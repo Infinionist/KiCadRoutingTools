@@ -2538,6 +2538,16 @@ def assign_waypoints_to_mst_edges(waypoints, pad_grid, mst_edges):
 SHORT_POWER_EDGE_MM = 10.0
 
 
+def _neckdown_allowed(config):
+    """May a wide (power or impedance) net's failed full-width edge retry
+    narrower at all? The config knob is the caller's choice; ``--escalation
+    off`` (fab_tiers.may_narrow) forbids every descent site, and this ladder
+    was the one that did not ask -- cm5-io shipped 95 of 115 mm of a 1 mm
+    rail at 0.15 mm under a policy that promised exact sizes."""
+    from fab_tiers import may_narrow
+    return bool(config.power_tap_neckdown) and may_narrow()
+
+
 def _impedance_neckdown_allowed():
     """#156 follow-up: may an impedance-width net neck down to the NOMINAL
     track width when its full-width route fails? Completion-first default:
@@ -3254,7 +3264,7 @@ def _route_main_connection(router, obstacles, config, sources, targets, track_ma
     power_wide = net_w > layer_w + 1e-9
     imp_wide = (not power_wide and net_w > config.track_width + 1e-9
                 and _impedance_neckdown_allowed())
-    if result[0] is not None or not (power_wide or imp_wide) or not config.power_tap_neckdown:
+    if result[0] is not None or not (power_wide or imp_wide) or not _neckdown_allowed(config):
         return result + (False, None)
     neck_floor = layer_w if power_wide else config.track_width
 
