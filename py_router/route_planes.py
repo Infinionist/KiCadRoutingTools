@@ -20,6 +20,7 @@ from __future__ import annotations
 KRT_TOOL = {'scope': ['routing', 'combined'], 'kind': 'actor'}
 
 import env_knobs
+import math
 import re
 import sys
 import os
@@ -68,7 +69,7 @@ from plane_zone_geometry import (
     sample_route_for_voronoi
 )
 from plane_pad_tap import clamp_tap_via_to_edge
-from terminal_colors import GREEN, RED, RESET
+from terminal_colors import GREEN, RED, YELLOW, RESET
 
 # Import Rust router (startup_checks ensures it's available and up-to-date)
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'rust_router')))
@@ -546,6 +547,34 @@ def _path_to_segments(path, via_pos, pad, pad_layer, net_id, config, coord):
                 'net_id': net_id
             })
 
+    return _bound_tap_neck(segments, net_id, pad_layer, config)
+
+
+def _bound_tap_neck(segments, net_id, pad_layer, config):
+    """A plane tap is drawn at the board default width, so for a power net it
+    is a NECK. That is a pad entry only while it is short: cm5-io's +5V
+    (2 mm class) shipped 47 taps at 0.09 mm, one 7.25 mm long, under
+    ``--escalation off``. Record every necked tap in the fab ledger, and under
+    ``off`` refuse one longer than the pad-entry allowance (the caller reports
+    the pad unconnected instead of shipping a thread as a rail)."""
+    try:
+        net_w = config.get_net_track_width(net_id, pad_layer)
+    except Exception:                                          # noqa: BLE001
+        return segments
+    if not segments or net_w <= config.track_width + 1e-9:
+        return segments
+    from fab_tiers import may_narrow, note_narrowing
+    from single_ended_routing import PAD_ENTRY_NECK_MM
+    name = None
+    length = sum(math.hypot(s['end'][0] - s['start'][0], s['end'][1] - s['start'][1])
+                 for s in segments)
+    if not may_narrow() and length > PAD_ENTRY_NECK_MM + 1e-9:
+        print(f"    {YELLOW}plane tap for net {net_id} refused: {length:.2f}mm at "
+              f"{config.track_width:g}mm exceeds the {PAD_ENTRY_NECK_MM}mm pad-entry "
+              f"allowance for a {net_w:g}mm net (--escalation off){RESET}")
+        return None
+    note_narrowing(net_id, 'track_width', net_w, config.track_width, 'plane tap',
+                   net_name=name)
     return segments
 
 
@@ -667,6 +696,10 @@ def route_via_to_pad(
 
     # Convert path to segments
     segments = _path_to_segments(path, via_pos, pad, pad_layer, net_id, config, coord)
+    if segments is None:
+        if return_blocked_cells:
+            return RouteResult(segments=None, blocked_cells=[], success=False)
+        return None
 
     if return_blocked_cells:
         return RouteResult(segments=segments, blocked_cells=[], success=True)
@@ -774,6 +807,10 @@ def route_multi_source_to_pad(
         print(f"[multi-source {len(source_cells)} cand, {iterations}it]", end=" ")
 
     segments = _path_to_segments(path, via_pos, pad, pad_layer, net_id, config, coord)
+    if segments is None:
+        if return_blocked_cells:
+            return RouteResult(segments=None, blocked_cells=[], success=False), None
+        return None, None
     if return_blocked_cells:
         return RouteResult(segments=segments, blocked_cells=[], success=True), via_pos
     return segments, via_pos
