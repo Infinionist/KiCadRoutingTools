@@ -2545,6 +2545,24 @@ SHORT_POWER_EDGE_MM = 10.0
 PAD_ENTRY_NECK_MM = 2.0
 
 
+def _path_length_mm(path, grid_step):
+    """Copper length of an A* cell path in mm (layer changes add nothing)."""
+    total = 0.0
+    for a, b in zip(path, path[1:]):
+        total += math.hypot(a[0] - b[0], a[1] - b[1]) * grid_step
+    return total
+
+
+def _neck_path_ok(path, grid_step):
+    """Under ``--escalation off`` a necked edge may only be a pad-entry stretch:
+    its routed LENGTH must stay within PAD_ENTRY_NECK_MM, not just the span
+    between its endpoints (a short span can be routed as a long detour)."""
+    from fab_tiers import may_narrow
+    if may_narrow():
+        return True
+    return _path_length_mm(path, grid_step) <= PAD_ENTRY_NECK_MM + 1e-9
+
+
 def _neckdown_allowed(config, span_mm=None):
     """May a wide (power or impedance) net's failed full-width edge retry
     narrower? The config knob is the caller's choice. ``--escalation off``
@@ -3293,6 +3311,15 @@ def _route_main_connection(router, obstacles, config, sources, targets, track_ma
                 router, obstacles, config, sources, targets, tm,
                 pcb_data, net_id, print_prefix, direction_labels, single_direction, waypoints)
             total_iters += r[1]
+            if r[0] is not None and not _neck_path_ok(r[0], config.grid_step):
+                # A 2 mm span routed as a 12 mm detour is a narrow trunk, not a
+                # pad entry (cm5-io USBH1_VBUS 0.2 mm x 12.1 mm, USB30_DN half
+                # width on In2 under --escalation off). Refuse it; the edge
+                # fails honestly at the requested width.
+                print(f"{print_prefix}{YELLOW}Neck-down at {w:.4f}mm rejected: path "
+                      f"{_path_length_mm(r[0], config.grid_step):.1f}mm exceeds the "
+                      f"{PAD_ENTRY_NECK_MM}mm pad-entry allowance{RESET}")
+                continue
             if r[0] is not None:
                 print(f"{print_prefix}{YELLOW}Wide {'power' if power_wide else 'impedance'} route blocked - routed short edge at "
                       f"{w:.4f}mm (down from {net_w:.4f}){RESET}")

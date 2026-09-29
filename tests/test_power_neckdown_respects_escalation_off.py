@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'py_router'))
 
 import fab_tiers  # noqa: E402
-from single_ended_routing import PAD_ENTRY_NECK_MM, _neckdown_allowed  # noqa: E402
+from single_ended_routing import PAD_ENTRY_NECK_MM, _neck_path_ok, _neckdown_allowed  # noqa: E402
 
 
 class _Cfg:
@@ -42,7 +42,22 @@ def test_default_policy_keeps_the_ladder():
         fab_tiers.set_escalation_policy(*prev)
 
 
-TESTS = [test_escalation_off_forbids_the_ladder, test_default_policy_keeps_the_ladder]
+def test_necked_path_length_is_bounded_under_escalation_off():
+    prev = fab_tiers.get_escalation_policy()
+    try:
+        fab_tiers.set_escalation_policy('off')
+        short = [(0, 0, 0), (10, 0, 0), (20, 0, 0)]            # 1.0 mm at 0.05 grid
+        detour = [(0, 0, 0)] + [(i, i, 0) for i in range(1, 60)]  # ~4.2 mm
+        assert _neck_path_ok(short, 0.05) is True
+        assert _neck_path_ok(detour, 0.05) is False
+        fab_tiers.set_escalation_policy('fab')
+        assert _neck_path_ok(detour, 0.05) is True
+    finally:
+        fab_tiers.set_escalation_policy(*prev)
+
+
+TESTS = [test_escalation_off_forbids_the_ladder, test_default_policy_keeps_the_ladder,
+         test_necked_path_length_is_bounded_under_escalation_off]
 
 if __name__ == '__main__':
     for t in TESTS:
