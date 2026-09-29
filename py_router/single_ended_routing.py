@@ -2538,14 +2538,27 @@ def assign_waypoints_to_mst_edges(waypoints, pad_grid, mst_edges):
 SHORT_POWER_EDGE_MM = 10.0
 
 
-def _neckdown_allowed(config):
+# A wide net entering a pad narrower than its class cannot keep its width for
+# the last stretch: a 2 mm rail meets a 0.2 mm connector pin. Under
+# ``--escalation off`` only that pad-entry stretch may neck; a rail that needs
+# to be narrow for longer fails and is reported instead.
+PAD_ENTRY_NECK_MM = 2.0
+
+
+def _neckdown_allowed(config, span_mm=None):
     """May a wide (power or impedance) net's failed full-width edge retry
-    narrower at all? The config knob is the caller's choice; ``--escalation
-    off`` (fab_tiers.may_narrow) forbids every descent site, and this ladder
-    was the one that did not ask -- cm5-io shipped 95 of 115 mm of a 1 mm
-    rail at 0.15 mm under a policy that promised exact sizes."""
+    narrower? The config knob is the caller's choice. ``--escalation off``
+    (fab_tiers.may_narrow) confines necking to a pad-entry stretch of at most
+    PAD_ENTRY_NECK_MM (``span_mm`` is the edge's source->target span; None
+    means unknown, i.e. a trunk) -- this ladder was the one descent site that
+    never asked, and cm5-io shipped 95 of 115 mm of a 1 mm rail at 0.15 mm
+    under a policy that promised exact sizes."""
     from fab_tiers import may_narrow
-    return bool(config.power_tap_neckdown) and may_narrow()
+    if not config.power_tap_neckdown:
+        return False
+    if may_narrow():
+        return True
+    return span_mm is not None and span_mm <= PAD_ENTRY_NECK_MM + 1e-9
 
 
 def _impedance_neckdown_allowed():
@@ -3264,11 +3277,14 @@ def _route_main_connection(router, obstacles, config, sources, targets, track_ma
     power_wide = net_w > layer_w + 1e-9
     imp_wide = (not power_wide and net_w > config.track_width + 1e-9
                 and _impedance_neckdown_allowed())
-    if result[0] is not None or not (power_wide or imp_wide) or not _neckdown_allowed(config):
+    if result[0] is not None or not (power_wide or imp_wide):
+        return result + (False, None)
+    span_mm = _edge_span_mm(sources, targets, config.grid_step)
+    if not _neckdown_allowed(config, span_mm):
         return result + (False, None)
     neck_floor = layer_w if power_wide else config.track_width
 
-    if _edge_span_mm(sources, targets, config.grid_step) <= SHORT_POWER_EDGE_MM:
+    if span_mm <= SHORT_POWER_EDGE_MM:
         # Short edge: step the width down, widest-that-fits wins; segments use it.
         total_iters = result[1]
         for w in _power_width_ladder(net_w, neck_floor):

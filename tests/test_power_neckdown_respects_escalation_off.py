@@ -1,4 +1,5 @@
-"""The power/impedance neck-down ladder obeys --escalation off.
+"""The power/impedance neck-down ladder obeys --escalation off, except for the
+pad-entry stretch (<= PAD_ENTRY_NECK_MM) a wide net physically cannot keep.
 
 Before: `_power_width_ladder` and the long-trunk neck-down retry consulted
 only config.power_tap_neckdown, so a run that promised exact sizes
@@ -11,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'py_router'))
 
 import fab_tiers  # noqa: E402
-from single_ended_routing import _neckdown_allowed  # noqa: E402
+from single_ended_routing import PAD_ENTRY_NECK_MM, _neckdown_allowed  # noqa: E402
 
 
 class _Cfg:
@@ -22,7 +23,9 @@ def test_escalation_off_forbids_the_ladder():
     prev = fab_tiers.get_escalation_policy()
     try:
         fab_tiers.set_escalation_policy('off')
-        assert _neckdown_allowed(_Cfg()) is False
+        assert _neckdown_allowed(_Cfg()) is False            # trunk, span unknown
+        assert _neckdown_allowed(_Cfg(), 12.0) is False      # a 12 mm edge is a trunk
+        assert _neckdown_allowed(_Cfg(), PAD_ENTRY_NECK_MM) is True   # pad entry
     finally:
         fab_tiers.set_escalation_policy(*prev)
 
