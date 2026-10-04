@@ -12,6 +12,7 @@ This module consolidates geometry calculations used across multiple modules:
 from __future__ import annotations
 
 import math
+import re
 from typing import Tuple, Optional, Dict, List, Any, TYPE_CHECKING
 
 
@@ -465,3 +466,32 @@ def overlap_thickness(geom) -> float:
         else:
             best = max(best, min(short, 2.0 * _inscribed_radius(p)))
     return best
+
+
+def _copper_order(name: str) -> int:
+    """Stack position of a copper layer: F.Cu 0, InN.Cu N, B.Cu last."""
+    if name == "F.Cu":
+        return 0
+    if name == "B.Cu":
+        return 10_000
+    m = re.fullmatch(r"In(\d+)\.Cu", name)
+    return int(m.group(1)) if m else -1
+
+
+def via_span_layer_indices(via, routing_layers, num_layers: int):
+    """Routing-layer indices a via's copper occupies.
+
+    A through via (F.Cu..B.Cu), or a via whose layers are unknown, occupies every
+    routing layer. A blind/buried/micro via occupies only the layers between its
+    two end layers in stack order: an F.Cu->In1.Cu microvia leaves In2..B.Cu free
+    for tracks (via-in-pad GND microvias freed nothing while every via was
+    rasterized on all layers).
+    """
+    layers = getattr(via, "layers", None)
+    if not routing_layers or not layers or len(layers) < 2:
+        return range(num_layers)
+    a, b = sorted((_copper_order(layers[0]), _copper_order(layers[-1])))
+    if a < 0 or (a == 0 and b == 10_000):
+        return range(num_layers)
+    return [i for i, name in enumerate(list(routing_layers)[:num_layers])
+            if a <= _copper_order(name) <= b]
