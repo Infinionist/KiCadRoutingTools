@@ -1460,7 +1460,7 @@ def apply_diff_pair_layer_swaps(
                     continue
 
                 # Try each available layer except source and target
-                for alt_layer in config.layers:
+                for alt_layer in config.routable_layers():
                     if alt_layer == tgt_layer or alt_layer == src_layer:
                         continue
                     # Don't swap to F.Cu unless it's an edge stub
@@ -1560,7 +1560,7 @@ def apply_diff_pair_layer_swaps(
                     if not se_stub:
                         continue
 
-                    for alt_layer in config.layers:
+                    for alt_layer in config.routable_layers():
                         if alt_layer == src_layer or alt_layer == tgt_layer:
                             continue
                         if not can_swap_to_top_layer and alt_layer == 'F.Cu':
@@ -1804,7 +1804,7 @@ def _collapse_multipoint_net_to_common_layer(
     # moved stubs, then stack order. A zero-move candidate means some layer
     # already satisfies every endpoint — nothing to do.
     candidates = []
-    for L in config.layers:
+    for L in config.routable_layers():
         to_move = []
         feasible = True
         for e in entries:
@@ -1921,7 +1921,7 @@ def _assign_multipoint_net_per_cluster(
     chosen: List[str] = []
     while uncovered:
         best_L, best_count = None, 0
-        for L in config.layers:
+        for L in config.routable_layers():
             cnt = sum(1 for i in uncovered if _placement(entries[i], L) is not None)
             if cnt > best_count:
                 best_count, best_L = cnt, L

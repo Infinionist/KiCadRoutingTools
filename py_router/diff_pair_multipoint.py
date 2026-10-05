@@ -365,7 +365,10 @@ def _candidate_relocation_layers(state, terminals, obstacles, max_layers=3):
     if not any(f >= 0.45 for f in own_fracs):
         return []  # nothing is meaningfully blocked
     ranked = []
+    routable = set(config.routable_layers())
     for li, layer in enumerate(config.layers):
+        if layer not in routable:
+            continue
         fracs = [_blocked_fraction(config, obstacles, cx, cy, li) for cx, cy in centers]
         worst = max(fracs)
         # Useful only if it actually unblocks a blocked terminal.
@@ -927,7 +930,7 @@ def _switch_blocked_terminal_stubs(state, pair: DiffPairNet, terminals):
         if stub_p is None or stub_n is None:
             continue
         ranked = sorted(
-            (l for l in config.layers if l != stub_layer),
+            (l for l in config.routable_layers() if l != stub_layer),
             key=lambda l: _blocked_fraction(config, obstacles, cx, cy,
                                             config.layers.index(l)))
         for dest in ranked:
