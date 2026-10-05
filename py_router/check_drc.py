@@ -416,9 +416,12 @@ def check_via_segment_overlap(via: Via, seg: Segment, clearance: float, clearanc
     Args:
         clearance_margin: Fraction of clearance to use as tolerance (default 0.05 = 5%).
     """
-    # Standard through-hole vias go through ALL copper layers, not just the ones listed
-    # Only skip non-copper layers
+    # A through via is on ALL copper layers; a blind/buried/micro via only on the
+    # layers between its end layers (an F.Cu->In1.Cu microvia is not on In2..B.Cu).
     if not seg.layer.endswith('.Cu'):
+        return False, 0.0
+    from geometry_utils import via_on_layer
+    if not via_on_layer(via, seg.layer):
         return False, 0.0
 
     required_dist = via.size / 2 + seg.width / 2 + clearance

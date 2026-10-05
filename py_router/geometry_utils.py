@@ -478,6 +478,20 @@ def _copper_order(name: str) -> int:
     return int(m.group(1)) if m else -1
 
 
+def via_on_layer(via, layer_name: str) -> bool:
+    """True when the via's copper is on `layer_name`: a through via (or one with
+    unknown layers) is on every copper layer, a blind/buried/micro via only on the
+    layers between its two end layers in stack order."""
+    layers = getattr(via, "layers", None)
+    if not layers or len(layers) < 2:
+        return True
+    a, b = sorted((_copper_order(layers[0]), _copper_order(layers[-1])))
+    o = _copper_order(layer_name)
+    if a < 0 or o < 0:
+        return True
+    return a <= o <= b
+
+
 def via_span_layer_indices(via, routing_layers, num_layers: int):
     """Routing-layer indices a via's copper occupies.
 
