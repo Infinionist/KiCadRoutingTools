@@ -5241,6 +5241,9 @@ def drawn_body_rect(geom, fp_obj):
     source = 'none' if geom is None else (geom.drawn_source
                                           if geom.drawn_local is not None
                                           else geom.source)
+    if source == 'fab_marking':
+        # #1201: no silk, a rejected .Fab marking -- the rect is the pads.
+        source = 'pad_bbox'
     if rect_local is None or fp_obj is None:
         return None, source
     x0, y0, x1, y1 = legality.rotate_local_bounds(

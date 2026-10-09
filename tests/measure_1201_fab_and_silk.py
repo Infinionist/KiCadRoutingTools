@@ -59,8 +59,12 @@ FA10_HUMAN = [os.path.join(FA10_TRUTH, b, 'human.kicad_pcb') for b in (
     'ecc83-pp_v2', 'glasgow_revC', 'interf_u', 'multichannel_mixer',
     'rp2350_fpga_eensy_prePlane', 'sonde_xilinx')]
 
-#: Before the guard exists, the ON arm simulates it at this threshold.
-SIM_FRAC = 0.05
+#: Before the guard exists, the ON arm simulates it at this threshold
+#: (body.FAB_MIN_PAD_AREA_FRAC's value; the live constant is used once it
+#: exists).
+SIM_FRAC = 0.02
+#: The threshold the counts below are reported against.
+FRAC = getattr(body, 'FAB_MIN_PAD_AREA_FRAC', SIM_FRAC)
 
 #: The waivers that already exempt a containment from gating
 #: (legality.grade_body_overlap's `_GATE_EXEMPT`).
@@ -161,7 +165,7 @@ def main(argv):
     human = [b for b in FA10_HUMAN if fa10 and os.path.isfile(b)]
     boards = ([('tracked', b) for b in tracked] + [('fa10', b) for b in human]
               + [('extra', b) for b in argv])
-    out = {'sim_frac': SIM_FRAC, 'boards': []}
+    out = {'frac': FRAC, 'boards': []}
     tracked_min = None
     dots = []
     silk_trips = []
@@ -173,7 +177,7 @@ def main(argv):
         for ref, r, _f, _p in rows:
             if kind == 'tracked' and (tracked_min is None or r < tracked_min[0]):
                 tracked_min = (r, name, ref)
-            if r < SIM_FRAC:
+            if r < FRAC:
                 dots.append((kind, name, ref, r))
         with guard(False) as how_off:
             g_off = grade(pcb, path)
@@ -188,7 +192,7 @@ def main(argv):
                        if src_off.get(r) != src_on.get(r))
         row = {'board': name, 'kind': kind,
                'fab_parts': len(rows),
-               'below_frac': sum(1 for _r, r, _f, _p in rows if r < SIM_FRAC),
+               'below_frac': sum(1 for _r, r, _f, _p in rows if r < FRAC),
                'guard_off': how_off, 'guard_on': how_on,
                'courtyard_blocking': [g_off['courtyard_blocking'],
                                       g_on['courtyard_blocking']],
@@ -201,7 +205,7 @@ def main(argv):
         print('%-34s %-7s fab=%4d <%.2f=%3d  courtyard_blocking %s  '
               'containment_blocking %s  drawn-source moved %d  '
               'silk-only containments %d' % (
-                  name[:34], kind, row['fab_parts'], SIM_FRAC,
+                  name[:34], kind, row['fab_parts'], FRAC,
                   row['below_frac'], row['courtyard_blocking'],
                   row['containment_blocking'], len(moved), len(trips)))
     print()
@@ -209,7 +213,7 @@ def main(argv):
         print('tracked minimum fab/pad area ratio: %.4f (%s %s)' % tracked_min)
     tr_dots = [d for d in dots if d[0] == 'tracked']
     print('below %.2f: %d tracked, %d fa10' % (
-        SIM_FRAC, len(tr_dots), len(dots) - len(tr_dots)))
+        FRAC, len(tr_dots), len(dots) - len(tr_dots)))
     if dots:
         print('  largest rejected ratio: %.5f (%s %s)' % max(
             ((d[3], d[1], d[2]) for d in dots)))

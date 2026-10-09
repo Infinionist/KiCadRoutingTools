@@ -454,14 +454,15 @@ def main():
     _fr = g.get('fab_rejected_refs') or []
     from placement.body import FAB_MIN_PAD_AREA_FRAC as _FAB_FRAC
     if _fr:
-        print(f"    {len(_fr)} part(s) draw a .Fab marking too small to be a "
-              f"body (a pin-1 dot under {_FAB_FRAC:.0%} of the pad box, "
-              f"#1201), so their body is read from silk or pads: "
+        print(f"    {len(_fr)} part(s) draw only a .Fab marking (under "
+              f"{_FAB_FRAC:.0%} of the pad box: a pin-1 dot, a single line; "
+              f"#1201), which is not their body: they occupy their pad box, "
+              f"and their drawn body is their silk where they draw one: "
               + ', '.join(_fr[:8]) + (' ...' if len(_fr) > 8 else ''))
     if g['fab_unjudged']:
         _u = g['fab_unjudged_refs']
-        print(f"    {g['fab_unjudged']} part(s) draw no body at all (no .Fab, "
-              f"no usable silk), so the channel cannot judge them: "
+        print(f"    {g['fab_unjudged']} part(s) draw no usable body (no .Fab "
+              f"body, no usable silk), so the channel cannot judge them: "
               + ', '.join(_u[:8]) + (' ...' if len(_u) > 8 else ''))
 
     # ASSEMBLY SIDES (#837). Report-only, and deliberately not a conjunct:

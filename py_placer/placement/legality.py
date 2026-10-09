@@ -2949,13 +2949,25 @@ def grade_body_overlap(pcb_data, clearance: float,
                             if p.waiver not in _GATE_EXEMPT
                             and not _silk_drawn_pair(p)]
 
-    # #1201: name each contained pair's reason for not gating. Metadata
-    # only -- the gate above is the decision, and this does not re-derive it.
+    # #1201: name each contained pair's reason for not gating, READ OFF the
+    # gate above rather than re-derived beside it (a second copy could
+    # disagree and label a gating pair exempt). Stamped on the pair wherever
+    # it is listed -- `pairs`, `advisory_pairs`, `containment_pairs` -- so
+    # the JSON cannot say '' in one list and 'silk_drawn' in another.
+    _gating = {id(p) for p in containment_blocking}
+
     def _gate_exempt(p) -> str:
+        if id(p) in _gating:
+            return ''
         if p.waiver in _GATE_EXEMPT:
             return p.waiver
-        return 'silk_drawn' if _silk_drawn_pair(p) else ''
-    contained = [p._replace(gate_exempt=_gate_exempt(p)) for p in contained]
+        return 'silk_drawn'
+    _stamped = {id(p): p._replace(gate_exempt=_gate_exempt(p))
+                for p in contained}
+    pairs = [_stamped.get(id(p), p) for p in pairs]
+    advisory = [_stamped.get(id(p), p) for p in advisory]
+    containment_blocking = [_stamped[id(p)] for p in containment_blocking]
+    contained = [_stamped[id(p)] for p in contained]
     # Courtyard BLOCKING (run-23): the subset of courtyard pairs that gates --
     # `courtyard_blocking`'s floors and `PairWaivers.blocking_waived`'s ladder,
     # which carries the run-22/23 edge-LIVE geometry condition, the

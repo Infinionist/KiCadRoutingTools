@@ -90,22 +90,29 @@ SOURCE_COURTYARD = 'courtyard'
 SOURCE_FAB = 'fab'
 SOURCE_SILK = 'silk'
 SOURCE_PADS = 'pad_bbox'
+#: #1201: the occupancy of a part whose .Fab rung is a MARKING (a pin-1 dot,
+#: a zero-width line) rejected as its body: the marking united with the pads,
+#: exactly what that part occupied before the guard -- named for what it is.
+SOURCE_FAB_MARKING = 'fab_marking'
 SOURCE_NONE = 'none'
 
 #: Ladder order, for reporting a source mix in a stable sequence.
-SOURCES = (SOURCE_COURTYARD, SOURCE_FAB, SOURCE_SILK, SOURCE_PADS,
-           SOURCE_NONE)
+SOURCES = (SOURCE_COURTYARD, SOURCE_FAB, SOURCE_FAB_MARKING, SOURCE_SILK,
+           SOURCE_PADS, SOURCE_NONE)
 
 #: #1201. A .Fab rung whose bbox covers less than this fraction of the pad
 #: bbox's AREA is a marking, not a body. Measured
-#: (`tests/measure_1201_fab_and_silk.py`): the smallest tracked fab body is
-#: 0.3114 of its pads (orangecrab J4, a microSD shell), 0 of 1208 tracked
-#: parts fall below 0.05, and all 204 fab markings on the fa10 designer boards
-#: do (largest 0.00466): 203 EasyEDA 0.06 mm pin-1 dots -- CM5_MINIMA_3's
-#: USB-C receptacles J101/USB701 and One-Air-Max's BAT1 among them -- and
-#: CM5's Module301, whose only fab item is a zero-width 0 x 48 mm line. 0.05
-#: sits near the log-midpoint of that gap.
-FAB_MIN_PAD_AREA_FRAC = 0.05
+#: (`tests/measure_1201_fab_and_silk.py` and the phase-3 verifier's sweep of
+#: KiCad 10's stock library): the markings reach 0.00466 -- all 204 on the
+#: fa10 designer boards, 203 EasyEDA 0.06 mm pin-1 dots (CM5_MINIMA_3's USB-C
+#: J101/USB701, One-Air-Max's BAT1) and CM5's Module301, whose only fab item
+#: is a zero-width 0 x 48 mm line -- and the smallest real bodies are 0.0537
+#: (stock TO-50-4_LongPad, PowerMacro_M234) and 0.3114 on the tracked corpus
+#: (orangecrab J4). 0.02 sits near the log-midpoint of 0.00466 and 0.0537,
+#: with a factor of about 2.7-4.3 either side; no stock footprint with a 2-D
+#: fab body is rejected at any of six non-orthogonal angles. The ten stock
+#: footprints it does reject are wire-bridge test points whose fab is a line.
+FAB_MIN_PAD_AREA_FRAC = 0.02
 
 
 def _area(b: Bbox) -> float:
@@ -273,9 +280,10 @@ def body_geometry(fp, side: str,
     fab = _for_side(fab_sides, side)
     silk = _for_side(silk_sides, side)
     fab_rejected = False
+    marking: Optional[Bbox] = None
     if fab is not None and fab_cannot_be_body(fab, pads):
         # #1201: a marking, not a body -- the rung falls through to silk.
-        fab, fab_rejected = None, True
+        marking, fab, fab_rejected = fab, None, True
 
     # -- the DRAWN-BODY ladder: fab, else silk U pads. Courtyard is not on it.
     drawn_local: Optional[Bbox] = None
@@ -305,8 +313,18 @@ def body_geometry(fp, side: str,
     court = _for_side(courtyard_sides, side)
     if court is not None:
         body_local, source = court, SOURCE_COURTYARD
-    elif drawn_local is not None:
+    elif drawn_local is not None and not fab_rejected:
         body_local, source = drawn_local, drawn_source
+    elif fab_rejected:
+        # #1201: a part whose .Fab rung is a marking. Its BODY is its silk
+        # united with its pads (else its pads), never the dot; what it
+        # OCCUPIES is unchanged by the guard -- the marking united with the
+        # pads, as before, set below and labelled `fab_marking`. The user's
+        # decision: the silk may not occupy (a silk occupancy never gates,
+        # #896, and letting it answer flipped the fa10 One-Air-Max seed from
+        # NOT BUILDABLE, 23 courtyard pairs, to "buildable"), and the pad box
+        # alone lost the 14 passives under its ESP32 module's antenna.
+        body_local, source = (drawn_local or pads), SOURCE_FAB_MARKING
     elif pads is not None:
         body_local, source = pads, SOURCE_PADS
     else:
@@ -319,6 +337,9 @@ def body_geometry(fp, side: str,
                             pads_local=pads, fab_rejected=fab_rejected)
 
     occupancy = (body_local if pads is None else _union(body_local, pads))
+    if source == SOURCE_FAB_MARKING:
+        # The one rung whose occupancy is not body U pads (see above).
+        occupancy = _union(marking, pads)
     court_shape, court_how = (_shape_how_for_side(courtyard_shapes, side)
                               if source == SOURCE_COURTYARD else (None, ''))
     drawn_shape = (_shape_for_side(fab_shapes, side)

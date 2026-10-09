@@ -103,22 +103,59 @@ class TheGuard(unittest.TestCase):
         self.assertTrue(g.fab_rejected)
         # ...and the provenance reaches every LocalBounds consumer.
         self.assertTrue(lb.fab_rejected)
-        self.assertEqual(lb.source, body.SOURCE_SILK)
+        # Its DRAWN body is the silk, united with the pads, never the dot...
         self.assertEqual(g.drawn_source, body.SOURCE_SILK)
-        self.assertEqual(g.source, body.SOURCE_SILK)
         self.assertIsNone(g.drawn_shape_local)
-        # silk united with the pads, never the dot
         self.assertLess(g.drawn_local[0], -3.7)
         self.assertGreater(g.drawn_local[2], 5.8)
+        # ...but what it OCCUPIES is unchanged by the guard: the marking
+        # united with the pads, as before, named `fab_marking` (the user's
+        # decision: a silk occupancy never gates, #896, and letting it answer
+        # turned the fa10 One-Air-Max seed from NOT BUILDABLE to "buildable";
+        # the pad box alone lost the parts under its module's antenna).
+        dot = (-3.98, -2.26, -3.92, -2.2)
+        self.assertEqual(g.source, body.SOURCE_FAB_MARKING)
+        self.assertEqual(lb.source, body.SOURCE_FAB_MARKING)
+        want = body._union(dot, g.pads_local)
+        for got, exp in zip(g.occupancy_local, want):
+            self.assertAlmostEqual(got, exp, places=6)
+        # its BODY is the silk, never the dot
+        self.assertEqual(g.body_local, g.drawn_local)
+
+    def test_a_marking_without_silk_falls_to_the_pads(self):
+        text = _usb_c(6, 15, 180).replace(
+            '    (fp_rect (start -3.8 -2.6) (end 5.9 2.6) (stroke (width'
+            ' 0.12) (type default)) (layer "F.SilkS"))\n', '')
+        with tempfile.TemporaryDirectory() as td:
+            path = _board(td, text, size=(40, 30))
+            pcb = parse_kicad_pcb(path)
+            g = body.board_bodies(pcb, path)['J101']
+            rect, src = floorplan.drawn_body_rect(g, pcb.footprints['J101'])
+        self.assertTrue(g.fab_rejected)
+        self.assertIsNone(g.drawn_local)
+        self.assertEqual(g.source, body.SOURCE_FAB_MARKING)
+        # no silk: its body is its pads, and a drawn-body reader says so
+        self.assertEqual(g.body_local, g.pads_local)
+        self.assertEqual(src, 'pad_bbox')
 
     def test_the_threshold_brackets(self):
         pads = (-2.0, -1.0, 2.0, 1.0)                        # 8 mm2
         f = body.fab_cannot_be_body
+        frac = body.FAB_MIN_PAD_AREA_FRAC
         self.assertTrue(f((0, 0, 0.06, 0.06), pads))
-        self.assertTrue(f((0, 0, 0.5, 0.75), pads))          # 0.047
-        self.assertFalse(f((0, 0, 0.5, 0.85), pads))         # 0.053
+        self.assertTrue(f((0, 0, 0.4, 0.38), pads))          # 0.019
+        self.assertFalse(f((0, 0, 0.4, 0.42), pads))         # 0.021
+        # exactly AT the threshold is a body: 1 x 2 over 10 x 10, and
+        # 0.02 * 100 is exactly 2.0 in floating point
+        self.assertEqual(frac * 100.0, 2.0)
+        self.assertFalse(f((0, 0, 1.0, 2.0), (0, 0, 10.0, 10.0)))
+        # a zero-width line is a marking (CM5 Module301's 0 x 48 mm fab)
+        self.assertTrue(f((0, 0, 0.0, 48.0), (-20, -27, 20, 27)))
         self.assertFalse(f(None, pads))
         self.assertFalse(f((0, 0, 0.06, 0.06), None))
+        # the stock library's least-covering real bodies sit above it
+        self.assertLess(frac, 0.0537)
+        self.assertGreater(frac, 0.00466)
 
     def test_a_padless_fab_body_is_kept(self):
         """watchy's e-paper display: no pads, a real F.Fab body."""
@@ -176,6 +213,39 @@ class TheCorpus(unittest.TestCase):
         self.assertGreater(low[0], 6 * body.FAB_MIN_PAD_AREA_FRAC)
 
 
+def _fab_part(ref, x, y, half, name='t:QFN', pads=4):
+    """A part whose F.Fab body is a +-`half` square, with `pads` pads."""
+    pad = ''.join(
+        f'    (pad "{k}" smd rect (at {round(-half / 2 + k * 0.5, 2)} 0) '
+        f'(size 0.3 0.6) (layers "F.Cu") (net 2 "N2"))\n'
+        for k in range(pads))
+    return (f'  (footprint "{name}" (layer "F.Cu") (at {x} {y})\n'
+            f'    (property "Reference" "{ref}" (at 0 0) (layer "F.SilkS"))\n'
+            f'    (fp_rect (start {-half} {-half}) (end {half} {half}) (stroke'
+            f' (width 0.05) (type default)) (layer "F.Fab"))\n'
+            + pad + '  )\n')
+
+
+def _fiducial(ref, x, y):
+    return (f'  (footprint "Fiducial:Fiducial_1mm_Mask2mm" (layer "F.Cu") '
+            f'(at {x} {y})\n'
+            f'    (property "Reference" "{ref}" (at 0 0) (layer "F.SilkS"))\n'
+            f'    (fp_circle (center 0 0) (end 1 0) (stroke (width 0.05)'
+            f' (type default)) (layer "F.Fab"))\n'
+            f'    (pad "1" smd circle (at 0 0) (size 1 1) (layers "F.Cu")))\n')
+
+
+def _check_assembly(td, path):
+    out_json = os.path.join(td, 'a.json')
+    p = subprocess.run(
+        [PY, '-X', 'utf8', 'py_tools/check_assembly.py', path,
+         '--json', out_json],
+        capture_output=True, text=True, encoding='utf-8', errors='replace',
+        cwd=ROOT, timeout=600)
+    with open(out_json, encoding='utf-8') as fh:
+        return p.stdout + p.stderr, json.load(fh)
+
+
 class TheQuenchReadsTheSameBody(unittest.TestCase):
 
     def _state(self, td, text):
@@ -193,43 +263,100 @@ class TheQuenchReadsTheSameBody(unittest.TestCase):
             self.assertIsNotNone(st.fab_rect('DC1'))
             self.assertEqual(st.fab_rect('DC1'), (29.0, 14.0, 31.0, 16.0))
 
+    def test_body_less_means_what_the_grader_means(self):
+        """`_bodyless_refs` reads the grader's drawn body: J101's silk is a
+        body (not body-less); a twin that draws only the dot is body-less,
+        so the pads-under-body channel judges it, as the grader does."""
+        bare = _usb_c(30, 15, 0).replace('"J101"', '"J102"').replace(
+            '    (fp_rect (start -3.8 -2.6) (end 5.9 2.6) (stroke (width'
+            ' 0.12) (type default)) (layer "F.SilkS"))\n', '')
+        with tempfile.TemporaryDirectory() as td:
+            st = self._state(td, _usb_c(6, 15, 180) + bare)
+            got = st._bodyless_refs()
+        self.assertNotIn('J101', got)
+        self.assertIn('J102', got)
+
 
 class SilkContainmentIsNamed(unittest.TestCase):
 
     def test_bat1_shape(self):
+        """One-Air-Max BAT1's real shape (#1201's comment). Its drawn body
+        is its silk, so DC1 wholly inside it is a containment that does not
+        gate (#896) -- named as such -- while its OCCUPANCY is its pad box,
+        so the courtyard channel still gates the pair, as it did before the
+        guard. A fiducial inside it is exempt as a marker, and says so."""
         import pose_score
         with tempfile.TemporaryDirectory() as td:
-            path = _board(td, _holder_silk() + _dc1(22, 15), size=(44, 30))
+            path = _board(td, _holder_silk() + _dc1(22, 15)
+                          + _fiducial('FID1', 30, 15), size=(44, 30))
             pcb = parse_kicad_pcb(path)
             g = legality.grade_body_overlap(pcb, 0.2, pcb_file=path)
             st = pose_score.make_state(pcb, path, clearance=0.2)
             veto = st.candidate_veto('DC1', 22.0, 15.0, 0.0)
-            p = subprocess.run(
-                [PY, '-X', 'utf8', 'py_tools/check_assembly.py', path,
-                 '--json', os.path.join(td, 'a.json')],
-                capture_output=True, text=True, encoding='utf-8',
-                errors='replace', cwd=ROOT, timeout=600)
-            with open(os.path.join(td, 'a.json'), encoding='utf-8') as fh:
-                js = json.load(fh)
+            out, js = _check_assembly(td, path)
         self.assertEqual(g['fab_rejected_refs'], ['BAT1'])
         self.assertEqual(g['body_sources'].get('BAT1'), body.SOURCE_SILK)
-        pair = [q for q in g['containment_pairs'] if {q.a, q.b} ==
-                {'BAT1', 'DC1'}]
-        self.assertEqual(len(pair), 1)
-        self.assertEqual(pair[0].contained_frac, 1.0)
-        self.assertEqual(pair[0].gate_exempt, 'silk_drawn')
+        why = {frozenset((q.a, q.b)): q.gate_exempt
+               for q in g['containment_pairs']}
+        self.assertEqual(why.get(frozenset(('BAT1', 'DC1'))), 'silk_drawn')
+        # a marker's own exemption outranks the silk one
+        self.assertEqual(why.get(frozenset(('BAT1', 'FID1'))), 'marker_class')
         self.assertEqual(g['containment_blocking'], 0)
-        self.assertFalse([q for q in g['courtyard_blocking_pairs']
-                          if {q.a, q.b} == {'BAT1', 'DC1'}])
-        # The search still refuses the pose: the generator stays stricter.
+        # the pad box gates the courtyard channel, as before the guard
+        self.assertTrue([q for q in g['courtyard_blocking_pairs']
+                         if {q.a, q.b} == {'BAT1', 'DC1'}])
         self.assertEqual((veto or (None,))[0], 'courtyard', veto)
-        out = p.stdout + p.stderr
+        # one pair, one label, wherever it is listed
+        for lst in ('pairs', 'advisory_pairs'):
+            for q in g[lst]:
+                if q.contained:
+                    self.assertEqual(q.gate_exempt,
+                                     why[frozenset((q.a, q.b))], (lst, q))
         self.assertIn('does not gate: a silk-drawn body', out)
+        self.assertIn('does not gate: a mount-hole/fiducial/testpoint', out)
+        self.assertIn('None of these BLOCK: 1 a mount-hole/fiducial/testpoint '
+                      'is involved; 1 a silk-drawn body', out)
         self.assertNotIn('a marker or a board-sized container', out)
         self.assertIn('BAT1', out[out.find('.Fab marking'):])
         self.assertEqual(js['fab_rejected_refs'], ['BAT1'])
-        self.assertEqual([c['gate_exempt'] for c in js['containments']],
-                         ['silk_drawn'])
+        self.assertEqual(sorted(c['gate_exempt'] for c in js['containments']),
+                         ['marker_class', 'silk_drawn'])
+
+    def test_a_gating_containment_is_labelled_as_gating(self):
+        """A part wholly inside another's FAB body gates; its label is '',
+        and an edge-class waiver on it is named as one that still gates."""
+        with tempfile.TemporaryDirectory() as td:
+            path = _board(td, _fab_part('U1', 15, 15, 6)
+                          + _fab_part('R1', 15, 15, 1, pads=2)
+                          + _fab_part('J9', 32, 15, 5,
+                                      name='Connector_USB:USB_C_Receptacle_X')
+                          + _fab_part('R2', 32, 15, 1, pads=2),
+                          size=(44, 30))
+            g = legality.grade_body_overlap(parse_kicad_pcb(path), 0.2,
+                                            pcb_file=path)
+            out, _js = _check_assembly(td, path)
+        blk = {frozenset((q.a, q.b)): q
+               for q in g['containment_blocking_pairs']}
+        self.assertIn(frozenset(('U1', 'R1')), blk)
+        self.assertEqual(blk[frozenset(('U1', 'R1'))].gate_exempt, '')
+        self.assertIn(frozenset(('J9', 'R2')), blk)
+        self.assertEqual(blk[frozenset(('J9', 'R2'))].waiver, 'edge_class')
+        self.assertIn('[waived:edge_class, still gates]', out)
+
+    def test_a_container_only_board_says_by_design(self):
+        """watchy's e-paper display shape: a pad-less fab outline over most
+        of the board. A part under it is a container containment, and the
+        board-sized-container sentence is TRUE here, so it prints."""
+        disp = ('  (footprint "t:DISPLAY" (layer "F.Cu") (at 22 12)\n'
+                '    (property "Reference" "REF**" (at 0 0)'
+                ' (layer "F.SilkS"))\n'
+                '    (fp_rect (start -20 -10) (end 20 10) (stroke (width'
+                ' 0.1) (type default)) (layer "F.Fab")))\n')
+        with tempfile.TemporaryDirectory() as td:
+            path = _board(td, disp + _fab_part('U1', 22, 12, 1, pads=2))
+            out, _js = _check_assembly(td, path)
+        self.assertIn('a board-sized container is involved', out)
+        self.assertIn('Each is a by-design containment', out)
 
 
 class TheIssueBoard(unittest.TestCase):
@@ -244,6 +371,11 @@ class TheIssueBoard(unittest.TestCase):
             capture_output=True, text=True, encoding='utf-8',
             errors='replace', cwd=ROOT, timeout=900)
         out = p.stdout + p.stderr
+        # Positive evidence first: the run graded both receptacles and passed
+        # (a crash before grading would print none of the strings below).
+        self.assertEqual(p.returncode, 0, out[-1500:])
+        self.assertIn('J101 west: overhang', out)
+        self.assertIn('USB701 west: overhang', out)
         self.assertNotIn('body:fab', out)
         self.assertNotIn('seated 8.90mm', out)
         self.assertNotIn('seated 11.71mm', out)
