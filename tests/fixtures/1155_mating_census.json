@@ -29,6 +29,11 @@
   ]
  },
  "flat_hierarchy.kicad_pcb": {
+  "J1": [
+   "+y",
+   "courtyard+fab",
+   "west"
+  ],
   "JP1": [
    null,
    "",
@@ -98,6 +103,11 @@
    null,
    "",
    null
+  ],
+  "P1": [
+   "+y",
+   "courtyard+fab",
+   "east"
   ]
  },
  "interf_u_unrouted_placed.kicad_pcb": {
@@ -105,6 +115,11 @@
    null,
    "",
    null
+  ],
+  "P1": [
+   "+y",
+   "courtyard+fab",
+   "east"
   ]
  },
  "kit-dev-coldfire-xilinx_5213.kicad_pcb": {
@@ -232,6 +247,21 @@
    null,
    "",
    null
+  ],
+  "UARTCAN201": [
+   "+y",
+   "courtyard+fab",
+   "north"
+  ],
+  "UARTCAN202": [
+   "+y",
+   "courtyard+fab",
+   "north"
+  ],
+  "UARTCAN203": [
+   "+y",
+   "courtyard+fab",
+   "north"
   ],
   "UART_EN201": [
    null,

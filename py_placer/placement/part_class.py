@@ -53,6 +53,26 @@ CONNECTOR_FP = ('connector', 'usb', 'hdmi', 'rj45', 'jack', 'pinheader',
                 'microsd', 'sim', 'card', 'banana', 'header', 'socket')
 MOUNT_FP = ('mountinghole', 'fiducial', 'testpoint')
 
+
+def is_mount_hole_name(name) -> bool:
+    """True when a footprint's ITEM name says it is a mounting hole (#1176).
+
+    The item name STARTS with `MountingHole`: every mounting hole on the
+    tracked corpus and the fa10 boards is named that way, in any library
+    (`MountingHole:`, `Mounting_Holes:`, `Glasgow:`, a house library). A
+    SUBSTRING test also matched KiCad's horizontal D-subs, which carry the
+    hole offset in their name (`DSUB-9_Female_Horizontal_..._Housed_
+    MountingHolesOffset9.12mm`): five tracked DSUBs read `mount_hole`, so
+    their edge claim was never emitted. The item, not `lib:item`, because the
+    text parser keeps the library prefix and the pcbnew path does not -- a
+    rule on the whole string would answer differently on the two fronts.
+    Rejected alternatives, measured: "its plated pads carry nets" also
+    reclassifies glasgow MK1-4 and ulx3s H1-4 (netted plated holes); a
+    `MountingHole:` library-prefix rule misses the Glasgow and Mounting_Holes
+    libraries and the pcbnew path."""
+    item = str(name or '').rsplit(':', 1)[-1].lower()
+    return item.startswith('mountinghole')
+
 # The edge-mating subset of CONNECTOR_FP, plus receptacle-only names. A part
 # matching these mates through the board edge / an enclosure aperture.
 EDGE_RECEPTACLE_FP = ('usb', 'hdmi', 'rj45', 'rj11', 'dsub', 'd-sub',
@@ -125,7 +145,7 @@ def classify_part(fp, ref: str) -> PartClass:
                      if getattr(p, 'pad_type', '') != 'np_thru_hole']
     if npth and not plated_or_smd:
         return PartClass('mount_hole', 'high', ('npth-only pad set',))
-    if 'mountinghole' in name:
+    if is_mount_hole_name(name):
         return PartClass('mount_hole', 'medium', ('footprint name',))
     if 'fiducial' in name or pref == 'FID':
         return PartClass('fiducial', 'medium', ('footprint name/prefix',))
