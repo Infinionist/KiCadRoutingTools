@@ -187,6 +187,29 @@ class GlasgowBoxHeaders(unittest.TestCase):
         self.assertEqual({r: a[r] for r in ('J2', 'J3')},
                          {r: b[r] for r in ('J2', 'J3')})
 
+    def test_a_courtyard_overlapping_seat_walks_to_a_clean_angle(self):
+        """A seat only the pad-only fallback finds ('clean_t2') is walked
+        like a crowded one: the next angle stage 1 chose that seats clean
+        wins. Forced here by making J3's first angle overlap MK1."""
+        base = _seed(self.board, self.intent, ('J2', 'J3'))[1]
+        first = base['edge_angle_chosen']['J3']['to']
+        orig = seeder._placed_courtyard_hits
+
+        def hits(state, ref, pose, others):
+            if ref == 'J3' and abs((pose[2] - first + 180.0) % 360.0
+                                   - 180.0) < 1e-6:
+                return ['MK1']
+            return orig(state, ref, pose, others)
+        try:
+            seeder._placed_courtyard_hits = hits
+            _pcb, res, poses = _seed(self.board, self.intent, ('J2', 'J3'))
+        finally:
+            seeder._placed_courtyard_hits = orig
+        self.assertGreater(abs((poses['J3'][2] - first + 180.0) % 360.0
+                               - 180.0), 1e-6, (first, poses['J3']))
+        self.assertTrue(any('the next angle it chose that seats clear' in n
+                            for n in res['notes']), res['notes'])
+
 
 class TheMatingFaceDecides(unittest.TestCase):
     """sonde_u's J2 is #1155's DSUB edge-mount: a strong face (7.4 mm)."""
@@ -252,6 +275,144 @@ class TheMatingFaceDecides(unittest.TestCase):
             finally:
                 seeder._strong_facing_rots = orig
             self.assertAlmostEqual(st2.parts['J2'].rot % 360, 90.0)
+
+
+class TheCourtyardTierReading(unittest.TestCase):
+    """`_placed_courtyard_hits` itself, on glasgow's pile."""
+
+    @classmethod
+    def setUpClass(cls):
+        import pose_score
+        cls.td = tempfile.mkdtemp()
+        cls.board = _pile(cls.td, GLASGOW, 'g')
+        cls.st = pose_score.make_state(parse_kicad_pcb(cls.board), cls.board)
+        j2 = cls.st.parts['J2']
+        cls.at_j2 = (j2.x, j2.y, j2.rot)
+
+    def test_a_placed_courtyard_is_a_hit(self):
+        self.assertEqual(seeder._placed_courtyard_hits(
+            self.st, 'J3', self.at_j2, {'J2'}), ['J2'])
+
+    def test_only_the_parts_it_is_handed_count(self):
+        """Stage 1 hands it `placed`, never the pile."""
+        self.assertEqual(seeder._placed_courtyard_hits(
+            self.st, 'J3', self.at_j2, set()), [])
+
+    def test_disjoint_courtyards_are_not_a_hit(self):
+        x1, y1 = self.st.board[2], self.st.board[3]
+        self.assertEqual(seeder._placed_courtyard_hits(
+            self.st, 'J3', (x1 + 200.0, y1 + 200.0, 0.0), {'J2'}), [])
+
+    def test_a_project_ignoring_courtyards_reads_none(self):
+        try:
+            self.st.courtyards_ignored = True
+            self.assertEqual(seeder._placed_courtyard_hits(
+                self.st, 'J3', self.at_j2, {'J2'}), [])
+        finally:
+            self.st.courtyards_ignored = False
+
+
+class StageOneReadsTheInput(unittest.TestCase):
+    """`_stage1_claims` and `_uninformative_refs`, called directly."""
+
+    SONDE_J2 = {'ref': 'J2', 'edge': 'east', 'class': 'edge_receptacle',
+                'overhang_mm': {'min': 0.0, 'max': 15.15}}
+
+    def _claims(self, board, entries, uninformative):
+        import pose_score
+        pcb = parse_kicad_pcb(board)
+        st = pose_score.make_state(pcb, board)
+        by_edge = {}
+        for c in entries:
+            by_edge.setdefault(c['edge'], []).append(dict(c))
+        claims, why = seeder._stage1_claims(st, by_edge, {}, st.board, [],
+                                            lambda: set(uninformative))
+        return claims, why
+
+    def test_an_informative_input_keeps_its_angle(self):
+        claims, _ = self._claims(GLASGOW, GLASGOW_CLAIMS, ())
+        self.assertEqual(claims, {})
+
+    def test_an_uninformative_one_lies_along_its_edge_first(self):
+        claims, _ = self._claims(GLASGOW, GLASGOW_CLAIMS, ('J2', 'J3'))
+        self.assertEqual(sorted(claims), ['J2', 'J3'])
+        for ref, cl in claims.items():
+            self.assertIsInstance(cl, seeder._ChosenRot)
+            w, h = _extent(GLASGOW, ref, (0, 0, cl.candidates[0]))
+            self.assertGreater(w, h, (ref, cl))
+
+    def test_a_strong_face_offers_only_its_facing_angle(self):
+        """Uninformative but already facing: the reversed angles are not
+        candidates at all, so no fallback can seat it reversed."""
+        claims, _ = self._claims(SONDE, [self.SONDE_J2], ('J2',))
+        self.assertEqual(tuple(claims['J2'].candidates), (270.0,))
+
+    def test_a_reversed_strong_face_is_turned_on_a_placed_board(self):
+        with tempfile.TemporaryDirectory() as td:
+            rev = os.path.join(td, 'rev.kicad_pcb')
+            j2 = parse_kicad_pcb(SONDE).footprints['J2']
+            check([PY, '-X', 'utf8', 'py_placer/place_pose.py', SONDE, rev,
+                   '--allow-routed', '--force', 'set', 'J2', str(j2.x),
+                   str(j2.y), '--rot', '90'], accept=True)
+            claims, why = self._claims(rev, [self.SONDE_J2], ())
+        self.assertEqual(tuple(claims['J2'].candidates), (270.0,))
+        self.assertIn('pointed west', why['J2'])
+
+    def test_a_pile_is_uninformative_and_a_placed_board_is_not(self):
+        import pose_score
+        from types import SimpleNamespace
+        st = pose_score.make_state(parse_kicad_pcb(GLASGOW), GLASGOW)
+        refs = ['J2', 'J3']
+        self.assertEqual(seeder._uninformative_refs(
+            st, SimpleNamespace(pile=True, stacked_suspect_refs=()), refs),
+            set(refs))
+        self.assertEqual(seeder._uninformative_refs(
+            st, SimpleNamespace(pile=False, stacked_suspect_refs=()), refs),
+            set())
+
+
+class AWeakFaceDecidesNothing(unittest.TestCase):
+    """The repair ladder turns only a STRONG face: the Neutrik NMJ6HCD3's
+    weak face (1.36 mm) is wrong, and turning by it would reverse a jack
+    seated correctly."""
+
+    def test_only_a_strong_face_drives_the_repair_ladder(self):
+        import pose_score
+        jacks = os.path.join(ROOT, 'tests', 'fixtures',
+                             '1155_stock_jacks.kicad_pcb')
+        st = pose_score.make_state(parse_kicad_pcb(jacks), jacks)
+        weak = {'ref': 'J3', 'edge': 'east', 'class': 'edge_receptacle'}
+        self.assertIsNone(seeder._strong_facing_rots(st, 'J3', weak))
+        sonde = pose_score.make_state(parse_kicad_pcb(SONDE), SONDE)
+        self.assertEqual(seeder._strong_facing_rots(
+            sonde, 'J2', dict(StageOneReadsTheInput.SONDE_J2)), [270.0])
+
+
+class PackedStarts(unittest.TestCase):
+    """kit-dev-coldfire's north edge: five claims (three 31 mm D-subs since
+    #1176) whose equal starts overlap; they start packed by width."""
+
+    def test_the_north_claims_start_packed_in_seat_order(self):
+        import pose_score
+        board = os.path.join(KF, 'kit-dev-coldfire-xilinx_5213.kicad_pcb')
+        pcb = parse_kicad_pcb(board)
+        doc = floorplan.emit_intent(pcb, board)
+        it = floorplan.intent_from_dict(doc, source_path='e')
+        specs = sorted((c for c in it.edge_claims()
+                        if c.get('edge') == 'north'), key=lambda c: c['ref'])
+        self.assertEqual(len(specs), 5)
+        st = pose_score.make_state(pcb, board)
+        starts = seeder._packed_starts(st, specs, 'north', st.board,
+                                       lambda ref: None)
+        self.assertEqual(sorted(starts), [c['ref'] for c in specs])
+        fr = [starts[c['ref']] for c in specs]
+        self.assertEqual(fr, sorted(fr))
+        self.assertTrue(all(0.0 < f < 1.0 for f in fr), fr)
+        # a declared position anywhere on the edge keeps the equal starts
+        placed = [dict(specs[0], center_on_edge=0.0)] + specs[1:]
+        self.assertEqual(seeder._packed_starts(st, placed, 'north',
+                                               st.board, lambda ref: None),
+                         {})
 
 
 if __name__ == '__main__':

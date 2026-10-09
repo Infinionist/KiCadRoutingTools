@@ -2953,7 +2953,8 @@ def _placed_courtyard_hits(state, ref: str, pose, others) -> List[str]:
 
     `others` is the caller's: stage 1 passes `placed`, never the pile -- a
     part still in the pile sits at a meaningless coordinate."""
-    if getattr(state, 'courtyards_ignored', False):
+    _cy_ignored = getattr(state, 'courtyards_ignored', False)
+    if _cy_ignored:
         return []
     peers = sorted(o for o in others if o != ref and o in state.parts)
     if not peers:

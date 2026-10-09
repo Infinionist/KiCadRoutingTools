@@ -1101,8 +1101,9 @@ _UNRESOLVABLE = {}
 #: 81 before #1182 added `mutate_1182.py`; 82 before #1162 added
 #: `mutate_1162.py`; 83 before #1183 added `mutate_1183.py`; 84 before #1174
 #: added `mutate_1174.py`; 85 before #1176 added `mutate_1176.py`;
-#: 86 before #1201 added `mutate_1201.py`.
-_BATTERY_COUNT = 87
+#: 86 before #1201 added `mutate_1201.py`; 87 before #1155 added
+#: `mutate_1155.py`; 88 before #1172 added `mutate_1172.py`.
+_BATTERY_COUNT = 89
 
 #: A floor well under today's 831, not a target. Same purpose as
 #: `test_the_scanners_still_match_something`: prove the corpus is populated.
