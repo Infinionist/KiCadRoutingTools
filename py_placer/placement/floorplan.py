@@ -2034,6 +2034,23 @@ def _fmt_rect(r) -> str:
     return f"[{r[0]:.2f}, {r[1]:.2f}, {r[2]:.2f}, {r[3]:.2f}]"
 
 
+def emitted_zone_rect(rect, bounds):
+    """A zone as `emit_intent` writes it (#1174): 3 decimals, then clamped
+    into the envelope AS WRITTEN (`round(v, 4)` of the board bounds).
+
+    The zone used to be rounded on its own: CM5_MINIMA_3's x-min 75.0504
+    became 75.05, 0.4 um outside the 4-decimal envelope, and
+    `validate_intent` (tol 0) refused the emitted intent on its own board
+    with a message printing the same number on both sides. Clamping after
+    rounding can only move a side INWARD, so zone <= envelope holds exactly."""
+    z = [round(v, 3) for v in rect]
+    if not bounds:
+        return z
+    env = [round(v, 4) for v in bounds]
+    return [max(z[0], env[0]), max(z[1], env[1]),
+            min(z[2], env[2]), min(z[3], env[3])]
+
+
 def _ceil4(v: float) -> float:
     """Round UP to 4 decimals. See the legality_budget note in emit_intent."""
     return math.ceil(v * 1e4 - 1e-9) / 1e4
@@ -2768,7 +2785,8 @@ def declared_ladder(claim) -> Optional[List[float]]:
     return [rot] if rot is not None else list(cands)
 
 
-def zone_entries(intent: Intent, blocks: Dict[str, List[str]]) -> Tuple[Dict, ...]:
+def zone_entries(intent: Intent, blocks: Dict[str, List[str]],
+                 bounds=None) -> Tuple[Dict, ...]:
     """The plain-dict zone rows, given ALREADY-RESOLVED blocks.
 
     Split out of `resolve_intent_gate` (#797) because the SEAT search needs the
@@ -2779,12 +2797,20 @@ def zone_entries(intent: Intent, blocks: Dict[str, List[str]]) -> Tuple[Dict, ..
     One construction, several callers, for the reason `resolve_intent_gate`'s
     own docstring gives about the join it replaced: a filter that must be
     remembered is a filter that will be forgotten at the next call site.
+
+    `open_sides` (#1174) is `{ref: sides}` for the members whose declared
+    edge the zone may not bound (`zone_open_sides`); it needs the board
+    `bounds`, and is empty without them.
     """
+    claimed = claimed_edges(intent) if bounds else {}
     return tuple(
         {'name': z.name,
          'rect': tuple(z.rect),
          'tolerance_mm': intent.zone_tolerance(z),
          'refs': tuple(blocks.get(z.name, ())),
+         'open_sides': {r: s for r in blocks.get(z.name, ())
+                        for s in (zone_open_sides(z.rect, bounds,
+                                                  claimed.get(r)),) if s},
          'side': z.side,
          'exclusive': bool(z.exclusive)}
         for z in intent.blocks if z.rect is not None)
@@ -2819,7 +2845,8 @@ def resolve_intent_gate(intent: Intent, pcb_data,
         on tigard_placed).
     """
     blocks, problems = resolve_blocks(intent, pcb_data, group_sources)
-    zones = zone_entries(intent, blocks)
+    zones = zone_entries(intent, blocks, bounds=getattr(
+        getattr(pcb_data, 'board_info', None), 'board_bounds', None))
 
     # Total coverage AND the per-member "leaves it no pose" case (#799), from
     # the one function `grade` also calls -- so the same intent on the same
@@ -3537,9 +3564,15 @@ def zone_fits_courtyard(zone_rect, part_rect, tol: float) -> bool:
            (h <= zw + 1e-9 and w <= zh + 1e-9)
 
 
-def zone_escape(zone_rect, part_rect, anchor: bool) -> Tuple[float, str]:
+def zone_escape(zone_rect, part_rect, anchor: bool,
+                open_sides: Sequence[str] = ()) -> Tuple[float, str]:
     """How far `part_rect` is outside `zone_rect`, in mm, and on which side.
     Exactly 0.0 when contained.
+
+    `open_sides` (#1174) are sides the zone does not bound: an edge-claim
+    member's declared edge, where the zone side lies on the outline
+    (`zone_open_sides`). The edge rule grades that side, so the zone must not
+    -- an edge receptacle's mating face is SUPPOSED to cross it.
 
     THE zone measurement, shared by `rule_zone_containment` and the quench's
     intent gate (#702), for the reason `keepout_hit`'s docstring gives about
@@ -3561,11 +3594,84 @@ def zone_escape(zone_rect, part_rect, anchor: bool) -> Tuple[float, str]:
     up to 10.15mm on tigard J3. A gate built on the seeder's predicate would
     admit, by up to 10mm, poses this rule flags.
     """
+    if open_sides:
+        zone_rect = open_zone_rect(zone_rect, open_sides)
     if anchor:
         cx = (part_rect[0] + part_rect[2]) / 2.0
         cy = (part_rect[1] + part_rect[3]) / 2.0
         return _rect_escape(zone_rect, (cx, cy, cx, cy))
     return _rect_escape(zone_rect, part_rect)
+
+
+def claimed_edges(intent: 'Intent') -> Dict[str, Tuple[str, ...]]:
+    """`{ref: (edge, ...)}` for every `edge_claims()` entry naming an edge.
+
+    The claims, not `edge_connectors`: a `connector_affinity` entry makes no
+    seat claim, so it must not open a zone side either (#1174)."""
+    out: Dict[str, set] = {}
+    for c in intent.edge_claims():
+        e = c.get('edge')
+        if e in _EDGE_AXIS:
+            out.setdefault(str(c.get('ref')), set()).add(e)
+    return {r: tuple(sorted(s)) for r, s in out.items()}
+
+
+def zone_open_sides(zone_rect, bounds, edges) -> Tuple[str, ...]:
+    """The sides of `zone_rect` an edge-claim member's courtyard may cross
+    (#1174): each of `edges` (the member's declared edges) on which the zone
+    side lies on the outline's bounding box (within `_EDGE_SPAN_TOL_MM`) or
+    beyond it.
+
+    Why: an edge receptacle's body is meant to reach -- often to cross -- the
+    board edge, and a block zone that ends at that edge (which is where the
+    emitter clamps it, `emit_intent`) then failed the very connector the edge
+    rule passed: rp2350's J1 at 1.93 mm. The edge rule owns that side. A zone
+    side INSIDE the board stays closed: the author drew it there."""
+    if zone_rect is None or not bounds or not edges:
+        return ()
+    tol = _EDGE_SPAN_TOL_MM
+    on = {'west': zone_rect[0] <= bounds[0] + tol,
+          'north': zone_rect[1] <= bounds[1] + tol,
+          'east': zone_rect[2] >= bounds[2] - tol,
+          'south': zone_rect[3] >= bounds[3] - tol}
+    return tuple(e for e in ('west', 'north', 'east', 'south')
+                 if e in edges and on[e])
+
+
+#: How far `zone_pose_feasibility` pushes an open zone side (#1174): far past
+#: any board, so no pose the grade admits is left out of the superset.
+_OPEN_SIDE_REACH_MM = 1000.0
+
+
+def _reach_open_zone(zone_rect, open_sides):
+    """`open_zone_rect` with a finite reach, for the candidate algebra."""
+    r = _OPEN_SIDE_REACH_MM
+    z = list(zone_rect)
+    for side in open_sides or ():
+        if side == 'west':
+            z[0] -= r
+        elif side == 'north':
+            z[1] -= r
+        elif side == 'east':
+            z[2] += r
+        elif side == 'south':
+            z[3] += r
+    return tuple(z)
+
+
+def open_zone_rect(zone_rect, open_sides):
+    """`zone_rect` with each of `open_sides` pushed to infinity (#1174)."""
+    z = list(zone_rect)
+    for side in open_sides or ():
+        if side == 'west':
+            z[0] = -math.inf
+        elif side == 'north':
+            z[1] = -math.inf
+        elif side == 'east':
+            z[2] = math.inf
+        elif side == 'south':
+            z[3] = math.inf
+    return tuple(z)
 
 
 def zone_is_anchor(zone_rect, part, tol: float) -> bool:
@@ -3731,7 +3837,8 @@ _JOINT_KEEPOUT_CAP = 16
 
 
 def zone_pose_feasibility(zone_rect, tolerance: float, part,
-                          keepouts) -> Dict[str, object]:
+                          keepouts, open_sides: Sequence[str] = ()
+                          ) -> Dict[str, object]:
     """Does `zone_rect` MINUS the keep-outs still hold `part` at some rotation?
 
     #702 refuses an intent whose keep-out swallows a zone entirely. That is the
@@ -3853,6 +3960,11 @@ def zone_pose_feasibility(zone_rect, tolerance: float, part,
         return out
 
     anchor = zone_is_anchor(zone_rect, part, tolerance)
+    if open_sides:
+        # #1174: the grade does not bound an edge member's open side, so the
+        # superset must not either. Pushed out by a finite reach rather than
+        # to infinity, because the candidate algebra samples box ENDS.
+        zone_rect = _reach_open_zone(zone_rect, open_sides)
 
     def _search(entries):
         """First (x, y, rot) satisfying zone AND every entry, or None."""
@@ -4044,6 +4156,10 @@ def intent_zone_keepout_problems(intent, blocks, pcb_data,
         return out
     locals_ = legality.part_local_bounds(pcb_data, pcb_file or None)
     named = {v.block for v in out}
+    # #1174: the grade's open sides, so a refusal stays sound.
+    _claimed = claimed_edges(intent)
+    _bounds = getattr(getattr(pcb_data, 'board_info', None), 'board_bounds',
+                      None)
 
     for z in needs:
         if z.name in named:          # already reported as total coverage
@@ -4058,7 +4174,9 @@ def intent_zone_keepout_problems(intent, blocks, pcb_data,
                 continue
             fp = pcb_data.footprints[ref]
             part = _LocalPart(fp.rotation or 0.0, lb.local, lb.tht_local)
-            v = zone_pose_feasibility(z.rect, tol, part, bound)
+            v = zone_pose_feasibility(
+                z.rect, tol, part, bound,
+                open_sides=zone_open_sides(z.rect, _bounds, _claimed.get(ref)))
             if v['feasible']:
                 continue
             names = list(v['keepouts_freeing'] or v['keepouts_joint'])
@@ -4094,6 +4212,7 @@ def intent_zone_keepout_problems(intent, blocks, pcb_data,
 
 
 def rule_zone_containment(ctx) -> Iterator[Violation]:
+    claimed = claimed_edges(ctx.intent)
     for z in ctx.intent.blocks:
         if z.rect is None:
             continue
@@ -4102,9 +4221,13 @@ def rule_zone_containment(ctx) -> Iterator[Violation]:
             part = ctx.parts.get(ref)
             if part is None:
                 continue
+            # #1174: an edge-claim member's declared edge, where the zone
+            # ends at the outline, is the edge rule's to grade.
+            opened = zone_open_sides(z.rect, ctx.outline_bounds,
+                                     claimed.get(ref))
             if not zone_fits_courtyard(z.rect, part.rect, tol):
                 # Spec-coordinate zone: grade the part's CENTER against it.
-                out, axis = zone_escape(z.rect, part.rect, True)
+                out, axis = zone_escape(z.rect, part.rect, True, opened)
                 if out > tol:
                     yield Violation(
                         rule='zone_containment',
@@ -4116,10 +4239,11 @@ def rule_zone_containment(ctx) -> Iterator[Violation]:
                                  f"center)"),
                         measured={'rect': [round(v, 4) for v in part.rect],
                                   'outside_mm': round(out, 4), 'axis': axis,
-                                  'anchor_graded': True},
+                                  'anchor_graded': True,
+                                  'open_sides': list(opened)},
                         expected={'zone': list(z.rect), 'tolerance_mm': tol})
                 continue
-            out, axis = zone_escape(z.rect, part.rect, False)
+            out, axis = zone_escape(z.rect, part.rect, False, opened)
             if out > tol:
                 yield Violation(
                     rule='zone_containment',
@@ -4127,7 +4251,8 @@ def rule_zone_containment(ctx) -> Iterator[Violation]:
                     message=(f"{ref} courtyard extends {out:.2f}mm past the "
                              f"{axis} edge of block {z.name!r}"),
                     measured={'rect': [round(v, 4) for v in part.rect],
-                              'outside_mm': round(out, 4), 'axis': axis},
+                              'outside_mm': round(out, 4), 'axis': axis,
+                              'open_sides': list(opened)},
                     expected={'zone': list(z.rect), 'tolerance_mm': tol})
 
 
@@ -7141,7 +7266,11 @@ def exclusive_unsatisfiable(intent: Intent, blocks, pcb_data,
                     v = zone_pose_feasibility(
                         zb.rect, tol, _LocalPart(base, local0, None),
                         [{'name': za.name, 'rect': za.rect,
-                          'sides': ('F', 'B'), 'allow': ()}])
+                          'sides': ('F', 'B'), 'allow': ()}],
+                        open_sides=zone_open_sides(
+                            zb.rect, getattr(pcb_data.board_info,
+                                             'board_bounds', None),
+                            claimed_edges(intent).get(ref)))
                     tried += list(v['rotations'])
                     if v['feasible']:
                         feasible = True
@@ -8378,7 +8507,7 @@ def emit_intent(pcb_data, pcb_file: str, *,
             entry['note'] = ('the board is a pile, so its members\' bounding '
                              'box is staging, not a zone (#1103)')
         elif key in zoned:
-            entry['zone'] = [round(v, 3) for v in rect]
+            entry['zone'] = emitted_zone_rect(rect, bounds)
             entry['note'] = 'derived from the board; tighten or delete'
         else:
             entry['note'] = ('members are spread across the board and their '

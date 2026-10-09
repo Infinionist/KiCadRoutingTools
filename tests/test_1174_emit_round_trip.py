@@ -1,0 +1,311 @@
+"""#1174: an emitted intent grades clean on the board it was emitted from.
+
+`emit_intent` promises "The emitted intent grades CLEAN by construction", and
+two as-built boards broke it, each for its own reason:
+
+  * ROUNDING. The zone was rounded to 3 dp after being clamped to the board,
+    the envelope to 4 dp, and `validate_intent` tests containment at tol 0:
+    an outline coordinate whose 4th decimal rounds OUTWARD put the zone 0.4 um
+    outside the envelope. Now the zone is clamped into the envelope AS WRITTEN
+    (`floorplan.emitted_zone_rect`).
+  * THE EDGE MEMBER. rp2350's J1 (USB-C, north) passes the edge rule with its
+    body 1.43 mm past the edge, and its block's zone -- clamped to the outline
+    -- then failed it by 1.93 mm. An edge-claim member's declared edge is the
+    edge rule's to grade, so when the zone side lies ON the outline it does
+    not bound that member there (`floorplan.zone_open_sides`). The quench term
+    reads the same open side from the zone row, so the gate and the grade
+    agree.
+"""
+
+import copy
+import json
+import os
+import sys
+import tempfile
+import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for _p in ('py_placer', 'py_router', 'py_tools', 'tests'):
+    sys.path.insert(0, os.path.join(ROOT, _p))
+
+from kicad_parser import parse_kicad_pcb                      # noqa: E402
+from placement import floorplan                              # noqa: E402
+from placement.quench import QuenchState                     # noqa: E402
+from run_utils import check                                  # noqa: E402
+
+PY = sys.executable
+RP = os.path.join(ROOT, 'kicad_files', 'rp2350_fpga_eensy_prePlane.kicad_pcb')
+ZONE = 'sheet:558c3023'          # J1's block; its north side is the outline
+
+
+def _emit(path):
+    return floorplan.emit_intent(parse_kicad_pcb(path), path,
+                                 group_sources=('kicad', 'sheet'))
+
+
+def _grade(doc, path):
+    it = floorplan.intent_from_dict(doc, source_path='emitted.json')
+    return floorplan.grade(it, parse_kicad_pcb(path), path,
+                           group_sources=('kicad', 'sheet'))
+
+
+def _zone_errors(r, ref='J1'):
+    return [v for v in r.errors
+            if v.rule == 'zone_containment' and v.ref == ref]
+
+
+class Rounding(unittest.TestCase):
+
+    def test_a_zone_never_leaves_the_envelope_as_written(self):
+        # x-min 75.0504 rounds OUTWARD to 75.05; x-max 136.2499 to 136.25.
+        bounds = (75.0504, 10.0, 136.2499, 50.0)
+        z = floorplan.emitted_zone_rect((75.0504, 12.0, 136.2499, 40.0),
+                                        bounds)
+        env = [round(v, 4) for v in bounds]
+        self.assertTrue(floorplan._rect_contains(env, z, tol=0.0), (z, env))
+        self.assertEqual(z, [75.0504, 12.0, 136.2499, 40.0])
+
+    def test_an_interior_zone_is_only_rounded(self):
+        z = floorplan.emitted_zone_rect((80.12345, 20.5, 90.0, 30.98765),
+                                        (75.0, 10.0, 136.0, 50.0))
+        self.assertEqual(z, [80.123, 20.5, 90.0, 30.988])
+
+    def test_the_issue_board_round_trips_through_the_cli(self):
+        """The issue's own repro: rp2350 with its top edge moved by 0.4 um."""
+        with tempfile.TemporaryDirectory() as td:
+            with open(RP, encoding='utf-8') as fh:
+                text = fh.read()
+            self.assertIn('86.971)', text)
+            b = os.path.join(td, 'r.kicad_pcb')
+            with open(b, 'w', encoding='utf-8') as fh:
+                fh.write(text.replace('86.971)', '86.9714)'))
+            i = os.path.join(td, 'ri.json')
+            check([PY, '-X', 'utf8', 'py_tools/check_floorplan.py', b,
+                   '--emit-intent', i], accept=True)
+            with open(i, encoding='utf-8') as fh:
+                doc = json.load(fh)
+            env = doc['envelope']['rect']
+            for blk in doc['blocks']:
+                if blk.get('zone'):
+                    self.assertTrue(floorplan._rect_contains(
+                        env, blk['zone'], tol=0.0), (blk['name'], env))
+            check([PY, '-X', 'utf8', 'py_tools/check_floorplan.py', b,
+                   '--intent', i], accept=True)
+
+
+class TheEdgeMember(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.doc = _emit(RP)
+        cls.claim = next(c for c in cls.doc['edge_connectors']
+                         if c['ref'] == 'J1')
+        cls.block = next(b for b in cls.doc['blocks'] if b['name'] == ZONE)
+
+    def _variant(self, fn):
+        doc = copy.deepcopy(self.doc)
+        fn(doc)
+        return _grade(doc, RP)
+
+    def test_the_emitted_intent_grades_clean(self):
+        self.assertEqual(self.claim['edge'], 'north')
+        self.assertIn('J1', self.block['refs'])
+        r = _grade(self.doc, RP)
+        self.assertEqual([v.message for v in r.errors], [])
+
+    def test_a_member_without_an_edge_claim_is_still_flagged(self):
+        def drop(doc):
+            doc['edge_connectors'] = [c for c in doc['edge_connectors']
+                                      if c['ref'] != 'J1']
+        errs = _zone_errors(self._variant(drop))
+        self.assertEqual(len(errs), 1)
+        self.assertEqual(errs[0].measured['axis'], 'north')
+        self.assertEqual(errs[0].measured['open_sides'], [])
+
+    def test_a_connector_affinity_entry_claims_no_edge(self):
+        def demote(doc):
+            for c in doc['edge_connectors']:
+                if c['ref'] == 'J1':
+                    c['class'] = 'connector_affinity'
+        self.assertEqual(len(_zone_errors(self._variant(demote))), 1)
+
+    def test_a_claim_on_another_edge_opens_nothing(self):
+        def west(doc):
+            for c in doc['edge_connectors']:
+                if c['ref'] == 'J1':
+                    c['edge'] = 'west'
+        r = self._variant(west)
+        self.assertEqual(len(_zone_errors(r)), 1)
+
+    def test_a_zone_side_inside_the_board_stays_closed(self):
+        def shrink(doc):
+            for b in doc['blocks']:
+                if b['name'] == ZONE:
+                    b['zone'][1] = round(b['zone'][1] + 1.0, 4)
+        errs = _zone_errors(self._variant(shrink))
+        self.assertEqual(len(errs), 1)
+        self.assertEqual(errs[0].measured['open_sides'], [])
+
+    def test_the_other_sides_still_bound_the_member(self):
+        def narrow(doc):
+            for b in doc['blocks']:
+                if b['name'] == ZONE:
+                    b['zone'][2] = round(b['zone'][0] + 3.0, 4)
+        errs = _zone_errors(self._variant(narrow))
+        self.assertEqual([e.measured['axis'] for e in errs], ['east'])
+        self.assertEqual(errs[0].measured['open_sides'], ['north'])
+
+    def test_an_anchor_graded_member_opens_the_same_side(self):
+        """A zone smaller than the courtyard grades the courtyard CENTRE
+        (`zone_fits_courtyard`); the open side applies there too. J1 moved
+        north until its centre is 0.91 mm past the edge, in a 5 x 5 zone."""
+        with tempfile.TemporaryDirectory() as td:
+            with open(RP, encoding='utf-8') as fh:
+                text = fh.read()
+            self.assertEqual(text.count('(at 148.5 89.19 180)'), 1)
+            b = os.path.join(td, 'north.kicad_pcb')
+            with open(b, 'w', encoding='utf-8') as fh:
+                fh.write(text.replace('(at 148.5 89.19 180)',
+                                      '(at 148.5 85.5 180)'))
+            north = self.block['zone'][1]
+
+            def small(doc, claim=True):
+                for blk in doc['blocks']:
+                    if blk['name'] == ZONE:
+                        blk['zone'] = [146.0, north, 151.0, north + 5.0]
+                if not claim:
+                    doc['edge_connectors'] = [
+                        c for c in doc['edge_connectors'] if c['ref'] != 'J1']
+            doc = copy.deepcopy(self.doc)
+            small(doc)
+            self.assertEqual(_zone_errors(_grade(doc, b)), [])
+            doc = copy.deepcopy(self.doc)
+            small(doc, claim=False)
+            errs = _zone_errors(_grade(doc, b))
+            self.assertEqual(len(errs), 1)
+            self.assertTrue(errs[0].measured['anchor_graded'])
+            self.assertEqual(errs[0].measured['axis'], 'north')
+
+
+class OpenSides(unittest.TestCase):
+
+    B = (0.0, 0.0, 50.0, 40.0)
+
+    def test_only_a_declared_edge_on_the_outline_opens(self):
+        f = floorplan.zone_open_sides
+        self.assertEqual(f((0, 0, 10, 10), self.B, ('north',)), ('north',))
+        self.assertEqual(f((0, 0, 10, 10), self.B, ('north', 'west')),
+                         ('west', 'north'))
+        self.assertEqual(f((0, 0.5, 10, 10), self.B, ('north',)), ())
+        self.assertEqual(f((0, 0, 10, 10), self.B, ('east',)), ())
+        self.assertEqual(f((0, 0, 10, 10), self.B, ()), ())
+        self.assertEqual(f((0, 0, 10, 10), None, ('north',)), ())
+        # Within the 0.01 mm span tolerance, and beyond the outline.
+        self.assertEqual(f((0, 0.009, 10, 10), self.B, ('north',)),
+                         ('north',))
+        self.assertEqual(f((0, -2, 10, 10), self.B, ('north',)), ('north',))
+
+    def test_zone_escape_skips_only_the_open_side(self):
+        z, part = (0, 0, 10, 10), (2, -3, 8, 12)
+        self.assertEqual(floorplan.zone_escape(z, part, False), (3, 'north'))
+        self.assertEqual(floorplan.zone_escape(z, part, False, ('north',)),
+                         (2, 'south'))
+        self.assertEqual(floorplan.zone_escape(z, part, False,
+                                               ('north', 'south')), (0.0, ''))
+
+
+class EveryReaderOpensTheSameSide(unittest.TestCase):
+    """#799's feasibility kernel, the plan check and the seeder's lock note
+    read the grade's open side, so none of them refuses what the grade
+    passes."""
+
+    def test_feasibility_admits_a_pose_past_the_open_side(self):
+        # A 4x4 part in a 10x10 zone; a keep-out leaves only the strip y < 1.
+        # Closed, no pose clears it; open north, the part sits past the edge.
+        part = floorplan._LocalPart(0.0, (-2.0, -2.0, 2.0, 2.0))
+        ko = [{'name': 'K', 'rect': (-50.0, 1.0, 60.0, 60.0),
+               'sides': ('F', 'B'), 'allow': ()}]
+        closed = floorplan.zone_pose_feasibility((0, 0, 10, 10), 0.0, part,
+                                                 ko)
+        self.assertFalse(closed['feasible'])
+        opened = floorplan.zone_pose_feasibility((0, 0, 10, 10), 0.0, part,
+                                                 ko, open_sides=('north',))
+        self.assertTrue(opened['feasible'], opened)
+        self.assertLessEqual(opened['witness'][1] + 2.0, 1.0 + 1e-6)
+
+    def test_the_plan_check_does_not_refuse_a_locked_edge_member(self):
+        """Row 4 of `plan_check` is the grade's rule restricted to FILE-locked
+        members, so it inherits the open side. (Row 4b, a fixed pose outside
+        its zone, cannot meet an edge member: the loader refuses a fixed pose
+        on an `edge_connectors` part.)"""
+        doc = _emit(RP)
+        it = floorplan.intent_from_dict(doc, source_path='emitted.json')
+        with tempfile.TemporaryDirectory() as td:
+            b = os.path.join(td, 'locked.kicad_pcb')
+            check([PY, '-X', 'utf8', 'py_placer/place_pose.py', RP, b,
+                   '--allow-routed', 'lock', 'J1'], accept=True)
+            viols, _m = floorplan.plan_check(it, parse_kicad_pcb(b), b,
+                                             group_sources=('kicad', 'sheet'))
+        self.assertEqual([v.message for v in viols
+                          if v.rule == 'plan_fixed_outside_zone'], [])
+
+    def test_the_seeder_does_not_call_a_locked_edge_member_out_of_zone(self):
+        import random
+        from placement import seeder
+        doc = _emit(RP)
+        with tempfile.TemporaryDirectory() as td:
+            b = os.path.join(td, 'locked.kicad_pcb')
+            # A lock moves nothing, so the routed copper is not stranded.
+            check([PY, '-X', 'utf8', 'py_placer/place_pose.py', RP, b,
+                   '--allow-routed', 'lock', 'J1'], accept=True)
+            p = os.path.join(td, 'i.json')
+            with open(p, 'w', encoding='utf-8') as fh:
+                json.dump(doc, fh)
+            intent = floorplan.load_intent(p)
+            pcb = parse_kicad_pcb(b)
+            self.assertTrue(pcb.footprints['J1'].locked)
+            res = seeder.seed_from_intent(
+                pcb, b, intent, random.Random(1),
+                group_sources=('kicad', 'sheet'), seed_refs={'J3'})
+        self.assertEqual([n for n in res['notes']
+                          if 'J1 is (locked yes) IN THE FILE' in n], [])
+
+
+class TheGateAgrees(unittest.TestCase):
+    """The quench term reads the grade's open side: one measurement."""
+
+    def test_the_zone_term_equals_the_grade_on_a_lattice(self):
+        doc = _emit(RP)
+        with tempfile.TemporaryDirectory() as td:
+            p = os.path.join(td, 'i.json')
+            with open(p, 'w', encoding='utf-8') as fh:
+                json.dump(doc, fh)
+            intent = floorplan.load_intent(p)
+        pcb = parse_kicad_pcb(RP)
+        gate, _ = floorplan.resolve_intent_gate(intent, pcb, ('kicad', 'sheet'))
+        row = next(z for z in gate['zones'] if z['name'] == ZONE)
+        self.assertEqual(row['open_sides'].get('J1'), ('north',))
+        st = QuenchState(pcb, RP, 0.25, 0.55, 10.0, 0.5, 0.25, 2.0, 2.0, 2.0,
+                         0.1, 1.0, keepouts=gate['keepouts'],
+                         intent_zones=gate['zones'])
+        spec = [t for t in st.intent_spec_for('J1')
+                if t.rule == 'zone_containment']
+        self.assertEqual(len(spec), 1)
+        self.assertEqual(spec[0].open_sides, ('north',))
+        part = st.parts['J1']
+        bounds = pcb.board_info.board_bounds
+        for dx in (-4.0, -1.0, 0.0, 1.0, 4.0):
+            for dy in (-3.0, -1.0, 0.0, 1.5, 3.0, 8.0):
+                x, y = part.x + dx, part.y + dy
+                rects = part.grade_rects(x, y, part.rot)
+                term = st.intent_terms('J1', rects)[
+                    list(st.intent_spec_for('J1')).index(spec[0])]
+                opened = floorplan.zone_open_sides(
+                    row['rect'], bounds, ('north',))
+                want = floorplan.zone_escape(row['rect'], rects[0],
+                                             spec[0].anchor, opened)[0]
+                self.assertAlmostEqual(term, want, places=9, msg=(dx, dy))
+
+
+if __name__ == '__main__':
+    unittest.main()

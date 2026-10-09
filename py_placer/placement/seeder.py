@@ -5379,13 +5379,20 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         z = ref_zone[ref]
         part = state.parts[ref]
         tol = intent.zone_tolerance(z)
-        from placement.floorplan import zone_fits_courtyard, _rect_escape
+        from placement.floorplan import (zone_fits_courtyard, _rect_escape,
+                                         claimed_edges, open_zone_rect,
+                                         zone_open_sides)
         r = part.rect()
+        # #1174: the grade's open side, so this note cannot name a locked
+        # edge connector the grade passes.
+        _oz = open_zone_rect(z.rect, zone_open_sides(
+            z.rect, state.pcb_data.board_info.board_bounds,
+            claimed_edges(intent).get(ref)))
         if zone_fits_courtyard(z.rect, r, tol):
-            out, _axis = _rect_escape(z.rect, r)
+            out, _axis = _rect_escape(_oz, r)
         else:
             cx, cy = (r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0
-            out, _axis = _rect_escape(z.rect, (cx, cy, cx, cy))
+            out, _axis = _rect_escape(_oz, (cx, cy, cx, cy))
         if out > tol:
             notes.append(
                 f"{ref} is (locked yes) IN THE FILE at a pose violating its "

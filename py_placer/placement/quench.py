@@ -132,6 +132,11 @@ class _IntentTerm(NamedTuple):
     threshold: float
     anchor: bool              # zone_containment: grade the courtyard CENTRE
     entry: Optional[Dict]     # keepout: the raw entry `keepout_hit` reads
+    # zone_containment (#1174): sides the zone does not bound for this ref --
+    # its declared edge, where the zone ends at the outline. The grade's own
+    # `zone_open_sides`, carried in the zone row, so the gate opens what the
+    # grade opens and nothing else.
+    open_sides: Tuple[str, ...] = ()
 
 
 class _TetherTerm(NamedTuple):
@@ -203,7 +208,8 @@ def build_zone_spec(zones, parts, refs=None
                     for _r in (_p.rot % 360, (_p.rot + 90) % 360))
                 _terms.append(_IntentTerm(
                     'zone_containment', _z['name'], tuple(_z['rect']),
-                    _tol, _anchor, None))
+                    _tol, _anchor, None,
+                    tuple((_z.get('open_sides') or {}).get(_ref, ()))))
             elif _z['exclusive'] and (not _z['side']
                                       or _p.side == _z['side']):
                 # `elif`, not `if`: `rule_zone_exclusive` skips members of the
@@ -334,7 +340,8 @@ def intent_term_values(spec: Tuple[_IntentTerm, ...], rects
             # declines to measure.
             out.append(rect_overlap_area(rects[0], t.rect))
         else:
-            out.append(_fp.zone_escape(t.rect, rects[0], t.anchor)[0])
+            out.append(_fp.zone_escape(t.rect, rects[0], t.anchor,
+                                       t.open_sides)[0])
     return tuple(out)
 
 
