@@ -154,6 +154,11 @@ class BodyGeometry(NamedTuple):
     court_shape_how: str = ''
     far_court_shape_local: object = None
     far_court_shape_how: str = ''
+    # #1155. The pad bbox the ladders above united with (None for a pad-less
+    # part), in the same local frame. `mating.mating_face_local` reads a
+    # connector's mating face as the drawn body's offset off THIS box, so it
+    # is carried rather than recomputed by a second reader.
+    pads_local: Optional[Bbox] = None
 
 
 def _union(a: Bbox, b: Bbox) -> Bbox:
@@ -267,7 +272,8 @@ def body_geometry(fp, side: str,
                             drawn_local=None, drawn_source=SOURCE_NONE,
                             far_court_local=far_court,
                             far_court_shape_local=far_shape,
-                            far_court_shape_how=far_how)
+                            far_court_shape_how=far_how,
+                            pads_local=pads)
 
     occupancy = (body_local if pads is None else _union(body_local, pads))
     court_shape, court_how = (_shape_how_for_side(courtyard_shapes, side)
@@ -282,7 +288,8 @@ def body_geometry(fp, side: str,
                         far_court_local=far_court,
                         court_shape_how=court_how,
                         far_court_shape_local=far_shape,
-                        far_court_shape_how=far_how)
+                        far_court_shape_how=far_how,
+                        pads_local=pads)
 
 
 def board_bodies(pcb_data, pcb_file: Optional[str] = None

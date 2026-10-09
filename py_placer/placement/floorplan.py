@@ -2311,6 +2311,29 @@ def seated_plugs(keepouts, pcb_data, pcb_file: Optional[str] = None
             if _plug_seat_rect(r, fps[r], crt, gate) is not None}
 
 
+def is_board_copper_plug(fp) -> bool:
+    """True when a footprint is a PCB-edge plug made of board copper (#1098):
+    not assembled (an attr in `MATING_ATTRS`, no 3D model), not a net-tie (a
+    solder jumper shorts pad groups; a plug does not), no drilled copper, and
+    at least `MATING_MIN_FINGERS` netted finger pads.
+
+    The pose-INDEPENDENT half of `derived_mating_keepouts`'s test, which then
+    asks `_plug_seat_rect` whether the plug is seated. Lifted (#1155) so
+    `mating.mating_face_local` can abstain on a plug: the board is a plug's
+    mating body, so its courtyard points INTO the board by construction
+    (StickHub J1) and says nothing about which way it opens."""
+    if not (set(getattr(fp, 'attrs', ()) or ()) & set(MATING_ATTRS)):
+        return False
+    if getattr(fp, 'has_model', False):
+        return False
+    pads = _copper_pads(fp)
+    if any((p.drill or 0) > 0 for p in pads):
+        return False
+    if getattr(fp, 'net_tie_groups', None):
+        return False
+    return sum(1 for p in pads if p.net_id) >= MATING_MIN_FINGERS
+
+
 def derived_mating_keepouts(pcb_data, pcb_file: Optional[str] = None
                             ) -> Tuple[Dict, ...]:
     """The keep-outs a board's PCB-edge plugs imply, one per plug (#1098).
@@ -2334,9 +2357,7 @@ def derived_mating_keepouts(pcb_data, pcb_file: Optional[str] = None
     bi = getattr(pcb_data, 'board_info', None)
     if not path or not fps or bi is None:
         return ()
-    cands = [r for r, fp in fps.items()
-             if set(getattr(fp, 'attrs', ()) or ()) & set(MATING_ATTRS)
-             and not getattr(fp, 'has_model', False)]
+    cands = [r for r, fp in fps.items() if is_board_copper_plug(fp)]
     if not cands:
         return ()
     from .parser import extract_courtyard_sides
@@ -2350,13 +2371,6 @@ def derived_mating_keepouts(pcb_data, pcb_file: Optional[str] = None
     out = []
     for ref in sorted(cands):
         fp = fps[ref]
-        pads = _copper_pads(fp)
-        if any((p.drill or 0) > 0 for p in pads):
-            continue
-        if getattr(fp, 'net_tie_groups', None):
-            continue
-        if sum(1 for p in pads if p.net_id) < MATING_MIN_FINGERS:
-            continue
         rect = _plug_seat_rect(ref, fp, crt, gate)
         if rect is None:
             continue
@@ -3334,6 +3348,70 @@ def edge_seat_rect(entry: Dict, part_rect, body_rect):
         if brect is not None and src in ('fab', 'silk'):
             return brect, f'body:{src}'
     return part_rect, 'courtyard'
+
+
+#: #1155: the mount modes whose mating face must point at the declared edge.
+FACING_MOUNTS = ('edge_mount', 'through_edge')
+
+
+def edge_facing_policy(entry: Dict, fp) -> str:
+    """Whether `rule_edge_connector`'s facing conjunct grades this entry:
+    `'graded'`, or `'exempt: <why>'` (#1155).
+
+    In order: a vertical `mount_mode` is exempt (it mates off a face, not
+    the edge -- `VERTICAL_MOUNTS`); `edge_mount` / `through_edge` is graded;
+    a declared `class` grades only `edge_receptacle`; with none declared, the
+    part's own class (`part_class.classify_part`) decides the same way.
+
+    `connector_affinity` and the actuators are exempt, measured: on the
+    designer's StickHub, J5 (a JST-SH horizontal the emitter declares on the
+    north edge) opens EAST, sitting in a corner -- a connector the board
+    merely keeps near an edge is not one whose opening must face it. An
+    actuator's plastic says nothing about which way it is pressed (glasgow
+    SW1: courtyard north, fab south)."""
+    ctxd = entry.get('context') or {}
+    mm = ctxd.get('mount_mode')
+    if mm in VERTICAL_MOUNTS:
+        return 'exempt: a %s mates off a face, not the edge' % mm
+    if mm in FACING_MOUNTS:
+        return 'graded'
+    cls = entry.get('class')
+    how = 'declared'
+    if not cls:
+        from .part_class import classify_part
+        cls = classify_part(fp, getattr(fp, 'reference', '') or '').name
+        how = 'part_class'
+    if cls == 'edge_receptacle':
+        return 'graded'
+    return 'exempt: %s class %s' % (how, cls or 'none')
+
+
+def edge_facing(entry: Dict, fp, geom, rotation: Optional[float] = None
+                ) -> Dict:
+    """Which board edge a declared edge part's mating face points at, and
+    whether `rule_edge_connector` fails it (#1155).
+
+    `geom` is the part's `body.BodyGeometry` (None reads as no body);
+    `rotation` defaults to the footprint's own, and is what a seat trying a
+    turn passes. Returns `{policy, facing, local_face, basis, offset_mm,
+    reason, fails}`. `fails` is True only when the policy grades the entry,
+    the face is decisive at that rotation, and it is not the declared edge.
+
+    THE predicate: the rule calls it, and the seeder imports this function
+    rather than a copy of it, so the generator cannot seat a connector the
+    grader then calls reversed."""
+    from .mating import LocalFace, facing_edge, mating_face_local
+    policy = edge_facing_policy(entry, fp)
+    lf = (mating_face_local(fp, geom) if geom is not None
+          else LocalFace(None, 0.0, '', 'no body geometry'))
+    rot = (fp.rotation or 0.0) if rotation is None else rotation
+    facing = facing_edge(lf.face, rot)
+    edge = entry.get('edge')
+    return {'policy': policy, 'facing': facing, 'local_face': lf.face,
+            'basis': lf.basis, 'offset_mm': lf.offset_mm,
+            'reason': lf.reason,
+            'fails': bool(policy == 'graded' and edge and facing
+                          and facing != edge)}
 
 
 #: The axis a part slides along when it moves ALONG the named edge: x for a
