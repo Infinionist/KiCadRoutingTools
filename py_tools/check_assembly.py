@@ -38,6 +38,15 @@ import json
 import os
 import sys
 
+#: #1201. Why a contained pair does not gate, as check_assembly prints it --
+#: keyed by `BodyOverlapPair.gate_exempt`.
+_GATE_EXEMPT_WHY = {
+    'marker_class': 'a mount-hole/fiducial/testpoint is involved',
+    'container_class': 'a board-sized container is involved',
+    'intent_declared': "named in the intent's overlap_waivers",
+    'silk_drawn': 'a silk-drawn body, which never gates (#896)',
+}
+
 
 def main():
     p = argparse.ArgumentParser(
@@ -387,10 +396,16 @@ def main():
     # locked_contact` is how the coincident-origin channel would have reached
     # two of them and silently missed the third.
     if g['contained']:
-        print(f"  CONTAINMENT ({g['contained']}): a part's .Fab body lies "
+        print(f"  CONTAINMENT ({g['contained']}): a part's drawn body (its "
+              f".Fab outline, else its silk united with its pads) lies "
               f"wholly or mostly inside another part's.")
         for q in g['containment_pairs']:
-            tag = f"  [waived:{q.waiver}]" if q.waived else ''
+            # #1201: the reason a pair does not gate, by name -- a silk-drawn
+            # body is not "a marker or a board-sized container".
+            _ex = getattr(q, 'gate_exempt', '')
+            tag = (f"  [does not gate: {_GATE_EXEMPT_WHY.get(_ex, _ex)}]"
+                   if _ex else
+                   f"  [waived:{q.waiver}, still gates]" if q.waived else '')
             print(f"    {q.a} <-> {q.b}  {q.area_mm2}mm2  "
                   f"{q.contained_frac:.0%} of the smaller body{tag}")
         if g['containment_blocking']:
@@ -404,9 +419,17 @@ def main():
             print(f"    To accept one deliberately, name the pair in the "
                   f"intent rather than relying on its class.")
         else:
-            print(f"    None of these BLOCK: each is a by-design containment "
-                  f"(a marker or a board-sized container), which the corpus "
-                  f"ships legitimately -- orangecrab FID2/J5 at 100%.")
+            _why = {}
+            for q in g['containment_pairs']:
+                _ex = getattr(q, 'gate_exempt', '')
+                _why[_ex] = _why.get(_ex, 0) + 1
+            print(f"    None of these BLOCK: " + '; '.join(
+                f"{n} {_GATE_EXEMPT_WHY.get(k, k)}"
+                for k, n in sorted(_why.items())) + '.')
+            if set(_why) <= {'marker_class', 'container_class'}:
+                print(f"    Each is a by-design containment (a marker or a "
+                      f"board-sized container), which the corpus ships "
+                      f"legitimately -- orangecrab FID2/J5 at 100%.")
     # BODY COVERAGE (#896). Printed UNCONDITIONALLY, including the fully
     # covered case: "which geometry was this board graded on" is a fact about
     # every run, and a line that appears only when something is missing cannot
@@ -428,6 +451,13 @@ def main():
               f"part (esp_prog's SOT89 draws corner brackets 5.2mm apart "
               f"around a 4.5mm part). Such pairs are reported, with their "
               f"source, and excluded from the blocking channels.")
+    _fr = g.get('fab_rejected_refs') or []
+    from placement.body import FAB_MIN_PAD_AREA_FRAC as _FAB_FRAC
+    if _fr:
+        print(f"    {len(_fr)} part(s) draw a .Fab marking too small to be a "
+              f"body (a pin-1 dot under {_FAB_FRAC:.0%} of the pad box, "
+              f"#1201), so their body is read from silk or pads: "
+              + ', '.join(_fr[:8]) + (' ...' if len(_fr) > 8 else ''))
     if g['fab_unjudged']:
         _u = g['fab_unjudged_refs']
         print(f"    {g['fab_unjudged']} part(s) draw no body at all (no .Fab, "
@@ -694,6 +724,8 @@ def main():
             'pin_in_courtyard_pairs': [q._asdict() for q in pin_hits],
             'fab_unjudged': g['fab_unjudged'],
             'fab_unjudged_refs': g['fab_unjudged_refs'],
+            # #1201: parts whose .Fab drawing is a marking, not a body.
+            'fab_rejected_refs': list(g.get('fab_rejected_refs') or []),
             # Run-23 courtyard channel. `courtyard_pairs` is EVERY
             # courtyard-kind pair (waived included, so a reader never
             # re-derives the census); `courtyard_blocking*` is the gated

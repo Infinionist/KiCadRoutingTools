@@ -3068,7 +3068,7 @@ class QuenchState:
             except Exception:
                 self._fab_local = {}
         p = self.parts.get(ref)
-        if p is None:
+        if p is None or ref in self._fab_rejected_refs():
             return None
         sides = self._fab_local.get(ref)
         if not sides:
@@ -3084,6 +3084,33 @@ class QuenchState:
             local = rotate_local_bounds(*lb, rot)
             self._fab_cache[key] = local
         return (x + local[0], y + local[1], x + local[2], y + local[3])
+
+    def _board_bodies(self):
+        """`body.board_bodies` for this state's board, read once (or None
+        when it cannot be read)."""
+        got = getattr(self, '_board_bodies_cache', False)
+        if got is False:
+            try:
+                from placement.body import board_bodies
+                got = board_bodies(self.pcb_data, self.pcb_file)
+            except Exception:                                # noqa: BLE001
+                got = None
+            self._board_bodies_cache = got
+        return got
+
+    def _fab_rejected_refs(self):
+        """Parts whose .Fab drawing `body.fab_cannot_be_body` rejects
+        (#1201): `fab_rect` / `fab_shape` answer None for them, so the
+        quench's body vetoes read the checker's body and never a pin-1 dot.
+        Their own .Fab reader is kept, rather than replaced by the ladder's
+        `drawn_local`, so every other part reads exactly what it did."""
+        got = getattr(self, '_fab_rejected_cache', None)
+        if got is None:
+            bodies = self._board_bodies() or {}
+            got = frozenset(r for r, g in bodies.items()
+                            if getattr(g, 'fab_rejected', False))
+            self._fab_rejected_cache = got
+        return got
 
     @staticmethod
     def _fab_side(p):
@@ -3104,7 +3131,7 @@ class QuenchState:
                 self._fab_shapes = {}
         p = self.parts.get(ref)
         sides = self._fab_shapes.get(ref)
-        if p is None or not sides:
+        if p is None or not sides or ref in self._fab_rejected_refs():
             return None
         own = self._fab_side(p)
         got = sides.get(own) or next(iter(sides.values()))
@@ -3165,11 +3192,7 @@ class QuenchState:
         got = getattr(self, '_bodyless_cache', None)
         if got is None:
             fps = getattr(self.pcb_data, 'footprints', {}) or {}
-            try:
-                from placement.body import board_bodies
-                bodies = board_bodies(self.pcb_data, self.pcb_file)
-            except Exception:                                # noqa: BLE001
-                bodies = None
+            bodies = self._board_bodies()
             out = set()
             for r in self.parts:
                 fp = fps.get(r)
