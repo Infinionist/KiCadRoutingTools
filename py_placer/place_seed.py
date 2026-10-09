@@ -1202,6 +1202,9 @@ Examples:
         anchors_first=args.anchors_first,
         anchor_rounds=args.anchor_rounds,
         evict_depth=args.evict_depth,
+        # #1172: the pile verdict stage 1 reads to decide whether an edge
+        # connector's input angle means anything.
+        input_assessment=st,
         rotate_by_facing=args.rotate_by_facing,
         diagonal_rotations=args.diagonal_rotations,
         decap_claim_after_ics=args.decap_claim_after_ics,
@@ -1570,6 +1573,11 @@ Examples:
                # not SEAT: these were seated, and stay where the polish left
                # them.
                'reseat_declined': reseat_declined,
+               # #1172: edge connectors stage 1 TURNED -- {ref: {from, to,
+               # why, candidates}} -- because nothing declared their angle
+               # and their input angle carried no information, or their
+               # strong mating face pointed away from their edge.
+               'edge_angle_chosen': result.get('edge_angle_chosen') or {},
                # #975: declared edge connectors seated with pad copper inside
                # the board-edge floor because no pose the seat ladder tried
                # clears it -- the alternative was not seating them.
