@@ -30,10 +30,25 @@ a fact:
 
 Two sources vote: the courtyard (when that rung answered) and the drawn body
 (`drawn_local`, fab else silk -- AFTER #1201's guard, so a pin-1 dot casts no
-vote). Every decisive vote must agree. The KiCad library's "PCB edge"
-Dwgs.User line would be a third, but only 4 tracked footprints draw it (and
-all four agree); if it is ever read it may only force an abstention on a
-contradiction, never decide on its own.
+vote: unguarded, CM5_MINIMA_3's USB-C J101/USB701 read east off their dots;
+guarded, their silk shells read west, which is right). Every decisive vote
+must agree.
+
+A face is STRONG when its offset reaches `FACE_STRONG_OFFSET_MM`, and only a
+strong face may fail a declared edge at ERROR (`floorplan.edge_facing`); a
+weaker one is reported at WARN. The phase verifier swept KiCad's stock
+library: right on all 148 footprints that draw a "PCB Edge" marker, but
+confidently WRONG on three receptacles whose PAD layout, not their housing,
+sets the offset -- CUI SJ1-3533NG (x2, -x at 0.90 mm; its twin SJ1-3535NG,
+same housing, reads -y) and Neutrik NMJ6HCD3 (-x at 1.36 mm; the opening is
++x) -- while 60+ correct micro-USB / USB-C faces sit in the same 0.6-1.6 mm
+range. Above 2 mm no wrong face is known (227 checked). The marker itself
+would be stronger evidence still; reading it is a follow-up.
+
+Known limit: a card-edge PLUG in a file with no `attrs` (interf_u's ISA
+BUS1: 62 netted SMD fingers, no model) is not recognised as one, and reads
+inward (0.64 mm, weak). Its class is none, so it is graded only when an
+author declares it `edge_mount` / `through_edge`.
 
 The board frame uses the sign `connector_geometry.rect` and
 `legality.rotate_local_bounds` use, with NO extra mirror for a B-side part:
@@ -49,10 +64,18 @@ import math
 from typing import Dict, NamedTuple, Optional, Tuple
 
 #: A body must sit at least this far (mm) off its pad row's centre to name a
-#: face. The census's gap: 0.52 (the most offset part that has no face --
-#: splitflap's JST-XH vertical headers, before the name rule) to 0.59 (the
-#: least offset receptacle with one -- orangecrab J3's courtyard).
-FACE_MIN_OFFSET_MM = 0.55
+#: face. The census's gap among receptacles is 0.085 (the most offset that
+#: names none) to 0.59 (orangecrab J3's courtyard); connectors and actuators
+#: reach 0.50 without a face. 0.57 rather than 0.55: two stock footprints
+#: (microSD_HC_Molex_47219-2001, CM5's SW501) sit at exactly 0.55, where float
+#: rounding would decide them.
+FACE_MIN_OFFSET_MM = 0.57
+#: ...and a face this far off is STRONG: the only kind that fails a declared
+#: edge at ERROR. See the module docstring for the counterexamples below it.
+FACE_STRONG_OFFSET_MM = 2.0
+#: Both thresholds compare with this slack: the stock SJ1-3535NG's courtyard
+#: offset is 2.0 mm on paper and 1.9999999999999996 in float.
+_TOL_MM = 1e-6
 #: ...and by this factor more on the face axis than across it. The lowest
 #: ratio among faced receptacles is 2.02 (coldfire J201's courtyard).
 FACE_DOMINANCE = 1.5
@@ -71,6 +94,8 @@ class LocalFace(NamedTuple):
     basis: str                   # 'courtyard+fab', 'silk', ...; '' if abstained
     reason: str                  # why it abstained; '' when it did not
     votes: Tuple = ()            # ((source, face_or_None, ox, oy), ...)
+    # offset_mm >= FACE_STRONG_OFFSET_MM: may fail a declared edge at ERROR.
+    strong: bool = False
 
 
 def _centre(b):
@@ -83,7 +108,7 @@ def _vote(body, pads):
     px, py = _centre(pads)
     ox, oy = bx - px, by - py
     major, minor = max(abs(ox), abs(oy)), min(abs(ox), abs(oy))
-    if major < FACE_MIN_OFFSET_MM or major < FACE_DOMINANCE * minor:
+    if major < FACE_MIN_OFFSET_MM - _TOL_MM or major < FACE_DOMINANCE * minor:
         return None, ox, oy
     if abs(ox) >= abs(oy):
         return ('+x' if ox > 0 else '-x'), ox, oy
@@ -133,7 +158,8 @@ def mating_face_local(fp, geom) -> LocalFace:
             '%s %s' % (v[0], v[1]) for v in decisive), votes)
     offset = max(max(abs(v[2]), abs(v[3])) for v in decisive)
     return LocalFace(faces[0], round(offset, 4),
-                     '+'.join(v[0] for v in decisive), '', votes)
+                     '+'.join(v[0] for v in decisive), '', votes,
+                     strong=offset >= FACE_STRONG_OFFSET_MM - _TOL_MM)
 
 
 def facing_edge(face: Optional[str], rotation: float) -> Optional[str]:

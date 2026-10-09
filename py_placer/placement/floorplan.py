@@ -3421,8 +3421,12 @@ def edge_facing(entry: Dict, fp, geom, rotation: Optional[float] = None
     `geom` is the part's `body.BodyGeometry` (None reads as no body);
     `rotation` defaults to the footprint's own, and is what a seat trying a
     turn passes. Returns `{policy, facing, local_face, basis, offset_mm,
-    reason, fails}`. `fails` is True only when the policy grades the entry,
-    the face is decisive at that rotation, and it is not the declared edge.
+    strong, reason, fails}`. `fails` is True only when the policy grades the
+    entry, the face is decisive at that rotation, and it is not the declared
+    edge. `strong` (the face's offset reaches `mating.FACE_STRONG_OFFSET_MM`)
+    decides the severity: a strong failure is an ERROR, a weak one a WARN --
+    the tiering chosen after the phase verifier found stock receptacles whose
+    weak face is wrong (`placement.mating`'s docstring).
 
     THE predicate: the rule calls it, and the seeder imports this function
     rather than a copy of it, so the generator cannot seat a connector the
@@ -3436,7 +3440,7 @@ def edge_facing(entry: Dict, fp, geom, rotation: Optional[float] = None
     edge = entry.get('edge')
     return {'policy': policy, 'facing': facing, 'local_face': lf.face,
             'basis': lf.basis, 'offset_mm': lf.offset_mm,
-            'reason': lf.reason,
+            'strong': bool(lf.strong and facing), 'reason': lf.reason,
             'fails': bool(policy == 'graded' and edge and facing
                           and facing != edge)}
 

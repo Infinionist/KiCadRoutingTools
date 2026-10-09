@@ -100,10 +100,11 @@ SOURCES = (SOURCE_COURTYARD, SOURCE_FAB, SOURCE_SILK, SOURCE_PADS,
 #: bbox's AREA is a marking, not a body. Measured
 #: (`tests/measure_1201_fab_and_silk.py`): the smallest tracked fab body is
 #: 0.3114 of its pads (orangecrab J4, a microSD shell), 0 of 1208 tracked
-#: parts fall below 0.05, and every one of the 204 EasyEDA pin-1 dots on the
-#: fa10 designer boards does (largest 0.00466) -- CM5_MINIMA_3's USB-C
-#: receptacles J101/USB701 and One-Air-Max's BAT1 among them. 0.05 sits near
-#: the log-midpoint of that gap.
+#: parts fall below 0.05, and all 204 fab markings on the fa10 designer boards
+#: do (largest 0.00466): 203 EasyEDA 0.06 mm pin-1 dots -- CM5_MINIMA_3's
+#: USB-C receptacles J101/USB701 and One-Air-Max's BAT1 among them -- and
+#: CM5's Module301, whose only fab item is a zero-width 0 x 48 mm line. 0.05
+#: sits near the log-midpoint of that gap.
 FAB_MIN_PAD_AREA_FRAC = 0.05
 
 

@@ -62,6 +62,16 @@ class TheFace(unittest.TestCase):
         self.assertEqual(lf.basis, 'courtyard')
         self.assertGreater(lf.offset_mm, mating.FACE_MIN_OFFSET_MM)
 
+    def test_a_face_is_strong_only_past_the_strong_offset(self):
+        strong = mating.mating_face_local(_fp(), _geom(court=(-8, -6, 8, 1.5)))
+        self.assertEqual(strong.face, '-y')
+        self.assertGreaterEqual(strong.offset_mm, mating.FACE_STRONG_OFFSET_MM)
+        self.assertTrue(strong.strong)
+        weak = mating.mating_face_local(_fp(), _geom(court=(-8, -3, 8, 1.2)))
+        self.assertEqual(weak.face, '-y')
+        self.assertLess(weak.offset_mm, mating.FACE_STRONG_OFFSET_MM)
+        self.assertFalse(weak.strong)
+
     def test_both_sources_agreeing_are_named_together(self):
         lf = mating.mating_face_local(
             _fp(), _geom(court=(-8, -1.5, 8, 15), drawn=(-7, -1, 7, 14)))
@@ -101,8 +111,10 @@ class TheFace(unittest.TestCase):
         # The pcbnew path keeps no library prefix; a library NAMED vertical
         # must not abstain a horizontal part.
         self.assertFalse(mating.is_vertical_name(
-            _fp(name='Vertical_Lib:USB_C_Receptacle_Horizontal')))
+            _fp(name='Vertical_Lib:USB_C_Receptacle_GCT_USB4085')))
         self.assertTrue(mating.is_vertical_name(_fp(name='PinHeader_Vertical')))
+        self.assertTrue(mating.is_vertical_name(
+            _fp(name='Lib:PinHeader_Vertical')))
 
     def test_no_pads_abstains(self):
         lf = mating.mating_face_local(_fp(), _geom(court=(-8, -15, 8, 1.5),
@@ -136,6 +148,9 @@ class TheBoardFrame(unittest.TestCase):
     def test_a_diagonal_pose_names_no_edge(self):
         self.assertIsNone(mating.facing_edge('-y', 45.0))
         self.assertEqual(mating.facing_edge('-y', 20.0), 'north')
+        # The CARDINAL_TOL_DEG boundary, both sides of it.
+        self.assertEqual(mating.facing_edge('-y', 29.0), 'north')
+        self.assertIsNone(mating.facing_edge('-y', 31.0))
 
     def test_facing_rotations(self):
         self.assertEqual(mating.facing_rotations('-y', 'east'), (270.0,))
@@ -189,6 +204,8 @@ class ThePolicy(unittest.TestCase):
             bad = floorplan.edge_facing(entry, fp, geom, rotation=90.0)
             self.assertTrue(bad['fails'])
             self.assertEqual(bad['facing'], 'west')
+            # A DSUB's shell runs 7.4 mm past its pads: an ERROR-grade face.
+            self.assertTrue(bad['strong'])
         # Exempt is exempt, reversed or not.
         self.assertFalse(floorplan.edge_facing(
             {'ref': 'J2', 'edge': 'east', 'class': 'connector_affinity'},
@@ -199,6 +216,40 @@ class ThePolicy(unittest.TestCase):
                                    _fp(), None)
         self.assertFalse(ef['fails'])
         self.assertIsNone(ef['facing'])
+
+
+class TheStockCounterexamples(unittest.TestCase):
+    """The phase verifier's sweep of KiCad 10's stock library found three
+    receptacles whose face is confident and WRONG, because their PAD layout
+    sets the offset; their twins with the same housing read right.
+    `tests/fixtures/1155_stock_jacks.kicad_pcb` holds all five, unmodified
+    library footprints at rot 0 (opening: SJ1-35xx north, NMJ6 east). The
+    wrong faces are weak, so a correctly seated one is at worst a WARN; the
+    tiering exists for exactly these."""
+
+    FIX = os.path.join(ROOT, 'tests', 'fixtures', '1155_stock_jacks.kicad_pcb')
+    #: ref -> (footprint, the edge its opening really faces at rot 0)
+    TRUTH = {'J1': ('SJ1-3533NG_Horizontal', 'north'),
+             'J2': ('SJ1-3533NG_Horizontal_CircularHoles', 'north'),
+             'J3': ('NMJ6HCD3_Horizontal', 'east'),
+             'J4': ('SJ1-3535NG_Horizontal', 'north'),
+             'J5': ('NMJ6HFD3_Horizontal', 'east')}
+
+    def test_wrong_faces_never_reach_error(self):
+        pcb = parse_kicad_pcb(self.FIX)
+        bodies = board_bodies(pcb, self.FIX)
+        got = {}
+        for ref, (name, edge) in self.TRUTH.items():
+            fp = pcb.footprints[ref]
+            self.assertTrue(fp.footprint_name.endswith(name), fp.footprint_name)
+            ef = floorplan.edge_facing({'ref': ref, 'edge': edge,
+                                        'class': 'edge_receptacle'},
+                                       fp, bodies[ref])
+            got[ref] = (ef['fails'], ef['strong'])
+        self.assertEqual(got, {
+            'J1': (True, False), 'J2': (True, False), 'J3': (True, False),
+            # the twins: right, and SJ1-3535NG strong at exactly 2.0 mm
+            'J4': (False, True), 'J5': (False, False)})
 
 
 class TheCorpusCensus(unittest.TestCase):
@@ -216,7 +267,7 @@ class TheCorpusCensus(unittest.TestCase):
             parts, _e, _err = m.census(parse_kicad_pcb(path), path,
                                        emit=False)
             got[os.path.basename(path)] = {
-                r: [p['face'], p['basis'], p['facing']]
+                r: [p['face'], p['basis'], p['facing'], p['strong']]
                 for r, p in parts.items()}
         self.assertEqual(sorted(got), sorted(want))
         for name in sorted(want):

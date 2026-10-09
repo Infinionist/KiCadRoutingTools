@@ -80,7 +80,7 @@ def census(pcb, path, emit=True):
         parts[ref] = {
             'class': cls, 'footprint': fp.footprint_name,
             'face': lf.face, 'basis': lf.basis, 'offset_mm': lf.offset_mm,
-            'reason': lf.reason,
+            'strong': lf.strong, 'reason': lf.reason,
             'facing': mating.facing_edge(lf.face, fp.rotation or 0.0),
             'nearest': near,
             'votes': [[v[0], v[1], round(v[2], 4), round(v[3], 4)]
@@ -106,7 +106,8 @@ def census(pcb, path, emit=True):
                         'face': ef['local_face'], 'facing': ef['facing'],
                         'disagrees': bool(ef['facing']
                                           and ef['facing'] != edge),
-                        'policy': ef['policy'], 'fails': ef['fails']})
+                        'policy': ef['policy'], 'fails': ef['fails'],
+                        'strong': ef['strong']})
     return parts, entries, intent.get('_error')
 
 
@@ -136,7 +137,8 @@ def main(argv):
             report.append({'board': name, 'kind': kind, 'parts': parts,
                            'entries': entries, 'emit_error': err})
             if kind == 'tracked':
-                fixture[name] = {r: [p['face'], p['basis'], p['facing']]
+                fixture[name] = {r: [p['face'], p['basis'], p['facing'],
+                                     p['strong']]
                                  for r, p in parts.items()}
             for r, p in parts.items():
                 g = gap.setdefault(p['class'], [None, None])
@@ -172,8 +174,10 @@ def main(argv):
                            if e['disagrees'] else '')))
     print()
     print('fab guard: %s' % how)
-    print('threshold FACE_MIN_OFFSET_MM = %.3f, FACE_DOMINANCE = %.2f' % (
-        mating.FACE_MIN_OFFSET_MM, mating.FACE_DOMINANCE))
+    print('threshold FACE_MIN_OFFSET_MM = %.3f, FACE_DOMINANCE = %.2f, '
+          'FACE_STRONG_OFFSET_MM = %.2f' % (
+              mating.FACE_MIN_OFFSET_MM, mating.FACE_DOMINANCE,
+              mating.FACE_STRONG_OFFSET_MM))
     for cls, (ab, de) in sorted(gap.items()):
         print('  %-18s most offset vote naming no face: %s' % (
             cls, '%.4f (%s %s %s)' % ab if ab else '-'))

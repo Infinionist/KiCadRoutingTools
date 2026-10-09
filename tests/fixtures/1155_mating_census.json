@@ -3,98 +3,116 @@
   "J1": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J2": [
    null,
    "",
-   null
+   null,
+   false
   ]
  },
  "esp_prog.kicad_pcb": {
   "CON1": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "CON2": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "USB1": [
    "+x",
    "fab",
-   "west"
+   "west",
+   false
   ]
  },
  "flat_hierarchy.kicad_pcb": {
   "J1": [
    "+y",
    "courtyard+fab",
-   "west"
+   "west",
+   true
   ],
   "JP1": [
    null,
    "",
-   null
+   null,
+   false
   ]
  },
  "glasgow_revC.kicad_pcb": {
   "J1": [
    "+y",
    "courtyard+fab",
-   "west"
+   "west",
+   false
   ],
   "J10": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J2": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J3": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J4": [
    "+y",
    "courtyard+fab",
-   "south"
+   "south",
+   true
   ],
   "J5": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J6": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J7": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J8": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J9": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "SW1": [
    null,
    "",
-   null
+   null,
+   false
   ]
  },
  "haasoscope_pro_max_test.kicad_pcb": {},
@@ -102,259 +120,308 @@
   "JP1": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "P1": [
    "+y",
    "courtyard+fab",
-   "east"
+   "east",
+   true
   ]
  },
  "interf_u_unrouted_placed.kicad_pcb": {
   "JP1": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "P1": [
    "+y",
    "courtyard+fab",
-   "east"
+   "east",
+   true
   ]
  },
  "kit-dev-coldfire-xilinx_5213.kicad_pcb": {
   "ABRT_SW101": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "ALLPST101": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "BDM_PORT101": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "CAN_EN201": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "CAN_TERM201": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "CLKOUT101": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "COM_SEL201": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "COM_SEL202": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "COM_SEL203": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "CT101": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "GND101": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J201": [
    "-x",
    "courtyard+silk",
-   "north"
+   "north",
+   true
   ],
   "JP101": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "JP201": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "MCU_PORT201": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "P301": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "P302": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "P303": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "PULUPEN201": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "RS201": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "RST_SW101": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "SW201": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "SW202": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "SW_ONOFF201": [
    "+x",
    "courtyard+silk",
-   "north"
+   "north",
+   true
   ],
   "TA-101": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "UARTCAN201": [
    "+y",
    "courtyard+fab",
-   "north"
+   "north",
+   true
   ],
   "UARTCAN202": [
    "+y",
    "courtyard+fab",
-   "north"
+   "north",
+   true
   ],
   "UARTCAN203": [
    "+y",
    "courtyard+fab",
-   "north"
+   "north",
+   true
   ],
   "UART_EN201": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "UART_EN202": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "UART_EN203": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "VDDA101": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "VREF201": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "VX_EN201": [
    null,
    "",
-   null
+   null,
+   false
   ]
  },
  "lvds_converter_dualclk.kicad_pcb": {
   "J1": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J2": [
    null,
    "",
-   null
+   null,
+   false
   ]
  },
  "lvds_converter_dualclk_gnd.kicad_pcb": {
   "J1": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J2": [
    null,
    "",
-   null
+   null,
+   false
   ]
  },
  "orangecrab_ext_pll.kicad_pcb": {
   "J1": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J2": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J3": [
    "+y",
    "courtyard+fab",
-   "west"
+   "west",
+   false
   ],
   "J4": [
    "-y",
    "fab",
-   "west"
+   "west",
+   true
   ],
   "J5": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "SW1": [
    null,
    "",
-   null
+   null,
+   false
   ]
  },
  "qfn_csi_underpad_diff.kicad_pcb": {
   "J1": [
    null,
    "",
-   null
+   null,
+   false
   ]
  },
  "qfn_diffpair_escape.kicad_pcb": {},
@@ -365,297 +432,354 @@
   "J1": [
    "+y",
    "courtyard+fab",
-   "north"
+   "north",
+   false
   ],
   "J2": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J3": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "SW1": [
    null,
    "",
-   null
+   null,
+   false
   ]
  },
  "sonde_u.kicad_pcb": {
   "J1": [
    "+y",
    "courtyard+fab",
-   "west"
+   "west",
+   true
   ],
   "J2": [
    "-y",
    "courtyard+fab",
-   "east"
+   "east",
+   true
   ],
   "P1": [
    null,
    "",
-   null
+   null,
+   false
   ]
  },
  "splitflap_driver.kicad_pcb": {
   "J10": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J11": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J12": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J13": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J14": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J15": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J16": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J17": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J18": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J19": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J20": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J3": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J5": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J6": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J7": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J8": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J9": [
    null,
    "",
-   null
+   null,
+   false
   ]
  },
  "tigard.kicad_pcb": {
   "J1": [
    "+y",
    "courtyard+fab",
-   "west"
+   "west",
+   false
   ],
   "J2": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J3": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J4": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J5": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J6": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J7": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "SW1": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "SW2": [
    null,
    "",
-   null
+   null,
+   false
   ]
  },
  "ulx3s.kicad_pcb": {
   "AUDIO1": [
    "-y",
    "fab",
-   "north"
+   "north",
+   true
   ],
   "B0": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "B1": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "B2": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "B3": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "B4": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "B5": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "B6": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J1": [
    "+y",
    "courtyard+silk",
-   "west"
+   "west",
+   true
   ],
   "J2": [
    "+y",
    "courtyard+silk",
-   "east"
+   "east",
+   true
   ],
   "J3": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J4": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J5": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "SW1": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "US1": [
    "+y",
    "courtyard+fab",
-   "north"
+   "north",
+   false
   ],
   "US2": [
    "+y",
    "courtyard+fab",
-   "north"
+   "north",
+   false
   ]
  },
  "watchy.kicad_pcb": {
   "J1": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "J2": [
    "+y",
    "courtyard+silk",
-   "east"
+   "east",
+   false
   ],
   "J3": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "M1": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "SW1": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "SW2": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "SW3": [
    null,
    "",
-   null
+   null,
+   false
   ],
   "SW4": [
    null,
    "",
-   null
+   null,
+   false
   ]
  }
 }
