@@ -3608,14 +3608,24 @@ def zone_escape(zone_rect, part_rect, anchor: bool,
 
 
 def claimed_edges(intent: 'Intent') -> Dict[str, Tuple[str, ...]]:
-    """`{ref: (edge, ...)}` for every `edge_claims()` entry naming an edge.
+    """`{ref: (edge, ...)}` for every `edge_claims()` entry naming an edge
+    AND bounding its overhang (`overhang_mm.max`).
 
     The claims, not `edge_connectors`: a `connector_affinity` entry makes no
-    seat claim, so it must not open a zone side either (#1174)."""
+    seat claim, so it must not open a zone side either (#1174). And only a
+    bounded one: the open side hands that side to the edge rule, which bounds
+    how far past the edge a part may go only through the band's max -- a
+    claim without one (what the design brief compiles for a user-facing
+    receptacle on a pile) would let a part sit wholly off the board and pass
+    both rules (phase-1 verifier: 12.5 mm off, 0 errors). The population is
+    every edge claim, not only receptacles: the emitter also claims the
+    edge of a class-less part it sees overhanging (a fiducial, a cap), each
+    with the band it measured."""
     out: Dict[str, set] = {}
     for c in intent.edge_claims():
         e = c.get('edge')
-        if e in _EDGE_AXIS:
+        if (e in _EDGE_AXIS
+                and (c.get('overhang_mm') or {}).get('max') is not None):
             out.setdefault(str(c.get('ref')), set()).add(e)
     return {r: tuple(sorted(s)) for r, s in out.items()}
 
@@ -4130,10 +4140,18 @@ def intent_zone_keepout_problems(intent, blocks, pcb_data,
         member_sides[ref] = legality.sides_occupied(
             legality.footprint_side(fp), legality.footprint_has_through_pads(fp))
 
+    # #1174: the grade's open sides, so neither half refuses an edge member
+    # the grade lets sit past its zone's open side.
+    _claimed = claimed_edges(intent)
+    _bounds = getattr(getattr(pcb_data, 'board_info', None), 'board_bounds',
+                      None)
     for z in zoned:
         tol = intent.zone_tolerance(z)
         mine = {r: member_sides[r] for r in blocks.get(z.name, ())
-                if r in member_sides}
+                if r in member_sides
+                and not zone_open_sides(z.rect, _bounds, _claimed.get(r))}
+        if not mine:
+            continue
         hit = zone_covered_by_keepout(z, intent.keepouts, mine, tol)
         if hit is not None:
             out.append(Violation(
@@ -4160,10 +4178,6 @@ def intent_zone_keepout_problems(intent, blocks, pcb_data,
         return out
     locals_ = legality.part_local_bounds(pcb_data, pcb_file or None)
     named = {v.block for v in out}
-    # #1174: the grade's open sides, so a refusal stays sound.
-    _claimed = claimed_edges(intent)
-    _bounds = getattr(getattr(pcb_data, 'board_info', None), 'board_bounds',
-                      None)
 
     for z in needs:
         if z.name in named:          # already reported as total coverage
@@ -7628,6 +7642,9 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
         # and these bounds stand down to their WARNs (8492b3c1 verifier:
         # three circles ERRORed at 35.5 where the grade read 0).
         overlap_budget = None
+    # #1174: an edge member whose declared edge the zone leaves open may
+    # sit past that side, so the zone need hold none of it.
+    _claimed5 = claimed_edges(intent)
     for z in intent.blocks:
         if z.rect is None:
             continue
@@ -7660,6 +7677,12 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                 # where a fit at one angle does not forbid the anchor at
                 # another (b6a63ad8 verifier). Not modelled: place_seed's
                 # --diagonal-rotations fallback, which the plan cannot see.
+                continue
+            if zone_open_sides(z.rect, ctx.outline_bounds,
+                               _claimed5.get(r)):
+                # #1174: not charged, like an anchor-graded member -- it can
+                # sit wholly past the open side, so charging its outline
+                # ERRORed an intent the grade passes (phase-1 verifier).
                 continue
             per_face[part.side] = per_face.get(part.side, 0.0) + w * h
             per_face_c[part.side] = per_face_c.get(part.side, 0.0) + (

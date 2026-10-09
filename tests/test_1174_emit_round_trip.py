@@ -307,5 +307,175 @@ class TheGateAgrees(unittest.TestCase):
                 self.assertAlmostEqual(term, want, places=9, msg=(dx, dy))
 
 
+def _synthetic(td, parts, size=40):
+    """A size x size board with the given footprint texts."""
+    from test_1184_container_classification import _board
+    return _board(td, ''.join(parts), size=(size, size))
+
+
+def _box(ref, x, y, hw, hh, name='t:BOX'):
+    """A part with a +-hw x +-hh courtyard and one pad at its origin."""
+    return (f'  (footprint "{name}" (layer "F.Cu") (at {x} {y})\n'
+            f'    (property "Reference" "{ref}" (at 0 0) (layer "F.SilkS"))\n'
+            f'    (fp_rect (start {-hw} {-hh}) (end {hw} {hh}) (stroke'
+            f' (width 0.05) (type default)) (layer "F.CrtYd"))\n'
+            f'    (pad "1" smd rect (at 0 0) (size 0.6 0.6) (layers "F.Cu")'
+            f' (net 2 "N2")))\n')
+
+
+def _doc(blocks, claims=(), **extra):
+    doc = {'schema': floorplan.SCHEMA_VERSION, 'kind': floorplan.KIND,
+           'units': 'mm', 'blocks': list(blocks),
+           'edge_connectors': list(claims)}
+    doc.update(extra)
+    return floorplan.intent_from_dict(doc, source_path='t.json')
+
+
+J1_NORTH = {'ref': 'J1', 'edge': 'north', 'overhang_mm': {'min': 0, 'max': 5}}
+
+
+class EveryReaderAgrees(unittest.TestCase):
+    """The phase-1 verifier's counterexamples, each with its control."""
+
+    def _grade(self, path, intent):
+        return floorplan.grade(intent, parse_kicad_pcb(path), path)
+
+    def test_a_claim_without_a_band_max_opens_nothing(self):
+        """The edge rule bounds the overhang only through the band's max; a
+        claim without one would let a part sit wholly off the board."""
+        with tempfile.TemporaryDirectory() as td:
+            path = _synthetic(td, [_box('J1', 10, 1, 2, 2)])
+            zone = [{'name': 'b', 'refs': ['J1'], 'zone': [4, 0, 16, 8],
+                     'tolerance_mm': 0}]
+            bounded = self._grade(path, _doc(zone, [J1_NORTH]))
+            unbounded = self._grade(path, _doc(zone, [
+                {'ref': 'J1', 'edge': 'north'}]))
+        self.assertEqual(_zone_errors(bounded), [])
+        self.assertEqual(len(_zone_errors(unbounded)), 1)
+
+    def test_plan_row5_does_not_charge_an_open_side_member(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = _synthetic(td, [_box('J1', 10, 1, 5, 2.5),
+                                   _box('X1', 10, 6, 5, 2.5)])
+            zone = [{'name': 'b', 'refs': ['J1', 'X1'],
+                     'zone': [5, 0, 15, 8.5], 'tolerance_mm': 0}]
+            budget = {'overlap_area': 0.0, 'oob_count': 1}
+            pcb = parse_kicad_pcb(path)
+
+            def overfull(claims):
+                v, _m = floorplan.plan_check(
+                    _doc(zone, claims, legality_budget=budget), pcb, path)
+                return [x for x in v if x.rule == 'plan_zone_overfull'
+                        and x.severity == 'error']
+            self.assertEqual(overfull([J1_NORTH]), [])
+            self.assertTrue(overfull([]))          # control: J1 charged
+
+    def test_feasibility_refusals_read_the_open_side(self):
+        """#799 per member: the keep-out leaves only the strip past the
+        zone's north side, which an edge member may use."""
+        with tempfile.TemporaryDirectory() as td:
+            path = _synthetic(td, [_box('J1', 10, 1, 2, 2)])
+            zone = [{'name': 'b', 'refs': ['J1'], 'zone': [5, 0, 15, 10],
+                     'tolerance_mm': 0}]
+            ko = [{'name': 'K', 'rect': [0, 2, 40, 40]}]
+            pcb = parse_kicad_pcb(path)
+
+            def refused(claims):
+                it = _doc(zone, claims, keepouts=ko)
+                blocks, _p = floorplan.resolve_blocks(it, pcb, ())
+                return [v for v in floorplan.intent_zone_keepout_problems(
+                    it, blocks, pcb, path)
+                    if v.rule == 'intent_zone_in_keepout']
+            self.assertEqual(refused([J1_NORTH]), [])
+            self.assertTrue(refused([]))            # control
+
+    def test_total_coverage_reads_the_open_side(self):
+        """#702: a keep-out equal to the zone -- an edge member past the
+        open side is in neither."""
+        with tempfile.TemporaryDirectory() as td:
+            path = _synthetic(td, [_box('J1', 10, -2.6, 2, 2)])
+            zone = [{'name': 'b', 'refs': ['J1'], 'zone': [4, 0, 16, 8],
+                     'tolerance_mm': 0}]
+            ko = [{'name': 'K', 'rect': [4, 0, 16, 8]}]
+            pcb = parse_kicad_pcb(path)
+
+            def refused(claims):
+                it = _doc(zone, claims, keepouts=ko)
+                blocks, _p = floorplan.resolve_blocks(it, pcb, ())
+                return [v for v in floorplan.intent_zone_keepout_problems(
+                    it, blocks, pcb, path)
+                    if v.rule == 'intent_zone_in_keepout']
+            self.assertEqual(refused([J1_NORTH]), [])
+            self.assertTrue(refused([]))            # control
+
+    def test_the_exclusive_plan_check_reads_the_open_side(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = _synthetic(td, [_box('J1', 10, 1, 2, 2),
+                                   _box('X2', 20, 20, 1, 1)])
+            blocks = [{'name': 'b', 'refs': ['J1'], 'zone': [5, 0, 15, 10],
+                       'tolerance_mm': 0},
+                      {'name': 'a', 'refs': ['X2'], 'zone': [0, 2, 40, 40],
+                       'exclusive': True, 'tolerance_mm': 0}]
+            pcb = parse_kicad_pcb(path)
+
+            def unsat(claims):
+                v, _m = floorplan.plan_check(_doc(blocks, claims), pcb, path)
+                return [x for x in v
+                        if x.rule == 'plan_zone_exclusive_unsatisfiable']
+            self.assertEqual(unsat([J1_NORTH]), [])
+            self.assertTrue(unsat([]))              # control
+
+    def test_the_reach_covers_a_pose_far_past_the_side(self):
+        """Only poses whose centre is 7 mm past the side clear the keep-out;
+        a short reach would refuse an intent the grade passes."""
+        part = floorplan._LocalPart(0.0, (-2.0, -2.0, 2.0, 2.0))
+        ko = [{'name': 'K', 'rect': (-50.0, -5.0, 60.0, 60.0),
+               'sides': ('F', 'B'), 'allow': ()}]
+        v = floorplan.zone_pose_feasibility((0, 0, 10, 10), 0.0, part, ko,
+                                            open_sides=('north',))
+        self.assertTrue(v['feasible'], v)
+        self.assertLessEqual(v['witness'][1], -7.0 + 1e-6)
+
+    def test_every_zone_side_is_clamped(self):
+        self.assertEqual(floorplan.emitted_zone_rect(
+            (1, 1, 9, 49.9996), (0, 0, 10, 49.9996)), [1, 1, 9, 49.9996])
+        self.assertEqual(floorplan.emitted_zone_rect(
+            (0.0004, 0.0004, 9, 9), (0.0004, 0.0004, 10, 10)),
+            [0.0004, 0.0004, 9, 9])
+
+    def test_a_side_two_hundredths_inside_stays_closed(self):
+        self.assertEqual(floorplan.zone_open_sides(
+            (0, 0.02, 10, 10), (0, 0, 50, 40), ('north',)), ())
+
+    def test_the_seeder_note_reads_the_open_side_on_an_anchor_zone(self):
+        """A locked edge member whose zone is smaller than its courtyard
+        (centre-graded) and whose centre sits past the open side."""
+        import random
+        from placement import seeder
+        with tempfile.TemporaryDirectory() as td:
+            with open(RP, encoding='utf-8') as fh:
+                text = fh.read()
+            text = text.replace('(at 148.5 89.19 180)',
+                                '(at 148.5 85.5 180)\n\t\t(locked yes)')
+            b = os.path.join(td, 'north.kicad_pcb')
+            with open(b, 'w', encoding='utf-8') as fh:
+                fh.write(text)
+            pcb = parse_kicad_pcb(b)
+            self.assertTrue(pcb.footprints['J1'].locked)
+            north = pcb.board_info.board_bounds[1]
+            claim = dict(J1_NORTH)
+            notes = {}
+            for name, claims in (('open', [claim]), ('closed', [])):
+                it = _doc([{'name': 'b', 'refs': ['J1'],
+                            'zone': [146.0, north, 151.0, north + 5.0],
+                            'tolerance_mm': 0.5}], claims)
+                res = seeder.seed_from_intent(pcb, b, it, random.Random(1),
+                                              seed_refs={'J3'})
+                notes[name] = [n for n in res['notes']
+                               if 'J1 is (locked yes) IN THE FILE' in n]
+        self.assertEqual(notes['open'], [])
+        self.assertTrue(notes['closed'])            # control
+
+
 if __name__ == '__main__':
     unittest.main()
