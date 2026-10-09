@@ -3292,6 +3292,12 @@ class _Ctx:
         with the pads, which answers "may something be seated here" and would
         make `body` a superset of `pad_edge` rather than a second currency.
         """
+        return drawn_body_rect(self.body_geom(ref),
+                               self.pcb.footprints.get(ref))
+
+    def body_geom(self, ref: str):
+        """`body.BodyGeometry` for one part, or None -- the lazy, memoised
+        read `body_rect` uses (#1155: the facing conjunct reads it too)."""
         if self._bodies is None:
             from .body import board_bodies
             try:
@@ -3303,8 +3309,7 @@ class _Ctx:
                 # footprint that is fine.
                 self._bodies = {}
                 self._bodies_error = f"{type(exc).__name__}: {exc}"
-        return drawn_body_rect(self._bodies.get(ref),
-                               self.pcb.footprints.get(ref))
+        return self._bodies.get(ref)
 
     def sev(self, rule: str) -> str:
         return self.intent.severity_of(rule)
@@ -4536,6 +4541,43 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
                                       f"but is declared on the {edge} edge"),
                     measured={'edge': actual, 'basis': basis},
                     expected={'edge': edge})
+        # #1155: the FACING conjunct -- which way the body leaves its pad row
+        # (`edge_facing`, the predicate the seeder also seats by). The
+        # nearest-edge conjunct above reads where the part SITS, and a DSUB
+        # seated backwards sits nearest its declared edge whenever the back
+        # of its shell grazes it: sonde_xilinx J2, east, shell over the
+        # board, passed every grader. A STRONG face (offset >= 2 mm) failing
+        # is an ERROR; a weak one a WARN -- three stock receptacles read a
+        # confident wrong face below 2 mm (`placement.mating`).
+        _ef = edge_facing(c, ctx.pcb.footprints.get(ref), ctx.body_geom(ref))
+        evidence['facing'] = {
+            'edge': edge, 'facing': _ef['facing'],
+            'local_face': _ef['local_face'], 'basis': _ef['basis'],
+            'offset_mm': _ef['offset_mm'], 'strong': _ef['strong'],
+            'policy': _ef['policy'], 'reason': _ef['reason'],
+            'disposition': ('exempt' if _ef['policy'] != 'graded'
+                            else 'abstained' if not _ef['facing']
+                            else 'fail' if _ef['fails'] else 'pass')}
+        if _ef['fails']:
+            yield Violation(
+                rule='edge_connector',
+                severity=(ctx.sev('edge_connector') if _ef['strong']
+                          else WARN),
+                ref=ref,
+                message=(f"{ref}'s body leaves its pad row toward the "
+                         f"{_ef['facing']} ({_ef['basis']}, "
+                         f"{_ef['offset_mm']:.2f}mm), away from its declared "
+                         f"{edge} edge -- its mating face points "
+                         f"{_ef['facing']}, not out of the {edge} edge"
+                         + ('' if _ef['strong'] else
+                            ' (a weak face, under 2 mm: a WARN)')),
+                # No 'edge' key: the nearest-edge violation owns that one.
+                measured={'facing': _ef['facing'],
+                          'facing_basis': _ef['basis'],
+                          'facing_offset_mm': _ef['offset_mm'],
+                          'facing_strong': _ef['strong'],
+                          'local_face': _ef['local_face']},
+                expected={'facing': edge})
         # Run-4 A: the missing PROXIMITY conjunct. The rule used to grade only
         # the overhang band and the nearest-edge identity, so a receptacle
         # 15.8 mm INTERIOR passed ("nearest west, declared west" is satisfied
@@ -4630,6 +4672,17 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
             for key, value in evidence.items():
                 ctx.edge_seating[-1].setdefault(key, value)
         ctx.edge_connector_evidence.append(evidence)
+
+
+def _facing_tail(f) -> str:
+    """The CLI's `; facing ...` clause for one evidence row (#1155), or ''."""
+    if not f or f.get('disposition') in (None, 'exempt'):
+        return ''
+    if f['disposition'] == 'abstained':
+        return f"; facing abstained ({f.get('reason') or 'no face'})"
+    return (f"; facing {f['facing']} [{f['basis']}, "
+            f"{'strong' if f['strong'] else 'weak'}] "
+            f"{f['disposition'].upper() if f['disposition'] == 'fail' else 'pass'}")
 
 
 def _band_amount(ctx, ref, edge, legacy_amount):
@@ -8408,6 +8461,33 @@ def _emitted_basis(decaps, budget, conns, blocks,
     return out
 
 
+def _withhold_reversed_edge(entry: Dict, pcb_data, pcb_file: str,
+                            cache: Dict[str, object]) -> None:
+    """#1155: drop an emitted entry's edge when the part's STRONG mating face
+    points away from it -- a reversed pose. "The emitted intent grades CLEAN
+    by construction" (`emit_intent`) and must not bless the very pose the
+    facing conjunct ERRORs, so no edge is declared and the entry says why.
+    Measured on the 22 tracked boards and the fa10 designer boards: it never
+    fires (`tests/measure_1155_mating_census.py`)."""
+    edge = entry.get('edge')
+    fp = (pcb_data.footprints or {}).get(entry.get('ref'))
+    if not edge or fp is None:
+        return
+    if 'bodies' not in cache:
+        try:
+            from .body import board_bodies
+            cache['bodies'] = board_bodies(pcb_data, pcb_file)
+        except Exception:                                    # noqa: BLE001
+            cache['bodies'] = {}
+    ef = edge_facing(entry, fp, cache['bodies'].get(entry['ref']))
+    if ef['fails'] and ef['strong']:
+        entry.pop('edge')
+        entry['note'] = (f"its mating face points {ef['facing']} "
+                         f"({ef['basis']}, {ef['offset_mm']:.2f}mm), away "
+                         f"from the {edge} edge it sits nearest -- a "
+                         f"reversed pose; no edge is declared (#1155)")
+
+
 def emit_intent(pcb_data, pcb_file: str, *,
                 group_sources: Sequence[str] = ('kicad', 'sheet'),
                 zone_pad_mm: float = 1.0,
@@ -8623,6 +8703,7 @@ def emit_intent(pcb_data, pcb_file: str, *,
     conns = []
     declared = set()
     body_geometry = None     # #961: built only if an edged entry is emitted
+    _emit_bodies: Dict[str, object] = {}   # #1155: read once, if needed
     #: #959: refs whose `overhang_mm` is a CONSTANT of this module (a class
     #: default band, the sanity cap, the affinity floor) rather than a band
     #: read off the part -- labelled `derived_default`, not an observation.
@@ -8733,6 +8814,7 @@ def emit_intent(pcb_data, pcb_file: str, *,
                         f"{body['body_outside_mm']:.3f}mm overhang "
                         f"({body['body_layer']}), wider than the occupancy "
                         f"reading {amt:.3f}mm it would otherwise use")
+                _withhold_reversed_edge(entry, pcb_data, pcb_file, _emit_bodies)
             if declare_classes and pc is not None \
                     and pc.name in ('edge_receptacle', 'edge_actuator'):
                 entry['class'] = pc.name
@@ -8791,6 +8873,8 @@ def emit_intent(pcb_data, pcb_file: str, *,
                                  'declared -- its staging pose says nothing')
             elif plaus:
                 entry['edge'] = _nearest_edge(parts[ref].rect, bounds)
+                _withhold_reversed_edge(entry, pcb_data, pcb_file,
+                                        _emit_bodies)
             else:
                 entry['note'] = (
                     f'edge-receptacle class in an implausible pose '
@@ -9419,7 +9503,8 @@ def format_text(r: GradeResult) -> str:
                 f"{e['overhang_mm']:.4f}mm [{e['overhang_basis']}] "
                 f"{e['overhang_disposition']}; pad copper "
                 + (f"{gap:.4f}mm" if gap is not None else 'unmeasured')
-                + f" vs {cu.get('required_mm')}mm {cu.get('disposition')}")
+                + f" vs {cu.get('required_mm')}mm {cu.get('disposition')}"
+                + _facing_tail(e.get('facing')))
     ev = r.decap_pin_evidence or {}
     if ev:
         # WHAT the pin rule graded, printed whether or not it found anything.

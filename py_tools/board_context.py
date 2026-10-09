@@ -191,6 +191,10 @@ def pads_by_face(pcb_data, clearance: float, track_width: float):
 # The sheet
 # ---------------------------------------------------------------------------
 
+_LETTER = {'west': 'W', 'north': 'N', 'east': 'E', 'south': 'S'}
+_OPPOSITE = {'W': 'E', 'E': 'W', 'N': 'S', 'S': 'N'}
+
+
 def mating_faces(pcb_data, pcb_file: str, clearance: float):
     """`{ref: {edge, dist_mm, interior, overhang_mm}}` for connector-family
     parts.
@@ -206,6 +210,7 @@ def mating_faces(pcb_data, pcb_file: str, clearance: float):
     fact a mating face is about. USB1 on esp_prog overhangs; a header does not.
     """
     import render_placement as RP
+    from placement import mating
     from placement.body import board_bodies
     from placement.legality import rotate_local_bounds
     from placement.part_class import INTERIOR_AFFINITY_MM
@@ -238,11 +243,25 @@ def mating_faces(pcb_data, pcb_file: str, clearance: float):
         rect = (fp.x + x0, fp.y + y0, fp.x + x1, fp.y + y1)
         dists = {'W': rect[0] - bounds[0], 'N': rect[1] - bounds[1],
                  'E': bounds[2] - rect[2], 'S': bounds[3] - rect[3]}
-        edge, dist = min(dists.items(), key=lambda kv: kv[1])
+        near, dist = min(dists.items(), key=lambda kv: kv[1])
+        # #1155: the MATING face is the way the body leaves its pad row
+        # (`placement.mating`), which #891 asked this sheet for; the nearest
+        # edge stands in only when the body names no face. They differ on a
+        # connector seated backwards -- sonde_xilinx J2's shell over the
+        # board read "Mating face E" because its back grazed the east edge.
+        lf = mating.mating_face_local(fp, geom)
+        facing = mating.facing_edge(lf.face, fp.rotation or 0.0)
+        edge = _LETTER.get(facing, near)
         out[ref] = {'edge': edge,
-                    'dist_mm': round(max(0.0, dist), 3),
+                    'edge_basis': 'facing' if facing else 'nearest',
+                    'dist_mm': round(max(0.0, dists[edge]), 3),
                     'interior': bool(dist > INTERIOR_AFFINITY_MM),
-                    'overhang_mm': round(max(0.0, -dist), 3),
+                    'overhang_mm': round(max(0.0, -dists[edge]), 3),
+                    'nearest_edge': near,
+                    'nearest_dist_mm': round(max(0.0, dist), 3),
+                    'nearest_overhang_mm': round(max(0.0, -dist), 3),
+                    'facing_basis': lf.basis, 'facing_strong': lf.strong,
+                    'facing_reason': lf.reason,
                     'class': _cls, 'basis': geom.source}
     return out
 
@@ -570,6 +589,42 @@ def _pours(pcb_data, pcb_file):
         return None
 
 
+def mating_line(m) -> str:
+    """The sheet's "Mating face" sentence for one `mating_faces` row.
+
+    #1155: when the body names a face (`edge_basis` 'facing') that is not the
+    edge the part sits nearest, the sentence says both. OPPOSITE is a
+    reversed pose (sonde_xilinx J2's shell over the board), said only of a
+    strong face -- the kind the edge rule ERRORs; on a weak face it is a
+    reviewer's question. A perpendicular face is a part opening ALONG its
+    edge, which a corner connector does by design (StickHub J5)."""
+    near = m.get('nearest_edge', m['edge'])
+    if m.get('edge_basis') == 'facing' and near != m['edge']:
+        if _OPPOSITE.get(near) == m['edge'] and m.get('facing_strong'):
+            tail = "  --  the body extends INTO the board; a reversed pose"
+        elif _OPPOSITE.get(near) == m['edge']:
+            tail = ("  --  it points into the board on a weak face "
+                    "(under 2 mm), which a reviewer should check")
+        else:
+            tail = (f"  --  it opens toward {m['edge']}, along the {near} "
+                    f"edge rather than out of it")
+        return (f"Mating face **{m['edge']}** (the body leaves its pad row "
+                f"toward {m['edge']}, {m['facing_basis']}), but it sits "
+                f"nearest the **{near}** edge, {m['nearest_dist_mm']}mm from "
+                f"it"
+                + (f", overhanging it by {m['nearest_overhang_mm']}mm"
+                   if m['nearest_overhang_mm'] > 0 else '')
+                + tail)
+    return (f"Mating face **{m['edge']}**"
+            + ('' if m.get('edge_basis') == 'facing' else
+               ' (nearest edge; the body names no face)')
+            + f", {m['dist_mm']}mm from that edge"
+            + (f", overhanging it by {m['overhang_mm']}mm"
+               if m['overhang_mm'] > 0 else '')
+            + ('  --  INTERIOR for a connector, which a reviewer should '
+               'explain' if m['interior'] else ''))
+
+
 def format_md(doc) -> str:
     """The sheet, for a reader. Markdown because the audience is a model and a
     human reading the same page, and a table is how a pin row reads."""
@@ -663,12 +718,7 @@ def format_md(doc) -> str:
         if p.get('mating'):
             m = p['mating']
             L.append('')
-            L.append(f"Mating face **{m['edge']}**, {m['dist_mm']}mm from that "
-                     f"edge"
-                     + (f", overhanging it by {m['overhang_mm']}mm"
-                        if m['overhang_mm'] > 0 else '')
-                     + ('  --  INTERIOR for a connector, which a reviewer '
-                        'should explain' if m['interior'] else ''))
+            L.append(mating_line(m))
         if p['serves']:
             L.append('')
             L.append(f"Serves **{p['serves']['ref']}** "
