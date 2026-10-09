@@ -51,7 +51,11 @@ from typing import Dict, Optional, Tuple
 CONNECTOR_FP = ('connector', 'usb', 'hdmi', 'rj45', 'jack', 'pinheader',
                 'pinsocket', 'terminal', 'dsub', 'molex', 'jst', 'hirose',
                 'microsd', 'sim', 'card', 'banana', 'header', 'socket')
-MOUNT_FP = ('mountinghole', 'fiducial', 'testpoint')
+#: Marker parts by footprint-name SUBSTRING. Mounting holes are NOT here:
+#: a substring also matched KiCad's horizontal D-subs
+#: (`..._MountingHolesOffset...`, #1176), so a hole is decided by
+#: `is_mount_hole_name` (the item name's prefix) and nowhere else.
+MOUNT_FP = ('fiducial', 'testpoint')
 
 
 def is_mount_hole_name(name) -> bool:
@@ -69,7 +73,11 @@ def is_mount_hole_name(name) -> bool:
     Rejected alternatives, measured: "its plated pads carry nets" also
     reclassifies glasgow MK1-4 and ulx3s H1-4 (netted plated holes); a
     `MountingHole:` library-prefix rule misses the Glasgow and Mounting_Holes
-    libraries and the pcbnew path."""
+    libraries and the pcbnew path. The known casualty of the item rule: a
+    house library NAMED MountingHole whose item is not (`MountingHole:2.5mm`,
+    a generator stub with SMD placeholder pads) -- it was already unclassed on
+    the pcbnew front, and an NPTH-only hole is caught by the structural rule
+    above whatever its name."""
     item = str(name or '').rsplit(':', 1)[-1].lower()
     return item.startswith('mountinghole')
 

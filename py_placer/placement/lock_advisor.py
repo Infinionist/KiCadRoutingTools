@@ -364,8 +364,7 @@ def advise_locks(pcb_data, pcb_file: Optional[str] = None, *,
         # #1176: a mounting hole by its item name, not by substring -- a
         # horizontal D-sub's name carries `MountingHolesOffset`.
         _marker_name = (_is_mount_hole_name(fp_name)
-                        or any(k in fp_name for k in _MOUNT_FP
-                               if k != 'mountinghole'))
+                        or any(k in fp_name for k in _MOUNT_FP))
         if _marker_name and 'mounting_hole_npth' not in rules:
             rules.append('connector_footprint_name')
             reasons.append(f"footprint name {fp.footprint_name!r} is a "

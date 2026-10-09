@@ -53,8 +53,18 @@ class TheName(unittest.TestCase):
                      '_EdgePinOffset7.70mm_Housed_MountingHolesOffset9.12mm',
                      'DSUB-9_Female_Horizontal_P2.77x2.84mm_EdgePinOffset7.70mm'
                      '_Housed_MountingHolesOffset9.12mm',
-                     'MountingHole:Some_Connector', '', None):
+                     'MountingHole:Some_Connector',
+                     # near misses: a standoff is not a mounting hole
+                     'Mounting_Wuerth:Mounting_Wuerth_WA-SMSI-M3_H2mm_9774020633',
+                     'MountingEquipment:DINRailAdapter_3xM3_PhoenixContact',
+                     '', None):
             self.assertFalse(is_mount_hole_name(name), name)
+
+    def test_the_marker_table_carries_no_hole_substring(self):
+        """`MOUNT_FP` is the marker table lock_advisor imports; a hole
+        substring there would bring #1176 back through its next consumer."""
+        from placement.part_class import MOUNT_FP
+        self.assertFalse([k for k in MOUNT_FP if 'mounting' in k])
 
     def test_both_parse_fronts_agree(self):
         """The text parser keeps `lib:item`, pcbnew keeps `item`."""
