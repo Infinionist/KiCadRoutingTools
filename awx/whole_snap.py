@@ -246,11 +246,14 @@ def static_around(m, R):
     key = (round(m[0] / g), round(m[1] / g), round(R / g))
     if key in STATIC_NEAR:
         return STATIC_NEAR[key]
-    near = lambda x, y: math.hypot(x - m[0], y - m[1]) < R
+    # (each by its NEAREST copper, not its centre or its ends: a crossover's barrels stand half a millimetre off its
+    # anchor, and a pad whose centre lay just past R was never measured -- zynq K40's TX_D4 crossover via laid 0.05 mm
+    # from R10.1, whose centre stood 1.13 mm out at R 1.04, and the lay refused the pair)
+    near = lambda x, y, r=0.0: math.hypot(x - m[0], y - m[1]) - r < R
     pads = []
     for fp in ctx.pcb.footprints.values():
         for pd in fp.pads:
-            if not near(pd.global_x, pd.global_y):
+            if not near(pd.global_x, pd.global_y, math.hypot(pd.size_x, pd.size_y) / 2):
                 continue
             if pd.pad_type == 'np_thru_hole':
                 pads.append((pd, set(cfg.layers), 'hole'))
@@ -258,8 +261,9 @@ def static_around(m, R):
                 pads.append((pd, set(cfg.layers), 'pad'))
             else:
                 pads.append((pd, {L_ for L_ in pd.layers if L_ in cfg.layers}, 'pad'))
-    segs = [s_ for s_ in ctx.base_segments if near(s_.start_x, s_.start_y) or near(s_.end_x, s_.end_y)]
-    vias = [v_ for v_ in ctx.base_vias if near(v_.x, v_.y)]
+    segs = [s_ for s_ in ctx.base_segments
+            if _pairs._pt_seg(m, (s_.start_x, s_.start_y), (s_.end_x, s_.end_y)) - s_.width / 2 < R]
+    vias = [v_ for v_ in ctx.base_vias if near(v_.x, v_.y, v_.size / 2)]
     STATIC_NEAR[key] = (pads, segs, vias)
     return STATIC_NEAR[key]
 
