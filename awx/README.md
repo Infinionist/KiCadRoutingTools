@@ -424,6 +424,48 @@ round's copper is then held to where they stand (`fanout_from_plan.py
 later round starts from those poses and fans out round them; the route holds
 them fixed.
 
+`--escape` (opt-in, overriding `--joint-fanout`) fans the bus out the way a
+human escapes a ball grid array:
+
+- **Every ball dog-boned** (`dogbone_arrays.py`): each netted ball of both
+  arrays gets a short stub on its own layer to a through via on one of its
+  four diagonal gap points -- toward the other array along the axis it lies
+  along most, out of the array's middle on the other -- or, where no gap is
+  clear, a via in its pad. The ball lines (the rows and columns through the
+  balls) are then free on every other layer, and the gap line through the
+  array's middle, between the rows dog-boned up and the rows dog-boned down,
+  is a **street** with no via on it. The passives beneath the arrays are
+  moved off the vias once (the chain's cap nudge).
+- **Escapes instead of teeth** (`escape_plan.py`): each round's fanout lists
+  every way a lane can leave its ball's via -- half a pitch onto a ball line
+  beside it, a sidestep to a line up to two pitches over, or a pitch onto a
+  street -- out along it to a pitch past the outer balls, on every layer but
+  the balls' own where the fanout's track and clearance fit. The ends model
+  chooses each lane's escape at both arrays from those lists, and the chosen
+  escapes are laid exactly as listed.
+- **The ends model on escapes:** with no tooth laid, both ends of every lane
+  are free from its first search; it counts every stack (two escapes leaving
+  at one point on two layers); and its estimate of the route keeps two lanes
+  whose escape runs stack or cross on different layers, as the solve does.
+- **The solve on escapes:** a round's solve with no plan is solved again
+  without a pair's zigzag room, then with every crossing's window the whole
+  trunk; the geometry pays for what those relax.
+
+On the zynq's LVDS bus (U1 to U5) on four routing layers, on the board the
+recipe below makes, at its sizes, `ROUTE_LAYERS=F.Cu,B.Cu,In1.Cu,In2.Cu`
+(K: the first K nets of the ladder `route_bus` builds on the dog-boned board;
+47 is the whole bus):
+
+| | K32 | K40 | K47 |
+|---|---|---|---|
+| nets routed (the round) | 30 of 32 (1) | 37 of 40 (3) | 43 of 47 (1) |
+| handed on | 71 v, 660 mm | 85 v, 1000 mm | 105 v, 1331 mm |
+
+Every net it hands on is connected and DRC-clean; the open ones go back as
+they came. Each run is three rounds at most, 20 to 65 minutes on the Mac.
+These are one seed of the ends model's kicks; another (`ENDS_ILS_SEED=1`)
+routes 29 of 32, 35 of 40 and 33 of 47 -- the whole bus is not settled yet.
+
 `zynq_ad9364` from GitHub, its planes poured as the stress run poured them,
 and the whole bus at the stress run's sizes -- its fanouts' 0.12 mm track at
 0.09 mm, its routes' 0.15 mm track and 0.45/0.3 mm vias:
@@ -595,7 +637,8 @@ Linux, and an unproved state ranks last.
   reaches.
 
 **The search.** One lane's tooth or berth at a time (one other lane ejected
-where it is in the way), iterated from seeded random kicks; then **ban
+where it is in the way), iterated from seeded random kicks (`ENDS_ILS_SEED`
+another seed); then **ban
 kicks**: up to eight times, the three most crossed lanes that have another
 option get their current ends banned, the search runs with the bans and
 again without them, and the better state stands (four in a row finding
@@ -799,16 +842,21 @@ once, proved optimal in its vias.
 - **Unproved, still a plan:** a round's first solve, and the loop's last
   re-solve, keep a plan they cannot prove (`SOLVE_UNPROVED`). The nets such a
   plan leaves over two go back to the ends.
+- **Relaxed, still a plan** (the escape fanout, `route_bus --escape`): a
+  round's first solve with no plan is solved again without a pair's zigzag
+  room, then with every crossing's window the whole trunk, and the first plan
+  is the round's. The layers two via ends' runs are held apart on are never
+  relaxed: the relayer would lay those runs onto one another.
 - **No plan, and why** (`SOLVE_CROWD`, a round's first solve): a model with
-  no plan at all is solved again as its **crowd diagnosis** -- each lane's
-  crossings free to break their room along it (their spacing per layer, the
-  stack of crossers at one point), the fewest such lanes the only price --
-  and the lanes it breaks are named (`OUT.crowded.json`, and in the round's
-  log): the lanes whose crossings the ends leave no room for. On the zynq
-  LVDS bus on four layers, rounds 1 and 3 had no plan, and the diagnosis
-  names exactly the lanes a lane-by-lane search finds: TX_D4 and DATA_CLK,
-  then DATA_CLK alone -- two pairs berthing on the destination's facing face,
-  every crossing of theirs in the 3 mm between the arrays.
+  no plan at all, relaxed too where it is, is solved again as its **crowd
+  diagnosis** -- each lane free to break what its crossings need (their
+  spacing per layer and the stack of crossers at one point, a crossing's two
+  lanes on two layers, a change's room from them, the layers at its ends), the
+  fewest such lanes the only price. The lanes it names (`OUT.crowded.json`, and
+  in the round's log) go to the next round's fanout as open nets do, their
+  ends freed and avoided. On the zynq LVDS bus's 47 nets on escapes the most
+  relaxed model has no plan, and the diagnosis names one lane, CTRL_OUT0, in
+  37 s: with that lane's rules free there is a plan.
 
 **Bounded in work, not time.** A count of CP-SAT's interleaved batches, the
 workers sharing no clauses (`WHOLE_SOLVE_BATCHES`); bounded by deterministic
@@ -1392,6 +1440,7 @@ With nothing supplied, as on the benches:
 | | |
 |---|---|
 | `route_bus.py` | the bus step: a board as the chain hands it on, its bus routed in the board's own frame, graded on the board (`BUS ..`); the buses found on a board (`tests/test_622_find_buses.py`) |
+| `escape_plan.py`, `dogbone_arrays.py` | the escape fanout (`route_bus --escape`): both arrays dog-boned, and each round's ends chosen among the escapes that field has (ball lines, sidesteps, streets) and laid as they are (`tests/test_622_escape_plan.py`) |
 | `joint_escape.py`, `conflict_groups.py` | the joint fanout (`route_bus --joint-fanout`): an array's other balls planned together in one CP-SAT solve and laid by the under-pad engine's joint escape (a drop at a finer rung's via: `tests/test_622_drop_fine_via.py`; nothing in a laid pair's pocket: `test_622_pair_teeth.py`); the escapes' conflicts as cliques and bicliques (`tests/test_622_conflict_groups.py`) |
 | `whole_route.py`, `modal_whole.py` | one rung end to end -- fanout, solve, loop, route, checks, feedback rounds -- graded in one line (`WHOLE K=..`); the loop's layer cuts from the audit and the snap (`tests/test_622_layer_cuts.py`); the ladder in the cloud, one container per rung |
 | `whole_ends.py`, `whole_frame.py`, `whole_feedback.py` | the choice of ends (the fanout's `PLAN_JUDGE=ends`; every plane ball kept a way down: `tests/test_622_walled_balls.py`); the frame of a bench (a part on a ring's stack: `tests/test_622_ring_room.py`); what goes back to the fanout (`tests/test_622_ends_fixes.py`, `test_622_exit_front.py`, `test_622_feedback_rounds.py`) |
@@ -1565,24 +1614,37 @@ channels first, and the other escapes leave round it.
 
 ### Next, the whole route (`whole_*.py`)
 
-- **The zynq's LVDS bus (U1 to U5).** On four layers, with via ends, lanes on
-  every layer and [the winding cut](#the-ends-whole_endspy) (see [more routing
-  layers than two](#more-routing-layers-than-two-route_layerspy-relayerpy)),
-  the whole route plans it but does not yet route it: the loop does not
-  settle. The human runs every net from a dog-bone via at each array on one
+- **The zynq's LVDS bus (U1 to U5) on four layers.** With `route_bus
+  --escape` (see [the bus step](#the-bus-step-on-a-real-board)) the whole
+  route lays 30 of its first 32 nets, 37 of 40 and 43 of the whole bus's 47,
+  connected and clean, the rest open -- and on another seed of the ends
+  model, 29, 35 and 33. The
+  lanes left open leave U1's south face for balls in U5's middle and climb the
+  3 mm channel between the arrays across the lanes from U1's east face to U5's
+  west face. The human runs every net from a dog-bone via at each array on one
   layer end to end, each layer's nets a family that crosses nothing on it and
-  loops round U5 to enter it from every side. The trunk runs from U1's centre
-  to U5's, the way the lanes for U5's south side go; the lanes for its north
-  side leave U1's east face across it, a millimetre of their route advancing
-  route u by a quarter to a sixth of that, so every room and window the solve
-  measures in u is that much too short for them, and the geometry finds them
-  crowded where the solve saw room. To try: each lane's own route coordinate
-  in the solve -- each crossing and change at a place on each of its lanes,
-  its rooms in that lane's millimetres. And the part gates count a layer's
-  room along the whole column, board edge to board edge: here the lanes pass
-  the caps, T1 and X4 beside U5 in the corridor between the arrays, with room
-  to spare elsewhere on that column, so no gate binds. To try: the room in
-  the corridor the lanes cross.
+  rings U5 to enter it from every side -- on B.Cu nested bundles round U5's
+  bottom, far side and top, the far side's lanes outermost -- and runs B.Cu
+  lanes through U5's field between its dog-bone vias. To try:
+  - **the channel's room in the ends model:** on more than two layers its
+    route estimate prices a crossing at a hundredth of a via, and what the
+    solve runs out of is the room a channel has for crossings on each layer,
+    not their count;
+  - **escapes that turn inside the array** -- along a ball line, then onto a
+    street or another ball line -- so an inner ball reaches any face;
+  - **a shorter search:** most of the states the ends model scores are its
+    ejections (each clear option of the lane it moves aside scored in full),
+    and the winding cuts each search again from the start;
+  - **each lane's own route coordinate in the solve:** the trunk runs from
+    U1's centre to U5's, and a millimetre of a lane leaving U1's east face
+    advances route u by a quarter to a sixth of that, so every room and
+    window the solve measures in u is that much too short for it -- each
+    crossing and change at a place on each of its lanes instead, its rooms in
+    that lane's millimetres;
+  - **the room in the corridor:** the part gates count a layer's room along
+    the whole column, board edge to board edge; here the lanes pass the caps,
+    T1 and X4 beside U5 with room to spare elsewhere on that column, so no
+    gate binds.
 - **Via ends on two layers.** On more than two routing layers a lane ending
   at a via (a dog-bone, or a via in its pad) takes whichever layer the solve
   gives it there, and the via is dropped where the lane leaves on the ball's

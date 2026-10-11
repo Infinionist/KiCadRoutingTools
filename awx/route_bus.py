@@ -128,7 +128,7 @@ def resolve_rules(board, clearance=None, clearance_ceiling=None, track_width=Non
 
 
 def route_bus(board, out, src, dest, k=None, rounds=3, inproc=False, log=print, json_out=None, joint_fanout=False,
-              **sizes):
+              escape=False, **sizes):
     """Route the bus between `src` and `dest` on `board`, writing `out`, at the chain's sizes (`sizes`: SIZE_ARGS,
     resolve_rules). Returns (exit code, grade line). The run's rules are installed for the step and supplied to
     every stage (rules.SETTING); the process's own are put back after."""
@@ -141,13 +141,13 @@ def route_bus(board, out, src, dest, k=None, rounds=3, inproc=False, log=print, 
     _rules.install(run_rules)
     try:
         with step_policy(run_rules):
-            return _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out, joint_fanout)
+            return _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out, joint_fanout, escape)
     finally:
         _rules.install(prev)
 
 
 def route_buses(board, out, buses=None, k=None, rounds=3, inproc=False, log=print, json_out=None,
-                joint_fanout=False, **sizes):
+                joint_fanout=False, escape=False, **sizes):
     """Every bus on `board` routed in turn, each on the board the one before handed on, `out` the last: `buses` as
     [(src, dest)], else the ones find_buses takes, the largest first. Returns (exit code, grade lines): 0 when every
     bus was handed on routed, 1 when one or more left as it came (or none was found), 2 on a usage error. The
@@ -173,7 +173,7 @@ def route_buses(board, out, buses=None, k=None, rounds=3, inproc=False, log=prin
         step_out = os.path.join(work, f'{s}-{d}.kicad_pcb')
         step_json = os.path.join(work, f'{s}-{d}.summary.json')
         code, g = route_bus(cur, step_out, s, d, k, rounds, inproc, log, json_out=step_json,
-                            joint_fanout=joint_fanout, **sizes)
+                            joint_fanout=joint_fanout, escape=escape, **sizes)
         runs.append(dict(src=s, dest=d, exit=code, grade=g, summary=step_json))
         if os.path.isfile(step_out):       # (routed, or the board as it came)
             cur = step_out
@@ -187,7 +187,7 @@ def route_buses(board, out, buses=None, k=None, rounds=3, inproc=False, log=prin
     return code, [r['grade'] for r in runs]
 
 
-def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=None, joint_fanout=False):
+def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=None, joint_fanout=False, escape=False):
     import make_bench as mb
     import flow_frame as ff
     import whole_route as wr
@@ -253,6 +253,7 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
     # whole-route round, round a via site kept in every other ball of the arrays (joint_escape.reserve_ball_vias);
     # right after, each round, every array's other nets and plane balls are planned and laid jointly round the bus
     # copper just laid (fanout_from_plan.joint_others)
+    joint_fanout = joint_fanout and not escape          # (the escape fanout lays no joint plan: the field is dog-boned)
     others = {r: array_others(pcb, r, names) for r in (src, dest)} if joint_fanout else {src: [], dest: []}
     joint, spec = {}, None
     if joint_fanout:
@@ -276,12 +277,35 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
     # zynq DDR's, laid, the ends model's 86 vias with six nets over two and two ends blocked in front against the
     # chain's teeth's 70, its solve 264 crossings to the chain's 202; round the chain's teeth the joint plan still
     # serves every other net of U1 and 131 of its 132 plane balls)
-    with contextlib.redirect_stdout(sys.stderr):
-        n_t, n_v, failed = mb.fanout_source(base, fanned, src, names, reserve=spec)
-    with contextlib.redirect_stdout(sys.stderr):
-        fix_project_for_output(fanned, clearance=te.SPEC_CLEARANCE, track_width=sr.FAN_TRACK,
-                               via_diameter=te.VIA_SIZE, via_drill=te.VIA_DRILL, verbose=False)
-    log(f'  {src} fanned out: {n_t} tracks, {n_v} vias' + (f', refused {failed}' if failed else ''))
+    if escape:
+        # THE ESCAPE FANOUT (--escape): no source fanout -- every netted ball of both arrays DOG-BONED the human's way
+        # (dogbone_arrays: each ball's via on a gap point, the ball lines free below the balls' layer), the passives
+        # beneath the arrays moved off the vias (the chain's cap step, once, here), and each round's fanout plans the
+        # bus's ends among the escapes that field has and lays them as they are (escape_plan, FANOUT_ESCAPE)
+        import dogbone_arrays as dga
+        with contextlib.redirect_stdout(sys.stderr):
+            _ok, dstats = dga.dogbone_file(base, fanned, [src, dest], log=log)
+            fix_project_for_output(fanned, clearance=te.SPEC_CLEARANCE, track_width=sr.FAN_TRACK,
+                                   via_diameter=te.VIA_SIZE, via_drill=te.VIA_DRILL, verbose=False)
+        rcn = wr.run([os.path.join('..', 'py_router', 'place_fanout_clearance.py'), fanned, fanned,
+                      '--clearance', str(te.SPEC_CLEARANCE), '--beneath-only'], dict(os.environ),
+                     log_path=os.path.join(work, 'caps.log'), own_process=True)[0]
+        for ln in wr.grep(os.path.join(work, 'caps.log'), r'^(Moved|Stuck|  Unresolved)'):
+            log('  caps: ' + ln.strip()[:200])
+        if rcn != 0:
+            log(f'  caps: the nudge exited {rcn} -- the passives stay where they were')
+        left = {p_ for r_ in (src, dest) for p_ in dstats[r_][2]}
+        failed = sorted({short for n in names for short in [n.split('/')[-1]]
+                         if any(f'{p.component_ref}.{p.pad_number}' in left for p in
+                                pcb.nets[next(i for i, nn in pcb.nets.items() if nn.name == n)].pads)})
+        log(f'  {src} and {dest} dog-boned' + (f', no dog-bone for {failed}' if failed else ''))
+    else:
+        with contextlib.redirect_stdout(sys.stderr):
+            n_t, n_v, failed = mb.fanout_source(base, fanned, src, names, reserve=spec)
+        with contextlib.redirect_stdout(sys.stderr):
+            fix_project_for_output(fanned, clearance=te.SPEC_CLEARANCE, track_width=sr.FAN_TRACK,
+                                   via_diameter=te.VIA_SIZE, via_drill=te.VIA_DRILL, verbose=False)
+        log(f'  {src} fanned out: {n_t} tracks, {n_v} vias' + (f', refused {failed}' if failed else ''))
     with contextlib.redirect_stdout(sys.stderr):
         mb.write_ladder(fanned, names, log=log)
         ladder = coherent_nets(10 ** 6, fanned)
@@ -302,7 +326,8 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
     # 4. the whole route
     wr.INPROC = inproc
     rc, grade = wr.chain(K, os.path.join(work, 'run'), rounds, base=frame, dest=dest,
-                         settings={**STEP_SETTINGS, _rules.SETTING: _rules.as_setting(run_rules), **joint})
+                         settings={**STEP_SETTINGS, _rules.SETTING: _rules.as_setting(run_rules), **joint,
+                                   **({'FANOUT_ESCAPE': '1'} if escape else {})})
     seq = _routed(os.path.join(work, 'run'))
     short = lambda n: n.split('/')[-1]
     for n in names:
@@ -682,6 +707,11 @@ def main():
     ap.add_argument('--joint-fanout', action='store_true',
                     help='after each round lays the bus at the two arrays, plan and lay every array\'s other nets '
                          'and plane drops jointly round it, so the chain\'s later fanouts leave the arrays alone')
+    ap.add_argument('--escape', action='store_true',
+                    help='the ESCAPE fanout: no source fanout -- every ball of both arrays dog-boned the human\'s way '
+                         '(dogbone_arrays), the passives beneath moved off the vias, and each round plans the bus\'s '
+                         'ends among the escapes that field has and lays them as they are (escape_plan); '
+                         'overrides --joint-fanout')
     ap.add_argument('--json-out', help='the summary: the nets routed and refused (and why), the rules, the grade '
                                      '(default: <OUT>.bus/summary.json)')
     g = ap.add_argument_group('sizes', 'the chain\'s sizes, as the routing CLIs take them; one omitted is resolved as '
@@ -711,9 +741,9 @@ def main():
     sizes = {n: getattr(a, n) for n in SIZE_ARGS if getattr(a, n) is not None}
     if a.src is None:
         sys.exit(route_buses(a.board, a.out, None, a.k, a.rounds, a.inproc, json_out=a.json_out,
-                             joint_fanout=a.joint_fanout, **sizes)[0])
+                             joint_fanout=a.joint_fanout, escape=a.escape, **sizes)[0])
     sys.exit(route_bus(a.board, a.out, a.src, a.dest, a.k, a.rounds, a.inproc, json_out=a.json_out,
-                       joint_fanout=a.joint_fanout, **sizes)[0])
+                       joint_fanout=a.joint_fanout, escape=a.escape, **sizes)[0])
 
 
 if __name__ == '__main__':

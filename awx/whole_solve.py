@@ -68,15 +68,15 @@ W_SOFT = 3 * W_V                       # a broken SOFT cut: above a dive's two v
 #                                        vias dearer than one breaking it floored to the same whole number, proved)
 
 
-def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False):
+def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, relax=0):
     """the solve of the bench ctx (whole_ctx.plan()) round the destination part `dest`: the JSON
     whole_geo reads (crossings, changes, each lane's route coordinate), or None when CP-SAT finds no plan or none it
     proves optimal in its vias. `cuts`
     names the geometry's cut files (whole_geo), `hist` the audits' hot files (whole_gate --hot), `hint` an earlier
     solve to warm-start from. `crowd`: the CROWD diagnosis of a model with no plan -- each lane's crossings may break
-    their room along it (their spacing, and the stack of crossers at one point), the plan's only price the lanes that
-    do, so it breaks it on the fewest lanes there can be, named in the JSON's 'crowded': the lanes whose crossings the
-    ends leave no room for. Its plan is no plan to lay"""
+    their room along it (their spacing, and the stack of crossers at one point) and the layers they need (kept()), the
+    plan's only price the lanes that do, so it breaks it on the fewest lanes there can be, named in the JSON's
+    'crowded': the lanes whose crossings the ends leave no room for. Its plan is no plan to lay"""
     Fr = whole_frame.build(ctx, dest)          # the whole route's own frame (whole_frame.py)
     prs = getattr(ctx, 'pairs', {}) or {}
     M = list(Fr.M)
@@ -387,12 +387,21 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False):
     # every layer, alone. The band's evidence is two-layer: a pitch folded on one layer, K28/K35)
     BAND_X = BAND if NL == 2 else 0.0
     n_empty = 0
+    U_LO, U_HI = min(entry[n] for n in M), max(end[n] for n in M)
     for a, b in pairs:
         lo = max(entry[a] + max(MARG, RIN0[a]), entry[b] + max(MARG, RIN0[b]), BAND_X)
         # a crossing on the ring leaves the earlier lane's leg LEGROOM to reach its berth after it
         hi = min(end[a] - max(LEGROOM, RIN1[a]), end[b] - max(LEGROOM, RIN1[b])) if same(a, b) else \
             min(tend[a] - (max(MARG, RIN1[a]) if a not in bname else MARG), tend[b] - (max(MARG, RIN1[b]) if b not in bname else MARG))
         n_empty += hi < lo + G
+        if relax >= 2:
+            # (WIDE, the re-solve of a model with no plan and windows held open: EVERY crossing's window the whole
+            # trunk, from the first lane's entry to the last's end, so the braid's order along each lane can be kept
+            # whatever the ends' places -- an end far past the others' stretch left two crossings' windows in the
+            # order their lane cannot take them, and a single order constraint was a model with no plan (a synth bus on
+            # a 4 mm gap: SYP1). A plan the geometry pays for, where there was none)
+            win[(a, b)] = (U_LO, U_HI + G)
+            continue
         win[(a, b)] = (lo, max(hi, lo + G))
     if n_empty:
         # (an inverted pair with no room to cross is given a grid step at its window's start: a plan the geometry then
@@ -410,6 +419,15 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False):
         m.AddBoolAnd([lit, CROWD[n].Not()]).OnlyEnforceIf(q_)
         m.AddBoolOr([lit.Not(), CROWD[n], q_])
         return q_
+
+    def kept(*ns):
+        """the enforcement of a rule on lanes `ns` that a CROWDED one sheds: none, or (the CROWD diagnosis) each of
+        them not crowded -- a crowded lane keeps only its order in the braid and its count of changes: its crossings'
+        layers, its changes' room from them, its ends' layers (VBAN, VSEP, a pair's tips) and a pair's zigzag and
+        crossover go with its spacing, so the diagnosis names lanes on the layers' account too (the zynq LVDS bus on
+        escapes: five lanes up the channel between the arrays across five along it, their ends' runs crossing in U5's
+        own escapes, VSEP -- the spacing alone freed, no lane named, and three rounds laid the same ends)"""
+        return [CROWD[n_].Not() for n_ in ns if n_ in CROWD]
     # ---- geometry cuts (whole_geo.py's islands a lane could not be kept off): none of that lane's crossings in the span
     CUTS = []
     for fn_ in cuts:
@@ -518,15 +536,27 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False):
     # width -- or the geometry folds it between them (K35: SDQS0 run north on B to cross some lanes and back south to
     # cross others, a V in half a millimetre)
     zq = QU(2 * _pairs.turn_straight_steps(ctx.cfg) * ctx.cfg.grid_step + _pairs.pitch(TRK))
+    n_zz = 0
     for n in M:
-        if n not in prs:
+        if n not in prs or relax:
             continue
         ks = [k for k in t if n in k]
         way = {k: (1 if li[n] > li[k[1] if k[0] == n else k[0]] else -1) for k in ks}
         for k1, k2 in itertools.combinations(ks, 2):
             if way[k1] != way[k2]:
+                # (only where the two crossings' WINDOWS hold a turn between them: two windows with no room for it --
+                # a tight channel's crossings held open a grid step -- made the rule alone a model with no plan, and
+                # the round laid nothing (a synth bus on a 4 mm gap: SYP3 between SYP1 and SYP0). The geometry pays
+                # for the fold there, as it pays for the window held open)
+                (l1, h1), (l2, h2) = [(Q(win[k_][0]), Q(win[k_][1])) for k_ in (k1, k2)]
+                if h2 - l1 < zq and h1 - l2 < zq:
+                    n_zz += 1
+                    continue
                 zb = m.NewBoolVar('')
-                m.Add(t[k1] + zq <= t[k2]).OnlyEnforceIf(zb); m.Add(t[k2] + zq <= t[k1]).OnlyEnforceIf(zb.Not())
+                m.Add(t[k1] + zq <= t[k2]).OnlyEnforceIf([zb] + kept(n))
+                m.Add(t[k2] + zq <= t[k1]).OnlyEnforceIf([zb.Not()] + kept(n))
+    if n_zz:
+        print(f'   pair zigzags with no room in their windows for a turn, left to the geometry: {n_zz}')
     # ---- layer changes
     cost = []
     chg, tot = {}, {}
@@ -562,8 +592,8 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False):
             for k in range(KMAX):
                 bb = m.NewBoolVar('')
                 for h_, lit in ((h_st, stay), (h_mv, stay.Not())):
-                    m.Add(cs_[k] + h_ <= t[key]).OnlyEnforceIf([bb, lit])
-                    m.Add(cs_[k] - h_ >= t[key]).OnlyEnforceIf([bb.Not(), act[k], lit])
+                    m.Add(cs_[k] + h_ <= t[key]).OnlyEnforceIf([bb, lit] + kept(n))
+                    m.Add(cs_[k] - h_ >= t[key]).OnlyEnforceIf([bb.Not(), act[k], lit] + kept(n))
                 m.AddImplication(bb, act[k]); bits.append(bb)
             before[key] = bits
         if NL > 2:
@@ -574,9 +604,9 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False):
             for y_e, L_e, k_e in ((y_[0], tli[n], 0), (y_[KMAX], dli[n], 1)):
                 if (n, k_e) in VEND:
                     for L_b in sorted(VBAN.get((n, k_e), ())):
-                        m.Add(y_e != LAYN.index(L_b))
+                        m.Add(y_e != LAYN.index(L_b)).OnlyEnforceIf(kept(n))
                 else:
-                    m.Add(y_e == L_e)
+                    m.Add(y_e == L_e).OnlyEnforceIf(kept(n))
             for k in range(KMAX):
                 m.Add(y_[k + 1] != y_[k]).OnlyEnforceIf(act[k])
                 m.Add(y_[k + 1] == y_[k]).OnlyEnforceIf(act[k].Not())
@@ -593,7 +623,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False):
     # would be laid (whole_geo's XO_AT) -- the rule for every one
     for n in M:
         if n in prs and (NL > 2 or tl[n] == dl[n]) and _pairs.opposite_hands(ctx, n):
-            m.Add(chg[n][1][0] == 1)
+            m.Add(chg[n][1][0] == 1).OnlyEnforceIf(kept(n))
     # two lanes' changes apart along one frame far enough that two on NEIGHBOURING lanes -- a lane pitch across -- clear
     # the via-to-via rule as the geometry plans it (a grid step over it): a via apart along left them 0.36 where the rule
     # is 0.38, for the geometry to spread. Only lanes that can BE neighbours: adjacent at the launch or at the berths,
@@ -671,11 +701,11 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False):
     if NL > 2:
         end_y = lambda n, k_: YL[n][0] if k_ == 0 else YL[n][KMAX]
         for (n, k1_), (o_, k2_) in VSEP:
-            m.Add(end_y(n, k1_) != end_y(o_, k2_))
+            m.Add(end_y(n, k1_) != end_y(o_, k2_)).OnlyEnforceIf(kept(n, o_))
         for (n, k_), between_ in sorted(Fr.tip_between.items()):
             for o_ in between_:
                 if n in YL and o_ in YL:
-                    m.Add(end_y(n, k_) != end_y(o_, k_))
+                    m.Add(end_y(n, k_) != end_y(o_, k_)).OnlyEnforceIf(kept(n, o_))
 
     def run_at(n, before):
         """(more layers than two) the layer of lane n's run where `before` -- its changes before a point, in order --
@@ -714,7 +744,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False):
         if NL > 2:
             # crossing lanes DIFFER: the run each is on there (its changes before the crossing: they stand in order)
             La_, Lb_ = run_at(a, ev[a][key]), run_at(b, ev[b][key])
-            m.Add(La_ != Lb_)
+            m.Add(La_ != Lb_).OnlyEnforceIf(kept(a, b))
             for lane_, c_, mv_ in ((a, b, MV[key]), (b, a, MV[key].Not())):
                 vb = via_near(c_, key)
                 for w_, pres_ in ((w_move, mv_), (w_stay, mv_.Not())):
@@ -1474,16 +1504,36 @@ def main():
     J = solve(ctx, awx_settings.req('DEST'), files('CUTS'), files('HIST'), awx_settings.get('HINT') or None,
               soft_cuts=files('SOFT_CUTS'))
     if J is None:
-        # (SOLVE_CROWD=1, a round's first solve in whole_route: a model with NO plan is solved again as its CROWD
-        # diagnosis, and the lanes it names -- whose crossings the ends leave no room for -- go to OUT.crowded.json,
-        # which the round's log reads: zynq LVDS round 1's TX_D4 and DATA_CLK, round 3's DATA_CLK)
-        if awx_settings.get('SOLVE_CROWD') == '1' and STATUS.get('plan') is False and out.endswith('.json'):
+        # THE RELAXED RE-SOLVES (with the escape fanout, FANOUT_ESCAPE; a round's own solve, SOLVE_UNPROVED, which
+        # never ends with nothing): a model with NO plan is solved again without the rules the geometry can pay for --
+        # a pair's zigzag room (relax 1) -- then with every crossing's window the whole trunk too (relax 2). Each named
+        # in the log; the first plan is the round's, where it would have laid nothing (the zynq LVDS bus's 47 nets on
+        # escapes: a zigzag and the braid's order on two pairs; a synth bus on a 4 mm gap: degenerate windows). NEVER the
+        # layers via-end runs and a pair's tips are held apart on (VSEP, tip_between): relaxed, the relayer laid runs onto
+        # one another's layer -- 79 contacts -- and an open lane is better than a short
+        relax_on = awx_settings.get('FANOUT_ESCAPE') == '1'
+        if relax_on and awx_settings.get('SOLVE_UNPROVED') == '1' and STATUS.get('plan') is False:
+            for rlx, what in ((1, 'no pair zigzag room'), (2, 'and every crossing window the whole trunk')):
+                print(f'   no plan -- solved again, relaxed ({rlx}): {what}')
+                ctx, _cs = whole_ctx.plan()
+                J = solve(ctx, awx_settings.req('DEST'), files('CUTS'), files('HIST'), None,
+                          soft_cuts=files('SOFT_CUTS'), relax=rlx)
+                if J is not None:
+                    J['relaxed'] = rlx
+                    break
+        # (SOLVE_CROWD=1, a round's first solve in whole_route: a model with NO plan, relaxed too, is solved again as
+        # its CROWD diagnosis -- as relaxed as its last re-solve -- and the lanes it names, whose crossings the ends
+        # leave no room for, go to OUT.crowded.json: the round's log reads it, and a round with no plan names them to
+        # the next fanout (whole_feedback --name). Zynq LVDS round 1's TX_D4 and DATA_CLK, round 3's DATA_CLK)
+        if J is None and awx_settings.get('SOLVE_CROWD') == '1' and STATUS.get('plan') is False \
+                and out.endswith('.json'):
             ctx, _cs = whole_ctx.plan()
             Jc = solve(ctx, awx_settings.req('DEST'), files('CUTS'), files('HIST'), None,
-                       soft_cuts=files('SOFT_CUTS'), crowd=True)
+                       soft_cuts=files('SOFT_CUTS'), crowd=True, relax=2 if relax_on else 0)
             if Jc is not None and Jc.get('crowded'):
                 json.dump({'crowded': Jc['crowded']}, open(out[:-len('.json')] + '.crowded.json', 'w'), indent=0)
-        sys.exit(1)
+        if J is None:
+            sys.exit(1)
     json.dump(J, open(out, 'w'), indent=0)
 
 

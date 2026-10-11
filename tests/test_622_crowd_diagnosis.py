@@ -9,19 +9,23 @@ feedback named the lanes the ENDS MODEL names (its nets over two vias, its loade
 lanes in round 1, one in round 3, none of them the trouble. Switched off lane by lane, the solve's crossing room (each
 lane's crossings spaced along it per layer, and the stack of crossers at one point) had to give on TX_D4 and DATA_CLK
 in round 1 and on DATA_CLK alone in round 3 -- two pairs ending on the destination's facing face, every crossing of
-theirs in the few millimetres between the arrays. The diagnosis solves the model again with that room free to break
-lane by lane, the fewest lanes there can be, and names them (OUT.crowded.json; whole_route says them in the
-round's log).
+theirs in the few millimetres between the arrays. The diagnosis solves the model again with that room -- and the
+layers the lane's crossings and ends need -- free to break lane by lane, the fewest lanes there can be, and names them
+(OUT.crowded.json; whole_route says them in the round's log, and a round with no plan names them to the next round's
+fanout).
 
 On a generated four-copper bus (16 lanes, shuffled, a 2.5 mm channel), its round-1 bench laid by one round of the
 whole route, this pins:
 
 1. as generated the solve has a plan, and the diagnosis on that model names no lane;
 2. with a mover's crossings spaced as a stayer's (whole_solve.K_SWEEP 0) the solve finds no plan at all, and the
-   diagnosis names lanes -- and without their nets the solve has a plan again. That solve of SOME of the bus's lanes
-   is the last resort's partial, and was refused as not in the canonical frame: the remaining balls' centroids,
-   source to destination, point a quarter off on this bench (asserted, so the check is not vacuous), and the guard
-   (whole_ctx._guard) now takes the frame's own trunk, pad box to pad box, then;
+   diagnosis names lanes -- and without their nets the solve has a plan again. A solve of SOME of the bus's lanes is
+   the last resort's partial, and was refused as not in the canonical frame where the remaining balls' centroids,
+   source to destination, point a quarter off: the guard (whole_ctx._guard) now takes the frame's own trunk, pad box
+   to pad box, then. The lanes named need not leave such a rest (the diagnosis frees a crowded lane's layers too, and
+   names two lanes here where its spacing alone named five), so more lanes go, each the one whose leaving turns the
+   rest's centroid furthest off the run's axis, until the rest is a quarter off (asserted, so the check is not
+   vacuous), and that partial has a plan too;
 3. whole_solve's main writes OUT.crowded.json for a model with no plan under SOLVE_CROWD=1, and nothing without it.
 """
 import json
@@ -147,6 +151,10 @@ def main():
             rest = [n for n in nets if n.split('/')[-1] not in set(named)]
             if len(rest) != len(nets) - len(named):
                 raise SystemExit(f'BROKEN TEST: the lanes named {named} are not the run\'s nets {nets}')
+            rs = child('solve', bench, rest, k_sweep=0.0)
+            if not rs['plan']:
+                fails.append(f'without the lanes named ({", ".join(named)}) the crowded model still has no plan'
+                             + (f' -- refused: {rs["refused"].strip()[:160]}' if rs.get('refused') else ''))
             sys.path.insert(0, AWX)
             sys.path.insert(1, os.path.join(ROOT, 'py_router'))
             import contextlib
@@ -154,15 +162,32 @@ def main():
             with contextlib.redirect_stdout(io.StringIO()):
                 import flow_frame
                 from kicad_parser import parse_kicad_pcb
-                k_rest = flow_frame.quarter_of(parse_kicad_pcb(bench), 'SD1',
-                                               {n.split('/')[-1] for n in rest})[0]
-            print(f'  the lanes left: their balls\' centroids a quarter turn {k_rest} off')
+                pcb_ = parse_kicad_pcb(bench)
+
+            def off_axis(lanes_):
+                """how far the lanes' source-to-destination centroid vector turns off the run's axis (+x on this
+                canonical bench): its across less its along, quarter_of's vector"""
+                src, dst = [], []
+                for net in pcb_.nets.values():
+                    if net.name.split('/')[-1] in lanes_:
+                        for p in net.pads:
+                            (dst if p.component_ref == 'SD1' else src).append((p.global_x, p.global_y))
+                dx = sum(p[0] for p in dst) / len(dst) - sum(p[0] for p in src) / len(src)
+                dy = sum(p[1] for p in dst) / len(dst) - sum(p[1] for p in src) / len(src)
+                return abs(dy) - dx
+            left = [n.split('/')[-1] for n in rest]
+            while not flow_frame.quarter_of(pcb_, 'SD1', set(left))[0] and len(left) > 2:
+                left.remove(max(left, key=lambda l_: (off_axis(set(left) - {l_}), l_)))
+            k_rest = flow_frame.quarter_of(pcb_, 'SD1', set(left))[0]
+            print(f'  the partial: {len(left)} of {len(nets)} lanes, their balls\' centroids a quarter turn {k_rest} '
+                  f'off')
             if not k_rest:
-                raise SystemExit('BROKEN TEST: the lanes left are not a quarter off -- the guard is not tested')
-            rs = child('solve', bench, rest, k_sweep=0.0)
-            if not rs['plan']:
-                fails.append(f'without the lanes named ({", ".join(named)}) the crowded model still has no plan'
-                             + (f' -- refused: {rs["refused"].strip()[:160]}' if rs.get('refused') else ''))
+                raise SystemExit('BROKEN TEST: no partial of the lanes left is a quarter off -- the guard is not '
+                                 'tested')
+            rq = child('solve', bench, [n for n in rest if n.split('/')[-1] in set(left)], k_sweep=0.0)
+            if not rq['plan']:
+                fails.append(f'a partial a quarter off ({len(left)} lanes) has no plan'
+                             + (f' -- refused: {rq["refused"].strip()[:160]}' if rq.get('refused') else ''))
         print(f'  crowded model: {len(named)} lane(s) named -- {", ".join(named)}')
         # 3
         for crowd_on in (True, False):

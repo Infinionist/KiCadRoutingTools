@@ -72,7 +72,7 @@ ILS_PATIENCE = 4          # ... stopping after this many kicks in a row that fin
 BAN_KICKS = 8             # then BAN kicks (ban_kicks): the most crossed lanes' current ends banned, searched again ...
 BAN_LANES = 3             # ... this many lanes a kick
 BAN_PATIENCE = 4          # ... stopping after this many kicks in a row that find nothing
-ILS_SEED = 622
+ILS_SEED = int(awx_settings.get('ENDS_ILS_SEED', '622'))   # the kicks' seed (a setting: one bench, other trajectories)
 VIA_PREF = 2              # no more than two vias on a net where that can be had (whole_solve's first objective)
 W_OVER = 5.0              # each via a net carries past two costs this many MORE (nets of 0..4 vias: 0, 1, 2, 8, 14) --
 #                           a price, never a cap, the same as the whole solve's
@@ -728,7 +728,7 @@ class Ends:
         wound = self._wound_sides(lanes, bo, DB, cut)
         ride = sum(self.ride(l_, npair[l_], state[l_][0], state[l_][1], wound.get(l_)) for l_ in lanes) + \
             self._wind_stack(lanes, to, bo, kd, dcls, npair, wound)
-        stacks = _stacks(self.lanes, to, bo, chg)
+        stacks = _stacks(self.lanes, to, bo, chg, every=bool(self.st.get('escape')))
         fbk = (FB_AVOID * sum(ix.get(state[l_][k_], 0.0) for (l_, k_), ix in self.fb_avoid.items())
                + FB_PAIR * sum(ia.get(state[a_][k_], 0.0) * ib.get(state[b_][k_], 0.0)
                                for a_, b_, k_, ia, ib in self.fb_pairs))
@@ -925,15 +925,22 @@ class Ends:
               if L_ == (layer if layer is not None else m.layer)]
         return any(_seg_d(a, b, p, q) < bar for a, b in ra for p, q in rb)
 
-    def _colour(self, lanes, inv, ends, npair):
+    def _colour(self, lanes, inv, ends, npair, sep=()):
         """(changes, drops) per lane: the crossing graph COLOURED on the routing layers, the ESTIMATE the search steers by
         -- each lane, most crossed first, on the layer its crossed lanes left it that costs it least: a change for each
         fixed end not on it, less a via dropped for each via end on its neck there; a lane its neighbours left no layer
         crosses on the way, leaving its cheapest and coming back (two changes more). Two lanes that cross on different
-        layers need nothing; a via end's lane takes any layer (the human's way: a dog-bone each end, one layer a net)"""
+        layers need nothing; a via end's lane takes any layer (the human's way: a dog-bone each end, one layer a net).
+        `sep` (end_clashes: two via ends whose runs meet, as whole_solve's VSEP holds them on different layers) are lanes
+        kept apart as crossing ones are -- on an ESCAPE state (_score_nl), whose ends stack and cross on the ball lines:
+        without them the zynq LVDS bus's five pairs shingled on U1's east face on alternating layers were coloured one
+        layer, the lanes climbing the channel across them took another, and the solve found no layer for either"""
         nb = collections.defaultdict(set)
         for a, b in inv:
             nb[a].add(b); nb[b].add(a)
+        for (a, _ka), (b, _kb) in sep:
+            if a != b:
+                nb[a].add(b); nb[b].add(a)
         col, chg, drp = {}, {}, {}
 
         def price(l_, c):
@@ -971,7 +978,7 @@ class Ends:
         for l_, lg in self.lanes:
             ends[l_] = (self.end_domain(to[l_], 0, lg), self.end_domain(bo[l_], 1, lg))
         ends, sep = self.end_clashes(ends, to, bo, state)
-        chg, drp, col = self._colour(lanes, inv, ends, npair)
+        chg, drp, col = self._colour(lanes, inv, ends, npair, sep if self.st.get('escape') else ())
         xo = {}
         for l_, lg in self.lanes:
             xo[l_] = 0
@@ -1021,7 +1028,7 @@ class Ends:
         wound = self._wound_sides(lanes, bo, DB, cut)
         ride = sum(self.ride(l_, npair[l_], state[l_][0], state[l_][1], wound.get(l_)) for l_ in lanes) + \
             self._wind_stack(lanes, to, bo, kd, dcls, npair, wound)
-        stacks = _stacks(self.lanes, to, bo, chg)
+        stacks = _stacks(self.lanes, to, bo, chg, every=bool(self.st.get('escape')))
         fbk = (FB_AVOID * sum(ix.get(state[l_][k_], 0.0) for (l_, k_), ix in self.fb_avoid.items())
                + FB_PAIR * sum(ia.get(state[a_][k_], 0.0) * ib.get(state[b_][k_], 0.0)
                                for a_, b_, k_, ia, ib in self.fb_pairs))
@@ -1566,6 +1573,7 @@ def choose(st, log=print, src_free=True, fixed=None, seed=None, learned=None, fr
         sL, (vL, pL) = cut_phase(E, sL, (vL, pL), log=log)
     out, vF, pF = E.choice(sL), None, None
     log(f'  whole ends: on the teeth as laid: {_fmt(pL)}')
+    E2 = None
     if src_free:
         E2 = Ends(st, src_free=True, fixed=fixed, learned=learned, free_teeth=free_teeth)
         # a local search from the berths just chosen on the teeth as laid, iterated
@@ -1581,9 +1589,11 @@ def choose(st, log=print, src_free=True, fixed=None, seed=None, learned=None, fr
         else:
             log('  whole ends: no tooth move is better')
     # (`st`: the plan state it chose on, and whether it asked tooth moves -- asked none, its berths ARE the choice on
-    # that board's teeth as laid, and fanout_from_plan need not ask again)
+    # that board's teeth as laid, and fanout_from_plan need not ask again; `cut` the cut the ends taken were chosen at:
+    # the teeth's search's where its ends are taken, else the first's -- on a board with no tooth laid every tooth is a
+    # move either way, and the moves alone named the second search's cut beside the first search's ends)
     choose.last = dict(laid=vL, laid_parts=pL, free=vF, free_parts=pF, moved=bool(out[1]), st=id(st),
-                       cut=(E2.wcut if out[1] else E.wcut))
+                       cut=(E2.wcut if E2 is not None and vF < vL - TOOTH_GAIN else E.wcut))
     return out
 
 
@@ -1911,10 +1921,12 @@ def fb_weights(opts, item):
     return out
 
 
-def _stacks(lanes, to, bo, chg):
+def _stacks(lanes, to, bo, chg, every=False):
     """the STACKED pairs of ends -- two lanes' legs at one point (within DUP_TOL) on different layers, at the teeth or
     at the berths -- where either lane changes layer; one where either lane is a PAIR counts twice (a pair's dive is two
-    barrels side by side under the other lane's via: K51, SDQS1 under SDQ8)"""
+    barrels side by side under the other lane's via: K51, SDQS1 under SDQ8). `every` (an ESCAPE state, escape_plan:
+    the ends' runs share a ball line on two layers, and the solve keeps their layers apart whatever it changes): every
+    stack, changing or not -- three runs stacked on one line round a pair's tips asked the solve four layers of three"""
     npair = {l_: len(lg) for l_, lg in lanes}
     n = 0
     for opt in (to, bo):
@@ -1934,7 +1946,7 @@ def _stacks(lanes, to, bo, chg):
             near = [e for dx in (-1, 0, 1) for dy in (-1, 0, 1) for e in cells.get((cx + dx, cy + dy), ())]
             for la, ma in here:
                 for lb, mb in near:
-                    if la == lb or ma.layer == mb.layer or not (chg.get(la) or chg.get(lb)):
+                    if la == lb or ma.layer == mb.layer or not (every or chg.get(la) or chg.get(lb)):
                         continue
                     if math.hypot(ma.exit_pt[0] - mb.exit_pt[0], ma.exit_pt[1] - mb.exit_pt[1]) > DUP_TOL:
                         continue

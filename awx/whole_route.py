@@ -1302,9 +1302,10 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
             # audits names the lanes the ends model names on these ends (its nets over two, else its lanes loaded on
             # the trunk, else its most crossed): their ends freed and to be avoided -- an open net's at the end where
             # its trouble is, by the round's findings and its connectivity -- so the next round, incremental, chooses
-            # them again. Neither ends the rounds (K41: 5 nets open, the audits silent, and the rounds ended there)
+            # them again. Neither ends the rounds (K41: 5 nets open, the audits silent, and the rounds ended there).
+            # A round with no plan names the lanes its solve's CROWD diagnosis found no room for, as open ones
             fbn = stripped(run(['whole_feedback.py', '--name', os.path.join(d, 'fo.plan.json'), FB]
-                               + (res['open_nets'] if res else []),
+                               + (res['open_nets'] if res else crowded),
                                {**env, 'FB_ROUND': str(r), 'FB_HOTS': ','.join(hots),
                                 'FB_CONN': os.path.join(d, 'conn.log')}, err=sys.stderr)[1])
             say(fbn)
