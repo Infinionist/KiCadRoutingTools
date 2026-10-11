@@ -336,9 +336,15 @@ def _move_zone_pts(fp_text: str, ref: str, old_x: float, old_y: float,
 
     Each point is carried by the same rigid transform as the footprint: rotate
     about the footprint's OLD origin by `delta_rot`, then translate by
-    `(dx, dy)`. The flip path is deliberately untouched -- a zone there is
-    still refused by `_FLIP_NAMED_REFUSALS`, because a mirror is not a rigid
-    motion and this helper has no rule for it.
+    `(dx, dy)`. The rotation is KiCad's, which with y pointing down means the
+    standard matrix at the NEGATED angle -- the one
+    `kicad_parser.local_to_global` places the pads with, so the zone turns
+    with its pads. At +delta_rot the zone turns the other way, which agrees
+    with the pads only at 0 and 180 degrees.
+
+    The flip path is deliberately untouched -- a zone there is still refused
+    by `_FLIP_NAMED_REFUSALS`, because a mirror is not a rigid motion and this
+    helper has no rule for it.
 
     A zone whose `(pts ...)` does not parse is a refusal, not a skip: the
     writer returns True unconditionally, so a silently-untouched zone is
@@ -371,7 +377,7 @@ def _move_zone_pts(fp_text: str, ref: str, old_x: float, old_y: float,
                 f"leaving its keep-out zone behind: {node[:120]!r}")
         if not polygons:
             continue
-        rad = math.radians(delta_rot)
+        rad = math.radians(-delta_rot)  # KiCad's sense, as local_to_global
         c, s_ = math.cos(rad), math.sin(rad)
         rep_parts = []
         prev_end = 0
