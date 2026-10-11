@@ -15,7 +15,7 @@ All coordinates and sizes are in millimeters. See
 [Python API Overview](python-api.md#conventions) for shared conventions.
 
 Examples run from the repository root with the engine directory on the
-import path: `PYTHONPATH=py_router python3 your_script.py` (see the
+import path: `PYTHONPATH=py_router python3 <your script>` (see the
 [overview](python-api.md)).
 
 ## Contents

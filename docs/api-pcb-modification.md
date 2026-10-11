@@ -10,7 +10,7 @@
 All coordinates are mm.
 
 Examples run from the repository root with the engine directory on the
-import path: `PYTHONPATH=py_router python3 your_script.py` (see the
+import path: `PYTHONPATH=py_router python3 <your script>` (see the
 [overview](python-api.md)).
 
 ## `pcb_modification.py`

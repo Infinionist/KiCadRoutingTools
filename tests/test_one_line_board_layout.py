@@ -33,9 +33,11 @@ import tempfile
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS_DIR)
 sys.path.insert(0, os.path.join(ROOT, 'py_router'))
+sys.path.insert(0, TESTS_DIR)
 
 from kicad_parser import (_TOKEN_POS_RE, parse_kicad_pcb,  # noqa: E402
                           reflow_one_line_board)
+from fixture_boards import ensure                          # noqa: E402
 
 failures = []
 
@@ -79,8 +81,9 @@ def summary(d):
 # fixture -> fields that must be non-empty in the one-line parse (the ones
 # the layout used to lose).
 FIXTURES = {
-    # 2-layer, two GND pours, board outline, stackup
-    'interf_u_routed.kicad_pcb': ('zones', 'copper_layers', 'stackup', 'board_outline'),
+    # 2-layer, VCC/GND pours, board outline, stackup (built from the tracked
+    # interf_u_unrouted by fixture_boards)
+    'interf_u_plane.kicad_pcb': ('zones', 'copper_layers', 'stackup', 'board_outline'),
     # 4-layer with a keep-out rule area
     'glasgow_revC.kicad_pcb': ('keepouts', 'copper_layers', 'stackup'),
     # SOT-89 tab drawn as a copper fp_poly inside the footprint
@@ -98,7 +101,7 @@ def main():
     try:
         for name, nonempty in FIXTURES.items():
             print(f"1. {name}: one-line layout parses like the original")
-            src = os.path.join(ROOT, 'kicad_files', name)
+            src = ensure(name)
             text = open(src, encoding='utf-8').read()
             flat = os.path.join(tmp, name)
             with open(flat, 'w', encoding='utf-8') as f:
@@ -116,7 +119,7 @@ def main():
                 check(f'{field} present in the one-line parse', bool(got[field]))
 
         print("2. the reflow changes whitespace only")
-        text = open(os.path.join(ROOT, 'kicad_files', 'interf_u_routed.kicad_pcb'), encoding='utf-8').read()
+        text = open(ensure('interf_u_plane.kicad_pcb'), encoding='utf-8').read()
         flat = one_line(text)
         reflowed, changed = reflow_one_line_board(flat)
         check('one-line board is reflowed', changed and reflowed.count('\n') > 1000)
