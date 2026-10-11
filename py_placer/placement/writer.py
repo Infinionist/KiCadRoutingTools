@@ -7,6 +7,7 @@ to update the (at X Y [rotation]) of each footprint block.
 from __future__ import annotations
 
 import os
+import math
 import re
 import sys
 from typing import List, Dict
@@ -309,6 +310,85 @@ def _rotate_text_angles(fp_text: str, delta_rot: float, ref: str) -> str:
             rep = f"(at {x} {y})"
         if rep != node[m.start():m.end()]:
             pieces.append((s + m.start(), s + m.end(), rep))
+    if not pieces:
+        return fp_text
+    out = []
+    prev = 0
+    for s, e, rep in pieces:
+        out.append(fp_text[prev:s])
+        out.append(rep)
+        prev = e
+    out.append(fp_text[prev:])
+    return ''.join(out)
+
+
+def _move_zone_pts(fp_text: str, ref: str, old_x: float, old_y: float,
+                   delta_rot: float, dx: float, dy: float) -> str:
+    """Translate and rotate a footprint's own keep-out zone `(pts ...)`.
+
+    A footprint-internal `(zone ...)` stores its `(polygon (pts (xy ...)))` in
+    ABSOLUTE board coordinates -- the same fact `_FLIP_NAMED_REFUSALS['zone']`
+    records for the mirror. The move/rotate path of `write_placed_output`
+    rewrites the footprint's `(at ...)` and rotates pad and text angles, but
+    until this existed left the zone's `(pts ...)` untouched, so moving a
+    footprint left its keep-out zone behind at the old absolute position
+    (#1214).
+
+    Each point is carried by the same rigid transform as the footprint: rotate
+    about the footprint's OLD origin by `delta_rot`, then translate by
+    `(dx, dy)`. The flip path is deliberately untouched -- a zone there is
+    still refused by `_FLIP_NAMED_REFUSALS`, because a mirror is not a rigid
+    motion and this helper has no rule for it.
+
+    A zone whose `(pts ...)` does not parse is a refusal, not a skip: the
+    writer returns True unconditionally, so a silently-untouched zone is
+    indistinguishable from success at every call site, and a keep-out zone
+    left behind is exactly the failure this fix exists to remove.
+    """
+    if dx == 0 and dy == 0 and delta_rot % 360 == 0:
+        # An unchanged pose must write the zone byte for byte, or the
+        # identity write (test_714_identity_write_unchanged) re-spells it.
+        return fp_text
+    pieces = []
+    for head, s, e in _iter_sexpr_children(fp_text, 0):
+        if head != 'zone':
+            continue
+        node = fp_text[s:e]
+        if re.search(r'\(filled_polygon\b', node):
+            # A fill is also absolute, and a moved outline with a stale fill
+            # is a second way to ship copper where the part used to be.
+            raise SideFlipUnsupported(
+                f"{ref}: a footprint-internal (zone ...) carries a "
+                f"(filled_polygon ...), which this move does not carry. "
+                f"Refusing rather than leaving its fill behind: {node[:120]!r}")
+        polygons = list(re.finditer(
+            r'\(polygon\s+\(pts\s+((?:\(xy\s+[^\s()]+\s+[^\s()]+\)\s*)+)\)\s*\)', node))
+        if len(polygons) != len(re.findall(r'\(polygon\b', node)):
+            raise SideFlipUnsupported(
+                f"{ref}: a footprint-internal (zone ...) has a (polygon ...) "
+                f"this move cannot parse -- expected a (pts (xy x y) ...) "
+                f"list. Refusing rather than moving the footprint and "
+                f"leaving its keep-out zone behind: {node[:120]!r}")
+        if not polygons:
+            continue
+        rad = math.radians(delta_rot)
+        c, s_ = math.cos(rad), math.sin(rad)
+        rep_parts = []
+        prev_end = 0
+        for m in polygons:
+            new_pts = []
+            for x, y in re.findall(r'\(xy\s+([^\s()]+)\s+([^\s()]+)\)', m.group(1)):
+                fx, fy = float(x), float(y)
+                rx = old_x + (fx - old_x) * c - (fy - old_y) * s_
+                ry = old_y + (fx - old_x) * s_ + (fy - old_y) * c
+                new_pts.append(f"(xy {rx + dx:.6f} {ry + dy:.6f})")
+            rep_parts.append(node[prev_end:m.start()])
+            rep_parts.append("(polygon (pts " + " ".join(new_pts) + "))")
+            prev_end = m.end()
+        rep_parts.append(node[prev_end:])
+        rep = ''.join(rep_parts)
+        if rep != node:
+            pieces.append((s, e, rep))
     if not pieces:
         return fp_text
     out = []
@@ -1023,6 +1103,16 @@ def write_placed_output(input_file: str, output_file: str,
                 # they compose the same way; leaving them was how a rotated
                 # part shipped its Reference at the old angle.
                 new_fp_text = _rotate_text_angles(new_fp_text, delta_rot, key)
+            # A footprint-internal (zone ...) stores its (pts ...) in
+            # ABSOLUTE board coordinates, so a move or rotation must carry
+            # the zone's points with the footprint (#1214). Runs for a
+            # pure move too, not just a rotation; _move_zone_pts is a
+            # no-op when the pose is unchanged.
+            new_fp_text = _move_zone_pts(
+                new_fp_text, key,
+                float(at_match.group(1)), float(at_match.group(2)),
+                delta_rot, new_x - float(at_match.group(1)),
+                new_y - float(at_match.group(2)))
 
         content = content[:start] + new_fp_text + content[end:]
         modified_count += 1
