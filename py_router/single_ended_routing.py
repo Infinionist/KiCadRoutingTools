@@ -3028,8 +3028,17 @@ def _route_with_via_unblock(router, obstacles, config, sources, targets, track_m
     # windowed board scan, no IPC-4761 via-in-pad note). Capped at the probe
     # budget, same fail-fast rationale as the placement retry below.
     # Pre-placement remains the fallback for genuinely small-rung-boxed pads.
+    # #1228: only when rung 1 itself holds copper. An empty rung 1 falls back
+    # to rung 0 -- the search that just failed -- and a rung 1 holding only
+    # in-progress via rings would let the search through every foreign
+    # track. (get_stats()[7] sums EVERY rung, so a populated per-net rung
+    # used to wave this through on an empty small rung.)
+    try:
+        _rung1_held = obstacles.rung_len(1) > 0
+    except (AttributeError, TypeError):
+        _rung1_held = obstacles.get_stats()[7] > 0
     if (((bwd_i and bwd_i < lim) or (fwd_i and fwd_i < lim))
-            and obstacles.get_stats()[7] > 0):
+            and _rung1_held):
         _rp = _rung_search_pair(config, pcb_data)
         if _rp is not None:
             _rcfg = replace(config, via_rung=1,
@@ -4605,22 +4614,28 @@ def route_multipoint_taps(
     # correct. Idempotent, and released on every exit beside the via rings.
     from routing_context import ensure_own_pad_lift, release_own_pad_lift
     _oplift = ensure_own_pad_lift(obstacles, pcb_data, net_id)
+    # #1228: the via rungs the rings reach -- those that already hold copper,
+    # snapshotted once so the removal below hits exactly what was stamped.
+    # An EMPTY rung (the #568 small rung of a map with no net cache) falls
+    # back to rung 0, which carries the rings; stamping the rings into it
+    # made them its ONLY entries, and a rung-1 search then saw no foreign
+    # copper at all.
+    try:
+        from obstacle_map import populated_via_rungs
+        ring_rungs = tuple(populated_via_rungs(obstacles))
+    except ImportError:
+        ring_rungs = ()
     try:
         return _route_multipoint_taps_impl(
             pcb_data, net_id, config, obstacles, main_result,
-            global_offset, global_total, global_failed, ring_cells)
+            global_offset, global_total, global_failed, ring_cells, ring_rungs)
     finally:
         release_own_pad_lift(obstacles, net_id, _oplift)
         if ring_cells:
             _rc = np.array(ring_cells, dtype=np.int32)
             obstacles.remove_blocked_vias_batch(_rc)
-            try:    # #568: mirror of the ring's small stamp (refcount balance)
-                from obstacle_map import _rung_small_armed as _rsa, _mirror_rungs_remove
-                if _rsa() and hasattr(obstacles, 'remove_blocked_vias_small_batch'):
-                    obstacles.remove_blocked_vias_small_batch(_rc)
-                _mirror_rungs_remove(obstacles, _rc)   # #530 per-net rungs
-            except (AttributeError, ImportError):
-                pass
+            for _r in ring_rungs:   # the same rungs the rings were stamped into
+                obstacles.remove_blocked_vias_rung_batch(_r, _rc)
 
 
 def inprogress_via_ring_cells(v, net_id: int, config: GridRouteConfig,
@@ -4657,7 +4672,8 @@ def _route_multipoint_taps_impl(
     global_offset: int = 0,
     global_total: int = 0,
     global_failed: int = 0,
-    _ring_cells: list = None
+    _ring_cells: list = None,
+    _ring_rungs: tuple = ()
 ) -> Optional[dict]:
     """
     Route the remaining MST edges for a multi-point net.
@@ -4723,27 +4739,18 @@ def _route_multipoint_taps_impl(
     # -- the VTT multipoint junction double-via (hole_to_hole DRC). The ring skips
     # the via's own cell so reuse stays open (sized by inprogress_via_ring_cells).
 
-    try:        # #568: armed once per tap run (see the ring mirror below)
-        from obstacle_map import _rung_small_armed as _rsa, _per_net_rungs as _pnr
-        _small_rung_on = _rsa() and hasattr(obstacles, 'add_blocked_via_small')
-        _pn_rungs = list(_pnr(obstacles))   # #530 per-net rungs (above the small map)
-    except ImportError:
-        _small_rung_on = False
-        _pn_rungs = []
-
     def _register_inprogress_via(v):
         vgx, vgy = coord.to_grid(v.x, v.y)
         obstacles.add_free_via(vgx, vgy)
         for cgx, cgy in inprogress_via_ring_cells(v, net_id, config, coord):
             obstacles.add_blocked_via(cgx, cgy)
-            # #568 MIRROR: a rung-1 tap search trusts ONLY the small map for
-            # dynamic copper, so without this it could drop a small via inside
-            # the ring of a via this very net just placed -- a real same-net
-            # hole-to-hole violation. The wrapper's finally removes both maps'
-            # cells (#309).
-            if _small_rung_on:
-                obstacles.add_blocked_via_small(cgx, cgy)
-            for _r in _pn_rungs:   # #530 per-net rungs
+            # #568/#530 MIRROR: a search at rung r >= 1 trusts ONLY that
+            # rung's map for dynamic copper, so without this it could drop a
+            # via inside the ring of a via this very net just placed -- a
+            # real same-net hole-to-hole violation. Only the rungs that hold
+            # copper (the wrapper's snapshot, #1228); the wrapper's finally
+            # removes from exactly those (#309).
+            for _r in _ring_rungs:
                 obstacles.add_blocked_via_rung(_r, cgx, cgy)
             # Ref-counted raw add: the wrapper removes these on exit so they
             # can't leak into a persistent working map (#309).
