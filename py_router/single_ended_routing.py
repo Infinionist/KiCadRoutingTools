@@ -3919,6 +3919,49 @@ def _select_multipoint_main_edge(pcb_data, pad_info, pad_components,
     return mst_edges
 
 
+def _draw_at_own_via(vias, pcb_data, net_id: int, config, obstacles) -> None:
+    """#530 decision 4 for a multipoint net: draw each via it just placed at
+    the net's OWN via (config.net_via_sizes) wherever that is legal at the
+    net's own via-legality rung.
+
+    A multipoint net is SEARCHED at the run's via, so its paths -- and
+    whether it completes -- are what they would be with no class via; only
+    the vias change. A via whose cell is legal for the class via is drawn at
+    it; the rest keep the run's via and are disclosed as a descent in the
+    design_rules ledger. A via another mechanism already sized (an in-pad or
+    rung-1 shrink) keeps its size."""
+    sizes = getattr(config, 'net_via_sizes', None) or {}
+    own = sizes.get(net_id)
+    if not own or not vias:
+        return
+    own = (float(own[0]), float(own[1]))
+    if abs(own[0] - config.via_size) < 1e-9 and abs(own[1] - config.via_drill) < 1e-9:
+        return
+    try:
+        from obstacle_cache import rung_for_net
+        rung = rung_for_net(config, pcb_data, net_id)
+    except Exception:                                          # noqa: BLE001
+        return
+    if not rung:
+        return
+    coord = GridCoord(config.grid_step)
+    kept = 0
+    for v in vias:
+        if getattr(v, 'net_id', net_id) != net_id:
+            continue
+        if abs(v.size - config.via_size) > 1e-9 or abs(v.drill - config.via_drill) > 1e-9:
+            continue                      # sized by another mechanism, or already drawn
+        gx, gy = coord.to_grid(v.x, v.y)
+        if obstacles.is_via_blocked_rung(gx, gy, rung):
+            kept += 1
+        else:
+            v.size, v.drill = own
+    if kept:
+        from fab_tiers import note_narrowing
+        note_narrowing(net_id, 'via_diameter', own[0], config.via_size,
+                       'multipoint via kept at the run size', count=kept)
+
+
 def route_multipoint_main(
     pcb_data: PCBData,
     net_id: int,
@@ -4501,6 +4544,7 @@ def route_multipoint_main(
     segments = list(segments) + main_unblock_segments
 
     print(f"  Phase 1 routed in {total_iterations} iterations, {len(segments)} segments")
+    _draw_at_own_via(vias, pcb_data, net_id, config, obstacles)
 
     return {
         'new_segments': segments,
@@ -5306,6 +5350,7 @@ def _route_multipoint_taps_impl(
 
     print(f"  Phase 3 routing complete: {edges_routed} edges, {len(all_segments)} total segments, {len(all_vias)} total vias")
 
+    _draw_at_own_via(all_vias, pcb_data, net_id, config, obstacles)
     # Update result - preserve original fields, update segments/vias
     updated_result = dict(main_result)
     updated_result['new_segments'] = all_segments
