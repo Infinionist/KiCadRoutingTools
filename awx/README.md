@@ -266,7 +266,9 @@ bus laid, in the board's own frame:
 - the whole route runs on the ladder's nets (`--k K` for its first K). A
   pair's two legs stand in one river of the ladder, side by side, so no
   checkpoint runs a leg alone as a single (the zynq LVDS bus had RX_D3_N in
-  its second river and RX_D3_P in its fourth);
+  its second river and RX_D3_P in its fourth); and a K that falls between
+  two legs leaves the first out with its partner, so the run is a net short
+  of K rather than a pair run as one leg (`coherent_nets.whole_pairs`);
 - the routed board is turned back.
 
 It is graded where it is written:

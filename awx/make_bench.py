@@ -241,18 +241,28 @@ def drc_verdict(board):
 
 
 def pairs_whole(rivers):
-    """the rivers with each differential PAIR's two legs in ONE of them, the earlier leg's, side by side: a prefix K
-    that took one leg and not the other ran that leg alone, as a single (the zynq LVDS bus: RX_D3_N in its second
-    river, RX_D3_P in its fourth). A river left empty is dropped; the rivers keep their order"""
+    """the rivers with each differential PAIR's two legs in ONE of them, the earlier leg's, side by side -- whether
+    the later leg stood in a later river or further along the same one: a prefix K that took one leg and not the other
+    ran that leg alone, as a single (the zynq LVDS bus: RX_D3_N in its second river, RX_D3_P in its fourth; TX_D3_P
+    and TX_D3_N three apart in one), and with the legs side by side a prefix cuts at most one pair (coherent_nets drops
+    that leg). A river left empty is dropped; the rivers keep their order"""
     import pairs as _pairs
-    rivers = [list(r) for r in rivers]
+    mate = {}
     for p_, n_ in _pairs.pair_names([n for r in rivers for n in r], admit_all=True).values():
-        at = {n: i for i, r in enumerate(rivers) for n in r}
-        if at[p_] != at[n_]:
-            keep, leg = (p_, n_) if at[p_] < at[n_] else (n_, p_)
-            rivers[at[leg]].remove(leg)
-            rivers[at[keep]].insert(rivers[at[keep]].index(keep) + 1, leg)
-    return [r for r in rivers if r]
+        mate[p_], mate[n_] = n_, p_
+    out, taken = [], set()
+    for r in rivers:
+        row = []
+        for n in r:
+            if n in taken:
+                continue
+            row.append(n)
+            taken.add(n)
+            if n in mate and mate[n] not in taken:
+                row.append(mate[n])
+                taken.add(mate[n])
+        out.append(row)
+    return [r for r in out if r]
 
 
 def write_ladder(board, names, log=print):

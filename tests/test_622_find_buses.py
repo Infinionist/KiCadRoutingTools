@@ -97,6 +97,19 @@ def main():
     want = [['X', 'RX_D3_N', 'RX_D3_P', 'Y'], ['Z'], ['W'], ['V_P', 'V_N'], ['Q_N', 'Q_P']]
     if got != want:
         fails.append(f'ladder rivers {got}, want {want}')
+    # ...side by side within one river too (the escape ladder's TX_D3_P TX_D4_P TX_D5_P TX_D3_N TX_D4_N TX_D5_N)...
+    got = mb.pairs_whole([['TX_D3_P', 'TX_D4_P', 'S', 'TX_D3_N', 'TX_D4_N']])
+    want = [['TX_D3_P', 'TX_D3_N', 'TX_D4_P', 'TX_D4_N', 'S']]
+    if got != want:
+        fails.append(f'ladder river {got}, want {want}')
+    # ...and a prefix K never cuts a pair: the leg whose other leg lies beyond K is left out (coherent_nets.whole_pairs),
+    # a single at the cut kept, and a K that cuts nothing is the plain prefix
+    from coherent_nets import whole_pairs
+    flat = ['A', 'TX_D1_N', 'TX_D1_P', 'TX_D3_P', 'TX_D3_N', 'B', 'TX_D4_P', 'TX_D4_N']
+    for k_, want in ((4, ['A', 'TX_D1_N', 'TX_D1_P']), (6, flat[:6]), (7, flat[:6]), (8, flat), (20, flat)):
+        got = whole_pairs(flat, k_)
+        if got != want:
+            fails.append(f'whole_pairs K={k_}: {got}, want {want}')
     # 5
     with tempfile.TemporaryDirectory() as td:
         src = os.path.join(BOARDS, 'qfn_interior_pads.kicad_pcb')

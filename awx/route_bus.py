@@ -191,7 +191,7 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
     import make_bench as mb
     import flow_frame as ff
     import whole_route as wr
-    from coherent_nets import coherent_nets
+    from coherent_nets import coherent_nets, whole_pairs
     from kicad_parser import parse_kicad_pcb
     from fix_kicad_drc_settings import fix_project_for_output
     import braid as te
@@ -310,8 +310,11 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
         mb.write_ladder(fanned, names, log=log)
         ladder = coherent_nets(10 ** 6, fanned)
     K = min(int(k), len(ladder)) if k else len(ladder)
-    nets = ladder[:K]
-    log(f'  the run: K={K} of the ladder\'s {len(ladder)} nets')
+    with contextlib.redirect_stdout(sys.stderr):
+        nets = whole_pairs(ladder, K, fanned)            # (the chain's own cut: coherent_nets(K) cuts no pair)
+    cut = [n for n in ladder[:K] if n not in nets]
+    log(f'  the run: K={K} of the ladder\'s {len(ladder)} nets'
+        + (f' -- {len(nets)} nets: {", ".join(cut)} left out with their pair\'s other leg' if cut else ''))
 
     # 3. the flow frame
     with contextlib.redirect_stdout(sys.stderr):
@@ -335,6 +338,8 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
             refused.setdefault(short(n), 'no escape at the source fanout')
         elif short(n) not in ladder:
             refused.setdefault(short(n), 'not in the ladder: no free stub end at the source')
+        elif short(n) in cut:
+            refused.setdefault(short(n), f'its pair cut by --k {K}: left out with its other leg')
         elif short(n) not in nets:
             refused.setdefault(short(n), f'beyond --k {K}')
     summary = dict(board=board, out=out, src=src, dest=dest, k=K, rules=_rules_dict(run_rules),
