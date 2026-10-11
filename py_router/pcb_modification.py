@@ -305,6 +305,7 @@ def _safe_prune_net(net_id, prunable, vias, pads, zones,
     if not candidates:
         return prunable, []
 
+    from collections import defaultdict
     from check_connected import check_net_connectivity, analyze_conn_excluding
     anchor = anchor_segments or []
 
@@ -330,6 +331,9 @@ def _safe_prune_net(net_id, prunable, vias, pads, zones,
     _verify = _PRUNE_CONN_VERIFY
 
     def disconnected(segs):
+        """(physical, strict) disconnected-pad counts with only ``segs`` of the
+        prunable kept, and that state's strict (union-find, excluded universe
+        indices) for ``splits`` -- None without a strict graph."""
         if graph is not None:
             keep = {id(s) for s in segs}
             excl = {seg_pos[pid] for pid in prunable_ids if pid not in keep}
@@ -341,15 +345,58 @@ def _safe_prune_net(net_id, prunable, vias, pads, zones,
                     pcb_data=pcb_data)['disconnected_pads'])
                 assert n == ref, \
                     f"safe-prune fast-path mismatch: net {net_id} ({n} vs {ref})"
-            ns = (len(analyze_conn_excluding(graph_strict, excl)['disconnected_pads'])
-                  if graph_strict is not None else 0)
-            return (n, ns)
+            if graph_strict is None:
+                return (n, 0), None
+            ts = analyze_conn_excluding(graph_strict, excl, return_uf=True)
+            return (n, len(ts['disconnected_pads'])), (ts['uf'], excl)
         return (len(check_net_connectivity(
             net_id, anchor + segs, vias, pads, zones,
             zone_credit_validator=zone_credit_validator,
-            pcb_data=pcb_data)['disconnected_pads']), 0)
+            pcb_data=pcb_data)['disconnected_pads']), 0), None
 
-    base = disconnected(list(prunable))
+    def splits(state, trial):
+        """True when a removal breaks one of the accepted ``state``'s strict
+        copper components into pieces (#1227). A dead end hangs off the copper
+        at ONE end, so removing it never splits anything; a segment that does
+        split is carrying copper on both sides. The pad counts cannot see this
+        once the strict base is already split: a route committed with a
+        0.022mm hole of its own (strictly open) unwinds from the hole back to
+        its pad, the hole's bridge is rejected, and the fine-track steps behind
+        it each passed the physical gate on their neighbours' cap overlap --
+        11 of 18 segments chipped out, segment-endpoint-gap on every stump.
+        Compared against the CURRENT state, not the base: removing an island
+        lowers the component count, which must not pay for a split.
+
+        Only the removal's boundary is read: every surviving point of a
+        component the removal touches still reaches a surviving NEIGHBOUR of a
+        removed point (the step before its path first meets one), so the
+        component split iff those neighbours land in different pieces -- exact,
+        and O(removed) rather than O(net) per trial."""
+        if state is None or trial is None:
+            return False
+        uf_s, excl_s = state
+        uf_t, excl_t = trial
+        gone = set()
+        for i in excl_t - excl_s:
+            gone.add(2 * i)
+            gone.add(2 * i + 1)
+        piece = {}
+        for p in gone:
+            for u in strict_adj.get(p, ()):
+                if u in gone or (u < n_seg_points and (u >> 1) in excl_t):
+                    continue
+                t = uf_t.find(u)
+                if piece.setdefault(uf_s.find(u), t) != t:
+                    return True
+        return False
+
+    strict_adj = defaultdict(list)
+    n_seg_points = 2 * len(universe)
+    for _a, _b in (graph_strict or {}).get('edges', ()):
+        strict_adj[_a].append(_b)
+        strict_adj[_b].append(_a)
+
+    base, strict_state = disconnected(list(prunable))
     # Protect components of base-disconnected pads (see helper docstring):
     # index space here is the UNIVERSE list (anchor + prunable).
     _prot_roots, _prot_uf = _base_disconnected_component_ids(graph)
@@ -368,16 +415,22 @@ def _safe_prune_net(net_id, prunable, vias, pads, zones,
     # is left until a full pass removes nothing. A candidate whose removal would
     # strand a pad stays load-bearing no matter what other dead copper goes, so
     # cache those rejections and never re-test them (keeps it O(dead ends) and
-    # guarantees termination).
+    # guarantees termination). A split rejection is just as permanent:
+    # candidates come leaf-first, so whatever the candidate still carries was
+    # tried before it and kept.
     #
     # Fast path: try dropping the WHOLE round's candidate batch with one
     # connectivity check. Dead-end removal is monotonic -- removing copper never
     # reconnects a pad -- so if dropping every candidate strands no pad, then so
     # does every subset, and the batch result is identical to validating one at a
-    # time. This turns the plane sweep on a big pour net (hundreds of tap dead
-    # ends x a full-net union-find each) from O(dead ends) checks into ~O(rounds).
-    # Only when the batch DOES strand a pad do we fall back to per-candidate to
+    # time (leaf-first, each removal a leaf, so none splits either). This turns
+    # the plane sweep on a big pour net (hundreds of tap dead ends x a full-net
+    # union-find each) from O(dead ends) checks into ~O(rounds). Only when the
+    # batch DOES strand a pad or split copper do we fall back to per-candidate to
     # find the load-bearing one(s).
+    def accept(d, st):
+        return d[0] <= base[0] and d[1] <= base[1] and not splits(strict_state, st)
+
     rejected = set()
     while True:
         active = [c for c in candidates
@@ -386,18 +439,20 @@ def _safe_prune_net(net_id, prunable, vias, pads, zones,
             break
         aids = {id(c) for c in active}
         trial_all = [s for s in kept if id(s) not in aids]
-        _d = disconnected(trial_all)
-        if _d[0] <= base[0] and _d[1] <= base[1]:
+        _d, _st = disconnected(trial_all)
+        if accept(_d, _st):
             kept = trial_all
+            strict_state = _st
             kept_ids = {id(s) for s in kept}
             removed.extend(active)
         else:
             progress = False
             for c in active:
                 trial = [s for s in kept if s is not c]
-                _d = disconnected(trial)
-                if _d[0] <= base[0] and _d[1] <= base[1]:
+                _d, _st = disconnected(trial)
+                if accept(_d, _st):
                     kept = trial
+                    strict_state = _st
                     kept_ids.discard(id(c))
                     removed.append(c)
                     progress = True

@@ -1691,7 +1691,7 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
 
 
 def analyze_conn_excluding(graph: Dict, excluded_seg_indices=(),
-                           excluded_via_indices=()) -> Dict:
+                           excluded_via_indices=(), return_uf: bool = False) -> Dict:
     """Re-evaluate net connectivity from a prebuilt graph (check_net_connectivity
     with return_graph=True) with some segments EXCLUDED, WITHOUT rebuilding the
     expensive spatial graph (#263).
@@ -1705,7 +1705,8 @@ def analyze_conn_excluding(graph: Dict, excluded_seg_indices=(),
     out, so a removal pass can grade "these segments AND the vias they leave
     dangling" in one evaluation. Returns {connected, num_components,
     disconnected_pads, num_copper_components}, matching check_net_connectivity
-    on the reduced copper.
+    on the reduced copper; ``return_uf`` adds the reduced state's union-find
+    under 'uf', in the graph's point-id space (#1227).
 
     Caveat: this reuses the point set / copper-layer set built from the FULL
     segment list, so it diverges from a true recompute only if excluding a
@@ -1734,7 +1735,7 @@ def analyze_conn_excluding(graph: Dict, excluded_seg_indices=(),
     pad_locations = graph['pad_locations']
     if not pad_ids:
         return {'connected': True, 'num_components': 0, 'disconnected_pads': [],
-                'num_copper_components': 0}
+                'num_copper_components': 0, **({'uf': uf} if return_uf else {})}
     pad_roots = [uf.find(pid) for pid in pad_ids]
     unique_roots = set(pad_roots)
     # Copper components over ALL points (pads + vias + non-excluded segment
@@ -1771,7 +1772,8 @@ def analyze_conn_excluding(graph: Dict, excluded_seg_indices=(),
     return {'connected': len(unique_roots) == 1,
             'num_components': len(unique_roots),
             'disconnected_pads': disconnected,
-            'num_copper_components': len(copper_roots)}
+            'num_copper_components': len(copper_roots),
+            **({'uf': uf} if return_uf else {})}
 
 
 def find_gap_between_components(debug_info: Dict, tolerance: float) -> Optional[Dict]:

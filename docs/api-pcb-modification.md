@@ -150,6 +150,21 @@ the routing pipeline applies both so the model and the output file agree.
 > (`route._late_dangling_via_sweep1166`, both fronts, input copper included
 > unless `--keep-input-copper`), and on the "nothing to route" return too.
 
+> **#1227 -- a dead-end prune never splits copper.** Every gated dead-end pass
+> (`add_route_to_pcb_data`'s per-commit prune, `sweep_dead_ends`,
+> `trim_net_stub_debris`, `cleanup_plane_taps_grazing`) removes through
+> `_safe_prune_net`, which now also refuses a removal
+> that breaks one of the net's strict copper components into pieces. A dead end
+> hangs off the copper at one end, so a real one never splits anything. The
+> pad-count gates could not see this once the strict graph was already split: a
+> route committed with a 0.022 mm hole of its own unwound from the hole back to
+> its pad, and the fine-track steps behind the rejected bridge each passed on
+> their neighbours' cap overlap (18 segments committed, 7 kept,
+> `segment-endpoint-gap` on every stump). The test compares each trial against
+> the state it is tried on, not the base: removing an island lowers the
+> component count, and that must not pay for a split.
+> `analyze_conn_excluding(..., return_uf=True)` returns the union-find it uses.
+
 > **#672 -- sub-cell slivers.** `sweep_dead_ends(..., sliver_eps=mm)` is the one
 > exception to its `protect_net_ids` exemption (nets with unfinished pads keep
 > every landing site, #473): a protected net still loses a dead-end piece
