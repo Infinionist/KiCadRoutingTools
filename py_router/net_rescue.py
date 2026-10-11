@@ -478,6 +478,20 @@ def _choose_grid(config, half_size):
     return fine
 
 
+def _via_step_down(config, net_id, **kw):
+    """A rung config whose via is a step DOWN for ``net_id``.
+
+    A net with its own #530 via (config.net_via_sizes) is re-pointed at that
+    via by route_net_with_obstacles before every search, so a rung that only
+    lowered via_size was searched -- and emitted -- at the class via again:
+    every step-down repeated the rung above it, map rebuild included. Taking
+    the net out of net_via_sizes on the rung makes the step-down reach the
+    search, judged at the rung map's rung 0, which is built at this via."""
+    nvs = dict(getattr(config, 'net_via_sizes', None) or {})
+    nvs.pop(net_id, None)
+    return replace(config, net_via_sizes=nvs, **kw)
+
+
 def _rescue_rungs(config, fine_grid, pcb_data, net_id):
     """The scoped retry ladder for one net (see module docstring)."""
     from plane_pad_tap import _clearance_ladder, fab_floor_clearance_track
@@ -557,18 +571,20 @@ def _rescue_rungs(config, fine_grid, pcb_data, net_id):
     # escalation_rungs: empty under --escalation off, raised to the board's
     # own minimums under board (#857) and to this net's rule minimums (#530).
     _ladder = escalation_rungs(n_layers, extra_floors=config.rule_floors(net_id))
+    # Smaller than the via this NET draws (its own #530 via, else the run's).
+    _own_via = config.net_via(net_id)[0]
     for floor in _ladder:
         v_dia, v_drill = floor['via_diameter'], floor['via_drill']
-        if v_dia >= config.via_size - 1e-9:
+        if v_dia >= _own_via - 1e-9:
             continue
         if v_dia < _ladder[0]['via_diameter'] - 1e-9:
             warn_fab_escalation(f"net rescue net_{net_id}")
-        rungs.append(replace(config, grid_step=fine_grid,
-                             clearance=floor_clearance,
-                             track_width=rescue_track, layer_widths={},
-                             power_net_widths=power_widths,
-                             via_size=v_dia, via_drill=v_drill,
-                             max_iterations=max_iters))
+        rungs.append(_via_step_down(config, net_id, grid_step=fine_grid,
+                                    clearance=floor_clearance,
+                                    track_width=rescue_track, layer_widths={},
+                                    power_net_widths=power_widths,
+                                    via_size=v_dia, via_drill=v_drill,
+                                    max_iterations=max_iters))
     return rungs
 
 
@@ -1321,6 +1337,7 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
 
         edge_results = []
         used_widths = []
+        stepped_vias = []   # (via the edge's rung drew, vias it shipped)
         failed_gaps = set()
         attempts = 0
         num = num0
@@ -1378,6 +1395,10 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                                     site='net rescue')
             edge_results.append(result)
             used_widths.append(used_cfg.track_width)
+            if result.get('new_vias') and \
+                    used_cfg.net_via(net_id)[0] < config.net_via(net_id)[0] - 1e-9:
+                stepped_vias.append((used_cfg.net_via(net_id)[0],
+                                     len(result['new_vias'])))
             print(f"    {GREEN}rescued a gap{RESET}: grid {used_cfg.grid_step:g}, "
                   f"clearance {used_cfg.clearance:g}, track "
                   f"{used_cfg.track_width:g} ({len(result['new_segments'])} segs, "
@@ -1543,6 +1564,14 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
             from fab_tiers import note_narrowing
             note_narrowing(net_id, 'track_width', _req_w, _del_w, 'net rescue',
                            net_name=net_name)
+        if stepped_vias:
+            # The via step-down rungs are a descent like the width's: what the
+            # edges routed on them shipped, against the via this net draws
+            # (its own #530 via, else the run's).
+            from fab_tiers import note_narrowing
+            note_narrowing(net_id, 'via_diameter', config.net_via(net_id)[0],
+                           min(v for v, _ in stepped_vias), 'net rescue',
+                           count=sum(n for _, n in stepped_vias), net_name=net_name)
         _thin = (f", {YELLOW}width {_del_w:g} vs requested {_req_w:g}{RESET}"
                  if _del_w < _req_w - 1e-9 else "")
         print(f"    {GREEN}{'fully reconnected' if fully else 'improved'}{RESET} "
@@ -1592,8 +1621,10 @@ def _escalation_ladder(config, pcb_data, net_id):
     # escalation_rungs: raised to the board's own minimums under board (#857)
     # and to this net's rule minimums (#530).
     ladder = escalation_rungs(n_layers, extra_floors=config.rule_floors(net_id))
+    # Smaller than the via this NET draws (its own #530 via, else the run's).
+    own_via = config.net_via(net_id)
     via_rungs = [(f['via_diameter'], f['via_drill']) for f in ladder
-                 if f['via_diameter'] < config.via_size - 1e-9]
+                 if f['via_diameter'] < own_via[0] - 1e-9]
     if not width_travel and not via_rungs:
         return []  # already at the floor: nothing to march
 
@@ -1619,21 +1650,27 @@ def _escalation_ladder(config, pcb_data, net_id):
         if m:
             v_dia, v_drill = via_rungs[min(m - 1, (k * m - 1) // n)]
         else:
-            v_dia, v_drill = config.via_size, config.via_drill
+            v_dia, v_drill = own_via
         key = (round(w, 6), round(v_dia, 6), round(v_drill, 6))
         if key == prev_key:
             continue  # discrete via ladder can repeat a rung; dedupe
         prev_key = key
         if m and v_dia < ladder[0]['via_diameter'] - 1e-9:
             warn_fab_escalation(f"terminal escalation net_{net_id}")
-        rungs.append(replace(config, track_width=w, layer_widths={},
-                             power_net_widths=power_widths,
-                             net_layer_widths=net_layer_widths,
-                             net_track_widths=net_track_widths,
-                             coplanar_net_ids=coplanar_ids,
-                             via_size=v_dia, via_drill=v_drill,
-                             bga_exclusion_zones=[],
-                             max_iterations=max_iters))
+        _rung = dict(track_width=w, layer_widths={},
+                     power_net_widths=power_widths,
+                     net_layer_widths=net_layer_widths,
+                     net_track_widths=net_track_widths,
+                     coplanar_net_ids=coplanar_ids,
+                     bga_exclusion_zones=[],
+                     max_iterations=max_iters)
+        if m:
+            rungs.append(_via_step_down(config, net_id, via_size=v_dia,
+                                        via_drill=v_drill, **_rung))
+        else:
+            # width only: the net keeps the via it draws (its own #530 via
+            # is re-applied by route_net_with_obstacles; the run via here)
+            rungs.append(replace(config, **_rung))
     return rungs
 
 
@@ -1823,16 +1860,17 @@ def terminal_geometry_escalation(state, single_ended_nets, net_clearances=None,
                   f"{RESET} ({elapsed:.1f}s)")
             continue
 
+        _acc_via = accepted_cfg.net_via(net_id)   # the via this net drew
         geom = (f"{accepted_cfg.track_width:.4g}x"
-                f"{accepted_cfg.via_size:.4g}/{accepted_cfg.via_drill:.4g}")
+                f"{_acc_via[0]:.4g}/{_acc_via[1]:.4g}")
         try:
             from fab_tiers import note_narrowing
             note_narrowing(net_id, 'track_width',
                            config.get_net_track_width(net_id, config.layers[0]),
                            accepted_cfg.track_width, 'terminal escalation',
                            net_name=net_name)
-            note_narrowing(net_id, 'via_diameter', config.via_size,
-                           accepted_cfg.via_size, 'terminal escalation',
+            note_narrowing(net_id, 'via_diameter', config.net_via(net_id)[0],
+                           _acc_via[0], 'terminal escalation',
                            net_name=net_name)
         except Exception:                                       # noqa: BLE001
             pass
