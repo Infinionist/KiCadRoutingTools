@@ -878,6 +878,28 @@ boards" and "which commit broke connectivity".
   the 2026-09-03 four-way A/B (old engine / new engine old policy / new
   engine new policy), which read -3 real DRC / -11 incomplete nets.
 
+### Per-net via sizes: `pernet_via_ab.py`
+
+Per-net via sizes (#530: a net drawn at its own class / rule via) are live only
+when route.py runs without `--via-size`, and 396 of the 403 recorded route
+steps pass one -- so `cloud_replay_sets.py` never exercises them, and a change
+to them A/Bs as a perfect null. `tests/stress/pernet_via_ab.py` replays one
+recorded route step per board with `--via-size`/`--via-drill` stripped:
+
+    python3 tests/stress/pernet_via_ab.py select                    # boards where per-net vias go live
+    python3 tests/stress/pernet_via_ab.py launch --label NAME [--only a,b]
+    python3 tests/stress/pernet_via_ab.py collect --label NAME
+
+`launch` deploys the sweep's image (clean `git archive HEAD` + KiCad) as the
+base arm and applies the working tree's `git diff HEAD` in the fix arm's
+container, so launch BEFORE committing the change. One spawn per (board, arm);
+each writes its own result to the `kicad-pernet-ab` volume, so a dropped link
+loses nothing. `collect` downloads to `<corpus>/pernet_ab/NAME`, grades both
+arms with the base checkers (shorts the run created = shorts absent from the
+graded input), and stops the app once every board is in. After editing the
+tool, `modal app stop pernet-via-ab -y` before relaunching: warm containers
+keep serving the previous code.
+
 ### Rules that make these trustworthy
 
 1. **The baseline is the RECORDED RUNS, re-graded — not an archived `ab_*` wave.**

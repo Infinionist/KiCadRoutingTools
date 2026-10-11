@@ -471,6 +471,11 @@ make them trustworthy -- notably: the baseline is the RECORDED RUNS re-graded
 (not an archived wave), grade both sides on the same terms, compare only boards
 that replayed an IDENTICAL chain, and **a two-board result is not a default
 change** (per-board spread is +-2..3 nets).
+**Per-net via sizes (#530) never run in those replays**: they are live only when
+route.py is given no `--via-size`, and 396 of the 403 recorded route steps pass
+one. A change that touches per-net vias is A/B'd with
+`tests/stress/pernet_via_ab.py`, which replays each board's recorded route step
+with `--via-size` stripped (176 boards qualify).
 
 **A new PLACEMENT objective term goes through `tests/test_placement_ab.py`
 before it ships on.** It runs the same board twice (flag off, flag on), writes
