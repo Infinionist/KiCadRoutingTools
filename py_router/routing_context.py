@@ -817,6 +817,21 @@ def prepare_obstacles_inplace(
     if same_net_via_cells:
         same_net_via_arr = np.array(same_net_via_cells, dtype=np.int32)
         working_obstacles.add_blocked_vias_batch(same_net_via_arr)
+        # The rung mirrors below. Which rung is the #568 small one is a fact
+        # of the LAYOUT, not of the env switch: armed, but with no fab via
+        # smaller than the run's (the run's is the ladder bottom, or
+        # --escalation off), the board has no small slot and a #530 per-net
+        # rung sits in slot 1. _per_net_rung_geometry reads the layout, as
+        # _stamp_rungs_at_own_via does. Every stamp is RECORDED, and the
+        # restore removes exactly those: a rung populated between prepare and
+        # restore must not lose a count it never received.
+        _stamped = []
+        try:
+            from obstacle_map import _per_net_rung_geometry
+            _geo = {r: (d, h) for r, d, h in
+                    _per_net_rung_geometry(working_obstacles, config)}
+        except (AttributeError, ImportError):
+            _geo = {}
         # #568 MIRROR: these are same-net via-via and pad-drill hole-to-hole
         # keep-outs (#70/#154). A rung-1 search consults ONLY the small map
         # for dynamic copper, so without this mirror it could drop a small
@@ -826,49 +841,44 @@ def prepare_obstacles_inplace(
         # checks foreign copper only. Mirrored at FULL size (conservative).
         try:
             from obstacle_map import _rung_small_armed
-            if _rung_small_armed():
+            if _rung_small_armed() and 1 not in _geo:
                 working_obstacles.add_blocked_vias_small_batch(same_net_via_arr)
+                _stamped.append((1, same_net_via_arr))
         except (AttributeError, ImportError):
             pass
         # #530 per-net rungs, the same mirror (#1070): a net searched at its
         # own via class reads only its rung's map, so it saw none of these.
-        # POPULATED rungs only (see populated_via_rungs). The rungs stamped
-        # are RECORDED, and the restore removes from exactly those: a rung
-        # populated between prepare and restore must not lose a count it
-        # never received.
+        # POPULATED rungs only (see populated_via_rungs).
         #
         # #1226: the #581 pad keep-out is sized by the via that may land, so a
         # rung carries it at THAT rung's via (a per-net via is usually larger
         # than the run's); the rings and pad-drill discs above are not
         # via-size dependent here and ride along unchanged. One array per
-        # rung, recorded, so the restore removes exactly what was added.
+        # rung. A per-net rung in slot 1 used to get the small mirror's
+        # run-size keep-out instead, so a larger per-net via could land
+        # inside --same-net-pad-clearance of its own pad.
         try:
-            from obstacle_map import (_per_net_rungs, populated_via_rungs,
-                                      _per_net_rung_geometry)
-            _pn = set(_per_net_rungs(working_obstacles))
-            _rungs = tuple(r for r in populated_via_rungs(working_obstacles)
-                           if r in _pn)
-            if _rungs:
-                _geo = {r: (d, h) for r, d, h in
-                        _per_net_rung_geometry(working_obstacles, config)}
-                _stamped = []
-                for _r in _rungs:
-                    _arr = same_net_via_arr
-                    if len(_pad_cells_581) and _r in _geo and \
-                            _geo[_r] != (config.via_size, config.via_drill):
-                        from dataclasses import replace as _dc_replace
-                        _c581 = same_net_pad_via_keepout_cells(
-                            pcb_data, net_id, _dc_replace(
-                                config, via_size=_geo[_r][0], via_drill=_geo[_r][1]))
-                        _arr = np.concatenate([same_net_via_arr[:_n_before_581],
-                                               np.asarray(_c581, dtype=np.int32)
-                                               .reshape(-1, 2)])
-                    working_obstacles.add_blocked_vias_rung_batch(_r, _arr)
-                    _stamped.append((_r, _arr))
-                _lift_record(_SAME_NET_RUNG_MIRROR, working_obstacles, net_id,
-                             tuple(_stamped))
+            from obstacle_map import populated_via_rungs
+            for _r in populated_via_rungs(working_obstacles):
+                if _r not in _geo:
+                    continue
+                _arr = same_net_via_arr
+                if len(_pad_cells_581) and \
+                        _geo[_r] != (config.via_size, config.via_drill):
+                    from dataclasses import replace as _dc_replace
+                    _c581 = same_net_pad_via_keepout_cells(
+                        pcb_data, net_id, _dc_replace(
+                            config, via_size=_geo[_r][0], via_drill=_geo[_r][1]))
+                    _arr = np.concatenate([same_net_via_arr[:_n_before_581],
+                                           np.asarray(_c581, dtype=np.int32)
+                                           .reshape(-1, 2)])
+                working_obstacles.add_blocked_vias_rung_batch(_r, _arr)
+                _stamped.append((_r, _arr))
         except (AttributeError, ImportError):
             pass
+        if _stamped:
+            _lift_record(_SAME_NET_RUNG_MIRROR, working_obstacles, net_id,
+                         tuple(_stamped))
     else:
         same_net_via_arr = np.empty((0, 2), dtype=np.int32)
 
@@ -897,9 +907,9 @@ _TIE_LIFTED: Dict[tuple, tuple] = {}
 #: #908 own-pad lift, same lifetime, keying and pin as _TIE_LIFTED.
 _OWNPAD_LIFTED: Dict[tuple, tuple] = {}
 _OWNPAD_VIA_LIFTED: Dict[tuple, tuple] = {}
-#: #1070 same-net via keep-outs mirrored into #530 per-net rungs by prepare:
-#: (rungs stamped, cells), removed by the matching restore. Same lifetime,
-#: keying and pin as _TIE_LIFTED.
+#: #1070 same-net via keep-outs mirrored by prepare into the #568 small rung
+#: and the #530 per-net rungs: ((rung, cells), ...), removed by the matching
+#: restore. Same lifetime, keying and pin as _TIE_LIFTED.
 _SAME_NET_RUNG_MIRROR: Dict[tuple, tuple] = {}
 
 
@@ -943,14 +953,8 @@ def restore_obstacles_inplace(
     # Remove same-net via clearance cells
     if len(same_net_via_cells) > 0:
         working_obstacles.remove_blocked_vias_batch(same_net_via_cells)
-        try:    # #568: mirror of the add-side small stamp (refcount balance)
-            from obstacle_map import _rung_small_armed
-            if _rung_small_armed():
-                working_obstacles.remove_blocked_vias_small_batch(
-                    same_net_via_cells)
-        except (AttributeError, ImportError):
-            pass
-    # #1070: the per-net rung mirror, from exactly the rungs prepare stamped.
+    # The rung mirrors -- the #568 small one and the #530 per-net ones
+    # (#1070) -- from exactly the rungs prepare stamped.
     _mir = _lift_take(_SAME_NET_RUNG_MIRROR, working_obstacles, net_id)
     if _mir is not None:
         for _r, _cells in _mir:   # (rung, the exact array stamped there)

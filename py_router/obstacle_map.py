@@ -2616,11 +2616,16 @@ def _per_net_rungs(obstacles) -> range:
     a single-rung map or a 0.21.x binary). Rung 0 is the run's via; when the
     #568 small map is armed it holds rung 1 (obstacle_cache.via_rungs keeps
     that slot for it) and its own mirror stamps it, so per-net rungs start at
-    2 -- otherwise at 1. The same-net keep-out mirrors copy their cells into
-    these rungs unchanged. FOREIGN copper must not be copied this way: a
+    2 -- otherwise at 1. FOREIGN copper must not be copied this way: a
     per-net via is usually larger than the run via, so run-size cells leave
     it short of the copper (#1226) -- raw copper adds use
-    _stamp_rungs_at_own_via instead."""
+    _stamp_rungs_at_own_via instead.
+
+    Armed is not the same as HAVING a small slot: with no fab via smaller
+    than the run's (the run's is the ladder bottom, or --escalation off), a
+    per-net rung sits in slot 1 and this range misses it. Where the layout
+    matters, read it with _per_net_rung_geometry, as
+    prepare_obstacles_inplace does."""
     try:
         n = int(obstacles.rung_count())
     except Exception:                                          # noqa: BLE001

@@ -726,21 +726,21 @@ def same_net_pad_seal_hint(pcb_data, config, net_id, net_name=None,
             rung = 0
     # The via the keep-out on THAT map was stamped at, as
     # prepare_obstacles_inplace stamps it: rung 0 and the #568 small rung at
-    # the RUN's via, a #530 per-net rung at that rung's own via (#1226). The
-    # cells removed below are then cells the stamp added, and the surround
-    # the hint quotes is the one the route was held to.
+    # the RUN's via, a #530 per-net rung -- slot 1 included, on a board with
+    # no small slot -- at that rung's own via (#1226), the layout
+    # _per_net_rung_geometry reads. The cells removed below are then cells
+    # the stamp added, and the surround the hint quotes is the one the route
+    # was held to.
     run_via = tuple(getattr(config, 'run_via', None)
                     or (config.via_size, config.via_drill))
     via = run_via
     if rung:
         try:
-            from obstacle_map import _per_net_rungs, _per_net_rung_geometry
-            if rung in _per_net_rungs(obstacles):
-                _run_cfg = replace(config, via_size=run_via[0],
-                                   via_drill=run_via[1], via_rung=0,
-                                   run_via=None)
-                via = {r: (d, h) for r, d, h in
-                       _per_net_rung_geometry(obstacles, _run_cfg)}.get(rung, via)
+            from obstacle_map import _per_net_rung_geometry
+            _run_cfg = replace(config, via_size=run_via[0], via_drill=run_via[1],
+                               via_rung=0, run_via=None)
+            via = {r: (d, h) for r, d, h in
+                   _per_net_rung_geometry(obstacles, _run_cfg)}.get(rung, via)
         except Exception:
             pass
     if via != (config.via_size, config.via_drill):
