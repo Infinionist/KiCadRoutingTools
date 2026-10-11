@@ -1952,7 +1952,9 @@ def _per_net_via_config(config: GridRouteConfig, pcb_data, net_id: int) -> GridR
         from obstacle_cache import rung_for_net
         d, h = sizes[net_id]
         return replace(config, via_size=float(d), via_drill=float(h),
-                       via_rung=rung_for_net(config, pcb_data, net_id))
+                       via_rung=rung_for_net(config, pcb_data, net_id),
+                       run_via=(getattr(config, 'run_via', None)
+                                or (config.via_size, config.via_drill)))
     except Exception:                                          # noqa: BLE001
         return config
 
@@ -2600,26 +2602,46 @@ def _power_width_ladder(net_width, layer_width):
 # _register_rung_path_vias, #568/#189) is a DIFFERENT mechanism and stays.
 
 
-def _register_rung_path_vias(pcb_data, obstacles, path, vs, dr):
+def _register_rung_path_vias(pcb_data, obstacles, path, vs, dr, own_rung: int = 0):
     """#568: register the small (dia, drill) for the path's via cells where
     the FULL size is blocked -- those transitions exist only by rung-1
     legality, so emission must ship the small rung (#339 re-validates).
     Cells legal at full size are NOT registered (they ship the configured
-    via; registering small there would shrink vias needlessly)."""
+    via; registering small there would shrink vias needlessly).
+
+    "Full size" is the via the net ships, judged at ITS rung (#1226): for a
+    net at its own #530 via that is `own_rung`, not rung 0 -- the run's via
+    is smaller, so a cell legal for it but not for the net's own via was
+    left unregistered and shipped full size after only a rung-1 check."""
     sizes = getattr(pcb_data, '_unblock_via_sizes', None)
     if sizes is None:
         sizes = pcb_data._unblock_via_sizes = {}
     for a, b in zip(path, path[1:]):
-        if a[2] != b[2] and obstacles.is_via_blocked(a[0], a[1]):
+        if a[2] != b[2] and obstacles.is_via_blocked_rung(a[0], a[1], own_rung):
             sizes.setdefault((a[0], a[1]), (vs, dr))
 
 
 def _rung_search_pair(config, pcb_data):
     """The (dia, drill) a via_rung=1 search would ship, or None when rust
     mode (KICAD_VIA_RUNG=2) is off or no smaller fab rung exists. Shared
-    selection rule with the obstacle-cache dual stamping by construction."""
+    selection rule with the obstacle-cache dual stamping by construction.
+
+    #1226: on a net's own-via clone (#530, `config.run_via` set) rung 1 is
+    still the small rung of the RUN's via -- that is what the map stamped --
+    so the pair is derived from the run's via, and a retry is offered only
+    when it is smaller than the net's own. Deriving it from the net's via
+    shipped, say, a 0.45 via that had been checked only at the 0.30 the map
+    holds; and with no small slot at all (the run via is the smallest fab
+    via) rung 1 is another net class's rung, not a smaller via."""
     from obstacle_cache import _small_via_pair
-    return _small_via_pair(config, pcb_data)
+    run = getattr(config, 'run_via', None)
+    if not run:
+        return _small_via_pair(config, pcb_data)
+    pair = _small_via_pair(replace(config, via_size=run[0], via_drill=run[1]),
+                           pcb_data)
+    if pair is None or pair[0] >= config.via_size - 1e-9:
+        return None
+    return pair
 
 
 def _edge_span_mm(sources, targets, grid_step):
@@ -3024,7 +3046,8 @@ def _route_with_via_unblock(router, obstacles, config, sources, targets, track_m
                 # probes (see _place_shrunk_via_in_pad_impl).
                 if not getattr(config, 'plan_probe', False):
                     _register_rung_path_vias(pcb_data, obstacles, _r1[0],
-                                             _rp[0], _rp[1])
+                                             _rp[0], _rp[1],
+                                             own_rung=getattr(config, 'via_rung', 0))
                 return _r1 + ([], [])
 
     _dbg = _unblock_debug()

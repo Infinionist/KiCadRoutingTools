@@ -682,10 +682,16 @@ def _attempt_edge(pcb_data, net_id, gap, config, net_clearances,
         # BUS pad whose center sat 2.6mm outside). Stamp the same-net pad via
         # keep-out from the FULL board; cells outside the fenced window are
         # unreachable anyway, so the extra stamps are inert.
-        from obstacle_map import same_net_pad_via_keepout_cells
+        from obstacle_map import same_net_pad_via_keepout_cells, _stamp_rungs_at_own_via
         _cells581 = same_net_pad_via_keepout_cells(pcb_data, net_id, cfg)
         if len(_cells581):
             obstacles.add_blocked_vias_batch(_cells581)
+            # #1226: and the rungs the net may search at, each at its own via.
+            _stamp_rungs_at_own_via(
+                obstacles, cfg,
+                lambda s, c: s.add_blocked_vias_batch(
+                    same_net_pad_via_keepout_cells(pcb_data, net_id, c)),
+                populated_only=True)
         # Constrain the route to the window: drop endpoints outside it and keep the
         # source/target overrides from punching the fence, so the A* can never leave
         # the stamped region and cross foreign copper the window never modelled (#396).

@@ -38,6 +38,7 @@ automatically at other grid steps (see [cost scaling](#cost-scaling)).
 | `via_size` | `0.3` | Via outer diameter |
 | `via_drill` | `0.2` | Via hole diameter |
 | `via_rung` | `0` | #568 per-search via legality rung. `0` = the configured via size (normal). `1` = judge via placement at the SMALLER fab-ladder rung, used only on a `dataclasses.replace()` clone for one escalation retry when a route is blocked purely by via legality. There is no CLI flag or GUI control: the engine sets it, and `KICAD_VIA_RUNG` (`2` = default rust per-rung map, `1` = python overlay, `0` = off) is a kill switch. |
+| `run_via` | `None` | #1226: the run's `(via_size, via_drill)`, recorded on the clone `route_net_with_obstacles` makes for a net at its own via (`net_via_sizes`). The #568 small rung is stamped against the RUN's via, so a rung-1 retry from that clone ships the run's small fab via (only when it is smaller than the net's own) and judges which path vias need it at the net's own rung. Engine-set only, like `via_rung`. |
 | `grid_step` | `0.1` | Routing grid resolution |
 | `layers` | `['F.Cu', 'B.Cu']` | Copper layers available to the router |
 
@@ -511,7 +512,7 @@ on the corpus.
 | `meander_amplitude` | `1.0` | Meander height |
 | `meander_spacing` | `2.0` | Centre-to-centre pitch of adjacent meander arms, in multiples of the net's routed track width (#501) |
 | `net_layer_widths` | `{}` | Per-net per-layer widths reapplied from stored `.kicad_pro` impedance declarations on a redo (#521); outranks the netclass scalar |
-| `net_via_sizes` | `{}` | `{net_id: (via_size, via_drill)}` for nets whose resolved class / rule via geometry differs from the call's `via_size`/`via_drill` (#530 decision 4). `config.net_via(net_id)` returns the pair a net draws. The obstacle cache keeps one via-legality **rung** per distinct pair (`obstacle_cache.via_rungs`, rung 0 = the call's size; rust `add_blocked_via_rung` / `is_via_blocked_rung`), every add/remove is mirrored into all rungs, and `route_net_with_obstacles` selects the net's rung before the search. Needs `grid_router` 0.22.0+; `route.py` prints a note and routes at the call size on an older binary |
+| `net_via_sizes` | `{}` | `{net_id: (via_size, via_drill)}` for nets whose resolved class / rule via geometry differs from the call's `via_size`/`via_drill` (#530 decision 4). `config.net_via(net_id)` returns the pair a net draws. The obstacle cache keeps one via-legality **rung** per distinct pair (`obstacle_cache.via_rungs`, rung 0 = the call's size; rust `add_blocked_via_rung` / `is_via_blocked_rung`), every add/remove -- cached or raw (#1226: the per-net adds behind `build_single_ended_obstacles`, the list add/remove twins, the board-edge bands) -- reaches every rung at THAT rung's own via and drill, never the call's size (a larger per-net via would sit (rung - call)/2 inside the copper), and `route_net_with_obstacles` selects the net's rung before the search. Needs `grid_router` 0.22.0+; `route.py` prints a note and routes at the call size on an older binary |
 | `time_matching` | `False` | Match propagation delay instead of length |
 | `time_match_tolerance` | `1.0` | Allowed spread (picoseconds) |
 

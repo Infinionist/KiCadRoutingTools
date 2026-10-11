@@ -215,6 +215,12 @@ class GridRouteConfig:
     # dataclasses.replace CLONE for one retry search -- never mutate a shared
     # config, the field must not leak into sibling routes.
     via_rung: int = 0
+    # #1226: the RUN's (via_size, via_drill), recorded on the per-net clone
+    # single_ended_routing._per_net_via_config makes for a net at its own
+    # #530 via (None on the run config). The #568 small rung is stamped
+    # against the run's via, so a rung-1 retry from that clone must ship the
+    # pair the map was stamped at, not one derived from the net's own via.
+    run_via: Optional[Tuple[float, float]] = None
     neckdown_length: float = 2.5  # mm of narrow track from the target pad
     neckdown_taper_length: float = 0.5  # mm narrow->wide taper (0 = abrupt width step)
     gnd_via_enabled: bool = True  # Enable GND via placement near diff pair signal vias

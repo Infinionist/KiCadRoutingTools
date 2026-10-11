@@ -406,9 +406,22 @@ def build_single_ended_obstacles(
     if _op_via is not None and len(_op_via):
         obstacles.remove_blocked_via_spans_batch(_op_via)
 
+    # Add other unrouted nets as obstacles (can use cache since they haven't changed).
+    # FIRST, ahead of the raw adds below (#1226): a cache entry stamps every via
+    # rung, including the #568 small rung, which the base leaves empty; the raw
+    # adds then reach exactly the rungs that hold copper (populated_via_rungs),
+    # so they must see those rungs populated. Rung 0 is order-independent.
+    other_unrouted = [nid for nid in remaining_net_ids if nid != net_id]
+    _raw_unrouted = []
+    for other_net_id in other_unrouted:
+        if net_obstacles_cache and other_net_id in net_obstacles_cache:
+            add_net_obstacles_from_cache(obstacles, net_obstacles_cache[other_net_id])
+        else:
+            _raw_unrouted.append(other_net_id)
+
     # Add previously routed nets as obstacles
     # Note: Cannot use cache for routed nets because their segments have changed
-    for routed_id in routed_net_ids:
+    for routed_id in list(routed_net_ids) + _raw_unrouted:
         add_net_stubs_as_obstacles(obstacles, pcb_data, routed_id, config)
         add_net_vias_as_obstacles(obstacles, pcb_data, routed_id, config, diagonal_margin=diagonal_margin)
         add_net_pads_as_obstacles(obstacles, pcb_data, routed_id, config)
@@ -416,16 +429,6 @@ def build_single_ended_obstacles(
     # Add GND vias as obstacles
     if gnd_net_id is not None:
         add_net_vias_as_obstacles(obstacles, pcb_data, gnd_net_id, config, diagonal_margin=diagonal_margin)
-
-    # Add other unrouted nets as obstacles (can use cache since they haven't changed)
-    other_unrouted = [nid for nid in remaining_net_ids if nid != net_id]
-    for other_net_id in other_unrouted:
-        if net_obstacles_cache and other_net_id in net_obstacles_cache:
-            add_net_obstacles_from_cache(obstacles, net_obstacles_cache[other_net_id])
-        else:
-            add_net_stubs_as_obstacles(obstacles, pcb_data, other_net_id, config)
-            add_net_vias_as_obstacles(obstacles, pcb_data, other_net_id, config, diagonal_margin=diagonal_margin)
-            add_net_pads_as_obstacles(obstacles, pcb_data, other_net_id, config)
 
     # Add stub proximity costs (includes chip pads as pseudo-stubs)
     stub_proximity_net_ids = _stub_proximity_source_ids(
@@ -805,6 +808,7 @@ def prepare_obstacles_inplace(
     # stays balanced. Track blocking is untouched -- the route may still REACH
     # its pad; only a via may not land on/near it.
     from obstacle_map import same_net_pad_via_keepout_cells
+    _n_before_581 = len(same_net_via_cells)
     _pad_cells_581 = same_net_pad_via_keepout_cells(pcb_data, net_id, config)
     if len(_pad_cells_581):
         same_net_via_cells.extend(map(tuple, _pad_cells_581.tolist()))
@@ -832,17 +836,37 @@ def prepare_obstacles_inplace(
         # are RECORDED, and the restore removes from exactly those: a rung
         # populated between prepare and restore must not lose a count it
         # never received.
+        #
+        # #1226: the #581 pad keep-out is sized by the via that may land, so a
+        # rung carries it at THAT rung's via (a per-net via is usually larger
+        # than the run's); the rings and pad-drill discs above are not
+        # via-size dependent here and ride along unchanged. One array per
+        # rung, recorded, so the restore removes exactly what was added.
         try:
-            from obstacle_map import _per_net_rungs, populated_via_rungs
+            from obstacle_map import (_per_net_rungs, populated_via_rungs,
+                                      _per_net_rung_geometry)
             _pn = set(_per_net_rungs(working_obstacles))
             _rungs = tuple(r for r in populated_via_rungs(working_obstacles)
                            if r in _pn)
             if _rungs:
+                _geo = {r: (d, h) for r, d, h in
+                        _per_net_rung_geometry(working_obstacles, config)}
+                _stamped = []
                 for _r in _rungs:
-                    working_obstacles.add_blocked_vias_rung_batch(
-                        _r, same_net_via_arr)
+                    _arr = same_net_via_arr
+                    if len(_pad_cells_581) and _r in _geo and \
+                            _geo[_r] != (config.via_size, config.via_drill):
+                        from dataclasses import replace as _dc_replace
+                        _c581 = same_net_pad_via_keepout_cells(
+                            pcb_data, net_id, _dc_replace(
+                                config, via_size=_geo[_r][0], via_drill=_geo[_r][1]))
+                        _arr = np.concatenate([same_net_via_arr[:_n_before_581],
+                                               np.asarray(_c581, dtype=np.int32)
+                                               .reshape(-1, 2)])
+                    working_obstacles.add_blocked_vias_rung_batch(_r, _arr)
+                    _stamped.append((_r, _arr))
                 _lift_record(_SAME_NET_RUNG_MIRROR, working_obstacles, net_id,
-                             (_rungs, same_net_via_arr))
+                             tuple(_stamped))
         except (AttributeError, ImportError):
             pass
     else:
@@ -929,8 +953,7 @@ def restore_obstacles_inplace(
     # #1070: the per-net rung mirror, from exactly the rungs prepare stamped.
     _mir = _lift_take(_SAME_NET_RUNG_MIRROR, working_obstacles, net_id)
     if _mir is not None:
-        _rungs, _cells = _mir
-        for _r in _rungs:
+        for _r, _cells in _mir:   # (rung, the exact array stamped there)
             working_obstacles.remove_blocked_vias_rung_batch(_r, _cells)
 
     # Re-add the net-tie corridor stamps lifted by prepare (see there).
