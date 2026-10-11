@@ -218,6 +218,10 @@ class Ends:
         self.NL = len(self.RL)
         self._runs_ok = {}                              # (more than two) a via end's moves -> the layers its runs fit
         self._meet = {}                                 # (more than two) two ends' moves -> their runs within the rule
+        self._nbrs = {}                                 # (more than two) an end option -> the options its runs meet
+        self._rbox = {}                                 # ...an option's runs' box, grown by the rule
+        self._dom = {}                                  # (more than two) an end option -> its layer domain
+        self._lay = {}                                  # ...its layer's index
         vias_only = route_layers.escape_vias('src')
         for lane, lg in self.lanes:
             # (`free_teeth`: an incremental fanout frees only the teeth its feedback names; the rest stand as laid)
@@ -512,7 +516,8 @@ class Ends:
                 chosen.add((leg, id(m)))
             for leg, m in zip(lg, bo[l_][0]):
                 chosen.add((leg, id(m)))
-        nconf = sum(1 for c in chosen for o in self.conf.get(c, ()) if o in chosen) // 2
+        conf = self.conf
+        nconf = sum(len(conf[c] & chosen) for c in chosen if c in conf) // 2
         lane_of = {leg: l_ for l_, lg in self.lanes for leg in lg}
         nref = sum(1 for l_ in lanes if to[l_][4] or bo[l_][4])
         # the orders, as the whole frame reads them (whole_frame.build)
@@ -767,6 +772,14 @@ class Ends:
         or a via in its pad -- is free (fixed None) on the layers its runs can lie on (`allowed`, via_run_layers), its
         via joining nothing, and dropped, on its NECK's own layer (the ball's pad's; None where a leg's pad is not on one
         routing layer)"""
+        got = self._dom.get((k_, id(opt)))
+        if got is not None and got[0] is opt:
+            return got[1]
+        got = self._end_domain(opt, k_, lg)
+        self._dom[(k_, id(opt))] = (opt, got)       # (an option is its lane's for good: T and B stand as built)
+        return got
+
+    def _end_domain(self, opt, k_, lg):
         moves = opt[0]
         if not moves or any(getattr(m, 'kind', 'surface') == 'surface' for m in moves):
             return (self.RL.index(opt[2]) if opt[2] in self.RL else 0), None, None
@@ -803,23 +816,36 @@ class Ends:
         self._runs_ok[key] = (tuple(moves), got)
         return got
 
-    def end_clashes(self, ends, to, bo):
+    def end_clashes(self, ends, to, bo, state):
         """(ends, sep): the chosen ends' runs against EACH OTHER, as the whole solve reads the laid board (relayer.clashes:
         its VBAN and VSEP) -- via_run_layers tests a via end's runs against the copper on the board, where the other
         lanes' chosen ends are not yet. A via end loses each layer, not its own, where another lane's FIXED end there
         comes within the rule of its run; two via ends whose runs come within the rule of each other, laid on two
         layers, end on different ones (sep [((lane, k), (lane, k))]). The synth ring_s4 on three layers: a berth on B.Cu
-        ending at the point its neighbour's F.Cu berth does, free to drop onto F alone"""
+        ending at the point its neighbour's F.Cu berth does, free to drop onto F alone. Two via ends' runs are found from
+        each option's neighbours (_meet_nbrs: the options of other lanes at its array whose runs meet its, found once an
+        option, by lane), in the order of the pairs of via ends -- every pair of them tested anew was most of the time
+        of a search that scores some half a million states on an escape state"""
         opt = lambda l_, k_: (to if k_ == 0 else bo)[l_]
-        own = lambda l_, k_: self.RL.index(opt(l_, k_)[2]) if opt(l_, k_)[2] in self.RL else None
+        lay_ = self._lay
+
+        def own(e_):
+            l_, k_ = e_
+            q_ = (k_, l_, state[l_][k_])
+            if q_ not in lay_:
+                L_ = opt(l_, k_)[2]
+                lay_[q_] = self.RL.index(L_) if L_ in self.RL else None
+            return lay_[q_]
         vend = [(l_, k_) for l_, _lg in self.lanes for k_ in (0, 1) if ends[l_][k_][0] is None]
-        out, sep = dict(ends), []
+        fixed = {k_: [(l2, ends[l2][k_][0]) for l2, _lg2 in self.lanes if ends[l2][k_][0] is not None] for k_ in (0, 1)}
+        out = dict(ends)
         for l_, k_ in vend:
+            if not fixed[k_]:
+                continue
             f_, n_, ok_ = out[l_][k_]
             lose = set()
-            for l2, _lg2 in self.lanes:
-                q = ends[l2][k_][0] if l2 != l_ else None
-                if q is None or q not in ok_ or q in lose or q == own(l_, k_):
+            for l2, q in fixed[k_]:
+                if l2 == l_ or q not in ok_ or q in lose or q == own((l_, k_)):
                     continue
                 if self._runs_meet(opt(l_, k_)[0], opt(l2, k_)[0], self.RL[q]):
                     lose.add(q)
@@ -827,12 +853,55 @@ class Ends:
                 e_ = list(out[l_])
                 e_[k_] = (f_, n_, ok_ - lose)
                 out[l_] = tuple(e_)
+        at = {e: i for i, e in enumerate(vend)}
+        hits = []
         for i, (la, ka) in enumerate(vend):
-            for lb, kb in vend[i + 1:]:
-                if la != lb and ka == kb and own(la, ka) != own(lb, kb) \
-                        and self._runs_meet(opt(la, ka)[0], opt(lb, kb)[0], None):
-                    sep.append(((la, ka), (lb, kb)))
-        return out, sep
+            for lb, ibs in self._meet_nbrs(la, ka, state[la][ka]).items():
+                j = at.get((lb, ka))
+                if j is not None and j > i and state[lb][ka] in ibs and own((la, ka)) != own((lb, ka)):
+                    hits.append((i, j))
+        return out, [(vend[i], vend[j]) for i, j in sorted(hits)]
+
+    def _run_box(self, k_, l_, i_):
+        """the box of option i_'s runs (lane l_'s, k_ 0 a tooth, 1 a berth: each move's legs on its own layer), grown
+        by the fanout's rule; None with no run"""
+        key = (k_, l_, i_)
+        if key not in self._rbox:
+            import rules as _rules
+            r = _rules.active()
+            bar = r.fan_track + r.fan_clear
+            pts = [p for m in (self.T if k_ == 0 else self.B)[l_][i_][0]
+                   for a, b, L_ in (getattr(m, 'legs', None) or ()) if L_ == m.layer for p in (a, b)]
+            self._rbox[key] = (min(p[0] for p in pts) - bar, min(p[1] for p in pts) - bar,
+                               max(p[0] for p in pts) + bar, max(p[1] for p in pts) + bar) if pts else None
+        return self._rbox[key]
+
+    def _meet_nbrs(self, l_, k_, i_):
+        """{lane: frozenset of option indices}: the other lanes' options at the same array (k_ 0 the teeth, 1 the
+        berths) whose runs come within the fanout's rule of option i_ of lane l_'s -- _runs_meet(.., None), each pair
+        tested once; a lane none of whose options meet it is not a key"""
+        key = (l_, k_, i_)
+        got = self._nbrs.get(key)
+        if got is not None:
+            return got
+        opts = self.T if k_ == 0 else self.B
+        ba = self._run_box(k_, l_, i_)
+        got = {}
+        if ba is not None:
+            for l2, _lg2 in self.lanes:
+                if l2 == l_:
+                    continue
+                hit = []
+                for i2 in range(len(opts[l2])):
+                    bb = self._run_box(k_, l2, i2)
+                    if bb is None or bb[0] > ba[2] or ba[0] > bb[2] or bb[1] > ba[3] or ba[1] > bb[3]:
+                        continue
+                    if self._runs_hit(opts[l_][i_][0], opts[l2][i2][0], None):
+                        hit.append(i2)
+                if hit:
+                    got[l2] = frozenset(hit)
+        self._nbrs[key] = got
+        return got
 
     def _runs_meet(self, ma, mb, layer):
         """whether via end `ma`'s runs (each move's legs on its own layer) come within the fanout's rule (its track,
@@ -841,15 +910,20 @@ class Ends:
         got = self._meet.get(key)
         if got is not None:
             return got[2]
+        hit = self._runs_hit(ma, mb, layer)
+        self._meet[key] = (tuple(ma), tuple(mb), hit)
+        return hit
+
+    @staticmethod
+    def _runs_hit(ma, mb, layer):
+        """_runs_meet's test itself, uncached"""
         import rules as _rules
         r = _rules.active()
         bar = r.fan_track + r.fan_clear - 0.01          # (relayer.clashes' SLACK: the fanout's grid a hair under)
         ra = [(a, b) for m in ma for a, b, L_ in (getattr(m, 'legs', None) or ()) if L_ == m.layer]
         rb = [(a, b) for m in mb for a, b, L_ in (getattr(m, 'legs', None) or ())
               if L_ == (layer if layer is not None else m.layer)]
-        hit = any(_seg_d(a, b, p, q) < bar for a, b in ra for p, q in rb)
-        self._meet[key] = (tuple(ma), tuple(mb), hit)
-        return hit
+        return any(_seg_d(a, b, p, q) < bar for a, b in ra for p, q in rb)
 
     def _colour(self, lanes, inv, ends, npair):
         """(changes, drops) per lane: the crossing graph COLOURED on the routing layers, the ESTIMATE the search steers by
@@ -876,8 +950,9 @@ class Ends:
         for l_ in sorted(lanes, key=lambda l_: (-len(nb[l_]), lanes.index(l_))):
             used = {col[o] for o in nb[l_] if o in col}
             free = [c for c in range(self.NL) if c not in used]
-            pick = min(free or range(self.NL), key=lambda c: (price(l_, c)[0] - price(l_, c)[1], c))
-            ch, dr = price(l_, pick)
+            pr = [price(l_, c) for c in range(self.NL)]
+            pick = min(free or range(self.NL), key=lambda c: (pr[c][0] - pr[c][1], c))
+            ch, dr = pr[pick]
             col[l_] = pick if free else None
             chg[l_] = ch + (0 if free else 2)
             drp[l_] = dr
@@ -895,7 +970,7 @@ class Ends:
         ends = {}
         for l_, lg in self.lanes:
             ends[l_] = (self.end_domain(to[l_], 0, lg), self.end_domain(bo[l_], 1, lg))
-        ends, sep = self.end_clashes(ends, to, bo)
+        ends, sep = self.end_clashes(ends, to, bo, state)
         chg, drp, col = self._colour(lanes, inv, ends, npair)
         xo = {}
         for l_, lg in self.lanes:
@@ -1846,8 +1921,14 @@ def _stacks(lanes, to, bo, chg):
         cells = {}
         for l_, _lg in lanes:
             for m in opt[l_][0]:
-                cells.setdefault((int(math.floor(m.exit_pt[0] / 0.25)), int(math.floor(m.exit_pt[1] / 0.25))),
-                                 []).append((l_, m))
+                c_ = getattr(m, '_stack_cell', None)
+                if c_ is None:
+                    c_ = (int(math.floor(m.exit_pt[0] / 0.25)), int(math.floor(m.exit_pt[1] / 0.25)))
+                    try:
+                        m._stack_cell = c_          # (an exit stands where it was offered)
+                    except AttributeError:
+                        pass
+                cells.setdefault(c_, []).append((l_, m))
         seen = set()
         for (cx, cy), here in cells.items():
             near = [e for dx in (-1, 0, 1) for dy in (-1, 0, 1) for e in cells.get((cx + dx, cy + dy), ())]
