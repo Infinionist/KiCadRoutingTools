@@ -898,6 +898,26 @@ def route_single_ended_nets(
             print(f"  FAILED: Could not find route ({elapsed:.2f}s)")
             total_iterations += iterations
 
+            # #907: did --same-net-pad-clearance close the last via site? Asked
+            # HERE, of the map the route searched, and reported below only if
+            # no rip-up rescues the net. After the restore the answer is about
+            # a different map (#1229): the net's own cached copper is back as
+            # an obstacle and its #581 keep-out is gone, so the probe's
+            # balanced remove/re-add takes counts that copper holds -- calling
+            # the flag guilty of a seal it did not make -- and stamps cells
+            # the map never held. Asked with the config the net was searched
+            # with: a net at its own #530 via searched its own rung.
+            _h907 = _v907 = None
+            try:
+                from routing_diagnostics import same_net_pad_seal_hint
+                from single_ended_routing import _per_net_via_config
+                _h907, _v907 = same_net_pad_seal_hint(
+                    pcb_data, _per_net_via_config(config, pcb_data, net_id),
+                    net_id, net_name, obstacles=obstacles,
+                    return_verdict=True)
+            except Exception:
+                pass
+
             # Restore working obstacles before attempting rip-up (in-place approach)
             if same_net_via_cells is not None and state.working_obstacles is not None:
                 restore_obstacles_inplace(state.working_obstacles, net_id,
@@ -1637,21 +1657,13 @@ def route_single_ended_nets(
                 # printed by the `no rippable blockers` line itself) because
                 # it is the only cause whose remedy is a command-line change
                 # the caller already controls -- and because nothing else in
-                # the report names the flag at all.
-                try:
-                    from routing_diagnostics import same_net_pad_seal_hint
-                    _h907, _v907 = same_net_pad_seal_hint(
-                        pcb_data, config, net_id, net_name,
-                        obstacles=state.working_obstacles,
-                        return_verdict=True)
-                    if _h907:
-                        _c907 = condense_hint(_h907)
-                        if _c907:
-                            print(f"  {_c907}")
-                        record_net_event(state, net_id, "sealed_by_snpc",
-                                         _v907)
-                except Exception:
-                    pass
+                # the report names the flag at all. The verdict was taken at
+                # the failure, on the map the route searched (#1229).
+                if _h907:
+                    _c907 = condense_hint(_h907)
+                    if _c907:
+                        print(f"  {_c907}")
+                    record_net_event(state, net_id, "sealed_by_snpc", _v907)
                 # #652: say WHY nothing is rippable when the answer is
                 # "this ball never got an escape". Placed before the #301 hint
                 # because it is the actionable one -- #301 names copper to rip,

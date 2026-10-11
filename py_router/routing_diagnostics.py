@@ -674,6 +674,19 @@ def same_net_pad_seal_hint(pcb_data, config, net_id, net_name=None,
     and the restore runs in a `finally`, because a diagnosis that corrupts the
     obstacle map would be far worse than no diagnosis.
 
+    That balance holds only on a map that CARRIES the flag's stamp, so
+    `obstacles` must be the map the route searched: prepared by
+    `prepare_obstacles_inplace` (or stamped by `add_same_net_via_clearance`)
+    and not yet restored (#1229). A restored map holds the net's own cached
+    copper in place of its keep-out, so the removal takes counts that copper
+    holds and the hint blames the flag for a seal it did not make. The probe
+    reads, and touches, only the via map of `config.via_rung` (rung 0 unless
+    that rung's map is populated -- `is_via_blocked_rung`'s own fallback), and
+    sizes the keep-out at the via that map was stamped with. Pass a net at its
+    own #530 via the config the route searched it with
+    (`_per_net_via_config`): it names the net's rung and carries the run's via
+    in `run_via`.
+
     "A site that could serve the pad" is the pad's own cells plus the off-pad
     escape-stub radius (`KICAD_ESCAPE_STUB_RADIUS`, 1.0 mm by default), which
     is the actual fallback rung `_place_shrunk_via_in_pad` uses when this flag
@@ -691,8 +704,8 @@ def same_net_pad_seal_hint(pcb_data, config, net_id, net_name=None,
     if obstacles is None or pcb_data is None or not net_id             or snpc is None or snpc <= 0:
         return _ret('')
     try:
-        from obstacle_map import (same_net_pad_via_keepout_cells, GridCoord,
-                                  _rung_small_armed)
+        from dataclasses import replace
+        from obstacle_map import same_net_pad_via_keepout_cells, GridCoord
         import numpy as _np
         import env_knobs
     except Exception:
@@ -703,6 +716,35 @@ def same_net_pad_seal_hint(pcb_data, config, net_id, net_name=None,
         return _ret('')            # through-hole only: the flag exempts those
     coord = GridCoord(config.grid_step)
     rung = int(getattr(config, 'via_rung', 0) or 0)
+    if rung:
+        # An unpopulated rung reads as rung 0 (is_via_blocked_rung falls
+        # back), so rung 0 is the map to probe -- and the one to touch.
+        try:
+            if not obstacles.rung_len(rung):
+                rung = 0
+        except Exception:
+            rung = 0
+    # The via the keep-out on THAT map was stamped at, as
+    # prepare_obstacles_inplace stamps it: rung 0 and the #568 small rung at
+    # the RUN's via, a #530 per-net rung at that rung's own via (#1226). The
+    # cells removed below are then cells the stamp added, and the surround
+    # the hint quotes is the one the route was held to.
+    run_via = tuple(getattr(config, 'run_via', None)
+                    or (config.via_size, config.via_drill))
+    via = run_via
+    if rung:
+        try:
+            from obstacle_map import _per_net_rungs, _per_net_rung_geometry
+            if rung in _per_net_rungs(obstacles):
+                _run_cfg = replace(config, via_size=run_via[0],
+                                   via_drill=run_via[1], via_rung=0,
+                                   run_via=None)
+                via = {r: (d, h) for r, d, h in
+                       _per_net_rung_geometry(obstacles, _run_cfg)}.get(rung, via)
+        except Exception:
+            pass
+    if via != (config.via_size, config.via_drill):
+        config = replace(config, via_size=via[0], via_drill=via[1])
     reach_mm = max(0.0, env_knobs.ESCAPE_STUB_RADIUS)
 
     def _free_site(pad):
@@ -748,21 +790,22 @@ def same_net_pad_seal_hint(pcb_data, config, net_id, net_name=None,
         if _free_site(pad):
             continue               # a legal site exists: the flag sealed nothing
         arr = _np.asarray(cells, dtype=_np.int32)
-        # REMOVE EXACTLY WHAT THE STAMP ADDED, and nothing else. The snpc
-        # keep-out is stamped by routing_context as `add_blocked_vias_batch`
-        # plus the #568 SMALL mirror -- never into the per-net RUNG maps. And
-        # `remove_blocked_vias_rung_batch` SATURATES at zero (an absent key is
-        # a no-op), so touching the rungs here would remove nothing and then
-        # STAMP them on the way back: measured, a rung count of 1 became 4 and
-        # the cell stayed blocked for the rest of the run, silently
-        # over-blocking rung via placement on the failure path -- exactly when
-        # the router is already struggling.
-        _small = _rung_small_armed()
+        # REMOVE EXACTLY WHAT THE STAMP ADDED, from the one map `_free_site`
+        # reads and nothing else. Every via map SATURATES at zero (an absent
+        # key is a no-op), so removing cells a map does not hold removes
+        # nothing and the re-add then STAMPS them, over-blocking via placement
+        # for the rest of the run on the failure path -- exactly when the
+        # router is already struggling. A map the probe does not read can
+        # only be harmed by it: measured (#1229), the #568 small rung gained
+        # 132 cells on a restored map, and 381 on a clone whose small rung
+        # had been empty -- populated with this keep-out ALONE, the hazard
+        # populated_via_rungs exists to prevent.
         _removed = False
         try:
-            obstacles.remove_blocked_vias_batch(arr)
-            if _small:
-                obstacles.remove_blocked_vias_small_batch(arr)
+            if rung:
+                obstacles.remove_blocked_vias_rung_batch(rung, arr)
+            else:
+                obstacles.remove_blocked_vias_batch(arr)
             _removed = True
             freed = _free_site(pad)
         except Exception:
@@ -774,9 +817,10 @@ def same_net_pad_seal_hint(pcb_data, config, net_id, net_name=None,
             # happened, so a throw part-way through cannot leak a stamp.
             if _removed:
                 try:
-                    obstacles.add_blocked_vias_batch(arr)
-                    if _small:
-                        obstacles.add_blocked_vias_small_batch(arr)
+                    if rung:
+                        obstacles.add_blocked_vias_rung_batch(rung, arr)
+                    else:
+                        obstacles.add_blocked_vias_batch(arr)
                 except Exception:
                     pass
         if not freed:
