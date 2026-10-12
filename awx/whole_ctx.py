@@ -246,10 +246,10 @@ def candidate(pcb, names, dest, plan, tracks=(), cfg=None, board=None):
     net_id}, as escape_plan.lay lays them) added in memory, and `plan` the sidecar's keys (ends, tooth_layer,
     dest_layer, tooth_dir, stub_dir, dest_cut, chi). The fields the whole frame and the solve read -- the ends (a
     pair's at its legs' midpoints), the layers (a pair's its P leg's, its N leg's beside them), the escape directions,
-    the source part, the destination's cut, the copper -- as setup gives them (tests/test_622_candidate_ctx.py holds
-    them to it); a lane's taut path, which only places its reference, is its straight line from tooth to berth. So the
-    ends model asks the whole solve of its own ends before any of them is laid (whole_ends.solve_check). None for a
-    plan made in the turned-over pair frame (setup turns such a board over first)"""
+    the source part, the destination's cut, the copper, each lane's taut path -- as setup gives them
+    (tests/test_622_candidate_ctx.py holds them to it). So the ends model asks the whole solve of its own ends before
+    any of them is laid (whole_ends.solve_check). None for a plan made in the turned-over pair frame (setup turns such
+    a board over first)"""
     import copy
     import braid as bd
     import pairs as _pairs
@@ -300,7 +300,13 @@ def candidate(pcb, names, dest, plan, tracks=(), cfg=None, board=None):
                               + (p.global_y - ends[nm][0][1]) ** 2).component_ref
     ctx.cfg = cfg if cfg is not None else bd.run_config(pcb2, board)
     ctx.base_segments, ctx.base_vias = list(pcb2.segments), list(pcb2.vias)
-    ctx.paths = {nm: [tuple(map(float, ends[nm][0])), tuple(map(float, ends[nm][1]))] for nm in names}
+    # each lane's TAUT path as setup draws it: round the copper on the bundle's layer, the run's own nets free. The
+    # frame's reference reads it, and the solve's built-in via cuts at other parts' pads read the reference: drawn
+    # straight from tooth to berth, a lane's reference stood 0.2 mm off where the round's did, and the check said a
+    # plan the round's solve had none for (zynq LVDS K40: RX_D0 1.36 mm off C152.1 here, 1.15 there -- cut there alone)
+    bl_ = bd.bundle_layer_of(ctx.tooth_layer)
+    with contextlib.redirect_stdout(io.StringIO()):         # (taut_paths prints its TAUT VIOLATING lines)
+        ctx.paths = bd.db.taut_paths(names, ends, lambda nm: bd.build_obstacles(pcb2, byname[nm][0], ctx.kids, bl_))
     return ctx
 
 

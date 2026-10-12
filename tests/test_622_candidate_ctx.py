@@ -13,10 +13,11 @@ state's escapes LAID (escape_plan.lay) and its plan sidecar beside it, as the ro
 
 1. every field the whole frame and the solve read is the same: the lanes and pairs, each lane's ends (a pair's at its
    legs' midpoints) and its legs' ends, the layers (a pair's P leg's, its N leg's beside them), the escape directions,
-   the source part, the pair frame, the destination's cut, the routing config, and the copper: the board's own and
-   the escape runs, segment for segment;
+   the source part, the pair frame, the destination's cut, the routing config, the copper (the board's own and the
+   escape runs, segment for segment), and each lane's TAUT PATH -- round the arrays' dog-bone vias, and a 0402 beside
+   the trunk whose pads the solve's built-in via cuts read the lanes' references against;
 2. the whole frame built on each (whole_frame.build) is the same: its lanes, launch and final orders, ring classes,
-   starts, landings, handoffs;
+   starts, landings, handoffs, and each lane's reference (mid);
 3. whole_solve.solve(check=True) gives each the same verdict -- and its solve, run as the round runs it, the same plan.
 
 A field setup gains and candidate() does not read is a drift this test sees only where the frame or the solve reads it.
@@ -83,6 +84,16 @@ def board():
         pads[ref] = (x0, '\n'.join(out))
     fps = '\n'.join(f'  (footprint "BGA" (layer "F.Cu") (at {x0:.3f} 0)\n    (property "Reference" "{ref}" (at 0 0) '
                     f'(layer "F.SilkS"))\n{body}\n  )' for ref, (x0, body) in pads.items())
+    # (a 0402 beside the trunk, off the arrays' top row: its pads are what the solve's built-in via cuts read a lane's
+    # reference against, and the reference is the lane's taut path's)
+    cn = []
+    for k in (1, 2):
+        n_of[f'C1_{k}'] = len(nets)
+        nets.append(f'(net {len(nets)} "C1_{k}")')
+        cn.append(f'    (pad "{k}" smd rect (at {(k - 1.5):.3f} 0) (size 0.5 0.5) (layers "F.Cu" "F.Mask") '
+                  f'(net {n_of[f"C1_{k}"]} "C1_{k}"))')
+    fps += (f'\n  (footprint "C0402" (layer "F.Cu") (at {GAP / 2 + (N - 1) * PITCH / 2 + 1:.3f} -0.9)\n'
+            f'    (property "Reference" "C1" (at 0 0) (layer "F.SilkS"))\n' + '\n'.join(cn) + '\n  )')
     W = GAP + 2 * N * PITCH + 4
     return f"""(kicad_pcb (version 20240108) (generator "test")
   (general (thickness 1.6))
@@ -160,6 +171,10 @@ def main():
         via = lambda v: (round(v.x, 4), round(v.y, 4), round(v.size, 4), v.net_id)
         if sorted(map(via, cand.base_vias)) != sorted(map(via, real.base_vias)):
             fails.append('1. vias differ')
+        pth = lambda c: {k: [r6(p) for p in v] for k, v in c.paths.items()}
+        pc_, pr_ = pth(cand), pth(real)
+        if pc_ != pr_:
+            fails.append(f'1. taut paths differ on {sorted(k for k in set(pc_) | set(pr_) if pc_.get(k) != pr_.get(k))}')
         # 2. the frames
         with contextlib.redirect_stdout(io.StringIO()):
             Fc, Fr = whole_frame.build(cand, 'U5'), whole_frame.build(real, 'U5')
@@ -172,6 +187,10 @@ def main():
             b = {k: r6(v) for k, v in getattr(Fr, f_).items()}
             if a != b:
                 fails.append(f'2. frame {f_}: candidate {a} != setup {b}')
+        a = {k: [r6(p) for p in v] for k, v in Fc.mid.items()}
+        b = {k: [r6(p) for p in v] for k, v in Fr.mid.items()}
+        if a != b:
+            fails.append(f'2. frame mid (the references) differ on {sorted(k for k in a if a[k] != b.get(k))}')
         # 3. the solve
         with contextlib.redirect_stdout(io.StringIO()):
             vc = whole_solve.solve(cand, 'U5', front={}, check=True)
