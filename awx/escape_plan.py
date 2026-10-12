@@ -463,6 +463,10 @@ def run(out_path, K, base, log=print):
 
 
 def main():
+    if sys.argv[1:2] in (['-h'], ['--help']):
+        print('usage: escape_plan.py OUT.kicad_pcb K --board=BASE.kicad_pcb\n')
+        print(__doc__.strip())
+        return
     if len(sys.argv) < 2 or sys.argv[1].startswith('-'):
         print(__doc__.strip().splitlines()[0])
         sys.exit(2)

@@ -21,6 +21,12 @@ import subprocess
 import sys
 import tempfile
 
+try:
+    import ortools  # noqa: F401  (the whole route's solve is a CP-SAT solve)
+except ImportError as exc:
+    print('SKIP: needs ortools (%s)' % exc)
+    sys.exit(77)
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AWX = os.path.join(ROOT, 'awx')
 LAYERS = 'F.Cu,B.Cu,In1.Cu,In2.Cu'

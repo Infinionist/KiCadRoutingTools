@@ -245,6 +245,15 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         check_source_board_named(tmp)
         check_bus_replanned(tmp)
+        try:
+            import ortools  # noqa: F401  (check 3's joint plan is a CP-SAT solve)
+        except ImportError as exc:
+            if BAD:
+                for f in BAD:
+                    print(f'  FAIL: {f}')
+                sys.exit(1)
+            print('SKIP: check 3 needs ortools (%s); checks 1 and 2 passed' % exc)
+            sys.exit(77)
         check_plan_reproducible(tmp)
     if BAD:
         for f in BAD:

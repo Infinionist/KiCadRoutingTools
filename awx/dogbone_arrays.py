@@ -162,6 +162,10 @@ def dogbone_file(src, out, refs, log=print):
 
 
 def main():
+    if sys.argv[1:2] in (['-h'], ['--help']):
+        print('usage: dogbone_arrays.py IN.kicad_pcb OUT.kicad_pcb REF[,REF..]\n')
+        print(__doc__.strip())
+        return
     if len(sys.argv) < 4:
         print(__doc__.strip().splitlines()[0])
         sys.exit(2)
