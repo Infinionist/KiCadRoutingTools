@@ -1431,6 +1431,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # the fab track minimum; a manual --power-nets-widths override still wins.
     net_track_widths = {}
     netclass_width_floors = {}
+    # #1238: bound before the file check -- the GUI passes a board that was
+    # never saved (a freshly imported EAGLE .brd) under a path that does not
+    # exist yet, and the per-layer / per-net via readers further down then
+    # met unbound names. No file -> no class widths or vias, as for tracks.
+    _per_net, _per_layer, _per_net_via = {}, {}, {}
     if input_file and os.path.isfile(input_file):
         try:
             from list_nets import net_track_width_map_by_id, fab_floors
@@ -1461,7 +1466,6 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             # under "use netclass values". Nets whose width equals the Default
             # class's carry no entry (they route at config.track_width, as
             # before); a rule with layer-scoped opts fills net_layer_widths.
-            _per_net, _per_layer, _per_net_via = {}, {}, {}
             try:
                 from design_rules import DesignRules as _DR
                 _dr = _DR.from_project(
