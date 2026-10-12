@@ -549,7 +549,12 @@ def build_and_solve(sides, prev=None):
             pres = [n for n, v in pcs.items() if v['k0'] <= k <= v['k1']]
             if not pres:
                 continue
-            od = sorted(pres, key=functools.cmp_to_key(lambda a, b: -1 if below(a, b, u) else 1))
+            # (a ring's order read where its layers are (lay_u): no earlier than its lanes leave the trunk -- a ring
+            # piece starts short of the ring's origin, its first columns' u below HK, and a crossing the solve placed on
+            # the trunk's last stretch was undone there and made again on the ring: zynq LVDS K47, CTRL_IN3 x CTRL_OUT1
+            # placed 0.66 short of the S ring's start, the two drawn on top of each other on In2)
+            ub = max(u, HK[f]) if f != 'T' and f in HK else u
+            od = sorted(pres, key=functools.cmp_to_key(lambda a, b: -1 if below(a, b, ub) else 1))
             orders[(f, k)] = od
             lay = {n: layers_at(n, lay_u(f, n, u)) for n in od}
 
@@ -707,9 +712,9 @@ def build_and_solve(sides, prev=None):
             ka, kb = (kc, kc2) if a == n else (kc2, kc)
             le([(var[(f, a, ka)], 1.0), (var[(f, b, kb)], -1.0)], -h, ('viavia', f, km, a, b))
     via_at = {(f, n, kc) for (f, n, cu, kc) in vias}
-    # bounds: board, pad boxes (a via further off), the interval the reference lies in -- and where it lies in none
-    # (it cuts a box's corner), the interval the lane was in a column before, which it cannot leave across the box,
-    # and where that stood on both sides of the box, the side of its nearer terminal (corridor.held_interval)
+    # bounds: board, pad boxes (a via further off), the interval the reference lies in among those overlapping the one
+    # the lane was held to a column before, which it cannot leave across the box -- and where that one stands on both
+    # sides of the box, the side of the terminal ahead of it (corridor.held_interval)
     held_iv = {}
     # (a lane whose tooth -- or a trunk lane whose berth -- stands inside its array's grown box: bounded by the
     # array's pads on the trunk, where it leaves its tooth or reaches its berth)
@@ -729,8 +734,12 @@ def build_and_solve(sides, prev=None):
         iv = intervals(f, FR[f]['sp'], s_, round(mg, 4), OWN[n] if f == 'T' else (False, False))
         if not iv:
             continue
-        lo_, hi_ = held_iv[(f, n)] = _cor.held_interval(
-            iv, v['ref'](s_), held_iv.get((f, n)), v['o1'] if v['k1'] - k <= k - v['k0'] else v['o0'])
+        # (the terminal a SPLIT reads is the one AHEAD -- a box beginning at a column stands between the lane and its
+        # end, never its start: the piece's end, a ring lane's trunk its place on the ring's stack at the handoff; read
+        # as the nearer one, a trunk piece run on past the destination's corner took the tooth's side of it: zynq LVDS
+        # K47, CTRL_IN0 / IN2 / IN3 held north of U5's box with their stack south of it, 12-15 mm of bound)
+        end_ = v['o1'] if v['o1'] is not None else (Fr.o_h[n] if f == 'T' and n in cls else v['o0'])
+        lo_, hi_ = held_iv[(f, n)] = _cor.held_interval(iv, v['ref'](s_), held_iv.get((f, n)), end_)
         le([(j, -1.0)], -lo_, ('bound', f, k, n, 'lo'))
         le([(j, 1.0)], hi_, ('bound', f, k, n, 'hi'))
     # terminals, holds, slope cap, travel, bends
@@ -1281,14 +1290,27 @@ def static_sides(sol):
                     side = forced             # never against the lane's own fixed end, nor against its home side
                 out.append((f, n, k, ext[0], ext[1], side, lab))
             # (a pair's via is two barrels VX either side of its centreline -- its half width hw is less: 74 um short)
+            # ...its row REFINED by the part's exact extent on the via's column, as a lane's is: a part past a ring's
+            # end projects clamped onto it -- its box the ring's whole length and tens of millimetres across -- and
+            # every via of the ring was held outside it (zynq LVDS K47: R33, 30 mm from U5's south ring, its box s
+            # 0..24.1 and o -32.8..4.4; 'via R33' the largest static payment of every round, and the vias pushed out
+            # onto Ct1's pad)
             g2 = VIA_ST + max(hw[n], VX[n])
             if k in vcol[(f, n)] and sa - g2 <= s_ <= sb + g2:
-                out.append((f, n, k, oa - g2, ob + g2, -1 if o_ < (oa + ob) / 2 else 1, 'via ' + lab))
+                ev_ = extent(f, s_, ii, g2)
+                if ev_ is not None:
+                    ev_ = (max(ev_[0], oa - g2), min(ev_[1], ob + g2))
+                if ev_ is not None and ev_[0] <= ev_[1] and max(ev_[0] - o_, o_ - ev_[1], 0.0) <= WIN:
+                    out.append((f, n, k, ev_[0], ev_[1], -1 if o_ < (ev_[0] + ev_[1]) / 2 else 1, 'via ' + lab))
         if k in vcol[(f, n)]:
-            for (sa, sb, oa, ob, Ls, lab, own) in vboxes[f]:
+            for (sa, sb, oa, ob, Ls, lab, own), vr_ in zip(vboxes[f], VSTUB):
                 g2 = VIA_ST + max(hw[n], VX[n])
                 if own != n and sa - g2 <= s_ <= sb + g2 and oa - WIN <= o_ <= ob + WIN:
-                    out.append((f, n, k, oa - g2, ob + g2, -1 if o_ < (oa + ob) / 2 else 1, 'via ' + lab))
+                    ev_ = _cor.line_extent(FR[f]['sp'], s_, [tuple(vr_[:4])], g2)
+                    if ev_ is not None:
+                        ev_ = (max(ev_[0], oa - g2), min(ev_[1], ob + g2))
+                    if ev_ is not None and ev_[0] <= ev_[1]:
+                        out.append((f, n, k, ev_[0], ev_[1], -1 if o_ < (ev_[0] + ev_[1]) / 2 else 1, 'via ' + lab))
     return out
 
 

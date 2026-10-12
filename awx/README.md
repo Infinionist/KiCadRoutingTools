@@ -890,9 +890,16 @@ solve as **cuts**.
   median stub) -- a lane whose own tooth or berth stands inside that line, on
   the trunk, by the array's pads alone: held out of the grown box, a short
   tooth among long ones was sent to the nearest interval round it, 5 mm off.
+  Held a column before, a lane keeps to the intervals that overlap that one:
+  a reference that runs into a box and out of its far side does not carry the
+  lane across it. Where a box's corner splits the column, the lane takes the
+  side of the end ahead of it -- its piece's end, a ring lane's trunk its
+  place in the ring's stack.
 - **Vias** stand at the solve's changes, held within the lane's own extent:
   a change the solve's grid rounds a part of a step past a stub's end stands
-  at it.
+  at it. A via is kept off a part by the part's own extent on the via's
+  column, as a lane is, not by the part's box in the frame -- a part past a
+  ring's end projects onto the whole ring.
 - **Islands:** one split per island and layer, in the lane order, pinned by
   the lanes' own ends. An island is a part, or parts no lane can surely pass
   between (`whole_ctx.part_islands`). A two-pad part whose pads stand a lane
@@ -1080,7 +1087,10 @@ single's terminal join as the router lays it; each piece's off-grid allowance;
 a pair's end connectors and crossover as exact copper; a pair's dive for its
 straight runs, its room from both ends and the three cells the pair router
 tests; every pose for the router's probe; bands sampled on the router's grid;
-a via against a pair's legs, unplated holes and every stub.
+a via against a pair's legs, unplated holes and every stub. A shortfall of a
+quarter of the router's grid step or less is a near-miss, not a finding: the
+grid snap or a nudge moves a lane or a via that near its bar off it. Each
+check counts its near-misses on a `NUDGE` line of their own.
 
 **The gate** passes a plan only when every corridor member is laid, every
 check is clean, and every lane's band joins its tooth to its berth.
@@ -1647,6 +1657,95 @@ channels first, and the other escapes leave round it.
     the whole column, board edge to board edge; here the lanes pass the caps,
     T1 and X4 beside U5 with room to spare elsewhere on that column, so no
     gate binds.
+- **Corners made robust.** Where two arrays stand a few millimetres apart and
+  the lanes use two faces of one and every face of the other, nearly the whole
+  route is corners: lanes from two faces merge at the source's corner, the
+  bundle splits round the destination's, and the trunk hands lanes to the
+  rings there. A corner is where the stages part: the solve and the geometry
+  read every lane as an offset along one straight spine, so a lane that turns
+  the source's corner and then runs across the spine has no slope the
+  geometry can lay, and it is drawn through the corner's dog-bone vias; the
+  trunk and a ring meet at the destination's corner with no order kept
+  between their lanes; the solve's built-in via cuts at other parts' pads read
+  the trunk alone, so a ring lane's change lands on the passives that hug the
+  destination; and a crossing or a pair's crossover the ends leave to the
+  first millimetre past a corner has no room. The room itself is there: the
+  cuts from corner to corner hold many times the lanes the plans send. To try:
+  - **a corner suite of synthetic buses** -- two arrays at gaps of 2 to 6 mm,
+    offset either way, lanes leaving one face or two, pairs crossed and not,
+    passives at the destination's corners -- each routing clean in seconds,
+    so a corner defect is found and fixed in isolation before the ladders;
+  - **coordinates that turn with the lanes:** source rings, as the
+    destination's, for the lanes leaving the source's side faces, or each
+    lane's own route coordinate along its corridor, a corner an arc whose
+    lanes stack outward in their order;
+  - **one order where frames meet:** the trunk's and a ring's lanes in one
+    ordered set of columns wherever the two overlap;
+  - **corner zones:** round each array corner no change, and no crossing but
+    a stacked one (two lanes already on two layers there), with the ends
+    model told where each crossing can stand -- the stretch two lanes share
+    -- and pricing one that only a corner zone offers;
+  - **via cuts along the rings,** at other parts' pads, as along the trunk --
+    each lane's by its own place in its ring's stack (the lanes that berth
+    sooner peel off sooner, so they run inside it), not every pad across the
+    whole stack against every lane of the ring;
+  - **more ways out of a corner ball:** both faces, its own layer, and the
+    room a neighbour's surface escape frees, so the ends can keep a corner's
+    crossings out of the corner.
+- **A lane with no place to change layer, named.** A lane can be left no
+  change position at all: its window empty (a crossed pair's dive rooms
+  longer than its span), every position in it cut, or a clique of crossing
+  lanes the layers cannot colour with room for their changes. The solve's
+  check asks only which crossing windows conflict, so it names none of these
+  and the ends model searches the same state again. To try: every rule the
+  solve holds a lane to as its own assumption, the check returning a core of
+  (lane, rule), and the ends model pricing what that rule needs -- a crossed
+  pair's hands, the crossings among the core's lanes, a lane's end layers.
+- **A pair's dive off the face.** The face band keeps every change a room
+  past the source's near face, so a pair leaving a side face dives only after
+  it has turned the corner, among the other parts there; the human dives
+  such pairs a millimetre or two straight off the face. To try: the dive's
+  window in the band where both legs' via sites are measured clear.
+- **A tooth via's site measured.** A lane leaving on the surface may change
+  layer right at its tooth, and nothing measures that via's site; the fanout
+  stacks another net's stub under a surface escape in the same channel, so
+  the site can stand on that stub. To try: the site measured along the escape,
+  as a berth via's is, and the window starting where the stacked neighbour
+  has room to move aside.
+- **Exits packed as the human packs them.** The human's escapes leave a face
+  about a third of a ball pitch apart on each layer; ours leave a ball pitch
+  apart, one to a ball line, so each face holds two to three times fewer
+  lanes per layer. To try: exits between the ball lines, several to a street.
+- **Rounds that keep what connected.** Each round plans and lays every lane
+  again, and a lane laid in one round fails in the next for reasons far from
+  it. To try: the copper of every lane that connected kept as it lies, and
+  only the open ones planned and laid again round it.
+- **One bar per rule in every stage.** The stages measure one rule with
+  different numbers: the audit's pitch tolerance sits below the snap's share
+  bar off the grid, a pair's dive is held a little short of the static
+  clearance the lay asks, and no stage before the lay checks hole-to-hole
+  between vias. So a plan that every stage passes can be refused at the lay
+  by a few micrometres. To try: each rule's bar computed once, from the
+  router's rules and grid, and read by the geometry, the polish, the audit
+  and the snap.
+- **A pair's crossover checked against its own path.** The snap picks a
+  crossed pair's crossover cell by cell inside its search and never checks it
+  against the path it then takes, so a pair can turn back through its own
+  crossover's barrels and be refused at the lay. To try: once the path is
+  found, the crossover's barrels as the pair's own obstacles outside its span.
+- **Settings read off the board.** Some defaults still describe the benches:
+  the routing layers (the zynq's lanes run on its GND and power planes'
+  layers), the source and destination the harness names, tolerances in
+  millimetres rather than in pitches or grid steps, a trunk gap measured
+  along x only, and a fixed list of reference prefixes taken for passives. To
+  try: each read off the board -- the layers a plane leaves free, the arrays
+  `find_buses` names, tolerances as fractions of the pitch -- each judged on
+  both ladders and the synthetic buses.
+- **The solve's second search only when it pays.** After the main search
+  the solve searches again for fewer changes. That improves a proved plan,
+  but after a plan found without proof it spends its whole budget. To try:
+  the second search only after a proof, or with a budget scaled to the gap
+  left.
 - **Via ends on two layers.** On more than two routing layers a lane ending
   at a via (a dog-bone, or a via in its pad) takes whichever layer the solve
   gives it there, and the via is dropped where the lane leaves on the ball's
