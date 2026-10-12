@@ -49,6 +49,7 @@ W_V = 10 ** 6                          # per via: vias first (an integer: the ob
 W_OVER_X = 5                           # each via a net carries past two costs this many vias MORE (whole_ends.W_OVER)
 SOLVE_BATCHES = int(awx_settings.get('WHOLE_SOLVE_BATCHES', '100'))  # CP-SAT interleaved batches: the work budget
 SOLVE_WORKERS = 4
+CHECK_WORK = 30.0                       # a check's deterministic work limit (solve(check=True)): past it, no verdict
 # ...running these: two LP workers (the default and the strongest relaxation), core-based search and the objective's
 # lower-bound search. The default four ran nothing that raises the bound, and a plan's vias are proved from below: K51's
 # first solve stopped unproved at 421 s (best 56 vias, bound 40), with these it proves 42 in 141 s, K41 in 17 s (38)
@@ -68,7 +69,124 @@ W_SOFT = 3 * W_V                       # a broken SOFT cut: above a dive's two v
 #                                        vias dearer than one breaking it floored to the same whole number, proved)
 
 
-def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, relax=0):
+def _plane_weights(ctx, LAYN):
+    """(SOLVE_PLANE_TIE) each routing layer's price per step of a lane's run on it, for the PLANE it splits: the
+    layer's largest zone a plane when it covers a quarter of the board's largest one -- a GND net's (net_queries)
+    dearer than any other's (a power plane), a layer with none free -- and between planes of one kind the one nearer
+    F.Cu cheaper by a step. Returns ({layer: weight}, {layer: 'gnd' | 'pwr' | '-'})"""
+    from net_queries import is_ground_net_name
+
+    def _area(p_):
+        return abs(sum(p_[i][0] * p_[(i + 1) % len(p_)][1] - p_[(i + 1) % len(p_)][0] * p_[i][1]
+                       for i in range(len(p_)))) / 2
+    area = collections.defaultdict(float)
+    for z_ in getattr(ctx.pcb, 'zones', None) or []:
+        if z_.layer in LAYN and z_.net_name and len(z_.polygon) > 2:
+            area[(z_.layer, z_.net_name)] += _area(z_.polygon)
+    big = max(area.values(), default=0.0)
+    kind = {}
+    for L_ in LAYN:
+        nets_ = sorted(((a_, n_) for (L2_, n_), a_ in area.items() if L2_ == L_), reverse=True)
+        kind[L_] = 0 if not nets_ or nets_[0][0] < 0.25 * big else (2 if is_ground_net_name(nets_[0][1]) else 1)
+    stack = [L_ for L_ in (ctx.pcb.board_info.copper_layers or []) if L_ in LAYN]
+    rank = {}
+    for kd_ in (1, 2):
+        for i_, L_ in enumerate([L_ for L_ in stack if kind[L_] == kd_]):
+            rank[L_] = i_
+    w = {L_: (kind[L_] * (len(LAYN) + 1) + rank.get(L_, 0)) if kind[L_] else 0 for L_ in LAYN}
+    return w, {L_: ('-', 'pwr', 'gnd')[kind[L_]] for L_ in LAYN}
+
+
+class _Held:
+    """the main search's verdict -- its objective, its bound, its status -- and the plane tie's values"""
+    def __init__(self, main, vals):
+        self.main, self.vals = main, vals
+
+    def Value(self, v):
+        return self.vals.Value(v)
+
+    def BooleanValue(self, v):
+        return self.vals.BooleanValue(v)
+
+    def ObjectiveValue(self):
+        return self.main.ObjectiveValue()
+
+    def BestObjectiveBound(self):
+        return self.main.BestObjectiveBound()
+
+    def StatusName(self, st=None):
+        return self.main.StatusName(st)
+
+    def WallTime(self):
+        return self.main.WallTime() + self.vals.WallTime()
+
+
+def _plane_tie(ctx, m, sv, OBJ, t, chg, YL, M, entry, end, LAYN, KMAX, Q):
+    """(SOLVE_PLANE_TIE) the plan found, its runs' layers chosen again by the planes they split (_plane_weights): its
+    crossings and changes held, nothing it pays allowed to grow (the objective no more than the plan's) -- a tie-break
+    below every term, the mirror of an inner-layer plan resolved the same way every time. The plan's own values when
+    no other layers price lower"""
+    w, kinds = _plane_weights(ctx, LAYN)
+    if len(set(w.values())) < 2:
+        return sv
+    wi = [w[L_] for L_ in LAYN]
+    n0 = len(m.Proto().variables)
+    terms, cur, runs = [], 0, []
+    for n in M:
+        if n not in YL:
+            continue
+        cs_, act = chg[n]
+        a_ = [sv.Value(x_) for x_ in act]
+        c_ = [sv.Value(x_) for x_ in cs_]
+        start, e0 = Q(entry[n]), Q(end[n])
+        for k in range(KMAX + 1):
+            if k > 0 and not a_[k - 1]:
+                break
+            stop = c_[k] if (k < KMAX and a_[k]) else e0
+            ln = max(0, stop - start)
+            if ln:
+                v_ = m.NewIntVar(0, max(wi) * ln, '')
+                m.AddElement(YL[n][k], [wl_ * ln for wl_ in wi], v_)
+                terms.append(v_)
+                cur += wi[sv.Value(YL[n][k])] * ln
+                runs.append((n, k))
+            start = stop
+    if not terms:
+        return sv
+    for v_ in t.values():
+        m.Add(v_ == sv.Value(v_))
+    for n in M:
+        cs_, act = chg[n]
+        for x_ in list(cs_) + list(act):
+            m.Add(x_ == sv.Value(x_))
+    m.Add(OBJ <= int(round(sv.ObjectiveValue())))
+    m.ClearHints()
+    for i_ in range(n0):                       # (the plan's own values: the variables the search solved)
+        v_ = m.GetIntVarFromProtoIndex(i_)
+        m.AddHint(v_, sv.Value(v_))
+    old = {(n, k): sv.Value(YL[n][k]) for (n, k) in runs}
+    m.Minimize(sum(terms))
+    s_ = cp_model.CpSolver()
+    s_.parameters.num_workers = SOLVE_WORKERS
+    s_.parameters.subsolvers.extend(FALLBACK)
+    s_.parameters.interleave_search = True
+    s_.parameters.max_num_deterministic_batches = int(awx_settings.get('SOLVE_PLANE_BATCHES') or '20')
+    s_.parameters.share_glue_clauses = False
+    s_.parameters.share_binary_clauses = False
+    st_ = s_.Solve(m)
+    ok_ = st_ in (cp_model.OPTIMAL, cp_model.FEASIBLE)
+    if not ok_ or s_.ObjectiveValue() >= cur:
+        print(f'   plane tie ({", ".join(f"{L_} {kinds[L_]} {w[L_]}" for L_ in LAYN)}): the plan kept '
+              f'({cur}{"" if ok_ else ", no plan"}, {s_.WallTime():.1f}s)')
+        return sv
+    moved = sorted({n for (n, k) in runs if s_.Value(YL[n][k]) != old[(n, k)]})
+    print(f'   plane tie ({", ".join(f"{L_} {kinds[L_]} {w[L_]}" for L_ in LAYN)}): {cur} -> '
+          f'{s_.ObjectiveValue():.0f} [{s_.StatusName(st_)}] {s_.WallTime():.1f}s, {len(moved)} lane(s) on other layers: {", ".join(moved)}')
+    return _Held(sv, s_)
+
+
+def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, relax=0, front=None, check=False,
+          core=False):
     """the solve of the bench ctx (whole_ctx.plan()) round the destination part `dest`: the JSON
     whole_geo reads (crossings, changes, each lane's route coordinate), or None when CP-SAT finds no plan or none it
     proves optimal in its vias. `cuts`
@@ -204,11 +322,14 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
     # layer across that copper (a LAYER cut, below), its change between the stub and the copper -- its end room there a
     # via's own. A ring lane's berth stub runs across its ring, not along its route: its front is the geometry's
     FRONT = {}
-    try:
-        _side = os.path.splitext(awx_settings.req('BENCH'))[0] + '.plan.json'
-        FRONT = (json.load(open(_side)).get('ends_model') or {}).get('front') or {} if os.path.isfile(_side) else {}
-    except Exception:
-        FRONT = {}
+    if front is not None:
+        FRONT = front                  # (a candidate's, the ends model's own: solve_check)
+    else:
+        try:
+            _side = os.path.splitext(awx_settings.req('BENCH'))[0] + '.plan.json'
+            FRONT = (json.load(open(_side)).get('ends_model') or {}).get('front') or {} if os.path.isfile(_side) else {}
+        except Exception:
+            FRONT = {}
     LAYER_CUTS = []
     for n, ends_ in sorted(FRONT.items()):
         if n not in M or n in prs:
@@ -408,7 +529,18 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         # pays for -- the frame's rings started at the source on zynq's U1 to U5)
         print(f'   crossing windows EMPTY, held open a grid step: {n_empty} of {len(win)}')
     m = cp_model.CpModel()
-    t = {k: m.NewIntVar(Q(lo), Q(hi), f't_{k[0]}_{k[1]}') for k, (lo, hi) in win.items()}
+    WLIT = {}
+    if check and core:
+        # (the check's CORE: each crossing's window held by two assumption literals, so a model with no plan names the
+        # crossings whose windows it could not hold together -- the ends model prices those crossings and searches again,
+        # whole_ends.checked. The model is the same: every assumption holds)
+        t = {k: m.NewIntVar(Q(U_LO), Q(U_HI + G), f't_{k[0]}_{k[1]}') for k in win}
+        for k, (lo, hi) in win.items():
+            a_l, a_h = m.NewBoolVar(''), m.NewBoolVar('')
+            m.Add(t[k] >= Q(lo)).OnlyEnforceIf(a_l); m.Add(t[k] <= Q(hi)).OnlyEnforceIf(a_h)
+            WLIT[a_l.Index()], WLIT[a_h.Index()] = k, k
+    else:
+        t = {k: m.NewIntVar(Q(lo), Q(hi), f't_{k[0]}_{k[1]}') for k, (lo, hi) in win.items()}
     CROWD = {n: m.NewBoolVar(f'crowd_{n}') for n in M} if crowd else {}
 
     def present(lit, n):
@@ -495,6 +627,47 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
                 VCUTS.append({'lane': n, 'u': sp_, 'w': w_, 'built': 1})
     if len(VCUTS) > NVC1:
         print(f'   built-in via cuts at other parts\' pads and the teeth outside the bus: {len(VCUTS) - NVC1}')
+    # (SOLVE_RING_VCUTS: the same past the HANDOFF, on a ring lane's ring stretch -- the cuts above read the trunk
+    # alone, and the passives hugging the destination's faces stand under the rings: a ring lane's change planned on a
+    # 0402's pad there (zynq LVDS: CTRL_OUT2, TX_D1, TX_D0 on C145 / C146 under U5's south face). A pad across the
+    # ring's stack (its lanes' pitches and a standoff out) cuts each lane by that lane's own place in the stack)
+    NVC2 = len(VCUTS)
+    if (awx_settings.get('SOLVE_RING_VCUTS') or '2') != '0' and ring_of:
+        _dcp = [(p_.global_x, p_.global_y) for p_ in ctx.pcb.footprints[Fr.dst].pads]
+        _dcen = (sum(x_ for x_, _y in _dcp) / len(_dcp), sum(y_ for _x, y_ in _dcp) / len(_dcp))
+        for k_, sp_ in sorted(ring_of.items()):
+            mem_ = [n for n in M if bname.get(n) == k_]
+            if not mem_:
+                continue
+            band_ = sum(PITCH + (_pairs.pitch(TRK) if n in prs else 0.0) for n in mem_) + 2 * PITCH
+            wid_ = {n: PITCH + (_pairs.pitch(TRK) if n in prs else 0.0) for n in mem_}
+            sbe_ = {n: end[n] - Hn[n] + rs[k_] for n in mem_}             # where on the ring each lane berths
+            for (px_, py_), rp_ in items:
+                sb_, ob_ = (float(v_) for v_ in sp_.project_pt((px_, py_)))
+                if not (1e-6 < sb_ < float(sp_.S[-1]) - 1e-6):
+                    # (a pad past the ring's ends projects onto them, its offset read off the end leg's line: parts
+                    # 15-50 mm west of the source stood 'beside' the S ring and cut its lanes at its start, K47)
+                    continue
+                oc_ = float(sp_.project_pt(_dcen)[1])
+                out_ = (ob_ - 0.0) * (1.0 if 0.0 >= oc_ else -1.0)      # (its distance OUT from the ring spine)
+                for n in mem_:
+                    w_ = rp_ + VIA / 2 + CLR + (LD(n) if n in prs else 0.0)
+                    reach_ = rp_ + VIA / 2 + CLR + off_[n]
+                    if not (-reach_ < out_ < band_ + reach_):
+                        continue
+                    # (by the lane's own place in the stack -- a ring's lanes peel off to their berths in order, so
+                    # where the pad stands the lanes still on the ring that berth before this one run inside it: its
+                    # offset their widths and half its own, a lane pitch either way for the geometry, as a trunk
+                    # lane's reference. The whole stack cut every lane of the ring: the zynq LVDS at K47, six S-face
+                    # pairs with no change position left in their windows)
+                    o_n = sum(wid_[m_] for m_ in mem_ if m_ != n and sb_ < sbe_[m_] < sbe_[n]) + wid_[n] / 2
+                    if abs(out_ - o_n) >= reach_ + PITCH:
+                        continue
+                    u_ = u_ring(n, sb_)
+                    if Hn[n] < u_ + w_ and u_ - w_ < end[n]:
+                        VCUTS.append({'lane': n, 'u': u_, 'w': w_, 'built': 1})
+        if len(VCUTS) > NVC2:
+            print(f'   built-in via cuts on the rings at other parts\' pads: {len(VCUTS) - NVC2}')
     # ---- the braid rule over every triple
     nt = 0
     for i, j, k in itertools.combinations(Ln, 3):
@@ -1337,6 +1510,22 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         # soon as their count is)
         OBJ = W_V * sum(CROWD.values())
     m.Minimize(OBJ)
+    if check and not CROWD:
+        # (whole_ends.solve_check: has this model a plan at all? Its first plan ends the search -- the verdict alone)
+        m.ClearObjective()
+        s_ = cp_model.CpSolver()
+        s_.parameters.num_workers = 1 if WLIT else SOLVE_WORKERS        # (a core is one worker's)
+        if WLIT:
+            m.AddAssumptions([m.GetBoolVarFromProtoIndex(i_) for i_ in sorted(WLIT)])
+        s_.parameters.stop_after_first_solution = True
+        s_.parameters.max_deterministic_time = CHECK_WORK
+        st_ = s_.Solve(m)
+        STATUS['plan'] = st_ in (cp_model.OPTIMAL, cp_model.FEASIBLE)
+        out_ = {'plan': STATUS['plan'], 'status': s_.StatusName(st_), 'crossings': len(t), 'lanes': len(M)}
+        if WLIT and st_ == cp_model.INFEASIBLE:
+            suff_ = list(s_.SufficientAssumptionsForInfeasibility())
+            out_['core'] = sorted({WLIT[i_] for i_ in suff_ if i_ in WLIT})
+        return out_
     # ...and STOPPED when it STALLS: once it has a plan, SOLVE_STALL of the search's own model reductions in a row with
     # no better plan and no better bound (its log's '#Model' against '#n' and '#Bound' lines, events of the
     # deterministic search, never a clock). K35: its one plan at 46 s, then 145 s with neither -- the budget spent on
@@ -1419,6 +1608,15 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         t_first = sv.WallTime()
         sv, st, proved = run(FALLBACK)
         print(f'   plan-finding workers: [{sv.StatusName(st)}] {sv.WallTime():.0f}s (after {t_first:.0f}s)')
+    # (SOLVE_PLANE_TIE: the inner layers' MIRROR broken by the board. Every term prices two inner layers alike,
+    # so a plan and its mirror -- each lane's In1 runs on In2 and back -- cost the same and the search returns either:
+    # the zynq LVDS's loop re-solves flipped 18% of their lanes so, 24 of 33 at once, and a layer cut learned on one
+    # layer was moot on the next round's plan. From the plan found, its crossings and changes held and nothing it
+    # pays allowed to grow, the runs' layers chosen again by the PLANES they would split: a GND plane's dearer than a
+    # power plane's, a layer with no plane free; between planes of one kind the one nearer F.Cu -- per step of run)
+    if NL > 2 and (awx_settings.get('SOLVE_PLANE_TIE') or '1') == '1' and st in (cp_model.OPTIMAL, cp_model.FEASIBLE) \
+            and not CROWD:
+        sv = _plane_tie(ctx, m, sv, OBJ, t, chg, YL, M, entry, end, LAYN, KMAX, Q)
     print(f'whole_solve: {len(t)} crossings ({sum(1 for k in t if same(*k))} same-branch), {nt} triples, K<={KMAX}, '
           f'mover/stayer (stay {P_STAY}), stagger {STAGGER:.3f}, MARG {MARG}: [{sv.StatusName(st)}] {sv.WallTime():.0f}s', end=' ')
     # only a plan PROVED optimal in its vias -- the nets over two and the vias, whole multiples of W_V; the history

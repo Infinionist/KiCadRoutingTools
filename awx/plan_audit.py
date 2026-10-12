@@ -779,7 +779,8 @@ def check_static(ctx, corridors, only=None):
                 for v in ctx.base_vias:
                     if v.net_id in own or not inb(v.x, v.y):
                         continue
-                    cand.append((np.hypot(P[:, 0] - v.x, P[:, 1] - v.y) - v.size / 2, f'via {name(v.net_id)}'))
+                    cand.append((np.hypot(P[:, 0] - v.x, P[:, 1] - v.y) - _pairs.svia_reach(cfg, v.x, v.y, v.size),
+                                 f'via {name(v.net_id)}'))
                 for d, what in cand:
                     k = int(np.argmin(d - NEED))
                     if NEED[k] - NUDGE_FRAC * g <= d[k] < NEED[k] - 1e-6:

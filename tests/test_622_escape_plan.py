@@ -183,8 +183,9 @@ import json  # noqa: E402
 with tempfile.TemporaryDirectory() as td_:
     out_ = os.path.join(td_, 'fo.kicad_pcb')
     b.layer = 'In1.Cu'
-    read_ = {'lane_over': {'A': 1}, 'lane_load': {'A': 0.9, 'B': 0.2}, 'lane_x': {'A': 3, 'B': 1},
-             'lane_front': {'B': {'1': [0.1, 0.2, 0.3, 0.4]}}, 'cut': ['S', 1.0]}
+    # (as whole_ends.choose.last holds it: the chosen state's lane readings under 'parts')
+    read_ = {'parts': {'lane_over': {'A': 1}, 'lane_load': {'A': 0.9, 'B': 0.2}, 'lane_x': {'A': 3, 'B': 1},
+                       'lane_front': {'B': {'1': [0.1, 0.2, 0.3, 0.4]}}}, 'cut': ['S', 1.0]}
     ep.sidecar(out_, {'chi': 1}, ['A', 'B'], {'A': a, 'B': b}, {'A': b, 'B': a}, read_['cut'], read_)
     em_ = json.load(open(os.path.join(td_, 'fo.plan.json'))).get('ends_model') or {}
     check(em_ == {'over': {'A': 1}, 'load': {'A': 0.9, 'B': 0.2}, 'x': {'A': 3, 'B': 1},

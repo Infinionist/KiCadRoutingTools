@@ -281,7 +281,8 @@ for ref_, fp in ctx.pcb.footprints.items():            # (labelled by the board'
 for s in ctx.base_segments:
     STATIC.append(('seg', {s.layer}, s.net_id, (s.start_x, s.start_y, s.end_x, s.end_y, s.width / 2), 'copper'))
 for v in ctx.base_vias:
-    STATIC.append(('circ', set(RL), v.net_id, (v.x, v.y, v.size / 2), 'via'))
+    # (its radius for a via's bar, and its reach for a lane's: the router's ring, SVIA_RING -- pairs.svia_reach)
+    STATIC.append(('circ', set(RL), v.net_id, (v.x, v.y, v.size / 2, _pairs.svia_reach(cfg, v.x, v.y, v.size)), 'via'))
 # a held pair's END LEGS are laid where they are drawn: copper the singles are fitted round -- and a crossed pair's
 # crossover, its legs and its two barrels (in name order: a set's would follow the hash seed, and this order is the
 # static list's and so the LP's rows')
@@ -349,7 +350,7 @@ def static_near(P, L, own, pair=False):
         if L not in Ls or net in own:
             continue
         if kind == 'circ':
-            cx, cy, r = d
+            cx, cy, r = d[:3]
             v = P - np.array([cx, cy]); dd = np.linalg.norm(v)
             if dd < 1e-9:
                 continue
@@ -406,13 +407,14 @@ def static_seg(p0, p1, L, own, cut=math.inf, pair=False):
         if L not in Ls or net in own:
             continue
         if kind == 'circ':
-            if far(d[0], d[1], d[0], d[1], d[2]):
+            r_ = d[3] if len(d) > 3 else d[2]          # (a via on the board: its reach for a lane, SVIA_RING)
+            if far(d[0], d[1], d[0], d[1], r_):
                 continue
             c = np.array([d[0], d[1]])
             dd, s, _t = seg_seg(p0, p1, c, c)
             P = p0 + (p1 - p0) * s
             v = P - c; nv_ = np.linalg.norm(v)
-            out.append((dd - d[2], s, (c + v / nv_ * d[2]) if nv_ > 1e-9 else None, lab))
+            out.append((dd - r_, s, (c + v / nv_ * r_) if nv_ > 1e-9 else None, lab))
         elif kind == 'seg':
             if far(min(d[0], d[2]), min(d[1], d[3]), max(d[0], d[2]), max(d[1], d[3]), d[4]):
                 continue

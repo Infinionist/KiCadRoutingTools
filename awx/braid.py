@@ -6626,6 +6626,34 @@ def mirror_plan(plan, M):
     return q
 
 
+def run_config(pcb, board):
+    """the run's routing config (connect.make_config at the run's sizes), with the board's own hole-to-hole and
+    copper-to-edge floors where they are tighter -- setup's, and a candidate's context's (whole_ctx.candidate)"""
+    # the board's own hole-to-hole floor when it is tighter than the
+    # config's default (the second bench, zynq_ad9364, declares 0.25 mm
+    # and its K28 shipped one drill-to-drill graze at the default 0.2);
+    # tighten-only, so a board declaring less than the default routes
+    # as before
+    from list_nets import board_constraint
+    # (a run's supplied rules carry the floors the driver resolved -- route_bus: given, else the board's own)
+    _sup = _rules.active()
+    h2h = _sup.hole_to_hole if _sup.hole_to_hole is not None else board_constraint(board, 'min_hole_to_hole')
+    kw = {}
+    if h2h and h2h > cn.GridRouteConfig().hole_to_hole_clearance:
+        kw['hole_to_hole_clearance'] = float(h2h)
+    # and the board's own copper-to-edge floor, likewise tighten-only: the
+    # config's 0 falls back to the track clearance (0.1), the project
+    # grades the edge at its min_copper_edge_clearance (0.2 on the
+    # bench's family), and a lane along an edge -- never on the bench,
+    # SCAS on the pose gate's BF article at K28 -- shipped three edge
+    # violations at 0.079 mm over (2026-09-08)
+    edge = (_sup.edge_clearance if _sup.edge_clearance is not None
+            else board_constraint(board, 'min_copper_edge_clearance'))
+    if edge and edge > CLEAR:
+        kw['board_edge_clearance'] = float(edge)
+    return cn.make_config(pcb, TRACK, CLEAR, VIA_SIZE, VIA_DRILL, grid_step=GRID, **kw)
+
+
 def setup(board, names, dest, log, plan=None, pairs=False):
     """Everything the corridors are built from: the board, the ends,
     the static obstacles, the flow directions, the corridor groups.
@@ -7037,30 +7065,7 @@ def setup(board, names, dest, log, plan=None, pairs=False):
     # vias) because the braid's vias are structural (page dive and
     # surface, reserved weaves, legs), so a costlier via only buys
     # worse detours that force more of them.
-    # the board's own hole-to-hole floor when it is tighter than the
-    # config's default (the second bench, zynq_ad9364, declares 0.25 mm
-    # and its K28 shipped one drill-to-drill graze at the default 0.2);
-    # tighten-only, so a board declaring less than the default routes
-    # as before
-    from list_nets import board_constraint
-    # (a run's supplied rules carry the floors the driver resolved -- route_bus: given, else the board's own)
-    _sup = _rules.active()
-    h2h = _sup.hole_to_hole if _sup.hole_to_hole is not None else board_constraint(board, 'min_hole_to_hole')
-    kw = {}
-    if h2h and h2h > cn.GridRouteConfig().hole_to_hole_clearance:
-        kw['hole_to_hole_clearance'] = float(h2h)
-    # and the board's own copper-to-edge floor, likewise tighten-only: the
-    # config's 0 falls back to the track clearance (0.1), the project
-    # grades the edge at its min_copper_edge_clearance (0.2 on the
-    # bench's family), and a lane along an edge -- never on the bench,
-    # SCAS on the pose gate's BF article at K28 -- shipped three edge
-    # violations at 0.079 mm over (2026-09-08)
-    edge = (_sup.edge_clearance if _sup.edge_clearance is not None
-            else board_constraint(board, 'min_copper_edge_clearance'))
-    if edge and edge > CLEAR:
-        kw['board_edge_clearance'] = float(edge)
-    ctx.cfg = cn.make_config(pcb, TRACK, CLEAR, VIA_SIZE, VIA_DRILL,
-                             grid_step=GRID, **kw)
+    ctx.cfg = run_config(pcb, board)
     ctx.base_segments = list(pcb.segments)
     ctx.base_vias = list(pcb.vias)
     # each net's FANOUT copper, as it came: what a rip resets to

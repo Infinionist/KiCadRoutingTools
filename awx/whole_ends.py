@@ -46,6 +46,8 @@ usage: whole_ends.py BOARD NETS|@FILE  -- the ends on the teeth as laid, and wit
 for each (the fanout's menus as PLAN_JUDGE=ends builds them)
 """
 import collections
+import contextlib
+import io
 import itertools
 import math
 import os
@@ -388,6 +390,7 @@ class Ends:
         # ends at 78 with SCK over; the solve held SCK over and 51 route vias, proved nothing, and laid nothing)
         self.fb_over = {ln: int(k) for ln, k in (fb.get('over') or {}).items() if ln in self.legs_of and int(k) > 0}
         self._xroute = {}          # the exact route per state (exact_route)
+        self.x_learned = {}        # {frozenset of two lanes: vias}: crossings the whole solve could not place (checked)
         self.wcut = None           # the destination's cut when WINDING moved it off the far face (choose: cut_phase)
         self.pool = {}             # every search's result: its state -> its objective by the estimate
         self._memo = {}            # every state scored: its objective -- the search asks a third of them again
@@ -1043,8 +1046,10 @@ class Ends:
                 sp_ = front_span(self.st['pcb'], self.st['byname'][self.legs_of[l_][0]][0], o_[0][0], self.run_ids)
                 if sp_ is not None:
                     lane_front[l_][k_] = sp_
+        # (crossings the whole solve could not place on an earlier state, checked: each its price where it is made again)
+        xlearn = sum(self.x_learned.get(frozenset((a, b)), 0.0) for a, b in inv) if self.x_learned else 0.0
         obj = (W_OVER * over + fan + route + ride / VIA_MM + cong + fbk + EPS_X * len(inv) + BIG * (nconf + nsplit + nref)
-               + STACK_COST * stacks + front + WALLED * len(walled := walled_balls(self.pw, self.lanes, state)))
+               + STACK_COST * stacks + front + WALLED * len(walled := walled_balls(self.pw, self.lanes, state)) + xlearn)
         xl = collections.Counter(l_ for e in inv for l_ in e)
         lane_over = {l_: k_ for l_ in lanes if (k_ := max(ovk(l_, chg[l_]), self.fb_over.get(l_, 0)))}
         same = sum(1 for a, b in inv if col.get(a) is not None and col.get(a) == col.get(b))
@@ -1057,6 +1062,7 @@ class Ends:
                          lane_over=lane_over, lane_load={l_: round(v_, 3) for l_, v_ in loads.items()},
                          lane_x=dict(xl), stacks=stacks, exact_failed=exact_failed, cut=cut, front=front,
                          lane_front=dict(lane_front), dropped=sum(npair[l_] * drp[l_] for l_ in lanes), walled=walled,
+                         learned=round(xlearn, 2),
                          conf_lanes=(sorted({lane_of[c[0]] for c in chosen for o in self.conf.get(c, ())
                                              if o in chosen}) if nconf else []))
 
@@ -1588,12 +1594,148 @@ def choose(st, log=print, src_free=True, fixed=None, seed=None, learned=None, fr
             log(f'  whole ends: teeth moved ({len(out[1])}): {_fmt(pF)}')
         else:
             log('  whole ends: no tooth move is better')
+    # (the chosen state's own reading -- its lanes' nets over two, load, crossings and blocked fronts -- for the
+    # sidecar: escape_plan wrote the lane_* keys from choose.last's top level, where they never were, so the round's
+    # solve had no blocked front the check's had (solve_check's front=lane_front) and whole_feedback no lane to name)
+    parts_ = pF if (E2 is not None and vF < vL - TOOTH_GAIN) else pL
+    if st.get('escape') and (awx_settings.get('ENDS_SOLVE_CHECK') or '1') == '1':
+        Ef, sf, pf_ = (E2, sF, pF) if (E2 is not None and vF < vL - TOOTH_GAIN) else (E, sL, pL)
+        sf = checked(Ef, sf, pf_, log=log)
+        out = Ef.choice(sf)
+        parts_ = Ef.score(sf, exact=True)[1]
     # (`st`: the plan state it chose on, and whether it asked tooth moves -- asked none, its berths ARE the choice on
     # that board's teeth as laid, and fanout_from_plan need not ask again; `cut` the cut the ends taken were chosen at:
     # the teeth's search's where its ends are taken, else the first's -- on a board with no tooth laid every tooth is a
     # move either way, and the moves alone named the second search's cut beside the first search's ends)
     choose.last = dict(laid=vL, laid_parts=pL, free=vF, free_parts=pF, moved=bool(out[1]), st=id(st),
-                       cut=(E2.wcut if E2 is not None and vF < vL - TOOTH_GAIN else E.wcut))
+                       cut=(E2.wcut if E2 is not None and vF < vL - TOOTH_GAIN else E.wcut), parts=parts_)
+    return out
+
+
+CHECK_TRIES = 4           # the solve's check (checked): this many searches again before the ends stand as chosen
+CHECK_SWEEP = 8           # ...each first asking a crowded lane's best alternatives alone, the other lanes held
+X_LEARN = 5.0             # a crossing the whole solve could not place, in vias -- doubled each time it is learned again
+
+
+def _sweep(E, state, lanes, log=print):
+    """a crowded lane's ends changed ALONE, every other lane held: its CHECK_SWEEP best (tooth, berth) options by the
+    estimate, each asked of the whole solve -- the first it takes, else None. The fix is often the same place another
+    way: on the zynq LVDS bus's K47 round 2, RX_D2's berth at the same exit on the same layer with its legs the other
+    way round (no crossover to fit in the channel), the cheaper by the estimate as well"""
+    for lane in lanes[:2]:
+        if lane not in E.legs_of:
+            continue
+        cands = []
+        for ti in range(len(E.T[lane])):
+            for bi in range(len(E.B[lane])):
+                if (ti, bi) == tuple(state[lane]):
+                    continue
+                s2 = dict(state)
+                s2[lane] = (ti, bi)
+                v_ = E.objective(s2)
+                if v_ < BIG:
+                    cands.append((v_, ti, bi))
+        for _v, ti, bi in sorted(cands)[:CHECK_SWEEP]:
+            s2 = dict(state)
+            s2[lane] = (ti, bi)
+            r = solve_check(E, s2, crowd=False)
+            if r and r['plan']:
+                return s2
+    return None
+
+
+def checked(E, state, parts, log=print):
+    """the chosen state ASKED OF THE WHOLE SOLVE (solve_check) and, where it holds no plan under its strict rules,
+    searched again, CHECK_TRIES times at most: first a crowded lane's alternatives alone (_sweep); then the crossings the
+    solve could not place together (its CORE: the windows it could not hold) priced in the estimate (x_learned,
+    X_LEARN vias, doubled each time a crossing is learned again) and a local search from the state -- each result asked
+    again. The first state the solve takes is the choice; none taken, the state as it was"""
+    t0 = time.time()
+    v = solve_check(E, state, front=(parts or {}).get('lane_front'))
+    if v is None:
+        return state
+    say = lambda what, v_: log(f'  whole ends: {what}: the solve\'s check: ' + (
+        'a plan' if v_ and v_['plan'] else f'NO plan [{(v_ or {}).get("status")}], crowded {(v_ or {}).get("crowded")}, '
+        f'{len((v_ or {}).get("core") or [])} crossing(s) in its core') + f' ({time.time() - t0:.0f} s)')
+    say('as chosen', v)
+    cur, quiet = state, (lambda *a: None)
+    for k in range(CHECK_TRIES):
+        if v['plan'] or not (v['crowded'] or v['core']):
+            break
+        s1 = _sweep(E, cur, v['crowded'], log)
+        if s1 is not None:
+            log(f'  whole ends: a crowded lane\'s other ends alone -- the solve takes them ({time.time() - t0:.0f} s)')
+            return s1
+        for a_, b_ in v['core']:
+            key = frozenset((a_, b_))
+            E.x_learned[key] = 2.0 * E.x_learned[key] if key in E.x_learned else X_LEARN
+        E._memo.clear(); E._parts.clear(); E.pool.clear()
+        nxt, (_vn, pn) = E.best_exact(E.search(cur, log=quiet), log=quiet)
+        v = solve_check(E, nxt, front=pn.get('lane_front'))
+        say(f'searched again, {len(E.x_learned)} crossing(s) priced ({k + 1}): {_fmt(pn)}', v)
+        if v and v['plan']:
+            return nxt
+        cur = nxt
+    if not v['plan']:
+        log('  whole ends: no searched state has a plan under the solve\'s strict rules -- the ends stand as chosen')
+        return state
+    return cur
+
+
+def state_plan(E, state):
+    """(plan, tracks, names) of an ESCAPE state: the plan sidecar's keys as escape_plan.sidecar writes them for its
+    ends (each leg's tooth and berth exits, their layers, the escape directions, the pair frame, the ends model's cut),
+    the escape runs escape_plan.lay lays for them ({start, end, width, layer, net_id}), and the run's nets in its order"""
+    st = E.st
+    import rules as _rules_
+    fan = _rules_.active().fan_track
+    plan = {'ends': {}, 'tooth_layer': {}, 'dest_layer': {}, 'tooth_dir': {}, 'stub_dir': {}, 'chi': int(st['chi'])}
+    tracks = []
+    for lane, lg in E.lanes:
+        to_, bo_ = E.T[lane][state[lane][0]], E.B[lane][state[lane][1]]
+        for leg, tm, bm in zip(lg, to_[0], bo_[0]):
+            plan['ends'][leg] = [list(tm.exit_pt), list(bm.exit_pt)]
+            plan['tooth_layer'][leg], plan['dest_layer'][leg] = tm.layer, bm.layer
+            plan['tooth_dir'][leg], plan['stub_dir'][leg] = list(FAR[tm.direction]), list(FAR[bm.direction])
+            nid = st['byname'][leg][0]
+            for m in (tm, bm):
+                for p, q, L in m.legs:
+                    if L == m.layer and math.hypot(q[0] - p[0], q[1] - p[1]) > 1e-6:
+                        tracks.append({'start': tuple(p), 'end': tuple(q), 'width': fan, 'layer': L, 'net_id': nid})
+    if E.wcut is not None:
+        plan['dest_cut'] = list(E.wcut) if isinstance(E.wcut, (list, tuple)) else E.wcut
+    return plan, tracks, [nm for nm in st['launch'] if nm in plan['ends']]
+
+
+def solve_check(E, state, front=None, crowd=True):
+    """THE WHOLE SOLVE'S OWN VERDICT on an ESCAPE state's ends, before any is laid: the bench the state makes
+    (whole_ctx.candidate: the board as it stands, each end's escape run added in memory, the plan sidecar's keys from
+    the state at the ends model's cut) given to whole_solve.solve under its strict rules (no relaxation) -- the same
+    frame, spans, end rooms and crossing windows the round's solve will hold the plan to, which the ends model's own
+    route (exact_route_nl: the orders alone) does not see. On the zynq LVDS bus's escapes the round's first solve had no
+    plan in 21 of 29 rounds where that route found one: lanes leaving the source's near face enter the trunk a millimetre
+    or two before the rings leave it, and a pair's end rooms leave no place there for the change its crossings force.
+    {'plan': bool, 'crowded': [lanes the CROWD diagnosis names when there is none]}; None when it cannot be asked (not
+    an escape state, a plan in the turned-over pair frame)"""
+    st = E.st
+    if not st.get('escape'):
+        return None
+    import whole_ctx
+    import whole_solve
+    plan, tracks, names = state_plan(E, state)
+    if getattr(E, '_check_cfg', None) is None:
+        import braid as bd
+        E._check_cfg = bd.run_config(st['pcb'], st.get('base'))
+    ctx = whole_ctx.candidate(st['pcb'], names, st['dref'], plan, tracks, cfg=E._check_cfg, board=st.get('base'))
+    if ctx is None:
+        return None
+    with contextlib.redirect_stdout(io.StringIO()):
+        J = whole_solve.solve(ctx, st['dref'], front=front or {}, check=True, core=crowd)
+        out = {'plan': bool(J and J.get('plan')), 'status': (J or {}).get('status'), 'crowded': [],
+               'core': [tuple(k_) for k_ in (J or {}).get('core') or []]}
+        if not out['plan'] and crowd:
+            Jc = whole_solve.solve(ctx, st['dref'], front=front or {}, crowd=True, check=True)
+            out['crowded'] = list((Jc or {}).get('crowded') or [])
     return out
 
 

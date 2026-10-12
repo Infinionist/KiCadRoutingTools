@@ -393,7 +393,7 @@ def sidecar(out, st, names, teeth, berths, cut, read=None):
     import source_realize as sr
     plan = {'nets': list(names), 'ends': {}, 'tooth_layer': {}, 'dest_layer': {}, 'tooth_dir': {}, 'stub_dir': {},
             'berth_sig': {}, 'chi': int(st['chi']), 'pages_first': False,
-            'ends_model': {k: (read or {}).get('lane_' + k, {}) for k in ('over', 'load', 'x', 'front')},
+            'ends_model': {k: ((read or {}).get('parts') or {}).get('lane_' + k, {}) for k in ('over', 'load', 'x', 'front')},
             'escape': True}
     for nm in names:
         t, b = teeth.get(nm), berths.get(nm)
@@ -426,6 +426,7 @@ def run(out_path, K, base, log=print):
     sref = refs.most_common(1)[0][0]
     log(f'escape fanout: {len(names)} nets, {sref} -> {dref}, on {os.path.basename(base)}')
     st = plan_state(pcb, names, sref, dref, log=log)
+    st['base'] = base                    # (the board the ends are laid on: whole_ends.solve_check reads its floors)
     fixed = incremental_fixed(st, names)
     if fixed:
         log(f'  incremental: {len(fixed)} berth(s) held as laid')

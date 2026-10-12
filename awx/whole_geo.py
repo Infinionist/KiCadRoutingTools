@@ -326,6 +326,9 @@ for v_ in ctx.base_vias:
     own_ = NET_LANE.get(v_.net_id)
     if any(b[0] - REACH <= v_.x <= b[2] + REACH and b[1] - REACH <= v_.y <= b[3] + REACH for b in BOX):
         r = v_.size / 2
+        if (awx_settings.get('SVIA_RING') or '1') == '1':
+            # (its reach for a lane: the router's ring about the grid point it rounds to -- pairs.svia_reach)
+            r = max(r, _pairs.svia_reach(ctx.cfg, v_.x, v_.y, v_.size))
         VSTUB.append((v_.x - r, v_.y - r, v_.x + r, v_.y + r, ALL(), 'svia ' + (own_ or ctx.pcb.nets[v_.net_id].name.split('/')[-1]), own_))
 # ... and the LANES keep off the stub copper within a clearance block of the line, and off the stub vias
 for st_ in LSTUB + [v for v in VSTUB if v[5].startswith('svia ')]:

@@ -579,7 +579,10 @@ seeds the berths and in the ends model that judges them: two escapes conflict
 when they cross (every crossing counts: `select_moves.SEL_XING` is 2 under
 `PLAN_JUDGE=ends`, and 1 -- a crossing only where a move climbs -- for the
 braid's judges), or when two exits on one layer stand closer than a track and
-a clearance. An F exit stacked over a B one is allowed, and the engine checks
+a clearance, or when one's via stands within another's run by less than the
+router keeps a track off a via (`rules.fan_via_reach`: its via-to-track
+clearance for a fanout track rounded up to whole grid cells, and a quarter
+cell). An F exit stacked over a B one is allowed, and the engine checks
 a stub against other nets' tracks on the stub's own layer only, so it lays
 what the model allows.
 
@@ -650,6 +653,16 @@ distinct states within `EXACT_MARGIN` of the best (`EXACT_TOP`) are ranked on
 the exact route, and a state whose exact route fails ranks after every one
 that routes. Each state is scored once and each end's place round a grown box
 is cached.
+
+**The solve's check** (the escape fanout). The ends chosen are put to the
+whole solve under its strict rules before any is laid -- the bench they make
+built in memory (`whole_ctx.candidate`), so the solve holds them to the same
+frame, spans, end rooms and crossing windows the round's will. With no plan,
+the crowded lanes' best alternatives are asked alone, the crossings the solve
+could not place are priced, and the ends searched again, up to `CHECK_TRIES`
+(four) times; a state still without a plan stands as chosen. On the zynq LVDS
+bus's escapes the round's first solve had no plan in 21 of 29 rounds where the
+ends model's own route found one.
 
 **The far-face cut.** Berths on the destination's far face go round its
 north or its south side, split at the middle of the widest gap between them.
@@ -814,7 +827,10 @@ once, proved optimal in its vias.
 - Every lane's changes stay off the stretch where its reference passes within
   a via's reach of another part's pad or a tooth outside the bus
   (`whole_ctx.foreign_teeth`), a pair's the longer by its dive's straight
-  run. These are the **built-in via cuts**.
+  run. These are the **built-in via cuts**. Past the handoff the same along
+  each ring, by each lane's own place in its ring's stack: the lanes that
+  berth sooner peel off sooner, so the ones still on the ring run inside them,
+  and a pad cuts the lanes whose place stands within its reach.
 
 **The objective**, as the ends model's:
 
@@ -827,6 +843,13 @@ once, proved optimal in its vias.
    found the plan short (`whole_gate --hot`), priced by how many audits found
    it so -- a crossing there a lane pitch square of copper, a change a via's
    patch. The first solve prices nothing.
+4. **the planes**, below everything else: between plans of equal cost each
+   run's layer is chosen again by the plane it would split -- a ground
+   plane's dearer than a power plane's, a layer with no pour free, and among
+   planes of one kind the one nearer F.Cu -- so a plan and its mirror on the
+   inner layers come out the same way every time, and the ground plane is cut
+   the least (`_plane_tie`: after the search, nothing the plan pays allowed to
+   grow).
 
 **Proving it.**
 
@@ -974,7 +997,11 @@ runs again with the flip before anything is snapped.
 
 - **Static clearance** to a pad as KiCad draws it, plus the router's corner
   buffer for a single in a pad's corner zone; a pair at its legs' reach at a
-  45-degree corner plus the half step its off-grid legs take.
+  45-degree corner plus the half step its off-grid legs take. A via on the
+  board (another net's dog-bone, a stitch) as the router keeps a track off it:
+  its ring about the grid point it rounds to, and as far again as it stands
+  off that point (`pairs.svia_reach`) -- the geometry and the audit read the
+  same.
 - **Shape:** the audit's fold and notch findings straightened before and
   after the rounds; the rounds stop once no vertex moves more than a
   nanometre.
@@ -1666,10 +1693,8 @@ channels first, and the other escapes leave round it.
   the source's corner and then runs across the spine has no slope the
   geometry can lay, and it is drawn through the corner's dog-bone vias; the
   trunk and a ring meet at the destination's corner with no order kept
-  between their lanes; the solve's built-in via cuts at other parts' pads read
-  the trunk alone, so a ring lane's change lands on the passives that hug the
-  destination; and a crossing or a pair's crossover the ends leave to the
-  first millimetre past a corner has no room. The room itself is there: the
+  between their lanes; and a crossing or a pair's crossover the ends leave to
+  the first millimetre past a corner has no room. The room itself is there: the
   cuts from corner to corner hold many times the lanes the plans send. To try:
   - **a corner suite of synthetic buses** -- two arrays at gaps of 2 to 6 mm,
     offset either way, lanes leaving one face or two, pairs crossed and not,
@@ -1685,10 +1710,6 @@ channels first, and the other escapes leave round it.
     a stacked one (two lanes already on two layers there), with the ends
     model told where each crossing can stand -- the stretch two lanes share
     -- and pricing one that only a corner zone offers;
-  - **via cuts along the rings,** at other parts' pads, as along the trunk --
-    each lane's by its own place in its ring's stack (the lanes that berth
-    sooner peel off sooner, so they run inside it), not every pad across the
-    whole stack against every lane of the ring;
   - **more ways out of a corner ball:** both faces, its own layer, and the
     room a neighbour's surface escape frees, so the ends can keep a corner's
     crossings out of the corner.
