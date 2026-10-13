@@ -583,12 +583,17 @@ ROWS = [
         'ignore_nets': ['GND'],
         'signal': 'edge_facing_pads',
         'guard': ('crossings', 'hpwl', 'inversions', 'body_blocking'),
-        'expect': 'regress',
+        # #1172 (fa10 P2): regress -> improve. Its courtyard tier seats J18
+        # clear of J3's courtyard on BOTH arms (the old seed overlapped them
+        # by 5.03mm2), and on that seed the pin-order inversions fall with
+        # the rest. Toggling `_stage1_choose_edge_angle` and
+        # `_edge_courtyard_tier` off restores the old mark exactly. The term
+        # stays rejected: facing-seed-esp_prog still regresses.
+        'expect': 'improve',
         'rejected': True,
         'why': ('MECHANISM: as facing-seed-esp_prog, with the wire guards '
                 'going the OTHER way: crossings and wire length fall with '
-                'the signal here, and pin-order inversions alone rise -- '
-                'one guard is enough, as declared before the run. `unseated` '
+                'the signal here. `unseated` '
                 'is in the baseline because the first form of this arm lost '
                 "the seeder's whole-board sweep on the OFF path and this "
                 'board is where that showed.'),
@@ -743,6 +748,12 @@ _AFTER_ICS_MARKS = {
     # back restores improve / regress: the attribution toggle).
     ('decap-within-limit', 'ulx3s'): 'neutral',
     ('decap-after-queue', 'ulx3s'): 'neutral',
+    # #1172 (fa10 P2): splitflap's seed moved -- the courtyard tier seats
+    # J18 clear of J3's courtyard (5.03mm2 before, the OFF arm's one intent
+    # error, a `legality` one) -- and on that seed these two read
+    # neutral, not regress. The #1172 flags off restore regress exactly.
+    ('decap-after-ics', 'splitflap_driver'): 'neutral',
+    ('decap-within-limit', 'splitflap_driver'): 'neutral',
 }
 ROWS += [
     {
