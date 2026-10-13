@@ -664,6 +664,27 @@ could not place are priced, and the ends searched again, up to `CHECK_TRIES`
 bus's escapes the round's first solve had no plan in 21 of 29 rounds where the
 ends model's own route found one.
 
+**The joint ends** (an escape base; `ENDS_JOINT=0` leaves the search alone).
+Before any search, every lane's tooth and berth are chosen together by CP-SAT
+over the same menus: one choice per lane and end, the conflicts the search
+honours and a pair's opposite hands forbidden, each end on a layer its
+domain allows, two lanes whose orders round the boxes differ crossing on
+different layers where neither changes, and two via ends whose runs meet, or
+two legs stacked at one exit, on different layers. It minimizes the fanout's
+vias and ten vias a crossing -- crossings first, where the search's objective
+prices a stack at five vias and a crossing at a hundredth, and so buys stacks
+back with crossings the solve then cannot place: on the zynq LVDS bus's round
+one, none of 39 of its local optima at K47 had a plan under the solve's
+check. The far face's cut and each winding gap off it are ranked by a descent
+of the same objective (each lane in turn takes its best tooth and berth
+against the others), and CP-SAT is hinted from the best cut's descent. The
+state is put to the solve's check; a failing one's core is priced and solved
+again, and with no plan in four checks the search takes over. Reproducible: a
+count of interleaved batches stops it, and every set it is built from is
+walked in order. On that bus's round-one benches at K32, K40 and K47 each had
+a plan at the first check, the whole fanout in 14 to 108 s, where the search's
+took 455 to 1193 s.
+
 **The far-face cut.** Berths on the destination's far face go round its
 north or its south side, split at the middle of the widest gap between them.
 The model takes that cut from its own exits and it rides the plan sidecar
@@ -1839,8 +1860,8 @@ channels first, and the other escapes leave round it.
   cut that ties with the widest gap; it could score every gap along the far
   face, on its own objective, and take the best -- a score per gap, so the
   search would need it cheaply (moving the cut past a berth flips only that
-  berth's crossings with every other lane). Further, the cut a solve
-  variable.
+  berth's crossings with every other lane). The joint ends rank every gap by
+  a descent; the cut a variable of their CP-SAT model is untried.
 - **`EXACT_MARGIN` against the estimate's error:** the margin (4 vias) is
   below what the estimate can be off, so a state just outside it is never
   ranked on the exact route.
