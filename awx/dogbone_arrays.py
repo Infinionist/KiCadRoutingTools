@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.join(HERE, '..', 'py_router'))
 sys.path.insert(0, HERE)
 from kicad_parser import parse_kicad_pcb  # noqa: E402
 from kicad_writer import add_tracks_and_vias_to_pcb  # noqa: E402
+import awx_settings  # noqa: E402
 import rules as _rules  # noqa: E402
 
 
@@ -113,8 +114,49 @@ def dogbone(pcb, refs, log=print):
         prim_x = abs(ox) >= abs(oy)
         pads.sort(key=lambda p: -max(abs(p.global_x - cx) / px, abs(p.global_y - cy) / py))
         n_in, left = 0, []
+        # THE OUTER RING left undog-boned where a ball can leave on its own layer (DOGBONE_EDGE_FREE=0: every ball
+        # dog-boned) -- a track straight out of the field across its face, a pitch past the ring, clear of every other
+        # pad on that layer -- as the human's zynq leaves 42 of U1's 55 outer balls (all ten of the bus's) without a
+        # via: the outer ring escapes on the surface and the edge band stays free of vias for the lanes beneath (U1's
+        # band, a pitch deep: 33 vias in the human's, 84 in the base dog-boned to every ball)
+        edge_free = (awx_settings.get('DOGBONE_EDGE_FREE') or '1') == '1'
+        x_lo, x_hi, y_lo, y_hi = xs[0], xs[-1], ys[0], ys[-1]
+        n_edge = 0
+        bare = set()
+        if edge_free:
+            for p in pads:
+                home = next((L for L in p.layers if L.endswith('.Cu')), 'F.Cu')
+                outs = [(dx_, dy_) for dx_, dy_, on in ((-1, 0, abs(p.global_x - x_lo) < 1e-3),
+                                                        (1, 0, abs(p.global_x - x_hi) < 1e-3),
+                                                        (0, -1, abs(p.global_y - y_lo) < 1e-3),
+                                                        (0, 1, abs(p.global_y - y_hi) < 1e-3)) if on]
+                if any(stub_ok((p.global_x, p.global_y), (p.global_x + dx_ * 2 * px, p.global_y + dy_ * 2 * py), p,
+                               home) for dx_, dy_ in outs):
+                    bare.add(id(p))
+            # ...a PAIR's two balls alike: one leg left without a via and its partner dog-boned leaves the pair one
+            # escape on the surface and one through a via, no two of which make a pair's option (zynq LVDS U5 RX_D0:
+            # every berth option refused) -- the leg is dog-boned with its partner
+            import pairs as _pairs
+            short_ = lambda p: (getattr(p, 'net_name', '') or '').split('/')[-1]
+            ball_of = {}
+            for p in pads:
+                ball_of.setdefault(short_(p), []).append(p)
+            partner = {}
+            for _b, (pn_, nn_) in _pairs.pair_names(sorted(ball_of), admit_all=True).items():
+                partner[pn_], partner[nn_] = nn_, pn_
+            changed = True
+            while changed:
+                changed = False
+                for p in pads:
+                    mballs = ball_of.get(partner.get(short_(p)), [])
+                    if id(p) in bare and mballs and not all(id(q) in bare for q in mballs):
+                        bare.discard(id(p))
+                        changed = True
         for p in pads:
             home = next((L for L in p.layers if L.endswith('.Cu')), 'F.Cu')
+            if id(p) in bare:
+                n_edge += 1
+                continue
             sx = 1 if p.global_x >= cx else -1
             sy = 1 if p.global_y >= cy else -1
             if other is not None:
@@ -142,7 +184,8 @@ def dogbone(pcb, refs, log=print):
             if not done:
                 left.append(f'{ref}.{p.pad_number}')
         stats[ref] = (len(pads) - len(left), n_in, left)
-        log(f'  {ref}: {len(pads) - len(left)} of {len(pads)} balls dog-boned ({n_in} via in pad)'
+        log(f'  {ref}: {len(pads) - len(left) - n_edge} of {len(pads)} balls dog-boned ({n_in} via in pad)'
+            + (f', {n_edge} outer ball(s) left to leave on their own layer' if n_edge else '')
             + (f'; none for {len(left)}: {left[:12]}' if left else ''))
     if moved:
         log(f'  beneath the arrays, left to the cap step: {len(moved)} part(s)')

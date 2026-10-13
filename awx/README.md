@@ -429,7 +429,7 @@ them fixed.
 `--escape` (opt-in, overriding `--joint-fanout`) fans the bus out the way a
 human escapes a ball grid array:
 
-- **Every ball dog-boned** (`dogbone_arrays.py`): each netted ball of both
+- **The balls dog-boned** (`dogbone_arrays.py`): each netted ball of both
   arrays gets a short stub on its own layer to a through via on one of its
   four diagonal gap points -- toward the other array along the axis it lies
   along most, out of the array's middle on the other -- or, where no gap is
@@ -437,14 +437,22 @@ human escapes a ball grid array:
   balls) are then free on every other layer, and the gap line through the
   array's middle, between the rows dog-boned up and the rows dog-boned down,
   is a **street** with no via on it. The passives beneath the arrays are
-  moved off the vias once (the chain's cap nudge).
+  moved off the vias once (the chain's cap nudge). An outer-ring ball whose
+  straight run out of the field on its own layer is clear is left without a
+  via (a pair's two balls alike; `DOGBONE_EDGE_FREE=0` dog-bones every ball),
+  as the human leaves 42 of U1's 55 outer balls: it leaves on the surface, and
+  the band along the array's edge stays free of vias for the lanes beneath. On
+  the zynq LVDS bus's two-round chains (`--rounds 2`, `LOOP_ROUNDS=2`) at
+  K32, K40 and K47 it ended with 0, 0 and 2 nets open against 2, 0 and 2 with
+  every ball dog-boned, and 2 to 5 vias fewer.
 - **Escapes instead of teeth** (`escape_plan.py`): each round's fanout lists
   every way a lane can leave its ball's via -- half a pitch onto a ball line
   beside it, a sidestep to a line up to two pitches over, or a pitch onto a
   street -- out along it to a pitch past the outer balls, on every layer but
-  the balls' own where the fanout's track and clearance fit. The ends model
-  chooses each lane's escape at both arrays from those lists, and the chosen
-  escapes are laid exactly as listed.
+  the balls' own where the fanout's track and clearance fit; a ball with no
+  via leaves on its own layer, straight out or half a step onto a gap line
+  beside it. The ends model chooses each lane's escape at both arrays from
+  those lists, and the chosen escapes are laid exactly as listed.
 - **The ends model on escapes:** with no tooth laid, both ends of every lane
   are free from its first search; it counts every stack (two escapes leaving
   at one point on two layers); and its estimate of the route keeps two lanes
@@ -455,18 +463,20 @@ human escapes a ball grid array:
 
 On the zynq's LVDS bus (U1 to U5) on four routing layers, on the board the
 recipe below makes, at its sizes, `ROUTE_LAYERS=F.Cu,B.Cu,In1.Cu,In2.Cu`
-(K: the first K nets of the ladder `route_bus` builds on the dog-boned board;
-47 is the whole bus):
+(K: the first K nets of the ladder `route_bus` builds on the dog-boned board,
+a pair's leg left out where the K-th net would split it -- K32 is 31 nets, K40
+39; 47 is the whole bus):
 
 | | K32 | K40 | K47 |
 |---|---|---|---|
-| nets routed (the round) | 30 of 32 (1) | 37 of 40 (3) | 43 of 47 (1) |
-| handed on | 71 v, 660 mm | 85 v, 1000 mm | 105 v, 1331 mm |
+| nets routed (the round) | 31 of 31 (2) | 39 of 39 (1) | 45 of 47 (1) |
+| handed on | 64 v, 683 mm | 82 v, 826 mm | 99 v, 967 mm |
 
 Every net it hands on is connected and DRC-clean; the open ones go back as
-they came. Each run is three rounds at most, 20 to 65 minutes on the Mac.
-These are one seed of the ends model's kicks; another (`ENDS_ILS_SEED=1`)
-routes 29 of 32, 35 of 40 and 33 of 47 -- the whole bus is not settled yet.
+they came. Each run is three rounds at most, 3 to 13 minutes on the Mac (20
+to 65 before the joint ends and the pair search in Rust), and hands on its
+best round: the rounds differ -- K47's second and third left 6 and 10 nets
+open.
 
 `zynq_ad9364` from GitHub, its planes poured as the stress run poured them,
 and the whole bus at the stress run's sizes -- its fanouts' 0.12 mm track at
@@ -1260,6 +1270,13 @@ for some of the lanes exists:
   the first round's, a later loop round's plan on the zynq LVDS bus had eight
   lanes refused at their teeth and berths, 33 nets open, where on its own
   bench it leaves 13;
+- a round's loop runs six rounds at most (`LOOP_ROUNDS`); a loop that does
+  not pass, its held plan laid not clean, lays one other round's plan too --
+  snapped on its own bench, the fewest findings first, a plan the snap lays
+  nothing of skipped (`LAY_TRY=N`: N boards in all, stopping at the first
+  clean one; 1 lays the held plan alone) -- and keeps the better lay (DRC,
+  then open nets, vias, copper): on the zynq LVDS bus the held round laid 10,
+  3, 2 and 2 nets open where the loop's best round laid 6, 0, 2 and 2;
 - a round that lays nothing, or leaves nets open, feeds the next fanout
   (above), up to `ROUNDS`; a fanout that lays the round before's ends again
   has its feedback raised and runs again (above), and the rounds end only

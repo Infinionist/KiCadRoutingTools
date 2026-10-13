@@ -236,6 +236,48 @@ def escape_menu(pad, site, grid, faces, layers, copper, side=SIDE):
     return out
 
 
+def escape_out(pad, grid, faces, copper):
+    """the escapes of a ball with NO via (dogbone_arrays: an outer ball left to leave on its own layer): out on its
+    own layer, straight along its own line or half a step onto a gap line beside it, to the exit (escape_menu's line, a
+    pitch past the outer balls) -- a SURFACE escape, its run on that layer; where the lane leaves that layer is the
+    route's, as the human's surface escapes dive 0.8-2.9 mm off the balls in pairs (zynq U1)"""
+    net = (getattr(pad, 'net_name', '') or '').split('/')[-1]
+    nid = pad.net_id
+    home = next((L for L in pad.layers if L.endswith('.Cu')), 'F.Cu')
+    x0, y0, x1, y1 = grid.bbox
+    hx, hy = grid.pitch_x / 2.0, grid.pitch_y / 2.0
+    ball = (pad.global_x, pad.global_y)
+    out = []
+    for d in faces:
+        dx, dy = DIRS[d]
+        k = 0 if dx else 1
+        a_ = 1 - k
+        s = dx if dx else dy
+        h = (hy if k == 0 else hx)
+        hk = (hx if k == 0 else hy)
+        e = (x0 - PAST * 2 * hx if dx < 0 else x1 + PAST * 2 * hx) if k == 0 else \
+            (y0 - PAST * 2 * hy if dy < 0 else y1 + PAST * 2 * hy)
+        P = lambda along, normal, a_=a_: (along, normal) if a_ == 0 else (normal, along)
+        if s * (e - ball[k]) < -1e-6:
+            continue
+        lo, hi = (y0, y1) if a_ == 1 else (x0, x1)
+        paths = [(ball[a_], [ball, P(ball[a_], e)])]
+        for sg in (-1, 1):
+            g_ = ball[a_] + sg * h
+            paths.append((g_, [ball, P(g_, ball[k] + s * hk), P(g_, e)]))
+        for ln, path in paths:
+            if not (lo - h - 1e-6 <= ln <= hi + h + 1e-6):
+                continue
+            path = dedupe(path)
+            if not copper.path_clear(path, home, nid):
+                continue
+            legs = [(p, q, home) for p, q in zip(path, path[1:])]
+            mv = em.Move(net, 'surface', d, home, P(ln, e), 0, legs, site=None, climb=1)
+            mv.esc_side, mv.street = 0, False
+            out.append(mv)
+    return out
+
+
 def _pair_legs_clash(ma, mb, track, clear):
     """two legs of one pair whose runs come within the rule of each other on their layer"""
     ra = [(p, q) for p, q, L in ma.legs if L == ma.layer]
@@ -280,7 +322,9 @@ def plan_state(pcb, names, sref, dref, banned=frozenset(), log=print):
                 (dp, dgrid, dmenu, [d for d in DIRS if d != far_d or half(dp, dgrid, d)])):
             site = own_via(pcb, pad, nid, grid)
             if site is None:
-                menus[nm] = []
+                # (a ball with no via -- dogbone_arrays' outer ring -- leaves on its own layer: its surface escapes)
+                import source_realize as sr
+                menus[nm] = [m for m in escape_out(pad, grid, faces, copper) if (nm, sr.move_sig(m)) not in banned]
                 continue
             import source_realize as sr
             menus[nm] = [m for m in escape_menu(pad, site, grid, faces, rlayers, copper)

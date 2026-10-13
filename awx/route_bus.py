@@ -279,7 +279,8 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
     # serves every other net of U1 and 131 of its 132 plane balls)
     if escape:
         # THE ESCAPE FANOUT (--escape): no source fanout -- every netted ball of both arrays DOG-BONED the human's way
-        # (dogbone_arrays: each ball's via on a gap point, the ball lines free below the balls' layer), the passives
+        # (dogbone_arrays: each ball's via on a gap point, the ball lines free below the balls' layer; an outer-ring
+        # ball with a clear way out on its own layer left without one, as the human leaves it), the passives
         # beneath the arrays moved off the vias (the chain's cap step, once, here), and each round's fanout plans the
         # bus's ends among the escapes that field has and lays them as they are (escape_plan, FANOUT_ESCAPE)
         import dogbone_arrays as dga

@@ -228,6 +228,17 @@ def findings(gate_line):
         return 999
 
 
+def loop_rounds():
+    """the loop's rounds at most: 6, or LOOP_ROUNDS"""
+    return int(awx_settings.get('LOOP_ROUNDS') or '6')
+
+
+def lay_tries():
+    """the boards a loop that did not pass may lay (lay_rounds): LAY_TRY, else 2 -- the held plan's and one other
+    round's; 1 lays the held plan alone"""
+    return int(awx_settings.get('LAY_TRY') or '2')
+
+
 class NotConverging(Exception):
     pass
 
@@ -867,7 +878,7 @@ def plan_bench(loopd, plan, default):
     return b.get(m.group(1), default) if m else default
 
 
-def held_plan(loopd, env):
+def held_plan(loopd, env, i=None):
     """the plan a round whose loop did not pass is laid from -- the chain never ends with nothing: the loop's snapped
     plan when a round got that far (plan.json, short of the audit or the lint), else its best round's smooth plan
     (best.json, else its last) laid as a passing one is -- the pairs snapped first, the singles polished round them,
@@ -875,21 +886,29 @@ def held_plan(loopd, env):
     Snapped and laid on THAT round's bench (benches.json; recorded under 'held' for plan_bench): on more routing layers
     than two each re-solve relays the via ends afresh, and a later round's plan snapped and laid on round 1's bench
     started its lanes at stubs on other layers (zynq LVDS zDF r2, a later round held: eight lanes refused within a few
-    steps of their teeth or berths, 33 nets open; on its own bench 13)"""
+    steps of their teeth or berths, 33 nets open; on its own bench 13).
+    `i`: loop round i's smooth plan so, into held{i}_*.json (LAY_TRY: lay_rounds), plan_bench finding its bench
+    by the round's number"""
     O = lambda name: os.path.join(loopd, name)
-    if os.path.isfile(O('plan.json')):
+    pre = 'held_' if i is None else f'held{i}_'
+    if i is None and os.path.isfile(O('plan.json')):
         return O('plan.json')
     ps = sorted((f for f in glob.glob(O('p*.json')) if re.search(r'/p\d+\.json$', f)),
                 key=lambda f: int(re.search(r'/p(\d+)\.json$', f).group(1)))
     if not ps:
         return None
     src = ps[-1]
-    try:
-        b = O(f"p{json.load(open(O('best.json')))['i']}.json")
-        if os.path.isfile(b):
-            src = b
-    except Exception:
-        pass
+    if i is not None:
+        src = O(f'p{i}.json')
+        if not os.path.isfile(src):
+            return None
+    else:
+        try:
+            b = O(f"p{json.load(open(O('best.json')))['i']}.json")
+            if os.path.isfile(b):
+                src = b
+        except Exception:
+            pass
     try:
         bs = json.load(open(O('benches.json')))
     except (OSError, ValueError):
@@ -897,14 +916,68 @@ def held_plan(loopd, env):
     rb = bs.get(re.search(r'/p(\d+)\.json$', src).group(1))
     if rb:
         env = dict(env, BENCH=rb)
-        bs['held'] = rb
-        json.dump(bs, open(O('benches.json'), 'w'), indent=1)
-    run(['whole_snap.py', src, O('held_pairs.json'), '--pairs'], env, log_path=O('held_pairs.log'))
-    if os.path.isfile(O('held_pairs.json')) and \
-            run(['whole_polish.py', O('held_pairs.json'), O('held_q.json')], env, log_path=O('held_q.log'))[0] == 0:
-        src = O('held_q.json')
-    run(['whole_snap.py', src, O('held_plan.json')], env, log_path=O('held_plan.log'))
-    return O('held_plan.json') if os.path.isfile(O('held_plan.json')) else None
+        if i is None:
+            bs['held'] = rb
+            json.dump(bs, open(O('benches.json'), 'w'), indent=1)
+    run(['whole_snap.py', src, O(pre + 'pairs.json'), '--pairs'], env, log_path=O(pre + 'pairs.log'))
+    if os.path.isfile(O(pre + 'pairs.json')) and \
+            run(['whole_polish.py', O(pre + 'pairs.json'), O(pre + 'q.json')], env, log_path=O(pre + 'q.log'))[0] == 0:
+        src = O(pre + 'q.json')
+    run(['whole_snap.py', src, O(pre + 'plan.json')], env, log_path=O(pre + 'plan.log'))
+    return O(pre + 'plan.json') if os.path.isfile(O(pre + 'plan.json')) else None
+
+
+def lay_rounds(loopd, d, env, res, lay_, say):
+    """N = lay_tries() (LAY_TRY, else 2; 1 off): a loop that did not pass chooses its round by the LAY, not by its
+    findings. The held round laid not clean (`res`, lay_'s result), the loop's other rounds' smooth plans, fewest
+    findings first, each snapped as the held one is (held_plan) and laid (lay_(plan, tag) -> a result, or None) -- N
+    boards in all (a plan that lays none not counted), stopping at the first clean one; the best by the lay's own key
+    (DRC, open nets, vias, copper) kept, its board and logs copied over the held one's names in `d`. Measured on the
+    zynq LVDS: the held round laid 10, 3, 2 and 2 open where the loop's best round laid 6, 0, 2 and 2 -- the findings
+    count a static clearance the snap goes round and a detour not at all"""
+    tries = lay_tries()
+    if tries <= 1 or (res is not None and not res['open'] and not res['drc']):
+        return res
+    try:
+        held_i = int(json.load(open(os.path.join(loopd, 'best.json')))['i'])
+    except Exception:
+        held_i = None
+    sc = {}
+    for p in glob.glob(os.path.join(loopd, 'p*.json')):
+        m = re.search(r'/p(\d+)\.json$', p)
+        a = p[:-len('.json')] + '.audit'
+        if not m or int(m.group(1)) == held_i or not os.path.isfile(a):
+            continue
+        sc[int(m.group(1))] = findings(stripped(run(['whole_gate.py', p, a], env)[1]))
+    order = sorted(sc, key=lambda i: (sc[i], -i))
+    say(f"  the held round {held_i} laid " + (f"open {res['open']}, drc {res['drc']}" if res else 'nothing')
+        + f" -- the loop's other rounds, fewest findings first, until {tries - 1} laid: "
+        + ', '.join(f'{i} ({sc[i]})' for i in order))
+    best, laid = res, 0
+    for i in order:
+        if laid >= tries - 1:
+            break
+        hp = held_plan(loopd, env, i=i)
+        rr = lay_(hp, f'_h{i}') if hp else None
+        say(f"  round {i}'s plan laid: " + (f"open {rr['open']}, drc {rr['drc']}, vias {rr['key'][2]}, "
+                                            f"copper {rr['key'][3]} mm" if rr else 'nothing'))
+        if rr is None:
+            continue
+        laid += 1
+        if best is None or rr['key'] < best['key']:
+            best = rr
+        if not rr['open'] and not rr['drc']:
+            break
+    if best is not None and best is not res:
+        tag = best['tag']
+        for nm in ('seq.kicad_pcb', 'seq.kicad_pro', 'route_seq.log', 'conn.log', 'drc.log'):
+            b_, e_ = os.path.splitext(nm)
+            src = os.path.join(d, f'{b_}{tag}{e_}')
+            if os.path.isfile(src):
+                shutil.copyfile(src, os.path.join(d, nm))
+        best = dict(best, board=os.path.join(d, 'seq.kicad_pcb'))
+        say(f"  kept round {tag[2:]}'s lay")
+    return best
 
 
 def partial_drops(named, xs, lanes):
@@ -1022,15 +1095,16 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
             env['BASE'] = base
         return base
 
-    def lay(r, d, plan, bench, nets=None):
+    def lay(r, d, plan, bench, nets=None, tag='', quiet=False):
         """route_lanes all at once on PLAN, graded: the result (its key, open nets, violation, grade line, board), or
         None when no board was written. `nets` the nets the plan lays (a partial plan's, the last resort), else the
-        run's; open nets are counted over the run's whatever it lays"""
+        run's; open nets are counted over the run's whatever it lays. `tag` in its files' names (seq{tag}.kicad_pcb,
+        ...), `quiet` its grade line not said (lay_rounds: one of several lays, the kept one's said)"""
         rr = ['--plan', plan, '--board', bench, '--nets', ','.join(nets) if nets else NETS, '--dest', dest]
-        seq = os.path.join(d, 'seq.kicad_pcb')
+        seq = os.path.join(d, f'seq{tag}.kicad_pcb')
         run(['route_lanes.py', 'all'] + rr + ['--mode', 'seq', '--write', seq], {**env, 'BRAID_PAIR_SLACKS': '0'},
-            log_path=os.path.join(d, 'route_seq.log'))
-        sm = '\n'.join(grep(os.path.join(d, 'route_seq.log'), r'^SUMMARY'))
+            log_path=os.path.join(d, f'route_seq{tag}.log'))
+        sm = '\n'.join(grep(os.path.join(d, f'route_seq{tag}.log'), r'^SUMMARY'))
         say(f"  all at once: {sm}")
         if not os.path.isfile(seq):
             return None
@@ -1040,17 +1114,19 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
         # command-line banner -- the CMD / EXIT echo -- for its whole process)
         checker = lambda name: os.path.join('..', 'py_router', name)
         cc = run([checker('check_connected.py'), seq, '--nets'] + pats, env,
-                 log_path=os.path.join(d, 'conn.log'), own_process=True)[0]
+                 log_path=os.path.join(d, f'conn{tag}.log'), own_process=True)[0]
         dc = run([checker('check_drc.py'), seq, '--nets'] + pats + ['--clearance-margin', '0.1'], env,
-                 log_path=os.path.join(d, 'drc.log'), own_process=True)[0]
-        nopen = 0 if cc == 0 else max(1, count_open(os.path.join(d, 'conn.log')))
+                 log_path=os.path.join(d, f'drc{tag}.log'), own_process=True)[0]
+        nopen = 0 if cc == 0 else max(1, count_open(os.path.join(d, f'conn{tag}.log')))
         lanes = '\n'.join(m.split(' ')[0] for m in re.findall(r'[0-9]+/[0-9]+ in band', sm))
         v, c = grade_counts(seq, set(nets_all))
         g = (f"WHOLE K={K} round={r} lanes={lanes} vias={v} copper={c}mm connected={int(cc == 0)} "
              f"drc={int(dc == 0)} secs={secs()} open={nopen}")
-        say(g)
+        if not quiet:
+            say(g)
         return dict(key=(int(dc != 0), nopen, int(v), int(c)), open=nopen, drc=int(dc != 0), grade=g, board=seq,
-                    open_nets=sorted(open_nets(os.path.join(d, 'conn.log'))) if nopen else [])
+                    open_nets=sorted(open_nets(os.path.join(d, f'conn{tag}.log'))) if nopen else [],
+                    tag=tag)
 
     def lane_legs():
         """{lane: its nets} as the ends model makes lanes: a pair one lane named by its base (pairs.pair_names, under
@@ -1110,7 +1186,7 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
             bench_l = relayed(dj, bench, json.load(open(solve)), env_, say)
             loopd = os.path.join(dj, 'loop')
             with open(os.path.join(dj, 'loop.log'), 'w') as lf:
-                rc_ = loop(solve, loopd, 6, env_, Log(lf))
+                rc_ = loop(solve, loopd, loop_rounds(), env_, Log(lf))
             say(f"  loop exit {rc_} at {secs()} s")
             plan = os.path.join(loopd, 'plan.json') if rc_ == 0 else held_plan(loopd, env_)
             res = lay(f'partial{j}', dj, plan, plan_bench(loopd, plan, bench_l), sub) if plan else None
@@ -1253,7 +1329,7 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
                 say(f"  the solve's plan is UNPROVED ({u.get('over')} over two vias against a bound of "
                     f"{u.get('bound_over')}): laid all the same; its nets over two to the ends: {J.get('over_nets')}")
             with open(os.path.join(d, 'loop.log'), 'w') as lf:
-                rc = loop(solve, loopd, 6, env, Log(lf))
+                rc = loop(solve, loopd, loop_rounds(), env, Log(lf))
             for ln in grep(os.path.join(d, 'loop.log'), r'^=== round|smooth:|NOT CONVERGING|passes'):
                 say(ln[:170])
             say(f"  loop exit {rc} at {secs()} s")
@@ -1263,7 +1339,13 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
             if rc != 0:
                 say(f"  the loop did not pass -- laid from the plan it held: "
                     f"{os.path.relpath(plan, d) if plan else 'none'}")
-            res = lay(r, d, plan, plan_bench(loopd, plan, bench)) if plan else None
+            try_ = rc != 0 and plan is not None and lay_tries() > 1
+            res = lay(r, d, plan, plan_bench(loopd, plan, bench), quiet=try_) if plan else None
+            if try_:
+                res = lay_rounds(loopd, d, env, res, lambda hp, tag: lay(r, d, hp, plan_bench(loopd, hp, bench),
+                                                                          tag=tag, quiet=True), say)
+                if res is not None:
+                    say(res['grade'])
             if plan and res is None:
                 say("  no board laid from the plan (route_seq.log)")
         del env['BENCH']
