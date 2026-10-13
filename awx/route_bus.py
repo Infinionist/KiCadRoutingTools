@@ -4,13 +4,17 @@
     python3 route_bus.py BOARD.kicad_pcb OUT.kicad_pcb [--src U1 --dest U2] [--k K] [--rounds R] [--inproc]
                          [--clearance C] [--track-width W] [--fanout-track-width W] [--via-size D] [--via-drill D]
                          [--json-out FILE]
+    python3 route_bus.py BOARD.kicad_pcb OUT.kicad_pcb --bus SRC:DEST[:MODE[:LAYERS]] [--bus ...] [...]
     python3 route_bus.py BOARD.kicad_pcb --find
 
 Without --src and --dest, every bus on the board (route_buses): find_buses names each pair of parts sharing
 MIN_BUS_NETS nets or more the whole route admits, and takes those with a ball array at both ends (is_array), the
 larger array the source, the largest bus first; each is routed in turn on the board the one before handed on, and
 OUT is the last. A pair with a row part at one end is named and left to the router, and so is each net on both
-parts the whole route does not admit, with why. --find names them and stops.
+parts the whole route does not admit, with why. --find names them and stops. --bus names the buses and their order
+instead, each with its own fanout (MODE: joint, escape or plain) and routing layers (LAYERS, ROUTE_LAYERS); an
+escape bus on an array an earlier bus was routed through plans that array whole with it, its ends on the board as it
+was before (route_buses: ESCAPE_JOINT, ESCAPE_JOINT_ENDS).
 
 route_bus() takes a board as the chain hands it on and writes it back with the bus laid, in the board's own frame,
 at the chain's sizes (resolve_rules: the routing CLIs' flags, an omitted one resolved as route.py resolves it):
@@ -68,15 +72,17 @@ SIZE_ARGS = ('clearance', 'clearance_ceiling', 'track_width', 'fanout_track_widt
              'hole_to_hole_clearance', 'board_edge_clearance')
 
 
-def step_policy(run_rules=None):
+def step_policy(run_rules=None, settings=None):
     """The settings the step's awx modules are imported and run under: the chain's stage policy (whole_route.stage_env
     -- a pair one lane, the ends' judge), the caches off, and the run's rules when given. A module reads its policy
     when it is FIRST imported in a process (awx_settings), and the chain's in-process stages run on the modules the
     step imported before them: imported under the shell's environment, braid read BRAID_PAIRS off, and every stage
-    planned and laid a pair as two single lanes (the zynq's DQS0 and DQS1, the AD9364's fourteen LVDS pairs)"""
+    planned and laid a pair as two single lanes (the zynq's DQS0 and DQS1, the AD9364's fourteen LVDS pairs).
+    `settings`: the step's own, over the environment (route_buses: a bus's ROUTE_LAYERS, a shared array's)"""
     import awx_settings
     import whole_route as wr
     env = dict(os.environ)
+    env.update(settings or {})
     env.update(STEP_SETTINGS)
     wr.stage_env(env)
     if run_rules is not None:
@@ -128,10 +134,11 @@ def resolve_rules(board, clearance=None, clearance_ceiling=None, track_width=Non
 
 
 def route_bus(board, out, src, dest, k=None, rounds=3, inproc=False, log=print, json_out=None, joint_fanout=False,
-              escape=False, **sizes):
+              escape=False, settings=None, **sizes):
     """Route the bus between `src` and `dest` on `board`, writing `out`, at the chain's sizes (`sizes`: SIZE_ARGS,
     resolve_rules). Returns (exit code, grade line). The run's rules are installed for the step and supplied to
-    every stage (rules.SETTING); the process's own are put back after."""
+    every stage (rules.SETTING); the process's own are put back after. `settings` {name: value}: awx settings for
+    this step alone, over the environment, in the step and in every stage it runs"""
     import rules as _rules
     bad = sorted(set(sizes) - set(SIZE_ARGS))
     if bad:
@@ -140,18 +147,42 @@ def route_bus(board, out, src, dest, k=None, rounds=3, inproc=False, log=print, 
     prev = _rules.active()
     _rules.install(run_rules)
     try:
-        with step_policy(run_rules):
-            return _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out, joint_fanout, escape)
+        with step_policy(run_rules, settings):
+            return _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out, joint_fanout, escape,
+                          settings)
     finally:
         _rules.install(prev)
+
+
+BUS_MODES = ('joint', 'escape', 'plain')
+
+
+def parse_bus(spec):
+    """--bus SRC:DEST[:MODE[:LAYERS]] -> (src, dest, mode or None, layers or None): MODE one of BUS_MODES (joint: the
+    joint fanout, escape: the escape fanout, plain: neither), LAYERS the bus's routing layers (ROUTE_LAYERS, comma
+    separated). A ValueError names what is wrong"""
+    parts = spec.split(':')
+    if len(parts) < 2 or len(parts) > 4 or not parts[0] or not parts[1]:
+        raise ValueError(f'--bus {spec!r}: SRC:DEST[:MODE[:LAYERS]]')
+    mode = parts[2] if len(parts) > 2 and parts[2] else None
+    if mode is not None and mode not in BUS_MODES:
+        raise ValueError(f'--bus {spec!r}: MODE is one of {", ".join(BUS_MODES)}')
+    layers = parts[3] if len(parts) > 3 and parts[3] else None
+    return parts[0], parts[1], mode, layers
 
 
 def route_buses(board, out, buses=None, k=None, rounds=3, inproc=False, log=print, json_out=None,
                 joint_fanout=False, escape=False, **sizes):
     """Every bus on `board` routed in turn, each on the board the one before handed on, `out` the last: `buses` as
-    [(src, dest)], else the ones find_buses takes, the largest first. Returns (exit code, grade lines): 0 when every
-    bus was handed on routed, 1 when one or more left as it came (or none was found), 2 on a usage error. The
-    summary (--json-out, default <OUT>.bus/summary.json) holds each bus's own, and the buses found and not taken."""
+    [(src, dest)] or [(src, dest, mode, layers)] (parse_bus: MODE joint, escape or plain, None for `joint_fanout` /
+    `escape`; LAYERS the bus's ROUTE_LAYERS, None for the environment's), else the ones find_buses takes, the largest
+    first. Returns (exit code, grade lines): 0 when every bus was handed on routed, 1 when one or more left as it came
+    (or none was found), 2 on a usage error. The summary (--json-out, default <OUT>.bus/summary.json) holds each bus's
+    own, and the buses found and not taken.
+
+    A SHARED ARRAY: an escape bus on an array an earlier bus was handed on through has that array planned whole with
+    it each round (ESCAPE_JOINT), its ends chosen on the board as it was before the first such earlier bus
+    (ESCAPE_JOINT_ENDS) -- the zynq's U1: the DDR3 bus (joint), then the AD9364's LVDS (escape) round it"""
     from kicad_parser import parse_kicad_pcb
     from copy_board import copy_board
     board, out = os.path.abspath(board), os.path.abspath(out)
@@ -169,12 +200,25 @@ def route_buses(board, out, buses=None, k=None, rounds=3, inproc=False, log=prin
                 + (f" -- {d['why']}" if d['why'] else ''))
         buses = [(d['src'], d['dest']) for d in found if d['taken']]
     cur, runs = board, []
-    for s, d in buses:
+    inputs, through = [], {}        # (each step's input board; {array: the first step handed on through it})
+    for bus in buses:
+        s, d = bus[0], bus[1]
+        mode = (bus[2] if len(bus) > 2 else None) or ('escape' if escape else 'joint' if joint_fanout else 'plain')
+        settings = {'ROUTE_LAYERS': bus[3]} if len(bus) > 3 and bus[3] else {}
+        shared = [r_ for r_ in (s, d) if r_ in through]
+        if mode == 'escape' and shared:
+            settings.update(ESCAPE_JOINT=','.join(shared), ESCAPE_JOINT_ENDS=inputs[min(through[r_] for r_ in shared)])
+            log(f'route_bus: {s} -> {d}: {", ".join(shared)} routed through by an earlier bus -- planned whole with this '
+                f'one, its ends on {os.path.basename(settings["ESCAPE_JOINT_ENDS"])}')
         step_out = os.path.join(work, f'{s}-{d}.kicad_pcb')
         step_json = os.path.join(work, f'{s}-{d}.summary.json')
+        inputs.append(cur)
         code, g = route_bus(cur, step_out, s, d, k, rounds, inproc, log, json_out=step_json,
-                            joint_fanout=joint_fanout, escape=escape, **sizes)
-        runs.append(dict(src=s, dest=d, exit=code, grade=g, summary=step_json))
+                            joint_fanout=mode == 'joint', escape=mode == 'escape', settings=settings or None, **sizes)
+        runs.append(dict(src=s, dest=d, mode=mode, settings=settings, exit=code, grade=g, summary=step_json))
+        if code == 0:
+            for r_ in (s, d):
+                through.setdefault(r_, len(inputs) - 1)
         if os.path.isfile(step_out):       # (routed, or the board as it came)
             cur = step_out
     with contextlib.redirect_stdout(sys.stderr):
@@ -187,7 +231,8 @@ def route_buses(board, out, buses=None, k=None, rounds=3, inproc=False, log=prin
     return code, [r['grade'] for r in runs]
 
 
-def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=None, joint_fanout=False, escape=False):
+def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=None, joint_fanout=False, escape=False,
+           settings=None):
     import make_bench as mb
     import flow_frame as ff
     import whole_route as wr
@@ -422,7 +467,8 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
     # 4. the whole route
     wr.INPROC = inproc
     rc, grade = wr.chain(K, os.path.join(work, 'run'), rounds, base=frame, dest=dest,
-                         settings={**STEP_SETTINGS, _rules.SETTING: _rules.as_setting(run_rules), **joint,
+                         settings={**(settings or {}), **STEP_SETTINGS, _rules.SETTING: _rules.as_setting(run_rules),
+                                   **joint,
                                    **({'FANOUT_ESCAPE': '1'} if escape else {}), **escape_env})
     seq = _routed(os.path.join(work, 'run'))
     short = lambda n: n.split('/')[-1]
@@ -857,6 +903,12 @@ def main():
                                   'both, every bus found (find_buses), the largest first')
     ap.add_argument('--dest', help='the destination array')
     ap.add_argument('--find', action='store_true', help='name the buses found, taken or not and why, and stop')
+    ap.add_argument('--bus', action='append', metavar='SRC:DEST[:MODE[:LAYERS]]',
+                    help='a bus to route, in the order given (repeat for each; instead of --src/--dest): MODE joint, '
+                         'escape or plain (default: --joint-fanout / --escape), LAYERS its routing layers '
+                         '(ROUTE_LAYERS, comma separated; default the environment\'s). An escape bus on an array an '
+                         'earlier bus was routed through plans that array whole with it, its ends on the board as it '
+                         'was before that bus')
     ap.add_argument('--k', type=int, help="the ladder's first K nets (default: the whole ladder)")
     ap.add_argument('--rounds', type=int, default=3, help='fanout rounds (default 3)')
     ap.add_argument('--inproc', action='store_true', help='every stage in this process rather than each in its own')
@@ -894,9 +946,15 @@ def main():
         sys.exit(0)
     if not a.out or (a.src is None) != (a.dest is None):
         ap.error('OUT is needed, and --src and --dest go together')
+    if a.bus and a.src is not None:
+        ap.error('--bus names the buses: no --src/--dest with it')
+    try:
+        buses = [parse_bus(b) for b in a.bus] if a.bus else None
+    except ValueError as e:
+        ap.error(str(e))
     sizes = {n: getattr(a, n) for n in SIZE_ARGS if getattr(a, n) is not None}
     if a.src is None:
-        sys.exit(route_buses(a.board, a.out, None, a.k, a.rounds, a.inproc, json_out=a.json_out,
+        sys.exit(route_buses(a.board, a.out, buses, a.k, a.rounds, a.inproc, json_out=a.json_out,
                              joint_fanout=a.joint_fanout, escape=a.escape, **sizes)[0])
     sys.exit(route_bus(a.board, a.out, a.src, a.dest, a.k, a.rounds, a.inproc, json_out=a.json_out,
                        joint_fanout=a.joint_fanout, escape=a.escape, **sizes)[0])

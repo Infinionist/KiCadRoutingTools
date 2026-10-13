@@ -297,7 +297,12 @@ the larger array the source, the largest bus first, each routed in turn on the
 board the one before handed on. A pair with a row part at one end (a QFN, a
 TSOP, a connector) is named and not taken, and so is every net on both parts
 the ladder does not admit, with why (another part on it, more than one pad on
-a part). `--find` names them and stops.
+a part). `--find` names them and stops. `--bus SRC:DEST[:MODE[:LAYERS]]`,
+repeated, names the buses and their order instead, each with its own fanout
+(MODE `joint`, `escape` or `plain`; by default the `--joint-fanout` and
+`--escape` flags) and its own routing layers (LAYERS, as `ROUTE_LAYERS`). A
+later escape bus on an array an earlier bus was handed on through plans that
+array whole with it ([a shared array](#a-shared-array), below).
 
 Every stage runs under the chain's own policy (`step_policy`), the step's own
 imports of the chain's modules included: a module reads its policy when it is
@@ -510,15 +515,16 @@ back are in `refused`), and 1 when it hands on none. A bus net it does not hand
 on goes back as it came: its earlier copper, where that copper still clears
 what the step laid.
 
-**A shared array** (opt-in, `ESCAPE_JOINT=REF` with `--escape`): an array an
-earlier bus step has fanned out and routed through -- the zynq's U1 after the
-DDR step -- is planned WHOLE each round. Its copper that no routed net owns
+#### A shared array
+
+An array an earlier bus step has fanned out and routed through -- the zynq's U1
+after the DDR step -- is planned WHOLE each round by a later escape bus. Its copper that no routed net owns
 (the earlier fanout of its other nets, its plane drops) comes off inside its
 box. Then one CP-SAT solve (`joint_escape.escape_field`) plans, round the
 bus's teeth, every other ball's escape, strap or bare dog-bone and every plane
 ball's drop. The earlier bus's routed copper stays as it stands.
-`ESCAPE_JOINT_ENDS=BOARD`, the board as it was before that earlier step, gives
-the ends the bus's own field. That field is fanned out as the step fans a board
+The ends are chosen on the bus's own field: the board as it was before that
+earlier step. That field is fanned out as the step fans a board
 of the bus alone, and its ladder (the nets, their order and the K cut) comes
 with it. So each round's teeth and berths are the ones the bus alone takes.
 
@@ -530,6 +536,11 @@ whose ends the joint plan cannot keep falls back to ends chosen on the shared
 array, dog-boned. Each step's cap nudge moves only the passives beneath its
 own two arrays: the DDR step leaves U5's, the LVDS step U2's.
 
+`route_bus --bus` sets this up itself for an escape bus on an array an earlier
+bus was handed on through. A step run on its own takes it as settings:
+`ESCAPE_JOINT=REF` (the shared array) and `ESCAPE_JOINT_ENDS=BOARD` (the board
+before the earlier step), with `--escape`.
+
 On the zynq, after the DDR step (`--joint-fanout`, 43 of 43 nets, 74 vias),
 the LVDS bus routes as the table above at each K. Its ends, its solve and the
 nets it leaves open match, round for round: K32 and K40 clean with 64 and 82
@@ -538,12 +549,13 @@ is served (at K40: 98 escaped, 12 strapped and 5 dog-boned of 115). 97 of its
 98 plane balls are dropped; the last one's in-plane gap sites are the bus's
 own dog-bone and run.
 
+Both buses in one step, the DDR's on two routing layers and the LVDS bus's on
+four:
+
 ```bash
-python3 route_bus.py tmp/zynq/planes.kicad_pcb tmp/zynq/ddr.kicad_pcb --src U1 --dest U2 --inproc --joint-fanout \
+python3 route_bus.py tmp/zynq/planes.kicad_pcb tmp/zynq/both.kicad_pcb --k 47 --rounds 2 --inproc \
+    --bus U1:U2:joint --bus U1:U5:escape:F.Cu,B.Cu,In1.Cu,In2.Cu \
     --clearance 0.09 --track-width 0.15 --fanout-track-width 0.12 --via-size 0.45 --via-drill 0.3
-ESCAPE_JOINT=U1 ESCAPE_JOINT_ENDS=tmp/zynq/planes.kicad_pcb ROUTE_LAYERS=F.Cu,B.Cu,In1.Cu,In2.Cu \
-    python3 route_bus.py tmp/zynq/ddr.kicad_pcb tmp/zynq/lvds.kicad_pcb --src U1 --dest U5 --k 40 --rounds 2 \
-    --inproc --escape --clearance 0.09 --track-width 0.15 --fanout-track-width 0.12 --via-size 0.45 --via-drill 0.3
 ```
 
 ### Building the zynq article
@@ -1560,7 +1572,7 @@ With nothing supplied, as on the benches:
 
 | | |
 |---|---|
-| `route_bus.py` | the bus step: a board as the chain hands it on, its bus routed in the board's own frame, graded on the board (`BUS ..`); the buses found on a board (`tests/test_622_find_buses.py`) |
+| `route_bus.py` | the bus step: a board as the chain hands it on, its bus routed in the board's own frame, graded on the board (`BUS ..`); the buses found on a board (`tests/test_622_find_buses.py`); a board's buses in turn, each its own fanout and layers, a later escape bus planning a shared array whole (`--bus`: `tests/test_622_route_buses_shared.py`) |
 | `escape_plan.py`, `dogbone_arrays.py` | the escape fanout (`route_bus --escape`): both arrays dog-boned, and each round's ends chosen among the escapes that field has (ball lines, sidesteps, streets) and laid as they are (`tests/test_622_escape_plan.py`) |
 | `joint_escape.py`, `conflict_groups.py` | the joint fanout (`route_bus --joint-fanout`): an array's other balls planned together in one CP-SAT solve and laid by the under-pad engine's joint escape (a drop at a finer rung's via: `tests/test_622_drop_fine_via.py`; nothing in a laid pair's pocket: `test_622_pair_teeth.py`); the escapes' conflicts as cliques and bicliques (`tests/test_622_conflict_groups.py`); a shared array planned whole round an escape bus's teeth (`route_bus --escape`, `ESCAPE_JOINT`: `escape_field`) |
 | `whole_route.py`, `modal_whole.py` | one rung end to end -- fanout, solve, loop, route, checks, feedback rounds -- graded in one line (`WHOLE K=..`); the loop's layer cuts from the audit and the snap (`tests/test_622_layer_cuts.py`); the ladder in the cloud, one container per rung |
