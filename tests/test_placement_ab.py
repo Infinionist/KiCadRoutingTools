@@ -931,10 +931,11 @@ ROWS += [
         # #1172: stage 1 chooses an undeclared edge connector's angle on a
         # pile (`_stage1_claims`: least depth into the board, or the strong
         # mating face), and keeps its courtyard off the connectors it has
-        # seated (`_placed_courtyard_hits`, prefer-then-fall-back), starting
-        # an edge's claims packed by width when equal fractions would
-        # overlap them. OFF = both switches off: the pile's angle 0 and the
-        # pad-only neighbour check of before.
+        # seated (`_placed_courtyard_hits`, prefer-then-fall-back); a chosen
+        # angle that seats nowhere clean falls back to the input angle.
+        # OFF = both switches off: the pile's angle 0 and the pad-only
+        # neighbour check of before. Packing (`_stage1_packed_starts`) is
+        # off in both arms.
         'name': f'edge-angle-pile-{b[:-len(".kicad_pcb")]}',
         'board': b,
         'engine': 'seed',

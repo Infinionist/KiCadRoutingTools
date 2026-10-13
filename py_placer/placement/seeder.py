@@ -2933,6 +2933,14 @@ _stage1_choose_edge_angle = True
 #: when no such rung exists (`_stage1_one`). Prefer-then-fall-back: it cannot
 #: lose a seat the old ladder found.
 _edge_courtyard_tier = True
+#: #1172: start an edge's claims packed by width when stage 1's equal
+#: fractions would overlap them (`_packed_starts`). OPT-IN: measured, it
+#: helps a pile (kit-dev-coldfire's three 31 mm D-subs, edge claims since
+#: #1176, seat without the pad short the equal starts give them) and costs
+#: elsewhere (orangecrab's pile leaves two more parts unseated; it ignores
+#: the parts already on the band and the declared zones, phase-5 verifier),
+#: which is not a default by the A/B rule.
+_stage1_packed_starts = False
 
 
 class _ChosenRot(NamedTuple):
@@ -3173,6 +3181,14 @@ def _stage1_claims(state, by_edge, declared_rot, bounds, notes,
                 if strong:
                     keep = tuple(m for m in dr[1]
                                  if not ef(m % 360.0)['fails'])
+                    if not keep:
+                        notes.append(
+                            f"edge connector {ref}: at every angle of its "
+                            f"declared rotation_candidates "
+                            f"{[float(m) for m in dr[1]]} its mating face "
+                            f"points away from the {edge} edge -- the "
+                            f"author's set is kept, and the facing grade "
+                            f"will say so")
                     if keep and len(keep) < len(dr[1]):
                         claims[ref] = (None, keep)
                         why[ref] = 'declared candidates facing the edge'
@@ -3772,8 +3788,16 @@ def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
             seat = try_rot(rot)
             if seat is None:
                 # `try_rot` names a wider-than-the-edge refusal only at the
-                # part's own angle; this angle is the one that mattered.
-                _geometry(rot, True)
+                # part's own angle; this angle is the one that mattered --
+                # measured AT it (`_geometry` reads `part.rot`, which
+                # `try_rot` has restored; phase-5 verifier: sonde_u J1's
+                # 54.1 mm at 270 went unnamed against a 43.18 mm edge).
+                _rot_was = part.rot
+                part.rot = rot
+                try:
+                    _geometry(rot, True)
+                finally:
+                    part.rot = _rot_was
                 continue
             keep(seat, rot)
             notes.append(
@@ -5258,7 +5282,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         specs = sorted(by_edge[edge], key=lambda c: c['ref'])
         # #1172: width-aware starts when the equal ones would overlap.
         _packed1172 = (_packed_starts(state, specs, edge, bounds, _claim_of)
-                       if _edge_courtyard_tier else {})
+                       if _stage1_packed_starts else {})
         if _packed1172:
             notes.append(
                 f"stage 1: the {edge} edge's {len(specs)} claims would start "
@@ -5789,6 +5813,27 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                     + f", so stage 1 seated it at {_won:g}deg, the next "
                     f"member that seats clear on the {edge} edge (#1125)")
                 continue
+            if _mine:
+                # #1172 prefer-then-fall-back: stage 1's OWN angle is kept
+                # only where it seats clean -- clear of the placed pads AND
+                # courtyards. Otherwise the part is seated exactly as it was
+                # before stage 1 chose anything: the old attempt, from its
+                # input angle. Run 27's "a crowded seat on the declared edge
+                # beats the interior" is about an angle someone DECLARED; at
+                # an angle nobody declared it shorted the fa10 glasgow pile's
+                # J5 against the locked MK3 (phase-5 verifier), where the old
+                # attempt left J5 to the later stages and the board built.
+                _stage1_undo(_ref1125, _pose1125, _n1125)
+                _set = [float(r) for r in _claim[1]]
+                stage1_claims.pop(_ref1125, None)
+                _stage1_one(k, c)
+                notes.append(
+                    f"edge connector {_ref1125}: no angle stage 1 chose "
+                    f"({_set}) seats it clear of what is placed on the "
+                    f"{edge} edge, so it is seated as it was before any "
+                    f"angle was chosen, from its input {_pose1125[2]:g}deg "
+                    f"(#1172)")
+                continue
             if len(_tried) > 1:
                 _stage1_undo(_ref1125, _pose1125, _n1125)
                 _redo = _t2m if _t2m is not None else _crowded
@@ -5797,15 +5842,6 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 else:
                     _stage1_one(k, c)
                 _set = [float(r) for r in _claim[1]]
-                if _mine:
-                    notes.append(
-                        f"edge connector {_ref1125}: no angle stage 1 chose "
-                        f"({_set}) seats clear on the {edge} edge, so "
-                        + (f"it keeps the seat at {_redo:g}deg (#1172)"
-                           if _redo is not None else
-                           "it is left as its first attempt left it "
-                           "(#1172)"))
-                    continue
                 notes.append(
                     f"edge connector {_ref1125}: no member of its "
                     f"rotation_candidates {_set} seats clear on the {edge} "

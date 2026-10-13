@@ -6,10 +6,12 @@ that must fail. **THE ROW TO LOOK AT FIRST if this file ever goes red** is
 `chooser-off`: glasgow_revC's IDC box headers were seated at the pile's
 angle 0, long axis across the board, and their shells interpenetrated.
 
-NOT COVERED, said here rather than left to be assumed: the #1125 walk's
-preference for a courtyard-overlapping member over a pad-crowded one
-(`_t2m`) only matters when a candidate set's FIRST attempt is pad-crowded
-and a later one overlaps courtyard alone, and no fixture produces that.
+NOT COVERED, said here rather than left to be assumed: `_stage1_one`'s undo
+before the pad-only retry (a refused courtyard attempt's notes would leak),
+`_packed_starts`' fit gate (opt-in), `_depth_order`'s deeper-than-the-board
+filter, and place_seed's `edge_angle_chosen` summary key, which only a full
+place_seed run reaches. (The #1125 walk's `_t2m` preference is covered, by
+test_983's test_c5 -- the phase-5 verifier found the earlier note wrong.)
 
 NOT named `test_*.py`, so `tests/run_all.py` does not collect it: it REWRITES
 the sources in place. One writer per tree. It refuses to start on a dirty
@@ -105,6 +107,43 @@ ROWS = [
     ('packed-starts-off', 'sd',
      "    if len(specs) < 2 or any(_declared_frac(c) is not None for c in specs):\n",
      "    if True:\n",
+     (T1172,), 'KILLED'),
+    ('packed-starts-ignore-the-overlap-gate', 'sd',
+     "    if not any(spans[i][1] > spans[i + 1][0] + 1e-6\n",
+     "    if False and not any(spans[i][1] > spans[i + 1][0] + 1e-6\n",
+     (T1172,), 'KILLED'),
+    ('packed-starts-default-on', 'sd',
+     "_stage1_packed_starts = False\n",
+     "_stage1_packed_starts = True\n",
+     (T1172,), 'KILLED'),
+    # -- the phase-5 verifier's fixes --
+    ('chosen-angle-kept-when-not-clean', 'sd',
+     "            if _mine:\n",
+     "            if False:\n",
+     (T1172,), 'KILLED'),
+    ('a-stacked-suspect-is-informative', 'sd',
+     "    out = set(getattr(assessment, 'stacked_suspect_refs', None) or ()) & set(refs)\n",
+     "    out = set()\n",
+     (T1172,), 'KILLED'),
+    ('a-part-off-the-outline-is-informative', 'sd',
+     "            out.add(ref)\n",
+     "            pass\n",
+     (T1172,), 'KILLED'),
+    ('a-declared-set-is-not-narrowed-to-its-face', 'sd',
+     "                    if keep and len(keep) < len(dr[1]):\n",
+     "                    if False:\n",
+     (T1172,), 'KILLED'),
+    ('a-declared-reversed-rotation-is-unnamed', 'sd',
+     "                if strong and got['fails']:\n",
+     "                if False:\n",
+     (T1172,), 'KILLED'),
+    ('facing-refusal-measured-at-the-old-angle', 'sd',
+     "                part.rot = rot\n",
+     "                pass\n",
+     (T1172,), 'KILLED'),
+    ('a-declared-set-with-no-facing-member-is-unnamed', 'sd',
+     "                            f\"points away from the {edge} edge -- the \"\n",
+     "                            f\"points elsewhere -- the \"\n",
      (T1172,), 'KILLED'),
 ]
 

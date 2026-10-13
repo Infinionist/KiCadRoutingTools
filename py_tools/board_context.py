@@ -260,8 +260,14 @@ def mating_faces(pcb_data, pcb_file: str, clearance: float):
                     'nearest_edge': near,
                     'nearest_dist_mm': round(max(0.0, dist), 3),
                     'nearest_overhang_mm': round(max(0.0, -dist), 3),
-                    'facing_basis': lf.basis, 'facing_strong': lf.strong,
-                    'facing_reason': lf.reason,
+                    'facing_basis': lf.basis,
+                    # #1155: strong only with an edge it points at, as
+                    # `floorplan.edge_facing` reports it.
+                    'facing_strong': bool(lf.strong and facing),
+                    'facing_reason': lf.reason or (
+                        '' if facing else
+                        'the pose is more than 30 degrees off a quarter '
+                        'turn, so the face names no edge'),
                     'class': _cls, 'basis': geom.source}
     return out
 
@@ -432,9 +438,13 @@ def build_context(pcb_data, pcb_file: str, *, clearance: float,
             'role': 'inferred here from footprint / prefix / value; the '
                     'board carries no datasheet or 3D-model field to cite',
             'mating': 'which parts count as connectors: '
-                      'render_placement.connector_edge_facts. Where the edge '
-                      'is: measured from the placement.body occupancy rect, '
-                      'because that function reads the quench pad-box ladder '
+                      'render_placement.connector_edge_facts. `edge` is the '
+                      'edge the mating face points at when the body names '
+                      'one (placement.mating, #1155), else the nearest, and '
+                      '`dist_mm` / `overhang_mm` measure to THAT edge; '
+                      '`nearest_*` always to the nearest. Both from the '
+                      'placement.body occupancy rect, because '
+                      'connector_edge_facts reads the quench pad-box ladder '
                       'and would put two geometries on one sheet',
         },
     }
@@ -608,16 +618,23 @@ def mating_line(m) -> str:
         else:
             tail = (f"  --  it opens toward {m['edge']}, along the {near} "
                     f"edge rather than out of it")
+        # A weak face says so: three stock receptacles read a confident
+        # wrong face under 2 mm (`placement.mating`).
         return (f"Mating face **{m['edge']}** (the body leaves its pad row "
-                f"toward {m['edge']}, {m['facing_basis']}), but it sits "
+                f"toward {m['edge']}, {m['facing_basis']}"
+                + ('' if m.get('facing_strong') else ', a weak face')
+                + f"), but it sits "
                 f"nearest the **{near}** edge, {m['nearest_dist_mm']}mm from "
                 f"it"
                 + (f", overhanging it by {m['nearest_overhang_mm']}mm"
                    if m['nearest_overhang_mm'] > 0 else '')
-                + tail)
+                + tail
+                + ('  --  INTERIOR for a connector, which a reviewer should '
+                   'explain' if m['interior'] else ''))
     return (f"Mating face **{m['edge']}**"
             + ('' if m.get('edge_basis') == 'facing' else
-               ' (nearest edge; the body names no face)')
+               f" (nearest edge; "
+               f"{m.get('facing_reason') or 'the body names no face'})")
             + f", {m['dist_mm']}mm from that edge"
             + (f", overhanging it by {m['overhang_mm']}mm"
                if m['overhang_mm'] > 0 else '')

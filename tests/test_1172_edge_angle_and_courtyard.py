@@ -165,8 +165,10 @@ class GlasgowBoxHeaders(unittest.TestCase):
         self.assertGreater(_overlap(self.board, off, 'J2', 'J3'), 1.0)
 
     def test_it_cannot_lose_a_seat(self):
-        """When EVERY rung overlaps a placed courtyard, the seat is the one
-        the old pad-only ladder writes, and the overlap is named."""
+        """When EVERY rung overlaps a placed courtyard, no angle stage 1
+        chose seats clean, so each header is seated exactly as before #1172
+        -- the old pad-only ladder at its input angle -- and both the
+        fall-back and the overlap are named."""
         orig = seeder._placed_courtyard_hits
         try:
             seeder._placed_courtyard_hits = (
@@ -174,12 +176,16 @@ class GlasgowBoxHeaders(unittest.TestCase):
             _pcb, res, poses = _seed(self.board, self.intent, ('J2', 'J3'))
         finally:
             seeder._placed_courtyard_hits = orig
-        with flags(_edge_courtyard_tier=False):
+        with flags(_edge_courtyard_tier=False,
+                   _stage1_choose_edge_angle=False):
             _pcb, _r, off = _seed(self.board, self.intent, ('J2', 'J3'))
         self.assertEqual({r: poses[r] for r in ('J2', 'J3')},
                          {r: off[r] for r in ('J2', 'J3')})
         self.assertTrue(any('overlaps it' in n and 'MK1' in n
                             for n in res['notes']))
+        self.assertTrue(any('seated as it was before any angle was chosen'
+                            in n for n in res['notes']))
+        self.assertEqual(res['edge_angle_chosen'], {})
 
     def test_determinism(self):
         a = _seed(self.board, self.intent, ('J2', 'J3'))[2]
@@ -248,6 +254,121 @@ class TheMatingFaceDecides(unittest.TestCase):
             _pcb, res, poses = _seed(SONDE, intent, ('J2',))
         self.assertEqual(res['edge_angle_chosen'], {})
         self.assertAlmostEqual(poses['J2'][2] % 360, j2.rotation % 360)
+
+    def _reversed(self, td):
+        rev = os.path.join(td, 'rev.kicad_pcb')
+        j2 = parse_kicad_pcb(SONDE).footprints['J2']
+        check([PY, '-X', 'utf8', 'py_placer/place_pose.py', SONDE, rev,
+               '--allow-routed', '--force', 'set', 'J2', str(j2.x),
+               str(j2.y), '--rot', '90'], accept=True)
+        return rev
+
+    def test_a_chosen_angle_that_seats_only_crowded_falls_back(self):
+        """Prefer-then-fall-back (phase-5 verifier, BLOCKING on the fa10
+        glasgow pile): the facing angle 270 is made to overlap a placed
+        courtyard at every rung, so stage 1 keeps nothing at it and seats J2
+        as it would have without choosing -- from its input 90."""
+        orig = seeder._placed_courtyard_hits
+
+        def hits(state, ref, pose, others):
+            if ref == 'J2' and abs((pose[2] - 270.0 + 180.0) % 360.0
+                                   - 180.0) < 1e-6:
+                return ['J1']
+            return orig(state, ref, pose, others)
+        with tempfile.TemporaryDirectory() as td:
+            rev = self._reversed(td)
+            intent = _intent(td, rev, [dict(self.ENTRY)])
+            try:
+                seeder._placed_courtyard_hits = hits
+                _pcb, res, poses = _seed(rev, intent, ('J2',))
+            finally:
+                seeder._placed_courtyard_hits = orig
+            with flags(_stage1_choose_edge_angle=False):
+                _pcb, _r, off = _seed(rev, intent, ('J2',))
+        # An unmoved part has no placement record: it kept its input pose.
+        self.assertEqual(poses.get('J2'), off.get('J2'))
+        self.assertAlmostEqual((poses.get('J2') or (0, 0, 90.0))[2] % 360,
+                               90.0)
+        self.assertTrue(any('seated as it was before any angle was chosen'
+                            in n for n in res['notes']), res['notes'])
+
+    def test_a_declared_set_is_narrowed_to_its_facing_members(self):
+        """[90, 270] declared on the reversed board: 90 points J2's face
+        west, so stage 1 tries 270 only."""
+        with tempfile.TemporaryDirectory() as td:
+            rev = self._reversed(td)
+            doc = {'schema': floorplan.SCHEMA_VERSION,
+                   'kind': floorplan.KIND, 'units': 'mm',
+                   'edge_connectors': [dict(self.ENTRY)],
+                   'blocks': [{'name': 'rotation:J2', 'refs': ['J2'],
+                               'rotation_candidates': [90, 270]}]}
+            p = os.path.join(td, 'set.json')
+            with open(p, 'w', encoding='utf-8') as fh:
+                json.dump(doc, fh)
+            _pcb, res, poses = _seed(rev, floorplan.load_intent(p), ('J2',))
+        self.assertAlmostEqual(poses['J2'][2] % 360, 270.0)
+        self.assertTrue(any('only [270.0] point its mating face' in n
+                            for n in res['notes']), res['notes'])
+
+    def test_a_declared_set_with_no_facing_member_is_named(self):
+        with tempfile.TemporaryDirectory() as td:
+            rev = self._reversed(td)
+            doc = {'schema': floorplan.SCHEMA_VERSION,
+                   'kind': floorplan.KIND, 'units': 'mm',
+                   'edge_connectors': [dict(self.ENTRY)],
+                   'blocks': [{'name': 'rotation:J2', 'refs': ['J2'],
+                               'rotation_candidates': [0, 90]}]}
+            p = os.path.join(td, 'set.json')
+            with open(p, 'w', encoding='utf-8') as fh:
+                json.dump(doc, fh)
+            _pcb, res, _poses = _seed(rev, floorplan.load_intent(p), ('J2',))
+        self.assertTrue(any('its mating face points away from the east edge'
+                            in n for n in res['notes']), res['notes'])
+
+    def test_a_declared_reversed_rotation_is_kept_and_named(self):
+        with tempfile.TemporaryDirectory() as td:
+            rev = self._reversed(td)
+            doc = {'schema': floorplan.SCHEMA_VERSION,
+                   'kind': floorplan.KIND, 'units': 'mm',
+                   'edge_connectors': [dict(self.ENTRY)],
+                   'blocks': [{'name': 'rotation:J2', 'refs': ['J2'],
+                               'rotation': 90}]}
+            p = os.path.join(td, 'one.json')
+            with open(p, 'w', encoding='utf-8') as fh:
+                json.dump(doc, fh)
+            _pcb, res, poses = _seed(rev, floorplan.load_intent(p), ('J2',))
+        self.assertAlmostEqual((poses.get('J2') or (0, 0, 90.0))[2] % 360,
+                               90.0)
+        self.assertTrue(any('its DECLARED rotation 90deg points its mating '
+                            'face west' in n for n in res['notes']),
+                        res['notes'])
+
+    def test_a_facing_angle_too_wide_for_its_edge_is_named(self):
+        """sonde_u J1, a 54.1 mm DSUB-25 on a 43.18 mm west edge: its only
+        facing angle, 270, cannot seat, and the refusal says why AT 270."""
+        import pose_score
+        with tempfile.TemporaryDirectory() as td:
+            b = os.path.join(td, 'j1.kicad_pcb')
+            j1 = parse_kicad_pcb(SONDE).footprints['J1']
+            check([PY, '-X', 'utf8', 'py_placer/place_pose.py', SONDE, b,
+                   '--allow-routed', '--force', 'set', 'J1', str(j1.x),
+                   str(j1.y), '--rot', '0'], accept=True)
+            st = pose_score.make_state(parse_kicad_pcb(b), b)
+            notes = []
+            ok = seeder._seat_edge(
+                st, 'J1', {'ref': 'J1', 'edge': 'west',
+                           'class': 'edge_receptacle',
+                           'overhang_mm': {'min': 0.0, 'max': 27.048}},
+                set(), notes)
+        self.assertFalse(ok)
+        self.assertTrue(any('at rotation 270deg it is wider' in n
+                            for n in notes), notes)
+
+    def test_an_exempt_class_never_drives_the_repair_ladder(self):
+        import pose_score
+        st = pose_score.make_state(parse_kicad_pcb(SONDE), SONDE)
+        self.assertIsNone(seeder._strong_facing_rots(
+            st, 'J2', dict(self.ENTRY, **{'class': 'connector_affinity'})))
 
     def test_repair_turns_a_reversed_connector_and_never_seats_it_reversed(
             self):
@@ -358,6 +479,18 @@ class StageOneReadsTheInput(unittest.TestCase):
         self.assertEqual(tuple(claims['J2'].candidates), (270.0,))
         self.assertIn('pointed west', why['J2'])
 
+    def test_a_weak_face_orders_the_turns_but_never_narrows_them(self):
+        """The Neutrik NMJ6HCD3's weak face (1.36 mm) is WRONG: it may put
+        its facing turn first, never remove the others -- a strong face's
+        only-facing rule would leave a jack nothing but its reversed angle."""
+        jacks = os.path.join(ROOT, 'tests', 'fixtures',
+                             '1155_stock_jacks.kicad_pcb')
+        claims, _ = self._claims(jacks, [{'ref': 'J3', 'edge': 'east',
+                                          'class': 'edge_receptacle'}],
+                                 ('J3',))
+        self.assertEqual(sorted(claims['J3'].candidates),
+                         [0.0, 90.0, 180.0, 270.0])
+
     def test_a_pile_is_uninformative_and_a_placed_board_is_not(self):
         import pose_score
         from types import SimpleNamespace
@@ -369,6 +502,26 @@ class StageOneReadsTheInput(unittest.TestCase):
         self.assertEqual(seeder._uninformative_refs(
             st, SimpleNamespace(pile=False, stacked_suspect_refs=()), refs),
             set())
+
+    def test_a_stacked_suspect_is_uninformative(self):
+        import pose_score
+        from types import SimpleNamespace
+        st = pose_score.make_state(parse_kicad_pcb(GLASGOW), GLASGOW)
+        self.assertEqual(seeder._uninformative_refs(
+            st, SimpleNamespace(pile=False, stacked_suspect_refs=('J2',)),
+            ['J2', 'J3']), {'J2'})
+
+    def test_a_part_with_every_pad_off_the_outline_is_uninformative(self):
+        """All pads, not any: a designer's connector grazing the edge keeps
+        its angle; one parked off the board does not."""
+        import pose_score
+        from types import SimpleNamespace
+        st = pose_score.make_state(parse_kicad_pcb(GLASGOW), GLASGOW)
+        j3 = st.parts['J3']
+        st.apply_move('J3', j3.x + 500.0, j3.y, j3.rot)
+        self.assertEqual(seeder._uninformative_refs(
+            st, SimpleNamespace(pile=False, stacked_suspect_refs=()),
+            ['J2', 'J3']), {'J3'})
 
 
 class AWeakFaceDecidesNothing(unittest.TestCase):
@@ -390,7 +543,14 @@ class AWeakFaceDecidesNothing(unittest.TestCase):
 
 class PackedStarts(unittest.TestCase):
     """kit-dev-coldfire's north edge: five claims (three 31 mm D-subs since
-    #1176) whose equal starts overlap; they start packed by width."""
+    #1176) whose equal starts overlap; they start packed by width -- when
+    the opt-in switch is on."""
+
+    def test_it_is_opt_in(self):
+        """Measured as a trade, not a default: it clears coldfire's pile of
+        the pad short its equal starts give the D-subs, and leaves two more
+        of orangecrab's pile parts unseated (the A/B's seed rows)."""
+        self.assertIs(seeder._stage1_packed_starts, False)
 
     def test_the_north_claims_start_packed_in_seat_order(self):
         import pose_score
@@ -408,6 +568,10 @@ class PackedStarts(unittest.TestCase):
         fr = [starts[c['ref']] for c in specs]
         self.assertEqual(fr, sorted(fr))
         self.assertTrue(all(0.0 < f < 1.0 for f in fr), fr)
+        # equal starts that do not overlap are kept: two of them, far apart
+        far = [c for c in specs if c['ref'] in ('J201', 'UARTCAN203')]
+        self.assertEqual(seeder._packed_starts(st, far, 'north', st.board,
+                                               lambda ref: None), {})
         # a declared position anywhere on the edge keeps the equal starts
         placed = [dict(specs[0], center_on_edge=0.0)] + specs[1:]
         self.assertEqual(seeder._packed_starts(st, placed, 'north',

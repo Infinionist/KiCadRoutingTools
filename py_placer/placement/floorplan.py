@@ -3443,9 +3443,12 @@ def edge_facing(entry: Dict, fp, geom, rotation: Optional[float] = None
     rot = (fp.rotation or 0.0) if rotation is None else rotation
     facing = facing_edge(lf.face, rot)
     edge = entry.get('edge')
+    reason = lf.reason or ('' if facing or not lf.face else
+                           'the pose is more than 30 degrees off a quarter '
+                           'turn, so the face names no edge')
     return {'policy': policy, 'facing': facing, 'local_face': lf.face,
             'basis': lf.basis, 'offset_mm': lf.offset_mm,
-            'strong': bool(lf.strong and facing), 'reason': lf.reason,
+            'strong': bool(lf.strong and facing), 'reason': reason,
             'fails': bool(policy == 'graded' and edge and facing
                           and facing != edge)}
 
@@ -4234,6 +4237,54 @@ def intent_zone_keepout_problems(intent, blocks, pcb_data,
     return out
 
 
+def open_side_pad_escape(zone_rect, pad_rect, open_sides
+                         ) -> Tuple[float, Optional[str]]:
+    """`(mm, side)`: how far a member's PAD bbox reaches past one of its
+    zone's open sides (#1174), or `(0.0, None)`.
+
+    An open side lets an edge member's body overhang the edge, which the edge
+    rule's band then bounds -- but only through the band's `max`, measured on
+    the body's far side. A part wholly past the edge (pads included) passed
+    both rules whenever that max covered its depth (second verifier: a 4 mm
+    part 2.1 mm off a 40 mm board, `max 5`, 0 errors). Its pads are soldered
+    to the board, so past an open side the pads are what stays graded."""
+    if pad_rect is None or not open_sides:
+        return 0.0, None
+    zx0, zy0, zx1, zy1 = zone_rect
+    x0, y0, x1, y1 = pad_rect
+    past = {'north': zy0 - y0, 'south': y1 - zy1,
+            'west': zx0 - x0, 'east': x1 - zx1}
+    best = (0.0, None)
+    for side in open_sides:
+        if past.get(side, 0.0) > best[0]:
+            best = (past[side], side)
+    return best
+
+
+def _member_pad_rect(ctx, ref):
+    """The board-frame bbox of `ref`'s pads at the pose the context grades,
+    or None. A `_PosedState` (the seat search's view) answers the pose it is
+    asking about; a QuenchState its parts' current pose."""
+    st = ctx.state
+    lc = getattr(st, 'legality_ctx', None)
+    pp = (getattr(lc, 'parts', None) or {}).get(ref) if lc is not None else None
+    if pp is None:
+        return None
+    try:
+        if callable(getattr(st, 'pose', None)):
+            x, y, rot = st.pose(ref)
+        else:
+            p = st.parts[ref]
+            x, y, rot = p.x, p.y, p.rot
+        rects = pp.pad_rects(x, y, rot) or ()
+    except Exception:                                        # noqa: BLE001
+        return None
+    if not rects:
+        return None
+    return (min(r[0] for r in rects), min(r[1] for r in rects),
+            max(r[2] for r in rects), max(r[3] for r in rects))
+
+
 def rule_zone_containment(ctx) -> Iterator[Violation]:
     claimed = claimed_edges(ctx.intent)
     for z in ctx.intent.blocks:
@@ -4248,6 +4299,24 @@ def rule_zone_containment(ctx) -> Iterator[Violation]:
             # ends at the outline, is the edge rule's to grade.
             opened = zone_open_sides(z.rect, ctx.outline_bounds,
                                      claimed.get(ref))
+            if opened:
+                pout, pside = open_side_pad_escape(
+                    z.rect, _member_pad_rect(ctx, ref), opened)
+                if pout > tol:
+                    yield Violation(
+                        rule='zone_containment',
+                        severity=ctx.sev('zone_containment'), ref=ref,
+                        block=z.name,
+                        message=(f"{ref}'s pads reach {pout:.2f}mm past the "
+                                 f"{pside} edge of block {z.name!r} -- that "
+                                 f"side is open to its overhang, not to its "
+                                 f"pads leaving the board"),
+                        measured={'rect': [round(v, 4) for v in part.rect],
+                                  'outside_mm': round(pout, 4), 'axis': pside,
+                                  'pads_graded': True,
+                                  'open_sides': list(opened)},
+                        expected={'zone': list(z.rect), 'tolerance_mm': tol})
+                    continue
             if not zone_fits_courtyard(z.rect, part.rect, tol):
                 # Spec-coordinate zone: grade the part's CENTER against it.
                 out, axis = zone_escape(z.rect, part.rect, True, opened)
@@ -4556,6 +4625,7 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
             'offset_mm': _ef['offset_mm'], 'strong': _ef['strong'],
             'policy': _ef['policy'], 'reason': _ef['reason'],
             'disposition': ('exempt' if _ef['policy'] != 'graded'
+                            else 'no_edge' if not edge
                             else 'abstained' if not _ef['facing']
                             else 'fail' if _ef['fails'] else 'pass')}
         if _ef['fails']:
@@ -4681,6 +4751,9 @@ def _facing_tail(f) -> str:
         return ''
     if f['disposition'] == 'abstained':
         return f"; facing abstained ({f.get('reason') or 'no face'})"
+    if f['disposition'] == 'no_edge':
+        return (f"; facing {f['facing']} (no edge declared: not graded)"
+                if f.get('facing') else '')
     return (f"; facing {f['facing']} [{f['basis']}, "
             f"{'strong' if f['strong'] else 'weak'}] "
             f"{f['disposition'].upper() if f['disposition'] == 'fail' else 'pass'}")
@@ -6994,6 +7067,9 @@ class _PosedState:
         self._exclude = frozenset(exclude)
         self._poses = dict(poses or {})
         self.edge_gate = state.edge_gate
+        # #1174: the pad rects `rule_zone_containment` grades past an open
+        # side, read through `pose` like everything else here.
+        self.legality_ctx = getattr(state, 'legality_ctx', None)
         # #1104: `legality_metrics` reads it; without it a posed view of a
         # courtyard-waived board priced courtyard overlap again.
         self.courtyards_ignored = getattr(state, 'courtyards_ignored', False)
@@ -8482,11 +8558,19 @@ def _withhold_reversed_edge(entry: Dict, pcb_data, pcb_file: str,
             cache['bodies'] = {}
     ef = edge_facing(entry, fp, cache['bodies'].get(entry['ref']))
     if ef['fails'] and ef['strong']:
+        # Run-5's suspect-and-derive: the EDGE is as uncertain as the pose
+        # -- a part opening west that sits nearest east is either reversed
+        # on the east edge or a west-edge part displaced -- so neither is
+        # declared, and run-8 A3's machine-readable flag says why.
+        why = (f"its mating face points {ef['facing']} ({ef['basis']}, "
+               f"{ef['offset_mm']:.2f}mm), away from the {edge} edge it "
+               f"sits nearest: a reversed pose (#1155)")
         entry.pop('edge')
-        entry['note'] = (f"its mating face points {ef['facing']} "
-                         f"({ef['basis']}, {ef['offset_mm']:.2f}mm), away "
-                         f"from the {edge} edge it sits nearest -- a "
-                         f"reversed pose; no edge is declared (#1155)")
+        entry['suspect'] = True
+        entry['suspect_reason'] = why
+        note = f"edge withheld, SUSPECT: {why}"
+        entry['note'] = (f"{entry['note']}; {note}" if entry.get('note')
+                         else note)
 
 
 def emit_intent(pcb_data, pcb_file: str, *,
@@ -8704,7 +8788,6 @@ def emit_intent(pcb_data, pcb_file: str, *,
     conns = []
     declared = set()
     body_geometry = None     # #961: built only if an edged entry is emitted
-    _emit_bodies: Dict[str, object] = {}   # #1155: read once, if needed
     #: #959: refs whose `overhang_mm` is a CONSTANT of this module (a class
     #: default band, the sanity cap, the affinity floor) rather than a band
     #: read off the part -- labelled `derived_default`, not an observation.
@@ -8815,7 +8898,6 @@ def emit_intent(pcb_data, pcb_file: str, *,
                         f"{body['body_outside_mm']:.3f}mm overhang "
                         f"({body['body_layer']}), wider than the occupancy "
                         f"reading {amt:.3f}mm it would otherwise use")
-                _withhold_reversed_edge(entry, pcb_data, pcb_file, _emit_bodies)
             if declare_classes and pc is not None \
                     and pc.name in ('edge_receptacle', 'edge_actuator'):
                 entry['class'] = pc.name
@@ -8874,14 +8956,18 @@ def emit_intent(pcb_data, pcb_file: str, *,
                                  'declared -- its staging pose says nothing')
             elif plaus:
                 entry['edge'] = _nearest_edge(parts[ref].rect, bounds)
-                _withhold_reversed_edge(entry, pcb_data, pcb_file,
-                                        _emit_bodies)
             else:
                 entry['note'] = (
                     f'edge-receptacle class in an implausible pose '
                     f'({clr:.2f} mm from the nearest edge, no overhang): '
                     f'no edge declared -- reconstruct/repair must derive it')
             conns.append(entry)
+    # #1155: ONE pass over every edge this emitter observed (both branches
+    # above read it off `_nearest_edge`), before a brief is compiled in -- an
+    # author's declared edge is never second-guessed here.
+    _emit_bodies: Dict[str, object] = {}
+    for c in conns:
+        _withhold_reversed_edge(c, pcb_data, pcb_file, _emit_bodies)
 
     locked = sorted(extract_locked_refs_safe(pcb_file))
     leg = state.legality_metrics()

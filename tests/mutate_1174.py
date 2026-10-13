@@ -99,6 +99,23 @@ ROWS = [
      "            out, _axis = _rect_escape(_oz, r)\n",
      "            out, _axis = _rect_escape(z.rect, r)\n",
      (T1174,), 'KILLED'),
+    # -- the phase-1 verifier's fixes, and the second verifier's --
+    ('a-claim-without-a-band-max-opens-a-side', 'fp',
+     "                and (c.get('overhang_mm') or {}).get('max') is not None):\n",
+     "                and True):\n",
+     (T1174,), 'KILLED'),
+    ('plan-row5-charges-an-open-side-member', 'fp',
+     "            if zone_open_sides(z.rect, ctx.outline_bounds,\n",
+     "            if False and zone_open_sides(z.rect, ctx.outline_bounds,\n",
+     (T1174,), 'KILLED'),
+    ('total-coverage-ignores-the-open-side', 'fp',
+     "                and not zone_open_sides(z.rect, _bounds, _claimed.get(r))}\n",
+     "                and True}\n",
+     (T1174,), 'KILLED'),
+    ('an-open-side-lets-the-pads-leave', 'fp',
+     "            if opened:\n",
+     "            if False:\n",
+     (T1174,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)

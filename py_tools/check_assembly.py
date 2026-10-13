@@ -456,8 +456,9 @@ def main():
     if _fr:
         print(f"    {len(_fr)} part(s) draw only a .Fab marking (under "
               f"{_FAB_FRAC:.0%} of the pad box: a pin-1 dot, a single line; "
-              f"#1201), which is not their body: they occupy their pad box, "
-              f"and their drawn body is their silk where they draw one: "
+              f"#1201), which is not their body: their drawn body is their "
+              f"silk where they draw one, and what they occupy is unchanged "
+              f"(their courtyard, else the marking united with their pads): "
               + ', '.join(_fr[:8]) + (' ...' if len(_fr) > 8 else ''))
     if g['fab_unjudged']:
         _u = g['fab_unjudged_refs']

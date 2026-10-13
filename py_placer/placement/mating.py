@@ -26,7 +26,8 @@ a fact:
 * no source offset by at least `FACE_MIN_OFFSET_MM` and `FACE_DOMINANCE`
   times its cross-axis offset (a symmetric part: a box header, a terminal);
 * sources that disagree (courtyard says north, fab says south: glasgow SW1);
-* a pose within 30 degrees of a diagonal.
+* a pose more than 30 degrees off every quarter turn (within 15 degrees
+  of a diagonal).
 
 Two sources vote: the courtyard (when that rung answered) and the drawn body
 (`drawn_local`, fab else silk -- AFTER #1201's guard, so a pin-1 dot casts no

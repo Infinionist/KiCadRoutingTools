@@ -111,16 +111,84 @@ class TheReversedDsub(unittest.TestCase):
         self.assertIn('a reversed pose', block)
 
     def test_the_emitter_never_blesses_the_reversed_pose(self):
+        """J2's back overhangs the east edge, so the emitter observes it --
+        and withholds the edge as SUSPECT (run-5 suspect-and-derive, run-8
+        A3's machine-readable flag): reversed on the east edge, or a
+        west-edge part displaced, the board cannot say which."""
         pcb = parse_kicad_pcb(self.reversed)
-        doc = floorplan.emit_intent(pcb, self.reversed)
-        j2 = [c for c in doc['edge_connectors'] if c['ref'] == 'J2']
-        if j2:
+        for dc in (False, True):
+            doc = floorplan.emit_intent(pcb, self.reversed, declare_classes=dc)
+            j2 = [c for c in doc['edge_connectors'] if c['ref'] == 'J2']
+            self.assertEqual(len(j2), 1, doc['edge_connectors'])
             self.assertNotIn('edge', j2[0])
-            self.assertIn('reversed pose', j2[0].get('note', ''))
+            self.assertIs(j2[0].get('suspect'), True)
+            self.assertIn('reversed pose', j2[0]['suspect_reason'])
+            self.assertIn('SUSPECT', j2[0]['note'])
+            r = floorplan.grade(
+                floorplan.intent_from_dict(doc, source_path='e'), pcb,
+                self.reversed)
+            self.assertEqual([v.message for v in r.errors
+                              if v.rule == 'edge_connector'], [])
+
+    def test_a_withheld_edge_keeps_the_note_it_had(self):
+        entry = {'ref': 'J2', 'edge': 'east', 'note': 'band max from the body'}
+        floorplan._withhold_reversed_edge(
+            entry, parse_kicad_pcb(self.reversed), self.reversed, {})
+        self.assertTrue(entry['note'].startswith('band max from the body; '))
+        self.assertIn('SUSPECT', entry['note'])
+
+    def test_the_sheet_measures_to_the_facing_edge(self):
+        """`dist_mm` / `overhang_mm` go with `edge` (the facing one);
+        `nearest_*` with the nearest."""
+        from board_context import mating_faces
+        m = mating_faces(parse_kicad_pcb(self.reversed), self.reversed,
+                         0.2)['J2']
+        self.assertEqual((m['edge'], m['edge_basis'], m['nearest_edge']),
+                         ('W', 'facing', 'E'))
+        self.assertLess(m['nearest_dist_mm'], 1.0)
+        self.assertGreater(m['dist_mm'], 30.0)
+        self.assertEqual(m['overhang_mm'], 0.0)
+        self.assertGreater(m['nearest_overhang_mm'], 0.0)
+
+    def test_an_entry_with_no_edge_is_not_graded_or_passed(self):
+        doc = _intent({'ref': 'J2', 'class': 'edge_receptacle'})
         r = floorplan.grade(floorplan.intent_from_dict(doc, source_path='e'),
-                            pcb, self.reversed)
-        self.assertEqual([v.message for v in r.errors
-                          if v.rule == 'edge_connector'], [])
+                            parse_kicad_pcb(self.reversed), self.reversed)
+        ev = [e for e in r.edge_connector_evidence if e['ref'] == 'J2']
+        self.assertEqual(ev[0]['facing']['disposition'], 'no_edge')
+        tail = floorplan._facing_tail(ev[0]['facing'])
+        self.assertIn('not graded', tail)
+        self.assertNotIn('pass', tail)
+
+
+class TheDiagonalPose(unittest.TestCase):
+    """J2 at 45 degrees: a strong face, but the pose names no edge."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.td = tempfile.mkdtemp()
+        j2 = parse_kicad_pcb(SONDE).footprints['J2']
+        cls.board = os.path.join(cls.td, 'diag.kicad_pcb')
+        check([PY, '-X', 'utf8', 'py_placer/place_pose.py', SONDE,
+               cls.board, '--allow-routed', '--force', 'set', 'J2',
+               str(j2.x - 20.0), str(j2.y), '--rot', '45'], accept=True)
+
+    def test_the_grade_says_why_it_abstains(self):
+        from placement.body import board_bodies
+        pcb = parse_kicad_pcb(self.board)
+        ef = floorplan.edge_facing({'ref': 'J2', 'edge': 'east'},
+                                   pcb.footprints['J2'],
+                                   board_bodies(pcb, self.board)['J2'])
+        self.assertIsNone(ef['facing'])
+        self.assertFalse(ef['strong'])
+        self.assertIn('quarter turn', ef['reason'])
+
+    def test_the_sheet_says_why_it_reads_the_nearest_edge(self):
+        from board_context import mating_faces, mating_line
+        m = mating_faces(parse_kicad_pcb(self.board), self.board, 0.2)['J2']
+        self.assertEqual(m['edge_basis'], 'nearest')
+        self.assertFalse(m['facing_strong'])
+        self.assertIn('quarter turn', mating_line(m))
 
 
 class AWeakFaceIsAWarning(unittest.TestCase):
@@ -138,6 +206,24 @@ class AWeakFaceIsAWarning(unittest.TestCase):
         self.assertEqual(len(facing), 1, [v.message for v in r.violations])
         self.assertEqual(facing[0].severity, floorplan.WARN)
         self.assertFalse(facing[0].measured['facing_strong'])
+
+    def test_a_weak_face_keeps_its_emitted_edge(self):
+        """Seated at the east edge it opens out of, J3's wrong weak face
+        does not withhold its edge: only a strong face is suspect."""
+        with tempfile.TemporaryDirectory() as td:
+            board = os.path.join(td, 'j3east.kicad_pcb')
+            check([PY, '-X', 'utf8', 'py_placer/place_pose.py', JACKS, board,
+                   '--force', 'set', 'J3', '181.75', '11'], accept=True)
+            pcb = parse_kicad_pcb(board)
+            doc = floorplan.emit_intent(pcb, board)
+            j3 = [c for c in doc['edge_connectors'] if c['ref'] == 'J3']
+            self.assertEqual([(c.get('edge'), c.get('suspect')) for c in j3],
+                             [('east', None)])
+            r = floorplan.grade(
+                floorplan.intent_from_dict(doc, source_path='e'), pcb, board)
+        self.assertEqual(r.errors, [])
+        self.assertEqual(len([v for v in r.violations if v.ref == 'J3'
+                              and 'leaves its pad row' in v.message]), 1)
 
 
 class TheSheetSentence(unittest.TestCase):
@@ -165,6 +251,17 @@ class TheSheetSentence(unittest.TestCase):
         line = self._line(edge='E', nearest_edge='N')
         self.assertNotIn('reversed', line)
         self.assertIn('along the N edge rather than out of it', line)
+        self.assertNotIn('weak face', line)
+
+    def test_a_weak_perpendicular_face_says_it_is_weak(self):
+        """The stock jacks' wrong weak faces read perpendicular to their
+        edge; the sentence must not state that as a fact."""
+        line = self._line(edge='E', nearest_edge='N', facing_strong=False)
+        self.assertIn('courtyard+fab, a weak face)', line)
+
+    def test_interior_survives_the_facing_branch(self):
+        line = self._line(edge='E', nearest_edge='N', interior=True)
+        self.assertIn('INTERIOR for a connector', line)
 
     def test_no_face_reads_the_nearest_edge(self):
         line = self._line(edge='E', edge_basis='nearest', dist_mm=0.0,

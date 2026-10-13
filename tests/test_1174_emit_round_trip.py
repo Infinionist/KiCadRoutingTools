@@ -155,10 +155,12 @@ class TheEdgeMember(unittest.TestCase):
         self.assertEqual([e.measured['axis'] for e in errs], ['east'])
         self.assertEqual(errs[0].measured['open_sides'], ['north'])
 
-    def test_an_anchor_graded_member_opens_the_same_side(self):
+    def test_an_anchor_graded_member_pushed_off_its_pads_is_named(self):
         """A zone smaller than the courtyard grades the courtyard CENTRE
-        (`zone_fits_courtyard`); the open side applies there too. J1 moved
-        north until its centre is 0.91 mm past the edge, in a 5 x 5 zone."""
+        (`zone_fits_courtyard`). J1 moved north until its centre is 0.91 mm
+        past the edge, in a 5 x 5 zone: its pads are then 3.32 mm off the
+        board, so the open side does not excuse it -- the pads are named
+        (the synthetic twin in EveryReaderAgrees is the legitimate case)."""
         with tempfile.TemporaryDirectory() as td:
             with open(RP, encoding='utf-8') as fh:
                 text = fh.read()
@@ -178,7 +180,11 @@ class TheEdgeMember(unittest.TestCase):
                         c for c in doc['edge_connectors'] if c['ref'] != 'J1']
             doc = copy.deepcopy(self.doc)
             small(doc)
-            self.assertEqual(_zone_errors(_grade(doc, b)), [])
+            errs = _zone_errors(_grade(doc, b))
+            self.assertEqual(len(errs), 1, errs)
+            self.assertTrue(errs[0].measured['pads_graded'])
+            self.assertAlmostEqual(errs[0].measured['outside_mm'], 3.32,
+                                   places=2)
             doc = copy.deepcopy(self.doc)
             small(doc, claim=False)
             errs = _zone_errors(_grade(doc, b))
@@ -313,14 +319,14 @@ def _synthetic(td, parts, size=40):
     return _board(td, ''.join(parts), size=(size, size))
 
 
-def _box(ref, x, y, hw, hh, name='t:BOX'):
-    """A part with a +-hw x +-hh courtyard and one pad at its origin."""
+def _box(ref, x, y, hw, hh, name='t:BOX', pad=(0, 0)):
+    """A part with a +-hw x +-hh courtyard and one pad at `pad` (local)."""
     return (f'  (footprint "{name}" (layer "F.Cu") (at {x} {y})\n'
             f'    (property "Reference" "{ref}" (at 0 0) (layer "F.SilkS"))\n'
             f'    (fp_rect (start {-hw} {-hh}) (end {hw} {hh}) (stroke'
             f' (width 0.05) (type default)) (layer "F.CrtYd"))\n'
-            f'    (pad "1" smd rect (at 0 0) (size 0.6 0.6) (layers "F.Cu")'
-            f' (net 2 "N2")))\n')
+            f'    (pad "1" smd rect (at {pad[0]} {pad[1]}) (size 0.6 0.6)'
+            f' (layers "F.Cu") (net 2 "N2")))\n')
 
 
 def _doc(blocks, claims=(), **extra):
@@ -352,6 +358,39 @@ class EveryReaderAgrees(unittest.TestCase):
                 {'ref': 'J1', 'edge': 'north'}]))
         self.assertEqual(_zone_errors(bounded), [])
         self.assertEqual(len(_zone_errors(unbounded)), 1)
+
+    def test_an_open_side_does_not_let_the_pads_leave(self):
+        """Second verifier: the band's max bounds the body's far side only,
+        so a body-less 4 mm part wholly past the edge (its pad too) passed
+        both rules with `max 5`. Past an open side the PADS stay graded."""
+        with tempfile.TemporaryDirectory() as td:
+            gone = _synthetic(td, [_box('J1', 10, -2.1, 2, 2)])
+            zone = [{'name': 'b', 'refs': ['J1'], 'zone': [4, 0, 16, 8],
+                     'tolerance_mm': 0}]
+            errs = _zone_errors(self._grade(gone, _doc(zone, [J1_NORTH])))
+        self.assertEqual(len(errs), 1, errs)
+        self.assertIn("pads reach", errs[0].message)
+        self.assertTrue(errs[0].measured['pads_graded'])
+        self.assertEqual(errs[0].measured['axis'], 'north')
+        # The pad box past the side, not the courtyard: 2.1 + the 0.3 half-pad.
+        self.assertAlmostEqual(errs[0].measured['outside_mm'], 2.4, places=3)
+
+    def test_an_anchor_graded_member_opens_the_same_side(self):
+        """A zone smaller than the courtyard grades the courtyard CENTRE
+        (`zone_fits_courtyard`); the open side applies there too. The part's
+        centre sits 1 mm past the north edge while its pad stays 0.5 mm
+        inside it -- an overhang, not a part leaving the board."""
+        with tempfile.TemporaryDirectory() as td:
+            path = _synthetic(td, [_box('J1', 10, -1, 2, 2, pad=(0, 1.5))])
+            zone = [{'name': 'b', 'refs': ['J1'], 'zone': [9, 0, 11, 2],
+                     'tolerance_mm': 0}]
+            opened = self._grade(path, _doc(zone, [J1_NORTH]))
+            closed = self._grade(path, _doc(zone, []))
+        self.assertEqual(_zone_errors(opened), [])
+        errs = _zone_errors(closed)
+        self.assertEqual(len(errs), 1, errs)
+        self.assertTrue(errs[0].measured['anchor_graded'])
+        self.assertEqual(errs[0].measured['axis'], 'north')
 
     def test_plan_row5_does_not_charge_an_open_side_member(self):
         with tempfile.TemporaryDirectory() as td:
