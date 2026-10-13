@@ -166,7 +166,10 @@ class Ends:
         import pages_first as pf
         import source_realize as sr
         self.st = st
-        names = [n for n in st['launch'] if st['dmenu'].get(n)]
+        # (a lane with no option at an end is no lane -- the run leaves it out, and names it: on an escape base its
+        # teeth are its menu's alone, so with no tooth escape it is none either -- zynq U1's CTRL_OUT0, its via
+        # walled in, crashed the joint ends)
+        names = [n for n in st['launch'] if st['dmenu'].get(n) and (st['smenu'].get(n) or not st.get('escape'))]
         prs = {}
         if int(awx_settings.get('PLAN_PAIRS', awx_settings.get('BRAID_PAIRS', '0')) or 0):
             prs = {b: pr for b, pr in _pairs.pair_names(names).items() if pr[0] in names and pr[1] in names}

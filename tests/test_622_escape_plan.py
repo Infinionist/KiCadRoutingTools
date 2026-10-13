@@ -22,7 +22,9 @@ ball netted -- at the zynq LVDS run's sizes (clearance 0.09, escape track 0.12, 
    vias has no street escape;
 9. the plan sidecar carries the ends model's reading of each lane (its nets over two, load, crossings, fronts) as
    fanout_from_plan's does: a round the whole route lays nothing on names lanes from it (whole_feedback --name), and
-   with it empty the zynq LVDS bus's 47 nets on escapes named none -- three rounds laid the same ends.
+   with it empty the zynq LVDS bus's 47 nets on escapes named none -- three rounds laid the same ends;
+10. a net with no tooth escape (its via walled in) is no lane of the ends model, as one with no berth is: the run
+   leaves it out and names it (the joint ends had crashed on it).
 """
 import contextlib
 import io
@@ -191,6 +193,20 @@ with tempfile.TemporaryDirectory() as td_:
     check(em_ == {'over': {'A': 1}, 'load': {'A': 0.9, 'B': 0.2}, 'x': {'A': 3, 'B': 1},
                   'front': {'B': {'1': [0.1, 0.2, 0.3, 0.4]}}},
           f'9: the sidecar\'s ends_model is the ends model\'s reading: {em_}')
+
+# 10. a lane with no tooth escape is no lane: N0 (U1 to U2) with every move from its via banned -- the ends model
+# leaves it out, as it does a lane with no berth (joint_choose had crashed on it: zynq U1's walled-in CTRL_OUT0)
+import whole_ends  # noqa: E402
+import source_realize as sr  # noqa: E402
+with contextlib.redirect_stdout(io.StringIO()):
+    st0 = ep.plan_state(pcb, ['N0'], 'U1', 'U2', log=lambda *a: None)
+    lanes0 = [l_ for l_, _lg in whole_ends.Ends(st0).lanes]
+    st1 = ep.plan_state(pcb, ['N0'], 'U1', 'U2', log=lambda *a: None,
+                        banned={('N0', sr.move_sig(m)) for m in st0['smenu']['N0']})
+    lanes1 = [l_ for l_, _lg in whole_ends.Ends(st1).lanes]
+check(st0['smenu'].get('N0') and st0['dmenu'].get('N0') and lanes0 == ['N0'],
+      f'10: N0 has escapes at both arrays and a lane: {lanes0}')
+check(not st1['smenu'].get('N0') and lanes1 == [], f'10: N0 with no tooth escape has no lane: {lanes1}')
 
 print(f'escape plan: {len(moves)} moves from the test ball; ' + ('FAIL' if fails else 'all checks pass'))
 sys.exit(1 if fails else 0)
