@@ -1955,7 +1955,8 @@ def joint_choose(st, log=print, fixed=None, seed=None, learned=None, free_teeth=
         if chk is None or chk.get('plan'):
             break
         log(f'  whole ends: the joint ends ({how}): the solve\'s check: NO plan [{chk.get("status")}], core '
-            f'{chk.get("core")}')
+            f'{chk.get("core")}' + (f', rules {chk.get("rules")}' if chk.get('rules') else '')
+            + (f', crowded {chk.get("crowded")}' if chk.get('crowded') else ''))
         if not chk.get('core'):
             log('  whole ends: the joint ends: nothing to learn -- the local search')
             return None
