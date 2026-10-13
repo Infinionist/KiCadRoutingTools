@@ -329,6 +329,28 @@ def plan_state(pcb, names, sref, dref, banned=frozenset(), log=print):
             import source_realize as sr
             menus[nm] = [m for m in escape_menu(pad, site, grid, faces, rlayers, copper)
                          if (nm, sr.move_sig(m)) not in banned]
+    # TEETH_HOLD (a plan sidecar, the frame's): each net's TOOTH held -- where its escape reaches the boundary, by which
+    # face, on which layer -- the menu cut to the moves there, the ends left to choose the berths; the shared array's
+    # joint fanout (joint_escape.plan_array, hold=) laid its field round exactly those teeth, so the bus leaves it as it
+    # left its own fanout. A net with no move there keeps its menu, and is named
+    hold_path = awx_settings.get('TEETH_HOLD')
+    if hold_path:
+        sc_ = json.load(open(hold_path))
+        held_, miss_ = 0, []
+        for nm in sorted(smenu):
+            t_ = (sc_.get('ends') or {}).get(nm)
+            if not t_ or nm not in (sc_.get('tooth_layer') or {}):
+                continue
+            dv_ = tuple(sc_['tooth_dir'][nm])
+            at_ = [m for m in smenu[nm] if tuple(DIRS[m.direction]) == dv_ and m.layer == sc_['tooth_layer'][nm]
+                   and math.hypot(m.exit_pt[0] - t_[0][0], m.exit_pt[1] - t_[0][1]) <= 0.05]
+            if at_:
+                smenu[nm] = at_
+                held_ += 1
+            else:
+                miss_.append(nm)
+        log(f'  teeth held (TEETH_HOLD): {held_} net(s) held to their tooth'
+            + (f'; no move at it, menu kept: {miss_}' if miss_ else ''))
     # a PAIR's two legs never within the rule of each other: their joint options so banned (whole_ends: unbanned)
     import source_realize as sr
     banned = set(banned)

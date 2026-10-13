@@ -101,6 +101,11 @@ SUBSOLVERS = ['default_lp', 'quick_restart']
 # of 60,500: a via), U5 538 against 454 MB at 2.7% (665: two vias)
 SUBSOLVERS_RUNS = ['quick_restart']
 HOLD_TOL = 0.05            # mm: (`hold`) an escape's exit this close to the held tooth's is that tooth
+# (escape_to / hold) another ball served by its DOG-BONE ALONE -- a stub and a via at a gap, no run out of the array,
+# the router's to take on, as the escape fanout leaves every ball not its bus's -- where no escape of its fits round the
+# bus's held teeth: dearer than any escape (one on a plane layer, C_PLANE_LAYER, included), never a ball left to the
+# engine's own phases, which lay it blind to the plan (zynq U1's FB_CLK pair across the LVDS field)
+C_STUB = 4000
 
 
 def short_name(n):
@@ -152,6 +157,8 @@ def preferred_teeth(board, ref, bus):
 
 
 Strap = collections.namedtuple('Strap', 'to a b layer length')     # a join to the neighbouring ball `to`
+Stub = collections.namedtuple('Stub', 'site a layer')    # (escape_to / hold) another ball's DOG-BONE alone: a stub on
+#                                                           its layer from the ball `a` to a gap `site`, a via there
 Drop = collections.namedtuple('Drop', 'site stub layer inpad r dr')  # a plane ball's via: in a diagonal gap behind a
 #                                                                     stub (a, b) on `layer`, or in its pad; its
 #                                                                     radius and its drill's, as the engine lays it
@@ -899,6 +906,18 @@ def build_menus(pcb, ref, bus, others, other_layers, far=None, drops=(), climb=C
         o += [('strap', s, Piece(nm, [(s.a, s.b, s.layer)], [], [s.a, s.b])) for s in straps.get(key, ())]
         o += [('drop', d, Piece(nm, [d.stub + (d.layer,)] if d.stub else [], [(d.site, d.r, d.dr)], own))
               for d in dmenu[key]]
+        if (escape_to or hold) and nm in oth_s:
+            # (another ball's dog-bone alone, C_STUB: where no escape of its fits round the bus's held teeth)
+            home_ = next((L for L in pcb.board_info.copper_layers if L in p.layers), 'F.Cu')
+            for sx in (-1, 1):
+                for sy in (-1, 1):
+                    q_ = (p.global_x + sx * grid.pitch_x / 2.0, p.global_y + sy * grid.pitch_y / 2.0)
+                    if not _via_clear(pcb, obs, p.net_id, q_, sz['vr'], sz) or \
+                            not obs(p.net_id, home_).seg_clear(own[0], q_) or \
+                            (pockets and in_pockets(pockets, [(own[0], q_, home_)], [q_])):
+                        continue
+                    s_ = Stub(q_, own[0], home_)
+                    o.append(('stub', s_, Piece(nm, [(own[0], q_, home_)], [(q_, sz['vr'], sz['vdr'])], own)))
         opts[key] = o
     by_net = collections.defaultdict(list)
     for key, (nm, _p) in items.items():
@@ -1050,6 +1069,8 @@ def plan_array(pcb, ref, bus, others, other_layers, far=None, prefer=None, drops
 
     def cost(key, kind, o):
         nm, p = items[key]
+        if kind == 'stub':
+            return int(round(C_STUB + C_MM * math.hypot(o.site[0] - p.global_x, o.site[1] - p.global_y)))
         if kind == 'strap':
             # (a plane ball's strap is priced as the via it does without: it shares its neighbour's way down only
             # where the ball has none of its own, as a drop or a shared gap via)
@@ -1242,6 +1263,11 @@ def plan_array(pcb, ref, bus, others, other_layers, far=None, prefer=None, drops
         return z
     for n_p, (_b, kp, kn) in enumerate(bm.pairs):
         mdl.Add(sum(v[kp]) == sum(v[kn]))
+        # (a pair's two dog-bones alone together, or its two escapes: one leg left inside the array and the other out
+        # of it is no pair's start)
+        stub_ = lambda k_: [v[k_][i] for i, (kind, _o, _pc) in enumerate(opts[k_]) if kind == 'stub']   # noqa: E731
+        if stub_(kp) or stub_(kn):
+            mdl.Add(sum(stub_(kp)) == sum(stub_(kn)))
         slots, lit = {}, {}
         for k_ in (kp, kn):
             sl = slots[k_] = collections.defaultdict(list)     # (face, layer, exit x, exit y) -> the leg's options
@@ -1254,7 +1280,7 @@ def plan_array(pcb, ref, bus, others, other_layers, far=None, prefer=None, drops
                     ro_ = tuple(sorted(getattr(o, 'runs_on', None) or ())) if (escape_to or hold) and o.layer == RUN \
                         else ()
                     sl[(o.direction, o.layer, round(o.exit_pt[0], 6), round(o.exit_pt[1], 6), ro_)].append(i)
-                else:
+                elif kind != 'stub':
                     mdl.Add(v[k_][i] == 0)          # (a pair leaves by its legs' escapes: a strap leaves no pair)
             for s_, idx in sl.items():
                 if len(idx) == 1:
@@ -1536,6 +1562,60 @@ def plan_array(pcb, ref, bus, others, other_layers, far=None, prefer=None, drops
             piece[key] = Piece(pc.net, list(o2.legs), pc.vias, pc.balls)
         for key in uncoloured:
             del chosen[key], ci[key], piece[key]
+    repaired = []
+    if uncoloured and (escape_to or hold):
+        # (escape_to / hold) a ball whose run the colouring could not place takes its cheapest option that STANDS with
+        # the coloured plan in the laid geometry (_hit): a run on one of its layers that is free there, an escape off
+        # RUN, a drop, its dog-bone alone -- a pair both its legs' dog-bones; never a strap, which leans on a neighbour's
+        # choice. The capacity rows count a lane group's runs per layer and cannot see a run pushed from group to group
+        # (zynq U1, the LVDS teeth held: OTG_DATA6 chosen, no layer left for it, the ball left bare)
+        def stands(k, pc):
+            bx = _box(pc, sz['grow'])
+            for k2, pc2 in piece.items():
+                b2 = _box(pc2, sz['grow'])
+                if bx[0] > b2[2] or b2[0] > bx[2] or bx[1] > b2[3] or b2[1] > bx[3]:
+                    continue
+                if _hit(pc, pc2, items[k][0] == items[k2][0], sz):
+                    return False
+            return True
+
+        def ways(k):
+            for i, (kind, o, pc) in sorted(enumerate(opts[k]), key=lambda t: (cost(k, t[1][0], t[1][1]), t[0])):
+                if kind == 'strap':
+                    continue
+                if kind == 'escape' and o.layer == RUN:
+                    for L in (getattr(o, 'runs_on', None) or ()):
+                        o2 = dataclasses.replace(o, layer=L, legs=[(a, b, L if l_ == RUN else l_) for a, b, l_ in o.legs])
+                        yield i, kind, o2, Piece(pc.net, list(o2.legs), pc.vias, pc.balls)
+                else:
+                    yield i, kind, o, pc
+        leg_of = {k_: (kp, kn) for _b, kp, kn in bm.pairs for k_ in (kp, kn)}
+        for key in sorted(uncoloured):
+            if key in chosen:
+                continue
+            if key in leg_of:
+                kp, kn = leg_of[key]
+                if kp in chosen or kn in chosen:
+                    continue
+                for ip, (kd, op, pp) in enumerate(opts[kp]):
+                    if kd != 'stub' or not stands(kp, pp):
+                        continue
+                    hit = next(((jn, on, pn) for jn, (kd2, on, pn) in enumerate(opts[kn])
+                                if kd2 == 'stub' and stands(kn, pn) and not _hit(pp, pn, False, sz)), None)
+                    if hit:
+                        for k_, i_, o_, p_ in ((kp, ip, op, pp), (kn,) + hit):
+                            chosen[k_], ci[k_], piece[k_] = ('stub', o_), i_, p_
+                            repaired.append(k_)
+                        break
+                continue
+            for i, kind, o, pc in ways(key):
+                if stands(key, pc):
+                    chosen[key], ci[key], piece[key] = (kind, o), i, pc
+                    repaired.append(key)
+                    break
+        if repaired:
+            log(f'  joint escape of {ref}: {len(repaired)} uncoloured ball(s) given an option that stands with the '
+                f'plan: {sorted(repaired)}')
     # the choice against the laid geometry, apart from the lane model the pairs came from: two chosen options of two
     # balls whose copper the engine could not both lay (the lane model does not see, e.g., two plain moves crossing)
     clashes = []
@@ -1562,6 +1642,8 @@ def plan_array(pcb, ref, bus, others, other_layers, far=None, prefer=None, drops
             h['legs'] = [(tuple(a), tuple(b), L) for (a, b, L) in o.legs]
         elif kind == 'strap':
             h = {'kind': 'strap', 'to': tuple(o.b), 'layer': o.layer}
+        elif kind == 'stub':
+            h = {'kind': 'stub', 'site': tuple(o.site), 'layer': o.layer}   # (laid by lay, before the engine)
         else:
             h = {'kind': 'drop', 'site': tuple(o.site), 'layer': o.layer, 'inpad': bool(o.inpad)}
             if not o.inpad and o.r < sz['vr'] - 1e-9:
@@ -1576,6 +1658,7 @@ def plan_array(pcb, ref, bus, others, other_layers, far=None, prefer=None, drops
                bus_escaped=kinds[('bus', 'escape')],
                bus_balls=sum(1 for k in items if items[k][0] in bus_s),
                others_escaped=kinds[('other', 'escape')], others_strapped=kinds[('other', 'strap')],
+               others_stubbed=kinds[('other', 'stub')],
                others_balls=sum(1 for k in items if items[k][0] in oth_s),
                dropped=kinds[('plane', 'drop')], plane_strapped=kinds[('plane', 'strap')],
                dropped_in_pad=sum(1 for k, (kind, o) in chosen.items() if kind == 'drop' and o.inpad),
@@ -1605,7 +1688,9 @@ def plan_array(pcb, ref, bus, others, other_layers, far=None, prefer=None, drops
                             objective=obj_orig if chosen else None, bound=s_.BestObjectiveBound(),
                             wall=s_.WallTime(), branches=s_.NumBranches(), conflicts_cp=s_.NumConflicts())
     log(f'  joint escape of {ref}: {rep["status"]} -- bus {rep["bus_escaped"]}/{rep["bus_balls"]}, others '
-        f'{rep["others_escaped"]} escaped + {rep["others_strapped"]} strapped of {rep["others_balls"]}, plane '
+        f'{rep["others_escaped"]} escaped + {rep["others_strapped"]} strapped'
+        + (f' + {rep["others_stubbed"]} dog-boned alone' if rep['others_stubbed'] else '')
+        + f' of {rep["others_balls"]}, plane '
         f'{rep["dropped"]} dropped ({rep["dropped_in_pad"]} in pad)'
         + (f' + {rep["plane_strapped"]} strapped' if rep['plane_strapped'] else '') + f' of {rep["plane_balls"]}'
         + (f' on {rep["drop_vias"]} vias' if rep['drop_vias'] != rep['dropped'] else '') + '; '
@@ -1646,6 +1731,24 @@ def lay(board, out, ref, bus, others, other_layers, hints, other_pairs=(), plane
     import ship_vias
     import source_realize as sr
     extra = dict(diff_pair_patterns=[f'{b}*' for b in other_pairs], diff_pair_gap=_pairs.GAP) if other_pairs else {}
+    stubs = {at: h for at, h in hints.items() if h.get('kind') == 'stub'}
+    if stubs:
+        # (the plan's DOG-BONES ALONE, laid first as the plan proved them: the engine has no such move, and leaves a
+        # ball that carries its own net's copper -- so none of them is fanned again by its phases, blind to the plan)
+        pcb0 = parse_kicad_pcb(board)
+        at_ball = {(round(p.global_x, 3), round(p.global_y, 3)): p for p in pcb0.footprints[ref].pads}
+        got = [(at_ball[a], h) for a, h in sorted(stubs.items()) if a in at_ball]
+        pre = (out[:-len('.kicad_pcb')] if out.endswith('.kicad_pcb') else out) + '.stubs.kicad_pcb'
+        add_tracks_and_vias_to_pcb(
+            board, pre,
+            [{'start': (p.global_x, p.global_y), 'end': tuple(h['site']), 'width': sr.FAN_TRACK, 'layer': h['layer'],
+              'net_id': p.net_id} for p, h in got],
+            [{'x': h['site'][0], 'y': h['site'][1], 'size': te.VIA_SIZE, 'drill': te.VIA_DRILL,
+              'layers': ['F.Cu', 'B.Cu'], 'net_id': p.net_id} for p, h in got], [],
+            net_id_to_name={i: n.name for i, n in pcb0.nets.items()})
+        fp.copy_pro(board, pre)
+        board = pre
+        hints = {a: h for a, h in hints.items() if a not in stubs}
     # the movable passives (the decoupling caps under the array) are not obstacles: the cap placement step follows
     # the bus step in the chain and moves them off this copper (geometry.immovable_foreign_pads) -- until it has, once
     # (passives_fixed): every foreign pad then one a via clears
