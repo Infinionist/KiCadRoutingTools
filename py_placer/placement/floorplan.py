@@ -4600,7 +4600,8 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
             # for the boundary review, never an error -- legitimately-interior
             # connectors exist (tigard J7), so this fires at WARN whatever the
             # rule's configured severity. An author upgrades by writing
-            # max_setback_mm (then the configured severity applies) or edge.
+            # max_setback_mm (then the configured severity applies); an
+            # `edge` adds the edge conjuncts but leaves this flag a WARN.
             from .part_class import INTERIOR_AFFINITY_MM
             setback = INTERIOR_AFFINITY_MM
             _sev = WARN

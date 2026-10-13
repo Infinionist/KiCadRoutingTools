@@ -248,7 +248,7 @@ parts, and parts outside `seed_refs`, count as placed before stage 0):
 | stage | what it seats |
 |---|---|
 | 0 | `fixed_poses[]` (#1054): EXACTLY at the declared pose, a check and never a search -- courtyards may abut (KiCad's rule) but not overlap, pads and holes keep their clearance, and every declared pose is judged against every other one, so a clashing pair is refused BOTH; an illegal pose is refused with its measurement and the part held out of every later stage. Seated parts are stamped `(locked yes)` |
-| 1 | edge connectors on their declared edge, inside the overhang band. The edge seat bypasses `pose_ok` (it overhangs by design), so `edge_seat_ok` carries its own conjuncts -- band, pads on the board, keep-outs, exclusive zones and, since #1044, the board's rule-area `(tracks not_allowed)` bands, ABSOLUTE: a band pose is refused by name and the connector left to the later stages rather than seated where no track can reach its pad |
+| 1 | edge connectors on their declared edge, inside the overhang band. The edge seat bypasses `pose_ok` (it overhangs by design), so `edge_seat_ok` carries its own conjuncts -- band, pads on the board, keep-outs, exclusive zones and, since #1044, the board's rule-area `(tracks not_allowed)` bands, ABSOLUTE: a band pose is refused by name and the connector left to the later stages rather than seated where no track can reach its pad. Its ANGLE (#1172): an undeclared connector whose input angle carries no information -- the board is a pile, the part a stacked suspect, or every pad off the outline -- is tried at each quarter turn, least depth into the board first; a STRONG mating face (#1155, `mating.py`) decides it outright, and turns a part facing away from its edge on any board. A rung must clear the courtyards stage 1 has already seated as well as their pads (`_placed_courtyard_hits`, the floorplan budget's currency); only when no rung does is the old pad-only seat kept, and the overlap named. An edge's claims start packed by width when equal fractions would overlap them |
 | 1.5 | `must_lock` parts, at their current pose where it is legal |
 | 2 | zoned blocks, packed radially from the zone centre; a declared array whose members all sit in one zoned block is seated into it whole (stage 2.45) |
 | 2.4 | declared non-zoned arrays: each row's served part, then the row (stage 2.45), each row at its members' rank. A row member is never seated alone here. The order is disclosed in the seeder's `early_order` |
@@ -265,7 +265,8 @@ Its final gate also names rule-area band pads (#1044): `keepout_copper_seeded`
 is `[ref, mm]` for each part the seed MOVED whose pad copper went deeper into a
 `(tracks not_allowed)` band than at its input pose, and exits 4 on it;
 `oob_keepout_copper_count` is the written board's total, inherited ones
-included (reported, not charged).
+included (reported, not charged). `edge_angle_chosen` names every edge
+connector stage 1 TURNED -- `{ref: {from, to, why, candidates}}` (#1172).
 
 Every `JSON_SUMMARY` it prints (seed, `--repair`, `--reseat`) carries
 `connector_requirements` (#974): the declared edge connectors' graded
@@ -305,6 +306,12 @@ quench, whose swaps no longer trade a declared angle away), an array's
 `fixed_poses[]` entry's `rot` (seated exactly, then locked). Explore rotations
 deliberately with `place_portfolio.py --strategy poses`, which with `--intent`
 explores a part a block declares only within its declaration (#1121).
+An undeclared EDGE connector is the exception to keeping the input angle:
+stage 1 chooses its angle when the input carries none, or when its strong
+mating face points away from its edge (#1172, above), and `_seat_edge`
+(`--repair`) turns such a part to the facing quarter turn or refuses it by
+name. Neither seats a connector reversed; only an author's declared single
+`rotation` can, and stage 1 then says so.
 
 ### The eviction rung (`--evict-depth`, #630, #699)
 
@@ -1192,6 +1199,19 @@ parts worth knowing from here:
   believes they set and the grader never checks. `context` is the one exception,
   open by design at the top level and on every entry, because provenance with
   nowhere to go ends up in a key that IS graded.
+- **An edge connector is graded by the way it OPENS (#1155).** The edge
+  rule's facing conjunct fails a receptacle (declared, inferred by
+  `part_class`, or any `edge_mount` / `through_edge` entry) whose body leaves
+  its pad row away from its declared edge -- ERROR on a strong face, WARN on
+  a weak one -- and `--emit-intent` never declares the edge of a part seated
+  reversed.
+- **An edge member's zone is open on its declared edge (#1174)** when that
+  zone side lies on the outline and the claim bounds its overhang
+  (`overhang_mm.max`): the edge rule grades how far past the edge it may go,
+  and the zone no longer ejects it for going there. Every zone reader -- the
+  grade, the quench term, feasibility, the plan check, the seeder's notes --
+  opens the same side. Emitted zones are rounded inside the emitted
+  envelope, so an emitted intent grades clean on its own board.
 - **`schema` is the format number; `min_reader` is the field vocabulary.** An
   intent sets `min_reader` when a claim must not be silently ignored, and a
   build whose `READER_VERSION` is lower refuses the file instead of grading it
@@ -1385,7 +1405,8 @@ is followed by a settle beat, so the moves only play once the camera has arrived
 | `cli_gates.py` | argparse shared by both placement CLIs so they cannot drift |
 | `../render_placement.py` | Headless PNG stills of placement status (#431) |
 | `legality.py` | Hard constraints shared by both engines: board side, real Edge.Cuts containment, and the OO/OoB graders (#456) |
-| `body.py` | THE body model (#896): courtyard -> fab -> silk U pads -> pad bbox, with the occupancy rect and the source that answered |
+| `body.py` | THE body model (#896): courtyard -> fab -> silk U pads -> pad bbox, with the occupancy rect and the source that answered; a fab MARKING (under 2% of the pad box) is never the body (#1201) |
+| `mating.py` | Which way a connector OPENS (#1155): its mating face, read off where the body sits relative to its pad row. The edge rule and the seeder both read it through `floorplan.edge_facing` |
 | `connector_geometry.py` | The DRAWN connector envelope against a declared compass edge (#961): the number an `overhang_mm` band is graded on, at zero margin, and the legacy occupancy reading named as the basis wherever no body can be measured |
 | `parser.py` | Courtyard, fab, silk and locked-footprint extraction |
 | `writer.py` | Writes new positions/rotations (rotates pad angles with the footprint, as KiCad stores pad angle = footprint + pad rotation). Resolves blocks through `kicad_parser.iter_footprint_blocks`, so one placement moves ONE block even when two share a reference (#726) |
@@ -1434,6 +1455,22 @@ because Y1's pads overhang its fab body.
 above the run-23 blocking floors and all five were logos (`logo`, `oshw:oshw`,
 `Glasgow:nono_hana_lines`).
 
+**A `.Fab` rung under 2% of the pad box is a MARKING, not a body (#1201).**
+The fab rung used to be taken unconditionally while silk had a tick-mark
+guard, so the 0.06 mm pin-1 `fp_circle` -- the only F.Fab item an
+EasyEDA-converted USB-C receptacle draws -- became that part's body, and its
+edge seat was graded on a dot ("seated 8.90mm from the nearest edge" for a
+part whose pads are 3.8 mm from it, CM5_MINIMA_3 J101). `fab_cannot_be_body`
+(`FAB_MIN_PAD_AREA_FRAC = 0.02`) rejects it: the DRAWN body falls to silk,
+else nothing, and `fab_rejected` records it. What the part OCCUPIES is
+deliberately unchanged -- the marking united with its pads, as before, now
+labelled `fab_marking` -- because letting silk answer that question too
+turned the fa10 One-Air-Max seed from NOT BUILDABLE (23 courtyard pairs) to
+"buildable": a silk occupancy never gates. Measured: the markings reach
+0.00466 of their pad box (all 204 on the fa10 designer boards), the least
+real bodies 0.0537 (KiCad's stock library) and 0.3114 on the tracked corpus
+(orangecrab J4), which loses none. A pad-less part keeps its fab body.
+
 **A silk-sourced body never GATES**, structurally rather than by a census
 coming out clean. On the shipped esp_prog, U2's OLIMEX SOT89 draws four corner
 brackets at +/-2.5 mm plus a pin-1 dot -- a 5.2 x 5.2 mm assembly square
@@ -1442,7 +1479,11 @@ real body by 2.1 mm, reads as 89% CONTAINED. The pair is reported, with its
 source; it does not decide. The exclusion is scoped per channel (containment
 reads `drawn_source`, the courtyard channel the occupancy source), because
 scoping it to one set threw away four pre-existing findings silk had nothing to
-do with.
+do with. #1201 measured whether silk containment could gate after all: on
+the designer boards it trips 13 silk-only pairs, tracked esp_prog R1/U2 among
+them, so it stays advisory -- and check_assembly now says WHY each contained
+pair does not gate (`gate_exempt`: `silk_drawn`, or the marker / container
+waiver that applies) instead of one sentence that described neither.
 
 **There is no offset constant, deliberately.** #896 proposes expanding silk by
 "the silk-to-body offset the library uses, ~0.2 mm on OLIMEX"; that turns its
@@ -1466,6 +1507,37 @@ Source mix over 1349 corpus parts: 1267 courtyard, 27 fab, 6 silk, 49 pad bbox,
 (negative is an overlap, the same convention as `rect_gap`) and naming the
 source each side rests on. `body_overlap_pairs` reports a depth only for pairs
 that already overlap, so a board a hair from a collision said nothing at all.
+
+## Mating face (`mating.py`, #1155)
+
+The toolchain could say which edge a connector's courtyard was NEAREST, and
+nothing else, so a DSUB edge-mount seated backwards -- shell over the board,
+opening pointing inward -- passed every grader whenever the back of its shell
+grazed its declared edge (sonde_xilinx J2). The fact that decides it is where
+the BODY sits relative to the PAD ROW: a horizontal connector solders at the
+back and extends forward to its opening. `mating_face_local` reads that
+offset in the footprint's own frame from two votes, the courtyard and the
+drawn body (fab after #1201's guard, else silk), and `facing_edge` maps it
+through the pose.
+
+It abstains, with a reason, on no pads, a board-copper plug (the board is the
+mating body), a `Vertical` footprint name, a symmetric part (offset under
+`FACE_MIN_OFFSET_MM` 0.57 mm, or under `FACE_DOMINANCE` times its cross-axis
+offset), votes that disagree, and a pose within 30 degrees of a diagonal.
+A face is STRONG at `FACE_STRONG_OFFSET_MM` (2 mm): only a strong face fails
+a declared edge at ERROR. The tiering is measured, not cautious -- KiCad's
+stock library has three receptacles whose PAD layout sets a confidently
+wrong face between 0.9 and 1.4 mm, among 60+ correct USB faces in the same
+range, and no wrong face is known above 2 mm.
+
+One predicate, every consumer: `floorplan.edge_facing` is what
+`rule_edge_connector`'s facing conjunct grades, what `emit_intent` withholds
+a reversed edge by, and the function object the seeder seats by, so the
+generator cannot seat a connector the grader then calls reversed.
+`board_context`'s "Mating face" reads the same primitive. B-side parts need
+no extra mirror: the board file stores their local coordinates mirrored
+already. Census: `tests/measure_1155_mating_census.py` -- every decisive
+receptacle on the tracked and fa10 designer boards faces the edge it sits on.
 
 ## Legality model (`legality.py`, #456)
 

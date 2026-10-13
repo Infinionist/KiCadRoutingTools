@@ -12,14 +12,22 @@ first-fit: a zone is packed radially from its centre, anything unzoned lands
 on its connectivity centroid, and the first rotation that fits is kept. That
 is the right shape for the many small parts and it is not a chooser -- it has
 no representation for a pose that is a DECISION. An edge band says which edge
-and not where along it; nothing says which way a mating face points, so a
-connector is seated at the band's midpoint at whatever angle it came in with,
-which on a pile is a generator default. Measured on esp_prog (run 27): both
-free connectors came out at rotation 0, and one of them put the band midpoint
-through a fixed socket's ground tab on every one of ten seeds. Place and lock
-the parts whose pose is a decision first; seed what is left. The placement
-driver's P1 enforces that, and `--waive seed-connectors:<why>` is how a
-caller deliberately hands a connector to this module instead.
+and not where along it, so a connector is seated at the band's midpoint.
+Measured on esp_prog (run 27): both free connectors came out at rotation 0,
+and one of them put the band midpoint through a fixed socket's ground tab on
+every one of ten seeds. Place and lock the parts whose pose is a decision
+first; seed what is left. The placement driver's P1 enforces that, and
+`--waive seed-connectors:<why>` is how a caller deliberately hands a
+connector to this module instead.
+
+Since #1155 / #1172 stage 1 knows ONE thing about a connector's angle: which
+way its mating face points (`placement.mating`, read through
+`floorplan.edge_facing`, the edge rule's own predicate). A strong face that
+points away from its declared edge is turned to face it, on any board; an
+input angle that carries no information (a pile) is replaced by the quarter
+turns in least-depth order, facing ones first. That is a floor under the
+angle, not a placement decision: where along the edge, and the angle of a
+part whose face is weak or absent, are still the author's to declare.
 
 What each intent construct becomes, in placement order:
 
@@ -3806,12 +3814,14 @@ def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
     # (3) is not in the issue, and it was added because the probe caught the
     # loop firing without it: driven over a lattice of incoming poses for an
     # UNDECLARED splitflap_driver J17, the seat at start fraction 0.3 came
-    # back rotated 0 -> 90 degrees. Nothing in this tree knows which way a
-    # mating face must point -- `edge_seat_ok` tests the overhang band, the
-    # pads being on the board and the keep-outs, and `part_class` has no
-    # orientation concept at all -- so turning a connector is only defensible
-    # where a human declared where it belongs, and that declaration is the
-    # evidence that its current orientation is not itself the requirement.
+    # back rotated 0 -> 90 degrees. `edge_seat_ok` tests the overhang band,
+    # the pads being on the board and the keep-outs, not which way the part
+    # opens -- so turning a connector is only defensible where a human
+    # declared where it belongs, and that declaration is the evidence that
+    # its current orientation is not itself the requirement. (#1155 added a
+    # mating-face reading, but only a STRONG face is acted on, above, and a
+    # part already facing its edge skips this ladder entirely; a weak or
+    # absent face says nothing about which turn is right.)
     # Without (3) this PR's contract, inert unless something is declared,
     # would be false.
     #
@@ -5793,8 +5803,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                         f"({_set}) seats clear on the {edge} edge, so "
                         + (f"it keeps the seat at {_redo:g}deg (#1172)"
                            if _redo is not None else
-                           f"it is left as its first attempt left it "
-                           f"(#1172)"))
+                           "it is left as its first attempt left it "
+                           "(#1172)"))
                     continue
                 notes.append(
                     f"edge connector {_ref1125}: no member of its "

@@ -210,6 +210,13 @@ class ThePolicy(unittest.TestCase):
         self.assertFalse(floorplan.edge_facing(
             {'ref': 'J2', 'edge': 'east', 'class': 'connector_affinity'},
             fp, geom, rotation=90.0)['fails'])
+        # A diagonal pose names no edge, so the same strong face claims
+        # nothing there: `strong` is reported only with an edge it points at.
+        diag = floorplan.edge_facing({'ref': 'J2', 'edge': 'east'}, fp, geom,
+                                     rotation=45.0)
+        self.assertIsNone(diag['facing'])
+        self.assertFalse(diag['strong'])
+        self.assertFalse(diag['fails'])
 
     def test_no_geometry_never_fails(self):
         ef = floorplan.edge_facing({'edge': 'east', 'class': 'edge_receptacle'},
