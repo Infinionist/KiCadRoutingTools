@@ -516,5 +516,178 @@ class EveryReaderAgrees(unittest.TestCase):
         self.assertTrue(notes['closed'])            # control
 
 
+#: One zone per side of the 40 mm board, each reaching the outline there, and
+#: a 4 mm part whose centre sits 2.1 mm past that side (its pad with it).
+_SIDES = {'north': ([4, 0, 16, 8], (10, -2.1)),
+          'south': ([4, 32, 16, 40], (10, 42.1)),
+          'west': ([0, 4, 8, 16], (-2.1, 10)),
+          'east': ([32, 4, 40, 16], (42.1, 10))}
+
+
+class PadsPastAnOpenSide(unittest.TestCase):
+    """The round-2 verifier's: each of these SURVIVED test_1174 before."""
+
+    def _grade(self, path, intent):
+        return floorplan.grade(intent, parse_kicad_pcb(path), path)
+
+    def _claim(self, edge):
+        return {'ref': 'J1', 'edge': edge,
+                'overhang_mm': {'min': 0, 'max': 5}}
+
+    def test_every_side_is_measured(self):
+        for edge, (zone, (x, y)) in sorted(_SIDES.items()):
+            with self.subTest(edge=edge), \
+                    tempfile.TemporaryDirectory() as td:
+                path = _synthetic(td, [_box('J1', x, y, 2, 2)])
+                errs = _zone_errors(self._grade(path, _doc(
+                    [{'name': 'b', 'refs': ['J1'], 'zone': zone,
+                      'tolerance_mm': 0}], [self._claim(edge)])))
+                self.assertEqual(len(errs), 1, errs)
+                self.assertTrue(errs[0].measured['pads_graded'])
+                self.assertEqual(errs[0].measured['axis'], edge)
+                self.assertAlmostEqual(errs[0].measured['outside_mm'], 2.4,
+                                       places=3)
+
+    def test_a_small_escape_is_an_error_and_none_is_not(self):
+        """Half a 0.6 mm pad past the edge is 0.3 mm of copper off the
+        board, at the zone's tolerance 0; the same pad 0.6 mm inboard is
+        an overhang."""
+        zone = [{'name': 'b', 'refs': ['J1'], 'zone': [4, 0, 16, 8],
+                 'tolerance_mm': 0}]
+        with tempfile.TemporaryDirectory() as td:
+            over = _synthetic(td, [_box('J1', 10, 0, 2, 2)])
+            errs = _zone_errors(self._grade(over, _doc(
+                zone, [self._claim('north')])))
+        with tempfile.TemporaryDirectory() as td:
+            held = _synthetic(td, [_box('J1', 10, 0, 2, 2, pad=(0, 0.6))])
+            ok = _zone_errors(self._grade(held, _doc(
+                zone, [self._claim('north')])))
+        self.assertEqual(len(errs), 1, errs)
+        self.assertAlmostEqual(errs[0].measured['outside_mm'], 0.3, places=3)
+        self.assertEqual(ok, [])
+
+    def test_a_zone_drawn_past_the_board_measures_the_board(self):
+        """A side opens when it lies ON or BEYOND the outline, so the pads
+        are measured against the board's side: a zone 5 mm past the north
+        edge used to let pads 2.4 mm off the board grade clean."""
+        with tempfile.TemporaryDirectory() as td:
+            gone = _synthetic(td, [_box('J1', 10, -2.1, 2, 2)])
+            errs = _zone_errors(self._grade(gone, _doc(
+                [{'name': 'b', 'refs': ['J1'], 'zone': [4, -5, 16, 8],
+                  'tolerance_mm': 0}], [self._claim('north')])))
+        self.assertEqual(len(errs), 1, errs)
+        self.assertEqual(errs[0].measured['axis'], 'north')
+        self.assertAlmostEqual(errs[0].measured['outside_mm'], 2.4, places=3)
+        self.assertIn("past the board's north edge", errs[0].message)
+
+    def test_one_finding_per_member(self):
+        """Pads past the open north side AND a courtyard 1 mm past the
+        closed west side: the member is named once, for its pads -- every
+        branch of the rule yields at most one finding per member."""
+        with tempfile.TemporaryDirectory() as td:
+            path = _synthetic(td, [_box('J1', 5, -2.1, 2, 2)])
+            errs = _zone_errors(self._grade(path, _doc(
+                [{'name': 'b', 'refs': ['J1'], 'zone': [4, 0, 16, 8],
+                  'tolerance_mm': 0}], [self._claim('north')])))
+        self.assertEqual(len(errs), 1, errs)
+        self.assertTrue(errs[0].measured.get('pads_graded'), errs)
+
+    def test_the_seat_search_view_grades_the_pose_it_asks_about(self):
+        """`PoseGrader` (the seat search's view of the intent) grades the
+        pose it is ASKED about, through the posed state's pad model -- and
+        agrees with the grade of the board written at that pose. J1 sits on
+        the board; the search asks about it 2.1 mm past the north edge."""
+        import contextlib
+        import io
+        import pose_score
+        from placement.writer import write_placed_output
+        intent = _doc([{'name': 'b', 'refs': ['J1'], 'zone': [4, 0, 16, 8],
+                        'tolerance_mm': 0}], [self._claim('north')])
+        with tempfile.TemporaryDirectory() as td:
+            path = _synthetic(td, [_box('J1', 10, 5, 2, 2)])
+            pcb = parse_kicad_pcb(path)
+            blocks, _ = floorplan.resolve_blocks(intent, pcb,
+                                                 ('kicad', 'sheet'))
+            with contextlib.redirect_stdout(io.StringIO()):
+                st = pose_score.make_state(pcb, path, clearance=0.25,
+                                           board_edge_clearance=0.55)
+            pg = floorplan.PoseGrader(intent, st, blocks=blocks,
+                                      clearance=0.25,
+                                      board_edge_clearance=0.55)
+            here = [v for v in pg.violations()
+                    if v.rule == 'zone_containment']
+            asked = [v for v in pg.violations(poses={'J1': (10, -2.1, 0.0)})
+                     if v.rule == 'zone_containment']
+            out = os.path.join(td, 'w.kicad_pcb')
+            with contextlib.redirect_stdout(io.StringIO()):
+                write_placed_output(path, out, [
+                    {'reference': 'J1', 'new_x': 10, 'new_y': -2.1,
+                     'new_rotation': 0.0}])
+            written = _zone_errors(self._grade(out, intent))
+        self.assertEqual(here, [])
+        self.assertEqual(len(asked), 1, asked)
+        self.assertTrue(asked[0].measured['pads_graded'])
+        self.assertEqual(
+            [(v.measured['axis'], round(v.measured['outside_mm'], 4))
+             for v in asked],
+            [(v.measured['axis'], round(v.measured['outside_mm'], 4))
+             for v in written])
+
+
+#: The round-2 verifier's falsifier: a body-less J1 (one 0.6 x 6 mm pad) whose
+#: north band `min 1.5` makes stage 1 keep a seat with pad copper past the
+#: edge (#975's floor fallback), in a zone that ends at the outline.
+_TALL_J1 = (
+    '  (footprint "t:TALL" (layer "F.Cu") (at 20 20)\n'
+    '    (property "Reference" "J1" (at 0 0) (layer "F.SilkS"))\n'
+    '    (fp_rect (start -2 -3) (end 2 3) (stroke (width 0.05)'
+    ' (type default)) (layer "F.CrtYd"))\n'
+    '    (pad "1" smd rect (at 0 0) (size 0.6 6.0) (layers "F.Cu")'
+    ' (net 2 "N2"))\n'
+    '    (pad "2" smd rect (at 1.2 0) (size 0.6 0.6) (layers "F.Cu")'
+    ' (net 1 "N1")))\n')
+
+
+class TheReseatLeavesAnEdgeClaim(unittest.TestCase):
+    """place_seed's post-polish re-seat holds a part wholly inside its zone;
+    on an edge claim that pulled the connector off its edge, under a
+    "polish walked" line about a part the polish (which locks it) never
+    moved. It now declines, by name, and the grade error stands."""
+
+    def test_an_edge_claim_is_declined_not_pulled_inboard(self):
+        from run_utils import evidence
+        with tempfile.TemporaryDirectory() as td:
+            path = _synthetic(td, [_TALL_J1, _box('R1', 25, 25, 1, 0.6)])
+            ip = os.path.join(td, 'i.json')
+            with open(ip, 'w', encoding='utf-8') as fh:
+                json.dump({'schema': floorplan.SCHEMA_VERSION,
+                           'kind': floorplan.KIND, 'units': 'mm',
+                           'blocks': [{'name': 'b', 'refs': ['J1'],
+                                       'zone': [10, 0, 30, 10],
+                                       'tolerance_mm': 0}],
+                           'edge_connectors': [{
+                               'ref': 'J1', 'edge': 'north',
+                               'overhang_mm': {'min': 1.5, 'max': 2.0}}]},
+                          fh)
+            out = os.path.join(td, 's.kicad_pcb')
+            r = check([PY, '-X', 'utf8',
+                       os.path.join(ROOT, 'py_placer', 'place_seed.py'),
+                       path, out, '--intent', ip, '--force'],
+                      refuse='pads reach', code=4)
+            j1 = parse_kicad_pcb(evidence(out, 'written seed')
+                                 ).footprints['J1']
+        summary = next(json.loads(ln.split(':', 1)[1])
+                       for ln in r.stdout.splitlines()
+                       if ln.startswith('JSON_SUMMARY:')
+                       and '"reseat_declined"' in ln)
+        self.assertNotIn('polish walked J1', r.stdout)
+        self.assertIn('NOT repaired, J1: it claims the north edge', r.stdout)
+        self.assertEqual(summary['reseat_declined']['J1']['edge_claim'],
+                         ['north'])
+        # Stage 1's seat, on the band: the re-seat did not move it inboard.
+        self.assertEqual(summary['edge_floor_fallback']['J1']['pose'][:2],
+                         [round(j1.x, 3), round(j1.y, 3)])
+
+
 if __name__ == '__main__':
     unittest.main()

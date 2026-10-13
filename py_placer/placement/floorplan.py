@@ -4237,20 +4237,27 @@ def intent_zone_keepout_problems(intent, blocks, pcb_data,
     return out
 
 
-def open_side_pad_escape(zone_rect, pad_rect, open_sides
+def open_side_pad_escape(zone_rect, pad_rect, open_sides, bounds=None
                          ) -> Tuple[float, Optional[str]]:
     """`(mm, side)`: how far a member's PAD bbox reaches past one of its
-    zone's open sides (#1174), or `(0.0, None)`.
+    zone's open sides (#1174) -- past the BOARD's side there, when `bounds`
+    (the outline bbox) is given -- or `(0.0, None)`.
 
     An open side lets an edge member's body overhang the edge, which the edge
     rule's band then bounds -- but only through the band's `max`, measured on
     the body's far side. A part wholly past the edge (pads included) passed
     both rules whenever that max covered its depth (second verifier: a 4 mm
     part 2.1 mm off a 40 mm board, `max 5`, 0 errors). Its pads are soldered
-    to the board, so past an open side the pads are what stays graded."""
+    to the board, so past an open side the pads are what stays graded, and
+    against the outline: a side opens when it lies ON or BEYOND the outline,
+    so a zone drawn 5 mm past the board measured at its own side let pads
+    2.4 mm off the board grade clean (round-2 verifier)."""
     if pad_rect is None or not open_sides:
         return 0.0, None
     zx0, zy0, zx1, zy1 = zone_rect
+    if bounds:
+        zx0, zy0 = max(zx0, bounds[0]), max(zy0, bounds[1])
+        zx1, zy1 = min(zx1, bounds[2]), min(zy1, bounds[3])
     x0, y0, x1, y1 = pad_rect
     past = {'north': zy0 - y0, 'south': y1 - zy1,
             'west': zx0 - x0, 'east': x1 - zx1}
@@ -4301,16 +4308,18 @@ def rule_zone_containment(ctx) -> Iterator[Violation]:
                                      claimed.get(ref))
             if opened:
                 pout, pside = open_side_pad_escape(
-                    z.rect, _member_pad_rect(ctx, ref), opened)
+                    z.rect, _member_pad_rect(ctx, ref), opened,
+                    ctx.outline_bounds)
                 if pout > tol:
                     yield Violation(
                         rule='zone_containment',
                         severity=ctx.sev('zone_containment'), ref=ref,
                         block=z.name,
                         message=(f"{ref}'s pads reach {pout:.2f}mm past the "
-                                 f"{pside} edge of block {z.name!r} -- that "
-                                 f"side is open to its overhang, not to its "
-                                 f"pads leaving the board"),
+                                 f"board's {pside} edge, the open side of "
+                                 f"block {z.name!r} -- that side is open to "
+                                 f"its overhang, not to its pads leaving the "
+                                 f"board"),
                         measured={'rect': [round(v, 4) for v in part.rect],
                                   'outside_mm': round(pout, 4), 'axis': pside,
                                   'pads_graded': True,

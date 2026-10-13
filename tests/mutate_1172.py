@@ -142,8 +142,21 @@ ROWS = [
      "                pass\n",
      (T1172,), 'KILLED'),
     ('a-declared-set-with-no-facing-member-is-unnamed', 'sd',
-     "                            f\"points away from the {edge} edge -- the \"\n",
-     "                            f\"points elsewhere -- the \"\n",
+     "                            f\"face point at the {edge} edge -- the author's \"\n",
+     "                            f\"face point elsewhere -- the author's \"\n",
+     (T1172,), 'KILLED'),
+    # -- the round-2 verifier's fixes --
+    ('a-diagonal-member-counts-as-facing', 'sd',
+     "                                 if ef(m % 360.0)['facing'] == edge)\n",
+     "                                 if not ef(m % 360.0)['fails'])\n",
+     (T1172,), 'KILLED'),
+    ('a-chosen-pad-clear-seat-loses-to-the-input', 'sd',
+     "                if _t2m is not None:\n",
+     "                if False:\n",
+     (T1172,), 'KILLED'),
+    ('a-fall-back-to-a-reversed-input-is-unnamed', 'sd',
+     "                       f\"from the {edge} edge, which the facing grade \"\n",
+     "                       f\"from the {edge} edge, which nothing \"\n",
      (T1172,), 'KILLED'),
 ]
 

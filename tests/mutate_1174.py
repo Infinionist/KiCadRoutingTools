@@ -38,9 +38,11 @@ TARGETS = {
     'fp': os.path.join(_PL, 'floorplan.py'),
     'quench': os.path.join(_PL, 'quench.py'),
     'seeder': os.path.join(_PL, 'seeder.py'),
+    'ps': os.path.join(_ROOT, 'py_placer', 'place_seed.py'),
 }
 
 T1174 = os.path.join(_TESTS, 'test_1174_emit_round_trip.py')
+T975 = os.path.join(_TESTS, 'test_975_seat_edge_floor.py')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -116,6 +118,53 @@ ROWS = [
      "            if opened:\n",
      "            if False:\n",
      (T1174,), 'KILLED'),
+    # -- the round-2 verifier's: each SURVIVED test_1174 before its test --
+    ('the-posed-view-has-no-pad-model', 'fp',
+     "        self.legality_ctx = getattr(state, 'legality_ctx', None)\n",
+     "        self.legality_ctx = None\n",
+     (T1174,), 'KILLED'),
+    ('the-posed-view-grades-the-current-pose', 'fp',
+     "        if callable(getattr(st, 'pose', None)):\n",
+     "        if False:\n",
+     (T1174,), 'KILLED'),
+    ('a-small-pad-escape-passes', 'fp',
+     "                if pout > tol:\n",
+     "                if pout > tol + 1.0:\n",
+     (T1174,), 'KILLED'),
+    ('the-west-side-is-unmeasured', 'fp',
+     "            'west': zx0 - x0, 'east': x1 - zx1}\n",
+     "            'west': 0.0, 'east': x1 - zx1}\n",
+     (T1174,), 'KILLED'),
+    ('the-east-side-is-unmeasured', 'fp',
+     "            'west': zx0 - x0, 'east': x1 - zx1}\n",
+     "            'west': zx0 - x0, 'east': 0.0}\n",
+     (T1174,), 'KILLED'),
+    ('the-south-side-is-unmeasured', 'fp',
+     "    past = {'north': zy0 - y0, 'south': y1 - zy1,\n",
+     "    past = {'north': zy0 - y0, 'south': 0.0,\n",
+     (T1174,), 'KILLED'),
+    ('a-pad-error-also-grades-the-courtyard', 'fp',
+     "                    continue\n"
+     "            if not zone_fits_courtyard(z.rect, part.rect, tol):\n",
+     "                    pass\n"
+     "            if not zone_fits_courtyard(z.rect, part.rect, tol):\n",
+     (T1174,), 'KILLED'),
+    ('pads-measured-at-the-zone-side-not-the-board', 'fp',
+     "        zx0, zy0 = max(zx0, bounds[0]), max(zy0, bounds[1])\n",
+     "        pass\n",
+     (T1174,), 'KILLED'),
+    ('the-grade-passes-no-outline-to-the-pads', 'fp',
+     "                    ctx.outline_bounds)\n",
+     "                    None)\n",
+     (T1174,), 'KILLED'),
+    ('the-reseat-pulls-an-edge-claim-off-its-edge', 'ps',
+     "                    if _open:\n",
+     "                    if False:\n",
+     (T1174,), 'KILLED'),
+    ('the-reseat-declines-an-edge-claim-in-an-interior-zone', 'ps',
+     "                    if _open:\n",
+     "                    if ref in _claimed:\n",
+     (T975,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)

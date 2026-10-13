@@ -25,7 +25,9 @@ way its mating face points (`placement.mating`, read through
 `floorplan.edge_facing`, the edge rule's own predicate). A strong face that
 points away from its declared edge is turned to face it, on any board; an
 input angle that carries no information (a pile) is replaced by the quarter
-turns in least-depth order, facing ones first. That is a floor under the
+turns in least-depth order, facing ones first. Where none of those angles
+seats even pad-clear, the part gets the attempt from its input angle, and
+the note says when that angle points the face away. That is a floor under the
 angle, not a placement decision: where along the edge, and the angle of a
 part whose face is weak or absent, are still the author's to declare.
 
@@ -3179,16 +3181,19 @@ def _stage1_claims(state, by_edge, declared_rot, bounds, notes,
                 continue
             if dr is not None and dr[1]:
                 if strong:
+                    # FACING the edge, not merely not failing it: a diagonal
+                    # member names no edge and the grade abstains there
+                    # (round-2 verifier: [45, 90] narrowed to [45]).
                     keep = tuple(m for m in dr[1]
-                                 if not ef(m % 360.0)['fails'])
+                                 if ef(m % 360.0)['facing'] == edge)
                     if not keep:
                         notes.append(
-                            f"edge connector {ref}: at every angle of its "
+                            f"edge connector {ref}: at no angle of its "
                             f"declared rotation_candidates "
-                            f"{[float(m) for m in dr[1]]} its mating face "
-                            f"points away from the {edge} edge -- the "
-                            f"author's set is kept, and the facing grade "
-                            f"will say so")
+                            f"{[float(m) for m in dr[1]]} does its mating "
+                            f"face point at the {edge} edge -- the author's "
+                            f"set is kept, and the facing grade reports a "
+                            f"member that points it away")
                     if keep and len(keep) < len(dr[1]):
                         claims[ref] = (None, keep)
                         why[ref] = 'declared candidates facing the edge'
@@ -5814,25 +5819,52 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                     f"member that seats clear on the {edge} edge (#1125)")
                 continue
             if _mine:
-                # #1172 prefer-then-fall-back: stage 1's OWN angle is kept
-                # only where it seats clean -- clear of the placed pads AND
-                # courtyards. Otherwise the part is seated exactly as it was
-                # before stage 1 chose anything: the old attempt, from its
-                # input angle. Run 27's "a crowded seat on the declared edge
-                # beats the interior" is about an angle someone DECLARED; at
-                # an angle nobody declared it shorted the fa10 glasgow pile's
-                # J5 against the locked MK3 (phase-5 verifier), where the old
-                # attempt left J5 to the later stages and the board built.
+                # #1172 prefer-then-fall-back. Stage 1's OWN angles are
+                # walked in its order and the first that seats clean -- clear
+                # of the placed pads AND courtyards -- is kept (above). Next
+                # the first that seats PAD-clear, overlapping only a placed
+                # courtyard (round-2 verifier: orangecrab's pile shorted J5
+                # against J1 at its input 0 where 90 seated pad-clear). Only
+                # when none does is the part given the attempt it had before
+                # stage 1 chose anything, from its input angle. That attempt
+                # is no loss: an uninformative input's set holds the input
+                # angle itself, which the walk already tried, and a strong
+                # face's set leaves it out because the input points the face
+                # away. A pad-CROWDED seat at an angle nobody declared is
+                # never kept -- run 27's "a crowded seat on the declared edge
+                # beats the interior" is about an angle someone DECLARED, and
+                # here it shorted the fa10 glasgow pile's J5 against the
+                # locked MK3 (phase-5 verifier).
                 _stage1_undo(_ref1125, _pose1125, _n1125)
                 _set = [float(r) for r in _claim[1]]
+                if _t2m is not None:
+                    _stage1_one(k, c, _member1125=_t2m)
+                    notes.append(
+                        f"edge connector {_ref1125}: no angle stage 1 chose "
+                        f"({_set}) seats it clear of what is placed on the "
+                        f"{edge} edge, so it keeps the first pad-clear seat, "
+                        f"at {_t2m:g}deg, which overlaps only a placed "
+                        f"courtyard (#1172)")
+                    continue
                 stage1_claims.pop(_ref1125, None)
-                _stage1_one(k, c)
+                _o_in = _stage1_one(k, c)[0]
+                _how = {'clean': 'which seats it clear',
+                        'clean_t2': ('which seats it overlapping a placed '
+                                     'courtyard'),
+                        'crowded': 'which seats it crowding what is placed',
+                        }.get(_o_in, 'which leaves it to the later stages')
+                _away = (stage1_why.get(_ref1125) or '').startswith(
+                    'its mating face pointed')
                 notes.append(
                     f"edge connector {_ref1125}: no angle stage 1 chose "
                     f"({_set}) seats it clear of what is placed on the "
-                    f"{edge} edge, so it is seated as it was before any "
-                    f"angle was chosen, from its input {_pose1125[2]:g}deg "
-                    f"(#1172)")
+                    f"{edge} edge, so it gets the attempt it had before any "
+                    f"angle was chosen, from its input {_pose1125[2]:g}deg, "
+                    f"{_how}"
+                    + (f" -- an angle at which its mating face points away "
+                       f"from the {edge} edge, which the facing grade "
+                       f"reports" if _away else '')
+                    + " (#1172)")
                 continue
             if len(_tried) > 1:
                 _stage1_undo(_ref1125, _pose1125, _n1125)

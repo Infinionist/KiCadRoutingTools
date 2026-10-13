@@ -165,10 +165,13 @@ class GlasgowBoxHeaders(unittest.TestCase):
         self.assertGreater(_overlap(self.board, off, 'J2', 'J3'), 1.0)
 
     def test_it_cannot_lose_a_seat(self):
-        """When EVERY rung overlaps a placed courtyard, no angle stage 1
-        chose seats clean, so each header is seated exactly as before #1172
-        -- the old pad-only ladder at its input angle -- and both the
-        fall-back and the overlap are named."""
+        """When EVERY rung overlaps a placed courtyard, no angle seats clean,
+        so each header keeps the pad-clear seat of the first angle stage 1
+        chose: the seat the old pad-only ladder finds there (the tier-off
+        arm's), the tier's T2 -- not the input angle's attempt, which lies
+        across the board (round-2 verifier: orangecrab's pile shorted J5 at
+        its input angle where a chosen one seated pad-clear). The overlap and
+        the choice are named."""
         orig = seeder._placed_courtyard_hits
         try:
             seeder._placed_courtyard_hits = (
@@ -176,16 +179,47 @@ class GlasgowBoxHeaders(unittest.TestCase):
             _pcb, res, poses = _seed(self.board, self.intent, ('J2', 'J3'))
         finally:
             seeder._placed_courtyard_hits = orig
-        with flags(_edge_courtyard_tier=False,
-                   _stage1_choose_edge_angle=False):
-            _pcb, _r, off = _seed(self.board, self.intent, ('J2', 'J3'))
+        with flags(_edge_courtyard_tier=False):
+            _pcb, off_res, off = _seed(self.board, self.intent, ('J2', 'J3'))
         self.assertEqual({r: poses[r] for r in ('J2', 'J3')},
                          {r: off[r] for r in ('J2', 'J3')})
+        self.assertEqual(sorted(res['edge_angle_chosen']), ['J2', 'J3'])
+        self.assertEqual(
+            {r: v['to'] for r, v in res['edge_angle_chosen'].items()},
+            {r: v['to'] for r, v in off_res['edge_angle_chosen'].items()})
         self.assertTrue(any('overlaps it' in n and 'MK1' in n
                             for n in res['notes']))
-        self.assertTrue(any('seated as it was before any angle was chosen'
-                            in n for n in res['notes']))
-        self.assertEqual(res['edge_angle_chosen'], {})
+        self.assertTrue(any('so it keeps the first pad-clear seat, at' in n
+                            for n in res['notes']), res['notes'])
+
+    def test_a_clean_input_outranks_a_pad_clear_seat(self):
+        """J3 alone (J2 stays in the pile, which never counts): every angle
+        but the input 0 is made to overlap a placed courtyard. An
+        uninformative input's set holds every quarter turn, the input angle
+        included, so the walk itself finds 0 clean and keeps it over the
+        pad-clear seats ahead of it: J3 gets exactly the seat it had before
+        #1172 chose anything, and no fall-back is needed."""
+        orig = seeder._placed_courtyard_hits
+
+        def hits(state, ref, pose, others):
+            if ref == 'J3' and abs((pose[2] + 180.0) % 360.0 - 180.0) > 1e-6:
+                return ['MK1']
+            return orig(state, ref, pose, others)
+        try:
+            seeder._placed_courtyard_hits = hits
+            _pcb, res, poses = _seed(self.board, self.intent, ('J3',))
+        finally:
+            seeder._placed_courtyard_hits = orig
+        with flags(_stage1_choose_edge_angle=False):
+            _pcb, _r, off = _seed(self.board, self.intent, ('J3',))
+        self.assertEqual(poses.get('J3'), off.get('J3'))
+        self.assertNotIn('J3', res['edge_angle_chosen'])
+        self.assertTrue(any(
+            'so stage 1 seated it at 0deg, the next angle it chose that seats '
+            'clear' in n for n in res['notes']), res['notes'])
+        self.assertFalse(any('before any angle was chosen' in n
+                             or 'first pad-clear seat' in n
+                             for n in res['notes']), res['notes'])
 
     def test_determinism(self):
         a = _seed(self.board, self.intent, ('J2', 'J3'))[2]
@@ -263,16 +297,21 @@ class TheMatingFaceDecides(unittest.TestCase):
                str(j2.y), '--rot', '90'], accept=True)
         return rev
 
-    def test_a_chosen_angle_that_seats_only_crowded_falls_back(self):
-        """Prefer-then-fall-back (phase-5 verifier, BLOCKING on the fa10
-        glasgow pile): the facing angle 270 is made to overlap a placed
-        courtyard at every rung, so stage 1 keeps nothing at it and seats J2
-        as it would have without choosing -- from its input 90."""
+    @staticmethod
+    def _at(pose, deg):
+        return abs((pose[2] - deg + 180.0) % 360.0 - 180.0) < 1e-6
+
+    def test_a_pad_clear_seat_beats_an_input_that_seats_nothing(self):
+        """The facing angle 270 is made to overlap a placed courtyard at
+        every rung, so it seats only pad-clear (T2), and that seat is kept,
+        facing its edge. The input 90 is never tried: it points the strong
+        face away, and the attempt from it would leave J2 reversed for the
+        later stages -- the east band puts it off the board (round-2
+        verifier)."""
         orig = seeder._placed_courtyard_hits
 
         def hits(state, ref, pose, others):
-            if ref == 'J2' and abs((pose[2] - 270.0 + 180.0) % 360.0
-                                   - 180.0) < 1e-6:
+            if ref == 'J2' and self._at(pose, 270.0):
                 return ['J1']
             return orig(state, ref, pose, others)
         with tempfile.TemporaryDirectory() as td:
@@ -283,14 +322,46 @@ class TheMatingFaceDecides(unittest.TestCase):
                 _pcb, res, poses = _seed(rev, intent, ('J2',))
             finally:
                 seeder._placed_courtyard_hits = orig
+            self.assertFalse(self._facing(rev, poses['J2'])['fails'])
+        self.assertAlmostEqual(poses['J2'][2] % 360, 270.0)
+        self.assertIn('J2', res['edge_angle_chosen'])
+        self.assertTrue(any(
+            'so it keeps the first pad-clear seat, at 270deg' in n
+            for n in res['notes']), res['notes'])
+
+    def test_a_crowded_chosen_angle_falls_back_and_says_it_faces_away(self):
+        """Prefer-then-fall-back (phase-5 verifier, BLOCKING on the fa10
+        glasgow pile): the facing angle 270 is made to CROWD a placed part's
+        pads at every rung, so stage 1 keeps nothing at it and J2 gets the
+        attempt it had without choosing -- from its input 90, which leaves it
+        to the later stages. That angle points the strong face away, and the
+        note says so (round-2 verifier: coldfire's UARTCAN203)."""
+        from placement import legality
+        orig = legality.LegalityContext.pair_shortfall
+
+        def shortfall(ctx, a, b, pose_a=None, pose_b=None):
+            sf = orig(ctx, a, b, pose_a, pose_b)
+            if a == 'J2' and pose_a is not None and self._at(pose_a, 270.0):
+                return sf._replace(pad=max(sf.pad, 1.0))
+            return sf
+        with tempfile.TemporaryDirectory() as td:
+            rev = self._reversed(td)
+            intent = _intent(td, rev, [dict(self.ENTRY)])
+            try:
+                legality.LegalityContext.pair_shortfall = shortfall
+                _pcb, res, poses = _seed(rev, intent, ('J2',))
+            finally:
+                legality.LegalityContext.pair_shortfall = orig
             with flags(_stage1_choose_edge_angle=False):
                 _pcb, _r, off = _seed(rev, intent, ('J2',))
         # An unmoved part has no placement record: it kept its input pose.
         self.assertEqual(poses.get('J2'), off.get('J2'))
-        self.assertAlmostEqual((poses.get('J2') or (0, 0, 90.0))[2] % 360,
-                               90.0)
-        self.assertTrue(any('seated as it was before any angle was chosen'
-                            in n for n in res['notes']), res['notes'])
+        self.assertNotIn('J2', res['edge_angle_chosen'])
+        self.assertTrue(any(
+            'the attempt it had before any angle was chosen, from its input '
+            '90deg, which leaves it to the later stages -- an angle at which '
+            'its mating face points away from the east edge, which the '
+            'facing grade reports' in n for n in res['notes']), res['notes'])
 
     def test_a_declared_set_is_narrowed_to_its_facing_members(self):
         """[90, 270] declared on the reversed board: 90 points J2's face
@@ -322,8 +393,30 @@ class TheMatingFaceDecides(unittest.TestCase):
             with open(p, 'w', encoding='utf-8') as fh:
                 json.dump(doc, fh)
             _pcb, res, _poses = _seed(rev, floorplan.load_intent(p), ('J2',))
-        self.assertTrue(any('its mating face points away from the east edge'
+        self.assertTrue(any('does its mating face point at the east edge'
                             in n for n in res['notes']), res['notes'])
+
+    def test_a_diagonal_member_does_not_face_the_edge(self):
+        """[45, 90] on the reversed board: 45 names no edge (the grade
+        abstains there) and 90 points the face west, so NO member faces east
+        -- the set is not narrowed to [45] (round-2 verifier)."""
+        with tempfile.TemporaryDirectory() as td:
+            rev = self._reversed(td)
+            doc = {'schema': floorplan.SCHEMA_VERSION,
+                   'kind': floorplan.KIND, 'units': 'mm',
+                   'edge_connectors': [dict(self.ENTRY)],
+                   'blocks': [{'name': 'rotation:J2', 'refs': ['J2'],
+                               'rotation_candidates': [45, 90]}]}
+            p = os.path.join(td, 'diag.json')
+            with open(p, 'w', encoding='utf-8') as fh:
+                json.dump(doc, fh)
+            _pcb, res, _poses = _seed(rev, floorplan.load_intent(p), ('J2',))
+        self.assertFalse(any('only [45.0]' in n for n in res['notes']),
+                         res['notes'])
+        self.assertTrue(any('at no angle of its declared rotation_candidates '
+                            '[45.0, 90.0] does its mating face point at the '
+                            'east edge' in n for n in res['notes']),
+                        res['notes'])
 
     def test_a_declared_reversed_rotation_is_kept_and_named(self):
         with tempfile.TemporaryDirectory() as td:

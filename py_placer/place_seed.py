@@ -366,6 +366,12 @@ def reseat_decline_line(ref, rec):
     angle and each quarter turn, and says so.
     """
     zone = rec.get('zone')
+    if rec.get('edge_claim'):
+        return (f"  NOT repaired, {ref}: it claims the "
+                f"{'/'.join(rec['edge_claim'])} edge, where its zone is open "
+                f"to its overhang, and this re-seat holds a part wholly "
+                f"inside its zone, which would pull it off that edge (#1172). "
+                f"It stays where the seed put it, and its grade error stands")
     clear = [_CLEAR_OF[r] for r in (rec.get('rules') or ()) if r in _CLEAR_OF]
     where = ' '.join(([f"in zone {zone!r}"] if zone else [])
                      + ([f"clear of the declared {' and '.join(clear)}"]
@@ -1351,6 +1357,8 @@ Examples:
                 # intent declares -- e.g. the `rotation:<ref>` block
                 # rank_rotations --write-intent hands to the next seed.
                 _declared = floorplan.rotations_for_ref(intent, blocks2)
+                _claimed = floorplan.claimed_edges(intent)
+                _bounds = pcb_cur.board_info.board_bounds
                 st = pose_score.make_state(
                     pcb_cur, args.output_file, clearance=args.clearance,
                     board_edge_clearance=args.board_edge_clearance,
@@ -1406,6 +1414,26 @@ Examples:
                         pinned.append(ref)
                         continue
                     _claim = _declared.get(ref)
+                    # #1172 / #1174: nor is an edge claim whose zone is OPEN
+                    # on its edge (`zone_open_sides`, the grade's predicate).
+                    # `_try_place` holds a part wholly inside its zone and
+                    # knows no open side, so it pulls a connector that
+                    # overhangs its edge back into the board -- a band-min
+                    # edge error traded for the zone one, under a "polish
+                    # walked" line about a part the polish (which locks edge
+                    # claims) never moved (round-2 verifier). Declined, named,
+                    # and its grade error stands. A zone that does not reach
+                    # the claimed edge contradicts the claim, and is re-seated
+                    # into as before.
+                    _open = (floorplan.zone_open_sides(
+                        z.rect, _bounds, _claimed.get(ref))
+                        if z is not None else ())
+                    if _open:
+                        reseat_declined[ref] = dict(
+                            reseat_decline_record(ref, graded.errors,
+                                                  _repairable, z, _claim),
+                            edge_claim=list(_open))
+                        continue
                     _ladder = floorplan.declared_ladder(_claim)
                     # A candidate SET: the angle the polish chose goes first
                     # when it is one of them. Both are inside the
