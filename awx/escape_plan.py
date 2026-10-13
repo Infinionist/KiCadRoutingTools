@@ -285,7 +285,7 @@ def _pair_legs_clash(ma, mb, track, clear):
     return ma.layer == mb.layer and any(seg_seg(p, q, u, v) < track + clear - 1e-6 for p, q in ra for u, v in rb)
 
 
-def plan_state(pcb, names, sref, dref, banned=frozenset(), log=print):
+def plan_state(pcb, names, sref, dref, banned=frozenset(), log=print, hold_teeth=None):
     """the ends model's plan state (whole_ends.Ends' keys, fanout_from_plan.plan_state's shape) on a dog-boned base:
     the escape menus at both arrays, no tooth laid"""
     import select_moves as sm
@@ -333,23 +333,32 @@ def plan_state(pcb, names, sref, dref, banned=frozenset(), log=print):
     # face, on which layer -- the menu cut to the moves there, the ends left to choose the berths; the shared array's
     # joint fanout (joint_escape.plan_array, hold=) laid its field round exactly those teeth, so the bus leaves it as it
     # left its own fanout. A net with no move there keeps its menu, and is named
+    # (`hold_teeth` {net: {'tooth', 'direction', 'layer'}}: the same, in memory -- the escape step's own ends' teeth,
+    # ESCAPE_JOINT)
+    hold_ = dict(hold_teeth or {})
+    hold_missed = []
     hold_path = awx_settings.get('TEETH_HOLD')
     if hold_path:
         sc_ = json.load(open(hold_path))
+        for nm, t_ in (sc_.get('ends') or {}).items():
+            if nm in (sc_.get('tooth_layer') or {}) and nm not in hold_:
+                d_ = next(d for d, v in DIRS.items() if tuple(v) == tuple(sc_['tooth_dir'][nm]))
+                hold_[nm] = {'tooth': tuple(t_[0]), 'direction': d_, 'layer': sc_['tooth_layer'][nm]}
+    if hold_:
         held_, miss_ = 0, []
         for nm in sorted(smenu):
-            t_ = (sc_.get('ends') or {}).get(nm)
-            if not t_ or nm not in (sc_.get('tooth_layer') or {}):
+            g_ = hold_.get(nm)
+            if not g_:
                 continue
-            dv_ = tuple(sc_['tooth_dir'][nm])
-            at_ = [m for m in smenu[nm] if tuple(DIRS[m.direction]) == dv_ and m.layer == sc_['tooth_layer'][nm]
-                   and math.hypot(m.exit_pt[0] - t_[0][0], m.exit_pt[1] - t_[0][1]) <= 0.05]
+            at_ = [m for m in smenu[nm] if m.direction == g_['direction'] and m.layer == g_['layer']
+                   and math.hypot(m.exit_pt[0] - g_['tooth'][0], m.exit_pt[1] - g_['tooth'][1]) <= 0.05]
             if at_:
                 smenu[nm] = at_
                 held_ += 1
             else:
                 miss_.append(nm)
-        log(f'  teeth held (TEETH_HOLD): {held_} net(s) held to their tooth'
+        hold_missed = miss_
+        log(f'  teeth held: {held_} net(s) held to their tooth'
             + (f'; no move at it, menu kept: {miss_}' if miss_ else ''))
     # a PAIR's two legs never within the rule of each other: their joint options so banned (whole_ends: unbanned)
     import source_realize as sr
@@ -391,7 +400,8 @@ def plan_state(pcb, names, sref, dref, banned=frozenset(), log=print):
             'src_pad': src_pad, 'dst_pad': dst_pad, 'sref': sref, 'dref': dref, 'sgrid': sgrid,
             'bundle_layer': 'F.Cu', 'chi': chi, 'dgrid': dgrid, 'dboxes': dgrid.bbox, 'buses': [list(launch)],
             'obs': obs, 'pcb': pcb, 'escape': True, 'held': {},
-            'pads_of': {ref: [(p.global_x, p.global_y) for p in fp.pads] for ref, fp in pcb.footprints.items()}}
+            'pads_of': {ref: [(p.global_x, p.global_y) for p in fp.pads] for ref, fp in pcb.footprints.items()},
+            'hold_missed': hold_missed}
 
 
 def incremental_fixed(st, names):
@@ -491,20 +501,160 @@ def run(out_path, K, base, log=print):
                                if p.component_ref != dref)
     sref = refs.most_common(1)[0][0]
     log(f'escape fanout: {len(names)} nets, {sref} -> {dref}, on {os.path.basename(base)}')
-    st = plan_state(pcb, names, sref, dref, log=log)
-    st['base'] = base                    # (the board the ends are laid on: whole_ends.solve_check reads its floors)
-    fixed = incremental_fixed(st, names)
-    if fixed:
-        log(f'  incremental: {len(fixed)} berth(s) held as laid')
-    berths, teeth = whole_ends.choose(st, log=log, src_free=True, fixed=fixed or None)
-    read = getattr(whole_ends.choose, 'last', None) or {}
-    cut = read.get('cut')
+    # ESCAPE_JOINT (route_bus): the source array is SHARED -- other nets and plane balls of its own, an earlier bus
+    # routed through it. The ends choose the teeth on a field dog-boned as the escape fanout dog-bones an array of its
+    # own; the array is then planned WHOLE round exactly those teeth (joint_escape.escape_field: one solve for the bus's
+    # dog-bones, the other nets' escapes and the plane drops), and the bus leaves that field by the same teeth -- its
+    # menus there cut to them (plan_state hold_teeth), each berth the move the ends chose
+    jspec_ = awx_settings.get('ESCAPE_JOINT_SPEC')
+    arr_ = None
+    joint_laid = False
+    if jspec_ and os.path.isfile(jspec_):
+        arr_ = next((a_ for a_ in json.load(open(jspec_)).get('arrays', ()) if a_['ref'] == sref), None)
+    # (ESCAPE_ENDS_BASE, route_bus: the board as it was before the shared array's earlier step, fanned and turned as
+    # this step fans and turns its own -- the bus's OWN field, the one the escape fanout of the bus alone chooses its
+    # ends on. The ends chosen there are the bus-alone's teeth and berths; the shared array is then planned round them)
+    ends_base = awx_settings.get('ESCAPE_ENDS_BASE') if arr_ is not None else None
+
+    def choose_on(board_):
+        with contextlib.redirect_stdout(sys.stderr):
+            pcb_ = pcb if board_ == base else parse_kicad_pcb(board_)
+        st_ = plan_state(pcb_, names, sref, dref, log=log)
+        st_['base'] = board_             # (the board the ends are laid on: whole_ends.solve_check reads its floors)
+        fixed_ = incremental_fixed(st_, names)
+        if fixed_:
+            log(f'  incremental: {len(fixed_)} berth(s) held as laid')
+        b_, t_ = whole_ends.choose(st_, log=log, src_free=True, fixed=fixed_ or None)
+        rd_ = getattr(whole_ends.choose, 'last', None) or {}
+        return st_, b_, t_, rd_, rd_.get('cut')
+    if ends_base:
+        log(f'  the ends on the bus\'s own field: {os.path.basename(ends_base)}')
+    st, berths, teeth, read, cut = choose_on(ends_base or base)
+    if ends_base and not teeth:
+        log(f'  the ends on the bus\'s own field: no plan -- chosen again on {os.path.basename(base)}')
+        st, berths, teeth, read, cut = choose_on(base)
+
+    def joint_try(st_, teeth_, berths_, with_site):
+        """the shared array planned whole round the ends' teeth (with their dog-bone sites, or anywhere the ball's
+        escape reaches the same tooth); (st, teeth, berths) on that field, the nets the field does not leave as chosen,
+        the field"""
+        import joint_escape as je
+        import source_realize as sr
+        # (each tooth held -- with its site: the dog-bone the field gave the ball, or none -- the bus's own copper on
+        # the joint field is the field's, the plan placing only the other nets round it)
+        hold_ = {nm: dict({'tooth': tuple(m.exit_pt), 'direction': m.direction, 'layer': m.layer, 'kind': m.kind},
+                          **({'site': tuple(m.site) if m.site is not None else None} if with_site else {}))
+                 for nm, m in teeth_.items()}
+        if st_['base'] != base:
+            # (ends chosen on the bus's own field: each via end's run is the solve's to move onto another layer --
+            # whole_solve's VBAN, relayer.clashes -- wherever no other copper stands within the rule of it. The layers
+            # it is free on THERE are held free of the shared array's other copper too, so the solve has every layer
+            # change it has on the bus alone's field)
+            import types
+            import relayer as _relayer
+            with contextlib.redirect_stdout(sys.stderr):
+                pcb_e = parse_kicad_pcb(st_['base'])
+            ids_e = {n.name.split('/')[-1]: i for i, n in pcb_e.nets.items() if n.name}
+            fw_ = _rules.active().fan_track
+            runs_ = {}
+            for nm, m in teeth_.items():
+                if m.site is None or nm not in ids_e:
+                    continue            # (a surface escape: no via end, nothing the solve moves)
+                segs_ = [types.SimpleNamespace(start_x=p[0], start_y=p[1], end_x=q[0], end_y=q[1], width=fw_,
+                                               net_id=ids_e[nm], layer=L)
+                         for p, q, L in m.legs if L == m.layer and math.hypot(q[0] - p[0], q[1] - p[1]) > 1e-6]
+                if segs_:
+                    runs_[nm] = ({ids_e[nm]}, segs_)
+            lays_ = list(route_layers.layers())
+            ban_, _sep = _relayer.clashes(pcb_e, runs_, lays_, _rules.active().fan_clear)
+            for nm in runs_:
+                hold_[nm]['free_layers'] = [L for L in lays_ if L != teeth_[nm].layer and L not in ban_.get(nm, ())]
+            log(f'  via ends\' runs on the bus\'s own field: {len(runs_)}, free on '
+                f'{sum(len(hold_[nm]["free_layers"]) for nm in runs_)} other layer(s) -- held free of the shared '
+                f'array\'s other copper')
+        field_ = out_path[:-len('.kicad_pcb')] + '.field.kicad_pcb'
+        run_s = set(names)
+        others_ = list(arr_['others']) + [n for n in arr_.get('bus', ()) if n.split('/')[-1] not in run_s]
+        # (the passives movable to the plan, as the engine lays it -- planned as fixed, the engine refused 23 of zynq
+        # U1's planned drops the plan held clear; they are nudged off the round's copper once it is laid, below)
+        rep_ = je.escape_field(base, field_, sref, dref, list(names), others_, arr_['drops'], hold_, log=log,
+                               passives_fixed=False)
+        log(f'  joint field of {sref}{"" if with_site else " (teeth held, sites free)"}: {rep_.get("status")} -- bus '
+            f'{rep_.get("bus_escaped")}/{rep_.get("bus_balls")}, others {rep_.get("others_escaped")} escaped + '
+            f'{rep_.get("others_strapped")} strapped + {rep_.get("others_stubbed")} dog-boned alone of '
+            f'{rep_.get("others_balls")}, plane {rep_.get("dropped")}/{rep_.get("plane_balls")} dropped; unplanned '
+            f'{rep_.get("unplanned")}')
+        with contextlib.redirect_stdout(sys.stderr):
+            pcb2 = parse_kicad_pcb(field_)
+        st2 = plan_state(pcb2, names, sref, dref, log=log, hold_teeth=hold_)
+        # the ends' plan laid as they chose it -- each tooth the move at it from the site the joint plan gave the
+        # ball, each berth (the destination array is as it was) its own move: no second choice of the berths, whose
+        # cut round the destination the descents pick afresh (zynq K40: the far cut's plan of no crossing, chosen
+        # again at a winding cut, two crossings and 20 more on the objective)
+        miss_ = list(st2['hold_missed'])
+        teeth2 = {nm: st2['smenu'][nm][0] for nm in teeth_ if nm not in miss_ and st2['smenu'].get(nm)}
+        miss_ += [nm for nm in teeth_ if nm not in teeth2 and nm not in miss_]
+        berths2 = {}
+        for nm, b_ in berths_.items():
+            sig_ = json.dumps(sr.move_sig(b_))
+            m_ = next((m for m in st2['dmenu'].get(nm, ()) if json.dumps(sr.move_sig(m)) == sig_), None)
+            if m_ is None:
+                miss_.append(nm)
+            else:
+                berths2[nm] = m_
+        import pairs as _pairs
+        r_ = _rules.active()
+        for _b, (pn_, nn_) in _pairs.pair_names(list(teeth2)).items():
+            if pn_ in teeth2 and nn_ in teeth2 and _pair_legs_clash(teeth2[pn_], teeth2[nn_], r_.fan_track,
+                                                                      r_.fan_clear):
+                miss_ += [pn_, nn_]
+        st2['base'] = field_
+        return st2, teeth2, berths2, sorted(set(miss_)), field_
+    if arr_ is not None and teeth:
+        # (the ends' first choice, on the field they were chosen on, beside the round's: OUT.first.plan.json)
+        sidecar(out_path[:-len('.kicad_pcb')] + '.first.kicad_pcb', st, [n for n in names if n in st['launch']],
+                teeth, berths, cut, read)
+        got = joint_try(st, teeth, berths, True)
+        if got[3] and ends_base:
+            # (the bus's own field's sites need not be the shared array's: the same teeth, each ball's dog-bone where
+            # the joint plan finds room)
+            got = joint_try(st, teeth, berths, False)
+        if got[3] and ends_base:
+            # (the bus-alone's ends do not stand on the shared array: the ends chosen on its own dog-boned field, as
+            # with no bus-alone field given)
+            log(f'  joint field of {sref}: the bus\'s own ends not left by it for {got[3]} -- the ends chosen again '
+                f'on {os.path.basename(base)}')
+            st, berths, teeth, read, cut = choose_on(base)
+            got = joint_try(st, teeth, berths, True) if teeth else got
+        if got[3]:
+            # (never worse than the escape fanout of the bus alone: an end the joint field does not leave the bus is
+            # this round's field given up -- the teeth and berths chosen on the dog-boned field laid as they are)
+            if st['base'] != base:
+                st, berths, teeth, read, cut = choose_on(base)
+            log(f'  joint field of {sref}: GIVEN UP this round -- no way to its chosen end for {got[3]}; '
+                f'the ends laid on the dog-boned field')
+        else:
+            st2, teeth2, berths2, _m, field = got
+            log(f'  joint field of {sref}: the ends laid as chosen -- {len(teeth2)} teeth from the joint plan\'s '
+                f'sites, {len(berths2)} berths as they were')
+            st, base, teeth, berths, joint_laid = st2, field, teeth2, berths2, True
     missing = [nm for nm in st['launch'] if nm not in berths or nm not in teeth]
     if missing:
         log(f'  no escape chosen for {missing}')
     moves = [(nm, teeth[nm]) for nm in st['launch'] if nm in teeth] + \
             [(nm, berths[nm]) for nm in st['launch'] if nm in berths]
     ok, faults = lay(base, out_path, moves, byname, log=log)
+    if ok and joint_laid:
+        # (the joint field's vias planned with the passives movable: the cap nudge moves those beneath the array off
+        # the round's copper, as the chain's cap step does after a fanout -- place_fanout_clearance --beneath-only)
+        import subprocess
+        import joint_escape as je_
+        lock_ = je_.passives_beyond(out_path, [sref, dref])
+        rc_ = subprocess.run([sys.executable, os.path.join(HERE, '..', 'py_router', 'place_fanout_clearance.py'),
+                              out_path, out_path, '--clearance', str(_rules.active().clearance), '--beneath-only']
+                             + (['--lock'] + lock_ if lock_ else []), capture_output=True, text=True)
+        moved_ = [ln.strip() for ln in rc_.stdout.splitlines() if ln.startswith(('Moved', 'Stuck', '  Unresolved'))]
+        log(f'  joint field caps: exit {rc_.returncode}' + (f' -- {"; ".join(moved_)[:300]}' if moved_ else ''))
     sidecar(out_path, st, [n for n in names if n in st['launch']], teeth, berths, cut, read)
     by_face = collections.Counter((m.direction, m.layer) for _n, m in moves)
     log(f'  ends by face and layer: {dict(sorted(by_face.items()))}; sidesteps '

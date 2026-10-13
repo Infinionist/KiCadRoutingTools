@@ -56,8 +56,21 @@ def beneath(pcb, fp, refs):
     return False
 
 
-def dogbone(pcb, refs, log=print):
-    """(tracks, vias) the dog-bones of every netted ball of `refs`, and per array (dog-boned, in pad, left)"""
+def _seg_dist(x, y, s):
+    """(x, y) to segment s's centreline"""
+    ax, ay, bx, by = s.start_x, s.start_y, s.end_x, s.end_y
+    dx, dy = bx - ax, by - ay
+    t = max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy or 1e-12)))
+    return math.hypot(ax + t * dx - x, ay + t * dy - y)
+
+
+def dogbone(pcb, refs, log=print, only=None):
+    """(tracks, vias) the dog-bones of every netted ball of `refs`, and per array (dog-boned, in pad, left).
+    `only` {ref: set of net names (short)}: on those arrays the balls of those nets alone -- an array an earlier step
+    fanned and routed through (route_bus ESCAPE_JOINT: its unprotected nets, the earlier bus's routed nets as they
+    stand): there a ball already carrying its own net's copper is left as it is, a plane ball keeps a via (its drop),
+    and the board's TRACKS keep their clearance too (a site off every track on every layer, a stub off the tracks on
+    its own); the other arrays as with no `only`"""
     r = _rules.active()
     VIA, DRILL, STUB, CLEAR = r.via_size, r.via_drill, r.fan_track, r.fan_clear
     H2H = getattr(r, 'hole_to_hole', None) or 0.25
@@ -67,8 +80,16 @@ def dogbone(pcb, refs, log=print):
     vias = [(v.x, v.y, v.size, v.drill) for v in pcb.vias]
     holes = [(p.global_x, p.global_y, p.drill) for p in allpads if (p.drill or 0) > 0]
     near = lambda x, y, R=1.6: [p for p in allpads if abs(p.global_x - x) < R and abs(p.global_y - y) < R]
+    segs = list(pcb.segments) if only else []
+    in_only = [False]               # (the array in hand is one of `only`'s: the board's tracks kept clear there alone)
+    near_s = lambda x, y, R=1.6: [s for s in segs if in_only[0] and min(s.start_x, s.end_x) - R < x
+                                  < max(s.start_x, s.end_x) + R and min(s.start_y, s.end_y) - R < y
+                                  < max(s.start_y, s.end_y) + R]
 
     def site_ok(x, y, own):
+        for s in near_s(x, y):
+            if s.net_id != own.net_id and _seg_dist(x, y, s) < VIA / 2 + CLEAR + s.width / 2:
+                return False
         for p in near(x, y):
             if p is own or (p.net_id and p.net_id == own.net_id):
                 continue
@@ -86,6 +107,9 @@ def dogbone(pcb, refs, log=print):
     def stub_ok(a, b, own, home):
         for k in range(13):
             x, y = a[0] + (b[0] - a[0]) * k / 12, a[1] + (b[1] - a[1]) * k / 12
+            for s in near_s(x, y, 1.0):
+                if s.net_id != own.net_id and s.layer == home and _seg_dist(x, y, s) < STUB / 2 + CLEAR + s.width / 2:
+                    return False
             for p in near(x, y, 1.0):
                 if p is own or (p.net_id and p.net_id == own.net_id) or p.pad_type == 'np_thru_hole':
                     continue
@@ -98,8 +122,26 @@ def dogbone(pcb, refs, log=print):
     for ref in refs:
         fp = pcb.footprints[ref]
         pads = [p for p in fp.pads if p.net_id and any(L.endswith('.Cu') for L in p.layers)]
-        xs = sorted({round(p.global_x, 3) for p in pads})
-        ys = sorted({round(p.global_y, 3) for p in pads})
+        held = 0
+        in_only[0] = bool(only) and ref in only
+        geo = pads                  # (the array's pitch, middle and outer ring: read off every ball, scoped or not)
+        if only and ref in only:
+            # (a shared array: its scoped nets' balls alone, a ball with its own net's copper on it held as it is)
+            def carries(p):
+                rr = max(p.size_x, p.size_y) / 2
+                return any(s.net_id == p.net_id and min(_seg_dist(p.global_x, p.global_y, s), 9.0) <= rr
+                           for s in near_s(p.global_x, p.global_y, 1.0)) or \
+                    any(v.net_id == p.net_id and math.hypot(v.x - p.global_x, v.y - p.global_y) <= rr
+                        for v in pcb.vias)
+            want = only[ref]
+            scoped = [p for p in pads if (p.net_name or '').split('/')[-1] in want]
+            held = sum(1 for p in scoped if carries(p))
+            pads_all = pads
+            pads = [p for p in scoped if not carries(p)]
+            log(f'  {ref}: shared -- {len(pads)} ball(s) of {len(want)} net(s) to dog-bone, {held} carrying their own '
+                f'copper held, {len(pads_all) - len(scoped)} other balls as they are')
+        xs = sorted({round(p.global_x, 3) for p in geo})
+        ys = sorted({round(p.global_y, 3) for p in geo})
         px = min((b - a for a, b in zip(xs, xs[1:]) if b - a > 0.05), default=None)
         py = min((b - a for a, b in zip(ys, ys[1:]) if b - a > 0.05), default=None)
         if px is None and py is None:
@@ -123,8 +165,11 @@ def dogbone(pcb, refs, log=print):
         x_lo, x_hi, y_lo, y_hi = xs[0], xs[-1], ys[0], ys[-1]
         n_edge = 0
         bare = set()
+        zone_ids = {z.net_id for z in (pcb.zones or []) if z.net_id} if in_only[0] else set()
         if edge_free:
             for p in pads:
+                if p.net_id in zone_ids:
+                    continue            # (a shared array's plane ball keeps a via: its drop, re-seated)
                 home = next((L for L in p.layers if L.endswith('.Cu')), 'F.Cu')
                 outs = [(dx_, dy_) for dx_, dy_, on in ((-1, 0, abs(p.global_x - x_lo) < 1e-3),
                                                         (1, 0, abs(p.global_x - x_hi) < 1e-3),
@@ -192,10 +237,10 @@ def dogbone(pcb, refs, log=print):
     return tracks, new_vias, stats
 
 
-def dogbone_file(src, out, refs, log=print):
+def dogbone_file(src, out, refs, log=print, only=None):
     with contextlib.redirect_stdout(sys.stderr):
         pcb = parse_kicad_pcb(src)
-    tracks, new_vias, stats = dogbone(pcb, refs, log=log)
+    tracks, new_vias, stats = dogbone(pcb, refs, log=log, only=only)
     nmap = {i: n.name for i, n in pcb.nets.items()}
     with contextlib.redirect_stdout(sys.stderr):
         ok = add_tracks_and_vias_to_pcb(src, out, tracks, new_vias, net_id_to_name=nmap)

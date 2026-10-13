@@ -1285,9 +1285,17 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
             before = footprint_poses(bench)
             # (--beneath-only: a passive is nudged only where it stays beneath its BGA; one beside the array, in the
             # channel the bus leaves across, stays where it is and the fanout and the route go round it)
+            # (and only those beneath the run's own arrays -- the joint fanout's: another array's passives are another
+            # step's, locked -- joint_escape.passives_beyond. Unscoped, the zynq's DDR step moved two parts beneath the
+            # LVDS bus's U5)
+            import joint_escape as je_
+            lock_ = je_.passives_beyond(bench, [a_['ref'] for a_ in json.load(open(env['FANOUT_JOINT']))['arrays']])
             rcn = run([os.path.join('..', 'py_router', 'place_fanout_clearance.py'), bench, bench,
-                       '--clearance', str(_rules.active().clearance), '--beneath-only'], env,
+                       '--clearance', str(_rules.active().clearance), '--beneath-only']
+                      + (['--lock'] + lock_ if lock_ else []), env,
                       log_path=os.path.join(d, 'caps.log'), own_process=True)[0]
+            if lock_:
+                say(f'  caps: beneath another array, left where they are: {", ".join(lock_)}')
             for ln in grep(os.path.join(d, 'caps.log'), r'^(Moved|Stuck|  Unresolved)'):
                 say('  caps: ' + ln.strip()[:200])
             if rcn != 0:

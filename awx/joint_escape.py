@@ -602,6 +602,25 @@ def movable_refs(pcb, ref):
 _MOVABLE = {}       # (a board file, its mtime and size) -> its movable caps: the courtyards read off it once
 
 
+def passives_beyond(board, refs):
+    """the passives the cap step (place_fanout_clearance --beneath-only) would move on BOARD that stand beneath NONE of
+    the arrays `refs` -- beneath another array, whose step this is not: a bus step's cap nudge locks them (--lock), so it
+    moves only the parts beneath its own arrays. Unscoped, the zynq's DDR step (U1 -> U2) moved RX4 and C177 beneath U5,
+    the LVDS bus's array, and the LVDS step on its board found them where its own nudge would never have left them"""
+    if os.path.join(HERE, '..', 'py_placer') not in sys.path:
+        sys.path.insert(0, os.path.join(HERE, '..', 'py_placer'))
+    from placement.fanout_clearance import movable_cap_refs, package_box
+    from placement.parser import extract_courtyard_bboxes
+    from kicad_parser import parse_kicad_pcb
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        pcb = parse_kicad_pcb(board)
+        moving = movable_cap_refs(pcb, board, beneath_only=True)
+        court = extract_courtyard_bboxes(board)
+    boxes = [package_box(pcb.footprints[r], court) for r in refs if r in pcb.footprints]
+    under = lambda f: any(b[0] <= f.x <= b[2] and b[1] <= f.y <= b[3] for b in boxes)   # noqa: E731
+    return sorted(r for r in moving if r in pcb.footprints and not under(pcb.footprints[r]))
+
+
 def bus_route_layers(pcb):
     """the layers a BUS ball escapes on: every routing layer (route_layers.stacked) -- F.Cu and B.Cu on two, and on
     more a via's run on any of them, the plan's to choose (RUN); the solve moves it at its via end"""
@@ -837,6 +856,10 @@ def build_menus(pcb, ref, bus, others, other_layers, far=None, drops=(), climb=C
                    and math.hypot(m.exit_pt[0] - g_['tooth'][0], m.exit_pt[1] - g_['tooth'][1]) <= HOLD_TOL
                    and (m.layer == g_['layer'] or (m.layer == RUN and g_['layer'] in (getattr(m, 'runs_on', ())
                                                                                       or ())))]
+            if 'site' in g_:
+                # (its SITE held too where the hold names one: None, no via -- a surface escape)
+                at_ = [m for m in at_ if (m.site is None) == (g_['site'] is None) and
+                       (m.site is None or math.hypot(m.site[0] - g_['site'][0], m.site[1] - g_['site'][1]) < 1e-3)]
             for m in at_:
                 if m.layer == RUN:
                     # (a held tooth's layer is no longer the solve's to choose: its run PINNED there, on RUN still, so
@@ -970,11 +993,22 @@ def plan_array(pcb, ref, bus, others, other_layers, far=None, prefer=None, drops
         # had no layer left at the colouring (zynq U1: ENABLE pushed onto B.Cu by held In1/In2 teeth in another group,
         # across CTRL_OUT0's held B.Cu tooth -- three runs uncoloured, CTRL_OUT0 and FB_CLK unplanned)
         held_legs = collections.defaultdict(list)
+        # (a held via end's run is the solve's to move onto another layer where nothing stands within the rule of it
+        # -- relayer.clashes, whole_solve's VBAN: `hold[net]['free_layers']`, the layers it is free on in the bus's
+        # own field, are held free here too, so the shared array's other copper takes no layer change from the bus)
+        free_legs = collections.defaultdict(list)
         for k, ol in bm.opts.items():
+            free_ = (hold.get(bm.items[k][0]) or {}).get('free_layers') or ()
             for kind, o, _pc in ol:
                 if kind == 'escape' and getattr(o, 'pinned', False):
                     held_legs[o.runs_on[0]] += [(a, b) for a, b, L in o.legs if L == RUN]
-        n_cut = n_gone = 0
+                    for L_ in free_:
+                        free_legs[L_] += [(a, b) for a, b, L in o.legs if L == RUN]
+        for L_, lg_ in free_legs.items():
+            held_legs[L_] += lg_
+        near_ = lambda a, b, L: any(_seg_seg(a, b, u, w) < bm.sz['d_seg'] - 1e-6   # noqa: E731
+                                    for u, w in held_legs.get(L, ()))
+        n_cut = n_gone = n_free = 0
         for k in list(bm.opts):
             if bm.items[k][0] in bm.bus_s:
                 continue
@@ -982,19 +1016,24 @@ def plan_array(pcb, ref, bus, others, other_layers, far=None, prefer=None, drops
             for kind, o, pc in bm.opts[k]:
                 if kind == 'escape' and o.layer == RUN and getattr(o, 'runs_on', None):
                     runs_ = [(a, b) for a, b, L in o.legs if L == RUN]
-                    bad = {L for L in o.runs_on if any(_seg_seg(a, b, u, w) < bm.sz['d_seg'] - 1e-6
-                                                       for a, b in runs_ for u, w in held_legs.get(L, ()))}
+                    bad = {L for L in o.runs_on if any(near_(a, b, L) for a, b in runs_)}
                     if bad:
                         n_cut += 1
                         o.runs_on = tuple(L for L in o.runs_on if L not in bad)
                         if not o.runs_on:
                             n_gone += 1
                             continue
+                # (an option's copper on a layer a held run is to stay free on: an escape on its own layer, a strap,
+                # a dog-bone's stub, a drop's)
+                if free_legs and any(L != RUN and L in free_legs and near_(a, b, L) for a, b, L in pc.legs):
+                    n_free += 1
+                    continue
                 keep.append((kind, o, pc))
             bm.opts[k] = keep
             bm.menu[k] = [o for kind, o, _pc in keep if kind == 'escape']
         log(f'  joint escape of {ref}: held teeth -- {n_cut} other run(s) lose a layer to them, {n_gone} lose every '
-            f'layer')
+            f'layer' + (f'; their runs held free on {sum(len(v) for v in free_legs.values())} run leg-layers, '
+                        f'{n_free} other option(s) left out there' if free_legs else ''))
     planes_ = set(plane_layers(pcb))             # (a leg on one priced: C_PLANE_LAYER)
     rls = run_layers()                # (more routing layers than two: the via moves' runs on RUN)
     items, menu, balls, opts, straps, dmenu, t_menu = (bm.items, bm.menu, bm.balls, bm.opts, bm.straps, bm.dmenu,
@@ -1234,10 +1273,17 @@ def plan_array(pcb, ref, bus, others, other_layers, far=None, prefer=None, drops
     reach = 1.3 * max(bm.grid.pitch_x, bm.grid.pitch_y)
     along = lambda m: m.exit_pt[0 if m.direction in ('up', 'down') else 1]
     by_cls = collections.defaultdict(list)          # (face, layer) -> [(exit along the face, ball, option)], sorted
+    # (`hold`: a pinned run stands on its one layer -- a pair's slots and spans read it there, not on RUN, where another
+    # net's tooth on another layer between the legs read as a split (zynq K32: RX_D4's pair on In2 round SPI_CLK's tooth
+    # on In1, the pair left unplanned); a free run on RUN beside them counts on every layer it may take)
+    pin_ = lambda o: o.runs_on[0] if getattr(o, 'pinned', False) else o.layer   # noqa: E731
     for key in keys:
         for i, (kind, o, _pc) in enumerate(opts[key]):
             if kind == 'escape':
-                by_cls[(o.direction, o.layer)].append((along(o), key, i))
+                by_cls[(o.direction, pin_(o))].append((along(o), key, i))
+                if hold and o.layer == RUN and not getattr(o, 'pinned', False):
+                    for L_ in (getattr(o, 'runs_on', None) or ()):
+                        by_cls[(o.direction, L_)].append((along(o), key, i))
     at_cls = collections.defaultdict(list)          # (face, layer, exit along it) -> [(ball, option)] there
     for cls in by_cls:
         by_cls[cls].sort()
@@ -1279,7 +1325,7 @@ def plan_array(pcb, ref, bus, others, other_layers, far=None, prefer=None, drops
                     # pair unplanned. Not on the other paths, whose plans stand as measured)
                     ro_ = tuple(sorted(getattr(o, 'runs_on', None) or ())) if (escape_to or hold) and o.layer == RUN \
                         else ()
-                    sl[(o.direction, o.layer, round(o.exit_pt[0], 6), round(o.exit_pt[1], 6), ro_)].append(i)
+                    sl[(o.direction, pin_(o), round(o.exit_pt[0], 6), round(o.exit_pt[1], 6), ro_)].append(i)
                 elif kind != 'stub':
                     mdl.Add(v[k_][i] == 0)          # (a pair leaves by its legs' escapes: a strap leaves no pair)
             for s_, idx in sl.items():
@@ -1774,6 +1820,72 @@ def lay(board, out, ref, bus, others, other_layers, hints, other_pairs=(), plane
         shutil.copy(board, out)
     fp.copy_pro(board, out)
     return len(tracks), len(vias_add), sorted(set(failed))
+
+
+def escape_field(board, out, ref, dest, bus, others, drops, hold, log=print, passives_fixed=True):
+    """(route_bus --escape, ESCAPE_JOINT) ONE fanout of a shared array for an ESCAPE bus, its other nets and its plane
+    balls, laid as the escape step's FIELD. BOARD is the field the step's ends chose the bus's teeth on (`hold`, plan_array's
+    shape): every unprotected ball of the array dog-boned. Its copper of `bus`, `others` and `drops` inside the array's
+    box comes off, and the whole array is planned again in one solve round those teeth (plan_array escape_to=`dest`,
+    hold=) -- laid with each bus ball's dog-bone at the site the plan gave it (a via in the pad, or none for a surface
+    escape: the step's own lay runs the teeth from there), the other nets' escapes, straps and dog-bones alone and the
+    plane drops as planned (lay). The passives stand where they are (the step's cap nudge ran on the field). OUT is the
+    field; returns the plan's report, with `laid_sites` the bus vias laid"""
+    import replan
+    import rules as _rules
+    import fanout_from_plan as fp
+    from kicad_parser import parse_kicad_pcb
+    from kicad_writer import add_tracks_and_vias_to_pcb
+    import awx_settings as _as
+    with contextlib.redirect_stdout(io.StringIO()):
+        pcb0 = parse_kicad_pcb(board)
+    foot = pcb0.footprints[ref]
+    xs, ys = [p.global_x for p in foot.pads], [p.global_y for p in foot.pads]
+    box = (min(xs) - 1.5, min(ys) - 1.5, max(xs) + 1.5, max(ys) + 1.5)
+    byname = {short_name(n.name): (i, n) for i, n in pcb0.nets.items() if n.name}
+    nets = sorted({short_name(n) for n in list(bus) + list(others) + list(drops)} & set(byname))
+    stem = out[:-len('.kicad_pcb')] if out.endswith('.kicad_pcb') else out
+    bare = f'{stem}.bare.kicad_pcb'
+    with open(bare, 'w', encoding='utf-8') as f:
+        f.write(replan.strip_window(open(board, encoding='utf-8').read(), nets, byname, box))
+    fp.copy_pro(board, bare)
+    with contextlib.redirect_stdout(io.StringIO()):
+        pcb = parse_kicad_pcb(bare)
+    layers = list(pcb.board_info.copper_layers)
+    prefer = {nm: dict(g) for nm, g in hold.items()}
+    with _as.given({**_as.environ(), 'FANOUT_PASSIVES_FIXED': '1' if passives_fixed else '0'}):
+        hints, rep = plan_array(pcb, ref, list(bus), list(others), layers, far=far_face(pcb, ref, dest), drops=drops,
+                                prefer=prefer, log=log, debug=True, escape_to=dest, hold=hold)
+        chosen = (rep.pop('debug', None) or {}).get('chosen') or {}
+        bus_s = {short_name(n) for n in bus}
+        sz = _sizes(pcb, pcb.footprints[ref])
+        r = _rules.active()
+        pads = {f'{short_name(p.net_name)}#{p.pad_number}': p for p in pcb.footprints[ref].pads if p.net_id}
+        tracks, vias = [], []
+        for k, (kind, o) in sorted(chosen.items()):
+            if k.split('#')[0] not in bus_s or kind != 'escape' or o.site is None:
+                continue
+            p = pads[k]
+            c, s = (p.global_x, p.global_y), tuple(o.site)
+            if math.hypot(s[0] - c[0], s[1] - c[1]) < 1e-3:
+                rr, dr = sz['inpad'](p)
+                vias.append({'x': s[0], 'y': s[1], 'size': 2 * rr, 'drill': 2 * dr, 'layers': ['F.Cu', 'B.Cu'],
+                             'net_id': p.net_id})
+            else:
+                home = next((L for L in layers if L in p.layers), 'F.Cu')
+                tracks.append({'start': c, 'end': s, 'width': r.fan_track, 'layer': home, 'net_id': p.net_id})
+                vias.append({'x': s[0], 'y': s[1], 'size': r.via_size, 'drill': r.via_drill,
+                             'layers': ['F.Cu', 'B.Cu'], 'net_id': p.net_id})
+        sited = f'{stem}.sited.kicad_pcb'
+        with contextlib.redirect_stdout(sys.stderr):
+            add_tracks_and_vias_to_pcb(bare, sited, tracks, vias, net_id_to_name={i: n.name for i, n in pcb.nets.items()})
+        fp.copy_pro(bare, sited)
+        bus_at = {(round(p.global_x, 3), round(p.global_y, 3)) for k, p in pads.items() if k.split('#')[0] in bus_s}
+        with contextlib.redirect_stdout(sys.stderr):
+            lay(sited, out, ref, [], list(others), layers, {at: h for at, h in hints.items() if at not in bus_at},
+                plane_drop='off')
+    rep['laid_sites'] = len(vias)
+    return rep
 
 
 def _cross(p, q, a, b):
