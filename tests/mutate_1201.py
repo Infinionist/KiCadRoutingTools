@@ -142,8 +142,8 @@ ROWS = [
      "                   '')\n",
      (T1201,), 'KILLED'),
     ('the-reason-count-dropped', 'asm',
-     '            print(f"    None of these BLOCK: " + \'; \'.join(\n',
-     '            print(f"    None of these BLOCK." + \'\'.join(\n',
+     '            print("    None of these BLOCK: " + \'; \'.join(\n',
+     '            print("    None of these BLOCK." + \'\'.join(\n',
      (T1201,), 'KILLED'),
 ]
 

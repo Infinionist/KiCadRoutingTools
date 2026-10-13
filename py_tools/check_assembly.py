@@ -423,7 +423,7 @@ def main():
             for q in g['containment_pairs']:
                 _ex = getattr(q, 'gate_exempt', '')
                 _why[_ex] = _why.get(_ex, 0) + 1
-            print(f"    None of these BLOCK: " + '; '.join(
+            print("    None of these BLOCK: " + '; '.join(
                 f"{n} {_GATE_EXEMPT_WHY.get(k, k)}"
                 for k, n in sorted(_why.items())) + '.')
             if set(_why) <= {'marker_class', 'container_class'}:
