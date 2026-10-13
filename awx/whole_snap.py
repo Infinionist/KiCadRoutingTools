@@ -46,6 +46,10 @@ try:                     # a single's search in Rust (grid_router >= 0.23); an o
     from grid_router import lane_search as _lane_search
 except ImportError:
     _lane_search = None
+try:                     # ...and a pair's (grid_router >= 0.23.1)
+    from grid_router import pair_search as _pair_search
+except ImportError:
+    _pair_search = None
 
 plan = json.load(open(sys.argv[1]))
 OUT = sys.argv[2]
@@ -272,6 +276,11 @@ def leg_clear(pts, L, net, n, near):
     """a leg (points, layer, its net) clear of every other net's copper at half a track and the clearance -- pads as
     drawn, the other leg's stub among them -- and of the copper placed so far (a placed pair's legs off the grid by
     half a step), exactly: the pair step lays it where it is"""
+    return leg_static_clear(pts, L, net, near) and leg_placed_clear(pts, L, n)
+
+
+def leg_static_clear(pts, L, net, near):
+    """leg_clear against the board's fixed copper `near` (static_around's) alone: what never changes"""
     pads, segs, vias = near
     bar = TW / 2 + CL
     step = g / 4
@@ -299,13 +308,27 @@ def leg_clear(pts, L, net, n, near):
         if v_.net_id != net and min(_pairs._pt_seg((v_.x, v_.y), a_, b_) for a_, b_ in zip(pts, pts[1:])) \
                 < bar + v_.size / 2 - 1e-9:
             return False
-    for (m_, L_, p_, q_) in LEGS:
+    return True
+
+
+def placed_near(c, r):
+    """(LEGS, PLACED, PVIAS) -- the copper placed so far within r of the point c, leg_placed_clear's lists: a leg
+    whose every point stands within d of c meets no copper farther than d and its bar from c"""
+    near = lambda p_, q_: _pairs._pt_seg(c, p_, q_) < r
+    return ([e_ for e_ in LEGS if near(e_[2], e_[3])], [e_ for e_ in PLACED if near(e_[2], e_[3])],
+            [e_ for e_ in PVIAS if math.hypot(e_[1] - c[0], e_[2] - c[1]) < r])
+
+
+def leg_placed_clear(pts, L, n, near=None):
+    """leg_clear against the copper placed so far alone (other lanes than n): all of it, or `near` (placed_near's)"""
+    legs_, placed_, pvias_ = near if near is not None else (LEGS, PLACED, PVIAS)
+    for (m_, L_, p_, q_) in legs_:
         if m_ != n and L_ == L and _pairs.poly_dist(pts, [p_, q_]) < TW + CL + g / 2 - 1e-9:
             return False
-    for (m_, L_, p_, q_) in PLACED:
+    for (m_, L_, p_, q_) in placed_:
         if m_ != n and m_ not in prs and L_ == L and _pairs.poly_dist(pts, [p_, q_]) < TW + CL - 1e-9:
             return False
-    for (m_, bx_, by_) in PVIAS:
+    for (m_, bx_, by_) in pvias_:
         if m_ != n and min(_pairs._pt_seg((bx_, by_), a_, b_) for a_, b_ in zip(pts, pts[1:])) < VR + TW / 2 + CL - 1e-9:
             return False
     return True
@@ -408,7 +431,11 @@ def pair_end_cands(n, end, W, esc):
     floor_ = _pairs.handover_setback(cfg)                 # the router takes over this far past the legs' ends
     reach = end_reach(tips)
     i0, j0, band, bad = W['i0'], W['j0'], W['band'], W['bad']
-    out = []
+    # (each candidate's legs and their clearance of the board's FIXED copper are the same every time the lane is laid --
+    # its first try, its wide one, each sweep: kept, only the clearance of the copper placed since asked again. The
+    # legs' geometry and that clearance were 87 of a pair snap's 123 profiled seconds at zynq LVDS K47)
+    memo = END_LEGS.setdefault((n, end, L, esc), {})
+    cand = []
     for (ii, jj) in np.argwhere(band):
         i, j = int(ii) + i0, int(jj) + j0
         x, y = i * g, j * g
@@ -416,26 +443,47 @@ def pair_end_cands(n, end, W, esc):
         if ahead < max(floor_, g) or math.hypot(x - m[0], y - m[1]) > reach or bad[L][ii, jj]:
             continue
         for k in range(8):
-            hx, hy = DIRS[k]
-            hl = math.hypot(hx, hy)
-            u = (hx / hl, hy / hl)
-            if u[0] * e[0] + u[1] * e[1] < -1e-9:
+            got = memo.get((i, j, k), False)
+            if got is False:
+                got = None
+                hx, hy = DIRS[k]
+                hl = math.hypot(hx, hy)
+                u = (hx / hl, hy / hl)
+                if u[0] * e[0] + u[1] * e[1] >= -1e-9:
+                    q = (x - u[0] * floor_, y - u[1] * floor_)
+                    legs = _pairs.end_legs(tips, e, q, u, HALF, TW + CL, g, reach)
+                    if legs is not None:
+                        full = []
+                        for pts, net in zip(legs, nets):
+                            E_ = pts[-1]
+                            full.append(list(pts) + ([(E_[0] + u[0] * floor_, E_[1] + u[1] * floor_)] if floor_ > 0
+                                                     else []))
+                        if all(leg_static_clear(pts, L, net, static_near(n, end)) for pts, net in zip(full, nets)):
+                            ln = sum(math.hypot(b_[0] - a_[0], b_[1] - a_[1]) for pts in full
+                                     for a_, b_ in zip(pts, pts[1:]))
+                            dm = max(math.hypot(p_[0] - m[0], p_[1] - m[1]) for pts in full for p_ in pts)
+                            got = (ln, u, legs, full, dm)
+                memo[(i, j, k)] = got
+            if got is not None:
+                cand.append((i, j, k, x, y, got))
+    # ...and their clearance of the copper placed since, measured against what stands within their reach alone: every
+    # point of every candidate's legs lies within dmax of the tips' midpoint, so copper farther than dmax and the
+    # widest bar from it meets none of them (placed_near)
+    out = []
+    if cand:
+        dmax = max(c_[5][4] for c_ in cand)
+        near = placed_near(m, dmax + max(TW + CL + g / 2, TW + CL, VR + TW / 2 + CL) + 1e-6)
+        for i, j, k, x, y, (ln, u, legs, full, _dm) in cand:
+            if not all(leg_placed_clear(pts, L, n, near) for pts in full):
                 continue
-            q = (x - u[0] * floor_, y - u[1] * floor_)
-            legs = _pairs.end_legs(tips, e, q, u, HALF, TW + CL, g, reach)
-            if legs is None:
-                continue
-            full = []
-            for pts, net in zip(legs, nets):
-                E_ = pts[-1]
-                full.append(list(pts) + ([(E_[0] + u[0] * floor_, E_[1] + u[1] * floor_)] if floor_ > 0 else []))
-            if not all(leg_clear(pts, L, net, n, static_near(n, end)) for pts, net in zip(full, nets)):
-                continue
-            ln = sum(math.hypot(b_[0] - a_[0], b_[1] - a_[1]) for pts in full for a_, b_ in zip(pts, pts[1:]))
             out.append((ln, (i, j), k, {'pose': [x, y], 'heading': [u[0], u[1]], 'layer': L,
                                         'legs': [[list(p_) for p_ in pts] for pts in legs],
                                         'handover': [list(pts[-1]) for pts in legs]}))
     return sorted(out, key=lambda c_: (c_[0], c_[1], c_[2]))
+
+
+END_LEGS = {}        # (lane, end, layer, escape) -> {(i, j, heading): (length, heading, legs, full, reach) or None}
+POSE_OFF = {}        # (lane, x, y): a pose's distance from the lane's smooth line (route's rank of the end connectors)
 
 
 # ------------------------------------------------------------------ what is placed so far
@@ -1001,6 +1049,46 @@ def route(n, strict=True, wide=False):
             list(STEPT), ok(jS), ok(jE), ok(a_out), ok(a_in), bool(strict))
         return ([(i_, j_, d_, k_, (0, 0)) for (i_, j_, d_, k_) in p_] if p_ is not None else None), npop_
 
+    def vtable():
+        # (a via's distance from the plan's k-th site, math.hypot's as search() forms it, within reach of each site)
+        dv = np.full((K, NI, NJ), np.inf)
+        rc = int(math.ceil(rvia / g)) + 2
+        for k_, (vx_, vy_) in enumerate(vpts[:K]):
+            ci, cj = int(round(vx_ / g)) - i0, int(round(vy_ / g)) - j0
+            for i_ in range(max(0, ci - rc), min(NI, ci + rc + 1)):
+                for j_ in range(max(0, cj - rc), min(NJ, cj + rc + 1)):
+                    dv[k_, i_, j_] = math.hypot((i_ + i0) * g - vx_, (j_ + j0) * g - vy_)
+        return dv
+
+    def psearch(S, d0, E, dN, multi=None):
+        """search(S, d0, E, dN, poses=True, multi=multi) for a PAIR, by grid_router.pair_search where the binary has it:
+        the same search, the same path -- search_native's tables, and the crossover's clearance called back"""
+        if _pair_search is None:
+            return search(S, d0, E, dN, poses=True, multi=multi)
+        LN = list(bad)
+        soft_ = W.get('soft')
+        zero_ = np.zeros((NI, NJ), bool)
+        if multi:
+            starts = [(int(S_[0]), int(S_[1]), int(d_)) for S_, d_ in multi[0]]
+            ends = [(int(c_[0]), int(c_[1]), int(d_)) for c_, ds_ in multi[1].items() for d_ in sorted(ds_)]
+        else:
+            starts, ends = [(int(S[0]), int(S[1]), int(d0))], [(int(E[0]), int(E[1]), int(dN))]
+        p_, npop_, fa_, fs_ = _pair_search(
+            np.ascontiguousarray(band, bool), np.ascontiguousarray(np.stack([bad[L_] for L_ in LN]), bool),
+            np.ascontiguousarray(np.stack(vbad), bool), np.ascontiguousarray(arc, np.float64),
+            np.ascontiguousarray(dist, np.float64),
+            np.ascontiguousarray(W['tol'], np.float64) if W.get('tol') is not None else None,
+            np.ascontiguousarray(np.stack([soft_.get(L_, zero_) for L_ in LN]), bool) if soft_ is not None else None,
+            vtable(), starts, ends, bool(multi), [LN.index(L_) for L_ in lays], [(float(a_), float(b_)) for a_, b_ in gate],
+            [float(v_) for v_ in ROOM0], [float(v_) for v_ in ROOM1], float(total), float(rvia), float(W_VIA),
+            float(W_DEV), float(W_BEND), float(W_KEEP), float(W_SHARE), float(g), list(STEPT), int(CAP), int(RT), int(ST),
+            int(_pairs.pose_probe_steps(cfg)), bool(cross), [tuple(XS[d_]) for d_ in range(8)] if cross else [(0, 0)] * 8,
+            (lambda i_, j_, d_: xo(i_, j_, d_) is not None) if cross else None)
+        up = lambda s_: (s_[0], s_[1], s_[2], s_[3], (s_[4], s_[5]))
+        if p_ is None:
+            return None, ((fa_, None if fs_ is None else up(fs_)) if multi else npop_)
+        return [up(s_) for s_ in p_], npop_
+
     # a PAIR's two ends are its END CONNECTORS (pairs.end_legs): from its tips, two legs to a POSE on the grid where the
     # pair router takes over, heading along a router direction -- the pair step lays these legs as they are and runs
     # the pair router from the pose (no end search of its own), so the plan and the router share one end. Each end's
@@ -1015,7 +1103,14 @@ def route(n, strict=True, wide=False):
         # the plan lands the pair took the singles' room beside it (SDQS0's at its tips, 0.2 short of its landing, at
         # K28: SDQM0 pressed into SDQ13's berth). Ranked over EVERY candidate before the dozen per end are kept: the
         # dozen shortest were all at the tips
-        off = lambda c_: _pairs.poly_dist([tuple(c_[3]['pose'])] * 2, [tuple(p_) for p_ in P])
+        Pt = [tuple(p_) for p_ in P]
+
+        def off(c_):
+            # (a pose's distance from the lane's smooth line: the same every time it is asked, kept -- POSE_OFF)
+            key_ = (n, c_[3]['pose'][0], c_[3]['pose'][1])
+            if key_ not in POSE_OFF:
+                POSE_OFF[key_] = _pairs.poly_dist([tuple(c_[3]['pose'])] * 2, Pt)
+            return POSE_OFF[key_]
         rank = lambda c_: c_[0] + 2.0 * off(c_)
         allc = [sorted(cands[k_], key=rank) for k_ in (0, 1)]
         cands = [allc[k_][:12] for k_ in (0, 1)]
@@ -1025,8 +1120,7 @@ def route(n, strict=True, wide=False):
         tried, stuck, turned = 0, '', None
         for _tot, x0, x1 in combos:
             c0, c1 = cands[0][x0], cands[1][x1]
-            path, npop = search((c0[1][0] - i0, c0[1][1] - j0), c0[2], (c1[1][0] - i0, c1[1][1] - j0), (c1[2] + 4) % 8,
-                                poses=True)
+            path, npop = psearch((c0[1][0] - i0, c0[1][1] - j0), c0[2], (c1[1][0] - i0, c1[1][1] - j0), (c1[2] + 4) % 8)
             tried += 1
             if path is not None:
                 over = turned_over(path)
@@ -1040,7 +1134,7 @@ def route(n, strict=True, wide=False):
                 EG = {}
                 for c1_ in cands[1]:
                     EG.setdefault((c1_[1][0] - i0, c1_[1][1] - j0), set()).add((c1_[2] + 4) % 8)
-                any_, far_ = search(None, None, None, None, poses=True,
+                any_, far_ = psearch(None, None, None, None,
                                     multi=([((c0_[1][0] - i0, c0_[1][1] - j0), c0_[2]) for c0_ in cands[0]], EG))
                 if any_ is not None and turned_over(any_) is not None:
                     # the cheapest from any start to any end turns too far: the rest are dearer, and each costs a search
@@ -1065,7 +1159,7 @@ def route(n, strict=True, wide=False):
             EG = {}
             for c1_ in more[1]:
                 EG.setdefault(cell_(c1_), set()).add((c1_[2] + 4) % 8)
-            any_, _far = search(None, None, None, None, poses=True, multi=([(cell_(c0_), c0_[2]) for c0_ in more[0]], EG))
+            any_, _far = psearch(None, None, None, None, multi=([(cell_(c0_), c0_[2]) for c0_ in more[0]], EG))
             if any_ is not None and turned_over(any_) is None:
                 dead, live = (set(), set()), (set(), set())
                 for _tot, x0, x1 in sorted(((rank(c0) + rank(c1), x0, x1)
@@ -1074,7 +1168,7 @@ def route(n, strict=True, wide=False):
                     if x0 in dead[0] or x1 in dead[1]:
                         continue
                     c0, c1 = more[0][x0], more[1][x1]
-                    p_, npop_ = search(cell_(c0), c0[2], cell_(c1), (c1[2] + 4) % 8, poses=True)
+                    p_, npop_ = psearch(cell_(c0), c0[2], cell_(c1), (c1[2] + 4) % 8)
                     if p_ is not None:
                         if turned_over(p_) is None:
                             path, npop, ends_out = p_, npop_, [c0[3], c1[3]]
@@ -1082,12 +1176,12 @@ def route(n, strict=True, wide=False):
                             break
                         continue
                     if x1 not in live[1]:
-                        r_, _f = search(None, None, None, None, poses=True,
+                        r_, _f = psearch(None, None, None, None,
                                         multi=([(cell_(c_), c_[2]) for x_, c_ in enumerate(more[0]) if x_ not in dead[0]],
                                                {cell_(c1): {(c1[2] + 4) % 8}}))
                         (live[1] if r_ is not None else dead[1]).add(x1)
                     if x0 not in live[0]:
-                        r_, _f = search(None, None, None, None, poses=True, multi=([(cell_(c0), c0[2])], EG))
+                        r_, _f = psearch(None, None, None, None, multi=([(cell_(c0), c0[2])], EG))
                         (live[0] if r_ is not None else dead[0]).add(x0)
         if path is None and turned is not None:
             STUCK_AT['last'] = turned

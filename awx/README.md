@@ -1089,9 +1089,14 @@ and the snap lays the singles.
 holes, the board edge), placed copper at the audit's bars, a via by the ring
 the router stamps round it.
 
-**Speed:** a single's search runs in the router's Rust core
-(`grid_router.lane_search`; an older binary searches in Python). The Python
-pair search packs each state into one integer.
+**Speed:** both searches run in the router's Rust core -- a single's
+(`grid_router.lane_search`) and a pair's (`grid_router.pair_search`), each
+ported exactly, so the snapped plan is byte-identical; an older binary
+searches in Python. A pair's end connectors -- each candidate pose's legs, and
+their clearance of the board's fixed copper -- are kept from one try of the
+lane to the next (its first, its wide one, each sweep), and their clearance of
+the copper placed since is measured against what stands within their reach
+alone. On the zynq LVDS bus a K47 round's pairs snap in 29 s, 194 s before.
 
 </details>
 
@@ -1615,7 +1620,8 @@ channels first, and the other escapes leave round it.
    worker thread; the wiring CLAUDE.md asks for (plan executor action,
    `reset_params_to_defaults`, settings persistence, `manifest_to_plan`,
    `test_cli_postpass_coverage`, a parity gate); ortools optional in
-   `deps_check`; the `lane_search` crate change's release binaries.
+   `deps_check`; the `lane_search` and `pair_search` crate changes' release
+   binaries.
 10. **The gate.** The full chain with and without the step on the corpus's
     array-pair DDR boards (allwinner_h3_ddr3, zynq_ad9364, orangecrab, keks,
     ulx5m_gatemate, sechzig): unrouted plus broken nets and real DRC not

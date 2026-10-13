@@ -1079,25 +1079,39 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
             return (sp_.P[k_, 0] + t_ * sp_.d[k_, 0] + OS_ * sp_.nrm[k_, 0],
                     sp_.P[k_, 1] + t_ * sp_.d[k_, 1] + OS_ * sp_.nrm[k_, 1])
 
+        ISLA_ = {}                  # layer -> its boxes (the arrays', then each island's on it) as an array, and their reach
+
         def free_room(sp_, s_, L_, ring_):
             """lane pitches layer L_ has free across frame sp_'s column at s_ (a ring's: outside the destination)"""
             X_, Y_ = column(sp_, s_)
             ok_ = (X_ >= BX0_ + EDGE_) & (X_ <= BX1_ - EDGE_) & (Y_ >= BY0_ + EDGE_) & (Y_ <= BY1_ - EDGE_)
-            for b_ in [Fr.SB, Fr.DB] + [b2_ for (_l, ls2_), b2_ in ISLB.items() if L_ in ls2_]:
+            if L_ not in ISLA_:
+                bx_ = np.array([Fr.SB, Fr.DB] + [b2_ for (_l, ls2_), b2_ in ISLB.items() if L_ in ls2_], dtype=float)
+                ISLA_[L_] = (bx_, (bx_[:, 0] + bx_[:, 2]) / 2, (bx_[:, 1] + bx_[:, 3]) / 2,
+                             np.hypot((bx_[:, 2] - bx_[:, 0]) / 2 + BAR_, (bx_[:, 3] - bx_[:, 1]) / 2 + BAR_))
+            bx_, cx_, cy_, hd_ = ISLA_[L_]
+            # (only the boxes the column's LINE can meet -- the centre within the grown box's half-diagonal of it: a box
+            # farther off marks no sample, and the column's ~4000 samples were compared with every box on the layer,
+            # ~100 of them, 2439 columns a solve)
+            k_ = sp_.seg_of(s_)
+            px_, py_ = sp_.P[k_, 0] + (s_ - sp_.S[k_]) * sp_.d[k_, 0], sp_.P[k_, 1] + (s_ - sp_.S[k_]) * sp_.d[k_, 1]
+            nx_, ny_ = float(sp_.nrm[k_, 0]), float(sp_.nrm[k_, 1])
+            near_ = np.abs((cx_ - px_) * ny_ - (cy_ - py_) * nx_) <= hd_ * math.hypot(nx_, ny_) + 1e-6
+            for b_ in bx_[near_]:
                 ok_ &= ~((X_ > b_[0] - BAR_) & (X_ < b_[2] + BAR_) & (Y_ > b_[1] - BAR_) & (Y_ < b_[3] + BAR_))
             oc_ = float(sp_.project_pt(dcen_)[1]) if ring_ else None
-            room_, i_ = 0.0, 0
-            while i_ < len(OS_):
-                if not ok_[i_]:
-                    i_ += 1
-                    continue
-                j_ = i_
-                while j_ + 1 < len(OS_) and ok_[j_ + 1]:
-                    j_ += 1
-                a_, b_ = float(OS_[i_]), float(OS_[j_])
-                if not ring_ or ((a_ + b_) / 2 - oc_) * (0.0 - oc_) > 0:
-                    room_ += b_ - a_ + PMIN_                  # (centrelines a pitch apart from a_ to b_)
-                i_ = j_ + 1
+            # (the column's free RUNS found at once -- each run's ends, then each run summed in turn as before: the same
+            # floats in the same order. Walked a sample at a time, the ~4000 samples of a column were 4 of a check's
+            # 5-8 s: 2439 columns a solve on the zynq LVDS bus)
+            idx_ = np.flatnonzero(ok_)
+            room_ = 0.0
+            if idx_.size:
+                cut_ = np.flatnonzero(np.diff(idx_) > 1)
+                for i_, j_ in zip(np.concatenate((idx_[:1], idx_[cut_ + 1])).tolist(),
+                                  np.concatenate((idx_[cut_], idx_[-1:])).tolist()):
+                    a_, b_ = float(OS_[i_]), float(OS_[j_])
+                    if not ring_ or ((a_ + b_) / 2 - oc_) * (0.0 - oc_) > 0:
+                        room_ += b_ - a_ + PMIN_              # (centrelines a pitch apart from a_ to b_)
             return room_
         frames_ = [('T', spine, None)] + [(k_, sp_, k_) for k_, sp_ in sorted(ring_of.items())]
         # (a lane held off the layer from a VIA'S ROOM before the island to one past it: its change is a via, standing
