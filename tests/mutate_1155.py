@@ -38,11 +38,14 @@ TARGETS = {
     'fp': os.path.join(_PL, 'floorplan.py'),
     'sd': os.path.join(_PL, 'seeder.py'),
     'bc': os.path.join(_ROOT, 'py_tools', 'board_context.py'),
+    'pp': os.path.join(_PL, 'parser.py'),
+    'bd': os.path.join(_PL, 'body.py'),
 }
 
 T_FACE = os.path.join(_TESTS, 'test_1155_mating_face.py')
 T_REV = os.path.join(_TESTS, 'test_1155_reversed_edge_connector.py')
 T1172 = os.path.join(_TESTS, 'test_1172_edge_angle_and_courtyard.py')
+T1245 = os.path.join(_TESTS, 'test_1245_edge_marker.py')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -178,6 +181,43 @@ ROWS = [
      "                + ('' if m.get('facing_strong') else ', a weak face')\n",
      "                + ''\n",
      (T_REV,), 'KILLED'),
+    # -- #1245: the "PCB Edge" marker (mating.py, parser.py, body.py) --
+    ('marker-confirmation-dropped', 'mt',
+     "        return lf._replace(strong=True, basis=lf.basis + '+marker', marker=mk)\n",
+     "        return lf._replace(marker=mk)\n",
+     (T1245,), 'KILLED'),
+    ('marker-contradiction-confirms', 'mt',
+     "    if mk.face == lf.face:\n",
+     "    if True:\n",
+     (T1245,), 'KILLED'),
+    ('marker-reads-a-line-across-the-text', 'mt',
+     "            elif axis == 'x' and abs(x1 - x2) <= eps and abs(y1 - y2) > eps:\n",
+     "            elif abs(x1 - x2) <= eps and abs(y1 - y2) > eps:\n",
+     (T1245,), 'KILLED'),
+    ('marker-text-angle-read-raw', 'mt',
+     "        rel = (angle - rot) % 180.0\n",
+     "        rel = angle % 180.0\n",
+     (T1245,), 'KILLED'),
+    ('marker-reads-courtyard-and-copper-lines', 'mt',
+     "            if layer.endswith(('CrtYd', '.Cu')):\n",
+     "            if False:\n",
+     (T1245,), 'KILLED'),
+    ('marker-rival-not-abstained', 'mt',
+     "        if rival is not None and (\n",
+     "        if False and (\n",
+     (T1245,), 'KILLED'),
+    ('marker-line-through-the-pads-read', 'mt',
+     "        if abs(off) < FACE_MIN_OFFSET_MM - _TOL_MM:\n",
+     "        if False:\n",
+     (T1245,), 'KILLED'),
+    ('marker-text-case-sensitive', 'pp',
+     "EDGE_MARKER_TEXT = re.compile(r'\\b(?:pcb|board)[ _-]?edges?\\b', re.IGNORECASE)\n",
+     "EDGE_MARKER_TEXT = re.compile(r'\\b(?:pcb|board)[ _-]?edges?\\b')\n",
+     (T1245,), 'KILLED'),
+    ('body-drops-the-marker', 'bd',
+     "                             edge_marker=markers.get(ref))\n",
+     "                             edge_marker=None)\n",
+     (T1245, T_FACE), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)

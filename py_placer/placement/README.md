@@ -1254,7 +1254,9 @@ parts worth knowing from here:
   its pad row away from its declared edge -- ERROR on a strong face, WARN on
   a weak one -- and `--emit-intent` never declares an edge a STRONG face
   points away from. A weak face that is itself wrong (a few stock jacks,
-  `mating.py`) is not caught: a part seated by it reads pass (#1245).
+  `mating.py`) is not caught: a part seated by it reads pass. A footprint's
+  own "PCB Edge" marker, where it draws one, confirms a face (strong) or
+  vetoes it (abstains) (#1245); those jacks draw none.
 - **An edge member's zone is open on its declared edge (#1174)** when that
   zone side lies on the outline and the claim bounds its overhang
   (`overhang_mm.max`): the edge rule grades how far past the edge it may go,
@@ -1634,7 +1636,25 @@ range, and no wrong face is known above 2 mm. A wrong WEAK face is not
 caught: stage 1 also tries the angles that point a weak face at the edge
 first when it chooses an undeclared connector's angle, so such a jack can
 be seated opening into the board, and the facing conjunct then reads pass.
-Reading the "PCB Edge" marker those footprints draw is #1245.
+
+The footprint's "PCB Edge" marker is the third source (#1245,
+`marker_face_local`, carried as `BodyGeometry.edge_marker` from
+`parser.extract_edge_markers`). It reads the LINE the marker labels -- the
+straight line parallel to the text's baseline (its stored angle less the
+footprint's rotation), nearest it, on any layer but a courtyard or copper --
+and the face is the side of it away from the pad row. The text's POSITION is
+not the reading: sonde_u's DSUB texts sit 21.55 mm along the edge line, and
+stock DIN41612s put theirs 2 mm off it with an arrow. It abstains on a
+diagonal text, no parallel line, a line within `FACE_MIN_OFFSET_MM` of the
+pad centre, a rival line on another face less than `MARKER_NEARER_RATIO`
+times and `MARKER_NEARER_MM` farther, and two markers that disagree. It
+never names a face alone: agreeing, it makes the body's face STRONG (basis
+`+marker`); contradicting, it makes it abstain, never fail. Calibrated by
+`tests/measure_1245_edge_marker.py` on KiCad 10's 154 marked stock
+footprints: 73 of 73 strong body faces agree, 75 weak ones agree, one weak
+one is vetoed (the RaspberryPi Pico W module's RF-edge marker), and no
+reading moves when the footprints are saved at 90, 180 or 270. The three
+wrong-faced stock jacks above draw no marker, so it does not reach them.
 
 One predicate, every consumer: `floorplan.edge_facing` is what
 `rule_edge_connector`'s facing conjunct grades, what `emit_intent` withholds

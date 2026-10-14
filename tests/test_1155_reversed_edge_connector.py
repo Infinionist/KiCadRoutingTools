@@ -72,13 +72,15 @@ class TheReversedDsub(unittest.TestCase):
                        'class': 'edge_receptacle'}):
             r = self._grade(self.reversed, entry, refuse=WEST, code=4)
             self.assertIn('[ERROR] edge_connector', r.stdout)
-            self.assertIn('facing west [courtyard+fab, strong] FAIL',
+            # #1245: J2 draws a "PCB edge" marker that confirms its body.
+            self.assertIn('facing west [courtyard+fab+marker, strong] FAIL',
                           r.stdout)
 
     def test_the_correct_pose_passes(self):
         self.assertAlmostEqual(self.correct_rot % 360, 270.0)
         r = self._grade(SONDE, {'ref': 'J2', 'edge': 'east'}, accept=True)
-        self.assertIn('facing east [courtyard+fab, strong] pass', r.stdout)
+        self.assertIn('facing east [courtyard+fab+marker, strong] pass',
+                      r.stdout)
 
     def test_an_exempt_class_is_not_graded(self):
         r = self._grade(self.reversed, {'ref': 'J2', 'edge': 'east',

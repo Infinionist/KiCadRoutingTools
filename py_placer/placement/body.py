@@ -205,6 +205,11 @@ class BodyGeometry(NamedTuple):
     # to silk, then the occupancy ladder to courtyard / pads. A disclosure,
     # like `silk_rejected`: the part is not body-less, its fab is a marking.
     fab_rejected: bool = False
+    # #1245. The "PCB Edge" marker the footprint draws (`parser.EdgeMarker`:
+    # its texts and straight lines, local frame), or None when it draws
+    # none. Raw, like the bboxes above: `mating.marker_face_local` reads it,
+    # so every consumer of a mating face gets it through this record.
+    edge_marker: object = None
 
 
 def _union(a: Bbox, b: Bbox) -> Bbox:
@@ -249,7 +254,8 @@ def body_geometry(fp, side: str,
                   silk_sides: Optional[Dict[str, Bbox]] = None,
                   ref: str = '',
                   courtyard_shapes: Optional[Dict[str, tuple]] = None,
-                  fab_shapes: Optional[Dict[str, tuple]] = None
+                  fab_shapes: Optional[Dict[str, tuple]] = None,
+                  edge_marker=None
                   ) -> BodyGeometry:
     """THE ladder, for one footprint. Per-side bboxes come from the caller.
 
@@ -331,7 +337,8 @@ def body_geometry(fp, side: str,
                             far_court_local=far_court,
                             far_court_shape_local=far_shape,
                             far_court_shape_how=far_how,
-                            pads_local=pads, fab_rejected=fab_rejected)
+                            pads_local=pads, fab_rejected=fab_rejected,
+                            edge_marker=edge_marker)
 
     occupancy = (body_local if pads is None else _union(body_local, pads))
     if source == SOURCE_FAB_MARKING:
@@ -350,7 +357,8 @@ def body_geometry(fp, side: str,
                         court_shape_how=court_how,
                         far_court_shape_local=far_shape,
                         far_court_shape_how=far_how,
-                        pads_local=pads, fab_rejected=fab_rejected)
+                        pads_local=pads, fab_rejected=fab_rejected,
+                        edge_marker=edge_marker)
 
 
 def board_bodies(pcb_data, pcb_file: Optional[str] = None
@@ -369,8 +377,9 @@ def board_bodies(pcb_data, pcb_file: Optional[str] = None
     """
     from placement.legality import footprint_side
     from placement.parser import (extract_courtyard_shapes,
-                                  extract_courtyard_sides, extract_fab_shapes,
-                                  extract_fab_sides, extract_silk_sides)
+                                  extract_courtyard_sides, extract_edge_markers,
+                                  extract_fab_shapes, extract_fab_sides,
+                                  extract_silk_sides)
 
     path = pcb_file or getattr(pcb_data, 'source_path', None)
     crt: Dict[str, Dict[str, Bbox]] = {}
@@ -378,7 +387,12 @@ def board_bodies(pcb_data, pcb_file: Optional[str] = None
     silk: Dict[str, Dict[str, Bbox]] = {}
     crt_shapes: Dict[str, Dict[str, tuple]] = {}
     fab_shapes: Dict[str, Dict[str, tuple]] = {}
+    markers: Dict[str, object] = {}
     if path:
+        try:
+            markers = extract_edge_markers(path)
+        except Exception:                                    # noqa: BLE001
+            markers = {}
         for reader, target in ((extract_courtyard_shapes, crt_shapes),
                                (extract_fab_shapes, fab_shapes)):
             try:
@@ -406,7 +420,8 @@ def board_bodies(pcb_data, pcb_file: Optional[str] = None
                              fab_sides=fab.get(ref),
                              silk_sides=silk.get(ref), ref=ref,
                              courtyard_shapes=crt_shapes.get(ref),
-                             fab_shapes=fab_shapes.get(ref))
+                             fab_shapes=fab_shapes.get(ref),
+                             edge_marker=markers.get(ref))
         if geom.body_local is None and geom.source != SOURCE_NONE:
             continue
         out[ref] = geom

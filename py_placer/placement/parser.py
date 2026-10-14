@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Dict, Optional, Set, Tuple
+from typing import Dict, NamedTuple, Optional, Set, Tuple
 
 from kicad_parser import (_arc_to_segments, find_matching_paren,
                           footprint_head_flags, iter_footprint_blocks,
@@ -651,6 +651,91 @@ def extract_courtyard_bboxes(pcb_file: str) -> Dict[str, Bbox]:
         boxes = list(sides.values())
         out[ref] = (min(b[0] for b in boxes), min(b[1] for b in boxes),
                     max(b[2] for b in boxes), max(b[3] for b in boxes))
+    return out
+
+
+#: #1245: the text a footprint draws to say where the BOARD EDGE goes --
+#: "PCB Edge", "PCB edge", "Board edge", "PCB EDGE", "PCB Edges" (any case;
+#: a space, '_' or '-' between the words). KiCad 10's stock library carries
+#: it on 154 footprints, on Dwgs.User or Cmts.User (one on F.Fab). Not
+#: "PCB connector edge" (a card-edge PLUG's own fingers: the board is the
+#: mating body there, `mating` abstains on it anyway) or "Panel Edge".
+EDGE_MARKER_TEXT = re.compile(r'\b(?:pcb|board)[ _-]?edges?\b', re.IGNORECASE)
+
+
+class EdgeMarker(NamedTuple):
+    """A footprint's "PCB Edge" marker, as the board file stores it (#1245):
+    the marker texts `(x, y, angle, layer, text)` -- position in the
+    footprint's LOCAL frame, angle as stored, which is the ABSOLUTE board
+    angle (KiCad writes an fp_text angle on screen, the footprint's own
+    rotation included) -- and every straight line the footprint draws,
+    `(x1, y1, x2, y2, layer)`, local (fp_line, and each side of an fp_rect).
+    Raw: `mating.marker_face_local` decides what it says."""
+    texts: Tuple
+    lines: Tuple
+
+
+def _elements(fp_text: str, head: str):
+    """Each balanced `(head ...)` element of one footprint block."""
+    for m in re.finditer(r'\(' + head + r'\b', fp_text):
+        yield fp_text[m.start():find_matching_paren(fp_text, m.start())]
+
+
+def _element_layer(el: str) -> str:
+    m = re.search(r'\(layer\s+"?([^"\s)]+)"?', el)
+    return m.group(1) if m else ''
+
+
+_MARKER_TEXT_HEAD = re.compile(
+    r'\(fp_text\s+user\s+"((?:[^"\\]|\\.)*)"')
+_AT = re.compile(r'\(at\s+' + _NUM + r'\s+' + _NUM + r'(?:\s+' + _NUM + r')?')
+_START_END = re.compile(r'\(start\s+' + _NUM + r'\s+' + _NUM + r'\)\s*'
+                        r'\(end\s+' + _NUM + r'\s+' + _NUM + r'\)')
+
+
+def edge_marker_of(fp_text: str) -> Optional[EdgeMarker]:
+    """The `EdgeMarker` one footprint block draws, or None when it draws no
+    marker text."""
+    if 'edge' not in fp_text.lower():
+        return None
+    texts = []
+    for el in _elements(fp_text, 'fp_text'):
+        m = _MARKER_TEXT_HEAD.match(el)
+        if not m or not EDGE_MARKER_TEXT.search(m.group(1)):
+            continue
+        at = _AT.search(el, m.end())
+        if not at:
+            continue
+        texts.append((float(at.group(1)), float(at.group(2)),
+                      float(at.group(3)) if at.group(3) else 0.0,
+                      _element_layer(el[at.end():]), m.group(1)))
+    if not texts:
+        return None
+    lines = []
+    for head in ('fp_line', 'fp_rect'):
+        for el in _elements(fp_text, head):
+            se = _START_END.search(el)
+            if not se:
+                continue
+            x1, y1, x2, y2 = (float(se.group(i)) for i in range(1, 5))
+            layer = _element_layer(el[se.end():])
+            if head == 'fp_line':
+                lines.append((x1, y1, x2, y2, layer))
+            else:
+                lines.extend(((x1, y1, x2, y1, layer), (x2, y1, x2, y2, layer),
+                              (x2, y2, x1, y2, layer), (x1, y2, x1, y1, layer)))
+    return EdgeMarker(tuple(texts), tuple(lines))
+
+
+def extract_edge_markers(pcb_file: str) -> Dict[str, EdgeMarker]:
+    """`{ref: EdgeMarker}` for every footprint that draws a "PCB Edge"
+    marker (#1245). Footprint graphics reach neither parse path, so this
+    reads the FILE, as the courtyard and fab readers do."""
+    out: Dict[str, EdgeMarker] = {}
+    for ref, fp_text in _file_blocks(pcb_file):
+        mk = edge_marker_of(fp_text)
+        if mk is not None:
+            out[ref] = mk
     return out
 
 

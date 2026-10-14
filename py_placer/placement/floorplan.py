@@ -3476,8 +3476,10 @@ def edge_facing(entry: Dict, fp, geom, rotation: Optional[float] = None
     one answer for which way a part faces. That does not make a reversed
     seat impossible: an author's declared angle is kept, stage 1 falls back
     to a part's input angle when no facing angle seats, and a wrong WEAK face
-    (`placement.mating`, #1245) misleads both alike. The grade reports the
-    first two; the third reads as a pass."""
+    (`placement.mating`) misleads both alike. The grade reports the first
+    two; the third reads as a pass. A footprint's own "PCB Edge" marker
+    (#1245) confirms a face (strong) or vetoes it (an abstention) where it
+    draws one, through `mating_face_local`."""
     from .mating import LocalFace, facing_edge, mating_face_local
     policy = edge_facing_policy(entry, fp)
     lf = (mating_face_local(fp, geom) if geom is not None

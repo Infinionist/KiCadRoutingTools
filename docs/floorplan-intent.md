@@ -532,14 +532,27 @@ points west, not out of the east edge
   Such a wrong weak face is not caught: the seeder, choosing an undeclared
   connector's angle on a pile, tries the angles that point even a weak face
   at the edge first, so the jack can be seated opening into the board, and
-  this conjunct then reads it as a pass. Reading the footprint's "PCB Edge"
-  marker instead is #1245.
+  this conjunct then reads it as a pass -- unless the footprint says
+  otherwise (#1245, below). Those three stock jacks draw no marker, so for
+  them it stands.
+- **The footprint's "PCB Edge" marker confirms or vetoes the face (#1245).**
+  Many footprints draw a "PCB Edge" / "Board edge" text beside a line where
+  the board edge goes. `mating.marker_face_local` reads that LINE (parallel
+  to the text, nearest it, not on a courtyard or copper layer; the face is
+  the side away from the pads) -- not the text's position, which sits at an
+  end of the line. A marker that agrees with the body's face makes it STRONG
+  (`basis` gains `+marker`: esp_prog USB1 and orangecrab J3, 1.05 and
+  0.63 mm, now fail at ERROR when turned away); one that contradicts it makes
+  the face abstain, never fail; no marker leaves the reading as it was. It
+  never names a face the body does not. Calibrated on KiCad 10's 154 marked
+  stock footprints (`tests/measure_1245_edge_marker.py`): it agrees with all
+  73 strong body faces, at every quarter turn.
 - **It abstains** on a symmetric part, votes that disagree, a board-copper
   plug, a `Vertical` footprint name and a pose near a diagonal; the
   evidence row says so (`facing.disposition: abstained`, with the reason).
 - The evidence row carries `facing` (`{edge, facing, local_face, basis,
   offset_mm, strong, policy, reason, disposition}`) and the text line ends
-  `; facing west [courtyard+fab, strong] FAIL`. The violation's `measured`
+  `; facing west [courtyard+fab+marker, strong] FAIL`. The violation's `measured`
   has no `edge` key: the nearest-edge violation owns that one.
 - **Unchanged:** the nearest-edge identity, the seat gate, `edge_seat_rect`
   and the default bands. `check_assembly` evaluates no intent clause, so a

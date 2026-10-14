@@ -38,18 +38,28 @@ must agree.
 A face is STRONG when its offset reaches `FACE_STRONG_OFFSET_MM`, and only a
 strong face may fail a declared edge at ERROR (`floorplan.edge_facing`); a
 weaker one is reported at WARN. The phase verifier swept KiCad's stock
-library: right on all 148 footprints that draw a "PCB Edge" marker, but
-confidently WRONG on three receptacles whose PAD layout, not their housing,
-sets the offset -- CUI SJ1-3533NG (x2, -x at 0.90 mm; its twin SJ1-3535NG,
-same housing, reads -y) and Neutrik NMJ6HCD3 (-x at 1.36 mm; the opening is
-+x) -- while 60+ correct micro-USB / USB-C faces sit in the same 0.6-1.6 mm
-range. Above 2 mm no wrong face is known (227 checked). A weak face that is
-itself wrong is NOT caught: when the seeder's stage 1 chooses an undeclared
-connector's angle (on a pile, whose input angle says nothing), it tries the
-angles that point even a weak face at the edge first, so such a jack can be
-seated with its opening into the board, and the facing conjunct then reads
-that pose as a pass. The "PCB Edge" marker those footprints draw is stronger
-evidence than the offset; reading it is #1245.
+library: confidently WRONG on three receptacles whose PAD layout, not their
+housing, sets the offset -- CUI SJ1-3533NG (x2, -x at 0.90 mm; its twin
+SJ1-3535NG, same housing, reads -y) and Neutrik NMJ6HCD3 (-x at 1.36 mm; the
+opening is +x) -- while 60+ correct micro-USB / USB-C faces sit in the same
+0.6-1.6 mm range. Above 2 mm no wrong face is known (227 checked). A weak
+face that is itself wrong is NOT caught: when the seeder's stage 1 chooses
+an undeclared connector's angle (on a pile, whose input angle says nothing),
+it tries the angles that point even a weak face at the edge first, so such a
+jack can be seated with its opening into the board, and the facing conjunct
+then reads that pose as a pass.
+
+A THIRD source, since #1245: the "PCB Edge" marker many footprints draw, a
+text beside a line where the board edge goes (`marker_face_local`, carried
+on `body.BodyGeometry.edge_marker`). It reads the LINE, never the text's
+position (sonde_u's DSUBs put the text 21.55 mm along the line), and it
+never names a face alone: a marker that agrees makes the body's face STRONG
+(basis `+marker`), one that contradicts makes it abstain -- never fail --
+and no marker leaves today's reading. Calibrated on KiCad 10's 154 marked
+stock footprints (`tests/measure_1245_edge_marker.py`): it agrees with all
+73 strong body faces at every quarter turn, agrees with 75 weak ones and
+vetoes one (the Pico W module's RF-edge marker). The three wrong jacks above
+draw no marker, so for them the weak tier is still the only guard.
 
 Known limit: a card-edge PLUG in a file with no `attrs` (interf_u's ISA
 BUS1: 62 netted SMD fingers, no model) is not recognised as one, and reads
@@ -92,6 +102,32 @@ FACES = ('+x', '-x', '+y', '-y')
 _UNIT = {'+x': (1.0, 0.0), '-x': (-1.0, 0.0),
          '+y': (0.0, 1.0), '-y': (0.0, -1.0)}
 
+#: #1245: the line a "PCB Edge" marker labels must be at least this many
+#: times nearer its text than the nearest line that would name another face
+#: (`marker_face_local`)...
+MARKER_NEARER_RATIO = 2.0
+#: ...and at least this much nearer (mm). Measured on KiCad 10's 154 marked
+#: stock footprints (`tests/measure_1245_edge_marker.py`): no rival there is
+#: nearer than 2.57 times (Amphenol 12401948E412A) or 2.15 mm (Technik
+#: TWP-4002D-H3) farther than the line read, so neither floor binds on the
+#: library; they are there for a footprint whose text sits between two lines.
+MARKER_NEARER_MM = 1.0
+#: A marker text whose baseline is more than this far (degrees) off both axes
+#: of the footprint names no line.
+_MARKER_AXIS_TOL_DEG = 1.0
+#: A drawn line this far (mm) off an axis is not straight along it.
+_MARKER_STRAIGHT_MM = 1e-3
+
+
+class MarkerFace(NamedTuple):
+    """What a footprint's "PCB Edge" marker says, in its UNROTATED frame
+    (#1245): the face it implies, or None with the reason it abstains."""
+    face: Optional[str]
+    reason: str
+    # (axis of the line 'x' | 'y', its position, its layer, how near the
+    # text it is, mm), or None when no line was chosen.
+    line: Optional[Tuple] = None
+
 
 class LocalFace(NamedTuple):
     """A footprint's mating face in its own UNROTATED frame."""
@@ -100,8 +136,11 @@ class LocalFace(NamedTuple):
     basis: str                   # 'courtyard+fab', 'silk', ...; '' if abstained
     reason: str                  # why it abstained; '' when it did not
     votes: Tuple = ()            # ((source, face_or_None, ox, oy), ...)
-    # offset_mm >= FACE_STRONG_OFFSET_MM: may fail a declared edge at ERROR.
+    # offset_mm >= FACE_STRONG_OFFSET_MM, or a face the footprint's "PCB
+    # Edge" marker confirms (#1245): may fail a declared edge at ERROR.
     strong: bool = False
+    # #1245: the marker's reading (`MarkerFace`), None when it draws none.
+    marker: Optional[MarkerFace] = None
 
 
 def _centre(b):
@@ -155,17 +194,125 @@ def mating_face_local(fp, geom) -> LocalFace:
     votes = tuple((name,) + _vote(b, pads) for name, b in srcs)
     decisive = [v for v in votes if v[1] is not None]
     if not decisive:
+        # #1245: the marker names no face on its own; read for disclosure.
         return LocalFace(None, 0.0, '',
                          'symmetric about its pads' if votes
-                         else 'no drawn body', votes)
+                         else 'no drawn body', votes,
+                         marker=marker_face_local(fp, geom))
     faces = sorted({v[1] for v in decisive})
     if len(faces) > 1:
         return LocalFace(None, 0.0, '', 'sources disagree: ' + ', '.join(
-            '%s %s' % (v[0], v[1]) for v in decisive), votes)
+            '%s %s' % (v[0], v[1]) for v in decisive), votes,
+            marker=marker_face_local(fp, geom))
     offset = max(max(abs(v[2]), abs(v[3])) for v in decisive)
-    return LocalFace(faces[0], round(offset, 4),
-                     '+'.join(v[0] for v in decisive), '', votes,
-                     strong=offset >= FACE_STRONG_OFFSET_MM - _TOL_MM)
+    lf = LocalFace(faces[0], round(offset, 4),
+                   '+'.join(v[0] for v in decisive), '', votes,
+                   strong=offset >= FACE_STRONG_OFFSET_MM - _TOL_MM)
+    mk = marker_face_local(fp, geom)
+    if mk is None or mk.face is None:
+        return lf._replace(marker=mk)
+    if mk.face == lf.face:
+        # The library's own word for where the board edge goes, read off a
+        # different drawing than the body: a weak face it confirms is strong.
+        return lf._replace(strong=True, basis=lf.basis + '+marker', marker=mk)
+    return LocalFace(None, 0.0, '',
+                     'its PCB-edge marker puts the board edge on its %s side, '
+                     'against the %s face its body reads' % (mk.face, lf.face),
+                     votes, marker=mk)
+
+
+def marker_face_local(fp, geom) -> Optional[MarkerFace]:
+    """The face a footprint's "PCB Edge" marker implies (#1245), in its own
+    UNROTATED frame, or None when it draws no marker.
+
+    The marker is a text item ("PCB Edge", "Board edge", ...:
+    `parser.EDGE_MARKER_TEXT`) beside a straight line the library drew where
+    the board edge goes. The TEXT's position is not the reading: it sits at
+    an end of the line, often past the pad row (sonde_u's DSUB J1/J2 put it
+    21.55 mm along, which reads -x for a +y part), and stock DIN41612
+    footprints put it 2 mm off the line with an arrow pointing at it. The
+    LINE is: the board edge, with the pads on the board side of it, so the
+    mating face is the side of the line away from the pad bbox's centre.
+
+    Which line: one PARALLEL to the text's baseline (the text's angle less
+    the footprint's own rotation, since a board file stores it on screen) --
+    that is what keeps an arrow's shaft, perpendicular to the edge, out --
+    on any layer but a courtyard or copper, nearest the text (its distance
+    off the line's run plus how far past either end the text sits). It
+    abstains when:
+
+    * the text's baseline is off both axes;
+    * no parallel line is drawn;
+    * the line runs within `FACE_MIN_OFFSET_MM` of the pad row's centre --
+      too near to say which side the pads are on;
+    * a line that would name another face is not clearly farther: at least
+      `MARKER_NEARER_RATIO` times and `MARKER_NEARER_MM` farther from the
+      text;
+    * two marker texts on one footprint disagree.
+
+    The marker never names a face on its own: `mating_face_local` uses it to
+    confirm the body's face (strong) or to veto it (an abstention), so a
+    marker read wrongly can at worst cost a face, never invent one. Marker
+    or not, the courtyard and body votes are unchanged."""
+    marker = getattr(geom, 'edge_marker', None)
+    if marker is None or not getattr(marker, 'texts', None):
+        return None
+    pads = getattr(geom, 'pads_local', None)
+    if pads is None:
+        return MarkerFace(None, 'no pads to put on the board side of it')
+    pcx, pcy = _centre(pads)
+    rot = float(getattr(fp, 'rotation', 0.0) or 0.0)
+    eps = _MARKER_STRAIGHT_MM
+    faces = []
+    best_line = None
+    for tx, ty, angle, _layer, _text in marker.texts:
+        rel = (angle - rot) % 180.0
+        if min(rel, 180.0 - rel) <= _MARKER_AXIS_TOL_DEG:
+            axis = 'y'            # a horizontal baseline: a line y = const
+        elif abs(rel - 90.0) <= _MARKER_AXIS_TOL_DEG:
+            axis = 'x'
+        else:
+            return MarkerFace(None, 'its PCB-edge marker text runs off both '
+                                    'axes, so it labels no line')
+        cands = []
+        for x1, y1, x2, y2, layer in marker.lines:
+            if layer.endswith(('CrtYd', '.Cu')):
+                continue
+            if axis == 'y' and abs(y1 - y2) <= eps and abs(x1 - x2) > eps:
+                lo, hi = sorted((x1, x2))
+                pos, perp, along = y1, abs(ty - y1), tx
+                off = pos - pcy
+                face = '+y' if off > 0 else '-y'
+            elif axis == 'x' and abs(x1 - x2) <= eps and abs(y1 - y2) > eps:
+                lo, hi = sorted((y1, y2))
+                pos, perp, along = x1, abs(tx - x1), ty
+                off = pos - pcx
+                face = '+x' if off > 0 else '-x'
+            else:
+                continue
+            near = perp + max(0.0, lo - along, along - hi)
+            cands.append((near, face, off, pos, layer))
+        if not cands:
+            return MarkerFace(None, 'no straight line beside its PCB-edge '
+                                    'marker runs along the text')
+        cands.sort(key=lambda c: c[0])
+        near, face, off, pos, layer = cands[0]
+        line = (axis, round(pos, 4), layer, round(near, 4))
+        if abs(off) < FACE_MIN_OFFSET_MM - _TOL_MM:
+            return MarkerFace(None, 'the line its PCB-edge marker labels runs '
+                                    'through its pad row', line)
+        rival = next((c for c in cands[1:] if c[1] != face), None)
+        if rival is not None and (
+                rival[0] < MARKER_NEARER_RATIO * near - _TOL_MM
+                or rival[0] - near < MARKER_NEARER_MM - _TOL_MM):
+            return MarkerFace(None, 'two lines beside its PCB-edge marker '
+                                    'name different faces', line)
+        faces.append(face)
+        best_line = best_line or line
+    if len(set(faces)) > 1:
+        return MarkerFace(None, 'its PCB-edge markers disagree: '
+                          + ', '.join(sorted(set(faces))))
+    return MarkerFace(faces[0], '', best_line)
 
 
 def facing_edge(face: Optional[str], rotation: float) -> Optional[str]:

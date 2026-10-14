@@ -28,9 +28,9 @@
   ],
   "USB1": [
    "+x",
-   "fab",
+   "fab+marker",
    "west",
-   false
+   true
   ]
  },
  "flat_hierarchy.kicad_pcb": {
@@ -393,9 +393,9 @@
   ],
   "J3": [
    "+y",
-   "courtyard+fab",
+   "courtyard+fab+marker",
    "west",
-   false
+   true
   ],
   "J4": [
    "-y",
@@ -457,13 +457,13 @@
  "sonde_u.kicad_pcb": {
   "J1": [
    "+y",
-   "courtyard+fab",
+   "courtyard+fab+marker",
    "west",
    true
   ],
   "J2": [
    "-y",
-   "courtyard+fab",
+   "courtyard+fab+marker",
    "east",
    true
   ],
