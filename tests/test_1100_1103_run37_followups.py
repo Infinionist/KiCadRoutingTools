@@ -106,12 +106,20 @@ class TestPinLimitFromTheReference(unittest.TestCase):
     """#1102."""
 
     def test_a_withheld_pin_limit_is_a_note_not_debt(self):
-        """esp_prog covers too few supply pins to derive a pin limit: the
-        reason is a census NOTE, and the board still grades pass against
-        its own intent (it went pass -> exit 4 when the withholding was
-        written to budget_withheld)."""
-        _r, doc = emit(PLACED, '--decaps-from', PLACED)
+        """orangecrab_ext_pll covers no supply pin (0 of 3 needed) and
+        derives a tether limit, so its pin limit is withheld: the reason is
+        a census NOTE, never debt the grade owes (the grade went pass ->
+        exit 4 when the withholding was written to budget_withheld).
+
+        It was esp_prog until #1249 made U2's VIN and VOUT supply pins (4
+        covered, so esp_prog now derives one); orangecrab is the one tracked
+        board that withholds beside a tether limit. Its own grade owes the
+        withheld `overlap_area` budget, so the pass is asserted on the pin
+        limit's share: no error, and nothing owed for it."""
+        board = os.path.join(ROOT, 'kicad_files', 'orangecrab_ext_pll.kicad_pcb')
+        _r, doc = emit(board, '--decaps-from', board)
         census = doc['context']['decap_census']
+        self.assertIn('max_distance_mm', doc.get('decaps') or {})
         self.assertNotIn('max_pin_distance_mm', doc.get('decaps') or {})
         self.assertIn('supply pin', census.get('pin_limit_withheld') or '')
         self.assertNotIn('decaps.max_pin_distance_mm',
@@ -121,22 +129,28 @@ class TestPinLimitFromTheReference(unittest.TestCase):
             with open(ip, 'w', encoding='utf-8') as fh:
                 json.dump(doc, fh)
             g = subprocess.run([sys.executable, '-X', 'utf8', FLOORPLAN,
-                                PLACED, '--intent', ip],
+                                board, '--intent', ip],
                                capture_output=True, text=True, cwd=ROOT)
-        self.assertEqual(g.returncode, 0, g.stdout[-1500:])
+        line = next((ln for ln in g.stdout.splitlines()
+                     if ln.startswith('JSON_SUMMARY:')), None)
+        self.assertIsNotNone(line, g.stdout[-1500:])
+        s = json.loads(line.split('JSON_SUMMARY:', 1)[1])
+        self.assertEqual(s['errors'], 0, g.stdout[-1500:])
+        self.assertEqual(s['budget_abstained_keys'], ['overlap_area'], s)
 
     def test_a_promotion_without_a_pin_limit_is_said(self):
-        """The run25 esp_prog fixture keeps all 4 tethered caps inside the
-        radius, so `decap_ungraded` is promoted to error, while only 2 supply
-        pins are covered and the pin limit is withheld. The promotion was
-        printed only beside a derived pin limit, so here the emit raised a
-        severity without a word.
+        """A reference that keeps tethered caps inside the radius promotes
+        `decap_ungraded` to error for them, while the pin limit can still be
+        withheld. The promotion was printed only beside a derived pin limit,
+        so the emit raised a severity without a word.
 
         Since #1142 the promotion is PER CAP: the held caps are listed in
         `decaps.within_radius_refs` rather than raised board-wide through a
-        top-level `severity`, and the print still says so."""
-        board = os.path.join(ROOT, 'tests', 'fixtures', 'run25',
-                             'esp_prog_placed.kicad_pcb')
+        top-level `severity`, and the print still says so. The board was
+        the run25 esp_prog fixture (2 covered supply pins) until #1249 made
+        U2's VIN and VOUT supply pins; orangecrab_ext_pll (74 held caps, 0
+        covered pins) is the tracked board that withholds now."""
+        board = os.path.join(ROOT, 'kicad_files', 'orangecrab_ext_pll.kicad_pcb')
         r, doc = emit(board, '--decaps-from', board)
         held = (doc.get('decaps') or {}).get('within_radius_refs')
         self.assertTrue(held, doc.get('decaps'))

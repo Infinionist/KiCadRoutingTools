@@ -357,16 +357,19 @@ def cluster_to_pin(pcb_data, pcb_file, *, intent=None, clearance=None) -> dict:
 
     * DECLARED -- #902's `proximity` claims, graded by `floorplan.grade` and
       read off `GradeResult.proximity_measured`, which reports a clause that
-      PASSES as well as one that fails. This is the only channel that can
-      reach a 3-pad regulator's bulk capacitors at all.
+      PASSES as well as one that fails. The only channel for a relation the
+      election cannot name: a crystal to its load pins, an inductor to a
+      switch node, an ESD array to its connector.
     * INFERRED -- `board_context.serves_map`, the decap tether election inside
       its own radius, for the parts nobody declared.
 
     NOT the raw tether election, and #894 says so explicitly: it is syntactic
-    (a ref starting `C` bridging exactly two nets) and its target must carry 4
-    copper pads, so a 3-pad SOT89 regulator can never be elected at any radius
-    -- which is how a regulator's own bulk capacitors came to be graded
-    against a USB socket.
+    (a ref starting `C` bridging exactly two nets) and radius-free, so it
+    always names SOMETHING. Its target used to need four copper pads, which
+    is how a 3-pad SOT89 regulator's own bulk capacitors came to be graded
+    against a USB socket; since #1249 a supply owner (`groups.supply_owners`
+    -- a `power_out` pad, a regulator role, or the three-pad capped shape)
+    is elected too, so those caps now serve their regulator here.
     """
     unit = 'mm'
     rows, unresolved, declared_claims = [], [], set()

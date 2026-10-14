@@ -308,8 +308,8 @@ def _forecast_clause(cen):
                 f"opt-in -- the corpus A/B rejected it as a default)")
     if f.get('ownerless'):
         out += (f"; {len(f['ownerless'])} can never be claimed -- no "
-                f"{f.get('owner_rule', 'U-prefixed')} part carries their "
-                f"rail ({_refs(f['ownerless'])})")
+                f"{f.get('owner_rule', 'U-prefixed cap owner')} carries "
+                f"their rail ({_refs(f['ownerless'])})")
     if f.get('exempt'):
         out += f"; {len(f['exempt'])} exempt"
     if f.get('array_members'):

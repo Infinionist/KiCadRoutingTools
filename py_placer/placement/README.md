@@ -1462,6 +1462,7 @@ is followed by a settle beat, so the moves only play once the camera has arrived
 | `escape.py` | Per-face escape-lane ledger: can the nets on this part's face get OUT? |
 | `pair_order.py` | Pin-order inversions between connected part pairs. A LOWER BOUND, not a proxy |
 | `part_class.py` | What determines a part's position — a pose-INDEPENDENT class |
+| `roles.py` | What a part IS (regulator, crystal, transistor, ...), read off footprint name, pins and prefix: the table `board_context` prints and the decap owner predicate (`groups.supply_owners`, #1249) reads |
 | `options.py` | When a board cannot hold its parts, say so WITH THE NUMBER and the options |
 | `provenance.py` | Was every pose in this board produced by a registered engine lever? |
 | `lock_advisor.py` | Which parts should not be moved, and why (#431). Advice only |

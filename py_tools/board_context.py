@@ -70,80 +70,15 @@ SCHEMA = 1
 
 
 # ---------------------------------------------------------------------------
-# Roles. Deliberately NOT part of `part_class.classify_part`.
-#
-# `grade_body_overlap._waiver_for` branches on that classifier's `.name`
-# against its marker and edge tables, so adding a role vocabulary there would
-# silently change waivers on the body-overlap channel. These live beside it and
-# read it, never inside it.
+# Roles. The table and `infer_role` live in `placement.roles` (#1249): the
+# decap owner predicate (`placement.groups`) asks whether a part is a
+# regulator, and the placement engine must not import py_tools -- so the one
+# table moved where both can read it. Re-exported here for this tool's
+# callers.
 # ---------------------------------------------------------------------------
 
-#: (role, evidence-kind) by footprint-name substring. Lower-cased match.
-_ROLE_FP = (
-    ('crystal', ('xtal', 'crystal', 'resonator', 'oscillator')),
-    ('usb receptacle', ('usb_micro', 'usb-micro', 'usb_c', 'usb_b', 'usb_a',
-                        'uicro')),
-    ('pin header', ('pinheader', 'hn1x', 'socket_strip', 'header')),
-    ('npn/pnp transistor', ('sot23', 'sot-23', 'sot323', 'to92')),
-    ('regulator', ('sot89', 'sot-89', 'sot223', 'to252', 'dpak')),
-)
-
-#: role by reference prefix, used only when nothing stronger fired.
-_ROLE_PREFIX = {
-    'C': 'capacitor', 'R': 'resistor', 'L': 'inductor', 'D': 'diode',
-    'Q': 'transistor', 'U': 'integrated circuit', 'Y': 'crystal',
-    'X': 'crystal', 'J': 'connector', 'SW': 'switch', 'FB': 'ferrite bead',
-    'TP': 'test point', 'FID': 'fiducial', 'LED': 'led',
-}
-
-
-def _prefix(ref: str) -> str:
-    out = ''
-    for ch in ref:
-        if ch.isalpha() or ch in '#*':
-            out += ch
-        else:
-            break
-    return out.upper()
-
-
-def infer_role(fp, ref: str, cls_name: Optional[str]) -> Dict[str, object]:
-    """`{'role', 'source', 'evidence'}` -- or role `'unknown'`.
-
-    Ordered strongest-first, and each rung names itself. `unknown` is returned
-    rather than a prefix guess when the reference carries no convention this
-    table knows: "I looked and could not tell" is a different statement from a
-    low-confidence guess, and a reader who cannot tell them apart will trust
-    the guess.
-    """
-    name = (getattr(fp, 'footprint_name', '') or '').lower()
-    value = (getattr(fp, 'value', '') or '').strip()
-    pref = _prefix(ref)
-
-    if cls_name in ('mount_hole', 'fiducial', 'testpoint', 'edge_receptacle',
-                    'edge_actuator'):
-        return {'role': cls_name.replace('_', ' '), 'source': 'part_class',
-                'evidence': [f'placement.part_class says {cls_name}']}
-    for role, keys in _ROLE_FP:
-        hit = next((k for k in keys if k in name), None)
-        if hit:
-            return {'role': role, 'source': 'footprint',
-                    'evidence': [f'footprint name contains {hit!r}']}
-    # #1176: by the ITEM name, as `part_class` reads it -- a horizontal
-    # D-sub carries `MountingHolesOffset` in its name.
-    from placement.part_class import is_mount_hole_name
-    if is_mount_hole_name(name):
-        return {'role': 'mounting hole', 'source': 'footprint',
-                'evidence': ["footprint item name says 'MountingHole'"]}
-    if pref in _ROLE_PREFIX:
-        ev = [f'reference prefix {pref!r} (convention only)']
-        if value:
-            ev.append(f'value {value!r}')
-        return {'role': _ROLE_PREFIX[pref], 'source': 'ref_prefix',
-                'evidence': ev}
-    return {'role': 'unknown', 'source': 'looked',
-            'evidence': [f'footprint {name!r}, value {value!r}, prefix '
-                         f'{pref!r} match no rule here']}
+from placement.roles import (  # noqa: E402,F401
+    _ROLE_FP, _ROLE_PREFIX, _prefix, infer_role)
 
 
 # ---------------------------------------------------------------------------
@@ -289,11 +224,15 @@ def serves_map(pcb_data) -> dict:
 
     KNOWN INCOMPLETE, and the incompleteness is the reason #894's
     `cluster_to_pin` does not rest on it alone: the election is syntactic (a
-    ref starting `C` bridging exactly two nets) and its target must carry
-    `groups.DECAP_MIN_IC_PADS` = 4 copper pads, so a 3-pad SOT89 regulator can
-    never be elected at any radius and its own bulk capacitors are unservable
-    by construction. The DECLARED channel (#902's `proximity` claims) is what
-    reaches those; this is what covers the parts nobody declared.
+    ref starting `C` bridging exactly two nets), so an inductor, a crystal's
+    load relation or an ESD array is never a subject here. Its target is a
+    cap OWNER (`groups.chip_refs`): an IC by shape, or since #1249 a supply
+    owner (`groups.supply_owners` -- a `power_out` pad, the `regulator`
+    role, or three copper pads with one ground and two capped rails), so a
+    3-pad SOT89 regulator's own caps now serve it (esp_prog C1/C3 -> U2;
+    before, C3 -> U1 and C1 -> USB1). The DECLARED channel (#902's
+    `proximity` claims) reaches what the election cannot; this is what
+    covers the parts nobody declared.
 
     Never raises: an unreadable board yields `{}`, which the caller must treat
     as "not measured" and not as "nothing serves anything".
@@ -433,13 +372,15 @@ def build_context(pcb_data, pcb_file: str, *, clearance: float,
                          'diff_xnet.find_ac_coupled_xnets, judged by '
                          'pair_order.composed_pair_metrics',
             'part_class': 'placement.part_class.classify_part',
-            'serves': 'placement.groups tether election '
-                      '(DECAP_MIN_IC_PADS = 4, so a 3-pad regulator can '
-                      'never be a target -- see #902)',
+            'serves': 'placement.groups tether election: the nearest cap '
+                      'owner on the cap\'s rail -- an IC (4+ copper pads, '
+                      'not a row) or a supply owner such as a 3-pad '
+                      'regulator (#1249)',
             'diff_pairs': 'list_nets.find_differential_pairs '
                           '(rejects 2-terminal resonators)',
             'pours': 'board_brief.pour_census (the brief\'s own `pours`)',
-            'role': 'inferred here from footprint / prefix / value; the '
+            'role': 'placement.roles.infer_role, from footprint name, pins '
+                    '(pintype / pin function) and reference prefix; the '
                     'board carries no datasheet or 3D-model field to cite',
             'mating': 'which parts count as connectors: '
                       'render_placement.connector_edge_facts. `edge` is the '

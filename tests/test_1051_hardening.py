@@ -427,14 +427,17 @@ def test_a_declared_row_of_caps_is_not_the_decap_stages_to_claim():
     pcb = parse_kicad_pcb(ESP)
     doc = fp.emit_intent(pcb, ESP)
     doc['decaps'] = dict(doc.get('decaps') or {}, max_distance_mm=3.0)
-    # The owner ICs seated first (stage 0), so the pin stage has pins.
-    near, beyond, _o = groups_mod.decap_populations(pcb)
+    # The owner ICs seated first (stage 0), so the pin stage has pins: the
+    # stage's own owner set (`seeder.decap_owner_refs`). Read off the
+    # elected tether ICs instead, U1 dropped out once C3 elected U2, its
+    # regulator (#1249), and only one near cap was claimed.
+    from placement import seeder as seeder_mod
+    near, _beyond, _o = groups_mod.decap_populations(pcb)
     fps = pcb.footprints
     doc['fixed_poses'] = [
         {'ref': r, 'x': fps[r].x, 'y': fps[r].y, 'rot': fps[r].rotation or 0,
          'basis': 'declared', 'why': 'the owner IC, seated first'}
-        for r in sorted(set(near) | {ic for _c, ic, _d in beyond})
-        if r.startswith('U')]
+        for r in sorted(seeder_mod.decap_owner_refs(pcb))]
     ctl = _seed(ESP, fp.intent_from_dict(doc, ESP))
     claimed = sorted(n.split(':')[0] for n in ctl['notes']
                      if ': decap for ' in n)

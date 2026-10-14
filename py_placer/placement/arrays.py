@@ -539,6 +539,9 @@ def pose_free_chip_refs(pcb) -> set:
         if groups_mod._pads_are_collinear(local):
             continue
         out.add(ref)
+    # #1249: the supply owners `chip_refs` adds read no pose at all
+    # (pintypes, footprint name, nets), so they join as they are.
+    out.update(groups_mod.supply_owners(pcb, ics=out))
     return out
 
 

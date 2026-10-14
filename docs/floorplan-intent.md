@@ -1923,8 +1923,11 @@ Since #1105 it prints `context.decap_census.seeder_forecast` instead
 (`seeder.decap_pin_forecast`, the pin stages' own scope, rail and owner
 rules): which caps stage 2.5 can claim at an owner seated before it, which
 only stage 3.5 can (and that 3.5 is off unless `--decap-claim-after-ics` is
-passed), and which no stage can, because no U-prefixed part carries their
-rail (watchy: 9 of 26). It forecasts PINS, not seats, and assumes every
+passed), and which no stage can, because no U-prefixed cap owner carries
+their rail (watchy: 9 of 26). The owners are `groups.chip_refs`, the set the
+grade elects from (#1249); the U prefix is the seeder's shipping restriction on
+that set (`seeder.decap_owner_refs`), because #792 measured the whole set as
+pin owners stranding four parts the U-prefixed subset seats. It forecasts PINS, not seats, and assumes every
 declared early seat succeeds.
 
 ## Grading the pin, not the package (#705)
@@ -1960,13 +1963,39 @@ is.
 ### Which pads are supply pins, and on what evidence
 
 Three channels, tried **per chip**, and keyed on whether the channel YIELDS
-pins rather than on whether its field is populated:
+pins rather than on whether its field is populated -- plus channel 0 for a
+supply owner (#1249):
 
 | # | channel | test |
 |---|---|---|
+| 0 | `role` | a supply owner a `power_out` pad or the role table calls a regulator (below): every non-ground pin |
 | 1 | `pintype` | token-split on `+`; `power_in`/`power_out` present, `no_connect` absent |
 | 2 | `pinfunction` | exact or prefix match against `decaps.pin_functions`, else the built-in table |
 | 3 | rail net | the net NAME looks like a rail **and** already carries a decoupling cap |
+
+**Who owns caps (#1249).** The parts asked about are the cap owners
+`groups.chip_refs` names -- the same set the tether election, the quench's
+tether terms and the seeder's pin stages read. An owner is an IC by shape (four
+or more copper pads, not a single row), or a **supply owner**: a part with at
+least three copper pads and no `part_class` that has a pad typed `power_out`,
+or that `board_context`'s role table calls a `regulator`
+(`placement/roles.py`), or that has exactly three copper pads on three nets --
+one ground, and two that each carry a decoupling cap. Before it, a 3-pad
+SOT-89 or TO-92 regulator was never an owner: esp_prog's C3 (the ME6210's VOUT
+cap, 1.12 mm from that pin) was graded against U1 at 2.125 mm, its VIN cap C1
+against USB1 at 17.24 mm, and complex_hierarchy's C102 / C104 against parts
+35 and 33 mm away. Now they elect U2 (1.53 / 5.17 mm) and U101 (12.36 / 11.49
+mm). No one signal covers both boards -- U2 carries no pintype, U101's
+footprint name says only `TO-92` -- hence three. The three-pad shape also
+admits kit-dev LV101, a DS1818 reset supervisor whose VCC and RST nets are
+both capped; it changes none of that board's 53 elections. Channel 0 exists
+because a regulator's VIN and VOUT are supply pins by ROLE: U2 has no pintype
+and its VIN net is `Net-(C1-Pad1)`, which channel 3 never reads as a rail, and
+U101's VI is typed `input`. It yields only for an owner a `power_out` pad or
+the role table calls a regulator (`groups.regulator_owners`) -- the shape alone
+says a part owns caps, not which pins are supply pins, so LV101 keeps the
+ladder (its +3.3V pin, not RST) -- every IC's ladder is unchanged, and its
+findings are `decap_pin_distance` (error), like channels 1-2.
 
 **Per chip**, because on the 85 corpus chips where channels 1 and 2 both yield
 they disagree about the pin SET on 31 (36%) — the order materially decides the

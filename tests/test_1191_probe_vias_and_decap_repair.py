@@ -259,7 +259,7 @@ class DecapOnlySeedsAreRepairedAndRanked(unittest.TestCase):
 
     def test_a_decap_armed_pile_is_rankable(self):
         """The real chain on the #1105 pile with esp_prog's decap limit:
-        seeds 1-3 each fail their gate on decap_distance alone (measured
+        seeds 1-3 each fail their gate on the decap rules alone (measured
         2026-10-14; the copy before this exited 4, nothing rankable)."""
         td = tempfile.mkdtemp(prefix='t1191c_')
         try:
@@ -279,7 +279,13 @@ class DecapOnlySeedsAreRepairedAndRanked(unittest.TestCase):
         tried = [row for row in rows.values() if row.get('repair')]
         self.assertEqual(len(tried), 3, 'every seed was decap-only gated')
         for row in tried:
-            self.assertEqual(set(row['grade_error_rules']), {'decap_distance'})
+            # Decap rules and nothing else. Since #1249 the reference derives
+            # esp_prog's PIN limit too (U2's VIN and VOUT are supply pins by
+            # role: 4 covered pins, where 2 withheld it), so a seed may gate
+            # on decap_pin_distance as well.
+            self.assertTrue(row['grade_error_rules'], row)
+            self.assertLessEqual(set(row['grade_error_rules']),
+                                 {'decap_distance', 'decap_pin_distance'})
             self.assertEqual(bool(row.get('repaired')), row['repair']['rc'] == 0)
         fixed = [row for row in tried if row.get('repaired')]
         self.assertTrue(fixed, 'no repair cleared its seed')

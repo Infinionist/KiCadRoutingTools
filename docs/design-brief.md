@@ -66,11 +66,14 @@ parts, this far apart*:
 - `decaps.max_distance_mm` is **one board-wide budget over a derived
   population**, not a claim about a named pair — and its partner election is
   exactly what #902 is about. A decap is syntactic (`ref` starts with `C`,
-  bridges two nets) and the IC it is tethered to must carry ≥ 4 copper pads, so
-  a 3-pad SOT-89 regulator can never be a tether target *at any radius*.
-  Measured on the board that motivated the issue, the election gives
-  `C1 → USB1 2.03 mm` and `C3 → U1 1.83 mm`: the regulator's own bulk caps,
-  graded against a USB socket and a bridge IC.
+  bridges two nets), so an inductor, a crystal or an ESD array is never its
+  subject. When #902 landed, the IC it is tethered to had to carry ≥ 4 copper
+  pads, so a 3-pad SOT-89 regulator was never a tether target: on the board
+  that motivated the issue the election gave `C1 → USB1 2.03 mm` and
+  `C3 → U1 1.83 mm`, the regulator's own bulk caps graded against a USB socket
+  and a bridge IC. Since #1249 a supply owner (`groups.supply_owners`) is
+  elected too, and both caps tether to U2 at 0.95 mm — but the election still
+  measures to a pad box, not a named pin.
 - A **keep-out is an exclusion, not an attraction.** Compiling "beside" into
   "not inside" grades the opposite claim.
 

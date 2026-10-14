@@ -20,11 +20,14 @@ What each case pins:
 * ONCE PER TERM: on watchy a breached term binds three or more refs (a cap
   and its rail's chips); the count is still the grade's, which a per-ref count
   would exceed.
-* LOCKED TERMS COUNT: with C3 and its rail chip U1 file-locked on esp_prog, the gate
+* LOCKED TERMS COUNT: with C3 and its rail chips file-locked on esp_prog, the gate
   drops the C3 term (nothing can move it) but the grade still reports it, and
   so does the probe.
 * THE ISSUE'S RECIPE, through the CLI: esp_prog with `decaps.max_distance_mm
-  2.0` (C3 is 2.125mm from U1), `place_seed --reseat C3`: the `intent` basis
+  2.0` and C3 pushed 2.5mm east (2.33mm from U2, the regulator it decouples
+  since #1249 -- at its human pose it is 1.53mm away, inside the limit,
+  where the issue read it 2.125mm from U1), `place_seed --reseat C3`: the
+  `intent` basis
   before equals the grade's errors over `accept_basis.intent_rules`, the
   printed basis is labelled `intent[decap_distance]`, and the pass is ACCEPTED
   on `intent` 1 -> 0 with C3's error gone from the written board.
@@ -127,8 +130,8 @@ def _assert_parity(label, rows):
 
 
 def test_parity_decap_distance_esp_prog():
-    _assert_parity('esp_prog C3, decap_distance 2.0',
-                   _lattice(ESP, 'C3', {'decaps': {'max_distance_mm': 2.0}},
+    _assert_parity('esp_prog C3, decap_distance 1.5',
+                   _lattice(ESP, 'C3', {'decaps': {'max_distance_mm': 1.5}},
                             ('decap_distance',)))
 
 
@@ -166,7 +169,7 @@ def test_parity_both_decap_rules_watchy_once_per_term():
 
 def test_a_term_whose_refs_are_all_locked_still_counts():
     with tempfile.TemporaryDirectory() as td:
-        intent, _p = _intent(td, {'decaps': {'max_distance_mm': 2.0}})
+        intent, _p = _intent(td, {'decaps': {'max_distance_mm': 1.5}})
         b = os.path.join(td, 'locked.kicad_pcb')
         write_placed_output(ESP, b, [])
         pcb0 = parse_kicad_pcb(b)
@@ -190,6 +193,24 @@ def test_a_term_whose_refs_are_all_locked_still_counts():
           f"grade 1 == probe 1")
 
 
+#: #1249: C3 at its human pose is 1.53mm from U2, the regulator it
+#: decouples -- inside the recipe's 2.0mm limit. Pushed this far east it is
+#: 2.33mm from U2, a violator the re-seat can fix and the tether-less
+#: control cannot see.
+C3_EAST_MM = 2.5
+
+
+def _c3_east(td):
+    """esp_prog with C3 pushed `C3_EAST_MM` east (shipped writer)."""
+    c3 = parse_kicad_pcb(ESP).footprints['C3']
+    out = os.path.join(td, 'c3_east.kicad_pcb')
+    write_placed_output(ESP, out, [{'reference': 'C3',
+                                    'new_x': c3.x + C3_EAST_MM,
+                                    'new_y': c3.y,
+                                    'new_rotation': c3.rotation or 0.0}])
+    return evidence(out, 'the board with C3 pushed east')
+
+
 def _esp_probe(td, decaps):
     intent, _p = _intent(td, {'decaps': decaps}, name='esp.json')
     pcb = parse_kicad_pcb(ESP)
@@ -202,14 +223,16 @@ def test_leaving_the_radius_is_counted_as_the_grade_does_but_not_licensed():
     past the search radius stops counting (it is `decap_ungraded`, warn).
     The LICENCE reads it the way the gate does -- still measured -- so the
     same move is a RISE, not a fix (phase-2 verifier: esp_prog C3, radius
-    2.2, 1mm further from U1, read `1 -> 0` and was licensed)."""
+    2.2, 1mm further from U1, read `1 -> 0` and was licensed). Since #1249
+    C3 is measured against U2 (1.53mm), and 3mm east takes it to 2.73mm,
+    past the 2.2mm radius."""
     with tempfile.TemporaryDirectory() as td:
         intent, pcb, pr, st = _esp_probe(
-            td, {'max_distance_mm': 2.0, 'search_radius_mm': 2.2})
+            td, {'max_distance_mm': 1.5, 'search_radius_mm': 2.2})
         c3 = st.parts['C3']
         before = pr.snapshot()
         assert before['count'] == 1, before
-        st.apply_move('C3', c3.x + 1.0, c3.y, c3.rot)
+        st.apply_move('C3', c3.x + 3.0, c3.y, c3.rot)
         after = pr.snapshot()
         out = os.path.join(td, 'c3_out.kicad_pcb')
         write_placed_output(ESP, out, [{'reference': 'C3', 'new_x': c3.x,
@@ -236,7 +259,9 @@ def test_growing_inside_the_limit_is_no_finding():
         c3 = st.parts['C3']
         before = pr.snapshot()
         assert pr.terms('C3') == (0.0,), pr.terms('C3')
-        st.apply_move('C3', c3.x + 0.5, c3.y, c3.rot)
+        # 2mm east: C3 sits within U2's x span (#1249: U2 is its chip), so
+        # a shorter move along x does not change the distance at all.
+        st.apply_move('C3', c3.x + 2.0, c3.y, c3.rot)
         after = pr.snapshot()
         i = next(k for k, t in enumerate(pr.tethers)
                  if t.data.get('cap') == 'C3')
@@ -255,7 +280,7 @@ def test_the_limit_is_exclusive_at_its_tolerance():
     slackened compare) counts it; only a limit set to the exact value can
     tell the two apart."""
     with tempfile.TemporaryDirectory() as td:
-        _i, _pcb, pr0, _st = _esp_probe(td, {'max_distance_mm': 2.0})
+        _i, _pcb, pr0, _st = _esp_probe(td, {'max_distance_mm': 1.5})
         i = next(k for k, t in enumerate(pr0.tethers)
                  if t.data.get('cap') == 'C3')
         exact = pr0.snapshot()['tethers'][i]
@@ -277,7 +302,7 @@ def test_the_issue_recipe_through_the_cli():
     with tempfile.TemporaryDirectory() as td:
         intent, ipath = _intent(td, {'decaps': {'max_distance_mm': 2.0}})
         src = os.path.join(td, 'in.kicad_pcb')
-        write_placed_output(ESP, src, [])
+        write_placed_output(_c3_east(td), src, [])
         copy_siblings(ESP, src)
         before = fp.grade(intent, parse_kicad_pcb(src), src,
                           group_sources=SOURCES, clearance=CLEARANCE)
@@ -314,19 +339,20 @@ def test_control_without_the_tether_terms_the_same_reseat_is_refused():
         real(self, state, zones=zones, refs=refs, tethers=None)
     with tempfile.TemporaryDirectory() as td:
         intent, _p = _intent(td, {'decaps': {'max_distance_mm': 2.0}})
+        board = _c3_east(td)
         runs = {}
         for arm in ('tethers', 'zones_only'):
             if arm == 'zones_only':
                 q.IntentProbe.__init__ = zones_only
             try:
                 res = seeder.reseat_scope(
-                    parse_kicad_pcb(ESP), ESP, intent, refs=['C3'],
+                    parse_kicad_pcb(board), board, intent, refs=['C3'],
                     group_sources=(), clearance=CLEARANCE,
                     board_edge_clearance=0.5, grid_step=0.1, seed=0)
             finally:
                 q.IntentProbe.__init__ = real
             out = os.path.join(td, f'{arm}.kicad_pcb')
-            write_placed_output(ESP, out, res['moves'])
+            write_placed_output(board, out, res['moves'])
             runs[arm] = (res, _grade_count(intent, parse_kicad_pcb(out), out,
                                            ('decap_distance',)))
         (res_t, err_t), (res_z, err_z) = runs['tethers'], runs['zones_only']

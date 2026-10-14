@@ -5387,13 +5387,32 @@ DECAP_LATE_WITHIN_LIMIT = False
 DECAP_LATE_AT = 'after_last_owner'
 
 
-def _decap_owner_ok(ref: str, chips: Optional[Set[str]]) -> bool:
+def decap_owner_refs(pcb_data, owner_chips: bool = False) -> Set[str]:
+    """The parts whose supply pins the pin stages may serve (#1105, #1249).
+
+    ONE owner predicate: `groups.chip_refs`, the set the tether election,
+    the quench's tether terms and `floorplan.supply_pins` read -- an IC by
+    shape or a supply owner such as a three-pad regulator. Under
+    `owner_chips` every one of them; by default only the U-prefixed ones.
+    The prefix is a SHIPPING RESTRICTION on that set, not a second answer to
+    "what is an owner": `test_792_seeding_claims` measured the whole set as
+    pin owners stranding four parts across three boards (orangecrab U4,
+    rp2350 L1, tigard H1 and H3) that the U-prefixed subset seats. Before
+    #1249 the default was every U-prefixed part, owner or not; on the
+    tracked corpus the two agree, because the only U-prefixed parts that
+    were not chips (esp_prog U2, complex_hierarchy U101) are supply owners
+    now."""
+    from . import groups as _g
+    owners = _g.chip_refs(pcb_data)
+    return owners if owner_chips else {r for r in owners if r[0:1] == 'U'}
+
+
+def _decap_owner_ok(ref: str, chips: Set[str]) -> bool:
     """Whether the pin stages may serve `ref`'s supply pins (#1105).
 
-    One spelling for stage 2.5, stage 3.5 and `decap_pin_forecast`: the
-    grouper's chips under `decap_owner_chips`, else a U-prefixed ref (a
-    castellated row carries the rail too and must not eat a claim)."""
-    return (ref in chips) if chips is not None else (ref[0:1] == 'U')
+    One spelling for stage 2.5, stage 3.5 and `decap_pin_forecast`; `chips`
+    is `decap_owner_refs`' answer."""
+    return ref in chips
 
 
 def decap_graded_distance(pcb_data, state, cap: str, chips, placed
@@ -5452,16 +5471,18 @@ def decap_pin_forecast(pcb_data, intent, blocks, *,
     the cap falls to its `backup_owners`, the stage-3 owners of its rail);
     `late` caps have owners only the centroid stage seats, which stage 3.5
     serves when armed (`late_armed`); `ownerless` caps have a rail no
-    U-prefixed part (the grouper's chips under `owner_chips`) carries, and
-    neither stage can claim them. Same scope, rail and owner rules as the
-    stages themselves (`_decap_rail`, `_decap_owner_ok`).
+    owner the stages serve (`decap_owner_refs`: the U-prefixed cap owners,
+    every cap owner under `owner_chips`) carries, and neither stage can
+    claim them. Same scope, rail and owner rules as the stages themselves
+    (`_decap_rail`, `_decap_owner_ok`).
     """
     from placement import floorplan
     from placement import groups as _g
     spec = getattr(intent, 'decaps', None) or {}
     out: Dict[str, Any] = {
         'armed': spec.get('max_distance_mm') is not None,
-        'owner_rule': 'chips' if owner_chips else 'U-prefixed',
+        'owner_rule': ('cap owner' if owner_chips
+                       else 'U-prefixed cap owner'),
         'scope': 0, 'exempt': [], 'array_members': [], 'ownerless': [],
         'early': [], 'early_owners': [], 'late': [], 'late_owners': [],
         'backup_owners': [],
@@ -5492,7 +5513,7 @@ def decap_pin_forecast(pcb_data, intent, blocks, *,
         for n in nets:
             by_net.setdefault(n, []).append(ref)
     net_refs = {n: sorted(r) for n, r in by_net.items()}
-    chips = _g.chip_refs(pcb_data) if owner_chips else None
+    chips = decap_owner_refs(pcb_data, owner_chips)
 
     refs_all = sorted(fps)
     zoned = {m for z in intent.blocks if z.rect is not None
@@ -6903,8 +6924,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     from placement import groups as _g
     # Built ONCE: `chip_refs` walks every footprint's pads, the owner loop
     # runs per placed part, and stage 3.5 asks again.
-    chips = (_g.chip_refs(pcb_data) if decap_owner_chips and decap_scope
-             else None)
+    chips = (decap_owner_refs(pcb_data, decap_owner_chips) if decap_scope
+             else set())
     zone_of_cap = {}
     for name in sorted(zones_by_name):
         for r in blocks.get(name, ()):

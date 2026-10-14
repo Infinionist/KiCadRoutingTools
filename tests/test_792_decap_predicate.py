@@ -345,13 +345,24 @@ def test_a_two_terminal_passive_is_not_an_IC_however_it_is_rotated():
             ref, 'the row test alone would have caught it, so this arm proves '
                  'nothing about the copper-pad gate')
         assert ref not in chips, ref
-    # And no capacitor anywhere in the corpus is called an IC.
+    # And no capacitor anywhere in the corpus is called an IC. Since #1249 a
+    # part under four copper pads IS an owner when it is a supply owner (a
+    # three-pad regulator: esp_prog U2, kit-dev LV101), so the sweep asks
+    # the narrower question the trap is about: nothing under four copper
+    # pads is an owner except through `supply_owners`, and nothing under
+    # its three-pad floor is one at all.
     bad = []
+    owners3 = []
     for path in run_utils.corpus_boards():
         p2 = parse_kicad_pcb(path)
+        sup = G.supply_owners(p2)
+        owners3 += [(os.path.basename(path), r) for r in sup]
         bad += [(os.path.basename(path), r) for r in G.chip_refs(p2)
-                if G._copper_pads(p2.footprints[r]) < 4]
+                if G._copper_pads(p2.footprints[r]) < 4
+                and (r not in sup or G._copper_pads(p2.footprints[r])
+                     < G.SUPPLY_OWNER_MIN_PADS)]
     assert not bad, bad[:5]
+    assert ('esp_prog.kicad_pcb', 'U2') in owners3, owners3
     # The paste half of this trap is now closed TWICE: #1143's `_pads_view`
     # drops aperture-only pads before `build_chip_list` counts them, so C28
     # never reaches the copper-pad gate at all, and no corpus part is excluded

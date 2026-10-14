@@ -5201,6 +5201,12 @@ def _gradeable_supply_net(pcb_data, net_id: int) -> Optional[str]:
     return None if is_ground_net_name(net) else net
 
 
+#: `supply_pins`' channels in precedence order (#705, #1249). `role` yields
+#: only for a regulator among the supply owners (`groups.regulator_owners`),
+#: so for every other chip the ladder is pintype -> pinfunction -> rail_net.
+SUPPLY_PIN_CHANNELS = ('role', 'pintype', 'pinfunction', 'rail_net')
+
+
 def supply_pins(pcb_data, *, pin_functions=None,
                 chips=None) -> Dict[str, Dict]:
     """{chip ref: record} -- which pads are supply pins, and on what evidence.
@@ -5240,12 +5246,27 @@ def supply_pins(pcb_data, *, pin_functions=None,
     array detector (#1051) passes a POSE-FREE chip set: `chip_refs`' row
     test reads global pad coordinates, which a non-right-angle rotation
     changes, and the detector must answer the same on any pose.
+
+    A REGULATOR among the supply owners (#1249: `groups.regulator_owners`,
+    a part that owns caps without being an IC by shape and that a
+    `power_out` pad or the role table calls a regulator) is read by its
+    ROLE first: channel 0, `role`, takes every non-ground pin of it. A
+    regulator's VIN and VOUT are supply pins because of what the part is,
+    not because of a pintype or a rail-like net name: esp_prog U2 carries
+    no pintype, and its VIN net is `Net-(C1-Pad1)`, which channel 3 never
+    reads as a rail -- so without this channel C1 is graded against
+    nothing, and complex_hierarchy U101's VI pin (typed `input`) would lose
+    to channel 1's VO. An owner the three-pad shape alone admits (kit-dev
+    LV101, a reset supervisor) is not a regulator by any evidence, so it
+    keeps the ladder: its +3.3V pin, not its RST. The channel is empty for
+    every IC by shape, so their ladder is the one above, unchanged.
     """
     from net_queries import is_supply_pintype, is_supply_pinfunction, \
         is_power_net_name
     if chips is None:
         chips = groups_mod.chip_refs(pcb_data)
     by_net = _decap_caps_by_net(pcb_data)
+    owners = groups_mod.regulator_owners(pcb_data)
     out: Dict[str, Dict] = {}
     for ref in sorted(chips):
         fp_ = (pcb_data.footprints or {}).get(ref)
@@ -5257,6 +5278,7 @@ def supply_pins(pcb_data, *, pin_functions=None,
             if net is not None:
                 cands.append((p, net))
         chan = {
+            'role': list(cands) if ref in owners else [],
             'pintype': [(p, n) for p, n in cands
                         if is_supply_pintype(getattr(p, 'pintype', '') or '')],
             'pinfunction': [
@@ -5266,7 +5288,7 @@ def supply_pins(pcb_data, *, pin_functions=None,
             'rail_net': [(p, n) for p, n in cands
                          if is_power_net_name(n) and by_net.get(p.net_id)],
         }
-        order = ('pintype', 'pinfunction', 'rail_net')
+        order = SUPPLY_PIN_CHANNELS
         won = next((c for c in order if chan[c]), None)
         pins = chan[won] if won else []
         # Whether the ladder's ORDER decided the answer, per chip -- the
@@ -5548,7 +5570,7 @@ def _arm_decap_pins(ctx) -> Optional[str]:
     recs = ctx.supply_pins()
     if not any(r['pins'] for r in recs.values()):
         tot = {c: sum(r['counts'][c] for r in recs.values())
-               for c in ('pintype', 'pinfunction', 'rail_net')}
+               for c in SUPPLY_PIN_CHANNELS}
         return (f"no supply pin on any of {len(recs)} candidate IC(s): "
                 f"pintype yielded {tot['pintype']}, pinfunction "
                 f"{tot['pinfunction']}, rail-net {tot['rail_net']}. The rule "
@@ -5577,8 +5599,10 @@ def rule_decap_pin_distance(ctx) -> Iterator[Violation]:
     THREE NAMES, because severity is settable per NAME and these are three
     different claims:
 
-      decap_pin_distance           error  a DECLARED supply pin (channel 1-2)
-                                          is further than the limit
+      decap_pin_distance           error  a DECLARED supply pin (channel 1-2,
+                                          or a regulator owner's role,
+                                          channel 0, #1249) is further than
+                                          the limit
       decap_pin_distance_inferred  warn   same measurement, but the pin was
                                           inferred from a net NAME
       decap_pin_uncovered          warn   a declared supply pin's rail carries
@@ -5831,11 +5855,15 @@ def rule_proximity(ctx) -> Iterator[Violation]:
     read: a 3mm crystal loop and a 30mm one have identical connectivity, so no
     instrument that reads the board can tell them apart. `decap_distance`
     cannot stand in for it -- a decap is syntactic (`ref` starts with `C`,
-    bridges exactly two nets) and its partner must carry >= 4 copper pads, so a
-    3-pad SOT89 regulator can never be a tether target at ANY radius. Measured
-    on the board this was written for, the election gives `C1 -> USB1 2.03mm`
-    and `C3 -> U1 1.83mm`: the regulator's own bulk caps, graded against a USB
-    socket and a bridge IC.
+    bridges exactly two nets), so an inductor or an ESD array is never its
+    subject, and it measures to the nearest owner's pad BOX, not a named pin.
+    It was written for a sharper failure: a cap's partner had to carry >= 4
+    copper pads, so a 3-pad SOT89 regulator was never a tether target, and on
+    the board this was written for the election gave `C1 -> USB1 2.03mm` and
+    `C3 -> U1 1.83mm` -- the regulator's own bulk caps, graded against a USB
+    socket and a bridge IC. Since #1249 a supply owner
+    (`groups.supply_owners`) is elected, so both caps now tether to U2 at
+    0.95mm; a declared row still says WHICH pin and how far.
 
     THE INVARIANT. For each SUBJECT pad the claim declares, take the MINIMUM
     over a partner set that is a SUPERSET of the pads which could satisfy it,
@@ -8235,12 +8263,11 @@ def grade(intent: Intent, pcb_data, pcb_file: str, *,
             'pins': sum(len(r['pins']) for r in graded),
             'by_channel': {c: sum(1 for r in graded
                                   if r['channel'] == c)
-                           for c in ('pintype', 'pinfunction',
-                                     'rail_net')},
+                           for c in SUPPLY_PIN_CHANNELS},
             'pins_by_channel': {
                 c: sum(len(r['pins']) for r in graded
                        if r['channel'] == c)
-                for c in ('pintype', 'pinfunction', 'rail_net')},
+                for c in SUPPLY_PIN_CHANNELS},
             # Chips where a LOWER-precedence channel would have named a
             # different pin set -- i.e. where the ladder's ORDER decided
             # the answer. 31 of 85 dual-yield corpus chips disagree, so

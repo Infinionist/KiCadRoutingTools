@@ -262,8 +262,9 @@ def _copper_pads(fp) -> int:
                if any(str(l).endswith('.Cu') for l in (p.layers or ())))
 
 
-def _chip_list(pcb_data):
-    """The ChipBoundary objects this module calls ICs. ONE answer, one place."""
+def _ic_list(pcb_data):
+    """The ChipBoundary objects of the parts that are ICs by SHAPE: >= 4
+    copper pads, not a row. `_chip_list` adds the supply owners to them."""
     from chip_boundary import build_chip_list
     return [c for c in build_chip_list(_pads_view(pcb_data),
                                        min_pads=DECAP_MIN_IC_PADS)
@@ -272,8 +273,154 @@ def _chip_list(pcb_data):
             >= DECAP_MIN_IC_PADS]
 
 
+#: A supply owner that is not an IC by shape has at least this many copper
+#: pads: a regulator has an input, an output and a return (#1249). A
+#: two-pad part typed `power_out` (a battery holder in some libraries) is a
+#: source, not something a cap is placed to decouple.
+SUPPLY_OWNER_MIN_PADS = 3
+
+#: The roles `infer_role` may give a part the three-pad rule admits: an IC,
+#: a regulator, or nothing the table knows. Any other role -- a transistor,
+#: a feed-through capacitor, a three-pin header -- is a part whose two capped
+#: nets do not make it the thing the caps decouple.
+_THREE_PAD_ROLES = ('integrated circuit', 'regulator', 'unknown')
+
+
+def _capped_nets(pcb_data) -> Set[int]:
+    """Every net a decoupling cap (`is_decoupling_cap`) carries."""
+    out: Set[int] = set()
+    for ref, fp in (pcb_data.footprints or {}).items():
+        if is_decoupling_cap(fp, ref):
+            out.update(p.net_id for p in fp.pads if p.net_id > 0)
+    return out
+
+
+def supply_owner_evidence(pcb_data, ref: str,
+                          capped: Optional[Set[int]] = None
+                          ) -> Optional[str]:
+    """Why `ref` owns decoupling caps although it is not an IC by shape, or
+    None (#1249).
+
+    `DECAP_MIN_IC_PADS` is four, so a three-pad regulator (SOT-89, TO-92)
+    was never a chip: its input and output caps were elected to whatever
+    other part carried the rail, and the grade called that part "the IC it
+    decouples" (esp_prog C3 -> U1 at 2.125 mm, its own VOUT pin 1.12 mm
+    away; complex_hierarchy C102 -> U102 at 35.08 mm). A part with at least
+    `SUPPLY_OWNER_MIN_PADS` copper pads and no `part_class` (not a
+    connector, switch, hole or marker) is an owner when ANY of:
+
+    * a pad is typed `power_out` -- the symbol says it sources a rail
+      (complex_hierarchy U101, a 78L05);
+    * `roles.infer_role` calls it a `regulator` -- the one table
+      `board_context` prints from (esp_prog U2, an ME6210 in SOT-89, which
+      carries no pintype at all);
+    * it has exactly three copper pads on three nets, one of them ground,
+      and each of the other two carries a decoupling cap, and its role is
+      an IC, a regulator or unknown (`_THREE_PAD_ROLES`). esp_prog U2 and
+      complex_hierarchy U101 both meet it.
+
+    No single signal covers both of those boards, which is why there are
+    three. THE KNOWN CASE THE THIRD ADMITS THAT IS NOT A REGULATOR: kit-dev
+    LV101, a DS1818 reset supervisor in TO-92 whose VCC (`+3.3V`) and RST
+    nets each carry a cap. Admitting it changes 0 of that board's 53
+    elections (every cap on those nets is nearer another chip). The shape
+    says the part OWNS caps, not which of its pins are supply pins, so
+    `floorplan.supply_pins` reads its pins by role only for the first two
+    signals (`regulator_owners`); LV101 keeps the ordinary pin ladder, which
+    takes its +3.3V pin and not its RST.
+    """
+    fp = (pcb_data.footprints or {}).get(ref)
+    if fp is None:
+        return None
+    from .roles import _copper_pads as copper, infer_role, power_out_pads
+    pads = copper(fp)
+    if len(pads) < SUPPLY_OWNER_MIN_PADS:
+        return None
+    from .part_class import classify_part
+    cls = classify_part(fp, ref).name
+    if cls is not None:
+        return None
+    po = power_out_pads(fp)
+    if po:
+        return f"pad {po[0].pad_number} is typed power_out"
+    role = infer_role(fp, ref, cls)
+    if role['role'] == 'regulator':
+        return 'role regulator (' + '; '.join(role['evidence']) + ')'
+    if len(pads) != 3 or role['role'] not in _THREE_PAD_ROLES:
+        return None
+    nets = [p.net_id for p in pads]
+    if min(nets) <= 0 or len(set(nets)) != 3:
+        return None
+    from net_queries import is_ground_net_name
+    gnd = [n for n in nets if is_ground_net_name(_net_name(pcb_data, n))]
+    if len(gnd) != 1:
+        return None
+    if capped is None:
+        capped = _capped_nets(pcb_data)
+    if not all(n in capped for n in nets if n not in gnd):
+        return None
+    return THREE_PAD_EVIDENCE
+
+
+#: `supply_owner_evidence`'s answer for an owner the three-pad shape alone
+#: admits -- the one kind `regulator_owners` leaves out.
+THREE_PAD_EVIDENCE = ('3 copper pads: one ground net and two nets that each '
+                      'carry a decoupling cap')
+
+
+def supply_owners(pcb_data, ics=None) -> Dict[str, str]:
+    """`{ref: evidence}` -- the cap owners that are not ICs by shape
+    (`supply_owner_evidence`), ref-sorted. `ics` is the set to skip
+    (default: `_ic_list`'s)."""
+    if ics is None:
+        ics = {c.reference for c in _ic_list(pcb_data)}
+    capped = None
+    out: Dict[str, str] = {}
+    for ref, fp in sorted((pcb_data.footprints or {}).items()):
+        # The pad count first: it is the cheap test, and it rejects every
+        # two-pad passive before the classifier is asked.
+        if ref in ics or _copper_pads(fp) < SUPPLY_OWNER_MIN_PADS:
+            continue
+        if capped is None:
+            capped = _capped_nets(pcb_data)
+        ev = supply_owner_evidence(pcb_data, ref, capped)
+        if ev is not None:
+            out[ref] = ev
+    return out
+
+
+def regulator_owners(pcb_data, ics=None) -> Dict[str, str]:
+    """The supply owners a pin or the role table calls a regulator -- a
+    `power_out` pad or the `regulator` role -- with their evidence; the
+    three-pad shape alone does not say which pins are supply pins
+    (`supply_owner_evidence`'s LV101). `floorplan.supply_pins` reads these
+    by role."""
+    return {r: ev for r, ev in supply_owners(pcb_data, ics=ics).items()
+            if ev != THREE_PAD_EVIDENCE}
+
+
+def _chip_list(pcb_data):
+    """The ChipBoundary objects this module calls a cap's OWNER -- an IC by
+    shape (`_ic_list`) or a supply owner (`supply_owners`, #1249). ONE
+    answer, one place: `chip_refs`, `_elect_tethers`, `rail_chips` and
+    through them the grade, the quench's tether terms, the seeder's pin
+    stages and `floorplan.supply_pins` all read it. In the footprints'
+    own order, so the election's first-strict-minimum tie-break is the
+    one it always was."""
+    ics = _ic_list(pcb_data)
+    have = {c.reference for c in ics}
+    owners = supply_owners(pcb_data, ics=have)
+    if not owners:
+        return ics
+    from chip_boundary import build_chip_list
+    keep = have | set(owners)
+    return [c for c in build_chip_list(_pads_view(pcb_data), min_pads=1)
+            if c.reference in keep]
+
+
 def chip_refs(pcb_data) -> Set[str]:
-    """The refs this module calls an IC: >= 4 COPPER pads, and not a row.
+    """The refs this module calls a cap's owner: an IC (>= 4 COPPER pads,
+    and not a row) or a supply owner (`supply_owners`, #1249).
 
     Public since #792, because the seeder was answering the same question with
     `owner[0] == 'U'` -- a second answer to the problem `_pads_are_collinear`
@@ -394,7 +541,8 @@ def rail_chips(pcb_data, cap: str) -> List[str]:
     """The chips `_elect_tethers` would consider for `cap`, in its order:
     every chip of `_chip_list` (bar the cap) carrying the cap's power rail.
     Pose-invariant for a quench (membership reads pad counts, nets, and the
-    collinearity of a chip's pads, which a 90-degree move keeps)."""
+    collinearity of a chip's pads, which a 90-degree move keeps; a supply
+    owner's evidence -- pintypes, footprint name, nets -- reads no pose)."""
     fp = pcb_data.footprints.get(cap)
     if fp is None:
         return []

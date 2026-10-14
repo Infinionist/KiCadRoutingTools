@@ -793,11 +793,11 @@
    "health_block_displacement_max_mm": null,
    "health_bus_foreign_crossings": null,
    "hpwl": 259.99,
-   "intent_errors": 1,
+   "intent_errors": 2,
    "intent_errors_by_rule": {
-    "decap_distance": 1
+    "decap_distance": 2
    },
-   "intent_errors_enforced": 1,
+   "intent_errors_enforced": 2,
    "intent_errors_other": 0,
    "inversions": 13,
    "oob_keepout_copper_amount": 0.0,

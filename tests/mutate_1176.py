@@ -34,7 +34,9 @@ _PL = os.path.join(_ROOT, 'py_placer', 'placement')
 TARGETS = {
     'pc': os.path.join(_PL, 'part_class.py'),
     'lock': os.path.join(_PL, 'lock_advisor.py'),
-    'bc': os.path.join(_ROOT, 'py_tools', 'board_context.py'),
+    # board_context's role table moved to placement/roles.py (#1249); the
+    # sheet re-exports `infer_role` from there.
+    'roles': os.path.join(_PL, 'roles.py'),
 }
 
 T1176 = os.path.join(_TESTS, 'test_1176_mount_hole_name.py')
@@ -61,7 +63,7 @@ ROWS = [
      "        _marker_name = (_is_mount_hole_name(fp_name)\n",
      "        _marker_name = ('mountinghole' in fp_name\n",
      (T1176,), 'KILLED'),
-    ('board-context-substring-restored', 'bc',
+    ('board-context-substring-restored', 'roles',
      "    if is_mount_hole_name(name):\n",
      "    if 'mountinghole' in name:\n",
      (T1176,), 'KILLED'),

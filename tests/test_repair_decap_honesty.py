@@ -9,14 +9,15 @@ The run-7 honesty re-grade re-checked pads, holes and containment only, so
 each intent-only violator was reported repaired with nothing moved -- glasgow
 run 34: "33 violator(s), 33 repaired (0 moved)", floorplan errors 43 -> 43.
 
-What each case pins (esp_prog, `decaps.max_distance_mm = 2.0`, which charges
-C3 alone at the human pose: 2.125mm from U1):
+What each case pins (esp_prog, `decaps.max_distance_mm = 1.5`, which charges
+C3 alone at the human pose: 1.53mm from U2, the regulator it decouples since
+#1249 -- before it, the limit was 2.0 and C3 read 2.125mm from U1):
 
 * ZERO MOVE: C3 at its human pose is not moved and is UNRESOLVED, naming
   decap_distance.
-* MOVED, STILL FAILING: C3 dropped onto Y1's pads is charged for the pad
+* MOVED, STILL FAILING: C3 dropped onto R1's pads is charged for the pad
   conflict AND the decap distance. The repair moves it off R1 -- and it is
-  still too far from U1, so it is UNRESOLVED too ("it moved"). Re-grading
+  still too far from U2, so it is UNRESOLVED too ("it moved"). Re-grading
   only the zero-move refs (the obvious half-fix) passes the first case and
   fails this one.
 * A REAL FIX is still repaired: R2 dropped onto R1 charges one pad conflict,
@@ -27,8 +28,8 @@ C3 alone at the human pose: 2.125mm from U1):
 * A move that CREATES an error is not a repair (the phase-1 verifier's
   counterexample): splitflap with 12 parts displaced, C8 and C12 are moved
   off pad conflicts and out of their decap limits -- unresolved, "created".
-* Leaving the decap search radius is not a fix: C3 pushed past 5mm from U1
-  becomes `decap_ungraded` (warn), and stays unresolved.
+* Leaving the decap search radius is not a fix: C3 pushed past a declared
+  2mm radius from U2 becomes `decap_ungraded` (warn), and stays unresolved.
 * A created `decap_pin_distance` (it names the IC) is charged to the CAP
   whose move stranded the pin, through its measured `cap` -- and, when the
   finding names no moved ref at all, by COUNTERFACTUAL: watchy seed 2's C5
@@ -76,9 +77,11 @@ CLEARANCE = 0.2
 DECAP_RULES = ('decap_distance', 'decap_pin_distance')
 
 
-def _intent(td):
+def _intent(td, **decaps):
+    # 1.5mm since #1249: C3's partner is U2, the regulator it decouples,
+    # 1.53mm away at the human pose (it was U1 at 2.125mm, under 2.0).
     doc = {'schema': 1, 'kind': fp.KIND, 'units': 'mm',
-           'decaps': {'max_distance_mm': 2.0}}
+           'decaps': dict({'max_distance_mm': 1.5}, **decaps)}
     path = os.path.join(td, 'intent.json')
     with open(path, 'w', encoding='utf-8') as fh:
         json.dump(doc, fh)
@@ -135,17 +138,20 @@ def test_a_zero_move_decap_violator_is_unresolved():
 
 def test_a_moved_violator_still_failing_is_unresolved_and_a_real_fix_is_not():
     pcb = parse_kicad_pcb(ESP)
-    r3, y1 = pcb.footprints['R3'], pcb.footprints['Y1']
+    r3, r1 = pcb.footprints['R3'], pcb.footprints['R1']
     with tempfile.TemporaryDirectory() as td:
         intent, _p = _intent(td)
-        # C3 onto the crystal Y1: 3.555mm from U1, inside the decap radius
-        # (so graded, not `decap_ungraded`), and no move off Y1 that a pad
-        # conflict licenses brings it within 2mm. R2 onto R3 -- not onto R1,
-        # which sits inside U2's silk-drawn body: since #1153 a part that
-        # moves off a pad conflict there and stays in that body is not
-        # repaired, so the real fix below could not be shown on it.
+        # C3 onto R1: 3.11mm from U2, the regulator it decouples (#1249),
+        # inside the decap radius (so graded, not `decap_ungraded`), and the
+        # move off R1 a pad conflict licenses (1mm, the cap) does not bring
+        # it within 1.5mm. (Before #1249 this arm dropped C3 onto the
+        # crystal Y1, 3.555mm from U1; measured against U2 the repair's move
+        # off Y1 clears it.) R2 onto R3 -- not onto R1, which sits inside
+        # U2's silk-drawn body: since #1153 a part that moves off a pad
+        # conflict there and stays in that body is not repaired, so the real
+        # fix below could not be shown on it.
         board = _board(td, 'stacked.kicad_pcb',
-                       [('C3', y1.x, y1.y), ('R2', r3.x, r3.y + 0.3)])
+                       [('C3', r1.x, r1.y), ('R2', r3.x, r3.y + 0.3)])
         res = _repair(board, intent)
         moved = {m['reference'] for m in res['moves']}
         # The pad conflict moved C3 -- the arm is about a MOVED violator.
@@ -278,14 +284,17 @@ def test_a_move_that_creates_a_decap_error_is_not_repaired():
 def test_a_cap_pushed_past_the_decap_radius_is_not_cleared():
     """`decap_distance` stops being graded past the search radius (it becomes
     `decap_ungraded`, warn): leaving the radius must not read as the charge
-    cleared. esp_prog, C3 6mm out from its pose (4.58mm from U1, on top of
-    its neighbours), which the repair pushes 0.5mm further -- past 5mm."""
+    cleared. esp_prog, C3 6mm out from its pose, on top of its neighbours,
+    which the repair pushes 0.5mm further -- past the radius. Since #1249
+    C3 is measured against U2, 1.556mm away there and 2.056mm after the
+    push, so the intent declares a 2.0mm radius between the two (before,
+    the same move read 4.58mm from U1 and crossed the default 5mm)."""
     import math
     pcb = parse_kicad_pcb(ESP)
     c = pcb.footprints['C3']
     a = 2 * math.pi * 13 / 16
     with tempfile.TemporaryDirectory() as td:
-        intent, _p = _intent(td)
+        intent, _p = _intent(td, search_radius_mm=2.0)
         board = _board(td, 'far.kicad_pcb',
                        [('C3', c.x + 6.0 * math.cos(a),
                          c.y + 6.0 * math.sin(a))])
