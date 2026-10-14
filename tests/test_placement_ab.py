@@ -1920,7 +1920,8 @@ def _resolve_gate(intent, pcb, board):
     if _MEMO is not None and gate is not None:
         try:
             _MEMO['gates'][id(gate)] = (gate, (
-                'gate', board, _registered(intent, 'intents'), GROUP_SOURCES))
+                'gate', board, _registered(intent, 'intents'), GROUP_SOURCES,
+                _flag_state()))
         except _Unkeyable:
             pass
     return gate, probs
@@ -1937,7 +1938,8 @@ def _emit(board_path, **kw):
         try:
             key = ('emit', _freeze(_bound(floorplan.emit_intent,
                                           (None, board_path), kw,
-                                          drop=('pcb_data',))))
+                                          drop=('pcb_data',))),
+                   _flag_state())
         except _Unkeyable:
             key = None
         if key in _MEMO['emits']:
@@ -2018,8 +2020,10 @@ def _none_resolved(func):
     """{param: CONST} for each parameter of `func` that defaults to None and
     that its body reads ONLY as `CONST if param is None else bool(param)`,
     CONST a module global the body never assigns -- so None and CONST's
-    value are one input. Checked on the engine's source once per process."""
+    value are one input. Checked on the engine's source once per process,
+    through any wrapper (`__wrapped__`): CONST is the ENGINE module's."""
     import ast
+    func = inspect.unwrap(func)
     cache = _SOURCE_CHECKS
     if ('none', func) in cache:
         return cache[('none', func)]
@@ -2055,6 +2059,7 @@ def _ignore_nets_resolved_only(func):
     pat in ignore_nets)` -- only to build the set of net ids whose NAME
     matches, which is what `_quench_key` holds in its place."""
     import ast
+    func = inspect.unwrap(func)
     cache = _SOURCE_CHECKS
     if ('ignore', func) in cache:
         return cache[('ignore', func)]
@@ -2991,6 +2996,14 @@ def _self_test():
     assert _none_resolved(resolves) == {'flag': 'MIN_TRIAL_BOARDS'}, \
         _none_resolved(resolves)
     assert _none_resolved(also_reads) == {}, _none_resolved(also_reads)
+
+    # ...read through a wrapper from another module (a profiler, a
+    # decorator): CONST is looked up where the WRAPPED function lives.
+    def wrapper(*a, **k):
+        return resolves(*a, **k)
+    wrapper.__wrapped__ = resolves
+    wrapper.__module__ = 'builtins'
+    assert _none_resolved(wrapper) == {'flag': 'MIN_TRIAL_BOARDS'},         _none_resolved(wrapper)
 
     def resolves_ignore(nets, ignore_nets=None):
         import fnmatch
