@@ -132,6 +132,11 @@ class _IntentTerm(NamedTuple):
     threshold: float
     anchor: bool              # zone_containment: grade the courtyard CENTRE
     entry: Optional[Dict]     # keepout: the raw entry `keepout_hit` reads
+    # zone_containment (#1174): sides the zone does not bound for this ref --
+    # its declared edge, where the zone ends at the outline. The grade's own
+    # `zone_open_sides`, carried in the zone row, so the gate opens what the
+    # grade opens and nothing else.
+    open_sides: Tuple[str, ...] = ()
 
 
 class _TetherTerm(NamedTuple):
@@ -203,7 +208,8 @@ def build_zone_spec(zones, parts, refs=None
                     for _r in (_p.rot % 360, (_p.rot + 90) % 360))
                 _terms.append(_IntentTerm(
                     'zone_containment', _z['name'], tuple(_z['rect']),
-                    _tol, _anchor, None))
+                    _tol, _anchor, None,
+                    tuple((_z.get('open_sides') or {}).get(_ref, ()))))
             elif _z['exclusive'] and (not _z['side']
                                       or _p.side == _z['side']):
                 # `elif`, not `if`: `rule_zone_exclusive` skips members of the
@@ -334,7 +340,8 @@ def intent_term_values(spec: Tuple[_IntentTerm, ...], rects
             # declines to measure.
             out.append(rect_overlap_area(rects[0], t.rect))
         else:
-            out.append(_fp.zone_escape(t.rect, rects[0], t.anchor)[0])
+            out.append(_fp.zone_escape(t.rect, rects[0], t.anchor,
+                                       t.open_sides)[0])
     return tuple(out)
 
 
@@ -3089,7 +3096,7 @@ class QuenchState:
             except Exception:
                 self._fab_local = {}
         p = self.parts.get(ref)
-        if p is None:
+        if p is None or ref in self._fab_rejected_refs():
             return None
         sides = self._fab_local.get(ref)
         if not sides:
@@ -3105,6 +3112,33 @@ class QuenchState:
             local = rotate_local_bounds(*lb, rot)
             self._fab_cache[key] = local
         return (x + local[0], y + local[1], x + local[2], y + local[3])
+
+    def _board_bodies(self):
+        """`body.board_bodies` for this state's board, read once (or None
+        when it cannot be read)."""
+        got = getattr(self, '_board_bodies_cache', False)
+        if got is False:
+            try:
+                from placement.body import board_bodies
+                got = board_bodies(self.pcb_data, self.pcb_file)
+            except Exception:                                # noqa: BLE001
+                got = None
+            self._board_bodies_cache = got
+        return got
+
+    def _fab_rejected_refs(self):
+        """Parts whose .Fab drawing `body.fab_cannot_be_body` rejects
+        (#1201): `fab_rect` / `fab_shape` answer None for them, so the
+        quench's body vetoes read the checker's body and never a pin-1 dot.
+        Their own .Fab reader is kept, rather than replaced by the ladder's
+        `drawn_local`, so every other part reads exactly what it did."""
+        got = getattr(self, '_fab_rejected_cache', None)
+        if got is None:
+            bodies = self._board_bodies() or {}
+            got = frozenset(r for r, g in bodies.items()
+                            if getattr(g, 'fab_rejected', False))
+            self._fab_rejected_cache = got
+        return got
 
     @staticmethod
     def _fab_side(p):
@@ -3125,7 +3159,7 @@ class QuenchState:
                 self._fab_shapes = {}
         p = self.parts.get(ref)
         sides = self._fab_shapes.get(ref)
-        if p is None or not sides:
+        if p is None or not sides or ref in self._fab_rejected_refs():
             return None
         own = self._fab_side(p)
         got = sides.get(own) or next(iter(sides.values()))
@@ -3186,11 +3220,7 @@ class QuenchState:
         got = getattr(self, '_bodyless_cache', None)
         if got is None:
             fps = getattr(self.pcb_data, 'footprints', {}) or {}
-            try:
-                from placement.body import board_bodies
-                bodies = board_bodies(self.pcb_data, self.pcb_file)
-            except Exception:                                # noqa: BLE001
-                bodies = None
+            bodies = self._board_bodies()
             out = set()
             for r in self.parts:
                 fp = fps.get(r)

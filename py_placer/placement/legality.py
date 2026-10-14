@@ -1552,6 +1552,12 @@ class BodyOverlapPair(NamedTuple):
     # draws none, which KiCad cannot report: listed, never gating).
     hole: str = ''
     basis: str = ''
+    # #1201. For a CONTAINED pair: why it does not gate, or '' when it does
+    # -- the `_GATE_EXEMPT` waiver it carries, else 'silk_drawn' (a member's
+    # drawn body is silk, which never gates, #896). check_assembly prints
+    # it per pair, so a reader is never told a pair is "a marker or a
+    # board-sized container" when the silk rule is what let it through.
+    gate_exempt: str = ''
 
 
 def _pair_exact(a: GradedPart, b: GradedPart, s: str, ra, rb):
@@ -1822,6 +1828,10 @@ class LocalBounds(NamedTuple):
     # bbox (a pin-1 tick), so the union IS the pad bbox. A disclosure, not
     # an error -- a fragment must not be LABELLED a body.
     silk_rejected: bool = False
+    # #1201. The .Fab rung was a marking, not a body
+    # (`body.fab_cannot_be_body`). Appended LAST for the `_fields` reason
+    # `source` records above.
+    fab_rejected: bool = False
 
 
 def part_local_bounds(pcb_data, pcb_file: Optional[str] = None
@@ -1877,6 +1887,7 @@ def _part_local_bounds_and_bodies(pcb_data, pcb_file: Optional[str] = None):
         local = geom.occupancy_local if geom is not None else None
         source = geom.source if geom is not None else ''
         silk_rejected = bool(geom.silk_rejected) if geom is not None else False
+        fab_rejected = bool(getattr(geom, 'fab_rejected', False))
         if local is None:
             # SOURCE_NONE, or no readable board file at all: the +/-0.5mm
             # fiction, which `synthetic` marks so it can never gate.
@@ -1908,7 +1919,8 @@ def _part_local_bounds_and_bodies(pcb_data, pcb_file: Optional[str] = None):
                                tht_local=tht_local,
                                has_tht=has_tht, synthetic=synthetic,
                                from_courtyard=(source == SOURCE_COURTYARD),
-                               source=source, silk_rejected=silk_rejected)
+                               source=source, silk_rejected=silk_rejected,
+                               fab_rejected=fab_rejected)
     return out, bodies
 
 
@@ -2947,6 +2959,8 @@ def grade_body_overlap(pcb_data, clearance: float,
     silk_sourced: set = set()
     # #896. Seam inputs: every judged part's DRAWN body in board coordinates.
     seam_parts: list = []
+    # #1201. Parts whose .Fab drawing was rejected as a body (a pin-1 dot).
+    fab_rejected_refs: list = []
     # #1250. Test points whose pad copper lies under another part's body.
     testpoint_covered: List[TestpointCover] = []
 
@@ -2964,6 +2978,8 @@ def grade_body_overlap(pcb_data, clearance: float,
             _bodies = board_bodies(pcb_data, path)
         except Exception:                                    # noqa: BLE001
             _bodies = {}
+        fab_rejected_refs = sorted(r for r, _g in _bodies.items()
+                                   if getattr(_g, 'fab_rejected', False))
         fab_parts = []
         for ref, fp in sorted(fps.items()):
             geom = _bodies.get(ref)
@@ -3141,6 +3157,26 @@ def grade_body_overlap(pcb_data, clearance: float,
     containment_blocking = [p for p in contained
                             if p.waiver not in _GATE_EXEMPT
                             and not _silk_drawn_pair(p)]
+
+    # #1201: name each contained pair's reason for not gating, READ OFF the
+    # gate above rather than re-derived beside it (a second copy could
+    # disagree and label a gating pair exempt). Stamped on the pair wherever
+    # it is listed -- `pairs`, `advisory_pairs`, `containment_pairs` -- so
+    # the JSON cannot say '' in one list and 'silk_drawn' in another.
+    _gating = {id(p) for p in containment_blocking}
+
+    def _gate_exempt(p) -> str:
+        if id(p) in _gating:
+            return ''
+        if p.waiver in _GATE_EXEMPT:
+            return p.waiver
+        return 'silk_drawn'
+    _stamped = {id(p): p._replace(gate_exempt=_gate_exempt(p))
+                for p in contained}
+    pairs = [_stamped.get(id(p), p) for p in pairs]
+    advisory = [_stamped.get(id(p), p) for p in advisory]
+    containment_blocking = [_stamped[id(p)] for p in containment_blocking]
+    contained = [_stamped[id(p)] for p in contained]
     # Courtyard BLOCKING (run-23): the subset of courtyard pairs that gates --
     # `courtyard_blocking`'s floors and `PairWaivers.blocking_waived`'s ladder,
     # which carries the run-22/23 edge-LIVE geometry condition, the
@@ -3212,6 +3248,7 @@ def grade_body_overlap(pcb_data, clearance: float,
             # so a reader can tell a housing outline from a fab outline
             # rather than being told only that something was judged.
             'body_sources': dict(body_sources),
+            'fab_rejected_refs': fab_rejected_refs,
             # #896. The tightest DRAWN-body seam on the board, signed
             # (negative = overlap). `body_overlap_pairs` reports a depth only
             # for pairs that already overlap, so a board one micron from a

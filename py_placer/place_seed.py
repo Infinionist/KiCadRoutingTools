@@ -67,7 +67,22 @@ seat leaves pad copper inside the board-edge floor because no pose the seat
 ladder tried clears it, by ref, with the pads and why the seat could not move.
 An edge seat prefers a pose that clears the floor and otherwise keeps the seat
 it always chose, since an unseated connector is an unrouted one. Like
-`connector_requirements`, it never changes an exit code.
+`connector_requirements`, it never changes an exit code. The COPPER does,
+when it is past the outline rather than inside the floor (#1241):
+`pad_copper_off_board_seeded` names the parts whose pad copper the WRITTEN
+seed leaves past the board outline, by the per-pad measure check_assembly
+gates on -- wherever stage 1, the polish or the re-seat put them, or kept
+them -- and a non-empty list fails the gate, since such a part can be neither
+assembled nor routed. `pad_copper_off_board_locked` fails it too: a part
+`(locked yes)` in the input that the seed could not move, since placement
+stamps its own locks and check_assembly exempts none, so a lock would launder
+the last lap's overrun. The board's own is an unlocked part outside a
+partially-unplaced run's scope: named on the console and not charged at its
+input pose, nor after the polish moves it, unless the move took its copper
+further past the outline. `must_lock` alone exempts nothing: stage 1.5 seats
+every unlocked, in-scope must_lock part. An unseated part is charged as
+unseated. `oob_pad_copper_gating_count` is the written board's total,
+inherited parts included.
 
 And `reseat_declined` (#1117) on every summary of a seed (not of --repair /
 --reseat, which run no post-polish re-seat):
@@ -117,6 +132,18 @@ def _split_pinned(graded, output_file, intent):
                               or any(fnmatch.fnmatchcase(ref, p) for p in pats))
     return ([v for v in graded.errors if not pinned(v)],
             [v for v in graded.errors if pinned(v)])
+
+
+def pose_moved(a, b, tol_mm=1e-3, tol_deg=1e-3):
+    """Do two `(x, y, rotation)` poses differ by more than a write can?
+
+    `write_placed_output` writes x/y at 6 decimals and the rotation at 6
+    SIGNIFICANT digits, so a part rewritten at its own pose reads back up to
+    ~5e-4 off (an input angle of 180.1234567 comes back 180.123). Rotations
+    compare on the circle: -90 is 270, and 359.9999999 is 0.
+    """
+    return (abs(a[0] - b[0]) > tol_mm or abs(a[1] - b[1]) > tol_mm
+            or abs((a[2] - b[2] + 180.0) % 360.0 - 180.0) > tol_deg)
 
 
 def _print_grade(own, pinned):
@@ -399,7 +426,7 @@ def error_rules(errors):
     return out
 
 
-def gate_reason(unseated, own, my_pads, hole_delta, band=()):
+def gate_reason(unseated, own, my_pads, hole_delta, band=(), oob=()):
     """The one stderr line that says WHY this seed did not pass its gate.
 
     Two failures reach exit 4 and they are not the same failure, so the line
@@ -413,8 +440,14 @@ def gate_reason(unseated, own, my_pads, hole_delta, band=()):
     DELTA), so a hole-only refusal that said "pads ... see the pairs above"
     named the wrong channel and pointed at output that is not printed in
     that case.
+
+    `oob` (#1241): parts this seed placed whose pad copper reaches past the
+    board outline -- the measure check_assembly gates on. #975's floor
+    fallback keeps such a seat rather than leave the connector unseated, and
+    nothing after stage 1 charged it, so the seed exited 0 on a board
+    check_assembly calls NOT BUILDABLE.
     """
-    if not (unseated or own or my_pads or hole_delta or band):
+    if not (unseated or own or my_pads or hole_delta or band or oob):
         return None
     tail = " It was still written, for inspection."
     if unseated:
@@ -449,6 +482,10 @@ def gate_reason(unseated, own, my_pads, hole_delta, band=()):
     if band:
         ch.append(f"pad copper in a rule-area keep-out band on "
                   f"{', '.join(sorted(band))}, where no track can reach it")
+    if oob:
+        ch.append(f"pad copper past the board outline on "
+                  f"{', '.join(sorted(oob))}, which can be neither assembled "
+                  f"nor routed")
     return ("place_seed: the seed satisfies its intent but leaves "
             + " and ".join(ch) + "." + tail)
 
@@ -1246,6 +1283,9 @@ Examples:
         anchors_first=args.anchors_first,
         anchor_rounds=args.anchor_rounds,
         evict_depth=args.evict_depth,
+        # #1172: the pile verdict stage 1 reads to decide whether an edge
+        # connector's input angle means anything.
+        input_assessment=st,
         rotate_by_facing=args.rotate_by_facing,
         diagonal_rotations=args.diagonal_rotations,
         decap_claim_after_ics=args.decap_claim_after_ics,
@@ -1302,6 +1342,11 @@ Examples:
     if not args.no_polish:
         from placement.quench import quench
         pcb_seeded = parse_kicad_pcb(args.output_file)
+        # #1240: the poses as WRITTEN before the polish, read back the way the
+        # re-seat below reads the polished board, so the two compare at one
+        # quantisation (`result['placements']` holds the unrounded floats).
+        _seeded_poses = {r: (f.x, f.y, f.rotation or 0.0)
+                         for r, f in pcb_seeded.footprints.items()}
         # #1151: the polish runs as if the STAGED parts were not on the board
         # -- they are not. Held in place but priced, their airwires to the
         # staging row pulled seated parts toward it (phase-1 verifier,
@@ -1491,10 +1536,30 @@ Examples:
                 for ref in sorted(reseat_declined):
                     print(reseat_decline_line(ref, reseat_declined[ref]))
                 if fixes:
-                    print(f"  polish walked "
-                          f"{', '.join(f['reference'] for f in fixes)} out of "
-                          f"a declared {' / '.join(_rules)}; re-seated "
-                          f"against the polished board")
+                    # #1240: say WHO broke the rule. The polish locks edge
+                    # claims, so an edge connector stage 1 seated past its
+                    # zone was never walked anywhere; the line used to blame
+                    # the polish for every re-seat. Decided on the poses
+                    # (seeded vs polished, both as written), not on a class
+                    # of part.
+                    def _polish_moved(ref):
+                        sp, fp = _seeded_poses.get(ref), pcb_cur.footprints.get(ref)
+                        return sp is None or fp is None or pose_moved(
+                            sp, (fp.x, fp.y, fp.rotation or 0.0))
+                    _walked = [f['reference'] for f in fixes
+                               if _polish_moved(f['reference'])]
+                    _placed = [f['reference'] for f in fixes
+                               if f['reference'] not in _walked]
+                    if _walked:
+                        print(f"  polish walked {', '.join(_walked)} out of "
+                              f"a declared {' / '.join(_rules)}; re-seated "
+                              f"against the polished board")
+                    if _placed:
+                        print(f"  the seed placed {', '.join(_placed)} "
+                              f"outside a declared {' / '.join(_rules)} and "
+                              f"the polish did not move "
+                              f"{'it' if len(_placed) == 1 else 'them'}; "
+                              f"re-seated against the polished board")
                     _replace_output(fixes, '.reseat')
                     graded = _grade()
     except floorplan.UntrustworthyOutline as exc:
@@ -1595,6 +1660,85 @@ Examples:
         print(f"  {len(_band_seeded)} part(s) this seed placed with pad copper "
               f"in a rule-area keep-out band: "
               + '; '.join(f"{r} ({a:.3f}mm)" for r, a in _band_seeded))
+    # #1241: pad copper past the outline, by the measure check_assembly gates
+    # on, at the WRITTEN poses. Not a delta for a part the seed seats: a pile
+    # comes in off the board. Not `_seeded` either, which compares stage 1's
+    # poses with the input: the polish and the re-seat move parts after it,
+    # and a pose the seed KEPT (an unlocked part already at its seat) is the
+    # seed's choice as much as one it moved. `must_lock` exempts nothing:
+    # stage 1.5 seats every unlocked, in-scope must_lock part itself. An
+    # unseated part is charged as unseated, not here.
+    #
+    # A LOCK EXEMPTS NOTHING EITHER. A part `(locked yes)` in the input is
+    # charged and named as locked, so the fix is known to be upstream:
+    # placement stamps its own locks (must_lock, fixed_poses), so a lock
+    # would launder the last lap's off-board seat into this lap's exit 0,
+    # and check_assembly, which this gate answers to, exempts none (#1096).
+    #
+    # The board's own is an UNLOCKED part outside a partially-unplaced run's
+    # scope (`seed_refs`, "someone's work"): not charged at its input pose,
+    # and charged after the polish moves it only when its copper went
+    # further past the outline than it came in -- the #1044 band channel's
+    # delta, so a nudge that leaves it no worse is reported, not charged.
+    #
+    # The input is the board parsed BEFORE seeding, not the file: an in-place
+    # run (`place_seed X X`) has overwritten it, and would read every part as
+    # unmoved and every lock this run stamped as the input's.
+    _in_fps = pcb.footprints
+    _out_fps = parse_kicad_pcb(args.output_file).footprints
+    _overrun = _pads_out.get('oob_pad_copper_overrun_mm') or {}
+    _overrun_in = _pads_in.get('oob_pad_copper_overrun_mm') or {}
+
+    def _oob_cause(r):
+        """Whose off-board copper `r` carries: 'seeded', 'worsened' and
+        'locked' are charged; 'inherited' and 'nudged' are reported."""
+        fi, fo = _in_fps.get(r), _out_fps.get(r)
+        if fi is None or fo is None:
+            return 'seeded'
+        if getattr(fi, 'locked', False):
+            return 'locked'
+        if seed_refs is None or r in seed_refs:
+            return 'seeded'
+        if not pose_moved((fi.x, fi.y, fi.rotation or 0.0),
+                          (fo.x, fo.y, fo.rotation or 0.0)):
+            return 'inherited'
+        grew = _overrun.get(r, 0.0) > _overrun_in.get(r, 0.0) + 1e-6
+        return 'worsened' if grew else 'nudged'
+    _oob_refs = [r for r in (_pads_out.get('oob_pad_copper_gating_refs') or ())
+                 if r not in result['unseated']]
+    _oob_by = {r: _oob_cause(r) for r in _oob_refs}
+    _oob_seeded = [(r, _overrun.get(r, 0.0)) for r in _oob_refs
+                   if _oob_by[r] in ('seeded', 'worsened')]
+    _oob_locked = [(r, _overrun.get(r, 0.0)) for r in _oob_refs
+                   if _oob_by[r] == 'locked']
+
+    def _past(r):
+        return f"{r} ({_overrun.get(r, 0.0):.3f}mm past)"
+
+    def _grew(r):
+        return (f"{r} ({_overrun_in.get(r, 0.0):.3f} -> "
+                f"{_overrun.get(r, 0.0):.3f}mm past)")
+    for _cause, _fmt, _what in (
+            ('seeded', _past, "this seed placed with pad copper past the "
+                              "board outline"),
+            ('worsened', _grew, "outside this run's scope that the polish "
+                                "moved FURTHER past the board outline"),
+            ('locked', _past, "(locked yes) in the input with pad copper "
+                              "past the board outline, which this seed "
+                              "cannot move -- a lock is no waiver, since "
+                              "placement stamps its own: unlock it, or fix "
+                              "the step that seated it"),
+            # ...and the board's own, like an inherited short: not charged.
+            ('inherited', _past, "with pad copper past the board outline "
+                                 "that this seed did not place -- the "
+                                 "board's own, reported not charged"),
+            ('nudged', _grew, "outside this run's scope that the polish "
+                              "moved no further past the board outline -- "
+                              "the board's own, reported not charged")):
+        _refs = [r for r in _oob_refs if _oob_by[r] == _cause]
+        if _refs:
+            print(f"  {len(_refs)} part(s) {_what}: "
+                  + '; '.join(_fmt(r) for r in _refs))
     after = ratsnest.get('after', {})
     summary = {'placed': placed_count(result),
                'unseated': len(result['unseated']),
@@ -1614,6 +1758,14 @@ Examples:
                # not SEAT: these were seated, and stay where the polish left
                # them.
                'reseat_declined': reseat_declined,
+               # #1172: edge connectors stage 1 turned to an angle IT chose
+               # or reordered -- {ref: {from, to, why, candidates}}: nothing
+               # declared their angle and their input angle carried no
+               # information, or their strong mating face pointed away from
+               # their edge, or a declared candidate set was reordered with
+               # its facing members first. A declared turn (#893/#1120) is
+               # not here.
+               'edge_angle_chosen': result.get('edge_angle_chosen') or {},
                # #975: declared edge connectors seated with pad copper inside
                # the board-edge floor because no pose the seat ladder tried
                # clears it -- the alternative was not seating them.
@@ -1661,6 +1813,16 @@ Examples:
                'keepout_copper_seeded': [[r, a] for r, a in _band_seeded],
                'oob_keepout_copper_count':
                    _pads_out.get('oob_keepout_copper_count') or 0,
+               # #1241: parts this seed placed (or moved further) with pad
+               # copper past the outline, [ref, mm past], and the locked
+               # ones it could not move: the two lists the gate charges.
+               # The board total, inherited included, is check_assembly's.
+               'pad_copper_off_board_seeded': [[r, a]
+                                               for r, a in _oob_seeded],
+               'pad_copper_off_board_locked': [[r, a]
+                                               for r, a in _oob_locked],
+               'oob_pad_copper_gating_count':
+                   _pads_out.get('oob_pad_copper_gating_count') or 0,
                'grade_warnings': len(graded.warnings),
                'crossings': after.get('crossings'),
                'hpwl': (round(after['hpwl'], 3)
@@ -1682,7 +1844,8 @@ Examples:
         graded, own, pinned)
     print("JSON_SUMMARY: " + json.dumps(summary, sort_keys=True))
     _reason = gate_reason(result['unseated'], own, _my_pads, _hole_delta,
-                          band=[r for r, _a in _band_seeded])
+                          band=[r for r, _a in _band_seeded],
+                          oob=[r for r, _a in _oob_seeded + _oob_locked])
     if _reason is None:
         _reason = fixed_pose_reason(summary)
     if _reason is not None:

@@ -208,7 +208,8 @@ def decap_only(summary):
     """True when a gated seed's ONLY gate failure is decap rules (#1191):
     its own grade errors are all `decap_distance` / `decap_pin_distance`,
     and no other gate channel fired (no part unseated, no pad or hole
-    conflict seeded, no keep-out copper, no fixed pose refused). That is the
+    conflict seeded, no keep-out copper, no pad copper left past the outline
+    (#1241), no fixed pose refused). That is the
     failure `place_seed --repair --repair-decaps` exists for. The channels
     are place_seed's `gate_reason` inputs as its summary publishes them, and
     the fixed-pose one is its own `fixed_pose_reason`."""
@@ -219,6 +220,8 @@ def decap_only(summary):
             and not summary.get('pad_conflicts_seeded')
             and not (summary.get('hole_conflicts_added') or 0) > 0
             and not summary.get('keepout_copper_seeded')
+            and not summary.get('pad_copper_off_board_seeded')
+            and not summary.get('pad_copper_off_board_locked')
             and fixed_pose_reason(summary) is None)
 
 

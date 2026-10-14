@@ -501,10 +501,55 @@ taken as the tool's, not the author's, and graded at error; a
 this touches the fab containment channel, which is not KiCad's courtyard
 rule. `check_assembly --ignore-project-severity` is the OFF arm.
 
+### WHICH WAY it opens: the facing conjunct (#1155)
+
+The nearest-edge identity reads where a part SITS, and a connector seated
+backwards sits nearest its declared edge whenever the back of its shell
+grazes it: sonde_xilinx's J2, a DSUB-9 edge-mount declared east, was seated
+with its 18 mm shell over the board and its opening pointing inward, and it
+passed this rule, board_context, check_assembly and board_score. The facing
+conjunct reads which way the body leaves its pad row -- a horizontal
+connector solders at the back and extends forward to its opening -- through
+`floorplan.edge_facing` (`placement/mating.py` has the measurement):
+
+```
+[ERROR] edge_connector: J2's body leaves its pad row toward the west
+(courtyard+fab, 7.39mm), away from its declared east edge -- its mating face
+points west, not out of the east edge
+```
+
+- **Who is graded:** an entry whose `context.mount_mode` is `edge_mount` or
+  `through_edge`; else a declared `class: edge_receptacle`; else, with no
+  class declared, a part `part_class` infers as a receptacle (#1155's J2
+  carried none). A vertical mount, `connector_affinity` and the actuators
+  are exempt -- a connector the board merely keeps near an edge need not
+  open out of it (StickHub J5 opens east from a corner of the north edge),
+  and a switch's plastic says nothing about which way it is pressed.
+- **Strong is an ERROR, weak a WARN.** A face whose offset reaches 2 mm
+  fails at the rule's severity; a weaker one at `warn`. KiCad's stock
+  library has three receptacles whose pad layout sets a confidently wrong
+  face between 0.9 and 1.4 mm, among 60+ correct USB faces in the same range.
+  Such a wrong weak face is not caught: the seeder, choosing an undeclared
+  connector's angle on a pile, tries the angles that point even a weak face
+  at the edge first, so the jack can be seated opening into the board, and
+  this conjunct then reads it as a pass. Reading the footprint's "PCB Edge"
+  marker instead is #1245.
+- **It abstains** on a symmetric part, votes that disagree, a board-copper
+  plug, a `Vertical` footprint name and a pose near a diagonal; the
+  evidence row says so (`facing.disposition: abstained`, with the reason).
+- The evidence row carries `facing` (`{edge, facing, local_face, basis,
+  offset_mm, strong, policy, reason, disposition}`) and the text line ends
+  `; facing west [courtyard+fab, strong] FAIL`. The violation's `measured`
+  has no `edge` key: the nearest-edge violation owns that one.
+- **Unchanged:** the nearest-edge identity, the seat gate, `edge_seat_rect`
+  and the default bands. `check_assembly` evaluates no intent clause, so a
+  reversed connector reaches `board_score` through this ERROR's floorplan
+  count, not through the assembly verdict.
+
 ### WHERE ALONG the edge: `center_on_edge` and `along_edge_band`
 
-`edge_connector` grades the overhang band, the nearest-edge identity and a
-setback. All three are satisfied *anywhere along* the edge — so a receptacle
+`edge_connector` grades the overhang band, the nearest-edge identity, the
+facing and a setback. All four are satisfied *anywhere along* the edge — so a receptacle
 well off the centre of its edge grades exactly as well as a centred one. On a
 stick-shaped board where the PCB is the plug body, that is the difference
 between a product and something a human rejects on sight. Measured on this
@@ -615,7 +660,9 @@ at one margin and failed it at the other.
 The band is now graded on the **drawn body's overhang past the outline, at
 zero margin**, whenever that body can be measured. That means a declared
 `edge`, a closed convex Fab outline (SilkS when the part draws nothing on
-Fab) and a rectangular Edge.Cuts outline. A zero `min` is therefore
+Fab, or when its Fab drawing is a marking such as a pin-1 dot -- the same
+`body.fab_cannot_be_body` decision the facing grade reads, #1243) and a
+rectangular Edge.Cuts outline. A zero `min` is therefore
 nonbinding and a positive `min` is a real conjunct. Like the occupancy reading
 it replaces, the graded number is summed over every side the body crosses, so
 a corner part counts both sides. For a body that crosses only its declared
@@ -707,6 +754,11 @@ a clearance shortfall into an unseated connector, which is an unrouted one.
 The kept shortfall is reported in `place_seed`'s `edge_floor_fallback`, with the
 pads and the reason the seat could not move; the copper itself is graded in
 `pad_edge_after` as before. A rotation is never changed to clear the floor.
+A kept seat whose copper reaches PAST the outline, not just into the floor,
+fails a seed's gate (exit 4, `pad_copper_off_board_seeded`, #1241): the
+seat is still written, for inspection, but the seed is not passed as
+buildable. `place_seed --repair` and `--reseat` are not gated this way yet
+(#1241).
 
 Every declared connector on the board gets a row in `edge_connector_evidence`
 (`--json`), including passing ones. Each row carries:
@@ -873,12 +925,12 @@ status from this list:
 | rule | fires when | measured with |
 |---|---|---|
 | `envelope` | the declared envelope is not the board's outline | `board_bounds` |
-| `zone_containment` | a member's courtyard leaves its block's zone | `GradedPart.rect`. **Enforced, not only graded, since [#702](https://github.com/drandyhaas/KiCadRoutingTools/issues/702)** — the quench refuses such a MOVE, through the same `zone_escape` this rule calls |
+| `zone_containment` | a member's courtyard leaves its block's zone. A zone side is OPEN for an edge-claim member when that side lies on the outline (within 0.01 mm) and the member's claim names that edge with an `overhang_mm.max` ([#1174](https://github.com/drandyhaas/KiCadRoutingTools/issues/1174)): the edge rule bounds how far past the edge it may go, so the zone does not eject it for going there. Its PADS stay graded there, against the board's own side and at zero whatever the zone's tolerance: pad copper past it is the error (`measured.pads_graded`), since a soldered pad cannot overhang; castellated pads are left out, as the edge rule leaves them out | `GradedPart.rect`. **Enforced, not only graded, since [#702](https://github.com/drandyhaas/KiCadRoutingTools/issues/702)** — the quench refuses such a MOVE, through the same `zone_escape` this rule calls, with the same open sides (`zone_open_sides`), as do the feasibility check, the plan check and the seeder's notes |
 | `zone_side` | a member is on the other face | `legality.footprint_side` |
 | `assembly_side` | a part sits on a face the board's declared assembly policy does not populate. **warn** by default (#837): nothing in the engine can move a part between faces, so an error would be a red mark no run could clear | `legality.assembly_census`, body face — the pad-bearing population, so a zero-pad graphic on the back is not a part (and since #1143 a part whose only pads are paste/mask apertures is zero-pad too) |
 | `zone_exclusive` | a non-member intrudes on a reserved zone | `rect_overlap_area`, **courtyard only** — a through-hole stranger's leads may cross a reserved zone, unlike a keep-out's. **Enforced since [#702](https://github.com/drandyhaas/KiCadRoutingTools/issues/702)**, same way — and since [#797](https://github.com/drandyhaas/KiCadRoutingTools/issues/797) the seat search refuses such a pose too, with the verdict `zone_exclusive_blocks` |
 | `keepout` | any part enters a keep-out, unless in `allow` | courtyard **and** through-hole rect. **Enforced, not only graded, since [#701](https://github.com/drandyhaas/KiCadRoutingTools/issues/701)** — the seat search refuses such a pose through the same `keepout_hit` this rule calls — and since [#702](https://github.com/drandyhaas/KiCadRoutingTools/issues/702) the quench refuses such a MOVE through it too |
-| `edge_connector` | overhang outside `[min,max]`; the wrong edge; on the body path, pad copper past the OUTLINE (castellated pads excepted); a `connector_affinity` entry seated more than 3 mm from every edge fires at **warn** whatever the configured severity | the band: the drawn body's overhang past the outline, summed over the sides it crosses (`body_outside_mm`, `connector_geometry`, #961), else `BoardOutlineGate.rect_outside_amount`; the seat: `edge_clearance` |
+| `edge_connector` | overhang outside `[min,max]`; the wrong edge; a graded receptacle whose mating face points away from its declared edge (**error** on a strong face, **warn** on a weak one, #1155); on the body path, pad copper past the OUTLINE (castellated pads excepted); a `connector_affinity` entry seated more than 3 mm from every edge fires at **warn** whatever the configured severity | the band: the drawn body's overhang past the outline, summed over the sides it crosses (`body_outside_mm`, `connector_geometry`, #961), else `BoardOutlineGate.rect_outside_amount`; the seat: `edge_clearance` |
 | `decap_distance` | a decoupling cap is too far from its own IC | `groups.decap_populations` (`near`) |
 | `decap_ungraded` | a cap in scope lies BEYOND the tether search radius, so `decap_distance` never measured it against the declared limit — a claim about COVERAGE, not compliance. **warn** by default ([#794](https://github.com/drandyhaas/KiCadRoutingTools/issues/794)). **ERROR, per cap, for a cap in `decaps.within_radius_refs`** ([#1142](https://github.com/drandyhaas/KiCadRoutingTools/issues/1142)): one the `--decaps-from` reference keeps inside the radius, so leaving it beyond strands a decoupler. An explicit `severity.decap_ungraded` wins either way | `groups.decap_populations` (`beyond`) |
 | `decap_pin_distance` | a DECLARED supply pin is further than `max_pin_distance_mm` from the nearest decoupling cap on its own rail, pad edge to pad edge ([#705](https://github.com/drandyhaas/KiCadRoutingTools/issues/705)) | `floorplan.supply_pins`, `legality.pad_rect` + `rect_gap` |
@@ -1492,13 +1544,33 @@ Parts already overhanging the outline are recorded as `edge_connectors` by
 observation, which is what stops `oob_count` reporting a card edge or USB shell
 as a defect forever.
 
+An edge part whose STRONG mating face points at another edge than the one it
+sits nearest -- the opposite edge (seated reversed) or one at right angles
+(opening along its edge) -- is not given that edge by the emitter: the entry
+keeps its ref and band, drops `edge`, is flagged `suspect`, and its `note`
+says which of the two it measured (#1155).
+Declaring it would bless the very pose the facing conjunct fails. On the 22
+tracked boards and the fa10 designer boards it never fires.
+
+Emitted zones are rounded to 3 decimals and clamped inside the envelope,
+which is written at 4 (#1174) -- a zone rounded past its envelope failed
+`validate_intent` at tolerance 0 on the board it came from (CM5_MINIMA_3:
+its x-min 75.0504 rounded to 75.05, 0.4 um outside the 4-decimal envelope;
+test_1174 pins the case with rp2350's outline moved to 86.9714). An overhanging edge member is no longer clamped OUT of its block's
+zone either: the zone side on its edge is open (above), so rp2350's J1 no
+longer reads 1.93 mm outside a zone the emitter drew around it.
+
 With `--declare-classes`, connector-family parts that claim no edge (headers,
 JST, terminal blocks; `part_class` calls them `connector_affinity`) are also
 recorded, with `"class": "connector_affinity"` and **no `edge`** (naming one
 would be an invention). The grade then flags such a part seated more than
 3 mm from every edge at `warn` only, because legitimately interior connectors
-exist; write `max_setback_mm` or `edge` on the entry to make it a real claim
-at the configured severity.
+exist; write `max_setback_mm` on the entry to hold that setback at the
+configured severity. Writing `edge` does not upgrade the interior flag --
+it stays a `warn` -- but it adds the nearest-edge identity and the overhang
+band at the configured severity. The facing conjunct never grades a
+`connector_affinity` entry unless the entry declares `context.mount_mode`
+`edge_mount` or `through_edge`, which outranks its class.
 
 These entries are **declarations, not seat claims**, and the placement engines
 do not act on them. `edge_connectors` therefore holds two populations, and
@@ -1507,7 +1579,7 @@ do not act on them. `edge_connectors` therefore holds two populations, and
 (banded off-outline allowance, exchange-stage exclusion) and
 `reconstruct.classify` (the anchor tier) read. The `edge_connector` **rule**
 reads the whole key, because flagging an interior pose is the entry's only
-purpose. Writing `max_setback_mm` or `edge` on an entry changes its class-based
+purpose. Writing `max_setback_mm` on an entry changes its class-based
 severity, not its membership -- to hand a part the edge-part treatment in the
 engines, declare it with an edge class.
 
