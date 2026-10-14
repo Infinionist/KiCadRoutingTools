@@ -8684,7 +8684,14 @@ def emit_intent(pcb_data, pcb_file: str, *,
         _ref_pcb = _parse_ref(decaps_from)
         _ref_census = decap_census(_ref_pcb)
         _limit, _why = _decap_derivation(_ref_census)
-        _census['reference_board'] = decaps_from
+        # #1175: the reference is NAMED, as the basis already names it, and
+        # identified by its bytes -- never pointed at. The reference is
+        # typically a human layout, and an intent carrying its path hands a
+        # run that grades against it the one file it must not read.
+        from .provenance import sha256_file as _sha256_file
+        _ref_name = os.path.basename(decaps_from)
+        _census['reference_board'] = _ref_name
+        _census['reference_board_sha256'] = _sha256_file(decaps_from)
         _census['reference_tethers'] = _ref_census.get('tethers')
         # The reference REPLACES the auto/strict arms: an auto withholding
         # about THIS board is not a statement about the number written.
@@ -8732,12 +8739,12 @@ def emit_intent(pcb_data, pcb_file: str, *,
                 _ref_state.stacked_suspect_refs)
         if _limit is None:
             _withheld['decaps.max_distance_mm'] = (
-                f"the reference board {decaps_from}: {_why}")
+                f"the reference board {_ref_name}: {_why}")
         else:
             _decaps['max_distance_mm'] = _limit
             _census['emitted_max_distance_mm'] = _limit
             _census['decaps_basis'] = ('reference:'
-                                       + os.path.basename(decaps_from))
+                                       + _ref_name)
             # #1102: the tether currency is the cap to the chip's inflated
             # PAD BBOX, and it stops at the 5 mm search radius -- a cap
             # left 10 mm away is only `decap_ungraded`, a WARN. A cap the
@@ -8789,7 +8796,7 @@ def emit_intent(pcb_data, pcb_file: str, *,
             # graded" (#1102 verifier: esp_prog graded against its own
             # --decaps-from intent went pass/exit 0 -> exit 4).
             _census['pin_limit_withheld'] = (
-                f"the reference board {decaps_from}: {_pin_why}")
+                f"the reference board {_ref_name}: {_pin_why}")
         else:
             _decaps['max_pin_distance_mm'] = _pin_limit
             _census['emitted_max_pin_distance_mm'] = _pin_limit

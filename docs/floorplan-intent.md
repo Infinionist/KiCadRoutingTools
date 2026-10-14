@@ -1499,7 +1499,12 @@ never fire on an auto-emitted intent. With `--declare-decaps` it derives
 PLACED REFERENCE of the same design instead -- a human layout, an earlier
 placement -- which is the only way to arm the rule on a pile, where there is
 nothing to read. Same derivation and withholding; the basis is
-`reference:<file>`, in the census and in `context.basis`. It withholds when
+`reference:<file>`, in the census and in `context.basis`. The intent NAMES the
+reference and never points at it (#1175): `context.decap_census.reference_board`
+is the file's basename, `reference_board_sha256` identifies its bytes, and a
+withholding reason names the basename too. The reference is usually a human
+layout, and a run that grades against an intent carrying its path is one Read
+away from the placement it must not match. It withholds when
 the two boards share, under the same reference and footprint, under 90% of
 EITHER board's pad-bearing parts (another design: a small board of generic
 passives shares most of ITS parts with almost any large one), and when the
