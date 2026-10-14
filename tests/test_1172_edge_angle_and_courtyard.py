@@ -873,6 +873,39 @@ class TheFallBack(unittest.TestCase):
                             in n for n in res['notes']), res['notes'])
 
 
+    def test_a_chosen_angle_too_wide_for_the_edge_falls_back(self):
+        """A strong-faced jack 20 mm along its pad row on a 15 mm wide board,
+        input 90 -- facing east, across its north claim. Its facing angle,
+        180, is wider than the edge, so stage 1 refuses it before the turn;
+        the part still gets the attempt from its input angle, which seats it
+        on its edge exactly as the arm without #1172 does, instead of being
+        left to the later stages and parked in the interior. The note says
+        the chosen angle does not fit, and that the kept one faces away."""
+        with tempfile.TemporaryDirectory() as td:
+            b = _board(td, [
+                _rect_part('J1', 7.5, 20, (-10, -2, 10, 7),
+                           [(-1, 0, .6, .6, 2), (1, 0, .6, .6, 1)],
+                           name='t:JACK')], w=15.0, h=40.0)
+            b90 = os.path.join(td, 'b90.kicad_pcb')
+            check([PY, '-X', 'utf8', 'py_placer/place_pose.py', b, b90,
+                   '--force', 'set', 'J1', '7.5', '20', '--rot', '90'],
+                  accept=True)
+            intent = _intent(td, b90, [{'ref': 'J1', 'edge': 'north',
+                                        'class': 'edge_receptacle',
+                                        'overhang_mm': {'min': 0, 'max': 1}}])
+            _pcb, res, poses = _seed(b90, intent, ('J1',))
+            with flags(_stage1_choose_edge_angle=False,
+                       _edge_courtyard_tier=False):
+                _pcb, _r, off = _seed(b90, intent, ('J1',))
+        self.assertEqual(poses['J1'], off['J1'])
+        self.assertNotIn('J1', res['unseated'])
+        fell = [n for n in res['notes'] if 'before any angle was chosen' in n]
+        self.assertEqual(len(fell), 1, res['notes'])
+        self.assertIn('no angle stage 1 chose ([180.0]) fits the north edge',
+                      fell[0])
+        self.assertIn('which seats it clear -- an angle at which its mating '
+                      'face points away from the north edge', fell[0])
+
     def _floor_board(self, td, blocks=()):
         """J1, a faceless 4 x 4 box, claimed on the north edge of the
         standard 40 mm board; R1 (locked) has a courtyard over the middle of

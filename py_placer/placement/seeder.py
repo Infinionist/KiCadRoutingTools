@@ -5859,6 +5859,14 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             # pad-crowded one when none does.
             _t2 = _out == 'clean_t2'
             _out = 'crowded' if _t2 else _out
+            # #1172: stage 1's OWN angles refused before the turn ('skip':
+            # wider than the edge, or outside its window, at every one of
+            # them) still owe the part the attempt from its input angle, as
+            # every other way of not seating at them does -- read as refused
+            # after the turn, the walk finds no other angle that fits and
+            # the fall-back below makes that attempt.
+            _skip1172 = isinstance(_claim, _ChosenRot) and _out == 'skip'
+            _out = 'skip_late' if _skip1172 else _out
             if (_out not in ('crowded', 'skip_late') or _claim is None
                     or _claim[0] is not None or not _claim[1]):
                 continue
@@ -5917,9 +5925,10 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 # the first that seats PAD-clear, overlapping only a placed
                 # courtyard (round-2 verifier: orangecrab's pile shorted J5
                 # against J1 at its input 0 where 90 seated pad-clear). Only
-                # when none does is the part given the attempt it had before
-                # stage 1 chose anything, from its input angle -- the old
-                # attempt, which may still crowd, exactly as before #1172. An
+                # when none does -- or none even fits the edge -- is the part
+                # given the attempt it had before stage 1 chose anything, from
+                # its input angle -- the old attempt, which may still crowd,
+                # exactly as before #1172. An
                 # uninformative input's set holds the input angle itself
                 # (unless it is deeper than the board past the band's max,
                 # where it cannot seat), which the walk already tried; a
@@ -5949,11 +5958,14 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                         }.get(_o_in, 'which leaves it to the later stages')
                 _away = (stage1_why.get(_ref1125) or '').startswith(
                     'its mating face pointed')
+                _none = (f"fits the {edge} edge" if _skip1172 else
+                         f"seats it clear of what is placed on the {edge} "
+                         f"edge")
                 notes.append(
                     f"edge connector {_ref1125}: no angle stage 1 chose "
-                    f"({_set}) seats it clear of what is placed on the "
-                    f"{edge} edge, so it gets the attempt it had before any "
-                    f"angle was chosen, from its input {_pose1125[2]:g}deg, "
+                    f"({_set}) {_none}, so it gets the attempt it had before "
+                    f"any angle was chosen, from its input "
+                    f"{_pose1125[2]:g}deg, "
                     f"{_how}"
                     + (f" -- an angle at which its mating face points away "
                        f"from the {edge} edge, which the facing grade "

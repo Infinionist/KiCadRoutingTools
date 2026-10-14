@@ -200,6 +200,12 @@ ROWS = [
      "                        and _ref1125 in edge_floor_fallback):\n",
      "                        and False):\n",
      (T1172,), 'KILLED'),
+    # -- the PR review's: chosen angles that do not fit the edge at all
+    #    still owe the part its input-angle attempt --
+    ('a-chosen-angle-that-does-not-fit-skips-the-input-attempt', 'sd',
+     "            _out = 'skip_late' if _skip1172 else _out\n",
+     "            _out = _out\n",
+     (T1172,), 'KILLED'),
     # -- the final review's: the #1125 walk's note named the wrong seat --
     ('the-walk-note-names-the-crowded-member', 'sd',
      "                       if _t2m is not None else\n",
