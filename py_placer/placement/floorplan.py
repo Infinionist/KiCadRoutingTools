@@ -8561,12 +8561,19 @@ def _emitted_basis(decaps, budget, conns, blocks,
     return out
 
 
+#: #1155: the edge across the board from each edge.
+_OPPOSITE_EDGE = {'north': 'south', 'south': 'north',
+                  'east': 'west', 'west': 'east'}
+
+
 def _withhold_reversed_edge(entry: Dict, pcb_data, pcb_file: str,
                             cache: Dict[str, object]) -> None:
     """#1155: drop an emitted entry's edge when the part's STRONG mating face
-    points away from it -- a reversed pose. "The emitted intent grades CLEAN
-    by construction" (`emit_intent`) and must not bless the very pose the
-    facing conjunct ERRORs, so no edge is declared and the entry says why.
+    points at another edge -- the opposite one (a reversed pose) or one at
+    right angles (the part opens along the edge it sits nearest). "The
+    emitted intent grades CLEAN by construction" (`emit_intent`) and must not
+    bless the very pose the facing conjunct ERRORs, so no edge is declared
+    and the entry says which of the two it measured.
     Measured on the 22 tracked boards and the fa10 designer boards: it never
     fires (`tests/measure_1155_mating_census.py`)."""
     edge = entry.get('edge')
@@ -8585,9 +8592,14 @@ def _withhold_reversed_edge(entry: Dict, pcb_data, pcb_file: str,
         # -- a part opening west that sits nearest east is either reversed
         # on the east edge or a west-edge part displaced -- so neither is
         # declared, and run-8 A3's machine-readable flag says why.
+        if _OPPOSITE_EDGE.get(edge) == ef['facing']:
+            how = (f"away from the {edge} edge it sits nearest: a reversed "
+                   f"pose")
+        else:
+            how = (f"along the {edge} edge it sits nearest rather than out "
+                   f"of it")
         why = (f"its mating face points {ef['facing']} ({ef['basis']}, "
-               f"{ef['offset_mm']:.2f}mm), away from the {edge} edge it "
-               f"sits nearest: a reversed pose (#1155)")
+               f"{ef['offset_mm']:.2f}mm), {how} (#1155)")
         entry.pop('edge')
         entry['suspect'] = True
         entry['suspect_reason'] = why

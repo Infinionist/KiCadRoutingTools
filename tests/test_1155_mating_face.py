@@ -224,6 +224,34 @@ class ThePolicy(unittest.TestCase):
         self.assertFalse(ef['fails'])
         self.assertIsNone(ef['facing'])
 
+    def test_the_emitter_names_what_it_measured(self):
+        """`emit_intent` withholds an edge its strong face fails. sonde_u J2
+        faces east: against a west edge that is a reversed pose; against a
+        north one it opens ALONG that edge, which is not called reversed.
+        A passing entry keeps its edge."""
+        path = os.path.join(ROOT, 'kicad_files', 'sonde_u.kicad_pcb')
+        pcb = parse_kicad_pcb(path)
+        cache = {}
+
+        def withhold(edge):
+            e = {'ref': 'J2', 'edge': edge, 'class': 'edge_receptacle'}
+            floorplan._withhold_reversed_edge(e, pcb, path, cache)
+            return e
+        kept = withhold('east')
+        self.assertEqual(kept.get('edge'), 'east')
+        self.assertNotIn('suspect', kept)
+        rev = withhold('west')
+        self.assertNotIn('edge', rev)
+        self.assertIs(rev['suspect'], True)
+        self.assertIn('away from the west edge', rev['suspect_reason'])
+        self.assertIn('a reversed pose', rev['suspect_reason'])
+        perp = withhold('north')
+        self.assertNotIn('edge', perp)
+        self.assertIs(perp['suspect'], True)
+        self.assertIn('along the north edge', perp['suspect_reason'])
+        self.assertNotIn('reversed', perp['suspect_reason'])
+        self.assertIn('SUSPECT', perp['note'])
+
 
 class TheStockCounterexamples(unittest.TestCase):
     """The phase verifier's sweep of KiCad 10's stock library found three

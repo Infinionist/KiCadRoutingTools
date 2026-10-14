@@ -128,6 +128,10 @@ ROWS = [
      "        entry['note'] = (f\"{entry['note']}; {note}\" if entry.get('note')\n",
      "        entry['note'] = (note if entry.get('note')\n",
      (T_REV,), 'KILLED'),
+    ('emitter-calls-a-perpendicular-face-reversed', 'fp',
+     "        if _OPPOSITE_EDGE.get(edge) == ef['facing']:\n",
+     "        if True:\n",
+     (T_FACE,), 'KILLED'),
     # -- the sheet (py_tools/board_context.py) --
     ('board-context-reads-the-nearest-edge', 'bc',
      "        edge = _LETTER.get(facing, near)\n",
