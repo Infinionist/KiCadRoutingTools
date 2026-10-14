@@ -388,6 +388,17 @@ def reseat_decline_line(ref, rec):
             f"where the polish left it, and its grade error stands")
 
 
+def error_rules(errors):
+    """`{rule: count}` of graded violations: WHICH rules a gate failure is
+    made of (#1191). A count names nothing, so compare_seeds could not tell
+    a seed failing only `decap_distance` -- which `--repair --repair-decaps`
+    is for -- from one failing anything else."""
+    out = {}
+    for v in errors:
+        out[v.rule] = out.get(v.rule, 0) + 1
+    return out
+
+
 def gate_reason(unseated, own, my_pads, hole_delta, band=()):
     """The one stderr line that says WHY this seed did not pass its gate.
 
@@ -1125,6 +1136,7 @@ Examples:
             own, pinned = _split_pinned(graded, args.output_file, intent)
             _print_grade(own, pinned)
             summary['grade_errors'] = len(own)
+            summary['grade_error_rules'] = error_rules(own)
             summary['grade_errors_pinned'] = len(pinned)
             # #974: the same own/pinned lists that decide exit_rc below.
             summary['connector_requirements'] = floorplan.connector_requirements(
@@ -1625,6 +1637,7 @@ Examples:
                    if not e.get('accepted')),
                'locked': n_locked,
                'grade_errors': len(own),
+               'grade_error_rules': error_rules(own),
                'grade_errors_pinned': len(pinned),
                # run 27: the copper this seed arranged, graded. `_seeded`
                # names the pairs; `_inherited` is the board's own and is

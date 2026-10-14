@@ -270,8 +270,16 @@ python py_placer/compare_seeds.py board.kicad_pcb --intent floorplan.json \
 
 Per seed: a `place_seed` run (a seed failing its own intent gate is
 recorded but never ranked), then a probe of `'*'` minus the ignored nets
-with identical route args. Emits a ranked table, `seeds.json`, and a
-`JSON_SUMMARY` with `best_seed`. Exit 0 with a ranked winner, 4 when
+with identical route args. Seeds rank by probe failures, then, when failures
+tie, by the probe's vias, then its `copper_mm` (board_score's routed-copper
+measure, read off the routed probe board), then router iterations (#1191).
+A seed whose ONLY gate failure is decap rules (`decap_distance` /
+`decap_pin_distance`, with nothing unseated and no copper conflict seeded)
+is repaired with `place_seed --repair --repair-decaps` into
+`seed_N_repaired.kicad_pcb`. When the repaired board passes the same gate,
+that board is probed and ranked (gate `rep`, row `repair`), so a pile whose
+intent arms the decap rule is rankable. Emits a ranked table, `seeds.json`,
+and a `JSON_SUMMARY` with `best_seed` and `best_board`. Exit 0 with a ranked winner, 4 when
 nothing was rankable -- including when every probe ran but produced no
 verdict, which returned 0 with `best_seed: null` until #713 fixed it.
 When `place_seed` refuses the zone PLAN (its exit 5, #959), the plan is the
@@ -330,8 +338,9 @@ left unseated, or written at another angle, is a hard fail and ranks last. An
 angle where a seed's re-seat could not put the part back (`reseat_declined`,
 #1117) ranks after every angle whose seeds held it, and still ranks. The
 rest rank by unseated parts, then a probe verdict when `--probe` routed it
-(the top `--probe-top` angles, full-board, no timeout), then median crossings,
-hpwl and grade errors; a tie goes to the earlier angle in the ladder (the
+(the top `--probe-top` angles, full-board, no timeout) -- median failures,
+then median probe vias, then median probe `copper_mm` (#1191) -- then median
+crossings, hpwl and grade errors; a tie goes to the earlier angle in the ladder (the
 input angle when it is ranked). Any other seed that fails its intent gate is
 not a tier -- on a pile most do, for repairable reasons -- but each angle reports
 how many of its seeds did, and the winner line says so. A CONTROL arm seeds
