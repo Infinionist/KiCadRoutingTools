@@ -5881,11 +5881,19 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 else:
                     _stage1_one(k, c)
                 _set = [float(r) for r in _claim[1]]
+                # The note names the seat the redo above MADE: a pad-clear
+                # one outranks a crowded one (final review: it used to name
+                # the crowded member, or "left to the later stages", while
+                # J5 sat at the pad-clear 90).
                 notes.append(
                     f"edge connector {_ref1125}: no member of its "
                     f"rotation_candidates {_set} seats clear on the {edge} "
                     f"edge, so "
-                    + (f"it keeps the crowded seat of {_crowded:g}deg, the "
+                    + (f"it keeps the pad-clear seat of {_t2m:g}deg, the "
+                       f"first member whose seat crowds no placed pad -- it "
+                       f"overlaps only a placed courtyard (#1125, #1172)"
+                       if _t2m is not None else
+                       f"it keeps the crowded seat of {_crowded:g}deg, the "
                        f"first member that seats there at all (#1125)"
                        if _crowded is not None else
                        f"none seats there and it is left to the later "

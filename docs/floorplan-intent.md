@@ -1476,8 +1476,9 @@ tracked boards and the fa10 designer boards it never fires.
 
 Emitted zones are rounded to 3 decimals and clamped inside the envelope,
 which is written at 4 (#1174) -- a zone rounded past its envelope failed
-`validate_intent` at tolerance 0 on the board it came from (rp2350, at
-86.9714). An overhanging edge member is no longer clamped OUT of its block's
+`validate_intent` at tolerance 0 on the board it came from (CM5_MINIMA_3:
+its x-min 75.0504 rounded to 75.05, 0.4 um outside the 4-decimal envelope;
+test_1174 pins the case with rp2350's outline moved to 86.9714). An overhanging edge member is no longer clamped OUT of its block's
 zone either: the zone side on its edge is open (above), so rp2350's J1 no
 longer reads 1.93 mm outside a zone the emitter drew around it.
 
@@ -1490,7 +1491,8 @@ exist; write `max_setback_mm` on the entry to hold that setback at the
 configured severity. Writing `edge` does not upgrade the interior flag --
 it stays a `warn` -- but it adds the nearest-edge identity and the overhang
 band at the configured severity. The facing conjunct never grades a
-`connector_affinity` entry.
+`connector_affinity` entry unless the entry declares `context.mount_mode`
+`edge_mount` or `through_edge`, which outranks its class.
 
 These entries are **declarations, not seat claims**, and the placement engines
 do not act on them. `edge_connectors` therefore holds two populations, and

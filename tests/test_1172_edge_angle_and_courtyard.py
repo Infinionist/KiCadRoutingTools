@@ -193,7 +193,7 @@ class GlasgowBoxHeaders(unittest.TestCase):
                             for n in res['notes']), res['notes'])
 
     def test_a_clean_input_outranks_a_pad_clear_seat(self):
-        """J3 alone (J2 stays in the pile, which never counts): every angle
+        """J3 alone (J2 keeps its pile pose, counted as placed): every angle
         but the input 0 is made to overlap a placed courtyard. An
         uninformative input's set holds every quarter turn, the input angle
         included, so the walk itself finds 0 clean and keeps it over the

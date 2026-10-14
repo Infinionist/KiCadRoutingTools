@@ -43,6 +43,7 @@ TARGETS = {
 }
 
 T1172 = os.path.join(_TESTS, 'test_1172_edge_angle_and_courtyard.py')
+T983 = os.path.join(_TESTS, 'test_983_seat_grade_bounds.py')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -183,6 +184,11 @@ ROWS = [
      "                    _stage1_one(k, c, _member1125=_t2m)\n",
      "                    _stage1_one(k, c)\n",
      (T1172,), 'KILLED'),
+    # -- the final review's: the #1125 walk's note named the wrong seat --
+    ('the-walk-note-names-the-crowded-member', 'sd',
+     "                       if _t2m is not None else\n",
+     "                       if False else\n",
+     (T983,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)

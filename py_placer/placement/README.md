@@ -248,7 +248,7 @@ parts, and parts outside `seed_refs`, count as placed before stage 0):
 | stage | what it seats |
 |---|---|
 | 0 | `fixed_poses[]` (#1054): EXACTLY at the declared pose, a check and never a search -- courtyards may abut (KiCad's rule) but not overlap, pads and holes keep their clearance, and every declared pose is judged against every other one, so a clashing pair is refused BOTH; an illegal pose is refused with its measurement and the part held out of every later stage. Seated parts are stamped `(locked yes)` |
-| 1 | edge connectors on their declared edge, inside the overhang band. The edge seat bypasses `pose_ok` (it overhangs by design), so `edge_seat_ok` carries its own conjuncts -- band, pads on the board, keep-outs, exclusive zones and, since #1044, the board's rule-area `(tracks not_allowed)` bands, ABSOLUTE: a band pose is refused by name and the connector left to the later stages rather than seated where no track can reach its pad. Its ANGLE (#1172): an undeclared connector whose input angle carries no information -- the board is a pile, the part a stacked suspect, or every pad off the outline -- is tried at each quarter turn, least depth into the board first; a STRONG mating face (#1155, `mating.py`) decides it outright, and turns a part facing away from its edge on any board. A rung must clear the courtyards stage 1 has already seated as well as their pads (`_placed_courtyard_hits`, the floorplan budget's currency); only when no rung does is the old pad-only seat kept, and the overlap named. Stage 1's own angles are walked in its order: the first that seats clean is kept, else the first that seats pad-clear (overlapping only a placed courtyard, named); when none does, the part gets the attempt it had before any angle was chosen, from its input angle -- the attempt stage 1 always made, which may still crowd, as it did before #1172 -- and the note says what it did and when that angle points a strong face away. Stage 1 never keeps a pad-crowded seat at an angle it CHOSE. An angle is dropped as deeper than the board only past the band's `max` overhang. Packing an edge's claims by width when equal fractions would overlap them is opt-in (`seeder._stage1_packed_starts`): measured, a trade rather than a default |
+| 1 | edge connectors on their declared edge, inside the overhang band. The edge seat bypasses `pose_ok` (it overhangs by design), so `edge_seat_ok` carries its own conjuncts -- band, pads on the board, keep-outs, exclusive zones and, since #1044, the board's rule-area `(tracks not_allowed)` bands, ABSOLUTE: a band pose is refused by name and the connector left to the later stages rather than seated where no track can reach its pad. Its ANGLE (#1172): an undeclared connector whose input angle carries no information -- the board is a pile, the part a stacked suspect, or every pad off the outline -- is tried at each quarter turn, least depth into the board first; a STRONG mating face (#1155, `mating.py`) decides it outright, and turns a part facing away from its edge on any board. A rung must clear the courtyards stage 1 has already seated as well as their pads (`_placed_courtyard_hits`, the floorplan budget's currency); only when no rung does is the old pad-only seat kept, and the overlap named. Stage 1's own angles are walked in its order: the first that seats clean is kept, else the first that seats pad-clear (overlapping only a placed courtyard, named); when every one seats crowded or is refused after the turn, the part gets the attempt it had before any angle was chosen, from its input angle -- the attempt stage 1 always made, which may still crowd, as it did before #1172 -- and the note says what it did and when that angle points a strong face away. Stage 1 never keeps a pad-crowded seat at an angle it CHOSE. When its first angle is refused before the turn (wider than the edge, outside its window), the part is left to the later stages without the input attempt (on sonde_u's J1, 54 mm on a 43 mm edge, the input angle is refused alike). An angle is dropped as deeper than the board only past the band's `max` overhang. Packing an edge's claims by width when equal fractions would overlap them is opt-in (`seeder._stage1_packed_starts`): measured, a trade rather than a default |
 | 1.5 | `must_lock` parts, at their current pose where it is legal |
 | 2 | zoned blocks, packed radially from the zone centre; a declared array whose members all sit in one zoned block is seated into it whole (stage 2.45) |
 | 2.4 | declared non-zoned arrays: each row's served part, then the row (stage 2.45), each row at its members' rank. A row member is never seated alone here. The order is disclosed in the seeder's `early_order` |
@@ -266,7 +266,10 @@ is `[ref, mm]` for each part the seed MOVED whose pad copper went deeper into a
 `(tracks not_allowed)` band than at its input pose, and exits 4 on it;
 `oob_keepout_copper_count` is the written board's total, inherited ones
 included (reported, not charged). `edge_angle_chosen` names every edge
-connector stage 1 TURNED -- `{ref: {from, to, why, candidates}}` (#1172).
+connector stage 1 turned to an angle IT chose or narrowed (#1172) --
+`{ref: {from, to, why, candidates}}`: an undeclared one, or a declared
+`rotation_candidates` set narrowed to its facing members. A turn to an
+angle the author declared outright (#893, #1120) is not in it.
 
 Every `JSON_SUMMARY` it prints (seed, `--repair`, `--reseat`) carries
 `connector_requirements` (#974): the declared edge connectors' graded
@@ -310,10 +313,12 @@ An undeclared EDGE connector is the exception to keeping the input angle:
 stage 1 chooses its angle when the input carries none, or when its strong
 mating face points away from its edge (#1172, above), and `_seat_edge`
 (`--repair`) turns such a part to the facing quarter turn or refuses it by
-name. Neither CHOOSES a reversed angle. Two paths still leave one, each
-named and graded: an author's declared single `rotation` (kept, with a
-note), and stage 1's fall-back to the input angle when no facing angle
-seats even pad-clear (the facing grade reports it).
+name. Neither CHOOSES a reversed angle. What still leaves one is named and
+graded: an author's declaration -- a single `rotation`, or a
+`rotation_candidates` set none of whose members faces the edge (each kept,
+with a note; `--repair` seats a declared ladder as declared) -- and stage
+1's fall-back to the input angle when no facing angle seats even pad-clear.
+The facing grade reports every one.
 
 ### The eviction rung (`--evict-depth`, #630, #699)
 

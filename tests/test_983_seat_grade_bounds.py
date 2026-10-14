@@ -636,6 +636,34 @@ class StageOneRotation(_Graded):
         self.assertTrue([n for n in res['notes'] if '(#1125)' in n],
                         res['notes'])
 
+    def test_c21_the_fall_back_note_names_the_pad_clear_seat_it_keeps(self):
+        """#1172 with #1125: 180 crowds J17's pads (or is refused after the
+        turn) and 90 seats pad-clear but over a placed courtyard (made so
+        here), so no member seats clean and the walk keeps 90's pad-clear
+        seat. The note names THAT seat -- it used to name 180's crowded seat,
+        or say J5 was "left to the later stages" while stage 1 had seated it
+        (final review)."""
+        real = seeder._placed_courtyard_hits
+
+        def hits(state, ref, pose, others):
+            if ref == 'J5' and abs((pose[2] - 90.0 + 180.0) % 360.0
+                                   - 180.0) < 1e-6:
+                return ['J16']
+            return real(state, ref, pose, others)
+        for refused in ((), (180.0,)):
+            with self.subTest(refused=refused), \
+                    patch.object(seeder, '_placed_courtyard_hits', hits), \
+                    self.refusing(refused):
+                res = self.seat_j5_set([180, 90])
+                self.assertAlmostEqual(self.pose(res, 'J5')[2] % 360.0, 90.0,
+                                       delta=1e-6)
+                notes = self.j5_notes(res)
+                self.assertTrue([n for n in notes if
+                                 'keeps the pad-clear seat of 90deg' in n],
+                                notes)
+                self.assertFalse([n for n in notes if 'crowded seat of' in n
+                                  or 'left to the later stages' in n], notes)
+
     @_pad_only
     def test_c17_a_member_refused_after_the_turn_is_walked_past(self):
         clear90 = self.seat_j5_single(90)
