@@ -264,16 +264,30 @@ def _seeder_forecast(doc, pcb, board, sources):
     return out
 
 
+#: #1105: how an author seats an owner IC before the per-supply-pin stage --
+#: the routes `seeder.decap_pin_forecast` counts as "early".
+DECLARE_OWNERS_HOW = ('a fixed_poses[] entry, a must_lock pattern or a '
+                      'zoned block')
+
+
 def _forecast_clause(cen):
     """#1105: the tail of the emitter's decap line -- what place_seed's pin
     stages can claim from this intent, by stage, and what they never can.
-    Falls back to the census's scope count when no forecast was taken."""
+
+    It promises only what the stage can do on the board it was emitted
+    from. The pin stage serves the supply pins of owner ICs seated BEFORE
+    it, so on a pile, where no owner is placed, locked or declared, it
+    claims nothing (run 38's StickHub pile: "will seat 38", then claimed 0
+    on every seed) -- and the line says that, with how to declare the
+    owners. With no forecast it states the scope as a scope, never as a
+    count of seats."""
     f = cen.get('seeder_forecast') or {}
     if not f or 'unavailable' in f:
-        return (f" and will seat up to {cen.get('seeder_pin_scope')} cap(s) "
-                f"per supply pin instead of zone-packing them"
-                + (f" (seeder forecast unavailable: {f['unavailable']})"
-                   if f else ''))
+        return (f"; its per-supply-pin stage has {cen.get('seeder_pin_scope')}"
+                f" cap(s) in scope and claims only those whose owner IC is "
+                f"seated before it ({DECLARE_OWNERS_HOW}, or a part already "
+                f"placed or file-locked) -- how many could not be forecast"
+                + (f" ({f['unavailable']})" if f else ''))
 
     def _refs(xs, n=8):
         xs = list(xs)
@@ -282,6 +296,31 @@ def _forecast_clause(cen):
 
     early, late = f.get('early') or [], f.get('late') or []
     armed = bool(f.get('late_armed'))
+    if not early and not (late and armed):
+        # Nothing to claim on THIS board. Said as a statement, not as "up
+        # to 0", which read as a promise with a zero in it.
+        owners = sorted(set(f.get('late_owners') or ()))
+        out = (f", but its per-supply-pin stage will claim NO cap on this "
+               f"board: of the {f.get('scope')} cap(s) in scope, none has an "
+               f"owner IC placed, locked or declared before the stage runs"
+               + (f" (their owners {_refs(owners)} are seated only by the "
+                  f"centroid stage, after it)" if owners else '')
+               + f", so they are zone-packed or seated by the centroid stage "
+                 f"instead. To claim them, declare the owners -- "
+                 f"{DECLARE_OWNERS_HOW} -- so they are seated first; "
+                 f"place_seed --decap-claim-after-ics claims after the "
+                 f"centroid stage instead (opt-in -- the corpus A/B rejected "
+                 f"it as a default)")
+        if f.get('ownerless'):
+            out += (f"; {len(f['ownerless'])} can never be claimed -- no "
+                    f"{f.get('owner_rule', 'U-prefixed cap owner')} carries "
+                    f"their rail ({_refs(f['ownerless'])})")
+        if f.get('exempt'):
+            out += f"; {len(f['exempt'])} exempt"
+        if f.get('array_members'):
+            out += (f"; {len(f['array_members'])} are declared array members "
+                    f"(the array wins)")
+        return out
     head = (f" and can claim up to {len(early) + (len(late) if armed else 0)} "
             f"of {f.get('scope')} cap(s) in scope at a supply pin instead of "
             f"zone-packing them")
@@ -302,8 +341,8 @@ def _forecast_clause(cen):
     if late and not armed:
         out += (f"; {len(late)} are NOT claimed: their owner IC(s) "
                 f"({_refs(f.get('late_owners') or ())}) are seated only by "
-                f"the centroid stage, after the pin stage (declare them as "
-                f"fixed_poses or in a zoned block to seat them first; "
+                f"the centroid stage, after the pin stage (declare them -- "
+                f"{DECLARE_OWNERS_HOW} -- to seat them first; "
                 f"place_seed --decap-claim-after-ics claims after them, "
                 f"opt-in -- the corpus A/B rejected it as a default)")
     if f.get('ownerless'):

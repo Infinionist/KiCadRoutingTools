@@ -76,6 +76,9 @@ J = 'test_1105_stage3_jitter.py'
 JIT_SAME = _t(J, 'same_with_the_claim')
 JIT_OFF = _t(J, 'pre_1105_seeder')
 JIT_ANCHORS = _t(J, 'anchors_first')
+E = 'test_1105_emitter_on_a_pile.py'
+PILE_LINE = _t(E, 'esp_prog_pile')
+NO_FORECAST = _t(E, 'no_forecast')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -158,6 +161,17 @@ ROWS = [
      "    if late and not armed:",
      "    if False:",
      (EMIT,), 'KILLED'),
+    # the emitter on a pile: "up to 0 of 4" read as a promise with a zero
+    # in it; the line now says the stage claims nothing, and how to change
+    # that.
+    ('emitter-zero-claim-reads-as-up-to-0', 'cf',
+     "    if not early and not (late and armed):",
+     "    if False:",
+     (PILE_LINE,), 'KILLED'),
+    ('emitter-no-forecast-promises-seats', 'cf',
+     "        return (f\"; its per-supply-pin stage has {cen.get('seeder_pin_scope')}\"",
+     "        return (f\" and will seat up to {cen.get('seeder_pin_scope')}\"",
+     (NO_FORECAST,), 'KILLED'),
     ('emitter-forecast-not-taken', 'cf',
      "            _dcen['seeder_forecast'] = _seeder_forecast(doc, pcb, args.board,",
      "            _dcen['seeder_forecast_x'] = _seeder_forecast(doc, pcb, args.board,",

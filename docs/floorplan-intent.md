@@ -1927,7 +1927,14 @@ passed), and which no stage can, because no U-prefixed cap owner carries
 their rail (watchy: 9 of 26). The owners are `groups.chip_refs`, the set the
 grade elects from (#1249); the U prefix is the seeder's shipping restriction on
 that set (`seeder.decap_owner_refs`), because #792 measured the whole set as
-pin owners stranding four parts the U-prefixed subset seats. It forecasts PINS, not seats, and assumes every
+pin owners stranding four parts the U-prefixed subset seats. When the
+forecast holds NOTHING for stage 2.5 (and 3.5 is off) -- a pile, where no
+owner is placed, locked or declared before the stage runs -- the line says
+the stage will claim no cap on this board, names the owners the centroid
+stage seats after it, and names the three ways to seat them first: a
+`fixed_poses[]` entry, a `must_lock` pattern or a zoned block
+(`check_floorplan.DECLARE_OWNERS_HOW`). With no forecast at all it states the
+pin scope as a scope, never as a count of seats. It forecasts PINS, not seats, and assumes every
 declared early seat succeeds.
 
 ## Grading the pin, not the package (#705)
