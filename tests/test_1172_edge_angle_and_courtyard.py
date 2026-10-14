@@ -380,6 +380,53 @@ class TheMatingFaceDecides(unittest.TestCase):
         self.assertAlmostEqual(poses['J2'][2] % 360, 270.0)
         self.assertTrue(any('only [270.0] point its mating face' in n
                             for n in res['notes']), res['notes'])
+        # "first" means first in the facing-first order, and says so
+        self.assertTrue(any('those facing it ([270.0]) tried first' in n
+                            for n in res['notes']), res['notes'])
+
+    def test_a_crowded_facing_member_never_beats_a_clean_declared_one(self):
+        """[0, 270] declared on the reversed board, 270 made to CROWD a
+        placed part's pads at every rung: the set is reordered, not
+        narrowed, so 0 -- the declared member the author's order seats
+        clean, facing north -- is still tried and kept, exactly the seat of
+        the arm without #1172. A pad short is worse than a facing error, and
+        the kept angle's facing is named."""
+        with tempfile.TemporaryDirectory() as td:
+            rev = self._reversed(td)
+            doc = {'schema': floorplan.SCHEMA_VERSION,
+                   'kind': floorplan.KIND, 'units': 'mm',
+                   'edge_connectors': [dict(self.ENTRY)],
+                   'blocks': [{'name': 'rotation:J2', 'refs': ['J2'],
+                               'rotation_candidates': [0, 270]}]}
+            p = os.path.join(td, 'crowd.json')
+            with open(p, 'w', encoding='utf-8') as fh:
+                json.dump(doc, fh)
+            orig = legality.LegalityContext.pair_shortfall
+
+            def shortfall(ctx, a, b, pose_a=None, pose_b=None):
+                sf = orig(ctx, a, b, pose_a, pose_b)
+                if a == 'J2' and pose_a is not None and self._at(pose_a,
+                                                                 270.0):
+                    return sf._replace(pad=max(sf.pad, 1.0))
+                return sf
+            try:
+                legality.LegalityContext.pair_shortfall = shortfall
+                _pcb, res, poses = _seed(rev, floorplan.load_intent(p),
+                                         ('J2',))
+                with flags(_stage1_choose_edge_angle=False,
+                           _edge_courtyard_tier=False):
+                    _pcb, _r, off = _seed(rev, floorplan.load_intent(p),
+                                          ('J2',))
+            finally:
+                legality.LegalityContext.pair_shortfall = orig
+        self.assertAlmostEqual(poses['J2'][2] % 360, 0.0)
+        self.assertEqual(poses['J2'], off['J2'])
+        self.assertFalse(any('conflict is left for the gate' in n
+                             for n in res['notes']), res['notes'])
+        self.assertTrue(any(
+            'no member of its declared rotation_candidates that faces the '
+            'east edge ([270.0]) seats it as well, so it keeps the declared '
+            '0deg' in n for n in res['notes']), res['notes'])
 
     def test_a_declared_set_with_no_facing_member_is_named(self):
         with tempfile.TemporaryDirectory() as td:

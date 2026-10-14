@@ -272,10 +272,10 @@ the seed does not seat (`(locked yes)` in the input, or outside a
 partially-unplaced run's scope) and still at its input pose is the board's
 own, named and not charged. `must_lock` alone exempts nothing: stage 1.5 seats
 every unlocked, in-scope must_lock part. `edge_angle_chosen` names every edge
-connector stage 1 turned to an angle IT chose or narrowed (#1172) --
+connector stage 1 turned to an angle IT chose or reordered (#1172) --
 `{ref: {from, to, why, candidates}}`: an undeclared one, or a declared
-`rotation_candidates` set narrowed to its facing members. A turn to an
-angle the author declared outright (#893, #1120) is not in it.
+`rotation_candidates` set reordered with its facing members first. A turn to
+an angle the author declared outright (#893, #1120) is not in it.
 
 Every `JSON_SUMMARY` it prints (seed, `--repair`, `--reseat`) carries
 `connector_requirements` (#974): the declared edge connectors' graded
@@ -320,9 +320,11 @@ stage 1 chooses its angle when the input carries none, or when its strong
 mating face points away from its edge (#1172, above), and `_seat_edge`
 (`--repair`) turns such a part to the facing quarter turn or refuses it by
 name. Neither CHOOSES a reversed angle. What still leaves one is named and
-graded: an author's declaration -- a single `rotation`, or a
-`rotation_candidates` set none of whose members faces the edge (each kept,
-with a note; `--repair` seats a declared ladder as declared) -- and stage
+graded: an author's declaration -- a single `rotation`, a
+`rotation_candidates` set none of whose members faces the edge, or one whose
+facing members, tried first, seat only worse than another member (a pad short
+is worse than a facing error; each kept, with a note; `--repair` seats a
+declared ladder as declared) -- and stage
 1's fall-back to the input angle when no facing angle seats even pad-clear,
 including the later stages' seat of a part that attempt leaves to them
 (coldfire's pile, UARTCAN203). The facing grade reports every one.

@@ -1674,11 +1674,12 @@ Examples:
                # them.
                'reseat_declined': reseat_declined,
                # #1172: edge connectors stage 1 turned to an angle IT chose
-               # or narrowed -- {ref: {from, to, why, candidates}}: nothing
+               # or reordered -- {ref: {from, to, why, candidates}}: nothing
                # declared their angle and their input angle carried no
                # information, or their strong mating face pointed away from
-               # their edge, or a declared candidate set was narrowed to
-               # its facing members. A declared turn (#893/#1120) is not here.
+               # their edge, or a declared candidate set was reordered with
+               # its facing members first. A declared turn (#893/#1120) is
+               # not here.
                'edge_angle_chosen': result.get('edge_angle_chosen') or {},
                # #975: declared edge connectors seated with pad copper inside
                # the board-edge floor because no pose the seat ladder tried

@@ -2965,6 +2965,37 @@ class _ChosenRot(NamedTuple):
     candidates: Tuple[float, ...]
 
 
+class _FacingFirst(NamedTuple):
+    """#1172: an author's `rotation_candidates` set, REORDERED so the members
+    at which a strong mating face points at the declared edge are tried first.
+
+    Every declared member stays a candidate, so the order is a preference and
+    not a filter: a seat the author's set had is never lost to the facing
+    reading, and the #1125 walk keeps a CLEAN seat at a non-facing member over
+    a crowded one at a facing member -- a pad short is worse than a facing
+    error. `candidates` is the walk order, `facing` the facing members. Still
+    the author's claim (`_mine` is False for it): the walk's crowded fallback
+    and its notes are #1125's."""
+    rot: Optional[float]
+    candidates: Tuple[float, ...]
+    facing: Tuple[float, ...]
+
+
+def _facing_first_order(part, members, facing) -> Tuple[float, ...]:
+    """#1172: `members` (declared, author order), the facing ones first, and
+    in each group the part's own angle first when it is one -- the #1120 rule
+    that a part already at a member is not turned, kept inside each group."""
+    def _same(a, b):
+        return abs((a - b + 180.0) % 360.0 - 180.0) < 1e-6
+
+    def _group(ms):
+        own = [m for m in ms if _same(m, part.rot)]
+        return own + [m for m in ms if not _same(m, part.rot)]
+    ms = [float(m) % 360.0 for m in members]
+    fac = [m for m in ms if any(_same(m, f) for f in facing)]
+    return tuple(_group(fac) + _group([m for m in ms if m not in fac]))
+
+
 def _placed_courtyard_hits(state, ref: str, pose, others) -> List[str]:
     """#1172: the parts in `others` whose courtyard `ref`'s overlaps at `pose`,
     in the floorplan budget's own currency.
@@ -3145,8 +3176,9 @@ def _stage1_claims(state, by_edge, declared_rot, bounds, notes,
 
       * a declared single `rotation` is the author's: kept, with a note when
         its strong face points away;
-      * a declared `rotation_candidates` set is narrowed to the members whose
-        strong face points at the edge, when at least one does;
+      * a declared `rotation_candidates` set is REORDERED, the members whose
+        strong face points at the edge first, when at least one does -- the
+        rest stay candidates (`_FacingFirst`);
       * undeclared, a STRONG face pointing away gets the facing angle(s), on
         any board -- the grade would ERROR;
       * undeclared, an input angle with no information (`uninformative`)
@@ -3207,14 +3239,22 @@ def _stage1_claims(state, by_edge, declared_rot, bounds, notes,
                             f"set is kept, and the facing grade reports a "
                             f"member that points it away")
                     if keep and len(keep) < len(dr[1]):
-                        claims[ref] = (None, keep)
-                        why[ref] = 'declared candidates facing the edge'
+                        # REORDERED, not narrowed: the other members stay
+                        # candidates after the facing ones, so a member that
+                        # seats clean is never traded for a crowded seat at
+                        # a facing one (`_FacingFirst`).
+                        claims[ref] = _FacingFirst(
+                            None, _facing_first_order(part, dr[1], keep),
+                            tuple(float(m) % 360.0 for m in keep))
+                        why[ref] = ('declared candidates, the ones facing '
+                                    'the edge first')
                         notes.append(
                             f"edge connector {ref}: of its declared "
                             f"rotation_candidates "
                             f"{[float(m) for m in dr[1]]}, only "
                             f"{[float(m) for m in keep]} point its mating "
-                            f"face at the {edge} edge; stage 1 tries those")
+                            f"face at the {edge} edge; stage 1 tries those "
+                            f"first, then the rest")
                 continue
             if strong and here['fails'] and facing:
                 claims[ref] = _ChosenRot(None, tuple(facing))
@@ -3267,6 +3307,11 @@ def _stage1_geometry_rot(part, claim, fits=None):
         # input angle has none, so it is not kept for being a member.
         fit1172 = [r for r in claim.candidates if fits is None or fits(r)]
         return fit1172[0] if fit1172 else claim.candidates[0]
+    if isinstance(claim, _FacingFirst):
+        # #1172: an author's set in stage 1's facing-first order, which
+        # already puts the part's own angle first inside each group.
+        fitff = [r for r in claim.candidates if fits is None or fits(r)]
+        return fitff[0] if fitff else claim.candidates[0]
     if claim is not None and claim[0] is not None:
         return claim[0] % 360.0
     if claim is not None and claim[1]:
@@ -5428,6 +5473,13 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                          else _geo_rot) % 360.0
                 if abs((part.rot % 360.0) - _want) > 1e-9:
                     part.ensure_rotation(_want)
+                    # #1172: "first" in stage 1's facing-first order, when
+                    # it reordered the set -- not the author's order.
+                    _ffc = _claim_of(ref)
+                    _ff_tail = (f", those facing it "
+                                f"({[float(r) for r in _ffc.facing]}) tried "
+                                f"first" if isinstance(_ffc, _FacingFirst)
+                                else '')
                     notes.append(
                         f"edge connector {ref}: seated at the declared "
                         f"rotation {_want:g}deg (input was {part.rot:g}deg)"
@@ -5435,8 +5487,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                            f"{[float(r) for r in _edge_decl[1]]} "
                            + ("that fits " if _member1125 is None else
                               "that seats clear of what is placed on ")
-                           + f"the {edge} edge" if _edge_decl[0] is None
-                           else ''))
+                           + f"the {edge} edge" + _ff_tail
+                           if _edge_decl[0] is None else ''))
                     state.apply_move(ref, part.x, part.y, _want)
             _chosen = stage1_claims.get(ref)
             if (_edge_decl is None and isinstance(_chosen, _ChosenRot)
@@ -5920,6 +5972,25 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 'why': stage1_why.get(ref, ''),
                 'candidates': [float(r) for r in (stage1_claims[ref][1]
                                                   or ())]}
+    # #1172: a declared set stage 1 reordered facing-first can still end at a
+    # member that does not face the edge -- every facing member seated worse
+    # (crowded, or not at all) -- and that is named, never silent.
+    _edge_of1172 = {c['ref']: e for e, cs in by_edge.items() for c in cs}
+    for ref in sorted(stage1_claims):
+        _cl = stage1_claims[ref]
+        p = state.parts.get(ref)
+        if (not isinstance(_cl, _FacingFirst) or p is None
+                or ref not in placed
+                or any(abs((p.rot - f + 180.0) % 360.0 - 180.0) < 1e-6
+                       for f in _cl.facing)):
+            continue
+        notes.append(
+            f"edge connector {ref}: no member of its declared "
+            f"rotation_candidates that faces the {_edge_of1172.get(ref)} "
+            f"edge ({[float(f) for f in _cl.facing]}) seats it as well, so "
+            f"it keeps the declared {p.rot:g}deg, at which its mating face "
+            f"points away from that edge -- the facing grade reports it "
+            f"(#1172)")
 
     # ---- 1.5 must_lock parts seat FIRST, in place when possible ------------
     # Under --force, previously-good must_lock parts used to be re-derived at

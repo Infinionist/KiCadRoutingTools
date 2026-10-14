@@ -184,6 +184,12 @@ ROWS = [
      "                    _stage1_one(k, c, _member1125=_t2m)\n",
      "                    _stage1_one(k, c)\n",
      (T1172,), 'KILLED'),
+    # -- the PR review's: a declared set is reordered facing-first, never
+    #    narrowed, so a clean non-facing member beats a crowded facing one --
+    ('a-declared-set-is-narrowed-not-reordered', 'sd',
+     "    return tuple(_group(fac) + _group([m for m in ms if m not in fac]))\n",
+     "    return tuple(_group(fac))\n",
+     (T1172,), 'KILLED'),
     # -- the final review's: the #1125 walk's note named the wrong seat --
     ('the-walk-note-names-the-crowded-member', 'sd',
      "                       if _t2m is not None else\n",
