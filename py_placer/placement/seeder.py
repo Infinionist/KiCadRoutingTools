@@ -9498,6 +9498,15 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
     has forfeited its band anyway: the band was measured off the pose being
     discarded.
 
+    #1242: but a claim the EDGE SEAT can honour is not forfeited. After the
+    seed, each scope edge claim is seated through `_seat_edge`, as
+    `repair_placement` seats one -- the band, the declared or facing angles,
+    pads on the board, so no throw off the board -- and one that seats keeps
+    its declaration in `intent_used`, is exempt from the prune, and counts its
+    `edge_connector` errors in the explicit scope's `intent` basis (sonde_u's
+    reversed J2: `--reseat J2` used to leave it reversed and unseated). One
+    that does not seat keeps the seed's answer and is dropped, as above.
+
     Gate, three conjuncts, because one lexicographic tuple is not enough here:
 
       1. Per-seat and structural, already free: `_try_place` demands full
@@ -9657,6 +9666,7 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
                 # found nothing" from "no census ran".
                 'no_pose_blockers': {}, 'no_pose_verdict': {},
                 'no_pose_census': {}, 'evicted': [], 'edge_floor_fallback': {},
+                'edge_band_contradiction': {},
                 'evictions': 0, 'evictions_reverted': 0,
                 'gate_before': list(_empty_gate),
                 'gate_after': list(_empty_gate),
@@ -9725,20 +9735,18 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
     # edge_claims(); the marker on the next line is what the source guard in
     # tests/test_run23_connector_affinity.py accepts, and it asserts this is
     # the ONLY one in the tree.
+    _entries = []
     for c in intent.edge_connectors:   # edge-claims-exempt: faithful copy
+        _entries.append(c)
         if c['ref'] in scope and c['ref'] in _claims:
             dropped[c['ref']] = float((c.get('overhang_mm') or {}).get('max')
                                       or 0.0)
         else:
             keep.append(c)
-    if dropped:
-        notes.append(
-            "dropped the edge declaration of " + ", ".join(
-                f"{r} (band {m:g}mm)" for r, m in sorted(dropped.items()))
-            + " -- a ref being re-seated has forfeited its band, which was "
-              "measured off the pose being discarded. Stage 1 seats a declared "
-              "edge connector with NO legality gate; leaving these in threw a "
-              "part 30km off the board in a measured probe.")
+    # What the SEED is handed: every scope claim dropped, so stage 1 never
+    # sees one. A claim the edge seat below seats keeps its declaration in
+    # the intent the result is graded against (#1242), so its band is not
+    # reported dropped either; that note is written once the seat has run.
     intent2 = dataclasses.replace(intent, edge_connectors=tuple(keep))
 
     # ---- the declared-claim probe (#698) ------------------------------------
@@ -9834,6 +9842,82 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
     for ref, p in sorted(seated.items()):
         state.apply_move(ref, p['new_x'], p['new_y'], p['new_rotation'])
 
+    # ---- #1242: the scope's edge claims, on their edge ----------------------
+    # Stage 1 must not see them (the 30km probe above), so the seed seated
+    # each as an ordinary part -- no band, no mating face: sonde_u's J2, a
+    # DSUB turned to face into the board, found "no legal pose anywhere on the
+    # board" and stayed reversed, where `--repair` turns it 90 -> 270 onto its
+    # band. Each is now seated the way `--repair` seats one, through
+    # `_seat_edge`: the declared band, the declared angles or else the strong
+    # face's (#1155), pads on the board (#1241), against the board the seed
+    # just made -- aimed at its zone, else from where it stands, the scope
+    # refs the seed could not seat left out as the pile they still are. One
+    # that does not seat keeps the seed's answer, and its declaration is
+    # dropped as before. The declared claim is the one an explicit scope is
+    # judged on: its `edge_connector` errors join the `intent` basis.
+    edge_seated: Dict[str, Dict] = {}
+    edge_floor_fallback: Dict[str, Dict] = {}
+    edge_band_contradiction: Dict[str, Dict] = {}
+    _edge_grade = None
+    _scope_claims = {c['ref']: c for c in intent.edge_claims()
+                     if c['ref'] in scope and c.get('edge')
+                     and c['ref'] in state.parts}
+    if _scope_claims:
+        _eblocks, _ = floorplan.resolve_blocks(intent, pcb_data,
+                                               group_sources)
+        _erot = floorplan.rotations_for_ref(intent, _eblocks)
+        _ezone = {}
+        for z in intent.blocks:
+            if z.rect is not None:
+                for r in _eblocks.get(z.name, ()):
+                    _ezone.setdefault(r, z.rect)
+        _edge_grade = floorplan.PoseGrader(
+            intent, state, blocks=_eblocks, clearance=clearance,
+            board_edge_clearance=board_edge_clearance)
+        _pile = set(res['unseated']) & scope
+        for ref in sorted(_scope_claims):
+            zr = _ezone.get(ref)
+            if _seat_edge(state, ref, _scope_claims[ref], must_lock, notes,
+                          target=(((zr[0] + zr[2]) / 2.0, (zr[1] + zr[3]) / 2.0)
+                                  if zr is not None else None),
+                          exclude=_pile - {ref},
+                          rotations=floorplan.declared_ladder(_erot.get(ref)),
+                          disclose=edge_floor_fallback,
+                          contradictions=edge_band_contradiction,
+                          grade=_edge_grade):
+                edge_seated[ref] = _scope_claims[ref]
+                notes.append(f"{ref}: re-seated on its declared "
+                             f"{_scope_claims[ref]['edge']} edge through the "
+                             f"edge seat; its declaration is kept and graded "
+                             f"(#1242)")
+    for r in edge_seated:
+        dropped.pop(r, None)
+    if dropped:
+        notes.append(
+            "dropped the edge declaration of " + ", ".join(
+                f"{r} (band {m:g}mm)" for r, m in sorted(dropped.items()))
+            + " -- a ref being re-seated has forfeited its band, which was "
+              "measured off the pose being discarded. Stage 1 seats a declared "
+              "edge connector with NO legality gate; leaving these in threw a "
+              "part 30km off the board in a measured probe.")
+    intent_used = (dataclasses.replace(intent, edge_connectors=tuple(
+        c for c in _entries if c['ref'] not in dropped))
+        if edge_seated else intent2)
+
+    def _edge_errors(poses=None):
+        """{edge-seated ref: its `edge_connector` ERRORs} at `poses`."""
+        if not edge_seated:
+            return {}
+        try:
+            got = _edge_grade.violations(poses=poses)
+        except Exception:                                   # noqa: BLE001
+            return None
+        return {r: sum(1 for v in got if v.ref == r
+                       and v.rule == 'edge_connector'
+                       and v.severity == floorplan.ERROR)
+                for r in edge_seated}
+    _edge_was = _edge_errors({r: old[r] for r in edge_seated})
+
     # ---- gate ---------------------------------------------------------------
     # An evicted part is EXEMPT from the per-part sweep, and that is the only
     # thing that makes the trade atomic. `evidenced` is not enough: it gates
@@ -9855,7 +9939,7 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
     pruned = _recon.prune_assignment(state, old, notes,
                                      edge_bands=gate_bands,
                                      overlap=_cy_overlap,
-                                     exempt=set(evicted),
+                                     exempt=set(evicted) | set(edge_seated),
                                      evidenced=set(scope),
                                      # #698: the sweep's tuple has no intent
                                      # term, so a seat that cleared a declared
@@ -9875,13 +9959,25 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
     _risen = ()
     if probe is not None:
         _lic_ok, _risen = probe.licence(intent_before, intent_after)
+        _edge_now = _edge_errors()
+        if _edge_was is not None and _edge_now is not None and edge_seated:
+            bases_before = dict(bases_before, intent=bases_before['intent']
+                                + sum(_edge_was.values()))
+            bases_after = dict(bases_after, intent=bases_after['intent']
+                               + sum(_edge_now.values()))
+            _risen = list(_risen) + [
+                (r, 'edge_connector', 'errors', _edge_was[r], _edge_now[r])
+                for r in sorted(edge_seated)
+                if _edge_now[r] > _edge_was[r]]
     accepted, accept_basis = reseat_accept(
         before, after, scope_source=scope_source,
         witnesses_before=witnesses_before, witnesses_after=witnesses_after,
         bases_before=bases_before, bases_after=bases_after,
         intent_risen=_risen, min_gain=min_gain)
     if probe is not None:
-        accept_basis['intent_rules'] = list(probe.rules)
+        accept_basis['intent_rules'] = list(probe.rules) + (
+            ['edge_connector'] if edge_seated and _edge_was is not None
+            else [])
     if evicted and not eviction_licence_ok(before, after):
         accepted = False
         accept_basis['fired'] = None
@@ -9930,7 +10026,7 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
             # the west edge but is declared on the east edge` errors on a board
             # whose 11 off-outline parts had all come home). That is the same
             # laundering as the band itself, one step later.
-            'intent_used': intent2,
+            'intent_used': intent_used,
             # SCOPE parts that moved. An evicted part is not a re-seat and
             # must not inflate the count this pass is judged by.
             'reseated': sorted(m['reference'] for m in moves
@@ -9943,29 +10039,36 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
             # untouched. The attempt is still visible in `evictions`.
             'evicted': evicted if accepted else [],
             'refused': sorted(refused),
-            'unseated': sorted(r for r in res['unseated'] if r in scope),
+            'unseated': sorted(r for r in res['unseated'] if r in scope
+                               and r not in edge_seated),
             # The census travels with the verdict here too (#630): a scope
             # ref with no legal pose names what is in its way. The
             # eviction counts are 0 unless the caller passed `evict_depth`
             # (#699); they are carried either way so a reader sees the same
             # keys on both paths.
+            # (#1242: not for a ref the edge seat seated after the seed
+            # found it no pose.)
             'no_pose_blockers': {r: v for r, v in
                                  (res.get('no_pose_blockers') or {}).items()
-                                 if r in scope},
+                                 if r in scope and r not in edge_seated},
             # #699's ledger travels with the verdict here too, same filter.
             'no_pose_verdict': {r: v for r, v in
                                 (res.get('no_pose_verdict') or {}).items()
-                                if r in scope},
+                                if r in scope and r not in edge_seated},
             'no_pose_census': {r: v for r, v in
                                (res.get('no_pose_census') or {}).items()
-                               if r in scope},
-            # #975, same filter, and only for a board this pass wrote. Empty
-            # in practice: re-seat drops its scope's edge declarations, so no
-            # stage-1 seat reaches a scope ref. Carried so both paths, and
-            # every place_seed summary, have the key.
+                               if r in scope and r not in edge_seated},
+            # #975, same filter, and only for a board this pass wrote. Stage 1
+            # never sees a scope claim (they are dropped from the seed), so
+            # what is here is the edge seat's (#1242). Carried so both paths,
+            # and every place_seed summary, have the key.
             'edge_floor_fallback': ({r: v for r, v in
-                                     (res.get('edge_floor_fallback') or {}).items()
+                                     dict(res.get('edge_floor_fallback') or {},
+                                          **edge_floor_fallback).items()
                                      if r in scope} if accepted else {}),
+            # #1241: the edge seat's band contradictions, likewise.
+            'edge_band_contradiction': (dict(edge_band_contradiction)
+                                        if accepted else {}),
             'evictions': sum(1 for e in (res.get('evictions') or [])
                              if e.get('accepted')),
             'evictions_reverted': sum(1 for e in (res.get('evictions') or [])

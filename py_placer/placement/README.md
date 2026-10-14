@@ -486,6 +486,17 @@ a new stack would sit below it unread. At depth 0 — the default, and what
 `place_reconstruct`'s reseat rung uses — nothing outside the scope is touched
 and the counts are 0.
 
+**A scope edge claim is seated on its edge (#1242).** The seed never sees one
+-- `reseat_scope` drops the scope's declarations from the intent it seeds
+with, because stage 1 seats a claim with no legality gate -- so after the
+seed each is seated the way `--repair` seats it, through `_seat_edge`: the
+band, the declared angles or the strong mating face's (a reversed connector
+is turned), pads on the board, aimed at its zone or from where it stands.
+One that seats keeps its declaration in `intent_used`, the intent the result
+is graded against, and is exempt from `prune` (an edge seat is hpwl-worse by
+design); one that does not keeps the seed's answer and its band is dropped,
+as before (`edge_bands_dropped`).
+
 **An EXPLICIT scope is accepted on a different rule from the auto one (#698),
 and the difference is structural rather than a preference.** On
 `auto:damage_witnesses` the pass's win *is* `oob`, at index 3 of the gate tuple
@@ -508,7 +519,8 @@ part could never be re-seated whatever the search found. So:
   improve: the six hard gate terms, the scope's own HPWL, and the count of
   breached declared claims -- zone/keep-out AND, since #1068, the tether rules
   (`decap_distance`, `decap_pin_distance`, `proximity`), each claim counted
-  once; `accept_basis.intent_rules` names which. All are reported in `accept_basis` whether they
+  once, and since #1242 the `edge_connector` errors of a scope edge claim the
+  edge seat seated; `accept_basis.intent_rules` names which. All are reported in `accept_basis` whether they
   fired or not — a basis that measured nothing and a basis that measured no
   change must not look alike.
 - **The intent VECTOR is the guard; the intent COUNT is only the trigger.** A

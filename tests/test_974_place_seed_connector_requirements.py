@@ -331,18 +331,43 @@ def main():
         check('key: repair: no band was dropped', rep.get('bands_dropped') == [],
               f'{rep}')
 
+        # #1242: a re-seated edge claim is seated through the edge seat and
+        # keeps its declaration, so its band is graded, not dropped.
         rc, s, text = _cli(b, i, out_of('reseat_j1'), ['--reseat', 'J1'])
         check('rc: reseat_j1: exit code as before the report', rc == 0,
               f'rc {rc}\n{text[-900:]}')
         check('board: reseat_j1: written', os.path.exists(out_of('reseat_j1')))
         rep = graded_invariants('reseat_j1', rc, s)
-        check('key: reseat_j1: the dropped band is listed, not graded, and '
-              'the report is incomplete',
+        check('key: reseat_j1: the band the edge seat honoured is graded, '
+              'not dropped, and the report is complete',
+              rep.get('bands_dropped') == []
+              and rep.get('declared_refs') == ['J1']
+              and [(e.get('ref'), e.get('overhang_disposition'))
+                   for e in rep.get('overhang_evidence') or ()]
+              == [('J1', 'pass')]
+              and rep.get('complete') is True, f'{rep}')
+        # A band is still DROPPED when the edge seat cannot seat the claim:
+        # here a declared along-edge window J1's 3 mm body cannot meet on the
+        # 20 mm west edge (its centre may range over 7.5-92.5 %).
+        _b, i_drop = _write(tmp, 'placed_drop', PLACED, dict(
+            PLACED_INTENT, edge_connectors=[dict(
+                PLACED_INTENT['edge_connectors'][0],
+                along_edge_band={'from': 0.0, 'to': 0.02})]))
+        rc, s, text = _cli(b, i_drop, out_of('reseat_j1_drop'),
+                           ['--reseat', 'J1'])
+        check('rc: reseat_j1_drop: exit code as before the report', rc == 0,
+              f'rc {rc}\n{text[-900:]}')
+        check('board: reseat_j1_drop: written',
+              os.path.exists(out_of('reseat_j1_drop')))
+        rep = graded_invariants('reseat_j1_drop', rc, s)
+        check('key: reseat_j1_drop: the dropped band is listed, not graded, '
+              'and the report is incomplete',
               [(d.get('ref'), d.get('band_max_mm'), d.get('graded'))
                for d in rep.get('bands_dropped') or ()] == [('J1', 0.5, False)]
               and rep.get('declared_refs') == []
               and rep.get('complete') is False, f'{rep}')
-        check('key: reseat_j1: it matches the summary\'s own edge_bands_dropped',
+        check('key: reseat_j1_drop: it matches the summary\'s own '
+              'edge_bands_dropped',
               sorted(d['ref'] for d in rep.get('bands_dropped') or ())
               == sorted((s or {}).get('edge_bands_dropped') or {}), f'{s}')
 
