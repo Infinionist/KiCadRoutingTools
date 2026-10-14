@@ -177,14 +177,19 @@ class TheWrittenPoseDecides(unittest.TestCase):
                           summary['pad_copper_off_board_seeded']], ['J1'])
 
     def test_an_unseated_part_is_charged_as_unseated_only(self):
-        # U9 fits nowhere on the board, so it is STAGED below it (#1151):
-        # its copper is off the board, and the gate names it as UNSEATED,
-        # not again as off-board copper, and not as the board's own.
-        u9 = _part('U9', 20, 20, [(1, 0, 0, 0.6, 0.6, 2)], hw=25, hh=25)
+        # U9 fits nowhere on the board and comes in OFF it, so it is written
+        # at its input pose with its copper past the outline; the gate names
+        # it as UNSEATED, not again as off-board copper, and not as the
+        # board's own.
+        u9 = _part('U9', 20, 60, [(1, 0, 0, 0.6, 0.6, 2)], hw=25, hh=25)
         with tempfile.TemporaryDirectory() as td:
             r, summary = _seed(td, {'min': 0.0, 'max': 2.0}, code=4,
                                refuse='UNSEATED', extra=[u9])
         self.assertIn('U9', summary['unseated_refs'])
+        # The precondition: without it the exclusion is never exercised (an
+        # on-board U9 let the filter's removal pass, #1241's battery).
+        self.assertLess(
+            summary['pad_edge_after']['minimum_gap_by_ref_mm']['U9'], 0)
         self.assertEqual(summary['pad_copper_off_board_seeded'], [])
         self.assertNotIn("the board's own", r.stdout)
 
