@@ -1104,10 +1104,11 @@ for n, ln in LANES.items():
 # parts the geometry holds lanes to one side of (whole_geo's islands: every part's pads and holes but the source's and
 # the destination's; a flip of either would change nothing and cost a round)
 _SRC = collections.Counter(ctx.src_ref[n] for n in geo['lanes']).most_common(1)[0][0]
-_DST = awx_settings.req('DEST')
+from flow_frame import dest_refs as _dest_refs  # noqa: E402
+_DSTS = tuple(_dest_refs(awx_settings.req('DEST')))     # (DEST may name several parts: one source, several ends)
 
 
-ISLAND = whole_ctx.part_islands(ctx, skip=(_SRC, _DST))
+ISLAND = whole_ctx.part_islands(ctx, skip=(_SRC, *_DSTS))
 
 
 def island_of(lab):
@@ -1115,7 +1116,7 @@ def island_of(lab):
     for pre in ('pad ', 'hole '):
         if lab.startswith(pre):
             ref, _, num = lab[len(pre):].split(' ')[0].rpartition('.')
-            if ref in (_SRC, _DST) or ref not in ctx.pcb.footprints:
+            if ref in (_SRC, *_DSTS) or ref not in ctx.pcb.footprints:
                 return None
             if geo.get('islands') is not None:        # the islands the geometry held lanes to
                 return geo['islands'].get(f'{ref}.{num}')

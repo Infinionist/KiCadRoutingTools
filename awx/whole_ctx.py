@@ -213,8 +213,9 @@ def _guard(out, nets, dest):
         # last-resort partial of rev8g1, rev8g2 and c4r12 was refused so, its round laying nothing)
         import whole_frame
         src = collections.Counter(ctx.src_ref.values()).most_common(1)[0][0]
-        if src in ctx.pcb.footprints and dest in ctx.pcb.footprints:
-            sb, db = whole_frame.box_of(ctx.pcb, src), whole_frame.box_of(ctx.pcb, dest)
+        prim = flow_frame.dest_refs(dest)[0]                # (the trunk's destination: whole_frame.build's)
+        if src in ctx.pcb.footprints and prim in ctx.pcb.footprints:
+            sb, db = whole_frame.box_of(ctx.pcb, src), whole_frame.box_of(ctx.pcb, prim)
             dx, dy = (db[0] + db[2] - sb[0] - sb[2]) / 2, (db[1] + db[3] - sb[1] - sb[3]) / 2
             if max(range(4), key=lambda k_: (round(flow_frame._q(dx, dy, k_)[0], 6), -k_)) == 0:
                 k = 0
@@ -275,14 +276,15 @@ def candidate(pcb, names, dest, plan, tracks=(), cfg=None, board=None):
     dc_ = plan.get('dest_cut')
     ctx.dest_cut = None if dc_ is None else ((dc_[0], float(dc_[1])) if isinstance(dc_, (list, tuple)) else float(dc_))
     pe = plan['ends']
-    ends = {nm: (tuple(pe[nm][0]), tuple(pe[nm][1]), dest) for nm in names if nm in pe}
+    # (each net's end at the destination part it reaches: DEST may name several, braid.net_dest)
+    ends = {nm: (tuple(pe[nm][0]), tuple(pe[nm][1]), bd.net_dest(byname[nm][1], dest)) for nm in names if nm in pe}
     for pr_ in prs.values():
         for leg in pr_:
-            ends[leg] = (tuple(pe[leg][0]), tuple(pe[leg][1]), dest)
+            ends[leg] = (tuple(pe[leg][0]), tuple(pe[leg][1]), bd.net_dest(byname[leg][1], dest))
     ctx.pair_ends = {}
     for b_, (pn_, nn_) in prs.items():
         (sp_, tp_, _), (sn_, tn_, _) = ends[pn_], ends[nn_]
-        ends[b_] = (_pairs.mid(sp_, sn_), _pairs.mid(tp_, tn_), dest)
+        ends[b_] = (_pairs.mid(sp_, sn_), _pairs.mid(tp_, tn_), ends[pn_][2])
         ctx.pair_ends[b_] = ((sp_, sn_), (tp_, tn_))
     ctx.pcb, ctx.byname, ctx.ends, ctx.plan = pcb2, byname, ends, plan
     ctx.kids = {byname[nm][0] for nm in names} | {byname[n][0] for pr_ in prs.values() for n in pr_}
@@ -295,7 +297,7 @@ def candidate(pcb, names, dest, plan, tracks=(), cfg=None, board=None):
     ctx.pair_layers = {b_: (plan['tooth_layer'][nn_], plan['dest_layer'][nn_]) for b_, (_pn, nn_) in prs.items()}
     ctx.src_ref = {}
     for nm in names:
-        pads_ = [p for p in byname[nm][1].pads if p.component_ref != dest] or list(byname[nm][1].pads)
+        pads_ = [p for p in byname[nm][1].pads if p.component_ref != ends[nm][2]] or list(byname[nm][1].pads)
         ctx.src_ref[nm] = min(pads_, key=lambda p: (p.global_x - ends[nm][0][0]) ** 2
                               + (p.global_y - ends[nm][0][1]) ** 2).component_ref
     ctx.cfg = cfg if cfg is not None else bd.run_config(pcb2, board)

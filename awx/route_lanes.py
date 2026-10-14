@@ -225,7 +225,8 @@ def main(argv=None):
     ap.add_argument('only', help='the lanes to route (N1,N2,..) or all')
     ap.add_argument('--board', required=True)
     ap.add_argument('--nets', required=True, help='the bench nets: N1,N2,.. or @FILE')
-    ap.add_argument('--dest', required=True, help="the destination part's reference")
+    ap.add_argument('--dest', required=True, help="the destination part's reference (several, 'U4+U3': one source, "
+                                                  "several ends -- the trunk's first)")
     ap.add_argument('--mode', choices=('alone', 'seq'), default='alone')
     ap.add_argument('--png', default='', help='a directory: one render per lane')
     ap.add_argument('--probe', default='', help="X,Y;X,Y;.. or 'stops'")

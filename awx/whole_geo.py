@@ -166,9 +166,10 @@ def layers_at(n, u):
     return {layer_of(n, u)}
 
 
-DST_REF = awx_settings.req('DEST')
+DST_REF = Fr.dst                # (the trunk's destination; DEST may name several, each other a branch's: Fr.dests)
 SRC_REF = collections.Counter(ctx.src_ref[n] for n in M).most_common(1)[0][0]
 BOX = [Fr.SB, Fr.DB]       # the arrays' pad boxes, grown by how far outside them the terminals sit (whole_frame)
+BOX += [Fr.DBs[b_] for b_ in Fr.dests[1:]]               # ...and each branch's part's, kept as the trunk's is
 log(f'pad boxes grown by the terminals: {[round(b[2] - b[0], 3) for b in BOX]}')
 
 
@@ -183,6 +184,7 @@ def _pads_box(ref, b):
 # ...and by their pads alone: what bounds a lane whose own tooth or berth stands inside its array's grown box (shorter
 # than the median the box is grown by) -- its first or last columns are its stub's room beside the longer stubs
 PADS_BOX = [_pads_box(SRC_REF, BOX[0]), _pads_box(DST_REF, BOX[1])]
+PADS_BOX += [_pads_box(b_, Fr.DBs[b_]) for b_ in Fr.dests[1:]]
 BX0, BY0, BX1, BY1 = ctx.pcb.board_info.board_bounds
 EDGE = (float(getattr(ctx.cfg, 'board_edge_clearance', 0.0) or 0.0) or ctx.cfg.clearance) + TW / 2
 _SPAN = max(BX1 - BX0, BY1 - BY0)
@@ -206,7 +208,7 @@ def intervals(ftag, sp, s, margin, own=(False, False)):
         return _ivc[key]
     X, Y = spine_xy_vec(sp, s, OS)
     ok = (X >= BX0 + EDGE) & (X <= BX1 - EDGE) & (Y >= BY0 + EDGE) & (Y <= BY1 - EDGE)
-    for b in [PADS_BOX[i] if own[i] else BOX[i] for i in (0, 1)]:
+    for b in [PADS_BOX[i] if own[i] else BOX[i] for i in (0, 1)] + BOX[2:]:
         ok &= ~((X > b[0] - margin) & (X < b[2] + margin) & (Y > b[1] - margin) & (Y < b[3] + margin))
     out, i = [], 0
     while i < len(OS):
@@ -228,11 +230,11 @@ ISL = {}             # an island's pads on one layer set (a lane goes round an i
 # (a two-pad part split where a lane fits between its pads only where they stand across the lanes: corridor.pads_across)
 _SPINES = {'T': Fr.spine, **{k_: r_ for k_, r_ in Fr.rings.items()}}
 _CU = lambda p_: bool(p_.drill and p_.drill > 0) or any(L in p_.layers for L in ('F.Cu', 'B.Cu', '*.Cu'))
-ISLAND = whole_ctx.part_islands(ctx, skip=(SRC_REF, DST_REF), split=lambda ref: len(
+ISLAND = whole_ctx.part_islands(ctx, skip=(SRC_REF, *Fr.dests), split=lambda ref: len(
     [p_ for p_ in ctx.pcb.footprints[ref].pads if _CU(p_)]) == 2 and _cor.pads_across(
     _SPINES, [(p_.global_x, p_.global_y) for p_ in ctx.pcb.footprints[ref].pads if _CU(p_)]))
 for ref, fp in ctx.pcb.footprints.items():
-    if ref in (SRC_REF, DST_REF):
+    if ref in (SRC_REF, *Fr.dests):
         continue
     for i_, p in enumerate(fp.pads):
         drilled = bool(p.drill and p.drill > 0)
@@ -399,7 +401,7 @@ def _out_of(sp, o_at):
 
 _depths = []
 for n in M:
-    if n in cls and n in prs:
+    if n in cls and n in prs and cls[n] not in Fr.branch:
         sp_ = ring_sp[cls[n]]
         m_ = _pairs.mid(*ctx.pair_ends[n][1])
         _depths.append(abs(sp_.project_pt(Fr.land[n])[1] - sp_.project_pt(m_)[1]))
@@ -451,6 +453,11 @@ for n in M:
         s_out = sb0 + abs(o_run - ob0)                          # out to the standoff at 45 degrees past the handoff
         rpts = ([(sb0, ob0), (s_out, o_run), (s_run, o_run), (sb1, ob1)] if s_out < s_run else
                 [(sb0, ob0), (s_run, o_run), (sb1, ob1)] if s_run > sb0 + 1e-9 else [(sb0, ob0), (sb1, ob1)])
+        if cls[n] in Fr.branch:
+            # a BRANCH's lane lands off it as the trunk's near face's lanes land off the trunk: straight onto its berth,
+            # held a track's width into it (no ring, no standoff: its berth faces the branch, whole_frame)
+            rpts = [(sb0, ob0), (sb1, ob1)]
+            hold1 = max(hold1, HOLD)
         PIECE[(cls[n], n)] = dict(k0=int(round(sb0 / G)), k1=int(round(sb1 / G)), o0=None, o1=ob1, hold0=0, hold1=hold1,
                                   ex0=0, ex1=max(hold1 + 1, EXC),
                                   ref=(lambda s, P=rpts: float(np.interp(s, [q[0] for q in P], [q[1] for q in P]))),
@@ -1071,7 +1078,7 @@ def static_sides(sol):
                 room[-1] = min(room[-1], oa - lo_i)
                 room[1] = min(room[1], hi_i - ob)
                 span = [max(span[0], lo_i), min(span[1], hi_i)]
-            if f != 'T':
+            if f != 'T' and f not in Fr.branch:
                 # on a RING the lanes run the ring's standoff out from the destination's face (its pairs' landings
                 # lie that deep): the room between the island and the face is that much less (K35 C12 at DU1's south
                 # face: four F lanes and a pair kept inside it, the pair pressed onto the face and folded to its landing)

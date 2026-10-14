@@ -77,6 +77,7 @@ from schedule import Schedule  # noqa: E402
 import escape_moves as em  # noqa: E402
 from select_moves import pair_chirality  # noqa: E402
 from bga_fanout.flip_frame import to_front_frame, other_layer, mirror_axis  # noqa: E402
+from flow_frame import dest_refs  # noqa: E402  DEST naming one part or several ('U4+U3')
 
 import rules as _rules  # noqa: E402  ONE source for every design rule
 
@@ -1169,8 +1170,11 @@ def endpoints(pcb, names, byname, dest_ref=None):
     free end at both; the pair is attributed by walking the net's own
     copper (nearest-pad is wrong for a stub dragged across a field).
     A free end is a segment endpoint used once that lies inside no pad
-    and no via barrel of the net."""
+    and no via barrel of the net. dest_ref may name several parts
+    ('U4+U3', one source and several ends): each net's end is at the
+    one it reaches, its third member that part."""
     ends = {}
+    dset = set(dest_refs(dest_ref)) if dest_ref is not None else None
     for nm in names:
         nid, net = byname[nm]
         segs = [s for s in pcb.segments if s.net_id == nid]
@@ -1225,7 +1229,7 @@ def endpoints(pcb, names, byname, dest_ref=None):
         assert free, (nm, 'no free stub end')
         if dest_ref is not None:
             at_dest = [pt for pt in free
-                       if _owner(pt, segs, net.pads) == dest_ref]
+                       if _owner(pt, segs, net.pads) in dset]
             at_src = [pt for pt in free if pt not in at_dest]
             if not at_dest or not at_src:
                 # ONE end's stub ends in a via (the rule above, per end): the
@@ -1239,15 +1243,15 @@ def endpoints(pcb, names, byname, dest_ref=None):
                           all(math.hypot(pt[0] - ax, pt[1] - ay) > max(0.02, ar)
                               for (ax, ay, ar) in pads_only)]
                 if not at_dest:
-                    at_dest = [pt for pt in free_v if _owner(pt, segs, net.pads) == dest_ref]
+                    at_dest = [pt for pt in free_v if _owner(pt, segs, net.pads) in dset]
                 if not at_src:
                     at_src = [pt for pt in free_v if pt not in at_dest
-                              and _owner(pt, segs, net.pads) != dest_ref]
+                              and _owner(pt, segs, net.pads) not in dset]
             if at_dest and at_src:
                 src = max(at_src, key=lambda p: max(ts.d2(p, q)
                                                     for q in at_dest))
                 tgt = max(at_dest, key=lambda q: ts.d2(src, q))
-                ends[nm] = (src, tgt, dest_ref)
+                ends[nm] = (src, tgt, _owner(tgt, segs, net.pads))
                 continue
             free = at_src or free
         if len(free) > 1:
@@ -6587,22 +6591,33 @@ def pair_chirality_of(pcb, names, byname, dest):
     """The pair's chirality as the fanout's plan computes it
     (select_moves.pair_chirality on the same balls and the same array
     boxes): the run's nets' pad on `dest` against their pad on the source
-    array, the boxes those arrays' pads span."""
+    array, the boxes those arrays' pads span. (`dest` naming several
+    parts: each net's pad on the one it reaches, and the first's box --
+    the plan's own dgrid, fanout_from_plan.plan_state.)"""
     src, dst, refs = {}, {}, Counter()
+    dests = dest_refs(dest)
     for nm in names:
         _nid, net = byname[nm]
-        d = [p for p in net.pads if p.component_ref == dest]
-        o = [p for p in net.pads if p.component_ref != dest]
+        d = [p for p in net.pads if p.component_ref in dests]
+        o = [p for p in net.pads if p.component_ref not in dests]
         if d:
             dst[nm] = (d[0].global_x, d[0].global_y)
         if o:
             src[nm] = (o[0].global_x, o[0].global_y)
             refs[o[0].component_ref] += 1
-    if not src or not dst or dest not in pcb.footprints:
+    if not src or not dst or dests[0] not in pcb.footprints:
         return 1
     sref = max(refs, key=refs.get)
     return pair_chirality(src, dst, em.grid_of(pcb.footprints[sref]).bbox,
-                          em.grid_of(pcb.footprints[dest]).bbox)
+                          em.grid_of(pcb.footprints[dests[0]]).bbox)
+
+
+def net_dest(net, dest):
+    """the destination part a net reaches, of the parts `dest` names: the first carrying a pad of it (the first named
+    when none does)"""
+    dests = dest_refs(dest)
+    on = {p.component_ref for p in net.pads}
+    return next((d for d in dests if d in on), dests[0])
 
 
 def mirror_plan(plan, M):
@@ -6745,7 +6760,7 @@ def setup(board, names, dest, log, plan=None, pairs=False):
     ctx.pairs = _pairs_here
     if chi < 0:
         CY = mirror_axis(pcb)     # the engine's own rule: a lattice line
-        pcb, M = to_front_frame(pcb, dest)
+        pcb, M = to_front_frame(pcb, dest_refs(dest)[0])
         ctx.M = M
         byname = {n.name.split('/')[-1]: (i, n) for i, n in pcb.nets.items()}
         _standin(byname)
@@ -6795,20 +6810,21 @@ def setup(board, names, dest, log, plan=None, pairs=False):
     _want = ([nm for nm in names if nm not in planned and nm not in _pairs_here]
              + [n for n in _legs if n not in _pl_ends])
     ends = endpoints(pcb, _want, byname, dest_ref=dest) if _want else {}
+    # (each planned net's end at the destination part it reaches: DEST may name several, one source and several ends)
     for nm in [n for n in names if n in planned]:    # the run's order: a set's would follow the hash seed
         e = plan['ends'][nm]
-        ends[nm] = (tuple(e[0]), tuple(e[1]), dest)
+        ends[nm] = (tuple(e[0]), tuple(e[1]), net_dest(byname[nm][1], dest))
     for n in _legs:
         if n in _pl_ends:
             e = _pl_ends[n]
-            ends[n] = (tuple(e[0]), tuple(e[1]), dest)
+            ends[n] = (tuple(e[0]), tuple(e[1]), net_dest(byname[n][1], dest))
     ctx.pair_ends = {}
     for _b, (_pn, _nn) in list(_pairs_here.items()):
         (sp_, tp_, _), (sn_, tn_, _) = ends[_pn], ends[_nn]
         _ds, _dt = math.sqrt(ts.d2(sp_, sn_)), math.sqrt(ts.d2(tp_, tn_))
         # the limit: two lane pitches, or 1.3 of the destination's ball
         # pitch -- a harmonised pair's tips stand one ball apart
-        _dg = em.grid_of(pcb.footprints[dest])
+        _dg = em.grid_of(pcb.footprints[ends[_pn][2]])
         _lim = max(_pairs.MAX_SEP, 1.3 * max(_dg.pitch_x, _dg.pitch_y))
         if max(_ds, _dt) > _lim:
             # the plan put this pair's ends APART: it stays a PAIR all the
@@ -6819,7 +6835,7 @@ def setup(board, names, dest, log, plan=None, pairs=False):
             # 2026-09-20: never).
             log(f'pair {_b}: ends apart -- teeth {_ds:.2f} mm, berths {_dt:.2f} mm (limit {_lim:.2f}); '
                 f'still a pair: coupled or refused, never singles')
-        ends[_b] = (_pairs.mid(sp_, sn_), _pairs.mid(tp_, tn_), dest)
+        ends[_b] = (_pairs.mid(sp_, sn_), _pairs.mid(tp_, tn_), ends[_pn][2])
         ctx.pair_ends[_b] = ((sp_, sn_), (tp_, tn_))
     ctx.pairs = _pairs_here
     ctx.pcb, ctx.byname, ctx.ends, ctx.kids = pcb, byname, ends, kids

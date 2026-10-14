@@ -16,7 +16,9 @@ order instead, each with its own fanout (MODE: joint, escape or plain) and routi
 a bus to a row part among them (its pads escape straight out of their rows: escape_moves.row_part); an escape bus on
 an array an earlier bus was routed through plans that array whole with it, its ends on the board as it was before
 (route_buses: ESCAPE_JOINT, ESCAPE_JOINT_ENDS). A plain or joint bus from such an array may keep the escapes that
-bus's step laid it there, opted in (SOURCE_SHARED=REF).
+bus's step laid it there, opted in (SOURCE_SHARED=REF). DEST may name several parts, SRC:U4+U3: ONE SOURCE, SEVERAL
+ENDS, the buses to them one plain bus planned and laid whole -- the whole route's trunk runs to the first, and each
+other's lanes leave it on a branch (whole_frame), crossing the others on the trunk alone.
 
 route_bus() takes a board as the chain hands it on and writes it back with the bus laid, in the board's own frame,
 at the chain's sizes (resolve_rules: the routing CLIs' flags, an omitted one resolved as route.py resolves it):
@@ -192,6 +194,7 @@ def route_buses(board, out, buses=None, k=None, rounds=3, inproc=False, log=prin
     environment (SOURCE_SHARED=REF) -- the zynq's USB bus from U1 to its QFN"""
     from kicad_parser import parse_kicad_pcb
     from copy_board import copy_board
+    from flow_frame import dest_refs as _ff_dest_refs
     board, out = os.path.abspath(board), os.path.abspath(out)
     if not out.endswith('.kicad_pcb'):
         out += '.kicad_pcb'
@@ -212,7 +215,8 @@ def route_buses(board, out, buses=None, k=None, rounds=3, inproc=False, log=prin
         s, d = bus[0], bus[1]
         mode = (bus[2] if len(bus) > 2 else None) or ('escape' if escape else 'joint' if joint_fanout else 'plain')
         settings = {'ROUTE_LAYERS': bus[3]} if len(bus) > 3 and bus[3] else {}
-        shared = [r_ for r_ in (s, d) if r_ in through]
+        parts_ = [s] + _ff_dest_refs(d)                 # (DEST may name several parts: one source, several ends)
+        shared = [r_ for r_ in parts_ if r_ in through]
         if mode == 'escape' and shared:
             settings.update(ESCAPE_JOINT=','.join(shared), ESCAPE_JOINT_ENDS=inputs[min(through[r_] for r_ in shared)])
             log(f'route_bus: {s} -> {d}: {", ".join(shared)} routed through by an earlier bus -- planned whole with this '
@@ -224,7 +228,7 @@ def route_buses(board, out, buses=None, k=None, rounds=3, inproc=False, log=prin
                             joint_fanout=mode == 'joint', escape=mode == 'escape', settings=settings or None, **sizes)
         runs.append(dict(src=s, dest=d, mode=mode, settings=settings, exit=code, grade=g, summary=step_json))
         if code == 0:
-            for r_ in (s, d):
+            for r_ in parts_:
                 through.setdefault(r_, len(inputs) - 1)
         if os.path.isfile(step_out):       # (routed, or the board as it came)
             cur = step_out
@@ -258,27 +262,36 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
     os.makedirs(work, exist_ok=True)
     with contextlib.redirect_stdout(sys.stderr):
         pcb = parse_kicad_pcb(board)
-    for r in (src, dest):
+    # (DEST may name several parts, 'U4+U3': one source, several ends -- the whole route's trunk runs to the first, a
+    # branch off it to each other, whole_frame)
+    dests = ff.dest_refs(dest)
+    for r in [src] + dests:
         if r not in pcb.footprints:
             log(f'route_bus: no footprint {r} on the board')
             return 2, None
+    if len(dests) > 1 and (joint_fanout or escape):
+        log(f'route_bus: {src} -> {dest}: a bus to several parts is a plain bus (its source fanned out, each '
+            f'destination\'s berths laid as planned) -- no joint or escape fanout')
+        return 2, None
     log(f'route_bus: {os.path.basename(board)}, copper layers {pcb.board_info.copper_layers}, {src} -> {dest}')
 
     # 1. the bus, its copper stripped
-    names = mb.pair_nets(pcb, src, dest)
-    log(f'  {len(names)} nets between {src} and {dest}')
+    names = sorted({n for d in dests for n in mb.pair_nets(pcb, src, d)})
+    for d in dests:
+        log(f'  {len(mb.pair_nets(pcb, src, d))} nets between {src} and {d}')
     import awx_settings
     # BUS_PULLED (opt-in): 1 every bus, or the buses named SRC-DEST, comma separated -- their pulled nets laid as lanes
     # (pulled_nets), each a place in the bus's order: the zynq's USB and Ethernet buses take theirs (OTG_RESETN; ETH_MDIO,
     # ETH_RXCTL, ETH_RXD0-3)
     _bp = (awx_settings.get('BUS_PULLED') or '').strip()
-    pulled = pulled_nets(pcb, src, dest, names) if _bp == '1' or f'{src}-{dest}' in _bp.split(',') else {}
+    pulled = ({k_: v_ for d in dests for k_, v_ in pulled_nets(pcb, src, d, names).items()}
+              if _bp == '1' or f'{src}-{dest}' in _bp.split(',') else {})
     if pulled:
         names = sorted(set(names) | set(pulled))
         log(f'  {len(pulled)} more with a PULL beside their two ends, laid as lanes, the pull left to the rest of the '
             f'chain: ' + ', '.join(f'{n.split("/")[-1]} ({", ".join(p.component_ref for p in v)})'
                                    for n, v in sorted(pulled.items())))
-    wps = waypoint_pairs(pcb, names, src, dest)
+    wps = {leg: part for d in dests for leg, part in waypoint_pairs(pcb, names, src, d).items()}
     refused = {leg: f'passes through {part}, a termination part between the arrays: the whole route lays no waypoint'
                for leg, part in wps.items()}
     if wps:
@@ -1054,10 +1067,11 @@ def main():
     ap.add_argument('--bus', action='append', metavar='SRC:DEST[:MODE[:LAYERS]]',
                     help='a bus to route, in the order given (repeat for each; instead of --src/--dest): MODE joint, '
                          'escape or plain (default: --joint-fanout / --escape), LAYERS its routing layers '
-                         '(ROUTE_LAYERS, comma separated; default the environment\'s); DEST may be a row part (a QFN). '
-                         'An escape bus on an array an earlier bus was routed through plans that array whole with it, '
-                         'its ends on the board as it was before that bus; a plain or joint one keeps the escapes that '
-                         'bus\'s step laid it there')
+                         '(ROUTE_LAYERS, comma separated; default the environment\'s); DEST may be a row part (a QFN), '
+                         'and may name several parts, U4+U3 (one source, several ends: a plain bus, its trunk to the '
+                         'first, a branch off it to each other). An escape bus on an array an earlier bus was routed '
+                         'through plans that array whole with it, its ends on the board as it was before that bus; a '
+                         'plain or joint one may keep the escapes that bus\'s step laid it there (SOURCE_SHARED)')
     ap.add_argument('--k', type=int, help="the ladder's first K nets (default: the whole ladder)")
     ap.add_argument('--rounds', type=int, default=3, help='fanout rounds (default 3)')
     ap.add_argument('--inproc', action='store_true', help='every stage in this process rather than each in its own')

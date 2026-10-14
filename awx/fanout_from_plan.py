@@ -253,20 +253,35 @@ def plan_state(pcb, names, banned=frozenset()):
             street=street, street_pitch=pe.sm._STACK_PITCH + 1e-4, street_dirs=street_dirs)
     dmenu, launch, src_pad, dst_pad = {}, {}, {}, {}
     dref = ends[names[0]][2]
+    # (DEST naming several parts, one source and several ends: the trunk's -- the first -- is the plan's destination
+    # array, and each other a BRANCH off the trunk, whole_frame)
+    _dl = te.dest_refs(awx_settings.get('DEST') or '')
+    if len(_dl) > 1:
+        dref = _dl[0]
     dgrid = em.grid_of(pcb.footprints[dref])
     dboxes = dgrid.bbox
+    _dests = [dref] + [r_ for r_ in _dl[1:] if r_ != dref] if len(_dl) > 1 else [dref]
+    _dgrid_of = {r_: (dgrid if r_ == dref else em.grid_of(pcb.footprints[r_])) for r_ in _dests}
     # the destination's FAR face, the one facing away from the source: under the whole route's ends a far-face move
     # is offered only to a ball in the array's half beside that face -- in ten fanouts over K15-K41 the ends model
     # chose 3 of 341 berths there, one net one column from the far face (K41 SA11), from 518 of 2269 menu moves
-    # (every dog-bone and via-in-pad among them unchosen)
+    # (every dog-bone and via-in-pad among them unchosen). Each destination's own, where DEST names several
     _sc = [sum(ends[n][0][k] for n in names) / len(names) for k in (0, 1)]
-    _dc = ((dboxes[0] + dboxes[2]) / 2, (dboxes[1] + dboxes[3]) / 2)
-    far = max(em.DIRS, key=lambda d: em.DIRS[d][0] * (_dc[0] - _sc[0]) + em.DIRS[d][1] * (_dc[1] - _sc[1]))
-    toward = max(em.DIRS, key=lambda d: em.DIRS[d][0] * (_sc[0] - _dc[0]) + em.DIRS[d][1] * (_sc[1] - _dc[1]))
-    _fax = 0 if em.DIRS[far][0] else 1
+    _fd = {}
+
+    def faces_of(ref):
+        """(far, toward, the far face's axis, the box) of destination `ref`"""
+        if ref not in _fd:
+            b_ = dboxes if ref == dref else em.grid_of(pcb.footprints[ref]).bbox
+            c_ = ((b_[0] + b_[2]) / 2, (b_[1] + b_[3]) / 2)
+            f_ = max(em.DIRS, key=lambda d: em.DIRS[d][0] * (c_[0] - _sc[0]) + em.DIRS[d][1] * (c_[1] - _sc[1]))
+            t_ = max(em.DIRS, key=lambda d: em.DIRS[d][0] * (_sc[0] - c_[0]) + em.DIRS[d][1] * (_sc[1] - c_[1]))
+            _fd[ref] = (f_, t_, 0 if em.DIRS[f_][0] else 1, b_, c_)
+        return _fd[ref]
 
     def far_half(pad):
-        mid = (dboxes[_fax] + dboxes[_fax + 2]) / 2
+        far, _t, _fax, b_, _c = faces_of(pad.component_ref)
+        mid = (b_[_fax] + b_[_fax + 2]) / 2
         return ((pad.global_x, pad.global_y)[_fax] - mid) * em.DIRS[far][_fax] >= -1e-6
     for nm in names:
         nid, net = byname[nm]
@@ -275,10 +290,17 @@ def plan_state(pcb, names, banned=frozenset()):
         pad = min(fp.pads, key=lambda p: (p.global_x - bx) * (p.global_x - bx)
                   + (p.global_y - by) * (p.global_y - by))
         dst_pad[nm] = pad
+        far, toward, _fax, _b, _c = faces_of(ends[nm][2])
         moves = dedupe_climbs(menu(pad, em.grid_of(fp), nid, climb=DST_CLIMB,
                                    street=DST_STREET, street_dirs=(toward,)))
         if PLAN_JUDGE == 'ends' and not far_half(pad):
             moves = [m for m in moves if m.direction != far]
+        if ends[nm][2] != dref and len(_dl) > 1:
+            # a BRANCH's berths only on the faces turned toward the source: its lanes leave the trunk and land on
+            # them from the branch, which has no way round its part (whole_frame) -- a net whose ball has no such
+            # move has no berth, and the run names it
+            moves = [m for m in moves if em.DIRS[m.direction][0] * (_sc[0] - _c[0])
+                     + em.DIRS[m.direction][1] * (_sc[1] - _c[1]) > 1e-9]
         dmenu[nm] = [m for m in moves if (nm, sr.move_sig(m)) not in banned
                      and (nm, 'class', sr.move_class(m)) not in banned]
         # a pad of this net on the other layer UNDER the ball (a back-side
@@ -341,7 +363,9 @@ def plan_state(pcb, names, banned=frozenset()):
     # route has no way round the source (whole_frame), so such a move is no candidate
     far_dir = None
     if PLAN_JUDGE == 'ends':
-        _dp = [(p_.global_x, p_.global_y) for p_ in pcb.footprints[ends[names[0]][2]].pads]
+        # (every destination's pads, where DEST names several: the source's far face faces away from them all)
+        _dp = [(p_.global_x, p_.global_y) for r_ in sorted({ends[n][2] for n in names})
+               for p_ in pcb.footprints[r_].pads]
         _sp = [(p_.global_x, p_.global_y) for p_ in pcb.footprints[sref].pads]
         _fx = sum(x for x, _y in _dp) / len(_dp) - sum(x for x, _y in _sp) / len(_sp)
         _fy = sum(y for _x, y in _dp) / len(_dp) - sum(y for _x, y in _sp) / len(_sp)
@@ -468,6 +492,8 @@ def plan_state(pcb, names, banned=frozenset()):
             'dst_pad': dst_pad, 'sref': sref, 'dref': dref, 'sgrid': sgrid,
             'bundle_layer': bundle_layer, 'chi': chi,
             'dgrid': dgrid, 'dboxes': dboxes,
+            # (DEST naming several parts: the trunk's first, each other a branch's -- whole_ends reads each lane's own)
+            'dests': _dests, 'dgrid_of': _dgrid_of, 'dbox_of': {r_: g_.bbox for r_, g_ in _dgrid_of.items()},
             'buses': buses, 'obs': obs, 'pcb': pcb,
             'pads_of': {ref: [(p.global_x, p.global_y) for p in fp.pads]
                         for ref, fp in pcb.footprints.items()}})
@@ -1333,6 +1359,10 @@ def explain_plan(choice, st, names, out_path=None, board=None, achieved=None):
         if PLAN_PAGES:
             plan['pages_first'] = True      # the braid stage pages this plan EXACTLY
         plan['nets'] = list(names)          # the run, in its order: an INCREMENTAL round routes the same nets
+        if isinstance(st, dict) and len(st.get('dests') or ()) > 1:
+            # (DEST naming several parts, one source and several ends: each net's own -- the feedback's berth boxes,
+            # whole_feedback)
+            plan['dest_of'] = {nm: st['dst_pad'][nm].component_ref for nm in plan['ends'] if nm in st['dst_pad']}
         if PLAN_JUDGE == 'ends':
             # the ends model's reading of each lane on these ends (whole_ends: its nets over two, its load on the
             # trunk, its crossings) -- the lanes a round the whole route lays nothing on frees next (whole_feedback
@@ -1802,6 +1832,9 @@ def fanout_audit(board, names, dest):
     empty: the board may be handed on."""
     import whole_ctx
     import whole_frame
+    _d = awx_settings.get('DEST') or ''
+    if len(te.dest_refs(_d)) > 1 and te.dest_refs(_d)[0] == dest:
+        dest = _d                       # (DEST naming several parts, `dest` the trunk's: the frame of them all)
     with awx_settings.given({**awx_settings.environ(), 'BENCH': board, 'NETS': ','.join(names), 'DEST': dest}):
         try:
             with contextlib.redirect_stdout(io.StringIO()):
@@ -2039,7 +2072,11 @@ def fanout_once(out_path, names, choice, dst_pad, dref, byname, board,
     hint -- its own search picks the gap, layer and kind on that face), for a
     net whose menu of straight escapes is empty on an occupied board
     (reberth.py); measured like an unplanned net, not audited.
-    Returns (laid nets, audit dict, clean-and-complete)."""
+    Returns (laid nets, audit dict, clean-and-complete).
+    (DEST naming several parts, one source and several ends: each net's
+    berth laid at its own -- dst_pad's part -- by that part's engine.)"""
+    multi = len(te.dest_refs(awx_settings.get('DEST') or '')) > 1
+    dof = (lambda nm: dst_pad[nm].component_ref if nm in dst_pad else dref) if multi else (lambda nm: dref)
     if relay is None:
         targets = list(names)
         pcb = parse_kicad_pcb(board)
@@ -2050,14 +2087,16 @@ def fanout_once(out_path, names, choice, dst_pad, dref, byname, board,
         shutil.copy(out_path, prev)
         pcb = parse_kicad_pcb(prev)
         n2n = {i: n.name for i, n in pcb.nets.items()}
-        x0, y0, x1, y1 = em.grid_of(pcb.footprints[dref]).bbox
-        x0, y0, x1, y1 = x0 - 2.0, y0 - 2.0, x1 + 2.0, y1 + 2.0
-        nids = {byname[nm][0] for nm in targets}
-        segs = [s for s in pcb.segments if s.net_id in nids
-                and x0 <= min(s.start_x, s.end_x) and max(s.start_x, s.end_x) <= x1
-                and y0 <= min(s.start_y, s.end_y) and max(s.start_y, s.end_y) <= y1]
-        vias = [v for v in pcb.vias if v.net_id in nids
-                and x0 <= v.x <= x1 and y0 <= v.y <= y1]
+        segs, vias = [], []
+        for r_ in sorted({dof(nm) for nm in targets}):
+            x0, y0, x1, y1 = em.grid_of(pcb.footprints[r_]).bbox
+            x0, y0, x1, y1 = x0 - 2.0, y0 - 2.0, x1 + 2.0, y1 + 2.0
+            nids = {byname[nm][0] for nm in targets if dof(nm) == r_}
+            segs += [s for s in pcb.segments if s.net_id in nids
+                     and x0 <= min(s.start_x, s.end_x) and max(s.start_x, s.end_x) <= x1
+                     and y0 <= min(s.start_y, s.end_y) and max(s.start_y, s.end_y) <= y1]
+            vias += [v for v in pcb.vias if v.net_id in nids
+                     and x0 <= v.x <= x1 and y0 <= v.y <= y1]
         content = open(prev, encoding='utf-8').read()
         content, n_s = sr.remove_segments_from_content(content, segs, n2n)
         content, n_v = sr.remove_vias_from_content(content, vias, n2n)
@@ -2100,16 +2139,23 @@ def fanout_once(out_path, names, choice, dst_pad, dref, byname, board,
     pcb._fanout_all_foreign_immovable = True
     import joint_escape as _je
     _je.reserve_ball_vias(pcb)          # the joint fanout: the other balls' own via sites stay free
-    if em.row_part(pcb.footprints[dref]):
-        # a ROW PART (a QFN): each berth laid as planned, on its own legs -- a pad's one escape, straight out of its
-        # row (escape_moves); the array engine follows a plan over a ball grid, and on zynq U4 laid 1 of 8
-        tracks, vias_add, vias_rm, failed = row_berths(pcb, dref, targets, choice, dst_pad, byname)
-    else:
-        tracks, vias_add, vias_rm, failed = generate_bga_fanout(
-            pcb.footprints[dref], pcb, net_filter=targets, layers=route_layers.stacked(pcb.board_info.copper_layers),
-            track_width=sr.FAN_TRACK, clearance=sr.FAN_CLEAR, via_size=te.VIA_SIZE, via_drill=te.VIA_DRILL,
-            exit_margin=0.5, escape_method='underpad', plane_drop='off',
-            escape_dir_hints=hints)
+    tracks, vias_add, vias_rm, failed = [], [], [], []
+    for r_ in [dref] + sorted({dof(nm) for nm in targets} - {dref}):
+        tg_ = [nm for nm in targets if dof(nm) == r_]
+        if not tg_ and r_ != dref:
+            continue
+        if em.row_part(pcb.footprints[r_]):
+            # a ROW PART (a QFN): each berth laid as planned, on its own legs -- a pad's one escape, straight out of
+            # its row (escape_moves); the array engine follows a plan over a ball grid, and on zynq U4 laid 1 of 8
+            got_ = row_berths(pcb, r_, tg_, choice, dst_pad, byname)
+        else:
+            got_ = generate_bga_fanout(
+                pcb.footprints[r_], pcb, net_filter=tg_, layers=route_layers.stacked(pcb.board_info.copper_layers),
+                track_width=sr.FAN_TRACK, clearance=sr.FAN_CLEAR, via_size=te.VIA_SIZE, via_drill=te.VIA_DRILL,
+                exit_margin=0.5, escape_method='underpad', plane_drop='off',
+                escape_dir_hints=hints)
+        for acc_, add_ in zip((tracks, vias_add, vias_rm, failed), got_):
+            acc_ += list(add_)
     if tracks:
         add_tracks_and_vias_to_pcb(
             src_file, out_path, tracks, vias_add, vias_rm,
@@ -2170,7 +2216,7 @@ def fanout_once(out_path, names, choice, dst_pad, dref, byname, board,
     got = {t['net_id'] for t in tracks}
     have = (set(already) - set(targets)) | {nm for nm in names if byname[nm][0] in got}
     laid = [nm for nm in choice if nm in have]
-    achieved = {nm: sr.measure_tooth(pcb_out, nm, dst_pad[nm], byname, dest_ref=dref)
+    achieved = {nm: sr.measure_tooth(pcb_out, nm, dst_pad[nm], byname, dest_ref=dof(nm))
                 for nm in laid}
     audit_d, _counts = sr.audit(choice, achieved, None, laid, print, 'berth')
     # the berth of a net the plan left UNPLACED, laid by the engine's own
@@ -2178,7 +2224,7 @@ def fanout_once(out_path, names, choice, dst_pad, dref, byname, board,
     # over the asked berths only)
     for nm in names:
         if nm not in choice and nm in have and nm in dst_pad:
-            achieved[nm] = sr.measure_tooth(pcb_out, nm, dst_pad[nm], byname, dest_ref=dref)
+            achieved[nm] = sr.measure_tooth(pcb_out, nm, dst_pad[nm], byname, dest_ref=dof(nm))
     fanout_once.achieved = achieved
     print(f'\nwrote {out_path}: {len(tracks)} tracks, {len(vias_add)} '
           f'vias, {len(set(failed))} failed nets, '

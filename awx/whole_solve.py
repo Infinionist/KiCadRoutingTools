@@ -222,7 +222,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         """each leg's stub at end k_ (0 the tooth, 1 the berth) carries a via inside its array, and its end stands on
         that via or runs to it on one layer -- what the relayer can move (relayer.run_to_via): a via of the net in the
         box its stub does not reach would be an end the plan moves and the copper leaves where it was"""
-        box = (Fr.SB, Fr.DB)[k_]
+        box = Fr.SB if k_ == 0 else Fr.DBs[Fr.dest_of[n]]
         if n in prs:
             (sp_, sn_), (tp_, tn_) = ctx.pair_ends[n]
             legs_ = ((prs[n][0], (sp_, tp_)[k_], (ctx.tooth_layer, ctx.dest_layer)[k_][n]),
@@ -614,9 +614,9 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
     NVC1 = len(VCUTS)
     off_ = {n: (_pairs.dive_offset(ctx.cfg, _pairs.pitch(TRK) / 2) if n in prs else 0.0) for n in M}
     items = [((pd_.global_x, pd_.global_y), max(pd_.size_x, pd_.size_y) / 2)
-             for ref_, fp_ in ctx.pcb.footprints.items() if ref_ not in (Fr.src, Fr.dst) for pd_ in fp_.pads
+             for ref_, fp_ in ctx.pcb.footprints.items() if ref_ not in (Fr.src, *Fr.dests) for pd_ in fp_.pads
              if pd_.pad_type != 'np_thru_hole' and any(L.endswith('.Cu') for L in pd_.layers)]
-    items += [((x_, y_), r_) for (x_, y_, r_, _L, _nm) in whole_ctx.foreign_teeth(ctx, M, (Fr.SB, Fr.DB))]
+    items += [((x_, y_), r_) for (x_, y_, r_, _L, _nm) in whole_ctx.foreign_teeth(ctx, M, (Fr.SB, *Fr.DBs.values()))]
     for (px_, py_), rp_ in items:
         sp_, op_ = (float(v_) for v_ in spine.project_pt((px_, py_)))
         for n in M:
@@ -637,8 +637,8 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         _dcen = (sum(x_ for x_, _y in _dcp) / len(_dcp), sum(y_ for _x, y_ in _dcp) / len(_dcp))
         for k_, sp_ in sorted(ring_of.items()):
             mem_ = [n for n in M if bname.get(n) == k_]
-            if not mem_:
-                continue
+            if not mem_ or k_ in Fr.branch:
+                continue                # (a branch has no outside: its lanes land off it as the trunk's near face's)
             band_ = sum(PITCH + (_pairs.pitch(TRK) if n in prs else 0.0) for n in mem_) + 2 * PITCH
             wid_ = {n: PITCH + (_pairs.pitch(TRK) if n in prs else 0.0) for n in mem_}
             sbe_ = {n: end[n] - Hn[n] + rs[k_] for n in mem_}             # where on the ring each lane berths
@@ -1053,7 +1053,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         LIDX_ = {L_: i_ for i_, L_ in enumerate(LAYN)}
         ALL_ = frozenset(range(NL))
         ISLB = {}                                      # (island, its layers) -> its box
-        for (ref_, i_), lab_ in whole_ctx.part_islands(ctx, skip=(Fr.src, Fr.dst)).items():
+        for (ref_, i_), lab_ in whole_ctx.part_islands(ctx, skip=(Fr.src, *Fr.dests)).items():
             p_ = ctx.pcb.footprints[ref_].pads[i_]
             if p_.pad_type == 'np_thru_hole':
                 hx_ = hy_ = (p_.drill or 0) / 2
@@ -1086,7 +1086,8 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
             X_, Y_ = column(sp_, s_)
             ok_ = (X_ >= BX0_ + EDGE_) & (X_ <= BX1_ - EDGE_) & (Y_ >= BY0_ + EDGE_) & (Y_ <= BY1_ - EDGE_)
             if L_ not in ISLA_:
-                bx_ = np.array([Fr.SB, Fr.DB] + [b2_ for (_l, ls2_), b2_ in ISLB.items() if L_ in ls2_], dtype=float)
+                bx_ = np.array([Fr.SB, *Fr.DBs.values()] + [b2_ for (_l, ls2_), b2_ in ISLB.items() if L_ in ls2_],
+                               dtype=float)
                 ISLA_[L_] = (bx_, (bx_[:, 0] + bx_[:, 2]) / 2, (bx_[:, 1] + bx_[:, 3]) / 2,
                              np.hypot((bx_[:, 2] - bx_[:, 0]) / 2 + BAR_, (bx_[:, 3] - bx_[:, 1]) / 2 + BAR_))
             bx_, cx_, cy_, hd_ = ISLA_[L_]
@@ -1099,6 +1100,8 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
             near_ = np.abs((cx_ - px_) * ny_ - (cy_ - py_) * nx_) <= hd_ * math.hypot(nx_, ny_) + 1e-6
             for b_ in bx_[near_]:
                 ok_ &= ~((X_ > b_[0] - BAR_) & (X_ < b_[2] + BAR_) & (Y_ > b_[1] - BAR_) & (Y_ < b_[3] + BAR_))
+            # (a ring's room is outside the destination; a branch's, as the trunk's, either side)
+            ring_ = ring_ if ring_ not in Fr.branch else None
             oc_ = float(sp_.project_pt(dcen_)[1]) if ring_ else None
             # (the column's free RUNS found at once -- each run's ends, then each run summed in turn as before: the same
             # floats in the same order. Walked a sample at a time, the ~4000 samples of a column were 4 of a check's
@@ -1214,7 +1217,8 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
             orun_ = ob1_ if n in prs else ob1_ + out_ * STAND_
             srun_ = sb1_ - (STAND_ + TRK + CLR)
             sout_ = sb0_ + abs(orun_ - ob0_)
-            rp_ = ([(sb0_, ob0_), (sout_, orun_), (srun_, orun_), (sb1_, ob1_)] if sout_ < srun_ else
+            rp_ = ([(sb0_, ob0_), (sb1_, ob1_)] if k_ in Fr.branch else      # (a branch's: straight to its landing)
+                   [(sb0_, ob0_), (sout_, orun_), (srun_, orun_), (sb1_, ob1_)] if sout_ < srun_ else
                    [(sb0_, ob0_), (srun_, orun_), (sb1_, ob1_)] if srun_ > sb0_ + 1e-9 else [(sb0_, ob0_), (sb1_, ob1_)])
             for sb_ in np.arange(sb0_, sb1_ + 1e-9, G):
                 o_ = float(np.interp(sb_, [q_[0] for q_ in rp_], [q_[1] for q_ in rp_]))
@@ -1224,7 +1228,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         # the islands on some layers only, outside the arrays' boxes, joined into regions where they stand within a
         # lane pitch of each other on a layer they share
         isl_ = {}
-        for (ref_, i_), lab_ in whole_ctx.part_islands(ctx, skip=(Fr.src, Fr.dst)).items():
+        for (ref_, i_), lab_ in whole_ctx.part_islands(ctx, skip=(Fr.src, *Fr.dests)).items():
             p_ = ctx.pcb.footprints[ref_].pads[i_]
             if p_.pad_type == 'np_thru_hole' or (p_.drill or 0) > 0 or '*.Cu' in p_.layers:
                 continue
@@ -1235,7 +1239,8 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
             b_[0], b_[1] = min(b_[0], p_.global_x - p_.size_x / 2), min(b_[1], p_.global_y - p_.size_y / 2)
             b_[2], b_[3] = max(b_[2], p_.global_x + p_.size_x / 2), max(b_[3], p_.global_y + p_.size_y / 2)
         inbox_ = lambda b_, B_: b_[0] >= B_[0] and b_[2] <= B_[2] and b_[1] >= B_[1] and b_[3] <= B_[3]
-        isl_ = {k_: b_ for k_, b_ in isl_.items() if not inbox_(b_, Fr.SB) and not inbox_(b_, Fr.DB)}
+        isl_ = {k_: b_ for k_, b_ in isl_.items() if not inbox_(b_, Fr.SB)
+                and not any(inbox_(b_, B_) for B_ in Fr.DBs.values())}
         keys_ = sorted(isl_)
         up_ = list(range(len(keys_)))
 
@@ -1291,7 +1296,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
             X_, Y_ = cx_ + ts_ * nr_[0], cy_ + ts_ * nr_[1]
             for L_ in sorted(lays_):
                 ok_ = np.ones(len(ts_), bool)
-                for b_ in [Fr.SB, Fr.DB] + [b2_ for (_l, ls2_), b2_ in isl_.items() if L_ in ls2_]:
+                for b_ in [Fr.SB, *Fr.DBs.values()] + [b2_ for (_l, ls2_), b2_ in isl_.items() if L_ in ls2_]:
                     ok_ &= ~((X_ > b_[0] - BARr_) & (X_ < b_[2] + BARr_) & (Y_ > b_[1] - BARr_) & (Y_ < b_[3] + BARr_))
                 room_, i_ = 0.0, 0
                 while i_ < len(ts_):
@@ -1462,7 +1467,8 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         nid = ctx.byname[leg][0]
         vs = [v for v in ctx.base_vias if v.net_id == nid]
         pads = ctx.pcb.nets[nid].pads
-        ties = [d_ for d_ in pads if d_.component_ref == dest and any(_pairs.under_pad(d_, q_, bd.VIA_SIZE) for q_ in pads)]
+        dref_ = ctx.ends[leg][2] if leg in ctx.ends else Fr.dst       # (its own destination: DEST may name several)
+        ties = [d_ for d_ in pads if d_.component_ref == dref_ and any(_pairs.under_pad(d_, q_, bd.VIA_SIZE) for q_ in pads)]
         tie = any(abs(v.x - d_.global_x) <= d_.size_x / 2 and abs(v.y - d_.global_y) <= d_.size_y / 2
                   for v in vs for d_ in ties)
         return len(vs) - int(tie), tie
@@ -1478,7 +1484,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
     for (n, k_) in sorted(VEND):
         necks = set()
         for leg in (prs[n] if n in prs else (n,)):
-            ref_ = ctx.src_ref.get(leg) if k_ == 0 else dest
+            ref_ = ctx.src_ref.get(leg) if k_ == 0 else Fr.dest_of[n]
             cu_ = {L for p_ in ctx.pcb.nets[ctx.byname[leg][0]].pads if p_.component_ref == ref_
                    for L in p_.layers if L in LAYN}
             necks |= cu_ if len(cu_) == 1 else {None}

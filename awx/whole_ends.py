@@ -100,6 +100,7 @@ FB_OTHER_LAYER = 0.5      # ... this much on the other layer there (a layer chan
 FB_RADIUS = 0.76          # ... falling to nothing this far beyond the place ...
 FB_ESCALATE = 2.0         # ... and this many times more each later round it is named again
 BIG = 100000.0            # a conflict, a split pair or a refused end: never taken
+RANK_MM = 1.0e4           # a branch's rank across the trunk, in mm round its part: past any part's perimeter (whole_frame)
 FRONT_REACH = 1.2         # a single lane's exit: its straight run out, this far along its escape (as a pair's,
 #                           fanout_from_plan.PAIR_EXIT_REACH), against copper outside the run on its layer (exit_front) --
 FRONT_VIA = 1.0           # ... blocked, with room for a via before the block: the lane changes layer there ...
@@ -176,6 +177,17 @@ class Ends:
         legs = {l_ for pr in prs.values() for l_ in pr}
         self.lanes = [(n, (n,)) for n in names if n not in legs] + [(b, pr) for b, pr in prs.items()]
         self.legs_of = dict(self.lanes)
+        # (DEST naming several parts, one source and several ends: each lane's own destination -- the trunk's the plan
+        # state's dref, each other a BRANCH's, whose lanes stand at its rank across the trunk in their order round it,
+        # whole_frame.dest_ranks / dest_box_cut, the frame's own)
+        import whole_frame
+        dests_ = list(st.get('dests') or [st['dref']])
+        self.multi = len(dests_) > 1
+        self.dest_of = {l_: (st['dst_pad'][lg[0]].component_ref if self.multi else st['dref']) for l_, lg in self.lanes}
+        self.rank = whole_frame.dest_ranks(st['pcb'], st['sref'], dests_) if self.multi else {st['dref']: 0}
+        self.prim = [l_ for l_, _lg in self.lanes if self.dest_of[l_] == st['dref']]
+        self.lbox = {l_: (st['dboxes'] if self.dest_of[l_] == st['dref'] else st['dbox_of'][self.dest_of[l_]])
+                     for l_, _lg in self.lanes}
         sb, db = st['sgrid'].bbox, st['dgrid'].bbox
         cs = ((sb[0] + sb[2]) / 2, (sb[1] + sb[3]) / 2)
         cd = ((db[0] + db[2]) / 2, (db[1] + db[3]) / 2)
@@ -186,6 +198,9 @@ class Ends:
         # ---- each lane's options at each end: (moves per leg, point, layer, vias)
         rt = 1.3 * max(st['sgrid'].pitch_x, st['sgrid'].pitch_y)
         rb = 1.3 * max(st['dgrid'].pitch_x, st['dgrid'].pitch_y)
+        rb_of = {l_: (rb if self.dest_of[l_] == st['dref'] else
+                      1.3 * max(st['dgrid_of'][self.dest_of[l_]].pitch_x, st['dgrid_of'][self.dest_of[l_]].pitch_y))
+                 for l_, _lg in self.lanes}
 
         def combos(menus, reach, forced=False):
             # (moves per leg, point, layer, vias, refused); `forced`: the ends as they stand, one option, REFUSED
@@ -254,8 +269,9 @@ class Ends:
             dm = [[m for m in st['dmenu'][l_] if l_ not in fixed or sr.move_sig(m) == fixed[l_]] or list(st['dmenu'][l_])
                   for l_ in lg]
             forced = all(l_ in fixed for l_ in lg)
-            self.B[lane] = (combos(dm, rb, forced=forced) if forced else
-                            unbanned(lg, combos(dm, rb)) or combos(dm, rb, forced=True))     # (nothing clean: refused)
+            rb_ = rb_of[lane]
+            self.B[lane] = (combos(dm, rb_, forced=forced) if forced else
+                            unbanned(lg, combos(dm, rb_)) or combos(dm, rb_, forced=True))  # (nothing clean: refused)
         # a PAIR's end is refused where copper of a net OUTSIDE the run stands between its two tips on its layer: the
         # pair cannot be coupled there. A run net's stub there is no refusal: it moves with the search, and the score's
         # split count sees whichever of its options stands between the tips (the bench's SA6 stub between SCK's teeth
@@ -364,7 +380,7 @@ class Ends:
         # past them (whole_frame: braid.ring_spine round the hull of the pads and the stubs). Priced at the box's own 0.3
         # mm, as around_box prices the short way, a lane wound round three faces came 5 to 12 mm longer laid (s4_bulgeW)
         bx_ = st['dboxes']
-        out_ = sorted(v for lane, _lg in self.lanes for o in self.B[lane]
+        out_ = sorted(v for lane in self.prim for o in self.B[lane]
                       if (v := max(bx_[0] - o[1][0], o[1][0] - bx_[2], bx_[1] - o[1][1], o[1][1] - bx_[3])) > 0)
         self.ring_d0 = (out_[len(out_) // 2] if out_ else 0.0) + _bd.LPITCH
         # ---- the whole route's FEEDBACK (whole_feedback: ends its audits found crowded, FEEDBACK= to the fanout): an
@@ -411,7 +427,7 @@ class Ends:
         if k not in self._ride:
             import plan_ends as pe
             a, b = self.T[lane][ti][1], self.B[lane][bi][1]
-            d = pe.sm.around_box(a, b, self.st['dboxes']) if side is None else \
+            d = pe.sm.around_box(a, b, self.lbox[lane]) if side is None else \
                 wound_ride(a, b, self.st['dboxes'], side, pad=self.ring_d0)
             d += pe.sm.around_box(a, b, self.st['sgrid'].bbox) - math.hypot(b[0] - a[0], b[1] - a[1])
             lg = dict(self.lanes)[lane]
@@ -422,6 +438,21 @@ class Ends:
                 stubs += math.hypot(bm.exit_pt[0] - dp_.global_x, bm.exit_pt[1] - dp_.global_y)
             self._ride[k] = npair * d + stubs
         return self._ride[k]
+
+    def _dcls(self, lanes, bo, dface, cut, DB):
+        """{lane: its class as the frame reads it (whole_frame.build)}: a trunk lane's ring ('N', 'S') or 'W' (the
+        facing face) at the trunk destination's cut (`dface` its face on that destination's grown box DB); a branch's
+        lane its branch ('B:' and its part), whose lanes cross the others on the trunk alone"""
+        import whole_frame
+        out = {}
+        for l_ in lanes:
+            if self.dest_of[l_] != self.st['dref']:
+                out[l_] = 'B:' + self.dest_of[l_]
+                continue
+            f_ = dface(bo[l_][1])
+            out[l_] = (('N' if bo[l_][1][1] < cut else 'S') if f_ == 'E' else f_) if whole_frame.far_cut(cut) \
+                else (whole_frame.ring_side(bo[l_][1], DB, cut) or 'W')
+        return out
 
     def _wound_sides(self, lanes, bo, DB, cut):
         """{lane: 'N' | 'S'} of the lanes WOUND in a state: its winding cut (cut_phase; `cut`) sends a lane's berth round
@@ -493,7 +524,7 @@ class Ends:
         import whole_frame
         if self.wcut is not None:
             return self._score_at(state, exact, self.wcut)      # (winding's cut, choose: cut_phase)
-        pts = [self.B[l_][state[l_][1]][1] for l_, _lg in self.lanes]
+        pts = [self.B[l_][state[l_][1]][1] for l_ in self.prim]
         DB = whole_frame.grown(self.dbox, pts)
         cuts = whole_frame.cuts_tied([p[1] for p in pts if whole_frame.face(p, DB) == 'E'], DB[1], DB[3], _bd.LPITCH)
         if len(cuts) < 2:
@@ -527,8 +558,10 @@ class Ends:
         lane_of = {leg: l_ for l_, lg in self.lanes for leg in lg}
         nref = sum(1 for l_ in lanes if to[l_][4] or bo[l_][4])
         # the orders, as the whole frame reads them (whole_frame.build)
+        dref = self.st['dref']
+        prim = [l_ for l_ in lanes if self.dest_of[l_] == dref]
         SB = whole_frame.grown(self.sbox, [to[l_][1] for l_ in lanes])
-        DB = whole_frame.grown(self.dbox, [bo[l_][1] for l_ in lanes])
+        DB = whole_frame.grown(self.dbox, [bo[l_][1] for l_ in prim])
         pc = self._perim
 
         def dface(p):
@@ -538,7 +571,7 @@ class Ends:
             return pc[k]
         # (the far face's cut, from the model's own exits: it rides the plan sidecar to the solve's frame, dest_cut)
         cut = cut_at if cut_at is not None else \
-            whole_frame.cut([bo[l_][1][1] for l_ in lanes if dface(bo[l_][1]) == 'E'], DB[1], DB[3])
+            whole_frame.cut([bo[l_][1][1] for l_ in prim if dface(bo[l_][1]) == 'E'], DB[1], DB[3])
         if isinstance(cut, (tuple, list)) and cut[0] == 'E':
             cut = float(cut[1])                 # (a far-face cut is its y, as the sidecar has always carried it)
 
@@ -553,8 +586,21 @@ class Ends:
             if k not in pc:
                 pc[k] = whole_frame.perim_c(p, DB, cut)
             return pc[k]
+        # (a BRANCH's berths: round its own part's box at its own cut, its rank across the trunk ahead of the place --
+        # the frame's final order, whole_frame.build)
+        bcut = {b_: whole_frame.dest_box_cut(self.st['pcb'], b_, [bo[l_][1] for l_ in lanes if self.dest_of[l_] == b_])
+                for b_ in sorted(set(self.dest_of[l_] for l_ in lanes) - {dref})}
+
+        def pend(l_, p):
+            b_ = self.dest_of[l_]
+            if b_ == dref:
+                return pdst(p)
+            k = (p, bcut[b_])
+            if k not in pc:
+                pc[k] = whole_frame.perim_c(p, *bcut[b_]) + RANK_MM * self.rank[b_]
+            return pc[k]
         ps = {l_: psrc(to[l_][1]) for l_ in lanes}
-        pd = {l_: pdst(bo[l_][1]) for l_ in lanes}
+        pd = {l_: pend(l_, bo[l_][1]) for l_ in lanes}
         tl = {l_: to[l_][2] for l_ in lanes}
         dl = {l_: bo[l_][2] for l_ in lanes}
         # strict orders: a tie broken by the lane's place in the run, the same way in both
@@ -568,17 +614,21 @@ class Ends:
         nsplit = 0
         if any(len(lg) > 1 for _l, lg in self.lanes):
             # every leg's place round each box, once
-            legs_at = [(to, {l_: [psrc(m.exit_pt) for m in to[l_][0]] for l_ in lanes}, SB),
-                       (bo, {l_: [pdst(m.exit_pt) for m in bo[l_][0]] for l_ in lanes}, DB)]
+            # (at the berths, each lane's own destination's box, and only its lanes)
+            legs_at = [(to, {l_: [psrc(m.exit_pt) for m in to[l_][0]] for l_ in lanes}, lambda l_: SB,
+                        lambda l_: None),
+                       (bo, {l_: [pend(l_, m.exit_pt) for m in bo[l_][0]] for l_ in lanes},
+                        lambda l_: DB if self.dest_of[l_] == dref else bcut[self.dest_of[l_]][0], self.dest_of.get)]
             for l_, lg in self.lanes:
                 if len(lg) < 2:
                     continue
-                for opt, pv, B_ in legs_at:
+                for opt, pv, box_, grp_ in legs_at:
+                    B_ = box_(l_)
                     whole = 2 * (B_[2] - B_[0] + B_[3] - B_[1])
                     a_, b_ = sorted(pv[l_])
                     L = opt[l_][2]
                     for o in lanes:
-                        if o == l_ or opt[o][2] != L:
+                        if o == l_ or opt[o][2] != L or grp_(o) != grp_(l_):
                             continue
                         # (more routing layers than two: a via end's layer is the solve's, which holds an end between
                         # a pair's tips off the pair's layer -- whole_solve's tip_between -- a split only of two
@@ -701,11 +751,7 @@ class Ends:
         # over the trunk's length. The solve can take a load to LOAD_OK freely (K28's ends: 0.5 at most, solved in 6
         # s); past it each lane pays W_CONG vias per the square of its overload (K35's: 0.8, 173 crossings on a 6.5
         # mm trunk, the solve found no plan)
-        dcls = {}
-        for l_ in lanes:
-            f_ = dface(bo[l_][1])
-            dcls[l_] = (('N' if bo[l_][1][1] < cut else 'S') if f_ == 'E' else f_) if whole_frame.far_cut(cut) \
-                else (whole_frame.ring_side(bo[l_][1], DB, cut) or 'W')
+        dcls = self._dcls(lanes, bo, dface, cut, DB)
         gT = max(DB[0] - SB[2], _LANE_PITCH)
         xT = collections.Counter()
         for a, b in inv:
@@ -731,7 +777,7 @@ class Ends:
                 exact_failed = True
         if self.fb_over:
             over = sum(max(ovk(l_, chg[l_]), self.fb_over.get(l_, 0)) for l_ in lanes)
-        wound = self._wound_sides(lanes, bo, DB, cut)
+        wound = self._wound_sides(prim, bo, DB, cut)
         ride = sum(self.ride(l_, npair[l_], state[l_][0], state[l_][1], wound.get(l_)) for l_ in lanes) + \
             self._wind_stack(lanes, to, bo, kd, dcls, npair, wound)
         stacks = _stacks(self.lanes, to, bo, chg, every=bool(self.st.get('escape')))
@@ -1063,11 +1109,7 @@ class Ends:
         over = sum(ovk(l_, chg[l_]) for l_ in lanes)
         # (the trunk: as on two layers, each crossing there its price, and each lane's load -- shared among the layers,
         # two lanes crossing on different ones standing one over the other)
-        dcls = {}
-        for l_ in lanes:
-            f_ = dface(bo[l_][1])
-            dcls[l_] = (('N' if bo[l_][1][1] < cut else 'S') if f_ == 'E' else f_) if whole_frame.far_cut(cut) \
-                else (whole_frame.ring_side(bo[l_][1], DB, cut) or 'W')
+        dcls = self._dcls(lanes, bo, dface, cut, DB)
         gT = max(DB[0] - SB[2], _LANE_PITCH)
         xT = collections.Counter()
         for a, b in inv:
@@ -1090,7 +1132,7 @@ class Ends:
                 exact_failed = True
         if self.fb_over:
             over = sum(max(ovk(l_, chg[l_]), self.fb_over.get(l_, 0)) for l_ in lanes)
-        wound = self._wound_sides(lanes, bo, DB, cut)
+        wound = self._wound_sides([l_ for l_ in lanes if self.dest_of[l_] == self.st['dref']], bo, DB, cut)
         ride = sum(self.ride(l_, npair[l_], state[l_][0], state[l_][1], wound.get(l_)) for l_ in lanes) + \
             self._wind_stack(lanes, to, bo, kd, dcls, npair, wound)
         stacks = _stacks(self.lanes, to, bo, chg, every=bool(self.st.get('escape')))
@@ -1576,13 +1618,13 @@ def cut_phase(E, state, vp, log=print):
     import whole_frame
     quiet = lambda *a: None
     v0, p0 = vp
-    pts = [E.B[l_][state[l_][1]][1] for l_, _lg in E.lanes]
+    # (the trunk destination's lanes: a branch's berths are round its own part, its cut its own -- whole_frame)
+    pts = [E.B[l_][state[l_][1]][1] for l_ in E.prim]
     DB = whole_frame.grown(E.dbox, pts)
     seen = {whole_frame.cut_sig(pts, DB, p0.get('cut'))}
     cands = []
     E.wcut = None
-    exits = [o[1] for l_, _lg in E.lanes for o in E.B[l_]] + [m.exit_pt for l_, _lg in E.lanes for o in E.B[l_]
-                                                               for m in o[0]]
+    exits = [o[1] for l_ in E.prim for o in E.B[l_]] + [m.exit_pt for l_ in E.prim for o in E.B[l_] for m in o[0]]
     for c in whole_frame.cut_gaps(pts, DB, avoid=exits):
         if whole_frame.far_cut(c):
             continue                    # (the far face's own gaps are _score's tied cuts: winding is a cut OFF it)
