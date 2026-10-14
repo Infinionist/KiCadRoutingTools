@@ -62,14 +62,23 @@ That fix also closed the DRC it was causing. cparti_fpga's retry step went
 drc_real 30 -> 10 with connectivity IMPROVING (15 -> 10 nets incomplete), and
 the 11mm collinear SPIs_MISO/SPIs_SCK short -- which a correct-looking map had
 not prevented -- disappeared entirely.
+
+WHERE THE BEHAVIOURAL HALF RUNS. The churn route is the one
+test_obstacle_map_balance's stage 1 already pays for -- same board, same
+arguments, same audit environment -- so it is routed ONCE, there, and graded
+for both: balance by that file, content by `grade_route_py_log` below, on the
+same log. (It used to be routed twice, ~265 s each.) This file runs the
+structural rows and asserts that wiring, so the behavioural half cannot be
+dropped from the stage without this file going red. To run the behavioural
+half alone:
+
+    python3 tests/test_obstacle_map_balance.py --part 0/4
 """
 import ast
 import glob
 import os
 import re
-import subprocess
 import sys
-import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -123,6 +132,15 @@ CONTENT_RE = re.compile(
     r"map; (?P<vias>\d+) via cells checked, (?P<vmissing>\d+) NOT via-blocked; "
     r"(?P<stale_cells>\d+) cells absent from their net's cache entry "
     r"\((?P<stale>\d+) stale entries\)")
+
+#: The churn recipe, shared with test_obstacle_map_balance's stage 1 so the two
+#: gradings of it cannot drift onto different runs: kicad_files/
+#: flat_hierarchy.kicad_pcb, single layer, fat geometry. Run under
+#: KICAD_OBSTACLE_AUDIT=1, KICAD_OBSTACLE_LEDGER=1, KICAD_PLANE_FRAGILITY_COST=0.
+CHURN_BOARD = os.path.join(ROOT, 'kicad_files', 'flat_hierarchy.kicad_pcb')
+CHURN_ARGS = ('--nets', '*', '!GND', '--track-width', '0.8',
+              '--clearance', '0.7', '--via-size', '1.0', '--via-drill', '0.6',
+              '--layers', 'F.Cu', '--max-ripup', '10')
 
 FAILS = []
 
@@ -288,32 +306,14 @@ def t_the_structural_detector_is_not_vacuous():
 # ---------------------------------------------------------------------------
 # Behavioural: invariant E on the route.py front, across EVERY audit
 # ---------------------------------------------------------------------------
-def t_invariant_e_on_the_route_py_front():
-    board = os.path.join(ROOT, 'kicad_files', 'flat_hierarchy.kicad_pcb')
-    if not os.path.isfile(board) or os.path.getsize(board) == 0:
-        check('t_invariant_e_on_the_route_py_front', False,
-              f'fixture missing: {board} -- this gate graded NOTHING')
-        return
-    env = dict(os.environ, KICAD_OBSTACLE_AUDIT='1', KICAD_OBSTACLE_LEDGER='1',
-               KICAD_PLANE_FRAGILITY_COST='0')
-    with tempfile.TemporaryDirectory(prefix='obs_content_') as d:
-        out = os.path.join(d, 'churn.kicad_pcb')
-        argv = [sys.executable, '-X', 'utf8',
-                os.path.join(ROOT, 'py_router', 'route.py'), board, out,
-                '--nets', '*', '!GND', '--track-width', '0.8',
-                '--clearance', '0.7', '--via-size', '1.0', '--via-drill', '0.6',
-                '--layers', 'F.Cu', '--max-ripup', '10']
-        try:
-            p = subprocess.run(argv, cwd=ROOT, env=env, capture_output=True,
-                               text=True, timeout=2400,
-                               encoding='utf-8', errors='replace')
-        except subprocess.TimeoutExpired:
-            check('t_invariant_e_on_the_route_py_front', False,
-                  'the churn recipe timed out -- no verdict, not a pass')
-            return
-    log = (p.stdout or '') + (p.stderr or '')
-    check('t_run_completed', p.returncode == 0 and 'Traceback' not in log,
-          f'rc={p.returncode}')
+def grade_route_py_log(rc, log, check=check):
+    """Invariant E across EVERY audit of one churn-recipe route.py run.
+
+    `rc`/`log` are that run's exit code and stdout+stderr; `check` is the
+    caller's recorder (name, cond, detail). test_obstacle_map_balance's stage
+    1 calls this on the log it already has -- see the module docstring."""
+    check('t_run_completed', rc == 0 and 'Traceback' not in log,
+          f'rc={rc}')
     rows = list(CONTENT_RE.finditer(log))
     check('t_content_audit_ran', bool(rows),
           f'{len(rows)} [OBSTACLE CONTENT] audit line(s)'
@@ -360,10 +360,44 @@ def t_invariant_e_on_the_route_py_front():
         print(f"      {label:<20} {'fired ' + str(n) + 'x' if n else 'NOT EXERCISED (structural rows only)'}")
 
 
+def t_the_behavioural_half_is_wired():
+    """The route this file grades runs in test_obstacle_map_balance's stage 1
+    (module docstring). Without this row, deleting that call -- or pointing
+    the stage at another recipe -- would leave invariant E graded on nothing
+    while both files stay green."""
+    path = os.path.join(ROOT, 'tests', 'test_obstacle_map_balance.py')
+    with open(path, encoding='utf-8') as f:
+        tree = ast.parse(f.read())
+    fn = next((n for n in tree.body if isinstance(n, ast.FunctionDef)
+               and n.name == 'stage_route'), None)
+    if fn is None:
+        check('t_the_behavioural_half_is_wired', False,
+              'test_obstacle_map_balance.py has no stage_route -- nothing '
+              'routes the churn recipe, so invariant E grades nothing')
+        return
+    attrs = {n.attr for n in ast.walk(fn) if isinstance(n, ast.Attribute)}
+    missing = sorted({'grade_route_py_log', 'CHURN_BOARD', 'CHURN_ARGS'}
+                     - attrs)
+    check('t_the_behavioural_half_is_wired', not missing,
+          'stage_route routes CHURN_BOARD/CHURN_ARGS and grades the log '
+          'with grade_route_py_log' if not missing else
+          f'stage_route no longer uses {missing} -- invariant E is not graded '
+          f'on the churn recipe any more')
+    stages = next((n for n in tree.body if isinstance(n, ast.Assign)
+                   and any(getattr(t, 'id', None) == 'STAGES'
+                           for t in n.targets)), None)
+    listed = ({e.id for e in stages.value.elts if isinstance(e, ast.Name)}
+              if stages is not None else set())
+    check('t_the_behavioural_stage_runs', 'stage_route' in listed,
+          'stage_route is in STAGES' if 'stage_route' in listed else
+          'stage_route is not in test_obstacle_map_balance.STAGES, so it '
+          'never runs')
+
+
 def main():
     t_the_structural_detector_is_not_vacuous()
     t_every_commit_site_tells_the_map()
-    t_invariant_e_on_the_route_py_front()
+    t_the_behavioural_half_is_wired()
     print()
     if FAILS:
         print(f"{len(FAILS)} FAILURE(S): {', '.join(FAILS)}")
