@@ -1154,7 +1154,14 @@ Examples:
                                             default=str), flush=True)
         return exit_rc
 
-    if not st.unplaced and not st.partially_unplaced and not args.force:
+    # #1165: `seed_scope` is the one answer (rank_rotations and
+    # check_floorplan's forecast read it too). A board whose unlocked parts
+    # sit off the outline is a seeding target whatever its locked parts do:
+    # the skill places and locks the fixed parts FIRST, which widened the
+    # spread (s2) and diluted the off-outline share (s3) until `unplaced`
+    # read False, and this gate refused the pile as "already PLACED".
+    from placement.placement_state import SEED_NONE, SEED_STACKED
+    if st.seed_scope == SEED_NONE and not args.force:
         # PARTIALLY unplaced boards (a stacked pile beside real placements --
         # a netlist re-import, or a seeder that pinned only the spec-fixed
         # parts) are a legitimate seeding target, not a refusal: locked parts
@@ -1164,12 +1171,18 @@ Examples:
               "variations of it, or --force to re-seed anyway.",
               file=sys.stderr)
         return UNPLACED_EXIT
+    if st.off_outline and not st.unplaced and not args.force:
+        _whole = bool(st.signals.get('s3_outside'))
+        _frac = st.outside_fraction if _whole else st.movable_outside_fraction
+        print(f"place_seed: {_frac:.0%} of the "
+              f"{'' if _whole else 'unlocked '}parts sit off the outline -- "
+              f"seeding every unlocked part; the locked ones stand.")
 
     # Partially unplaced without --force: seed ONLY the stacked pile. The
     # genuinely-placed unlocked parts are someone's work, not this tool's to
     # re-derive; --force widens the scope back to everything unlocked.
     seed_refs = None
-    if st.partially_unplaced and not st.unplaced and not args.force:
+    if st.seed_scope == SEED_STACKED and not args.force:
         # SCOPE FOLLOWS THE GATE. `partially_unplaced` is now decided on the
         # SUSPECT subset -- co-located parts that are not markers and not on
         # opposite sides -- so scoping the seed from the full `stacked_refs`

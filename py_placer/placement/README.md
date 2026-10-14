@@ -515,7 +515,14 @@ part could never be re-seated whatever the search found. So:
 Requires an Edge.Cuts outline (exit 3 without one — the outline is spec-owned
 and will not be invented) and refuses a board that already looks placed
 (use `place_portfolio.py` to explore around an existing placement, or
-`--force` to discard it). Different `--seed` values give genuinely different
+`--force` to discard it). A KiCad lock is a placement decision, so a board
+whose UNLOCKED parts sit off the outline is a seeding target whatever its
+locked parts do: place and lock the fixed parts first, then seed (#1165).
+The gate and its scope are `PlacementState.seed_scope` — every unlocked
+part on an unplaced or off-outline board (`off_outline`, which measures the
+unlocked parts when some are locked), only the stacked suspects on a
+partially-unplaced one, nothing on a placed one — and `rank_rotations.py`
+and check_floorplan's seeder forecast read the same property. Different `--seed` values give genuinely different
 legal seeds; the same seed reproduces byte for byte. The two compose:
 `place_seed --seed N` → `place_portfolio` diversifies and ranks.
 

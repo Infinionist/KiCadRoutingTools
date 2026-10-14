@@ -54,6 +54,11 @@ DEFAULT_THRESHOLDS = {'dup_fraction': DUP_FRACTION,
                       'spread_ratio': SPREAD_RATIO,
                       'outside_fraction': OUTSIDE_FRACTION}
 
+#: `PlacementState.seed_scope` values (#1165).
+SEED_ALL = 'all'            # every unlocked part
+SEED_STACKED = 'stacked'    # only `stacked_suspect_refs`
+SEED_NONE = 'placed'        # the board looks placed: nothing without --force
+
 
 @dataclass
 class PlacementState:
@@ -69,6 +74,14 @@ class PlacementState:
     # None means UNAVAILABLE (no usable outline), never 0.0. A misparsed outline
     # must not be able to manufacture an "unplaced" verdict.
     outside_fraction: Optional[float] = None
+    #: #1165. The same share over the UNLOCKED parts only, measured when the
+    #: board has both locked and unlocked pad-bearing parts (None otherwise,
+    #: or with no usable outline). A KiCad lock is a placement decision: the
+    #: skill places and locks the fixed parts BEFORE it seeds, and those
+    #: on-board parts diluted `outside_fraction` below the threshold while
+    #: every part still to be placed sat in the pile (ecc83: 4 locked holes
+    #: of 15 parts, 0.733).
+    movable_outside_fraction: Optional[float] = None
     stacked_refs: List[str] = field(default_factory=list)
     #: The subset of `stacked_refs` that is not explicable as deliberate
     #: co-location -- i.e. neither on a side the others cannot reach (a DRILLED
@@ -92,24 +105,62 @@ class PlacementState:
         return f"{self.segments} segment(s) and {self.vias} via(s)"
 
     @property
+    def off_outline(self) -> bool:
+        """The parts still to be placed sit off the outline (#1165):
+        `s3_outside` over every part, or `s3_movable_outside` over the
+        unlocked ones when some are locked. A staging ring is spread, not
+        stacked, so it reads neither unplaced nor partially unplaced; and a
+        pile whose fixed parts were placed and LOCKED first -- the order the
+        free-agent skill prescribes -- reads under the whole-board threshold
+        once enough of them stand on the board."""
+        sig = self.signals or {}
+        return bool(sig.get('s3_outside') or sig.get('s3_movable_outside'))
+
+    @property
     def pile(self) -> bool:
         """The poses carry no placement decisions (#1103, #1109).
 
-        `unplaced`, OR a staging ring (`s3_outside`: spread, not stacked, so
-        it reads neither unplaced nor partially unplaced -- run 36/37's
-        StickHub pile, 93% off the board), OR a heap: at least
-        `DUP_FRACTION` of the parts stacked in a way a placed board does not
-        explain (`stacked_suspect_refs`, which excuses far-side and marker
+        `unplaced`, OR a staging ring (`off_outline`: spread, not stacked,
+        so it reads neither unplaced nor partially unplaced -- run 36/37's
+        StickHub pile, 93% off the board; measured over the UNLOCKED parts
+        when some are locked, #1165), OR a heap: at least `DUP_FRACTION` of
+        the parts stacked in a way a placed board does not explain
+        (`stacked_suspect_refs`, which excuses far-side and marker
         co-locations; the raw `duplicate_fraction` read a placed orangecrab
-        as a pile). The ONE pile test: emit_intent and board_brief both read
-        it, and the free-agent skill chooses its mode from it.
+        as a pile). The ONE pile test: emit_intent, board_brief and
+        place_seed's gate read it, and the free-agent skill chooses its mode
+        from it. A locked part's pose stays a decision on a pile: emit_intent
+        keeps its claims.
         """
-        sig = self.signals or {}
         n = max(1, self.n_footprints or 0)
-        return bool(self.unplaced or sig.get('s3_outside')
+        return bool(self.unplaced or self.off_outline
                     or (self.partially_unplaced
                         and len(self.stacked_suspect_refs) / n
                         >= DUP_FRACTION))
+
+    @property
+    def seed_scope(self) -> str:
+        """What place_seed seeds without --force (#1165) -- ONE answer for
+        its gate, `rank_rotations`' eligibility and check_floorplan's seeder
+        forecast, so none of them can scope a seed the gate did not:
+
+        * `SEED_ALL` -- every unlocked part: the board is `unplaced`, or its
+          parts still to be placed sit off the outline (`off_outline`).
+          Checked BEFORE the stacked scope: a pile whose fixed parts were
+          placed first can carry a deliberate stack (CM5 module halves at
+          one origin), and scoping the seed to that stack seeded nothing but
+          two locked parts and left the pile where it was.
+        * `SEED_STACKED` -- a partially-unplaced board: only
+          `stacked_suspect_refs`; the rest is someone's work.
+        * `SEED_NONE` -- the board looks placed: place_seed refuses.
+
+        Locked parts are never seeded in any scope (seed_from_intent treats
+        a file-locked part as placed)."""
+        if self.unplaced or self.off_outline:
+            return SEED_ALL
+        if self.partially_unplaced:
+            return SEED_STACKED
+        return SEED_NONE
 
     @property
     def blocked(self) -> bool:
@@ -228,17 +279,36 @@ def assess_placement(pcb_data, pcb_file: Optional[str] = None,
     s2 = st.spread_ratio is not None and st.spread_ratio < th['spread_ratio']
 
     # --- S3: outside the outline
-    st.outside_fraction = _outside_fraction(pcb_data, pcb_file, fps)
+    _out_flags: Dict[str, bool] = {}
+    st.outside_fraction = _outside_fraction(pcb_data, pcb_file, fps,
+                                            flags_out=_out_flags)
     s3 = (st.outside_fraction is not None
           and st.outside_fraction >= th['outside_fraction'])
+    # #1165: the same test over the UNLOCKED parts. Only a REPORTED signal
+    # (`off_outline`, so `pile` and `seed_scope`): `unplaced` and
+    # `partially_unplaced` are unchanged, so every `gate_or_exit` caller
+    # refuses and warns exactly as before.
+    _locked = [fp for fp in fps if getattr(fp, 'locked', False)]
+    _movable = [fp for fp in fps if not getattr(fp, 'locked', False)]
+    if _locked and _movable and st.outside_fraction is not None:
+        st.movable_outside_fraction = (
+            sum(1 for fp in _movable if _out_flags.get(fp.reference))
+            / len(_movable))
+    s3m = (st.movable_outside_fraction is not None
+           and st.movable_outside_fraction >= th['outside_fraction'])
 
     st.signals = {'s1_coincident': s1, 's2_low_spread': s2, 's3_outside': s3,
+                  's3_movable_outside': s3m,
                   'duplicate_fraction': round(st.duplicate_fraction, 3),
                   'distinct_positions': st.distinct_positions,
                   'spread_ratio': (None if st.spread_ratio is None
                                    else round(st.spread_ratio, 4)),
                   'outside_fraction': (None if st.outside_fraction is None
-                                       else round(st.outside_fraction, 3))}
+                                       else round(st.outside_fraction, 3)),
+                  'locked': len(_locked),
+                  'movable_outside_fraction': (
+                      None if st.movable_outside_fraction is None
+                      else round(st.movable_outside_fraction, 3))}
 
     st.unplaced = bool(s1 or (s2 and s3) or (s3 and st.distinct_positions <= 2))
     st.partially_unplaced = (not st.unplaced) and bool(suspect)
@@ -254,6 +324,11 @@ def assess_placement(pcb_data, pcb_file: Optional[str] = None,
     if s3:
         st.reasons.append(
             f"{st.outside_fraction:.0%} of footprints lie outside the board outline")
+    elif s3m:
+        st.reasons.append(
+            f"{st.movable_outside_fraction:.0%} of the unlocked footprints lie "
+            f"outside the board outline ({len(_locked)} locked part(s) not "
+            f"counted: a lock is a placement decision)")
     if st.partially_unplaced:
         _benign_n = len(dup_refs) - len(suspect)
         st.reasons.append(
@@ -268,9 +343,13 @@ def assess_placement(pcb_data, pcb_file: Optional[str] = None,
     return st
 
 
-def _outside_fraction(pcb_data, pcb_file, fps) -> Optional[float]:
+def _outside_fraction(pcb_data, pcb_file, fps,
+                      flags_out: Optional[Dict[str, bool]] = None
+                      ) -> Optional[float]:
     """Share of footprints whose courtyard leaves the outline, or None when
-    there is no usable outline to measure against."""
+    there is no usable outline to measure against. `flags_out`, when given,
+    receives `{ref: outside}` per measured footprint, so a caller can take
+    the share over a subset (#1165) without reading the courtyards twice."""
     bi = pcb_data.board_info
     if getattr(bi, 'board_bounds', None) is None:
         return None
@@ -299,10 +378,13 @@ def _outside_fraction(pcb_data, pcb_file, fps) -> Optional[float]:
         if rect is None:
             continue
         try:
-            if gate.rect_outside_amount(rect) > 0:
-                outside += 1
+            hit = gate.rect_outside_amount(rect) > 0
         except Exception:
             return None
+        if hit:
+            outside += 1
+        if flags_out is not None:
+            flags_out[fp.reference] = hit
     return outside / len(fps) if fps else None
 
 

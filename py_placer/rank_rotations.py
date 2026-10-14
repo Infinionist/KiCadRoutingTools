@@ -222,7 +222,7 @@ def eligible_refs(pcb, intent, blocks, pcb_file, *, min_pads=16,
     one with fewer than `min_pads` connected pads."""
     from placement import floorplan
     from placement.part_class import classify_part
-    from placement.placement_state import assess_placement
+    from placement.placement_state import SEED_STACKED, assess_placement
     refs_all = sorted(pcb.footprints)
     must = {r for p in intent.must_lock for r in refs_all if fnmatch.fnmatchcase(r, p)}
     edge = {str(c['ref']) for c in intent.edge_claims()}
@@ -230,8 +230,9 @@ def eligible_refs(pcb, intent, blocks, pcb_file, *, min_pads=16,
     declared = floorplan.rotations_for_ref(intent, blocks)
     outside = set()
     st = assess_placement(pcb, pcb_file)
-    if (st.partially_unplaced and not st.unplaced
-            and '--force' not in seed_args):
+    # place_seed's own scope (#1165: `seed_scope`, so a pile whose fixed
+    # parts were placed first is not scoped to a stack among them).
+    if st.seed_scope == SEED_STACKED and '--force' not in seed_args:
         outside = set(refs_all) - set(st.stacked_suspect_refs)
     hard: dict = {}
     soft: dict = {}

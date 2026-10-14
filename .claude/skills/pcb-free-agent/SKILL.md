@@ -17,7 +17,8 @@ board and `route` for a placed one. The positive test for which one is
 read `pile` and `has_copper` on its `JSON_SUMMARY` line (the file carries
 them under `state`); exit codes are not the test. Read `pile`, not
 `unplaced`: a staging ring of parts around the outline is a pile but reads
-`unplaced: false` (#1109). The same line's `poured_nets` names the nets a
+`unplaced: false` (#1109), and so does a pile whose fixed parts you placed
+and locked first -- `pile` measures the unlocked parts (#1165). The same line's `poured_nets` names the nets a
 copper pour already serves (`pours` in the file: layers, filled or not,
 coverage), which `has_copper` does not count; route.py's plane finalize
 serves those nets from the fill.

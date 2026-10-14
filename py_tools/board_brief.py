@@ -902,6 +902,7 @@ def build_brief(pcb, pcb_file, *, clearance=None, board_edge_clearance=None,
                 'outline and never another part, so on this board it is the '
                 'section that still answers "where could this go".'),
             'gate': ('state.unplaced' if st.get('unplaced')
+                     else 'state.pile' if st.get('pile')
                      else f'duplicate_fraction {dup:.3f} >= {PILE_FRACTION}'),
             'not_applied_to': (
                 'a board where only a few refs share a coordinate -- a '

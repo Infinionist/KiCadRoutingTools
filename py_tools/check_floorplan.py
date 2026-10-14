@@ -243,7 +243,7 @@ def _seeder_forecast(doc, pcb, board, sources):
     the pile it seeds (place_seed's own rule, `stacked_suspect_refs`)."""
     from placement import seeder
     from placement.floorplan import resolve_blocks
-    from placement.placement_state import assess_placement
+    from placement.placement_state import SEED_STACKED, assess_placement
     try:
         intent = intent_from_dict(doc, board)
         blocks, _probs = resolve_blocks(intent, pcb, sources or ())
@@ -251,7 +251,8 @@ def _seeder_forecast(doc, pcb, board, sources):
         return {'unavailable': str(exc)}
     standing = set((doc.get('context') or {}).get('file_locked') or ())
     st = assess_placement(pcb, board)
-    partial = bool(st.partially_unplaced and not st.unplaced)
+    # place_seed's scope, by its own predicate (#1165: `seed_scope`).
+    partial = st.seed_scope == SEED_STACKED
     if partial:
         standing |= set(pcb.footprints) - set(st.stacked_suspect_refs)
     out = seeder.decap_pin_forecast(pcb, intent, blocks,
