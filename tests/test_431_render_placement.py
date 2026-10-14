@@ -446,6 +446,8 @@ def test_json_out_writes_a_file_with_instrument_and_checklist():
                            'b_courtyard_census_error',
                            'b_courtyard_overlap_mm2',
                            'b_cross_side_stacks',
+                           # #1250: a test point under another part's body.
+                           'b_testpoint_covered',
                            'c_hole_conflicts', 'c_locked_refs', 'd_moved'}, (
             f'checklist keys moved to {sorted(cl)}')
         assert cl['d_moved'] == {'moved': 22, 'expected': 22, 'match': True}

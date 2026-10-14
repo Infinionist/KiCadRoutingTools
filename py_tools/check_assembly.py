@@ -24,7 +24,9 @@ report-only -- healthy human boards ship such pairs by design (measured:
 Exit codes: 0 = clean, 2 = usage/load error, 4 = a blocking pair OR copper
 landing on a KiCad-locked part (see LOCKED-PART CONTACT) OR a coincident-
 origin stack (see COINCIDENT ORIGINS) OR a containment OR a moved-vs-
-baseline courtyard interpenetration (see COURTYARD BLOCKING).
+baseline courtyard interpenetration (see COURTYARD BLOCKING) OR a test point
+a moved member left under another part's body (see TEST POINT COVERED,
+#1250; armed by --baseline like the courtyard gate).
 """
 
 #: #937 registry: which door(s) show this tool, and whether it changes
@@ -607,6 +609,44 @@ def main():
               f"deliberate overlap is accepted by naming the pair in the "
               f"intent's `overlap_waivers`, where the acceptance is visible.")
 
+    # #1250: a TEST POINT whose pad copper lies under another part's drawn
+    # body -- no probe or bed-of-nails pin can reach it. The marker waiver
+    # every other channel gives a test point (courtyard `blocking_waived`,
+    # containment `_GATE_EXEMPT`) looks only at whether the test point is in
+    # someone's way, never at whether something now sits over it: glasgow's
+    # TP6 moved into U19's TSSOP body read `buildable`. Gated on the courtyard
+    # gate's currency (a member MOVED vs --baseline), because orangecrab ships
+    # TP26/TP27 under J4 by design; an author accepts a pair by naming it in
+    # the intent's `overlap_waivers`. A silk-drawn cover never gates (#896).
+    tp_cov = list(g.get('testpoint_covered') or [])
+    tp_gating = (legality.testpoint_covered_gating(tp_cov, moved_refs)
+                 if moved_refs is not None else [])
+    if tp_cov:
+        _gate_note = (
+            f"{len(tp_gating)} of {len(tp_cov)} GATE (a member moved vs the "
+            f"baseline)" if moved_refs is not None
+            else "REPORT-ONLY: pass --baseline <the board the run started "
+                 "from> to gate the ones your moves created")
+        print(f"  TEST POINT COVERED ({len(tp_cov)}): a test point's pad "
+              f"copper lies under another part's drawn body, where no probe "
+              f"can reach it -- {_gate_note}")
+        _gk = {(t.testpoint, t.cover) for t in tp_gating}
+        for t in tp_cov:
+            if not t.gates_if_moved:
+                _why = (f'  waived:{t.waiver}' if t.waiver
+                        else '  never gates: the body is drawn on silk')
+            elif moved_refs is None:
+                _why = ''
+            elif (t.testpoint, t.cover) in _gk:
+                _who = [r for r in (t.testpoint, t.cover) if r in moved_refs]
+                _why = '  GATES (moved: ' + ' '.join(_who) + ')'
+            else:
+                _why = "  baseline's own (no member moved)"
+            print(f"    {t.testpoint} under {t.cover}  {t.frac:.0%} of its "
+                  f"pad copper  body {t.body_source}  side {t.side}{_why}")
+        print("    A deliberate pose is accepted by naming the pair in the "
+              "intent's `overlap_waivers`.")
+
     # A FOURTH conjunct, and `g['blocking']` is deliberately NOT touched.
     # `blocking` means "pad intersections" to board_score, to the seeder's
     # repair census, and -- with INVERTED polarity -- to the retired
@@ -672,10 +712,12 @@ def main():
             print(f"    {other} over {frame} {_kind} pin(s) "
                   f"{', '.join(x or f'(unnumbered {_kind})' for x in q.pins)}"
                   f"  {q.area_mm2}mm2  side {q.side}")
+    # #1250, the NINTH: a test point a move left under another part's body
+    # (`tp_gating`, above).
     not_buildable = bool(g['blocking'] or locked_contact or stack_groups
                          or g['containment_blocking']
                          or courtyard_gating or off_outline_pads or mating
-                         or pin_hits)
+                         or pin_hits or tp_gating)
     verdict = 'NOT BUILDABLE' if not_buildable else 'buildable (blocking 0)'
     print(f"  VERDICT: {verdict}")
 
@@ -756,6 +798,24 @@ def main():
                 1 for q in g['advisory_pairs'] if q.kind == 'courtyard'
                 and q not in g['courtyard_blocking_pairs']),
             'courtyard_synthetic_refs': g['courtyard_synthetic_refs'],
+            # #1250: test points whose pad copper lies under another part's
+            # drawn body, every one (`testpoint_covered_pairs`), and the
+            # subset that GATES -- a member moved vs --baseline. Like
+            # `courtyard_blocking_gating`, None (not 0) without a baseline.
+            'testpoint_covered': len(tp_cov),
+            'testpoint_covered_pairs': [t._asdict() for t in tp_cov],
+            'testpoint_covered_gating': (len(tp_gating)
+                                         if moved_refs is not None else None),
+            'testpoint_covered_gating_pairs': [t._asdict()
+                                               for t in tp_gating],
+            'testpoint_covered_basis': (
+                'a test point (part_class testpoint) whose copper pads, as '
+                'boxes about their centres (legality.bodyless_pad_shape), lie '
+                'at least CONTAINMENT_FRAC under another same-face part\'s '
+                'drawn body (fab, else silk). Gates when a member moved vs '
+                '--baseline, the body is .Fab, and the pair is not in the '
+                'intent\'s overlap_waivers or a container\'s. Fiducials are '
+                'not graded here.'),
             'blocking_pairs': [q._asdict() for q in g['blocking_pairs']],
             'advisory_pairs': [q._asdict() for q in g['advisory_pairs']],
             'pad_conflicts': leg['pad_conflicts'],

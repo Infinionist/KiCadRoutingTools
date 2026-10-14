@@ -1429,6 +1429,47 @@ def bodyless_pad_shape(fp, x=None, y=None, rot=None):
     return place_local_shape(unary_union(boxes), x, y, rot)
 
 
+# --- #1250: a test point under another part's drawn body ---------------------
+#
+# The marker waiver (`_MARKER_NONPHYSICAL`) excuses a test point's courtyard
+# pair and `_GATE_EXEMPT` excuses its containment, on the premise that a test
+# point has nothing above board level. Neither looks at the other direction:
+# a test point whose PAD a move carried under another part's body. That pad is
+# where the designer meant a probe or a bed-of-nails pin to land, and no probe
+# reaches copper under an IC. glasgow's TP6 moved 39.7 mm into U19's TSSOP
+# body and check_assembly --baseline called the board buildable, because the
+# only pair that saw it carried `marker_class`.
+#
+# Measured with the #1106 measurement (`bodyless_pad_shape` against a drawn
+# body, `pads_under_body_frac`), at its own `CONTAINMENT_FRAC`. On the 22
+# tracked boards 2 of 40 test points read covered, orangecrab TP26/TP27 under
+# J4 at 1.000, both the designer's own poses -- so the census GATES only when a
+# member moved relative to --baseline, as the courtyard gate does.
+
+class TestpointCover(NamedTuple):
+    testpoint: str
+    cover: str           # the part whose drawn body lies over the pad
+    frac: float          # share of the test point's pad copper under it
+    side: str            # the face it happens on ('F'/'B')
+    body_source: str     # the cover's drawn-body rung: 'fab' | 'silk'
+    # 'intent_declared' (the pair is in the intent's overlap_waivers) or
+    # 'container_class' (a board-sized outline other parts sit under), else
+    # ''. `marker_class` is deliberately never recorded: it is the label this
+    # census exists to look past.
+    waiver: str
+    # True when this finding gates once a member moves: a .Fab body (a silk
+    # body never gates, #896) and no waiver above.
+    gates_if_moved: bool
+
+
+def testpoint_covered_gating(findings, moved) -> list:
+    """The `TestpointCover` findings that GATE: gate-eligible and a member
+    moved relative to the baseline (`moved_refs`), the courtyard gate's
+    currency (#1250)."""
+    return [t for t in findings if t.gates_if_moved
+            and (t.testpoint in moved or t.cover in moved)]
+
+
 class BodyOverlapPair(NamedTuple):
     a: str
     b: str
@@ -2774,6 +2815,8 @@ def grade_body_overlap(pcb_data, clearance: float,
     silk_sourced: set = set()
     # #896. Seam inputs: every judged part's DRAWN body in board coordinates.
     seam_parts: list = []
+    # #1250. Test points whose pad copper lies under another part's body.
+    testpoint_covered: List[TestpointCover] = []
 
     # -- DRAWN BODY channel (advisory) ----------------------------------------
     # Reads `placement.body`'s drawn-body ladder rather than calling
@@ -2879,6 +2922,40 @@ def grade_body_overlap(pcb_data, clearance: float,
                         waived=bool(waiver), waiver=waiver,
                         contained_frac=round(_f, 3), contained=True,
                         depth_mm=0.0))
+        # #1250: every TEST POINT's pad copper against every other same-face
+        # drawn body -- whether or not the test point draws a body of its
+        # own. TP6 draws silk, so the #1106 loop above never asks about it,
+        # and a body-less test point there carries `marker_class`, which
+        # `_GATE_EXEMPT` excuses. Fiducials are not in this census: human
+        # boards seat them under connectors on purpose (esp_prog Ref*~2 under
+        # USB1, orangecrab FID1/FID2 under J4/J5), and the containment
+        # channel already reports them.
+        for ref in sorted(fps):
+            if _waivers.class_of(ref) != 'testpoint':
+                continue
+            fp = fps[ref]
+            _ps = bodyless_pad_shape(fp)
+            if _ps is None:
+                continue
+            _sides = sides_occupied(footprint_side(fp),
+                                    footprint_has_through_pads(fp))
+            _pb = _ps.bounds
+            for rb, sb, rcb, shb in fab_parts:
+                if rb == ref or sb not in _sides:
+                    continue
+                if rect_overlap_area(_pb, rcb) <= EPS:
+                    continue
+                _f = pads_under_body_frac(_ps, shb)
+                if _f < CONTAINMENT_FRAC:
+                    continue
+                _label = _waiver_for(ref, rb)
+                _w = (_label if _label in ('intent_declared',
+                                           'container_class') else '')
+                _src = body_sources.get(rb, _BODY_NONE)
+                testpoint_covered.append(TestpointCover(
+                    testpoint=ref, cover=rb, frac=round(_f, 3), side=sb,
+                    body_source=_src, waiver=_w,
+                    gates_if_moved=(not _w and _src != _BODY_SILK)))
 
     # -- pad_intersection channel (never waivable) ----------------------------
     # #1064: lifted VERBATIM into `pad_intersection_pairs`, so place_pose
@@ -3011,6 +3088,11 @@ def grade_body_overlap(pcb_data, clearance: float,
             # the chain produced that number. None when fewer than two parts
             # draw a body.
             'body_seam': (_seam._asdict() if _seam is not None else None),
+            # #1250: test points whose pad copper lies under another part's
+            # drawn body (`TestpointCover`). ABSOLUTE here; the caller gates
+            # the moved subset (`testpoint_covered_gating`), because the
+            # corpus ships two such poses by design (orangecrab TP26/TP27).
+            'testpoint_covered': testpoint_covered,
             # Run-23 courtyard blocking channel -- see the selection above.
             # NOTE these pairs also remain in `advisory`/`advisory_pairs`
             # (that count's meaning is unchanged for its existing consumers);

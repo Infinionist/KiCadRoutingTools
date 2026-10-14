@@ -1474,6 +1474,24 @@ Source mix over 1349 corpus parts: 1267 courtyard, 27 fab, 6 silk, 49 pad bbox,
 source each side rests on. `body_overlap_pairs` reports a depth only for pairs
 that already overlap, so a board a hair from a collision said nothing at all.
 
+**A test point under another part's body (#1250).** The marker waiver
+excuses a test point's courtyard pair and its containment, because a test
+point has nothing above board level that could be in anyone's way. It never
+asked whether something now sits over the test point. Glasgow's TP6, moved
+39.7 mm into U19's TSSOP body, graded `buildable`. `grade_body_overlap`'s
+`testpoint_covered` measures every test point's pad copper
+(`bodyless_pad_shape`) against each other same-face drawn body
+(`pads_under_body_frac`, at `CONTAINMENT_FRAC`, the #1106 measurement).
+check_assembly gates a finding only when a member moved relative to
+`--baseline` (`testpoint_covered_gating`, the courtyard gate's currency). It
+also needs the body to be `.Fab`, since silk never gates, and the pair must not
+be in the intent's `overlap_waivers`. Over the 22 tracked boards, 2 of 40 test
+points read covered: orangecrab TP26/TP27 under J4, both the designer's own
+poses, so they stay buildable. Fiducials are not graded here, because human
+boards seat them under connectors on purpose. This is the grader's census only.
+The movers' marker exemption (`body_exempt_refs`, `blocking_waived`) still
+admits such a seat, and this gate then charges it.
+
 ## Legality model (`legality.py`, #456)
 
 What counts as a *legal* placement is decided in one place, so the optimizer and

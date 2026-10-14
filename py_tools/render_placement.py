@@ -322,6 +322,10 @@ def legality_findings(model) -> Dict[str, object]:
            'courtyard_overlap_pairs_refs': [],
            'courtyard_blocking_pairs_refs': [],
            'courtyard_overlap_mm2': 0.0,
+           # #1250: [testpoint, cover, frac, body_source, waiver,
+           # gates_if_moved] -- a test point's pad copper under another
+           # part's drawn body (grade_body_overlap's `testpoint_covered`).
+           'testpoint_covered_refs': [],
            'body_seam': None,
            'body_sources': {},
            'cross_side_stacks': [],
@@ -566,6 +570,12 @@ def legality_findings(model) -> Dict[str, object]:
             # weaker claim than one between two drawn .Fab bodies.
             out['body_seam'] = _g.get('body_seam')
             out['body_sources'] = dict(_g.get('body_sources') or {})
+            # #1250: check_assembly's test-point census, the same function's
+            # output. Absolute here; --gate charges the moved subset only.
+            out['testpoint_covered_refs'] = [
+                [t.testpoint, t.cover, t.frac, t.body_source, t.waiver,
+                 t.gates_if_moved]
+                for t in _g.get('testpoint_covered') or ()]
             # Hang it on the model too: `draw_courtyards` needs it per ref and
             # is called from seven places that have no business learning a new
             # parameter -- the same reason #897 put `intent_waivers` here.
@@ -2635,6 +2645,13 @@ def main(argv=None):
             #     can see a board graded on silk rather than on drawn bodies.
             'b_body_seam': fnd.get('body_seam'),
             'b_body_sources': fnd.get('body_sources') or {},
+            #   b_testpoint_covered -- #1250: a test point whose pad copper
+            #     lies under another part's drawn body, where no probe can
+            #     reach it. [testpoint, cover, frac, body_source, waiver,
+            #     gates_if_moved] rows, every one; --gate with --before
+            #     charges the rows a moved member made (orangecrab ships
+            #     TP26/TP27 under J4 by design).
+            'b_testpoint_covered': fnd.get('testpoint_covered_refs') or [],
             # None when the census ran. --gate reads it: a render that
             # could not build the census must not report "blocking: none".
             'b_courtyard_census_error': fnd['courtyard_census_error'],
@@ -2802,6 +2819,12 @@ def main(argv=None):
                    doc['checklist']['b_courtyard_blocking_pairs']
                    if row[0] in _mv or row[1] in _mv]
             _fail['b_courtyard_blocking_pairs(moved)'] = len(_cb)
+            # #1250: same currency, same reason -- a test point a move left
+            # under another part's body. `gates_if_moved` already drops a
+            # silk-drawn cover and a waived pair.
+            _tp = [row for row in doc['checklist']['b_testpoint_covered']
+                   if row[5] and (row[0] in _mv or row[1] in _mv)]
+            _fail['b_testpoint_covered(moved)'] = len(_tp)
         # THE DEFECT RECORDS, read rather than merely written. A gate on
         # a render made from --defect-json is asking "does this picture
         # show the finding", and there are three ways it does not:

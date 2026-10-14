@@ -91,13 +91,14 @@ ROWS = [
      "            if True:",
      (T1212,), 'KILLED'),
     # -- the verdicts --
+    # Both RE-ANCHORED for #1250, which appended a conjunct after each.
     ('check-assembly-drops-the-conjunct', 'asm',
-     "                         or pin_hits)",
-     "                         or False)",
+     "                         or pin_hits or tp_gating)",
+     "                         or tp_gating)",
      (T1212,), 'KILLED'),
     ('board-score-drops-the-live-conjunct', 'score',
-     "                           'pin_in_courtyard', 'courtyard_blocking_gating')",
-     "                           'courtyard_blocking_gating')",
+     "                           'pin_in_courtyard', 'courtyard_blocking_gating',",
+     "                           'courtyard_blocking_gating',",
      (T918,), 'KILLED'),
     # -- the search, the seeder and the repair --
     ('the-search-skips-the-pins', 'quench',

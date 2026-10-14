@@ -392,7 +392,7 @@ def unrouted_shape(board: str, unrouted_names, pcb=None) -> dict:
             'open': sorted(open_nets)}
 
 
-#: check_assembly's eight `not_buildable` conjuncts, by the JSON key each one
+#: check_assembly's nine `not_buildable` conjuncts, by the JSON key each one
 #: publishes (check_assembly's `not_buildable = ...` line). `blocking` -- pad INTERSECTIONS -- is
 #: the first of them and is the only one this component used to read (#918).
 #:
@@ -419,10 +419,14 @@ def unrouted_shape(board: str, unrouted_names, pcb=None) -> dict:
 #: null rather than 0, and the scorer reports it unmeasured -- in
 #: `conjuncts_unmeasured` and in the top-level `ungraded` as
 #: 'assembly.courtyard_gating' -- never counted as clean.
+#:
+#: `testpoint_covered_gating` (#1250) is armed by the same `--baseline` on
+#: the same currency (a test point a moved member left under another part's
+#: drawn body), and is null when unarmed for the same reason.
 ASSEMBLY_CONJUNCTS = ('blocking', 'locked_contacts', 'coincident_origins',
                       'containment_blocking', 'courtyard_blocking_gating',
                       'oob_pad_copper_gating_count', 'mating_keepout_count',
-                      'pin_in_courtyard')
+                      'pin_in_courtyard', 'testpoint_covered_gating')
 
 #: The conjuncts that can ACTUALLY flip the verdict while `blocking` is 0, in
 #: this scorer's invocation. Not every conjunct can:
@@ -439,13 +443,17 @@ ASSEMBLY_CONJUNCTS = ('blocking', 'locked_contacts', 'coincident_origins',
 #: the NOT-BUILDABLE floor, deliberately: CLAUDE.md ranks it first.
 #: fa10 P1 (#1212) added `pin_in_courtyard`: a pin frame's drilled pin inside
 #: another part's courtyard, absolute, so it too fires at `blocking` 0.
+#: #1250 added `testpoint_covered_gating`: a test point a moved member left
+#: under another part's drawn body, armed by `--baseline` like the courtyard
+#: gate -- its pads are not another part's pads, so `blocking` stays 0.
 ASSEMBLY_LIVE_CONJUNCTS = ('coincident_origins', 'containment_blocking',
                            'oob_pad_copper_gating_count', 'mating_keepout_count',
-                           'pin_in_courtyard', 'courtyard_blocking_gating')
+                           'pin_in_courtyard', 'courtyard_blocking_gating',
+                           'testpoint_covered_gating')
 
 
 def assembly_component(doc: dict, rc: int) -> dict:
-    """check_assembly's VERDICT, not one of its eight conjuncts (#918).
+    """check_assembly's VERDICT, not one of its nine conjuncts (#918).
 
     `not_buildable` is `blocking or locked_contact or stack_groups or
     containment_blocking or courtyard_gating`. This component read `blocking`
@@ -489,10 +497,10 @@ def assembly_component(doc: dict, rc: int) -> dict:
     buildable = doc.get('buildable')
     if not isinstance(buildable, bool):
         return skipped(
-            "check_assembly published no `buildable` key: `blocking` alone is "
-            "1 of its 8 not_buildable conjuncts (check_assembly's "
-            "`not_buildable` line), and this component will not re-derive "
-            "the other seven")
+            f"check_assembly published no `buildable` key: `blocking` alone is "
+            f"1 of its {len(ASSEMBLY_CONJUNCTS)} not_buildable conjuncts "
+            f"(check_assembly's `not_buildable` line), and this component "
+            f"will not re-derive the other {len(ASSEMBLY_CONJUNCTS) - 1}")
     if (rc == 4) != (not buildable):
         return skipped(
             f"check_assembly contradicts itself: exit {rc} with "
@@ -553,8 +561,10 @@ def assembly_component(doc: dict, rc: int) -> dict:
                 None if isinstance(conjuncts['courtyard_blocking_gating'], int)
                 else 'no --baseline was passed, so check_assembly\'s fifth '
                      'conjunct (moved-vs-baseline courtyard interpenetration) '
-                     'is unarmed and publishes null. Pass --baseline <the '
-                     'board this one was derived from> to arm it (#1183)'),
+                     'is unarmed and publishes null, and so is its ninth '
+                     '(a test point a move left under a body, #1250). Pass '
+                     '--baseline <the board this one was derived from> to arm '
+                     'it (#1183)'),
             'advisory_pairs': int(doc.get('advisory') or 0),
             'waived_pairs': int(doc.get('waived') or 0),
             **lists,
