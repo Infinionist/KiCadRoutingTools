@@ -359,6 +359,46 @@ class SilkContainmentIsNamed(unittest.TestCase):
         self.assertIn('Each is a by-design containment', out)
 
 
+class ConnectorGeometryReadsTheSameBody(unittest.TestCase):
+    """#1243: the #961 band reader takes the guard's verdict too."""
+
+    def _row(self, text):
+        from placement.connector_geometry import ConnectorGeometry, band_amount
+        with tempfile.TemporaryDirectory() as td:
+            path = _board(td, text, size=(40, 30))
+            pcb = parse_kicad_pcb(path)
+            geo = ConnectorGeometry(pcb, path)
+            return band_amount(geo, 'J101', 'west', 9.0, 0.25)
+
+    def test_a_dot_on_fab_measures_the_silk_shell(self):
+        # at 180 deg the silk's local +x (5.9) faces west: x=5.8 is 0.1 over
+        amount, basis, row = self._row(_usb_c(5.8, 15, 180))
+        self.assertEqual(basis, 'body:F.SilkS', row)
+        self.assertAlmostEqual(amount, 0.1, places=6)
+
+    def test_a_dot_with_open_silk_stays_unmeasured(self):
+        text = _usb_c(5.8, 15, 180).replace(
+            '    (fp_rect (start -3.8 -2.6) (end 5.9 2.6) (stroke (width'
+            ' 0.12) (type default)) (layer "F.SilkS"))\n',
+            '    (fp_line (start -3.8 -2.6) (end 5.9 -2.6) (stroke (width'
+            ' 0.12) (type default)) (layer "F.SilkS"))\n'
+            '    (fp_line (start -3.8 2.6) (end 5.9 2.6) (stroke (width'
+            ' 0.12) (type default)) (layer "F.SilkS"))\n')
+        amount, basis, row = self._row(text)
+        self.assertEqual(basis, 'legacy_occupancy@margin=0.25')
+        self.assertEqual(amount, 9.0)
+        self.assertEqual(row['body_layer'], 'F.SilkS')
+        self.assertIn('open or concave', row['body_unmeasured_reason'])
+
+    def test_a_dot_without_silk_stays_unmeasured(self):
+        text = _usb_c(5.8, 15, 180).replace(
+            '    (fp_rect (start -3.8 -2.6) (end 5.9 2.6) (stroke (width'
+            ' 0.12) (type default)) (layer "F.SilkS"))\n', '')
+        amount, basis, row = self._row(text)
+        self.assertEqual(basis, 'legacy_occupancy@margin=0.25')
+        self.assertIn('marking', row['body_unmeasured_reason'])
+
+
 class TheIssueBoard(unittest.TestCase):
 
     def test_cm5_receptacles_are_graded_on_their_bodies(self):

@@ -628,7 +628,9 @@ at one margin and failed it at the other.
 The band is now graded on the **drawn body's overhang past the outline, at
 zero margin**, whenever that body can be measured. That means a declared
 `edge`, a closed convex Fab outline (SilkS when the part draws nothing on
-Fab) and a rectangular Edge.Cuts outline. A zero `min` is therefore
+Fab, or when its Fab drawing is a marking such as a pin-1 dot -- the same
+`body.fab_cannot_be_body` decision the facing grade reads, #1243) and a
+rectangular Edge.Cuts outline. A zero `min` is therefore
 nonbinding and a positive `min` is a real conjunct. Like the occupancy reading
 it replaces, the graded number is summed over every side the body crosses, so
 a corner part counts both sides. For a body that crosses only its declared
