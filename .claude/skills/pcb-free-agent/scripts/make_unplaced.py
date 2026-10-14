@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pile a board's components off its outline: the input for a from-scratch run.
 
-    python3 -X utf8 .claude/skills/pcb-free-agent/scripts/make_unplaced.py SRC DST [--keep-locked]
+    python3 -X utf8 .claude/skills/pcb-free-agent/scripts/make_unplaced.py SRC DST [--keep-locked] [--keep-local-zones]
 
 Nothing else in the toolchain PRODUCES an unplaced board. `perturb.py` damages
 a placement, and every corpus board ships placed. This script builds that
@@ -23,13 +23,16 @@ input deterministically, so the run is replayable. Measured on an 18-part
   a text angle as an absolute board angle and humans keep labels upright, so
   a text composed with the rotation change into the pile (as the writer does
   for a real rotation) reads `T - R` and hands back the human rotation `R`.
-- **Board-level zones and rule areas stay where they are, and are
-  DISCLOSED** (#1163): a zone covering under a quarter of the board's
-  bounding box is usually drawn around part of the placement, so the summary
-  counts those and the moved parts with a pad inside one. Whether a pile
-  should keep, drop
-  or declare them is an open policy question; this script only reports.
-  (Zones a footprint owns move with it.)
+- **A board-level zone that outlines the placement is DROPPED** (#1163): one
+  covering under a quarter of the board's bounding box that holds a pad of a
+  part this script moves -- a local pour, an antenna keep-out -- traces where
+  that part was, which is exactly what a pile must not carry. Every other
+  zone and rule area stays where it is: a board-wide pour says which net
+  pours on which layer, and a zone holding no moved part's pad locates none.
+  A dropped zone's FACT (that net pours there, nothing may go here) is the
+  run's to DECLARE, in the design brief or the prompt, as a lock's is.
+  `--keep-local-zones` keeps them and only reports them. (Zones a footprint
+  owns move with it.)
 - **Padless artwork stays.** It has no nets, and nothing could bring it back.
 - **Refuses (exit 3) when a footprint draws the board outline** (#829):
   moving it would move the outline.
@@ -38,9 +41,10 @@ input deterministically, so the run is replayable. Measured on an 18-part
 
 The OUTPUT is verified, not the plan: every moved part's courtyard clears the
 outline, siblings (.kicad_pro/.kicad_prl/.kicad_dru) are carried, no copper,
-no new stack, every unlocked part really is unlocked, and every moved part's
-every text reads absolute 0. Exit 0 when all of that holds, 1 when a check
-fails.
+no new stack, every unlocked part really is unlocked, every moved part's
+every text reads absolute 0, and no kept board-level zone outlines a moved
+part (unless `--keep-local-zones`). Exit 0 when all of that holds, 1 when a
+check fails.
 """
 from __future__ import annotations
 
@@ -59,7 +63,7 @@ for _d in ('py_router', 'py_placer'):
         sys.path.insert(0, _p)
 
 from kicad_parser import (parse_kicad_pcb, iter_footprint_blocks,  # noqa: E402
-                          non_aperture_pads)
+                          non_aperture_pads, find_matching_paren)
 from placement.placement_state import assess_placement          # noqa: E402
 from placement.utility import compute_footprint_bbox_local       # noqa: E402
 from placement.portfolio import copy_siblings                    # noqa: E402
@@ -110,26 +114,67 @@ def _inside(x, y, ring):
     return hit
 
 
-def kept_zones(pcb, movable, bounds):
-    """(board-level zones/rule areas kept, the LOCAL ones, moved refs with a
-    pad inside a local one) -- the disclosure #1163 asks for, measured on the
-    SOURCE poses. A zone a footprint owns moves with it and is not counted."""
+#: A top-level `(zone` header, as the parser's own `_iter_zone_blocks` finds it.
+_ZONE_START = re.compile(r'\r?\n([\t ]*)\(zone(?=[\s(])')
+#: A vertex of a zone outline: `(xy x y)`, or an arc's start/mid/end.
+_ZONE_PT = re.compile(r'\((?:xy|start|mid|end)\s+(-?[\d.]+(?:[eE][-+]?\d+)?)'
+                      r'\s+(-?[\d.]+(?:[eE][-+]?\d+)?)\)')
+
+
+def board_zone_blocks(text):
+    """[(start, end, rings)] for every BOARD-LEVEL `(zone ...)` block -- copper
+    pours and rule areas alike -- with each outline `(polygon ...)` as a ring
+    (never a `filled_polygon`). `start` is the newline before the block, so
+    cutting `text[start:end]` leaves the file's layout intact. A zone a
+    footprint owns is nested deeper (the parser's own indentation rule) and
+    moves with its part, so it is not listed."""
+    out = []
+    for m in _ZONE_START.finditer(text):
+        ind = m.group(1)
+        if ind.count('\t') >= 2 or ('\t' not in ind and len(ind) >= 4):
+            continue
+        open_idx = text.index('(', m.start())
+        end = find_matching_paren(text, open_idx)
+        block = text[open_idx:end]
+        rings = []
+        for pm in re.finditer(r'\(polygon(?=[\s(])', block):
+            ring = [(float(a), float(b)) for a, b in
+                    _ZONE_PT.findall(block[pm.start():
+                                           find_matching_paren(block, pm.start())])]
+            if len(ring) >= 3:
+                rings.append(ring)
+        out.append((m.start(), end, rings))
+    return out
+
+
+def placement_zones(text, pcb, movable, bounds):
+    """[(start, end, refs)] for each board-level zone that OUTLINES THE
+    PLACEMENT (#1163): it covers under LOCAL_ZONE_FRAC of the bounding box and
+    holds a pad of a moved part (`refs`), measured on the SOURCE poses."""
     min_x, min_y, max_x, max_y = bounds
     bbox = (max_x - min_x) * (max_y - min_y)
-    rings = {}
-    for z in pcb.zones or ():
-        if not z.in_footprint and z.polygon:
-            rings.setdefault(z.uuid or tuple(z.polygon), list(z.polygon))
-    for k in getattr(pcb.board_info, 'keepouts', None) or ():
-        poly = [tuple(p) for p in k.get('polygon') or ()]
-        if not k.get('in_footprint') and poly:
-            rings.setdefault(tuple(poly), poly)
-    local = [r for r in rings.values()
-             if bbox > 0 and _shoelace(r) < LOCAL_ZONE_FRAC * bbox]
-    inside = sorted(ref for ref in movable
-                    if any(_inside(p.global_x, p.global_y, r)
-                           for p in pcb.footprints[ref].pads for r in local))
-    return len(rings), len(local), inside
+    pads = [(ref, p.global_x, p.global_y)
+            for ref in movable for p in pcb.footprints[ref].pads]
+    out = []
+    for start, end, rings in board_zone_blocks(text):
+        if not rings or bbox <= 0 or \
+                sum(_shoelace(r) for r in rings) >= LOCAL_ZONE_FRAC * bbox:
+            continue
+        refs = sorted({ref for ref, x, y in pads
+                       if any(_inside(x, y, r) for r in rings)})
+        if refs:
+            out.append((start, end, refs))
+    return out
+
+
+def _drop_blocks(path, spans):
+    """Cut `spans` ([(start, end, ...)]) out of the file at `path`."""
+    with open(path, encoding='utf-8', newline='') as fh:
+        text = fh.read()
+    for start, end, *_rest in sorted(spans, reverse=True):
+        text = text[:start] + text[end:]
+    with open(path, 'w', encoding='utf-8', newline='') as fh:
+        fh.write(text)
 
 
 def _unlock(dst, refs):
@@ -152,7 +197,8 @@ def _unlock(dst, refs):
     return sorted(done)
 
 
-def build(src: str, dst: str, keep_locked: bool = False) -> int:
+def build(src: str, dst: str, keep_locked: bool = False,
+          keep_local_zones: bool = False) -> int:
     pcb = parse_kicad_pcb(src)
     bounds = pcb.board_info.board_bounds
     if bounds is None:
@@ -214,6 +260,15 @@ def build(src: str, dst: str, keep_locked: bool = False) -> int:
         print('refuse: write_placed_output returned False', file=sys.stderr)
         return 1
     unlocked = _unlock(dst, set(movable))
+    # #1163: the zones that outline the placement go, unless asked to stay.
+    # Measured on the written board's text (the writer does not touch a
+    # board-level zone) against the SOURCE pad poses.
+    with open(dst, encoding='utf-8', newline='') as fh:
+        _dst_text = fh.read()
+    n_zones = len(board_zone_blocks(_dst_text))
+    local = placement_zones(_dst_text, pcb, movable, bounds)
+    if local and not keep_local_zones:
+        _drop_blocks(dst, local)
     copy_siblings(src, dst)
 
     # --- verify the OUTPUT, not the plan -----------------------------------
@@ -271,7 +326,21 @@ def build(src: str, dst: str, keep_locked: bool = False) -> int:
               + ', '.join(f'{r} {a}' for r, a in sorted(leaks.items())[:8]),
               file=sys.stderr)
         ok = False
-    n_zones, n_local, in_local = kept_zones(pcb, movable, bounds)
+    with open(dst, encoding='utf-8', newline='') as fh:
+        _out_text = fh.read()
+    still_local = placement_zones(_out_text, pcb, movable, bounds)
+    dropped = 0 if keep_local_zones else len(local)
+    if not keep_local_zones and still_local:
+        print(f'FAIL: {len(still_local)} kept zone(s) still outline a moved '
+              f'part: {", ".join(sorted({r for z in still_local for r in z[2]})[:8])}',
+              file=sys.stderr)
+        ok = False
+    if len(board_zone_blocks(_out_text)) != n_zones - dropped:
+        print(f'FAIL: meant to drop {dropped} of {n_zones} board-level zone(s), '
+              f'the output carries {len(board_zone_blocks(_out_text))}',
+              file=sys.stderr)
+        ok = False
+    in_local = sorted({r for z in local for r in z[2]})
 
     print(f'board      {max_x - min_x:.2f} x {max_y - min_y:.2f} mm')
     print(f'moved      {len(movable)} pad-bearing part(s) to a pile at '
@@ -282,16 +351,24 @@ def build(src: str, dst: str, keep_locked: bool = False) -> int:
     print(f'held       {len(held)} locked part(s), {len(artwork)} padless artwork block(s)')
     print(f'texts      {n_text_ok} of {n_texts} text(s) on {len(movable)} '
           f'moved part(s) at absolute {PILE_TEXT_ANGLE:g}')
-    zl = (f'zones      {n_zones} board-level zone(s)/rule area(s) kept where '
-          f'they were; ')
-    if n_local:
-        named = ', '.join(in_local[:8]) + (' ...' if len(in_local) > 8 else '')
-        zl += (f'{n_local} cover under {LOCAL_ZONE_FRAC:.0%} of the bounding '
-               f'box and hold a pad of {len(in_local)} moved part(s)'
-               + (f' ({named})' if in_local else '')
-               + ', so their outlines may still trace the placement (#1163)')
+    named = ', '.join(in_local[:8]) + (' ...' if len(in_local) > 8 else '')
+    if not local:
+        zl = (f'zones      {n_zones} board-level zone(s)/rule area(s) kept; '
+              f'none covers under {LOCAL_ZONE_FRAC:.0%} of the bounding box and '
+              f'holds a moved part\'s pad')
+    elif keep_local_zones:
+        zl = (f'zones      {n_zones} board-level zone(s)/rule area(s) kept where '
+              f'they were (--keep-local-zones); {len(local)} cover under '
+              f'{LOCAL_ZONE_FRAC:.0%} of the bounding box and hold a pad of '
+              f'{len(in_local)} moved part(s) ({named}), so their outlines '
+              f'still trace the placement (#1163)')
     else:
-        zl += f'none covers under {LOCAL_ZONE_FRAC:.0%} of the bounding box'
+        zl = (f'zones      {n_zones - dropped} of {n_zones} board-level zone(s)/'
+              f'rule area(s) kept; dropped {dropped} that cover under '
+              f'{LOCAL_ZONE_FRAC:.0%} of the bounding box and held a pad of '
+              f'{len(in_local)} moved part(s) ({named}): their outlines traced '
+              f'the placement (#1163). Declare what they meant in the design '
+              f'brief, or pass --keep-local-zones')
     print(zl)
     print(f'siblings   {sibs or "none (the source had none either)"}')
     print(f'verdict    unplaced={st.unplaced} partially_unplaced='
@@ -305,8 +382,13 @@ def main(argv=None):
     ap.add_argument('dst')
     ap.add_argument('--keep-locked', action='store_true',
                     help='leave KiCad-locked parts in place and locked')
+    ap.add_argument('--keep-local-zones', action='store_true',
+                    help='keep board-level zones that outline the placement '
+                         f'(under {round(LOCAL_ZONE_FRAC * 100)}%% of the '
+                         'bounding box, holding a moved part\'s pad) instead '
+                         'of dropping them; they are reported')
     a = ap.parse_args(argv)
-    return build(a.src, a.dst, a.keep_locked)
+    return build(a.src, a.dst, a.keep_locked, a.keep_local_zones)
 
 
 if __name__ == '__main__':

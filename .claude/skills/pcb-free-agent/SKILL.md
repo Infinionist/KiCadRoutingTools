@@ -90,8 +90,11 @@ serves those nets from the fill.
   (`(locked yes)`), and there is no override. For a from-scratch experiment
   with everything off the board, build the input with
   `python3 -X utf8 .claude/skills/pcb-free-agent/scripts/make_unplaced.py <src> <dst>`.
-  It piles every pad-bearing part off the outline and removes each moved
-  part's lock. It refuses a routed input: strip that first with
+  It piles every pad-bearing part off the outline, removes each moved
+  part's lock, writes every moved part's texts at absolute 0, and drops the
+  board-level zones that outline the placement (a small zone holding a moved
+  part's pad; declare what it meant in the brief, or pass
+  `--keep-local-zones`). It refuses a routed input: strip that first with
   `python3 -X utf8 tests/stress/strip_copper_only.py <src> <dst>`, which keeps
   the outline bit-identical.
 - **Work in a run directory**, `wk/<run>/`. Copy every board with

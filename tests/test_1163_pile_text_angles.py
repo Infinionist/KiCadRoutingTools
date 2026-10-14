@@ -10,8 +10,9 @@ recovered the rotation exactly for 7 parts of esp_prog, 13 of watchy, 24 of
 tigard and 14 of splitflap_driver.
 
 The fixture is the issue's minimal input on esp_prog: C1 (at ... 90) with its
-texts turned upright (absolute 0), plus a GND zone drawn tight around one C1
-pad and a board-wide one, for the zone disclosure.
+texts turned upright (absolute 0), plus the issue's second channel: a GND zone
+drawn tight around one C1 pad, a keep-out (rule area) tight around a pad of a
+second part, and a board-wide GND pour.
 
 Checks:
   1. NEGATIVE CONTROL: the pile written the old way (no `new_text_angle`)
@@ -20,8 +21,11 @@ Checks:
   2. a REAL rotation still composes (C1 90 -> 180 turns its texts by 90);
   3. make_unplaced's pile: every text of every moved part is written
      `(at x y 0)`, token present, its summary says so, C1's is 0;
-  4. the zone disclosure counts the local zone and names C1, and leaves the
-     board-wide pour out of it; zones are kept, not moved;
+  4. the zones: a board-level zone that outlines the placement (under a
+     quarter of the bounding box, holding a moved part's pad) is DROPPED --
+     the local pour and the local keep-out both -- and the board-wide pour is
+     kept as it was; the summary names the parts; with --keep-local-zones
+     every zone is kept and the summary still names them;
   5. `new_text_angle` refuses a non-number at the boundary.
 
     python3 tests/test_1163_pile_text_angles.py
@@ -71,6 +75,34 @@ def _zone(uid, ring):
             '\t\t(polygon\n\t\t\t(pts\n\t\t\t\t%s\n\t\t\t)\n\t\t)\n\t)\n' % (uid, pts))
 
 
+def _keepout(uid, ring):
+    pts = ' '.join('(xy %.4f %.4f)' % p for p in ring)
+    return ('\t(zone\n\t\t(layers "F.Cu" "B.Cu")\n\t\t(uuid "%s")\n'
+            '\t\t(hatch edge 0.5)\n\t\t(connect_pads\n\t\t\t(clearance 0)\n\t\t)\n'
+            '\t\t(min_thickness 0.25)\n\t\t(keepout\n\t\t\t(tracks not_allowed)\n'
+            '\t\t\t(vias not_allowed)\n\t\t\t(pads allowed)\n'
+            '\t\t\t(copperpour not_allowed)\n\t\t\t(footprints allowed)\n\t\t)\n'
+            '\t\t(fill\n\t\t\t(thermal_gap 0.5)\n\t\t\t(thermal_bridge_width 0.5)\n\t\t)\n'
+            '\t\t(polygon\n\t\t\t(pts\n\t\t\t\t%s\n\t\t\t)\n\t\t)\n\t)\n' % (uid, pts))
+
+
+def _box(pad):
+    return [(pad.global_x - 1, pad.global_y - 1), (pad.global_x + 1, pad.global_y - 1),
+            (pad.global_x + 1, pad.global_y + 1), (pad.global_x - 1, pad.global_y + 1)]
+
+
+LOCAL_POUR = '11111111-0000-4000-8000-000000000001'
+WIDE_POUR = '11111111-0000-4000-8000-000000000002'
+LOCAL_KEEPOUT = '11111111-0000-4000-8000-000000000003'
+
+
+def _zone_uuids(path):
+    with open(path, encoding='utf-8') as fh:
+        text = fh.read()
+    return sorted(text[s:e].split('(uuid "', 1)[1].split('"', 1)[0]
+                  for s, e, _r in make_unplaced.board_zone_blocks(text))
+
+
 def build(td):
     with open(ESP, encoding='utf-8', newline='') as fh:
         text = fh.read()
@@ -86,20 +118,25 @@ def build(td):
     pcb = parse_kicad_pcb(ESP)
     pad = pcb.footprints['C1'].pads[0]
     x0, y0, x1, y1 = pcb.board_info.board_bounds
-    local = [(pad.global_x - 1, pad.global_y - 1), (pad.global_x + 1, pad.global_y - 1),
-             (pad.global_x + 1, pad.global_y + 1), (pad.global_x - 1, pad.global_y + 1)]
+    local = _box(pad)
+    # the keep-out sits around a pad of the part farthest from C1, so the two
+    # local zones name different parts
+    other = max((r for r, f in pcb.footprints.items() if f.pads and r != 'C1'),
+                key=lambda r: (pcb.footprints[r].x - pad.global_x) ** 2
+                + (pcb.footprints[r].y - pad.global_y) ** 2)
     wide = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
-    text = text.replace(ANCHOR, _zone('11111111-0000-4000-8000-000000000001', local)
-                        + _zone('11111111-0000-4000-8000-000000000002', wide) + ANCHOR)
+    text = text.replace(ANCHOR, _zone(LOCAL_POUR, local) + _zone(WIDE_POUR, wide)
+                        + _keepout(LOCAL_KEEPOUT, _box(pcb.footprints[other].pads[0]))
+                        + ANCHOR)
     src = os.path.join(td, 'human.kicad_pcb')
     with open(src, 'w', encoding='utf-8', newline='') as fh:
         fh.write(text)
-    return src, text
+    return src, text, other
 
 
 def main():
     with tempfile.TemporaryDirectory() as td:
-        src, text = build(td)
+        src, text, other = build(td)
         c1_src = text_node_angles(_block(text, 'C1'))
         check('fixture: C1 is at 90 and every text of it at absolute 0',
               parse_kicad_pcb(src).footprints['C1'].rotation == 90
@@ -153,14 +190,32 @@ def main():
               line)
 
         # 4. the zones
+        check('fixture: three board-level zones, two of them local',
+              _zone_uuids(src) == sorted([LOCAL_POUR, WIDE_POUR, LOCAL_KEEPOUT]))
         zl = [ln for ln in r.stdout.splitlines() if ln.startswith('zones')]
-        check('the zone line counts the local zone, names C1, leaves the pour out',
-              zl and zl[0].startswith('zones      2 board-level zone(s)/rule area(s) '
-                                      'kept where they were; 1 cover under 25%')
-              and '1 moved part(s) (C1)' in zl[0], zl)
-        hz = sorted((z.uuid, tuple(z.polygon)) for z in human.zones)
-        pz = sorted((z.uuid, tuple(z.polygon)) for z in parse_kicad_pcb(pile).zones)
-        check('zones are kept as they were', hz == pz and len(hz) == 2)
+        check('the zone line says both local zones were dropped and names '
+              'the parts', zl and zl[0].startswith(
+                  'zones      1 of 3 board-level zone(s)/rule area(s) kept; '
+                  'dropped 2 that cover under 25%')
+              and f'2 moved part(s) ({", ".join(sorted(["C1", other]))})' in zl[0],
+              zl)
+        check('the local pour and the local keep-out are gone, the board-wide '
+              'pour stays', _zone_uuids(pile) == [WIDE_POUR], _zone_uuids(pile))
+        hz = [(z.uuid, tuple(z.polygon)) for z in human.zones if z.uuid == WIDE_POUR]
+        pz = [(z.uuid, tuple(z.polygon)) for z in parse_kicad_pcb(pile).zones]
+        check('the kept pour is exactly as it was', hz == pz and len(hz) == 1)
+        # --keep-local-zones: kept, and still disclosed
+        kept = os.path.join(td, 'kept.kicad_pcb')
+        rk = run_utils.check(PY + [UNPLACED, src, kept, '--keep-local-zones'],
+                             accept=True)
+        zk = [ln for ln in rk.stdout.splitlines() if ln.startswith('zones')]
+        check('--keep-local-zones keeps every zone',
+              _zone_uuids(run_utils.evidence(kept))
+              == sorted([LOCAL_POUR, WIDE_POUR, LOCAL_KEEPOUT]),
+              _zone_uuids(kept))
+        check('...and its zone line still names the parts they outline',
+              zk and '(--keep-local-zones); 2 cover under 25%' in zk[0]
+              and 'C1' in zk[0] and other in zk[0], zk)
 
         # 5. the boundary
         for bad_angle in ('0', True):
@@ -178,7 +233,7 @@ def main():
         for f in failures:
             print(f"  - {f}")
         return 1
-    print("\nPASS: a pile's texts read absolute 0 and its local zones are disclosed")
+    print("\nPASS: a pile's texts read absolute 0 and its placement-local zones are dropped")
     return 0
 
 
