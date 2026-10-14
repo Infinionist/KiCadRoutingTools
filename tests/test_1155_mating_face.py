@@ -326,6 +326,32 @@ class TheCorpusCensus(unittest.TestCase):
                     and p['facing'] != p['nearest']]
         self.assertEqual(bad, [])
 
+    def test_the_census_gate_sees_a_withheld_edge(self):
+        """The census's gate reads each edge as the emitter observes it,
+        BEFORE `_withhold_reversed_edge` can drop it -- so a strong failure
+        counts as a failure AND a withheld edge, instead of vanishing from
+        the population. sonde_u J2 turned to 90 (#1155's reversed pose,
+        facing west), in memory; the control is the board as designed."""
+        import measure_1155_mating_census as m
+        from placement.legality import footprint_at_pose
+        path = os.path.join(ROOT, 'kicad_files', 'sonde_u.kicad_pcb')
+
+        def j2(pcb):
+            _p, entries, err = m.census(pcb, path)
+            self.assertIsNone(err)
+            return [e for e in entries if e['ref'] == 'J2']
+        pcb = parse_kicad_pcb(path)
+        got = j2(pcb)
+        self.assertEqual(len(got), 1, got)
+        self.assertFalse(got[0]['fails'] or got[0]['withheld'], got)
+        fp = pcb.footprints['J2']
+        pcb.footprints['J2'] = footprint_at_pose(fp, (fp.x, fp.y, 90.0))
+        got = j2(pcb)
+        self.assertEqual(len(got), 1, got)
+        self.assertEqual((got[0]['edge'], got[0]['facing']), ('east', 'west'))
+        self.assertTrue(got[0]['fails'] and got[0]['strong'], got)
+        self.assertTrue(got[0]['withheld'], got)
+
 
 if __name__ == '__main__':
     unittest.main()

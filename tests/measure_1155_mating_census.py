@@ -9,11 +9,14 @@ three questions its constants and its gate rest on:
 1. **Population.** Every part `part_class` calls an edge receptacle, an edge
    actuator or a connector: each source's offset (courtyard, drawn body), the
    verdict, the board edge it faces at its pose, and the edge it is nearest.
-2. **The gate.** Every `edge_connectors` entry the emitter writes from the
-   board (`emit_intent(declare_classes=True)`, the widest population). A
-   decisive face that disagrees with the entry's edge on a DESIGNER's board is
-   listed; one the rule's own predicate (`floorplan.edge_facing`) FAILS is a
-   false positive of the facing conjunct, and the gate is that there are none.
+2. **The gate.** Every edge the emitter observes on the board
+   (`emit_intent(declare_classes=True)`, the widest population), read as it
+   reaches `_withhold_reversed_edge` -- BEFORE that pass can drop it, so a
+   strong failure is counted rather than withheld out of sight. A decisive
+   face that disagrees with the edge on a DESIGNER's board is listed; one the
+   rule's own predicate (`floorplan.edge_facing`) FAILS is a false positive of
+   the facing conjunct. The gate is that there are none, and that the emitted
+   intent carries no entry the pass withheld (`suspect`, #1155).
 3. **The threshold gap**, per class: the most offset vote that names no face
    against the least offset decisive vote. `FACE_MIN_OFFSET_MM` must sit
    inside the GRADED population's gap (receptacles), and should clear the
@@ -31,6 +34,7 @@ and never asserted on by a test. Before #1201's fab guard exists the guard is
 simulated (`measure_1201_fab_and_silk.guard`), so a pin-1 dot does not vote
 here either. A measurement tool; `run_all` does not collect `measure_*`.
 """
+import contextlib
 import json
 import os
 import sys
@@ -88,16 +92,28 @@ def census(pcb, path, emit=True):
     entries = []
     if not emit:
         return parts, entries, None
+    seen = []
     try:
-        intent = floorplan.emit_intent(pcb, path, declare_classes=True)
+        with _observed_edges(seen):
+            intent = floorplan.emit_intent(pcb, path, declare_classes=True)
     except Exception as exc:                                 # noqa: BLE001
         intent = {'edge_connectors': [], '_error': repr(exc)}
-    for e in intent.get('edge_connectors') or []:
+    err = intent.get('_error')
+    emitted = intent.get('edge_connectors') or []
+    if emitted and not seen and not err:
+        # A gate that saw nothing would read as one that found nothing.
+        err = ('the emitter wrote edge_connectors but never reached '
+               '_withhold_reversed_edge: nothing was measured')
+    withheld = {e.get('ref') for e in emitted
+                if e.get('suspect')
+                and '#1155' in str(e.get('suspect_reason') or '')}
+    for e in seen:
         ref, edge = e.get('ref'), e.get('edge')
         fp = pcb.footprints.get(ref)
         if fp is None or not edge:
             continue
-        # The rule's own predicate -- called, not mirrored.
+        # The rule's own predicate -- called, not mirrored -- on the edge the
+        # emitter observed, before the withhold pass could drop it.
         ef = floorplan.edge_facing(e, fp, bodies.get(ref))
         cls = e.get('class') or classify_part(fp, ref).name
         entries.append({'ref': ref, 'edge': edge, 'class': cls,
@@ -107,8 +123,26 @@ def census(pcb, path, emit=True):
                         'disagrees': bool(ef['facing']
                                           and ef['facing'] != edge),
                         'policy': ef['policy'], 'fails': ef['fails'],
-                        'strong': ef['strong']})
-    return parts, entries, intent.get('_error')
+                        'strong': ef['strong'],
+                        'withheld': ref in withheld})
+    return parts, entries, err
+
+
+@contextlib.contextmanager
+def _observed_edges(seen):
+    """Record a copy of every entry `emit_intent` hands
+    `floorplan._withhold_reversed_edge`, as it arrives -- before that pass
+    can drop its edge -- and let the pass run as it would."""
+    orig = floorplan._withhold_reversed_edge
+
+    def spy(entry, *args, **kwargs):
+        seen.append(dict(entry))
+        return orig(entry, *args, **kwargs)
+    floorplan._withhold_reversed_edge = spy
+    try:
+        yield
+    finally:
+        floorplan._withhold_reversed_edge = orig
 
 
 def main(argv):
@@ -126,7 +160,7 @@ def main(argv):
     human = [b for b in FA10_HUMAN if fa10 and os.path.isfile(b)]
     rows = [('tracked', b) for b in tracked] + [('fa10', b) for b in human]
     fixture, report = {}, []
-    disagree, fails = [], []
+    disagree, fails, withheld, unmeasured = [], [], [], []
     gap = {}            # class -> [max abstained vote, min decisive vote]
     with guard(True) as how:
         for kind, path in rows:
@@ -151,15 +185,21 @@ def main(argv):
                     elif face is not None and p['face'] is not None:
                         if g[1] is None or mag < g[1][0]:
                             g[1] = (mag, name, r, src)
+            if err:
+                unmeasured.append((kind, name, err))
             for e in entries:
                 if e['disagrees']:
                     disagree.append((kind, name, e))
                 if e['fails']:
                     fails.append((kind, name, e))
+                if e['withheld']:
+                    withheld.append((kind, name, e))
             faced = sum(1 for p in parts.values() if p['face'])
-            print('%-34s %-7s parts=%3d faced=%3d entries=%2d fails=%d%s'
+            print('%-34s %-7s parts=%3d faced=%3d edges=%2d fails=%d '
+                  'withheld=%d%s'
                   % (name[:34], kind, len(parts), faced, len(entries),
                      sum(1 for e in entries if e['fails']),
+                     sum(1 for e in entries if e['withheld']),
                      ('  EMIT ERROR ' + err) if err else ''))
             for e in entries:
                 if not (e['face'] or e['fails']):
@@ -169,7 +209,10 @@ def main(argv):
                           e['ref'], e['edge'], e['class'],
                           e['mount_mode'] or '-', e['face'] or '-',
                           _SHORT[e['facing']], e['policy'],
-                          ('   <-- FAILS' if e['fails'] else
+                          ('   <-- FAILS%s' % (
+                              ' (strong: withheld)' if e['withheld']
+                              else ' (strong)' if e['strong'] else ' (weak)')
+                           if e['fails'] else
                            '   <-- disagrees (not graded)'
                            if e['disagrees'] else '')))
     print()
@@ -189,10 +232,18 @@ def main(argv):
         print('  %-7s %-30s %s edge %s class %s face %s facing %s  %s' % (
             kind, name, e['ref'], e['edge'], e['class'], e['face'],
             e['facing'], e['policy']))
-    print('GATE -- entries the facing conjunct FAILS on these boards: %d'
-          % len(fails))
+    print('GATE -- observed edges the facing conjunct FAILS on these boards: '
+          '%d (%d strong)' % (len(fails),
+                              sum(1 for _k, _n, e in fails if e['strong'])))
     for kind, name, e in fails:
         print('  %-7s %-30s %s' % (kind, name, e['ref']))
+    print('GATE -- edges the emitter withheld as suspect (#1155): %d'
+          % len(withheld))
+    for kind, name, e in withheld:
+        print('  %-7s %-30s %s' % (kind, name, e['ref']))
+    print('GATE -- boards the census could not measure: %d' % len(unmeasured))
+    for kind, name, err in unmeasured:
+        print('  %-7s %-30s %s' % (kind, name, err))
     if write:
         with open(FIXTURE, 'w', encoding='utf-8', newline='\n') as fh:
             json.dump(fixture, fh, indent=1, sort_keys=True)
@@ -201,7 +252,7 @@ def main(argv):
     if out_json:
         with open(out_json, 'w', encoding='utf-8') as fh:
             json.dump(report, fh, indent=1)
-    return 1 if fails else 0
+    return 1 if (fails or withheld or unmeasured) else 0
 
 
 if __name__ == '__main__':
