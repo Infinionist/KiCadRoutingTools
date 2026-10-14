@@ -195,6 +195,22 @@ def _quench_to(board, gate, out, **kw):
     return m, parse_kicad_pcb(out)
 
 
+def _seed_polished_with_rows():
+    """The SF_SEED board polished with its rows intent's own gate, POLISH
+    knobs: `(metrics_out, written pcb)`. Two cases read this one quench --
+    the unformed-row case's seeded control and the cross-group swap case --
+    and each used to run it with identical arguments. The quench is
+    deterministic and both only read the result."""
+    if 'sf_seed_q' not in _CACHE:
+        _doc, ipath = _splitflap_intent()
+        seed, _formed = _seeded_no_polish()
+        intent = fp.load_intent(ipath)
+        _CACHE['sf_seed_q'] = _quench_to(
+            seed, _gate(intent, parse_kicad_pcb(seed)),
+            os.path.join(_workdir(), 'sf_seed_q.kicad_pcb'))
+    return _CACHE['sf_seed_q']
+
+
 # --------------------------------------------------------------------------
 # rows and rigid blocks
 # --------------------------------------------------------------------------
@@ -292,9 +308,7 @@ def test_an_unformed_row_is_not_held_rigid():
     assert not held, rigid['groups']
     assert set(rigid['unformed']) == names, rigid['unformed']
     assert all(rigid['unformed'][n] for n in names), rigid['unformed']
-    seed, _formed = _seeded_no_polish()
-    m2, _p2 = _quench_to(seed, _gate(intent, parse_kicad_pcb(seed)),
-                         os.path.join(td, 'sf_seed_q.kicad_pcb'))
+    m2, _p2 = _seed_polished_with_rows()
     assert names <= set(m2['rigid']['groups']), m2['rigid']
     assert m2['rigid']['unformed'] == {}, m2['rigid']['unformed']
     print(f"  PASS: {len(names)} unformed rows on the human board are not "
@@ -1019,16 +1033,14 @@ def test_rigid_swap_rule_stays_inside_one_group():
     assert ok(held2, order, 'C', 'D') is True      # order unknown: may trade
     # And in the quench: two arrays of ONE footprint (splitflap's U9:220R and
     # U5:220R), side by side, never exchange members.
-    doc, ipath = _splitflap_intent()
+    doc, _ipath = _splitflap_intent()
     seed, _formed = _seeded_no_polish()
     rows = {a['name']: set(a['members']) for a in doc['arrays']}
     assert {'U9:220R', 'U5:220R'} <= set(rows)
-    intent = fp.load_intent(ipath)
     pcb = parse_kicad_pcb(seed)
     before = {r: (pcb.footprints[r].x, pcb.footprints[r].y)
               for r in rows['U9:220R'] | rows['U5:220R']}
-    out = os.path.join(_workdir(), 'sf_cross.kicad_pcb')
-    m, got = _quench_to(seed, _gate(intent, pcb), out)
+    m, got = _seed_polished_with_rows()
     for name in ('U9:220R', 'U5:220R'):
         spots = {before[r] for r in rows[name]}
         dx = got.footprints[sorted(rows[name])[0]].x -             before[sorted(rows[name])[0]][0]
