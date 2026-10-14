@@ -29,6 +29,10 @@ it is a contradiction between the board and the intent, which only their
 author can settle. Measured, run 27: a fixed USB socket declared
 `along_edge: center` within 0.6 mm sits 1.75 mm off centre, and every one of
 ten seeds failed on it, so nothing the seeder did could ever be ranked.
+`--repair` keeps the same contract (#1193): a violator it may not move
+because it is locked (`(locked yes)`, a `--lock` glob, a `fixed_poses[]`
+ref) is named in `unrepairable_pinned_refs` and does not fail the gate; a
+free violator it could not seat (`unrepairable_failed_refs`) does.
 
 Exit 5 (#959): the PLAN is refused before anything is written --
 `floorplan.plan_check` found an ERROR no arrangement can satisfy and the
@@ -1032,16 +1036,26 @@ Examples:
                 if fp is not None:
                     max_move = max(max_move, _math.hypot(mv['new_x'] - fp.x,
                                                          mv['new_y'] - fp.y))
+            # #1193: `unrepairable` is two populations. A PINNED one is
+            # locked (file, --lock, fixed pose) -- the pinned-part contract
+            # in this module's docstring: reported, never a gate failure. A
+            # FAILED one is a free violator no seat could place: exit 4.
+            _pinned = list(result.get('unrepairable_pinned') or [])
+            _failed = list(result.get('unrepairable_failed') or [])
             print(f"Repair: {len(result['violators'])} violator(s), "
                   f"{len(result['repaired'])} repaired "
                   f"({len(result['moves'])} moved, max {max_move:.2f}mm), "
                   f"{len(result.get('unresolved') or [])} unresolved, "
-                  f"{len(result['unrepairable'])} unrepairable")
+                  f"{len(result['unrepairable'])} unrepairable"
+                  + (f" ({len(_pinned)} pinned: {', '.join(_pinned)} -- "
+                     f"locked, reported, not a gate failure)"
+                     if _pinned else ''))
             # #1066: the refs behind every count. `unresolved` was printed and
             # never written, so a caller reading JSON_SUMMARY could not tell
             # a repaired violator from one still carrying its finding. An
             # unresolved ref does NOT set exit 4 -- that code stays reserved
-            # for a violator this tool may not move (`unrepairable`).
+            # for a free violator this tool could not seat
+            # (`unrepairable_failed_refs`).
             _unres = list(result.get('unresolved') or [])
             _by_rule: dict = {}
             for _rules in (result.get('unresolved_claims') or {}).values():
@@ -1057,6 +1071,11 @@ Examples:
                 # #1066 (b): what the decap rung did per cap; {} when off.
                 'decap_rung': result.get('decap_rung') or {},
                 'unrepairable': len(result['unrepairable']),
+                # #1193: by ref, split. The count above used to be the only
+                # record, with the ref left to a NOTE line.
+                'unrepairable_refs': list(result['unrepairable']),
+                'unrepairable_pinned_refs': _pinned,
+                'unrepairable_failed_refs': _failed,
                 'moved_refs': [m['reference'] for m in result['moves']],
                 'max_move_mm': round(max_move, 3),
                 # #1182: check_assembly's gating courtyard pairs against
@@ -1071,7 +1090,7 @@ Examples:
             summary.update({f'{k}_before': v
                             for k, v in result['pad_report_before'].items()})
             _advance(result['moves'], 'repair')
-            if result['unrepairable']:
+            if _failed:
                 exit_rc = 4
 
         if not args.dry_run:

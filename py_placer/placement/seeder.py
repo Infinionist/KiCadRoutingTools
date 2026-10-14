@@ -7332,6 +7332,13 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
     # cosmetic and common on legitimate boards (tigard's own corner mounting
     # holes overhang by courtyard; the human original grades oob 7). The
     # margined courtyard test flagged and "repaired" exactly those.
+    #
+    # EACH pad and EACH hole graded alone (#1193), never the part's union box:
+    # on a notched outline that box's corner can sit in the notch while no
+    # pad does. StickHub's locked J5 was charged 0.65 mm that way and the run
+    # exited 4, with `grade_pad_legality`'s `oob_pad_copper_refs` -- this
+    # same per-pad measure, `pad_copper_outside_amount` -- empty. The holes
+    # keep a pad-less part (a mounting hole) in the census.
     zero_gate = _leg.BoardOutlineGate(pcb_data.board_info, 0.0)
     part_pads = _leg.build_part_pads(pcb_data.footprints, clearance)
     #
@@ -7352,10 +7359,12 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
         if pp is None:
             continue
         fp = pcb_data.footprints[ref]
-        ext = pp.extent(fp.x, fp.y, fp.rotation or 0.0)
-        if ext is None:
-            continue
-        amt = zero_gate.rect_outside_amount(ext)
+        _pose = (fp.x, fp.y, fp.rotation or 0.0)
+        _own = _leg.part_outline_rings(zero_gate, fp.pads)
+        amt = max([_leg.pad_copper_outside_amount(pp, *_pose, zero_gate,
+                                                  skip_rings=_own)]
+                  + [zero_gate.rect_outside_amount(h, skip_rings=_own)
+                     for h in pp.hole_extent_rects(*_pose)])
         band = edge_band.get(ref)
         if band is not None:
             excess = amt - band
@@ -7789,7 +7798,16 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
             notes.append(f"{r}: UNRESOLVED -- {why} -- NOT reported "
                          f"repaired")
     return {'moves': moves, 'repaired': repaired, 'unrepairable':
-            unrepairable + failed, 'unresolved': unresolved,
+            unrepairable + failed,
+            # #1193: the two halves of `unrepairable`, apart. PINNED: a
+            # LOCKED violator -- `(locked yes)` in the file, a --lock glob,
+            # or a `fixed_poses[]` ref -- not this tool's to move, a
+            # board/intent contradiction its author settles, which
+            # place_seed reports without failing its gate. FAILED: a free
+            # violator no seat could place, which does fail it.
+            'unrepairable_pinned': list(unrepairable),
+            'unrepairable_failed': list(failed),
+            'unresolved': unresolved,
             'violators': violators, 'notes': notes,
             # #1066: {ref: [rule, ...]} -- the grade claims that kept each
             # unresolved ref out of `repaired`: charged ones still present,

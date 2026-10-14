@@ -4083,6 +4083,18 @@ class PartPads:
             return None
         return (x + e[0], y + e[1], x + e[2], y + e[3])
 
+    def hole_extent_rects(self, x: float, y: float, rot: float):
+        """[(x0, y0, x1, y1)] one box per NPTH hole at its EXTENT radius (the
+        holes `extent` folds into the union), rotated as `extent_local`
+        rotates them -- so a census can grade each drill ALONE (#1193)."""
+        rad = math.radians(-self._delta_key(rot))
+        hc, hs = math.cos(rad), math.sin(rad)
+        out = []
+        for ox, oy, r in self.holes_extent:
+            cx, cy = x + ox * hc - oy * hs, y + ox * hs + oy * hc
+            out.append((cx - r, cy - r, cx + r, cy + r))
+        return out
+
     def extent_local_side(self, rot: float, side: str):
         """`extent_local`, restricted to the pads that occupy `side` (#834).
 
@@ -5138,6 +5150,27 @@ def _copper_vertices(geom) -> List[Tuple[float, float]]:
     return out
 
 
+def pad_copper_outside_amount(pp, x: float, y: float, rot: float, gate,
+                              skip_rings=None) -> float:
+    """The worst SINGLE copper pad's outline violation, each pad's rect graded
+    alone -- `grade_pad_legality`'s `oob_pad_copper_refs` magnitude (#937),
+    which calls this, and `seeder.repair_placement`'s off-board census
+    (#1193). 0.0 for a part with no copper pads.
+
+    Never the part's pad UNION: on a notched outline that box's corner can
+    sit in the notch while no pad does (StickHub's locked J5, charged 0.65 mm
+    and exit 4 with `oob_pad_copper_refs` empty)."""
+    return max((gate.rect_outside_amount(r[:4], skip_rings=skip_rings)
+                for r in pp.pad_rects(x, y, rot)), default=0.0)
+
+
+def part_outline_rings(gate, pads):
+    """The interior rings `pads`' own centres enclose -- the #628 ownership
+    exemption (a part whose pads ring a milled relief owns that ring), shared
+    by `grade_pad_legality`'s two off-board censuses and the repair's."""
+    return gate.rings_enclosing([(p.global_x, p.global_y) for p in pads or ()])
+
+
 def pad_copper_overrun_mm(pads, gate) -> float:
     """How far `pads`' copper reaches past the outline, in mm: THE gating
     measure for pad copper off the board (#1096), shared by check_assembly
@@ -5774,10 +5807,11 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
             # The same #628 ownership exemption the AABB pass takes: a part
             # whose own pads ring a milled relief OWNS that ring and must not
             # be graded as hanging off it.
-            own = pad_gate.rings_enclosing(
-                [(p.global_x, p.global_y) for p in pads_by_ref.get(ref, ())])
-            amt = max((pad_gate.rect_outside_amount(r[:4], skip_rings=own)
-                       for r in rects), default=0.0)
+            own = part_outline_rings(pad_gate, pads_by_ref.get(ref, ()))
+            # #1193: the one per-pad measure, which the repair census reads.
+            amt = pad_copper_outside_amount(pp, fp.x, fp.y,
+                                            fp.rotation or 0.0, pad_gate,
+                                            skip_rings=own)
             if amt > EPS:
                 oob_copper_refs.append([ref, round(amt, 4)])
                 # #1096: the DISTANCE past the outline, on each pad's TRUE

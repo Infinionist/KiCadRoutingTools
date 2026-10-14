@@ -1594,7 +1594,14 @@ re-seating 85/92 while leaving its zone targets unmoved):
   restored alone), and a cap pushed past the
   decap search radius (its `decap_distance` became `decap_ungraded`, which is
   not a fix). `unresolved` sets no exit code of its own; exit 4 stays
-  `unrepairable`'s and the final grade's. `place_reconstruct`'s legalize
+  `unrepairable_failed_refs`' (a free violator no seat could place) and the
+  final grade's. A locked violator (`(locked yes)`, `--lock`, a fixed pose)
+  is `unrepairable_pinned_refs`: reported, never a gate failure, the
+  pinned-part contract (#1193). The
+  off-board census grades each pad's copper and each hole ALONE
+  (`legality.pad_copper_outside_amount`, the `oob_pad_copper_refs`
+  measure), never the part's pad union, whose corner can sit in a notch no
+  pad enters. `place_reconstruct`'s legalize
   stage reports the same `unresolved` list.
   `--repair-decaps` (#1066 b, opt-in) adds the missing actor: each cap a
   `decap_distance` / `decap_pin_distance` error charges is seated toward its
