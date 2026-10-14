@@ -380,7 +380,7 @@ python py_placer/plane_score.py board.kicad_pcb --plane-nets GND 3V3:F.Cu
 
 ## Placement Quality Terms (`placement_score.py`)
 
-Five terms a COPPER-FREE placement lap can be ranked by, because nothing else
+Six terms a COPPER-FREE placement lap can be ranked by, because nothing else
 can rank one: `blocking` on such a board is the unrouted count (the routing
 half's number, identical on every lap) and `quality` is `(0, 0.0, 0)` for every
 placement of every board.
@@ -388,6 +388,7 @@ placement of every board.
 ```bash
 python3 -X utf8 py_placer/placement_score.py board.kicad_pcb --json wk/terms.json
 python3 -X utf8 py_placer/placement_score.py board.kicad_pcb --intent floorplan.json
+python3 -X utf8 py_placer/placement_score.py board.kicad_pcb --length-groups groups.json
 ```
 
 | term | what it measures |
@@ -397,6 +398,7 @@ python3 -X utf8 py_placer/placement_score.py board.kicad_pcb --intent floorplan.
 | `cluster_to_pin` | worst distance from a passive to the pin it serves, mm — declared `proximity` claims first, the decap election for the rest |
 | `plane_cut_proxy` | length of each net's chord lying INSIDE a locked part's body, summed. Two-layer boards only; ground and rails excluded |
 | `balance` | pad-area first moment along the board's long axis, as a fraction of span. Copper pads only: NPTH and paste/mask-aperture pads are excluded, and the term names that population as its `basis` (#1143), so a lap scored before #1143 is reported `not-comparable` against one scored after it rather than as a move |
+| `edge_facing` | connected pads on a row that faces the board outline with nothing beyond it, over parts with 3+ connected pads; edge connectors excluded |
 
 **There is no aggregate and no weight.** Laps are compared by `compare_terms`,
 which is PARETO: `better` only when no measured term regressed, `mixed` naming
@@ -407,6 +409,23 @@ Each term publishes a `basis` when its population is not fixed by the board
 (which parts are locked, which claims were declared). When that basis moves
 between laps the term is **not judged**: a total over a different population is
 not a larger or smaller version of the first.
+
+**`--length-groups FILE`** (the `board_score` / `check_complete` format,
+`{"G": {"nets": [...], "tolerance_mm": t, "mode": "pin_pair"}}`) fills a
+REPORT-ONLY `length_groups` section (#1252) that is **not a term**: it is not in
+`TERM_ORDER`, so `compare_terms` and the lap ledger never read it. Per group it
+reports each member's length FLOOR and its basis -- `2-part`, the octilinear
+distance of the closest pad pair across the two parts; `multipoint`, of the
+farthest pad pair on different parts -- the longest floor and its net, the
+spread, `copper_to_add_mm` = Σ(longest − own floor), and the longest floor in
+ps on an outer and an inner layer (`impedance.get_layer_ps_per_mm`).
+`tolerance_mm` is printed beside the spread with no pass/fail: a floor spread
+is not a routed spread, because meanders can always add copper. `cannot_see`
+lists what a floor misses (detours, layers and vias, meander room, fly-by/T
+topologies, pad `die_length` #1248 and pad-edge entry). A group with fewer than
+two of its nets on the board is `ran: false` with a reason; a path that is not
+a readable file of that shape exits 2 (where `board_score` reads it as
+ungraded).
 
 `board_score.py --placement-terms` embeds this document at a top-level
 `placement` key, report-only — it never enters `blocking` and never changes the
