@@ -29,6 +29,10 @@ it is a contradiction between the board and the intent, which only their
 author can settle. Measured, run 27: a fixed USB socket declared
 `along_edge: center` within 0.6 mm sits 1.75 mm off centre, and every one of
 ten seeds failed on it, so nothing the seeder did could ever be ranked.
+`--repair` keeps the same contract (#1193): a violator it may not move
+because it is locked (`(locked yes)`, a `--lock` glob, a `fixed_poses[]`
+ref) is named in `unrepairable_pinned_refs` and does not fail the gate; a
+free violator it could not seat (`unrepairable_failed_refs`) does.
 
 Exit 5 (#959): the PLAN is refused before anything is written --
 `floorplan.plan_check` found an ERROR no arrangement can satisfy and the
@@ -411,6 +415,17 @@ def reseat_decline_line(ref, rec):
             f"where the polish left it, and its grade error stands")
 
 
+def error_rules(errors):
+    """`{rule: count}` of graded violations: WHICH rules a gate failure is
+    made of (#1191). A count names nothing, so compare_seeds could not tell
+    a seed failing only `decap_distance` -- which `--repair --repair-decaps`
+    is for -- from one failing anything else."""
+    out = {}
+    for v in errors:
+        out[v.rule] = out.get(v.rule, 0) + 1
+    return out
+
+
 def gate_reason(unseated, own, my_pads, hole_delta, band=(), oob=()):
     """The one stderr line that says WHY this seed did not pass its gate.
 
@@ -783,9 +798,9 @@ Examples:
         return UNPLACED_EXIT
     st = assess_placement(pcb, args.input_file)
     if st.has_copper:
-        print(f"place_seed: this board carries {st.segments} segment(s) and "
-              f"{st.vias} via(s); seeding moves footprints and would strand "
-              f"every track. Seed the unrouted board.", file=sys.stderr)
+        print(f"place_seed: this board carries {st.copper_carried}; seeding "
+              f"moves footprints and would strand every track. Seed the "
+              f"unrouted board.", file=sys.stderr)
         return UNPLACED_EXIT
     # #959 (#998): the plan, checked against itself and the board BEFORE the
     # first write. Run 29 found its zone plan's errors at lap 5 because the
@@ -1069,16 +1084,26 @@ Examples:
                 if fp is not None:
                     max_move = max(max_move, _math.hypot(mv['new_x'] - fp.x,
                                                          mv['new_y'] - fp.y))
+            # #1193: `unrepairable` is two populations. A PINNED one is
+            # locked (file, --lock, fixed pose) -- the pinned-part contract
+            # in this module's docstring: reported, never a gate failure. A
+            # FAILED one is a free violator no seat could place: exit 4.
+            _pinned = list(result.get('unrepairable_pinned') or [])
+            _failed = list(result.get('unrepairable_failed') or [])
             print(f"Repair: {len(result['violators'])} violator(s), "
                   f"{len(result['repaired'])} repaired "
                   f"({len(result['moves'])} moved, max {max_move:.2f}mm), "
                   f"{len(result.get('unresolved') or [])} unresolved, "
-                  f"{len(result['unrepairable'])} unrepairable")
+                  f"{len(result['unrepairable'])} unrepairable"
+                  + (f" ({len(_pinned)} pinned: {', '.join(_pinned)} -- "
+                     f"locked, reported, not a gate failure)"
+                     if _pinned else ''))
             # #1066: the refs behind every count. `unresolved` was printed and
             # never written, so a caller reading JSON_SUMMARY could not tell
             # a repaired violator from one still carrying its finding. An
             # unresolved ref does NOT set exit 4 -- that code stays reserved
-            # for a violator this tool may not move (`unrepairable`).
+            # for a free violator this tool could not seat
+            # (`unrepairable_failed_refs`).
             _unres = list(result.get('unresolved') or [])
             _by_rule: dict = {}
             for _rules in (result.get('unresolved_claims') or {}).values():
@@ -1094,6 +1119,11 @@ Examples:
                 # #1066 (b): what the decap rung did per cap; {} when off.
                 'decap_rung': result.get('decap_rung') or {},
                 'unrepairable': len(result['unrepairable']),
+                # #1193: by ref, split. The count above used to be the only
+                # record, with the ref left to a NOTE line.
+                'unrepairable_refs': list(result['unrepairable']),
+                'unrepairable_pinned_refs': _pinned,
+                'unrepairable_failed_refs': _failed,
                 'moved_refs': [m['reference'] for m in result['moves']],
                 'max_move_mm': round(max_move, 3),
                 # #1182: check_assembly's gating courtyard pairs against
@@ -1108,7 +1138,7 @@ Examples:
             summary.update({f'{k}_before': v
                             for k, v in result['pad_report_before'].items()})
             _advance(result['moves'], 'repair')
-            if result['unrepairable']:
+            if _failed:
                 exit_rc = 4
 
         if not args.dry_run:
@@ -1143,6 +1173,7 @@ Examples:
             own, pinned = _split_pinned(graded, args.output_file, intent)
             _print_grade(own, pinned)
             summary['grade_errors'] = len(own)
+            summary['grade_error_rules'] = error_rules(own)
             summary['grade_errors_pinned'] = len(pinned)
             # #974: the same own/pinned lists that decide exit_rc below.
             summary['connector_requirements'] = floorplan.connector_requirements(
@@ -1172,7 +1203,14 @@ Examples:
                                             default=str), flush=True)
         return exit_rc
 
-    if not st.unplaced and not st.partially_unplaced and not args.force:
+    # #1165: `seed_scope` is the one answer (rank_rotations and
+    # check_floorplan's forecast read it too). A board whose unlocked parts
+    # sit off the outline is a seeding target whatever its locked parts do:
+    # the skill places and locks the fixed parts FIRST, which widened the
+    # spread (s2) and diluted the off-outline share (s3) until `unplaced`
+    # read False, and this gate refused the pile as "already PLACED".
+    from placement.placement_state import SEED_NONE, SEED_STACKED
+    if st.seed_scope == SEED_NONE and not args.force:
         # PARTIALLY unplaced boards (a stacked pile beside real placements --
         # a netlist re-import, or a seeder that pinned only the spec-fixed
         # parts) are a legitimate seeding target, not a refusal: locked parts
@@ -1182,12 +1220,18 @@ Examples:
               "variations of it, or --force to re-seed anyway.",
               file=sys.stderr)
         return UNPLACED_EXIT
+    if st.off_outline and not st.unplaced and not args.force:
+        _whole = bool(st.signals.get('s3_outside'))
+        _frac = st.outside_fraction if _whole else st.movable_outside_fraction
+        print(f"place_seed: {_frac:.0%} of the "
+              f"{'' if _whole else 'unlocked '}parts sit off the outline -- "
+              f"seeding every unlocked part; the locked ones stand.")
 
     # Partially unplaced without --force: seed ONLY the stacked pile. The
     # genuinely-placed unlocked parts are someone's work, not this tool's to
     # re-derive; --force widens the scope back to everything unlocked.
     seed_refs = None
-    if st.partially_unplaced and not st.unplaced and not args.force:
+    if st.seed_scope == SEED_STACKED and not args.force:
         # SCOPE FOLLOWS THE GATE. `partially_unplaced` is now decided on the
         # SUSPECT subset -- co-located parts that are not markers and not on
         # opposite sides -- so scoping the seed from the full `stacked_refs`
@@ -1745,6 +1789,7 @@ Examples:
                    if not e.get('accepted')),
                'locked': n_locked,
                'grade_errors': len(own),
+               'grade_error_rules': error_rules(own),
                'grade_errors_pinned': len(pinned),
                # run 27: the copper this seed arranged, graded. `_seeded`
                # names the pairs; `_inherited` is the board's own and is

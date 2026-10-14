@@ -146,7 +146,7 @@ source, suspect, suspect_reason
 | `edge_connectors[].center_on_edge` | `tolerance_mm` (required — see below) |
 | `edge_connectors[].along_edge_band` | `from`, `to` |
 | `decaps` | `max_distance_mm`, `exempt`, `search_radius_mm`, `max_pin_distance_mm`, `pin_functions`, `same_side`, and the `--decaps-from`-written `within_radius_refs` / `within_radius_mm` (#1142: the caps the reference keeps within that radius of their chip, each held to it per cap; the two come together, need `max_distance_mm`, must match `search_radius_mm`, and need `min_reader` 8) |
-| `assembly` | `sides` (`"F"`, `"B"` or `"both"`), `why`, `context` |
+| `assembly` | `sides` (`"F"`, `"B"` or `"both"`), `body_edge_mm` (#1255: the least distance in mm a component body may sit from the board edge, which arms check_assembly's `body_edge_band` gate; needs `min_reader` 9), `why`, `context` |
 | `proximity[]` | `ref`, `near`, `max_mm`, `basis` (`"pad_edge"` or `"body"`), `pads`, `note`, `context`, and the compiler-written `source` |
 | `arrays[]` | `name`, `members` (an ORDERED list of literal refs, at least two), `serves` (a ref, or `"unknown"`), `order` (`"pin"`, `"declared"` or `"unknown"`), `rotation` (degrees, `"shared"` or `"unknown"`), `pitch_mm` (`"auto"` or mm), `axis` (`"auto"`, `"x"` or `"y"`), `allow_mixed`, `why`, `note`, `context`, and the compiler-written `source` (#1051; see "Arrays" below; needs `min_reader` 7) |
 | `fixed_poses[]` | `ref`, `x`, `y`, `rot` (degrees or `"unknown"`), `side` (`"F"`, `"B"` or `"unknown"`), `basis` (`"declared"` or `"mechanical"`), `why`, `context`, `accept_courtyard_overlap` (a list of literal refs, #1060) (#1054; see "Fixed poses" below; needs `min_reader` 7) |
@@ -232,7 +232,7 @@ The top-level `context.basis` labels numbers and changes no verdict.
 intent file at once — far too blunt for "this build learned a new field".
 
 So field-level compatibility is a second number. `READER_VERSION` (currently
-`7`) is what this build can act on, and an intent sets `min_reader` when a
+`9`) is what this build can act on, and an intent sets `min_reader` when a
 claim must not be silently ignored:
 
 ```jsonc
@@ -291,6 +291,13 @@ tether search radius of their chip, and the radius that was read at. A listed
 cap the graded board leaves beyond the radius is a `decap_ungraded` ERROR, per
 cap. It changes the exit code, so the intent is stamped `min_reader` 8, and an
 older build refuses both keys by name.
+
+**Reader 9 arrived with [#1255](https://github.com/drandyhaas/KiCadRoutingTools/issues/1255):**
+`assembly.body_edge_mm`, the least distance a component body may sit from the
+board edge. Declared, it turns check_assembly's `body_edge_band` census from
+report-only into a `not_buildable` conjunct, so it changes the exit code. An
+older build refuses the key by name. The design brief compiles its
+`assembly.body_edge_mm` with `min_reader` 9.
 
 ### Arrays: parts that form one row (#1051)
 
@@ -412,7 +419,11 @@ that part. `rot` / `side` absent or `"unknown"` keep the
 part's current angle / face; a declared side the part is not on is refused,
 since no search flips a part. A part already placed -- locked in the file, or
 outside the seed scope -- is recorded when it is at the pose and refused when
-it is not. A seated part is stamped `(locked yes)`, so every later stage and
+it is not, the refusal naming the lock's real cause (#1152). A footprint with
+no pad at all (a logo or outline drawing a courtyard) is placed only as a
+static obstacle, not by anyone's declaration, so its pose elsewhere is
+checked like a free part's, by its courtyard. A seated part is stamped
+`(locked yes)`, so every later stage and
 the polish treat it as an obstacle, and `place_seed --repair` never moves one.
 `place_seed`'s `JSON_SUMMARY` carries `fixed_seated` (with `at_written_pose`)
 and `fixed_refused`. An unlocked `mechanical.json` ref is accepted, instead
@@ -442,6 +453,22 @@ overlap: the pair's area still counts in `legality.overlap_area` and in
 carries exactly the finding KiCad's DRC reports -- declare the budget to fit
 it. A pose also overlapping a part the waiver does not name (U30 and
 TP2, once TP2 is placed or declared) is still refused.
+
+**A shared ORIGIN is a stack only when something physical is shared
+(#1204).** check_assembly's COINCIDENT ORIGINS conjunct (run 19: three parts
+at one point whose rotated pads interleaved, so no pad intersected) groups
+parts whose origins agree to 1 um. An origin is a library's datum, so within
+such a group a pair counts only when, on a face both occupy, their COPPER pad
+boxes overlap (a plated barrel is on both faces), an NPTH hole of one lies on
+the other's copper, or the body channel reports pad copper or two drawn
+(non-silk) bodies shared there (`placement_state.coincident_touch`). The two
+halves of a CM5 IO module footprint share one origin and the module's two
+mounting holes with 34 mm between their pads, and rp2350_fpga_eensy_prePlane's
+Tag-Connect J2 (B.Cu) sits over U3 (F.Cu) between its alignment holes:
+neither is a stack. An `overlap_waivers[]` pair is accepted here as its
+courtyard pair is. Both kinds are listed, never silently, in
+`coincident_origins_exempt` (`why` `apart` or `waived`). board_score reads the
+same JSON, and the seeder's #1151 disposition asks the same question.
 
 **Courtyards are graded as drawn, at the project's own severity (#1094,
 #1095).** The courtyard and fab channels keep the part rects as their broad
@@ -1059,6 +1086,43 @@ the pad-bearing population: `glasgow_revC` declared `F` reports **92**, not the
 94 blocks on its back, because two of those blocks carry no pads. The census in
 `check_assembly.py` prints the same numbers and declares its basis.
 
+### `assembly.body_edge_mm`: how close a body may sit to the edge (#1255)
+
+This is an assembler's rule, and the board file cannot say it. JLCPCB's assembly
+terms ask for at least 2.5 mm between a component body and the board edge.
+JLC also adds edge rails when the file has none, and after that the board edge
+is no longer the conveyor edge.
+
+```jsonc
+"assembly": { "body_edge_mm": 2.5 }   // mm, > 0; `sides` may sit beside it
+```
+
+`check_assembly` measures every pad-bearing part's body in its
+`body_edge_band` census. The body is the drawn one (.Fab, else silk united with
+the pads), else the courtyard, else the pad box, and the rung is named. It is
+measured against the real outline at margin 0, cutouts included. A body that
+reaches past the outline reads 0. Some parts belong at the edge by what they
+are: edge-class parts, markers (mounting holes, fiducials, test points) and
+parts whose `edge_connectors[]` entry names an edge. They are listed apart and
+never counted. A connector with no edge claim stays in, because connectors are
+most of the hits on human boards.
+
+* **Undeclared**, the band is 2.5 mm, labelled `derived_default` with the JLC
+  citation. The census is **report-only**. Every human board measured breaks
+  it: splitflap 10 of 58 parts, esp_prog 7 of 15, glasgow 4 of 232, watchy 10
+  of 70 and ulx3s 9 of 210.
+* **Declared**, every part in the band is a `not_buildable` conjunct
+  (`body_edge_band_gating`). render_placement's `a_body_edge_band` fails
+  `--gate` the same way.
+* With `--baseline` (render: `--before`), `new_in_band` counts the parts in the
+  band that moved.
+
+No floorplan rule grades this key. `check_floorplan` carries it and names
+check_assembly as its grader. The design brief declares it as
+`assembly.body_edge_mm` too, and that compiles here. The key is spelled
+`body_edge_mm` rather than "...band", so it cannot be confused with
+`edge_connectors[].along_edge_band`, which is a position along an edge.
+
 ### A through-hole part is in a keep-out from either side
 
 Its leads pass through. `keepout` tests the courtyard **and** the drilled-pad
@@ -1571,11 +1635,22 @@ never fire on an auto-emitted intent. With `--declare-decaps` it derives
 PLACED REFERENCE of the same design instead -- a human layout, an earlier
 placement -- which is the only way to arm the rule on a pile, where there is
 nothing to read. Same derivation and withholding; the basis is
-`reference:<file>`, in the census and in `context.basis`. It withholds when
+`reference:<file>`, in the census and in `context.basis`. The intent NAMES the
+reference and never points at it (#1175): `context.decap_census.reference_board`
+is the file's basename, `reference_board_sha256` identifies its bytes, and a
+withholding reason names the basename too. The reference is usually a human
+layout, and a run that grades against an intent carrying its path is one Read
+away from the placement it must not match. It withholds when
 the two boards share, under the same reference and footprint, under 90% of
 EITHER board's pad-bearing parts (another design: a small board of generic
 passives shares most of ITS parts with almost any large one), and when the
-reference is itself unplaced.
+reference is itself a pile -- `PlacementState.pile`, the one pile test
+(#1109). A placed reference with a few parts sharing an origin is NOT a pile
+(#1178): rp2350_fpga_eensy_prePlane's J2, a Tag-Connect on B.Cu, sits over
+U3 on F.Cu by design, and a CM5 module footprint's two halves share one
+origin. It is read as placed, and the shared ones are named in
+`context.decap_census.reference_stacked_refs`. The limit is still read off
+every part, because the reference must grade clean against its own number.
 StickHub's human board gives 2.18 mm from 38 tethers; run 36, with no limit
 armed, left the hub's decaps 2.1-9.8 mm from their pins. Since #1102 it also
 derives the PIN limit, `max_pin_distance_mm` (see "The emitter derives no pin
@@ -1601,10 +1676,11 @@ tether limit.
 `--declare-decaps` (strict) and `--auto-declare-decaps`. The default,
 `check_floorplan.DECLARE_DECAPS_DEFAULT`, is `off`.
 
-- **`auto`** derives only off a PLACED board. It keys on `assess_placement`'s
-  `unplaced` and `partially_unplaced`. Run 29's pile read
+- **`auto`** derives only off a PLACED board. It keys on
+  `PlacementState.pile` (#1178). Run 29's pile read
   `partially_unplaced` with a duplicate fraction of 0.833, and strict wrote a
-  limit of 0.0 there. When auto withholds, it records why in
+  limit of 0.0 there; `pile`'s heap arm catches it, and does not discard a
+  placed board over one pair of parts that share an origin by design. When auto withholds, it records why in
   `context.decap_census.auto_withheld`, never in `budget_withheld`, so an
   auto emit moves no exit code.
 - **The number is labelled** `observed_baseline` in `context.basis`, alongside

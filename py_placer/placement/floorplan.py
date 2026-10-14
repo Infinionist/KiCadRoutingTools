@@ -178,7 +178,12 @@ EDGE_BAND_SANITY_MM = 5.0
 #: cap inside -- which none of the seven #1105 references did. It changes the
 #: exit code, so the rule above mandates the bump; an older build refuses
 #: both keys by name.
-READER_VERSION = 8
+#: 9 (#1255): `assembly.body_edge_mm` -- the least distance a component body
+#: may sit from the board edge, an assembler's rule. Declared, it turns
+#: check_assembly's `body_edge_band` census from report-only into a
+#: `not_buildable` conjunct, so it changes the exit code and the rule above
+#: mandates the bump; an older build refuses the key by name.
+READER_VERSION = 9
 
 _TOP_LEVEL_KEYS = {
     'schema', 'kind', 'board', 'units', 'envelope', 'defaults', 'blocks',
@@ -226,7 +231,13 @@ _FIXED_POSE_BASES = ('declared', 'mechanical')
 #: whole board, and it is the thing `options.grow_board` needed and could not
 #: be told -- it credits the back face's area to every board, so a placement
 #: can be reported as fitting on area the fab will never populate.
-_ASSEMBLY_KEYS = {'sides', 'why', 'context'}
+#: #1255: `body_edge_mm` is the least distance (mm) a component body may sit
+#: from the board edge -- an assembler's rule the board file cannot carry.
+#: Declared, it arms check_assembly's `body_edge_band` gate; undeclared, that
+#: census reports against JLCPCB's 2.5 mm, labelled `derived_default`, and
+#: never gates. Spelled `body_edge_mm`, not "...band", so it cannot be read as
+#: `edge_connectors[].along_edge_band`, which is a position ALONG an edge.
+_ASSEMBLY_KEYS = {'sides', 'why', 'context', 'body_edge_mm'}
 #: Named faces, not "single". `"sides": "single"` is under-specified, and the
 #: corpus says so: ulx3s is BACK-dominant (163 of its 226 pad-bearing parts),
 #: so a rule reading "single implies F.Cu" would flag most of a shipping
@@ -466,6 +477,23 @@ class Intent:
         arithmetic did before this key existed.
         """
         return str((self.assembly or {}).get('sides') or 'both')
+
+    def body_edge_mm(self) -> Optional[float]:
+        """#1255: the declared least body-to-board-edge distance, or None.
+
+        None, never a default: the default (JLCPCB's 2.5 mm) belongs to the
+        census that reports it as `derived_default`, and an undeclared band
+        must not read as a declared one -- the declaration is what gates."""
+        v = (self.assembly or {}).get('body_edge_mm')
+        return None if v is None else float(v)
+
+    def edge_claim_refs(self) -> Tuple[str, ...]:
+        """Refs whose `edge_claims()` entry names an edge (#1255): parts the
+        intent says belong AT the edge, which the body-to-edge census lists
+        apart rather than counting. An entry whose edge was declared
+        "unknown" carries no `edge` and claims nothing."""
+        return tuple(str(c['ref']) for c in self.edge_claims()
+                     if c.get('edge'))
 
     def edge_claims(self) -> Tuple[Dict[str, object], ...]:
         """The `edge_connectors` entries that actually CLAIM AN EDGE.
@@ -1330,12 +1358,22 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
             raise IntentError(
                 f"assembly.sides must be one of {list(_ASSEMBLY_SIDES)}, got "
                 f"{v!r}{extra}")
-    elif assembly:
+    elif assembly and 'body_edge_mm' not in assembly:
         raise IntentError(
-            "assembly: declares no `sides`, so it constrains nothing. Give it "
-            f"one of {list(_ASSEMBLY_SIDES)} or drop the key -- an assembly "
-            "block that grades nothing is the failure `block_unresolved` "
-            "exists to prevent, one level down")
+            "assembly: declares neither `sides` nor `body_edge_mm`, so it "
+            f"constrains nothing. Give it `sides` (one of "
+            f"{list(_ASSEMBLY_SIDES)}) or `body_edge_mm`, or drop the key -- "
+            "an assembly block that grades nothing is the failure "
+            "`block_unresolved` exists to prevent, one level down")
+    if 'body_edge_mm' in assembly:
+        # #1255. Greater than zero: a 0 mm band measures nothing, and a
+        # negative one reads as "past the edge is fine". Graded by
+        # check_assembly's `body_edge_band` (and render's checklist), which is
+        # the grader this declaration arms -- not by a floorplan rule.
+        if _number(assembly['body_edge_mm'], 'assembly.body_edge_mm') <= 0:
+            raise IntentError(
+                f"assembly.body_edge_mm: expected a distance > 0 mm, got "
+                f"{assembly['body_edge_mm']!r}")
 
     decaps = _obj(raw.get('decaps'), 'decaps')
     _reject_unknown(decaps, _DECAP_KEYS, 'decaps')
@@ -9110,9 +9148,12 @@ def emit_intent(pcb_data, pcb_file: str, *,
         # #959 (#1002): derive only off a PLACED board. Run 29's pile read
         # `unplaced: false` and `partially_unplaced: true` (duplicate
         # fraction 0.833), and a strict derivation there wrote a limit of 0.0.
+        # `.pile` (#1109) catches it -- its heap arm is that 83% -- and,
+        # unlike any `partially_unplaced`, does not discard a placed board
+        # over two parts sharing an origin by design (#1178).
         from .placement_state import assess_placement
         _st = assess_placement(pcb_data, pcb_file)
-        if _st.unplaced or _st.partially_unplaced:
+        if _st.pile:
             _census['auto_withheld'] = (
                 'the board is not placed ('
                 + '; '.join(_st.reasons[:2])
@@ -9131,7 +9172,14 @@ def emit_intent(pcb_data, pcb_file: str, *,
         _ref_pcb = _parse_ref(decaps_from)
         _ref_census = decap_census(_ref_pcb)
         _limit, _why = _decap_derivation(_ref_census)
-        _census['reference_board'] = decaps_from
+        # #1175: the reference is NAMED, as the basis already names it, and
+        # identified by its bytes -- never pointed at. The reference is
+        # typically a human layout, and an intent carrying its path hands a
+        # run that grades against it the one file it must not read.
+        from .provenance import sha256_file as _sha256_file
+        _ref_name = os.path.basename(decaps_from)
+        _census['reference_board'] = _ref_name
+        _census['reference_board_sha256'] = _sha256_file(decaps_from)
         _census['reference_tethers'] = _ref_census.get('tethers')
         # The reference REPLACES the auto/strict arms: an auto withholding
         # about THIS board is not a statement about the number written.
@@ -9158,21 +9206,33 @@ def emit_intent(pcb_data, pcb_file: str, *,
                 f"{_common}/{len(_theirs)} of its parts and "
                 f"{_common}/{len(_ours)} of this board's (at least "
                 f"{DECAPS_FROM_MIN_MATCH:.0%} of each needed)")
-        elif _ref_state.unplaced or _ref_state.partially_unplaced:
+        elif _ref_state.pile:
+            # #1178: the ONE pile test (#1109), as the emitter's own pile
+            # gate reads it. Not any `partially_unplaced`: two parts sharing
+            # an origin by design set it on a placed reference -- a
+            # Tag-Connect over a SOT-666 on the far face (rp2350), the two
+            # halves of a CM5 module footprint -- and discarded the whole
+            # reference over them.
             _limit, _why = None, (
                 "it is not placed (" + '; '.join(_ref_state.reasons[:2])
                 + "): a limit read off it would bless a pile")
         _ref_ok = (_match >= DECAPS_FROM_MIN_MATCH
-                   and not (_ref_state.unplaced
-                            or _ref_state.partially_unplaced))
+                   and not _ref_state.pile)
+        if _ref_ok and _ref_state.stacked_suspect_refs:
+            # Read as placed, and SAID: the limit is the reference's own
+            # fixed point (`_decap_derivation`), so it is read off every
+            # part -- leaving these out would leave caps the reference
+            # holds out of the max the reference must then pass.
+            _census['reference_stacked_refs'] = list(
+                _ref_state.stacked_suspect_refs)
         if _limit is None:
             _withheld['decaps.max_distance_mm'] = (
-                f"the reference board {decaps_from}: {_why}")
+                f"the reference board {_ref_name}: {_why}")
         else:
             _decaps['max_distance_mm'] = _limit
             _census['emitted_max_distance_mm'] = _limit
             _census['decaps_basis'] = ('reference:'
-                                       + os.path.basename(decaps_from))
+                                       + _ref_name)
             # #1102: the tether currency is the cap to the chip's inflated
             # PAD BBOX, and it stops at the 5 mm search radius -- a cap
             # left 10 mm away is only `decap_ungraded`, a WARN. A cap the
@@ -9224,7 +9284,7 @@ def emit_intent(pcb_data, pcb_file: str, *,
             # graded" (#1102 verifier: esp_prog graded against its own
             # --decaps-from intent went pass/exit 0 -> exit 4).
             _census['pin_limit_withheld'] = (
-                f"the reference board {decaps_from}: {_pin_why}")
+                f"the reference board {_ref_name}: {_pin_why}")
         else:
             _decaps['max_pin_distance_mm'] = _pin_limit
             _census['emitted_max_pin_distance_mm'] = _pin_limit

@@ -1109,11 +1109,18 @@ def _graded_input_conflicts(state, refs, waivers=(), keepouts=()):
                 if non_aperture_pads(fp):
                     at.setdefault((round(fp.x, 3), round(fp.y, 3)),
                                   []).append(r)
+            # #1204: the grader's physical test, on this same board and
+            # grade -- a shared origin stacks only when something physical
+            # is shared, and a waived pair never does.
+            from .placement_state import body_contact_pairs, coincident_touch
+            _touch = coincident_touch(pcb, body_contact_pairs(g),
+                                      tuple(waivers or ()))
             stacks = [{'refs': sorted(rs),
                        'sides': {r: footprint_sides(pcb.footprints[r])
                                  for r in rs},
                        'markers': {r: is_assembly_marker(pcb, r)
-                                   for r in rs}}
+                                   for r in rs},
+                       'touch': _touch}
                       for _pt, rs in sorted(at.items())
                       if len(rs) > 1 and refs & set(rs)]
     except Exception as exc:                                 # noqa: BLE001
@@ -1152,7 +1159,8 @@ def _stack_conflict(stacks, ref, absent):
         if ref not in st['refs']:
             continue
         present = [r for r in st['refs'] if r == ref or r not in absent]
-        sus = coincident_stack_suspects(present, st['sides'], st['markers'])
+        sus = coincident_stack_suspects(present, st['sides'], st['markers'],
+                                        touch=st.get('touch'))
         if ref not in sus:
             continue
         # A MARKER (fiducial, mounting hole, testpoint) is co-located by
@@ -1163,7 +1171,7 @@ def _stack_conflict(stacks, ref, absent):
         # failed COINCIDENT ORIGINS).
         if st['markers'][ref] and coincident_stack_suspects(
                 [r for r in present if r != ref], st['sides'],
-                st['markers']):
+                st['markers'], touch=st.get('touch')):
             continue
         other = next(r for r in sus if r != ref and not st['markers'][r])
         return ('coincident', other)
@@ -4717,10 +4725,18 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple],
 def _fixed_pose_prep(state, pcb_data, f: Dict, placed: Set[str],
                      held: Set[str], seated: Dict[str, Dict],
                      refused: Dict[str, Dict], lock: Set[str],
-                     notes: List[str]):
+                     notes: List[str], seatable: Set[str] = frozenset()):
     """The per-entry half of stage 0: resolve one `fixed_poses[]` entry's
     pose, and settle the entries no geometry check is needed for. Returns
     `(ref, pose, rec)` for an entry to check, else None.
+
+    `seatable` (#1152): refs in `placed` whose only lock is the state's
+    pad-less policy (`quench.LOCK_PADLESS`) -- a static obstacle by default,
+    not a pose anybody fixed -- so a declared pose for one is CHECKED like any
+    free part's, by its courtyard, instead of refused as already placed. Every
+    other placed ref is refused with the cause the state recorded for its lock
+    (`QuenchState.lock_reasons`), which used to read "locked in the board
+    file" whatever the cause was.
 
     `rot` / `side` absent or `"unknown"` keep the part's CURRENT rotation /
     side, and the record says so (`rot_kept`, `side_kept`) -- the author
@@ -4770,10 +4786,12 @@ def _fixed_pose_prep(state, pcb_data, f: Dict, placed: Set[str],
                      f"; flip the part on the board first")
         return None
     if ref in placed:
-        # Authoritative already: locked in the FILE, or outside an explicit
-        # `seed_refs` scope. Not this stage's to move -- the file lock is the
-        # user's. At the pose it is simply recorded; anywhere else is a
-        # contradiction to name, never to resolve by force.
+        # Authoritative already: locked in the FILE (or by another cause the
+        # state names), or outside an explicit `seed_refs` scope. Not this
+        # stage's to move -- the file lock is the user's. At the pose it is
+        # simply recorded; anywhere else is a contradiction to name, never to
+        # resolve by force -- except a `seatable` ref, whose declared pose
+        # elsewhere is checked below like a free part's.
         at = (math.hypot(part.x - x, part.y - y) <= FIXED_POSE_EPS_MM
               and _ang_close(part.rot, rot))
         if at:
@@ -4781,11 +4799,16 @@ def _fixed_pose_prep(state, pcb_data, f: Dict, placed: Set[str],
             if not part.locked:
                 lock.add(ref)
             return None
+    if ref in placed and ref not in seatable:
+        from .quench import LOCK_PADLESS
+        why = getattr(state, 'lock_reasons', {}).get(ref)
+        if not part.locked or why == LOCK_PADLESS:
+            # Free, or pad-less (its policy lock alone would have made it
+            # `seatable`): placed only because the seed scope leaves it out.
+            why = 'outside the seed scope'
         refused[ref] = dict(rec, reason=(
             f"already placed at ({part.x:g}, {part.y:g}, {part.rot:g}deg) -- "
-            + ("locked in the board file" if part.locked
-               else "outside the seed scope")
-            + ", and not this stage's to move"))
+            + (why or 'locked') + ", and not this stage's to move"))
         notes.append(f"fixed pose {ref}: REFUSED -- {refused[ref]['reason']}"
                      f" (declared ({x:g}, {y:g}, {rot:g}deg))")
         return None
@@ -4797,7 +4820,8 @@ def _seat_fixed_poses(state, pcb_data, entries, placed: Set[str],
                       unplaced: Set[str], held: Set[str],
                       seated: Dict[str, Dict], refused: Dict[str, Dict],
                       lock: Set[str], notes: List[str],
-                      waived=frozenset()) -> None:
+                      waived=frozenset(),
+                      seatable: Set[str] = frozenset()) -> None:
     """Stage 0 (#1054): every `fixed_poses[]` entry, judged as ONE batch.
 
     ORDER-INDEPENDENT. Each declared pose is checked against the parts
@@ -4816,12 +4840,16 @@ def _seat_fixed_poses(state, pcb_data, entries, placed: Set[str],
     `waived` (#1060): the declared courtyard waivers as unordered pairs, so
     a waiver on EITHER entry of a pair covers both checks -- checked one way
     only, FID8 declared beside U30 would still refuse both halves.
+
+    `seatable` (#1152): see `_fixed_pose_prep`. Such a ref stays in `placed`
+    -- an obstacle at its input pose -- whatever stage 0 decides; seated, it
+    moves there and is locked like any seated pose.
     """
     declared: Dict[str, Tuple] = {}
     recs: Dict[str, Dict] = {}
     for f in sorted(entries, key=lambda f: str(f['ref'])):
         got = _fixed_pose_prep(state, pcb_data, f, placed, held, seated,
-                               refused, lock, notes)
+                               refused, lock, notes, seatable=seatable)
         if got is not None:
             ref, pose, rec = got
             declared[ref] = pose
@@ -5294,13 +5322,22 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     fixed_refused: Dict[str, Dict] = {}
     fixed_lock: Set[str] = set()
     _waiver_pairs = getattr(intent, 'courtyard_waiver_pairs', None)
+    # #1152: a pad-less part is `placed` by the state's policy lock alone
+    # (a static obstacle), not because anyone fixed its pose -- so inside the
+    # seed scope its declared pose is checked and seated by its courtyard.
+    from .quench import LOCK_PADLESS
+    _reasons = getattr(state, 'lock_reasons', {}) or {}
+    _seatable = frozenset(
+        r for r in placed if _reasons.get(r) == LOCK_PADLESS
+        and (seed_refs is None or r in seed_refs))
     _seat_fixed_poses(state, pcb_data,
                       getattr(intent, 'fixed_poses', ()) or (), placed,
                       unplaced, held, fixed_seated, fixed_refused,
                       fixed_lock, notes,
                       waived=frozenset(frozenset(p) for p in
                                        (_waiver_pairs() if _waiver_pairs
-                                        else ())))
+                                        else ())),
+                      seatable=_seatable)
 
     # ---- 1. edge connectors: spec geometry, no legality gate ---------------
     # edge_claims(), not the raw key: a connector_affinity entry declares a
@@ -7611,6 +7648,23 @@ DISPROPORTION_RATIO = 8.0
 DISPROPORTION_FLOOR_MM = 1.0
 
 
+def _repair_containment_pairs(body, exempt) -> List:
+    """The repair's CONTAINMENT census (run-22): `grade_body_overlap`'s
+    `containment_pairs` with neither member in `exempt`, the engine's
+    body-exempt set (markers and containers).
+
+    ONE selection for both halves of the repair (#1153): the charge reads it
+    on the input board, and the honesty re-grade -- of every ref charged for
+    containment, moved or not -- on the board at the repair's final poses.
+    The zero-move re-grade used to ask the SEARCH's own
+    `_body_contained_at` instead -- fab rects only, so a body drawn on silk
+    is unjudged there -- and pristine esp_prog's R1, charged for sitting
+    inside U2's silk-drawn body (frac 0.892), read `repaired` with 0 moves
+    while the pair stayed on the board."""
+    return [q for q in body.get('containment_pairs', ())
+            if q.a not in exempt and q.b not in exempt]
+
+
 def repair_placement(pcb_data, pcb_file: str, intent, *,
                      lock_globs: Optional[Sequence[str]] = None,
                      group_sources: Sequence[str] = (),
@@ -7932,8 +7986,11 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
         _cont_exempt = _recon._body_exempt_refs(state)
     except Exception:
         _cont_exempt = set(getattr(state, 'container_refs', ()) or ())
-    _cont = [q for q in body.get('containment_pairs', ())
-             if q.a not in _cont_exempt and q.b not in _cont_exempt]
+    _cont = _repair_containment_pairs(body, _cont_exempt)
+    # #1153: {charged ref: {pair}}, so the zero-move re-grade asks about the
+    # pairs a ref was CHARGED for -- not every pair it is in (the host of a
+    # pair charged to its guest is the guest's finding, not its own).
+    cont_charged: Dict[str, Set[frozenset]] = {}
     if _cont:
         print(f"  Containment census: {len(_cont)} part(s) inside another "
               f"part's body, all listed")
@@ -7953,6 +8010,7 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
         # would outrank it. Containment is a yes/no fact about whether a part
         # can be built, so it charges a flat strong value rather than a size.
         _charge(ordered[0], CONTAINMENT_CHARGE_MM)
+        cont_charged.setdefault(ordered[0], set()).add(frozenset((q.a, q.b)))
         for partner in ordered[1:]:
             partner_of.setdefault(ordered[0], []).append(partner)
 
@@ -8040,6 +8098,13 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
     # cosmetic and common on legitimate boards (tigard's own corner mounting
     # holes overhang by courtyard; the human original grades oob 7). The
     # margined courtyard test flagged and "repaired" exactly those.
+    #
+    # EACH pad and EACH hole graded alone (#1193), never the part's union box:
+    # on a notched outline that box's corner can sit in the notch while no
+    # pad does. StickHub's locked J5 was charged 0.65 mm that way and the run
+    # exited 4, with `grade_pad_legality`'s `oob_pad_copper_refs` -- this
+    # same per-pad measure, `pad_copper_outside_amount` -- empty. The holes
+    # keep a pad-less part (a mounting hole) in the census.
     zero_gate = _leg.BoardOutlineGate(pcb_data.board_info, 0.0)
     part_pads = _leg.build_part_pads(pcb_data.footprints, clearance)
     #
@@ -8060,10 +8125,12 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
         if pp is None:
             continue
         fp = pcb_data.footprints[ref]
-        ext = pp.extent(fp.x, fp.y, fp.rotation or 0.0)
-        if ext is None:
-            continue
-        amt = zero_gate.rect_outside_amount(ext)
+        _pose = (fp.x, fp.y, fp.rotation or 0.0)
+        _own = _leg.part_outline_rings(zero_gate, fp.pads)
+        amt = max([_leg.pad_copper_outside_amount(pp, *_pose, zero_gate,
+                                                  skip_rings=_own)]
+                  + [zero_gate.rect_outside_amount(h, skip_rings=_own)
+                     for h in pp.hole_extent_rects(*_pose)])
         band = edge_band.get(ref)
         if band is not None:
             excess = amt - band
@@ -8216,6 +8283,11 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                 moves.append({'reference': pname, 'new_x': pp.x,
                               'new_y': pp.y, 'new_rotation': pp.rot})
                 repaired.append(pname)
+                # #1153: it moved FOR `ref`'s charge, so the re-grade asks
+                # it about the containment pairs of that charge it is in.
+                _for = {p for p in cont_charged.get(ref, ()) if pname in p}
+                if _for:
+                    cont_charged.setdefault(pname, set()).update(_for)
                 notes.append(
                     f"{ref}: no legal pose within any cap {tuple(caps)}mm -- "
                     f"seated its pair partner {pname} instead "
@@ -8286,6 +8358,33 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
     # board whose pad/body census did not move are UNRESOLVED, so the fix
     # loop can see it stalled instead of believing "repaired" forever.
     unresolved = []
+    # #1153: a ref charged for a containment pair -- moved or not -- is
+    # re-graded on THAT pair at the FINAL poses, by the census that charged
+    # it (`_repair_containment_pairs` on `grade_body_overlap`,
+    # check_assembly's grader) -- graded once, and only when asked.
+    _contained_after: Dict[str, Any] = {}
+
+    def _still_contained(ref):
+        charged = cont_charged.get(ref)
+        if not charged:
+            return None
+        if 'pairs' not in _contained_after:
+            _contained_after['pairs'] = _repair_containment_pairs(
+                _leg.grade_body_overlap(
+                    floorplan._PosedState(state).board(), clearance,
+                    pcb_file=pcb_file),
+                _cont_exempt)
+        return next((q for q in _contained_after['pairs']
+                     if frozenset((q.a, q.b)) in charged), None)
+
+    def _contained_why(ref, hit, moved):
+        other = hit.b if hit.a == ref else hit.a
+        return (f"still in a containment pair with {other} "
+                f"({hit.contained_frac:.0%} of the smaller body, by the "
+                f"census that charged it) at the final poses, "
+                + ("and it moved without clearing it" if moved
+                   else "and it did not move"))
+
     if zero_move and state.legality_ctx is not None:
         # Post-repair poses live on the STATE (pcb_data still holds the
         # file's input poses), so the re-grade uses the state's own pair
@@ -8293,6 +8392,7 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
         ctx = state.legality_ctx
         for ref in zero_move:
             still = False
+            why = None
             # CONTAINMENT is checked FIRST, and it has to be: PairShortfall
             # carries pad/hole/stack and no body term, so a part charged for
             # sitting inside another body, which then could not move, would
@@ -8300,16 +8400,15 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
             # metric mismatch this re-grade was written to stop, one channel
             # later.
             #
-            # It FAILS LOUD. `state` is always a QuenchState (it comes from
-            # pose_score.make_state), so the method always exists, and
-            # fab_rect already swallows its own parse failure and returns None
-            # = UNJUDGED. Anything still raising here is a real bug -- and
-            # swallowing it would convert that bug into exactly the false
-            # `repaired` this check exists to prevent. So an error means NOT
-            # repaired, said out loud, rather than a silent pass.
+            # It FAILS LOUD: an error means NOT repaired, said out loud,
+            # rather than a silent pass -- swallowing it would convert a real
+            # bug into exactly the false `repaired` this check exists to
+            # prevent.
             try:
-                if state._body_contained_at(ref, None, None, None):
+                hit = _still_contained(ref)
+                if hit is not None:
                     still = True
+                    why = _contained_why(ref, hit, moved=False)
             except Exception as exc:
                 still = True
                 notes.append(f'{ref}: could not verify containment after the '
@@ -8328,9 +8427,10 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                 unresolved.append(ref)
                 repaired.remove(ref)
                 notes.append(
-                    f"{ref}: UNRESOLVED -- pose is courtyard-legal but the "
-                    f"charged pad/body violation persists (metric mismatch; "
-                    f"was reported 'repaired' before run-7 A2)")
+                    f"{ref}: UNRESOLVED -- " + (why or (
+                        "pose is courtyard-legal but the charged pad/body "
+                        "violation persists (metric mismatch; was reported "
+                        "'repaired' before run-7 A2)")))
 
     # #1066: the INTENT half of the same honesty re-grade. The loop above
     # re-checks pads, holes and containment only, so a part charged for a
@@ -8466,6 +8566,32 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                    else " (it did not move)")
                 + " -- NOT reported repaired")
 
+    # #1153: and every MOVED ref charged for containment. The seat search
+    # judges containment in its own currency (fab rects), so a move can be
+    # legal there and leave the part inside a body the census reads -- a
+    # silk-drawn one -- which is the zero-move lie one channel over. Same
+    # measure, same pairs, same fail-loud rule. AFTER the intent half, so a
+    # ref it already found unresolved keeps that reason and gains this one
+    # (a cap charged for its decap distance AND for sitting in U2).
+    _moved_now = {m['reference'] for m in moves}
+    for ref in [r for r in dict.fromkeys(list(repaired) + list(unresolved))
+                if r in _moved_now and cont_charged.get(r)]:
+        try:
+            hit = _still_contained(ref)
+        except Exception as exc:
+            hit = None
+            why = (f"could not verify containment after the repair "
+                   f"({exc.__class__.__name__}: {exc})")
+        else:
+            why = (_contained_why(ref, hit, moved=True)
+                   if hit is not None else None)
+        if why is None:
+            continue
+        repaired[:] = [r for r in repaired if r != ref]
+        if ref not in unresolved:
+            unresolved.append(ref)
+        notes.append(f"{ref}: UNRESOLVED -- {why} -- NOT reported repaired")
+
     # #1182: the COURTYARD half of the honesty re-grade, on check_assembly's
     # channel at the FINAL poses and against the same baseline. A part
     # charged for a gating pair that still gates, or a part this repair
@@ -8497,7 +8623,16 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
             notes.append(f"{r}: UNRESOLVED -- {why} -- NOT reported "
                          f"repaired")
     return {'moves': moves, 'repaired': repaired, 'unrepairable':
-            unrepairable + failed, 'unresolved': unresolved,
+            unrepairable + failed,
+            # #1193: the two halves of `unrepairable`, apart. PINNED: a
+            # LOCKED violator -- `(locked yes)` in the file, a --lock glob,
+            # or a `fixed_poses[]` ref -- not this tool's to move, a
+            # board/intent contradiction its author settles, which
+            # place_seed reports without failing its gate. FAILED: a free
+            # violator no seat could place, which does fail it.
+            'unrepairable_pinned': list(unrepairable),
+            'unrepairable_failed': list(failed),
+            'unresolved': unresolved,
             'violators': violators, 'notes': notes,
             # #1066: {ref: [rule, ...]} -- the grade claims that kept each
             # unresolved ref out of `repaired`: charged ones still present,

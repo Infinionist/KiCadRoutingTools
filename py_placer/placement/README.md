@@ -544,7 +544,14 @@ part could never be re-seated whatever the search found. So:
 Requires an Edge.Cuts outline (exit 3 without one — the outline is spec-owned
 and will not be invented) and refuses a board that already looks placed
 (use `place_portfolio.py` to explore around an existing placement, or
-`--force` to discard it). Different `--seed` values give genuinely different
+`--force` to discard it). A KiCad lock is a placement decision, so a board
+whose UNLOCKED parts sit off the outline is a seeding target whatever its
+locked parts do: place and lock the fixed parts first, then seed (#1165).
+The gate and its scope are `PlacementState.seed_scope` — every unlocked
+part on an unplaced or off-outline board (`off_outline`, which measures the
+unlocked parts when some are locked), only the stacked suspects on a
+partially-unplaced one, nothing on a placed one — and `rank_rotations.py`
+and check_floorplan's seeder forecast read the same property. Different `--seed` values give genuinely different
 legal seeds; the same seed reproduces byte for byte. The two compose:
 `place_seed --seed N` → `place_portfolio` diversifies and ranks.
 
@@ -1544,6 +1551,37 @@ Source mix over 1349 corpus parts: 1267 courtyard, 27 fab, 6 silk, 49 pad bbox,
 source each side rests on. `body_overlap_pairs` reports a depth only for pairs
 that already overlap, so a board a hair from a collision said nothing at all.
 
+**A test point under another part's body (#1250).** The marker waiver
+excuses a test point's courtyard pair and its containment, because a test
+point has nothing above board level that could be in anyone's way. It never
+asked whether something now sits over the test point. Glasgow's TP6, moved
+39.7 mm into U19's TSSOP body, graded `buildable`. `grade_body_overlap`'s
+`testpoint_covered` measures every test point's pad copper
+(`bodyless_pad_shape`) against each other same-face drawn body
+(`pads_under_body_frac`, at `CONTAINMENT_FRAC`, the #1106 measurement).
+check_assembly gates a finding only when a member moved relative to
+`--baseline` (`testpoint_covered_gating`, the courtyard gate's currency). It
+also needs the body to be `.Fab`, since silk never gates, and the pair must not
+be in the intent's `overlap_waivers`. Over the 22 tracked boards, 2 of 40 test
+points read covered: orangecrab TP26/TP27 under J4, both the designer's own
+poses, so they stay buildable. Fiducials are not graded here, because human
+boards seat them under connectors on purpose. This is the grader's census only.
+The movers' marker exemption (`body_exempt_refs`, `blocking_waived`) still
+admits such a seat, and this gate then charges it.
+
+**A body's distance to the board edge (#1255).** `legality.body_edge_band`
+measures every pad-bearing part's body against the real outline at margin 0.
+The body is the drawn one, else the courtyard, else the pad box, with the rung
+named. Edge-class parts, markers and parts with an edge in the intent are
+listed apart. The band is the intent's `assembly.body_edge_mm`; without it,
+JLCPCB's 2.5 mm (`BODY_EDGE_DEFAULT_MM`, labelled `derived_default`, with its
+citation). check_assembly and render_placement report the census, and it gates
+only when the band is declared. All five human boards measured break 2.5 mm
+(splitflap 10 of 58 parts, esp_prog 7 of 15, glasgow 4 of 232, watchy 10 of 70,
+ulx3s 9 of 210), and JLC adds edge rails when the file has none. It is the
+grader's census only: the quench's soft `edge_halo` (2.0 mm) does not read a
+declared band.
+
 ## Mating face (`mating.py`, #1155)
 
 The toolchain could say which edge a connector's courtyard was NEAREST, and
@@ -1710,7 +1748,14 @@ re-seating 85/92 while leaving its zone targets unmoved):
   restored alone), and a cap pushed past the
   decap search radius (its `decap_distance` became `decap_ungraded`, which is
   not a fix). `unresolved` sets no exit code of its own; exit 4 stays
-  `unrepairable`'s and the final grade's. `place_reconstruct`'s legalize
+  `unrepairable_failed_refs`' (a free violator no seat could place) and the
+  final grade's. A locked violator (`(locked yes)`, `--lock`, a fixed pose)
+  is `unrepairable_pinned_refs`: reported, never a gate failure, the
+  pinned-part contract (#1193). The
+  off-board census grades each pad's copper and each hole ALONE
+  (`legality.pad_copper_outside_amount`, the `oob_pad_copper_refs`
+  measure), never the part's pad union, whose corner can sit in a notch no
+  pad enters. `place_reconstruct`'s legalize
   stage reports the same `unresolved` list.
   `--repair-decaps` (#1066 b, opt-in) adds the missing actor: each cap a
   `decap_distance` / `decap_pin_distance` error charges is seated toward its
