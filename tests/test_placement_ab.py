@@ -46,6 +46,9 @@ Usage:
     python3 -X utf8 tests/test_placement_ab.py --write-baseline
 """
 import argparse
+import copy
+import hashlib
+import inspect
 import json
 import os
 import shutil
@@ -1068,9 +1071,7 @@ def _emit_kwargs(param, value, board_path):
         return {param: value}
     if value == 'none':
         return {}
-    from kicad_parser import parse_kicad_pcb
-    from placement import floorplan
-    doc = floorplan.emit_intent(parse_kicad_pcb(board_path), board_path)
+    doc = _emit(board_path)
     return {'rigid_blocks': tuple(b['name'] for b in doc['blocks']
                                   if b.get('zone'))}
 
@@ -1138,12 +1139,10 @@ def _intent_for(board_path, corridors, workdir, zone_flags=None,
     is measured in tests/test_702_quench_intent_gate.py on hand-written boards
     where the answer is a theorem.
     """
-    from kicad_parser import parse_kicad_pcb
-    from placement import floorplan
     path = os.path.join(workdir, name)
     kw = {'derive_decaps': derive_decaps}
     kw.update(emit_kw or {})
-    doc = floorplan.emit_intent(parse_kicad_pcb(board_path), board_path, **kw)
+    doc = _emit(board_path, **kw)
     if corridors:
         # Guarded: an unconditional assignment plants an empty `bus_corridors`
         # on a row that declares none, which makes
@@ -1157,7 +1156,7 @@ def _intent_for(board_path, corridors, workdir, zone_flags=None,
                 b.update(zone_flags)
     with open(path, 'w') as fh:
         json.dump(doc, fh, indent=2)
-    return floorplan.load_intent(path)
+    return _load_intent(path)
 
 
 def _body_overlap(pcb_data, board_path, clearance):
@@ -1285,21 +1284,31 @@ def _run_seed(board_path, out_path, intent, seed_kw,
     from placement import seeder
     from placement.writer import write_placed_output
 
-    pcb = parse_kicad_pcb(board_path)
-    t0 = time.time()
+    kw = _seed_kwargs(seed_kw, group_sources)
     with _module_flags(engine_flags):
-        res = seeder.seed_from_intent(
-            pcb, board_path, intent, random.Random('0'),
-            group_sources=group_sources, clearance=QUENCH_BASE['clearance'],
-            board_edge_clearance=QUENCH_BASE['board_edge_clearance'],
-            grid_step=QUENCH_BASE['grid_step'], **seed_kw)
-    write_placed_output(board_path, out_path, res['placements'])
+        key = _memo_key(lambda: _seed_key(
+            board_path, _registered(intent, 'intents'), kw))
+    t0 = time.time()
+    res = _arm_hit(key, out_path)
+    shared = res is not None
+    if not shared:
+        pcb = parse_kicad_pcb(board_path)
+        t0 = time.time()
+        with _module_flags(engine_flags):
+            res = seeder.seed_from_intent(pcb, board_path, intent,
+                                          random.Random('0'), **kw)
+        write_placed_output(board_path, out_path, res['placements'])
+        _arm_store(key, out_path, _seed_record(res))
     for ext in ('.kicad_pro', '.kicad_dru'):
         src = os.path.splitext(board_path)[0] + ext
         if os.path.exists(src):
             shutil.copy2(src, os.path.splitext(out_path)[0] + ext)
-    graded = _grade_row(out_path, grade_intent or intent, group_sources,
-                        ignore_nets, t0, len(res.get('unseated') or ()))
+    gi = grade_intent or intent
+    graded = _graded(
+        _memo_key(lambda: _grade_key(key, gi, group_sources, ignore_nets)),
+        t0, shared, lambda: _grade_row(out_path, gi, group_sources,
+                                       ignore_nets, t0,
+                                       len(res.get('unseated') or ())))
     # What the decap stages did, for a reader of the --json report. Not a
     # BASELINE_KEYS column, so it is never recorded or compared.
     graded['decap_stage'] = res.get('decap_stage')
@@ -1343,7 +1352,6 @@ def _pile_inputs(board_path, d, require_decaps=True):
     (`tests/1127_stack_ab_prereg.json`) ask nothing of the decap rule."""
     import subprocess
     from kicad_parser import parse_kicad_pcb
-    from placement import floorplan
     from placement.placement_state import assess_placement
     stress = os.path.join(ROOT, 'tests', 'stress')
     if stress not in sys.path:
@@ -1381,7 +1389,7 @@ def _pile_inputs(board_path, d, require_decaps=True):
             f"{(doc.get('context') or {}).get('decap_census', {}).get('derivation')})")
     seed_refs = (set(st.stacked_suspect_refs)
                  if st.partially_unplaced and not st.unplaced else None)
-    return pile, floorplan.load_intent(ipath), doc, seed_refs
+    return pile, _load_intent(ipath), doc, seed_refs
 
 
 def _pile_edge_inputs(board_path, d):
@@ -1418,8 +1426,7 @@ def _pile_edge_inputs(board_path, d):
     if not assess_placement(parse_kicad_pcb(pile), pile).unplaced:
         raise AssertionError(f"{pile}: piled, but assess_placement does not "
                              f"read it as unplaced")
-    placed = floorplan.emit_intent(parse_kicad_pcb(board_path), board_path,
-                                   group_sources=GROUP_SOURCES)
+    placed = _emit(board_path, group_sources=GROUP_SOURCES)
     claims = [c for c in placed.get('edge_connectors') or ()
               if c.get('edge') and c.get('class') != 'connector_affinity']
     if len(claims) < 2:
@@ -1431,7 +1438,7 @@ def _pile_edge_inputs(board_path, d):
     ipath = os.path.join(d, 'pile_edge_intent.json')
     with open(ipath, 'w', encoding='utf-8') as fh:
         json.dump(doc, fh)
-    return pile, floorplan.load_intent(ipath), None
+    return pile, _load_intent(ipath), None
 
 
 def _pile_forecast(doc):
@@ -1503,12 +1510,17 @@ def _seed_once(board_path, out_path, intent, group_sources=GROUP_SOURCES):
     from placement.writer import write_placed_output
     if os.path.exists(out_path):
         return out_path
-    res = seeder.seed_from_intent(
-        parse_kicad_pcb(board_path), board_path, intent, random.Random('0'),
-        group_sources=group_sources, clearance=QUENCH_BASE['clearance'],
-        board_edge_clearance=QUENCH_BASE['board_edge_clearance'],
-        grid_step=QUENCH_BASE['grid_step'])
-    write_placed_output(board_path, out_path, res['placements'])
+    # The same seed as a `decaps-auto-*` ON arm's, and shared with it under
+    # the memo: the kwargs `_run_seed` passes for an empty `seed_kw`.
+    kw = _seed_kwargs({}, group_sources)
+    key = _memo_key(lambda: _seed_key(
+        board_path, _registered(intent, 'intents'), kw))
+    if _arm_hit(key, out_path) is None:
+        res = seeder.seed_from_intent(
+            parse_kicad_pcb(board_path), board_path, intent,
+            random.Random('0'), **kw)
+        write_placed_output(board_path, out_path, res['placements'])
+        _arm_store(key, out_path, _seed_record(res))
     for ext in ('.kicad_pro', '.kicad_dru'):
         src = os.path.splitext(board_path)[0] + ext
         if os.path.exists(src):
@@ -1555,27 +1567,58 @@ def _run(board_path, out_path, intent, quench_kw, group_sources=GROUP_SOURCES,
     from kicad_parser import parse_kicad_pcb
     from placement.quench import quench
     from placement.writer import write_placed_output
-    from placement import floorplan
 
-    pcb = parse_kicad_pcb(board_path)
-    metrics = {}
-    t0 = time.time()
+    # The board's nets key the arm (`_quench_key`), so the board is parsed
+    # once per process for that and again only to quench it.
+    pcb = None
+    if _MEMO is None or board_path not in _MEMO['nets']:
+        pcb = parse_kicad_pcb(board_path)
+        if _MEMO is not None:
+            _MEMO['nets'][board_path] = {nid: net.name
+                                         for nid, net in pcb.nets.items()}
     with _module_flags(engine_flags):
-        placements = quench(pcb, pcb_file=board_path, metrics_out=metrics,
-                            **quench_kw)
-    write_placed_output(board_path, out_path, placements)
+        key = _memo_key(lambda: _quench_key(
+            board_path, _gate_registered(quench_kw),
+            _MEMO['nets'][board_path]))
+    t0 = time.time()
+    metrics = _arm_hit(key, out_path)
+    shared = metrics is not None
+    if not shared:
+        if pcb is None:
+            pcb = parse_kicad_pcb(board_path)
+        metrics = {}
+        t0 = time.time()
+        with _module_flags(engine_flags):
+            placements = quench(pcb, pcb_file=board_path, metrics_out=metrics,
+                                **quench_kw)
+        write_placed_output(board_path, out_path, placements)
+        _arm_store(key, out_path, {k: metrics.get(k)
+                                   for k in ('after', 'intent_gate')})
     for ext in ('.kicad_pro', '.kicad_dru'):
         src = os.path.splitext(board_path)[0] + ext
         if os.path.exists(src):
             shutil.copy2(src, os.path.splitext(out_path)[0] + ext)
+    gi = grade_intent or intent
+    return _graded(
+        _memo_key(lambda: _grade_key(key, gi, group_sources, ())), t0,
+        shared, lambda: _grade_quench(out_path, gi, group_sources, quench_kw,
+                                      metrics, t0))
 
+
+def _grade_quench(out_path, grade_intent, group_sources, quench_kw, metrics,
+                  t0):
+    """`_run`'s independent grade of the board a quench WROTE, from the
+    quench's own `metrics` (crossings, hpwl, the gate's refusals) and a fresh
+    parse of the file."""
+    from kicad_parser import parse_kicad_pcb
+    from placement import floorplan
     # The independent half: parse what was WRITTEN and grade it. The corridors
     # here come from the final poses, not from the frozen model the optimizer
     # minimised against.
     graded = parse_kicad_pcb(out_path)
     # #1051: arms gated by DIFFERENT intents are graded against ONE, as the
     # seed engine's `grade_intent` is (#959).
-    result = floorplan.grade(grade_intent or intent, graded, out_path,
+    result = floorplan.grade(grade_intent, graded, out_path,
                              with_health=True, group_sources=group_sources)
     summary = floorplan.summary(result)
     after = metrics.get('after') or {}
@@ -1648,8 +1691,7 @@ def _run(board_path, out_path, intent, quench_kw, group_sources=GROUP_SOURCES,
         'intent_gate_rejected': None if gate is None else gate['rejected'],
         # Run 26's facing number, carried on every row as evidence so the
         # quench rows say what they do to it too.
-        'edge_facing_pads': _edge_facing(graded, out_path,
-                                         grade_intent or intent),
+        'edge_facing_pads': _edge_facing(graded, out_path, grade_intent),
         # The seed engine's column (`_run_seed`); a quench moves nothing
         # it has not seated, so the key is present and empty here.
         'unseated': None,
@@ -1763,6 +1805,393 @@ class _seeder_flags:
         return False
 
 
+# --- the per-process arm memo ----------------------------------------------
+#
+# Many rows compute an ARM another row has already computed: the same engine
+# on the same board, intent, kwargs and flags. On each board the three decap
+# families' OFF arms are one seed graded one way, and that seed is also
+# `decaps-auto-*`'s ON arm and the `repair-decaps-*` input; the `body-seed`,
+# `facing-seed`, `diag-seed`, `decaps-auto` and `arrays-auto` OFF arms are one
+# seed of the board's own intent; `intent-ulx3s`'s ON quench is
+# `tethers-ulx3s`'s and `rigid-blocks-ulx3s`'s OFF quench. Under `main()` each
+# arm runs ONCE per process: a later row gets a copy of the board it wrote and
+# of its engine results, and is graded again only when its own grading intent
+# or ignore list differs. Only rows run by one process share.
+#
+# KEYS ARE CONTENT, never row names: the board, the intent FILE's bytes, every
+# engine kwarg with the signature's defaults applied, and the value of every
+# module flag a row of the table sets. The engines are deterministic (a seed
+# draws from `random.Random('0')`), which the baseline already relies on: it
+# is recorded by one process over the whole table and compared part by part.
+# So a key can only be too fine: two calls share only when every input the
+# engine reads is equal, and an input the key cannot represent
+# (`_Unkeyable`) makes that call compute. Two
+# normalisations reach further, each licensed by a check of the ENGINE'S OWN
+# SOURCE in the same process, so an engine change that reads the parameter
+# any other way turns the normalisation off rather than wrong:
+#   * a seed kwarg that defaults to None and is read ONLY as
+#     `CONST if p is None else bool(p)` keys on what it resolves to
+#     (`_none_resolved`) -- `diag-seed-*`'s explicit OFF is the default seed;
+#   * the quench's `ignore_nets` keys on the net ids it resolves to, since the
+#     quench reads the list only to build that set
+#     (`_ignore_nets_resolved_only`) -- `body-ulx3s`'s `VCC*` matches no net.
+#
+# Only `main()` turns it on. These helpers are imported by measurement
+# scripts that patch the engine between calls, and a memo there would hand
+# them the answer from before the patch.
+_MEMO = None
+
+
+def _new_memo(workdir):
+    """An empty memo whose stored boards live under `workdir`."""
+    d = os.path.join(workdir, '_memo')
+    os.makedirs(d, exist_ok=True)
+    return {'dir': d, 'intents': {}, 'gates': {}, 'emits': {}, 'arms': {},
+            'grades': {}, 'nets': {}}
+
+
+#: `_none_resolved` / `_ignore_nets_resolved_only` verdicts, per function.
+_SOURCE_CHECKS = {}
+
+
+class _Unkeyable(Exception):
+    """An input the memo cannot prove equal to another: the call computes."""
+
+
+def _freeze(v):
+    """A hashable image of plain data that keeps every distinction the engine
+    could see, the type included (3 vs 3.0, a list vs a tuple)."""
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return (type(v).__name__, v)
+    if isinstance(v, (list, tuple)):
+        return (type(v).__name__, tuple(_freeze(x) for x in v))
+    if isinstance(v, (set, frozenset)):
+        return (type(v).__name__,
+                tuple(sorted((_freeze(x) for x in v), key=repr)))
+    if isinstance(v, dict):
+        return ('dict', tuple(sorted(((_freeze(k), _freeze(x))
+                                      for k, x in v.items()), key=repr)))
+    raise _Unkeyable(type(v).__name__)
+
+
+def _memo_key(make):
+    """`make()`, or None when the memo is off or an input is unkeyable."""
+    if _MEMO is None:
+        return None
+    try:
+        return make()
+    except _Unkeyable:
+        return None
+
+
+def _registered(obj, table):
+    """The key `obj` was registered under by `_load_intent` / `_resolve_gate`.
+    Identity is checked, not just `id()`: an id is reused once its object is
+    gone, and the table holds the object to keep it alive."""
+    if obj is None:
+        return ('none',)
+    hit = _MEMO[table].get(id(obj))
+    if hit is None or hit[0] is not obj:
+        raise _Unkeyable(f'unregistered {table}')
+    return hit[1]
+
+
+def _load_intent(path):
+    """`floorplan.load_intent`, and under the memo the FILE's bytes as the
+    intent's key: two rows that emit one document load two equal intents,
+    and only the bytes say so. (Their `source_path`s differ; it reaches
+    messages only.)"""
+    from placement import floorplan
+    intent = floorplan.load_intent(path)
+    if _MEMO is not None:
+        with open(path, 'rb') as fh:
+            _MEMO['intents'][id(intent)] = (
+                intent, hashlib.sha256(fh.read()).hexdigest())
+    return intent
+
+
+def _resolve_gate(intent, pcb, board):
+    """`floorplan.resolve_intent_gate` over GROUP_SOURCES -- a function of the
+    intent and the board, which is what the memo registers it under."""
+    from placement import floorplan
+    gate, probs = floorplan.resolve_intent_gate(intent, pcb, GROUP_SOURCES)
+    if _MEMO is not None and gate is not None:
+        try:
+            _MEMO['gates'][id(gate)] = (gate, (
+                'gate', board, _registered(intent, 'intents'), GROUP_SOURCES))
+        except _Unkeyable:
+            pass
+    return gate, probs
+
+
+def _emit(board_path, **kw):
+    """`floorplan.emit_intent` on a fresh parse of `board_path`; under the
+    memo once per board and kwarg set (the signature's defaults applied, so
+    an explicit default is the same call). Returns a copy: callers edit it."""
+    from kicad_parser import parse_kicad_pcb
+    from placement import floorplan
+    key = None
+    if _MEMO is not None:
+        try:
+            key = ('emit', _freeze(_bound(floorplan.emit_intent,
+                                          (None, board_path), kw,
+                                          drop=('pcb_data',))))
+        except _Unkeyable:
+            key = None
+        if key in _MEMO['emits']:
+            return copy.deepcopy(_MEMO['emits'][key])
+    doc = floorplan.emit_intent(parse_kicad_pcb(board_path), board_path, **kw)
+    if key is not None:
+        _MEMO['emits'][key] = copy.deepcopy(doc)
+    return doc
+
+
+def _bound(func, args, kw, drop):
+    """Every argument `func(*args, **kw)` runs with, defaults applied, minus
+    `drop`."""
+    ba = inspect.signature(func).bind(*args, **kw)
+    ba.apply_defaults()
+    return {k: v for k, v in ba.arguments.items() if k not in drop}
+
+
+def _flag_state():
+    """The current value of every module flag a row of the table sets --
+    read, not remembered, so a flag set to its own value keys as unset."""
+    import importlib
+    names = set()
+    for r in ROWS:
+        for arm in (r.get('seeder_flags') or {}).values():
+            names.update(('seeder', k) for k in arm)
+        for arm in (r.get('engine_flags') or {}).values():
+            names.update(tuple(k.rsplit('.', 1)) for k in arm)
+    out = []
+    for mod, flag in sorted(names):
+        m = importlib.import_module('placement.' + mod)
+        if not hasattr(m, flag):
+            raise _Unkeyable(f'placement.{mod}.{flag}')
+        out.append((mod, flag, _freeze(getattr(m, flag))))
+    return tuple(out)
+
+
+def _source_tree(func):
+    """`func`'s own FunctionDef, parsed from its source; None if unreadable."""
+    import ast
+    import textwrap
+    try:
+        node = ast.parse(textwrap.dedent(inspect.getsource(func))).body[0]
+    except (OSError, TypeError, SyntaxError, IndexError):
+        return None
+    return node if isinstance(node, (ast.FunctionDef,
+                                     ast.AsyncFunctionDef)) else None
+
+
+def _dynamic_scope(fn_node):
+    """Whether `fn_node` can reach its locals by name (`locals()`, `eval`,
+    ...), which no reading of its source can follow."""
+    import ast
+    return any(isinstance(n, ast.Name) and n.id in ('locals', 'vars', 'eval',
+                                                     'exec')
+               for n in ast.walk(fn_node))
+
+
+def _is_none_resolution(e, p):
+    """Whether AST node `e` is `CONST if p is None else bool(p)`."""
+    import ast
+    return (isinstance(e, ast.IfExp)
+            and isinstance(e.test, ast.Compare)
+            and isinstance(e.test.left, ast.Name) and e.test.left.id == p
+            and len(e.test.ops) == 1 and isinstance(e.test.ops[0], ast.Is)
+            and isinstance(e.test.comparators[0], ast.Constant)
+            and e.test.comparators[0].value is None
+            and isinstance(e.body, ast.Name)
+            and isinstance(e.orelse, ast.Call)
+            and isinstance(e.orelse.func, ast.Name)
+            and e.orelse.func.id == 'bool'
+            and len(e.orelse.args) == 1 and not e.orelse.keywords
+            and isinstance(e.orelse.args[0], ast.Name)
+            and e.orelse.args[0].id == p)
+
+
+def _none_resolved(func):
+    """{param: CONST} for each parameter of `func` that defaults to None and
+    that its body reads ONLY as `CONST if param is None else bool(param)`,
+    CONST a module global the body never assigns -- so None and CONST's
+    value are one input. Checked on the engine's source once per process."""
+    import ast
+    cache = _SOURCE_CHECKS
+    if ('none', func) in cache:
+        return cache[('none', func)]
+    out = {}
+    fn = _source_tree(func)
+    if fn is not None and not _dynamic_scope(fn):
+        names = [n for n in ast.walk(fn) if isinstance(n, ast.Name)]
+        stored = {n.id for n in names if not isinstance(n.ctx, ast.Load)}
+        module = inspect.getmodule(func)
+        params = inspect.signature(func).parameters
+        for p, prm in params.items():
+            if prm.default is not None:
+                continue
+            found = [e for e in ast.walk(fn) if _is_none_resolution(e, p)]
+            covered = {id(n) for e in found
+                       for n in (e.test.left, e.orelse.args[0])}
+            consts = {e.body.id for e in found}
+            uses = [n for n in names if n.id == p]
+            if not (found and len(consts) == 1
+                    and all(id(n) in covered for n in uses)):
+                continue
+            const = next(iter(consts))
+            if (hasattr(module, const) and const not in params
+                    and const not in stored and 'bool' not in stored):
+                out[p] = const
+    cache[('none', func)] = out
+    return out
+
+
+def _ignore_nets_resolved_only(func):
+    """Whether `func` reads its `ignore_nets` only as an `if ignore_nets:`
+    guard and as the iterable of `any(fnmatch.fnmatchcase(net.name, pat) for
+    pat in ignore_nets)` -- only to build the set of net ids whose NAME
+    matches, which is what `_quench_key` holds in its place."""
+    import ast
+    cache = _SOURCE_CHECKS
+    if ('ignore', func) in cache:
+        return cache[('ignore', func)]
+    ok = False
+    fn = _source_tree(func)
+    if fn is not None and not _dynamic_scope(fn):
+        parent = {}
+        for n in ast.walk(fn):
+            for c in ast.iter_child_nodes(n):
+                parent[c] = n
+        uses = [n for n in ast.walk(fn)
+                if isinstance(n, ast.Name) and n.id == 'ignore_nets']
+        resolved = 0
+        ok = bool(uses)
+        for n in uses:
+            up = parent.get(n)
+            if isinstance(up, ast.If) and up.test is n:
+                continue
+            gen = parent.get(up)
+            call = parent.get(gen)
+            if (isinstance(up, ast.comprehension) and up.iter is n
+                    and isinstance(gen, ast.GeneratorExp)
+                    and isinstance(gen.elt, ast.Call)
+                    and isinstance(gen.elt.func, ast.Attribute)
+                    and gen.elt.func.attr == 'fnmatchcase'
+                    and gen.elt.args
+                    and isinstance(gen.elt.args[0], ast.Attribute)
+                    and gen.elt.args[0].attr == 'name'
+                    and isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Name)
+                    and call.func.id == 'any'):
+                resolved += 1
+                continue
+            ok = False
+        ok = ok and resolved > 0
+    cache[('ignore', func)] = ok
+    return ok
+
+
+def _seed_kwargs(seed_kw, group_sources=GROUP_SOURCES):
+    """The kwargs every seed of this file runs `seed_from_intent` with."""
+    return dict(group_sources=group_sources,
+                clearance=QUENCH_BASE['clearance'],
+                board_edge_clearance=QUENCH_BASE['board_edge_clearance'],
+                grid_step=QUENCH_BASE['grid_step'], **(seed_kw or {}))
+
+
+def _seed_key(board_path, intent_key, kw):
+    """The key of `seed_from_intent(<parse of board_path>, board_path, <the
+    intent keyed `intent_key`>, random.Random('0'), **kw)` under the flags
+    in force now."""
+    from placement import seeder
+    args = _bound(seeder.seed_from_intent, (None, board_path, None, None), kw,
+                  drop=('pcb_data', 'intent', 'rng'))
+    for p, const in _none_resolved(seeder.seed_from_intent).items():
+        args[p] = (getattr(seeder, const) if args.get(p) is None
+                   else bool(args[p]))
+    return ('seed', intent_key, _freeze(args), _flag_state())
+
+
+def _gate_registered(kw):
+    """`kw` with its resolved intent gate replaced by the gate's key."""
+    if kw.get('intent_gate') is None:
+        return kw
+    return dict(kw, intent_gate=_registered(kw['intent_gate'], 'gates'))
+
+
+def _quench_key(board_path, kw, net_names=None):
+    """The key of `quench(<parse of board_path>, pcb_file=board_path, **kw)`
+    under the flags in force now, `kw`'s gate already a key. With the
+    board's `net_names` ({net id: name}) `ignore_nets` keys on the ids it
+    resolves to; without, on the patterns as written."""
+    import fnmatch
+    from placement import quench as qmod
+    args = _bound(qmod.quench, (None, board_path), kw,
+                  drop=('pcb_data', 'metrics_out'))
+    if net_names is not None and _ignore_nets_resolved_only(qmod.quench):
+        pats = args.get('ignore_nets') or ()
+        args['ignore_nets'] = sorted(
+            nid for nid, name in net_names.items()
+            if any(fnmatch.fnmatchcase(name, p) for p in pats))
+    return ('quench', _freeze(args), _flag_state())
+
+
+def _grade_key(arm_key, grade_intent, group_sources, ignore_nets):
+    """An arm's grade: its written board, and what it is graded against."""
+    if arm_key is None:
+        raise _Unkeyable('an unkeyed arm')
+    return ('grade', arm_key, _registered(grade_intent, 'intents'),
+            _freeze(tuple(group_sources)), _freeze(tuple(ignore_nets)))
+
+
+def _seed_record(res):
+    """What `_run_seed` and `_seed_once` read of a seed besides the board it
+    wrote -- all a later row sharing the arm needs."""
+    return {'unseated': res.get('unseated'),
+            'decap_stage': res.get('decap_stage')}
+
+
+def _arm_hit(key, out_path):
+    """A copy of the engine result stored under `key`, with the board that
+    arm wrote copied to `out_path`; None when there is none."""
+    if _MEMO is None or key is None or key not in _MEMO['arms']:
+        return None
+    board, res = _MEMO['arms'][key]
+    shutil.copyfile(board, out_path)
+    return copy.deepcopy(res)
+
+
+def _arm_store(key, out_path, res):
+    """Keep the board an arm wrote, and its result, under `key`."""
+    if _MEMO is None or key is None:
+        return
+    keep = os.path.join(_MEMO['dir'], f"arm{len(_MEMO['arms'])}.kicad_pcb")
+    shutil.copyfile(out_path, keep)
+    _MEMO['arms'][key] = (keep, copy.deepcopy(res))
+
+
+def _graded(key, t0, shared, compute):
+    """`compute()` -- an arm's grade -- once per key under the memo. A stored
+    grade comes back as a copy carrying this call's `seconds`; `memo` says
+    what was shared ('arm', 'arm+grade'), for the row's printout only."""
+    if _MEMO is not None and key is not None and key in _MEMO['grades']:
+        out = copy.deepcopy(_MEMO['grades'][key])
+        out['seconds'] = round(time.time() - t0, 1)
+        out['memo'] = 'arm+grade'
+        return out
+    out = compute()
+    if _MEMO is not None and key is not None:
+        _MEMO['grades'][key] = copy.deepcopy(out)
+    out['memo'] = 'arm' if shared else None
+    return out
+
+
+def _secs(arm):
+    """`12.3s`, or `0.0s shared` for an arm another row computed."""
+    return f"{arm['seconds']}s" + (' shared' if arm.get('memo') else '')
+
+
 def run_row(row, workdir):
     board = os.path.join(BOARDS, row['board'])
     if not os.path.exists(board):
@@ -1821,7 +2250,7 @@ def run_row(row, workdir):
         elif expected:
             tag = f"{mark.upper()} != expected {expected.upper()}"
         print(f"  {row['name']:<24} {tag:<32} "
-              f"({off['seconds']}s / {on['seconds']}s)  [repair engine]")
+              f"({_secs(off)} / {_secs(on)})  [repair engine]")
         for k in ('crossings', 'hpwl', 'body_blocking', row['signal']):
             print(f"      {k:<32} {off.get(k)!s:>12} -> {on.get(k)!s:>12}")
         for n in notes:
@@ -1885,7 +2314,7 @@ def run_row(row, workdir):
         elif expected:
             tag = f"{mark.upper()} != expected {expected.upper()}"
         print(f"  {row['name']:<24} {tag:<32} "
-              f"({off['seconds']}s / {on['seconds']}s)  [seed engine]")
+              f"({_secs(off)} / {_secs(on)})  [seed engine]")
         for k in ('crossings', 'hpwl', 'inversions', 'unseated', row['signal']):
             print(f"      {k:<32} {off.get(k)!s:>12} -> {on.get(k)!s:>12}")
         for n in notes:
@@ -1906,23 +2335,19 @@ def run_row(row, workdir):
         # the one difference is the declared feature -- not "gated vs the
         # engine that shipped", which would charge the zones to the feature.
         from kicad_parser import parse_kicad_pcb
-        from placement import floorplan
         _pcb = parse_kicad_pcb(board)
         i_off, i_on = _mk(gi['off'], 'off'), _mk(gi['on'], 'on')
         i_grade = _mk(gi['grade'], 'grade')
-        kw_off['intent_gate'], _p = floorplan.resolve_intent_gate(
-            i_off, _pcb, GROUP_SOURCES)
-        kw_on['intent_gate'], _p = floorplan.resolve_intent_gate(
-            i_on, _pcb, GROUP_SOURCES)
+        kw_off['intent_gate'], _p = _resolve_gate(i_off, _pcb, board)
+        kw_on['intent_gate'], _p = _resolve_gate(i_on, _pcb, board)
     # #702: the row declares the intent it wants gated with a sentinel, so the
     # table stays plain data and `_intent_for` stays the only place an intent
     # is built. The OFF arm must NOT get one, or "off" would mean "resolved
     # and then ignored" rather than "the engine that shipped".
     if kw_on.get('intent_gate') is ROW_INTENT:
         from kicad_parser import parse_kicad_pcb
-        from placement import floorplan
-        kw_on['intent_gate'], _probs = floorplan.resolve_intent_gate(
-            intent, parse_kicad_pcb(board), GROUP_SOURCES)
+        kw_on['intent_gate'], _probs = _resolve_gate(
+            intent, parse_kicad_pcb(board), board)
     # The ON run needs the corridors the flag prices; the OFF run must NOT get
     # them, or "off" would mean "built and multiplied by zero" rather than
     # "the objective that shipped".
@@ -1948,8 +2373,7 @@ def run_row(row, workdir):
         tag = f"{mark.upper()} (as measured)"
     elif expected:
         tag = f"{mark.upper()} != expected {expected.upper()}"
-    print(f"  {row['name']:<24} {tag:<32} "
-          f"({off['seconds']}s / {on['seconds']}s)")
+    print(f"  {row['name']:<24} {tag:<32} ({_secs(off)} / {_secs(on)})")
     for k in ('crossings', 'hpwl', row['signal']):
         print(f"      {k:<32} {off.get(k)!s:>12} -> {on.get(k)!s:>12}")
     # Printed apart from the real deltas: OFF is deliberately given no
@@ -2537,6 +2961,53 @@ def _self_test():
         pass
     assert _lg.STACK_EXACT_CONFIRM is _was, 'a partial enter leaked a flag'
 
+    # --- the arm memo and --part ---
+    # 34. `_freeze` keeps every distinction the engine could see and refuses
+    #     what it cannot represent -- that call then computes.
+    assert _freeze({'a': 1, 'b': [1.0]}) == _freeze({'b': [1.0], 'a': 1})
+    for x, y in ((3, 3.0), ([1], (1,)), (True, 1), (None, 'None'),
+                 ({'a': 1}, {'a': 2})):
+        assert _freeze(x) != _freeze(y), (x, y)
+    try:
+        _freeze({'a': object()})
+    except _Unkeyable:
+        pass
+    else:
+        raise AssertionError('_freeze must refuse an arbitrary object')
+
+    # 35. a source check licenses its normalisation for the exact reading it
+    #     names, and refuses the same parameter read once more anywhere.
+    def resolves(a, flag=None, other=None):
+        on = MIN_TRIAL_BOARDS if flag is None else bool(flag)
+        return on, other
+
+    def also_reads(a, flag=None):
+        on = MIN_TRIAL_BOARDS if flag is None else bool(flag)
+        return on, flag
+
+    assert _none_resolved(resolves) == {'flag': 'MIN_TRIAL_BOARDS'}, \
+        _none_resolved(resolves)
+    assert _none_resolved(also_reads) == {}, _none_resolved(also_reads)
+
+    def resolves_ignore(nets, ignore_nets=None):
+        import fnmatch
+        ids = set()
+        if ignore_nets:
+            for nid, net in nets.items():
+                if any(fnmatch.fnmatchcase(net.name, p) for p in ignore_nets):
+                    ids.add(nid)
+        return ids
+
+    def logs_ignore(nets, ignore_nets=None):
+        import fnmatch
+        if ignore_nets:
+            print(ignore_nets)
+        return {nid for nid, net in nets.items()
+                if any(fnmatch.fnmatchcase(net.name, p) for p in ignore_nets)}
+
+    assert _ignore_nets_resolved_only(resolves_ignore)
+    assert not _ignore_nets_resolved_only(logs_ignore)
+
 
 def _self_test_live():
     """`--self-test` only: EMIT every per-arm intent on its real board and
@@ -2578,6 +3049,7 @@ def _part(text):
 
 
 def main(argv=None):
+    global _MEMO
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--row', action='append',
@@ -2666,11 +3138,16 @@ def main(argv=None):
     print(f"A/B in {workdir}\n")
 
     marks, records = {}, {}
-    for r in rows:
-        mark, _notes, off, on = run_row(r, workdir)
-        marks[r['name']] = mark
-        if off is not None and on is not None:
-            records[r['name']] = record_for(r, mark, off, on)
+    _MEMO = _new_memo(workdir)
+    try:
+        for r in rows:
+            mark, _notes, off, on = run_row(r, workdir)
+            marks[r['name']] = mark
+            if off is not None and on is not None:
+                records[r['name']] = record_for(r, mark, off, on)
+    finally:
+        shutil.rmtree(_MEMO['dir'], ignore_errors=True)
+        _MEMO = None
 
     print()
     tally = {m: [n for n, v in marks.items() if v == m]
