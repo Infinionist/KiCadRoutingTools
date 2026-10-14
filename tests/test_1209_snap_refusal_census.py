@@ -63,8 +63,15 @@ def _refusal(r):
 
 
 def test_a_refused_ranked_pose_is_not_offered_back():
-    """The issue's shape, forced: the ranker calls the requested pose legal
-    (dist 0), the re-grade refuses it, and nothing else is in reach."""
+    """The issue's shape, forced: the ranker calls a pose beside the request
+    legal, the re-grade refuses it, and nothing else is in reach.
+
+    The pose is 0.01 mm off the request rather than the request itself,
+    because since #1256 the request is dropped before any re-grade
+    (`test_1256_snap_ranker_input_baseline` pins that); this keeps the path
+    #1209 was about -- re-graded, refused, not named -- exercised. The
+    request is read off the ranker's STATE, where the snap puts the part
+    (the board it is handed is the input since #1256)."""
     import pose_score
     from kicad_parser import parse_kicad_pcb
     from placement import pose_ops
@@ -72,10 +79,10 @@ def test_a_refused_ranked_pose_is_not_offered_back():
     real = pose_score.rank_poses
 
     def ranker_that_likes_the_request(pcb, board_path, ref, **kw):
-        fp = pcb.footprints[ref]
-        return [{'x': fp.x, 'y': fp.y, 'rot': (kw.get('rotations')
-                                                or (fp.rotation,))[0],
-                 'dist_mm': 0.0, 'legal': True, 'cost': 0.0}]
+        part = kw['state'].parts[ref]
+        return [{'x': round(part.x + 0.01, 4), 'y': part.y,
+                 'rot': (kw.get('rotations') or (part.rot,))[0],
+                 'dist_mm': 0.01, 'legal': True, 'cost': 0.0}]
 
     pose_score.rank_poses = ranker_that_likes_the_request
     try:
@@ -86,7 +93,7 @@ def test_a_refused_ranked_pose_is_not_offered_back():
                     [{'kind': 'set', 'ref': 'C3', 'x': float(C4_X),
                       'y': float(C4_Y), 'rot': None}],
                     pcb_data=parse_kicad_pcb(ESP), snap=True,
-                    snap_radius=0.0, snap_tries=3, dry_run=True)
+                    snap_radius=0.05, snap_tries=3, dry_run=True)
             except pose_ops.PoseRefusal as exc:
                 s = exc.extra['summary']
                 reason = exc.reason
@@ -98,7 +105,7 @@ def test_a_refused_ranked_pose_is_not_offered_back():
     assert sc['candidates_tried'] == 1 and sc['ranked'] == 1, sc
     assert s['nearest_legal'] is None, s['nearest_legal']
     assert 'try it with --snap' not in reason, reason
-    assert '0.000 mm away' not in reason, reason
+    assert 'mm away' not in reason, reason
     assert sc['regrade_refused_by'].get('pad_conflicts') == 1, sc
     assert '--snap re-graded 1 candidate(s)' in reason, reason
     assert 'pad_conflicts x1 (' in reason, reason

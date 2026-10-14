@@ -235,6 +235,15 @@ in this verb's own currency before it is written. Measured on
 `set C4 --near 128.0 49.53 --radius 3`, because its gate is the absolute one,
 while 236 poses inside the same radius graded no worse — the nearest 0.354 mm
 away. `snap_census` reports both rungs and `snapped.rung` says which answered.
+The ranker judges the part from its pose on the INPUT board, the baseline the
+re-grade compares with, while it sweeps around the aimed point (#1256): built
+from the staged board, the request was its own baseline, and on esp_prog
+(C1 at a 1.5 mm pad clearance, `set C2 140.06 96.23 --rot 90 --snap
+--radius 2`) it ranked 8 poses carrying the very conflict that refused the
+request, all 8 then refused. Neither the snap nor the no-snap suggestion ever
+returns the request itself (`requested_dropped`). `input_pose_vetoed` is the
+ranker's verdict on the part's input pose: when it vetoes even that, its
+knobs are stricter than the board, and the refusal says so.
 When every candidate fails the re-grade, the refusal says what the census
 found instead (#1209) -- `regrade_refused_by` / `regrade_refused_pairs` per
 category, e.g. `hole_conflicts x4 (H1/TP1)` -- plus the `untried` count

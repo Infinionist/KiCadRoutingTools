@@ -572,33 +572,90 @@ def _legality_row(before: Dict, after: Dict) -> Dict:
 # snapping
 # ---------------------------------------------------------------------------
 
+def _ranker_state(pcb, board_path: str, ref: str, at, *, clearance: float,
+                  board_edge_clearance: float):
+    """The ranker's state for `ref`, judged from the INPUT board (#1256).
+
+    `pcb` / `board_path` are the board the caller's re-grade compares
+    against, so every part's SEED -- the baseline `LegalityContext.pads_ok`
+    and `keepout_ok` refuse a pose relative to -- is its pose there. `at`
+    (x, y, rot), when given, is where the caller asked the part to go: it is
+    moved there AFTER the state is built, so the sweep centres on the request
+    while the part is still judged against where it started.
+
+    Built from the STAGED board instead (the requested pose already written),
+    the request was its own baseline: it passed at offset 0, and so did every
+    nearby pose carrying the same new conflict at no greater depth, while the
+    re-grade -- against the input -- refused them all. Measured on esp_prog
+    with C1 given a 1.5 mm pad clearance, `set C2 140.06 96.23 --rot 90
+    --snap --radius 2`: 8 ranked poses, the request among them at 0.000 mm,
+    every one refused by the re-grade.
+    """
+    import pose_score
+    st = pose_score.make_state(pcb, board_path, clearance=clearance,
+                               board_edge_clearance=board_edge_clearance)
+    part = st.parts.get(ref) if (at is not None
+                                 and hasattr(st, 'parts')) else None
+    if part is not None:
+        rot = float(at[2]) % 360.0
+        # The rotation caches carry the input pose's 90-degree lattice only;
+        # a rect asked for a rotation outside it falls back to 0 degrees.
+        part.ensure_rotation(rot)
+        st.apply_move(ref, float(at[0]), float(at[1]), rot)
+    return st
+
+
+def _is_pose(p: Dict, at) -> bool:
+    """Is ranked pose `p` the pose `at` (x, y, rot)?"""
+    if at is None:
+        return False
+    import pose_score
+    return (abs(p['x'] - float(at[0])) <= 1e-4
+            and abs(p['y'] - float(at[1])) <= 1e-4
+            and pose_score._same_rot(p['rot'], at[2]))    # noqa: PLC2701
+
+
 def nearest_legal(board_path: str, ref: str, *, clearance: float,
                   board_edge_clearance: float, radius: float, step: float,
-                  rotations=None, limit: int = 12, pcb_data=None):
+                  rotations=None, limit: int = 12, pcb_data=None, at=None):
     """The ranked legal poses for `ref` on the board at `board_path`.
 
     `pose_score.rank_poses`, unchanged: this only resolves the knobs from the
     board first and carries the dropped-pose census back, so an empty ranking
     can say "the knobs veto even staying put" instead of "no legal pose"
     (run-7 S4).
+
+    `at` (#1256): the pose the caller asked for and its own grade refused.
+    The sweep centres there, the part is judged against its pose on THIS
+    board (the input, see `_ranker_state`), and `at` itself is never
+    returned -- the census counts it as `requested_dropped`.
     """
     import pose_score
     from kicad_parser import parse_kicad_pcb
     pcb = pcb_data if pcb_data is not None else parse_kicad_pcb(board_path)
-    st = pose_score.make_state(pcb, board_path, clearance=clearance,
-                               board_edge_clearance=board_edge_clearance)
+    st = _ranker_state(pcb, board_path, ref, at, clearance=clearance,
+                       board_edge_clearance=board_edge_clearance)
     diag: Dict = {}
     kw = {} if rotations is None else {'rotations': tuple(rotations)}
     poses = pose_score.rank_poses(pcb, board_path, ref, radius=radius,
-                                  step=step, limit=limit, state=st,
+                                  step=step, limit=limit + 1, state=st,
                                   diagnostics=diag, **kw)
-    return poses, diag
+    kept = [p for p in poses if not _is_pose(p, at)]
+    diag['requested_dropped'] = len(poses) - len(kept)
+    return kept[:limit], diag
 
 
 def snap_candidates(board_path: str, ref: str, *, rot: float, clearance: float,
                     board_edge_clearance: float, radius: float, step: float,
-                    pcb_data=None):
+                    pcb_data=None, at=None):
     """Poses to TRY for a snap, nearest-first, from TWO rungs. (list, census)
+
+    `board_path` / `pcb_data` are the INPUT board -- the one the caller's
+    re-grade compares against -- and `at` is the (x, y) the caller asked
+    for, refused by that grade (#1256). Both rungs centre on `at` (default:
+    where the part sits on the board), rung 1 judges the part against its
+    pose on the board (`_ranker_state`), and the requested pose itself is
+    never returned (`requested_dropped` in the census).
 
     Rung 1 is `rank_poses` -- cost-ordered, and worth trying first because it
     knows about wirelength and crossings, which this verb does not.
@@ -621,8 +678,21 @@ def snap_candidates(board_path: str, ref: str, *, rot: float, clearance: float,
     import pose_score
     from kicad_parser import parse_kicad_pcb
     pcb = pcb_data if pcb_data is not None else parse_kicad_pcb(board_path)
-    st = pose_score.make_state(pcb, board_path, clearance=clearance,
-                               board_edge_clearance=board_edge_clearance)
+    request = None if at is None else (float(at[0]), float(at[1]), rot)
+    st = _ranker_state(pcb, board_path, ref, request, clearance=clearance,
+                       board_edge_clearance=board_edge_clearance)
+    # "The knobs veto even staying put" (run-7 S4) is a fact about the part's
+    # pose on the INPUT board, where the re-grade is no-worse by definition:
+    # a veto THERE means the ranker's gates are stricter than the board. The
+    # ranking's own in-place spot is the request, which the caller's grade
+    # has just refused, so a veto there only agrees with it (#1256).
+    _home = st.parts.get(ref) if hasattr(st, 'parts') else None
+    home_veto = None
+    if _home is not None and hasattr(st, 'candidate_veto'):
+        _v = st.candidate_veto(ref, _home.seed_x, _home.seed_y,
+                               _home.orig_rot)
+        if _v is not None:
+            home_veto = {'check': _v[0], 'blocker': _v[1]}
     diag: Dict = {}
     try:
         ranked = pose_score.rank_poses(pcb, board_path, ref, radius=radius,
@@ -638,6 +708,10 @@ def snap_candidates(board_path: str, ref: str, *, rot: float, clearance: float,
             f"the ranking can score, and there are none for this block -- "
             f"give it an exact pose instead (drop --near / --snap / "
             f"--strict-legal) and lock it", code=exc.code, ref=ref) from exc
+    # #1256: the request was refused by the caller's grade before this ran,
+    # so it is not a candidate -- the lattice below already skips offset 0.
+    requested_dropped = sum(1 for p in ranked if _is_pose(p, request))
+    ranked = [p for p in ranked if not _is_pose(p, request)]
     # The Euclidean bound, because `_offsets` walks SQUARE rings: a corner of
     # the r=4 ring sits 5.66 mm out, and a caller who typed `--radius 4` read
     # it as a distance (measured: a snap moved a part 5.0 mm under 4).
@@ -677,6 +751,7 @@ def snap_candidates(board_path: str, ref: str, *, rot: float, clearance: float,
                  key=lambda p: (p.get('dist_mm') or 0.0), default=None)
     census = {'ranked': len(out),
               'ranked_before_radius': len(ranked),
+              'requested_dropped': requested_dropped,
               'nearest_beyond_radius': (
                   None if beyond is None else
                   {'x': beyond['x'], 'y': beyond['y'], 'rot': beyond['rot'],
@@ -686,7 +761,11 @@ def snap_candidates(board_path: str, ref: str, *, rot: float, clearance: float,
               'step_mm': step,
               'rotations': [rot],
               'dropped_total': diag.get('dropped_total', 0),
+              # The rotations vetoed at offset 0 -- the REQUEST's spot.
               'dropped_in_place': diag.get('dropped_in_place', []),
+              # The ranker's verdict on the part's pose on the input board:
+              # {check, blocker} when vetoed there, else None (#1256).
+              'input_pose_vetoed': home_veto,
               # #1113: which check vetoed them, and against whom.
               'dropped_by': diag.get('dropped_by', {}),
               'stopped_early': bool(diag.get('stopped_early'))}
@@ -898,11 +977,16 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                 'skipped': 'snap applies to exactly one pose op; this call '
                            'carries %d' % len(placements)}
         if (bad or (strict and not is_clean(after))) and snap and len(placements) == 1:
-            # Rank around the REQUESTED point, not the part's old one: the
-            # sweep in `rank_poses` is centred on where the part sits in the
-            # board it is handed, and on the staged board that is exactly
-            # where the caller aimed. The rotation stays as asked -- a snap
-            # relocates a decision, it does not overrule it.
+            # Rank around the REQUESTED point, not the part's old one, and
+            # judge the part against its pose on the INPUT board (#1256):
+            # the state is built from `board_path` -- every seed, the
+            # baseline the ranker's pad check is relative to, is the pose the
+            # re-grade below compares with -- and the part is then moved to
+            # the request, where the sweep centres. Built from the staged
+            # board, the request was its own baseline, and the ranker passed
+            # poses carrying the very conflict that refused it. The rotation
+            # stays as asked -- a snap relocates a decision, it does not
+            # overrule it.
             #
             # Each candidate is RE-GRADED rather than trusted, because the
             # ranking's own legality (`QuenchState.candidate_valid`, an AABB
@@ -915,9 +999,10 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
             want_rot = placements[0]['new_rotation']
             try:
                 poses, census = snap_candidates(
-                    cand, ref, rot=want_rot, clearance=clearance,
+                    board_path, ref, rot=want_rot, clearance=clearance,
                     board_edge_clearance=board_edge_clearance,
-                    radius=snap_radius, step=snap_step, pcb_data=cand_pcb)
+                    radius=snap_radius, step=snap_step, pcb_data=pcb,
+                    at=(placements[0]['new_x'], placements[0]['new_y']))
             except PoseRefusal as exc:
                 # The refusal rides in the SAME summary every other refusal
                 # here carries -- ops, knobs and lock intent included -- so a
@@ -1176,12 +1261,17 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                 # and an unverified ranker pose "to try with --snap" is advice
                 # it has already taken.
                 try:
+                    # #1256: from the INPUT board, centred on the refused
+                    # request, which is never named back.
                     poses, _d = nearest_legal(
-                        cand, placements[0]['reference'], clearance=clearance,
+                        board_path, placements[0]['reference'],
+                        clearance=clearance,
                         board_edge_clearance=board_edge_clearance,
                         radius=max(snap_radius, 2.0), step=snap_step,
                         rotations=(placements[0]['new_rotation'],),
-                        pcb_data=cand_pcb)
+                        pcb_data=pcb,
+                        at=(placements[0]['new_x'], placements[0]['new_y'],
+                            placements[0]['new_rotation']))
                     summary['nearest_legal'] = poses[0] if poses else None
                     summary['nearest_legal_basis'] = (
                         'pose_score.rank_poses / QuenchState.candidate_valid '
@@ -1553,11 +1643,17 @@ def _snap_census_sentence(sc: Dict) -> str:
                 "rot=%g (%.3f mm away), not re-graded: --radius %g would let "
                 "the snap try it." % (nb['x'], nb['y'], nb['rot'],
                                       nb.get('dist_mm') or 0.0, reach))
-    if sc.get('dropped_in_place') and not sc.get('ranked_before_radius'):
+    home = sc.get('input_pose_vetoed')
+    if home and not sc.get('ranked_before_radius'):
+        # #1256: about the part's pose on the INPUT board -- staying put --
+        # not the request's spot, which the grade had already refused.
         import pose_score
-        out += (" The ranker kept no pose at all, and its census shows the "
-                "knobs veto the part's own spot too -- check the resolved "
-                "clearance against the board's floor before reading this as "
-                "'the part is stuck'. Vetoed by "
+        out += (" The ranker kept no pose at all, and it vetoes the part's "
+                "pose on the input board too (%s%s), where the re-grade "
+                "cannot be worse -- its knobs are stricter than the board, "
+                "so check the resolved clearance against the board's floor "
+                "before reading this as 'the part is stuck'. Vetoed by "
+                % (home.get('check'),
+                   ' vs %s' % home['blocker'] if home.get('blocker') else '')
                 + pose_score.veto_phrase(sc.get('dropped_by') or {}) + ".")
     return out
