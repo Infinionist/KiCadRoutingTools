@@ -29,6 +29,7 @@ function that already owns it, and the ones that matter say so on the sheet:
     pairs through series   diff_xnet.find_ac_coupled_xnets (#1251)
     part class             placement.part_class.classify_part
     decap partner          placement.groups (_elect_tethers / decap_populations)
+    emc roles + legs       placement.emc_roles (#1254)
     diff pairs             list_nets.find_differential_pairs (resonator-safe)
     net classes            list_nets.net_class_memberships
     floors                 list_nets.board_floor_knobs
@@ -364,7 +365,17 @@ def build_context(pcb_data, pcb_file: str, *, clearance: float,
         'diff_pairs': [list(t) for t in sorted(pairs or ())],
         'parts': parts,
         'pin_order': pin_order_rows(pcb_data, pcb_file, clearance),
+        # #1254: converters, crystals, oscillators and ESD arrays, each leg
+        # measured and a ready `proximity[]` row beside it. Report only.
+        'emc_roles': emc_roles_section(pcb_data),
         'sources': {
+            'emc_roles': 'placement.emc_roles (#1254): roles read off PIN '
+                         'FUNCTIONS (SW/LX, VIN, PGND/GND; I/O or CH lines) '
+                         'and the role table (crystals); every leg pad edge '
+                         'to pad edge (legality.pad_rect + rect_gap), never '
+                         'a loop area; `unknown` where the pins carry no '
+                         'function; rows carry max_mm null -- the limit is '
+                         'the author\'s',
             'body_mm / body_source': 'placement.body.board_bodies (#896)',
             'pads_by_face': 'placement.escape.assign_faces (#850)',
             'pin_order': 'placement.pair_order.pair_metrics; a pair through '
@@ -398,6 +409,68 @@ def build_context(pcb_data, pcb_file: str, *, clearance: float,
 def _elect(pcb_data):
     from placement.groups import _elect_tethers      # noqa: PLC2701
     return _elect_tethers(pcb_data)
+
+
+def emc_roles_section(pcb_data) -> dict:
+    """`placement.emc_roles.emc_roles` (#1254), or `{'error': ...}` -- named,
+    never an empty section a reader would take for "no hot loop here"."""
+    try:
+        from placement.emc_roles import emc_roles
+        return emc_roles(pcb_data)
+    except Exception as exc:                                 # noqa: BLE001
+        return {'error': f'{type(exc).__name__}: {exc}', 'roles': [],
+                'counts': {}}
+
+
+def _emc_md(sec) -> List[str]:
+    """The markdown for `emc_roles`: one block per role, its legs as a
+    table, its rows ready to paste."""
+    L = ['## EMC roles (report only)', '']
+    if sec.get('error'):
+        L += [f"NOT MEASURED ({sec['error']}).", '']
+        return L
+    if not sec.get('roles'):
+        L += ['No switching converter, crystal, oscillator or ESD array is '
+              'named by the pins or the role table here.', '']
+        return L
+    L += [sec.get('note', ''), '', f"Legs: {sec.get('basis', '')}.", '']
+    for r in sec['roles']:
+        what = r['role'] + (f" ({r['topology']})" if r.get('topology')
+                            else '')
+        if r['role'] == 'unknown':
+            what = f"unknown -- a {r.get('candidate')}?"
+        L.append(f"### {r['part']}  --  {what}"
+                 + (f"  value `{r['value']}`" if r.get('value') else ''))
+        L.append('')
+        for e in r.get('evidence') or ():
+            L.append(f"- {e}")
+        if r.get('why'):
+            L.append(f"- **Not read:** {r['why']}")
+        for n in r.get('notes') or ():
+            L.append(f"- note: {n}")
+        for u in r.get('unmeasured_legs') or ():
+            L.append(f"- pad {u['pad']} ({u['net']}) not measured: "
+                     f"{u['why']}")
+        rows = r.get('proximity') or []
+        if rows:
+            L.append('')
+            L.append('| leg | from | to | net | gap mm | sides |')
+            L.append('|---|---|---|---|---|---|')
+            for pr in rows:
+                for g in pr['legs']:
+                    a, b = g['from'], g['to']
+                    L.append(f"| {g['leg']} | {a['ref']}.{a['pad']} | "
+                             f"{b['ref']}.{b['pad']}"
+                             + (f" ({b['pin_function']})"
+                                if b.get('pin_function') else '')
+                             + f" | {a['net']} | {g['gap_mm']} | "
+                             f"{a['side']} / {b['side']} |")
+            L.append('')
+            for pr in rows:
+                L.append(f"- row, worst leg {pr['worst_leg_mm']} mm: "
+                         f"`{json.dumps(pr['row'], sort_keys=True)}`")
+        L.append('')
+    return L
 
 
 def _verdict(m):
@@ -940,6 +1013,9 @@ def format_md(doc) -> str:
                  + '; '.join(f"{p['pair']} ({p['why']})" for p in unmeasured)
                  + '.')
     L.append('')
+
+    if doc.get('emc_roles') is not None:
+        L.extend(_emc_md(doc['emc_roles']))
 
     L.append('## Parts')
     L.append('')

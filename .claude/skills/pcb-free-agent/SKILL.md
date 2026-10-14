@@ -69,6 +69,21 @@ serves those nets from the fill.
   then a `decap_ungraded` ERROR, named by ref (#1142). Nothing repairs it
   automatically -- `--repair-decaps` covers `decap_distance` and
   `decap_pin_distance` only -- so move the cap with `place_pose`.
+- **Ask for the EMC rows the board cannot state.** A crystal's load pins, a
+  converter's input cap and inductor, an ESD array's connector: how close
+  they sit decides EMC, and the emitted intent carries no `proximity` row for
+  any of them, because a limit read off the board would bless its pose. Run
+  `python3 -X utf8 py_tools/board_context.py <board> --json -o <ctx.json>`
+  and read `emc_roles.roles`: each converter, crystal, oscillator and ESD
+  array its pin functions name, every leg measured pad edge to pad edge in
+  `emc_roles.roles[].proximity[].legs`, and a ready row in
+  `emc_roles.roles[].proximity[].row` with `max_mm` left null. Ask the user
+  for the limits -- crystal to its load pins, input or bulk cap to the
+  regulator's VIN and PGND, inductor to SW, ESD array to its connector --
+  put the rows in the brief's or the intent's `proximity`, and report which
+  you were given. A role read as `unknown` (a buck whose pins carry no pin
+  function) names the part; which pin is SW is not guessed, so ask for the
+  pins too.
 - **On a pile, read the emitter's decap line before you seed.** It says how
   many caps the per-supply-pin stage can claim, and which only once their
   owner ICs are seated. When `place_seed` then reports the decap stage
