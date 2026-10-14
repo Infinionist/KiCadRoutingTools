@@ -111,7 +111,13 @@ never the fallback lattice, and the polish's swaps refuse to trade a declared
 angle away, so a declared angle survives the polish. A part the re-seat
 declines stays where the polish left it, named on a `NOT repaired` line, and
 its grade error stands, so the seed exits 4. Before #1117 a declared part was
-instead turned to fit and the seed exited 0.
+instead turned to fit and the seed exited 0. A declared EDGE claim is first
+re-seated on its edge (#1240, `reseat_on_edge`: the repair's edge seat, aimed
+at its zone's centre), kept when the part then grades no zone, keep-out,
+exclusive-zone or edge error; the ordinary search, which wants the whole
+courtyard on the board, would pull it off its edge. The line printed for a
+re-seat names who broke the rule: the polish when it walked the part out of a
+seeded pose that kept it, the seed otherwise.
 """
 
 #: #937 registry: which door(s) show this tool, and whether it changes
@@ -452,6 +458,43 @@ def reseat_decline_line(ref, rec):
         how = "at its current angle or any quarter turn of it"
     return (f"  NOT repaired, {ref}: no legal pose {where} {how}. It stays "
             f"where the polish left it, and its grade error stands")
+
+
+def reseat_on_edge(st, ref, claim, zone, ladder, grader, rules):
+    """#1240: the post-polish re-seat of a declared EDGE claim, on its edge.
+
+    `_try_place`, the re-seat's ordinary search, demands the whole courtyard
+    inside the zone and on the board (`zone_gate`, `pose_ok`), so it pulled an
+    edge connector stage 1 had seated outside its zone in off its edge, giving
+    up the overhang its band declares: the round-3 lateral board, band minimum
+    1.5, went (20, 0.851) -> (8.0, 2.851) and exited 4 on the band; at band
+    minimum 0 it exited 0 with the overhang silently gone. This seats it the
+    way `--repair` does, through `seeder._seat_edge` -- the band, the facing,
+    pads on the board -- aimed at the zone's centre, at the declared angles
+    when there are any. The seat is KEPT only when the board grades no
+    `rules` error and no `edge_connector` error on `ref` there (`grader`, the
+    intent's own rules at the state's poses), with no #975 floor fallback and
+    no #1241 band contradiction; otherwise the pose is restored and the
+    caller searches as before. Returns the seat's notes when kept, else None.
+    """
+    from placement import floorplan, seeder
+    part = st.parts[ref]
+    was = (part.x, part.y, part.rot)
+    target = None
+    if zone is not None and zone.rect is not None:
+        target = ((zone.rect[0] + zone.rect[2]) / 2.0,
+                  (zone.rect[1] + zone.rect[3]) / 2.0)
+    notes, floor, contra = [], {}, {}
+    ok = seeder._seat_edge(st, ref, claim, set(), notes, target=target,
+                           rotations=ladder or None, disclose=floor,
+                           contradictions=contra, grade=grader)
+    if ok and not floor and not contra and not [
+            v for v in grader.violations()
+            if v.ref == ref and v.severity == floorplan.ERROR
+            and (v.rule in rules or v.rule == 'edge_connector')]:
+        return notes
+    st.apply_move(ref, *was)
+    return None
 
 
 def repair_oob_split(gating, overrun, pinned, moved, whole_board):
@@ -1582,6 +1625,19 @@ Examples:
                     for r in blocks2.get(z.name, ()):
                         zone_of.setdefault(r, z)
                 seeded_pose = {p['reference']: p for p in result['placements']}
+                # #1240: the declared edge claims, seated on their edge first
+                # (`reseat_on_edge`), and the grade it asks, built once.
+                _edge_claim = {c['ref']: c for c in intent.edge_claims()
+                               if c.get('edge')}
+                _pg = []
+
+                def _grader():
+                    if not _pg:
+                        _pg.append(floorplan.PoseGrader(
+                            intent, st, blocks=blocks2,
+                            clearance=args.clearance,
+                            board_edge_clearance=args.board_edge_clearance))
+                    return _pg[0]
                 fixes = []
                 pinned = []
                 for ref in broke:
@@ -1623,6 +1679,17 @@ Examples:
                         _cur = st.parts[ref].rot % 360.0
                         _ladder = sorted(_ladder, key=lambda c: abs(
                             (c - _cur + 180.0) % 360.0 - 180.0) >= 1e-6)
+                    if ref in _edge_claim:
+                        _kept = reseat_on_edge(st, ref, _edge_claim[ref], z,
+                                               _ladder, _grader(), _repairable)
+                        if _kept is not None:
+                            for _n in _kept:
+                                print(f"  NOTE: {_n}")
+                            p2 = st.parts[ref]
+                            fixes.append({'reference': ref, 'new_x': p2.x,
+                                          'new_y': p2.y,
+                                          'new_rotation': p2.rot})
+                            continue
                     clr = seeder._try_place(
                         st, ref, sp['new_x'], sp['new_y'], set(),
                         constraint=z.rect if z is not None else None,
@@ -1670,10 +1737,31 @@ Examples:
                                if _polish_moved(f['reference'])]
                     _placed = [f['reference'] for f in fixes
                                if f['reference'] not in _walked]
+                    # #1240: and a part the polish DID move was walked out
+                    # only if its seeded pose kept the rule -- the intent's
+                    # own rules at the seeded poses, as written.
+                    _left = []
+                    if _walked:
+                        _seed_broke = {
+                            v.ref for v in _grader().violations(poses={
+                                r: _seeded_poses[r] for r in st.parts
+                                if r in _seeded_poses})
+                            if v.rule in _repairable
+                            and v.severity == floorplan.ERROR}
+                        _left = [r for r in _walked if r in _seed_broke]
+                        _walked = [r for r in _walked if r not in _seed_broke]
                     if _walked:
                         print(f"  polish walked {', '.join(_walked)} out of "
                               f"a declared {' / '.join(_rules)}; re-seated "
                               f"against the polished board")
+                    if _left:
+                        print(f"  the seed placed {', '.join(_left)} outside "
+                              f"a declared {' / '.join(_rules)} and the "
+                              f"polish moved "
+                              f"{'it' if len(_left) == 1 else 'them'} "
+                              f"without bringing "
+                              f"{'it' if len(_left) == 1 else 'them'} back; "
+                              f"re-seated against the polished board")
                     if _placed:
                         print(f"  the seed placed {', '.join(_placed)} "
                               f"outside a declared {' / '.join(_rules)} and "

@@ -1248,8 +1248,15 @@ parts worth knowing from here:
   (`overhang_mm.max`): the edge rule grades how far past the edge it may go,
   and the zone no longer ejects it for going there. Its pads stay graded
   there, at zero. The grade, the quench term, feasibility, the plan checks
-  and the seeder's lock note open the same side; `seeder.zone_gate` (the
-  re-seat and `--repair`) does not yet (#1240). Emitted zones are clamped
+  and the seeder's lock note open the same side. A seat search does not need
+  to: `seeder.zone_gate` keeps the closed side, but every search it serves
+  also demands the courtyard on the board (`pose_ok`), so an open side would
+  admit nothing. What keeps an edge member on its edge instead is the edge
+  seat: `--repair` seats an edge claim through `_seat_edge`, and since #1240
+  so does `place_seed`'s post-polish re-seat (`reseat_on_edge`), aimed at the
+  zone's centre and kept only when the part grades no zone, keep-out,
+  exclusive-zone or edge error there -- else the ordinary search runs, as
+  before. Emitted zones are clamped
   inside the envelope as written, so an emitted intent's zones raise no
   `intent_zone_outside_envelope` or `zone_containment` error on the board
   it came from. That is an error-free grade, not a complete one: a channel
