@@ -319,14 +319,15 @@ def _synthetic(td, parts, size=40):
     return _board(td, ''.join(parts), size=(size, size))
 
 
-def _box(ref, x, y, hw, hh, name='t:BOX', pad=(0, 0)):
-    """A part with a +-hw x +-hh courtyard and one pad at `pad` (local)."""
+def _box(ref, x, y, hw, hh, name='t:BOX', pad=(0, 0), pad_extra=''):
+    """A part with a +-hw x +-hh courtyard and one pad at `pad` (local).
+    `pad_extra` is appended inside the pad, e.g. a castellation property."""
     return (f'  (footprint "{name}" (layer "F.Cu") (at {x} {y})\n'
             f'    (property "Reference" "{ref}" (at 0 0) (layer "F.SilkS"))\n'
             f'    (fp_rect (start {-hw} {-hh}) (end {hw} {hh}) (stroke'
             f' (width 0.05) (type default)) (layer "F.CrtYd"))\n'
             f'    (pad "1" smd rect (at {pad[0]} {pad[1]}) (size 0.6 0.6)'
-            f' (layers "F.Cu") (net 2 "N2")))\n')
+            f' (layers "F.Cu") (net 2 "N2"){pad_extra}))\n')
 
 
 def _doc(blocks, claims=(), **extra):
@@ -374,6 +375,42 @@ class EveryReaderAgrees(unittest.TestCase):
         self.assertEqual(errs[0].measured['axis'], 'north')
         # The pad box past the side, not the courtyard: 2.1 + the 0.3 half-pad.
         self.assertAlmostEqual(errs[0].measured['outside_mm'], 2.4, places=3)
+
+    def test_pads_past_an_open_side_are_graded_at_zero(self):
+        """The zone's tolerance is slack on where a part sits in its zone,
+        not on its pads leaving the board: a pad 0.3 mm past the open north
+        side is an error under the DEFAULT tolerance (0.5 mm), which it used
+        to pass. Control: the same pad flush with the edge."""
+        zone = [{'name': 'b', 'refs': ['J1'], 'zone': [4, 0, 16, 8]}]
+        self.assertGreater(_doc(zone).zone_tolerance(_doc(zone).blocks[0]),
+                           0.3)
+        with tempfile.TemporaryDirectory() as td:
+            # The 0.6 mm pad centred on y = 0: its copper reaches y = -0.3.
+            past = _synthetic(td, [_box('J1', 10, 0, 2, 2)])
+            errs = _zone_errors(self._grade(past, _doc(zone, [J1_NORTH])))
+        self.assertEqual(len(errs), 1, errs)
+        self.assertTrue(errs[0].measured['pads_graded'])
+        self.assertEqual(errs[0].measured['axis'], 'north')
+        self.assertAlmostEqual(errs[0].measured['outside_mm'], 0.3, places=3)
+        self.assertEqual(errs[0].expected['tolerance_mm'], 0.0)
+        with tempfile.TemporaryDirectory() as td:
+            flush = _synthetic(td, [_box('J1', 10, 0.3, 2, 2)])
+            self.assertEqual(_zone_errors(self._grade(
+                flush, _doc(zone, [J1_NORTH]))), [])
+
+    def test_a_castellated_pad_past_an_open_side_is_not_graded(self):
+        """A castellated pad straddles the outline by design -- the edge
+        rule's copper conjunct skips it too -- so the same 0.3 mm reads
+        clean when the pad is castellated."""
+        zone = [{'name': 'b', 'refs': ['J1'], 'zone': [4, 0, 16, 8]}]
+        with tempfile.TemporaryDirectory() as td:
+            path = _synthetic(td, [_box(
+                'J1', 10, 0, 2, 2,
+                pad_extra=' (property pad_prop_castellated)')])
+            pcb = parse_kicad_pcb(path)
+            self.assertTrue(pcb.footprints['J1'].pads[0].castellated)
+            errs = _zone_errors(self._grade(path, _doc(zone, [J1_NORTH])))
+        self.assertEqual(errs, [])
 
     def test_an_anchor_graded_member_opens_the_same_side(self):
         """A zone smaller than the courtyard grades the courtyard CENTRE

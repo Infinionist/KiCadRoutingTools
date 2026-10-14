@@ -4271,7 +4271,12 @@ def open_side_pad_escape(zone_rect, pad_rect, open_sides, bounds=None
 def _member_pad_rect(ctx, ref):
     """The board-frame bbox of `ref`'s pads at the pose the context grades,
     or None. A `_PosedState` (the seat search's view) answers the pose it is
-    asking about; a QuenchState its parts' current pose."""
+    asking about; a QuenchState its parts' current pose.
+
+    Castellated pads are left out: they straddle the outline by design, and
+    the edge rule's copper conjunct (`_copper_outside_mm`) skips them too.
+    `PartPads` keeps one rect per copper pad in `fp.pads` order, so the
+    rects pair with the footprint's copper pads one to one."""
     st = ctx.state
     lc = getattr(st, 'legality_ctx', None)
     pp = (getattr(lc, 'parts', None) or {}).get(ref) if lc is not None else None
@@ -4286,6 +4291,12 @@ def _member_pad_rect(ctx, ref):
         rects = pp.pad_rects(x, y, rot) or ()
     except Exception:                                        # noqa: BLE001
         return None
+    fp = (getattr(ctx.pcb, 'footprints', None) or {}).get(ref)
+    if fp is not None:
+        cu = [p for p in (fp.pads or ()) if legality._pad_carries_copper(p)]
+        if len(cu) == len(rects):
+            rects = [r for r, p in zip(rects, cu)
+                     if not getattr(p, 'castellated', False)]
     if not rects:
         return None
     return (min(r[0] for r in rects), min(r[1] for r in rects),
@@ -4310,7 +4321,10 @@ def rule_zone_containment(ctx) -> Iterator[Violation]:
                 pout, pside = open_side_pad_escape(
                     z.rect, _member_pad_rect(ctx, ref), opened,
                     ctx.outline_bounds)
-                if pout > tol:
+                # At zero, not at the zone's tolerance: that is slack on
+                # where a part sits in its zone, and a soldered pad past the
+                # board's edge is off the board by any amount.
+                if pout > legality.EPS:
                     yield Violation(
                         rule='zone_containment',
                         severity=ctx.sev('zone_containment'), ref=ref,
@@ -4324,7 +4338,7 @@ def rule_zone_containment(ctx) -> Iterator[Violation]:
                                   'outside_mm': round(pout, 4), 'axis': pside,
                                   'pads_graded': True,
                                   'open_sides': list(opened)},
-                        expected={'zone': list(z.rect), 'tolerance_mm': tol})
+                        expected={'zone': list(z.rect), 'tolerance_mm': 0.0})
                     continue
             if not zone_fits_courtyard(z.rect, part.rect, tol):
                 # Spec-coordinate zone: grade the part's CENTER against it.
