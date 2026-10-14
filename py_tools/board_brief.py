@@ -921,9 +921,22 @@ def format_text(b):
              f"{bd.get('footprints')} parts, {bd.get('nets')} nets, "
              f"{len(bd.get('copper_layers') or [])} copper layers")
     if bd.get('size_mm'):
-        L.append(f"  outline {bd['size_mm'][0]} x {bd['size_mm'][1]} mm "
-                 f"({bd.get('area_mm2')} mm2), cutouts {bd.get('cutouts')}, "
-                 f"milled contours {bd.get('milled_contours')}")
+        # #1205: `size_mm`/`area_mm2` are the BOUNDING BOX. On a notched or
+        # eared board the outline encloses less, and printing the box alone as
+        # "outline" sent an agent to place edge parts against edges the board
+        # does not have (CM5_MINIMA_3: 3929.0 mm2 box, 3054.87 mm2 outline).
+        box = bd.get('area_mm2')
+        ring = bd.get('outline_area_mm2')
+        if ring is not None and box is not None and abs(ring - box) >= 0.01:
+            L.append(f"  outline bounding box {bd['size_mm'][0]} x "
+                     f"{bd['size_mm'][1]} mm ({box} mm2), outline area {ring} "
+                     f"mm2 ({100.0 * ring / box:.0f}% of the box), cutouts "
+                     f"{bd.get('cutouts')}, milled contours "
+                     f"{bd.get('milled_contours')}")
+        else:
+            L.append(f"  outline {bd['size_mm'][0]} x {bd['size_mm'][1]} mm "
+                     f"({box} mm2), cutouts {bd.get('cutouts')}, "
+                     f"milled contours {bd.get('milled_contours')}")
         if bd.get('cutout_area_mm2'):
             L.append(f"    copper {bd.get('copper_area_mm2')} mm2 -- "
                      f"{bd['cutout_area_mm2']} mm2 of the outline is cut out")
