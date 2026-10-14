@@ -71,9 +71,9 @@ gates on -- wherever stage 1, the polish or the re-seat put them, or kept
 them -- and a non-empty list fails the gate, since such a part can be neither
 assembled nor routed. A part the seed does not seat -- `(locked yes)` in the
 input, or outside a partially-unplaced run's scope -- and that is still at
-its input pose is the board's own: named on the console, not charged. A
-`must_lock` part is not exempt, because stage 1.5 seats it. An unseated part is
-charged as unseated.
+its input pose is the board's own: named on the console, not charged.
+`must_lock` alone exempts nothing: stage 1.5 seats every unlocked, in-scope
+must_lock part. An unseated part is charged as unseated.
 
 And `reseat_declined` (#1117) on every summary of a seed (not of --repair /
 --reseat, which run no post-polish re-seat):
@@ -1619,11 +1619,14 @@ Examples:
     # seed's choice as much as one it moved. The board's own is a part the
     # seed does not seat -- `(locked yes)` in the input, or outside a
     # partially-unplaced run's scope (`seed_refs`, "someone's work") -- still
-    # at its input pose, since the polish moves parts outside the scope. NOT
-    # `must_lock`: stage 1.5 seats every unlocked must_lock part itself, so
-    # such a part at its input pose is a seat the seed kept. An unseated part
-    # is charged as unseated, not here.
-    _in_fps = parse_kicad_pcb(args.input_file).footprints
+    # at its input pose, since the polish moves parts outside the scope.
+    # `must_lock` alone exempts nothing: stage 1.5 seats every unlocked,
+    # in-scope must_lock part itself, so such a part at its input pose is a
+    # seat the seed kept. An unseated part is charged as unseated, not here.
+    # The input is the board parsed BEFORE seeding, not the file: an in-place
+    # run (`place_seed X X`) has overwritten it, and would read every part as
+    # unmoved and every lock this run stamped as the input's.
+    _in_fps = pcb.footprints
     _out_fps = parse_kicad_pcb(args.output_file).footprints
 
     def _board_own(r):

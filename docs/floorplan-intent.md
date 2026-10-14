@@ -723,9 +723,9 @@ The kept shortfall is reported in `place_seed`'s `edge_floor_fallback`, with the
 pads and the reason the seat could not move; the copper itself is graded in
 `pad_edge_after` as before. A rotation is never changed to clear the floor.
 A kept seat whose copper reaches PAST the outline, not just into the floor,
-fails `place_seed`'s gate (exit 4, `pad_copper_off_board_seeded`, #1241): the
+fails a seed's gate (exit 4, `pad_copper_off_board_seeded`, #1241): the
 seat is still written, for inspection, but the seed is not passed as
-buildable.
+buildable. `place_seed --repair` is not gated this way yet (#1241).
 
 Every declared connector on the board gets a row in `edge_connector_evidence`
 (`--json`), including passing ones. Each row carries:

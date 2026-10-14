@@ -243,6 +243,38 @@ class TheWrittenPoseDecides(unittest.TestCase):
         self.assertNotIn("the board's own", r.stdout)
 
 
+class InPlace(unittest.TestCase):
+    """`place_seed X X` overwrites its input (recorded manifests run steps
+    that way). Re-reading the input FILE for "the board's own" then saw
+    every part unmoved and every lock this run stamped as the input's
+    (#1239's round-3 verifier)."""
+
+    def test_polished_copper_is_charged_in_place(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = _synthetic(td, _scoped())
+            r, summary = _run(path, _R2_ROT, code=4, flags=(),
+                              refuse='pad copper past the board outline '
+                                     'on R2',
+                              out_name=os.path.basename(path))
+        self.assertEqual([ref for ref, _mm in
+                          summary['pad_copper_off_board_seeded']], ['R2'])
+        self.assertNotIn("the board's own", r.stdout)
+
+    def test_a_must_lock_seat_is_charged_in_place(self):
+        # Stage 1 moves J1 from (20, 20) to its kept off-board seat, and the
+        # run stamps it locked; neither makes it the board's own.
+        with tempfile.TemporaryDirectory() as td:
+            path = _synthetic(td, [_TALL_J1, _box('R1', 25, 25, 1, 0.6)])
+            r, summary = _run(path, dict(_claim({'min': 1.5, 'max': 2.0}),
+                                         must_lock=['J*']),
+                              code=4, refuse='pad copper past the board '
+                                             'outline on J1',
+                              out_name=os.path.basename(path))
+        self.assertEqual([ref for ref, _mm in
+                          summary['pad_copper_off_board_seeded']], ['J1'])
+        self.assertNotIn("the board's own", r.stdout)
+
+
 class PoseMoved(unittest.TestCase):
     """`place_seed.pose_moved`, which both the gate and the re-seat line
     read (#1240, #1241)."""
