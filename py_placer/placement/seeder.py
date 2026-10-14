@@ -5793,7 +5793,14 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             rung was refused for courtyard alone, the attempt is undone and
             made again as it always was (T2), and a clean T2 seat reads
             'clean_t2' with a note naming the overlapped parts. When no rung
-            was refused for courtyard alone, T1 IS the old attempt."""
+            was refused for courtyard alone, T1 IS the old attempt.
+
+            Pad copper at the board edge outranks a courtyard overlap. A
+            clean T1 seat whose copper is short of the board-edge floor
+            (#975: it left an `edge_floor_fallback` record) is held against
+            T2 too, and T2 wins when its copper clears the floor; when T2's
+            does not either, T1 -- clear of the courtyards as well -- is
+            made again."""
             if not _edge_courtyard_tier:
                 return _stage1_attempt(k, c, _member1125)
             ref = c['ref']
@@ -5802,17 +5809,29 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             n0 = len(notes)
             seen: List[str] = []
             out = _stage1_attempt(k, c, _member1125, seen)
-            if out[0] in ('clean', 'skip') or not seen:
+            _short = out[0] == 'clean' and ref in edge_floor_fallback
+            if out[0] == 'skip' or not seen or (out[0] == 'clean'
+                                                 and not _short):
                 return out
             _stage1_undo(ref, pose, n0)
             out2 = _stage1_attempt(k, c, _member1125)
+            if _short and (out2[0] != 'clean' or ref in edge_floor_fallback):
+                _stage1_undo(ref, pose, n0)
+                return _stage1_attempt(k, c, _member1125, [])
             if out2[0] == 'clean':
+                _over = ', '.join(sorted(set(seen)))
                 notes.append(
-                    f"edge connector {ref}: no seat on the {edge} band clears "
-                    f"the courtyard of {', '.join(sorted(set(seen)))}, so it "
-                    f"keeps a pad-clear seat that overlaps it -- the "
-                    f"courtyard budget and check_assembly grade that "
-                    f"overlap (#1172)")
+                    f"edge connector {ref}: "
+                    + (f"the seat on the {edge} band that clears the "
+                       f"courtyard of {_over} leaves pad copper inside the "
+                       f"board-edge floor, so it keeps a pad-clear seat "
+                       f"whose copper clears the floor and that overlaps it"
+                       if _short else
+                       f"no seat on the {edge} band clears the courtyard of "
+                       f"{_over}, so it keeps a pad-clear seat that overlaps "
+                       f"it")
+                    + " -- the courtyard budget and check_assembly grade "
+                      "that overlap (#1172)")
                 return 'clean_t2', out2[1]
             return out2
 
@@ -5847,6 +5866,11 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             _won = None
             _crowded = _used if _out == 'crowded' else None
             _t2m = _used if _t2 else None
+            # #1172: whether `_t2m`'s seat leaves pad copper short of the
+            # board-edge floor. A later member's clean seat that is short of
+            # it does not beat a pad-clear seat that clears it: copper at
+            # the edge outranks a courtyard overlap, as in `_stage1_one`.
+            _t2m_short = _t2 and _ref1125 in edge_floor_fallback
             while True:
                 _next = _stage1_walk_member(
                     _part1125, _claim, _tried,
@@ -5857,11 +5881,14 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 _stage1_undo(_ref1125, _pose1125, _n1125)
                 _tried.append(_next)
                 _o, _u = _stage1_one(k, c, _member1125=_next)
-                if _o == 'clean':
+                if _o == 'clean' and not (
+                        _t2m is not None and not _t2m_short
+                        and _ref1125 in edge_floor_fallback):
                     _won = _u
                     break
                 if _o == 'clean_t2' and _t2m is None:
                     _t2m = _u
+                    _t2m_short = _ref1125 in edge_floor_fallback
                 if _o == 'crowded' and _crowded is None:
                     _crowded = _u
             _mine = isinstance(_claim, _ChosenRot)

@@ -873,5 +873,87 @@ class TheFallBack(unittest.TestCase):
                             in n for n in res['notes']), res['notes'])
 
 
+    def _floor_board(self, td, blocks=()):
+        """J1, a faceless 4 x 4 box, claimed on the north edge of the
+        standard 40 mm board; R1 (locked) has a courtyard over the middle of
+        the band and its pad far below it, so the centre rung is pad-clear
+        but overlaps R1's courtyard and every rung clear of it is off the
+        centre."""
+        b = _board(td, [
+            _rect_part('J1', 20, 30, (-2, -2, 2, 2),
+                       [(-1, 0, .6, .6, 2), (1, 0, .6, .6, 1)]),
+            _rect_part('R1', 20, 3, (-0.5, -3, 0.5, 1),
+                       [(0, 0.5, .4, .4, 3)], locked=True)])
+        doc = {'schema': floorplan.SCHEMA_VERSION, 'kind': floorplan.KIND,
+               'units': 'mm',
+               'edge_connectors': [{'ref': 'J1', 'edge': 'north',
+                                    'overhang_mm': {'min': 0, 'max': 1}}],
+               'blocks': list(blocks)}
+        p = os.path.join(td, 'floor.json')
+        with open(p, 'w', encoding='utf-8') as fh:
+            json.dump(doc, fh)
+        return b, floorplan.load_intent(p)
+
+    @staticmethod
+    def _short_where(pred):
+        """`seeder._floor_at`, reading pad copper 0.3 mm inside the floor at
+        every J1 pose `pred(x, rot)` names (a measured shortfall's shape)."""
+        fa = seeder._floor_at
+
+        def floor_at(state, ref, x, y, rot):
+            f = fa(state, ref, x, y, rot)
+            if ref == 'J1' and f is not None and pred(round(x, 3), rot):
+                return f._replace(short=((0.3, 0, 'east', 0.25, '2'),))
+            return f
+        return fa, floor_at
+
+    def test_a_floor_clear_seat_outranks_a_courtyard_clear_one(self):
+        """Pad copper at the board edge outranks a courtyard overlap: every
+        rung off the centre reads copper inside the board-edge floor, so the
+        only seats clear of R1's courtyard are short of it. The tier keeps
+        the centre's floor-clear seat over R1's courtyard -- the seat of the
+        arm without the tier -- and says why."""
+        with tempfile.TemporaryDirectory() as td:
+            b, intent = self._floor_board(td)
+            fa, short = self._short_where(lambda x, rot: abs(x - 20.0) > 1e-6)
+            try:
+                seeder._floor_at = short
+                _pcb, res, poses = _seed(b, intent, ('J1',))
+                with flags(_edge_courtyard_tier=False):
+                    _pcb, _r, off = _seed(b, intent, ('J1',))
+            finally:
+                seeder._floor_at = fa
+        self.assertEqual(poses['J1'], off['J1'])
+        self.assertAlmostEqual(poses['J1'][0], 20.0)
+        self.assertNotIn('J1', res['edge_floor_fallback'])
+        self.assertTrue(any('leaves pad copper inside the board-edge floor, '
+                            'so it keeps a pad-clear seat whose copper '
+                            'clears the floor and that overlaps it' in n
+                            for n in res['notes']), res['notes'])
+
+    def test_a_walked_member_short_of_the_floor_does_not_win(self):
+        """The same across a declared set [0, 90]: at 0 the floor-clear seat
+        overlaps R1's courtyard; at 90 every seat is short of the floor, the
+        one clear of R1 included. The #1125 walk does not take 90's
+        courtyard-clear seat over 0's floor-clear one."""
+        with tempfile.TemporaryDirectory() as td:
+            b, intent = self._floor_board(
+                td, [{'name': 'rotation:J1', 'refs': ['J1'],
+                      'rotation_candidates': [0, 90]}])
+            fa, short = self._short_where(
+                lambda x, rot: (abs((rot - 90.0 + 180.0) % 360.0 - 180.0)
+                                < 1e-6 or abs(x - 20.0) > 1e-6))
+            try:
+                seeder._floor_at = short
+                _pcb, res, poses = _seed(b, intent, ('J1',))
+                with flags(_edge_courtyard_tier=False):
+                    _pcb, _r, off = _seed(b, intent, ('J1',))
+            finally:
+                seeder._floor_at = fa
+        self.assertEqual(poses['J1'], off['J1'])
+        self.assertAlmostEqual(poses['J1'][2] % 360, 0.0)
+        self.assertNotIn('J1', res['edge_floor_fallback'])
+
+
 if __name__ == '__main__':
     unittest.main()

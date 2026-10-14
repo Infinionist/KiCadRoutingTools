@@ -98,8 +98,8 @@ ROWS = [
      "    if False:\n",
      (T1172,), 'KILLED'),
     ('no-pad-only-fallback', 'sd',
-     "            if out[0] in ('clean', 'skip') or not seen:\n",
-     "            if True:\n",
+     "            if out[0] == 'skip' or not seen or (out[0] == 'clean'\n",
+     "            if True or (out[0] == 'clean'\n",
      (T1172,), 'KILLED'),
     ('t2-seat-read-as-clean', 'sd',
      "                return 'clean_t2', out2[1]\n",
@@ -189,6 +189,16 @@ ROWS = [
     ('a-declared-set-is-narrowed-not-reordered', 'sd',
      "    return tuple(_group(fac) + _group([m for m in ms if m not in fac]))\n",
      "    return tuple(_group(fac))\n",
+     (T1172,), 'KILLED'),
+    # -- the PR review's: pad copper at the board edge outranks a courtyard
+    #    overlap, in one attempt and across the #1125 walk --
+    ('a-floor-short-courtyard-clear-seat-wins', 'sd',
+     "            _short = out[0] == 'clean' and ref in edge_floor_fallback\n",
+     "            _short = False\n",
+     (T1172,), 'KILLED'),
+    ('a-walked-member-short-of-the-floor-wins', 'sd',
+     "                        and _ref1125 in edge_floor_fallback):\n",
+     "                        and False):\n",
      (T1172,), 'KILLED'),
     # -- the final review's: the #1125 walk's note named the wrong seat --
     ('the-walk-note-names-the-crowded-member', 'sd',
