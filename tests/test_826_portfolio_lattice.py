@@ -403,13 +403,24 @@ def t_the_disclosure_reports_what_was_used_not_what_was_inferred():
     work = tempfile.mkdtemp(prefix='pf826d_')
     try:
         path = board(IMPERIAL)
+        # `only=1`: this arm reads candidate 1 and nothing else, so the
+        # baseline quench -- half the run, and never read here -- is not
+        # paid for. `generate`'s contract is that `only=i` rebuilds candidate
+        # i byte-identically without the others (its stream and lattice are
+        # functions of i and the input alone); the end-to-end arm above
+        # still runs the baseline and asserts its disclosure.
         with contextlib.redirect_stdout(io.StringIO()):
             res = PF.generate(path, work, seed=0, n_candidates=2,
                               strategies=('jitter',), radius=RADIUS,
                               quench_kw=dict(max_displacement=3.0, step=0.25,
                                              grid_step=0.1, clearance=0.2,
                                              board_edge_clearance=0.55,
-                                             max_passes=3, verbose=False))
+                                             max_passes=3, verbose=False),
+                              only=1)
+        report('the run built candidate 1 alone, as asked',
+               res['baseline'] is None
+               and [c.index for c in res['candidates']] == [1],
+               str([c.index for c in res['candidates']]))
         c = res['candidates'][0]
         if not c.board:
             report('the --step 0.25 arm produced a candidate', False, c.note)
