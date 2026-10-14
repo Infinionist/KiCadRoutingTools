@@ -47,6 +47,7 @@ for each (the fanout's menus as PLAN_JUDGE=ends builds them)
 """
 import collections
 import contextlib
+import copy
 import io
 import itertools
 import math
@@ -54,6 +55,7 @@ import os
 import awx_settings
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -90,6 +92,25 @@ WIND_GAIN = 1.0           # ...a cut taken only when its ends lay fewer vias and
 #                           took two cuts at 1.2 and 0.18 and laid 30 vias and 584 mm against the far cut's 32 and 544
 EXACT_WORK = 60.0         # CP-SAT's deterministic work limit for one exact route (a machine's deterministic time is
 #                           its own: H3 K51's best ends proved at 17 on a Mac and stopped unproved at 20 on Linux)
+_EXACT_MEMO = {}          # an exact route's model (its text's hash) -> its answer: one model is one answer, solved once in
+#                           the process -- a re-plan asks the first plan's models again (the two-end USB and Ethernet
+#                           bus's fanout: 7 of its 27 four-layer exact routes, at 3 to 14 s each)
+
+
+def _exact_solve(m):
+    """(status, the value of each variable by index, or None) of the exact route's model `m`: one worker, the work
+    EXACT_WORK -- the same answer on every run. Memoised on the model itself (_EXACT_MEMO)"""
+    import hashlib
+    from ortools.sat.python import cp_model
+    key = hashlib.sha1(str(m.Proto()).encode()).hexdigest()
+    if key not in _EXACT_MEMO:
+        sol = cp_model.CpSolver()
+        sol.parameters.num_workers = 1
+        sol.parameters.max_deterministic_time = EXACT_WORK
+        r = sol.Solve(m)
+        _EXACT_MEMO[key] = (r, [sol.Value(m.GetIntVarFromProtoIndex(i)) for i in range(len(m.Proto().variables))]
+                            if r in (cp_model.OPTIMAL, cp_model.FEASIBLE) else None)
+    return _EXACT_MEMO[key]
 LOAD_OK = 0.5             # a lane's congestion on the trunk (score) the solve takes freely ...
 W_CONG = 20.0             # ... past it, vias per the square of the overload
 X_TRUNK = 0.2             # a crossing on the trunk, in vias
@@ -1258,14 +1279,11 @@ class Ends:
                 la.append(L_)
             m.Add(la[0] != la[1])
         m.Minimize(sum(cost))
-        sol = cp_model.CpSolver()
-        sol.parameters.num_workers = 1
-        sol.parameters.max_deterministic_time = EXACT_WORK
-        r = sol.Solve(m)
+        _r, vals = _exact_solve(m)
         out = None
-        if r in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            chg = {l_: sum(sol.Value(a) for a in acts[l_]) for l_ in lanes}
-            drx = {l_: sum(sol.Value(d_) for d_ in drops[l_]) for l_ in lanes}
+        if vals is not None:
+            chg = {l_: sum(vals[a.Index()] for a in acts[l_]) for l_ in lanes}
+            drx = {l_: sum(vals[d_.Index()] for d_ in drops[l_]) for l_ in lanes}
             out = (sum(npair[l_] * chg[l_] for l_ in lanes),
                    sum(max(0, sv[l_] + chg[l_] - drx[l_] - VIA_PREF) for l_ in lanes), chg, drx)
         self._xroute[key] = out
@@ -1339,13 +1357,10 @@ class Ends:
                 lits = lits + [m.NewConstant(1)]
             m.AddBoolXOr(lits)
         m.Minimize(sum(cost))
-        sol = cp_model.CpSolver()
-        sol.parameters.num_workers = 1
-        sol.parameters.max_deterministic_time = EXACT_WORK
-        r = sol.Solve(m)
+        _r, vals = _exact_solve(m)
         out = None
-        if r in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            chg = {l_: sum(sol.Value(a) for a in act_of[l_]) for l_ in lanes}
+        if vals is not None:
+            chg = {l_: sum(vals[a.Index()] for a in act_of[l_]) for l_ in lanes}
             out = (sum(npair[l_] * chg[l_] for l_ in lanes),
                    sum(max(0, sv[l_] + chg[l_] - VIA_PREF) for l_ in lanes), chg)
         self._xroute[key] = out
@@ -1602,9 +1617,20 @@ def wind_on():
 
 
 WIND_SEEN = []      # the cuts off the far face the cut phase chose in this process, for judge to price a choice at
+THREADS = 4         # the ends model's threads, the calling one counted: the most exact routes (one CP-SAT worker
+#                     each) at once -- the winding's cuts, and the teeth's search beside the berths' (choose)
+_POOL = []
 
 
-def cut_phase(E, state, vp, log=print):
+def _pool():
+    """the ends model's pool, THREADS - 1 workers (the calling thread the last), made once in the process. Only the
+    teeth's search, run on it, waits on others (its own winding's cuts), and they wait on nothing: no task is starved"""
+    if not _POOL:
+        _POOL.append(ThreadPoolExecutor(THREADS - 1))
+    return _POOL[0]
+
+
+def cut_phase(E, state, vp, log=print, into=None):
     """WINDING: the destination's cut moved off its far face. A lane's way round the destination is fixed by where the
     cut stands: a berth past it is reached round the other side, so a cut on the destination's south face sends the
     lanes ending on the south face beyond it, and on the far face, round the north (a human's lanes from the source's
@@ -1637,18 +1663,32 @@ def cut_phase(E, state, vp, log=print):
     E.wcut = None
     best = (state, (v0, p0), None)
     rank = lambda vp_: (bool(vp_[1].get('exact_failed')), vp_[0])
-    for v_est, c in sorted(cands, key=lambda t: (t[0], str(t[1])))[:WIND_TRY]:
+    tried = sorted(cands, key=lambda t: (t[0], str(t[1])))[:WIND_TRY]
+
+    def one(c):
+        # (each cut on a copy of the model of its own -- its cut, its search's pool, the memo as it stood -- sharing
+        # only caches written once per key, a value set twice set the same: the cuts searched and routed AT ONCE, each
+        # exact route a CP-SAT worker that gives up the GIL as it solves. The same ends as one cut after another, in
+        # the time of the slowest -- the two-end USB and Ethernet bus's fanout spent 110 s of its 160 s here)
+        Ec = copy.copy(E)
+        Ec.wcut, Ec.pool = c, {}
+        Ec._memo, Ec._parts = dict(E._memo), collections.OrderedDict(E._parts)
         t_c = time.time()
-        E.wcut = c
-        E.pool = {}
-        s_ = E.iterate(E.search(state, log=quiet), log=quiet)
+        s_ = Ec.iterate(Ec.search(state, log=quiet), log=quiet)
         t_s = time.time() - t_c
-        s_, vp_ = E.best_exact(s_, log=quiet)
+        s_, vp_ = Ec.best_exact(s_, log=quiet)
+        return Ec, s_, vp_, t_s, time.time() - t_c - t_s
+    # (the first cut on this thread, the others on the ends model's pool -- THREADS in all)
+    futs = [_pool().submit(one, c) for _v, c in tried[1:]]
+    runs = ([one(tried[0][1])] if tried else []) + [f_.result() for f_ in futs]
+    for (v_est, c), (Ec, s_, vp_, t_s, t_x) in zip(tried, runs):
+        E._memo.update(Ec._memo)
+        E.pool = Ec.pool
         pv = lambda p_: (f'{p_["fan"] + p_["route"]} v, ride {p_["ride"]}, cong {p_.get("cong", 0)}, '
                          f'{p_["crossings"]} x')
         log(f'  whole ends: winding, the cut at {c[0]} {c[1]:.3f} (estimate {v_est:.2f} on the far cut\'s ends): '
             f'objective {vp_[0]:.2f} ({pv(vp_[1])}) against the far cut\'s {v0:.2f} ({pv(p0)}); '
-            f'searched in {t_s:.0f} s, routed exact in {time.time() - t_c - t_s:.0f} s')
+            f'searched in {t_s:.0f} s, routed exact in {t_x:.0f} s')
         # (taken when it lays FEWER vias than the far cut's ends (the fanout's and the route's, predicted) and beats
         # their objective by WIND_GAIN -- winding trades length for vias; a cut that saves none won on the estimate's
         # other terms alone, which its own search, held at another cut, had one more chance to move: shuf_k12s3_g3,
@@ -1662,7 +1702,7 @@ def cut_phase(E, state, vp, log=print):
             best = (s_, vp_, c)
     E.wcut = best[2]
     if best[2] is not None:
-        WIND_SEEN.append(best[2])
+        (WIND_SEEN if into is None else into).append(best[2])
         log(f'  whole ends: WOUND -- the destination cut at {best[2][0]} {best[2][1]:.3f}: {_fmt(best[1][1])}')
     return best[0], best[1]
 
@@ -2041,20 +2081,44 @@ def choose(st, log=print, src_free=True, fixed=None, seed=None, learned=None, fr
         log(f'  whole ends: {len(E.pw.balls)} plane ball(s) of the arrays kept a way down ({E.pw.n_ways} ways, {E.pw.secs:.0f} s)')
     sL = E.ban_kicks(E.iterate(E.search(E.start(seed), log=quiet), log=quiet), log=log)
     sL, (vL, pL) = E.best_exact(sL, log=log)
+
+    def teeth(berths, log_, into=None):
+        """the second search, the teeth free: (its Ends, state, objective, parts) from `berths`"""
+        E2_ = Ends(st, src_free=True, fixed=fixed, learned=learned, free_teeth=free_teeth)
+        # a local search from the berths just chosen on the teeth as laid, iterated
+        sF_ = E2_.ban_kicks(E2_.iterate(E2_.search(E2_.start(berths), log=quiet), log=quiet), log=log_)
+        sF_, (vF_, pF_) = E2_.best_exact(sF_, log=log_)
+        if wind_on():
+            # (the teeth searched on the far face's cut first, then its own winding: held at the berths' cut, the teeth
+            # missed the moves the far cut's ends wanted -- s4_bulge's five teeth, 12 vias to 8)
+            sF_, (vF_, pF_) = cut_phase(E2_, sF_, (vF_, pF_), log=log_, into=into)
+        return E2_, sF_, vF_, pF_
+    spec = None
     if wind_on():
+        if src_free:
+            # (the second search SPECULATED beside the berths' winding, from the berths as they stand: a winding that
+            # leaves them so leaves the second search's ends its own -- its lines said, and its cut seen, where they
+            # would have been; one that moves them has the second search run again from those. The two-end USB and
+            # Ethernet bus's fanout overlapped so in each of its three plans, 115 s to 96: their windings took no cut)
+            buf, seen2, sL0 = [], [], dict(sL)
+            spec = (sL0, seen2, buf, _pool().submit(teeth, E.choice(sL)[0], buf.append, seen2))
         sL, (vL, pL) = cut_phase(E, sL, (vL, pL), log=log)
     out, vF, pF = E.choice(sL), None, None
     log(f'  whole ends: on the teeth as laid: {_fmt(pL)}')
     E2 = None
     if src_free:
-        E2 = Ends(st, src_free=True, fixed=fixed, learned=learned, free_teeth=free_teeth)
-        # a local search from the berths just chosen on the teeth as laid, iterated
-        sF = E2.ban_kicks(E2.iterate(E2.search(E2.start(out[0]), log=quiet), log=quiet), log=log)
-        sF, (vF, pF) = E2.best_exact(sF, log=log)
-        if wind_on():
-            # (the teeth searched on the far face's cut first, then its own winding: held at the berths' cut, the teeth
-            # missed the moves the far cut's ends wanted -- s4_bulge's five teeth, 12 vias to 8)
-            sF, (vF, pF) = cut_phase(E2, sF, (vF, pF), log=log)
+        if spec is not None:
+            sL0, seen2, buf, fut = spec
+            got = fut.result()
+            if dict(sL) == sL0:
+                E2, sF, vF, pF = got
+                for line in buf:
+                    log(line)
+                WIND_SEEN.extend(seen2)
+            else:
+                E2, sF, vF, pF = teeth(out[0], log)
+        else:
+            E2, sF, vF, pF = teeth(out[0], log)
         if vF < vL - TOOTH_GAIN:
             out = E2.choice(sF)
             log(f'  whole ends: teeth moved ({len(out[1])}): {_fmt(pF)}')

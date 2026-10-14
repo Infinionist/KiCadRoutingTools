@@ -515,19 +515,6 @@ def build(n):
     # a pair: how far it may stand from its line before the steep price -- half the smallest staircase the router
     # lays along the nearest segment's heading, and a grid step
     tol = np.zeros(X.shape) if n in prs else None
-    s0 = 0.0
-    for a_, b_ in zip(P, P[1:]):
-        d_ = seg_pts_dist(a_, b_, X, Y)
-        L_ = float(np.hypot(*(b_ - a_)))
-        t_ = np.clip(((X - a_[0]) * (b_[0] - a_[0]) + (Y - a_[1]) * (b_[1] - a_[1])) / max(L_ * L_, 1e-18), 0, 1)
-        better = d_ < dist
-        dist[better] = d_[better]
-        arc[better] = s0 + t_[better] * L_
-        if tol is not None:
-            tol[better] = _pairs.stair_spread(cfg, b_[0] - a_[0], b_[1] - a_[1]) / 2 + g
-        s0 += L_
-    band = dist <= BAND
-    bad = {L: np.zeros(X.shape, bool) for L in cfg.layers}
     lo_x, lo_y = xs[0], ys[0]
 
     def window(bb, rch, ox=0.0, oy=0.0):
@@ -535,6 +522,28 @@ def build(n):
         a0 = max(0, int(math.floor((bb[0] - rch - ox - lo_x) / g))); a1 = min(len(xs) - 1, int(math.ceil((bb[2] + rch - ox - lo_x) / g)))
         b0 = max(0, int(math.floor((bb[1] - rch - oy - lo_y) / g))); b1 = min(len(ys) - 1, int(math.ceil((bb[3] + rch - oy - lo_y) / g)))
         return None if a1 < a0 or b1 < b0 else (slice(a0, a1 + 1), slice(b0, b1 + 1))
+    # each segment measured only on the cells within the band (and two steps) of its box: a cell farther off is
+    # farther from it than the band, so it is not the cell's nearest wherever the cell is in the band, and outside
+    # the band nothing is read (the search keeps to it, a terminal's join is within three steps of the line). The
+    # whole window per segment was 25 s of a 47 s snap
+    s0 = 0.0
+    R_ = BAND + 2 * g
+    for a_, b_ in zip(P, P[1:]):
+        L_ = float(np.hypot(*(b_ - a_)))
+        w = window((min(a_[0], b_[0]), min(a_[1], b_[1]), max(a_[0], b_[0]), max(a_[1], b_[1])), R_)
+        if w is not None:
+            Xw, Yw = X[w], Y[w]
+            d_ = seg_pts_dist(a_, b_, Xw, Yw)
+            t_ = np.clip(((Xw - a_[0]) * (b_[0] - a_[0]) + (Yw - a_[1]) * (b_[1] - a_[1])) / max(L_ * L_, 1e-18), 0, 1)
+            dw, aw = dist[w], arc[w]
+            better = d_ < dw
+            dw[better] = d_[better]
+            aw[better] = s0 + t_[better] * L_
+            if tol is not None:
+                tol[w][better] = _pairs.stair_spread(cfg, b_[0] - a_[0], b_[1] - a_[1]) / 2 + g
+        s0 += L_
+    band = dist <= BAND
+    bad = {L: np.zeros(X.shape, bool) for L in cfg.layers}
 
     def mark(arr, bb, bar, dfun, ox=0.0, oy=0.0):
         """the cells whose point (x + ox, y + oy) lies within bar of the copper dfun measures (inside the box bb)"""

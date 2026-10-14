@@ -564,12 +564,19 @@ def gather():
                 for cy in range(int(math.floor(lo[1] / CELL)), int(math.floor(hi[1] / CELL)) + 1):
                     segs[(cx, cy)].append((n, i))
 
+    near_memo = {}                  # (the cells a query spans -> its answer: neighbouring segments span the same cells)
+
     def near_segs(P, r):
-        out = set()
-        for cx in range(int(math.floor((P[0] - r) / CELL)), int(math.floor((P[0] + r) / CELL)) + 1):
-            for cy in range(int(math.floor((P[1] - r) / CELL)), int(math.floor((P[1] + r) / CELL)) + 1):
-                out.update(segs.get((cx, cy), ()))
-        return sorted(out)          # the LP's row order: a set's would follow the hash seed
+        key = (int(math.floor((P[0] - r) / CELL)), int(math.floor((P[0] + r) / CELL)),
+               int(math.floor((P[1] - r) / CELL)), int(math.floor((P[1] + r) / CELL)))
+        got = near_memo.get(key)
+        if got is None:
+            out = set()
+            for cx in range(key[0], key[1] + 1):
+                for cy in range(key[2], key[3] + 1):
+                    out.update(segs.get((cx, cy), ()))
+            got = near_memo[key] = sorted(out)          # the LP's row order: a set's would follow the hash seed
+        return got
 
     seen = set()
     # each segment's bounding box and its mitre, once: a pair of segments whose boxes stand further apart than its bar

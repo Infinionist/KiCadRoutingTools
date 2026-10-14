@@ -631,8 +631,11 @@ BUS_PULLED=1 python3 route_bus.py tmp/zynq/zr6_both.kicad_pcb tmp/zynq/zr6_usb_e
     --rounds 2 --inproc --bus U1:U4+U3:plain:F.Cu,B.Cu,In1.Cu,In2.Cu $SZ
 ```
 
-It routes 25 of the 26 nets (ETH_RXD2 left open; 50 vias, 840 mm), handed on
-connected and clean, in 76 minutes. Its lanes on In2 split VCC_1V8 and VCC_3V3
+It routes 24 of the 26 nets (ETH_RXD2 and ETH_RXD3 left open; 48 vias,
+808 mm), handed on connected and clean, in 14 minutes. With the solve's opt-in
+settings (`WHOLE_SOLVE_BATCHES=40 SOLVE_PHASE2_ONLY=1 SOLVE_FULLHINT=1`,
+[the solve](#the-solve-whole_solvepy)) it routes 25 (ETH_RXD2 left open; 50
+vias, 826 mm) in 6.5 minutes. Its lanes on In2 split VCC_1V8 and VCC_3V3
 there (454 unconnected island links against 451 as it came): the whole route
 plans across a pour without pricing what it cuts.
 
@@ -842,7 +845,12 @@ again, and takes one only when its ends predict fewer vias than the far
 cut's and beat its objective by a via (`WIND_GAIN`). A wound lane's ride
 round the destination is priced a ring's distance out, with the room its
 turns stack up. The cut rides the sidecar as the far-face cut does, and the
-frame's two rings meet at it.
+frame's two rings meet at it. The best few cuts are searched at once, each on
+a copy of the model, beside the teeth's search from the berths as they stand;
+a winding that moves the berths sends that search again from them. The ends
+model takes four threads at most, its caller's counted (`THREADS`): each
+exact route is one CP-SAT worker, which gives up the GIL as it solves. The
+two-end bus's fanout went from 163 s to 98 s, its plan the same.
 
 **Laid as asked, or not kept.** The destination is chosen, fanned out and
 audited in passes (`DST_ITERS`, 8):
@@ -1049,6 +1057,17 @@ time, or sharing clauses, one model gave a different answer on every run. It
 stops sooner once the vias are proved, or once it has a plan and three of its
 own model reductions in a row find no better plan or bound.
 
+**Faster, opt-in.** With more routing layers than two every solve of a round
+keeps a plan it cannot prove, so the bound-raising workers can be left out
+(`SOLVE_PHASE2_ONLY=1`): on the two-end bus they proved nothing in 188 s
+(best 46, bound 38), and the plan-finding workers alone found the same 40
+vias in 73 s at 40 batches. A re-solve's warm start can be laid out whole
+(`SOLVE_FULLHINT=1`): every variable hinted, its search has a plan from the
+first batch, and runs `WHOLE_WARM_BATCHES` (20) -- the plan 40 batches found
+from nothing (55, 39 vias), in 46 s against 63. Both change plans (with the
+first, the generated pairs bench of `tests/test_622_lane_fixes.py` lays no
+crossover at an end), so they stay off.
+
 </details>
 
 #### The geometry (`whole_geo.py`)
@@ -1067,6 +1086,12 @@ solve as **cuts**.
   tangent cuts, so a lane takes the **comfortable pitch**, a track more than
   the bar, wherever there is room); the bends; every neighbour short of that
   pitch, four times as steeply below halfway to the bar.
+- **The tangents lazy** (`GEO_LAZY`, on): the second pass's tangent cuts (a
+  column's length, a pitch, a via's room, each at several slopes) are most
+  of its rows and few of them bind. It is solved with those near binding at
+  the first pass's answer, then again with any its answer breaks, until it
+  breaks none: the whole LP's optimum, its tie-break making it one point. On
+  the two-end bus, 228 000 rows: two solves on 130 000, 40 s to 16 s.
 - **Turns:** a lane turns at most 45 degrees a column, a pair 45 degrees per
   turning run. A lane is bounded by the free interval its reference lies in,
   outside the arrays' pad boxes grown to the line their stubs end on (the
@@ -1817,8 +1842,15 @@ channels first, and the other escapes leave round it.
   the geometry could price each lane's cut through a pour, or keep a pour's
   corridor whole (the zynq's USB and Ethernet buses split VCC_1V8 between U1
   and the PHYs).
-- **A faster loop.** A round's loop re-solves after each geometry's findings,
-  five or six times on the two-end bus, about five minutes each.
+- **The solve's work by need.** The bound-raising workers only where a proof
+  is used (a re-solve on two layers), the plan-finders alone elsewhere; and
+  the budget by progress -- deterministic chunks of batches, each from the
+  last's best plan laid out whole, until one gains no whole via -- in place
+  of a fixed count and the opt-in settings.
+- **A faster first solve.** On the two-end bus, with the opt-in settings, its
+  stages run: the fanout 86 s, the first solve 70 s, the geometry 45 and 42 s,
+  the re-solve 47 s, the lays 53 s. The first solve's first 22 s find no plan
+  at all: a cheaper start would leave its search the rest.
 - **A layer left for the nets that cross the bus,** if item 8 finds many
   failing.
 - **Feedback from `route.py`:** failures that name bus copper as the blocker

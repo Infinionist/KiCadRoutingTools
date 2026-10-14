@@ -473,7 +473,13 @@ def loop(solve, out, rounds, env, log):
     def resolve(i):
         """the solve again, warm, with every cut and every audit's history so far -- less an island cut a side flip has
         answered since (the flip puts that lane on the island's other side; the cut would keep holding it off the
-        island); None when the solve failed"""
+        island); None to go on, an exit code when the solve failed"""
+        if i >= rounds:
+            # ...but not after the LAST round: its plan would be for a round that never runs, and nothing reads it --
+            # a loop that did not pass is laid from its rounds' own smooth plans, each on its round's bench (held_plan,
+            # lay_rounds). The two-end bus's first chain round: 119 s of solve, for a file no stage opened
+            log(f"  (round {i} is the last: no solve again)")
+            return None
         s2, cuts_out = O(f's{i + 1}.json'), O(f'cuts{i + 1}.json')
         try:
             fl = lambda fs: {tuple(x[:2]) for f in fs if f and os.path.isfile(f)
@@ -614,7 +620,11 @@ def loop(solve, out, rounds, env, log):
                 # ...and at once, when a finding there is one no solve moves (a pitch or a static clearance at the ends)
                 log(f"=== round {i}: ENDS CROWDED -- findings at the ends no solve moves: the fanout's to change")
                 return 4
-            if (not passes and not answered and i > 1 and os.path.isfile(hp0) and os.path.isfile(hp)
+            # (two rounds running, the layer cuts excuse nothing: the finding stood through the solve that had the round
+            # before's, so they did not move it. On the two-end USB and Ethernet bus every round had a layer cut at a
+            # passive mid-route, and the same five findings at the source's teeth stood through all eleven rounds of
+            # two chain rounds -- each round 6.5 min)
+            if (not passes and not newflips and i > 1 and os.path.isfile(hp0) and os.path.isfile(hp)
                     and os.path.isfile(sidecar)
                     and run(['whole_feedback.py', '--repeat', sidecar, hp0, hp], env, to=unredirected)[0] == 0):
                 log(f"=== round {i}: ENDS CROWDED -- the same findings at the ends two rounds running: "

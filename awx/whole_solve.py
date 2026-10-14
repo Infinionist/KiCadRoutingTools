@@ -57,9 +57,16 @@ SUBSOLVERS = ['default_lp', 'max_lp', 'core', 'objective_lb_search']
 # ...and when they cannot prove it, the PLAN-FINDING workers the first four leave out, with core-based search to close
 # the proof from their plan (the finders alone found K51-on-the-human's-fanout's plan and left its bound where it was)
 FALLBACK = ['quick_restart', 'no_lp', 'core']
-FACE_ROOM = 2 * VNEED                  # the band along the source's near face: a change's room along its lane
+# ...or the plan-finding workers ALONE (SOLVE_PHASE2_ONLY=1, opt-in): on more routing layers than two every solve of
+# a round keeps a plan it cannot prove, and the bound-raising workers proved nothing on the two-end USB and Ethernet
+# bus (best 46, bound 38 after 188 s) -- the finders alone, at 40 batches, the same 40 vias in 73 s
+PHASE2_ONLY = (awx_settings.get('SOLVE_PHASE2_ONLY') or '0') == '1'
+FACE_ROOM = 2 * VNEED                 # the band along the source's near face: a change's room along its lane
 SOLVE_STALL = 3                        # the search's model reductions in a row with no progress: stalled
 WARM_WORK = 30.0                       # deterministic work to lay a re-solve's warm start out whole (one worker)
+FULLHINT = (awx_settings.get('SOLVE_FULLHINT') or '0') == '1'    # (opt-in) the warm start laid out whole, every
+#                                        variable's hint ...
+WARM_BATCHES = int(awx_settings.get('WHOLE_WARM_BATCHES', '20'))    # ... and the search's budget then
 W_FIRM = 100 * W_V                     # a broken FIRM cut (CUTS_FIRM=1, more layers than two): above everything else a
 #                                        plan can buy -- the solve holds every cut it can and breaks one only where no
 #                                        plan holds them all, in ONE solve (whole_route's loop: no hard pass first)
@@ -1564,7 +1571,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         # 36051642); by batches with clause sharing on, two gave two; by batches with sharing off, two concurrent
         # solves agree exactly
         s_.parameters.interleave_search = True
-        s_.parameters.max_num_deterministic_batches = SOLVE_BATCHES
+        s_.parameters.max_num_deterministic_batches = budget['batches']
         s_.parameters.share_glue_clauses = False
         s_.parameters.share_binary_clauses = False
         stall = {'n': 0, 'plan': False}
@@ -1606,12 +1613,37 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         if sw.Solve(m) in (cp_model.OPTIMAL, cp_model.FEASIBLE) and \
                 math.floor(sw.ObjectiveValue() / W_V) <= (W_OVER * root['over'] + W_V * root['vias']) // W_V:
             warm = sw
-    sv, st, proved = run(SUBSOLVERS)
+    # ...and the warm start laid out whole is EVERY variable's hint (SOLVE_FULLHINT): the round before's plan hints its
+    # crossings, changes and layers, and the search found no plan of its own for 16 s on the two-end USB and Ethernet
+    # bus's re-solve -- the rest of the plan unhinted, nothing for its neighbourhood searches to start from. Laid out
+    # (0.1 s there), the search has a plan from its first batch, and the budget is WARM_BATCHES: its 20 reached the
+    # plan the 40 found from nothing (55, 39 vias), in 46 s against 63
+    budget = {'batches': SOLVE_BATCHES}
+    if hint and FULLHINT:
+        sh = cp_model.CpSolver()
+        sh.parameters.num_workers = 1
+        sh.parameters.fix_variables_to_their_hinted_value = True
+        sh.parameters.max_deterministic_time = WARM_WORK
+        st_h = sh.Solve(m)
+        if st_h in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            vals_h = [sh.Value(m.GetIntVarFromProtoIndex(i_)) for i_ in range(len(m.Proto().variables))]
+            m.ClearHints()
+            for i_, v_ in enumerate(vals_h):
+                m.AddHint(m.GetIntVarFromProtoIndex(i_), v_)
+            budget['batches'] = min(SOLVE_BATCHES, WARM_BATCHES)
+        print(f'   the warm start laid out whole: [{sh.StatusName(st_h)}]'
+              + (f' {sh.ObjectiveValue():.0f}, every variable hinted, {budget["batches"]} batches'
+                 if st_h in (cp_model.OPTIMAL, cp_model.FEASIBLE) else ' -- its own hints alone'))
+    if PHASE2_ONLY:
+        sv, st, proved = run(FALLBACK)
+        print(f'   plan-finding workers alone: [{sv.StatusName(st)}] {sv.WallTime():.0f}s')
+    else:
+        sv, st, proved = run(SUBSOLVERS)
     if not proved and warm is not None:
         print(f'   bound-raising workers: [{sv.StatusName(st)}] {sv.WallTime():.0f}s, no proved plan -- the warm start, '
               f'at the root\'s floor ({warm.ObjectiveValue():.0f})')
         sv, st, proved = warm, cp_model.FEASIBLE, True
-    if not proved:
+    if not proved and not PHASE2_ONLY:
         # the FALLBACK: the bound-raising workers could not prove it (the plan they found was not good enough to meet
         # their bound: K51 on the human's fanout, best 2 over two + 38 vias against 0 + 32, 124 s). The PLAN-FINDING
         # workers run on from there -- its best plan as their start, and its bound, proved on this very model, a

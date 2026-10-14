@@ -536,7 +536,9 @@ def build_and_solve(sides, prev=None):
         extra.append(cost)
         return nv + len(extra) - 1
 
-    def le(terms, b, elastic=None):
+    lazy = []
+
+    def le(terms, b, elastic=None, tangent=False):
         r = len(rhs)
         for j, a_ in terms:
             rows.append(r); cols.append(j); vals.append(a_)
@@ -545,6 +547,7 @@ def build_and_solve(sides, prev=None):
             rows.append(r); cols.append(e); vals.append(-1.0)
             tags.append((e, elastic))
         rhs.append(b)
+        lazy.append(tangent)
 
     bounds = {}
     orders = {}
@@ -628,7 +631,7 @@ def build_and_solve(sides, prev=None):
                             terms = [(ja, 1.0), (jb, -1.0)]
                             for (p1, p0) in sl:
                                 terms += [(p1, sep * be / (len(sl) * G)), (p0, -sep * be / (len(sl) * G))]
-                            le(terms, -sep * al, ('pitch', f, k, a, b, Ly))
+                            le(terms, -sep * al, ('pitch', f, k, a, b, Ly), tangent=True)
                     e = newvar(W_COMF * G)
                     le([(ja, 1.0), (jb, -1.0), (e, -1.0)], -(P_COMF + hw[a] + hw[b]))
                     # ...and steeper below the midpoint to the minimum: the tightest pairs are spread first
@@ -707,7 +710,7 @@ def build_and_solve(sides, prev=None):
                         for t0_, sc_ in tangents([(j1, j0)]):
                             al, be = sc_ / math.sqrt(1 + t0_ * t0_), sc_ * t0_ / math.sqrt(1 + t0_ * t0_)
                             terms = [(jb_, sg), (jm, -sg), (j1, sg * need * be / G), (j0, -sg * need * be / G)]
-                            le(terms, -need * al, ('via', f, k, n, nb))
+                            le(terms, -need * al, ('via', f, k, n, nb), tangent=True)
     for i, (f, n, cu, kc) in enumerate(vias):
         for (f2, m_, cu2, kc2) in vias[i + 1:]:
             ds = abs(FR[f]['s'](cu) - FR[f2]['s'](cu2)) if f2 == f else math.inf
@@ -773,7 +776,7 @@ def build_and_solve(sides, prev=None):
             d = newvar(W_LEN)
             for t_ in LEN_T:
                 r_ = math.sqrt(1 + t_ * t_)
-                le([(b, t_ / r_), (a, -t_ / r_), (d, -1.0)], -G * (1 / r_ - 1))
+                le([(b, t_ / r_), (a, -t_ / r_), (d, -1.0)], -G * (1 / r_ - 1), tangent=True)
             if k > v['k0']:
                 p = var[(f, n, k - 1)]
                 d2 = newvar(W_BEND)
@@ -900,7 +903,19 @@ def build_and_solve(sides, prev=None):
     for j, b in bounds.items():
         bnd[j] = b
     tb = time.time()
-    res = lp_by_dual(cost, Aub, np.array(rhs), bnd)
+    lz = np.array(lazy, bool)
+    how = ''
+    if prev is not None and GEO_LAZY and lz.any():
+        # (the tangents' rows LAZY, from the pass before: its answer says which can bind -- lp_lazy)
+        xo = np.array([prev[inv[j]] if inv[j] in prev else PIECE[inv[j][:2]]['ref'](inv[j][2] * G) for j in range(nv)])
+        res, n_, na_ = lp_lazy(cost, Aub, np.array(rhs), bnd, lz, nv, xo)
+        how = f' ({n_} solve(s) on {na_} of them: the tangents lazy)'
+        if res.status != 0:
+            # (a lazy solve the solver could not finish: the whole LP, as it was asked)
+            log(f'  LP status {res.status} with the tangents lazy: {res.message} -- the whole LP')
+            res, how = lp_by_dual(cost, Aub, np.array(rhs), bnd), ''
+    else:
+        res = lp_by_dual(cost, Aub, np.array(rhs), bnd)
     if res.status != 0:
         log(f'  LP status {res.status}: {res.message}')
         return None
@@ -910,12 +925,43 @@ def build_and_solve(sides, prev=None):
     for e, tg in tags:
         if x[e] > 1e-4:
             paid[tg[0]].append((float(x[e]),) + tuple(tg[1:]))
-    log(f'  joint LP: {len(PIECE)} pieces, {nv} o-vars, {len(rhs)} rows, build {tb - t0:.0f}s solve {time.time() - tb:.0f}s, '
+    log(f'  joint LP: {len(PIECE)} pieces, {nv} o-vars, {len(rhs)} rows{how}, build {tb - t0:.0f}s solve {time.time() - tb:.0f}s, '
         f'obj {res.fun:.1f}; elastic paid: ' + (', '.join(f'{k} {len(v)} (max {max(q[0] for q in v):.3f})' for k, v in paid.items()) or 'none'))
     return dict(o=o, paid=paid, vias=vias, orders=orders)
 
 
 IPM_ITERS = 500      # the interior point's iterations before the dual simplex takes over (it ends in 58-103 here)
+GEO_LAZY = (awx_settings.get('GEO_LAZY') or '1') == '1'     # the second pass's tangents lazy (lp_lazy); 0: all at once
+LAZY_NEAR = 0.1      # mm: a tangent's row taken from the start when the pass before's answer stands this near its bar
+LAZY_TOL = 1e-7      # a row broken by more than this (relative to its bar) is added
+
+
+def lp_lazy(c, A, b, bnd, lz, nv, xo):
+    """lp_by_dual's LP with the rows `lz` (the tangent cuts: most of the second pass's rows, few of them binding) LAZY:
+    solved on the others and those of `lz` within LAZY_NEAR of binding at the start -- the pass before's offsets `xo`
+    (the first nv columns), each extra column at the least its tangents there ask -- then again with every row its
+    answer breaks (and those near binding beside them), until it breaks none: then it is the whole LP's optimum, its
+    tie-break making that one point. The two-end USB and Ethernet bus's second pass, 228 000 rows: two solves on
+    130 000 of them, 40 s to 16 s, the same geometry. (res, solves, rows taken)"""
+    A = A.tocsr()
+    tol = LAZY_TOL * (1.0 + np.abs(b))
+    s_ = A[:, :nv] @ xo - b
+    Ae = A[:, nv:].tocoo()
+    m = lz[Ae.row] & (Ae.data < 0)
+    ex = np.zeros(A.shape[1] - nv)
+    np.maximum.at(ex, Ae.col[m], s_[Ae.row[m]] / -Ae.data[m])
+    near = lambda x_: (A @ x_ - b) > -LAZY_NEAR - tol
+    active = ~lz | near(np.concatenate([xo, ex]))
+    n_ = 0
+    while True:
+        n_ += 1
+        res = lp_by_dual(c, A[active], b[active], bnd)
+        if res.status != 0:
+            return res, n_, int(active.sum())
+        new = ((A @ res.x - b) > tol) & ~active
+        if not new.any():
+            return res, n_, int(active.sum())
+        active |= near(res.x) & ~active
 
 
 def lp_by_dual(c, A, b, bnd):

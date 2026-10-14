@@ -940,7 +940,7 @@ def build_obstacles(pcb, nid, kids, layer, margin=None, skip_refs=frozenset()):
             root = _build_obstacles(pcb, frozenset(), layer, margin=margin, skip_refs=skip_refs)
             _obs_remember(rkey)
             _OBS_MEMO[rkey] = root
-        base = root.exclude(base_kids, where=lambda it: str(it[3]).startswith('seg:'))
+        base = root.exclude(base_kids, where=lambda it: str(it[3]).startswith(('seg:', GFX)))
         _OBS_MEMO[bkey] = base
     if base is None:
         base = _build_obstacles(pcb, base_kids, layer, margin=margin, skip_refs=skip_refs)
@@ -957,6 +957,7 @@ def build_obstacles(pcb, nid, kids, layer, margin=None, skip_refs=frozenset()):
 # rectangle: never smaller than its copper) -- while half its short side is within this many margins: past it, the
 # long axis's capsule and the edges' leave the pad's deep corners uncovered (exact to (sqrt 2 + 1) / (sqrt 2 - 1))
 RECT_EXACT = 5.5
+GFX = 'gfx:'          # a filled copper graphic's outline capsules are named GFX + net ('seg:' + net a track's)
 
 
 def _build_obstacles(pcb, kids, layer, margin=None, skip_refs=frozenset()):
@@ -1003,8 +1004,18 @@ def _build_obstacles(pcb, kids, layer, margin=None, skip_refs=frozenset()):
     for s in pcb.segments:
         if s.net_id in kids or s.layer != layer:
             continue
+        # (a FILLED copper graphic -- a footprint's land drawn as a polygon -- is copper AREA, as a pad is, not a track:
+        # its outline named apart, GFX, one name per shape, the taut strings see it as they see a pad drawn as
+        # capsules, the one disc round them (taut_fast.pad_discs) -- where a track ('seg:') crossed is a dive they
+        # pass. Crossed as tracks, X2.1's chamfered land on the zynq board took four strings in through its edges,
+        # which pushed them only where they ran along them, and folded each, 30% longer every block, to 846 mm for
+        # a 32 mm lane)
+        name = f'seg:{s.net_id}'
+        if getattr(s, 'graphic', False) and getattr(s, 'graphic_filled', False):
+            ring = getattr(s, 'graphic_ring', None) or ((s.start_x, s.start_y),)
+            name = f'{GFX}{s.net_id}:{ring[0][0]:.4f},{ring[0][1]:.4f}'
         obs.add_cap((s.start_x, s.start_y), (s.end_x, s.end_y),
-                    s.width / 2 + m, f'seg:{s.net_id}', net=s.net_id)
+                    s.width / 2 + m, name, net=s.net_id)
     for v in pcb.vias:
         obs.add_disc(v.x, v.y, v.size / 2 + m, f'via:{v.net_id}',
                      net=v.net_id)
@@ -7003,7 +7014,7 @@ def setup(board, names, dest, log, plan=None, pairs=False):
     # relax algorithm changes; per-net entries so a different K
     # fills in only what is missing. json round-trips floats exactly
     # (repr), so the cached run stays bit-identical.
-    TAUT_CACHE_VERSION = 3   # 2: taut_clean reseeds (0902); 3: rect and oval pads as capsules, a string's disc round them
+    TAUT_CACHE_VERSION = 4   # 2: taut_clean reseeds (0902); 3: rect and oval pads as capsules, a string's disc round them; 4: a filled copper graphic a wall
     log('taut paths...')
     import json as _json
     _tc_path = os.path.splitext(board)[0] + '.taut.json'

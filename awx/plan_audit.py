@@ -82,6 +82,30 @@ import pairs as _pairs  # noqa: E402
 NUDGE_FRAC = 0.25
 
 
+def _neck_ends(ctx, c, nm):
+    """the lane's own ends -- its tooth and its berth -- where the TERMINAL NECK holds it: the router narrows a
+    terminal's segments -- the exact stub to the grid and the first leg on it -- where they graze foreign copper
+    (single_ended_routing._neck_terminal_grazes), and the fanout's escape the lane continues is the fanout's track wide
+    (rules.fan_track): within a lane pitch of its own ends a single's copper is held to that track, not the lane's.
+    None for a pair (its end legs are laid by the pair step)"""
+    if nm in (getattr(ctx, 'pairs', {}) or {}) or nm not in getattr(c, 'teeth', {}) or nm not in getattr(c, 'stubs', {}):
+        return np.zeros((0, 2))
+    return np.array([c.teeth[nm], c.stubs[nm]], float)
+
+
+def _neck_cut(ctx):
+    """the half-width the terminal neck takes off a lane: (track - fanout track) / 2, none when the fanout's is not narrower"""
+    import rules as _rules
+    return max(0.0, (ctx.cfg.track_width - _rules.active().fan_track) / 2)
+
+
+def _near_ends(P, E, reach):
+    """per point of P: within `reach` of one of the points E"""
+    if not len(E) or not len(P):
+        return np.zeros(len(P), bool)
+    return np.hypot(P[:, None, 0] - E[None, :, 0], P[:, None, 1] - E[None, :, 1]).min(1) <= reach
+
+
 def _nudge_line(check, n, g):
     if n:
         print(f'NUDGE {check}: {n} near-miss(es) within a quarter grid step ({NUDGE_FRAC * g:.4f} mm) of their bar -- '
@@ -235,6 +259,7 @@ def check_pitch(ctx, corridors, png=None):
     # pieces that is off the grid (it lands up to half a step off its plan; one ON the grid lands on itself)
     bar = lambda off_a, off_b: TW + CL + g / 2 * (off_a + off_b)
     block = bar(1, 1)
+    cut = _neck_cut(ctx)
     bx0, by0, bx1, by1 = ctx.pcb.board_info.board_bounds
     hits, V_all, n_near = [], {}, 0
     for c in corridors:
@@ -261,14 +286,19 @@ def check_pitch(ctx, corridors, png=None):
                   else [(p, q, L, *((0.0, 0.0) if (_on_grid(p, q, g) or (tuple(map(float, p)), tuple(map(float, q)), L)
                                                    in exact[nm]) else (g / 2, g / 2))) for (p, q, L) in v])
              for nm, v in V.items()}
+        NE = {nm: _neck_ends(ctx, c, nm) for nm in mem}
         for i, nm in enumerate(mem):
             for L in ctx.cfg.layers:
                 Pa, Aa = _samples_allow(R[nm], L, g)
                 if not len(Pa):
                     continue
+                neck_a = cut * _near_ends(Pa, NE[nm], bd.LANE_MIN)
                 for om in mem[i + 1:]:
                     _m, d, ab = _dist_allow(Pa, R[om], L)
-                    need = TW + CL + Aa + ab
+                    # (each lane at its own terminal held to the fanout's track: the other's binding point within a
+                    # lane pitch of its ends when this point is within that and the distance of them)
+                    neck_b = cut * _near_ends(Pa, NE[om], bd.LANE_MIN + d) if len(NE[om]) else 0.0
+                    need = TW + CL + Aa + ab - neck_a - neck_b
                     # ...short by half a step at most without failing, where the pieces are off the grid: the bar
                     # already charges each such piece half a step as if it landed toward the other, the snap lays them
                     # on the grid and its audit holds the laid pieces to the bar exactly (K35's smooth plan: four pairs
@@ -720,6 +750,7 @@ def check_static(ctx, corridors, only=None):
     cfg = ctx.cfg
     TW, CL, g = cfg.track_width, cfg.clearance, cfg.grid_step
     need = TW / 2 + CL + g / 2                   # the bar for a lane piece off the grid (it lands up to half a step off)
+    cut = _neck_cut(ctx)
     pairs = getattr(ctx, 'pairs', {}) or {}
     pads = []
     for fp in ctx.pcb.footprints.values():
@@ -754,6 +785,8 @@ def check_static(ctx, corridors, only=None):
                 NEED = np.concatenate([np.full(len(P_on), TW / 2 + CL), np.full(len(P_off), need)])[:len(P)]
                 if not len(P):
                     continue
+                # (within a lane pitch of its own tooth or berth, the fanout's track: the terminal neck, _neck_ends)
+                NEED = NEED - cut * _near_ends(P, _neck_ends(ctx, c, nm), bd.LANE_MIN)
                 x0, y0 = P.min(0) - 4 * bd.LANE_MIN       # the static copper near the lane: a few lane pitches round it
                 x1, y1 = P.max(0) + 4 * bd.LANE_MIN
                 inb = lambda x, y: x0 <= x <= x1 and y0 <= y <= y1
