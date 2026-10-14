@@ -392,7 +392,7 @@ python3 -X utf8 py_placer/placement_score.py board.kicad_pcb --intent floorplan.
 
 | term | what it measures |
 |---|---|
-| `pair_length` | worst straight-line span of a declared differential pair, mm |
+| `pair_length` | worst span of a declared differential pair, mm. A pair two parts carry whole: the straight pad-centre span. A pair through per-leg series parts (AC caps, USB series resistors), composed by the router's own junction rule (`diff_xnet.find_ac_coupled_xnets`): the longer leg's pad-centre polyline through the series pads, with both legs and \|P−N\| in `pairs[]` as numbers, not a verdict (#1251). A pair neither covers is named in `not_measured` with why; the `basis` names the rule and the measured rows |
 | `pin_order_crossings` | part pairs whose pad order CROSSES, so a router must pay a via or a detour |
 | `cluster_to_pin` | worst distance from a passive to the pin it serves, mm — declared `proximity` claims first, the decap election for the rest |
 | `plane_cut_proxy` | length of each net's chord lying INSIDE a locked part's body, summed. Two-layer boards only; ground and rails excluded |

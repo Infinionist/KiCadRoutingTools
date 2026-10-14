@@ -198,18 +198,63 @@ def pin_order_crossings(pin_order_doc) -> dict:
                          'span_mm': r.get('span_mm')} for r in crossed])
 
 
-def pair_length(pin_order_doc) -> dict:
-    """The worst straight-line span of a declared differential pair, in mm.
+#: The rule that chooses `pair_length`'s population, named in its basis so a
+#: lap scored before #1251 (direct rows only) is `not-comparable` against one
+#: scored after it, as `BALANCE_BASIS` does for #1143.
+PAIR_LENGTH_BASIS = ('pair rows: two parts carrying both nets, plus pairs '
+                     'composed end to end through per-leg series parts '
+                     '(#1251)')
 
-    PURE, over the same rows. `span_mm` is `board_context._pair_span_mm`'s
-    number and PR #917 added it for exactly this: over the nets two parts
-    share, the MINIMUM pad-centre distance per net, then the MAXIMUM over
-    nets. Worst-net, best-pad -- a bus is as long as its longest member.
+#: The fields a composed row (#1251) carries into `pairs[]`.
+_COMPOSED_KEYS = ('series', 'legs_mm', 'leg_skew_mm', 'span_basis',
+                  'stops_at', 'note')
+
+
+def _is_pair_row(row) -> bool:
+    """A pair-scoped row: `pair POS/NEG...`, or the bare `pair` a raised pair
+    branch leaves. Reading only `startswith('pair ')` dropped the second, and
+    the term then reported that no pair had been found (#1251)."""
+    scope = str(row.get('scope') or '')
+    return scope == 'pair' or scope.startswith('pair ')
+
+
+def _raised(row) -> str:
+    """The exception a bare-`pair` row records, as precisely as it says."""
+    if row.get('error'):
+        return str(row['error'])
+    verdict = str(row.get('verdict') or '')
+    if verdict.startswith('NOT MEASURED (') and verdict.endswith(')'):
+        return verdict[len('NOT MEASURED ('):-1]
+    return verdict or 'an unnamed error'
+
+
+def pair_length(pin_order_doc) -> dict:
+    """The worst span of a declared differential pair, in mm.
+
+    PURE, over the same rows. For a pair two parts carry whole, `span_mm` is
+    `board_context._pair_span_mm`'s number and PR #917 added it for exactly
+    this: over the nets two parts share, the MINIMUM pad-centre distance per
+    net, then the MAXIMUM over nets. Worst-net, best-pad -- a bus is as long
+    as its longest member.
+
+    A pair through per-leg series parts (AC caps, USB series resistors) is
+    carried whole by no two parts, and #1251 found every such pair missing:
+    ulx3s's 14 pairs gave no row. `board_context.composed_pair_rows` composes
+    them through the router's own junction rule; such a row's `span_mm` is its
+    longer leg's pad-centre polyline through the series pads, and `pairs[]`
+    carries both legs and |P - N| (`legs_mm`, `leg_skew_mm`) as numbers, not
+    as a verdict.
 
     Reads the PAIR-scoped rows only. A differential pair's polarity is a
     two-net question and asking it as part of the whole interface hides it:
     on the run-25 fixture one part pair AGREES over three shared nets while
     the two pair nets alone are CROSSED.
+
+    When nothing is measured the reason names WHICH of four things happened,
+    with its count: no pair was found; pairs were found but none is carried
+    whole by two parts or composes through series parts (named); the pair
+    branch raised (named); rows were found without a span. They used to share
+    one reason, "found no differential pair", which was false for three.
     """
     unit = 'mm'
     if not isinstance(pin_order_doc, dict):
@@ -217,29 +262,82 @@ def pair_length(pin_order_doc) -> dict:
     if pin_order_doc.get('error'):
         return _skip(f"board_context.pin_order_rows could not measure: "
                      f"{pin_order_doc['error']}", unit)
-    rows = [r for r in (pin_order_doc.get('rows') or [])
-            if str(r.get('scope') or '').startswith('pair ')]
+    census = pin_order_doc.get('pairs')
+    census = census if isinstance(census, dict) else None
+    rows = [r for r in (pin_order_doc.get('rows') or []) if _is_pair_row(r)]
+    raised = [r for r in rows if str(r.get('scope') or '') == 'pair']
+    rows = [r for r in rows if r not in raised]
+    if raised:
+        # The population is INCOMPLETE, so no worst is reported -- a max over
+        # the rows that happened to be measured before the error would read
+        # as the board's worst pair.
+        return _skip(
+            f"the pair branch of board_context.pin_order_rows raised "
+            f"({'; '.join(_raised(r) for r in raised)}), so the pair "
+            f"population is incomplete and no worst span is reported"
+            + (f' ({len(rows)} pair row(s) were measured before it)'
+               if rows else ''),
+            unit, raised=[_raised(r) for r in raised], pair_rows=len(rows))
     spans = [(r['span_mm'], r) for r in rows
              if isinstance(r.get('span_mm'), (int, float))]
+    unspanned = [{'a': r.get('a'), 'b': r.get('b'), 'scope': r.get('scope'),
+                  'verdict': r.get('verdict'), 'note': r.get('note')}
+                 for r in rows
+                 if not isinstance(r.get('span_mm'), (int, float))]
+    found = len(census['found']) if census else None
+    not_measured = list(census.get('not_measured') or []) if census else []
     if not spans:
-        # TWO different answers, and they must not share a reason: no pair was
-        # FOUND, versus pairs were found but none carried a span.
         if rows:
             return _skip(
                 f'{len(rows)} differential-pair row(s) were found, but none '
                 f'carries a span_mm, so the pair length was not measured',
-                unit, pair_rows=len(rows))
+                unit, pair_rows=len(rows), rows_without_span=unspanned,
+                pairs_found=found)
+        if found:
+            named = '; '.join(f"{p['pair']} ({p['why']})"
+                              for p in not_measured[:6])
+            more = (f' (and {len(not_measured) - 6} more)'
+                    if len(not_measured) > 6 else '')
+            return _skip(
+                f'list_nets.find_differential_pairs found {found} pair(s), '
+                f'but none is carried whole by two parts and none composes '
+                f'end to end through per-leg series parts: {named}{more}',
+                unit, pairs_found=found, not_measured=not_measured)
+        if census is None:
+            # A document from before the census, or a hand-built one: it
+            # cannot say whether a pair was found, so this does not claim
+            # that none was.
+            return _skip('board_context.pin_order_rows reported no '
+                         'differential-pair row, and no pair census to say '
+                         'whether any pair was found', unit)
         return _skip(
             'list_nets.find_differential_pairs found no differential pair on '
             'this board (it is name-based, and 2-terminal resonators are '
             'rejected). --impedance-nets is a route.py glob list, not a pair '
-            'source, and is deliberately not read here', unit)
+            'source, and is deliberately not read here', unit, pairs_found=0)
     worst, row = max(spans, key=lambda t: t[0])
+
+    def published(r):
+        out = {'a': r['a'], 'b': r['b'], 'scope': r['scope'],
+               'span_mm': r['span_mm'], 'verdict': r.get('verdict')}
+        if r.get('composed'):
+            out['composed'] = True
+            out.update({k: r.get(k) for k in _COMPOSED_KEYS})
+        return out
+    # BASIS: the rule plus the measured rows. The population is pose-invariant
+    # on one board (which parts carry which nets), so two laps of one board
+    # share it -- and a lap that lost a row, or was scored under the old rule,
+    # is refused rather than compared as if it were the same max.
     return _term(round(float(worst), 3), unit,
-                 pairs=[{'a': r['a'], 'b': r['b'], 'scope': r['scope'],
-                         'span_mm': r['span_mm'], 'verdict': r.get('verdict')}
+                 basis=[PAIR_LENGTH_BASIS] + sorted(
+                     f"{r['a']}~{r['b']} {r['scope']}" for _s, r in spans),
+                 pairs=[published(r)
                         for _s, r in sorted(spans, key=lambda t: -t[0])],
-                 worst_pair=f"{row['a']}~{row['b']} {row['scope']}")
+                 worst_pair=f"{row['a']}~{row['b']} {row['scope']}",
+                 pairs_found=found,
+                 composed=sum(1 for _s, r in spans if r.get('composed')),
+                 rows_without_span=unspanned,
+                 not_measured=not_measured)
 
 
 # ----------------------------------------------------------- cluster to pin

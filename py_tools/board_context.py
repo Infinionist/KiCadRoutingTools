@@ -26,6 +26,7 @@ function that already owns it, and the ones that matter say so on the sheet:
     body extent + source   placement.body            (#896's one model)
     pads by board face     placement.escape.assign_faces  (#850's one rule)
     pin-order agreement    placement.pair_order.pair_metrics
+    pairs through series   diff_xnet.find_ac_coupled_xnets (#1251)
     part class             placement.part_class.classify_part
     decap partner          placement.groups (_elect_tethers / decap_populations)
     diff pairs             list_nets.find_differential_pairs (resonator-safe)
@@ -397,7 +398,10 @@ def build_context(pcb_data, pcb_file: str, *, clearance: float,
         'sources': {
             'body_mm / body_source': 'placement.body.board_bodies (#896)',
             'pads_by_face': 'placement.escape.assign_faces (#850)',
-            'pin_order': 'placement.pair_order.pair_metrics',
+            'pin_order': 'placement.pair_order.pair_metrics; a pair through '
+                         'per-leg series parts (#1251): the junctions of '
+                         'diff_xnet.find_ac_coupled_xnets, judged by '
+                         'pair_order.composed_pair_metrics',
             'part_class': 'placement.part_class.classify_part',
             'serves': 'placement.groups tether election '
                       '(DECAP_MIN_IC_PADS = 4, so a 3-pad regulator can '
@@ -516,16 +520,26 @@ def pin_order_rows(pcb_data, pcb_file: str, clearance: float):
     # interface hides it: on esp_prog U1<->USB1 shares three nets and AGREES
     # overall while /D_P and /D_N alone are CROSSED. That fact decided run
     # 25's only open clause and was found after routing.
+    #
+    # `pairs` is the CENSUS behind those rows (#1251): every pair
+    # `list_nets.find_differential_pairs` found, which ones a row measures,
+    # and why each other one has none. Without it a reader of the rows cannot
+    # tell "no pair on this board" from "14 pairs, none carried whole by two
+    # parts" -- ulx3s is the second and `pair_length` used to say the first.
+    census = {'found': [], 'direct': [], 'composed': [], 'not_measured': [],
+              'xnet_warnings': [], 'xnets_not_chained': []}
+    found, name_to_id, direct = [], {}, set()
     try:
         from placement.pair_order import pair_metrics
         import list_nets
-        name_to_id = {}
         for ref, fp in (pcb_data.footprints or {}).items():
             for pad in (fp.pads or ()):
                 nm = getattr(pad, 'net_name', '') or ''
                 if nm:
                     name_to_id.setdefault(nm, getattr(pad, 'net_id', 0) or 0)
-        for pos, neg in (list_nets.find_differential_pairs(pcb_data) or ()):
+        found = list(list_nets.find_differential_pairs(pcb_data) or ())
+        census['found'] = [[pos, neg] for pos, neg in found]
+        for pos, neg in found:
             ids = [name_to_id.get(pos), name_to_id.get(neg)]
             if None in ids or 0 in ids:
                 continue
@@ -537,6 +551,7 @@ def pin_order_rows(pcb_data, pcb_file: str, clearance: float):
                     m = pair_metrics(model.state, a, b, only_nets=ids)
                     if m is None:
                         continue
+                    direct.add(f'{pos}/{neg}')
                     rows.append({
                         'a': a, 'b': b, 'nets': m['nets'],
                         'scope': f'pair {pos}/{neg}',
@@ -546,14 +561,265 @@ def pin_order_rows(pcb_data, pcb_file: str, clearance: float):
                                                  only_nets=ids),
                     })
     except Exception as exc:                                 # noqa: BLE001
-        rows.append({'a': '-', 'b': '-', 'nets': 0, 'scope': 'pair',
-                     'inversions': None, 'lis': None, 'span_mm': None,
-                     'verdict': f'NOT MEASURED ({type(exc).__name__})'})
+        rows.append(_pair_error_row('the pair rows', exc))
+        census['error'] = f'{type(exc).__name__}: {exc}'
+        found = []
+    composed = set()
+    if found:
+        try:
+            got, composed, census['xnet_warnings'], \
+                census['xnets_not_chained'] = composed_pair_rows(
+                    pcb_data, model.state, found, name_to_id)
+            rows.extend(got)
+        except Exception as exc:                             # noqa: BLE001
+            rows.append(_pair_error_row('the composed pairs', exc))
+            census['error'] = f'{type(exc).__name__}: {exc}'
+    census['direct'] = sorted(direct)
+    census['composed'] = sorted(composed)
+    if 'error' not in census:
+        census['not_measured'] = _unmeasured_pairs(
+            pcb_data, found, name_to_id, direct | composed,
+            census['xnets_not_chained'])
 
     # Pair rows first: they are the narrow, unfixable-by-rotation claim.
     rows.sort(key=lambda r: (r['scope'] == 'interface',
                              -(r['inversions'] or 0), r['a'], r['b']))
-    return {'error': None, 'rows': rows}
+    return {'error': None, 'rows': rows, 'pairs': census}
+
+
+def _pair_error_row(what, exc):
+    """The row a raised pair branch leaves. Its scope is the bare `pair`: no
+    pair is named because none was measured, and `pair_length` reads that
+    scope as "the pair population is incomplete", never as "no pair"."""
+    return {'a': '-', 'b': '-', 'nets': 0, 'scope': 'pair',
+            'inversions': None, 'lis': None, 'span_mm': None,
+            'verdict': f'NOT MEASURED ({type(exc).__name__})',
+            'error': f'{what}: {type(exc).__name__}: {exc}'}
+
+
+def _copper_nets(fp):
+    """The net ids on a part's pads, aperture-only windows excluded (#1143)."""
+    from kicad_parser import non_aperture_pads
+    return {getattr(q, 'net_id', 0) or 0 for q in non_aperture_pads(fp)}
+
+
+def _carried_whole_by(pcb_data, net_ids, exclude=()):
+    """The parts whose copper pads carry EVERY net in `net_ids`."""
+    want = set(net_ids)
+    return sorted(r for r, fp in (pcb_data.footprints or {}).items()
+                  if r not in exclude and want <= _copper_nets(fp))
+
+
+#: What a composed row's span is, printed beside it.
+COMPOSED_SPAN_BASIS = ('the longer leg: end pad -> series part pads -> end '
+                       'pad, straight between pad centres')
+
+
+def composed_pair_rows(pcb_data, state, found, name_to_id):
+    """Rows for pairs that run END TO END through per-leg series parts (#1251).
+
+    A pair through AC caps or USB series resistors is two name-detected pairs:
+    U1 carries FPDI_D0+/-, GPDI1 carries /gpdi/GPDI_D0+/-, and C42 / C43 each
+    carry one net of each. No two parts carry both nets of either pair, so the
+    direct rows above find none of it -- ulx3s has 14 pairs and no row.
+
+    The junctions are the ROUTER's: `diff_xnet.find_ac_coupled_xnets` (#196),
+    which joins two pairs only when BOTH polarities are bridged, each by its
+    own non-DNP part with exactly two copper pads, on the same polarity. Its
+    chain is walked from one end to the other, and the row carries:
+
+      * `a` / `b`: the end parts, the one part (series parts aside) carrying
+        each end pair whole. None or several is said, not chosen;
+      * `series`: the series part on each leg, in chain order;
+      * `legs_mm`: each leg's pad-centre polyline, end pad -> series pads ->
+        end pad, taking the end pad nearest its series pad; `leg_skew_mm` is
+        |P - N|. Numbers, not a verdict: a straight-line floor says what the
+        placement forces, and meanders can still add copper;
+      * `span_mm`: the longer leg (`COMPOSED_SPAN_BASIS`) -- worst member, as
+        `_pair_span_mm` takes it for a direct pair;
+      * the polarity verdict between the two END parts
+        (`pair_order.composed_pair_metrics`).
+
+    The chain follows name-detected pairs only, so it stops at the last part
+    carrying one whole -- which need not be where the signal ends (rp2350's
+    stops at U3, a flow-through ESD part whose J1-side nets are not a named
+    pair). `stops_at` names each end with its part class and copper pad count
+    and the row's `note` says so; nothing past an end is followed or guessed.
+
+    Returns (rows, composed pair keys, the router's warnings, XNets that are
+    not a simple chain). A key is "POS/NEG", as in a direct row's scope.
+    """
+    import math
+    from diff_xnet import find_ac_coupled_xnets
+    from kicad_parser import non_aperture_pads
+    from routing_config import DiffPairNet
+    from placement.pair_order import composed_pair_metrics
+    from placement.part_class import classify_part
+
+    fps = pcb_data.footprints or {}
+    dp, member = {}, {}
+    for pos, neg in found:
+        ids = (name_to_id.get(pos), name_to_id.get(neg))
+        if None in ids or 0 in ids:
+            continue
+        key = f'{pos}/{neg}'
+        dp[key] = DiffPairNet(base_name=key, p_net_id=ids[0], n_net_id=ids[1],
+                              p_net_name=pos, n_net_name=neg)
+        member[ids[0]] = (key, 'P')
+        member[ids[1]] = (key, 'N')
+    xnets, warnings = find_ac_coupled_xnets(pcb_data, dp)
+
+    def dist(p, q):
+        return math.dist((p.global_x, p.global_y), (q.global_x, q.global_y))
+
+    def end_note(ref):
+        fp = fps[ref]
+        try:
+            cls = classify_part(fp, ref).name
+        except Exception:                                    # noqa: BLE001
+            cls = None
+        return {'ref': ref, 'class': cls,
+                'copper_pads': len(non_aperture_pads(fp))}
+
+    rows, composed, unchained = [], set(), []
+    for xn in xnets:
+        keys = sorted(m.base_name for m in xn.members)
+        bridges = set(xn.bridge_refs)
+        # (key, key) -> polarity -> {'ref': series part, key: its pad there}
+        junction = {}
+        for ref in sorted(bridges):
+            p0, p1 = non_aperture_pads(fps[ref])
+            # One polarity per part: the junction rule refuses a part that
+            # bridges P to N, so both pads name the same one.
+            k0, pol = member[p0.net_id]
+            k1 = member[p1.net_id][0]
+            junction.setdefault(frozenset((k0, k1)), {})[pol] = {
+                'ref': ref, k0: p0, k1: p1}
+        nbrs = {k: set() for k in keys}
+        for edge in junction:
+            a_k, b_k = sorted(edge)
+            nbrs[a_k].add(b_k)
+            nbrs[b_k].add(a_k)
+        tips = [k for k in keys if len(nbrs[k]) == 1]
+        if (len(junction) != len(keys) - 1 or len(tips) != 2
+                or any(len(v) > 2 for v in nbrs.values())):
+            unchained.append({'pairs': keys, 'series': sorted(bridges),
+                              'why': 'its series parts join the pairs in a '
+                                     'branch, not a chain, so there is no '
+                                     'single end-to-end leg'})
+            continue
+        order, prev = [tips[0]], None
+        while len(order) < len(keys):
+            nxt = sorted(nbrs[order[-1]] - {prev})[0]
+            prev = order[-1]
+            order.append(nxt)
+        ends = [_carried_whole_by(pcb_data, (dp[k].p_net_id, dp[k].n_net_id),
+                                  exclude=bridges)
+                for k in (order[0], order[-1])]
+        if all(len(e) == 1 for e in ends) and ends[0][0] > ends[1][0]:
+            order.reverse()
+            ends.reverse()
+        composed.update(order)
+        scope = 'pair ' + ' + '.join(order)
+        series = {pol: [junction[frozenset((order[i], order[i + 1]))][pol]
+                        ['ref'] for i in range(len(order) - 1)]
+                  for pol in ('P', 'N')}
+        row = {'a': ','.join(ends[0]) or '-', 'b': ','.join(ends[1]) or '-',
+               'nets': 2, 'scope': scope, 'composed': True,
+               'series': series, 'inversions': None, 'lis': None, 'ties': 0,
+               'span_mm': None, 'span_basis': COMPOSED_SPAN_BASIS,
+               'legs_mm': None, 'leg_skew_mm': None}
+        if not all(len(e) == 1 for e in ends):
+            bad = [(k, e) for k, e in zip((order[0], order[-1]), ends)
+                   if len(e) != 1]
+            row['verdict'] = 'NOT MEASURED (an end part is not determined)'
+            row['note'] = '; '.join(
+                f'{k} is carried whole by ' + (', '.join(e) if e else
+                                               'no part')
+                + (' -- which of them ends the signal is not something the '
+                   'netlist says' if e else '')
+                for k, e in bad)
+            rows.append(row)
+            continue
+        a, b = ends[0][0], ends[1][0]
+        legs = {}
+        for pol in ('P', 'N'):
+            pts = []
+            for i in range(len(order) - 1):
+                j = junction[frozenset((order[i], order[i + 1]))][pol]
+                pts += [j[order[i]], j[order[i + 1]]]
+            nid_a = getattr(dp[order[0]], f'{pol.lower()}_net_id')
+            nid_b = getattr(dp[order[-1]], f'{pol.lower()}_net_id')
+            first = min((q for q in non_aperture_pads(fps[a])
+                         if q.net_id == nid_a),
+                        key=lambda q: (dist(q, pts[0]), q.global_x,
+                                       q.global_y))
+            last = min((q for q in non_aperture_pads(fps[b])
+                        if q.net_id == nid_b),
+                       key=lambda q: (dist(q, pts[-1]), q.global_x,
+                                      q.global_y))
+            path = [first] + pts + [last]
+            legs[pol] = sum(dist(path[i], path[i + 1])
+                            for i in range(len(path) - 1))
+        m = composed_pair_metrics(
+            state, a, b, (dp[order[0]].p_net_id, dp[order[0]].n_net_id),
+            (dp[order[-1]].p_net_id, dp[order[-1]].n_net_id))
+        stops = [end_note(a), end_note(b)]
+        row.update({
+            'a': a, 'b': b,
+            'legs_mm': {pol: round(v, 3) for pol, v in legs.items()},
+            # From the unrounded legs: rounding each first can move the
+            # difference by a unit in the last place.
+            'leg_skew_mm': round(abs(legs['P'] - legs['N']), 3),
+            'span_mm': round(max(legs.values()), 3),
+            'stops_at': stops,
+            'note': ('composed through name-detected pairs only: it stops at '
+                     + ' and '.join(f"{s['ref']} ({s['class'] or 'no part class'}"
+                                    f", {s['copper_pads']} copper pads)"
+                                    for s in stops)
+                     + ', where no name-detected pair continues. A part '
+                       'that is not a connector may still pass the signal on '
+                       'through nets the name-based detector cannot pair; '
+                       'those are not followed.')})
+        if m is None:
+            row['verdict'] = ('NOT MEASURED (the end parts have no channel '
+                              'axis or lack an escape pad per leg)')
+        else:
+            row.update({'nets': m['nets'], 'inversions': m['inversions'],
+                        'lis': m['lis'], 'ties': m.get('ties', 0),
+                        'verdict': _verdict(m)})
+        rows.append(row)
+    return rows, composed, warnings, unchained
+
+
+def _unmeasured_pairs(pcb_data, found, name_to_id, measured, unchained):
+    """Each found pair no row measures, with the reason it has none."""
+    in_branch = {k for u in unchained for k in u['pairs']}
+    out = []
+    for pos, neg in found:
+        key = f'{pos}/{neg}'
+        if key in measured:
+            continue
+        ids = (name_to_id.get(pos), name_to_id.get(neg))
+        if None in ids or 0 in ids:
+            out.append({'pair': key, 'carried_whole_by': [],
+                        'why': 'a net of the pair is on no pad'})
+            continue
+        whole = _carried_whole_by(pcb_data, ids)
+        if key in in_branch:
+            why = ('its series parts join it to other pairs in a branch, not '
+                   'a chain, so there is no single end-to-end leg')
+        elif len(whole) >= 2:
+            why = (f"carried whole by {', '.join(whole)}, but pair_metrics "
+                   f"gave no row (the parts coincide, or one lacks an escape "
+                   f"pad per net)")
+        else:
+            why = ((f'carried whole by {whole[0]} only' if whole
+                    else 'no part carries both nets')
+                   + ', and no series part joins it end to end to another '
+                     'detected pair')
+        out.append({'pair': key, 'carried_whole_by': whole, 'why': why})
+    return out
 
 
 def _pours(pcb_data, pcb_file):
@@ -628,6 +894,33 @@ def format_md(doc) -> str:
                  'below); a ratio much above 1.5 is a finding to explain. '
                  'The threshold is a judgement, which is why the tool '
                  'reports the measurement and not a verdict.')
+        composed = [r for r in po['rows'] if r.get('composed')]
+        if composed:
+            L.append('')
+            L.append('Pairs composed END TO END through per-leg series parts '
+                     '(#1251): `a`/`b` are the end parts, the verdict is '
+                     'between them, and the span is '
+                     f'{COMPOSED_SPAN_BASIS}. Each leg is printed; |P-N| is '
+                     'a straight-line floor difference, not a verdict.')
+            L.append('')
+            L.append('| A | B | series P / N | P mm | N mm | abs(P-N) mm | '
+                     'note |')
+            L.append('|---|---|---|---|---|---|---|')
+            for r in composed:
+                legs = r.get('legs_mm') or {}
+                ser = r.get('series') or {}
+                L.append(f"| {r['a']} | {r['b']} | "
+                         f"{','.join(ser.get('P') or [])} / "
+                         f"{','.join(ser.get('N') or [])} | "
+                         f"{legs.get('P', '-')} | {legs.get('N', '-')} | "
+                         f"{r.get('leg_skew_mm', '-')} | "
+                         f"{r.get('note') or ''} |")
+    unmeasured = (po.get('pairs') or {}).get('not_measured') or []
+    if unmeasured:
+        L.append('')
+        L.append('Differential pairs no row measures: '
+                 + '; '.join(f"{p['pair']} ({p['why']})" for p in unmeasured)
+                 + '.')
     L.append('')
 
     L.append('## Parts')
