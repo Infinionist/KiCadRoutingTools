@@ -38,9 +38,12 @@ TARGETS = {
     'fp': os.path.join(_PL, 'floorplan.py'),
     'quench': os.path.join(_PL, 'quench.py'),
     'seeder': os.path.join(_PL, 'seeder.py'),
+    'ps': os.path.join(_ROOT, 'py_placer', 'place_seed.py'),
 }
 
 T1174 = os.path.join(_TESTS, 'test_1174_emit_round_trip.py')
+T1241 = os.path.join(_TESTS, 'test_1241_seed_gate_off_board.py')
+T1117 = os.path.join(_TESTS, 'test_1117_reseat_declared_rotation.py')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -159,6 +162,31 @@ ROWS = [
      "        zx1, zy1 = min(zx1, bounds[2]), min(zy1, bounds[3])\n",
      "        pass\n",
      (T1174,), 'KILLED'),
+    # ---- follow-ups folded in: #1241 (c)/(d) and #1240's wording ----------
+    ('the-gate-forgets-pad-copper-off-the-board', 'ps',
+     "                          oob=[r for r, _a in _oob_seeded])\n",
+     "                          oob=[])\n",
+     (T1241,), 'KILLED'),
+    ('the-gate-reason-ignores-oob-alone', 'ps',
+     "    if not (unseated or own or my_pads or hole_delta or band or oob):\n",
+     "    if not (unseated or own or my_pads or hole_delta or band):\n",
+     (T1241,), 'KILLED'),
+    ('the-gate-charges-copper-the-seed-did-not-place', 'ps',
+     "                   if r in _seeded and r not in result['unseated']]\n",
+     "                   if r not in result['unseated']]\n",
+     (T1241,), 'KILLED'),
+    ('the-floor-note-calls-off-board-copper-the-floor', 'seeder',
+     "    off = pad['gap_mm'] is not None and pad['gap_mm'] < 0\n",
+     "    off = False\n",
+     (T1241, T1174), 'KILLED'),
+    ('the-reseat-always-blames-the-polish', 'ps',
+     "                               if _polish_moved(f['reference'])]\n",
+     "                               if True]\n",
+     (T1174,), 'KILLED'),
+    ('the-reseat-never-blames-the-polish', 'ps',
+     "                        return fp is None or (\n",
+     "                        return False and (\n",
+     (T1117,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)

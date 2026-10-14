@@ -40,6 +40,7 @@ TARGETS = {
     'leg': os.path.join(_PL, 'legality.py'),
     'quench': os.path.join(_PL, 'quench.py'),
     'asm': os.path.join(_ROOT, 'py_tools', 'check_assembly.py'),
+    'cg': os.path.join(_PL, 'connector_geometry.py'),
 }
 
 T1201 = os.path.join(_TESTS, 'test_1201_fab_guard.py')
@@ -144,6 +145,19 @@ ROWS = [
     ('the-reason-count-dropped', 'asm',
      '            print("    None of these BLOCK: " + \'; \'.join(\n',
      '            print("    None of these BLOCK." + \'\'.join(\n',
+     (T1201,), 'KILLED'),
+    # ---- #1243: the #961 band reader takes the same guard -----------------
+    ('conngeom-ignores-the-marking-guard', 'cg',
+     "        if layer == side + '.Fab' and self._fab_is_marking(ref):\n",
+     "        if False:\n",
+     (T1201,), 'KILLED'),
+    ('conngeom-marking-without-silk-reads-a-missing-layer', 'cg',
+     "        if layer not in layers:\n",
+     "        if False:\n",
+     (T1201,), 'KILLED'),
+    ('conngeom-cache-ignores-the-guard', 'cg',
+     "        key = (ref, side, fab_is_marking)\n",
+     "        key = (ref, side)\n",
      (T1201,), 'KILLED'),
 ]
 

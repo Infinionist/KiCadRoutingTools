@@ -298,8 +298,8 @@ class ConnectorGeometry:
         if fp is None:
             return None, None, 'part not on this board'
         from .legality import footprint_side
+        points, layer, reason = self.source.envelope(ref, footprint_side(fp))
         side = footprint_side(fp)
-        points, layer, reason = self.source.envelope(ref, side)
         if layer == side + '.Fab' and self._fab_is_marking(ref):
             points, layer, reason = self.source.envelope(ref, side, True)
         if points is None:

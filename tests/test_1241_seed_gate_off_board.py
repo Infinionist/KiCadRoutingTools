@@ -31,9 +31,9 @@ from test_1174_emit_round_trip import _TALL_J1, _box, _synthetic  # noqa: E402
 PY = sys.executable
 
 
-def _seed(td, band, code, refuse=None):
+def _seed(td, band, code, refuse=None, extra=()):
     """Seed the body-less J1 with a north claim of `band` and no zone."""
-    path = _synthetic(td, [_TALL_J1, _box('R1', 25, 25, 1, 0.6)])
+    path = _synthetic(td, [_TALL_J1, _box('R1', 25, 25, 1, 0.6)] + list(extra))
     ip = os.path.join(td, 'i.json')
     with open(ip, 'w', encoding='utf-8') as fh:
         json.dump({'schema': floorplan.SCHEMA_VERSION, 'kind': floorplan.KIND,
@@ -89,6 +89,19 @@ class TheIssueBoard(unittest.TestCase):
             r, summary = _seed(td, {'min': 0.0, 'max': 2.0}, code=0)
         self.assertEqual(summary['pad_copper_off_board_seeded'], [])
         self.assertNotIn('past the board outline', r.stdout + r.stderr)
+
+    def test_copper_the_seed_did_not_place_is_not_charged(self):
+        # R2 comes in LOCKED with its pad 0.6 mm past the east edge, so the
+        # seed leaves it there: the board's own, like an inherited short. It
+        # is reported (check_assembly gates the board on it), not charged.
+        r2 = _box('R2', 39.8, 20, 1, 0.6, pad=(0.5, 0)).replace(
+            '(layer "F.Cu") (at', '(locked yes) (layer "F.Cu") (at', 1)
+        with tempfile.TemporaryDirectory() as td:
+            r, summary = _seed(td, {'min': 0.0, 'max': 2.0}, code=0,
+                               extra=[r2])
+        self.assertLess(summary['pad_edge_after']['minimum_gap_by_ref_mm']
+                        ['R2'], 0.0)
+        self.assertEqual(summary['pad_copper_off_board_seeded'], [])
 
 
 if __name__ == '__main__':
