@@ -129,7 +129,10 @@ check("PartEscape really has no worst_deficit ATTRIBUTE",
       "this test should be deleted rather than inverted")
 if os.path.isfile(DENSE):
     dp = parse_kicad_pcb(DENSE)
-    led = escape_ledger(dp, pcb_file=DENSE, clearance=0.2)
+    # The population the capacity options grade since #1196: fine by pitch
+    # OR at the board's own rules.
+    led = escape_ledger(dp, pcb_file=DENSE, clearance=0.2,
+                        fine_at_board_rules=True)
     tot = deficit_totals(led)
     want_parts = sum(1 for p in led if p.to_dict()['worst_deficit'] > 0)
     want_lanes = sum(f['deficit'] for p in led for f in p.to_dict()['faces'])

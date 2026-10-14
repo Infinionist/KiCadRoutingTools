@@ -453,10 +453,25 @@ the row it was recorded against.
 ## Capacity Options (`check_capacity.py`)
 
 Answers "can this board hold its parts, and if not, what are the levers?" with
-measured numbers rather than a verdict. Five options, each reporting `measured`
+measured numbers rather than a verdict. Six options, each reporting `measured`
 / `expected` / `action` and naming what it does **not** model: grow the
 outline, add copper layers, move the neighbour eating a starved face, relax
-clearance (floored at what the fab can etch), and use a smaller package.
+clearance (floored at what the fab can etch), narrow the track so it crosses
+through-hole pin rows (`narrow_track`, #1196), and use a smaller package.
+
+The three escape options (`add_layers`, `move_blocker`, `relax_clearance`)
+ledger every part that is fine-pitch by the absolute pitches **or at the
+board's own rules** — no track of the board's width passes between two
+adjacent pads at its clearance, or two vias cannot sit side by side at the pad
+pitch (#1196, `escape.fine_by_rules`). The parts are fixed **once**, at the
+board's clearance, so a ladder rung at a tighter clearance grades the same
+parts rather than reading fewer of them as a gain. `narrow_track` reports the
+through-hole pin gaps a track of the board's width crosses on the routing
+grid, and the narrower widths that open the rest, down to the fab floor — the
+same measurement as `check_channels`' through-hole rows below. On a board of
+DIPs it is the capacity the lane ledgers cannot see: interf_u at its 0.4 mm
+class track read `relax_clearance: not measured -- no face is short of lanes`
+while its DIP rows crossed none of 115 gaps.
 
 **It reports; it never refuses and it never acts** — no outline is written, no
 stackup edited, no part moved. There is deliberately no exit code for "too
@@ -1651,6 +1666,23 @@ face against `--baseline`), **3** (nothing had a ledger, so the gate did not
 run — this is *not* a pass), and **2** (unreadable board). Without `--gate`
 it is 0 throughout.
 
+**Which parts are ledgered** without `--refs`: QFN/QFP/BGA packages, a part
+whose pad pitch is under twice the lane pitch, and — since #1196 — every part
+fine-pitch **at the floors this run resolved**: no track passes between two
+adjacent pads of a row (`gap < track + 2 × clearance`) or two vias cannot sit
+side by side at the pad pitch (`escape.fine_by_rules`). Absolute pitches alone
+never ledgered a SOIC (a 0.67 mm pin gap) on a board asking for track 0.3 /
+clearance 0.3, which needs 0.9 mm between pins. The population is larger, so
+`--gate` sees more parts: on the tracked `run23` pair the verdict is unchanged
+(exit 4) and it now names 18 damaged faces where it named U3's two.
+
+**The board's Board Setup minimums.** The floors are the Default net class,
+which is what `route.py` routes at when given no `--clearance`. When the
+board's Board Setup asks for a larger `min_clearance` or `min_track_width`, the
+header is followed by a `NOTE` naming them: KiCad's DRC grades the board at
+them (#1210), so pass the two flags it prints to ledger at the board's own
+minimums. JSON: `board_minimums_above`.
+
 ### Which face a pad points at, and the interior bucket
 
 Demand is *"nets with a pad **on** this face"*, and "on" is
@@ -1723,7 +1755,8 @@ way `escape_band_mm` is):
 | `interior_nets` | distinct nets among them |
 | `interior_demand_nets` | the subset that had **no** pad on any face, i.e. what the four faces actually lost |
 | `interior_pads_box` | the same count under the **box rule alone** — basis-free, and the number to read when you want the fanout fact without the parameter fact |
-| `face_corridor_escapes` | how many pads the corridor freed. `interior_pads + face_corridor_escapes == interior_pads_box` is a conservation law, not a second copy: a count that falls with nothing naming where it went is how a ledger stops looking |
+| `face_corridor_escapes` | how many pads the corridor freed. `interior_pads + face_corridor_escapes + through_row_pads == interior_pads_box` is a conservation law, not a second copy: a count that falls with nothing naming where it went is how a ledger stops looking |
+| `through_row_pads` / `through_row_nets` | **#1196.** On a through-hole part (plated pins outnumber SMD pads), a pin both rules call interior is charged to its **nearest face** instead: it is on every copper layer already, so it needs a lane between the outer pins, not a via. interf_u's PGA U9 reported "70 pad(s) on no face -- they need a via, not a lane; 40 net(s) left the faces"; its 70 pins and 40 nets are now face demand, printed once as `through-row`. An SMD part's thermal vias stay interior — on the other layers nothing of that part stands in their way. `through_row_nets` counts the nets that became demand that way |
 | `face_corridor_clearance_mm` / `face_corridor_track_mm` | the basis the enclosure test ran at |
 | `face_corridor_source` | `caller` when the corridor ran; `unmodelled`, `no_pad_boxes` or `not_measured` naming which degradation happened instead — three different facts, not one `unknown` |
 
@@ -1765,6 +1798,34 @@ haasoscope_pro_max, routed_output — 68 / 44 / 44 lanes short here against 0 on
 the escape ledger) now agree. Regenerate with
 `tests/measure_850_848_faces.py --table demand`, which prints the two
 ledgers' interior counts adjacent as its negative control.
+
+### Through-hole pin rows
+
+The face ledger asks whether a part's OWN pins can leave. On a board of DIPs,
+PGAs and headers the capacity is the other nets crossing those parts' pin
+rows between adjacent pins, so after the ledger the tool prints, per
+through-hole part, how many adjacent-pin gaps a track of the run's width
+crosses, and the narrower widths that open the rest, down to the fab floor
+(`placement.pin_rows`, #1196; JSON `tht_rows`):
+
+```
+Through-hole pin rows (...grid 0.1, clearance 0.254): 0.4 mm crosses 223/352 adjacent-pin gaps; 0.35 mm opens 223/352; 0.3 mm opens 271/352; ...
+  U1: 0.4 mm crosses 0/18 gaps (pitch 2.54); 0.35 mm opens 0/18; 0.3 mm opens 8/18; 0.25 mm opens 14/18; 0.2 mm opens 18/18
+```
+
+It is measured **on the routing grid, in the router's own obstacle map**
+(`build_base_obstacle_map`, every pad an obstacle), because the arithmetic is
+wrong by the grid's quantisation: interf_u's DIP rows have a 0.94 mm gap, and
+0.4 + 2 × 0.254 = 0.908 fits only within ±0.016 mm of the midpoint, which the
+0.1 mm stamp never lands on — 0 of 115 gaps cross, 48 at 0.3 mm, 91 at
+0.25 mm. A gap is open when one grid column between the two pins is free on
+some layer across the reach of the two pins' own keep-out (a straight
+crossing — the best a convex pad allows). A pin is a pad number's overlapping
+plated copper merged into one box (a Teensy draws each pin as two pads; a
+mounting hole's stitching vias sit on its own pad), and only gaps at a row's
+own pitch are counted. Existing copper is an obstacle, and so is the board
+edge: a header's outer row against the edge reads closed at every width,
+which is true — nothing crosses it toward the edge.
 
 ### The escape band
 

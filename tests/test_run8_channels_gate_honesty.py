@@ -35,6 +35,10 @@ sys.path.insert(0, os.path.join(ROOT, 'py_tools'))  # #522/py_placer layout
 os.environ['KRT_NO_BANNER'] = '1'
 
 BOARD = os.path.join('kicad_files', 'splitflap_driver.kicad_pcb')
+#: A board with nothing to ledger. It was splitflap until #1196 made "fine"
+#: relative to the board's rules: its SOICs have a 0.67 mm pin gap where a
+#: track at 0.3 / 0.25 needs 0.8, so the auto-detect now ledgers them.
+EMPTY = os.path.join('kicad_files', 'cap_chain.kicad_pcb')
 PY = [sys.executable, '-X', 'utf8']
 
 # The CLI resolves these from the board; the library needs them spelled out.
@@ -73,8 +77,11 @@ def ledgered_ref(board):
 
 def main():
     print('a gate that measured nothing does not report a pass')
-    code, out = run(BOARD, '--gate', '--refs')       # explicitly nothing
+    code, out = run(EMPTY, '--gate', '--refs')       # explicitly nothing
     check('exit is not 0 when no part was ledgered', code != 0, f'exit {code}')
+    check('...because nothing was auto-detected, not because the CLI died',
+          code == 3 and 'no fine-pitch parts auto-detected' in out,
+          f'exit {code}')
     check('...and it says the gate did not run', 'GATE DID NOT RUN' in out)
     check('...and it does not call that a pass', 'This is not a pass' in out)
 

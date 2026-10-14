@@ -86,13 +86,14 @@ T841 = os.path.join(ROOT, 'tests', 'test_841_obstruction_rect.py')
 ROWS = [
     # ---- #850: the shared face rule ---------------------------------------
     ('the-ledger-goes-back-to-pad-centres', 'rou',
-     # RE-ANCHORED for #862, which added the corridor basis to this call.
+     # RE-ANCHORED for #862, which added the corridor basis to this call,
+     # and for #1196, which added `through_row=True` after it.
      # The MUTATION is unchanged: hand the ledger no geometry, so it falls
      # back to pad CENTRES measured against the extent.
      "    asg = _assign_faces(fp, own, lane_mm=pitch_routed, fallback_rect=ext,\n"
-     "                        clearance=clearance, track_width=track_width)",
+     "                        clearance=clearance, track_width=track_width,",
      "    asg = _assign_faces(fp, None, lane_mm=pitch_routed, fallback_rect=ext,\n"
-     "                        clearance=clearance, track_width=track_width)",
+     "                        clearance=clearance, track_width=track_width,",
      (T850,), 'KILLED'),
 
     ('pad_box-is-dropped-so-it-degrades-to-centres', 'esc',
@@ -279,8 +280,9 @@ ROWS = [
     # named witness intact and breaks only the reconciliation -- which is the
     # whole point of #850, and the reason that arm now passes `track_width`.
     ('the-ledgers-price-different-corridors', 'rou',
-     "                        clearance=clearance, track_width=track_width)",
-     "                        clearance=clearance, track_width=pitch_routed)",
+     # RE-ANCHORED for #1196 (`through_row=True` now follows); same mutation.
+     "                        clearance=clearance, track_width=track_width,",
+     "                        clearance=clearance, track_width=pitch_routed,",
      (T850, T862), 'KILLED'),
 
     # The basis must be PUBLISHED. Without it a reader diffing two runs cannot

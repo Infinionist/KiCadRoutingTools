@@ -537,6 +537,7 @@ def add_layers(pcb_data, pcb_file: str, *, clearance: float,
     down, so the reason is reported beside them.
     """
     from placement.escape import escape_ledger, lane_pitch  # noqa: F401
+    from placement.escape import board_rule_fine_parts
     try:
         from fab_tiers import (count_copper_layers_in_data,
                                count_copper_layers_in_file, fab_floor_bucket,
@@ -566,10 +567,16 @@ def add_layers(pcb_data, pcb_file: str, *, clearance: float,
     b_now, b_more = fab_floor_bucket(n), fab_floor_bucket(n + step)
     layer_blind = (b_now.bucket == b_more.bucket)
 
+    # #1196: the parts, fixed ONCE at the board's own rules (fine by pitch or
+    # at its track/clearance), so every rung below grades the same parts and
+    # a tighter floor cannot read as a gain by ledgering fewer of them.
+    refs = board_rule_fine_parts(pcb_data, pcb_file, track_width, clearance)
+
     def _deficit(clr, tw, layers=None, field='deficit'):
         return deficit_totals(
             escape_ledger(pcb_data, pcb_file=pcb_file, clearance=clr,
-                          track_width=tw, signal_layers=layers), field=field)
+                          track_width=tw, signal_layers=layers, refs=refs),
+            field=field)
 
     # BOTH sides must be measured at their own fab floor, or the comparison
     # is not about layers at all. Measuring "now" at the board's clearance
@@ -597,7 +604,8 @@ def add_layers(pcb_data, pcb_file: str, *, clearance: float,
         # level down: a number that does not move with the layer count and
         # does not say why.
         _led = escape_ledger(pcb_data, pcb_file=pcb_file, clearance=clearance,
-                             track_width=track_width, signal_layers=n)
+                             track_width=track_width, signal_layers=n,
+                             refs=refs)
         _bounds = [f.supply_bound for p in _led for f in p.faces if f.deficit]
         _slots = [f.via_slots for p in _led for f in p.faces if f.deficit]
     except Exception as e:                       # noqa: BLE001
@@ -754,8 +762,9 @@ def move_blocker(pcb_data, pcb_file: str, *, clearance: float,
     """
     from placement.escape import escape_ledger
     try:
+        # #1196: fine by pitch OR at this board's own rules.
         led = escape_ledger(pcb_data, pcb_file=pcb_file, clearance=clearance,
-                            track_width=track_width)
+                            track_width=track_width, fine_at_board_rules=True)
     except Exception as e:                       # noqa: BLE001
         return _skip(f'the escape ledger did not run: {type(e).__name__}: {e}')
     if not led:
@@ -811,7 +820,7 @@ def relax_clearance(pcb_data, pcb_file: str, *, clearance: float,
     152-174` measured that trap directly (declared 0.02/0.02 reported supply
     242 against 29 at 0.2/0.2).
     """
-    from placement.escape import escape_ledger
+    from placement.escape import board_rule_fine_parts, escape_ledger
     floor_clr = None
     try:
         from fab_tiers import (count_copper_layers_in_data,
@@ -826,9 +835,13 @@ def relax_clearance(pcb_data, pcb_file: str, *, clearance: float,
     except Exception:                            # noqa: BLE001
         floor_clr = None
 
+    # #1196: the parts fixed ONCE at the board's own rules, so a tighter rung
+    # grades the same parts rather than fewer of them.
+    refs = board_rule_fine_parts(pcb_data, pcb_file, track_width, clearance)
+
     def _deficit(clr):
         led = escape_ledger(pcb_data, pcb_file=pcb_file, clearance=clr,
-                            track_width=track_width)
+                            track_width=track_width, refs=refs)
         # Via deficit_totals, NOT `getattr(p, 'worst_deficit', 0)`. That name
         # is a to_dict() key, never an attribute, so the getattr returned 0 on
         # every board and this whole option reported "no face is short of
@@ -879,6 +892,80 @@ def relax_clearance(pcb_data, pcb_file: str, *, clearance: float,
     return out
 
 
+def narrow_track(pcb_data, pcb_file: str, *, clearance: float,
+                 track_width: Optional[float] = None,
+                 limit: int = 6) -> Dict:
+    """Which through-hole pin rows the board's track cannot cross, and the
+    width that opens them (#1196).
+
+    The lane ledgers above model a fine-pitch part's OWN escape. On a board of
+    DIPs, PGAs and headers the capacity is the other nets crossing those
+    parts' pin rows, and none of the options above sees it: interf_u at its
+    0.4 mm class track read `relax_clearance: not measured -- no face is short
+    of lanes` while its DIP rows crossed 0 of 115 gaps. Measured in the
+    router's own obstacle map on its grid (`pin_rows`), floored at the fab's
+    track width -- a width nobody can etch opens nothing.
+    """
+    import routing_defaults as defaults
+    from placement.escape import lane_pitch_parts
+    from placement.pin_rows import ladder_phrase, tht_row_crossings
+    tw, clr = lane_pitch_parts(pcb_data, pcb_file, track_width, clearance)
+    floor_tw = 0.0
+    try:
+        from fab_tiers import (count_copper_layers_in_data,
+                               count_copper_layers_in_file, fab_floor_min)
+        n = (count_copper_layers_in_file(pcb_file)
+             or count_copper_layers_in_data(pcb_data))
+        if n:
+            floor_tw = fab_floor_min(n).get('track_width') or 0.0
+    except Exception:                            # noqa: BLE001
+        floor_tw = 0.0
+    grid = defaults.GRID_STEP
+    try:
+        rep = tht_row_crossings(pcb_data, track_width=tw, clearance=clr,
+                                grid_step=grid, min_track_width=floor_tw)
+    except Exception as e:                       # noqa: BLE001
+        return _skip(f'the pin-row measurement did not run: '
+                     f'{type(e).__name__}: {e}')
+    if not rep['gaps']:
+        return _skip('this board has no through-hole pin row for a track to '
+                     'cross')
+    closed = [p for p in rep['parts'] if p['open'] < p['gaps']]
+    out = {'ran': True,
+           'measured': {'pin_gaps_open': rep['open'],
+                        'pin_gaps': rep['gaps'],
+                        'track_width': tw, 'clearance': clr,
+                        'opens_all_at': rep['opens_all_at'],
+                        'fab_floor_track_width': floor_tw,
+                        'grid_step': grid,
+                        'ladder': rep['ladder'],
+                        'parts_with_closed_gaps': [
+                            {'ref': p['ref'], 'gaps': p['gaps'],
+                             'open': p['open'], 'ladder': p['ladder']}
+                            for p in closed[:limit]]},
+           'expected': {'pin_gaps_open': rep['gaps']},
+           'not_modelled': 'diagonal crossings (a straight one is the best a '
+                           'row offers a convex pad), per-net class '
+                           'clearances, and existing copper as anything but '
+                           'an obstacle'}
+    if not closed:
+        out['action'] = (f"a {tw:g} mm track crosses every one of the "
+                         f"{rep['gaps']} through-hole pin gaps; nothing to "
+                         f"narrow")
+    else:
+        names = ', '.join(p['ref'] for p in closed[:limit])
+        out['action'] = (
+            ladder_phrase(rep, what='through-hole pin gaps')
+            + ('' if rep['opens_all_at'] is not None else
+               f", and some stay closed down to the {floor_tw:g} mm fab "
+               f"floor")
+            + f" (rows of {names}). A row the track cannot cross is a wall "
+              f"every other net routes around; the track width is a "
+              f"net-class decision the board owner makes, not a placement "
+              f"one.")
+    return out
+
+
 def smaller_footprint(pcb_data, pcb_file: str, *, clearance: float,
                       limit: int = 5) -> Dict:
     """Which parts are big enough that their SIZE is the constraint.
@@ -918,6 +1005,7 @@ OPTIONS = {
     'add_layers': add_layers,
     'move_blocker': move_blocker,
     'relax_clearance': relax_clearance,
+    'narrow_track': narrow_track,
     'smaller_footprint': smaller_footprint,
 }
 
@@ -939,7 +1027,8 @@ def capacity_options(pcb_data, pcb_file: str, *, clearance: float,
             # but reads `largest_parts_mm2` and `usable_area_mm2` only, and
             # the policy touches neither.
             kw['assembly_sides'] = assembly_sides
-        if name in ('add_layers', 'move_blocker', 'relax_clearance'):
+        if name in ('add_layers', 'move_blocker', 'relax_clearance',
+                    'narrow_track'):
             kw['track_width'] = track_width
         try:
             out[name] = fn(pcb_data, pcb_file, **kw)

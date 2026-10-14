@@ -1460,7 +1460,11 @@ divided by one track plus one clearance, at the board's own floor) against lanes
 **demanded** (nets that must leave through it). A face in deficit is a *binding
 constraint* — net ordering only chooses which nets strand there, never how many.
 Runs have been spent on ordering experiments against a face this settles in
-seconds.
+seconds. "Fine-pitch" is the absolute pitch test **or** the board's own rules
+(#1196): no track of the board's width passes between two adjacent pads at its
+clearance, or two vias cannot sit side by side at the pad pitch — so a SOIC on
+a board asking for track 0.3 / clearance 0.3 is measured, where the absolute
+0.6 / 0.8 mm pitches never looked at it.
 
 Reported without any declaration, on every board: a face that cannot pass its
 own nets is a fact about geometry, and requiring an opt-in would mean it is only

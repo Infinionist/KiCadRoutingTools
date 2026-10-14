@@ -186,6 +186,16 @@ def test_it_runs_on_real_boards_and_finds_the_fine_pitch_parts():
         refs = escape.fine_pitch_parts(pcb)
         led = escape.escape_ledger(pcb, pcb_file=path)
         assert len(led) == len(refs)
+        # #1196: asked for, the population is ALSO "fine" at the board's own
+        # rules, resolved the way the ledger resolves them -- a superset.
+        tw, clr, dr = escape.lane_pitch_parts(pcb, path, return_rules=True)
+        vp = escape.via_pitch(pcb, path, clearance=clr, design_rules=dr)
+        wide = escape.fine_pitch_parts(pcb, rules=(tw, clr, vp))
+        assert set(refs) <= set(wide)
+        led_r = escape.escape_ledger(pcb, pcb_file=path,
+                                     fine_at_board_rules=True)
+        assert sorted(p.ref for p in led_r) == sorted(wide), (
+            sorted(p.ref for p in led_r), sorted(wide))
         # Sorted worst-deficit-first, so the first row is the one to read.
         deficits = [p.worst.deficit if p.worst else 0 for p in led]
         assert deficits == sorted(deficits, reverse=True), deficits

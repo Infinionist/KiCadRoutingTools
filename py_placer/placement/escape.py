@@ -27,7 +27,9 @@ Three things make this honest rather than a plausible number:
   copper, the same box `routability.face_lane_ledger` charges.
 * **Interior pads count toward NO face.** A pad boxed in by its neighbours does
   not escape sideways at all -- it needs a via. Rolling it into a face's demand
-  would blame the face for a fanout problem. Reported separately.
+  would blame the face for a fanout problem. Reported separately. Except on a
+  through-hole part (#1196): its inner pins are on every layer already, so
+  they are demand on their nearest face (`through_row_pads`).
 
 Deliberately NOT a min-cost-flow escape router (Yan & Wong, DAC 2009). That is
 the right model eventually, but it needs a grid, a solver and a dependency, and
@@ -260,6 +262,12 @@ class PartEscape:
     #: one-pad `Ref*` made `json.dumps(..., allow_nan=False)` raise.
     face_pitch_mm: float = 0.0
     face_pitch_source: str = 'unknown'
+    #: #1196: plated pins of a through-hole part that both rules call
+    #: interior, counted as demand on their nearest face instead (a pin on
+    #: every layer needs a lane between the outer pins, not a via).
+    #: `interior_pads + face_corridor_escapes + through_row_pads ==
+    #: interior_pads_box`.
+    through_row_pads: int = 0
 
     @property
     def worst(self) -> Optional[FaceLedger]:
@@ -289,7 +297,9 @@ class PartEscape:
                 # the two instruments' JSON can be diffed key for key.
                 'interior_pads_box': self.interior_pads_box,
                 'face_corridor_escapes': (self.interior_pads_box
-                                          - self.interior_pads),
+                                          - self.interior_pads
+                                          - self.through_row_pads),
+                'through_row_pads': self.through_row_pads,
                 'face_corridor_source': self.corridor_source,
                 'face_corridor_clearance_mm': round(
                     self.corridor_clearance_mm, 4),
@@ -360,8 +370,66 @@ def pad_pitch(fp) -> float:
     return min(_min_step(xs), _min_step(ys))
 
 
-def fine_pitch_parts(pcb_data, min_pads: int = MIN_PADS) -> List[str]:
+def min_row_gap(fp) -> float:
+    """The narrowest copper gap between two adjacent same-size pads of one
+    straight row, in mm -- what a track threading the row must fit through
+    (#1196). `inf` when the part has no such row.
+
+    Same-size, so an exposed pad sitting in a row of pins is not read as a
+    gap; board coordinates, so a part at a non-90-degree angle has no row.
+    """
+    from paste_apertures import pad_has_copper
+    pads = [p for p in _pads(fp) if pad_has_copper(p)]
+    best = float('inf')
+    for along_x in (True, False):
+        rows: Dict[Tuple, list] = {}
+        for p in pads:
+            line = p.global_y if along_x else p.global_x
+            key = (round(line, 2), round(p.size_x, 3), round(p.size_y, 3))
+            rows.setdefault(key, []).append(p)
+        for row in rows.values():
+            if len(row) < 2:
+                continue
+            pos = sorted(p.global_x if along_x else p.global_y for p in row)
+            width = row[0].size_x if along_x else row[0].size_y
+            for a, b in zip(pos, pos[1:]):
+                gap = (b - a) - width
+                if gap > 1e-6:
+                    best = min(best, gap)
+    return best
+
+
+def fine_by_rules(fp, *, track_width: float, clearance: float,
+                  via_pitch_mm: float = 0.0) -> Optional[str]:
+    """Why `fp` is fine-pitch AT THIS BOARD'S RULES, or None (#1196).
+
+    `'gap'`: no track of `track_width` passes between two adjacent pads at
+    `clearance` (`min_row_gap < track + 2 x clearance`). `'via_pitch'`: two
+    escape vias cannot sit side by side at the pad pitch (`pad_pitch <
+    via_pitch_mm`, i.e. via + clearance or drill + hole-to-hole). The
+    absolute `FINE_PITCH_MM` / `FINE_PITCH_LARGE_MM` never read the rules,
+    so a SOIC-8 (1.27 mm pitch, 0.6 mm pads, a 0.67 mm gap) on a board asking
+    for track 0.3 / clearance 0.3 -- which needs 0.9 mm between pins -- was
+    never ledgered (multichannel_mixer, fa10 board 04).
+    """
+    if min_row_gap(fp) < track_width + 2.0 * clearance - 1e-9:
+        return 'gap'
+    if via_pitch_mm > 0 and pad_pitch(fp) < via_pitch_mm - 1e-9:
+        return 'via_pitch'
+    return None
+
+
+def fine_pitch_parts(pcb_data, min_pads: int = MIN_PADS,
+                     rules: Optional[Tuple[float, float, float]] = None
+                     ) -> List[str]:
     """Refs worth a lane ledger, by PITCH and geometry -- not by pin count.
+
+    `rules` (#1196) is `(track_width, clearance, via_pitch_mm)`: given, a
+    part is ALSO fine when `fine_by_rules` says so at those rules -- the
+    reporting tools pass the floors they resolved, so "fine" moves with the
+    board's own track and clearance instead of only with two absolute
+    pitches. Through-hole parts stay out either way (their pins are on every
+    layer; `pin_rows` reports what they do to other nets' crossings).
 
     The same test the routing skill spells out inline for the fanout decision,
     lifted here so it has one definition rather than a copy in prose. Raw pad
@@ -398,7 +466,11 @@ def fine_pitch_parts(pcb_data, min_pads: int = MIN_PADS) -> List[str]:
                     and pitch <= FINE_PITCH_LARGE_MM))
         # A named array package still has to BE fine-pitch to have a lane
         # problem: a 1.27mm BGA escapes without help.
-        if fine or (named and pitch <= FINE_PITCH_LARGE_MM):
+        if (fine or (named and pitch <= FINE_PITCH_LARGE_MM)
+                or (rules is not None
+                    and fine_by_rules(fp, track_width=rules[0],
+                                      clearance=rules[1],
+                                      via_pitch_mm=rules[2]))):
             out.append(ref)
     return out
 
@@ -927,10 +999,30 @@ class FaceAssignment(NamedTuple):
     #: two since #862, where before it was a function of geometry alone.
     corridor_clearance_mm: float = 0.0
     corridor_track_mm: float = 0.0
+    #: #1196, index-aligned with `faces`: True where both rules called the
+    #: pad interior and it took its nearest face instead, because it is a
+    #: plated pin of a THROUGH-HOLE part (`through_row=True` only). Such a pin
+    #: is on every copper layer, so it needs no via; its net leaves between
+    #: the outer pins, on whichever layer has room.
+    through_row: Tuple[bool, ...] = ()
+
+
+def _nearest_face(pad, rect, pad_box) -> str:
+    """The face `pad` is nearest, by `face_of`'s own distances and tie order
+    -- the box half with no tolerance, so it always answers."""
+    minx, miny, maxx, maxy = rect
+    px0, py0, px1, py1 = (pad_box if pad_box is not None
+                          else (pad.global_x, pad.global_y,
+                                pad.global_x, pad.global_y))
+    d = {'west': px0 - minx, 'east': maxx - px1,
+         'north': py0 - miny, 'south': maxy - py1}
+    near = min(d.values())
+    return next(f for f in FACES if abs(d[f] - near) < 1e-9)
 
 
 def assign_faces(fp, geom, *, lane_mm, fallback_rect=None,
-                 clearance=None, track_width=None) -> FaceAssignment:
+                 clearance=None, track_width=None,
+                 through_row: bool = False) -> FaceAssignment:
     """THE face rule: which face each of `fp`'s pads escapes through.
 
     One function because the disagreement #850 names is not in `face_of`'s
@@ -963,8 +1055,20 @@ def assign_faces(fp, geom, *, lane_mm, fallback_rect=None,
     ledgers resolve DIFFERENT lanes (raw `track + clearance` here,
     grid-quantized in `routability`) and an unreported basis difference is
     exactly what #847 was about.
+
+    `through_row` (#1196, the two lane ledgers pass it): on a through-hole
+    part -- plated pins outnumber SMD pads, `pin_rows.is_through_hole_part`
+    -- a plated pin both rules call interior takes its NEAREST face instead
+    of `None`, and `through_row` marks it. "Interior needs a via" is a fact
+    about an SMD pad; a through-hole pin already is one, on every layer, and
+    its net needs a lane between the outer pins (interf_u's PGA U9: 70 pins
+    were "on no face", their 40 nets out of the demand). Not on an SMD part
+    whose drilled pads are a thermal-via field: on the other layers nothing
+    of that part stands in their way. Off by default, so the other callers
+    (`pose_ops.part_faces`, `board_context`) keep the rule as it was.
     """
     from .legality import pad_box as _pad_box
+    from .pin_rows import is_through_hole_part
     pitch = pad_pitch(fp)
     source = 'pad_lattice'
     if pitch == float('inf'):
@@ -1005,20 +1109,28 @@ def assign_faces(fp, geom, *, lane_mm, fallback_rect=None,
                                 clearance, track_width)
         csource = 'caller'
 
+    tpart = through_row and is_through_hole_part(fp)
+    from kicad_parser import pad_is_plated_through
     out = []
     boxes = []
+    rows = []
     for pad in _pads(fp):
         box = None if geom is None else _pad_box(geom, pad)
         bf = face_of(pad, rect, pitch, pad_box=box)
         boxes.append(bf)
         if bf is None and corridor is not None and box is not None:
             bf = face_of(pad, rect, pitch, pad_box=box, corridor=corridor)
+        row = bf is None and tpart and pad_is_plated_through(pad)
+        if row:
+            bf = _nearest_face(pad, rect, box)
+        rows.append(row)
         out.append((pad, bf))
     return FaceAssignment(faces=tuple(out), pitch_mm=pitch,
                           pitch_source=source, box_faces=tuple(boxes),
                           corridor_source=csource,
                           corridor_clearance_mm=float(clearance or 0.0),
-                          corridor_track_mm=float(track_width or 0.0))
+                          corridor_track_mm=float(track_width or 0.0),
+                          through_row=tuple(rows) if through_row else ())
 
 
 def _face_geometry(rect, face) -> Tuple[float, float, float, float]:
@@ -1567,10 +1679,11 @@ def part_escape(pcb_data, ref, *, pitch_mm: Optional[float] = None,
     # ledgers disagree on `interior_pads` for every board -- the one number
     # #850 exists to have them agree on.
     asg = assign_faces(fp, own, lane_mm=lane, fallback_rect=rect,
-                       clearance=clr, track_width=tw)
+                       clearance=clr, track_width=tw, through_row=True)
     demand: Dict[str, List[int]] = {f: [] for f in FACES}
     interior: List[int] = []
     interior_box = 0
+    through = 0
     for i, (pad, face) in enumerate(asg.faces):
         nid = getattr(pad, 'net_id', 0)
         if not nid or nid in ignored:
@@ -1580,6 +1693,8 @@ def part_escape(pcb_data, ref, *, pitch_mm: Optional[float] = None,
         # `assign_faces` where neither caller's filter is known.
         if asg.box_faces and asg.box_faces[i] is None:
             interior_box += 1
+        if asg.through_row and asg.through_row[i]:
+            through += 1               # #1196: demand, on its nearest face
         if face is None:
             interior.append(nid)
         else:
@@ -1615,7 +1730,22 @@ def part_escape(pcb_data, ref, *, pitch_mm: Optional[float] = None,
                       corridor_clearance_mm=asg.corridor_clearance_mm,
                       corridor_track_mm=asg.corridor_track_mm,
                       face_pitch_mm=asg.pitch_mm,
-                      face_pitch_source=asg.pitch_source)
+                      face_pitch_source=asg.pitch_source,
+                      through_row_pads=through)
+
+
+def board_rule_fine_parts(pcb_data, pcb_file: Optional[str] = None,
+                          track_width: Optional[float] = None,
+                          clearance: Optional[float] = None) -> List[str]:
+    """`escape_ledger(..., fine_at_board_rules=True)`'s population, without
+    the ledger (#1196): fine by pitch or at the rules resolved from these
+    arguments. A caller that ledgers one board at SEVERAL clearances resolves
+    this once and passes it as `refs`, so every rung grades the same parts --
+    otherwise a tighter rung ledgers fewer parts and reads as a gain."""
+    tw, clr, dr = lane_pitch_parts(pcb_data, pcb_file, track_width, clearance,
+                                   return_rules=True)
+    vpitch = via_pitch(pcb_data, pcb_file, clearance=clr, design_rules=dr)
+    return fine_pitch_parts(pcb_data, rules=(tw, clr, vpitch))
 
 
 def escape_ledger(pcb_data, *, refs: Optional[Sequence[str]] = None,
@@ -1628,9 +1758,17 @@ def escape_ledger(pcb_data, *, refs: Optional[Sequence[str]] = None,
                   via_drill: Optional[float] = None,
                   hole_to_hole: Optional[float] = None,
                   signal_layers: Optional[int] = None,
-                  plane_layers: Optional[Sequence[str]] = None
+                  plane_layers: Optional[Sequence[str]] = None,
+                  fine_at_board_rules: bool = False
                   ) -> List[PartEscape]:
     """Ledgers for every fine-pitch part, worst deficit first.
+
+    `fine_at_board_rules` (#1196): with no `refs`, ALSO ledger every part
+    that is fine at the track, clearance and via pitch resolved here
+    (`fine_by_rules`), not only those fine by the two absolute pitches. The
+    reporting tools pass it (`check_capacity`'s options, `check_floorplan
+    --health`); the default keeps the population every other caller and
+    every recorded measurement of this ledger was taken on.
 
     Returns [] on a board with no fine-pitch parts, which is the common case
     and is not a failure -- there is simply no escape question to ask.
@@ -1652,7 +1790,12 @@ def escape_ledger(pcb_data, *, refs: Optional[Sequence[str]] = None,
                        hole_to_hole=hole_to_hole, design_rules=dr)
     nsig, source, planes = signal_layer_count(
         pcb_data, signal_layers=signal_layers, plane_layers=plane_layers)
-    targets = list(refs) if refs is not None else fine_pitch_parts(pcb_data)
+    # #1196: "fine" at THIS board's rules too -- the track, clearance and via
+    # pitch resolved just above -- when the caller asks for it.
+    targets = (list(refs) if refs is not None else
+               fine_pitch_parts(pcb_data, rules=((tw, clr, vpitch)
+                                                 if fine_at_board_rules
+                                                 else None)))
     # #835: both per-board maps resolved ONCE, then threaded into every part.
     # #841 adds the third, at the clearance the lane pitch already resolved.
     sides = board_side_map(pcb_data)
@@ -1701,6 +1844,11 @@ def format_text(ledgers: Sequence[PartEscape], limit: int = 5) -> str:
             lines.append(f"      {p.interior_pads} interior pad(s) escape "
                          f"through NO face -- that is a fanout question, not a "
                          f"lane one")
+        if p.through_row_pads:
+            lines.append(f"      {p.through_row_pads} through-hole pin(s) "
+                         f"inside the outer rows count on their nearest face: "
+                         f"on every layer already, they need a lane between "
+                         f"the outer pins, not a via")
     if len(ledgers) > limit:
         lines.append(f"  ... {len(ledgers) - limit} more")
     return '\n'.join(lines)
