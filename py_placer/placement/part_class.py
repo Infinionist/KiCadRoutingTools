@@ -54,35 +54,36 @@ CONNECTOR_FP = ('connector', 'usb', 'hdmi', 'rj45', 'jack', 'pinheader',
 #: Marker parts by footprint-name SUBSTRING. Mounting holes are NOT here:
 #: a substring also matched KiCad's horizontal D-subs
 #: (`..._MountingHolesOffset...`, #1176), so a hole is decided by
-#: `is_mount_hole_name` (the item name's prefix) and nowhere else.
+#: `is_mount_hole_name` (the item name) and nowhere else.
 MOUNT_FP = ('fiducial', 'testpoint')
+
+#: `MountingHole` anywhere in the item, except as the plural `MountingHoles`
+#: -- the word a part that merely HAS holes uses (a D-sub's
+#: `MountingHolesOffset`, a module's `WithMountingHoles`).
+_MOUNT_HOLE_MID = re.compile(r'mountinghole(?!s)')
 
 
 def is_mount_hole_name(name) -> bool:
     """True when a footprint's ITEM name says it is a mounting hole (#1176).
 
     The item name STARTS with `MountingHole`, in any library
-    (`MountingHole:`, `Mounting_Holes:`, `Glasgow:`, a house library). Three
-    holes on the tracked corpus and the fa10 boards are named otherwise
-    (splitflap H6/H7 `JLCPCB:AssemblyToolingHole`, StickHub H1
-    `footprints:Plain_Hole_3mm`); they are NPTH-only and classify
-    `mount_hole` through the structural rule above, as before. A
-    SUBSTRING test also matched KiCad's horizontal D-subs, which carry the
-    hole offset in their name (`DSUB-9_Female_Horizontal_..._Housed_
-    MountingHolesOffset9.12mm`): five tracked DSUBs read `mount_hole`, so
-    their edge claim was never emitted. The item, not `lib:item`, because the
-    text parser keeps the library prefix and the pcbnew path does not -- a
-    rule on the whole string would answer differently on the two fronts.
-    Rejected alternatives, measured: "its plated pads carry nets" also
-    reclassifies glasgow MK1-4 and ulx3s H1-4 (netted plated holes); a
-    `MountingHole:` library-prefix rule misses the Glasgow and Mounting_Holes
-    libraries and the pcbnew path. The known casualty of the item rule: a
-    house library NAMED MountingHole whose item is not (`MountingHole:2.5mm`,
-    a generator stub with SMD placeholder pads) -- it was already unclassed on
-    the pcbnew front, and an NPTH-only hole is caught by the structural rule
-    above whatever its name."""
+    (`MountingHole:`, `Mounting_Holes:`, `Glasgow:`, a house library), or
+    carries the singular `MountingHole` later on (`M3_MountingHole_Pad`). The
+    plural does not count: KiCad's horizontal D-subs carry the hole offset in
+    their name (`DSUB-9_Female_Horizontal_..._Housed_
+    MountingHolesOffset9.12mm`), its modules and encoders say
+    `WithMountingHoles` / `CircularMountingHoles`, and a substring test read
+    them all as holes, so a D-sub's edge claim was never emitted. A hole
+    named otherwise (`JLCPCB:AssemblyToolingHole`, `Plain_Hole_3mm`) is
+    NPTH-only and classifies `mount_hole` through `classify_part`'s
+    structural rule. The item, not `lib:item`, because the text parser keeps
+    the library prefix and the pcbnew path does not -- a rule on the whole
+    string would answer differently on the two fronts. So a house library
+    NAMED MountingHole whose item is not (`MountingHole:2.5mm`) is not a hole
+    by name; an NPTH-only one is still caught by the structural rule."""
     item = str(name or '').rsplit(':', 1)[-1].lower()
-    return item.startswith('mountinghole')
+    return (item.startswith('mountinghole')
+            or _MOUNT_HOLE_MID.search(item) is not None)
 
 # The edge-mating subset of CONNECTOR_FP, plus receptacle-only names. A part
 # matching these mates through the board edge / an enclosure aperture.

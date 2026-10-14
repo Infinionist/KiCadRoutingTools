@@ -1499,6 +1499,17 @@ them, so it stays advisory -- and check_assembly now says WHY each contained
 pair does not gate (`gate_exempt`: `silk_drawn`, or the marker / container
 waiver that applies) instead of one sentence that described neither.
 
+**A mounting hole is decided by its ITEM name, not a substring (#1176).**
+`part_class.is_mount_hole_name` reads `MountingHole` at the start of the item
+or, singular, later in it (a house `M3_MountingHole_Pad`); the plural
+`MountingHoles` is what a part that merely HAS holes says (KiCad's horizontal
+D-subs' `MountingHolesOffset`, its modules' `WithMountingHoles`), and the
+substring rule read those as markers. The item rather than `lib:item`, because
+the pcbnew front drops the library prefix. A horizontal D-sub is therefore
+graded as an edge receptacle, so a part inside its drawn housing is a
+containment that gates check_assembly, where the marker waiver used to excuse
+it.
+
 **There is no offset constant, deliberately.** #896 proposes expanding silk by
 "the silk-to-body offset the library uses, ~0.2 mm on OLIMEX"; that turns its
 own acceptance numbers -0.12 / -0.09 / -0.133 into -0.52 / -0.49 / -0.53. Silk

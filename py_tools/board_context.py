@@ -128,12 +128,12 @@ def infer_role(fp, ref: str, cls_name: Optional[str]) -> Dict[str, object]:
         if hit:
             return {'role': role, 'source': 'footprint',
                     'evidence': [f'footprint name contains {hit!r}']}
-    # #1176: by the ITEM name's prefix, as `part_class` reads it -- a
-    # horizontal D-sub carries `MountingHolesOffset` in its name.
+    # #1176: by the ITEM name, as `part_class` reads it -- a horizontal
+    # D-sub carries `MountingHolesOffset` in its name.
     from placement.part_class import is_mount_hole_name
     if is_mount_hole_name(name):
         return {'role': 'mounting hole', 'source': 'footprint',
-                'evidence': ["footprint item name starts with 'mountinghole'"]}
+                'evidence': ["footprint item name says 'MountingHole'"]}
     if pref in _ROLE_PREFIX:
         ev = [f'reference prefix {pref!r} (convention only)']
         if value:

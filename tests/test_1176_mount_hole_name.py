@@ -8,10 +8,12 @@ on two boards, coldfire UARTCAN201-203) read `mount_hole`, so the emitter
 never declared their edge, `edge_connector` reported "not applicable" on
 flat_hierarchy, and the checker and the quench treated them as markers.
 
-`part_class.is_mount_hole_name` reads the ITEM name's prefix -- every hole on
-the tracked corpus and the fa10 designer boards is named `MountingHole_...`,
-whatever its library -- and the item rather than `lib:item`, because the text
-parser keeps the library prefix and the pcbnew path does not.
+`part_class.is_mount_hole_name` reads the ITEM name -- `MountingHole` at its
+start (every hole on the tracked corpus and the fa10 designer boards is named
+`MountingHole_...`, whatever its library) or the singular later on (a house
+`M3_MountingHole_Pad`), never the plural `MountingHoles` a part that merely HAS
+holes carries -- and the item rather than `lib:item`, because the text parser
+keeps the library prefix and the pcbnew path does not.
 """
 
 import os
@@ -43,17 +45,28 @@ def _pcb(name):
 
 class TheName(unittest.TestCase):
 
-    def test_the_item_prefix_decides(self):
+    def test_the_item_name_decides(self):
         for name in ('MountingHole:MountingHole_3.2mm_M3',
                      'MountingHole_3.2mm_M3',
                      'Glasgow:MountingHole_3.5mm_Pad_Via_CrtYd',
-                     'Mounting_Holes:MountingHole_3.2mm_M3_ISO14580_Pad'):
+                     'Mounting_Holes:MountingHole_3.2mm_M3_ISO14580_Pad',
+                     # a house hole whose item says it later on
+                     'Lib:M3_MountingHole_Pad', 'M3_MountingHole_Pad',
+                     'house:Hole_MountingHole_3.2mm'):
             self.assertTrue(is_mount_hole_name(name), name)
         for name in ('kit-dev-coldfire:DSUB-9_Female_Horizontal_P2.77x2.84mm'
                      '_EdgePinOffset7.70mm_Housed_MountingHolesOffset9.12mm',
                      'DSUB-9_Female_Horizontal_P2.77x2.84mm_EdgePinOffset7.70mm'
                      '_Housed_MountingHolesOffset9.12mm',
                      'MountingHole:Some_Connector',
+                     # the plural: parts that HAVE mounting holes (KiCad 10's
+                     # stock D-subs, modules and encoders)
+                     'Connector_Dsub:DSUB-15-HD_Pins_Vertical_P2.29x1.98mm'
+                     '_MountingHoles',
+                     'Module:Arduino_UNO_R3_WithMountingHoles',
+                     'Arduino_UNO_R3_WithMountingHoles',
+                     'Rotary_Encoder:RotaryEncoder_Alps_EC11E_Vertical_H20mm'
+                     '_CircularMountingHoles',
                      # near misses: a standoff is not a mounting hole
                      'Mounting_Wuerth:Mounting_Wuerth_WA-SMSI-M3_H2mm_9774020633',
                      'MountingEquipment:DINRailAdapter_3xM3_PhoenixContact',
@@ -71,14 +84,18 @@ class TheName(unittest.TestCase):
         pads = [SimpleNamespace(pad_type='thru_hole', layers=['*.Cu'],
                                 drill=1.0, pinfunction='', net_id=1)
                 for _ in range(9)]
-        for item in ('DSUB-9_Female_Horizontal_P2.77x2.84mm_EdgePinOffset7.70'
-                     'mm_Housed_MountingHolesOffset9.12mm',
-                     'MountingHole_3.2mm_M3_Pad'):
+        for item, want in (
+                ('DSUB-9_Female_Horizontal_P2.77x2.84mm_EdgePinOffset7.70'
+                 'mm_Housed_MountingHolesOffset9.12mm', 'edge_receptacle'),
+                ('MountingHole_3.2mm_M3_Pad', 'mount_hole'),
+                ('M3_MountingHole_Pad', 'mount_hole'),
+                ('Arduino_UNO_R3_WithMountingHoles', None)):
             a = classify_part(SimpleNamespace(footprint_name='Lib:' + item,
                                               pads=pads), 'J9')
             b = classify_part(SimpleNamespace(footprint_name=item,
                                               pads=pads), 'J9')
             self.assertEqual(a, b, item)
+            self.assertEqual(a.name, want, item)
 
 
 class TheCorpus(unittest.TestCase):
