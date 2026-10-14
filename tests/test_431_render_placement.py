@@ -436,6 +436,8 @@ def test_json_out_writes_a_file_with_instrument_and_checklist():
         # one. Re-stated rather than relaxed to a subset, because a subset
         # check is what would have let the drift through in the first place.
         assert set(cl) == {'a_off_outline',
+                           # #1255: each body's distance to the board edge.
+                           'a_body_edge_band',
                            'b_pad_clearance_pairs',
                            'b_body_overlap_pairs',
                            # #896: the tightest drawn-body seam and the

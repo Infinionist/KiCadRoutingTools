@@ -927,11 +927,20 @@ def main(argv=None):
                                 consequences=(brief_report or {}).get(
                                     'consequences'))
     ledger_s = ledger_summary(ledger)
-    if not args.quiet and ledger_s['carried_facts']:
-        print(f"  {len(ledger_s['carried_facts'])} declared fact(s) are "
+    # #1255: a carried fact ANOTHER instrument grades is named with it, so
+    # the sentence below stays true of the facts it lists.
+    from placement.design_brief import GRADED_ELSEWHERE as _elsewhere
+    _carried = [f for f in ledger_s['carried_facts'] if f not in _elsewhere]
+    _graded_by = [f for f in ledger_s['carried_facts'] if f in _elsewhere]
+    if not args.quiet and _carried:
+        print(f"  {len(_carried)} declared fact(s) are "
               f"CARRIED, NOT physically checked -- no rule measures them, "
               f"whatever `complete` says: "
-              f"{', '.join(ledger_s['carried_facts'])}")
+              f"{', '.join(_carried)}")
+    if not args.quiet and _graded_by:
+        print(f"  {len(_graded_by)} declared fact(s) are graded by another "
+              f"instrument, not by this one: "
+              + ', '.join(f"{f} ({_elsewhere[f]})" for f in _graded_by))
 
     if args.json:
         doc = to_json(result)

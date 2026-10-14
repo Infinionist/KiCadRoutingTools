@@ -1492,6 +1492,19 @@ boards seat them under connectors on purpose. This is the grader's census only.
 The movers' marker exemption (`body_exempt_refs`, `blocking_waived`) still
 admits such a seat, and this gate then charges it.
 
+**A body's distance to the board edge (#1255).** `legality.body_edge_band`
+measures every pad-bearing part's body against the real outline at margin 0.
+The body is the drawn one, else the courtyard, else the pad box, with the rung
+named. Edge-class parts, markers and parts with an edge in the intent are
+listed apart. The band is the intent's `assembly.body_edge_mm`; without it,
+JLCPCB's 2.5 mm (`BODY_EDGE_DEFAULT_MM`, labelled `derived_default`, with its
+citation). check_assembly and render_placement report the census, and it gates
+only when the band is declared. All five human boards measured break 2.5 mm
+(splitflap 10 of 58 parts, esp_prog 7 of 15, glasgow 4 of 232, watchy 10 of 70,
+ulx3s 9 of 210), and JLC adds edge rails when the file has none. It is the
+grader's census only: the quench's soft `edge_halo` (2.0 mm) does not read a
+declared band.
+
 ## Legality model (`legality.py`, #456)
 
 What counts as a *legal* placement is decided in one place, so the optimizer and

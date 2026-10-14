@@ -26,7 +26,10 @@ landing on a KiCad-locked part (see LOCKED-PART CONTACT) OR a coincident-
 origin stack (see COINCIDENT ORIGINS) OR a containment OR a moved-vs-
 baseline courtyard interpenetration (see COURTYARD BLOCKING) OR a test point
 a moved member left under another part's body (see TEST POINT COVERED,
-#1250; armed by --baseline like the courtyard gate).
+#1250; armed by --baseline like the courtyard gate) OR a body inside the
+body-to-edge band the --intent DECLARES (`assembly.body_edge_mm`; see
+BODY-TO-EDGE BAND, #1255 -- undeclared, it reports against JLCPCB's 2.5 mm
+and never gates).
 """
 
 #: #937 registry: which door(s) show this tool, and whether it changes
@@ -46,9 +49,11 @@ def main():
         description="Assembly (body-overlap) audit of a placed board.")
     p.add_argument("board")
     p.add_argument("--intent", default=None, metavar="JSON",
-                   help="Floorplan intent; its overlap_waivers are read, and "
+                   help="Floorplan intent; its overlap_waivers are read, "
                         "a keep-out it names `mating:<ref>` replaces the "
-                        "plug mating region derived from the board (#1098)")
+                        "plug mating region derived from the board (#1098), "
+                        "and a declared assembly.body_edge_mm makes the "
+                        "body-to-edge band gate (#1255)")
     p.add_argument("--clearance", type=float, default=None,
                    help="Pad-model clearance in mm. Default: the board's own "
                         "Default net-class clearance, else routing_defaults. "
@@ -148,11 +153,18 @@ def main():
 
     waivers = ()
     declared_keepouts = ()
+    # #1255: the body-to-edge band the intent declares (None = nothing
+    # declared, and the census reports against the derived default without
+    # gating), and the refs whose edge it declares.
+    body_edge_mm = None
+    edge_claim_refs = ()
     if args.intent:
         try:
             from placement.floorplan import load_intent
             _intent = load_intent(args.intent)
             waivers = _intent.waiver_pairs()
+            body_edge_mm = _intent.body_edge_mm()
+            edge_claim_refs = _intent.edge_claim_refs()
             # #1098: the intent's keep-outs, so a declared `mating:<ref>`
             # replaces the derived plug region here as it does in the seeder.
             declared_keepouts = tuple(_intent.keepouts or ())
@@ -647,6 +659,54 @@ def main():
         print("    A deliberate pose is accepted by naming the pair in the "
               "intent's `overlap_waivers`.")
 
+    # #1255: each pad-bearing part's BODY against the real outline at margin
+    # 0. An assembler's rule, not the board's: JLCPCB asks 2.5 mm and adds
+    # edge rails when the file has none, and every human board measured
+    # breaks it -- so this GATES only when the intent declares
+    # `assembly.body_edge_mm`, and then every part in the band gates.
+    # Printed unconditionally, like BODY COVERAGE: a section that appears
+    # only when something is in the band cannot say what was measured.
+    band = legality.body_edge_band(pcb, args.board,
+                                   threshold_mm=body_edge_mm,
+                                   edge_claim_refs=edge_claim_refs,
+                                   moved=moved_refs)
+    edge_band_gating = []
+    if band['gates']:
+        edge_band_gating = list(band['in_band'])
+        if band['error']:
+            # Declared and unmeasurable: fail closed, and say why.
+            edge_band_gating = [{'ref': '?', 'mm': None, 'source': None,
+                                 'side': None, 'unmeasured': band['error']}]
+    if band['error']:
+        print(f"  BODY-TO-EDGE BAND NOT MEASURED -- {band['error']}"
+              + (" -- NOT BUILDABLE until it is" if band['gates'] else ''))
+    else:
+        _basis = ('declared in the intent (assembly.body_edge_mm) -- GATES'
+                  if band['gates'] else
+                  'derived_default: JLCPCB\'s assembly rule, one '
+                  'assembler\'s -- REPORT-ONLY; declare '
+                  'assembly.body_edge_mm in the intent to gate')
+        print(f"  BODY-TO-EDGE BAND: {len(band['in_band'])} of "
+              f"{band['eligible']} part(s) have a body within "
+              f"{band['threshold_mm']:g}mm of the board edge [{_basis}]"
+              + (f"  new_in_band {band['new_in_band']}"
+                 if band['new_in_band'] is not None else ''))
+        _new = set(band['new_in_band_refs'] or ())
+        for r in band['in_band'][:12]:
+            print(f"    {r['ref']} {r['mm']}mm ({r['source']}, side "
+                  f"{r['side']})" + ('  MOVED' if r['ref'] in _new else ''))
+        if len(band['in_band']) > 12:
+            print(f"    ... +{len(band['in_band']) - 12} more (--json)")
+        if band['excluded']:
+            print("    in the band but belonging at the edge, never counted "
+                  "(edge class, marker, or an edge the intent declares): "
+                  + ', '.join(f"{r['ref']} {r['mm']}mm [{r['why']}]"
+                              for r in band['excluded'][:8])
+                  + (' ...' if len(band['excluded']) > 8 else ''))
+        if band['unmeasured']:
+            print("    no body, courtyard or pad box to measure: "
+                  + ', '.join(band['unmeasured'][:8]))
+
     # A FOURTH conjunct, and `g['blocking']` is deliberately NOT touched.
     # `blocking` means "pad intersections" to board_score, to the seeder's
     # repair census, and -- with INVERTED polarity -- to the retired
@@ -713,11 +773,12 @@ def main():
                   f"{', '.join(x or f'(unnumbered {_kind})' for x in q.pins)}"
                   f"  {q.area_mm2}mm2  side {q.side}")
     # #1250, the NINTH: a test point a move left under another part's body
-    # (`tp_gating`, above).
+    # (`tp_gating`, above). #1255, the TENTH: a body inside the body-to-edge
+    # band the intent DECLARES (`edge_band_gating`, empty when undeclared).
     not_buildable = bool(g['blocking'] or locked_contact or stack_groups
                          or g['containment_blocking']
                          or courtyard_gating or off_outline_pads or mating
-                         or pin_hits or tp_gating)
+                         or pin_hits or tp_gating or edge_band_gating)
     verdict = 'NOT BUILDABLE' if not_buildable else 'buildable (blocking 0)'
     print(f"  VERDICT: {verdict}")
 
@@ -816,6 +877,15 @@ def main():
                 '--baseline, the body is .Fab, and the pair is not in the '
                 'intent\'s overlap_waivers or a container\'s. Fiducials are '
                 'not graded here.'),
+            # #1255: every pad-bearing part's body against the real outline
+            # at margin 0 (`legality.body_edge_band`: threshold and its basis,
+            # in_band / excluded rows, eligible and measured counts,
+            # new_in_band with --baseline). `body_edge_band_gating` is the
+            # count that GATES: the in-band parts when the intent declares
+            # `assembly.body_edge_mm`, else 0 -- the derived default (JLCPCB's
+            # 2.5 mm) is reported and never gates.
+            'body_edge_band': band,
+            'body_edge_band_gating': len(edge_band_gating),
             'blocking_pairs': [q._asdict() for q in g['blocking_pairs']],
             'advisory_pairs': [q._asdict() for q in g['advisory_pairs']],
             'pad_conflicts': leg['pad_conflicts'],

@@ -146,7 +146,7 @@ source, suspect, suspect_reason
 | `edge_connectors[].center_on_edge` | `tolerance_mm` (required — see below) |
 | `edge_connectors[].along_edge_band` | `from`, `to` |
 | `decaps` | `max_distance_mm`, `exempt`, `search_radius_mm`, `max_pin_distance_mm`, `pin_functions`, `same_side`, and the `--decaps-from`-written `within_radius_refs` / `within_radius_mm` (#1142: the caps the reference keeps within that radius of their chip, each held to it per cap; the two come together, need `max_distance_mm`, must match `search_radius_mm`, and need `min_reader` 8) |
-| `assembly` | `sides` (`"F"`, `"B"` or `"both"`), `why`, `context` |
+| `assembly` | `sides` (`"F"`, `"B"` or `"both"`), `body_edge_mm` (#1255: the least distance in mm a component body may sit from the board edge, which arms check_assembly's `body_edge_band` gate; needs `min_reader` 9), `why`, `context` |
 | `proximity[]` | `ref`, `near`, `max_mm`, `basis` (`"pad_edge"` or `"body"`), `pads`, `note`, `context`, and the compiler-written `source` |
 | `arrays[]` | `name`, `members` (an ORDERED list of literal refs, at least two), `serves` (a ref, or `"unknown"`), `order` (`"pin"`, `"declared"` or `"unknown"`), `rotation` (degrees, `"shared"` or `"unknown"`), `pitch_mm` (`"auto"` or mm), `axis` (`"auto"`, `"x"` or `"y"`), `allow_mixed`, `why`, `note`, `context`, and the compiler-written `source` (#1051; see "Arrays" below; needs `min_reader` 7) |
 | `fixed_poses[]` | `ref`, `x`, `y`, `rot` (degrees or `"unknown"`), `side` (`"F"`, `"B"` or `"unknown"`), `basis` (`"declared"` or `"mechanical"`), `why`, `context`, `accept_courtyard_overlap` (a list of literal refs, #1060) (#1054; see "Fixed poses" below; needs `min_reader` 7) |
@@ -232,7 +232,7 @@ The top-level `context.basis` labels numbers and changes no verdict.
 intent file at once — far too blunt for "this build learned a new field".
 
 So field-level compatibility is a second number. `READER_VERSION` (currently
-`7`) is what this build can act on, and an intent sets `min_reader` when a
+`9`) is what this build can act on, and an intent sets `min_reader` when a
 claim must not be silently ignored:
 
 ```jsonc
@@ -291,6 +291,13 @@ tether search radius of their chip, and the radius that was read at. A listed
 cap the graded board leaves beyond the radius is a `decap_ungraded` ERROR, per
 cap. It changes the exit code, so the intent is stamped `min_reader` 8, and an
 older build refuses both keys by name.
+
+**Reader 9 arrived with [#1255](https://github.com/drandyhaas/KiCadRoutingTools/issues/1255):**
+`assembly.body_edge_mm`, the least distance a component body may sit from the
+board edge. Declared, it turns check_assembly's `body_edge_band` census from
+report-only into a `not_buildable` conjunct, so it changes the exit code. An
+older build refuses the key by name. The design brief compiles its
+`assembly.body_edge_mm` with `min_reader` 9.
 
 ### Arrays: parts that form one row (#1051)
 
@@ -1022,6 +1029,43 @@ typed it, which is the case where the violations are the point. The count is
 the pad-bearing population: `glasgow_revC` declared `F` reports **92**, not the
 94 blocks on its back, because two of those blocks carry no pads. The census in
 `check_assembly.py` prints the same numbers and declares its basis.
+
+### `assembly.body_edge_mm`: how close a body may sit to the edge (#1255)
+
+This is an assembler's rule, and the board file cannot say it. JLCPCB's assembly
+terms ask for at least 2.5 mm between a component body and the board edge.
+JLC also adds edge rails when the file has none, and after that the board edge
+is no longer the conveyor edge.
+
+```jsonc
+"assembly": { "body_edge_mm": 2.5 }   // mm, > 0; `sides` may sit beside it
+```
+
+`check_assembly` measures every pad-bearing part's body in its
+`body_edge_band` census. The body is the drawn one (.Fab, else silk united with
+the pads), else the courtyard, else the pad box, and the rung is named. It is
+measured against the real outline at margin 0, cutouts included. A body that
+reaches past the outline reads 0. Some parts belong at the edge by what they
+are: edge-class parts, markers (mounting holes, fiducials, test points) and
+parts whose `edge_connectors[]` entry names an edge. They are listed apart and
+never counted. A connector with no edge claim stays in, because connectors are
+most of the hits on human boards.
+
+* **Undeclared**, the band is 2.5 mm, labelled `derived_default` with the JLC
+  citation. The census is **report-only**. Every human board measured breaks
+  it: splitflap 10 of 58 parts, esp_prog 7 of 15, glasgow 4 of 232, watchy 10
+  of 70 and ulx3s 9 of 210.
+* **Declared**, every part in the band is a `not_buildable` conjunct
+  (`body_edge_band_gating`). render_placement's `a_body_edge_band` fails
+  `--gate` the same way.
+* With `--baseline` (render: `--before`), `new_in_band` counts the parts in the
+  band that moved.
+
+No floorplan rule grades this key. `check_floorplan` carries it and names
+check_assembly as its grader. The design brief declares it as
+`assembly.body_edge_mm` too, and that compiles here. The key is spelled
+`body_edge_mm` rather than "...band", so it cannot be confused with
+`edge_connectors[].along_edge_band`, which is a position along an edge.
 
 ### A through-hole part is in a keep-out from either side
 

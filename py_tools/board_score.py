@@ -392,7 +392,7 @@ def unrouted_shape(board: str, unrouted_names, pcb=None) -> dict:
             'open': sorted(open_nets)}
 
 
-#: check_assembly's nine `not_buildable` conjuncts, by the JSON key each one
+#: check_assembly's ten `not_buildable` conjuncts, by the JSON key each one
 #: publishes (check_assembly's `not_buildable = ...` line). `blocking` -- pad INTERSECTIONS -- is
 #: the first of them and is the only one this component used to read (#918).
 #:
@@ -423,10 +423,16 @@ def unrouted_shape(board: str, unrouted_names, pcb=None) -> dict:
 #: `testpoint_covered_gating` (#1250) is armed by the same `--baseline` on
 #: the same currency (a test point a moved member left under another part's
 #: drawn body), and is null when unarmed for the same reason.
+#:
+#: `body_edge_band_gating` (#1255) is armed by a DECLARATION instead -- the
+#: intent's `assembly.body_edge_mm` -- and is 0, not null, when nothing is
+#: declared: the census still ran, and an undeclared band gates nothing by
+#: policy, which is a measured answer rather than a missing one.
 ASSEMBLY_CONJUNCTS = ('blocking', 'locked_contacts', 'coincident_origins',
                       'containment_blocking', 'courtyard_blocking_gating',
                       'oob_pad_copper_gating_count', 'mating_keepout_count',
-                      'pin_in_courtyard', 'testpoint_covered_gating')
+                      'pin_in_courtyard', 'testpoint_covered_gating',
+                      'body_edge_band_gating')
 
 #: The conjuncts that can ACTUALLY flip the verdict while `blocking` is 0, in
 #: this scorer's invocation. Not every conjunct can:
@@ -446,14 +452,17 @@ ASSEMBLY_CONJUNCTS = ('blocking', 'locked_contacts', 'coincident_origins',
 #: #1250 added `testpoint_covered_gating`: a test point a moved member left
 #: under another part's drawn body, armed by `--baseline` like the courtyard
 #: gate -- its pads are not another part's pads, so `blocking` stays 0.
+#: #1255 added `body_edge_band_gating`: a body inside the body-to-edge band
+#: the intent declares, a fact about one part, so it too fires at
+#: `blocking` 0.
 ASSEMBLY_LIVE_CONJUNCTS = ('coincident_origins', 'containment_blocking',
                            'oob_pad_copper_gating_count', 'mating_keepout_count',
                            'pin_in_courtyard', 'courtyard_blocking_gating',
-                           'testpoint_covered_gating')
+                           'testpoint_covered_gating', 'body_edge_band_gating')
 
 
 def assembly_component(doc: dict, rc: int) -> dict:
-    """check_assembly's VERDICT, not one of its nine conjuncts (#918).
+    """check_assembly's VERDICT, not one of its ten conjuncts (#918).
 
     `not_buildable` is `blocking or locked_contact or stack_groups or
     containment_blocking or courtyard_gating`. This component read `blocking`

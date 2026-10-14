@@ -2113,6 +2113,138 @@ def courtyard_gating(blocking_pairs, moved) -> list:
     return [q for q in blocking_pairs if q.a in moved or q.b in moved]
 
 
+# --- #1255: a component body's distance to the board edge --------------------
+#
+# Past the hard outline gate, the only pressure keeping a BODY off the edge was
+# the quench's soft halo (`_edge_penalty`), and no grader reads that cost.
+# render's `a_off_outline.courtyard` asks a different question: the courtyard
+# against the outline inset by the clearance and copper-edge floors. Neither
+# check_assembly nor board_score measured body-to-edge distance at all. A
+# 1.77 mm nudge put splitflap R1's fab body 1.00 mm from the south edge, and
+# every grader read the board exactly as before.
+#
+# The number belongs to an ASSEMBLER, not to the board. JLCPCB's assembly
+# terms ask for 2.5 mm between a component body and the board edge, and JLC
+# adds edge rails when the file has none, after which the board edge is no
+# longer the conveyor edge. Every human board measured breaks 2.5 mm
+# (splitflap, esp_prog, glasgow, watchy, ulx3s). So the census is REPORT-ONLY
+# unless the intent declares `assembly.body_edge_mm`, and then it gates every
+# part in the band.
+
+#: The band when nothing declares one. Reported as `derived_default`, always
+#: beside `BODY_EDGE_DEFAULT_CITATION`.
+BODY_EDGE_DEFAULT_MM = 2.5
+BODY_EDGE_DEFAULT_CITATION = (
+    'JLCPCB assembly terms, section 2 "Notes on DFM", item 3: "The distance '
+    'between the body of the components and the edge of the board must be '
+    'equal or greater than 2.5mm." One assembler\'s rule, which also adds '
+    'edge rails when the file has none (https://jlcpcb.com/help/article/'
+    'Terms-and-Conditions-of-JLCPCB-Assembly-Service, read 2026-10-14)')
+
+
+def body_edge_band(pcb_data, pcb_file: Optional[str] = None, *,
+                   threshold_mm: Optional[float] = None,
+                   edge_claim_refs: Sequence[str] = (),
+                   moved: Optional[set] = None,
+                   bodies=None) -> Dict[str, object]:
+    """Pad-bearing parts whose BODY lies within `threshold_mm` of the edge.
+
+    The body is the drawn one (`placement.body`: .Fab, else silk united with
+    the pads). A part that draws neither falls back to its occupancy rung,
+    which is the courtyard, else the pad box. `source` names the rung. The
+    body's rect at the part's pose is measured against the real outline at
+    margin 0 (`BoardOutlineGate.edge_clearance`, cutouts included). A body
+    that reaches past the outline reads 0.
+
+    Some parts belong at the edge by what they are. Edge-class parts
+    (`edge_receptacle` / `edge_actuator`), markers (`mount_hole` /
+    `fiducial` / `testpoint`) and refs in `edge_claim_refs` (an edge the
+    intent declares) are listed apart in `excluded`, with `why`, and never
+    counted. A connector-family part with no edge claim stays IN, because
+    those are most of the hits on human boards.
+
+    `threshold_mm` None means nothing declared a band: the band is
+    `BODY_EDGE_DEFAULT_MM`, labelled `derived_default`, and `gates` is False.
+    `moved` (a `moved_refs` set) adds `new_in_band`, the in-band parts that
+    moved relative to a baseline. `bodies` (a `board_bodies` map) skips the
+    board-file read.
+    """
+    declared = threshold_mm is not None
+    thr = float(threshold_mm) if declared else BODY_EDGE_DEFAULT_MM
+    out: Dict[str, object] = {
+        'threshold_mm': thr,
+        'threshold_basis': 'declared' if declared else 'derived_default',
+        'citation': None if declared else BODY_EDGE_DEFAULT_CITATION,
+        'gates': declared,
+        'measured': 0, 'eligible': 0, 'in_band': [], 'excluded': [],
+        'unmeasured': [],
+        'new_in_band': None, 'new_in_band_refs': None, 'error': None,
+    }
+    bi = getattr(pcb_data, 'board_info', None)
+    if bi is None or getattr(bi, 'board_bounds', None) is None:
+        # Unmeasured is not clean: a caller that gates must fail closed.
+        out['error'] = 'the board has no outline to measure against'
+        return out
+    from kicad_parser import non_aperture_pads
+    from placement.part_class import classify_part
+    if bodies is None:
+        from placement.body import board_bodies
+        bodies = board_bodies(pcb_data, pcb_file)
+    og = BoardOutlineGate(bi, 0.0)
+    claimed = set(edge_claim_refs or ())
+    in_band: list = []
+    excluded: list = []
+    unmeasured: list = []
+    measured = 0
+    eligible = 0          # measured and not excluded: the band's population
+    for ref, fp in sorted((pcb_data.footprints or {}).items()):
+        if not non_aperture_pads(fp):
+            continue                    # not pad-bearing: nothing to assemble
+        g = bodies.get(ref)
+        local, src = None, None
+        if g is not None:
+            if g.drawn_local is not None:
+                local, src = g.drawn_local, g.drawn_source
+            elif g.body_local is not None:
+                local, src = g.body_local, g.source
+        if local is None:
+            unmeasured.append(ref)
+            continue
+        x0, y0, x1, y1 = rotate_local_bounds(*local, fp.rotation or 0.0)
+        rect = (fp.x + x0, fp.y + y0, fp.x + x1, fp.y + y1)
+        mm = (0.0 if og.rect_outside_amount(rect) > EPS
+              else og.edge_clearance(rect))
+        measured += 1
+        try:
+            cls = classify_part(fp, ref).name
+        except Exception:                                    # noqa: BLE001
+            cls = None
+        why = (cls if cls in _EDGE_CLASSES or cls in _MARKER_CLASSES
+               else 'declared_edge' if ref in claimed else '')
+        if not why:
+            eligible += 1
+        if mm >= thr - EPS:
+            continue
+        row = {'ref': ref, 'mm': round(mm, 3), 'source': src,
+               'side': footprint_side(fp)}
+        if why:
+            row['why'] = why
+            excluded.append(row)
+        else:
+            in_band.append(row)
+
+    def _key(r):
+        return (r['mm'], r['ref'])
+    out.update(measured=measured, eligible=eligible,
+               in_band=sorted(in_band, key=_key),
+               excluded=sorted(excluded, key=_key), unmeasured=unmeasured)
+    if moved is not None:
+        new = [r['ref'] for r in out['in_band'] if r['ref'] in moved]
+        out['new_in_band'] = len(new)
+        out['new_in_band_refs'] = new
+    return out
+
+
 class PairWaivers:
     """The waiver ladder check_assembly labels a body pair with, and the
     subset of those labels that may excuse a courtyard pair from BLOCKING.
