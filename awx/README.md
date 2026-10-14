@@ -6,7 +6,7 @@ the others, and where each changes layer. It holds two routers:
 
 | | how it works | status |
 |---|---|---|
-| **The whole route**<br>`whole_route.py`, `whole_*.py`, `route_bus.py` | Chooses every net's ends, then plans every lane's **whole path before anything is routed** -- crossings, layer changes, geometry on the router's grid -- checks the plan against the router's own rules, and routes every lane in its band at once. | **The current router.** Every rung of both benches routes connected and DRC-clean on a Mac, with fewer vias and less copper than the human, on a Mac and on Linux. |
+| **The whole route**<br>`whole_route.py`, `whole_*.py`, `route_bus.py` | Chooses every net's ends, then plans every lane's **whole path before anything is routed** -- crossings, layer changes, geometry on the router's grid -- checks the plan against the router's own rules, and routes every lane in its band at once. | **The current router.** Every rung of both benches routes connected and DRC-clean on a Mac, with fewer vias and less copper than the human. |
 | The braid chain<br>`chain_k.sh`, `braid.py`, `evolve.py` | A CP-SAT plan of both ends, a corridor braid routed stage by stage, then a population of routed boards improved by probes the real router judges. | The earlier router. The whole route reuses its fanout, router, benches and audits. |
 
 Two rules both keep:
@@ -60,8 +60,7 @@ H3 to DDR3 (`fb_t2q_pairs`):
 
 | | K15 | K28 | K35 | K41 | K51 |
 |---|---|---|---|---|---|
-| **the whole route, Mac** | **12 v, 193 mm** | **32 v, 544 mm** | **48 v, 777 mm** | **54 v, 965 mm** | **80 v, 1264 mm** |
-| the whole route, Linux | 12 v, 193 mm | 32 v, 548 mm | 48 v, 769 mm | 54 v, 972 mm | 82 v, 1280 mm |
+| **the whole route** | **12 v, 194 mm** | **32 v, 543 mm** | **42 v, 759 mm** | **54 v, 967 mm** | **80 v, 1254 mm** |
 | human | 22 v, 232 mm | 48 v, 678 mm | 60 v, 889 mm | 70 v, 1081 mm | 88 v, 1337 mm |
 
 Zynq to DDR3 (the article's first build, 44 lanes in the ladder; see
@@ -70,19 +69,18 @@ carries its length-matching meanders):
 
 | | K18 | K26 | K32 | K38 | K42 | K44 |
 |---|---|---|---|---|---|---|
-| **the whole route, Mac** | **14 v, 458 mm** | **28 v, 737 mm** | **38 v, 974 mm** | **48 v, 1168 mm** | **64 v, 1258 mm** | **68 v, 1383 mm** |
-| the whole route, Linux | 14 v, 458 mm | 28 v, 737 mm | 38 v, 974 mm | 48 v, 1168 mm | 56 v, 1316 mm | 68 v, 1383 mm |
+| **the whole route** | **14 v, 435 mm** | **28 v, 702 mm** | **42 v, 919 mm** | **48 v, 1173 mm** | **64 v, 1256 mm** | **62 v, 1421 mm** |
 | human | 45 v, 662 mm | 57 v, 923 mm | 74 v, 1166 mm | 86 v, 1373 mm | 97 v, 1534 mm | 103 v, 1617 mm |
 
 Reading the tables:
 
-- **Rounds.** Every rung routes in its first fanout round, on both machines.
-- **Mac and Linux** keep different plans among a solve's equal optima, and
-  the ends model's exact ranking can part on them too: zynq K42 lays 56 vias
-  on Linux and 64 on the Mac, H3 K51 82 and 80.
-- **Time.** The Mac ran two rungs at a time: K51 took 30 min, zynq K42 19,
-  K41 15, the rest under 10. On Linux (a container a rung, slower cores) the
-  same rungs took one and a half to four times as long, K51 50 min.
+- **Rounds.** Every rung routes in its first fanout round.
+- **Machines.** The tables are the Mac's. Linux (`modal_whole.py`, a
+  container a rung) can keep a different plan among a solve's equal optima,
+  and the ends model's exact ranking can part on them too, so a rung's vias
+  and millimetres can differ there.
+- **Time.** The Mac ran three rungs at a time: zynq K44 took 12 min, K51 10,
+  K41 and zynq K42 8, zynq K38 7, the rest under 5.
 - **Generated cases.** `synth_handoff.py` routes 108 generated buses whole --
   lanes handed to a ring on either side of the destination, parts at its
   corner and in the lanes' way (passives and rows of them, PTH headers,
@@ -631,11 +629,10 @@ BUS_PULLED=1 python3 route_bus.py tmp/zynq/zr6_both.kicad_pcb tmp/zynq/zr6_usb_e
     --rounds 2 --inproc --bus U1:U4+U3:plain:F.Cu,B.Cu,In1.Cu,In2.Cu $SZ
 ```
 
-It routes 24 of the 26 nets (ETH_RXD2 and ETH_RXD3 left open; 48 vias,
-808 mm), handed on connected and clean, in 14 minutes. With the solve's opt-in
-settings (`WHOLE_SOLVE_BATCHES=40 SOLVE_PHASE2_ONLY=1 SOLVE_FULLHINT=1`,
-[the solve](#the-solve-whole_solvepy)) it routes 25 (ETH_RXD2 left open; 50
-vias, 826 mm) in 6.5 minutes. Its lanes on In2 split VCC_1V8 and VCC_3V3
+It routes 24 of the 26 nets (ETH_RXD2 and OTG_DATA2 left open; 48 vias,
+811 mm), handed on connected and clean, in 16 minutes: its first round 10
+minutes, the second (new ends for the two open nets, 8 left open) the rest.
+Its lanes on In2 split VCC_1V8 and VCC_3V3
 there (454 unconnected island links against 451 as it came): the whole route
 plans across a pour without pricing what it cuts.
 
@@ -1051,22 +1048,22 @@ once, proved optimal in its vias.
   relaxed model has no plan, and the diagnosis names one lane, CTRL_OUT0, in
   37 s: with that lane's rules free there is a plan.
 
-**Bounded in work, not time.** A count of CP-SAT's interleaved batches, the
-workers sharing no clauses (`WHOLE_SOLVE_BATCHES`); bounded by deterministic
-time, or sharing clauses, one model gave a different answer on every run. It
-stops sooner once the vias are proved, or once it has a plan and three of its
-own model reductions in a row find no better plan or bound.
+**Bounded in work, not time.** Counts of CP-SAT's interleaved batches, the
+workers sharing no clauses; bounded by deterministic time, or sharing clauses,
+one model gave a different answer on every run.
 
-**Faster, opt-in.** With more routing layers than two every solve of a round
-keeps a plan it cannot prove, so the bound-raising workers can be left out
-(`SOLVE_PHASE2_ONLY=1`): on the two-end bus they proved nothing in 188 s
-(best 46, bound 38), and the plan-finding workers alone found the same 40
-vias in 73 s at 40 batches. A re-solve's warm start can be laid out whole
-(`SOLVE_FULLHINT=1`): every variable hinted, its search has a plan from the
-first batch, and runs `WHOLE_WARM_BATCHES` (20) -- the plan 40 batches found
-from nothing (55, 39 vias), in 46 s against 63. Both change plans (with the
-first, the generated pairs bench of `tests/test_622_lane_fixes.py` lays no
-crossover at an end), so they stay off.
+**Its work by need.** The bound-raising workers run first, a probe of 10
+batches (`WHOLE_SOLVE_PROBE`): their plan meeting their bound is the solve.
+Else the plan-finding workers run on from the probe's plan and bound, one
+search of at most 100 batches (`WHOLE_SOLVE_BATCHES`). Each stops sooner once
+the vias are proved, and the probe once it has a plan and three of its own
+model reductions in a row find no better plan or bound. With more routing
+layers than two every solve of a round keeps a plan it cannot prove, and the
+probe is all the bound-raising workers spend there: on the two-end bus their
+bound stood at 38 from 4 s on, and given 100 batches they ran 160 s to it. A
+re-solve's warm start, the round before's plan, is laid out whole first
+(0.1 s there): every variable hinted, its search has a plan from the first
+batch.
 
 </details>
 
@@ -1842,15 +1839,15 @@ channels first, and the other escapes leave round it.
   the geometry could price each lane's cut through a pour, or keep a pour's
   corridor whole (the zynq's USB and Ethernet buses split VCC_1V8 between U1
   and the PHYs).
-- **The solve's work by need.** The bound-raising workers only where a proof
-  is used (a re-solve on two layers), the plan-finders alone elsewhere; and
-  the budget by progress -- deterministic chunks of batches, each from the
-  last's best plan laid out whole, until one gains no whole via -- in place
-  of a fixed count and the opt-in settings.
-- **A faster first solve.** On the two-end bus, with the opt-in settings, its
-  stages run: the fanout 86 s, the first solve 70 s, the geometry 45 and 42 s,
-  the re-solve 47 s, the lays 53 s. The first solve's first 22 s find no plan
-  at all: a cheaper start would leave its search the rest.
+- **A faster first solve.** On the two-end bus the first solve takes 182 s:
+  the probe's 32 s find no plan, and the plan-finders, from nothing, stop at
+  their 100 batches on 46 vias against a bound of 40. From the 46-via plan the
+  bound-raising workers find given 100 batches (`WHOLE_SOLVE_PROBE=100`,
+  160 s) they prove 40 in 111 s. A cheaper first plan would leave the search
+  the rest.
+- **A second round only where it can gain.** On the two-end bus the second
+  fanout round chooses new ends for the two nets the first left open and
+  routes the whole bus again on them, 300 s for 8 open.
 - **A layer left for the nets that cross the bus,** if item 8 finds many
   failing.
 - **Feedback from `route.py`:** failures that name bus copper as the blocker
@@ -2042,7 +2039,8 @@ channels first, and the other escapes leave round it.
   - the ends' search: `ILS_ROUNDS`, `ILS_KICK`, `ILS_PATIENCE`, the ban
     kicks' count, lanes and patience, `EXACT_TOP`, `EXACT_MARGIN`,
     `EXACT_WORK`;
-  - the solve's budget and stall (`WHOLE_SOLVE_BATCHES`, `SOLVE_STALL`);
+  - the solve's probe, budget and stall (`WHOLE_SOLVE_PROBE`,
+    `WHOLE_SOLVE_BATCHES`, `SOLVE_STALL`);
   - the geometry's comfort pitch (`P_COMF`), the snap's `W_KEEP`, the loop's
     `PATIENCE`, the street sites (`DST_STREET`).
 - **The teeth chosen again on the realized board.** Each source realize

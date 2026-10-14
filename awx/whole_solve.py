@@ -16,17 +16,19 @@ audits found the plan short, HIST).
 The bench from BENCH / NETS / DEST (whole_ctx). HINT=SOLVE.json warm-starts from an earlier solve; CUTS=GEO.json,..
 adds the geometry's cuts (whole_geo: the islands a lane could not be kept off, the changes it could not give their
 room). HIST=HOT.json,.. prices the places earlier audits found short (whole_gate --hot). The solve is bounded in WORK,
-not time: a count of CP-SAT's interleaved batches, its workers pinned and sharing no clauses, so the same model gives
-the same answer on every run, later on a slower machine (WHOLE_SOLVE_BATCHES sets the budget). It stops sooner when
-the vias are proved (the plan's vias no more than the bound's whole vias) or, once it has a plan, when it STALLS
-(SOLVE_STALL of its own model reductions in a row with no better plan or bound: events of the search, never a clock)
--- all but the fallback, the plan-finding workers' last try, which runs its whole budget. Only a plan PROVED optimal in its vias is written;
+not time: counts of CP-SAT's interleaved batches, its workers pinned and sharing no clauses, so the same model gives
+the same answer on every run, later on a slower machine. A re-solve's warm start is laid out whole first (every
+variable hinted), then the BOUND-RAISING workers run a probe of WHOLE_SOLVE_PROBE batches (10): their plan meeting
+their bound is the solve. Else the PLAN-FINDING workers run on from the probe's plan and bound, ONE search of at most
+WHOLE_SOLVE_BATCHES (100). Each stops sooner when the vias are proved (the plan's vias no more than the bound's whole
+vias), and the probe, once it has a plan, when it STALLS (SOLVE_STALL of its own model reductions in a row with no
+better plan or bound: events of the search, never a clock). Only a plan PROVED optimal in its vias is written;
 one the search could not prove is no plan -- except under SOLVE_UNPROVED=1 (a round's first solve in whole_route,
 which never ends with nothing): the best plan found is written marked 'proved': false, with the nets it leaves over
 two vias ('over_nets'), and never as a floor for a later solve. Under SOLVE_CROWD=1 (that solve too) a model with NO
 plan is solved again as its CROWD diagnosis, and the lanes whose crossings the ends leave no room for are written to
 OUT.crowded.json (solve(crowd=True))."""
-import sys, os, re, itertools, collections, json, math, hashlib
+import sys, os, re, itertools, collections, json, math, hashlib, time
 import awx_settings
 import whole_ctx
 import whole_frame
@@ -47,7 +49,8 @@ MARG = CLR                             # a crossing starts a clearance past both
 K_SWEEP = 4.0
 W_V = 10 ** 6                          # per via: vias first (an integer: the objective stays CP-SAT's exact one)
 W_OVER_X = 5                           # each via a net carries past two costs this many vias MORE (whole_ends.W_OVER)
-SOLVE_BATCHES = int(awx_settings.get('WHOLE_SOLVE_BATCHES', '100'))  # CP-SAT interleaved batches: the work budget
+SOLVE_BATCHES = int(awx_settings.get('WHOLE_SOLVE_BATCHES', '100'))  # CP-SAT interleaved batches: the plan-finders' most
+PROBE_BATCHES = int(awx_settings.get('WHOLE_SOLVE_PROBE', '10'))    # the bound-raising workers' (run)
 SOLVE_WORKERS = 4
 CHECK_WORK = 30.0                       # a check's deterministic work limit (solve(check=True)): past it, no verdict
 # ...running these: two LP workers (the default and the strongest relaxation), core-based search and the objective's
@@ -57,16 +60,9 @@ SUBSOLVERS = ['default_lp', 'max_lp', 'core', 'objective_lb_search']
 # ...and when they cannot prove it, the PLAN-FINDING workers the first four leave out, with core-based search to close
 # the proof from their plan (the finders alone found K51-on-the-human's-fanout's plan and left its bound where it was)
 FALLBACK = ['quick_restart', 'no_lp', 'core']
-# ...or the plan-finding workers ALONE (SOLVE_PHASE2_ONLY=1, opt-in): on more routing layers than two every solve of
-# a round keeps a plan it cannot prove, and the bound-raising workers proved nothing on the two-end USB and Ethernet
-# bus (best 46, bound 38 after 188 s) -- the finders alone, at 40 batches, the same 40 vias in 73 s
-PHASE2_ONLY = (awx_settings.get('SOLVE_PHASE2_ONLY') or '0') == '1'
 FACE_ROOM = 2 * VNEED                 # the band along the source's near face: a change's room along its lane
 SOLVE_STALL = 3                        # the search's model reductions in a row with no progress: stalled
 WARM_WORK = 30.0                       # deterministic work to lay a re-solve's warm start out whole (one worker)
-FULLHINT = (awx_settings.get('SOLVE_FULLHINT') or '0') == '1'    # (opt-in) the warm start laid out whole, every
-#                                        variable's hint ...
-WARM_BATCHES = int(awx_settings.get('WHOLE_WARM_BATCHES', '20'))    # ... and the search's budget then
 W_FIRM = 100 * W_V                     # a broken FIRM cut (CUTS_FIRM=1, more layers than two): above everything else a
 #                                        plan can buy -- the solve holds every cut it can and breaks one only where no
 #                                        plan holds them all, in ONE solve (whole_route's loop: no hard pass first)
@@ -1562,7 +1558,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
     # whole vias -- the nets over two and the vias settled, only the history's tie-break open (K35's re-solve: 167 s,
     # most of it on the tie-break). (A gap limit of a via would stop short of that proof: a plan of 24 vias against a
     # bound of 23 and half a via's history is within one via, and a 23-via plan may still exist.)
-    def run(subs):
+    def once(subs, batches, known_):
         s_ = cp_model.CpSolver()
         s_.parameters.num_workers = SOLVE_WORKERS
         s_.parameters.subsolvers.extend(subs)
@@ -1571,7 +1567,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         # 36051642); by batches with clause sharing on, two gave two; by batches with sharing off, two concurrent
         # solves agree exactly
         s_.parameters.interleave_search = True
-        s_.parameters.max_num_deterministic_batches = budget['batches']
+        s_.parameters.max_num_deterministic_batches = batches
         s_.parameters.share_glue_clauses = False
         s_.parameters.share_binary_clauses = False
         stall = {'n': 0, 'plan': False}
@@ -1582,7 +1578,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
                 stall['plan'] = stall['plan'] or not line.startswith('#Bound')
                 m_ = re.search(r'best:(\S+)\s+next:\[([^,\]]+)', line)
                 if m_ and float(m_.group(1)) < math.inf and \
-                        math.floor(float(m_.group(1)) / W_V) <= math.floor(float(m_.group(2)) / W_V):
+                        math.floor(float(m_.group(1)) / W_V) <= math.floor(max(float(m_.group(2)), known_) / W_V):
                     s_.StopSearch()
             # (not the FALLBACK's: started from the first run's plan, it has one from its first line, and a stall there is
             # the last chance lost -- K51 on the human's fanout on Linux stopped so, unproved, holding the plan it proves
@@ -1595,9 +1591,20 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         s_.parameters.log_to_stdout = False
         s_.log_callback = _progress
         st_ = s_.Solve(m)
+        return s_, st_
+
+    # ---- the BOUND-RAISING workers a PROBE (PROBE_BATCHES): their bound meeting a plan is the proof, and the solve
+    # done; else the PLAN-FINDING workers run on from its plan and bound (SOLVE_BATCHES their most). On the two-end
+    # USB and Ethernet bus the bound-raising workers' bound stood at 38 from 4 s on, and given 100 batches they ran
+    # 159 s to it, their plans (from 35 s) the plan-finders' work, who found them from 22 s
+    def run(subs, batches, known=-math.inf):
+        """(solver, status, proved, its bound, seconds) of one search of `batches`; `known` a bound proved before it"""
+        t0_ = time.time()
+        s_, st_ = once(subs, batches, known)
+        b_ = max(s_.BestObjectiveBound(), known)
         pr_ = st_ in (cp_model.OPTIMAL, cp_model.FEASIBLE) and \
-            math.floor(s_.ObjectiveValue() / W_V) <= math.floor(s_.BestObjectiveBound() / W_V)
-        return s_, st_, pr_
+            math.floor(s_.ObjectiveValue() / W_V) <= math.floor(b_ / W_V)
+        return s_, st_, pr_, b_, time.time() - t0_
     # ---- the WARM START, laid out whole: a re-solve starts from the round before's plan, and when that plan is one of
     # this model (no cut the round added excludes it) at the root's floor, it is PROVED -- the floor is the root's own
     # proof. The search is given it as a hint and may still lose it (K41 with the stub check per layer, a round whose
@@ -1613,13 +1620,11 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         if sw.Solve(m) in (cp_model.OPTIMAL, cp_model.FEASIBLE) and \
                 math.floor(sw.ObjectiveValue() / W_V) <= (W_OVER * root['over'] + W_V * root['vias']) // W_V:
             warm = sw
-    # ...and the warm start laid out whole is EVERY variable's hint (SOLVE_FULLHINT): the round before's plan hints its
-    # crossings, changes and layers, and the search found no plan of its own for 16 s on the two-end USB and Ethernet
-    # bus's re-solve -- the rest of the plan unhinted, nothing for its neighbourhood searches to start from. Laid out
-    # (0.1 s there), the search has a plan from its first batch, and the budget is WARM_BATCHES: its 20 reached the
-    # plan the 40 found from nothing (55, 39 vias), in 46 s against 63
-    budget = {'batches': SOLVE_BATCHES}
-    if hint and FULLHINT:
+    # ...and the warm start laid out whole is EVERY variable's hint: the round before's plan hints its crossings,
+    # changes and layers, and the search found no plan of its own for 16 s on the two-end USB and Ethernet bus's
+    # re-solve -- the rest of the plan unhinted, nothing for its neighbourhood searches to start from. Laid out (0.1 s
+    # there), the search has a plan from its first batch
+    if hint:
         sh = cp_model.CpSolver()
         sh.parameters.num_workers = 1
         sh.parameters.fix_variables_to_their_hinted_value = True
@@ -1630,36 +1635,34 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
             m.ClearHints()
             for i_, v_ in enumerate(vals_h):
                 m.AddHint(m.GetIntVarFromProtoIndex(i_), v_)
-            budget['batches'] = min(SOLVE_BATCHES, WARM_BATCHES)
         print(f'   the warm start laid out whole: [{sh.StatusName(st_h)}]'
-              + (f' {sh.ObjectiveValue():.0f}, every variable hinted, {budget["batches"]} batches'
-                 if st_h in (cp_model.OPTIMAL, cp_model.FEASIBLE) else ' -- its own hints alone'))
-    if PHASE2_ONLY:
-        sv, st, proved = run(FALLBACK)
-        print(f'   plan-finding workers alone: [{sv.StatusName(st)}] {sv.WallTime():.0f}s')
-    else:
-        sv, st, proved = run(SUBSOLVERS)
+              + (f' {sh.ObjectiveValue():.0f}, every variable hinted' if st_h in (cp_model.OPTIMAL, cp_model.FEASIBLE)
+                 else ' -- its own hints alone'))
+    sv, st, proved, known, secs = run(SUBSOLVERS, PROBE_BATCHES)
+    solve_secs = secs
     if not proved and warm is not None:
-        print(f'   bound-raising workers: [{sv.StatusName(st)}] {sv.WallTime():.0f}s, no proved plan -- the warm start, '
+        print(f'   bound-raising workers: [{sv.StatusName(st)}] {secs:.0f}s, no proved plan -- the warm start, '
               f'at the root\'s floor ({warm.ObjectiveValue():.0f})')
         sv, st, proved = warm, cp_model.FEASIBLE, True
-    if not proved and not PHASE2_ONLY:
+    if not proved:
         # the FALLBACK: the bound-raising workers could not prove it (the plan they found was not good enough to meet
         # their bound: K51 on the human's fanout, best 2 over two + 38 vias against 0 + 32, 124 s). The PLAN-FINDING
         # workers run on from there -- its best plan as their start, and its bound, proved on this very model, a
         # constraint (no worker proves it again)
-        print(f'   bound-raising workers: [{sv.StatusName(st)}] {sv.WallTime():.0f}s' +
+        print(f'   bound-raising workers: [{sv.StatusName(st)}] {secs:.0f}s' +
               (f', best {sv.ObjectiveValue():.0f}' if st in (cp_model.OPTIMAL, cp_model.FEASIBLE) else ', no plan') +
-              f', bound {sv.BestObjectiveBound():.0f} -- the plan-finding workers on from there')
+              f', bound {known:.0f} -- the plan-finding workers on from there')
         if st in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             m.ClearHints()
             for i_ in range(len(m.Proto().variables)):
                 v_ = m.GetIntVarFromProtoIndex(i_)
                 m.AddHint(v_, sv.Value(v_))
-        m.Add(OBJ >= int(math.ceil(sv.BestObjectiveBound() - 1e-6)))
-        t_first = sv.WallTime()
-        sv, st, proved = run(FALLBACK)
-        print(f'   plan-finding workers: [{sv.StatusName(st)}] {sv.WallTime():.0f}s (after {t_first:.0f}s)')
+        if known > -math.inf:
+            m.Add(OBJ >= int(math.ceil(known - 1e-6)))
+        t_first = secs
+        sv, st, proved, known, secs = run(FALLBACK, SOLVE_BATCHES, known)
+        print(f'   plan-finding workers: [{sv.StatusName(st)}] {secs:.0f}s (after {t_first:.0f}s)')
+        solve_secs += secs
     # (SOLVE_PLANE_TIE: the inner layers' MIRROR broken by the board. Every term prices two inner layers alike,
     # so a plan and its mirror -- each lane's In1 runs on In2 and back -- cost the same and the search returns either:
     # the zynq LVDS's loop re-solves flipped 18% of their lanes so, 24 of 33 at once, and a layer cut learned on one
@@ -1670,7 +1673,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
             and not CROWD:
         sv = _plane_tie(ctx, m, sv, OBJ, t, chg, YL, M, entry, end, LAYN, KMAX, Q)
     print(f'whole_solve: {len(t)} crossings ({sum(1 for k in t if same(*k))} same-branch), {nt} triples, K<={KMAX}, '
-          f'mover/stayer (stay {P_STAY}), stagger {STAGGER:.3f}, MARG {MARG}: [{sv.StatusName(st)}] {sv.WallTime():.0f}s', end=' ')
+          f'mover/stayer (stay {P_STAY}), stagger {STAGGER:.3f}, MARG {MARG}: [{sv.StatusName(st)}] {solve_secs:.0f}s', end=' ')
     # only a plan PROVED optimal in its vias -- the nets over two and the vias, whole multiples of W_V; the history
     # terms below one are congestion's tie-break -- goes on to the geometry: one the search could not prove is a plan
     # whose ends it found hard, and the geometry would be laid on a guess (K35's round 2: best and bound a thousandth

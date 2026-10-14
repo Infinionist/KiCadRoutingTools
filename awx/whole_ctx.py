@@ -363,7 +363,7 @@ CTX_CACHE = os.path.join(HERE, 'tmp', 'ctx_cache')
 # what the loop hands one stage and not the next, read only by whole_solve, whole_geo and whole_snap once the bench is
 # planned: not in the plan's key, or each stage would plan the same bench again
 STAGE_VARS = ('HINT', 'CUTS', 'HIST', 'GEO_FLIPS_FROM', 'SEED_FLIPS', 'SEED_CUTS', 'SEED_HIST', 'WHOLE_SOLVE_BATCHES',
-              'SNAP_KEEP')
+              'WHOLE_SOLVE_PROBE', 'SNAP_KEEP')
 
 
 class _NoCell:
