@@ -1911,6 +1911,51 @@ def _body_band_correct(state, ref: str, edge: str, x: float, y: float,
 #: state rather than a parameter threaded through every edge caller.
 _edge_band_gate = True
 
+#: The two halves `edge_seat_ok`'s drawn-body pad conjunct writes its refusal
+#: in, around the distance, so `_only_past_outline` can tell a rung refused
+#: for that alone (#1241: the inward move may still seat it) from one a
+#: keep-out or the band refused too. A rule-area refusal also opens with
+#: "pad copper " but ends "keep-out band".
+_PAST_OUTLINE_REASON = ('pad copper ', 'mm past the outline')
+
+
+def _only_past_outline(reasons) -> bool:
+    """Did `edge_seat_ok` refuse a pose for its pad copper past the outline,
+    and for nothing else? It stops at the first failing conjunct, and the band
+    is asked before the pads, so a band refusal never reads as this."""
+    head, tail = _PAST_OUTLINE_REASON
+    return (len(reasons) == 1 and reasons[0].startswith(head)
+            and reasons[0].endswith(tail))
+
+
+def _zero_edge_gate(state):
+    """The board outline at ZERO margin, built once per state: the gate a
+    containment question (is this copper on the board?) is asked of. The
+    state's own `edge_gate` carries the board-edge margin, which is the
+    clearance question instead."""
+    zero = getattr(state, '_zero_edge_gate', None)
+    if zero is None:
+        from .legality import BoardOutlineGate
+        zero = BoardOutlineGate(state.pcb_data.board_info, 0.0)
+        state._zero_edge_gate = zero
+    return zero
+
+
+def _pads_past_outline(state, part, x: float, y: float) -> float:
+    """How far `part`'s pad copper reaches past the board outline at the pose
+    `apply_move` WRITES, at `part.rot`; 0.0 when none of it does.
+
+    The drawn-body conjunct of `edge_seat_ok` reads the same measure
+    (`connector_geometry.pad_copper_outside`: each copper pad's rotated box,
+    castellated pads skipped, as they sit on the outline by design). On every
+    other pad a box never under-states the true outline check_assembly gates
+    on (`legality.pad_copper_overrun_mm`), so a seat it calls on the board is
+    not charged off it."""
+    from .connector_geometry import geometry_for, pad_copper_outside
+    return pad_copper_outside(geometry_for(state, state.pcb_data, state.pcb_file),
+                              _zero_edge_gate(state), part.ref,
+                              (round(x, 3), round(y, 3), part.rot))
+
 
 def edge_seat_ok(state, part, x: float, y: float, edge: str,
                  lo: float, hi: float,
@@ -1983,14 +2028,11 @@ def edge_seat_ok(state, part, x: float, y: float, edge: str,
         # with the edge while a pad sits 0.75 mm past it. CONTAINMENT only,
         # at zero margin -- the edge-clearance floor is check_drc's question.
         from .connector_geometry import pad_copper_outside
-        from .legality import BoardOutlineGate
-        zero = getattr(state, '_zero_edge_gate', None)
-        if zero is None:
-            zero = BoardOutlineGate(state.pcb_data.board_info, 0.0)
-            state._zero_edge_gate = zero
+        zero = _zero_edge_gate(state)
         off = pad_copper_outside(geometry, zero, part.ref, (x, y, part.rot))
         if off > 1e-9:
             if reasons is not None:
+                # `_only_past_outline` reads this sentence's two halves.
                 reasons.append(f'pad copper {off:.3f}mm past the outline')
             return False
     _blockers = state.keepout_blockers(part.ref, (r, tht))
@@ -2676,6 +2718,166 @@ def _floor_rung(state, part, entry: Dict, edge: str, lo: float, hi: float,
     return (sx, sy), floor, None
 
 
+# ---- #1241: pad copper past the outline is never KEPT -----------------------
+#
+# On a connector with no drawn body `edge_seat_ok` asks only whether each pad
+# CENTRE is on the board, so the seat a ladder keeps -- its first conflict-free
+# rung when no pose clears the floor (#975), or stage 1's crowding fallback --
+# could carry pad copper past the outline, the top-priority placement defect:
+# a band `min 1.5` on a body-less 0.6 x 6 mm pad left it 1.2 mm off the board,
+# and the seed passed it on. It is asked of the rung about to be KEPT, after
+# `_floor_rung` has had its chance to move that rung inward clear of the
+# floor: a rung still past the outline is moved inward onto the board here, or
+# it is not a seat and the walk goes on. A drawn-body connector meets the same
+# rule one step earlier -- `edge_seat_ok` refuses its rung for the copper --
+# and is given the same move when that is all it was refused for.
+
+def _onto_check(state, part, entry: Dict, edge: str, hi: float,
+                x: float, y: float, crowds, rung):
+    """`(key, detail)` naming why `_onto_the_board` may not take this pose, in
+    `_floor_note`'s vocabulary, or None when it may. The grade's nearest-edge
+    and along-edge conjuncts are asked as "no worse than the rung" (`rung` =
+    `(faces its edge, outside its window)` there), as `_band_settle` asks
+    them: the ladder keeps a rung without them, and an inward move does not
+    change the along-edge coordinate a window too narrow for the grid
+    misses."""
+    if _pads_past_outline(state, part, x, y) > 1e-9:
+        return 'still_past', {}
+    refused: List[str] = []
+    if not edge_seat_ok(state, part, x, y, edge, float('-inf'), hi,
+                        reasons=refused):
+        return 'refused', {'refused_by': sorted(set(refused))[:3]
+                           or ['the seat']}
+    if crowds(x, y):
+        return 'crowds', {}
+    if rung[0] and not _faces_its_edge(state, part, entry, edge, x, y):
+        return 'nearest_edge', {}
+    if not rung[1] and _outside_its_along_edge_claim(state, part, entry, edge,
+                                                     x, y):
+        return 'along_edge_window', {}
+    return None
+
+
+def _onto_the_board(state, part, entry: Dict, edge: str, lo: float,
+                    hi: float, x: float, y: float, crowds, rung_why=None):
+    """#1241: a rung whose pad copper reaches past the outline, moved inward
+    along the seated edge's normal until it does not.
+
+    Returns `(pose, kind, contradiction, floor_why)`, or `(None, refusals,
+    None, None)` when no move seats it -- the rung is then not a seat.
+    `floor_why` is the reason the floor-clearing pose was not taken, for the
+    `edge_floor_fallback` record of a pose short of the floor (`rung_why`,
+    `_floor_rung`'s own reason, when no floor pose could be derived).
+
+    Three poses along the inward normal:
+      * `floor` -- `_floor_rung`'s derived shift: every pad on that edge
+        clear of the board-edge floor;
+      * `band_min` -- the declared minimum overhang, the most inward pose the
+        band accepts;
+      * `on_board` -- the copper just onto the board, found by walking (at
+        most three steps; copper past ANOTHER side, which an inward move does
+        not reach, ends the walk).
+    Each must pass every seat check but the band's minimum and the setback:
+    the copper on the board, `edge_seat_ok` (keep-outs, exclusive zones,
+    rule-area bands, the band's maximum), the neighbours (`crowds`), and the
+    grade's nearest edge and along-edge window no worse than at the rung
+    (`_onto_check`).
+
+    Which one is decided by the band at its MINIMUM:
+      * the copper is on the board there: the band can be met, so only a
+        pose it accepts (`_grade_band_refuses`) is taken -- `floor`, then
+        `band_min`, then `on_board`, as far from the floor as the band allows,
+        #975's preference;
+      * the copper is past the outline even there: the band contradicts the
+        footprint, and no pose meets it with the copper on the board. The
+        copper wins -- CLAUDE.md ranks it first -- so `floor`, then
+        `on_board`, and `contradiction` describes it for the caller to name.
+        The grade still reports the band, so the seed still exits 4 on it,
+        but the part sits on its declared edge with its nets routable, not in
+        the interior with a second error.
+    The intent grade is not compared (`_grade_worse`): the rung is not a seat,
+    so there is no first seat to compare with, and the end-of-run grade
+    reports whatever the move costs."""
+    reach = _pads_past_outline(state, part, x, y)
+    ux, uy = _INWARD[edge]
+
+    def at(shift):
+        return round(x + ux * shift, 3), round(y + uy * shift, 3)
+
+    amount, _basis, _legacy = _band_reading(state, part, edge, x, y)
+    # The band's minimum, and the copper there: what decides, and what the
+    # note reports. The pose taken for it sits one grid step on the band side.
+    reach_min = (_pads_past_outline(state, part, *at(amount - lo))
+                 if amount > lo else reach)
+    contradicts = reach_min > 1e-9
+    d_min = max(0.0, amount - lo - _FLOOR_SHIFT_GUARD_MM)
+    moves = []
+    floor = _floor_at(state, part.ref, x, y, part.rot)
+    if floor is not None and floor.short and {s[2] for s in floor.short} == {edge}:
+        moves.append(('floor', max(s[0] for s in floor.short)
+                      + _FLOOR_SHIFT_GUARD_MM))
+    if d_min and not contradicts:
+        moves.append(('band_min', d_min))
+    shift, left = 0.0, reach
+    for _ in range(3):
+        shift += left + _FLOOR_SHIFT_GUARD_MM
+        now = _pads_past_outline(state, part, *at(shift))
+        if now <= 1e-9:
+            moves.append(('on_board', shift))
+            break
+        if now >= left - 1e-9:
+            break
+        left = now
+    refusals: List[str] = []
+    floor_why = rung_why
+    rung = (_faces_its_edge(state, part, entry, edge, x, y),
+            _outside_its_along_edge_claim(state, part, entry, edge, x, y))
+    for kind, d in moves:
+        sx, sy = at(d)
+        why = _onto_check(state, part, entry, edge, hi, sx, sy, crowds, rung)
+        if why is None and not contradicts:
+            band_why, detail = _grade_band_refuses(state, part, entry, edge,
+                                                   lo, sx, sy)
+            if band_why is not None:
+                why = band_why, dict(detail)
+        if why is not None:
+            refusals.append(f"{kind} ({why[0]})")
+            if kind == 'floor':
+                floor_why = dict(why[1], why=why[0], shift_mm=round(d, 4))
+            continue
+        contradiction = None
+        if contradicts:
+            band_why, detail = _grade_band_refuses(state, part, entry, edge,
+                                                   lo, sx, sy)
+            if band_why in ('band_min', 'setback'):
+                contradiction = {
+                    'edge': edge, 'why': band_why, 'kept': kind,
+                    'band_min_mm': lo,
+                    'overhang_mm': detail['overhang_after_mm'],
+                    'basis': detail['basis'],
+                    'pads_past_at_band_min_mm': round(reach_min, 4),
+                    'pose': [sx, sy, part.rot],
+                    'floor_clear': kind == 'floor'}
+        return (sx, sy), kind, contradiction, floor_why
+    return None, refusals, None, None
+
+
+def _contradiction_note(prefix: str, ref: str, record: Dict) -> str:
+    """One NOTE for an `edge_band_contradiction` record (#1241)."""
+    where = ("clear of the board-edge floor" if record['floor_clear'] else
+             "inside the board-edge floor (edge_floor_fallback)")
+    at = (f"with no overhang, where its seat setback is graded"
+          if record['why'] == 'setback' else
+          f"at overhang {record['overhang_mm']:.3f}mm ({record['basis']})")
+    return (f"{prefix}{ref}: its declared overhang minimum "
+            f"{record['band_min_mm']:g}mm on the {record['edge']} edge puts "
+            f"pad copper {record['pads_past_at_band_min_mm']:.3f}mm past the "
+            f"board outline -- the band contradicts the footprint. Seated on "
+            f"that edge {at}, its pads on the board and {where}, rather than "
+            f"with copper off the board or in the interior; the grade reports "
+            f"the band. Fix the band (edge_band_contradiction)")
+
+
 def _floor_record(ref: str, edge: str, kept: str, pose, floor: _Floor,
                   why: Optional[Dict]) -> Optional[Dict]:
     """The `edge_floor_fallback` record for a KEPT pose that is short on a
@@ -2759,6 +2961,9 @@ def _floor_note(prefix: str, ref: str, record: Dict) -> str:
                          "edge than the declared one"),
         'crowding': ("no seat on this band clears the parts already placed, so "
                      "the floor was not searched"),
+        # #1241: the floor pose of a seat moved onto the board.
+        'still_past': ("the pose that clears it still leaves copper past the "
+                       "outline"),
     }.get(why, str(why))
     return (f"{prefix}{ref}: its seat on the {record['edge']} edge leaves pad "
             f"copper {where} -- "
@@ -3493,7 +3698,8 @@ def _strong_facing_rots(state, ref: str, entry: Dict):
 
 def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
                notes: List[str], target=None, exclude=None,
-               rotations=None, disclose=None, grade=None) -> bool:
+               rotations=None, disclose=None, grade=None,
+               contradictions=None) -> bool:
     """Seat a DECLARED edge part on its edge band, minimal-move (run-4 B-6).
 
     Repair could never do this: `_try_place._ok` demands full containment,
@@ -3516,6 +3722,12 @@ def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
     always have kept. A rotation is never changed to clear the floor, so which
     rotations seat is exactly what it was. A kept seat that is short of the
     floor gets a NOTE and, when `disclose` is a dict, an `edge_floor_fallback`
+    record under `ref`.
+
+    #1241: a seat about to be kept with pad copper past the outline is moved
+    inward onto the board (`_onto_the_board`), or is not a seat and the walk
+    goes on; a band that only copper past the outline could meet is named in
+    a NOTE and, when `contradictions` is a dict, an `edge_band_contradiction`
     record under `ref`."""
     part = state.parts[ref]
     edge = entry['edge']
@@ -3659,13 +3871,11 @@ def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
     # or add an `allow`.
     refused: List[str] = []
 
-    def on_board(px, py):
-        return edge_seat_ok(state, part, px, py, edge, lo, hi_eff,
-                            reasons=refused)
-
     def try_rot(rot):
-        """The seat ladder at one rotation. (x, y, record) or None; `record` is
-        the `edge_floor_fallback` record when the seat is short of the floor.
+        """The seat ladder at one rotation. (x, y, record, contradiction) or
+        None; `record` is the `edge_floor_fallback` record when the seat is
+        short of the floor, `contradiction` the `edge_band_contradiction` one
+        when its band could be met only with copper past the outline (#1241).
 
         #975: ONE walk. Every rung is tested as it always was, and the first
         conflict-free one is the seat the ladder always chose. It is kept if
@@ -3679,7 +3889,11 @@ def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
         error to that seat's (`_grade_worse`). Failing all that, the first
         seat is kept and disclosed. A rung that is not already a conflict-free
         seat is never asked, so a rotation that seated nowhere still seats
-        nowhere.
+        nowhere -- except, #1241, a rung refused for its pad copper past the
+        outline and nothing else, which is asked like a first seat whose
+        copper is past it: that seat is never kept as it is, but moved onto
+        the board (`_onto_the_board`), or it is not a seat and the walk goes
+        on to the next rung.
 
         `part.rot` is SET for the duration, and that is the whole point rather
         than a shortcut. `_edge_pose`, `_edge_correct` and `edge_seat_ok` all
@@ -3725,12 +3939,27 @@ def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
                     rung = (x, y)
                     x, y = _band_settle(state, part, entry, edge, lo, x, y, seats)
                     x, y = _window_nudge(state, part, entry, edge, x, y, seats, rung)
-                if not converged or not on_board(x, y):
+                if not converged:
                     continue
+                # #1241: a drawn-body rung refused for its pad copper past the
+                # outline, and for nothing else, is asked like a body-less one
+                # whose copper is past it: moved inward, or not a seat.
+                _why_rung: List[str] = []
+                if not edge_seat_ok(state, part, x, y, edge, lo, hi_eff,
+                                    reasons=_why_rung):
+                    if not _only_past_outline(_why_rung):
+                        refused.extend(_why_rung)
+                        continue
+                    _body_past = _why_rung
+                else:
+                    _body_past = None
                 if not conflict_free(x, y, rot):
+                    if _body_past:
+                        refused.extend(_body_past)
                     continue
                 if first is not None and first[3] not in _SLIDE_HELPS:
                     break
+                past = _pads_past_outline(state, part, x, y)
                 try:
                     seat, floor, why = _floor_rung(
                         state, part, entry, edge, lo, hi_eff, x, y,
@@ -3746,10 +3975,14 @@ def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
                                  f"({type(exc).__name__}: {exc}); the seat is "
                                  f"unchanged")
                     seat, floor, why = None, None, None
+                if past > 1e-9 and seat == (x, y):
+                    # No floor reading (`_floor_rung` returns the rung as it
+                    # is): the floor cannot vouch for copper past the outline.
+                    seat = None
                 # The first seat, unmoved, is the one the ladder always chose,
                 # and is taken without asking anything more.
                 if seat is not None and first is None and seat == (x, y):
-                    return x, y, None
+                    return x, y, None, None
                 # Anything else is a pose the grade has not been measured on:
                 # the grade's own edge conjuncts are asked of it (a move asked
                 # them already), then the whole intent grade against the
@@ -3761,25 +3994,49 @@ def _seat_edge(state, ref: str, entry: Dict, must_lock: Set[str],
                                          (x, y) if first is None else first[:2],
                                          seat, ex - {ref}, graded)
                     if not worse:
-                        return seat[0], seat[1], None
+                        return seat[0], seat[1], None, None
                     if first is None:
                         why = dict(why or {}, why='grade_delta',
                                    n_grade_delta=len(worse),
                                    grade_delta=list(worse[:_FLOOR_ROWS]))
-                if first is None:
+                if first is None and past > 1e-9:
+                    # #1241: this rung would be KEPT, and its copper is past
+                    # the outline. Moved onto the board, or not a seat.
+                    moved, kind, contra, fwhy = _onto_the_board(
+                        state, part, entry, edge, lo, hi_eff, x, y,
+                        lambda a, b: not conflict_free(a, b, rot), why)
+                    if moved is None:
+                        refused.append(
+                            f"pad copper {past:.3f}mm past the outline, which "
+                            f"no inward move clears ({', '.join(kind)})"
+                            if kind else
+                            f"pad copper {past:.3f}mm past the outline")
+                        continue
+                    mx, my = moved
+                    first = (mx, my, _floor_record(
+                        ref, edge, kind, (mx, my, rot),
+                        _floor_at(state, ref, mx, my, rot), fwhy),
+                        (why or {}).get('why'), contra)
+                elif first is None:
                     first = (x, y, _floor_record(
                         ref, edge, 'conflict_free', (x, y, rot), floor, why),
-                        (why or {}).get('why'))
-            return first[:3] if first is not None else None
+                        (why or {}).get('why'), None)
+            return (first[0], first[1], first[2], first[4]) \
+                if first is not None else None
         finally:
             part.rot = saved
 
     def keep(seat, rot):
-        """Apply a seat, disclosing a floor shortfall it carries."""
+        """Apply a seat, disclosing a floor shortfall it carries and, #1241, a
+        band it could not meet with its pad copper on the board."""
         state.apply_move(ref, round(seat[0], 3), round(seat[1], 3), rot)
         missed = _window_miss_note(state, part, entry, edge, '')
         if missed:
             notes.append(missed)
+        if seat[3] is not None:
+            notes.append(_contradiction_note('', ref, seat[3]))
+            if contradictions is not None:
+                contradictions[ref] = seat[3]
         if seat[2] is not None:
             notes.append(_floor_note('', ref, seat[2]))
             if disclose is not None:
@@ -5279,6 +5536,9 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # #975: stage 1's edge seats that keep pad copper inside the board-edge
     # floor because no pose the ladder tried clears it -- see `_floor_rung`.
     edge_floor_fallback: Dict[str, Dict] = {}
+    # #1241: stage 1's edge seats whose band only copper past the outline
+    # could meet, seated with their pads on the board -- `_onto_the_board`.
+    edge_band_contradiction: Dict[str, Dict] = {}
     # A part locked IN THE FILE is already authoritatively placed -- a caller
     # that pre-placed its spec-fixed parts and stamped them (locked yes) must
     # not have the seeder re-derive them. Treated as placed from the start:
@@ -5626,6 +5886,21 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                     if sf.pad > 1e-6 or sf.hole > 1e-6:
                         hit.append(other)
                 return hit
+
+            def _crowding_at(px, py):
+                """{placed ref: pad + hole shortfall} at this pose -- what a
+                crowding seat moved onto the board may not make worse
+                (#1241)."""
+                ctx = state.legality_ctx
+                if ctx is None:
+                    return {}
+                out = {}
+                for other in _shorted_by(px, py):
+                    sf = ctx.pair_shortfall(
+                        ref, other,
+                        pose_a=(round(px, 3), round(py, 3), part.rot))
+                    out[other] = sf.pad + sf.hole
+                return out
             # SCALED to the declared window, exactly as `_seat_edge`'s ladder
             # is. Unscaled, a `center_on_edge {tolerance_mm: 1.0}` window on
             # splitflap's 198.12mm north edge is 0.0101 wide and every
@@ -5672,6 +5947,11 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             _kept_xy = None
             _pick = None
             _graded = {}
+            _hi_eff = float(hi) if hi is not None else max(2.0 * overhang,
+                                                           lo + 1.0)
+            # #1241: rungs that would have been kept with pad copper past the
+            # outline and that no inward move seats -- (reach, refusals).
+            _past_refused: List[Tuple[float, List[str]]] = []
             for _df in _slide:
                 frac = min(f_hi, max(f_lo, _base_frac + _df * _sstep))
                 _x, _y = _edge_pose(part, bounds, edge, frac, overhang)
@@ -5684,10 +5964,12 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                     _x, _y = _band_settle(state, part, c, edge, lo, _x, _y, _s1_seats)
                     _x, _y = _window_nudge(state, part, c, edge, _x, _y, _s1_seats, _rung)
                 _why = []
-                if _conv and edge_seat_ok(state, part, _x, _y, edge, lo,
-                                          float(hi) if hi is not None
-                                          else max(2.0 * overhang, lo + 1.0),
-                                          reasons=_why):
+                # #1241: a drawn-body rung refused for its pad copper past the
+                # outline, and for nothing else, is asked like a body-less one
+                # whose copper is past it: moved inward, or not a seat.
+                if _conv and (edge_seat_ok(state, part, _x, _y, edge, lo,
+                                           _hi_eff, reasons=_why)
+                              or _only_past_outline(_why)):
                     _hit = _shorted_by(_x, _y)
                     if not _hit and _cy1172 is not None:
                         # #1172: the courtyard tier. A rung clear of pads
@@ -5702,11 +5984,14 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                         if (_kept is not None and (_kept[2] or {}).get('why')
                                 not in _SLIDE_HELPS):
                             break
+                        _past = _pads_past_outline(state, part, _x, _y)
                         _seat, _floor, _fwhy = _floor_rung(
-                            state, part, c, edge, lo,
-                            float(hi) if hi is not None
-                            else max(2.0 * overhang, lo + 1.0),
+                            state, part, c, edge, lo, _hi_eff,
                             _x, _y, lambda a, b: bool(_shorted_by(a, b)))
+                        if _past > 1e-9 and _seat == (_x, _y):
+                            # No floor reading: it cannot vouch for copper
+                            # past the outline.
+                            _seat = None
                         if _seat is not None and _kept is None and _seat == (_x, _y):
                             _pick = _seat
                             break
@@ -5725,8 +6010,22 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                                 _fwhy = dict(_fwhy or {}, why='grade_delta',
                                              n_grade_delta=len(_worse),
                                              grade_delta=list(_worse[:_FLOOR_ROWS]))
-                        if _kept is None:
-                            _kept = (frac, _floor, _fwhy)
+                        if _kept is None and _past > 1e-9:
+                            # #1241: this rung would be KEPT, and its copper
+                            # is past the outline. Moved onto the board, or
+                            # not a seat.
+                            _moved, _kind, _ctr, _mwhy = _onto_the_board(
+                                state, part, c, edge, lo, _hi_eff, _x, _y,
+                                lambda a, b: bool(_shorted_by(a, b)), _fwhy)
+                            if _moved is None:
+                                _past_refused.append((_past, _kind))
+                                continue
+                            _kept = (frac, _floor_at(state, ref, *_moved,
+                                                     part.rot),
+                                     _mwhy, _ctr, _kind)
+                            _kept_xy = _moved
+                        elif _kept is None:
+                            _kept = (frac, _floor, _fwhy, None, 'conflict_free')
                             _kept_xy = (_x, _y)
                         continue
                     if _fallback is None:
@@ -5768,16 +6067,36 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                              f"not converge on the {edge} edge, so stage 1 "
                              f"left it for the later stages")
                 return 'skip_late', _geo_rot
+            # #1241: pad copper past the outline is never KEPT. A pick clears
+            # the floor and a kept rung was moved onto the board in the walk;
+            # what is left is the crowding fallback, moved onto the board
+            # here -- crowding what it crowded, and no deeper -- and a pose
+            # re-derived from the last rung when nothing seated, which is
+            # refused below.
+            _contra = _kept[3] if (_pick is None and _kept is not None) else None
+            _crowd_kind = 'crowding'
+            if (_pick is None and _kept is None and _fallback is not None
+                    and _pads_past_outline(state, part, x, y) > 1e-9):
+                _was = _crowding_at(x, y)
+                _moved, _crowd_kind, _contra, _ = _onto_the_board(
+                    state, part, c, edge, lo, _hi_eff, x, y,
+                    lambda a, b: any(v > _was.get(k, 0.0) + 1e-6
+                                     for k, v in _crowding_at(a, b).items()),
+                    None)
+                if _moved is not None:
+                    x, y = _moved
             # The SAME containment predicate _seat_edge uses. Stage 1 got the
             # fraction clamp and the convergence skip but not this, and was
             # measured still seating a connector at (159.909, 132.830) with
             # 16 of 16 pads 18.45mm off a board ending at 114.38 -- the exact
             # pose the fix elsewhere refuses. Stage 1 runs no legality gate at
-            # all by design, so nothing downstream catches it.
-            hi_eff = float(hi) if hi is not None else max(2.0 * overhang,
-                                                          lo + 1.0)
+            # all by design, so nothing downstream catches it. #1241: a band
+            # that only copper past the outline could meet is not asked here
+            # -- the move onto the board left it on purpose, and it is named.
+            hi_eff = _hi_eff
             _why: List[str] = []
-            if not edge_seat_ok(state, part, x, y, edge, lo, hi_eff,
+            if not edge_seat_ok(state, part, x, y, edge,
+                                float('-inf') if _contra else lo, hi_eff,
                                 reasons=_why):
                 # #701: a keep-out refusal has a DIFFERENT next move from an
                 # off-board one -- move the keep-out, not the band -- so it is
@@ -5788,19 +6107,35 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                                 f"the {edge} band would put it off the board")
                              + ", so stage 1 left it for the later stages")
                 return 'skip_late', _geo_rot
+            _past = _pads_past_outline(state, part, x, y)
+            if _past > 1e-9:
+                # #1241: the pose `edge_seat_ok` cannot see past -- its pad
+                # test on a body-less part reads only the pad CENTRES.
+                _reach = max([_past] + [r for r, _k in _past_refused])
+                notes.append(
+                    f"edge connector {ref}: every seat on the {edge} band "
+                    f"leaves pad copper past the board outline (up to "
+                    f"{_reach:.3f}mm), and no pose moved inward onto the "
+                    f"board seats it, so stage 1 left it for the later "
+                    f"stages")
+                return 'skip_late', _geo_rot
             state.apply_move(ref, round(x, 3), round(y, 3), part.rot)
             _missed = _window_miss_note(state, part, c, edge, 'edge connector ')
             if _missed:
                 notes.append(_missed)
             placed.add(ref)
             unplaced.discard(ref)
+            if _contra:
+                edge_band_contradiction[ref] = _contra
+                notes.append(_contradiction_note('edge connector ', ref,
+                                                 _contra))
             if _pick is None:
                 if _kept is not None:
-                    _record = _floor_record(ref, edge, 'conflict_free',
+                    _record = _floor_record(ref, edge, _kept[4],
                                             (x, y, part.rot), _kept[1], _kept[2])
                 else:
                     _record = _floor_record(
-                        ref, edge, 'crowding', (x, y, part.rot),
+                        ref, edge, _crowd_kind, (x, y, part.rot),
                         _floor_at(state, ref, x, y, part.rot),
                         {'why': 'crowding'} if _fallback is not None else None)
                 if _record is not None:
@@ -5819,6 +6154,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             state.apply_move(ref, *pose)
             del notes[n0:]
             edge_floor_fallback.pop(ref, None)
+            edge_band_contradiction.pop(ref, None)
             placed.discard(ref)
             unplaced.add(ref)
 
@@ -7268,7 +7604,13 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             # pose, the floor, the worst pads and why the seat could not move.
             # Only records still describing the written pose are kept.
             'edge_floor_fallback': _floor_records_at_final_pose(
-                state, edge_floor_fallback)}
+                state, edge_floor_fallback),
+            # #1241. Declared edge connectors whose overhang band could be met
+            # only with pad copper past the outline, seated on their edge with
+            # their pads on the board instead, by ref -- the band's error
+            # stands in the grade. Same final-pose filter.
+            'edge_band_contradiction': _floor_records_at_final_pose(
+                state, edge_band_contradiction)}
 
 
 #: KiCad 6's bare footprint lock, ``(footprint "X" locked ...``; group 1 is
@@ -8133,6 +8475,20 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                      for h in pp.hole_extent_rects(*_pose)])
         band = edge_band.get(ref)
         if band is not None:
+            # #1241: a band exempts the overhang it declares, which is the
+            # BODY's; pad copper past the outline it never exempts. Measured
+            # as check_assembly gates it (`pad_copper_overrun_mm`, a
+            # castellated pad on the outline exempt), so a seat this census
+            # leaves alone is not one the gate charges.
+            over = _leg.pad_copper_overrun_mm(fp.pads, zero_gate)
+            if over > _leg.EPS:
+                notes.append(
+                    f"{ref}: its pad copper reaches {over:.3f}mm past the "
+                    f"board outline -- charged, since a declared band "
+                    f"exempts the body's overhang, never pad copper off the "
+                    f"board")
+                _charge(ref, max(over, amt - band))
+                continue
             excess = amt - band
             if excess > 1e-6:
                 notes.append(
@@ -8189,6 +8545,7 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
     zero_move: List[str] = []   # run-7 A2: honesty re-grade candidates
     moves: List[Dict] = []
     edge_floor_fallback: Dict[str, Dict] = {}   # #975, see `_floor_rung`
+    edge_band_contradiction: Dict[str, Dict] = {}   # #1241, `_onto_the_board`
     for ref in violators:
         part = state.parts[ref]
         was_locked = part.locked      # always False here: locked refs are
@@ -8217,6 +8574,7 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                        (zt.rect[1] + zt.rect[3]) / 2.0)
             ok = _seat_edge(state, ref, ec, must_lock, notes, target=tgt,
                             rotations=_rot_ladder(ref),
+                            contradictions=edge_band_contradiction,
                             disclose=edge_floor_fallback, grade=pose_grader)
             if ok:
                 d = math.hypot(part.x - part.seed_x, part.y - part.seed_y)
@@ -8651,6 +9009,10 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
             # #975: edge seats kept short of the board-edge floor, by ref.
             'edge_floor_fallback': _floor_records_at_final_pose(
                 state, edge_floor_fallback),
+            # #1241: edge seats whose band only copper past the outline
+            # could meet, seated with their pads on the board, by ref.
+            'edge_band_contradiction': _floor_records_at_final_pose(
+                state, edge_band_contradiction),
             # #1066 (b): {cap: {moved, tried: [...]}}; {} when the rung is
             # off or nothing was charged to a decap rule.
             'decap_rung': decap_rung}

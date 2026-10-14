@@ -969,10 +969,17 @@ ROWS += [
                 'turned to the least depth or to its face, and seated clear '
                 'of the placed courtyards, it does none of these. '
                 'splitflap\'s north-edge claims seat without an edge error '
-                'or an overlap at either angle.'),
+                'or an overlap at either angle. glasgow\'s since #1241: at '
+                'the pile angle J1\'s one rung put pad copper past the west '
+                'edge, so the drawn-body seat refused it and the later '
+                'stages parked J1 in the interior; a rung refused for that '
+                'alone now reaches #975\'s floor ladder, which moves it '
+                'inward clear of the floor, so the OFF arm carries no edge '
+                'error for the ON arm to remove and the ON arm\'s win is '
+                'left to its guards.'),
     }
     for b, ign, exp in (
-        ('glasgow_revC.kicad_pcb', ['GND', '+3V3'], 'improve'),
+        ('glasgow_revC.kicad_pcb', ['GND', '+3V3'], 'neutral'),
         ('sonde_u.kicad_pcb', ['GND'], 'improve'),
         ('splitflap_driver.kicad_pcb', ['GND', '+5V', '+3V3'], 'neutral'))
 ]

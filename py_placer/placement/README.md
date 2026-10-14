@@ -276,7 +276,15 @@ the board's own, named and not charged -- at its input pose, or after a
 polish move that took its copper no further past the outline.
 `oob_pad_copper_gating_count` is the written board's total. `must_lock` alone
 exempts nothing: stage 1.5 seats every unlocked, in-scope must_lock part.
-`place_seed --repair` and `--reseat` are not gated this way yet.
+`place_seed --repair` charges the same copper on any part it could move
+(`pad_copper_off_board_charged`), and `--reseat` alone on a part it moved; a
+pinned part is reported (`pad_copper_off_board_pinned`, #1193's contract). No
+edge seat keeps such copper in the first place (#1241): stage 1 and
+`_seat_edge` move a rung whose pads would sit past the outline inward onto
+the board, and name a band only copper past the outline could meet in
+`edge_band_contradiction`, seated on its edge with its band error standing.
+The seed's pad-pair and band channels read "moved" off the WRITTEN board, so
+a polish or re-seat move counts, on the delta (#1241).
 `edge_angle_chosen` names every edge
 connector stage 1 turned to an angle IT chose or reordered (#1172) --
 `{ref: {from, to, why, candidates}}`: an undeclared one, or a declared

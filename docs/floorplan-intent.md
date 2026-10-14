@@ -754,11 +754,31 @@ a clearance shortfall into an unseated connector, which is an unrouted one.
 The kept shortfall is reported in `place_seed`'s `edge_floor_fallback`, with the
 pads and the reason the seat could not move; the copper itself is graded in
 `pad_edge_after` as before. A rotation is never changed to clear the floor.
-A kept seat whose copper reaches PAST the outline, not just into the floor,
-fails a seed's gate (exit 4, `pad_copper_off_board_seeded`, #1241): the
-seat is still written, for inspection, but the seed is not passed as
-buildable. `place_seed --repair` and `--reseat` are not gated this way yet
-(#1241).
+
+Copper PAST the outline, not just into the floor, is never kept (#1241). On a
+connector with no drawn body the seat predicate reads only the pad CENTRES,
+so the seat a ladder keeps -- the first seat above, or stage 1's nearest
+crowding seat -- can carry pad copper off the board; on a drawn-body
+connector the predicate refuses such a rung outright. Either way the rung is
+moved inward along the edge's normal: to the floor-clearing pose, else to the
+band's minimum, else to where the copper is just on the board, each checked
+like any seat (keep-outs, exclusive zones, rule-area bands, the neighbours --
+a crowding seat may crowd no deeper -- and no worse on the nearest edge and
+the along-edge window than the rung). Failing that, it is not a seat and the
+ladder walks on; a connector with no seat left is refused by name. When the
+band can be met only with copper past the outline -- its MINIMUM puts the
+copper there -- the band contradicts the footprint. The copper wins: the
+connector is seated on its declared edge, clear of the floor when any pose
+is, and named in `place_seed`'s `edge_band_contradiction` and a NOTE. The
+grade still reports the band, so the seed exits 4 on it, but on a board with
+the connector's nets routable rather than with the connector thrown into the
+interior. A seed's gate also charges copper past the outline wherever it
+comes from (exit 4, `pad_copper_off_board_seeded`), and so does
+`place_seed --repair`'s (`pad_copper_off_board_charged`): its census charges
+such copper on a declared edge connector too, since a band exempts the
+body's overhang and never pad copper, and the repair re-seats it through the
+same edge seat. A part locked in the input keeps the #1193 pinned contract
+there: reported, not charged.
 
 Every declared connector on the board gets a row in `edge_connector_evidence`
 (`--json`), including passing ones. Each row carries:

@@ -2196,24 +2196,22 @@
  },
  "edge-angle-pile-glasgow_revC": {
   "board": "glasgow_revC.kicad_pcb",
-  "mark": "improve",
+  "mark": "neutral",
   "off": {
-   "body_advisory": 2,
+   "body_advisory": 4,
    "body_blocking": 0,
    "courtyard_blocking": 1,
    "courtyard_blocking_area": 7.3927,
-   "crossings": 4398,
-   "edge_facing_pads": 1,
+   "crossings": 3945,
+   "edge_facing_pads": 5,
    "health_block_displacement_max_mm": null,
    "health_bus_foreign_crossings": null,
-   "hpwl": 6815.68,
-   "intent_errors": 1,
-   "intent_errors_by_rule": {
-    "edge_connector": 1
-   },
+   "hpwl": 6671.37,
+   "intent_errors": 0,
+   "intent_errors_by_rule": {},
    "intent_errors_enforced": 0,
-   "intent_errors_other": 1,
-   "inversions": 2134,
+   "intent_errors_other": 0,
+   "inversions": 1850,
    "oob_keepout_copper_amount": 0.0,
    "oob_keepout_copper_count": 0,
    "unseated": 1

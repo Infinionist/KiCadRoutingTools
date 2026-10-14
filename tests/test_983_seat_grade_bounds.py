@@ -12,7 +12,8 @@ refusals) pin the function directly. A10 and B7 go through
   A.  (#983) A RUNG WRITTEN OUTSIDE ITS DECLARED ALONG-EDGE WINDOW is stepped
       one 0.001 mm grid unit along the edge, inside (`_window_nudge`); a rung
       the grade accepts is returned bit-identical.
-      A1  the issue's two blocker positions (both window ends), to the micron.
+      A1  the issue's two blocker positions (both window ends), to the micron
+          along the edge (#1241 moved one across it, see the arm).
       A2  a lattice slice through both ladders; a seat differs from the blind
           one only when a step fired (A6).
       A3  an asymmetric part at 0/90/180/270: the end that rounds out, and
@@ -743,6 +744,17 @@ def key(pads=0, worst=0.0, overlap=None):
     return (pads, worst, dict(overlap or {}), None, None)
 
 
+def pads_past(path, pose, ref='J1'):
+    """How far `ref`'s pad copper reaches past the outline at `pose` (#1241)."""
+    import pose_score
+    st = pose_score.make_state(parse_kicad_pcb(path), path, clearance=.25,
+                               board_edge_clearance=.55)
+    part = st.parts[ref]
+    seeder._materialise_rotation(part, pose[2])
+    part.rot = pose[2]
+    return seeder._pads_past_outline(st, part, pose[0], pose[1])
+
+
 def no_nudge():
     """The blind twin of A: every rung is written where the clamp put it."""
     return patch.object(seeder, '_window_nudge',
@@ -769,13 +781,23 @@ class AlongEdgeWindow(_Graded):
     def test_a1_the_issues_two_positions_are_written_inside_the_window(self):
         # #983's own rows: the blind pose is the issue's, to the micron, and
         # outside the window; the stepped one is inside it at both ends.
-        for (bx, by), issue_pose in (((0.5, 14.6), (0.468, 14.693, 270.0)),
-                                     ((0.5, 15.65), (-0.04, 14.152, 270.0))):
+        #
+        # #1241: ALONG the edge, that is. At the issue's 15.65 pose
+        # (-0.04, 14.152) pad 2 reached 0.200 mm past the west edge, and a
+        # seat never keeps copper past the outline any more: the blind seat
+        # is that rung moved inward across the edge, to (0.711, 14.152),
+        # where the copper clears the board-edge floor. The along-edge
+        # coordinate -- the one #983 is about -- is the issue's.
+        for (bx, by), issue_pose, now in (
+                ((0.5, 14.6), (0.468, 14.693, 270.0), (0.468, 14.693, 270.0)),
+                ((0.5, 15.65), (-0.04, 14.152, 270.0), (0.711, 14.152, 270.0))):
             with self.subTest(blocker=(bx, by)):
                 path = self.issue_board(bx, by)
                 ok, blind, _ = self.seat(path, ALONG, blind=True, target=(2.18, -0.24))
                 self.assertTrue(ok)
-                self.assertEqual(blind, issue_pose)
+                self.assertEqual(blind, now)
+                self.assertEqual(blind[1:], issue_pose[1:])
+                self.assertEqual(pads_past(path, blind), 0.0)
                 before = self.graded(path, {'J1': blind}, intent_doc(ALONG))['J1']
                 self.assertIn('along_edge', before)
                 ok, pose, notes = self.seat(path, ALONG, target=(2.18, -0.24))
@@ -974,11 +996,12 @@ class AlongEdgeWindow(_Graded):
         self.assertEqual(seeder._window_nudge(st, part, mid, 'west', x, y, same), stepped)
 
     def test_a4c_a_step_that_raises_keeps_the_seat(self):
-        # The issue's two rows with the floor unreadable at every pose: the
-        # seat is kept where the ladder had it (and graded as #983 found it),
-        # rather than the error escaping the seat and unseating the part.
-        for (bx, by), issue_pose in (((0.5, 14.6), (0.468, 14.693, 270.0)),
-                                     ((0.5, 15.65), (-0.04, 14.152, 270.0))):
+        # The issue's two rows with the window step raising at every pose:
+        # the seat is kept where the ladder had it (the blind seat, as A1
+        # pins it), rather than the error escaping the seat and unseating the
+        # part.
+        for (bx, by), blind_pose in (((0.5, 14.6), (0.468, 14.693, 270.0)),
+                                     ((0.5, 15.65), (0.711, 14.152, 270.0))):
             with self.subTest(blocker=(bx, by)):
                 path = self.issue_board(bx, by)
                 real = seeder._window_step
@@ -989,7 +1012,7 @@ class AlongEdgeWindow(_Graded):
                     ok, pose, _ = self.seat(path, ALONG, target=(2.18, -0.24))
                 self.assertTrue(ok)
                 self.assertIs(seeder._window_step, real)
-                self.assertEqual(pose, issue_pose)
+                self.assertEqual(pose, blind_pose)
 
     def test_a10_the_issue_row_through_the_production_caller(self):
         # (0.5, 14.6): J1 already overlaps R9's courtyard by 0.0441 mm2 at

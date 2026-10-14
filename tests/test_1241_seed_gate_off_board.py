@@ -13,13 +13,16 @@ is off the board rather than "inside the board-edge floor". A lock exempts
 nothing: placement stamps its own, so a lap-1 lock would launder its
 off-board seat into lap 2's exit 0.
 
-What this does NOT change (still open in #1241): stage 1 keeps the seat, and
-`--repair` / `--reseat` are not gated this way.
+Since the seat half of #1241 no edge seat keeps pad copper past the outline
+(test_1241_edge_seat_on_board.py), so the issue's own J1 no longer reaches
+this gate: it is seated on its edge with its pads on the board and the band's
+minimum named. The gate's attribution is pinned here on R2 instead, a part
+whose pad lies 4 mm outside its courtyard, which the seat search (courtyard
+containment) still puts past the east edge -- the gate is what charges it.
 """
 
 import json
 import os
-import shutil
 import sys
 import tempfile
 import unittest
@@ -97,20 +100,20 @@ class TheGateReason(unittest.TestCase):
 class TheIssueBoard(unittest.TestCase):
     """The issue's falsifier: no zone, so #1174's re-seat never runs."""
 
-    def test_a_seat_with_copper_off_the_board_fails_the_gate(self):
+    def test_the_issue_board_fails_on_its_band_not_its_copper(self):
+        # Before the seat half of #1241, stage 1 kept J1's pads 1.2 mm past
+        # the north edge and this gate charged the copper (grade clean). The
+        # seat now never keeps that: J1 sits on its edge with its pads on
+        # the board, and the seed fails on the band's minimum, which no seat
+        # with the pads on the board can meet -- named, not hidden.
         with tempfile.TemporaryDirectory() as td:
             r, summary = _seed(td, {'min': 1.5, 'max': 2.0}, code=4,
-                               refuse='pad copper past the board outline '
-                                      'on J1')
-        # Stage 1 still keeps the seat (#975), and says where the copper is.
-        self.assertIn('J1', summary['edge_floor_fallback'])
-        self.assertIn('leaves pad copper past the board outline -- J1.1 '
-                      'reaches 1.200mm past the north edge', r.stdout)
-        # The grade is clean: this is the copper channel, not the intent's.
-        self.assertEqual(summary['grade_errors'], 0)
-        [(ref, mm)] = summary['pad_copper_off_board_seeded']
-        self.assertEqual(ref, 'J1')
-        self.assertGreater(mm, 1.0)
+                               refuse='does NOT satisfy its intent')
+        self.assertEqual(summary['pad_copper_off_board_seeded'], [])
+        self.assertEqual(summary['oob_pad_copper_gating_count'], 0)
+        self.assertEqual(summary['grade_error_rules'], {'edge_connector': 1})
+        self.assertIn('J1', summary['edge_band_contradiction'])
+        self.assertNotIn('past the board outline on J1', r.stderr)
 
     def test_a_seat_on_the_board_still_passes(self):
         # The control: with a band pads on the board can meet, the floor
@@ -161,6 +164,19 @@ def _scoped(extra=()):
 
 
 _R2_ROT = {'blocks': [{'name': 'r2rot', 'refs': ['R2'], 'rotation': 0}]}
+
+
+def _lap0(td):
+    """`_scoped` seeded with --force: every unlocked part is in scope, and R2
+    -- its pad 4 mm east of its courtyard -- is written with that pad past
+    the east edge, the copper this gate charges. Returns the written board,
+    which the tests below re-seed as a later lap would."""
+    path = _synthetic(td, _scoped())
+    _r, summary = _run(path, {}, code=4, out_name='lap0.kicad_pcb',
+                       refuse='pad copper past the board outline on R2')
+    # The precondition: R2 is the seed's, past the outline.
+    assert [r for r, _mm in summary['pad_copper_off_board_seeded']] == ['R2']
+    return os.path.join(td, 'lap0.kicad_pcb')
 
 
 class TheWrittenPoseDecides(unittest.TestCase):
@@ -232,59 +248,55 @@ class TheWrittenPoseDecides(unittest.TestCase):
 
     def test_a_must_lock_seat_is_the_seeds_own(self):
         # Stage 1.5 seats every unlocked must_lock part itself; re-seeding
-        # the issue's seed with J1 must_lock keeps J1's off-board seat, and
-        # that seat is still the seed's choice.
+        # lap 0 with R2 must_lock keeps R2's off-board seat, and that seat
+        # is still the seed's choice.
         with tempfile.TemporaryDirectory() as td:
-            path = _synthetic(td, [_TALL_J1, _box('R1', 25, 25, 1, 0.6)])
-            band = {'min': 1.5, 'max': 2.0}
-            _run(path, _claim(band), code=4,
-                 refuse='pad copper past the board outline on J1')
-            again = os.path.join(td, 'again.kicad_pcb')
-            shutil.copyfile(os.path.join(td, 's.kicad_pcb'), again)
-            r, summary = _run(again, dict(_claim(band), must_lock=['J*']),
-                              code=4, refuse='pad copper past the board '
-                                             'outline on J1',
-                              out_name='s2.kicad_pcb')
+            lap0 = _lap0(td)
+            r, summary = _run(lap0, {'must_lock': ['R2']}, code=4,
+                              refuse='pad copper past the board outline '
+                                     'on R2', out_name='s2.kicad_pcb')
         self.assertEqual([ref for ref, _mm in
-                          summary['pad_copper_off_board_seeded']], ['J1'])
+                          summary['pad_copper_off_board_seeded']], ['R2'])
         self.assertNotIn("the board's own", r.stdout)
 
     def test_a_seat_the_seed_kept_is_charged(self):
-        # Re-seed the issue's own written seed: J1 now comes in AT the seat
-        # stage 1 keeps, unlocked, so it does not "move" -- and is still the
-        # seed's choice, not the board's.
+        # Re-seed lap 0: R2 comes in AT the seat the seed gives it again,
+        # unlocked, so it does not "move" -- and is still the seed's choice,
+        # not the board's.
+        from kicad_parser import parse_kicad_pcb
         with tempfile.TemporaryDirectory() as td:
-            path = _synthetic(td, [_TALL_J1, _box('R1', 25, 25, 1, 0.6)])
-            band = {'min': 1.5, 'max': 2.0}
-            _run(path, _claim(band), code=4,
-                 refuse='pad copper past the board outline on J1')
-            again = os.path.join(td, 'again.kicad_pcb')
-            shutil.copyfile(os.path.join(td, 's.kicad_pcb'), again)
-            r, summary = _run(again, _claim(band), code=4,
+            lap0 = _lap0(td)
+            r, summary = _run(lap0, {}, code=4,
                               refuse='pad copper past the board outline on '
-                                     'J1', out_name='s2.kicad_pcb')
+                                     'R2', out_name='s2.kicad_pcb')
+            a = parse_kicad_pcb(lap0).footprints['R2']
+            b = parse_kicad_pcb(os.path.join(td, 's2.kicad_pcb')
+                                ).footprints['R2']
+        # The precondition: R2 did not move.
+        self.assertFalse(place_seed.pose_moved((a.x, a.y, a.rotation),
+                                               (b.x, b.y, b.rotation)))
         self.assertEqual([ref for ref, _mm in
-                          summary['pad_copper_off_board_seeded']], ['J1'])
+                          summary['pad_copper_off_board_seeded']], ['R2'])
 
     def test_a_lock_the_last_lap_stamped_launders_nothing(self):
-        # Lap 1 seats J1 off the board under must_lock and STAMPS it locked.
-        # Lap 2 re-seeds lap 1's board: J1 now comes in `(locked yes)` at
+        # Lap 1 keeps R2 off the board under must_lock and STAMPS it locked.
+        # Lap 2 re-seeds lap 1's board: R2 now comes in `(locked yes)` at
         # that seat, and the gate must still fail -- check_assembly calls the
         # board NOT BUILDABLE whoever locked the part.
         from kicad_parser import parse_kicad_pcb
         with tempfile.TemporaryDirectory() as td:
-            path = _synthetic(td, [_TALL_J1, _box('R1', 25, 25, 1, 0.6)])
-            doc = dict(_claim({'min': 1.5, 'max': 2.0}), must_lock=['J*'])
-            _run(path, doc, code=4, out_name='lap1.kicad_pcb',
-                 refuse='pad copper past the board outline on J1')
+            lap0 = _lap0(td)
+            doc = {'must_lock': ['R2']}
+            _run(lap0, doc, code=4, out_name='lap1.kicad_pcb',
+                 refuse='pad copper past the board outline on R2')
             lap1 = os.path.join(td, 'lap1.kicad_pcb')
             # The precondition: lap 1 stamped the lock lap 2 reads.
-            self.assertTrue(parse_kicad_pcb(lap1).footprints['J1'].locked)
+            self.assertTrue(parse_kicad_pcb(lap1).footprints['R2'].locked)
             r, summary = _run(lap1, doc, code=4, out_name='lap2.kicad_pcb',
                               refuse='pad copper past the board outline '
-                                     'on J1')
+                                     'on R2')
         self.assertEqual([ref for ref, _mm in
-                          summary['pad_copper_off_board_locked']], ['J1'])
+                          summary['pad_copper_off_board_locked']], ['R2'])
         self.assertIn("(locked yes) in the input with pad copper past the "
                       "board outline", r.stdout)
         self.assertNotIn("the board's own", r.stdout)
@@ -325,17 +337,17 @@ class InPlace(unittest.TestCase):
         self.assertNotIn("the board's own", r.stdout)
 
     def test_a_must_lock_seat_is_charged_in_place(self):
-        # Stage 1 moves J1 from (20, 20) to its kept off-board seat, and the
-        # run stamps it locked; neither makes it the board's own.
+        # Stage 1.5 keeps lap 0's R2 at its off-board seat, and the run
+        # stamps it locked over the input it read; neither makes it the
+        # board's own.
         with tempfile.TemporaryDirectory() as td:
-            path = _synthetic(td, [_TALL_J1, _box('R1', 25, 25, 1, 0.6)])
-            r, summary = _run(path, dict(_claim({'min': 1.5, 'max': 2.0}),
-                                         must_lock=['J*']),
-                              code=4, refuse='pad copper past the board '
-                                             'outline on J1',
-                              out_name=os.path.basename(path))
+            lap0 = _lap0(td)
+            r, summary = _run(lap0, {'must_lock': ['R2']}, code=4,
+                              refuse='pad copper past the board outline '
+                                     'on R2',
+                              out_name=os.path.basename(lap0))
         self.assertEqual([ref for ref, _mm in
-                          summary['pad_copper_off_board_seeded']], ['J1'])
+                          summary['pad_copper_off_board_seeded']], ['R2'])
         self.assertNotIn("the board's own", r.stdout)
 
 

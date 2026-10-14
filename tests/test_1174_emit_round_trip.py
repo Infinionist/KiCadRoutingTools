@@ -695,15 +695,19 @@ _TALL_J1 = (
 
 class TheReseatPutsThePadsBackOnTheBoard(unittest.TestCase):
     """The pads-past-an-open-side finding is not grade-only (round-2
-    verifier): place_seed's post-polish re-seat repairs a zone error, so a
-    seat whose pad copper stage 1 kept past the edge (#975's floor fallback,
-    a band `min` that pads on the board cannot reach) is now re-seated
-    inside the zone, pads on the board. What stands is the band's minimum,
-    which no seat with its pads on the board meets -- a contradiction in the
-    claim, named. Before, the open side hid the pads and the seed exited 0
-    with copper 1.2 mm off the board."""
+    verifier). Stage 1 used to keep J1's pads 1.2 mm past the edge (#975's
+    floor fallback, a band `min` that pads on the board cannot reach), the
+    open side then hid them, and the seed exited 0; place_seed's post-polish
+    re-seat repaired that zone error, pads on the board.
 
-    def _seed(self, j1=_TALL_J1):
+    Since #1241 the seat never keeps them there: stage 1 seats J1 on its edge
+    with its pads on the board, inside its zone, and names the contradiction.
+    What stands is still the band's minimum, which no seat with its pads on
+    the board meets -- the end this class pins -- and the re-seat line's
+    wording is pinned on a board where the re-seat still runs (`_lateral`)."""
+
+    def _seed(self, j1=_TALL_J1, zone=(10, 0, 30, 10), code=4,
+              refuse='does NOT satisfy its intent'):
         from run_utils import evidence
         with tempfile.TemporaryDirectory() as td:
             path = _synthetic(td, [j1, _box('R1', 25, 25, 1, 0.6)])
@@ -712,7 +716,7 @@ class TheReseatPutsThePadsBackOnTheBoard(unittest.TestCase):
                 json.dump({'schema': floorplan.SCHEMA_VERSION,
                            'kind': floorplan.KIND, 'units': 'mm',
                            'blocks': [{'name': 'b', 'refs': ['J1'],
-                                       'zone': [10, 0, 30, 10],
+                                       'zone': list(zone),
                                        'tolerance_mm': 0}],
                            'edge_connectors': [{
                                'ref': 'J1', 'edge': 'north',
@@ -722,7 +726,8 @@ class TheReseatPutsThePadsBackOnTheBoard(unittest.TestCase):
             r = check([PY, '-X', 'utf8',
                        os.path.join(ROOT, 'py_placer', 'place_seed.py'),
                        path, out, '--intent', ip, '--force'],
-                      refuse='does NOT satisfy its intent', code=4)
+                      **({'accept': True} if code == 0
+                         else {'refuse': refuse, 'code': code}))
             evidence(out, 'written seed')
         return r, [json.loads(ln.split(':', 1)[1])
                    for ln in r.stdout.splitlines()
@@ -731,16 +736,16 @@ class TheReseatPutsThePadsBackOnTheBoard(unittest.TestCase):
 
     def test_the_pads_end_on_the_board_and_the_band_minimum_stands(self):
         r, summary = self._seed()
-        # Stage 1 did keep pad copper past the edge, and its note says the
-        # copper is OFF the board, not inside the floor (#1241).
-        self.assertIn("leaves pad copper past the board outline -- J1.1 "
-                      "reaches 1.200mm past the north edge", r.stdout)
-        # The re-seat names stage 1, not the polish, which never moved the
-        # edge claim it locks (#1240).
-        self.assertIn('the seed placed J1 outside a declared '
-                      'zone_containment and the polish did not move it',
-                      r.stdout)
-        self.assertNotIn('polish walked J1', r.stdout)
+        # Stage 1 names the band, which cannot be met with the pads on the
+        # board (#1241), instead of keeping the copper past the edge.
+        self.assertIn("its declared overhang minimum 1.5mm on the north edge "
+                      "puts pad copper 0.950mm past the board outline -- the "
+                      "band contradicts the footprint", r.stdout)
+        self.assertEqual(list(summary['edge_band_contradiction']), ['J1'])
+        self.assertNotIn('leaves pad copper past the board outline',
+                         r.stdout)
+        # Seated inside its zone, so nothing is left to re-seat.
+        self.assertNotIn('re-seated against the polished board', r.stdout)
         # ...and the written seed has its pads on the board.
         self.assertGreaterEqual(
             summary['pad_edge_after']['minimum_gap_by_ref_mm']['J1'], 0.55)
@@ -750,12 +755,19 @@ class TheReseatPutsThePadsBackOnTheBoard(unittest.TestCase):
         self.assertTrue(all('under the declared minimum 1.50mm' in ln
                             for ln in errs), errs)
 
+    #: The round-3 verifier's lateral board: a zone in the north-west corner,
+    #: whose east side stage 1 -- which never reads the block zone -- seats
+    #: the 4 x 4 mm J1 past, on its edge.
+    _LATERAL = (0, 0, 10, 10)
+
     def test_the_writers_rounding_is_not_a_polish_move(self):
         # #1240's line, follow-up verifier: an input angle the writer rounds
         # (180.1234567 is written 180.123) read as a polish move when the
         # seeded pose was the unrounded float.
-        r, _summary = self._seed(_TALL_J1.replace(
-            '(at 20 20)\n', '(at 20 20 180.1234567)\n', 1))
+        r, _summary = self._seed(
+            _box('J1', 20, 20, 2, 2).replace('(at 20 20)\n',
+                                              '(at 20 20 180.1234567)\n', 1),
+            zone=self._LATERAL)
         self.assertIn('the seed placed J1 outside a declared '
                       'zone_containment and the polish did not move it',
                       r.stdout)
