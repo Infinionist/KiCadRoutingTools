@@ -38,11 +38,9 @@ TARGETS = {
     'fp': os.path.join(_PL, 'floorplan.py'),
     'quench': os.path.join(_PL, 'quench.py'),
     'seeder': os.path.join(_PL, 'seeder.py'),
-    'ps': os.path.join(_ROOT, 'py_placer', 'place_seed.py'),
 }
 
 T1174 = os.path.join(_TESTS, 'test_1174_emit_round_trip.py')
-T975 = os.path.join(_TESTS, 'test_975_seat_edge_floor.py')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -157,14 +155,10 @@ ROWS = [
      "                    ctx.outline_bounds)\n",
      "                    None)\n",
      (T1174,), 'KILLED'),
-    ('the-reseat-pulls-an-edge-claim-off-its-edge', 'ps',
-     "                    if _open:\n",
-     "                    if False:\n",
+    ('pads-measured-at-the-zone-side-not-the-board-east-south', 'fp',
+     "        zx1, zy1 = min(zx1, bounds[2]), min(zy1, bounds[3])\n",
+     "        pass\n",
      (T1174,), 'KILLED'),
-    ('the-reseat-declines-an-edge-claim-in-an-interior-zone', 'ps',
-     "                    if _open:\n",
-     "                    if ref in _claimed:\n",
-     (T975,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)

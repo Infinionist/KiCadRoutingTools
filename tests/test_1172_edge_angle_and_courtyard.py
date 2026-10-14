@@ -672,5 +672,159 @@ class PackedStarts(unittest.TestCase):
                          {})
 
 
+def _rect_part(ref, x, y, cy, pads, *, locked=False, name='t:R'):
+    """A footprint with courtyard `cy` (x0, y0, x1, y1, local) and `pads`
+    [(x, y, sx, sy, net)], at (x, y, 0)."""
+    lk = '    (locked yes)\n' if locked else ''
+    body = ''.join(f'    (pad "{i + 1}" smd rect (at {px} {py}) (size {sx} '
+                   f'{sy}) (layers "F.Cu") (net {n} "N{n}"))\n'
+                   for i, (px, py, sx, sy, n) in enumerate(pads))
+    return (f'  (footprint "{name}" (layer "F.Cu") (at {x} {y})\n' + lk +
+            f'    (property "Reference" "{ref}" (at 0 0) (layer "F.SilkS"))\n'
+            f'    (fp_rect (start {cy[0]} {cy[1]}) (end {cy[2]} {cy[3]})'
+            f' (stroke (width 0.05) (type default)) (layer "F.CrtYd"))\n'
+            + body + '  )\n')
+
+
+def _board(td, parts, w=40.0, h=40.0, name='b'):
+    path = os.path.join(td, name + '.kicad_pcb')
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write('(kicad_pcb (version 20240108) (generator pcbnew)\n'
+                 '  (layers (0 "F.Cu" signal) (31 "B.Cu" signal)'
+                 ' (44 "Edge.Cuts" user))\n'
+                 '  (net 0 "") (net 1 "N1") (net 2 "N2") (net 3 "N3")\n'
+                 f'  (gr_rect (start 0 0) (end {w} {h}) (stroke (width 0.1)'
+                 ' (type default)) (layer "Edge.Cuts"))\n'
+                 + ''.join(parts) + ')\n')
+    return path
+
+
+class TheFallBack(unittest.TestCase):
+    """The round-3 verifier's inputs: what stage 1 keeps when its own angles
+    do not seat clean, and what the note says it did."""
+
+    def test_an_angle_is_deeper_than_the_board_only_past_its_band(self):
+        """J1 is 4 x 12 on an 11 mm board, parked off it (its input angle
+        means nothing); two locked flanks leave a 5 mm gap on the north
+        band. Its claim lets it overhang 5 mm, so the input 0 (12 deep) is
+        NOT deeper than the board, stays in the set, and is the angle that
+        seats clean in the gap -- where dropping it kept a quarter turn over
+        R2's courtyard (24 mm2)."""
+        with tempfile.TemporaryDirectory() as td:
+            b = _board(td, [
+                _rect_part('J1', 60, 60, (-2, -6, 2, 6), [(0, 0, .6, .6, 2)]),
+                _rect_part('R1', 8.75, 1.8, (-8.75, -1.2, 8.75, 1.2),
+                           [(-7.75, 0.2, .6, .6, 1)], locked=True),
+                _rect_part('R2', 31.25, 1.8, (-8.75, -1.2, 8.75, 1.2),
+                           [(7.75, 0.2, .6, .6, 3)], locked=True)], h=11.0)
+            intent = _intent(td, b, [{'ref': 'J1', 'edge': 'north',
+                                      'overhang_mm': {'min': 0, 'max': 5}}])
+            _pcb, res, poses = _seed(b, intent, ('J1',))
+        self.assertAlmostEqual(poses['J1'][2] % 360, 0.0)
+        self.assertTrue(any('so stage 1 seated it at 0deg' in n
+                            for n in res['notes']), res['notes'])
+
+    def test_a_crowded_input_attempt_is_named_as_crowded(self):
+        """Every angle crowds a locked R1 whose 38 mm pad runs along the
+        north band, so the input attempt runs and crowds too -- kept, as it
+        was before #1172, and the note says CROWDING, with no facing clause
+        (the box has no face)."""
+        with tempfile.TemporaryDirectory() as td:
+            b = _board(td, [
+                _rect_part('J1', 60, 60, (-2, -2, 2, 2), [(0, 0, .6, .6, 2)]),
+                _rect_part('R1', 20, 2.2, (-19.5, -0.3, 19.5, 0.3),
+                           [(0, 0, 38, 0.4, 1)], locked=True)], h=20.0)
+            intent = _intent(td, b, [{'ref': 'J1', 'edge': 'north',
+                                      'overhang_mm': {'min': 0, 'max': 1}}])
+            _pcb, res, _poses = _seed(b, intent, ('J1',))
+        fell = [n for n in res['notes'] if 'before any angle was chosen' in n]
+        self.assertEqual(len(fell), 1, res['notes'])
+        self.assertIn('from its input 0deg, which seats it crowding what is '
+                      'placed (#1172)', fell[0])
+        self.assertNotIn('points away', fell[0])
+
+    def test_a_clean_reversed_input_is_named_as_facing_away(self):
+        """A strong face (the courtyard reaches 7 mm one way from the pad
+        row, 2 mm the other) seated on the board at 0, facing SOUTH, claimed
+        on the north edge: stage 1 chooses 180. 180 is made to crowd a
+        placed part's pads at every rung, so the input attempt runs -- and
+        seats clean, reversed. The note says both."""
+        with tempfile.TemporaryDirectory() as td:
+            b = _board(td, [
+                _rect_part('J1', 20, 20, (-3, -2, 3, 7),
+                           [(-1, 0, .6, .6, 2), (1, 0, .6, .6, 1)],
+                           name='t:JACK'),
+                _rect_part('R1', 30, 30, (-1, -0.6, 1, 0.6),
+                           [(-0.5, 0, .5, .6, 2), (0.5, 0, .5, .6, 1)])])
+            # A band whose centre (0.5 mm) keeps the reversed part's pads on
+            # the board, so the input attempt can seat.
+            entry = {'ref': 'J1', 'edge': 'north', 'class': 'edge_receptacle',
+                     'overhang_mm': {'min': 0, 'max': 1}}
+            pcb = parse_kicad_pcb(b)
+            ef = floorplan.edge_facing(entry, pcb.footprints['J1'],
+                                       board_bodies(pcb, b)['J1'],
+                                       rotation=0.0)
+            self.assertTrue(ef['fails'] and ef['strong'], ef)   # the premise
+            intent = _intent(td, b, [entry])
+            orig = legality.LegalityContext.pair_shortfall
+
+            def shortfall(ctx, a, bb, pose_a=None, pose_b=None):
+                sf = orig(ctx, a, bb, pose_a, pose_b)
+                if (a == 'J1' and pose_a is not None
+                        and abs((pose_a[2] - 180.0 + 180.0) % 360.0 - 180.0)
+                        < 1e-6):
+                    return sf._replace(pad=max(sf.pad, 1.0))
+                return sf
+            try:
+                legality.LegalityContext.pair_shortfall = shortfall
+                _pcb, res, _poses = _seed(b, intent, ('J1',))
+            finally:
+                legality.LegalityContext.pair_shortfall = orig
+        fell = [n for n in res['notes'] if 'before any angle was chosen' in n]
+        self.assertEqual(len(fell), 1, res['notes'])
+        self.assertIn('from its input 0deg, which seats it clear -- an angle '
+                      'at which its mating face points away from the north '
+                      'edge, which the facing grade reports', fell[0])
+        self.assertNotIn('J1', res['edge_angle_chosen'])
+
+    def test_the_first_pad_clear_seat_can_be_a_later_angle(self):
+        """glasgow's J3 from the pile: every rung overlaps a placed
+        courtyard, and its first chosen angle (90) also crowds a placed
+        part's pads, so the first PAD-CLEAR seat is at 270, the second angle
+        it chose -- and that is the one kept, not a redo of the first."""
+        with tempfile.TemporaryDirectory() as td:
+            ops = []
+            for ref, (x, y) in MK.items():
+                ops += ['set', ref, str(x), str(y), '--rot', '0']
+            ops += ['lock'] + list(MK)
+            board = _pile(td, GLASGOW, 'g', *ops)
+            intent = _intent(td, board, GLASGOW_CLAIMS)
+            hits0 = seeder._placed_courtyard_hits
+            sf0 = legality.LegalityContext.pair_shortfall
+
+            def shortfall(ctx, a, bb, pose_a=None, pose_b=None):
+                sf = sf0(ctx, a, bb, pose_a, pose_b)
+                if (a == 'J3' and pose_a is not None
+                        and abs((pose_a[2] - 90.0 + 180.0) % 360.0 - 180.0)
+                        < 1e-6):
+                    return sf._replace(pad=max(sf.pad, 1.0))
+                return sf
+            try:
+                seeder._placed_courtyard_hits = (
+                    lambda state, ref, pose, others:
+                    ['MK1'] if ref == 'J3' else hits0(state, ref, pose,
+                                                      others))
+                legality.LegalityContext.pair_shortfall = shortfall
+                _pcb, res, poses = _seed(board, intent, ('J3',))
+            finally:
+                seeder._placed_courtyard_hits = hits0
+                legality.LegalityContext.pair_shortfall = sf0
+        self.assertEqual(res['edge_angle_chosen']['J3']['candidates'][:2],
+                         [90.0, 270.0])
+        self.assertAlmostEqual(poses['J3'][2] % 360, 270.0)
+        self.assertTrue(any('so it keeps the first pad-clear seat, at 270deg'
+                            in n for n in res['notes']), res['notes'])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -569,16 +569,24 @@ class PadsPastAnOpenSide(unittest.TestCase):
     def test_a_zone_drawn_past_the_board_measures_the_board(self):
         """A side opens when it lies ON or BEYOND the outline, so the pads
         are measured against the board's side: a zone 5 mm past the north
-        edge used to let pads 2.4 mm off the board grade clean."""
-        with tempfile.TemporaryDirectory() as td:
-            gone = _synthetic(td, [_box('J1', 10, -2.1, 2, 2)])
-            errs = _zone_errors(self._grade(gone, _doc(
-                [{'name': 'b', 'refs': ['J1'], 'zone': [4, -5, 16, 8],
-                  'tolerance_mm': 0}], [self._claim('north')])))
-        self.assertEqual(len(errs), 1, errs)
-        self.assertEqual(errs[0].measured['axis'], 'north')
-        self.assertAlmostEqual(errs[0].measured['outside_mm'], 2.4, places=3)
-        self.assertIn("past the board's north edge", errs[0].message)
+        edge used to let pads 2.4 mm off the board grade clean. Every side
+        (round-3 verifier: only north was pinned)."""
+        for edge, (zone, (x, y)) in sorted(_SIDES.items()):
+            past = {'north': [zone[0], zone[1] - 5, zone[2], zone[3]],
+                    'south': [zone[0], zone[1], zone[2], zone[3] + 5],
+                    'west': [zone[0] - 5, zone[1], zone[2], zone[3]],
+                    'east': [zone[0], zone[1], zone[2] + 5, zone[3]]}[edge]
+            with self.subTest(edge=edge),                     tempfile.TemporaryDirectory() as td:
+                gone = _synthetic(td, [_box('J1', x, y, 2, 2)])
+                errs = _zone_errors(self._grade(gone, _doc(
+                    [{'name': 'b', 'refs': ['J1'], 'zone': past,
+                      'tolerance_mm': 0}], [self._claim(edge)])))
+                self.assertEqual(len(errs), 1, errs)
+                self.assertEqual(errs[0].measured['axis'], edge)
+                self.assertAlmostEqual(errs[0].measured['outside_mm'], 2.4,
+                                       places=3)
+                self.assertIn(f"past the board's {edge} edge",
+                              errs[0].message)
 
     def test_one_finding_per_member(self):
         """Pads past the open north side AND a courtyard 1 mm past the
@@ -648,13 +656,17 @@ _TALL_J1 = (
     ' (net 1 "N1")))\n')
 
 
-class TheReseatLeavesAnEdgeClaim(unittest.TestCase):
-    """place_seed's post-polish re-seat holds a part wholly inside its zone;
-    on an edge claim that pulled the connector off its edge, under a
-    "polish walked" line about a part the polish (which locks it) never
-    moved. It now declines, by name, and the grade error stands."""
+class TheReseatPutsThePadsBackOnTheBoard(unittest.TestCase):
+    """The pads-past-an-open-side finding is not grade-only (round-2
+    verifier): place_seed's post-polish re-seat repairs a zone error, so a
+    seat whose pad copper stage 1 kept past the edge (#975's floor fallback,
+    a band `min` that pads on the board cannot reach) is now re-seated
+    inside the zone, pads on the board. What stands is the band's minimum,
+    which no seat with its pads on the board meets -- a contradiction in the
+    claim, named. Before, the open side hid the pads and the seed exited 0
+    with copper 1.2 mm off the board."""
 
-    def test_an_edge_claim_is_declined_not_pulled_inboard(self):
+    def test_the_pads_end_on_the_board_and_the_band_minimum_stands(self):
         from run_utils import evidence
         with tempfile.TemporaryDirectory() as td:
             path = _synthetic(td, [_TALL_J1, _box('R1', 25, 25, 1, 0.6)])
@@ -673,21 +685,24 @@ class TheReseatLeavesAnEdgeClaim(unittest.TestCase):
             r = check([PY, '-X', 'utf8',
                        os.path.join(ROOT, 'py_placer', 'place_seed.py'),
                        path, out, '--intent', ip, '--force'],
-                      refuse='pads reach', code=4)
-            j1 = parse_kicad_pcb(evidence(out, 'written seed')
-                                 ).footprints['J1']
-        summary = next(json.loads(ln.split(':', 1)[1])
-                       for ln in r.stdout.splitlines()
-                       if ln.startswith('JSON_SUMMARY:')
-                       and '"reseat_declined"' in ln)
-        self.assertNotIn('polish walked J1', r.stdout)
-        self.assertIn('NOT repaired, J1: it claims the north edge', r.stdout)
-        self.assertEqual(summary['reseat_declined']['J1']['edge_claim'],
-                         ['north'])
-        # Stage 1's seat, on the band: the re-seat did not move it inboard.
-        self.assertEqual(summary['edge_floor_fallback']['J1']['pose'][:2],
-                         [round(j1.x, 3), round(j1.y, 3)])
-
+                      refuse='does NOT satisfy its intent', code=4)
+            evidence(out, 'written seed')
+        summary = [json.loads(ln.split(':', 1)[1])
+                   for ln in r.stdout.splitlines()
+                   if ln.startswith('JSON_SUMMARY:')
+                   and '"pad_edge_after"' in ln][-1]
+        # Stage 1 did keep pad copper past the edge, and the grade said so.
+        self.assertIn("J1.1 is -1.200mm from the north edge", r.stdout)
+        self.assertIn('polish walked J1 out of a declared zone_containment',
+                      r.stdout)
+        # ...and the written seed has its pads on the board.
+        self.assertGreaterEqual(
+            summary['pad_edge_after']['minimum_gap_by_ref_mm']['J1'], 0.55)
+        errs = [ln for ln in r.stdout.splitlines()
+                if ln.strip().startswith('GRADE ERROR')]
+        self.assertTrue(errs)
+        self.assertTrue(all('under the declared minimum 1.50mm' in ln
+                            for ln in errs), errs)
 
 if __name__ == '__main__':
     unittest.main()

@@ -3037,16 +3037,20 @@ def _uninformative_refs(state, assessment, refs) -> Set[str]:
     return out
 
 
-def _depth_order(part, lattice, bounds, edge) -> List[float]:
+def _depth_order(part, lattice, bounds, edge, reach=0.0) -> List[float]:
     """#1172: `lattice`'s angles, least depth into the board first.
 
     Depth is the grade rect's extent along the edge's NORMAL (y for a north or
-    south edge). An angle deeper than the board is dropped (all of them kept
-    if every one is); ties go to lattice order, i.e. from the input angle.
-    Glasgow's IDC box headers from a pile at 0 give [90, 270, 0, 180]: long
-    axis along the edge, as the designer seated them."""
+    south edge). An angle deeper than the board -- past the `reach` the claim
+    lets it overhang, its band's max -- is dropped (all of them kept if every
+    one is); ties go to lattice order, i.e. from the input angle. Glasgow's
+    IDC box headers from a pile at 0 give [90, 270, 0, 180]: long axis along
+    the edge, as the designer seated them. Without `reach`, a 12 mm part on
+    an 11 mm board with `max 5` lost the input angle, the only one that
+    seated clean (round-3 verifier)."""
     axis_y = edge in ('north', 'south')
     span = (bounds[3] - bounds[1]) if axis_y else (bounds[2] - bounds[0])
+    span += max(0.0, float(reach or 0.0))
     rows = []
     for k, r in enumerate(lattice):
         rr = _materialise_rotation(part, r)
@@ -3211,7 +3215,8 @@ def _stage1_claims(state, by_edge, declared_rot, bounds, notes,
                 continue
             if ref not in uninformative():
                 continue
-            order = _depth_order(part, lattice, bounds, edge)
+            order = _depth_order(part, lattice, bounds, edge,
+                                 (c.get('overhang_mm') or {}).get('max'))
             if graded and facing:
                 first = [r for r in order if any(
                     abs((r - f + 180.0) % 360.0 - 180.0) < 1e-6
@@ -5826,15 +5831,17 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 # courtyard (round-2 verifier: orangecrab's pile shorted J5
                 # against J1 at its input 0 where 90 seated pad-clear). Only
                 # when none does is the part given the attempt it had before
-                # stage 1 chose anything, from its input angle. That attempt
-                # is no loss: an uninformative input's set holds the input
-                # angle itself, which the walk already tried, and a strong
-                # face's set leaves it out because the input points the face
-                # away. A pad-CROWDED seat at an angle nobody declared is
-                # never kept -- run 27's "a crowded seat on the declared edge
-                # beats the interior" is about an angle someone DECLARED, and
-                # here it shorted the fa10 glasgow pile's J5 against the
-                # locked MK3 (phase-5 verifier).
+                # stage 1 chose anything, from its input angle -- the old
+                # attempt, which may still crowd, exactly as before #1172. An
+                # uninformative input's set holds the input angle itself
+                # (unless it is deeper than the board past the band's max,
+                # where it cannot seat), which the walk already tried; a
+                # strong face's set leaves it out because the input points
+                # the face away. Stage 1 never keeps a pad-CROWDED seat at an
+                # angle it CHOSE -- run 27's "a crowded seat on the declared
+                # edge beats the interior" is about an angle someone
+                # DECLARED, and at a chosen one it shorted the fa10 glasgow
+                # pile's J5 against the locked MK3 (phase-5 verifier).
                 _stage1_undo(_ref1125, _pose1125, _n1125)
                 _set = [float(r) for r in _claim[1]]
                 if _t2m is not None:
