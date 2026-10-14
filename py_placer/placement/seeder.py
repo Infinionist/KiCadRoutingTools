@@ -1099,11 +1099,18 @@ def _graded_input_conflicts(state, refs, waivers=(), keepouts=()):
                 if non_aperture_pads(fp):
                     at.setdefault((round(fp.x, 3), round(fp.y, 3)),
                                   []).append(r)
+            # #1204: the grader's physical test, on this same board and
+            # grade -- a shared origin stacks only when something physical
+            # is shared, and a waived pair never does.
+            from .placement_state import body_contact_pairs, coincident_touch
+            _touch = coincident_touch(pcb, body_contact_pairs(g),
+                                      tuple(waivers or ()))
             stacks = [{'refs': sorted(rs),
                        'sides': {r: footprint_sides(pcb.footprints[r])
                                  for r in rs},
                        'markers': {r: is_assembly_marker(pcb, r)
-                                   for r in rs}}
+                                   for r in rs},
+                       'touch': _touch}
                       for _pt, rs in sorted(at.items())
                       if len(rs) > 1 and refs & set(rs)]
     except Exception as exc:                                 # noqa: BLE001
@@ -1142,7 +1149,8 @@ def _stack_conflict(stacks, ref, absent):
         if ref not in st['refs']:
             continue
         present = [r for r in st['refs'] if r == ref or r not in absent]
-        sus = coincident_stack_suspects(present, st['sides'], st['markers'])
+        sus = coincident_stack_suspects(present, st['sides'], st['markers'],
+                                        touch=st.get('touch'))
         if ref not in sus:
             continue
         # A MARKER (fiducial, mounting hole, testpoint) is co-located by
@@ -1153,7 +1161,7 @@ def _stack_conflict(stacks, ref, absent):
         # failed COINCIDENT ORIGINS).
         if st['markers'][ref] and coincident_stack_suspects(
                 [r for r in present if r != ref], st['sides'],
-                st['markers']):
+                st['markers'], touch=st.get('touch')):
             continue
         other = next(r for r in sus if r != ref and not st['markers'][r])
         return ('coincident', other)

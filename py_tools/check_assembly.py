@@ -168,12 +168,6 @@ def main():
     g = grade_body_overlap(pcb, clearance, intent_waivers=waivers,
                            pcb_file=args.board,
                            courtyard_severity=_cy_sev_arg)
-    # #897: a waiver that resolves to nothing excuses nothing, and said nothing.
-    # Formatted by the engine (`format_waiver_warnings`) rather than here, so
-    # place_reconstruct says the same words.
-    from placement.legality import format_waiver_warnings as _waiver_warnings
-    for _line in _waiver_warnings(g):
-        print("  " + _line, file=sys.stderr)
     leg = grade_pad_legality(pcb, clearance, worst_n=0, pcb_file=args.board,
                              declared_keepouts=declared_keepouts)
     # #697: name any pair graded ABOVE `clearance` and what raised it, or the
@@ -185,18 +179,28 @@ def main():
     # COINCIDENT ORIGINS (run-19, measured twice): SW17+SW34+REF_PUCK_R all at
     # one point graded `buildable (blocking 0)` -- the pair currency counts pad
     # INTERSECTIONS, and the rotated pads happened to interleave. A stack of
-    # parts at one origin is unbuildable whatever the pads do, so it is its own
-    # blocking channel. The grouping and the exoneration are placement_state's
-    # prior art, reused rather than re-derived: assess_placement buckets every
-    # pad-bearing footprint by round(coord, 3), partitions each bucket by
-    # physical side (a drilled part is on both), and exonerates all-marker
-    # side-groups (fiducials, mounting holes, testpoints -- mouse-bites and
+    # parts at one origin is unbuildable even when no pad intersects, so it is
+    # its own blocking channel. The grouping and the exoneration are
+    # placement_state's prior art, reused rather than re-derived
+    # (`stack_suspects`, the rule assess_placement applies): every pad-bearing
+    # footprint is bucketed by round(coord, 3), each bucket is partitioned by
+    # physical side (a drilled part is on both), and all-marker side-groups
+    # are exonerated (fiducials, mounting holes, testpoints -- mouse-bites and
     # graphics markers are co-located by design and must NOT flag). A bucket is
     # a finding here only when it holds >= 2 suspect NON-marker parts: one real
     # part sitting on a fiducial is not a stack of parts.
     # `coincident_stack_groups` is that rule (fa10 P1: the seeder's #1151
     # disposition calls it too, so the two cannot disagree about a stack).
-    from placement.placement_state import coincident_stack_groups
+    # #1204: an origin is a library's datum, not a body, so a pair at one
+    # origin is a stack only when it shares something PHYSICAL on a face they
+    # both occupy -- copper pad boxes (run 19's interleaved pads still
+    # overlap), an NPTH hole on copper, or what this grade's body channel
+    # found (`body_contact_pairs`). CM5 IO's two module halves share one
+    # origin with 34 mm between their pads, and an `overlap_waivers` entry
+    # naming a pair now accepts its shared origin as it accepts its
+    # courtyard pair.
+    from placement.placement_state import (body_contact_pairs,
+                                           coincident_stack_groups)
     # Every footprint BLOCK is an entry here since #726: two blocks sharing a
     # reference are keyed `TP4` and `TP4~2`, so two parts at one point form a
     # coincident pair even when they answer to one name. Before that they
@@ -205,7 +209,23 @@ def main():
     # `coincident_origins 0` with TWO coincident pairs on it.
     # `duplicate_references` below still reports the naming, which is a
     # schematic question rather than a geometric one.
-    stack_groups = coincident_stack_groups(pcb, args.board)
+    stack_exempt: list = []
+    stack_groups = coincident_stack_groups(
+        pcb, args.board, contacts=body_contact_pairs(g), waivers=waivers,
+        exempt_out=stack_exempt)
+    # #897: a waiver that resolves to nothing excuses nothing, and said nothing.
+    # Formatted by the engine (`format_waiver_warnings`) rather than here, so
+    # place_reconstruct says the same words. A waiver that accepted a shared
+    # origin did excuse something (#1204), so it is not "unused".
+    _stack_used = {tuple(p) for e in stack_exempt
+                   for p in e.get('waived_pairs') or ()}
+    if _stack_used and g.get('waivers_unused'):
+        g = dict(g, waivers_unused=[
+            p for p in g['waivers_unused']
+            if tuple(sorted(p)) not in _stack_used])
+    from placement.legality import format_waiver_warnings as _waiver_warnings
+    for _line in _waiver_warnings(g):
+        print("  " + _line, file=sys.stderr)
     dup_refs = dict(getattr(pcb, 'duplicate_references', None) or {})
 
     new_advisory = None
@@ -294,6 +314,17 @@ def main():
         for grp in stack_groups:
             print(f"    {' '.join(grp['refs'])} @ "
                   f"({grp['point'][0]}, {grp['point'][1]})")
+    if stack_exempt:
+        # #1204: said, never silent -- an origin shared without a stack.
+        print(f"  SHARED ORIGINS, not stacks ({len(stack_exempt)}): no copper "
+              f"pad box, hole or drawn body shared on a face both occupy, or "
+              f"the pair is in the intent's overlap_waivers")
+        for grp in stack_exempt:
+            _w = ('waived: ' + ', '.join('<->'.join(p) for p in
+                                         grp.get('waived_pairs') or ())
+                  if grp['why'] == 'waived' else 'apart')
+            print(f"    {' '.join(grp['refs'])} @ "
+                  f"({grp['point'][0]}, {grp['point'][1]})  [{_w}]")
 
     locked_contact = g.get('locked_contact_pairs') or []
     if locked_contact:
@@ -787,11 +818,20 @@ def main():
             # finding about one point, and the fix is one re-seat per part.
             'coincident_origin_groups': stack_groups,
             'coincident_origins': len(stack_groups),
+            # #1204: origins shared WITHOUT a stack, each with its `why`
+            # ('apart' or 'waived' + `waived_pairs`). Not a conjunct.
+            'coincident_origins_exempt': stack_exempt,
             'coincident_origins_basis': (
                 'every footprint BLOCK (#726): blocks sharing one reference '
                 'are keyed with an ordinal suffix, so they form a pair here '
                 'like any other two parts. See duplicate_references for the '
-                'names the board itself uses.'),
+                'names the board itself uses. A pair at one origin stacks '
+                'only when it shares something physical on a face both '
+                'occupy -- copper pad boxes (a plated barrel on both faces), '
+                'an NPTH hole on copper, or pad copper / a drawn body the '
+                'body channel found -- and is not in the intent\'s '
+                'overlap_waivers (#1204); coincident_origins_exempt names '
+                'the rest.'),
             'duplicate_references': dup_refs,
             # #837, report-only: additive keys, no exit code and no conjunct
             # moves. `parts_by_side` is the pad-bearing census -- the one the

@@ -443,6 +443,22 @@ carries exactly the finding KiCad's DRC reports -- declare the budget to fit
 it. A pose also overlapping a part the waiver does not name (U30 and
 TP2, once TP2 is placed or declared) is still refused.
 
+**A shared ORIGIN is a stack only when something physical is shared
+(#1204).** check_assembly's COINCIDENT ORIGINS conjunct (run 19: three parts
+at one point whose rotated pads interleaved, so no pad intersected) groups
+parts whose origins agree to 1 um. An origin is a library's datum, so within
+such a group a pair counts only when, on a face both occupy, their COPPER pad
+boxes overlap (a plated barrel is on both faces), an NPTH hole of one lies on
+the other's copper, or the body channel reports pad copper or two drawn
+(non-silk) bodies shared there (`placement_state.coincident_touch`). The two
+halves of a CM5 IO module footprint share one origin and the module's two
+mounting holes with 34 mm between their pads, and rp2350_fpga_eensy_prePlane's
+Tag-Connect J2 (B.Cu) sits over U3 (F.Cu) between its alignment holes:
+neither is a stack. An `overlap_waivers[]` pair is accepted here as its
+courtyard pair is. Both kinds are listed, never silently, in
+`coincident_origins_exempt` (`why` `apart` or `waived`). board_score reads the
+same JSON, and the seeder's #1151 disposition asks the same question.
+
 **Courtyards are graded as drawn, at the project's own severity (#1094,
 #1095).** The courtyard and fab channels keep the part rects as their broad
 phase and measure an overlapping pair on the DRAWN outlines (courtyard united

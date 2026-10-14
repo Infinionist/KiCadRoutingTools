@@ -509,12 +509,20 @@ def footprint_sides(fp) -> tuple:
         return ('F', 'B')
 
 
-def stack_suspects(refs_at_one_spot, sides_of, is_marker) -> List[str]:
+def stack_suspects(refs_at_one_spot, sides_of, is_marker,
+                   touch=None) -> List[str]:
     """The refs at ONE coordinate that are not explicable, PER SIDE
     (`sides_of(ref)` -> its sides, `is_marker(ref)` -> a marker class).
     THE stack rule: `assess_placement` calls it about the board, the
     seeder's #1151 disposition about the parts PRESENT when it decides
     (`coincident_stack_suspects`).
+
+    `touch(a, b, side)`, when given (#1204), keeps in a side's group only
+    the parts that share something physical there with another member
+    (`coincident_touch`): a shared origin is a library's choice of datum,
+    and two halves of one module footprint share theirs with 34 mm between
+    their pads. None is the origin-only rule, which `assess_placement`
+    keeps -- it reads a pile, where every part at the spot is suspect.
 
     Partitioned by side rather than tested group-wide. A group-wide test
     let ONE back-side part exonerate an arbitrarily large front-side pile:
@@ -531,6 +539,9 @@ def stack_suspects(refs_at_one_spot, sides_of, is_marker) -> List[str]:
         for s in sides_of(r):
             by_side[s].append(r)
     for _side, group in by_side.items():
+        if touch is not None:
+            group = [r for r in group
+                     if any(o != r and touch(r, o, _side) for o in group)]
         if len(group) < 2:
             continue                    # alone on its side: nothing to hit
         if all(is_marker(r) for r in group):
@@ -548,35 +559,184 @@ def stack_suspects(refs_at_one_spot, sides_of, is_marker) -> List[str]:
     return sorted(out)      # a through part appears in both side-groups
 
 
-def coincident_stack_suspects(refs, sides, markers) -> List[str]:
+def coincident_stack_suspects(refs, sides, markers, touch=None) -> List[str]:
     """check_assembly's verdict on ONE origin holding `refs`, given each
     ref's `sides` and `markers` maps: the suspect refs when the origin GATES
     (>= 2 suspect non-markers -- `coincident_stack_groups`' rule), else [].
-    For a caller deciding which parts will be present there (#1151)."""
-    sus = stack_suspects(refs, sides.__getitem__, markers.__getitem__)
+    For a caller deciding which parts will be present there (#1151).
+    `touch` is `coincident_touch`'s predicate (#1204); the grader passes it,
+    and so must any caller that means to agree with the grader."""
+    sus = stack_suspects(refs, sides.__getitem__, markers.__getitem__,
+                         touch=touch)
     if sum(1 for r in sus if not markers[r]) >= 2:
         return sus
     return []
 
 
-def coincident_stack_groups(pcb_data, pcb_file: Optional[str] = None
+def _copper_presence(fp):
+    """`({side: copper pad bbox}, [NPTH hole bbox])` of one footprint at
+    its pose (#1204). A pad's copper is on the faces its layers expand to
+    (`check_drc.pad_copper_layers`, the router's and the grader's one
+    expansion), so a plated barrel is on both; an NPTH has no copper and
+    is returned as its HOLE, which no part's copper may cover on either
+    face. Aperture-only pads are not pads (#1143). A pad tilted off the
+    axes is boxed by its half-diagonal: a larger box, never a smaller one."""
+    import math
+    from kicad_parser import pad_is_aperture_only
+    from check_drc import pad_copper_layers
+    boxes: Dict[str, List[float]] = {}
+    holes = []
+    for pad in getattr(fp, 'pads', None) or ():
+        if pad_is_aperture_only(pad):
+            continue
+        if getattr(pad, 'pad_type', '') == 'np_thru_hole':
+            r = (getattr(pad, 'drill', 0.0) or 0.0) / 2.0
+            hx = getattr(pad, 'hole_x', None)
+            hy = getattr(pad, 'hole_y', None)
+            cx = pad.global_x if hx is None else hx
+            cy = pad.global_y if hy is None else hy
+            if r > 0:
+                holes.append((cx - r, cy - r, cx + r, cy + r))
+            continue
+        sx, sy = (pad.size_x or 0.0) / 2.0, (pad.size_y or 0.0) / 2.0
+        if abs(getattr(pad, 'rect_rotation', 0.0) or 0.0) > 1e-6:
+            sx = sy = math.hypot(sx, sy)
+        box = (pad.global_x - sx, pad.global_y - sy,
+               pad.global_x + sx, pad.global_y + sy)
+        layers = pad_copper_layers(pad, ('F.Cu', 'B.Cu'))
+        for side, layer in (('F', 'F.Cu'), ('B', 'B.Cu')):
+            if layer not in layers:
+                continue
+            b = boxes.get(side)
+            boxes[side] = (list(box) if b is None else
+                           [min(b[0], box[0]), min(b[1], box[1]),
+                            max(b[2], box[2]), max(b[3], box[3])])
+    return {s: tuple(b) for s, b in boxes.items()}, holes
+
+
+def body_contact_pairs(grade) -> Dict[frozenset, set]:
+    """`{frozenset({a, b}): {side}}` -- the pairs a `grade_body_overlap`
+    result says share physical space on a face (#1204): pad copper
+    intersecting (`pad_intersection`), pad copper under a drawn body
+    (`pads_under_body`), and two DRAWN bodies overlapping (`fab`) -- unless
+    either body is silk-drawn, which may be an assembly marking and never
+    gates (#896). Courtyards are not here: a courtyard is a keep-out margin,
+    not a body, and the courtyard channel has its own gate."""
+    from placement.body import SOURCE_SILK
+    srcs = (grade or {}).get('body_sources') or {}
+    out: Dict[frozenset, set] = {}
+    for q in (grade or {}).get('pairs') or ():
+        if q.kind not in ('pad_intersection', 'pads_under_body', 'fab'):
+            continue
+        if q.kind == 'fab' and SOURCE_SILK in (srcs.get(q.a), srcs.get(q.b)):
+            continue
+        out.setdefault(frozenset((q.a, q.b)), set()).add(q.side)
+    return out
+
+
+def coincident_touch(pcb_data, contacts=None, waivers=(), hits=None):
+    """`touch(a, b, side)` for `stack_suspects` (#1204): do two parts that
+    share an origin share anything PHYSICAL on `side`?
+
+    * their copper pad boxes overlap there (`_copper_presence`; a plated
+      barrel puts a part's copper box on both faces) -- run 19's
+      SW17/SW34/REF_PUCK_R had rotated pads that interleave, so no pad
+      intersects and the boxes still overlap;
+    * an NPTH hole of one lies on the other's copper box there; or
+    * `contacts` (`body_contact_pairs` of the board's grade) names the pair
+      on that side: pad copper intersecting, pads under a body, or two
+      drawn bodies overlapping.
+
+    Not an NPTH hole on an NPTH hole: CM5 IO's Module301 and Module302
+    each draw the module's two mounting holes, at the same spots.
+
+    A pair in `waivers` (an intent's `overlap_waivers`) never touches: the
+    author accepted it, as they accept its courtyard pair. `hits`, when
+    given, receives each waived pair that would otherwise have touched."""
+    from placement.legality import EPS, rect_overlap_area
+    waived = {frozenset(p) for p in (waivers or ()) if len(p) == 2}
+    fps = getattr(pcb_data, 'footprints', None) or {}
+    cache: Dict[str, tuple] = {}
+
+    def _geom(ref):
+        if ref not in cache:
+            fp = fps.get(ref)
+            cache[ref] = (_copper_presence(fp) if fp is not None
+                          else ({}, []))
+        return cache[ref]
+
+    def _physical(a, b, side):
+        if side in ((contacts or {}).get(frozenset((a, b))) or ()):
+            return True
+        (ba, ha), (bb, hb) = _geom(a), _geom(b)
+        xa, xb = ba.get(side), bb.get(side)
+        if xa and xb and rect_overlap_area(xa, xb) > EPS:
+            return True
+        return (bool(xb) and any(rect_overlap_area(h, xb) > EPS for h in ha)
+                or bool(xa) and any(rect_overlap_area(h, xa) > EPS
+                                    for h in hb))
+
+    def touch(a, b, side):
+        if frozenset((a, b)) in waived:
+            if hits is not None and _physical(a, b, side):
+                hits.add(tuple(sorted((a, b))))
+            return False
+        return _physical(a, b, side)
+    return touch
+
+
+def coincident_stack_groups(pcb_data, pcb_file: Optional[str] = None, *,
+                            contacts=None, waivers=(),
+                            exempt_out: Optional[List[Dict]] = None
                             ) -> List[Dict]:
     """check_assembly's COINCIDENT ORIGINS channel: `[{point, refs}]`, one
     entry per origin (rounded to 1 um) holding >= 2 suspect NON-marker
-    parts. `assess_placement` buckets the pad-bearing parts, partitions each
-    bucket by physical side and exonerates all-marker side-groups; `refs`
-    keeps every suspect part at the point, markers included. One function,
-    so the seeder's #1151 disposition and the grader cannot disagree about
-    what a stack is."""
-    suspect = assess_placement(pcb_data, pcb_file=pcb_file).stacked_suspect_refs
+    parts. The pad-bearing parts are bucketed by origin, each bucket is
+    partitioned by physical side, and a side's group keeps only the parts
+    that share something physical there (#1204, `coincident_touch`: copper
+    pad boxes, an NPTH hole on copper, or `contacts` -- the board grade's
+    `body_contact_pairs`); all-marker groups are exonerated. `refs` keeps
+    every suspect part at the point, markers included. A pair the intent's
+    `overlap_waivers` names (`waivers`) is accepted here as it is in the
+    courtyard channel. One function, so the seeder's #1151 disposition and
+    the grader cannot disagree about what a stack is.
+
+    `exempt_out`, when given, receives `{point, refs, why}` for each origin
+    the origin-only rule would have gated and this one does not: `why` is
+    'apart' (nothing physical shared on a common face -- CM5 IO's two
+    module halves, a Tag-Connect's alignment holes around a part on the far
+    face) or 'waived' (with the `waived_pairs` that did it)."""
+    from kicad_parser import non_aperture_pads
+    fps = pcb_data.footprints or {}
     buckets: Dict = {}
-    for ref in suspect:
-        fp = (pcb_data.footprints or {}).get(ref)
-        if fp is None:
+    for ref, fp in fps.items():
+        if non_aperture_pads(fp):
+            buckets.setdefault((round(fp.x, 3), round(fp.y, 3)),
+                               []).append(ref)
+    hits: set = set()
+    touch = coincident_touch(pcb_data, contacts, waivers, hits=hits)
+    bare = coincident_touch(pcb_data, contacts)
+    out = []
+    for pt, refs in sorted(buckets.items()):
+        if len(refs) < 2:
             continue
-        buckets.setdefault((round(fp.x, 3), round(fp.y, 3)), []).append(ref)
-    return [{'point': [pt[0], pt[1]], 'refs': refs}
-            for pt, refs in sorted(buckets.items())
-            if sum(1 for r in refs
-                   if not is_assembly_marker(pcb_data, r)) >= 2]
+        refs = sorted(refs)
+        sides = {r: footprint_sides(fps[r]) for r in refs}
+        markers = {r: is_assembly_marker(pcb_data, r) for r in refs}
+        sus = coincident_stack_suspects(refs, sides, markers, touch=touch)
+        if sus:
+            out.append({'point': [pt[0], pt[1]], 'refs': sus})
+            continue
+        if exempt_out is None or not coincident_stack_suspects(
+                refs, sides, markers):
+            continue
+        if coincident_stack_suspects(refs, sides, markers, touch=bare):
+            exempt_out.append({
+                'point': [pt[0], pt[1]], 'refs': refs, 'why': 'waived',
+                'waived_pairs': sorted(list(p) for p in hits
+                                       if set(p) <= set(refs))})
+        else:
+            exempt_out.append({'point': [pt[0], pt[1]], 'refs': refs,
+                               'why': 'apart'})
+    return out
 
