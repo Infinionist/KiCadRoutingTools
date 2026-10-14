@@ -267,11 +267,17 @@ is `[ref, mm]` for each part the seed MOVED whose pad copper went deeper into a
 `oob_keepout_copper_count` is the written board's total, inherited ones
 included (reported, not charged). `pad_copper_off_board_seeded` (#1241) is
 `[ref, mm]` for each seated part whose pad copper the written seed leaves past
-the outline (check_assembly's gating measure), and exits 4 on it; a part
-the seed does not seat (`(locked yes)` in the input, or outside a
-partially-unplaced run's scope) and still at its input pose is the board's
-own, named and not charged. `must_lock` alone exempts nothing: stage 1.5 seats
-every unlocked, in-scope must_lock part. `edge_angle_chosen` names every edge
+the outline (check_assembly's gating measure), and exits 4 on it;
+`pad_copper_off_board_locked` is the same for a part `(locked yes)` in the
+input, which the seed cannot move and still answers for: placement stamps its
+own locks, so a lock would launder the last lap's overrun, and check_assembly
+exempts none. An unlocked part outside a partially-unplaced run's scope is
+the board's own, named and not charged -- at its input pose, or after a
+polish move that took its copper no further past the outline.
+`oob_pad_copper_gating_count` is the written board's total. `must_lock` alone
+exempts nothing: stage 1.5 seats every unlocked, in-scope must_lock part.
+`place_seed --repair` and `--reseat` are not gated this way yet.
+`edge_angle_chosen` names every edge
 connector stage 1 turned to an angle IT chose or reordered (#1172) --
 `{ref: {from, to, why, candidates}}`: an undeclared one, or a declared
 `rotation_candidates` set reordered with its facing members first. A turn to

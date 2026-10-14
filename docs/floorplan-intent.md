@@ -730,7 +730,8 @@ pads and the reason the seat could not move; the copper itself is graded in
 A kept seat whose copper reaches PAST the outline, not just into the floor,
 fails a seed's gate (exit 4, `pad_copper_off_board_seeded`, #1241): the
 seat is still written, for inspection, but the seed is not passed as
-buildable. `place_seed --repair` is not gated this way yet (#1241).
+buildable. `place_seed --repair` and `--reseat` are not gated this way yet
+(#1241).
 
 Every declared connector on the board gets a row in `edge_connector_evidence`
 (`--json`), including passing ones. Each row carries:

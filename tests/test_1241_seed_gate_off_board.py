@@ -6,13 +6,15 @@ against the board, so a band `min` that pads on the board cannot reach left
 J1's copper 1.2 mm past the north edge. Nothing after stage 1 charged it:
 place_seed exited 0 on a seed check_assembly calls NOT BUILDABLE. The gate now
 reads the measure check_assembly gates on (`oob_pad_copper_gating_refs`)
-at the WRITTEN poses, for every seated part except the board's own (a part
-the seed does not seat -- file-locked, or outside a partially-unplaced run's
-scope -- still at its input pose), and the floor note says the copper is off
-the board rather than "inside the board-edge floor".
+at the WRITTEN poses, for every part except the board's own -- an UNLOCKED
+part outside a partially-unplaced run's scope, at its input pose or moved by
+the polish no further past the outline -- and the floor note says the copper
+is off the board rather than "inside the board-edge floor". A lock exempts
+nothing: placement stamps its own, so a lap-1 lock would launder its
+off-board seat into lap 2's exit 0.
 
 What this does NOT change (still open in #1241): stage 1 keeps the seat, and
-`--repair` is not gated this way.
+`--repair` / `--reseat` are not gated this way.
 """
 
 import json
@@ -118,20 +120,26 @@ class TheIssueBoard(unittest.TestCase):
         self.assertEqual(summary['pad_copper_off_board_seeded'], [])
         self.assertNotIn('past the board outline', r.stdout + r.stderr)
 
-    def test_copper_the_seed_did_not_place_is_not_charged(self):
+    def test_a_locked_part_off_the_board_is_charged_as_locked(self):
         # R2 comes in LOCKED with its pad 0.6 mm past the east edge, so the
-        # seed leaves it there: the board's own, like an inherited short. It
-        # is reported (check_assembly gates the board on it), not charged.
+        # seed leaves it there. A lock is no waiver -- placement stamps its
+        # own, and check_assembly exempts none (#1096) -- so it is charged,
+        # named as locked so the fix is known to be upstream.
         r2 = _box('R2', 39.8, 20, 1, 0.6, pad=(0.5, 0)).replace(
             '(layer "F.Cu") (at', '(locked yes) (layer "F.Cu") (at', 1)
         with tempfile.TemporaryDirectory() as td:
-            r, summary = _seed(td, {'min': 0.0, 'max': 2.0}, code=0,
-                               extra=[r2])
+            r, summary = _seed(td, {'min': 0.0, 'max': 2.0}, code=4,
+                               refuse='pad copper past the board outline '
+                                      'on R2', extra=[r2])
         self.assertLess(summary['pad_edge_after']['minimum_gap_by_ref_mm']
                         ['R2'], 0.0)
         self.assertEqual(summary['pad_copper_off_board_seeded'], [])
-        self.assertIn("the board's own, reported not charged: R2 (0.600mm "
-                      "past)", r.stdout)
+        self.assertEqual(summary['pad_copper_off_board_locked'],
+                         [['R2', 0.6]])
+        self.assertEqual(summary['oob_pad_copper_gating_count'], 1)
+        self.assertIn("(locked yes) in the input with pad copper past the "
+                      "board outline, which this seed cannot move", r.stdout)
+        self.assertNotIn("the board's own", r.stdout)
 
 
 def _scoped(extra=()):
@@ -188,6 +196,39 @@ class TheWrittenPoseDecides(unittest.TestCase):
                         ['R6'], 0.0)
         self.assertEqual(summary['pad_copper_off_board_seeded'], [])
         self.assertIn("the board's own, reported not charged: R6", r.stdout)
+        # Reported in the board total, though not charged.
+        self.assertEqual(summary['oob_pad_copper_gating_count'], 1)
+
+    def _r2_at(self, x, code, refuse=None):
+        """`_scoped` with the out-of-scope R2 at `x` (its pad's east end at
+        x + 5.5, against the outline at 40), seeded with the polish on."""
+        with tempfile.TemporaryDirectory() as td:
+            path = _synthetic(td, [p.replace('(at 34 20)', f'(at {x} 20)', 1)
+                                   for p in _scoped()])
+            return _run(path, _R2_ROT, code=code, refuse=refuse, flags=())
+
+    def test_a_polish_move_that_shrinks_the_overrun_is_not_charged(self):
+        # R2 comes in 2.5 mm past the east edge; the polish pulls it to 1.5.
+        # It moved, but no further off the board: the board's own, reported.
+        r, summary = self._r2_at(37, code=0)
+        self.assertEqual(summary['pad_copper_off_board_seeded'], [])
+        self.assertEqual(summary['pad_copper_off_board_locked'], [])
+        self.assertIn("polish moved no further past the board outline -- "
+                      "the board's own, reported not charged: R2 (2.500 -> "
+                      "1.500mm past)", r.stdout)
+        self.assertNotIn('this seed placed', r.stdout)
+
+    def test_a_polish_move_that_grows_the_overrun_is_charged(self):
+        # The control: R2 comes in 0.5 mm past, already off the board, and
+        # the polish pushes it to 1.5 -- the delta grew, so it is charged.
+        r, summary = self._r2_at(35, code=4,
+                                 refuse='pad copper past the board outline '
+                                        'on R2')
+        self.assertEqual([ref for ref, _mm in
+                          summary['pad_copper_off_board_seeded']], ['R2'])
+        self.assertIn("polish moved FURTHER past the board outline: R2 "
+                      "(0.500 -> 1.500mm past)", r.stdout)
+        self.assertNotIn("the board's own", r.stdout)
 
     def test_a_must_lock_seat_is_the_seeds_own(self):
         # Stage 1.5 seats every unlocked must_lock part itself; re-seeding
@@ -224,6 +265,29 @@ class TheWrittenPoseDecides(unittest.TestCase):
                                      'J1', out_name='s2.kicad_pcb')
         self.assertEqual([ref for ref, _mm in
                           summary['pad_copper_off_board_seeded']], ['J1'])
+
+    def test_a_lock_the_last_lap_stamped_launders_nothing(self):
+        # Lap 1 seats J1 off the board under must_lock and STAMPS it locked.
+        # Lap 2 re-seeds lap 1's board: J1 now comes in `(locked yes)` at
+        # that seat, and the gate must still fail -- check_assembly calls the
+        # board NOT BUILDABLE whoever locked the part.
+        from kicad_parser import parse_kicad_pcb
+        with tempfile.TemporaryDirectory() as td:
+            path = _synthetic(td, [_TALL_J1, _box('R1', 25, 25, 1, 0.6)])
+            doc = dict(_claim({'min': 1.5, 'max': 2.0}), must_lock=['J*'])
+            _run(path, doc, code=4, out_name='lap1.kicad_pcb',
+                 refuse='pad copper past the board outline on J1')
+            lap1 = os.path.join(td, 'lap1.kicad_pcb')
+            # The precondition: lap 1 stamped the lock lap 2 reads.
+            self.assertTrue(parse_kicad_pcb(lap1).footprints['J1'].locked)
+            r, summary = _run(lap1, doc, code=4, out_name='lap2.kicad_pcb',
+                              refuse='pad copper past the board outline '
+                                     'on J1')
+        self.assertEqual([ref for ref, _mm in
+                          summary['pad_copper_off_board_locked']], ['J1'])
+        self.assertIn("(locked yes) in the input with pad copper past the "
+                      "board outline", r.stdout)
+        self.assertNotIn("the board's own", r.stdout)
 
     def test_an_unseated_part_is_charged_as_unseated_only(self):
         # U9 fits nowhere on the board and comes in OFF it, so it is written

@@ -69,11 +69,16 @@ when it is past the outline rather than inside the floor (#1241):
 seed leaves past the board outline, by the per-pad measure check_assembly
 gates on -- wherever stage 1, the polish or the re-seat put them, or kept
 them -- and a non-empty list fails the gate, since such a part can be neither
-assembled nor routed. A part the seed does not seat -- `(locked yes)` in the
-input, or outside a partially-unplaced run's scope -- and that is still at
-its input pose is the board's own: named on the console, not charged.
-`must_lock` alone exempts nothing: stage 1.5 seats every unlocked, in-scope
-must_lock part. An unseated part is charged as unseated.
+assembled nor routed. `pad_copper_off_board_locked` fails it too: a part
+`(locked yes)` in the input that the seed could not move, since placement
+stamps its own locks and check_assembly exempts none, so a lock would launder
+the last lap's overrun. The board's own is an unlocked part outside a
+partially-unplaced run's scope: named on the console and not charged at its
+input pose, nor after the polish moves it, unless the move took its copper
+further past the outline. `must_lock` alone exempts nothing: stage 1.5 seats
+every unlocked, in-scope must_lock part. An unseated part is charged as
+unseated. `oob_pad_copper_gating_count` is the written board's total,
+inherited parts included.
 
 And `reseat_declined` (#1117) on every summary of a seed (not of --repair /
 --reseat, which run no post-polish re-seat):
@@ -1612,48 +1617,84 @@ Examples:
               f"in a rule-area keep-out band: "
               + '; '.join(f"{r} ({a:.3f}mm)" for r, a in _band_seeded))
     # #1241: pad copper past the outline, by the measure check_assembly gates
-    # on, at the WRITTEN poses. Not a delta against the input board: a pile
+    # on, at the WRITTEN poses. Not a delta for a part the seed seats: a pile
     # comes in off the board. Not `_seeded` either, which compares stage 1's
     # poses with the input: the polish and the re-seat move parts after it,
     # and a pose the seed KEPT (an unlocked part already at its seat) is the
-    # seed's choice as much as one it moved. The board's own is a part the
-    # seed does not seat -- `(locked yes)` in the input, or outside a
-    # partially-unplaced run's scope (`seed_refs`, "someone's work") -- still
-    # at its input pose, since the polish moves parts outside the scope.
-    # `must_lock` alone exempts nothing: stage 1.5 seats every unlocked,
-    # in-scope must_lock part itself, so such a part at its input pose is a
-    # seat the seed kept. An unseated part is charged as unseated, not here.
+    # seed's choice as much as one it moved. `must_lock` exempts nothing:
+    # stage 1.5 seats every unlocked, in-scope must_lock part itself. An
+    # unseated part is charged as unseated, not here.
+    #
+    # A LOCK EXEMPTS NOTHING EITHER. A part `(locked yes)` in the input is
+    # charged and named as locked, so the fix is known to be upstream:
+    # placement stamps its own locks (must_lock, fixed_poses), so a lock
+    # would launder the last lap's off-board seat into this lap's exit 0,
+    # and check_assembly, which this gate answers to, exempts none (#1096).
+    #
+    # The board's own is an UNLOCKED part outside a partially-unplaced run's
+    # scope (`seed_refs`, "someone's work"): not charged at its input pose,
+    # and charged after the polish moves it only when its copper went
+    # further past the outline than it came in -- the #1044 band channel's
+    # delta, so a nudge that leaves it no worse is reported, not charged.
+    #
     # The input is the board parsed BEFORE seeding, not the file: an in-place
     # run (`place_seed X X`) has overwritten it, and would read every part as
     # unmoved and every lock this run stamped as the input's.
     _in_fps = pcb.footprints
     _out_fps = parse_kicad_pcb(args.output_file).footprints
+    _overrun = _pads_out.get('oob_pad_copper_overrun_mm') or {}
+    _overrun_in = _pads_in.get('oob_pad_copper_overrun_mm') or {}
 
-    def _board_own(r):
+    def _oob_cause(r):
+        """Whose off-board copper `r` carries: 'seeded', 'worsened' and
+        'locked' are charged; 'inherited' and 'nudged' are reported."""
         fi, fo = _in_fps.get(r), _out_fps.get(r)
         if fi is None or fo is None:
-            return False
-        told = (getattr(fi, 'locked', False)
-                or (seed_refs is not None and r not in seed_refs))
-        return told and not pose_moved((fi.x, fi.y, fi.rotation or 0.0),
-                                       (fo.x, fo.y, fo.rotation or 0.0))
-    _overrun = _pads_out.get('oob_pad_copper_overrun_mm') or {}
+            return 'seeded'
+        if getattr(fi, 'locked', False):
+            return 'locked'
+        if seed_refs is None or r in seed_refs:
+            return 'seeded'
+        if not pose_moved((fi.x, fi.y, fi.rotation or 0.0),
+                          (fo.x, fo.y, fo.rotation or 0.0)):
+            return 'inherited'
+        grew = _overrun.get(r, 0.0) > _overrun_in.get(r, 0.0) + 1e-6
+        return 'worsened' if grew else 'nudged'
     _oob_refs = [r for r in (_pads_out.get('oob_pad_copper_gating_refs') or ())
                  if r not in result['unseated']]
-    _oob_seeded = [(r, _overrun.get(r, 0.0))
-                   for r in _oob_refs if not _board_own(r)]
-    if _oob_seeded:
-        print(f"  {len(_oob_seeded)} part(s) this seed placed with pad copper "
-              f"past the board outline: "
-              + '; '.join(f"{r} ({a:.3f}mm past)" for r, a in _oob_seeded))
-    # ...and the board's own, like an inherited short: named, not charged.
-    _oob_theirs = [r for r in _oob_refs if _board_own(r)]
-    if _oob_theirs:
-        print(f"  {len(_oob_theirs)} part(s) with pad copper past the board "
-              f"outline that this seed did not place -- the board's own, "
-              f"reported not charged: "
-              + '; '.join(f"{r} ({_overrun.get(r, 0.0):.3f}mm past)"
-                          for r in _oob_theirs))
+    _oob_by = {r: _oob_cause(r) for r in _oob_refs}
+    _oob_seeded = [(r, _overrun.get(r, 0.0)) for r in _oob_refs
+                   if _oob_by[r] in ('seeded', 'worsened')]
+    _oob_locked = [(r, _overrun.get(r, 0.0)) for r in _oob_refs
+                   if _oob_by[r] == 'locked']
+
+    def _past(r):
+        return f"{r} ({_overrun.get(r, 0.0):.3f}mm past)"
+
+    def _grew(r):
+        return (f"{r} ({_overrun_in.get(r, 0.0):.3f} -> "
+                f"{_overrun.get(r, 0.0):.3f}mm past)")
+    for _cause, _fmt, _what in (
+            ('seeded', _past, "this seed placed with pad copper past the "
+                              "board outline"),
+            ('worsened', _grew, "outside this run's scope that the polish "
+                                "moved FURTHER past the board outline"),
+            ('locked', _past, "(locked yes) in the input with pad copper "
+                              "past the board outline, which this seed "
+                              "cannot move -- a lock is no waiver, since "
+                              "placement stamps its own: unlock it, or fix "
+                              "the step that seated it"),
+            # ...and the board's own, like an inherited short: not charged.
+            ('inherited', _past, "with pad copper past the board outline "
+                                 "that this seed did not place -- the "
+                                 "board's own, reported not charged"),
+            ('nudged', _grew, "outside this run's scope that the polish "
+                              "moved no further past the board outline -- "
+                              "the board's own, reported not charged")):
+        _refs = [r for r in _oob_refs if _oob_by[r] == _cause]
+        if _refs:
+            print(f"  {len(_refs)} part(s) {_what}: "
+                  + '; '.join(_fmt(r) for r in _refs))
     after = ratsnest.get('after', {})
     summary = {'placed': placed_count(result),
                'unseated': len(result['unseated']),
@@ -1727,10 +1768,16 @@ Examples:
                'keepout_copper_seeded': [[r, a] for r, a in _band_seeded],
                'oob_keepout_copper_count':
                    _pads_out.get('oob_keepout_copper_count') or 0,
-               # #1241: parts this seed placed with pad copper past the
-               # outline, [ref, mm past], the channel the gate charges.
+               # #1241: parts this seed placed (or moved further) with pad
+               # copper past the outline, [ref, mm past], and the locked
+               # ones it could not move: the two lists the gate charges.
+               # The board total, inherited included, is check_assembly's.
                'pad_copper_off_board_seeded': [[r, a]
                                                for r, a in _oob_seeded],
+               'pad_copper_off_board_locked': [[r, a]
+                                               for r, a in _oob_locked],
+               'oob_pad_copper_gating_count':
+                   _pads_out.get('oob_pad_copper_gating_count') or 0,
                'grade_warnings': len(graded.warnings),
                'crossings': after.get('crossings'),
                'hpwl': (round(after['hpwl'], 3)
@@ -1753,7 +1800,7 @@ Examples:
     print("JSON_SUMMARY: " + json.dumps(summary, sort_keys=True))
     _reason = gate_reason(result['unseated'], own, _my_pads, _hole_delta,
                           band=[r for r, _a in _band_seeded],
-                          oob=[r for r, _a in _oob_seeded])
+                          oob=[r for r, _a in _oob_seeded + _oob_locked])
     if _reason is None:
         _reason = fixed_pose_reason(summary)
     if _reason is not None:
