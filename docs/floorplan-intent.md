@@ -419,7 +419,11 @@ that part. `rot` / `side` absent or `"unknown"` keep the
 part's current angle / face; a declared side the part is not on is refused,
 since no search flips a part. A part already placed -- locked in the file, or
 outside the seed scope -- is recorded when it is at the pose and refused when
-it is not. A seated part is stamped `(locked yes)`, so every later stage and
+it is not, the refusal naming the lock's real cause (#1152). A footprint with
+no pad at all (a logo or outline drawing a courtyard) is placed only as a
+static obstacle, not by anyone's declaration, so its pose elsewhere is
+checked like a free part's, by its courtyard. A seated part is stamped
+`(locked yes)`, so every later stage and
 the polish treat it as an obstacle, and `place_seed --repair` never moves one.
 `place_seed`'s `JSON_SUMMARY` carries `fixed_seated` (with `at_written_pose`)
 and `fixed_refused`. An unlocked `mechanical.json` ref is accepted, instead

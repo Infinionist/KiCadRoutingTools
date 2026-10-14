@@ -4269,10 +4269,18 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple],
 def _fixed_pose_prep(state, pcb_data, f: Dict, placed: Set[str],
                      held: Set[str], seated: Dict[str, Dict],
                      refused: Dict[str, Dict], lock: Set[str],
-                     notes: List[str]):
+                     notes: List[str], seatable: Set[str] = frozenset()):
     """The per-entry half of stage 0: resolve one `fixed_poses[]` entry's
     pose, and settle the entries no geometry check is needed for. Returns
     `(ref, pose, rec)` for an entry to check, else None.
+
+    `seatable` (#1152): refs in `placed` whose only lock is the state's
+    pad-less policy (`quench.LOCK_PADLESS`) -- a static obstacle by default,
+    not a pose anybody fixed -- so a declared pose for one is CHECKED like any
+    free part's, by its courtyard, instead of refused as already placed. Every
+    other placed ref is refused with the cause the state recorded for its lock
+    (`QuenchState.lock_reasons`), which used to read "locked in the board
+    file" whatever the cause was.
 
     `rot` / `side` absent or `"unknown"` keep the part's CURRENT rotation /
     side, and the record says so (`rot_kept`, `side_kept`) -- the author
@@ -4322,10 +4330,12 @@ def _fixed_pose_prep(state, pcb_data, f: Dict, placed: Set[str],
                      f"; flip the part on the board first")
         return None
     if ref in placed:
-        # Authoritative already: locked in the FILE, or outside an explicit
-        # `seed_refs` scope. Not this stage's to move -- the file lock is the
-        # user's. At the pose it is simply recorded; anywhere else is a
-        # contradiction to name, never to resolve by force.
+        # Authoritative already: locked in the FILE (or by another cause the
+        # state names), or outside an explicit `seed_refs` scope. Not this
+        # stage's to move -- the file lock is the user's. At the pose it is
+        # simply recorded; anywhere else is a contradiction to name, never to
+        # resolve by force -- except a `seatable` ref, whose declared pose
+        # elsewhere is checked below like a free part's.
         at = (math.hypot(part.x - x, part.y - y) <= FIXED_POSE_EPS_MM
               and _ang_close(part.rot, rot))
         if at:
@@ -4333,11 +4343,16 @@ def _fixed_pose_prep(state, pcb_data, f: Dict, placed: Set[str],
             if not part.locked:
                 lock.add(ref)
             return None
+    if ref in placed and ref not in seatable:
+        from .quench import LOCK_PADLESS
+        why = getattr(state, 'lock_reasons', {}).get(ref)
+        if not part.locked or why == LOCK_PADLESS:
+            # Free, or pad-less (its policy lock alone would have made it
+            # `seatable`): placed only because the seed scope leaves it out.
+            why = 'outside the seed scope'
         refused[ref] = dict(rec, reason=(
             f"already placed at ({part.x:g}, {part.y:g}, {part.rot:g}deg) -- "
-            + ("locked in the board file" if part.locked
-               else "outside the seed scope")
-            + ", and not this stage's to move"))
+            + (why or 'locked') + ", and not this stage's to move"))
         notes.append(f"fixed pose {ref}: REFUSED -- {refused[ref]['reason']}"
                      f" (declared ({x:g}, {y:g}, {rot:g}deg))")
         return None
@@ -4349,7 +4364,8 @@ def _seat_fixed_poses(state, pcb_data, entries, placed: Set[str],
                       unplaced: Set[str], held: Set[str],
                       seated: Dict[str, Dict], refused: Dict[str, Dict],
                       lock: Set[str], notes: List[str],
-                      waived=frozenset()) -> None:
+                      waived=frozenset(),
+                      seatable: Set[str] = frozenset()) -> None:
     """Stage 0 (#1054): every `fixed_poses[]` entry, judged as ONE batch.
 
     ORDER-INDEPENDENT. Each declared pose is checked against the parts
@@ -4368,12 +4384,16 @@ def _seat_fixed_poses(state, pcb_data, entries, placed: Set[str],
     `waived` (#1060): the declared courtyard waivers as unordered pairs, so
     a waiver on EITHER entry of a pair covers both checks -- checked one way
     only, FID8 declared beside U30 would still refuse both halves.
+
+    `seatable` (#1152): see `_fixed_pose_prep`. Such a ref stays in `placed`
+    -- an obstacle at its input pose -- whatever stage 0 decides; seated, it
+    moves there and is locked like any seated pose.
     """
     declared: Dict[str, Tuple] = {}
     recs: Dict[str, Dict] = {}
     for f in sorted(entries, key=lambda f: str(f['ref'])):
         got = _fixed_pose_prep(state, pcb_data, f, placed, held, seated,
-                               refused, lock, notes)
+                               refused, lock, notes, seatable=seatable)
         if got is not None:
             ref, pose, rec = got
             declared[ref] = pose
@@ -4840,13 +4860,22 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     fixed_refused: Dict[str, Dict] = {}
     fixed_lock: Set[str] = set()
     _waiver_pairs = getattr(intent, 'courtyard_waiver_pairs', None)
+    # #1152: a pad-less part is `placed` by the state's policy lock alone
+    # (a static obstacle), not because anyone fixed its pose -- so inside the
+    # seed scope its declared pose is checked and seated by its courtyard.
+    from .quench import LOCK_PADLESS
+    _reasons = getattr(state, 'lock_reasons', {}) or {}
+    _seatable = frozenset(
+        r for r in placed if _reasons.get(r) == LOCK_PADLESS
+        and (seed_refs is None or r in seed_refs))
     _seat_fixed_poses(state, pcb_data,
                       getattr(intent, 'fixed_poses', ()) or (), placed,
                       unplaced, held, fixed_seated, fixed_refused,
                       fixed_lock, notes,
                       waived=frozenset(frozenset(p) for p in
                                        (_waiver_pairs() if _waiver_pairs
-                                        else ())))
+                                        else ())),
+                      seatable=_seatable)
 
     # ---- 1. edge connectors: spec geometry, no legality gate ---------------
     # edge_claims(), not the raw key: a connector_affinity entry declares a
