@@ -68,7 +68,8 @@ when it is past the outline rather than inside the floor (#1241):
 `pad_copper_off_board_seeded` names the parts this seed placed whose pad copper
 reaches past the board outline, by the per-pad measure check_assembly gates
 on, and a non-empty list fails the gate, since such a part can be neither
-assembled nor routed.
+assembled nor routed. Such copper on a part the seed did not move is the
+board's own, named on the console and not charged.
 
 And `reseat_declined` (#1117) on every summary of a seed (not of --repair /
 --reseat, which run no post-polish re-seat):
@@ -1603,6 +1604,16 @@ Examples:
         print(f"  {len(_oob_seeded)} part(s) this seed placed with pad copper "
               f"past the board outline: "
               + '; '.join(f"{r} ({a:.3f}mm past)" for r, a in _oob_seeded))
+    # ...and the board's own, like an inherited short: named, not charged.
+    _oob_theirs = [r for r in (_pads_out.get('oob_pad_copper_gating_refs')
+                               or ())
+                   if r not in _seeded and r not in result['unseated']]
+    if _oob_theirs:
+        print(f"  {len(_oob_theirs)} part(s) with pad copper past the board "
+              f"outline that this seed did not place -- the board's own, "
+              f"reported not charged: "
+              + '; '.join(f"{r} ({_overrun.get(r, 0.0):.3f}mm past)"
+                          for r in _oob_theirs))
     after = ratsnest.get('after', {})
     summary = {'placed': placed_count(result),
                'unseated': len(result['unseated']),

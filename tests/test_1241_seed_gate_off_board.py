@@ -102,6 +102,8 @@ class TheIssueBoard(unittest.TestCase):
         self.assertLess(summary['pad_edge_after']['minimum_gap_by_ref_mm']
                         ['R2'], 0.0)
         self.assertEqual(summary['pad_copper_off_board_seeded'], [])
+        self.assertIn("the board's own, reported not charged: R2 (0.600mm "
+                      "past)", r.stdout)
 
 
 if __name__ == '__main__':
