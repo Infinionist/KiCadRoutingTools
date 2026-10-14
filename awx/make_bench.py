@@ -178,6 +178,76 @@ def strip_pair_copper(txt, pcb, names):
     return txt, n0 - len(txt)
 
 
+_NUM = r'(-?[\d.]+)'
+
+
+def walk_blocks(txt, token, remove):
+    """Every top-level `(token ...)` block: `remove(block)` True drops it.
+    Paren-balanced, either net dialect (te.strip_net_items's walk)."""
+    out, i = [], 0
+    while True:
+        j = txt.find('(' + token, i)
+        while j >= 0 and txt[j + 1 + len(token)] not in ' \n\t':
+            j = txt.find('(' + token, j + 1)
+        if j < 0:
+            out.append(txt[i:])
+            break
+        k, depth = j, 0
+        while True:
+            c = txt[k]
+            if c == '(':
+                depth += 1
+            elif c == ')':
+                depth -= 1
+                if depth == 0:
+                    break
+            k += 1
+        block = txt[j:k + 1]
+        if remove(block):
+            out.append(txt[i:j].rstrip(' \t'))
+            e = k + 1
+            if e < len(txt) and txt[e] == '\n':
+                e += 1
+            i = e
+        else:
+            out.append(txt[i:k + 1])
+            i = k + 1
+    return ''.join(out)
+
+
+def block_geom(block, token):
+    if token == 'segment':
+        s = re.search(r'\(start ' + _NUM + ' ' + _NUM + r'\)', block)
+        e = re.search(r'\(end ' + _NUM + ' ' + _NUM + r'\)', block)
+        L = re.search(r'\(layer "?([^")\s]+)"?\)', block)
+        return ((float(s.group(1)), float(s.group(2))), (float(e.group(1)), float(e.group(2))), L.group(1))
+    a = re.search(r'\(at ' + _NUM + ' ' + _NUM + r'\)', block)
+    return ((float(a.group(1)), float(a.group(2))), None, None)
+
+
+def in_box(p, box):
+    return box[0] <= p[0] <= box[2] and box[1] <= p[1] <= box[3]
+
+
+def strip_window(txt, nets, byname, box):
+    """`txt` with those nets' copper inside `box` removed (a segment
+    wholly inside, a via inside): fanout_once's re-lay strip, as text."""
+    ids = {byname[nm][0]: byname[nm][1].name for nm in nets}
+
+    def rm(token):
+        def f(block):
+            m = re.search(r'\(net (\d+)\)', block)
+            m2 = re.search(r'\(net "([^"]+)"\)', block)
+            nid = int(m.group(1)) if m else next((i for i, n in ids.items() if m2 and n == m2.group(1)), None)
+            if nid not in ids:
+                return False
+            a, b, _ = block_geom(block, token)
+            return in_box(a, box) and (b is None or in_box(b, box))
+        return f
+    txt = walk_blocks(txt, 'segment', rm('segment'))
+    return walk_blocks(txt, 'via', rm('via'))
+
+
 def side_of(fp_):
     return 'B' if fp_.layer.startswith('B') else 'F'
 

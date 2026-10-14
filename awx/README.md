@@ -558,6 +558,60 @@ python3 route_bus.py tmp/zynq/planes.kicad_pcb tmp/zynq/both.kicad_pcb --k 47 --
     --clearance 0.09 --track-width 0.15 --fanout-track-width 0.12 --via-size 0.45 --via-drill 0.3
 ```
 
+**A bus to a QFN.** `--bus` also takes a bus whose destination is a row part:
+a QFN, its long pads in rows round its edge (`escape_moves.row_part`).
+`find_buses` names such a bus and leaves it to the router unless `--bus` names
+it. Each of its pads has one escape, straight out of its row on its own layer
+to half a pitch past the pads' outer ends. The lane changes layer beyond that,
+where the whole route places its vias. Each round lays the chosen escapes as
+planned (`fanout_from_plan.row_berths`): the array engine follows a plan over
+a ball grid, and refuses most of a QFN's.
+
+`SOURCE_SHARED=REF` (opt-in) has a plain or joint bus from an array an earlier
+bus went through keep the escapes that step's plan laid it there, instead of
+fanning that full array out again. Fanned out again for the bus alone, a full
+array sends a deep ball out by any face with room: the zynq's USB balls by
+U1's south face, into the LVDS bus's lanes, where the plan had them east
+toward U4. The earlier plan chose those escapes for its own bus, so it is set
+per bus: it sends three of the Ethernet bus's balls south, away from U3.
+
+`BUS_PULLED` (opt-in: `1` for every bus, or `U1-U4,U1-U3`) lays as a lane each
+net that a pull alone keeps out of the bus: its other pads are on two-pad parts
+whose other pad is a plane's net (`route_bus.pulled_nets`). The pull pads come
+off their nets for the step and go back on in OUT, for the chain to connect.
+
+The zynq's USB bus (U1 to U4, 11 nets) and Ethernet bus (U1 to U3, 8 nets)
+were routed on its SIX-RAIL board: the unrouted board (the recipe above) with In2
+split six ways -- VCC_3V3, VCC_1V8, VCC_1V5, VDD_DIG, VDDA_RX_LO and VCC_1V0
+-- beside In1's GND and RFGND. Its DDR3 and LVDS buses are routed first, as
+above; then each of the two alone on that board, with `BUS_PULLED` -- the USB
+bus's OTG_RESETN (R33, C121) and the Ethernet bus's ETH_MDIO, ETH_RXCTL and
+ETH_RXD0-3 (R34-R45) laid as lanes -- the USB bus from U1's escapes as the
+LVDS step laid them (`SOURCE_SHARED`):
+
+```bash
+python3 ../py_router/route_planes.py tmp/zynq/src/boards_unrouted_set1/zynq_ad9364.kicad_pcb tmp/zynq/zr6.kicad_pcb \
+    --nets GND RFGND VCC_3V3 VCC_1V8 VCC_1V5 VDD_DIG VDDA_RX_LO VCC_1V0 \
+    --plane-layers In1.Cu In1.Cu In2.Cu In2.Cu In2.Cu In2.Cu In2.Cu In2.Cu --layers F.Cu In1.Cu In2.Cu B.Cu \
+    --clearance-ceiling 0.2 --hole-to-hole-clearance 0.25 --via-size 0.45 --via-drill 0.3 \
+    --power-nets GND RFGND VCC_3V3 VCC_1V8 VCC_1V5 VDD_DIG VDDA_RX_LO VCC_1V0 \
+    --power-nets-widths 0.4 0.4 0.4 0.4 0.4 0.4 0.4 0.4
+SZ="--clearance 0.09 --track-width 0.15 --fanout-track-width 0.12 --via-size 0.45 --via-drill 0.3"
+python3 route_bus.py tmp/zynq/zr6.kicad_pcb tmp/zynq/zr6_both.kicad_pcb --k 47 --rounds 2 --inproc \
+    --bus U1:U2:joint --bus U1:U5:escape:F.Cu,B.Cu,In1.Cu,In2.Cu $SZ
+SOURCE_SHARED=U1 BUS_PULLED=1 python3 route_bus.py tmp/zynq/zr6_both.kicad_pcb tmp/zynq/zr6_usb.kicad_pcb \
+    --rounds 2 --inproc --bus U1:U4:plain:F.Cu,B.Cu,In1.Cu,In2.Cu $SZ
+BUS_PULLED=1 python3 route_bus.py tmp/zynq/zr6_both.kicad_pcb tmp/zynq/zr6_eth.kicad_pcb \
+    --rounds 2 --inproc --bus U1:U3:plain:F.Cu,B.Cu,In1.Cu,In2.Cu $SZ
+```
+
+The DDR3 bus routes all 45 nets of its run, 43 lanes (72 vias, 1397 mm), and
+the LVDS bus 45 of the 47 of its run (99 vias, 969 mm), the RX_D1 pair left
+open. The USB bus routes 11 of its 12 nets (22 vias, 313 mm), OTG_RESETN left
+open; the Ethernet bus 12 of its 14 (24 vias, 430 mm), ETH_TXCTL and ETH_TXD0
+left open. Each step hands its bus on connected and clean, no plane it crosses
+in more pieces than it came.
+
 ### Building the zynq article
 
 The second bench is built from a public board: `ZYNQ7020_AD9364_V2` from
@@ -1572,7 +1626,7 @@ With nothing supplied, as on the benches:
 
 | | |
 |---|---|
-| `route_bus.py` | the bus step: a board as the chain hands it on, its bus routed in the board's own frame, graded on the board (`BUS ..`); the buses found on a board (`tests/test_622_find_buses.py`); a board's buses in turn, each its own fanout and layers, a later escape bus planning a shared array whole (`--bus`: `tests/test_622_route_buses_shared.py`) |
+| `route_bus.py` | the bus step: a board as the chain hands it on, its bus routed in the board's own frame, graded on the board (`BUS ..`); the buses found on a board (`tests/test_622_find_buses.py`); a board's buses in turn, each its own fanout and layers, a later escape bus planning a shared array whole (`--bus`: `tests/test_622_route_buses_shared.py`) and, opt-in, a later plain or joint one keeping its escapes there (`SOURCE_SHARED`); a net a pull alone keeps out laid as a lane, opt-in (`BUS_PULLED`: `tests/test_622_route_bus_pulled.py`) |
 | `escape_plan.py`, `dogbone_arrays.py` | the escape fanout (`route_bus --escape`): both arrays dog-boned, and each round's ends chosen among the escapes that field has (ball lines, sidesteps, streets) and laid as they are (`tests/test_622_escape_plan.py`) |
 | `joint_escape.py`, `conflict_groups.py` | the joint fanout (`route_bus --joint-fanout`): an array's other balls planned together in one CP-SAT solve and laid by the under-pad engine's joint escape (a drop at a finer rung's via: `tests/test_622_drop_fine_via.py`; nothing in a laid pair's pocket: `test_622_pair_teeth.py`); the escapes' conflicts as cliques and bicliques (`tests/test_622_conflict_groups.py`); a shared array planned whole round an escape bus's teeth (`route_bus --escape`, `ESCAPE_JOINT`: `escape_field`) |
 | `whole_route.py`, `modal_whole.py` | one rung end to end -- fanout, solve, loop, route, checks, feedback rounds -- graded in one line (`WHOLE K=..`); the loop's layer cuts from the audit and the snap (`tests/test_622_layer_cuts.py`); the ladder in the cloud, one container per rung |
@@ -1595,7 +1649,7 @@ With nothing supplied, as on the benches:
 | | |
 |---|---|
 | `fanout_from_plan.py`, `pages_first.py` | the planner and both fanouts |
-| `select_moves.py`, `escape_moves.py`, `plan_ends.py` | menus, conflicts, plan cost |
+| `select_moves.py`, `escape_moves.py`, `plan_ends.py` | menus, conflicts, plan cost; a row part's (a QFN's) one escape a pad, laid as planned (`fanout_from_plan.row_berths`: `tests/test_622_row_part.py`) |
 | `source_realize.py` | a source plan realised with the production engine, audited per dimension |
 | `connect.py`, `corridor.py`, `topo_strings.py`, `taut_fast.py` | the real router, corridors (a lane's layers on its two pieces: `tests/test_622_piece_u.py`), the taut relaxation |
 | `pairs.py` | a differential pair's rules: its hand, end connectors, dive room, crossover, staircase; `harmonise` |
@@ -1695,8 +1749,8 @@ channels first, and the other escapes leave round it.
    class, `.kicad_dru` layer rules, and `--fab-tier` / `--escalation`.
 5. **Termination parts as waypoints.** A pair through a termination part
    between the arrays (the zynq's CK through R20) is refused, and so are the
-   nets `find_buses` leaves (fly-by, multi-drop, a pull-down); a pair could be
-   laid through its part.
+   nets `find_buses` leaves (fly-by, multi-drop; a pull-down too, unless
+   `BUS_PULLED`); a pair could be laid through its part.
 6. **The handoff.** The laid nets go into the project's `protected_nets`;
    a refused lane is left with no partial copper, unprotected, and listed in
    a JSON summary for `route.py`; the bus's own pairs stop going to
@@ -1731,7 +1785,13 @@ channels first, and the other escapes leave round it.
   planned with the lanes rather than cut from a finished route.
 - **Routing on inner layers:** the page pair chosen among the signal layers.
 - **Fly-by and multi-drop nets,** as legs in daisy order.
-- **A row part at one end** (TSOP-II SDRAM, SODIMM, edge connectors).
+- **A row part at one end** beyond a QFN (TSOP-II SDRAM, SODIMM, edge
+  connectors): `escape_moves.row_part` reads their rows, and none has been
+  routed.
+- **Two buses from one face, together.** The zynq's USB and Ethernet buses
+  leave U1's east face side by side, for U4 and for U3; routed one after the
+  other, the second meets the first's lanes across its way. One whole route
+  could lay both: one source, two destinations.
 - **A layer left for the nets that cross the bus,** if item 8 finds many
   failing.
 - **Feedback from `route.py`:** failures that name bus copper as the blocker

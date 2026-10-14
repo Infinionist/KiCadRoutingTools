@@ -1831,12 +1831,11 @@ def escape_field(board, out, ref, dest, bus, others, drops, hold, log=print, pas
     escape: the step's own lay runs the teeth from there), the other nets' escapes, straps and dog-bones alone and the
     plane drops as planned (lay). The passives stand where they are (the step's cap nudge ran on the field). OUT is the
     field; returns the plan's report, with `laid_sites` the bus vias laid"""
-    import replan
+    import make_bench as mb
     import rules as _rules
     import fanout_from_plan as fp
     from kicad_parser import parse_kicad_pcb
     from kicad_writer import add_tracks_and_vias_to_pcb
-    import awx_settings as _as
     with contextlib.redirect_stdout(io.StringIO()):
         pcb0 = parse_kicad_pcb(board)
     foot = pcb0.footprints[ref]
@@ -1847,13 +1846,13 @@ def escape_field(board, out, ref, dest, bus, others, drops, hold, log=print, pas
     stem = out[:-len('.kicad_pcb')] if out.endswith('.kicad_pcb') else out
     bare = f'{stem}.bare.kicad_pcb'
     with open(bare, 'w', encoding='utf-8') as f:
-        f.write(replan.strip_window(open(board, encoding='utf-8').read(), nets, byname, box))
+        f.write(mb.strip_window(open(board, encoding='utf-8').read(), nets, byname, box))
     fp.copy_pro(board, bare)
     with contextlib.redirect_stdout(io.StringIO()):
         pcb = parse_kicad_pcb(bare)
     layers = list(pcb.board_info.copper_layers)
     prefer = {nm: dict(g) for nm, g in hold.items()}
-    with _as.given({**_as.environ(), 'FANOUT_PASSIVES_FIXED': '1' if passives_fixed else '0'}):
+    with awx_settings.given({**awx_settings.environ(), 'FANOUT_PASSIVES_FIXED': '1' if passives_fixed else '0'}):
         hints, rep = plan_array(pcb, ref, list(bus), list(others), layers, far=far_face(pcb, ref, dest), drops=drops,
                                 prefer=prefer, log=log, debug=True, escape_to=dest, hold=hold)
         chosen = (rep.pop('debug', None) or {}).get('chosen') or {}

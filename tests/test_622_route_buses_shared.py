@@ -11,7 +11,9 @@ With the step itself stood in for (no routing: each bus 'handed on' as its input
    routing layers (settings ROUTE_LAYERS), the other buses none;
 3. a SHARED ARRAY: an escape bus on an array an earlier bus was handed on through gets that array planned whole
    (ESCAPE_JOINT) and its ends on the board as it was before that earlier bus (ESCAPE_JOINT_ENDS); an escape bus on
-   arrays nothing went through, and one after an earlier bus that was not handed on, get neither;
+   arrays nothing went through, and one after an earlier bus that was not handed on, get neither; a plain or joint
+   bus from such an array gets neither either -- keeping the escapes the earlier step laid it there is the
+   environment's to opt into (SOURCE_SHARED), never set here;
 4. step_policy lays a step's settings over the environment, the step's own policy over both.
 """
 import os
@@ -81,7 +83,14 @@ check(calls[2]['escape'] and calls[2]['settings'] == {}, f'3: U7-U8: nothing sha
 _c, calls, _b, _w = run([('U1', 'U2', 'joint', None), ('U1', 'U5', 'escape', None)], fail={('U1', 'U2')})
 check('ESCAPE_JOINT' not in calls[1]['settings'], f'3: after a bus left as it came, nothing shared: {calls[1]}')
 _c, calls, _b, _w = run([('U1', 'U2', 'joint', None), ('U1', 'U5', 'joint', None)])
-check('ESCAPE_JOINT' not in calls[1]['settings'], f'3: a joint bus on a shared array: no ESCAPE_JOINT: {calls[1]}')
+check(calls[1]['settings'] == {}, f'3: a joint bus on a shared array: no ESCAPE_JOINT, no SOURCE_SHARED: {calls[1]}')
+# (the zynq's four: the DDR3, the LVDS round it, then its USB and Ethernet buses to their QFNs)
+_c, calls, _b, _w = run([('U1', 'U2', 'joint', None), ('U1', 'U5', 'escape', L4), ('U1', 'U4', 'plain', L4),
+                         ('U1', 'U3', 'plain', L4), ('U7', 'U8', 'plain', None)])
+check([c['settings'].get('SOURCE_SHARED') for c in calls] == [None] * 5,
+      f'3: SOURCE_SHARED is the environment\'s to opt into, set on no bus: {[c["settings"] for c in calls]}')
+check(calls[2]['settings'] == {'ROUTE_LAYERS': L4} and not calls[2]['escape'] and not calls[2]['joint'],
+      f'3: U1-U4: its layers, plain: {calls[2]}')
 
 # 4. step_policy: the step's settings over the environment, its policy over both
 import awx_settings  # noqa: E402

@@ -1996,6 +1996,31 @@ def fanout_destination(out_path, names, choice, dst_pad, dref, byname, board,
     return 0 if ok_l else 1
 
 
+def row_berths(pcb, dref, targets, choice, dst_pad, byname):
+    """(tracks, vias, removed vias, failed nets) for the berths at a ROW PART (escape_moves.row_part): each target's
+    planned move laid on its own legs at the fanout's track; a target the plan left unplaced takes its pad's one
+    escape, straight out of its row (escape_moves), where its row's face is clear of everything but the run's nets"""
+    grid = em.grid_of(pcb.footprints[dref])
+    kids = {byname[nm][0] for nm in targets}
+    tracks, vias, failed = [], [], []
+    for nm in targets:
+        nid = byname[nm][0]
+        m = choice.get(nm)
+        if m is None and nm in dst_pad:
+            own = em.enumerate_moves(dst_pad[nm], grid, route_layers.escape_layers(pcb.board_info.copper_layers),
+                                     lambda p, q, L, _n=nid: te.build_obstacles(pcb, _n, kids, L).seg_clear(p, q))
+            m = own[0] if own else None
+        if m is None:
+            failed.append(nm)
+            continue
+        tracks += [{'start': tuple(a), 'end': tuple(b), 'width': sr.FAN_TRACK, 'layer': L, 'net_id': nid}
+                   for a, b, L in m.legs]
+        if m.site is not None:
+            vias.append({'x': m.site[0], 'y': m.site[1], 'size': te.VIA_SIZE, 'drill': te.VIA_DRILL,
+                         'layers': ['F.Cu', 'B.Cu'], 'net_id': nid})
+    return tracks, vias, [], failed
+
+
 def fanout_once(out_path, names, choice, dst_pad, dref, byname, board,
                 relay=None, already=(), face_asks=None):
     """One destination fanout to `choice`, written to out_path and audited.
@@ -2075,11 +2100,16 @@ def fanout_once(out_path, names, choice, dst_pad, dref, byname, board,
     pcb._fanout_all_foreign_immovable = True
     import joint_escape as _je
     _je.reserve_ball_vias(pcb)          # the joint fanout: the other balls' own via sites stay free
-    tracks, vias_add, vias_rm, failed = generate_bga_fanout(
-        pcb.footprints[dref], pcb, net_filter=targets, layers=route_layers.stacked(pcb.board_info.copper_layers),
-        track_width=sr.FAN_TRACK, clearance=sr.FAN_CLEAR, via_size=te.VIA_SIZE, via_drill=te.VIA_DRILL,
-        exit_margin=0.5, escape_method='underpad', plane_drop='off',
-        escape_dir_hints=hints)
+    if em.row_part(pcb.footprints[dref]):
+        # a ROW PART (a QFN): each berth laid as planned, on its own legs -- a pad's one escape, straight out of its
+        # row (escape_moves); the array engine follows a plan over a ball grid, and on zynq U4 laid 1 of 8
+        tracks, vias_add, vias_rm, failed = row_berths(pcb, dref, targets, choice, dst_pad, byname)
+    else:
+        tracks, vias_add, vias_rm, failed = generate_bga_fanout(
+            pcb.footprints[dref], pcb, net_filter=targets, layers=route_layers.stacked(pcb.board_info.copper_layers),
+            track_width=sr.FAN_TRACK, clearance=sr.FAN_CLEAR, via_size=te.VIA_SIZE, via_drill=te.VIA_DRILL,
+            exit_margin=0.5, escape_method='underpad', plane_drop='off',
+            escape_dir_hints=hints)
     if tracks:
         add_tracks_and_vias_to_pcb(
             src_file, out_path, tracks, vias_add, vias_rm,
