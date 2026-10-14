@@ -10,7 +10,8 @@ R1, charged for sitting inside U2's SILK-drawn body (U2 draws no .Fab;
 contained_frac 0.892), was reported `repaired` with 0 moves while the pair
 stayed on the board. Now one selection (`seeder._repair_containment_pairs`)
 serves both halves: the charge on the input poses, the re-grade on the board
-at the repair's final poses.
+at the repair's final poses -- for every ref charged for containment, moved
+or not, on the pairs it was charged for.
 
 Pinned here:
   * the anti-vacuity: esp_prog's census holds R1/U2 at 0.892 on a silk body,
@@ -18,7 +19,11 @@ Pinned here:
   * R1 is charged, does not move, and is UNRESOLVED (not repaired), the note
     naming U2;
   * the re-grade reads the FINAL poses: when another mover takes U2 off R1
-    during the repair, the same zero-move R1 is repaired.
+    during the repair, the same zero-move R1 is repaired;
+  * a MOVE that leaves R1 inside U2's body (0.1 mm) is unresolved, one that
+    takes it out (2 mm) is repaired, and a pair partner seated in R1's place
+    without clearing the pair is unresolved too. The seat search is replaced
+    by a stand-in for these, since its fab-rect currency never moves R1.
 
 Run: python3 -X utf8 tests/test_1153_containment_regrade.py
 """
@@ -77,28 +82,79 @@ def test_a_zero_move_containment_violator_is_unresolved():
     print(f"  PASS: {note[0]}")
 
 
+def _repair_with(seat):
+    """The repair with `_try_place` answered by `seat(state, ref, real, *a,
+    **k)` -- a stand-in for a seat search whose move the test chooses."""
+    real = seeder._try_place
+    seeder._try_place = lambda state, ref, *a, **k: seat(state, ref, real,
+                                                         *a, **k)
+    try:
+        return _repair()
+    finally:
+        seeder._try_place = real
+
+
+def _shift(state, ref, dx):
+    p = state.parts[ref]
+    state.apply_move(ref, p.x + dx, p.y, p.rot)
+    return state.clearance
+
+
+def _moved(res):
+    return [m['reference'] for m in res['moves']]
+
+
 def test_the_regrade_reads_the_final_poses():
     """A pair another mover cleared during the repair is cleared: the re-grade
     grades the state's poses, not the input file's."""
-    real = seeder._try_place
-
-    def other_mover_clears_it(state, ref, *a, **k):
+    def other_mover_clears_it(state, ref, real, *a, **k):
         if ref == 'R1':
-            u2 = state.parts['U2']
-            state.apply_move('U2', u2.x + 25.0, u2.y, u2.rot)
+            _shift(state, 'U2', 25.0)
             return state.clearance          # R1 accepted where it stands
         return real(state, ref, *a, **k)
 
-    seeder._try_place = other_mover_clears_it
-    try:
-        res = _repair()
-    finally:
-        seeder._try_place = real
-    assert 'R1' not in [m['reference'] for m in res['moves']], res['moves']
+    res = _repair_with(other_mover_clears_it)
+    assert 'R1' not in _moved(res), res['moves']
     assert 'R1' in res['repaired'], (res['repaired'], res['unresolved'],
                                      res['notes'])
     print("  PASS: U2 moved off it during the repair, so zero-move R1 is "
           "repaired")
+
+
+def test_a_moved_violator_still_inside_is_unresolved():
+    """A move the search accepts can leave the part in the body the census
+    charged it for: R1 0.1 mm over is still 89% inside U2's silk body."""
+    res = _repair_with(lambda st, ref, real, *a, **k: (
+        _shift(st, 'R1', 0.1) if ref == 'R1' else real(st, ref, *a, **k)))
+    assert 'R1' in _moved(res), res['moves']
+    assert 'R1' not in res['repaired'], res['repaired']
+    assert 'R1' in res['unresolved'], (res['unresolved'], res['notes'])
+    note = [n for n in res['notes'] if n.startswith('R1: UNRESOLVED')]
+    assert note and 'moved without clearing it' in note[0], res['notes']
+    print(f"  PASS: {note[0]}")
+
+
+def test_a_moved_violator_that_leaves_the_body_is_repaired():
+    """The positive control for a move: 2 mm over, R1 is in no pair."""
+    res = _repair_with(lambda st, ref, real, *a, **k: (
+        _shift(st, 'R1', 2.0) if ref == 'R1' else real(st, ref, *a, **k)))
+    assert 'R1' in _moved(res), res['moves']
+    assert 'R1' in res['repaired'], (res['repaired'], res['unresolved'],
+                                     res['notes'])
+    print("  PASS: R1 moved 2 mm, out of U2's body, and is repaired")
+
+
+def test_a_partner_seated_for_the_pair_is_regraded_on_it():
+    """R1 finds no seat; its pair partner U2 is seated instead, 0.1 mm over,
+    which clears nothing. U2 moved FOR R1's containment charge, so it is
+    judged on that pair."""
+    res = _repair_with(lambda st, ref, real, *a, **k: (
+        None if ref == 'R1' else _shift(st, 'U2', 0.1) if ref == 'U2'
+        else real(st, ref, *a, **k)))
+    assert _moved(res) == ['U2'], res['moves']
+    assert 'U2' not in res['repaired'], res['repaired']
+    assert 'U2' in res['unresolved'], (res['unresolved'], res['notes'])
+    print("  PASS: the seated partner U2 still holds R1 and is unresolved")
 
 
 def main():

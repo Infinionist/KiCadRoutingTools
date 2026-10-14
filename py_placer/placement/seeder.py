@@ -6946,8 +6946,9 @@ def _repair_containment_pairs(body, exempt) -> List:
     body-exempt set (markers and containers).
 
     ONE selection for both halves of the repair (#1153): the charge reads it
-    on the input board, and the zero-move honesty re-grade on the board at
-    the repair's final poses. The re-grade used to ask the SEARCH's own
+    on the input board, and the honesty re-grade -- of every ref charged for
+    containment, moved or not -- on the board at the repair's final poses.
+    The zero-move re-grade used to ask the SEARCH's own
     `_body_contained_at` instead -- fab rects only, so a body drawn on silk
     is unjudged there -- and pristine esp_prog's R1, charged for sitting
     inside U2's silk-drawn body (frac 0.892), read `repaired` with 0 moves
@@ -7574,6 +7575,11 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                 moves.append({'reference': pname, 'new_x': pp.x,
                               'new_y': pp.y, 'new_rotation': pp.rot})
                 repaired.append(pname)
+                # #1153: it moved FOR `ref`'s charge, so the re-grade asks
+                # it about the containment pairs of that charge it is in.
+                _for = {p for p in cont_charged.get(ref, ()) if pname in p}
+                if _for:
+                    cont_charged.setdefault(pname, set()).update(_for)
                 notes.append(
                     f"{ref}: no legal pose within any cap {tuple(caps)}mm -- "
                     f"seated its pair partner {pname} instead "
@@ -7644,30 +7650,38 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
     # board whose pad/body census did not move are UNRESOLVED, so the fix
     # loop can see it stalled instead of believing "repaired" forever.
     unresolved = []
+    # #1153: a ref charged for a containment pair -- moved or not -- is
+    # re-graded on THAT pair at the FINAL poses, by the census that charged
+    # it (`_repair_containment_pairs` on `grade_body_overlap`,
+    # check_assembly's grader) -- graded once, and only when asked.
+    _contained_after: Dict[str, Any] = {}
+
+    def _still_contained(ref):
+        charged = cont_charged.get(ref)
+        if not charged:
+            return None
+        if 'pairs' not in _contained_after:
+            _contained_after['pairs'] = _repair_containment_pairs(
+                _leg.grade_body_overlap(
+                    floorplan._PosedState(state).board(), clearance,
+                    pcb_file=pcb_file),
+                _cont_exempt)
+        return next((q for q in _contained_after['pairs']
+                     if frozenset((q.a, q.b)) in charged), None)
+
+    def _contained_why(ref, hit, moved):
+        other = hit.b if hit.a == ref else hit.a
+        return (f"still in a containment pair with {other} "
+                f"({hit.contained_frac:.0%} of the smaller body, by the "
+                f"census that charged it) at the final poses, "
+                + ("and it moved without clearing it" if moved
+                   else "and it did not move"))
+
     if zero_move and state.legality_ctx is not None:
         # Post-repair poses live on the STATE (pcb_data still holds the
         # file's input poses), so the re-grade uses the state's own pair
         # machinery in the gate currency.
         ctx = state.legality_ctx
-        # #1153: a ref charged for a containment pair is re-graded on THAT
-        # pair at the FINAL poses, by the census that charged it
-        # (`_repair_containment_pairs` on `grade_body_overlap`,
-        # check_assembly's grader) -- graded once, and only when asked.
-        _contained_after: Dict[str, Any] = {}
-
-        def _still_contained(ref):
-            charged = cont_charged.get(ref)
-            if not charged:
-                return None
-            if 'pairs' not in _contained_after:
-                _contained_after['pairs'] = _repair_containment_pairs(
-                    _leg.grade_body_overlap(
-                        floorplan._PosedState(state).board(), clearance,
-                        pcb_file=pcb_file),
-                    _cont_exempt)
-            return next((q for q in _contained_after['pairs']
-                         if frozenset((q.a, q.b)) in charged), None)
-
         for ref in zero_move:
             still = False
             why = None
@@ -7686,11 +7700,7 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                 hit = _still_contained(ref)
                 if hit is not None:
                     still = True
-                    other = hit.b if hit.a == ref else hit.a
-                    why = (f"still in a containment pair with {other} "
-                           f"({hit.contained_frac:.0%} of the smaller body, "
-                           f"by the census that charged it) at the final "
-                           f"poses, and it did not move")
+                    why = _contained_why(ref, hit, moved=False)
             except Exception as exc:
                 still = True
                 notes.append(f'{ref}: could not verify containment after the '
@@ -7847,6 +7857,32 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                     else " (it moved)") if ref in moved_refs
                    else " (it did not move)")
                 + " -- NOT reported repaired")
+
+    # #1153: and every MOVED ref charged for containment. The seat search
+    # judges containment in its own currency (fab rects), so a move can be
+    # legal there and leave the part inside a body the census reads -- a
+    # silk-drawn one -- which is the zero-move lie one channel over. Same
+    # measure, same pairs, same fail-loud rule. AFTER the intent half, so a
+    # ref it already found unresolved keeps that reason and gains this one
+    # (a cap charged for its decap distance AND for sitting in U2).
+    _moved_now = {m['reference'] for m in moves}
+    for ref in [r for r in dict.fromkeys(list(repaired) + list(unresolved))
+                if r in _moved_now and cont_charged.get(r)]:
+        try:
+            hit = _still_contained(ref)
+        except Exception as exc:
+            hit = None
+            why = (f"could not verify containment after the repair "
+                   f"({exc.__class__.__name__}: {exc})")
+        else:
+            why = (_contained_why(ref, hit, moved=True)
+                   if hit is not None else None)
+        if why is None:
+            continue
+        repaired[:] = [r for r in repaired if r != ref]
+        if ref not in unresolved:
+            unresolved.append(ref)
+        notes.append(f"{ref}: UNRESOLVED -- {why} -- NOT reported repaired")
 
     # #1182: the COURTYARD half of the honesty re-grade, on check_assembly's
     # channel at the FINAL poses and against the same baseline. A part
