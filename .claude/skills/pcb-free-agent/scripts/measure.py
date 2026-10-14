@@ -284,7 +284,7 @@ def _slashed(s):
 
 def evidence_patterns(evidence, cwd=None):
     """Regexes for one --evidence path: as given and absolute, either slash,
-    bounded so `wk/run` does not match `wk/run10`."""
+    bounded so `out/a` does not match `out/a2`."""
     forms = {_slashed(os.path.abspath(os.path.join(cwd or os.getcwd(), evidence)))}
     given = _slashed(os.path.normpath(evidence))
     if given not in ('', '.'):
