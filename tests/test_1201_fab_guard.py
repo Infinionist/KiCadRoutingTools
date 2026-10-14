@@ -8,17 +8,15 @@ USB701, declared on the west edge, "seated 8.90mm / 11.71mm from the nearest
 edge" while their pads were 3.8 mm from it.
 
 `body.fab_cannot_be_body` rejects a fab bbox under `FAB_MIN_PAD_AREA_FRAC`
-(0.05) of the pad bbox's area. The rung falls through to silk, then courtyard,
-then pads, and the part records `fab_rejected`. The quench's own .Fab reader
-(`QuenchState.fab_rect` / `fab_shape`) honours the same rejection, so the
-search and the grader read one body.
+(0.02) of the pad bbox's area. The DRAWN body falls through to silk united
+with the pads (else none), the part records `fab_rejected`, and what it
+OCCUPIES is unchanged: its courtyard, else the marking united with its pads.
+The quench's own .Fab reader (`QuenchState.fab_rect` / `fab_shape`) honours
+the same rejection, so the search and the grader read one body.
 
-Silk containment stays advisory (#896), measured: with the guard on, 13
-containment pairs on the tracked corpus and the fa10 designer boards are
-exempt only by the silk rule -- tracked esp_prog's R1/U2 among them -- so
-letting silk gate would fail designer boards. What changes is that
-check_assembly now SAYS so per pair (`gate_exempt`), instead of calling every
-non-gating containment "a marker or a board-sized container".
+Silk containment stays advisory: a silk-drawn body never gates (#896). What
+changes is that check_assembly now SAYS so per pair (`gate_exempt`), instead
+of calling every non-gating containment "a marker or a board-sized container".
 """
 
 import json
@@ -109,10 +107,8 @@ class TheGuard(unittest.TestCase):
         self.assertLess(g.drawn_local[0], -3.7)
         self.assertGreater(g.drawn_local[2], 5.8)
         # ...but what it OCCUPIES is unchanged by the guard: the marking
-        # united with the pads, as before, named `fab_marking` (the user's
-        # decision: a silk occupancy never gates, #896, and letting it answer
-        # turned the fa10 One-Air-Max seed from NOT BUILDABLE to "buildable";
-        # the pad box alone lost the parts under its module's antenna).
+        # united with the pads, as before, named `fab_marking` (a silk
+        # occupancy never gates, #896, so silk may not answer it).
         dot = (-3.98, -2.26, -3.92, -2.2)
         self.assertEqual(g.source, body.SOURCE_FAB_MARKING)
         self.assertEqual(lb.source, body.SOURCE_FAB_MARKING)

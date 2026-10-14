@@ -319,11 +319,8 @@ def body_geometry(fp, side: str,
         # #1201: a part whose .Fab rung is a marking. Its BODY is its silk
         # united with its pads (else its pads), never the dot; what it
         # OCCUPIES is unchanged by the guard -- the marking united with the
-        # pads, as before, set below and labelled `fab_marking`. The user's
-        # decision: the silk may not occupy (a silk occupancy never gates,
-        # #896, and letting it answer flipped the fa10 One-Air-Max seed from
-        # NOT BUILDABLE, 23 courtyard pairs, to "buildable"), and the pad box
-        # alone lost the 14 passives under its ESP32 module's antenna.
+        # pads, as before, set below and labelled `fab_marking`. Not the
+        # silk: a silk occupancy never gates (#896).
         body_local, source = (drawn_local or pads), SOURCE_FAB_MARKING
     elif pads is not None:
         body_local, source = pads, SOURCE_PADS

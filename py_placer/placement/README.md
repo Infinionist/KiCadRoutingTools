@@ -1478,9 +1478,8 @@ part whose pads are 3.8 mm from it, CM5_MINIMA_3 J101). `fab_cannot_be_body`
 (`FAB_MIN_PAD_AREA_FRAC = 0.02`) rejects it: the DRAWN body falls to silk,
 else nothing, and `fab_rejected` records it. What the part OCCUPIES is
 deliberately unchanged -- the marking united with its pads, as before, now
-labelled `fab_marking` -- because letting silk answer that question too
-turned the fa10 One-Air-Max seed from NOT BUILDABLE (23 courtyard pairs) to
-"buildable": a silk occupancy never gates. Measured: the markings reach
+labelled `fab_marking` -- because a silk occupancy never gates (#896), so
+silk may not answer that question. Measured: the markings reach
 0.00466 of their pad box (all 204 on the fa10 designer boards), the least
 real bodies 0.0537 (KiCad's stock library) and 0.3114 on the tracked corpus
 (orangecrab J4), which loses none. A pad-less part keeps its fab body.
@@ -1493,11 +1492,9 @@ real body by 2.1 mm, reads as 89% CONTAINED. The pair is reported, with its
 source; it does not decide. The exclusion is scoped per channel (containment
 reads `drawn_source`, the courtyard channel the occupancy source), because
 scoping it to one set threw away four pre-existing findings silk had nothing to
-do with. #1201 measured whether silk containment could gate after all: on
-the designer boards it trips 13 silk-only pairs, tracked esp_prog R1/U2 among
-them, so it stays advisory -- and check_assembly now says WHY each contained
-pair does not gate (`gate_exempt`: `silk_drawn`, or the marker / container
-waiver that applies) instead of one sentence that described neither.
+do with. check_assembly says WHY each contained pair does not gate
+(`gate_exempt`: `silk_drawn`, or the marker / container waiver that applies,
+#1201) instead of one sentence that described neither.
 
 **A mounting hole is decided by its ITEM name, not a substring (#1176).**
 `part_class.is_mount_hole_name` reads `MountingHole` at the start of the item
