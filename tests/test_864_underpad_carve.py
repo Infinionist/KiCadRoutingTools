@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """#864: the under-pad escape's foreign-copper carve, at the _Occ level.
 
-Three things the fix relies on, pinned without routing a board:
+Four things the fix relies on, pinned without routing a board:
 
   1. `_Occ.disk_cells(x, y, r)` is exactly `frozenset(_disk(x, y, r))` and is
      memoised (the same object comes back for the same key), so the eight
@@ -16,6 +16,9 @@ Three things the fix relies on, pinned without routing a board:
      a 7 mm mounting-pad keep-out was a 5-million-cell disk and 264 of them
      were 397 of a 433 s rescue. The floor leaves real pitches alone
      (0.35 mm -> 0.011).
+  4. `generate_underpad_escape` runs with the cyclic collector paused, and
+     restores it exactly -- re-enabled after the call, left off when the
+     caller had it off, re-enabled on an exception.
 """
 import math
 import os
@@ -92,6 +95,35 @@ def main():
         worst = max(worst, (len(got) - len(exact)) / max(1, len(exact)))
     if worst > 0.12:
         fails.append(f"the sampled capsule over-blocks by {worst:.0%} (> 12%) -- the inflation is too generous")
+    # 4. the escape runs with the CYCLIC collector paused and restores it
+    # exactly: the memo's live frozensets made every young collection
+    # re-traverse millions of set members (see `_cyclic_gc_paused`).
+    import gc
+    from bga_fanout.underpad import _cyclic_gc_paused, generate_underpad_escape
+    if getattr(generate_underpad_escape, '__wrapped__', None) is None:
+        fails.append("generate_underpad_escape no longer runs under _cyclic_gc_paused")
+    _probe = _cyclic_gc_paused(gc.isenabled)
+    _was = gc.isenabled()
+    try:
+        gc.enable()
+        if _probe() is not False or gc.isenabled() is not True:
+            fails.append("the pause did not hold inside the call, or did not "
+                         "re-enable the collector after it")
+        gc.disable()
+        if _probe() is not False or gc.isenabled() is not False:
+            fails.append("the pause re-enabled a collector the CALLER had disabled")
+        gc.enable()
+
+        def _raises():
+            raise ValueError('boom')
+        try:
+            _cyclic_gc_paused(_raises)()
+        except ValueError:
+            pass
+        if not gc.isenabled():
+            fails.append("an exception inside the escape left the collector paused")
+    finally:
+        (gc.enable if _was else gc.disable)()
     # 3. the resolution floor (read straight from the source, one expression)
     src = open(os.path.join(ROOT, 'py_router', 'bga_fanout', 'underpad.py'), encoding='utf-8').read()
     if not re.search(r"res = max\(min\(grid\.pitch_x, grid\.pitch_y\) / 32\.0, 0\.01\)", src):
@@ -100,7 +132,8 @@ def main():
         print("FAIL:\n  " + "\n  ".join(fails))
         return 1
     print(f"PASS: disk_cells == _disk and memoised; the sampled capsule covers every cell within "
-          f"keep on 60 random segments (worst over-block {worst:.1%}); the grid resolution is floored at 0.01 mm")
+          f"keep on 60 random segments (worst over-block {worst:.1%}); the grid resolution is floored at 0.01 mm; "
+          f"the escape pauses the cyclic collector and restores it")
     return 0
 
 

@@ -567,6 +567,38 @@ def stub_track_conflict(net_id, a, b, segs, layer_idx, half_width, clearance):
     return False
 
 
+def _cyclic_gc_paused(fn):
+    """Run `fn` with Python's CYCLIC collector paused, restored on exit.
+
+    The under-pad escape allocates tens of millions of small objects (the
+    disk_cells frozensets of (a, b) tuples) while the memo keeps millions of
+    them alive, and CPython 3.14's incremental collector re-traverses every
+    live set member on its young-generation schedule. Measured on 3.14.0:
+    building 0.8M cells in sets took 1.6 s with nothing else retained, 12.4 s
+    with 4M cells retained, 0.25 s paused. Reference counting still frees
+    everything acyclic as it dies, and the escape makes no cyclic garbage of
+    its own (a gc.collect() after each of glasgow U30's 50 escape calls at a
+    0.70 mm hole-to-hole floor found none), so the pause changes WHEN a
+    collection runs, never what is computed -- the precedent is
+    placement/fanout_clearance.py's cap sweep. Nested calls are safe: only
+    the outermost call re-enables, and only if the collector was enabled when
+    it started."""
+    import functools
+    import gc
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            if was_enabled:
+                gc.enable()
+    return wrapper
+
+
+@_cyclic_gc_paused
 def generate_underpad_escape(footprint: Footprint,
                              pcb_data: PCBData,
                              grid: BGAGrid,
