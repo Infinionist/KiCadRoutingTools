@@ -8660,9 +8660,12 @@ def emit_intent(pcb_data, pcb_file: str, *,
         # #959 (#1002): derive only off a PLACED board. Run 29's pile read
         # `unplaced: false` and `partially_unplaced: true` (duplicate
         # fraction 0.833), and a strict derivation there wrote a limit of 0.0.
+        # `.pile` (#1109) catches it -- its heap arm is that 83% -- and,
+        # unlike any `partially_unplaced`, does not discard a placed board
+        # over two parts sharing an origin by design (#1178).
         from .placement_state import assess_placement
         _st = assess_placement(pcb_data, pcb_file)
-        if _st.unplaced or _st.partially_unplaced:
+        if _st.pile:
             _census['auto_withheld'] = (
                 'the board is not placed ('
                 + '; '.join(_st.reasons[:2])
@@ -8708,13 +8711,25 @@ def emit_intent(pcb_data, pcb_file: str, *,
                 f"{_common}/{len(_theirs)} of its parts and "
                 f"{_common}/{len(_ours)} of this board's (at least "
                 f"{DECAPS_FROM_MIN_MATCH:.0%} of each needed)")
-        elif _ref_state.unplaced or _ref_state.partially_unplaced:
+        elif _ref_state.pile:
+            # #1178: the ONE pile test (#1109), as the emitter's own pile
+            # gate reads it. Not any `partially_unplaced`: two parts sharing
+            # an origin by design set it on a placed reference -- a
+            # Tag-Connect over a SOT-666 on the far face (rp2350), the two
+            # halves of a CM5 module footprint -- and discarded the whole
+            # reference over them.
             _limit, _why = None, (
                 "it is not placed (" + '; '.join(_ref_state.reasons[:2])
                 + "): a limit read off it would bless a pile")
         _ref_ok = (_match >= DECAPS_FROM_MIN_MATCH
-                   and not (_ref_state.unplaced
-                            or _ref_state.partially_unplaced))
+                   and not _ref_state.pile)
+        if _ref_ok and _ref_state.stacked_suspect_refs:
+            # Read as placed, and SAID: the limit is the reference's own
+            # fixed point (`_decap_derivation`), so it is read off every
+            # part -- leaving these out would leave caps the reference
+            # holds out of the max the reference must then pass.
+            _census['reference_stacked_refs'] = list(
+                _ref_state.stacked_suspect_refs)
         if _limit is None:
             _withheld['decaps.max_distance_mm'] = (
                 f"the reference board {decaps_from}: {_why}")

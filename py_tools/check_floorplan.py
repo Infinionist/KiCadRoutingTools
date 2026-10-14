@@ -769,6 +769,12 @@ def main(argv=None):
             if cen.get('decap_ungraded_promoted'):
                 print(f"  decaps: decap_ungraded promoted to error -- "
                       f"{cen['decap_ungraded_promoted']}")
+            # #1178: a placed reference with parts sharing an origin is read
+            # as placed (a pile is refused), and the shared ones are named.
+            if cen.get('reference_stacked_refs'):
+                print(f"  decaps: the reference was read as placed although "
+                      f"{', '.join(cen['reference_stacked_refs'])} share an "
+                      f"origin -- it is not a pile (#1109's `pile`)")
             # The two causes are printed SEPARATELY (#792). One number
             # used to carry both, and the doc explained it with a third
             # cause -- a predicate mismatch -- that measurement says does

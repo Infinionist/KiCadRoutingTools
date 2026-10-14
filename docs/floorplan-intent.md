@@ -1503,7 +1503,13 @@ nothing to read. Same derivation and withholding; the basis is
 the two boards share, under the same reference and footprint, under 90% of
 EITHER board's pad-bearing parts (another design: a small board of generic
 passives shares most of ITS parts with almost any large one), and when the
-reference is itself unplaced.
+reference is itself a pile -- `PlacementState.pile`, the one pile test
+(#1109). A placed reference with a few parts sharing an origin is NOT a pile
+(#1178): rp2350_fpga_eensy_prePlane's J2, a Tag-Connect on B.Cu, sits over
+U3 on F.Cu by design, and a CM5 module footprint's two halves share one
+origin. It is read as placed, and the shared ones are named in
+`context.decap_census.reference_stacked_refs`. The limit is still read off
+every part, because the reference must grade clean against its own number.
 StickHub's human board gives 2.18 mm from 38 tethers; run 36, with no limit
 armed, left the hub's decaps 2.1-9.8 mm from their pins. Since #1102 it also
 derives the PIN limit, `max_pin_distance_mm` (see "The emitter derives no pin
@@ -1529,10 +1535,11 @@ tether limit.
 `--declare-decaps` (strict) and `--auto-declare-decaps`. The default,
 `check_floorplan.DECLARE_DECAPS_DEFAULT`, is `off`.
 
-- **`auto`** derives only off a PLACED board. It keys on `assess_placement`'s
-  `unplaced` and `partially_unplaced`. Run 29's pile read
+- **`auto`** derives only off a PLACED board. It keys on
+  `PlacementState.pile` (#1178). Run 29's pile read
   `partially_unplaced` with a duplicate fraction of 0.833, and strict wrote a
-  limit of 0.0 there. When auto withholds, it records why in
+  limit of 0.0 there; `pile`'s heap arm catches it, and does not discard a
+  placed board over one pair of parts that share an origin by design. When auto withholds, it records why in
   `context.decap_census.auto_withheld`, never in `budget_withheld`, so an
   auto emit moves no exit code.
 - **The number is labelled** `observed_baseline` in `context.basis`, alongside
