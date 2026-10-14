@@ -317,8 +317,9 @@ name. Neither CHOOSES a reversed angle. What still leaves one is named and
 graded: an author's declaration -- a single `rotation`, or a
 `rotation_candidates` set none of whose members faces the edge (each kept,
 with a note; `--repair` seats a declared ladder as declared) -- and stage
-1's fall-back to the input angle when no facing angle seats even pad-clear.
-The facing grade reports every one.
+1's fall-back to the input angle when no facing angle seats even pad-clear,
+including the later stages' seat of a part that attempt leaves to them
+(coldfire's pile, UARTCAN203). The facing grade reports every one.
 
 ### The eviction rung (`--evict-depth`, #630, #699)
 

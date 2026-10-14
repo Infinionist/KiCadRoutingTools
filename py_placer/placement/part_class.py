@@ -61,9 +61,12 @@ MOUNT_FP = ('fiducial', 'testpoint')
 def is_mount_hole_name(name) -> bool:
     """True when a footprint's ITEM name says it is a mounting hole (#1176).
 
-    The item name STARTS with `MountingHole`: every mounting hole on the
-    tracked corpus and the fa10 boards is named that way, in any library
-    (`MountingHole:`, `Mounting_Holes:`, `Glasgow:`, a house library). A
+    The item name STARTS with `MountingHole`, in any library
+    (`MountingHole:`, `Mounting_Holes:`, `Glasgow:`, a house library). Three
+    holes on the tracked corpus and the fa10 boards are named otherwise
+    (splitflap H6/H7 `JLCPCB:AssemblyToolingHole`, StickHub H1
+    `footprints:Plain_Hole_3mm`); they are NPTH-only and classify
+    `mount_hole` through the structural rule above, as before. A
     SUBSTRING test also matched KiCad's horizontal D-subs, which carry the
     hole offset in their name (`DSUB-9_Female_Horizontal_..._Housed_
     MountingHolesOffset9.12mm`): five tracked DSUBs read `mount_hole`, so
