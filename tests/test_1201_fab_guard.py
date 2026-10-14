@@ -397,6 +397,8 @@ class ConnectorGeometryReadsTheSameBody(unittest.TestCase):
         amount, basis, row = self._row(text)
         self.assertEqual(basis, 'legacy_occupancy@margin=0.25')
         self.assertIn('marking', row['body_unmeasured_reason'])
+        # the layer it looked at and refused, not "no layer"
+        self.assertEqual(row['body_layer'], 'F.Fab')
 
 
 class TheIssueBoard(unittest.TestCase):

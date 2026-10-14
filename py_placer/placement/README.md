@@ -265,7 +265,11 @@ Its final gate also names rule-area band pads (#1044): `keepout_copper_seeded`
 is `[ref, mm]` for each part the seed MOVED whose pad copper went deeper into a
 `(tracks not_allowed)` band than at its input pose, and exits 4 on it;
 `oob_keepout_copper_count` is the written board's total, inherited ones
-included (reported, not charged). `edge_angle_chosen` names every edge
+included (reported, not charged). `pad_copper_off_board_seeded` (#1241) is
+`[ref, mm]` for each seated part whose pad copper the written seed leaves past
+the outline (check_assembly's gating measure), and exits 4 on it; a part
+locked or `must_lock`-ed in the input and left at its input pose is the
+board's own, named and not charged. `edge_angle_chosen` names every edge
 connector stage 1 turned to an angle IT chose or narrowed (#1172) --
 `{ref: {from, to, why, candidates}}`: an undeclared one, or a declared
 `rotation_candidates` set narrowed to its facing members. A turn to an

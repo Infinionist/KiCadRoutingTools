@@ -21,7 +21,8 @@ other unusable Fab drawing does NOT fall back to SilkS -- drawn with `fp_line`, 
 `fp_rect` and straight-sided `fp_poly`. Internal markings drawn with those
 primitives are allowed, but every side of the convex hull must actually be
 drawn. ANY other primitive on that layer makes the whole body UNMEASURED --
-`fp_arc`, `fp_circle` (a pin-1 dot included), `fp_curve`, a rounded
+`fp_arc`, `fp_circle` (a pin-1 dot included, unless the guard above reads
+the SilkS instead), `fp_curve`, a rounded
 `fp_rect`, an `fp_poly` carrying an arc -- as do open outlines, concave
 envelopes and a part that draws no body. Text, pads and courtyards are never
 body geometry. Vertices are transformed before taking extrema, so any

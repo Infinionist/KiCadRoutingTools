@@ -666,10 +666,10 @@ class TheReseatPutsThePadsBackOnTheBoard(unittest.TestCase):
     claim, named. Before, the open side hid the pads and the seed exited 0
     with copper 1.2 mm off the board."""
 
-    def test_the_pads_end_on_the_board_and_the_band_minimum_stands(self):
+    def _seed(self, j1=_TALL_J1):
         from run_utils import evidence
         with tempfile.TemporaryDirectory() as td:
-            path = _synthetic(td, [_TALL_J1, _box('R1', 25, 25, 1, 0.6)])
+            path = _synthetic(td, [j1, _box('R1', 25, 25, 1, 0.6)])
             ip = os.path.join(td, 'i.json')
             with open(ip, 'w', encoding='utf-8') as fh:
                 json.dump({'schema': floorplan.SCHEMA_VERSION,
@@ -687,10 +687,13 @@ class TheReseatPutsThePadsBackOnTheBoard(unittest.TestCase):
                        path, out, '--intent', ip, '--force'],
                       refuse='does NOT satisfy its intent', code=4)
             evidence(out, 'written seed')
-        summary = [json.loads(ln.split(':', 1)[1])
+        return r, [json.loads(ln.split(':', 1)[1])
                    for ln in r.stdout.splitlines()
                    if ln.startswith('JSON_SUMMARY:')
                    and '"pad_edge_after"' in ln][-1]
+
+    def test_the_pads_end_on_the_board_and_the_band_minimum_stands(self):
+        r, summary = self._seed()
         # Stage 1 did keep pad copper past the edge, and its note says the
         # copper is OFF the board, not inside the floor (#1241).
         self.assertIn("leaves pad copper past the board outline -- J1.1 "
@@ -709,6 +712,18 @@ class TheReseatPutsThePadsBackOnTheBoard(unittest.TestCase):
         self.assertTrue(errs)
         self.assertTrue(all('under the declared minimum 1.50mm' in ln
                             for ln in errs), errs)
+
+    def test_the_writers_rounding_is_not_a_polish_move(self):
+        # #1240's line, follow-up verifier: an input angle the writer rounds
+        # (180.1234567 is written 180.123) read as a polish move when the
+        # seeded pose was the unrounded float.
+        r, _summary = self._seed(_TALL_J1.replace(
+            '(at 20 20)\n', '(at 20 20 180.1234567)\n', 1))
+        self.assertIn('the seed placed J1 outside a declared '
+                      'zone_containment and the polish did not move it',
+                      r.stdout)
+        self.assertNotIn('polish walked J1', r.stdout)
+
 
 if __name__ == '__main__':
     unittest.main()

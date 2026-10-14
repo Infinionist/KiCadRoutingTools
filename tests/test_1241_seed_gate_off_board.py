@@ -15,6 +15,7 @@ What this does NOT change (still open in #1241): stage 1 keeps the seat, and
 
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -31,16 +32,15 @@ from test_1174_emit_round_trip import _TALL_J1, _box, _synthetic  # noqa: E402
 PY = sys.executable
 
 
-def _seed(td, band, code, refuse=None, extra=()):
-    """Seed the body-less J1 with a north claim of `band` and no zone."""
-    path = _synthetic(td, [_TALL_J1, _box('R1', 25, 25, 1, 0.6)] + list(extra))
-    ip = os.path.join(td, 'i.json')
+def _run(path, doc, code, refuse=None, out_name='s.kicad_pcb'):
+    """place_seed `path` under the intent `doc`; (run, JSON_SUMMARY)."""
+    td = os.path.dirname(path)
+    ip = os.path.join(td, out_name + '.json')
     with open(ip, 'w', encoding='utf-8') as fh:
-        json.dump({'schema': floorplan.SCHEMA_VERSION, 'kind': floorplan.KIND,
-                   'units': 'mm', 'blocks': [],
-                   'edge_connectors': [{'ref': 'J1', 'edge': 'north',
-                                        'overhang_mm': band}]}, fh)
-    out = os.path.join(td, 's.kicad_pcb')
+        json.dump(dict({'schema': floorplan.SCHEMA_VERSION,
+                        'kind': floorplan.KIND, 'units': 'mm',
+                        'blocks': [], 'edge_connectors': []}, **doc), fh)
+    out = os.path.join(td, out_name)
     r = check([PY, '-X', 'utf8',
                os.path.join(ROOT, 'py_placer', 'place_seed.py'),
                path, out, '--intent', ip, '--force'],
@@ -51,6 +51,31 @@ def _seed(td, band, code, refuse=None, extra=()):
                if ln.startswith('JSON_SUMMARY:')
                and '"pad_edge_after"' in ln][-1]
     return r, summary
+
+
+def _claim(band):
+    return {'edge_connectors': [{'ref': 'J1', 'edge': 'north',
+                                 'overhang_mm': band}]}
+
+
+def _seed(td, band, code, refuse=None, extra=()):
+    """Seed the body-less J1 with a north claim of `band` and no zone."""
+    path = _synthetic(td, [_TALL_J1, _box('R1', 25, 25, 1, 0.6)] + list(extra))
+    return _run(path, _claim(band), code, refuse)
+
+
+def _part(ref, x, y, pads, hw=1.0, hh=0.6, locked=False):
+    """A part with a +-hw x +-hh courtyard and `pads` =
+    [(number, x, y, size_x, size_y, net)] in its own frame."""
+    lk = '(locked yes) ' if locked else ''
+    return (f'  (footprint "t:P" {lk}(layer "F.Cu") (at {x} {y})\n'
+            f'    (property "Reference" "{ref}" (at 0 0) (layer "F.SilkS"))\n'
+            f'    (fp_rect (start {-hw} {-hh}) (end {hw} {hh}) (stroke'
+            f' (width 0.05) (type default)) (layer "F.CrtYd"))\n'
+            + ''.join(f'    (pad "{n}" smd rect (at {px} {py}) (size {sx} {sy})'
+                      f' (layers "F.Cu") (net {net} "N{net}"))\n'
+                      for n, px, py, sx, sy, net in pads)
+            + '  )\n')
 
 
 class TheGateReason(unittest.TestCase):
@@ -104,6 +129,108 @@ class TheIssueBoard(unittest.TestCase):
         self.assertEqual(summary['pad_copper_off_board_seeded'], [])
         self.assertIn("the board's own, reported not charged: R2 (0.600mm "
                       "past)", r.stdout)
+
+
+class TheWrittenPoseDecides(unittest.TestCase):
+    """The verifier's escapes: "moved" read off stage 1's poses missed copper
+    the polish pushed off the board, and a seat the seed KEPT."""
+
+    def test_copper_the_polish_pushes_off_the_board_is_charged(self):
+        # R2's pad 1 sits 4 mm east of its courtyard, net-tied to a LOCKED R3
+        # at the east edge. Stage 1 leaves R2's copper on the board; the
+        # polish pulls R2 toward R3 and its pad ends past the outline.
+        parts = [
+            _part(f'P{i}', 10, 30, [(1, -0.5, 0, 0.5, 0.6, 1),
+                                    (2, 0.5, 0, 0.5, 0.6, 2)])
+            for i in (1, 2, 3)] + [
+            _part('R2', 33, 20, [(1, 4.0, 0, 3.0, 0.6, 3),
+                                 (2, -0.5, 0, 0.5, 0.6, 3)]),
+            _part('R3', 38.8, 23, [(1, 0.5, 0, 0.2, 0.6, 3)], hw=0.6,
+                  hh=0.6, locked=True),
+            _part('R4', 30, 10, [(1, 0, 0, 0.5, 0.6, 4)])]
+        with tempfile.TemporaryDirectory() as td:
+            path = _synthetic(td, parts)
+            r, summary = _run(path, {'blocks': [{'name': 'r2rot',
+                                                 'refs': ['R2'],
+                                                 'rotation': 0}]},
+                              code=4, refuse='pad copper past the board '
+                                             'outline on R2')
+        self.assertEqual([ref for ref, _mm in
+                          summary['pad_copper_off_board_seeded']], ['R2'])
+        self.assertNotIn("the board's own", r.stdout)
+
+    def test_a_seat_the_seed_kept_is_charged(self):
+        # Re-seed the issue's own written seed: J1 now comes in AT the seat
+        # stage 1 keeps, unlocked, so it does not "move" -- and is still the
+        # seed's choice, not the board's.
+        with tempfile.TemporaryDirectory() as td:
+            path = _synthetic(td, [_TALL_J1, _box('R1', 25, 25, 1, 0.6)])
+            band = {'min': 1.5, 'max': 2.0}
+            _run(path, _claim(band), code=4,
+                 refuse='pad copper past the board outline on J1')
+            again = os.path.join(td, 'again.kicad_pcb')
+            shutil.copyfile(os.path.join(td, 's.kicad_pcb'), again)
+            r, summary = _run(again, _claim(band), code=4,
+                              refuse='pad copper past the board outline on '
+                                     'J1', out_name='s2.kicad_pcb')
+        self.assertEqual([ref for ref, _mm in
+                          summary['pad_copper_off_board_seeded']], ['J1'])
+
+    def test_an_unseated_part_is_charged_as_unseated_only(self):
+        # U9 fits nowhere on the board, so it is STAGED below it (#1151):
+        # its copper is off the board, and the gate names it as UNSEATED,
+        # not again as off-board copper, and not as the board's own.
+        u9 = _part('U9', 20, 20, [(1, 0, 0, 0.6, 0.6, 2)], hw=25, hh=25)
+        with tempfile.TemporaryDirectory() as td:
+            r, summary = _seed(td, {'min': 0.0, 'max': 2.0}, code=4,
+                               refuse='UNSEATED', extra=[u9])
+        self.assertIn('U9', summary['unseated_refs'])
+        self.assertEqual(summary['pad_copper_off_board_seeded'], [])
+        self.assertNotIn("the board's own", r.stdout)
+
+
+class PoseMoved(unittest.TestCase):
+    """`place_seed.pose_moved`, which both the gate and the re-seat line
+    read (#1240, #1241)."""
+
+    def test_a_rotation_alone_is_a_move(self):
+        self.assertTrue(place_seed.pose_moved((1, 2, 0), (1, 2, 90)))
+
+    def test_rotations_compare_on_the_circle(self):
+        self.assertFalse(place_seed.pose_moved((1, 2, -90), (1, 2, 270)))
+        self.assertFalse(place_seed.pose_moved((1, 2, 359.9999999), (1, 2, 0)))
+
+    def test_the_writers_rounding_is_not_a_move(self):
+        # 180.1234567 is written as 180.123 (6 significant digits).
+        self.assertFalse(place_seed.pose_moved((1, 2, 180.1234567),
+                                               (1, 2, 180.123)))
+        self.assertTrue(place_seed.pose_moved((1, 2, 0), (1.01, 2, 0)))
+        self.assertTrue(place_seed.pose_moved((1, 2, 0), (1, 2.01, 0)))
+
+
+class TheFloorNote(unittest.TestCase):
+    """#1241 (d): the note says where the copper is."""
+
+    def _note(self, gap):
+        from placement.seeder import _floor_note
+        return _floor_note('NOTE: edge connector ', 'J1', {
+            'edge': 'north', 'required_mm': 0.55, 'why': 'band_min',
+            'shortfall_mm': 0.55 - gap, 'overhang_after_mm': 0.0,
+            'band_min_mm': 1.5,
+            'pads': [{'pad_ref': 'J1.1', 'gap_mm': gap, 'side': 'north'}]})
+
+    def test_copper_off_the_board_says_so(self):
+        note = self._note(-1.2)
+        self.assertIn('leaves pad copper past the board outline -- J1.1 '
+                      'reaches 1.200mm past the north edge (1.750mm short of '
+                      'the 0.55mm board-edge floor)', note)
+
+    def test_copper_inside_the_floor_says_so(self):
+        note = self._note(0.2)
+        self.assertIn('leaves pad copper inside the 0.55mm board-edge floor '
+                      '-- J1.1 is 0.200mm from the north edge (0.350mm short '
+                      'of the 0.55mm board-edge floor)', note)
+        self.assertNotIn('past the board outline', note)
 
 
 if __name__ == '__main__':
