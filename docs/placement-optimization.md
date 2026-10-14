@@ -699,6 +699,16 @@ own failure diagnostics* to decide what to move. Each round:
    nudge radius only. The swap cap stays at its base value, so a widened
    round cannot become a long-range swap.
 
+   That comparison sees neither `--intent` (which gates the moves only) nor
+   DRC or assembly. `--accept-cmd CMD` replaces it with a judge run as
+   `CMD <placed> <routed> <route.json>` that prints `SCORE=<float>`, lower
+   is better; the repo ships one (#1194), `py_tools/accept_blocking.py`,
+   which scores the routed board with `board_score` and the intent:
+   unrouted + broken first, then the rest of `blocking`, then vias —
+   `--accept-cmd "python3 py_tools/accept_blocking.py --intent INTENT.json"`.
+   It refuses (a rejected round) rather than score blind to an intent it
+   could not grade.
+
 Result on kit-dev-coldfire from the hand placement (recorded before #458;
 `failures` was then the pre-reconciliation count and `router iterations` the
 first pass only, so both columns would read slightly differently today: fewer

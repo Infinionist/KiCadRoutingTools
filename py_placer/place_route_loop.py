@@ -757,7 +757,13 @@ def main():
                              "max-length rule, a via ban, a required width or a "
                              "decap-proximity limit -- on a spec'd board those are what "
                              "decide whether a placement got better. A non-zero exit or "
-                             "a missing SCORE line REJECTS the round.")
+                             "a missing SCORE line REJECTS the round. --intent never "
+                             "reaches the built-in comparison (it gates the moves "
+                             "only); the repo's judge, py_tools/accept_blocking.py, "
+                             "scores the routed board with board_score, unrouted+"
+                             "broken first, then the rest of blocking, then vias: "
+                             "--accept-cmd \"python3 py_tools/accept_blocking.py "
+                             "--intent INTENT.json\" (#1194)")
     parser.add_argument("--ratsnest-screen", type=float, default=0.0,
                         help="Skip the routing run when a candidate placement's "
                              "airwire crossings or HPWL regress by more than "

@@ -174,7 +174,11 @@ python py_placer/place_pose.py BOARD OUT set U1 129.9 98.3 rotate CON2 180 lock 
 
 Several verbs in one call describe ONE arrangement: every op is resolved
 against the INPUT board and written in a single pass, so no op sees another's
-effect. `set` takes exact coordinates positionally; `--near X Y` is the same
+effect, and the arrangement is graded at the exact points given -- so a snap
+needs a call with ONE pose op: `--near` beside a second pose op is refused at
+exit 2 before anything is graded (#1194; issue one `set REF --near X Y` per
+call, lock/unlock may ride along), and `--snap` there is skipped and says so.
+`set` takes exact coordinates positionally; `--near X Y` is the same
 point read as approximate and implies `--snap`, which takes the best legal
 pose within `--radius` (ranked by `pose_score`, then RE-GRADED here — the
 ranker's legality is an AABB gate and this verb's verdict is exact geometry,
