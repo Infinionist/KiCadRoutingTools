@@ -36,9 +36,9 @@ from qfn_fanout import generate_qfn_fanout
 
 from fixture_boards import ensure
 
-# Built on demand from the tracked interf_u_unrouted board: this one is produced
-# by test_interf_u.py, which run_all.py runs LATER, and it is gitignored, so it
-# is absent on a clean tree.
+# Built on demand from the tracked interf_u_unrouted board: it is gitignored, so
+# it is absent on a clean tree, and no test leaves it behind any more
+# (test_interf_u.py writes its chain to a temp dir).
 BGA_BOARD = ensure("interf_u_plane.kicad_pcb")                                   # 2-layer, PGA120 grid
 QFN_BOARD = os.path.join(ROOT, "kicad_files", "qfn_diffpair_escape.kicad_pcb")    # 2-layer QFN
 BGA_4L = os.path.join(ROOT, "kicad_files", "ulx3s.kicad_pcb")                     # 4-layer BGA
