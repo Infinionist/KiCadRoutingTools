@@ -1750,8 +1750,10 @@ re-seating 85/92 while leaving its zone targets unmoved):
   not a fix). `unresolved` sets no exit code of its own; exit 4 stays
   `unrepairable_failed_refs`' (a free violator no seat could place) and the
   final grade's. A locked violator (`(locked yes)`, `--lock`, a fixed pose)
-  is `unrepairable_pinned_refs`: reported, never a gate failure, the
-  pinned-part contract (#1193). The
+  is `unrepairable_pinned_refs`: reported, not a gate failure, the
+  pinned-part contract (#1193) -- except pad copper past the outline, where a
+  lock is no waiver, as in the seed gate (#1241): such a ref is also in
+  `unrepairable_pinned_off_board_refs` and exits 4. The
   off-board census grades each pad's copper and each hole ALONE
   (`legality.pad_copper_outside_amount`, the `oob_pad_copper_refs`
   measure), never the part's pad union, whose corner can sit in a notch no
