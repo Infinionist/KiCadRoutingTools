@@ -36,6 +36,15 @@ def short(name):
     return (name or '').split('/')[-1]
 
 
+def palette(n):
+    """n colours, each its own: PALETTE's, and past its ten hues spread round the wheel (the golden angle apart)"""
+    import colorsys
+    if n <= len(PALETTE):
+        return PALETTE[:n]
+    return [tuple(int(255 * c) for c in colorsys.hsv_to_rgb((i * 0.618034) % 1.0, 0.75, 0.85 - 0.2 * (i % 2)))
+            for i in range(n)]
+
+
 def font(size):
     from PIL import ImageFont
     for f in FONTS:
@@ -96,7 +105,7 @@ def render(board, out, quarter=1, buses=(), all_nets=False, chips='', chip_label
     # the planes, each (net, layer) its colour at ALPHA; each zone's OUTLINE thin black (not the fill's edge: KiCad
     # fractures a fill's holes open with slits out to its edge)
     order = sorted(fills, key=lambda k: (k[1], k[0]))
-    colour = {k: PALETTE[i % len(PALETTE)] for i, k in enumerate(order)}
+    colour = dict(zip(order, palette(len(order))))
     for k in order:
         lay = Image.new('RGBA', (W, H), (0, 0, 0, 0))
         dl = ImageDraw.Draw(lay)
