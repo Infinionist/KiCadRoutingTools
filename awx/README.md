@@ -484,16 +484,16 @@ to 65 before the joint ends and the pair search in Rust), and hands on its
 best round: the rounds differ -- K47's second and third left 6 and 10 nets
 open.
 
-`zynq_ad9364` from GitHub, its planes poured as the stress run poured them,
+`zynq_ad9364` (`boards/`: its source, license and changes in
+`boards/NOTICE.md`), its planes poured as the stress run poured them,
 and the whole bus at the stress run's sizes -- its fanouts' 0.12 mm track at
 0.09 mm, its routes' 0.15 mm track and 0.45/0.3 mm vias:
 
 ```bash
 cd awx
 mkdir -p tmp/zynq/src/boards_set1
-U=https://raw.githubusercontent.com/kangyuzhe666/ZYNQ7010-7020_AD9363/main/kicad/ZYNQ7020_AD9364_V2
-curl -L -o tmp/zynq/src/boards_set1/zynq_ad9364.kicad_pcb $U.kicad_pcb
-curl -L -o tmp/zynq/src/boards_set1/zynq_ad9364.kicad_pro $U.kicad_pro
+gunzip -c boards/zynq_ad9364.kicad_pcb.gz > tmp/zynq/src/boards_set1/zynq_ad9364.kicad_pcb
+cp boards/zynq_ad9364.kicad_pro tmp/zynq/src/boards_set1/
 STRESS_DIR=tmp/zynq/src /Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 \
     ../tests/stress/strip_routing.py zynq_ad9364
 python3 ../py_router/route_planes.py tmp/zynq/src/boards_unrouted_set1/zynq_ad9364.kicad_pcb tmp/zynq/planes.kicad_pcb \
@@ -618,14 +618,14 @@ The second bench is built from a public board: `ZYNQ7020_AD9364_V2` from
 [kangyuzhe666/ZYNQ7010-7020_AD9363](https://github.com/kangyuzhe666/ZYNQ7010-7020_AD9363),
 the Zynq `U1` (CLG400) to its DDR3 `U2`. Its routing is stripped, the bench is
 made two-layer with `U1` fanned out, and the result is turned into the flow
-frame (one quarter turn), where `whole_route.py` runs it:
+frame (one quarter turn), where `whole_route.py` runs it. The board is in
+`boards/` (`boards/NOTICE.md`: its source, license and changes):
 
 ```bash
 cd awx
 mkdir -p tmp/zynq/src/boards_set1
-U=https://raw.githubusercontent.com/kangyuzhe666/ZYNQ7010-7020_AD9363/main/kicad/ZYNQ7020_AD9364_V2
-curl -L -o tmp/zynq/src/boards_set1/zynq_ad9364.kicad_pcb $U.kicad_pcb
-curl -L -o tmp/zynq/src/boards_set1/zynq_ad9364.kicad_pro $U.kicad_pro
+gunzip -c boards/zynq_ad9364.kicad_pcb.gz > tmp/zynq/src/boards_set1/zynq_ad9364.kicad_pcb
+cp boards/zynq_ad9364.kicad_pro tmp/zynq/src/boards_set1/
 # strip the routing with KiCad's bundled python (macOS path shown) -> tmp/zynq/src/boards_unrouted_set1/
 STRESS_DIR=tmp/zynq/src /Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3 \
     ../tests/stress/strip_routing.py zynq_ad9364
