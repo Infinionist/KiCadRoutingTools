@@ -43,8 +43,13 @@ confidently WRONG on three receptacles whose PAD layout, not their housing,
 sets the offset -- CUI SJ1-3533NG (x2, -x at 0.90 mm; its twin SJ1-3535NG,
 same housing, reads -y) and Neutrik NMJ6HCD3 (-x at 1.36 mm; the opening is
 +x) -- while 60+ correct micro-USB / USB-C faces sit in the same 0.6-1.6 mm
-range. Above 2 mm no wrong face is known (227 checked). The marker itself
-would be stronger evidence still; reading it is a follow-up.
+range. Above 2 mm no wrong face is known (227 checked). A weak face that is
+itself wrong is NOT caught: when the seeder's stage 1 chooses an undeclared
+connector's angle (on a pile, whose input angle says nothing), it tries the
+angles that point even a weak face at the edge first, so such a jack can be
+seated with its opening into the board, and the facing conjunct then reads
+that pose as a pass. The "PCB Edge" marker those footprints draw is stronger
+evidence than the offset; reading it is #1245.
 
 Known limit: a card-edge PLUG in a file with no `attrs` (interf_u's ISA
 BUS1: 62 netted SMD fingers, no model) is not recognised as one, and reads

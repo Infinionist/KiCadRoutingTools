@@ -1217,15 +1217,21 @@ parts worth knowing from here:
   rule's facing conjunct fails a receptacle (declared, inferred by
   `part_class`, or any `edge_mount` / `through_edge` entry) whose body leaves
   its pad row away from its declared edge -- ERROR on a strong face, WARN on
-  a weak one -- and `--emit-intent` never declares the edge of a part seated
-  reversed.
+  a weak one -- and `--emit-intent` never declares an edge a STRONG face
+  points away from. A weak face that is itself wrong (a few stock jacks,
+  `mating.py`) is not caught: a part seated by it reads pass (#1245).
 - **An edge member's zone is open on its declared edge (#1174)** when that
   zone side lies on the outline and the claim bounds its overhang
   (`overhang_mm.max`): the edge rule grades how far past the edge it may go,
-  and the zone no longer ejects it for going there. Every zone reader -- the
-  grade, the quench term, feasibility, the plan check, the seeder's notes --
-  opens the same side. Emitted zones are rounded inside the emitted
-  envelope, so an emitted intent grades clean on its own board.
+  and the zone no longer ejects it for going there. Its pads stay graded
+  there, at zero. The grade, the quench term, feasibility, the plan checks
+  and the seeder's lock note open the same side; `seeder.zone_gate` (the
+  re-seat and `--repair`) does not yet (#1240). Emitted zones are clamped
+  inside the envelope as written, so an emitted intent's zones raise no
+  `intent_zone_outside_envelope` or `zone_containment` error on the board
+  it came from. That is an error-free grade, not a complete one: a channel
+  the grade abstains on (an `overlap_area` budget it cannot measure) still
+  exits `check_floorplan` 4 as NOT FULLY GRADED.
 - **`schema` is the format number; `min_reader` is the field vocabulary.** An
   intent sets `min_reader` when a claim must not be silently ignored, and a
   build whose `READER_VERSION` is lower refuses the file instead of grading it
@@ -1551,13 +1557,20 @@ A face is STRONG at `FACE_STRONG_OFFSET_MM` (2 mm): only a strong face fails
 a declared edge at ERROR. The tiering is measured, not cautious -- KiCad's
 stock library has three receptacles whose PAD layout sets a confidently
 wrong face between 0.9 and 1.4 mm, among 60+ correct USB faces in the same
-range, and no wrong face is known above 2 mm.
+range, and no wrong face is known above 2 mm. A wrong WEAK face is not
+caught: stage 1 also tries the angles that point a weak face at the edge
+first when it chooses an undeclared connector's angle, so such a jack can
+be seated opening into the board, and the facing conjunct then reads pass.
+Reading the "PCB Edge" marker those footprints draw is #1245.
 
 One predicate, every consumer: `floorplan.edge_facing` is what
 `rule_edge_connector`'s facing conjunct grades, what `emit_intent` withholds
 a reversed edge by, and the function object the seeder seats by, so the
-generator cannot seat a connector the grader then calls reversed.
-`board_context`'s "Mating face" reads the same primitive. B-side parts need
+seeder's angle choice and the grade read one answer for which way a part
+faces. A reversed seat is still possible -- an author's declared angle is
+kept, stage 1 falls back to the input angle when no facing angle seats, and
+the wrong weak face above misleads both alike -- and the grade reports the
+first two. `board_context`'s "Mating face" reads the same primitive. B-side parts need
 no extra mirror: the board file stores their local coordinates mirrored
 already. Census: `tests/measure_1155_mating_census.py` -- every decisive
 receptacle on the tracked and fa10 designer boards faces the edge it sits on.

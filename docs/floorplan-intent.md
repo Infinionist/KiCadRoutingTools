@@ -502,6 +502,11 @@ points west, not out of the east edge
   fails at the rule's severity; a weaker one at `warn`. KiCad's stock
   library has three receptacles whose pad layout sets a confidently wrong
   face between 0.9 and 1.4 mm, among 60+ correct USB faces in the same range.
+  Such a wrong weak face is not caught: the seeder, choosing an undeclared
+  connector's angle on a pile, tries the angles that point even a weak face
+  at the edge first, so the jack can be seated opening into the board, and
+  this conjunct then reads it as a pass. Reading the footprint's "PCB Edge"
+  marker instead is #1245.
 - **It abstains** on a symmetric part, votes that disagree, a board-copper
   plug, a `Vertical` footprint name and a pose near a diagonal; the
   evidence row says so (`facing.disposition: abstained`, with the reason).
@@ -892,7 +897,7 @@ status from this list:
 | rule | fires when | measured with |
 |---|---|---|
 | `envelope` | the declared envelope is not the board's outline | `board_bounds` |
-| `zone_containment` | a member's courtyard leaves its block's zone. A zone side is OPEN for an edge-claim member when that side lies on the outline (within 0.01 mm) and the member's claim names that edge with an `overhang_mm.max` ([#1174](https://github.com/drandyhaas/KiCadRoutingTools/issues/1174)): the edge rule bounds how far past the edge it may go, so the zone does not eject it for going there. Its PADS stay graded there, against the board's own side: pad copper past it is the error (`measured.pads_graded`), since a soldered pad cannot overhang | `GradedPart.rect`. **Enforced, not only graded, since [#702](https://github.com/drandyhaas/KiCadRoutingTools/issues/702)** — the quench refuses such a MOVE, through the same `zone_escape` this rule calls, with the same open sides (`zone_open_sides`), as do the feasibility check, the plan check and the seeder's notes |
+| `zone_containment` | a member's courtyard leaves its block's zone. A zone side is OPEN for an edge-claim member when that side lies on the outline (within 0.01 mm) and the member's claim names that edge with an `overhang_mm.max` ([#1174](https://github.com/drandyhaas/KiCadRoutingTools/issues/1174)): the edge rule bounds how far past the edge it may go, so the zone does not eject it for going there. Its PADS stay graded there, against the board's own side and at zero whatever the zone's tolerance: pad copper past it is the error (`measured.pads_graded`), since a soldered pad cannot overhang; castellated pads are left out, as the edge rule leaves them out | `GradedPart.rect`. **Enforced, not only graded, since [#702](https://github.com/drandyhaas/KiCadRoutingTools/issues/702)** — the quench refuses such a MOVE, through the same `zone_escape` this rule calls, with the same open sides (`zone_open_sides`), as do the feasibility check, the plan check and the seeder's notes |
 | `zone_side` | a member is on the other face | `legality.footprint_side` |
 | `assembly_side` | a part sits on a face the board's declared assembly policy does not populate. **warn** by default (#837): nothing in the engine can move a part between faces, so an error would be a red mark no run could clear | `legality.assembly_census`, body face — the pad-bearing population, so a zero-pad graphic on the back is not a part (and since #1143 a part whose only pads are paste/mask apertures is zero-pad too) |
 | `zone_exclusive` | a non-member intrudes on a reserved zone | `rect_overlap_area`, **courtyard only** — a through-hole stranger's leads may cross a reserved zone, unlike a keep-out's. **Enforced since [#702](https://github.com/drandyhaas/KiCadRoutingTools/issues/702)**, same way — and since [#797](https://github.com/drandyhaas/KiCadRoutingTools/issues/797) the seat search refuses such a pose too, with the verdict `zone_exclusive_blocks` |
@@ -1474,9 +1479,11 @@ Parts already overhanging the outline are recorded as `edge_connectors` by
 observation, which is what stops `oob_count` reporting a card edge or USB shell
 as a defect forever.
 
-An edge part whose STRONG mating face points away from the edge it sits
-nearest is seated reversed, and the emitter does not declare that edge: the
-entry keeps its ref and band, drops `edge`, and its `note` says why (#1155).
+An edge part whose STRONG mating face points at another edge than the one it
+sits nearest -- the opposite edge (seated reversed) or one at right angles
+(opening along its edge) -- is not given that edge by the emitter: the entry
+keeps its ref and band, drops `edge`, is flagged `suspect`, and its `note`
+says which of the two it measured (#1155).
 Declaring it would bless the very pose the facing conjunct fails. On the 22
 tracked boards and the fa10 designer boards it never fires.
 

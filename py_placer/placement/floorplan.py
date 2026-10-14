@@ -3434,8 +3434,12 @@ def edge_facing(entry: Dict, fp, geom, rotation: Optional[float] = None
     weak face is wrong (`placement.mating`'s docstring).
 
     THE predicate: the rule calls it, and the seeder imports this function
-    rather than a copy of it, so the generator cannot seat a connector the
-    grader then calls reversed."""
+    rather than a copy of it, so the seeder's angle choice and the grade read
+    one answer for which way a part faces. That does not make a reversed
+    seat impossible: an author's declared angle is kept, stage 1 falls back
+    to a part's input angle when no facing angle seats, and a wrong WEAK face
+    (`placement.mating`, #1245) misleads both alike. The grade reports the
+    first two; the third reads as a pass."""
     from .mating import LocalFace, facing_edge, mating_face_local
     policy = edge_facing_policy(entry, fp)
     lf = (mating_face_local(fp, geom) if geom is not None
@@ -7664,6 +7668,9 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
     #     is failed from the first write -- the same contradiction row 4
     #     names for a file lock, raised before anything is seeded. A WARN
     #     unless the plan sets it: the author may mean the pose to win.
+    #     No #1174 open side here: only an edge claim opens one, and the
+    #     loader refuses a fixed pose on any `edge_connectors` ref
+    #     (`_fixed_pose_entries`), so no member graded here has one.
     _fx = {str(f['ref']): f for f in intent.fixed_poses}
     for z in intent.blocks:
         if z.rect is None:
