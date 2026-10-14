@@ -19,6 +19,17 @@ input deterministically, so the run is replayable. Measured on an 18-part
   mounting hole's position) must be DECLARED instead, in the design brief or
   the run's prompt. `--keep-locked` leaves locked parts where they are, still
   locked. That was run 31/32's input, which only reaches `partially_unplaced`.
+- **Every moved part's texts are reset to absolute 0** (#1163). KiCad stores
+  a text angle as an absolute board angle and humans keep labels upright, so
+  a text composed with the rotation change into the pile (as the writer does
+  for a real rotation) reads `T - R` and hands back the human rotation `R`.
+- **Board-level zones and rule areas stay where they are, and are
+  DISCLOSED** (#1163): a zone covering under a quarter of the board's
+  bounding box is usually drawn around part of the placement, so the summary
+  counts those and the moved parts with a pad inside one. Whether a pile
+  should keep, drop
+  or declare them is an open policy question; this script only reports.
+  (Zones a footprint owns move with it.)
 - **Padless artwork stays.** It has no nets, and nothing could bring it back.
 - **Refuses (exit 3) when a footprint draws the board outline** (#829):
   moving it would move the outline.
@@ -27,8 +38,9 @@ input deterministically, so the run is replayable. Measured on an 18-part
 
 The OUTPUT is verified, not the plan: every moved part's courtyard clears the
 outline, siblings (.kicad_pro/.kicad_prl/.kicad_dru) are carried, no copper,
-no new stack, and every unlocked part really is unlocked. Exit 0 when all of
-that holds, 1 when a check fails.
+no new stack, every unlocked part really is unlocked, and every moved part's
+every text reads absolute 0. Exit 0 when all of that holds, 1 when a check
+fails.
 """
 from __future__ import annotations
 
@@ -51,12 +63,73 @@ from kicad_parser import (parse_kicad_pcb, iter_footprint_blocks,  # noqa: E402
 from placement.placement_state import assess_placement          # noqa: E402
 from placement.utility import compute_footprint_bbox_local       # noqa: E402
 from placement.portfolio import copy_siblings                    # noqa: E402
-from placement.writer import write_placed_output                 # noqa: E402
+from placement.writer import (write_placed_output,              # noqa: E402
+                              text_node_angles)
 
 CLUSTER_FRAC = 0.10     # of the board diagonal; SPREAD_RATIO (s2) is 0.15
 GAP_MARGIN = 2.0        # mm of clear air beyond the tallest part's reach
 PILE_ROT = 0.0          # a pile carries no orientation information
+PILE_TEXT_ANGLE = 0.0   # ...and neither do its texts (#1163): absolute degrees
+LOCAL_ZONE_FRAC = 0.25  # a zone under this share of the bbox outlines a placement
 SIBLINGS = ('.kicad_pro', '.kicad_prl', '.kicad_dru')
+
+
+def text_angle_leaks(path, refs):
+    """({ref: angles} for each named block with a text NOT written at
+    absolute PILE_TEXT_ANGLE, texts checked, texts that passed) (#1163).
+
+    The token is checked as well as the value: KiCad reads an absent token as
+    0, but the writer adds one only to a text whose angle came out non-zero,
+    so whether a token is there would itself say something about the pose.
+    """
+    with open(path, encoding='utf-8', newline='') as fh:
+        text = fh.read()
+    bad, n, good = {}, 0, 0
+    for _s, _e, fp_text, _raw, key in iter_footprint_blocks(text):
+        if key not in refs:
+            continue
+        angles = text_node_angles(fp_text)
+        ok = [a is not None and a % 360 == PILE_TEXT_ANGLE for a in angles]
+        n += len(angles)
+        good += sum(ok)
+        if not all(ok):
+            bad[key] = angles
+    return bad, n, good
+
+
+def _shoelace(ring):
+    return abs(sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1)
+                   in zip(ring, ring[1:] + ring[:1]))) / 2.0
+
+
+def _inside(x, y, ring):
+    hit = False
+    for (x0, y0), (x1, y1) in zip(ring, ring[1:] + ring[:1]):
+        if (y0 > y) != (y1 > y) and x < x0 + (y - y0) * (x1 - x0) / (y1 - y0):
+            hit = not hit
+    return hit
+
+
+def kept_zones(pcb, movable, bounds):
+    """(board-level zones/rule areas kept, the LOCAL ones, moved refs with a
+    pad inside a local one) -- the disclosure #1163 asks for, measured on the
+    SOURCE poses. A zone a footprint owns moves with it and is not counted."""
+    min_x, min_y, max_x, max_y = bounds
+    bbox = (max_x - min_x) * (max_y - min_y)
+    rings = {}
+    for z in pcb.zones or ():
+        if not z.in_footprint and z.polygon:
+            rings.setdefault(z.uuid or tuple(z.polygon), list(z.polygon))
+    for k in getattr(pcb.board_info, 'keepouts', None) or ():
+        poly = [tuple(p) for p in k.get('polygon') or ()]
+        if not k.get('in_footprint') and poly:
+            rings.setdefault(tuple(poly), poly)
+    local = [r for r in rings.values()
+             if bbox > 0 and _shoelace(r) < LOCAL_ZONE_FRAC * bbox]
+    inside = sorted(ref for ref in movable
+                    if any(_inside(p.global_x, p.global_y, r)
+                           for p in pcb.footprints[ref].pads for r in local))
+    return len(rings), len(local), inside
 
 
 def _unlock(dst, refs):
@@ -134,7 +207,8 @@ def build(src: str, dst: str, keep_locked: bool = False) -> int:
     placements = [{'reference': ref,
                    'new_x': round(x0 + (i % cols) * pitch_x, 4),
                    'new_y': round(y0 + (i // cols) * pitch_y, 4),
-                   'new_rotation': PILE_ROT}
+                   'new_rotation': PILE_ROT,
+                   'new_text_angle': PILE_TEXT_ANGLE}
                   for i, ref in enumerate(movable)]
     if not write_placed_output(src, dst, placements, pcb_data=pcb):
         print('refuse: write_placed_output returned False', file=sys.stderr)
@@ -190,6 +264,14 @@ def build(src: str, dst: str, keep_locked: bool = False) -> int:
         print(f'FAIL: meant to unlock {to_unlock}, unlocked {unlocked}, still '
               f'locked {still}', file=sys.stderr)
         ok = False
+    leaks, n_texts, n_text_ok = text_angle_leaks(dst, set(movable))
+    if leaks:
+        print(f'FAIL: {len(leaks)} moved part(s) carry a text not at absolute '
+              f'{PILE_TEXT_ANGLE:g}: '
+              + ', '.join(f'{r} {a}' for r, a in sorted(leaks.items())[:8]),
+              file=sys.stderr)
+        ok = False
+    n_zones, n_local, in_local = kept_zones(pcb, movable, bounds)
 
     print(f'board      {max_x - min_x:.2f} x {max_y - min_y:.2f} mm')
     print(f'moved      {len(movable)} pad-bearing part(s) to a pile at '
@@ -198,6 +280,19 @@ def build(src: str, dst: str, keep_locked: bool = False) -> int:
           f'{worst[1] if worst else float("nan"):.2f} mm below it')
     print(f'unlocked   {len(unlocked)}: {", ".join(unlocked) or "-"}')
     print(f'held       {len(held)} locked part(s), {len(artwork)} padless artwork block(s)')
+    print(f'texts      {n_text_ok} of {n_texts} text(s) on {len(movable)} '
+          f'moved part(s) at absolute {PILE_TEXT_ANGLE:g}')
+    zl = (f'zones      {n_zones} board-level zone(s)/rule area(s) kept where '
+          f'they were; ')
+    if n_local:
+        named = ', '.join(in_local[:8]) + (' ...' if len(in_local) > 8 else '')
+        zl += (f'{n_local} cover under {LOCAL_ZONE_FRAC:.0%} of the bounding '
+               f'box and hold a pad of {len(in_local)} moved part(s)'
+               + (f' ({named})' if in_local else '')
+               + ', so their outlines may still trace the placement (#1163)')
+    else:
+        zl += f'none covers under {LOCAL_ZONE_FRAC:.0%} of the bounding box'
+    print(zl)
     print(f'siblings   {sibs or "none (the source had none either)"}')
     print(f'verdict    unplaced={st.unplaced} partially_unplaced='
           f'{st.partially_unplaced} has_copper={st.has_copper}')
