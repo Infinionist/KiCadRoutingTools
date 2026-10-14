@@ -241,6 +241,14 @@ off-outline grade (`check_drc.footprint_graphic_outline_census`, #962) reads
 | `in_footprint` | bool | Zone is owned by a footprint (nested in its `(footprint ...)` block); points are still board coordinates. Plane creation neither replaces nor aborts on these |
 | `teardrop` | bool | KiCad's `(attr (teardrop ...))` (pcbnew `IsTeardropArea()`): a generated teardrop area where a track meets a pad or via. Routing output, so `assess_placement`'s `has_copper` counts it (#1164) |
 
+A teardrop is still COPPER: the obstacle map, DRC and connectivity read it
+through `pcb.zones` like any zone. It is never a POUR: a consumer deciding
+"is this net a plane / poured net" asks `pour_zones(pcb.zones)`, every zone
+but the teardrops. Counted as a pour, a teardropped signal net read as a
+plane net (never offered to `--rip-existing-nets`, handed to the plane
+finalize), and a GND teardrop on F.Cu read as "GND already pours on F.Cu",
+which route_planes replaced, or kept instead of the plane it was asked for.
+
 ### `BoardInfo`
 
 | Field | Type | Meaning |

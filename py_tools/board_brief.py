@@ -357,10 +357,16 @@ def pour_census(pcb, pcb_file=None):
     FILLED in the file (an unfilled zone has its outline only), and the
     largest fraction of the board's copper area one layer's zones cover
     (zone outline clipped to the board outline). Footprint-owned pours are
-    listed apart; keep-out rule areas are counted, never listed as pours."""
+    listed apart; keep-out rule areas are counted, never listed as pours, and
+    so are KiCad's generated TEARDROP areas (#1164): routing output on a
+    signal net, which would otherwise list that net as poured."""
     import re
+    from kicad_parser import pour_zones
     bi = pcb.board_info
-    zones = [z for z in (getattr(pcb, 'zones', None) or [])
+    _all = getattr(pcb, 'zones', None) or []
+    teardrops = len({(z.uuid or id(z)) for z in _all
+                     if getattr(z, 'teardrop', False)})
+    zones = [z for z in pour_zones(_all)
              if (getattr(z, 'layer', '') or '').endswith('.Cu')
              and (getattr(z, 'net_name', '') or '').strip()]
     filled = {}
@@ -416,7 +422,8 @@ def pour_census(pcb, pcb_file=None):
         e['area_fraction'] = max(fr) if fr else None
         pours.append(e)
     return {'pours': pours,
-            'keepout_areas': len(getattr(bi, 'keepouts', None) or ())}
+            'keepout_areas': len(getattr(bi, 'keepouts', None) or ()),
+            'teardrop_areas': teardrops}
 
 
 def pours_section(pcb, pcb_file, skipped):
@@ -964,6 +971,9 @@ def format_text(b):
         L.append(f"  pours: {format_pours(pc)}")
     if pc.get('keepout_areas'):
         L.append(f"  keep-out rule areas: {pc['keepout_areas']}")
+    if pc.get('teardrop_areas'):
+        L.append(f"  teardrop areas: {pc['teardrop_areas']} (routing output, "
+                 f"not pours)")
     # BEFORE the numbers, not after them and not only in the JSON. This
     # printed `state: UNPLACED` and then, eleven lines later, an escape
     # deficit and a lock tally measured on the pile, in the same words a

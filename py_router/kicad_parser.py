@@ -612,6 +612,21 @@ class Zone:
     # track: KiCad regenerates it on refill, and it sits on its pad's old pose.
 
 
+def pour_zones(zones):
+    """Every zone but KiCad's generated TEARDROP areas: the zones that say
+    "this net POURS here".
+
+    A teardrop (`Zone.teardrop`) is real copper, and the obstacle map, DRC and
+    connectivity keep reading it through `pcb.zones`. But it is routing output
+    on whatever net the track carries, not a pour, so a consumer deciding "is
+    this net a plane / poured net" must ask this instead: counted as a pour, a
+    teardropped signal net read as a plane net (never rip-eligible, skipped
+    by --force-reroute, handed to the plane finalize), and a GND teardrop on
+    F.Cu read as "GND already pours on F.Cu", so route_planes kept the pour it
+    was asked to create."""
+    return [z for z in (zones or ()) if not getattr(z, 'teardrop', False)]
+
+
 @dataclass
 class GuidePath:
     """A user-drawn graphic polyline (e.g. on User.1) used as a routing corridor."""
