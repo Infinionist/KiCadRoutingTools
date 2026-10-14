@@ -40,7 +40,7 @@ only per-key evidence can, and prose cannot be re-run at all.
 Usage:
     python3 -X utf8 tests/test_placement_ab.py            # the default table
     python3 -X utf8 tests/test_placement_ab.py --row corridor-ulx3s
-    python3 -X utf8 tests/test_placement_ab.py --part 2/8   # every 8th row from the 3rd
+    python3 -X utf8 tests/test_placement_ab.py --part 2/8   # the 3rd of 8 slices
     python3 -X utf8 tests/test_placement_ab.py --list
     python3 -X utf8 tests/test_placement_ab.py --self-test   # gate logic only
     python3 -X utf8 tests/test_placement_ab.py --write-baseline
@@ -1816,7 +1816,9 @@ class _seeder_flags:
 # `tethers-ulx3s`'s and `rigid-blocks-ulx3s`'s OFF quench. Under `main()` each
 # arm runs ONCE per process: a later row gets a copy of the board it wrote and
 # of its engine results, and is graded again only when its own grading intent
-# or ignore list differs. Only rows run by one process share.
+# or ignore list differs. `_part_rows` gathers the rows that share arms into
+# one `--part` as far as an even split allows; a share split across two parts
+# is computed in each.
 #
 # KEYS ARE CONTENT, never row names: the board, the intent FILE's bytes, every
 # engine kwarg with the signature's defaults applied, and the value of every
@@ -2601,8 +2603,9 @@ def gate(rows, marks):
 def _self_test():
     """Every branch of the gate and the comparator, without quenching.
 
-    Runs at the top of EVERY invocation: it costs milliseconds, and the live
-    table cannot reach any of it (all three rows are pinned, so the trial
+    Runs at the top of EVERY invocation: it costs about a second, most of it
+    importing the engine every row loads anyway, and the live table cannot
+    reach any of it (all three rows are pinned, so the trial
     branch never executes on a real run). A gate whose own logic is untested
     is how a documented rule stays documentation -- which is exactly what
     #694 found: CLAUDE.md's ">= 3 boards" rule was never in the code.
@@ -3008,6 +3011,29 @@ def _self_test():
     assert _ignore_nets_resolved_only(resolves_ignore)
     assert not _ignore_nets_resolved_only(logs_ignore)
 
+    # 36. `--part`: N disjoint slices covering the table, table order kept,
+    #     the same split on every call -- every `--part i/N` process must
+    #     compute one split, or a row runs twice or never.
+    order = {r['name']: i for i, r in enumerate(ROWS)}
+    for n in (1, 3, 8, len(ROWS) + 5):
+        parts = _part_rows(ROWS, n)
+        assert len(parts) == n, (n, len(parts))
+        names = [r['name'] for p in parts for r in p]
+        assert sorted(names) == sorted(order), n
+        for i, p in enumerate(parts):
+            assert [order[r['name']] for r in p] == sorted(
+                order[r['name']] for r in p), (n, i)
+        assert ([[r['name'] for r in p] for p in _part_rows(ROWS, n)]
+                == [[r['name'] for r in p] for p in parts]), n
+    # ...and the planner prices every row (none falls back to "shares
+    # nothing"), seeing the share the table makes by construction: the three
+    # decap families' OFF arms on one board are one seed.
+    plans = {r['name']: _plan_arms(r) for r in ROWS}
+    for b in _AFTER_ICS_BOARDS:
+        offs = {plans[f'{f}-{b}'][0][0] for f in (
+            'decap-after-ics', 'decap-within-limit', 'decap-after-queue')}
+        assert len(offs) == 1, (b, len(offs))
+
 
 def _self_test_live():
     """`--self-test` only: EMIT every per-arm intent on its real board and
@@ -3037,6 +3063,194 @@ def _self_test_live():
     assert not bad, '\n'.join(bad)
 
 
+#: What one ARM -- an engine run plus its grade -- costs, by (engine, board):
+#: the mean `seconds` the rows print, which `main()` reports at the end of a
+#: run (measured over the whole table on a shared 4-core box, each part
+#: scaled by its CPU/wall ratio). Used ONLY to balance `--part`, so only the
+#: RATIOS matter: a stale or missing entry makes the slices less even and
+#: never changes which rows run or what they measure. A pair not listed is
+#: priced at the median of the rest.
+_ARM_SECONDS = {
+    ('pile', 'glasgow_revC.kicad_pcb'): 416,
+    ('pile', 'sonde_u.kicad_pcb'): 14,
+    ('pile', 'splitflap_driver.kicad_pcb'): 53,
+    ('quench', 'esp_prog.kicad_pcb'): 2,
+    ('quench', 'kit-dev-coldfire-xilinx_5213.kicad_pcb'): 70,
+    ('quench', 'orangecrab_ext_pll.kicad_pcb'): 37,
+    ('quench', 'rp2350_fpga_eensy_prePlane.kicad_pcb'): 82,
+    ('quench', 'splitflap_driver.kicad_pcb'): 23,
+    ('quench', 'tigard.kicad_pcb'): 11,
+    ('quench', 'ulx3s.kicad_pcb'): 76,
+    ('quench', 'watchy.kicad_pcb'): 10,
+    ('repair', 'esp_prog.kicad_pcb'): 1,
+    ('repair', 'glasgow_revC.kicad_pcb'): 17,
+    ('repair', 'splitflap_driver.kicad_pcb'): 2,
+    ('repair', 'tigard.kicad_pcb'): 26,
+    ('repair', 'watchy.kicad_pcb'): 41,
+    ('seed', 'esp_prog.kicad_pcb'): 1,
+    ('seed', 'glasgow_revC.kicad_pcb'): 31,
+    ('seed', 'kit-dev-coldfire-xilinx_5213.kicad_pcb'): 94,
+    ('seed', 'orangecrab_ext_pll.kicad_pcb'): 96,
+    ('seed', 'rp2350_fpga_eensy_prePlane.kicad_pcb'): 58,
+    ('seed', 'splitflap_driver.kicad_pcb'): 43,
+    ('seed', 'tigard.kicad_pcb'): 143,
+    ('seed', 'ulx3s.kicad_pcb'): 56,
+    ('seed', 'watchy.kicad_pcb'): 10,
+}
+
+
+def _intent_spec(row, emit_kw=None, derive_decaps='off'):
+    """What `_intent_for` would emit for `row`, named rather than emitted:
+    the static shadow of the intent FILE the memo keys on."""
+    from placement import floorplan
+    kw = {'derive_decaps': derive_decaps}
+    kw.update(emit_kw or {})
+    board = os.path.join(BOARDS, row['board'])
+    return ('intent', _freeze(_bound(floorplan.emit_intent, (None, board), kw,
+                                     drop=('pcb_data',))),
+            _freeze(row.get('corridors') or []),
+            _freeze(row.get('zone_flags') or {}))
+
+
+def _arm_intent_spec(row, value):
+    """`_intent_spec` of the per-arm intent `run_row`'s `_mk` builds; a
+    `rigid_blocks` RULE stands for the names it resolves to."""
+    param = row.get('seed_intent_param', 'derive_decaps')
+    if param == 'rigid_blocks':
+        return _intent_spec(row, {} if value == 'none'
+                            else {'rigid_blocks': ('<rule>', value)})
+    return _intent_spec(row, {param: value})
+
+
+def _plan_arms(row):
+    """[(arm key, cost key)] for each engine run `row` makes, read off the
+    table without emitting an intent or parsing a board: `run_row`'s arms,
+    keyed as the memo keys them except that an intent is named by what
+    emits it (`_intent_spec`) and the board's nets are read off its text
+    (`_file_net_names`). Two equal keys are an arm the memo shares when both
+    rows run in one process.
+    `_part_rows` prices slices with it, so a wrong key costs balance only."""
+    board = os.path.join(BOARDS, row['board'])
+    eng = row.get('engine')
+
+    def own(kind, arm):
+        return (('own', row['name'], arm), (kind, row['board']))
+
+    if row.get('input'):
+        return [own('pile', 'off'), own('pile', 'on')]
+    if eng == 'repair':
+        spec = _intent_spec(row, derive_decaps=row.get('derive_decaps', 'off'))
+        return [(_seed_key(board, spec, _seed_kwargs({})),
+                 ('seed', row['board'])),
+                own('repair', 'off'), own('repair', 'on')]
+    out = []
+    if eng == 'seed':
+        si = row.get('seed_intents')
+        flags = row.get('seeder_flags') or {}
+        eflags = row.get('engine_flags') or {}
+        for arm in ('off', 'on'):
+            spec = _arm_intent_spec(row, si[arm]) if si else _intent_spec(row)
+            with _seeder_flags(flags.get(arm)), _module_flags(eflags.get(arm)):
+                out.append((_seed_key(board, spec,
+                                      _seed_kwargs(row.get(f'seed_{arm}'))),
+                            ('seed', row['board'])))
+        return out
+    # The quench arms, built as `run_row` builds them.
+    kw_off = dict(QUENCH_BASE)
+    kw_off.update(row.get('quench_base') or {})
+    kw_off['ignore_nets'] = list(row.get('ignore_nets') or ())
+    kw_on = dict(kw_off)
+    kw_on.update(row.get('quench_on') or {})
+    gi = row.get('gate_intents')
+    if gi:
+        kw_off['intent_gate'] = ('gate', _arm_intent_spec(row, gi['off']))
+        kw_on['intent_gate'] = ('gate', _arm_intent_spec(row, gi['on']))
+    if kw_on.get('intent_gate') is ROW_INTENT:
+        kw_on['intent_gate'] = ('gate', _intent_spec(row))
+    if 'corridor_weight' in (row.get('quench_on') or {}):
+        kw_on['corridor_specs'] = row['corridors']
+    eflags = row.get('engine_flags') or {}
+    nets = _file_net_names(board)
+    for arm, kw in (('off', kw_off), ('on', kw_on)):
+        with _module_flags(eflags.get(arm)):
+            out.append((_quench_key(board, kw, nets),
+                        ('quench', row['board'])))
+    return out
+
+
+#: `_file_net_names` per board path.
+_NET_NAMES = {}
+
+
+def _file_net_names(path):
+    """{name: name} of every `(net ...)` the board file spells -- both
+    dialects, read as text, so planning parses no board. For `_quench_key`'s
+    `ignore_nets` resolution; the memo itself keys on the parser's nets."""
+    import re
+    if path not in _NET_NAMES:
+        with open(path, encoding='utf-8', errors='replace') as fh:
+            names = re.findall(r'\(net (?:\d+ )?"((?:[^"\\]|\\.)*)"\)',
+                               fh.read())
+        _NET_NAMES[path] = {n: n for n in names}
+    return _NET_NAMES[path]
+
+
+def _part_rows(rows, n):
+    """`rows` as `n` disjoint slices for `--part`, each in table order.
+
+    Priced by `_plan_arms`: a row costs the arms its slice does not already
+    run, so rows that share an arm gather in one slice -- the memo then runs
+    it once -- until that slice reaches its cap, and the rest go where they
+    cost least. Rows are dealt costliest first; a row takes the slice that
+    adds least without passing the cap, else the one whose total stays
+    lowest. The cap is the even share of the table's distinct arms times a
+    slack: too tight splits shares an even split did not need to, too loose
+    piles them into one slice, so each slack in `_PART_SLACKS` is dealt and
+    the split with the lightest heaviest slice (then the least total) kept.
+    Deterministic, so every `--part i/N` process computes the same split."""
+    known = sorted(_ARM_SECONDS.values())
+    default = known[len(known) // 2] if known else 1.0
+    plan = []
+    for k, r in enumerate(rows):
+        try:
+            plan.append(_plan_arms(r))
+        except Exception:                                  # noqa: BLE001
+            # An unplannable row (its run will say why) shares nothing.
+            plan.append([(('own', r['name'], k, arm), ('?', r['board']))
+                         for arm in ('off', 'on')])
+
+    def added(arms, have):
+        seen, cost = set(have), 0.0
+        for key, what in arms:
+            if key not in seen:
+                seen.add(key)
+                cost += _ARM_SECONDS.get(what, default)
+        return cost
+
+    order = sorted(range(len(rows)), key=lambda k: (-added(plan[k], ()), k))
+    share = added([a for arms in plan for a in arms], ()) / n
+
+    def deal(cap):
+        load, have, slot = [0.0] * n, [set() for _ in range(n)], {}
+        for k in order:
+            cost = [added(plan[k], have[i]) for i in range(n)]
+            fits = [i for i in range(n) if load[i] + cost[i] <= cap]
+            i = (min(fits, key=lambda i: (cost[i], load[i], i)) if fits else
+                 min(range(n), key=lambda i: (load[i] + cost[i], i)))
+            slot[k] = i
+            load[i] += cost[i]
+            have[i].update(key for key, _ in plan[k])
+        return (max(load), sum(load)), slot
+
+    _, slot = min((deal(share * s) for s in _PART_SLACKS),
+                  key=lambda d: d[0])
+    return [[r for k, r in enumerate(rows) if slot[k] == i] for i in range(n)]
+
+
+#: The caps `_part_rows` tries, as multiples of an even share.
+_PART_SLACKS = (1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3)
+
+
 def _part(text):
     """'I/N' -> (I, N), 0 <= I < N."""
     try:
@@ -3056,9 +3270,10 @@ def main(argv=None):
                    help='Run only these table rows (repeatable)')
     p.add_argument('--list', action='store_true', help='List rows and exit')
     p.add_argument('--part', type=_part, default=None, metavar='I/N',
-                   help='Run every N-th row from the I-th (0-based), after '
-                        '--row: one of N disjoint slices of the table '
-                        '(run_all splits the table this way)')
+                   help='Run the I-th (0-based) of N disjoint slices of the '
+                        'table, after --row: rows that share an arm gather in '
+                        'one slice, and the slices are balanced on '
+                        'measured cost (run_all splits the table this way)')
     p.add_argument('--workdir', default=None,
                    help='Where to write boards (default: a temp dir)')
     p.add_argument('--json', '--json-out', dest='json', default=None,
@@ -3119,7 +3334,7 @@ def main(argv=None):
         return 2
     if args.part:
         _pi, _pn = args.part
-        rows = rows[_pi::_pn]
+        rows = _part_rows(rows, _pn)[_pi]
         print(f"part {_pi}/{_pn}: {len(rows)} row(s): "
               f"{', '.join(r['name'] for r in rows) or 'none'}")
         if not rows:
@@ -3137,7 +3352,7 @@ def main(argv=None):
     os.makedirs(workdir, exist_ok=True)
     print(f"A/B in {workdir}\n")
 
-    marks, records = {}, {}
+    marks, records, arm_seconds = {}, {}, {}
     _MEMO = _new_memo(workdir)
     try:
         for r in rows:
@@ -3145,6 +3360,12 @@ def main(argv=None):
             marks[r['name']] = mark
             if off is not None and on is not None:
                 records[r['name']] = record_for(r, mark, off, on)
+                what = ('pile' if r.get('input') else
+                        'repair' if r.get('engine') == 'repair' else
+                        'seed' if r.get('engine') == 'seed' else 'quench',
+                        r['board'])
+                arm_seconds.setdefault(what, []).extend(
+                    a['seconds'] for a in (off, on) if not a.get('memo'))
     finally:
         shutil.rmtree(_MEMO['dir'], ignore_errors=True)
         _MEMO = None
@@ -3157,6 +3378,10 @@ def main(argv=None):
     for m in ('improve', 'neutral', 'regress', 'skip'):
         if tally[m]:
             print(f"{m:<9} {len(tally[m])}: {', '.join(tally[m])}")
+    # What `_ARM_SECONDS` records: the mean arm this run computed itself.
+    print("arm seconds: {" + ', '.join(
+        f"{w!r}: {sum(v) / len(v):.0f}"
+        for w, v in sorted(arm_seconds.items()) if v) + "}")
 
     if args.write_baseline:
         target = args.baseline or DEFAULT_BASELINE
