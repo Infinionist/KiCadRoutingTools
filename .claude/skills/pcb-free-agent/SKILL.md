@@ -355,7 +355,11 @@ Read `--help` before assuming a flag does not exist. Two runs declared
    replacing the verifier:
    ```bash
    python3 -X utf8 .claude/skills/pcb-free-agent/scripts/grade.py <board> --baseline <input> --intent <i> --mode <mode>
-   python3 -X utf8 .claude/skills/pcb-free-agent/scripts/measure.py --root .
+   python3 -X utf8 .claude/skills/pcb-free-agent/scripts/measure.py --self --evidence wk/<run>
    ```
    Add `--spec <name>=<value>` to `grade.py` for each spec flag the board
-   declares (e.g. `--spec net-min-widths=widths.json`).
+   declares (e.g. `--spec net-min-widths=widths.json`). `measure.py` must
+   run from your own shell: `--self` is the transcript making that call
+   (a subagent's included), checked against your work dir. It prints the
+   file it measured; if it refuses (exit 3), quote the refusal rather than
+   timing another transcript.
