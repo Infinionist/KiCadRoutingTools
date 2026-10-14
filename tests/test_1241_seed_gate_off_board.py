@@ -5,9 +5,11 @@ connector unseated", and on a body-less part stage 1 tests only pad CENTRES
 against the board, so a band `min` that pads on the board cannot reach left
 J1's copper 1.2 mm past the north edge. Nothing after stage 1 charged it:
 place_seed exited 0 on a seed check_assembly calls NOT BUILDABLE. The gate now
-reads the measure check_assembly gates on (`oob_pad_copper_gating_refs`),
-for the parts this seed moved and did seat, and the floor note says the
-copper is off the board rather than "inside the board-edge floor".
+reads the measure check_assembly gates on (`oob_pad_copper_gating_refs`)
+at the WRITTEN poses, for every seated part except the board's own (a part
+the seed does not seat -- file-locked, or outside a partially-unplaced run's
+scope -- still at its input pose), and the floor note says the copper is off
+the board rather than "inside the board-edge floor".
 
 What this does NOT change (still open in #1241): stage 1 keeps the seat, and
 `--repair` is not gated this way.
@@ -32,7 +34,8 @@ from test_1174_emit_round_trip import _TALL_J1, _box, _synthetic  # noqa: E402
 PY = sys.executable
 
 
-def _run(path, doc, code, refuse=None, out_name='s.kicad_pcb'):
+def _run(path, doc, code, refuse=None, out_name='s.kicad_pcb',
+         flags=('--force',)):
     """place_seed `path` under the intent `doc`; (run, JSON_SUMMARY)."""
     td = os.path.dirname(path)
     ip = os.path.join(td, out_name + '.json')
@@ -43,7 +46,7 @@ def _run(path, doc, code, refuse=None, out_name='s.kicad_pcb'):
     out = os.path.join(td, out_name)
     r = check([PY, '-X', 'utf8',
                os.path.join(ROOT, 'py_placer', 'place_seed.py'),
-               path, out, '--intent', ip, '--force'],
+               path, out, '--intent', ip] + list(flags),
               **({'accept': True} if code == 0
                  else {'refuse': refuse, 'code': code}))
     evidence(out, 'written seed')
@@ -131,32 +134,78 @@ class TheIssueBoard(unittest.TestCase):
                       "past)", r.stdout)
 
 
+def _scoped(extra=()):
+    """A PARTIALLY unplaced board: P1-P3 piled, the rest placed. Without
+    --force the seed seats only the pile; R2, R3, R4, R5 stand as placed
+    ("someone's work"), but the polish still moves the unlocked ones. R2's
+    pad 1 sits 4 mm east of its courtyard, 0.5 mm inside the east edge,
+    net-tied to a LOCKED R3 at that edge."""
+    return [
+        _part(f'P{i}', 10, 30, [(1, -0.5, 0, 0.5, 0.6, 1),
+                                (2, 0.5, 0, 0.5, 0.6, 2)])
+        for i in (1, 2, 3)] + [
+        _part('R2', 34, 20, [(1, 4.0, 0, 3.0, 0.6, 3),
+                             (2, -0.5, 0, 0.5, 0.6, 3)]),
+        _part('R3', 38.8, 23, [(1, 0.5, 0, 0.2, 0.6, 3)], hw=0.6,
+              hh=0.6, locked=True),
+        _part('R5', 25, 12, [(1, 0, 0, 0.5, 0.6, 5)]),
+        _part('R4', 30, 10, [(1, 0, 0, 0.5, 0.6, 4)])] + list(extra)
+
+
+_R2_ROT = {'blocks': [{'name': 'r2rot', 'refs': ['R2'], 'rotation': 0}]}
+
+
 class TheWrittenPoseDecides(unittest.TestCase):
-    """The verifier's escapes: "moved" read off stage 1's poses missed copper
-    the polish pushed off the board, and a seat the seed KEPT."""
+    """The verifiers' escapes: "moved" read off stage 1's poses missed copper
+    the polish pushed off the board and a seat the seed KEPT; a `must_lock`
+    exemption let a seat stage 1.5 chose pass as the board's own."""
 
     def test_copper_the_polish_pushes_off_the_board_is_charged(self):
-        # R2's pad 1 sits 4 mm east of its courtyard, net-tied to a LOCKED R3
-        # at the east edge. Stage 1 leaves R2's copper on the board; the
-        # polish pulls R2 toward R3 and its pad ends past the outline.
-        parts = [
-            _part(f'P{i}', 10, 30, [(1, -0.5, 0, 0.5, 0.6, 1),
-                                    (2, 0.5, 0, 0.5, 0.6, 2)])
-            for i in (1, 2, 3)] + [
-            _part('R2', 33, 20, [(1, 4.0, 0, 3.0, 0.6, 3),
-                                 (2, -0.5, 0, 0.5, 0.6, 3)]),
-            _part('R3', 38.8, 23, [(1, 0.5, 0, 0.2, 0.6, 3)], hw=0.6,
-                  hh=0.6, locked=True),
-            _part('R4', 30, 10, [(1, 0, 0, 0.5, 0.6, 4)])]
         with tempfile.TemporaryDirectory() as td:
-            path = _synthetic(td, parts)
-            r, summary = _run(path, {'blocks': [{'name': 'r2rot',
-                                                 'refs': ['R2'],
-                                                 'rotation': 0}]},
-                              code=4, refuse='pad copper past the board '
-                                             'outline on R2')
+            path = _synthetic(td, _scoped())
+            # The control: stage 1 leaves R2 where it was, copper on board.
+            r0, s0 = _run(path, _R2_ROT, code=0, out_name='np.kicad_pcb',
+                          flags=('--no-polish',))
+            self.assertGreater(s0['pad_edge_after']['minimum_gap_by_ref_mm']
+                               ['R2'], 0.0)
+            # The polish pulls R2 toward R3 and its pad ends past the edge.
+            r, summary = _run(path, _R2_ROT, code=4, flags=(),
+                              refuse='pad copper past the board outline '
+                                     'on R2')
         self.assertEqual([ref for ref, _mm in
                           summary['pad_copper_off_board_seeded']], ['R2'])
+        self.assertNotIn("the board's own", r.stdout)
+
+    def test_copper_outside_the_runs_scope_is_the_boards_own(self):
+        # R6 stands as placed with its pad 1 mm past the east edge. Without
+        # --force it is outside the seed's scope, and with no polish nothing
+        # moves it: inherited, named and not charged.
+        r6 = _part('R6', 30, 5, [(1, 11.0, 0, 0.6, 0.6, 6)])
+        with tempfile.TemporaryDirectory() as td:
+            path = _synthetic(td, _scoped([r6]))
+            r, summary = _run(path, _R2_ROT, code=0, flags=('--no-polish',))
+        self.assertLess(summary['pad_edge_after']['minimum_gap_by_ref_mm']
+                        ['R6'], 0.0)
+        self.assertEqual(summary['pad_copper_off_board_seeded'], [])
+        self.assertIn("the board's own, reported not charged: R6", r.stdout)
+
+    def test_a_must_lock_seat_is_the_seeds_own(self):
+        # Stage 1.5 seats every unlocked must_lock part itself; re-seeding
+        # the issue's seed with J1 must_lock keeps J1's off-board seat, and
+        # that seat is still the seed's choice.
+        with tempfile.TemporaryDirectory() as td:
+            path = _synthetic(td, [_TALL_J1, _box('R1', 25, 25, 1, 0.6)])
+            band = {'min': 1.5, 'max': 2.0}
+            _run(path, _claim(band), code=4,
+                 refuse='pad copper past the board outline on J1')
+            again = os.path.join(td, 'again.kicad_pcb')
+            shutil.copyfile(os.path.join(td, 's.kicad_pcb'), again)
+            r, summary = _run(again, dict(_claim(band), must_lock=['J*']),
+                              code=4, refuse='pad copper past the board '
+                                             'outline on J1',
+                              out_name='s2.kicad_pcb')
+        self.assertEqual([ref for ref, _mm in
+                          summary['pad_copper_off_board_seeded']], ['J1'])
         self.assertNotIn("the board's own", r.stdout)
 
     def test_a_seat_the_seed_kept_is_charged(self):

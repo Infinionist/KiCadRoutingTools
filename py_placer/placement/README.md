@@ -268,8 +268,10 @@ is `[ref, mm]` for each part the seed MOVED whose pad copper went deeper into a
 included (reported, not charged). `pad_copper_off_board_seeded` (#1241) is
 `[ref, mm]` for each seated part whose pad copper the written seed leaves past
 the outline (check_assembly's gating measure), and exits 4 on it; a part
-locked or `must_lock`-ed in the input and left at its input pose is the
-board's own, named and not charged. `edge_angle_chosen` names every edge
+the seed does not seat (`(locked yes)` in the input, or outside a
+partially-unplaced run's scope) and still at its input pose is the board's
+own, named and not charged. A `must_lock` part is not exempt, because stage
+1.5 seats it. `edge_angle_chosen` names every edge
 connector stage 1 turned to an angle IT chose or narrowed (#1172) --
 `{ref: {from, to, why, candidates}}`: an undeclared one, or a declared
 `rotation_candidates` set narrowed to its facing members. A turn to an

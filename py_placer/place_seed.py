@@ -69,9 +69,11 @@ when it is past the outline rather than inside the floor (#1241):
 seed leaves past the board outline, by the per-pad measure check_assembly
 gates on -- wherever stage 1, the polish or the re-seat put them, or kept
 them -- and a non-empty list fails the gate, since such a part can be neither
-assembled nor routed. A part the seed was told not to move (`(locked yes)` in
-the input, or `must_lock`) and left at its input pose is the board's own:
-named on the console, not charged. An unseated part is charged as unseated.
+assembled nor routed. A part the seed does not seat -- `(locked yes)` in the
+input, or outside a partially-unplaced run's scope -- and that is still at
+its input pose is the board's own: named on the console, not charged. A
+`must_lock` part is not exempt, because stage 1.5 seats it. An unseated part is
+charged as unseated.
 
 And `reseat_declined` (#1117) on every summary of a seed (not of --repair /
 --reseat, which run no post-polish re-seat):
@@ -1615,20 +1617,21 @@ Examples:
     # poses with the input: the polish and the re-seat move parts after it,
     # and a pose the seed KEPT (an unlocked part already at its seat) is the
     # seed's choice as much as one it moved. The board's own is a part the
-    # seed was told not to move -- `(locked yes)` in the input or matched by
-    # `must_lock`, as `_split_pinned` reads it -- still at its input pose. An
-    # unseated part is charged as unseated, not here.
-    import fnmatch
+    # seed does not seat -- `(locked yes)` in the input, or outside a
+    # partially-unplaced run's scope (`seed_refs`, "someone's work") -- still
+    # at its input pose, since the polish moves parts outside the scope. NOT
+    # `must_lock`: stage 1.5 seats every unlocked must_lock part itself, so
+    # such a part at its input pose is a seat the seed kept. An unseated part
+    # is charged as unseated, not here.
     _in_fps = parse_kicad_pcb(args.input_file).footprints
     _out_fps = parse_kicad_pcb(args.output_file).footprints
-    _must = tuple(getattr(intent, 'must_lock', ()) or ())
 
     def _board_own(r):
         fi, fo = _in_fps.get(r), _out_fps.get(r)
         if fi is None or fo is None:
             return False
         told = (getattr(fi, 'locked', False)
-                or any(fnmatch.fnmatchcase(r, p) for p in _must))
+                or (seed_refs is not None and r not in seed_refs))
         return told and not pose_moved((fi.x, fi.y, fi.rotation or 0.0),
                                        (fo.x, fo.y, fo.rotation or 0.0))
     _overrun = _pads_out.get('oob_pad_copper_overrun_mm') or {}
