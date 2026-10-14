@@ -691,10 +691,16 @@ class TheReseatPutsThePadsBackOnTheBoard(unittest.TestCase):
                    for ln in r.stdout.splitlines()
                    if ln.startswith('JSON_SUMMARY:')
                    and '"pad_edge_after"' in ln][-1]
-        # Stage 1 did keep pad copper past the edge, and the grade said so.
-        self.assertIn("J1.1 is -1.200mm from the north edge", r.stdout)
-        self.assertIn('polish walked J1 out of a declared zone_containment',
+        # Stage 1 did keep pad copper past the edge, and its note says the
+        # copper is OFF the board, not inside the floor (#1241).
+        self.assertIn("leaves pad copper past the board outline -- J1.1 "
+                      "reaches 1.200mm past the north edge", r.stdout)
+        # The re-seat names stage 1, not the polish, which never moved the
+        # edge claim it locks (#1240).
+        self.assertIn('the seed placed J1 outside a declared '
+                      'zone_containment and the polish did not move it',
                       r.stdout)
+        self.assertNotIn('polish walked J1', r.stdout)
         # ...and the written seed has its pads on the board.
         self.assertGreaterEqual(
             summary['pad_edge_after']['minimum_gap_by_ref_mm']['J1'], 0.55)

@@ -2707,8 +2707,15 @@ def _grade_delta_phrase(entry: Dict) -> str:
 def _floor_note(prefix: str, ref: str, record: Dict) -> str:
     """One NOTE for a disclosed floor shortfall, shared by every seat path."""
     pad = record['pads'][0]
+    # #1241: a negative gap is copper PAST the outline, not copper inside
+    # the floor -- say which, or -1.2 mm reads like a clearance shortfall.
+    off = pad['gap_mm'] is not None and pad['gap_mm'] < 0
     gap = ('' if pad['gap_mm'] is None
+           else f" reaches {-pad['gap_mm']:.3f}mm past the {pad['side']} edge"
+           if off
            else f" is {pad['gap_mm']:.3f}mm from the {pad['side']} edge")
+    where = ("past the board outline" if off else
+             f"inside the {record['required_mm']:g}mm board-edge floor")
     why = record.get('why')
     because = {
         'band_min': (f"clearing it would take the overhang to "
@@ -2746,8 +2753,9 @@ def _floor_note(prefix: str, ref: str, record: Dict) -> str:
                      "the floor was not searched"),
     }.get(why, str(why))
     return (f"{prefix}{ref}: its seat on the {record['edge']} edge leaves pad "
-            f"copper inside the {record['required_mm']:g}mm board-edge floor -- "
-            f"{pad['pad_ref']}{gap} ({record['shortfall_mm']:.3f}mm short); "
+            f"copper {where} -- "
+            f"{pad['pad_ref']}{gap} ({record['shortfall_mm']:.3f}mm short of "
+            f"the {record['required_mm']:g}mm board-edge floor); "
             f"{because}. Kept the seat rather than leave the connector "
             f"unseated, which leaves its nets unrouted (edge_floor_fallback)")
 
