@@ -14,6 +14,7 @@ seated correctly (rot -90), copied and posed reversed with place_pose.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -52,6 +53,7 @@ class TheReversedDsub(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.td = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.td, True)
         j2 = parse_kicad_pcb(SONDE).footprints['J2']
         cls.correct_rot = j2.rotation
         cls.reversed = os.path.join(cls.td, 'reversed.kicad_pcb')
@@ -167,6 +169,7 @@ class TheDiagonalPose(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.td = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.td, True)
         j2 = parse_kicad_pcb(SONDE).footprints['J2']
         cls.board = os.path.join(cls.td, 'diag.kicad_pcb')
         check([PY, '-X', 'utf8', 'py_placer/place_pose.py', SONDE,
