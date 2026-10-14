@@ -687,9 +687,8 @@ class PackedStarts(unittest.TestCase):
     the opt-in switch is on."""
 
     def test_it_is_opt_in(self):
-        """Measured as a trade, not a default: it clears coldfire's pile of
-        the pad short its equal starts give the D-subs, and leaves two more
-        of orangecrab's pile parts unseated (the A/B's seed rows)."""
+        """Off by default, an opt-in. It ignores the parts already on the
+        band and the declared zones (#1244)."""
         self.assertIs(seeder._stage1_packed_starts, False)
 
     def test_the_north_claims_start_packed_in_seat_order(self):

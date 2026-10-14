@@ -2944,12 +2944,9 @@ _stage1_choose_edge_angle = True
 #: lose a seat the old ladder found.
 _edge_courtyard_tier = True
 #: #1172: start an edge's claims packed by width when stage 1's equal
-#: fractions would overlap them (`_packed_starts`). OPT-IN: measured, it
-#: helps a pile (kit-dev-coldfire's three 31 mm D-subs, edge claims since
-#: #1176, seat without the pad short the equal starts give them) and costs
-#: elsewhere (orangecrab's pile leaves two more parts unseated; it ignores
-#: the parts already on the band and the declared zones, phase-5 verifier),
-#: which is not a default by the A/B rule.
+#: fractions would overlap them (`_packed_starts`). Off by default, an
+#: opt-in. It ignores the parts already on the band and the declared zones
+#: (#1244).
 _stage1_packed_starts = False
 
 
@@ -3171,8 +3168,11 @@ def _stage1_claims(state, by_edge, declared_rot, bounds, notes,
     {ref: why})`, read once before any connector is seated.
 
     Facing comes from `floorplan.edge_facing` -- the grader's predicate, the
-    function object, not a copy -- so stage 1 cannot write a connector the
-    facing conjunct then fails. Per edge claim:
+    function object, not a copy -- so the angles stage 1 PREFERS are the ones
+    the facing conjunct passes. A preference, not a guarantee: an author's
+    declaration, a set whose facing members seat worse, and the fall-back to
+    the input angle when no chosen angle seats can each leave a part facing
+    away, and the facing grade then reports it. Per edge claim:
 
       * a declared single `rotation` is the author's: kept, with a note when
         its strong face points away;
