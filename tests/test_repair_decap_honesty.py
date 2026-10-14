@@ -669,7 +669,11 @@ def test_cli_writes_the_refs_and_the_repaired_set_is_honest():
                                                       still)
         line = [ln for ln in r.stdout.splitlines()
                 if ln.startswith('Repair:')]
-        assert line and '1 unresolved' in line[0], line
+        # #1153: the other violator is R1, charged for sitting inside U2's
+        # silk-drawn body and never moved. It read "1 repaired (0 moved)"
+        # while the pair stayed on the board; it is unresolved too.
+        assert 'R1' in s['unresolved_refs'], s
+        assert line and '2 unresolved' in line[0], line
     print(f"  PASS: {line[0]}")
 
 

@@ -6940,6 +6940,22 @@ DISPROPORTION_RATIO = 8.0
 DISPROPORTION_FLOOR_MM = 1.0
 
 
+def _repair_containment_pairs(body, exempt) -> List:
+    """The repair's CONTAINMENT census (run-22): `grade_body_overlap`'s
+    `containment_pairs` with neither member in `exempt`, the engine's
+    body-exempt set (markers and containers).
+
+    ONE selection for both halves of the repair (#1153): the charge reads it
+    on the input board, and the zero-move honesty re-grade on the board at
+    the repair's final poses. The re-grade used to ask the SEARCH's own
+    `_body_contained_at` instead -- fab rects only, so a body drawn on silk
+    is unjudged there -- and pristine esp_prog's R1, charged for sitting
+    inside U2's silk-drawn body (frac 0.892), read `repaired` with 0 moves
+    while the pair stayed on the board."""
+    return [q for q in body.get('containment_pairs', ())
+            if q.a not in exempt and q.b not in exempt]
+
+
 def repair_placement(pcb_data, pcb_file: str, intent, *,
                      lock_globs: Optional[Sequence[str]] = None,
                      group_sources: Sequence[str] = (),
@@ -7261,8 +7277,11 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
         _cont_exempt = _recon._body_exempt_refs(state)
     except Exception:
         _cont_exempt = set(getattr(state, 'container_refs', ()) or ())
-    _cont = [q for q in body.get('containment_pairs', ())
-             if q.a not in _cont_exempt and q.b not in _cont_exempt]
+    _cont = _repair_containment_pairs(body, _cont_exempt)
+    # #1153: {charged ref: {pair}}, so the zero-move re-grade asks about the
+    # pairs a ref was CHARGED for -- not every pair it is in (the host of a
+    # pair charged to its guest is the guest's finding, not its own).
+    cont_charged: Dict[str, Set[frozenset]] = {}
     if _cont:
         print(f"  Containment census: {len(_cont)} part(s) inside another "
               f"part's body, all listed")
@@ -7282,6 +7301,7 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
         # would outrank it. Containment is a yes/no fact about whether a part
         # can be built, so it charges a flat strong value rather than a size.
         _charge(ordered[0], CONTAINMENT_CHARGE_MM)
+        cont_charged.setdefault(ordered[0], set()).add(frozenset((q.a, q.b)))
         for partner in ordered[1:]:
             partner_of.setdefault(ordered[0], []).append(partner)
 
@@ -7629,8 +7649,28 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
         # file's input poses), so the re-grade uses the state's own pair
         # machinery in the gate currency.
         ctx = state.legality_ctx
+        # #1153: a ref charged for a containment pair is re-graded on THAT
+        # pair at the FINAL poses, by the census that charged it
+        # (`_repair_containment_pairs` on `grade_body_overlap`,
+        # check_assembly's grader) -- graded once, and only when asked.
+        _contained_after: Dict[str, Any] = {}
+
+        def _still_contained(ref):
+            charged = cont_charged.get(ref)
+            if not charged:
+                return None
+            if 'pairs' not in _contained_after:
+                _contained_after['pairs'] = _repair_containment_pairs(
+                    _leg.grade_body_overlap(
+                        floorplan._PosedState(state).board(), clearance,
+                        pcb_file=pcb_file),
+                    _cont_exempt)
+            return next((q for q in _contained_after['pairs']
+                         if frozenset((q.a, q.b)) in charged), None)
+
         for ref in zero_move:
             still = False
+            why = None
             # CONTAINMENT is checked FIRST, and it has to be: PairShortfall
             # carries pad/hole/stack and no body term, so a part charged for
             # sitting inside another body, which then could not move, would
@@ -7638,16 +7678,19 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
             # metric mismatch this re-grade was written to stop, one channel
             # later.
             #
-            # It FAILS LOUD. `state` is always a QuenchState (it comes from
-            # pose_score.make_state), so the method always exists, and
-            # fab_rect already swallows its own parse failure and returns None
-            # = UNJUDGED. Anything still raising here is a real bug -- and
-            # swallowing it would convert that bug into exactly the false
-            # `repaired` this check exists to prevent. So an error means NOT
-            # repaired, said out loud, rather than a silent pass.
+            # It FAILS LOUD: an error means NOT repaired, said out loud,
+            # rather than a silent pass -- swallowing it would convert a real
+            # bug into exactly the false `repaired` this check exists to
+            # prevent.
             try:
-                if state._body_contained_at(ref, None, None, None):
+                hit = _still_contained(ref)
+                if hit is not None:
                     still = True
+                    other = hit.b if hit.a == ref else hit.a
+                    why = (f"still in a containment pair with {other} "
+                           f"({hit.contained_frac:.0%} of the smaller body, "
+                           f"by the census that charged it) at the final "
+                           f"poses, and it did not move")
             except Exception as exc:
                 still = True
                 notes.append(f'{ref}: could not verify containment after the '
@@ -7666,9 +7709,10 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                 unresolved.append(ref)
                 repaired.remove(ref)
                 notes.append(
-                    f"{ref}: UNRESOLVED -- pose is courtyard-legal but the "
-                    f"charged pad/body violation persists (metric mismatch; "
-                    f"was reported 'repaired' before run-7 A2)")
+                    f"{ref}: UNRESOLVED -- " + (why or (
+                        "pose is courtyard-legal but the charged pad/body "
+                        "violation persists (metric mismatch; was reported "
+                        "'repaired' before run-7 A2)")))
 
     # #1066: the INTENT half of the same honesty re-grade. The loop above
     # re-checks pads, holes and containment only, so a part charged for a
