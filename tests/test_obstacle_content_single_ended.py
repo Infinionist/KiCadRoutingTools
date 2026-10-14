@@ -144,6 +144,40 @@ REFRESH = {'refresh_net_obstacles', 'update_net_obstacles_after_routing',
            'record_single_ended_success', 'precompute_net_obstacles'}
 
 
+def _is_commit(n):
+    return (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+            and n.func.id == 'add_route_to_pcb_data')
+
+
+def _holding_a_commit(tree):
+    """(ids of every node that IS, or contains, an add_route_to_pcb_data
+    call; every function node), in ONE pass over the tree.
+
+    Only those nodes can hold a statement block with a commit in it, so the
+    scan below descends through them alone. Same answer as visiting every node
+    of every function -- a block with no commit contributes no key -- at a
+    fraction of the cost: that walk re-walked every statement once per
+    enclosing block and every nested function once per enclosing function,
+    and was nearly all of this file's run time."""
+    parent, commits, fns = {}, [], []
+    todo = [tree]
+    while todo:
+        n = todo.pop()
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            fns.append(n)
+        if _is_commit(n):
+            commits.append(n)
+        for c in ast.iter_child_nodes(n):
+            parent[id(c)] = n
+            todo.append(c)
+    held = set()
+    for n in commits:
+        while n is not None and id(n) not in held:
+            held.add(id(n))
+            n = parent.get(id(n))
+    return held, fns
+
+
 def _commit_sites():
     """{'file:function': refreshes?} for every add_route_to_pcb_data call,
     judged in its INNERMOST enclosing statement block.
@@ -161,27 +195,36 @@ def _commit_sites():
     """
     best = {}
     for f in sorted(glob.glob(os.path.join(ROOT, 'py_router', '*.py'))):
+        src = open(f).read()
+        # A call to a Name is spelled in the source, so a file that never
+        # spells it has no commit site; skipping its parse changes nothing.
+        if 'add_route_to_pcb_data' not in src:
+            continue
         try:
-            tree = ast.parse(open(f).read())
+            tree = ast.parse(src)
         except SyntaxError:
             continue
         # Forward slashes: the allowlist spells sites that way, and a Windows
         # relpath's backslashes made every allowlisted site read as unlisted.
         rel = os.path.relpath(f, ROOT).replace(os.sep, '/')
-        for fn in ast.walk(tree):
-            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        held, fns = _holding_a_commit(tree)
+        for fn in fns:
+            if id(fn) not in held:
                 continue
-            for node in ast.walk(fn):
+            # Every node of `fn` that holds a commit, nested functions
+            # included (a nested commit counts for its enclosing function
+            # too, exactly as walking all of `fn` did).
+            todo = [fn]
+            while todo:
+                node = todo.pop()
+                todo.extend(c for c in ast.iter_child_nodes(node)
+                            if id(c) in held)
                 for fld in ('body', 'orelse', 'finalbody'):
                     body = getattr(node, fld, None)
                     if not isinstance(body, list):
                         continue
                     for i, stmt in enumerate(body):
-                        hits = [n for n in ast.walk(stmt)
-                                if isinstance(n, ast.Call)
-                                and isinstance(n.func, ast.Name)
-                                and n.func.id == 'add_route_to_pcb_data']
-                        if not hits:
+                        if id(stmt) not in held:
                             continue
                         names = set()
                         for s2 in body[i:]:
