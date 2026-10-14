@@ -231,6 +231,13 @@ in this verb's own currency before it is written. Measured on
 `set C4 --near 128.0 49.53 --radius 3`, because its gate is the absolute one,
 while 236 poses inside the same radius graded no worse — the nearest 0.354 mm
 away. `snap_census` reports both rungs and `snapped.rung` says which answered.
+When every candidate fails the re-grade, the refusal says what the census
+found instead (#1209) -- `regrade_refused_by` / `regrade_refused_pairs` per
+category, e.g. `hole_conflicts x4 (H1/TP1)` -- plus the `untried` count
+(raise `--snap-tries`) and the ranker's nearest pose past the bound
+(`nearest_beyond_radius`, raise `--radius`). It never offers back a pose its
+own re-grade refused, and never advises `--snap` to a call that snapped:
+`nearest_legal` on a snap is the pose it wrote, or null.
 
 Knobs come from the board (`list_nets.board_floor_knobs`) unless given — a
 CLI-supplied `--clearance` loosens the verdict on a tool whose job is to
