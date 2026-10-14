@@ -750,9 +750,9 @@ Examples:
         return UNPLACED_EXIT
     st = assess_placement(pcb, args.input_file)
     if st.has_copper:
-        print(f"place_seed: this board carries {st.segments} segment(s) and "
-              f"{st.vias} via(s); seeding moves footprints and would strand "
-              f"every track. Seed the unrouted board.", file=sys.stderr)
+        print(f"place_seed: this board carries {st.copper_carried}; seeding "
+              f"moves footprints and would strand every track. Seed the "
+              f"unrouted board.", file=sys.stderr)
         return UNPLACED_EXIT
     # #959 (#998): the plan, checked against itself and the board BEFORE the
     # first write. Run 29 found its zone plan's errors at lap 5 because the

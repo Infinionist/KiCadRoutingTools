@@ -78,6 +78,18 @@ class PlacementState:
     stacked_suspect_refs: List[str] = field(default_factory=list)
     segments: int = 0
     vias: int = 0
+    #: KiCad teardrop areas (#1164): generated where a track meets a pad or
+    #: via, so routing output exactly as a track is, and left behind on the
+    #: pad's old pose when the part moves.
+    teardrops: int = 0
+
+    @property
+    def copper_carried(self) -> str:
+        """What `has_copper` counted, for a refusal to name."""
+        if self.teardrops:
+            return (f"{self.segments} segment(s), {self.vias} via(s) and "
+                    f"{self.teardrops} teardrop zone(s)")
+        return f"{self.segments} segment(s) and {self.vias} via(s)"
 
     @property
     def pile(self) -> bool:
@@ -132,7 +144,15 @@ def assess_placement(pcb_data, pcb_file: Optional[str] = None,
     st.segments = len([s for s in (pcb_data.segments or [])
                        if not getattr(s, 'graphic', False)])
     st.vias = len(pcb_data.vias or [])
-    st.has_copper = (st.segments + st.vias) > 0
+    # A TEARDROP zone is routing output too (#1164): KiCad generates one where
+    # a track meets a pad or via and drops it on refill once the track is
+    # gone, and each sits on its pad's pose. A board stripped of its tracks
+    # but not its teardrops still records where every teardropped part was,
+    # and a part moved off it strands the zone. One per zone block: a
+    # multi-layer zone parses as one Zone per layer, but a teardrop has one.
+    st.teardrops = len({(z.uuid or id(z)) for z in (pcb_data.zones or [])
+                        if getattr(z, 'teardrop', False)})
+    st.has_copper = (st.segments + st.vias + st.teardrops) > 0
     if not fps:
         st.reasons.append("board has no footprints with pads")
         return st
@@ -332,12 +352,12 @@ def format_report(state: PlacementState, tool: str = 'placement', *,
         lines.append(f"{tool}: WARNING - {state.reasons[-1]}")
     if state.has_copper and allow_routed:
         lines.append(
-            f"{tool}: this board carries {state.segments} segment(s) and "
-            f"{state.vias} via(s); proceeding with the copper left as it is.")
+            f"{tool}: this board carries {state.copper_carried}; proceeding "
+            f"with the copper left as it is.")
     elif state.has_copper:
         lines.append(
-            f"{tool}: this board carries {state.segments} segment(s) and "
-            f"{state.vias} via(s). Placement moves FOOTPRINTS and does not move "
+            f"{tool}: this board carries {state.copper_carried}. Placement "
+            f"moves FOOTPRINTS and does not move "
             f"copper -- every track would be left behind, detached from its pad. "
             f"Run placement on the UNROUTED board and re-route from there. "
             f"Override with --allow-routed.")

@@ -400,11 +400,11 @@ def main(argv=None):
     if st.has_copper and not args.allow_routed:
         return _refuse(
             args,
-            "this board carries %d segment(s) and %d via(s); moving a "
+            "this board carries %s; moving a "
             "footprint strands every track attached to it. Pose the unrouted "
             "board, or pass --allow-routed if you mean to."
-            % (st.segments, st.vias), UNPLACED_EXIT,
-            segments=st.segments, vias=st.vias)
+            % st.copper_carried, UNPLACED_EXIT,
+            segments=st.segments, vias=st.vias, teardrops=st.teardrops)
     intent = None
     if args.intent:
         from placement import floorplan

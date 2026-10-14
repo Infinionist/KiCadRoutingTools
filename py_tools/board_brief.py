@@ -338,7 +338,10 @@ def state_section(pcb, pcb_file, skipped):
             'spread_ratio': round(st.spread_ratio, 4),
             'outside_fraction': round(st.outside_fraction, 4),
             'stacked_suspect_refs': list(st.stacked_suspect_refs),
-            'segments': st.segments, 'vias': st.vias}
+            # #1164: has_copper counts teardrop zones too, so a reader
+            # seeing 0 segments and 0 vias can tell what tripped it.
+            'segments': st.segments, 'vias': st.vias,
+            'teardrops': st.teardrops}
 
 
 def pour_census(pcb, pcb_file=None):
