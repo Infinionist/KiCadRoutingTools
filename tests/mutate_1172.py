@@ -8,7 +8,8 @@ angle 0, long axis across the board, and their shells interpenetrated.
 
 NOT COVERED, said here rather than left to be assumed: `_stage1_one`'s undo
 before the pad-only retry (a refused courtyard attempt's notes would leak),
-`_packed_starts`' fit gate (opt-in), `_depth_order`'s deeper-than-the-board
+`_packed_starts`' fit gate and the stage-1 call that hands it `placed` and the
+zones (opt-in; the #1244 rows witness the function, not that call), `_depth_order`'s deeper-than-the-board
 filter, and place_seed's `edge_angle_chosen` summary key, which only a full
 place_seed run reaches. (The #1125 walk's `_t2m` preference is covered, by
 test_983's test_c5 -- the phase-5 verifier found the earlier note wrong.)
@@ -44,6 +45,7 @@ TARGETS = {
 
 T1172 = os.path.join(_TESTS, 'test_1172_edge_angle_and_courtyard.py')
 T983 = os.path.join(_TESTS, 'test_983_seat_grade_bounds.py')
+T1244 = os.path.join(_TESTS, 'test_1244_packed_starts_band.py')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -110,8 +112,8 @@ ROWS = [
      "    if True:\n",
      (T1172,), 'KILLED'),
     ('packed-starts-ignore-the-overlap-gate', 'sd',
-     "    if not any(spans[i][1] > spans[i + 1][0] + 1e-6\n",
-     "    if False and not any(spans[i][1] > spans[i + 1][0] + 1e-6\n",
+     "    if not found:\n        return {}\n",
+     "    if False:\n        return {}\n",
      (T1172,), 'KILLED'),
     ('packed-starts-default-on', 'sd',
      "_stage1_packed_starts = False\n",
@@ -211,6 +213,31 @@ ROWS = [
      "                       if _t2m is not None else\n",
      "                       if False else\n",
      (T983,), 'KILLED'),
+    # -- #1244: the packing reads the band and the zones --
+    ('packing-blind-to-placed-parts', 'sd',
+     "    obstacles = _band_obstacles(state, placed, {c['ref'] for c in specs})\n",
+     "    obstacles = []\n",
+     (T1244,), 'KILLED'),
+    ('packing-blind-to-zones', 'sd',
+     "        z_lo, z_hi = _claim_zone_spans(zones.get(ref), axis_x, r, e_lo, e_hi)\n",
+     "        z_lo, z_hi = e_lo, e_hi\n",
+     (T1244,), 'KILLED'),
+    ('packing-ignores-where-a-zone-lies', 'sd',
+     "        ((row['lo'] + row['hi']) / 2.0 if zones.get(row['ref']) else mid),\n",
+     "        mid,\n",
+     (T1244,), 'KILLED'),
+    ('obstacle-blocks-the-other-side', 'sd',
+     "            if (row['sides'] and osides and not (row['sides'] & osides)):\n",
+     "            if False:\n",
+     (T1244,), 'KILLED'),
+    ('obstacle-blocks-at-any-depth', 'sd',
+     "            if o_n0 < row['n1'] - 1e-6 and o_n1 > row['n0'] + 1e-6:\n",
+     "            if True:\n",
+     (T1244,), 'KILLED'),
+    ('a-container-is-an-obstacle', 'sd',
+     "        if o in containers:\n",
+     "        if False:\n",
+     (T1244,), 'KILLED'),
 ]
 
 sys.path.insert(0, _TESTS)

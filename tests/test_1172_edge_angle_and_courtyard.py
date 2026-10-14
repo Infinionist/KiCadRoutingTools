@@ -687,8 +687,8 @@ class PackedStarts(unittest.TestCase):
     the opt-in switch is on."""
 
     def test_it_is_opt_in(self):
-        """Off by default, an opt-in. It ignores the parts already on the
-        band and the declared zones (#1244)."""
+        """Off by default, an opt-in (`tests/test_1244_packed_starts_band.py`
+        pins the band and zone reading the packing does)."""
         self.assertIs(seeder._stage1_packed_starts, False)
 
     def test_the_north_claims_start_packed_in_seat_order(self):

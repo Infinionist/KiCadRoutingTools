@@ -3157,9 +3157,8 @@ _stage1_choose_edge_angle = True
 #: lose a seat the old ladder found.
 _edge_courtyard_tier = True
 #: #1172: start an edge's claims packed by width when stage 1's equal
-#: fractions would overlap them (`_packed_starts`). Off by default, an
-#: opt-in. It ignores the parts already on the band and the declared zones
-#: (#1244).
+#: fractions would overlap them, a part already on the band, or a claim's
+#: zone (#1244: `_packed_starts`). Off by default, an opt-in.
 _stage1_packed_starts = False
 
 
@@ -3227,13 +3226,7 @@ def _placed_courtyard_hits(state, ref: str, pose, others) -> List[str]:
     if not peers:
         return []
     from . import legality
-    cen = getattr(state, '_cy1172_census', None)
-    if cen is None:
-        try:
-            cen = legality.CourtyardCensus(state.pcb_data, state.pcb_file)
-        except Exception:                                    # noqa: BLE001
-            cen = False
-        state._cy1172_census = cen
+    cen = _cy1172_census(state)
     if not cen:
         return []
     poses = {r: (state.parts[r].x, state.parts[r].y, state.parts[r].rot)
@@ -3310,7 +3303,92 @@ def _depth_order(part, lattice, bounds, edge, reach=0.0) -> List[float]:
     return [x[2] for x in sorted(fit)]
 
 
-def _packed_starts(state, specs, edge, bounds, claim_of) -> Dict[str, float]:
+def _cy1172_census(state):
+    """The `legality.CourtyardCensus` stage 1 prices placed courtyards with,
+    built once per state (`state._cy1172_census`), or False when the board
+    cannot be read. Shared by `_placed_courtyard_hits` and `_band_obstacles`
+    so the rung and the packing read one census."""
+    cen = getattr(state, '_cy1172_census', None)
+    if cen is None:
+        from . import legality
+        try:
+            cen = legality.CourtyardCensus(state.pcb_data, state.pcb_file)
+        except Exception:                                    # noqa: BLE001
+            cen = False
+        state._cy1172_census = cen
+    return cen
+
+
+def _band_obstacles(state, placed, exclude) -> List[Tuple]:
+    """#1244: what is already on the board for an edge's packed starts to
+    pack around -- `[(ref, rect, sides), ...]` for every part in `placed`
+    outside `exclude`, in the two currencies stage 1's rungs refuse a seat
+    in: a placed courtyard (`_placed_courtyard_hits`, the floorplan budget's
+    universe at its grade rect) and placed pad copper (`_shorted_by`, here
+    the pad box).
+
+    A part the courtyard budget leaves out is read by its pads alone (a
+    silk-only body), and a CONTAINER -- a board-sized pin frame or outline
+    with no courtyard drawn (`legality.container_refs`: rp2350's Teensy
+    frame U8) -- is left out entirely: its box is under every seat on the
+    band, so packing around it would refuse the whole edge, while the rungs
+    price its pins one by one. A pad-less part with a courtyard is a locked
+    static obstacle (`quench.LOCK_PADLESS`) and is read by it; one with no
+    courtyard never enters the state at all (glasgow's pile keeps its REF**
+    logos where they were). Under a project that ignores courtyard overlaps
+    every part is read by its pads, as `_placed_courtyard_hits` reads none.
+
+    `placed` is the caller's: stage 1's set, never the pile -- a part still
+    in the pile sits at one meaningless coordinate."""
+    others = sorted(o for o in placed if o not in exclude and o in state.parts)
+    if not others:
+        return []
+    from . import legality
+    gp, excl = {}, {'containers': []}
+    if not getattr(state, 'courtyards_ignored', False):
+        cen = _cy1172_census(state)
+        if cen:
+            poses = {r: (state.parts[r].x, state.parts[r].y, state.parts[r].rot)
+                     for r in others}
+            gp, excl = legality.courtyard_budget_universe(cen, others, poses)
+    containers = set(excl.get('containers') or ())
+    out = []
+    for o in others:
+        if o in containers:
+            continue
+        p = state.parts[o]
+        rect = (p.grade_rect(p.x, p.y, p.rot) if o in gp
+                else p.padbox(p.x, p.y, p.rot))
+        if rect is not None:
+            out.append((o, tuple(rect), frozenset(getattr(p, 'sides', ())
+                                                  or ())))
+    return out
+
+
+def _claim_zone_spans(zones, axis_x, rect, e_lo, e_hi):
+    """#1244: the along-edge interval a claim's RECT may occupy, from the
+    edge span and every declared zone the claim is a member of (`zones`:
+    `[(zone_rect, tolerance), ...]`). A zone the courtyard fits is graded on
+    the courtyard, so the rect must lie in it; one it cannot fit at any
+    rotation is a spec coordinate graded on the courtyard CENTRE
+    (`floorplan.zone_fits_courtyard`, the grade's own decision), so the
+    interval is widened by half the rect. Only the along-edge sides: the
+    side at the outline is the edge rule's to grade (#1174), and the band
+    already puts the part there. `(lo, hi)`; lo > hi -> none fits."""
+    from . import floorplan as _fp
+    lo, hi = e_lo, e_hi
+    w = (rect[2] - rect[0]) if axis_x else (rect[3] - rect[1])
+    for zr, tol in zones or ():
+        za, zb = ((zr[0], zr[2]) if axis_x else (zr[1], zr[3]))
+        if _fp.zone_fits_courtyard(zr, rect, tol):
+            lo, hi = max(lo, za - tol), min(hi, zb + tol)
+        else:
+            lo, hi = max(lo, za - tol - w / 2.0), min(hi, zb + tol + w / 2.0)
+    return lo, hi
+
+
+def _packed_starts(state, specs, edge, bounds, claim_of, placed=(),
+                   zones=None, why=None) -> Dict[str, float]:
     """#1172: width-aware starting positions for one edge's claims, as
     DECLARED fractions (the courtyard centre, of the edge's span), or {} to
     keep stage 1's equal fractions.
@@ -3320,18 +3398,49 @@ def _packed_starts(state, specs, edge, bounds, claim_of) -> Dict[str, float]:
     D-subs edge claims, five north-edge parts started 26 mm apart and the
     last two were written with their pads intersecting (the designer seats
     them 35 mm apart). So, when those equal starts would OVERLAP two claims'
-    courtyards and the claims fit the edge end to end, they start packed in
-    seat order with equal gaps instead. Never when any claim on the edge
-    declares a position (the author placed them), and never when they do not
-    fit -- then the equal starts stand and the courtyard tier and the gate
-    see the crowding, as before.
+    courtyards, they start packed by width instead. Never when any claim on
+    the edge declares a position (the author placed them), and never when
+    they do not fit -- then the equal starts stand and the courtyard tier
+    and the gate see the crowding, as before.
+
+    #1244: the packing reads what the rungs read. `placed` (stage 1's set
+    when the edge is packed: file-locked parts, fixed poses, pad-less
+    artwork and the claims of the edges seated before this one) is read as
+    obstacles on the band (`_band_obstacles`): a placed part blocks a claim
+    when the two share a side and the part reaches the claim's depth band
+    (the normal-axis extent of its seat). And each claim's own declared
+    zones bound it along the edge (`zones`: `{ref: [(rect, tol), ...]}`,
+    `_claim_zone_spans`). The equal starts are replaced when they would put
+    two claims on each other, a claim on a placed part, or a claim outside
+    its zone's span; when none of that happens they stand, as before.
+
+    The packing, in ORDER: claims confined to a zone go where their zone
+    lies -- each is ordered by the midpoint of the centres its zone allows,
+    a free claim by the edge's own midpoint, ties in seat order. So a zone
+    at the far end puts its member after the free claims, where seat order
+    would have put glasgow's 34 mm J3 first and pushed J4 and SW1 off the
+    end. Then the claims are laid in that order with the LARGEST common gap
+    `g` that fits -- to each other, to the edge's ends and to every placed
+    part that blocks them -- each at the first position past its
+    predecessor that clears its blockers and lies in its zone span (found by
+    bisection: a larger gap only ever pushes a claim further on). With no
+    placed part and no zone that is exactly #1172's equal gaps,
+    `g = (span - widths) / (n + 1)`. When no gap fits -- the claims do not
+    fit the free stretches, or a zone cannot be reached in that order --
+    the equal starts stand.
 
     Each part is measured at the angle stage 1 will seat it at
     (`_stage1_geometry_rot` on its claim), so a chosen quarter turn is
-    packed by its turned width."""
+    packed by its turned width. `why`, when given, collects which of the
+    three the equal starts would have done, for the caller's note."""
     if len(specs) < 2 or any(_declared_frac(c) is not None for c in specs):
         return {}
     axis_x = edge in ('north', 'south')
+    e_lo, e_hi, _ = _declared_edge_span(state, bounds, edge)
+    length = e_hi - e_lo
+    if length <= 0:
+        return {}
+    zones = zones or {}
     rows = []
     for k, c in enumerate(specs):
         ref = c['ref']
@@ -3356,23 +3465,82 @@ def _packed_starts(state, specs, edge, bounds, claim_of) -> Dict[str, float]:
         ox, oy = _edge_pose(geo, bounds, edge, frac, overhang)
         r = part.grade_rect(ox, oy, rot)
         a, b = (r[0], r[2]) if axis_x else (r[1], r[3])
-        rows.append((ref, a, b))
-    spans = sorted((a, b) for _r, a, b in rows)
-    if not any(spans[i][1] > spans[i + 1][0] + 1e-6
-               for i in range(len(spans) - 1)):
+        n0, n1 = (r[1], r[3]) if axis_x else (r[0], r[2])
+        z_lo, z_hi = _claim_zone_spans(zones.get(ref), axis_x, r, e_lo, e_hi)
+        if z_hi - z_lo < (b - a) - 1e-9:
+            return {}
+        rows.append({'ref': ref, 'k': k, 'a': a, 'w': b - a, 'n0': n0,
+                     'n1': n1, 'lo': z_lo, 'hi': z_hi,
+                     'sides': frozenset(getattr(part, 'sides', ()) or ())})
+    obstacles = _band_obstacles(state, placed, {c['ref'] for c in specs})
+
+    def _blockers(row):
+        out = []
+        for _o, orc, osides in obstacles:
+            o_a, o_b = (orc[0], orc[2]) if axis_x else (orc[1], orc[3])
+            o_n0, o_n1 = (orc[1], orc[3]) if axis_x else (orc[0], orc[2])
+            if (row['sides'] and osides and not (row['sides'] & osides)):
+                continue
+            if o_n0 < row['n1'] - 1e-6 and o_n1 > row['n0'] + 1e-6:
+                out.append((o_a, o_b))
+        return sorted(out)
+    for row in rows:
+        row['block'] = _blockers(row)
+
+    def _hits(row, x):
+        return any(x < o_b - 1e-6 and x + row['w'] > o_a + 1e-6
+                   for o_a, o_b in row['block'])
+    spans = sorted((row['a'], row['a'] + row['w']) for row in rows)
+    found = [label for label, hit in (
+        ('overlapping', any(spans[i][1] > spans[i + 1][0] + 1e-6
+                            for i in range(len(spans) - 1))),
+        ('on a placed part', any(_hits(row, row['a']) for row in rows)),
+        ('outside a zone', any(row['a'] < row['lo'] - 1e-6
+                               or row['a'] + row['w'] > row['hi'] + 1e-6
+                               for row in rows))) if hit]
+    if not found:
         return {}
-    e_lo, e_hi, _ = _declared_edge_span(state, bounds, edge)
-    length = e_hi - e_lo
-    widths = [b - a for _r, a, b in rows]
-    free = length - sum(widths)
-    if length <= 0 or free < 0:
+    free = length - sum(row['w'] for row in rows)
+    if free < 0:
         return {}
-    gap = free / (len(rows) + 1)
-    out, cursor = {}, gap
-    for (ref, _a, _b), w in zip(rows, widths):
-        out[ref] = (cursor + w / 2.0) / length
-        cursor += w + gap
-    return out
+    mid = (e_lo + e_hi) / 2.0
+    order = sorted(rows, key=lambda row: (
+        ((row['lo'] + row['hi']) / 2.0 if zones.get(row['ref']) else mid),
+        row['k']))
+
+    def _lay(g):
+        """Left ends at common gap `g`, in `order`, or None."""
+        xs, cur = {}, e_lo
+        for row in order:
+            x = max(cur + g, row['lo'])
+            moved = True
+            while moved:
+                moved = False
+                for o_a, o_b in row['block']:
+                    if x < o_b + g - 1e-9 and x + row['w'] + g > o_a + 1e-9:
+                        x, moved = o_b + g, True
+            if x + row['w'] > row['hi'] + 1e-9:
+                return None
+            xs[row['ref']] = x
+            cur = x + row['w']
+        return xs if cur + g <= e_hi + 1e-9 else None
+    g_lo, g_hi = 0.0, free / (len(rows) + 1)
+    best = _lay(g_hi)
+    if best is None:
+        best = _lay(g_lo)
+        if best is None:
+            return {}
+        for _ in range(48):
+            g = (g_lo + g_hi) / 2.0
+            xs = _lay(g)
+            if xs is None:
+                g_hi = g
+            else:
+                g_lo, best = g, xs
+    if why is not None:
+        why.extend(found)
+    return {row['ref']: (best[row['ref']] + row['w'] / 2.0 - e_lo) / length
+            for row in rows}
 
 
 def _stage1_claims(state, by_edge, declared_rot, bounds, notes,
@@ -5638,16 +5806,31 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
 
     def _claim_of(ref):
         return stage1_claims.get(ref, declared_rot.get(ref))
+    # #1244: each claim's declared zones, for the packed starts -- every zone
+    # the ref is a member of, as `rule_zone_containment` grades every one.
+    _zones1244: Dict[str, List[Tuple]] = {}
+    if _stage1_packed_starts:
+        for z in intent.blocks:
+            if z.rect is None:
+                continue
+            for r in blocks.get(z.name, ()):
+                _zones1244.setdefault(r, []).append(
+                    (tuple(z.rect), intent.zone_tolerance(z)))
     for edge in sorted(by_edge):
         specs = sorted(by_edge[edge], key=lambda c: c['ref'])
-        # #1172: width-aware starts when the equal ones would overlap.
-        _packed1172 = (_packed_starts(state, specs, edge, bounds, _claim_of)
+        # #1172: width-aware starts when the equal ones would overlap --
+        # each other, a placed part on the band, or a claim's zone (#1244).
+        _why1244: List[str] = []
+        _packed1172 = (_packed_starts(state, specs, edge, bounds, _claim_of,
+                                      placed=placed, zones=_zones1244,
+                                      why=_why1244)
                        if _stage1_packed_starts else {})
         if _packed1172:
             notes.append(
                 f"stage 1: the {edge} edge's {len(specs)} claims would start "
-                f"overlapping at equal fractions, so they start packed by "
-                f"width ({', '.join(sorted(_packed1172))}) (#1172)")
+                f"{' and '.join(_why1244) or 'overlapping'} at equal "
+                f"fractions, so they start packed by width "
+                f"({', '.join(sorted(_packed1172))}) (#1172, #1244)")
 
         def _stage1_attempt(k, c, _member1125=None, _cy1172=None):
             # #1125: ONE stage-1 attempt at one connector, at the member

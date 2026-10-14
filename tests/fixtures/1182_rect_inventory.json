@@ -133,6 +133,9 @@
  "seeder.py::_already_on_its_edge": {
   "grade_rect": 1
  },
+ "seeder.py::_band_obstacles": {
+  "grade_rect": 1
+ },
  "seeder.py::_band_reading": {
   "grade_rect": 1
  },
