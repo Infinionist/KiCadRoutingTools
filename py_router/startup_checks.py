@@ -23,6 +23,7 @@ module at module level took the entire ~200-test suite down with them.
 """
 
 import importlib
+import importlib.util
 import os
 import re
 import sys
@@ -253,7 +254,32 @@ class Problem(object):
         return f"<Problem {self.name} {self.state} {self.installed}>"
 
 
-def dependency_problems(names=ROUTING_PACKAGES, floors=None):
+_PROBED_MODULE_RE = re.compile(r"\s*(?:from\s+([\w.]+)\s+import\b"
+                               r"|import\s+([\w.]+))")
+
+
+def probed_module(pip_name):
+    """The module `pip_name`'s IMPORT_TESTS statement imports (the submodule,
+    e.g. `scipy.optimize`), read from the statement so there is one table."""
+    stmt = IMPORT_TESTS.get(pip_name, f"import {pip_name}")
+    m = _PROBED_MODULE_RE.match(stmt)
+    return (m.group(1) or m.group(2)) if m else pip_name
+
+
+def _module_present(module_name):
+    """True when `module_name` can be FOUND, without executing it.
+
+    `find_spec` of a dotted name imports its parent packages (cheap: scipy's
+    top level is lazy) but not the module itself. An ImportError raised by a
+    parent is `absent`, exactly as the import probe reads it.
+    """
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def dependency_problems(names=ROUTING_PACKAGES, floors=None, load=True):
     """Return [Problem] for `names`: what cannot be imported, and what is stale.
 
     The two states are separate on purpose. "Missing scipy" and "numpy 1.21.6,
@@ -262,13 +288,28 @@ def dependency_problems(names=ROUTING_PACKAGES, floors=None):
     how a too-old package became invisible: the old probe was `except
     ImportError` and nothing else, so a numpy from before 1.22 passed every
     gate, raised no dialog, and surfaced later as somebody else's error text.
+
+    `load=True` EXECUTES each IMPORT_TESTS statement, which also catches a
+    partial install whose submodule is present but cannot load -- the check
+    the plugin's first-launch dialog and the installer make, where a broken
+    install can still be repaired. `load=False` only FINDS that submodule (and
+    still imports the top-level package to read its version): the CLI gate,
+    paid on every launch, where `from scipy.optimize import ...` alone was
+    half the CPU of a `route.py --help` (1.64 s -> 0.83 s) and no routing
+    module imports it at module scope. An absent package, or a top level that will not import, is
+    `absent` either way, with the same message.
     """
     floors = requirement_floors() if floors is None else floors
     problems = []
     for name in names:
-        try:
-            exec(IMPORT_TESTS.get(name, f"import {name}"), {})
-        except ImportError:
+        if load:
+            try:
+                exec(IMPORT_TESTS.get(name, f"import {name}"), {})
+            except ImportError:
+                problems.append(Problem(name, 'absent',
+                                        floor=floors.get(name)))
+                continue
+        elif not _module_present(probed_module(name)):
             problems.append(Problem(name, 'absent', floor=floors.get(name)))
             continue
         floor = floors.get(name)
@@ -394,11 +435,14 @@ def externally_managed_advice(problems, python_exe):
 
 
 def check_python_dependencies():
-    """Check the libraries routing needs are importable AND new enough.
+    """Check the libraries routing needs are present AND new enough.
 
-    Raises StartupCheckError naming what is missing or stale.
+    Raises StartupCheckError naming what is missing or stale. Finds rather
+    than loads each probed submodule (`dependency_problems(load=False)`): this
+    runs at every CLI launch, and the modules that use scipy import it where
+    they use it.
     """
-    problems = dependency_problems(ROUTING_PACKAGES)
+    problems = dependency_problems(ROUTING_PACKAGES, load=False)
     if problems:
         raise StartupCheckError(format_problems(
             problems,
