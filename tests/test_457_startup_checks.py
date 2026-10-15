@@ -224,6 +224,27 @@ _PROBE_CHILD = textwrap.dedent("""
     print('OPTIMIZE-LOADED', 'scipy.optimize' in sys.modules)
     print('DEEP', sorted(p.name for p in
                          S.dependency_problems(S.ROUTING_PACKAGES)))
+    print('SHALLOW', sorted(p.name for p in S.dependency_problems(
+        S.ROUTING_PACKAGES, load=False)))
+""")
+
+# A numpy whose spec is FOUND but whose top-level import fails. `find_spec`
+# of a top-level name executes nothing, so a shallow probe that only FINDS it
+# passes it, and blames the scipy and shapely that fail behind it.
+_BROKEN_NUMPY = textwrap.dedent("""
+    import importlib.abc, importlib.util, sys
+    class _Broken(importlib.abc.Loader):
+        def create_module(self, spec):
+            return None
+        def exec_module(self, module):
+            raise ImportError('simulated broken numpy build')
+    class _Finder:
+        def find_spec(self, name, path=None, target=None):
+            if name == 'numpy':
+                return importlib.util.spec_from_loader(name, _Broken(),
+                                                       is_package=True)
+            return None
+    sys.meta_path.insert(0, _Finder())
 """)
 
 # A scipy.optimize whose spec is FOUND but whose import fails: the shape of a
@@ -287,6 +308,18 @@ def test_a_broken_submodule_is_the_deep_probes_job():
         f"the deep probe no longer catches a broken submodule: {out}"
 
 
+def test_a_broken_top_level_is_named_by_the_cli_gate():
+    """A numpy that will not import is NAMED by the CLI gate, and the gate
+    reports the same packages the deep probe does -- not scipy and shapely
+    alone, whose pip command would answer 'already satisfied'."""
+    out = _gate_child(_BROKEN_NUMPY)
+    assert 'GATE-REFUSED' in out and 'numpy' in out.split('OPTIMIZE')[0], out
+    deep = next(l for l in out.splitlines() if l.startswith('DEEP '))
+    shallow = next(l for l in out.splitlines() if l.startswith('SHALLOW '))
+    assert "'numpy'" in shallow, f"the CLI gate never names numpy: {out}"
+    assert shallow[len('SHALLOW '):] == deep[len('DEEP '):], out
+
+
 def test_the_probed_module_is_read_from_the_one_table():
     assert startup_checks.probed_module('scipy') == 'scipy.optimize'
     assert startup_checks.probed_module('shapely') == 'shapely.geometry'
@@ -308,6 +341,7 @@ TESTS = [
     test_the_cli_gate_does_not_load_scipy_optimize,
     test_a_missing_scipy_is_absent_through_either_probe,
     test_a_broken_submodule_is_the_deep_probes_job,
+    test_a_broken_top_level_is_named_by_the_cli_gate,
     test_the_probed_module_is_read_from_the_one_table,
 ]
 

@@ -267,13 +267,18 @@ def probed_module(pip_name):
 
 
 def _module_present(module_name):
-    """True when `module_name` can be FOUND, without executing it.
+    """True when `module_name`'s top-level package IMPORTS and the module
+    itself can be FOUND, without executing the module.
 
-    `find_spec` of a dotted name imports its parent packages (cheap: scipy's
-    top level is lazy) but not the module itself. An ImportError raised by a
-    parent is `absent`, exactly as the import probe reads it.
+    The top level is executed (cheap: scipy's is lazy, and the version read
+    imports it anyway) because `find_spec` of a top-level name executes
+    nothing: a numpy that will not import was found here, and the scipy and
+    shapely behind it were blamed instead. `find_spec` of a dotted name then
+    imports its parent packages but not the module itself. An ImportError
+    from either is `absent`, exactly as the import probe reads it.
     """
     try:
+        importlib.import_module(module_name.split('.')[0])
         return importlib.util.find_spec(module_name) is not None
     except (ImportError, ValueError):
         return False
