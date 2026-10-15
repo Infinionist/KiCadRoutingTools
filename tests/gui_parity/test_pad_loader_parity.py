@@ -87,6 +87,46 @@ BOARD = '''(kicad_pcb (version %(ver)s) (generator "pcbnew") (general (thickness
 SHEETS = {'KiCad 6 "Sheet name"': ('Sheet name', 'Sheet file'),
           'KiCad 7 "Sheetname"': ('Sheetname', 'Sheetfile')}
 
+#: Via net propagation (antmicro lpddr4_test_board's stitching vias): pcbnew's
+#: connectivity pass gives a via the one net of the fills and pads it joins,
+#: whatever the file wrote. V1 (net 0) and V2 (SIG, nothing attached) in the
+#: GND fill become GND; V3 (SIG, tracked to a SIG pad) is a conflict and
+#: keeps SIG; V4 is `(free yes)` and keeps net 0. A net-0 via reached only by
+#: a track (pcbnew re-nets it through the track to the track's pad) is not
+#: modelled, and is not in this fixture.
+FILL = '(xy 0 0) (xy 30 0) (xy 30 20) (xy 0 20)'
+VIA_BOARD = '''(kicad_pcb (version 20241229) (generator "pcbnew") (general (thickness 1.6))
+ (paper "A4") (layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))
+ (setup) (net 0 "") (net 1 "GND") (net 2 "SIG")
+ (gr_rect (start -5 -5) (end 60 30) (stroke (width 0.1) (type solid)) (fill none) (layer "Edge.Cuts"))
+ (footprint "L:P" (layer "F.Cu") (at 45 10)
+  (property "Reference" "J1" (at 0 -3 0) (layer "F.Cu") (hide yes) (effects (font (size 1 1) (thickness 0.15))))
+  (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net 2 "SIG")))
+ (via (at 5 5) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 0) (uuid "00000000-0000-0000-0000-000000000001"))
+ (via (at 10 5) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 2) (uuid "00000000-0000-0000-0000-000000000002"))
+ (via (at 15 5) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 2) (uuid "00000000-0000-0000-0000-000000000003"))
+ (segment (start 15 5) (end 45 10) (width 0.2) (layer "F.Cu") (net 2) (uuid "00000000-0000-0000-0000-000000000013"))
+ (via (at 20 5) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (free yes) (net 0) (uuid "00000000-0000-0000-0000-000000000004"))
+ (zone (net 1) (net_name "GND") (layer "B.Cu") (uuid "00000000-0000-0000-0000-0000000000aa") (hatch edge 0.5)
+  (connect_pads (clearance 0.2)) (min_thickness 0.2) (filled_areas_thickness no)
+  (fill yes (thermal_gap 0.5) (thermal_bridge_width 0.5))
+  (polygon (pts %(fill)s))
+  (filled_polygon (layer "B.Cu") (pts %(fill)s)))
+)
+''' % {'fill': FILL}
+#: A KiCad 10 file has no net table and writes an unnetted track `(net "")`
+#: (apple1_aci_card: 2,363 of them), so one path lists net 0 and the other
+#: does not; the comparator must still call them the same net.
+NET0_BOARD = '''(kicad_pcb (version 20260206) (generator "pcbnew") (generator_version "10.0")
+ (general (thickness 1.6)) (paper "A4")
+ (layers (0 "F.Cu" signal) (2 "B.Cu" signal) (25 "Edge.Cuts" user))
+ (setup)
+ (gr_rect (start 0 0) (end 20 20) (stroke (width 0.1) (type solid)) (fill no) (layer "Edge.Cuts"))
+ (segment (start 2 2) (end 8 2) (width 0.2) (layer "F.Cu") (net "") (uuid "00000000-0000-0000-0000-000000000021"))
+ (segment (start 2 6) (end 8 6) (width 0.2) (layer "B.Cu") (net "") (uuid "00000000-0000-0000-0000-000000000022"))
+)
+'''
+
 
 def _reexec_into_kicad():
     for cand in KICAD_PYTHONS:
@@ -191,6 +231,38 @@ def main():
             if any(tp.layers == ['B.Cu', 'B.Mask', 'F.Cu', 'In1.Cu', 'In2.Cu']
                    for tp in tf.pads):
                 witnessed.add('plated pad takes the board copper')
+    # -- via nets: the connectivity pass on load ------------------------------
+    print('\nvia net propagation')
+    path = os.path.join(scratch, 'vias.kicad_pcb')
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write(VIA_BOARD)
+    board = pcbnew.LoadBoard(path)
+    f = parse_kicad_pcb(path)
+    native = {(round(pcbnew.ToMM(t.GetPosition().x), 3), round(pcbnew.ToMM(t.GetPosition().y), 3)):
+              t.GetNetname() for t in board.GetTracks() if t.GetClass() == 'PCB_VIA'}
+    text = {(round(v.x, 3), round(v.y, 3)): (f.nets[v.net_id].name if v.net_id in f.nets else '')
+            for v in f.vias}
+    check(native == {(5.0, 5.0): 'GND', (10.0, 5.0): 'GND', (15.0, 5.0): 'SIG', (20.0, 5.0): ''},
+          'pcbnew re-nets the two stitching vias in the GND fill, not the tracked or free one',
+          str(native))
+    check(text == native, 'every via is on pcbnew\'s net', 'text %s native %s' % (text, native))
+    diffs = compare_pcb_data(build_pcb_data_from_board(board), f)
+    check(not diffs, 'via board: compare_pcb_data is clean', str(diffs[:4]))
+    print('\nKiCad 10 unnetted tracks')
+    path = os.path.join(scratch, 'net0.kicad_pcb')
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write(NET0_BOARD)
+    board = pcbnew.LoadBoard(path)
+    check(board is not None, 'pcbnew loads the KiCad 10 fixture')
+    if board is not None:
+        f = parse_kicad_pcb(path)
+        g = build_pcb_data_from_board(board)
+        check(0 not in f.nets and 0 in g.nets and len(f.segments) == len(g.segments) == 2,
+              'the text model lists no net 0, the pcbnew model does (the case under test)',
+              '%s / %s' % (sorted(f.nets), sorted(g.nets)))
+        diffs = compare_pcb_data(g, f)
+        check(not diffs, 'net-0 board: compare_pcb_data calls both tracks the same net',
+              str(diffs[:3]))
     # A gate whose fixture stopped exercising a rule must fail, not pass.
     check(witnessed >= {'sheet read', 'sheet not read',
                         'plated pad takes the board copper'},

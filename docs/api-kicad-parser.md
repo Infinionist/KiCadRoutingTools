@@ -185,7 +185,7 @@ and is centred on the copper, not the hole, when the pad has a copper offset.
 | `size` | float | Outer (pad) diameter |
 | `drill` | float | Hole diameter |
 | `layers` | List[str] | Layer span, e.g. `['F.Cu', 'B.Cu']` |
-| `net_id` | int | Net ID |
+| `net_id` | int | Net ID, as pcbnew's connectivity pass leaves it on load: a non-free via with no same-net track or pad on it that sits in the zone FILL of exactly one net (on a layer it spans), with no track or pad of another net on it, takes that net whatever the file wrote (`propagate_via_cluster_nets`; antmicro lpddr4_test_board's stitching vias). A via joined to netted copper only by a track is not re-netted here |
 | `uuid` | str | UUID from the file |
 | `free` | bool | `(free yes)` flag — KiCad won't reassign the net from overlapping copper |
 | `tenting_attrs` | Dict[str, str] | Protection spec as `{token: raw inner s-expr}` for `tenting`/`covering`/`plugging`/`capping`/`filling`, e.g. `{'covering': '(front no) (back no)', 'capping': 'no'}`. `{}` = the board specified nothing (KiCad inherits its board default). Read by **both** parse paths (text and `build_pcb_data_from_board`) in the same normalized form. What a via is actually FABRICATED with is resolved token by token against `BoardInfo.via_protection_setup` by `fab_notes.effective_via_protection` (#962) |

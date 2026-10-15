@@ -7047,6 +7047,8 @@ def parse_kicad_pcb(filepath: str, guide_layer: str = "User.1",
     vias = extract_vias(content, name_to_id)
     segments = extract_segments(content, name_to_id)
     zones = extract_zones(content, name_to_id)
+    propagate_via_cluster_nets(content, vias, segments, footprints, zones,
+                               board_info.copper_layers)
     if kicad_version and kicad_version < NEW_OVERBAR_NOTATION:
         _apply_new_overbar_notation(nets, footprints, zones)
     board_info.keepouts = extract_keepouts(content)
@@ -7089,6 +7091,141 @@ def parse_kicad_pcb(filepath: str, guide_layer: str = "User.1",
         paste_apertures=paste_apertures,
         graphic_copper_unmeasured=graphic_copper_unmeasured,
     )
+
+
+def propagate_via_cluster_nets(content: str, vias, segments, footprints, zones,
+                               copper_layers) -> int:
+    """Give a via the net of the copper it connects to, as pcbnew's
+    connectivity pass does on load: a track or via takes its cluster's ORIGIN
+    net -- the one net of the pads and zone fills it touches -- whatever net
+    the file wrote (CN_CONNECTIVITY_ALGO::propagateConnections; a via joins a
+    zone's FILL of any net, since a via can change net).
+
+    antmicro lpddr4_test_board writes nine stitching vias, seven on `(net 0)`
+    and two on `(net 9)` TMS_JTAG, inside GND fills on five inner layers with
+    nothing else on them: pcbnew's bare reader loads them as written,
+    `pcbnew.LoadBoard` and the KiCad GUI as GND, and kicad-cli grades them as
+    GND.
+
+    Bounded so an ordinary board pays almost nothing: only a via with no
+    same-net track end and no same-net pad on it is a candidate (a routed via
+    is never one), a via inside the outline of a pour of its OWN net on a
+    layer it spans is taken to be that pour's stitching via and kept (a via
+    in a void of its own pour is the one case this skips), and a zone's fills
+    are read from the file only when a remaining candidate lies inside the
+    OUTLINE of a zone of another net on a layer it spans. The origin nets are the fills containing the via's centre on its
+    layers, plus -- as conflicts, since they stand for the pads behind them --
+    the nets of other tracks ending in it and of pads whose box covers it. A
+    via with exactly one origin net takes it; otherwise it keeps its own. A
+    `(free yes)` via keeps its net, as in KiCad. Tracks are not re-netted.
+    Returns how many vias changed."""
+    if not vias:
+        return 0
+    order = {ln: i for i, ln in enumerate(copper_layers)}
+
+    def span(v):
+        ix = [order[ln] for ln in (v.layers or []) if ln in order]
+        return set(copper_layers[min(ix):max(ix) + 1]) if ix else set()
+
+    cell = 1.0
+    ends = {}
+    for s in segments:
+        if getattr(s, 'graphic', False):
+            continue
+        for ex, ey in ((s.start_x, s.start_y), (s.end_x, s.end_y)):
+            ends.setdefault((int(ex // cell), int(ey // cell)), []).append((ex, ey, s))
+    # Each netted pad in every cell its bounding square covers, so a via asks
+    # one cell: the pads whose square could hold its centre.
+    pads = {}
+    for fp in footprints.values():
+        for p in fp.pads:
+            if p.net_id:
+                h = max(p.size_x, p.size_y) / 2.0
+                for i in range(int((p.global_x - h) // cell), int((p.global_x + h) // cell) + 1):
+                    for j in range(int((p.global_y - h) // cell), int((p.global_y + h) // cell) + 1):
+                        pads.setdefault((i, j), []).append(p)
+
+    def pads_on(x, y):
+        return pads.get((int(x // cell), int(y // cell)), ())
+
+    def near(table, x, y, reach):
+        k = int(reach // cell) + 1
+        cx, cy = int(x // cell), int(y // cell)
+        for i in range(cx - k, cx + k + 1):
+            for j in range(cy - k, cy + k + 1):
+                yield from table.get((i, j), ())
+
+    copper_zones = [z for z in zones if z.net_id and not getattr(z, 'teardrop', False)
+                    and len(z.polygon) >= 3]
+    zone_box = [(z, (min(p[0] for p in z.polygon), min(p[1] for p in z.polygon),
+                     max(p[0] for p in z.polygon), max(p[1] for p in z.polygon)))
+                for z in copper_zones]
+    todo = []
+    for v in vias:
+        if getattr(v, 'free', False):
+            continue        # `(free yes)`: KiCad never re-nets a free via
+        layers = span(v)
+        r = v.size / 2.0
+        own = any(s.net_id == v.net_id and s.layer in layers
+                  and (ex - v.x) ** 2 + (ey - v.y) ** 2 <= r * r
+                  for ex, ey, s in near(ends, v.x, v.y, r)) if v.net_id else False
+        own = own or (v.net_id and any(
+            p.net_id == v.net_id and abs(p.global_x - v.x) <= max(p.size_x, p.size_y) / 2
+            and abs(p.global_y - v.y) <= max(p.size_x, p.size_y) / 2
+            for p in pads_on(v.x, v.y)))
+        if own:
+            continue
+        over = [z for z, (x0, y0, x1, y1) in zone_box
+                if z.layer in layers and x0 <= v.x <= x1 and y0 <= v.y <= y1
+                and _pt_in_ring(v.x, v.y, z.polygon)]
+        # Inside a pour of its OWN net it is that pour's stitching via: its
+        # own net is an origin, so it cannot change (this skips the GND
+        # vias every human-routed board carries, which used to cost
+        # thunderscope 22 s of fill reading for no change at all).
+        if any(z.net_id == v.net_id for z in over):
+            continue
+        if over:
+            todo.append((v, layers, over))
+    if not todo:
+        return 0
+    want = {z.uuid for _v, _l, over in todo for z in over if z.uuid}
+    fills = {}          # (zone uuid, layer) -> [rings]
+    for body, _in_fp in _iter_zone_blocks(content):
+        if '(filled_polygon' not in body:
+            continue
+        # The zone's own id, from its header, as extract_zones reads it.
+        _hdr = min([i for i in (body.find(t) for t in ('(polygon', '(filled_polygon',
+                                                       '(keepout')) if i != -1]
+                   or [len(body)])
+        um = uuid_or_tstamp(body[:_hdr])
+        if um not in want:
+            continue
+        for fm in re.finditer(r'\(filled_polygon\b', body):
+            fb = body[fm.start():find_matching_paren(body, fm.start())]
+            lm = re.search(r'\(layer\s+"([^"]+)"\)', fb)
+            ring = [(float(x), float(y)) for x, y in
+                    re.findall(r'\(xy\s+([-\d.]+)\s+([-\d.]+)\)', fb)]
+            if lm and len(ring) >= 3:
+                fills.setdefault((um, lm.group(1)), []).append(ring)
+    changed = 0
+    for v, layers, over in todo:
+        origin = {z.net_id for z in over
+                  if any(_pt_in_ring(v.x, v.y, ring)
+                         for ring in fills.get((z.uuid, z.layer), ()))}
+        if not origin:
+            continue
+        r = v.size / 2.0
+        origin |= {s.net_id for ex, ey, s in near(ends, v.x, v.y, r)
+                   if s.net_id and s.layer in layers
+                   and (ex - v.x) ** 2 + (ey - v.y) ** 2 <= r * r}
+        origin |= {p.net_id for p in pads_on(v.x, v.y)
+                   if abs(p.global_x - v.x) <= max(p.size_x, p.size_y) / 2
+                   and abs(p.global_y - v.y) <= max(p.size_x, p.size_y) / 2
+                   and ('*.Cu' in p.layers or layers & set(p.layers))}
+        if len(origin) == 1 and v.net_id not in origin:
+            v.net_id = origin.pop()
+            changed += 1
+    return changed
 
 
 def _apply_new_overbar_notation(nets, footprints, zones) -> None:
@@ -9619,6 +9756,11 @@ def compare_pcb_data(from_board: 'PCBData', from_file: 'PCBData', tolerance: flo
         # GRAPHICS (#337, no pads/tracks anchor them), pcbnew's renumbered
         # code and the file's net-table id legitimately differ (openstint
         # /A-: board 3 vs file 14) while naming the same net.
+        # Net 0 is "no net" on both, whether or not a path lists it (a KiCad
+        # 9 file without the net-0 entry: apple1_aci_card's 2,363 unnetted
+        # tracks read '' on one side and 0 on the other).
+        if not nid:
+            return ''
         n = pcb.nets.get(nid)
         return n.name if n is not None else nid
 
