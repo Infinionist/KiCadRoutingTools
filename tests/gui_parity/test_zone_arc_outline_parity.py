@@ -204,9 +204,18 @@ def write_board(path, bodies, extra=''):
                  + extra + ')\n')
 
 
+def _iu(v):
+    """mm -> nm, halves away from zero as KiROUND does. Local, so the gate
+    also runs (and fails by its reason) against a parser without the port."""
+    a = abs(v * 1e6)
+    r = int(a)
+    if a - r >= 0.5:
+        r += 1
+    return r if v >= 0 else -r
+
+
 def nm(poly):
-    from kicad_parser import _kiround
-    return [(_kiround(x * 1e6), _kiround(y * 1e6)) for x, y in poly]
+    return [(_iu(x), _iu(y)) for x, y in poly]
 
 
 def native(board):
