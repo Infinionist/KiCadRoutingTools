@@ -241,6 +241,26 @@ def _drills_too_close(vias, hole_to_hole: float) -> bool:
     return False
 
 
+def escape_has_routable_layer(pad, config) -> bool:
+    """Whether a #666 escape for `pad` could join two layers this run routes.
+
+    An escape lays its dogbone trace on the pad's own layer and a via whose
+    only purpose is ANOTHER layer. A run restricted by --layers carries the
+    board's other copper layers in `config.layers` at FORBIDDEN cost (< 0):
+    they block, and a through via may span them, but nothing is routed on
+    them. So when the pad's layer is forbidden, or is the only routable
+    layer, an escape can only lay copper whose purpose is a forbidden layer:
+    the via reaches no routed copper, and the failed net it was laid for
+    ships it (#1260: `--layers F.Cu` left a via-in-pad down to B.Cu on each
+    of SIG's pads). A through via between two routable layers that happens
+    to span a forbidden one is still allowed."""
+    from net_queries import expand_pad_layers
+    routable = {l for l, c in zip(config.layers, config.get_layer_costs())
+                if c >= 0}
+    own = set(expand_pad_layers(pad.layers or [], list(config.layers)))
+    return bool(own & routable) and bool(routable - own)
+
+
 def _withdraw_unused_escapes(pcb_data, net_id, tap_results, config):
     """The #666 escape vias a now-connected net did not use, taken back out.
 
@@ -1201,6 +1221,12 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                          and abs(s.end_y - _py) < _reach)
                     for s in pcb_data.segments)
                 if not _bare:
+                    continue
+                if not escape_has_routable_layer(_pad, config):
+                    print(f"    bare-ball escape: {_pad.component_ref}."
+                          f"{_pad.pad_number} skipped (no routable layer "
+                          f"for its via to reach besides the pad's own; "
+                          f"the rest are outside --layers)")
                     continue
                 _cu = [l for l in _pad.layers if l.endswith('.Cu')]
                 try:
