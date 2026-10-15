@@ -255,6 +255,12 @@ plane net (never offered to `--rip-existing-nets`, handed to the plane
 finalize), and a GND teardrop on F.Cu read as "GND already pours on F.Cu",
 which route_planes replaced, or kept instead of the plane it was asked for.
 
+A zone on no copper layer -- a solder-mask or paste opening drawn as a zone
+(`(layers "*.Mask")`, `(layers "F.Mask" "F.Paste")`), a silkscreen fill -- is
+not copper, and neither front puts it in `pcb.zones` (pcbnew strips its net on
+load). A zone listing copper among other layers is modelled on its copper
+layers only.
+
 ### `BoardInfo`
 
 | Field | Type | Meaning |

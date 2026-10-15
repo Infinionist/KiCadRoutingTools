@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A zone outline parses to the vertices pcbnew loads.
+"""A zone parses to what pcbnew loads: its outline's vertices, and whether it is copper at all.
 
 The counts and coordinates below were read off pcbnew 10.0.0 loading the
 same text (`tests/gui_parity/test_zone_closing_vertex_parity.py` and
@@ -17,6 +17,8 @@ this file runs without KiCad.
   3. Witnesses through the extractors: an all-arc `F&B.Cu` zone is one Zone
      per layer, not dropped, and an arc rule area reaches extract_keepouts.
   4. KiROUND rounds halves away from zero (Python's round does not).
+  5. A zone on no copper layer (mask, paste, silkscreen) is not modelled;
+     one listing a copper layer among others is, on that layer only.
 
     python3 tests/test_zone_outline_points.py
 """
@@ -134,6 +136,18 @@ check("halves round away from zero, unlike Python's round",
       == (3, -3, 4, 0))
 check("it clamps to the int range like KiROUND<double, int>",
       _kiround(3e9) == 2 ** 31 - 1 and _kiround(-3e9) == -2 ** 31)
+
+print("5. a zone on no copper layer is not copper")
+text = '(kicad_pcb\n\t(layers (0 "F.Cu" signal) (2 "B.Cu" signal))\n' + ''.join(
+    '\t(zone\n\t\t(net 1)\n\t\t(net_name "GND")\n\t\t%s\n'
+    '\t\t(uuid "00000000-0000-4000-8000-%012d")\n\t\t(priority %d)\n'
+    '\t\t(polygon\n\t\t\t(pts\n\t\t\t\t(xy 0 0) (xy 1 0) (xy 1 1)\n\t\t\t)\n\t\t)\n\t)\n'
+    % (clause, i, i) for i, clause in enumerate(
+        ['(layers "*.Mask")', '(layers "F.Mask" "F.Paste")', '(layer "F.SilkS")',
+         '(layer "B.Mask")', '(layers "F.Cu" "F.Mask")', '(layer "B.Cu")'])) + ')\n'
+got = sorted((z.priority, z.layer) for z in extract_zones(text))
+check("only the copper layers are modelled: F.Cu of the mixed zone, and B.Cu",
+      got == [(4, 'F.Cu'), (5, 'B.Cu')], f"{got}")
 
 if failures:
     print(f"\nFAILED: {failures}")

@@ -6284,8 +6284,10 @@ def extract_zones(content: str, name_to_id: Dict[str, int] = None) -> List[Zone]
                 net_name_v10 = _unescape_kicad_string(net_match_v10.group(1))
             else:
                 # No net clause at all: a NO-NET copper pour (net 0). It still
-                # pours real copper (nitrokey/vfo_ctrl decorative fills), and
-                # pcbnew keeps it -- dropping it under-modelled the board.
+                # pours real copper (nitrokey decorative fills), and pcbnew
+                # keeps it -- dropping it under-modelled the board. (vfo_ctrl's
+                # net-less zones are F.Mask / B.Mask openings, not copper; the
+                # non-copper skip below drops those on both fronts.)
                 net_id = 0
 
         # Extract net name. Unescaped like every other net_name in the model
@@ -6317,6 +6319,12 @@ def extract_zones(content: str, name_to_id: Dict[str, int] = None) -> List[Zone]
         # both spellings (#369 A5).
         layer_match = re.search(r'\(layer\s+"?([^")\s]+)"?\)', zone_header)
         if layer_match:
+            # A zone on one NON-copper layer (a mask opening, a silkscreen
+            # fill) is not copper -- pcbnew strips its net on load -- and
+            # pcb.zones is copper: skip it, as a (layers ...) zone naming no
+            # copper layer always was, and as build_pcb_data_from_board does.
+            if not layer_match.group(1).endswith('.Cu'):
+                continue
             zone_layers = [layer_match.group(1)]
         else:
             layers_match = re.search(r'\(layers\s+([^)]+)\)', zone_header)
@@ -8689,9 +8697,21 @@ def _extract_zones_from_pcbnew(board, to_mm, get_layer_name):
                 zone_layers = [get_layer_name(l) for l in zone.GetLayerSet().Seq()
                                if _pcbnew.IsCopperLayer(l)]
             except Exception:
-                zone_layers = []
+                zone_layers = None
+                try:
+                    import pcbnew as _pcbnew
+                    if _pcbnew.IsCopperLayer(zone.GetLayer()):
+                        zone_layers = [get_layer_name(zone.GetLayer())]
+                except Exception:
+                    zone_layers = [get_layer_name(zone.GetLayer())]
+            # A zone on no copper layer -- a solder-mask or paste opening drawn
+            # as a zone, `(layers "*.Mask")`, `(layer "F.SilkS")` -- is not
+            # copper, and pcbnew gives it no net. It used to reach the model
+            # on the multi-layer fallback's UNDEFINED layer, as a net-0 "pour"
+            # the text parser never had (allwinner_a13_som, simplebldc_inv:
+            # 8). Neither front models it.
             if not zone_layers:
-                zone_layers = [get_layer_name(zone.GetLayer())]
+                continue
 
             # Extract polygon outline
             polygon = []
