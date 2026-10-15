@@ -973,6 +973,78 @@ def _cap_conflicts(pcb_data, fan_vias, net_id, config) -> dict:
     return conf
 
 
+def _cap_move_net_names(pcb_data, moves) -> list:
+    """Sorted names of the nets of every queued cap move's pads (#666)."""
+    ids = set()
+    for mv in moves or []:
+        ids.update(mv.get('net_ids') or [])
+    return sorted(pcb_data.nets[n].name for n in ids if n in pcb_data.nets)
+
+
+def mirror_cap_moves(pcb_data, moves) -> list:
+    """#666: mirror queued scoped cap moves into `pcb_data` -- the footprint's
+    x/y and every pad's global position, by the move's offset. The retry
+    queues the cap's OWN rotation, so a translation is the whole move.
+
+    Idempotent: the targets are absolute, so a second call moves nothing.
+    That is what lets the GUI mirror at the CLI's sequence point and again
+    when its applier moves the live footprint. A footprint that draws the
+    board outline (#829) stays where it is, as `write_placed_output` refuses
+    to move it. Returns the sorted names of the queued caps' nets: the scope
+    of the re-weld."""
+    for mv in moves or []:
+        fp = pcb_data.footprints.get(mv['reference'])
+        if fp is None or getattr(fp, 'owns_board_outline', False):
+            continue
+        dx = mv['new_x'] - fp.x
+        dy = mv['new_y'] - fp.y
+        fp.x = mv['new_x']
+        fp.y = mv['new_y']
+        for p in fp.pads:
+            p.global_x += dx
+            p.global_y += dy
+    return _cap_move_net_names(pcb_data, moves)
+
+
+def cap_move_reweld_spec(config, pcb_data, moves) -> dict:
+    """#666: the queued cap moves and the re-weld oracle's parameters,
+    resolved from THIS run's config.
+
+    route.py's file-mode block builds its `oracle_reconnect` call from this,
+    and on the GUI front batch_route posts it as
+    `results_data['pending_cap_moves']`, where the Route tab's applier moves
+    the live footprint and runs the staged-save oracle with it
+    (`gui_utils.run_kicad_oracle_on_live_board`). One builder, so the two
+    re-welds cannot be priced differently. Each move gains `net_names`. The
+    per-net maps travel by NAME (#1133, #1137): the oracle re-parses its
+    board, and the GUI's staged save numbers its nets afresh. The widths are
+    the power widths only, as the CLI's re-weld has always passed."""
+    from kicad_oracle import oracle_net_widths_by_name
+    out = []
+    for mv in moves or []:
+        m = dict(mv)
+        m['net_names'] = _cap_move_net_names(pcb_data, [mv])
+        out.append(m)
+    return {
+        'moves': out,
+        'nets': _cap_move_net_names(pcb_data, moves),
+        'clearance': config.clearance,
+        'track_width': config.track_width,
+        'via_size': config.via_size,
+        'via_drill': config.via_drill,
+        'grid_step': config.grid_step,
+        'track_via_clearance': config.clearance,
+        'hole_to_hole_clearance': config.hole_to_hole_clearance,
+        'layer_clearances': dict(config.layer_clearances or {}),
+        'layers': list(config.layers or []),
+        'layer_costs': (list(config.layer_costs)
+                        if getattr(config, 'layer_costs', None) else []),
+        'net_widths_by_name': oracle_net_widths_by_name(
+            config, pcb_data.nets, fields=('power_net_widths',)),
+        'net_clearances_by_name': config.net_clearances_by_name(pcb_data.nets),
+    }
+
+
 def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                        progress_callback=None, cancel_check=None):
     """Scoped fine-parameter rescue for every still-failed/partial net.
@@ -1146,7 +1218,10 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                         # allow a MOVABLE cap conflict -- but ship it ONLY
                         # with a verified relocation for the cap, recorded
                         # for the post-write scoped cap move + re-weld
-                        # (route.py applies it; the full clearance step is
+                        # (route.py applies it to the written file; on the
+                        # GUI the Route tab's applier moves the live
+                        # footprint from results_data['pending_cap_moves'];
+                        # the full clearance step is
                         # pre-route only, the scoped move is not). Gate on
                         # NET-FILTERED emptiness: the raw lists can carry
                         # partial copper of a failed escape.

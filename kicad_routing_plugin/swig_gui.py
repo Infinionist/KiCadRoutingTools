@@ -4050,6 +4050,23 @@ class RoutingDialog(wx.Dialog):
             if cleared:
                 print(f"Cleared {cleared} graphic(s) from the guide/keepout User layer(s)")
 
+        # #666 scoped cap move -- the GUI twin of route.py's file-mode block
+        # (write_placed_output + the pcb_data mirror + the re-weld oracle).
+        # The bare-ball rescue shipped an escape via onto a MOVABLE cap with a
+        # relocation verified at rescue time. The engine mirrored it into the
+        # model where the CLI does and posted it here, because only this
+        # applier holds the live board. Move the cap BEFORE the refill, so the
+        # pours knock out around its new pose; its nets are re-welded below,
+        # after the refill and before the plane-finalize fallback oracle --
+        # the CLI's order (its re-weld precedes the finalize).
+        _cmv = results_data.get('pending_cap_moves') or None
+        _cmv_applied = []
+        if _cmv and _cmv.get('moves'):
+            from .gui_utils import apply_cap_moves_to_live_board
+            self._apply_status("Moving the cap(s) off the rescue via(s)...")
+            _cmv_applied = apply_cap_moves_to_live_board(
+                board, self.pcb_data, _cmv['moves'])
+
         # Re-fill plane zones so any pour pulls back around the copper we just
         # routed (#362), then rebuild connectivity -- refill_all_zones does
         # both, in that order. The refill must come FIRST: a bare
@@ -4061,6 +4078,58 @@ class RoutingDialog(wx.Dialog):
         _rf = refill_all_zones(board)
         if _rf:
             print(f"Refilled {_rf} zone(s) around the new copper")
+
+        # #666 re-weld: the CLI's oracle_reconnect on the moved cap's nets,
+        # as the staged-save oracle on the live board with the engine's spec
+        # (net_rescue.cap_move_reweld_spec, the one the CLI builds its call
+        # from). Refill afterwards: welds change the fill.
+        _cmv_nets = sorted({n for _m in _cmv_applied
+                            for n in (_m.get('net_names') or [])})
+        if _cmv_nets:
+            try:
+                from .gui_utils import run_kicad_oracle_on_live_board
+                self._apply_status("Re-welding the moved cap(s)...")
+                _orc666 = run_kicad_oracle_on_live_board(
+                    board, _cmv_nets,
+                    clearance=_cmv.get('clearance'),
+                    track_width=_cmv.get('track_width'),
+                    via_size=_cmv.get('via_size'),
+                    via_drill=_cmv.get('via_drill'),
+                    grid_step=_cmv.get('grid_step'),
+                    track_via_clearance=_cmv.get('track_via_clearance'),
+                    hole_to_hole_clearance=_cmv.get('hole_to_hole_clearance'),
+                    layer_clearances=_cmv.get('layer_clearances'),
+                    layers=_cmv.get('layers'),
+                    layer_costs=_cmv.get('layer_costs'),
+                    net_widths_by_name=_cmv.get('net_widths_by_name'),
+                    net_clearances_by_name=_cmv.get('net_clearances_by_name'),
+                    progress_callback=(
+                        lambda c, t, m: self._apply_status(
+                            f"{m} ({c}/{t})" if t else m)))
+                if _orc666 is None:
+                    print("  #666 cap-move re-weld: DID NOT RUN -- no "
+                          "kicad-cli, or the staged-save oracle failed (see "
+                          "above); the re-weld is unchecked")
+                elif not _orc666.get('available'):
+                    print(f"  #666 cap-move re-weld: DID NOT RUN -- "
+                          f"{_orc666.get('why', 'no reason recorded')}; the "
+                          f"re-weld is unchecked")
+                else:
+                    print(f"  #666 cap-move re-weld: "
+                          f"{_orc666.get('links_routed', 0)} link(s) welded, "
+                          f"{_orc666.get('remaining', -1)} remaining")
+                if _orc666 is not None:
+                    self._apply_status("Refilling zones after the cap-move "
+                                       "re-weld...")
+                    # refill FIRST (it rebuilds connectivity itself): a bare
+                    # BuildConnectivity would flip the weld's new vias to the
+                    # stale fills' nets.
+                    _rf3 = refill_all_zones(board)
+                    if _rf3:
+                        print(f"Refilled {_rf3} zone(s) after the cap-move "
+                              f"re-weld")
+            except Exception as e:
+                print(f"(#666 cap-move re-weld skipped: {e})")
 
         # Plane-finalize ORACLE leg (#562) -- FALLBACK PATH ONLY.
         # Normally the finalize runs the oracle IN-RUN (stage_board_fn above),

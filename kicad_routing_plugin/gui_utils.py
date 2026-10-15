@@ -1002,6 +1002,69 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
     return _clamped
 
 
+def apply_cap_moves_to_live_board(board, pcb_data, moves):
+    """#666's scoped cap move on the LIVE board.
+
+    The GUI twin of route.py's file-mode `write_placed_output(output_file,
+    output_file, moves)` and its pcb_data mirror: the bare-ball rescue shipped
+    an escape via onto a MOVABLE cap with a relocation verified at rescue time,
+    and batch_route posts the move as results_data['pending_cap_moves']
+    because only the applier holds the live board. Each move names a PCBData
+    key (#726: `C5~2` for a duplicated reference), resolved through
+    `live_footprints_by_key`. The footprint is set to (new_x, new_y); its
+    rotation is the cap's own and is set only if it differs. The applied moves
+    are mirrored into `pcb_data` with the CLI's own mirror
+    (`net_rescue.mirror_cap_moves`, idempotent). A part that draws the board
+    outline is not moved (#829, where write_placed_output raises), and a
+    reference the live board lacks is named rather than skipped silently.
+
+    Returns the moves applied (each carrying its `net_names`, the re-weld
+    scope). Never raises: like the CLI's block, a failed move is reported and
+    the apply carries on.
+    """
+    moves = list(moves or [])
+    if not moves:
+        return []
+    try:
+        import pcbnew
+        from kicad_parser import mm_to_iu
+        from net_rescue import mirror_cap_moves
+        print(f"  #666 scoped cap move: relocating {len(moves)} cap(s) off "
+              f"rescue via(s): " + ', '.join(m['reference'] for m in moves))
+        live = live_footprints_by_key(board)
+        applied, skipped = [], []
+        for mv in moves:
+            ref = mv['reference']
+            fp = live.get(ref) or board.FindFootprintByReference(ref)
+            pd = (pcb_data.footprints.get(ref)
+                  if pcb_data is not None else None)
+            if fp is None:
+                skipped.append(f"{ref} (not on the live board)")
+                continue
+            if getattr(pd, 'owns_board_outline', False):
+                skipped.append(f"{ref} (draws the board outline, #829)")
+                continue
+            rot = mv.get('new_rotation')
+            if rot is not None and abs(
+                    (fp.GetOrientationDegrees() - rot + 180.0) % 360.0
+                    - 180.0) > 1e-6:
+                fp.SetOrientationDegrees(rot)
+            # mm_to_iu, never FromMM: FromMM truncates (#493).
+            fp.SetPosition(pcbnew.VECTOR2I(mm_to_iu(mv['new_x']),
+                                           mm_to_iu(mv['new_y'])))
+            applied.append(mv)
+        if skipped:
+            print(f"  #666 scoped cap move: NOT MOVED: {', '.join(skipped)}")
+        if applied:
+            board.SetModified()
+            if pcb_data is not None:
+                mirror_cap_moves(pcb_data, applied)
+        return applied
+    except Exception as e:
+        print(f"  (scoped cap move failed: {e})")
+        return []
+
+
 def run_kicad_oracle_on_live_board(board, net_names, *, clearance,
                                    track_width, via_size, via_drill,
                                    grid_step, track_via_clearance=None,
@@ -1020,7 +1083,8 @@ def run_kicad_oracle_on_live_board(board, net_names, *, clearance,
     stranded-fragment deletions, #508 finding 15) back onto the live board.
 
     Shared core for the planes tab's post-apply recheck and the signal tab's
-    plane-finalize oracle leg -- one implementation, both fronts. Callers
+    plane-finalize oracle leg and #666 cap-move re-weld -- one
+    implementation, both fronts. Callers
     refill zones AFTER this returns (the routed links change the fill).
     Returns the oracle result dict, or None when skipped (no kicad-cli).
     Skips quietly on any error: the recheck is an earner, never a blocker.

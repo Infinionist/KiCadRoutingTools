@@ -5089,6 +5089,20 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             # every key here is a list (`_empty_results_data`).
             'length_match_groups': summary.get('length_match_groups', []),
         }
+        # #666 scoped cap move, GUI front. The CLI applies a queued move to
+        # the file it is about to write and mirrors it into pcb_data HERE,
+        # before the plane finalize and the reconciliation read the board.
+        # There is no file on this front, so mirror the model at the same
+        # point -- those passes then price the cap where the CLI's do -- and
+        # leave the live footprint to the applier, which gets the moves and
+        # their re-weld spec as results_data['pending_cap_moves'] (posted at
+        # the end of the run, once every sub-run has queued its own).
+        # Outermost run only: this branch also runs in the CLI's nested
+        # in-memory sub-runs (the plane finalize's repairs share its
+        # pcb_data), where a mirror would move the model and not the file.
+        if final_reconcile and getattr(pcb_data, '_pending_cap_moves', None):
+            from net_rescue import mirror_cap_moves
+            mirror_cap_moves(pcb_data, pcb_data._pending_cap_moves)
     else:
         # Write output file using extracted output_writer module
         wrote = write_routed_output(
@@ -5278,45 +5292,34 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             # clearance step must NOT rerun post-route (strands every
             # moved cap's joints, measured 6->13); this moves ONLY the
             # conflicting cap(s).
+            # The GUI front has no file: it mirrors the model at this same
+            # point (the `if return_results:` branch above) and its applier
+            # moves the live footprint and re-welds from the SAME spec,
+            # results_data['pending_cap_moves'] (cap_move_reweld_spec).
             _capmv = getattr(pcb_data, '_pending_cap_moves', None)
             if _capmv:
                 try:
                     from placement.writer import write_placed_output
+                    from net_rescue import (mirror_cap_moves,
+                                            cap_move_reweld_spec)
                     print(f"  #666 scoped cap move: relocating "
                           f"{len(_capmv)} cap(s) off rescue via(s): "
                           + ', '.join(m['reference'] for m in _capmv))
                     if write_placed_output(output_file, output_file,
                                            _capmv):
-                        _mvnets = set()
-                        for _mv in _capmv:
-                            _fpmv = pcb_data.footprints.get(
-                                _mv['reference'])
-                            if _fpmv is not None:
-                                _dxm = _mv['new_x'] - _fpmv.x
-                                _dym = _mv['new_y'] - _fpmv.y
-                                _fpmv.x = _mv['new_x']
-                                _fpmv.y = _mv['new_y']
-                                for _pmv in _fpmv.pads:
-                                    _pmv.global_x += _dxm
-                                    _pmv.global_y += _dym
-                            _mvnets.update(_mv.get('net_ids') or [])
-                        _mvnames = sorted(
-                            pcb_data.nets[n].name for n in _mvnets
-                            if n in pcb_data.nets)
+                        _mvnames = mirror_cap_moves(pcb_data, _capmv)
                         if _mvnames:
-                            from kicad_oracle import (
-                                oracle_reconnect, oracle_net_widths_by_name)
+                            from kicad_oracle import oracle_reconnect
+                            _cspec = cap_move_reweld_spec(config, pcb_data,
+                                                          _capmv)
                             _cap_cfg = GridRouteConfig(
-                                clearance=config.clearance,
-                                track_width=config.track_width,
-                                via_size=config.via_size,
-                                via_drill=config.via_drill,
-                                grid_step=config.grid_step,
-                                layers=list(config.layers),
-                                layer_costs=(list(config.layer_costs)
-                                             if getattr(config,
-                                                        'layer_costs',
-                                                        None) else []))
+                                clearance=_cspec['clearance'],
+                                track_width=_cspec['track_width'],
+                                via_size=_cspec['via_size'],
+                                via_drill=_cspec['via_drill'],
+                                grid_step=_cspec['grid_step'],
+                                layers=list(_cspec['layers']),
+                                layer_costs=list(_cspec['layer_costs']))
                             # #1137: the board's .kicad_dru layer rules,
                             # installed exactly as the finalize leg's _ocfg
                             # installs them (no board, so no design-rules
@@ -5324,21 +5327,20 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                             # by NAME -- the oracle re-parses the file.
                             from kicad_dru import install_layer_clearances
                             install_layer_clearances(
-                                _cap_cfg, dict(config.layer_clearances or {}),
+                                _cap_cfg, dict(_cspec['layer_clearances']),
                                 input_file, None)
                             _orc_cap = oracle_reconnect(
                                 output_file, _mvnames, _cap_cfg,
-                                track_via_clearance=config.clearance,
+                                track_via_clearance=(
+                                    _cspec['track_via_clearance']),
                                 hole_to_hole_clearance=(
-                                    config.hole_to_hole_clearance),
+                                    _cspec['hole_to_hole_clearance']),
                                 project_from=input_file,
                                 net_clearances_by_name=(
-                                    config.net_clearances_by_name(
-                                        pcb_data.nets)),
+                                    _cspec['net_clearances_by_name']),
                                 # #1133: the power widths, by NAME as well
-                                net_widths_by_name=oracle_net_widths_by_name(
-                                    config, pcb_data.nets,
-                                    fields=('power_net_widths',)))
+                                net_widths_by_name=(
+                                    _cspec['net_widths_by_name']))
                             # The FOURTH oracle_reconnect consumer, and the one
                             # #713 item 3's first pass missed. Without this it
                             # printed "0 link(s) welded, -1 remaining" for an
@@ -5842,6 +5844,24 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                                     'segments_to_remove'),
                                 vias_to_remove=results_data.get(
                                     'vias_to_remove')):
+                            # #666: the CLI's written board already carries
+                            # the scoped cap move (its file-mode block runs
+                            # before this finalize), so the oracle must not
+                            # see the cap still sitting on the rescue via.
+                            # A refused write (#829) leaves the staged board
+                            # as it was, as the CLI's refusal leaves its file.
+                            _q9 = getattr(pcb_data, '_pending_cap_moves',
+                                          None)
+                            if _q9:
+                                try:
+                                    import _placer_path  # noqa: F401
+                                    from placement.writer import \
+                                        write_placed_output as _wpo9
+                                    _wpo9(_stg9, _stg9, list(_q9))
+                                except Exception as _e9m:
+                                    print(f"  Plane finalize (GUI): scoped "
+                                          f"cap move not staged for the "
+                                          f"oracle leg ({_e9m})")
                             _orc_file9 = _stg9
                 except Exception as _e9:
                     print(f"  Plane finalize (GUI): could not stage a board "
@@ -6799,7 +6819,15 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             _RECONCILE_RAISED[0] = True
             print(f"{RED}  final reconciliation pass failed: {_e}{RESET}")
 
-
+    # #666, GUI front: a cap move the reconciliation's (or the finalize's)
+    # in-memory sub-runs queued on this shared board. The CLI's reconcile
+    # sub-run applies its own to the file it writes; mirror the model the
+    # same way before the passes below read it (idempotent for the moves
+    # mirrored at the write).
+    if (return_results and final_reconcile
+            and getattr(pcb_data, '_pending_cap_moves', None)):
+        from net_rescue import mirror_cap_moves
+        mirror_cap_moves(pcb_data, pcb_data._pending_cap_moves)
 
     # #589 post-reconciliation oracle RE-AUDIT (KICAD_FINALIZE_REAUDIT=1,
     # experiment): the finalize's oracle leg audits BEFORE the final
@@ -7264,6 +7292,21 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     except Exception:
         batch_route._forced_link_hints = {}
         batch_route._forced_link_landed = []
+
+    # #666 scoped cap move, GUI front: hand the applier every move queued on
+    # this board -- the main pass's and every in-memory sub-run's, which share
+    # its ledger -- with the re-weld spec the CLI's file-mode block builds its
+    # oracle call from. The Route tab moves the live footprint and runs the
+    # staged-save oracle on the moved cap's nets (swig_gui). Posted BEFORE the
+    # improvement gate, so a rejected run's empty change-set withholds the
+    # move together with the copper that needed it.
+    if return_results and final_reconcile:
+        _q666 = list(getattr(pcb_data, '_pending_cap_moves', None) or [])
+        _rd666 = locals().get('results_data')
+        if _q666 and _rd666 is not None:
+            from net_rescue import cap_move_reweld_spec
+            _rd666['pending_cap_moves'] = cap_move_reweld_spec(
+                config, pcb_data, _q666)
 
     # ---- IMPROVEMENT GATE (#600) -------------------------------------------
     # Never ship a board this run made WORSE. route.py may rip already-routed
