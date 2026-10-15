@@ -161,12 +161,14 @@ def main():
           abs(a['via'] - 0.3) < 1e-9 and abs(a['drill'] - 0.2) < 1e-9, info)
 
     print("-- 4. both fronts read the shared rule --")
-    check("fanout_gui._apply_fanout_results calls fanout_written_floors",
+    # fanout_fix_kwargs is the one fanout writeback decision, built on
+    # fanout_written_floors (#1195), which both mains and the tab call.
+    check("fanout_gui._apply_fanout_results calls fanout_fix_kwargs",
           _calls(os.path.join(REPO, 'kicad_routing_plugin', 'fanout_gui.py'),
-                 '_apply_fanout_results', 'fanout_written_floors'))
-    check("qfn_fanout's main calls fanout_written_floors",
+                 '_apply_fanout_results', 'fanout_fix_kwargs'))
+    check("qfn_fanout's main calls fanout_fix_kwargs",
           _calls(os.path.join(REPO, 'py_router', 'qfn_fanout', '__init__.py'),
-                 'main', 'fanout_written_floors'))
+                 'main', 'fanout_fix_kwargs'))
 
     for d in tmpdirs:
         shutil.rmtree(d, ignore_errors=True)

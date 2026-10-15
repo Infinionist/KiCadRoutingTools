@@ -116,6 +116,37 @@ def _nm_to_mm(nm):
     return nm / 1e6
 
 
+def net_clearances_file_error(path):
+    """Why the Net Clearances File (route.py / route_diff.py --net-clearances)
+    cannot be used, or None when it is empty or loads -- through the loader
+    the CLI mains call, so a file the CLI would fail on is refused here too."""
+    path = (path or '').strip()
+    if not path:
+        return None
+    try:
+        from list_nets import load_net_clearances
+        load_net_clearances(path)
+    except (OSError, ValueError) as e:
+        return f"Net Clearances File: {e}"
+    return None
+
+
+def explicit_net_clearances(path, pcb_data):
+    """{net_id: mm} from the Net Clearances File, or None when it is empty.
+
+    The CLI's --net-clearances semantics: the file's map REPLACES the one the
+    tab builds from the board's net classes and is used as given (no class
+    clamp, no ceiling), resolved by net NAME against the live board."""
+    path = (path or '').strip()
+    if not path:
+        return None
+    from list_nets import load_net_clearances, net_clearance_map_by_name
+    out = net_clearance_map_by_name(pcb_data.nets, load_net_clearances(path))
+    print(f"Loaded per-net clearances for {len(out)}/{len(pcb_data.nets)} nets "
+          f"from {path}")
+    return out
+
+
 def _get_netclass_parameters(class_name):
     """Get routing parameters for a specific net class from pcbnew.
 
@@ -1125,6 +1156,32 @@ class RoutingDialog(wx.Dialog):
                     "one side route against each other at the normal clearance. The "
                     "log reports per net the length left inside a band. Empty = off.")
                 grid.Add(self.keep_away, 0, wx.EXPAND)
+                # route.py / route_diff.py --net-clearances FILE, named after
+                # the plan param: an explicit per-net clearance map that
+                # replaces the one the Route and Differential tabs build from
+                # the board's net classes.
+                grid.Add(wx.StaticText(parent, label="Net Clearances File:"), 0,
+                         wx.ALIGN_CENTER_VERTICAL)
+                ncl_sizer = wx.BoxSizer(wx.HORIZONTAL)
+                self.net_clearances_path = wx.TextCtrl(parent)
+                self.net_clearances_path.SetMinSize((60, -1))
+                self.net_clearances_path.SetToolTip(
+                    "Optional JSON file mapping net name -> clearance in mm, "
+                    "e.g. {\"/USB_D+\": 0.12, \"/USB_D-\": 0.12} (route.py / "
+                    "route_diff.py --net-clearances). When set it REPLACES the "
+                    "per-net clearances the Route and Differential tabs read "
+                    "from the board's net classes, used as given (no class, no "
+                    "ceiling); a net it does not name routes at the run's "
+                    "clearance. Empty = from the net classes.")
+                ncl_sizer.Add(self.net_clearances_path, 1, wx.EXPAND | wx.RIGHT, 4)
+                self.net_clearances_browse = wx.Button(parent, label="…",
+                                                       style=wx.BU_EXACTFIT)
+                self.net_clearances_browse.SetToolTip(
+                    "Browse for a per-net clearance JSON file")
+                self.net_clearances_browse.Bind(wx.EVT_BUTTON,
+                                                self._on_browse_net_clearances)
+                ncl_sizer.Add(self.net_clearances_browse, 0)
+                grid.Add(ncl_sizer, 0, wx.EXPAND)
             r = defaults.PARAM_RANGES[name]
             grid.Add(wx.StaticText(parent, label=label), 0, wx.ALIGN_CENTER_VERTICAL)
             ctrl = wx.SpinCtrlDouble(parent, min=r['min'], max=r['max'], initial=default, inc=r['inc'])
@@ -1216,6 +1273,17 @@ class RoutingDialog(wx.Dialog):
             if dlg.ShowModal() == wx.ID_CANCEL:
                 return
             self._add_recent_fab_override(dlg.GetPath())
+
+    def _on_browse_net_clearances(self, event):
+        """Browse for a per-net clearance JSON file (--net-clearances)."""
+        cur = self.net_clearances_path.GetValue().strip()
+        ddir = os.path.dirname(cur) if cur else ""
+        with wx.FileDialog(self, "Select per-net clearance file", defaultDir=ddir,
+                           wildcard="JSON files (*.json)|*.json|All files (*.*)|*.*",
+                           style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as dlg:
+            if dlg.ShowModal() == wx.ID_CANCEL:
+                return
+            self.net_clearances_path.SetValue(dlg.GetPath())
 
     def _add_recent_fab_override(self, path):
         """Put `path` at the top of the override-file dropdown (deduped, capped)."""
@@ -2661,6 +2729,18 @@ class RoutingDialog(wx.Dialog):
                 _po.gnd_via_distance.SetValue(defaults.GND_VIA_DISTANCE)
             if hasattr(_po, 'gnd_via_net'):
                 _po.gnd_via_net.SetValue(defaults.GND_VIA_NET)
+            # route_planes.py's argparse defaults for --min-thickness,
+            # --plane-max-iterations and --voronoi-seed-interval.
+            if hasattr(_po, 'min_thickness'):
+                _po.min_thickness.SetValue(defaults.PLANE_MIN_THICKNESS)
+            if hasattr(_po, 'plane_max_iterations'):
+                _po.plane_max_iterations.SetValue(defaults.MAX_ITERATIONS)
+            if hasattr(_po, 'voronoi_seed_interval'):
+                _po.voronoi_seed_interval.SetValue(defaults.VORONOI_SEED_INTERVAL)
+            # --skip-existing-zones is a store_true switch: off, so a step
+            # without it REPLACES a net's existing pour, as route_planes does.
+            if hasattr(_po, 'skip_existing_zones'):
+                _po.skip_existing_zones.SetValue(False)
         except Exception:
             pass
         # #581: the via-in-pad policy controls live on the Basic tab now
@@ -2714,7 +2794,11 @@ class RoutingDialog(wx.Dialog):
                         _ctl.SetValue(_val)
                     except Exception:
                         pass
-            for _name in ('escape_method_choice',):
+            # Item 0 of each is the CLI default: escape method 'auto',
+            # bga_fanout's --primary-escape 'horizontal' (the RadioBox), and
+            # qfn_fanout's omitted --layer (the part's mounted layer).
+            for _name in ('escape_method_choice', 'escape_direction',
+                          'qfn_layer'):
                 _ctl = _fctl(_name)
                 if _ctl is not None:
                     try:
@@ -2823,6 +2907,8 @@ class RoutingDialog(wx.Dialog):
         self.track_proximity_distance.SetValue(defaults.TRACK_PROXIMITY_DISTANCE)
         self.track_proximity_cost.SetValue(defaults.TRACK_PROXIMITY_COST)
         self.keep_away.SetValue("")
+        # Empty = route.py with no --net-clearances: the net classes' map.
+        self.net_clearances_path.SetValue("")
         self.keep_away_free.SetValue(defaults.KEEP_AWAY_FREE)
         self.keep_away_cost.SetValue(defaults.KEEP_AWAY_COST)
         self.vertical_attraction_radius.SetValue(defaults.VERTICAL_ATTRACTION_RADIUS)
@@ -2967,6 +3053,12 @@ class RoutingDialog(wx.Dialog):
         self.differential_tab.max_setback_angle.SetValue(defaults.DIFF_PAIR_MAX_SETBACK_ANGLE)
         self.differential_tab.max_turn_angle.SetValue(defaults.DIFF_PAIR_MAX_TURN_ANGLE)
         self.differential_tab.chamfer_extra.SetValue(defaults.DIFF_PAIR_CHAMFER_EXTRA)
+        # Auto, the CLI's omitted --diff-pair-centerline-setback (None): the
+        # override box unticked and the spin back at its default, disabled.
+        self.differential_tab.centerline_setback_check.SetValue(False)
+        self.differential_tab.centerline_setback.SetValue(
+            defaults.DIFF_PAIR_CENTERLINE_SETBACK)
+        self.differential_tab.centerline_setback.Enable(False)
         # #381 D3: reset to EMPTY (deny all swaps) to match tab creation and the
         # CLI deny-by-default (#279); '*' here silently widened plan-replay swaps.
         self.differential_tab.polarity_swap_nets_text.SetValue("")
@@ -3116,6 +3208,14 @@ class RoutingDialog(wx.Dialog):
                           wx.OK | wx.ICON_WARNING)
             return None, None
 
+        # A Net Clearances File route.py would fail to read is refused before
+        # routing starts, not routed at the net classes instead.
+        err = net_clearances_file_error(self.net_clearances_path.GetValue())
+        if err:
+            wx.MessageBox(err, "Invalid Net Clearances File",
+                          wx.OK | wx.ICON_WARNING)
+            return None, None
+
         return selected_nets, selected_layers
 
     @staticmethod
@@ -3169,6 +3269,9 @@ class RoutingDialog(wx.Dialog):
             'ordering_strategy': self.ordering_strategy.GetString(self.ordering_strategy.GetSelection()),
             'fab_tier': self.fab_tier.GetString(self.fab_tier.GetSelection()),
             'fab_overrides_path': self.fab_overrides_path.GetValue().strip(),
+            # --net-clearances FILE (Advanced tab); the route and diff workers
+            # replace their class-derived map with it (explicit_net_clearances).
+            'net_clearances_path': self.net_clearances_path.GetValue().strip(),
             'escalation': self._escalation_policy(),
             'board_floors': self._board_floor_dict(),
             # #1262: what KiCad grades a Default net at when the DRC
@@ -3571,6 +3674,12 @@ class RoutingDialog(wx.Dialog):
             except Exception as e:
                 print(f"Warning: Could not get net class clearances: {e}")
                 # Fall back to using config clearance for all nets
+            # route.py --net-clearances FILE: the explicit map replaces the
+            # class-derived one above, used as given (route.py main).
+            _explicit = explicit_net_clearances(config.get('net_clearances_path'),
+                                                self.pcb_data)
+            if _explicit is not None:
+                net_clearances = _explicit
 
             # Refresh user-layer guide polylines from the live board so a path
             # drawn this session is used without saving the file first (issue #7).
@@ -3831,6 +3940,11 @@ class RoutingDialog(wx.Dialog):
         the button (the plan executor's busy signal)."""
         try:
             handler(*args)
+            # The apply handler returned: this step's result is on the board.
+            # The cancel and error handlers produce none (ai_plan stops there).
+            if handler == self._apply_results_to_board:
+                from .gui_utils import mark_plan_step_produced
+                mark_plan_step_produced(self)
         finally:
             self._apply_pending = False
 
@@ -4067,6 +4181,26 @@ class RoutingDialog(wx.Dialog):
             if cleared:
                 print(f"Cleared {cleared} graphic(s) from the guide/keepout User layer(s)")
 
+        # #666 scoped cap move -- the GUI twin of route.py moving the cap in
+        # its written file. The bare-ball rescue shipped an escape via onto a
+        # MOVABLE cap with a relocation verified at rescue time. The engine
+        # mirrored the move into the model and re-welded the cap's nets
+        # IN-RUN on a staged board at the CLI's sequence point (the weld's
+        # copper is already in this change-set), and posted the move here,
+        # because only this applier holds the live board. Move the cap BEFORE
+        # the refill, so the pours knock out around its new pose. A move the
+        # engine could not re-weld (no staged board: reweld == 'applier') is
+        # re-welded below, after the refill and before the plane-finalize
+        # fallback oracle -- the CLI's order (its re-weld precedes the
+        # finalize).
+        _cmv = results_data.get('pending_cap_moves') or None
+        _cmv_applied = []
+        if _cmv and _cmv.get('moves'):
+            from .gui_utils import apply_cap_moves_to_live_board
+            self._apply_status("Moving the cap(s) off the rescue via(s)...")
+            _cmv_applied = apply_cap_moves_to_live_board(
+                board, self.pcb_data, _cmv['moves'])
+
         # Re-fill plane zones so any pour pulls back around the copper we just
         # routed (#362), then rebuild connectivity -- refill_all_zones does
         # both, in that order. The refill must come FIRST: a bare
@@ -4078,6 +4212,62 @@ class RoutingDialog(wx.Dialog):
         _rf = refill_all_zones(board)
         if _rf:
             print(f"Refilled {_rf} zone(s) around the new copper")
+
+        # #666 re-weld, FALLBACK only (the engine had no staged board): the
+        # CLI's oracle_reconnect on the moved cap's nets, as the staged-save
+        # oracle on the live board with the engine's spec
+        # (net_rescue.cap_move_reweld_spec, the one the CLI builds its call
+        # from). Post-apply, so its copper misses the engine's #984 soft-joint
+        # bridge -- the reason the in-run weld is the normal path. Refill
+        # afterwards: welds change the fill.
+        _cmv_nets = sorted({n for _m in _cmv_applied
+                            if _m.get('reweld', 'applier') == 'applier'
+                            for n in (_m.get('net_names') or [])})
+        if _cmv_nets:
+            try:
+                from .gui_utils import run_kicad_oracle_on_live_board
+                self._apply_status("Re-welding the moved cap(s)...")
+                _orc666 = run_kicad_oracle_on_live_board(
+                    board, _cmv_nets,
+                    clearance=_cmv.get('clearance'),
+                    track_width=_cmv.get('track_width'),
+                    via_size=_cmv.get('via_size'),
+                    via_drill=_cmv.get('via_drill'),
+                    grid_step=_cmv.get('grid_step'),
+                    track_via_clearance=_cmv.get('track_via_clearance'),
+                    hole_to_hole_clearance=_cmv.get('hole_to_hole_clearance'),
+                    layer_clearances=_cmv.get('layer_clearances'),
+                    layers=_cmv.get('layers'),
+                    layer_costs=_cmv.get('layer_costs'),
+                    net_widths_by_name=_cmv.get('net_widths_by_name'),
+                    net_clearances_by_name=_cmv.get('net_clearances_by_name'),
+                    progress_callback=(
+                        lambda c, t, m: self._apply_status(
+                            f"{m} ({c}/{t})" if t else m)))
+                if _orc666 is None:
+                    print("  #666 cap-move re-weld: DID NOT RUN -- no "
+                          "kicad-cli, or the staged-save oracle failed (see "
+                          "above); the re-weld is unchecked")
+                elif not _orc666.get('available'):
+                    print(f"  #666 cap-move re-weld: DID NOT RUN -- "
+                          f"{_orc666.get('why', 'no reason recorded')}; the "
+                          f"re-weld is unchecked")
+                else:
+                    print(f"  #666 cap-move re-weld: "
+                          f"{_orc666.get('links_routed', 0)} link(s) welded, "
+                          f"{_orc666.get('remaining', -1)} remaining")
+                if _orc666 is not None:
+                    self._apply_status("Refilling zones after the cap-move "
+                                       "re-weld...")
+                    # refill FIRST (it rebuilds connectivity itself): a bare
+                    # BuildConnectivity would flip the weld's new vias to the
+                    # stale fills' nets.
+                    _rf3 = refill_all_zones(board)
+                    if _rf3:
+                        print(f"Refilled {_rf3} zone(s) after the cap-move "
+                              f"re-weld")
+            except Exception as e:
+                print(f"(#666 cap-move re-weld skipped: {e})")
 
         # Plane-finalize ORACLE leg (#562) -- FALLBACK PATH ONLY.
         # Normally the finalize runs the oracle IN-RUN (stage_board_fn above),
@@ -4178,17 +4368,19 @@ class RoutingDialog(wx.Dialog):
         # impedance declarations, engine-noted during batch_route. The diff tab
         # does this via update_live_drc_floors; the signal tab's manual runs
         # end here, so consume at this step boundary or the notes linger until
-        # some later consumer writes them.
+        # some later consumer writes them. Into the board's records
+        # (tool_records): its project and the board itself, which KiCad's own
+        # save keeps when it rewrites the project.
         try:
             from protected_nets import (consume_protection_candidates,
                                         consume_impedance_specs,
                                         persist_protected_nets,
                                         persist_impedance_specs, pro_path_for_board)
-            _bf = board.GetFileName()
-            if _bf:
-                _pro = pro_path_for_board(_bf)
-                persist_protected_nets(_pro, consume_protection_candidates())
-                persist_impedance_specs(_pro, consume_impedance_specs())
+            _bf = board.GetFileName() or ""
+            _pro = pro_path_for_board(_bf) if _bf else ""
+            persist_protected_nets(_pro, consume_protection_candidates(),
+                                   board=board)
+            persist_impedance_specs(_pro, consume_impedance_specs(), board=board)
         except Exception:
             pass
 
@@ -4295,7 +4487,9 @@ class RoutingDialog(wx.Dialog):
                 via_size=config.get('via_size'),
                 via_drill=config.get('via_drill'),
                 hole_to_hole=config.get('hole_to_hole_clearance'),
-                edge_clearance=config.get('board_edge_clearance'))
+                edge_clearance=config.get('board_edge_clearance'),
+                # #581: recorded as route.py records --same-net-pad-clearance
+                same_net_pad_clearance=config.get('same_net_pad_clearance'))
 
     def _add_via_to_board(self, board, via, get_layer_id):
         """Add a via to the pcbnew board."""

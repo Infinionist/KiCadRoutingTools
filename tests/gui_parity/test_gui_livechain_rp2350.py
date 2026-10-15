@@ -186,6 +186,24 @@ def _inherited_keys(stage_pcb, clr):
         s = os.path.splitext(stage_pcb)[0] + ext
         if os.path.isfile(s):
             shutil.copy(s, os.path.splitext(dst)[0] + ext)
+    # And the stage's kicad_routing_tools records -- the fab-floor origin the
+    # grade pins the hole floor to among them. They live on the board itself
+    # as well as in the project (py_router/tool_records.py), so a GUI snapshot
+    # pcbnew saved with aSkipSettings carries them in its .kicad_pcb and has no
+    # project at all; copying the project alone graded the input under rules
+    # the stage did not have.
+    sys.path.insert(0, os.path.join(REPO, 'py_router'))
+    import tool_records
+    ns = tool_records.effective_namespace(stage_pcb)
+    if ns:
+        pro = os.path.splitext(dst)[0] + '.kicad_pro'
+        doc = {'meta': {'version': 1}}
+        if os.path.isfile(pro):
+            with open(pro, encoding='utf-8') as f:
+                doc = json.load(f)
+        doc[tool_records.NAMESPACE] = ns
+        with open(pro, 'w', encoding='utf-8') as f:
+            json.dump(doc, f, indent=2)
     items = _drc_items(dst, clr, baseline=False)
     return None if items is None else {_item_key(i) for i in items}
 

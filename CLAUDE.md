@@ -256,6 +256,12 @@ Validate routed boards against the *real* spec, with the right checker — most
   exclusion) and plane-repair `--rip-blocker-nets` never picks them as blockers.
   The override is naming the net EXACTLY (no glob) in `--nets` or
   `--rip-existing-nets` — there is deliberately no CLI flag or GUI control.
+  **The whole `kicad_routing_tools` namespace (these records and the ones
+  below) also lives on the board**, as a top-level `(property
+  "kicad_routing_tools" ...)`: KiCad's own project save rewrites the
+  `.kicad_pro` from its load-time copy and drops whatever a GUI run wrote after
+  load. Every reader takes the newer copy by `records_rev` and every writer
+  goes through `py_router/tool_records.py`, never straight to the project JSON.
   Rationale: a retry step once ripped a whole DDR match group and rerouted it
   unmatched (allwinner_h3_ddr3, 40/41 nets unmatched, one net stranded).
   **KiCad-LOCKED copper** (`segment.locked`/`via.locked`, both parse paths) makes

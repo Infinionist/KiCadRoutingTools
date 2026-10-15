@@ -3347,6 +3347,13 @@ def repair_planes(
 
     if progress_callback:
         progress_callback(1, 1, "Plane repair complete")
+    # #666: the cap moves this repair's batch_route sub-runs queued, for the
+    # caller that owns the artifact. route.py's plane finalize applies them to
+    # its output and re-welds; with live reuse they are already on its own
+    # board's ledger (it dedupes), without it this board was a parse of its
+    # own and they would be lost.
+    repair_planes.handed_back_cap_moves = list(
+        getattr(pcb_data, '_pending_cap_moves', None) or [])
     return (total_routes, total_regions)
 
 

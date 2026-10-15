@@ -422,11 +422,18 @@ def filter_zones_from_content(content: str, zones_to_remove: List[Tuple[int, str
             # Try KiCad 9: (net <id>)
             net_match = re.search(r'\(net\s+(\d+)\)', element_text)
 
+            # #1164: a teardrop area is routing output on the track's net, not
+            # a pour, so replacing that net's pour on this layer must not take
+            # it (the parser's own test, kicad_parser.extract_zones).
+            _teardrop = re.search(r'\(attr\s*\(teardrop[\s)]',
+                                  element_text) is not None
+
             def _removable(keys, want) -> bool:
                 # Remove only when EVERY layer this pour covers is being replaced.
                 # Otherwise deleting it would take copper on a layer nobody asked
                 # to touch (a GND pour on F.Cu+B.Cu replaced "for B.Cu").
-                return bool(keys) and keys <= want and not _fp_nested
+                return (bool(keys) and keys <= want and not _fp_nested
+                        and not _teardrop)
 
             if net_match and zone_layers:
                 zone_net_id = int(net_match.group(1))

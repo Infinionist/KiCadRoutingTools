@@ -107,7 +107,13 @@ def board(td, name='b', *, drop=(), locked=(), back=(), nets=None,
                                  for n in ('IN', 'OUT')]
     all_nets += sorted({n for n in nets.values() if n and n not in all_nets})
     ids = {n: i + 1 for i, n in enumerate(all_nets)}
-    out = ['(kicad_pcb (version 20241229) (generator "pcbnew")',
+    # The property spelling is a KiCad 6/7 one: pcbnew reads it as the sheet
+    # only up to file version 20230619 (SHEET_PROPERTIES_MAX_VERSION), so
+    # that fixture is written at 7's version, and `prop_names='modern'` writes
+    # the same property in a 9 file, where it is an ordinary user field.
+    version = ('20221018' if prop_names and prop_names != 'modern'
+               else '20241229')
+    out = ['(kicad_pcb (version %s) (generator "pcbnew")' % version,
            '  (layers (0 "F.Cu" signal) (31 "B.Cu" signal)'
            ' (36 "B.SilkS" user) (37 "F.SilkS" user)'
            ' (44 "Edge.Cuts" user) (46 "B.CrtYd" user) (47 "F.CrtYd" user))',
@@ -133,12 +139,18 @@ def board(td, name='b', *, drop=(), locked=(), back=(), nets=None,
                     % (' (justify mirror)' if side == 'B' else '')),
                  '    (path "%s")' % path]
         sfile = 'strip.kicad_sch' if sheet else 'top.kicad_sch'
-        if prop_names:
+        if prop_names == 'modern':
             sheet_lines = [
                 '    (property "Sheetname" "%s" (at 0 0) (layer "F.Fab") '
                 '(hide yes))' % sname,
                 '    (property "Sheetfile" "%s" (at 0 0) (layer "F.Fab") '
                 '(hide yes))' % sfile]
+        elif prop_names:
+            # KiCad 7 wrote "Sheetname"; KiCad 6 dev files "Sheet name".
+            two = prop_names if isinstance(prop_names, tuple) else (
+                'Sheetname', 'Sheetfile')
+            sheet_lines = ['    (property "%s" "%s")' % (two[0], sname),
+                           '    (property "%s" "%s")' % (two[1], sfile)]
         else:
             sheet_lines = [('    (sheetname "/%s/")' % sname if sname
                             else '    (sheetname "/")'),
@@ -665,6 +677,15 @@ def test_both_sheet_name_spellings_are_read():
         assert (new['R2'].sheet_file, old['R2'].sheet_file) == (
             'strip.kicad_sch', 'strip.kicad_sch'), (new['R2'].sheet_file,
                                                      old['R2'].sheet_file)
+        # KiCad 6's spelling reads too; in a file past 20230619 the property
+        # is a user field, as pcbnew 10 loads it, and names no sheet.
+        six = parse_kicad_pcb(board(td, 'six', prop_names=(
+            'Sheet name', 'Sheet file'))).footprints
+        assert (six['R2'].sheet_name, six['R2'].sheet_file) == (
+            'S2', 'strip.kicad_sch'), (six['R2'].sheet_name, six['R2'].sheet_file)
+        late_prop = parse_kicad_pcb(board(td, 'modern', prop_names='modern')).footprints
+        assert (late_prop['R2'].sheet_name, late_prop['R2'].sheet_file) == (
+            '', ''), (late_prop['R2'].sheet_name, late_prop['R2'].sheet_file)
         # Escapes are undone, as pcbnew's GetSheetname() returns them.
         esc = parse_kicad_pcb(board(td, 'esc', names={'S2': 'my \\"S2\\"'}))
         assert esc.footprints['R2'].sheet_name == '/my "S2"/', (
@@ -678,8 +699,9 @@ def test_both_sheet_name_spellings_are_read():
         out = os.path.join(td, 'x.kicad_pcb')
         pose(os.path.join(td, 'prop.kicad_pcb'), out, 'replicate', '--from',
              'S1', '--to', 'S2', accept=True)
-        print('  (sheetname "/S2/") and (property "Sheetname" "S2") both read,'
-              ' with the sheet file; escapes undone')
+        print('  (sheetname "/S2/") and a KiCad 6/7 (property "Sheetname" "S2")'
+              ' / "Sheet name" both read, with the sheet file; the property in'
+              ' a KiCad 9 file is no sheet; escapes undone')
 
 
 def test_glasgow_maps_by_symbol_and_names_the_address_straps():

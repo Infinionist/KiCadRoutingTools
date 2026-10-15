@@ -315,9 +315,13 @@ _PARAM_CONTROL_ALIASES = {
     'diff_pair_intra_match': 'intra_match_check',
     'ac_couple_match': 'ac_couple_check',
     'diff_chamfer_extra': 'chamfer_extra',
+    'diff_pair_centerline_setback': 'centerline_setback',
     'check_for_previous': 'check_previous',
     'no_inner_top_layer': 'no_inner_top',
     'force_escape_direction': 'force_escape',
+    # bga_fanout --primary-escape (the engine's name): the BGA panel's
+    # escape_direction RadioBox, set by label in _set_control.
+    'primary_escape': 'escape_direction',
     # bga_fanout --diff-pairs, under the fallthrough name. (Its
     # --diff-pair-gap cannot be aliased: see the fanout block's note.)
     'diff_pairs': 'diff_pair_patterns_ctrl',
@@ -528,7 +532,13 @@ def apply_step_params(step, dialog):
                 ctrl.SetValue(int(float(value)))
             elif isinstance(ctrl, wx.SpinCtrlDouble):
                 ctrl.SetValue(float(value))
-            elif isinstance(ctrl, wx.Choice):
+            elif isinstance(ctrl, (wx.Choice, wx.RadioBox)):
+                # By the item's LABEL, case-insensitively (FindString's
+                # default), so a CLI choice value lands on its item: the BGA
+                # panel's escape_direction RadioBox shows "Horizontal" /
+                # "Vertical" for bga_fanout's --primary-escape horizontal /
+                # vertical. A RadioBox has no SetValue, so before this branch
+                # it fell through to "no control, ignored".
                 idx = ctrl.FindString(str(value))
                 if idx == wx.NOT_FOUND:
                     return False
@@ -804,6 +814,22 @@ def apply_step_params(step, dialog):
                     getattr(tab, name).SetValue(float(params[name]))
                 except (TypeError, ValueError):
                     notes.append(f"ignored non-numeric {name}={params[name]!r}")
+        # The centerline setback has the same override box. A plan VALUE --
+        # 0 included, which is route_diff.py's explicit
+        # --diff-pair-centerline-setback 0, a setback of zero -- ticks it; no
+        # value leaves it as the reset left it, unticked = auto (the omitted
+        # flag). The generic loop has already set the spin; a plan can also
+        # name the box itself (centerline_setback_check: false = auto).
+        for _sb in ("centerline_setback", "diff_pair_centerline_setback"):
+            if params.get(_sb) is None:
+                continue
+            try:
+                tab.centerline_setback.SetValue(float(params[_sb]))
+                tab.centerline_setback_check.SetValue(True)
+                tab.centerline_setback.Enable(True)
+            except (TypeError, ValueError):
+                notes.append(f"ignored non-numeric {_sb}={params[_sb]!r}")
+            break
         # Impedance-controlled diff routing: per-layer width is derived from the
         # stackup, so this overrides diff_pair_width (the diff tab control above).
         if "impedance" in params:
@@ -1003,6 +1029,12 @@ def apply_step_selection(step, dialog, all_steps=None):
     # before selection, so a stale glob list from an earlier route step would
     # silently grant protection-override to nets this step never named.
     dialog._plan_net_globs = None
+    # Why this step has nothing to do BY THE PLAN'S OWN RULE, or None. Set only
+    # when the plane-net safety net below empties a selection that matched
+    # something: that is a GUI-side exclusion, not a refusal (the CLI would
+    # have routed those nets), so the executor runs the step as a no-op rather
+    # than stopping the plan on the tab's "no nets selected".
+    dialog._plan_step_noop = None
     if action == "route":
         # route.py --component (one or more refs, #537): its nets, composed
         # with the step's patterns exactly as route.py composes them. The
@@ -1023,7 +1055,12 @@ def apply_step_selection(step, dialog, all_steps=None):
         # the engine skips plane-connected nets and track-patches only pads
         # the plane steps left disconnected (#479).
         if _precedes_first_plane_step(step, all_steps):
+            _matched = names
             names = _drop_plane_nets(names, globs, plane_nets, notes, "route")
+            if _matched and not names:
+                dialog._plan_step_noop = ("every net it selects is a plan "
+                                          "plane net, excluded before the "
+                                          "planes exist")
         # #459: a recorded `--group BLOCK` scopes the step to one placement
         # block. Without this the block is lost and `globs` falls back to ["*"],
         # so the GUI routes the WHOLE BOARD where the CLI routed one block.
@@ -1062,7 +1099,11 @@ def apply_step_selection(step, dialog, all_steps=None):
             notes.append(f"fanout: component {ref} not in dropdown")
         globs = step.get("nets") or ["*"]
         names = _component_net_names(dialog.pcb_data, ref, globs)
+        _matched = names
         names = _drop_plane_nets(names, globs, plane_nets, notes, "fanout")
+        if _matched and not names:
+            dialog._plan_step_noop = ("every net it selects is a plan plane "
+                                      "net, excluded from the fanout")
         if not names:
             notes.append(f"fanout: no nets match {globs} on {ref}")
         tab.net_panel.set_selected_nets(names)
@@ -1270,7 +1311,9 @@ class PlanExecutor:
     Each step: re-apply its selection, switch to its tab, invoke the tab's
     own action handler, then poll the tab's action button (every tab disables
     it while working and re-enables on completion, including error paths)
-    until the operation finishes. Stops on the first failed step.
+    until the operation finishes. Stops on the first step that raises OR
+    ends without producing its result (see `_step_refusal`), as a CLI chain
+    stops on a step that wrote no output board.
 
     Callbacks (all on the main thread):
       on_status(step_index, status)
@@ -1607,8 +1650,10 @@ class PlanExecutor:
                                  f"board minima)")
             except Exception as e:
                 self.log(f"AI plan: live DRC settings skipped: {e}")
-            # Best-effort persistence for a later close/reopen; note KiCad
-            # may overwrite this if it saves its in-memory project state.
+            # The project file, for an in-session CLI step and a later reopen.
+            # KiCad's own save rewrites it from its in-memory state, so the
+            # same floors also go to the live board below, and the records to
+            # the board itself (tool_records).
             if board_file and os.path.isfile(board_file):
                 if _fixdrc693:
                     # #439: clamp non-Default classes in the written
@@ -1627,11 +1672,14 @@ class PlanExecutor:
                     # five values, read from the board the GUI already holds
                     # -- see gui_utils.board_minima_from_live.
                     from .gui_utils import board_minima_from_live
-                    _minima = (board_minima_from_live(board)
-                               if board is not None else {})
-                    from fix_kicad_drc_settings import fix_project_for_output
-                    fix_project_for_output(
-                        board_file, input_pcb=board_file,
+                    import pcbnew as _pcb_live
+                    _live = _pcb_live.GetBoard()
+                    _minima = (board_minima_from_live(_live)
+                               if _live is not None else {})
+                    from fix_kicad_drc_settings import (fix_project_for_output,
+                                                        apply_fix_to_board,
+                                                        close_live_step)
+                    _fix_kw = dict(
                         clearance=eff,
                         track_width=track_width,
                         via_diameter=floors.get('via_size'),
@@ -1640,26 +1688,47 @@ class PlanExecutor:
                         edge_clearance=floors.get('board_edge_clearance'),
                         diff_pair_width=floors.get('diff_pair_width'),
                         diff_pair_gap=floors.get('diff_pair_gap'),
-                        clamp_nondefault_netclasses=_clamp,
-                        minima=_minima)
-                # #521: persist the plan's protection-worthy nets (matched
-                # groups, routed diff pairs -- noted engine-side during the
-                # steps) so later steps/chains refuse to rip them.
-                try:
-                    from protected_nets import (consume_protection_candidates,
-                                                consume_impedance_specs,
-                                                consume_pour_served_pads,
-                                                persist_protected_nets,
-                                                persist_impedance_specs,
-                                                persist_pour_served_pads,
-                                                pro_path_for_board)
-                    _pro = pro_path_for_board(board_file)
-                    persist_protected_nets(_pro, consume_protection_candidates())
-                    persist_impedance_specs(_pro, consume_impedance_specs())
-                    # #678: the plan's fanout steps' pour-served balls.
-                    persist_pour_served_pads(_pro, consume_pour_served_pads())
-                except Exception as _pe:
-                    self.log(f"AI plan: protected-nets record skipped: {_pe}")
+                        clamp_nondefault_netclasses=_clamp)
+                    fix_project_for_output(board_file, input_pcb=board_file,
+                                           minima=_minima, **_fix_kw)
+                    # The SAME floors on the live board. KiCad's own save
+                    # rewrites this project from its in-memory settings, so a
+                    # rule written only into the file (the copper-to-hole floor,
+                    # the web, a clamped class) reverted on the user's save.
+                    if _live is not None:
+                        apply_fix_to_board(_live, minima=_minima, **_fix_kw)
+                        close_live_step(_live)
+            # #521: persist the plan's protection-worthy nets (matched groups,
+            # routed diff pairs -- noted engine-side during the steps) so later
+            # steps/chains refuse to rip them. Into the board's records
+            # (tool_records): the project, and the board itself, the copy
+            # KiCad's save keeps -- with whatever fix_project_for_output just
+            # recorded in the project (the origin, a class descent) put there
+            # too.
+            try:
+                import pcbnew as _pcb_live
+                import tool_records
+                from protected_nets import (consume_protection_candidates,
+                                            consume_impedance_specs,
+                                            consume_pour_served_pads,
+                                            persist_protected_nets,
+                                            persist_impedance_specs,
+                                            persist_pour_served_pads,
+                                            pro_path_for_board)
+                _live = _pcb_live.GetBoard()
+                _pro = pro_path_for_board(board_file) if board_file else ""
+                if _live is not None:
+                    tool_records.mirror_project_to_live_board(_live)
+                persist_protected_nets(_pro, consume_protection_candidates(),
+                                       board=_live)
+                persist_impedance_specs(_pro, consume_impedance_specs(),
+                                        board=_live)
+                # #678: the plan's fanout steps' pour-served balls.
+                persist_pour_served_pads(_pro, consume_pour_served_pads(),
+                                         board=_live)
+            except Exception as _pe:
+                self.log(f"AI plan: protected-nets record skipped: {_pe}")
+            if board_file and os.path.isfile(board_file):
                 if _fixdrc693:
                     self.log(f"AI plan: recorded DRC floors in the project "
                              f"file (clearance {eff:.4g}; live session "
@@ -1820,6 +1889,23 @@ class PlanExecutor:
             if self._fix_drc_pref is False:
                 restore_fix_drc_preference(self.dialog, False)
             invoke, busy = self._action_parts(step["action"])
+            # A CLI step that refuses writes no board and the chain stops on
+            # the missing file; here the owning tab marks a produced result
+            # and _poll_until_idle stops the plan on a step that ends without
+            # one. Cleared HERE, after the reset and selection above, so only
+            # this step's own operation can set it.
+            from .gui_utils import PLAN_STEP_PRODUCED, mark_plan_step_produced
+            _owner = self._action_owner(step["action"])
+            if _owner is not None:
+                setattr(_owner, PLAN_STEP_PRODUCED, False)
+            _noop = getattr(self.dialog, '_plan_step_noop', None)
+            if _noop:
+                def invoke(_why=_noop, _o=_owner, _n=index + 1,
+                           _a=step["action"]):
+                    self.log(f"AI plan: step {_n} ({_a}) runs nothing: {_why}")
+                    if _o is not None:
+                        mark_plan_step_produced(_o)
+                busy = lambda: False                       # noqa: E731
             import time as _time
             self._step_started = _time.time()
             # Push-mirror for UI-thread steps (fanout, cap optimize, the
@@ -1885,7 +1971,45 @@ class PlanExecutor:
                 self.log(f"AI plan: step {index + 1} stopped (cancelled)")
                 self._next_step()
                 return
+        refusal = self._step_refusal(index)
+        if refusal is not None:
+            action = self.steps[index]["action"]
+            self.on_status(index, "failed")
+            self.log(f"AI plan: step {index + 1} ({action}) produced no result "
+                     f"({refusal}); the plan stops here, as a CLI chain stops "
+                     f"on the step's missing output board")
+            self._finish(f"step {index + 1} ({action}) refused: {refusal}")
+            return
         self._completed += 1
         self.on_status(index, "done")
         self.log(f"AI plan: step {index + 1} finished")
         self._next_step()
+
+    def _step_refusal(self, index):
+        """None when step `index` produced its result, else what its tab says.
+
+        FAIL CLOSED: a step is done only when its owner marked a produced
+        result (gui_utils.PLAN_STEP_PRODUCED) -- the one place each tab
+        applies its result. Every other ending counts: a declined handler
+        (no nets / pairs / component / assignments selected, a malformed
+        keep-away rule -- the CLI's argparse or "matched nothing" exit), an
+        engine error, a cancel from the tab's own button, and optimize_caps'
+        refusal (#1067's unloadable intent) or raised pass. Each is a CLI step
+        that writes no board, so the chain stops there. `repair_planes` is a
+        no-op by construction (#562) and always produces.
+        """
+        action = self.steps[index]["action"]
+        if action == "repair_planes":
+            return None
+        from .gui_utils import PLAN_STEP_PRODUCED
+        owner = self._action_owner(action)
+        if owner is None or getattr(owner, PLAN_STEP_PRODUCED, False) is True:
+            return None
+        label = ""
+        try:
+            st = getattr(owner, "status_text", None)
+            label = (st.GetLabel() if st is not None else "").strip()
+        except Exception:                                  # noqa: BLE001
+            pass
+        return ("its tab reported no result"
+                + (f"; tab status: {label!r}" if label else ""))

@@ -110,10 +110,11 @@ REGISTRY = {
     'apply_stamps_in_memory': ['via_protection_stamps'],
     'print_via_protection_record': ['via_protection_stamps'],
     'via_snapshot': ['via_protection_stamps'],
-    # #1195: which floors a fanout step may lower (none for a QFN run with no
-    # copper, no via floors without a via). qfn_fanout's main and the fanout
-    # tab's apply both decide with it before their writeback.
-    'fanout_written_floors': ['_apply_fanout_results'],
+    # #1195: the fanout writeback -- which floors a step may lower (none for a
+    # QFN run with no copper, no via floors without a via) and the keywords
+    # they are written with. bga_fanout's and qfn_fanout's mains and the fanout
+    # tab's apply all decide with it before their writeback.
+    'fanout_fix_kwargs': ['_apply_fanout_results'],
 }
 # NOTE (deliberately NOT registered): move_copper_graphics_to_silkscreen runs
 # inside the shared plane WRITER (plane_io), not a main() -- so this gate, which
@@ -144,6 +145,18 @@ REGISTRY = {
 #
 # fix_kicad_drc_settings is a MODULE; the main() call is
 # fix_project_for_output (above).
+#
+# NOTE (not registered, and out of this lint's sight): a FILE-mode pass inside
+# batch_route is CLI-only exactly as a main() post-pass is, but this gate scans
+# main() scopes only. #666's scoped cap move is one (route.py
+# _cap_moves_to_file666: write_placed_output + the pcb_data mirror + an
+# oracle_reconnect re-weld, after the write and after the plane finalize). Its
+# GUI twin is in the engine too (_cap_moves_in_run666: the mirror and the
+# re-weld on a staged board, at the same points) plus the applier
+# (results_data['pending_cap_moves'] -> gui_utils.apply_cap_moves_to_live_board,
+# and run_kicad_oracle_on_live_board only when there was no staged board), and
+# tests/gui_parity/test_666_cap_move_gui.py is the gate that measures the two
+# fronts against each other.
 
 # Modules whose public functions are ALL post-route finalization passes: a
 # never-before-seen symbol from these, called in a CLI main, must be reviewed.
@@ -293,7 +306,7 @@ SAME_SYMBOL_TWINS = {
     'persist_protected_nets',
     'persist_impedance_specs',
     'persist_pour_served_pads',
-    'fanout_written_floors',
+    'fanout_fix_kwargs',
 }
 
 

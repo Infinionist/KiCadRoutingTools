@@ -2548,13 +2548,10 @@ Examples:
     # sibling .kicad_pro. All-Default boards -> empty map -> inert (byte-identical).
     _net_clearances_map = None
     if args.net_clearances:
-        import json as _jc
-        with open(args.net_clearances, encoding="utf-8") as _f:
-            _name_to_clr = _jc.load(_f)
-        _net_clearances_map = {}
-        for _nid, _net in pcb_data.nets.items():
-            if _net.name in _name_to_clr:
-                _net_clearances_map[_nid] = float(_name_to_clr[_net.name])
+        # The Differential tab reads its Net Clearances File the same way.
+        from list_nets import load_net_clearances, net_clearance_map_by_name
+        _net_clearances_map = net_clearance_map_by_name(
+            pcb_data.nets, load_net_clearances(args.net_clearances))
         print(f"Loaded per-net clearances for {len(_net_clearances_map)}/{len(pcb_data.nets)} nets "
               f"from {args.net_clearances}")
     else:

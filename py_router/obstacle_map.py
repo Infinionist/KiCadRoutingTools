@@ -1965,11 +1965,145 @@ def block_track_cells_near_override_pad_holes(obstacles: GridObstacleMap,
         obstacles.add_blocked_cells_batch(np.hstack([arr, layer_col]))
 
 
-_HOLE_CLR_CACHE = {}          # board path -> declared min_hole_clearance (mm)
-_HOLE_CLR_ANNOUNCED = set()
-_HOLE_CLR_ORIGIN = set()      # paths whose floor came from fab_floor_origin,
-                              # i.e. a later step's writeback had relaxed the
-                              # live rule below what the board declared
+_HOLE_CLR_CACHE = {}          # board path -> (project stamp, (rule, origin))
+_HOLE_CLR_ANNOUNCED = set()   # (board path, floor) pairs already printed
+_HOLE_CLR_ORIGIN = set()      # paths whose CURRENT floor came from
+                              # fab_floor_origin, i.e. a later step's writeback
+                              # had relaxed the rule below what the board declared
+
+
+def _project_stamp(path: str):
+    """What identifies the CONTENT of ``path``'s sibling ``.kicad_pro`` and of
+    the board file without reading them: an ``(mtime_ns, size, inode)`` per
+    file, or None when neither exists.
+
+    The hole-clearance cache is keyed on this, not on the path alone. A path
+    key served the FIRST value for the life of the process, and the GUI plugin
+    is one process for a whole KiCad session: a user who saved a new Board
+    Setup min hole clearance kept routing at the old one. The inode is in the
+    stamp because every writer here replaces the project atomically
+    (tmp + ``os.replace``), which gives the file a new inode even when the
+    write lands in the same mtime tick at the same size.
+    """
+    out = []
+    # The project, and the board file: the origin record may live on the
+    # board itself (tool_records), where a GUI session's survives KiCad's save.
+    # Not a sibling-copy list (copy_board.SIBLING_EXTS): exactly these two.
+    stem = os.path.splitext(path)[0]
+    for stamped in (stem + '.kicad_pro', stem + '.kicad_pcb'):
+        try:
+            st = os.stat(stamped)
+            out.append((st.st_mtime_ns, st.st_size, st.st_ino))
+        except (OSError, ValueError, TypeError):
+            out.append(None)
+    return tuple(out) if any(out) else None
+
+
+def _file_hole_floor(path: str):
+    """``(rule, origin)`` the board's sibling project declares, in mm.
+
+    ``rule`` is ``design_settings.rules.min_hole_clearance`` exactly as
+    :func:`list_nets.board_constraint` reads it -- None when the project does
+    not declare the key, a float (possibly 0.0) when it does -- and ``origin``
+    is ``kicad_routing_tools.fab_floor_origin.min_hole_clearance``
+    (:func:`fix_kicad_drc_settings.declared_fab_floor`, None when absent).
+
+    Cached per path and re-read whenever the project's stamp changes. The read
+    itself is not cheap enough to repeat: ``read_design_rules`` reads the whole
+    ``.kicad_pcb`` to count its copper layers, measured 0.07-3.4 ms per call on
+    the tracked boards (2.3 MB kit-dev-coldfire), and while a route step asks
+    a handful of times, ``plane_region_connector.npth_floor_ok`` asks once per
+    plane seed point. The stamp costs about 1 us.
+    """
+    stamp = _project_stamp(path)
+    hit = _HOLE_CLR_CACHE.get(path)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    try:
+        from list_nets import board_constraint
+        from fix_kicad_drc_settings import declared_fab_floor
+        rec = (board_constraint(path, 'min_hole_clearance'),
+               declared_fab_floor(path, 'min_hole_clearance'))
+    except Exception:                                           # noqa: BLE001
+        rec = (None, None)
+    _HOLE_CLR_CACHE[path] = (stamp, rec)
+    return rec
+
+
+def _live_hole_rule(pcb_data):
+    """The ``min_hole_clearance`` (mm) the LIVE board declares, when
+    ``pcb_data`` was built from a pcbnew board (``build_pcb_data_from_board``)
+    and the board declares one; else None, which leaves the file to decide.
+
+    Read through ``PCBData.live_rules_provider`` -- the #1187 channel, asked
+    NOW rather than captured at build, because mid-plan the floors the GUI's
+    writers lowered live only in pcbnew's memory and a PCBData built before a
+    step is still in use after it. The provider answers only DECLARED rules
+    (``fix_kicad_drc_settings.live_declared_rules``): pcbnew holds a project-
+    less board at a factory 0.25 that its file does not declare, and that
+    stand-in is not a floor."""
+    provider = getattr(pcb_data, 'live_rules_provider', None)
+    if not callable(provider):
+        return None
+    try:
+        live = provider()
+    except Exception:                                           # noqa: BLE001
+        return None
+    v = (live or {}).get('min_hole_clearance')
+    if not isinstance(v, (int, float)) or isinstance(v, bool):
+        return None
+    return float(v)
+
+
+def declared_hole_clearance(pcb_data: PCBData, pcb_file: str = None):
+    """``(floor_mm, source)``: the copper-to-HOLE floor this board declares.
+
+    The computation behind :func:`resolve_hole_clearance` -- no explicit
+    config override, no announcement -- shared with ``compare_pcb_data``, which
+    checks that a board built from pcbnew and the same board parsed from its
+    file declare the same floor. ``source`` is ``'fab_floor_origin'``,
+    ``'live board'``, ``'project'`` or ``''`` (declares nothing, floor 0.0).
+
+    THE FILE (every CLI, and any PCBData parsed from disk): the sibling
+    project's ``rules.min_hole_clearance`` when positive, raised to its
+    ``fab_floor_origin`` when that is larger -- exactly what this read before
+    the live branch existed.
+
+    THE LIVE BOARD (a PCBData from ``build_pcb_data_from_board``): the rule is
+    pcbnew's in-memory ``m_HoleClearance`` when the live board DECLARES it
+    (``fix_kicad_drc_settings.live_declared_rules``), so a Board Setup edit
+    counts before it is saved and a board with no file at all (#1238) is
+    still priced. pcbnew holds every project-less board -- 19 of the 22
+    tracked boards -- at a factory 0.25 its file does not declare; pricing
+    that would hold the GUI's tracks 0.25 off every NPTH wall and switch on
+    the #1038 via keep-out, where the CLI, which reads no rule from the same
+    file, holds tracks at the 0.20 fab floor (or the routing clearance, when
+    larger) and lays no via keep-out. A board that declares no rule live
+    reads the file, which then declares none either. The origin is the
+    file's either way: it is a record in the project, which pcbnew's design
+    settings do not carry.
+    """
+    path = pcb_file or getattr(pcb_data, 'source_path', "") or ""
+    rule, origin = _file_hole_floor(path) if path else (None, None)
+    # A live board's records are its own (what the session wrote, saved or
+    # not, and on a board with no file): PCBData.live_records_provider.
+    _records = getattr(pcb_data, 'live_records_provider', None)
+    if callable(_records):
+        try:
+            _o = ((_records() or {}).get('fab_floor_origin') or {}).get(
+                'min_hole_clearance')
+            origin = float(_o) if isinstance(_o, (int, float)) and _o > 0 else None
+        except Exception:                                       # noqa: BLE001
+            pass
+    live = _live_hole_rule(pcb_data)
+    if live is not None:
+        v, src = (live, 'live board') if live > 0 else (0.0, '')
+    else:
+        v = float(rule) if rule and rule > 0 else 0.0
+        src = 'project' if v > 0 else ''
+    if origin and origin > v:
+        v, src = float(origin), 'fab_floor_origin'
+    return v, src
 
 
 def resolve_hole_clearance(pcb_data: PCBData, config,
@@ -2082,46 +2216,38 @@ def resolve_hole_clearance(pcb_data: PCBData, config,
     and confirmed independently by kicad-cli. It was the single DRC failure on
     that board.
 
-    Cached per board path: the obstacle map is rebuilt per net, and this would
-    otherwise re-read the project file thousands of times in one run.
+    Where the value comes from -- the project file, or on the GUI the live
+    board's design settings -- is :func:`declared_hole_clearance`. The file
+    read is cached per path and re-read when the project changes
+    (:func:`_project_stamp`): the obstacle map is rebuilt per net, and a
+    path-only key kept a KiCad session on the first value it read.
     """
     explicit = getattr(config, 'hole_clearance', 0.0) or 0.0
     if explicit > 0:
         return float(explicit)
     path = pcb_file or getattr(pcb_data, 'source_path', "") or ""
-    if not path:
-        return 0.0
-    if path not in _HOLE_CLR_CACHE:
-        try:
-            from list_nets import board_constraint
-            v = board_constraint(path, 'min_hole_clearance')
-            v = float(v) if v and v > 0 else 0.0
-            # The DECLARED floor outranks the CURRENT rule, because the rule is
-            # not durable: every writeback clamps `rules.min_hole_clearance`
-            # down to the clearance that step routed at, so from step 2 onward
-            # the author's declaration is gone from the only place this used to
-            # look. Measured on a tigard pour+route chain declaring 0.25 -- the
-            # pour's writeback left rules at 0.15 and the route step then read
-            # 0.15, below the 0.20 fab floor, and silently stopped honouring
-            # the board. The original survives in `fab_floor_origin` (seeded at
-            # the first writeback, carried down with the project), so take the
-            # larger of the two. Raise-only, exactly like the rest of this
-            # helper: a board with no origin, or an origin at or below the
-            # rule, is bit-identical.
-            from fix_kicad_drc_settings import declared_fab_floor
-            _origin = declared_fab_floor(path, 'min_hole_clearance')
-            if _origin and _origin > v:
-                _HOLE_CLR_ORIGIN.add(path)
-                v = float(_origin)
-            _HOLE_CLR_CACHE[path] = v
-        except Exception:                                       # noqa: BLE001
-            _HOLE_CLR_CACHE[path] = 0.0
-    v = _HOLE_CLR_CACHE[path]
-    if v > defaults.NPTH_TO_TRACK_CLEARANCE and path not in _HOLE_CLR_ANNOUNCED:
-        _HOLE_CLR_ANNOUNCED.add(path)
+    # The DECLARED floor outranks the CURRENT rule, because the rule is not
+    # durable: every writeback clamps `rules.min_hole_clearance` down to the
+    # clearance that step routed at, so from step 2 onward the author's
+    # declaration is gone from the only place this used to look. Measured on a
+    # tigard pour+route chain declaring 0.25 -- the pour's writeback left rules
+    # at 0.15 and the route step then read 0.15, below the 0.20 fab floor, and
+    # silently stopped honouring the board. The original survives in
+    # `fab_floor_origin` (seeded at the first writeback, carried down with the
+    # project), so declared_hole_clearance takes the larger of the two.
+    # Raise-only, exactly like the rest of this helper: a board with no
+    # origin, or an origin at or below the rule, is bit-identical.
+    v, _source = declared_hole_clearance(pcb_data, pcb_file)
+    if _source == 'fab_floor_origin':
+        _HOLE_CLR_ORIGIN.add(path)
+    else:
+        _HOLE_CLR_ORIGIN.discard(path)
+    if v > defaults.NPTH_TO_TRACK_CLEARANCE \
+            and (path, v) not in _HOLE_CLR_ANNOUNCED:
+        _HOLE_CLR_ANNOUNCED.add((path, v))
         _src = ("the floor the board ORIGINALLY declared, which a later step's "
                 "writeback relaxed in the project"
-                if path in _HOLE_CLR_ORIGIN else "the board's own "
+                if _source == 'fab_floor_origin' else "the board's own "
                 "min_hole_clearance")
         # #1217: the floor holds copper off NPTH walls only; a via drill and a
         # PTH barrel are held at copper clearance. Say so where the number is

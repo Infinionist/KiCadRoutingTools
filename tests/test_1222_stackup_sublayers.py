@@ -24,6 +24,8 @@ Checks:
   7. The GUI's file fallback reads on when the stackup runs past its 8192-byte
      head.
   8. The GUI's SWIG branch asks for each sublayer.
+  9. compare_pcb_data names a stackup layer whose thickness, epsilon_r or
+     loss tangent differs, and two layers out of order.
 
     python3 tests/test_1222_stackup_sublayers.py
 """
@@ -293,6 +295,36 @@ text = extract_stackup('(stackup\n(layer "F.Cu" (type "copper") (thickness 0.035
                        '(copper_finish "None")\n)\n'
                        % " addsublayer ".join(SHEET % t for t in (.1164, .124, .1164)))
 check("SWIG branch == text parse", [vars(l) for l in swig] == [vars(l) for l in text])
+
+print("9. compare_pcb_data compares the stackup layer by layer")
+from kicad_parser import compare_pcb_data  # noqa: E402
+
+
+def _pcb(stk):
+    return PCBData(board_info=BoardInfo(layers=dict(enumerate(names)), copper_layers=names,
+                                        stackup=stk),
+                   nets={}, footprints={}, vias=[], segments=[], pads_by_net={})
+
+
+def _stackup_lines(a, b):
+    return [d for d in compare_pcb_data(_pcb(a), _pcb(b)) if d.startswith('Stackup')]
+
+
+base = extract_stackup(jlc_text())
+check("an identical stackup reports nothing", _stackup_lines(base, extract_stackup(jlc_text())) == [])
+for attr, delta in (('thickness', 0.0001), ('epsilon_r', 0.01), ('loss_tangent', 0.001)):
+    other = extract_stackup(jlc_text())
+    setattr(layer(other, "dielectric 5"), attr, getattr(layer(other, "dielectric 5"), attr) + delta)
+    got = _stackup_lines(base, other)
+    check(f"a changed {attr} on dielectric 5 is named",
+          len(got) == 1 and "'dielectric 5' %s" % attr in got[0], f"{got}")
+other = extract_stackup(jlc_text())
+other[1].thickness += 4e-7
+check("a sub-nm thickness difference is noise, not a diff", _stackup_lines(base, other) == [])
+other = extract_stackup(jlc_text())
+other[1], other[3] = other[3], other[1]
+check("two layers in a different order are named", len(_stackup_lines(base, other)) == 2,
+      f"{_stackup_lines(base, other)}")
 
 if failures:
     print(f"\nFAILED: {failures}")

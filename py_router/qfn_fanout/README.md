@@ -62,7 +62,7 @@ The `--nets` option supports fnmatch-style wildcards (`*`, `?`) and exclusion pa
 |--------|-------------|---------|
 | `--component`, `-c` | Component reference | Auto-detect QFN/QFP |
 | `--output`, `-o` | Output PCB file | qfn_fanout_test.kicad_pcb |
-| `--layer`, `-l` | Routing layer | F.Cu |
+| `--layer`, `-l` | Routing layer for the stubs; any layer but the part's own warns, since the stubs then miss its SMD pads (#96). GUI: the QFN panel's **Escape layer** | the layer the part is mounted on |
 | `--width`, `-w` | Track width (mm) | 0.1 |
 | `--extension` | Extension past pad edge before bend (mm) | 0.1 |
 | `--nets`, `-n` | Net patterns to include | All nets |

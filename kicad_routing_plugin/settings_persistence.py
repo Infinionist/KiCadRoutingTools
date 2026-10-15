@@ -82,6 +82,7 @@ def get_dialog_settings(dialog):
         'track_proximity_distance': dialog.track_proximity_distance.GetValue(),
         'track_proximity_cost': dialog.track_proximity_cost.GetValue(),
         'keep_away': dialog.keep_away.GetValue(),
+        'net_clearances_path': dialog.net_clearances_path.GetValue(),
         'keep_away_free': dialog.keep_away_free.GetValue(),
         'keep_away_cost': dialog.keep_away_cost.GetValue(),
         'vertical_attraction_radius': dialog.vertical_attraction_radius.GetValue(),
@@ -183,6 +184,7 @@ def get_dialog_settings(dialog):
         'max_turn_angle': dialog.differential_tab.max_turn_angle.GetValue(),
         'chamfer_extra': dialog.differential_tab.chamfer_extra.GetValue(),
         'centerline_setback': dialog.differential_tab.centerline_setback.GetValue(),
+        'centerline_setback_check': dialog.differential_tab.centerline_setback_check.GetValue(),
         'polarity_swap_nets_text': dialog.differential_tab.polarity_swap_nets_text.GetValue(),
         'gnd_via_check': dialog.differential_tab.gnd_via_check.GetValue(),
         'intra_match_check': dialog.differential_tab.intra_match_check.GetValue(),
@@ -224,6 +226,8 @@ def get_dialog_settings(dialog):
         'fanout_qfn_clearance': dialog.fanout_tab.qfn_options.qfn_clearance.GetValue(),
         'fanout_qfn_underpad': dialog.fanout_tab.qfn_options.underpad_escape.GetValue(),
         'fanout_qfn_allow_via_in_pad': dialog.fanout_tab.qfn_options.allow_via_in_pad.GetValue(),
+        # By NAME: the choice lists the board's own copper layers.
+        'fanout_qfn_layer': dialog.fanout_tab.qfn_options.qfn_layer.GetStringSelection(),
 
         # Planes tab settings
         'planes_net_panel_checked': list(dialog.planes_tab.net_panel.get_selected_nets()),
@@ -235,6 +239,7 @@ def get_dialog_settings(dialog):
         'planes_zone_clearance': dialog.planes_tab.create_options.zone_clearance.GetValue(),
         'planes_thermal_relief': dialog.planes_tab.create_options.thermal_relief.GetValue(),
         'planes_thermal_vias': dialog.planes_tab.create_options.thermal_vias.GetValue(),
+        'planes_skip_existing_zones': dialog.planes_tab.create_options.skip_existing_zones.GetValue(),
         'planes_add_gnd_vias': dialog.planes_tab.create_options.add_gnd_vias_check.GetValue(),
         'planes_gnd_via_distance': dialog.planes_tab.create_options.gnd_via_distance.GetValue(),
         'planes_stitch_vias': dialog.planes_tab.create_options.stitch_vias.GetValue(),
@@ -244,6 +249,9 @@ def get_dialog_settings(dialog):
         'planes_stitch_inset': dialog.planes_tab.create_options.stitch_inset.GetValue(),
         'planes_stitch_max_freq': dialog.planes_tab.create_options.stitch_max_freq.GetValue(),
         'planes_gnd_via_net': dialog.planes_tab.create_options.gnd_via_net.GetValue(),
+        'planes_min_thickness': dialog.planes_tab.create_options.min_thickness.GetValue(),
+        'planes_plane_max_iterations': dialog.planes_tab.create_options.plane_max_iterations.GetValue(),
+        'planes_voronoi_seed_interval': dialog.planes_tab.create_options.voronoi_seed_interval.GetValue(),
         # Repair mode options
 
         # AI tab settings (issue #40; backend selection #503). Model/effort
@@ -423,6 +431,8 @@ def restore_dialog_settings(dialog, settings):
         dialog.track_proximity_cost.SetValue(settings['track_proximity_cost'])
     if 'keep_away' in settings:
         dialog.keep_away.SetValue(settings['keep_away'])
+    if 'net_clearances_path' in settings:
+        dialog.net_clearances_path.SetValue(settings['net_clearances_path'])
     if 'keep_away_free' in settings:
         dialog.keep_away_free.SetValue(settings['keep_away_free'])
     if 'keep_away_cost' in settings:
@@ -634,6 +644,18 @@ def restore_dialog_settings(dialog, settings):
         dialog.differential_tab.chamfer_extra.SetValue(settings['chamfer_extra'])
     if 'centerline_setback' in settings:
         dialog.differential_tab.centerline_setback.SetValue(settings['centerline_setback'])
+    # The setback's override box. A settings file saved before it existed has
+    # only the value, where 0 meant auto and a positive value an explicit
+    # setback, so that is how such a file restores.
+    if 'centerline_setback_check' in settings:
+        _sb_on = bool(settings['centerline_setback_check'])
+    elif 'centerline_setback' in settings:
+        _sb_on = float(settings['centerline_setback'] or 0) > 0
+    else:
+        _sb_on = None
+    if _sb_on is not None:
+        dialog.differential_tab.centerline_setback_check.SetValue(_sb_on)
+        dialog.differential_tab.centerline_setback.Enable(_sb_on)
     if 'polarity_swap_nets_text' in settings:
         dialog.differential_tab.polarity_swap_nets_text.SetValue(
             settings['polarity_swap_nets_text'])
@@ -729,6 +751,11 @@ def restore_dialog_settings(dialog, settings):
         dialog.fanout_tab.qfn_options.underpad_escape.SetValue(settings['fanout_qfn_underpad'])
     if 'fanout_qfn_allow_via_in_pad' in settings:
         dialog.fanout_tab.qfn_options.allow_via_in_pad.SetValue(settings['fanout_qfn_allow_via_in_pad'])
+    if 'fanout_qfn_layer' in settings:
+        # A layer this board does not have falls back to the mounted layer.
+        _ql = dialog.fanout_tab.qfn_options.qfn_layer
+        _qi = _ql.FindString(str(settings['fanout_qfn_layer']))
+        _ql.SetSelection(_qi if _qi >= 0 else 0)
 
     # Restore planes tab settings
     # (No mode restore since #562: the tab is pour-creation only, so a
@@ -753,6 +780,9 @@ def restore_dialog_settings(dialog, settings):
         dialog.planes_tab.create_options.thermal_relief.SetValue(settings['planes_thermal_relief'])
     if 'planes_thermal_vias' in settings:
         dialog.planes_tab.create_options.thermal_vias.SetValue(settings['planes_thermal_vias'])
+    if 'planes_skip_existing_zones' in settings:
+        dialog.planes_tab.create_options.skip_existing_zones.SetValue(
+            bool(settings['planes_skip_existing_zones']))
     if 'planes_add_gnd_vias' in settings:
         dialog.planes_tab.create_options.add_gnd_vias_check.SetValue(settings['planes_add_gnd_vias'])
     if 'planes_gnd_via_distance' in settings:
@@ -771,6 +801,14 @@ def restore_dialog_settings(dialog, settings):
         dialog.planes_tab.create_options.stitch_max_freq.SetValue(settings['planes_stitch_max_freq'])
     if 'planes_gnd_via_net' in settings:
         dialog.planes_tab.create_options.gnd_via_net.SetValue(settings['planes_gnd_via_net'])
+    if 'planes_min_thickness' in settings:
+        dialog.planes_tab.create_options.min_thickness.SetValue(settings['planes_min_thickness'])
+    if 'planes_plane_max_iterations' in settings:
+        dialog.planes_tab.create_options.plane_max_iterations.SetValue(
+            int(settings['planes_plane_max_iterations']))
+    if 'planes_voronoi_seed_interval' in settings:
+        dialog.planes_tab.create_options.voronoi_seed_interval.SetValue(
+            settings['planes_voronoi_seed_interval'])
     # Repair mode options
 
     # Restore AI tab backend/model/effort (issue #40; #503). Per-backend

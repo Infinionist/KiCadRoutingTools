@@ -339,8 +339,9 @@ def test_an_f_and_b_pad_is_on_both_sides():
             '(net 1 "N1"))\n'
             + _rect_pad('2', 2, 0.6, 0, 1.0, 1.0))
     pcb = _pcb(_fp('U1', 10, 10, pads))
-    assert 'F&B.Cu' in pcb.footprints['U1'].pads[0].layers, (
-        pcb.footprints['U1'].pads[0].layers)
+    # The parser reads the token as the set pcbnew loads (canonical_pad_layers).
+    lys = pcb.footprints['U1'].pads[0].layers
+    assert {'F.Cu', 'B.Cu'} <= set(lys) and 'F&B.Cu' not in lys, lys
     assert len(_depths(pcb)) == 1, _depths(pcb)
     print("  F&B.Cu: a short against a front pad")
 

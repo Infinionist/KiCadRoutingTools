@@ -5301,14 +5301,18 @@ def main():
     if out_path and os.path.isfile(out_path) \
             and not getattr(args, 'no_fix_drc_settings', False):
         try:
-            from fix_kicad_drc_settings import fix_project_for_output
+            from fix_kicad_drc_settings import (fix_project_for_output,
+                                                fanout_fix_kwargs)
+            # The one fanout writeback decision, which the GUI fanout tab
+            # applies to the live board (#439: fanout escapes route to
+            # --clearance, so the classes are always clamped to it).
             fix_project_for_output(
                 out_path, input_pcb=args.pcb,
-                clearance=eff_clearance,
-                track_width=args.track_width,
-                via_diameter=getattr(args, 'via_size', None),
-                via_drill=getattr(args, 'via_drill', None),
-                clamp_nondefault_netclasses=True)  # #439: fanout escapes route to --clearance; always clamp
+                **fanout_fix_kwargs('bga', None, None,
+                                    clearance=eff_clearance,
+                                    track_width=args.track_width,
+                                    via_size=getattr(args, 'via_size', None),
+                                    via_drill=getattr(args, 'via_drill', None)))
         except Exception as _e:
             print(f"  (skipped DRC-settings fix: {_e})")
         # #581: record an ACTIVE same-net pad via clearance so later chain

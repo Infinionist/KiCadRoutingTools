@@ -39,7 +39,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "tests" / "stress"))
 import manifest_to_plan as m2p  # noqa: E402
 from redo_stress_test import (  # noqa: E402
-    parse_manifest, compute_prune_keep, is_check_cmd)
+    parse_manifest, is_check_cmd)
 
 STRESS = Path(os.environ.get("STRESS_DIR", str(Path.home() / "Documents/kicad_stress_test")))
 
@@ -64,7 +64,8 @@ SCALAR_FLAGS = {
     # invisible here, and no corpus manifest used --fab-overrides -- which is
     # why the FIXTURE now carries both (and always runs). When adding a CLI
     # flag, add it to the converter's FLAG_PARAMS and to this table.
-    '--fab-tier': 'fab_tier', '--fab-overrides': 'fab_overrides_path',
+    # (--fab-overrides is a FILE flag: checked in PATH_FLAGS, resolved.)
+    '--fab-tier': 'fab_tier',
     # The bus family travels together in a recorded run (runs_set12's
     # duodyne_backplane20 passes all three), so the fixture carries it whole.
     '--ordering': 'ordering_strategy',
@@ -75,6 +76,12 @@ SCALAR_FLAGS = {
     '--guide-corridor-spacing': 'guide_corridor_spacing_ctrl',
     '--keepout-layer': 'keepout_layer_ctrl',
     '--diff-chamfer-extra': 'chamfer_extra',
+}
+# FILE flags -> plan param: asserted RESOLVED against the command's folder
+# (check_pair), an independent expectation of manifest_to_plan.PATH_PARAMS.
+PATH_FLAGS = {
+    '--net-clearances': 'net_clearances_path',
+    '--fab-overrides': 'fab_overrides_path',
 }
 BOOL_FLAGS = {
     '--no-bga-zones': 'no_bga_zone', '--no-bga-zone': 'no_bga_zone',
@@ -159,15 +166,19 @@ def _num(v):
 
 def _plan_pairs(manifest):
     """Replicate manifest_to_plan.main()'s kept-command loop to yield
-    (argv, step) for every command that becomes a GUI step."""
+    (argv, step, base) for every command that becomes a GUI step -- `base`
+    being the folder a relative file the command named was opened from (its
+    recorded cwd, else the manifest's folder)."""
     cmds = parse_manifest(manifest)
-    keep, _info = compute_prune_keep(cmds)
+    # The converter's own prune, which leaves out commands their tool's parser
+    # rejects (the CLI ran nothing for them).
+    keep, _rejected = m2p.prune_manifest(cmds, manifest)
     steps = []
     pairs = []
     for i, (_cwd, argv) in enumerate(cmds):
         if i not in keep or is_check_cmd(argv):
             continue
-        if any(os.path.basename(a) == 'place_fanout_clearance.py' for a in argv):
+        if any(os.path.basename(a) == m2p.CAP_TOOL for a in argv):
             steps.append(m2p.cap_optimization_step(argv, cwd=_cwd))
             # A cap step is still appended (route_planes inheritance below
             # needs the sequence) but never enters `pairs`, because check_pair
@@ -178,8 +189,11 @@ def _plan_pairs(manifest):
             # which stopped being true at #733 and is now actively misleading:
             # every cap flag IS asserted, just not from this loop.
             continue
-        step = m2p.parse_command(argv)
-        if step is None:
+        base = _cwd or os.path.dirname(os.path.abspath(manifest))
+        step = m2p.parse_command(argv, cwd=base)
+        # A named refusal or no-op converts to NO step, as in
+        # plan_steps_from_manifest; there are no flags of it to assert.
+        if step is None or '_refused' in step or '_noop' in step:
             continue
         if step['action'] == 'repair_planes' and 'assignments' not in step:
             for prev in reversed(steps):
@@ -187,7 +201,7 @@ def _plan_pairs(manifest):
                     step['assignments'] = [dict(a) for a in prev['assignments']]
                     break
         steps.append(step)
-        pairs.append((argv, step))
+        pairs.append((argv, step, base))
     return pairs
 
 
@@ -267,8 +281,10 @@ def _component_refs(argv):
     return out
 
 
-def check_pair(argv, step):
-    """Return list of (flag, reason) mismatches for one command/step pair."""
+def check_pair(argv, step, base=None):
+    """Return list of (flag, reason) mismatches for one command/step pair.
+
+    `base`: the folder the command opened relative files from (PATH_FLAGS)."""
     params = step.get('params', {})
     scalar = dict(SCALAR_FLAGS)
     scalar.update(ACTION_SCALAR_OVERRIDES.get(step.get('action'), {}))
@@ -348,6 +364,25 @@ def check_pair(argv, step):
                 bad.append(('<positional pairs>',
                             f"want {want_pairs} got {got_pairs} "
                             f"(missing {missing})"))
+
+    # FILE flags: the CLI opened a relative path from ITS cwd, the GUI would
+    # from KiCad's, so the plan must carry the same file as the absolute path
+    # it was opened at. --net-clearances (it replaces the net classes' map) was
+    # dropped outright until 8 kept route steps on 4 corpus boards replayed at
+    # the class clearances; --fab-overrides (0 corpus uses, the fixture's
+    # relative `my_fab.txt`) was carried raw.
+    for flag, key in PATH_FLAGS.items():
+        if flag not in argv:
+            continue
+        k = argv.index(flag)
+        val = argv[k + 1] if k + 1 < len(argv) else ''
+        want = (val if os.path.isabs(val) or not base
+                else os.path.normpath(os.path.join(base, val)))
+        got = params.get(key)
+        n += 1
+        if not (isinstance(got, str) and os.path.isabs(got) and got == want):
+            bad.append((flag, f"want the absolute path {want!r} (recorded "
+                              f"{val!r}), got {key}={got!r}"))
 
     # Positional net names must survive into step['nets'] -- and must NOT be
     # silently widened to the ['*'] catch-all.
@@ -752,8 +787,10 @@ ROUTE_CLI_ONLY = {
                   "consumes results in memory",
     '--strict-sizes': "a harness EXIT-CODE flag (#857); changes no copper",
     '--keep-thermal': "deprecated no-op (#856)",
-    '--net-clearances': "a board-specific JSON path; the GUI derives the same "
-                        "map from the live board's net classes",
+    # (--net-clearances left this list: its file REPLACES the class-derived
+    # map, so "the GUI derives the same map from the net classes" was false
+    # for every file that differed. It is the Advanced tab's Net Clearances
+    # File now.)
     '--schematic-dir': "writes pad swaps back to .kicad_sch files, no copper; "
                        "the recorded path is the recording host's",
     '--write-fill': "fills zones in the OUTPUT FILE for delivery (#910); the "
@@ -799,20 +836,13 @@ _PROBE_VALUE = 'PROBE_VALUE'
 # the flag means the same thing there (the shared registrars and the file /
 # diagnostic flags); the rest are the tool's own.
 _SAME_AS_ROUTE = ('--debug-lines', '--debug-memory', '--enable-used-layers',
-                  '--keep-thermal', '--net-clearances', '--output',
-                  '--overwrite', '--schematic-dir', '--strict-sizes',
-                  '--verbose')
+                  '--keep-thermal', '--output', '--overwrite',
+                  '--schematic-dir', '--strict-sizes', '--verbose')
 
 DIFF_CLI_ONLY = {f: ROUTE_CLI_ONLY[f] for f in _SAME_AS_ROUTE}
-# KNOWN GAPS, PENDING ANDY'S DECISION (route_diff.py).
-DIFF_KNOWN_GAPS = {
-    '--diff-pair-centerline-setback': (
-        "its control exists (differential_tab.centerline_setback, 0 = auto, "
-        "which the diff tab passes as diff_pair_centerline_setback) but "
-        "reset_params_to_defaults never restores it, so an alias alone would "
-        "leak one step's setback into every later diff step. Fix: alias + "
-        "reset line. 0 recorded uses"),
-}
+# KNOWN GAPS (route_diff.py). EMPTY: --diff-pair-centerline-setback left when
+# it got its converter row, its alias and its reset line.
+DIFF_KNOWN_GAPS = {}
 
 PLANES_CLI_ONLY = dict(
     {f: ROUTE_CLI_ONLY[f] for f in ('--debug-lines', '--enable-used-layers',
@@ -821,46 +851,31 @@ PLANES_CLI_ONLY = dict(
                                     '--verbose')},
     **{'--dry-run': "analysis only, writes no board (the planes tab always "
                     "runs create_plane with dry_run=True and applies the "
-                    "result to the live board itself)",
-       '--skip-existing-zones': "the planes tab always behaves as if it were "
-                                "given (skip_existing_zones=True: keep an "
-                                "existing same-net zone on the live board); "
-                                "what it cannot replay is the flag's ABSENCE"})
-# KNOWN GAPS, PENDING ANDY'S DECISION (route_planes.py). No control on the
-# planes tab: planes_gui hands create_plane a fixed default for each, so a
-# recorded non-default value is lost. They steer the routed connections of a
-# multi-net (Voronoi split) plane layer and its zone fill. 0 recorded uses of
-# any of them.
-PLANES_KNOWN_GAPS = {
-    '--min-thickness': "no control; planes_gui passes "
-                       "defaults.PLANE_MIN_THICKNESS",
-    '--plane-max-iterations': "no control; planes_gui passes "
-                              "defaults.MAX_ITERATIONS",
-    '--voronoi-seed-interval': "no control; planes_gui passes 2.0",
-}
+                    "result to the live board itself)"})
+# (--skip-existing-zones left this list when the planes tab got its "Skip
+# existing zones" box: the tab used to behave as if the flag were ALWAYS
+# given, so a replayed step that omitted it kept a pour the CLI replaced.)
+# KNOWN GAPS (route_planes.py). EMPTY: --min-thickness, --plane-max-iterations
+# and --voronoi-seed-interval had no control (planes_gui handed create_plane a
+# fixed default for each) until the planes tab's advanced box got one of each,
+# named after the create_plane param and reset to the argparse default.
+PLANES_KNOWN_GAPS = {}
 
 BGA_CLI_ONLY = {f: ROUTE_CLI_ONLY[f] for f in ('--enable-used-layers',
                                                '--keep-thermal', '--output',
                                                '--strict-sizes')}
-# KNOWN GAPS, PENDING ANDY'S DECISION (bga_fanout.py). (--diff-pairs and
-# --diff-pair-gap left when the BGA panel got its Coupled pairs field and its
-# own coupled-pair gap: 51 kept corpus steps on 36 boards carry both.)
-BGA_KNOWN_GAPS = {
-    '--primary-escape': (
-        "its control is the escape_direction RadioBox, which the plan "
-        "executor's _set_control cannot set (no RadioBox branch, no "
-        "SetValue) and reset_params_to_defaults does not restore. Needs a "
-        "special handler + reset line. 0 recorded uses"),
-}
+# KNOWN GAPS (bga_fanout.py). EMPTY: --diff-pairs and --diff-pair-gap left
+# when the BGA panel got its Coupled pairs field and its own coupled-pair gap
+# (51 kept corpus steps on 36 boards carry both), and --primary-escape when
+# _set_control learned to set a RadioBox by label and the reset restored it.
+BGA_KNOWN_GAPS = {}
 
-QFN_CLI_ONLY = dict(
-    {f: ROUTE_CLI_ONLY[f] for f in ('--enable-used-layers', '--keep-thermal',
-                                    '--output', '--strict-sizes')},
-    **{'--layer': "overrides the escape layer, default the part's MOUNTED "
-                  "layer -- which is what the QFN panel always routes on "
-                  "(the tab passes component_layer). Any other value floats "
-                  "the stubs off the SMD pads (#96; the CLI warns). 0 of "
-                  "1018 recorded qfn_fanout calls use it"})
+QFN_CLI_ONLY = {f: ROUTE_CLI_ONLY[f] for f in ('--enable-used-layers',
+                                               '--keep-thermal', '--output',
+                                               '--strict-sizes')}
+# (--layer left this list when the QFN panel got its escape-layer choice: item
+# 0 is the part's mounted layer, the CLI's omitted flag, which is all the
+# panel could route on before.)
 
 # The tools whose EVERY flag is held to account: the plan action a recorded
 # command converts to, and the probe -- a command that already names its
@@ -895,15 +910,45 @@ FLAG_COVERAGE = {
         cli_only=QFN_CLI_ONLY, known_gaps={}, reset_gaps={}),
 }
 
-# The widget classes the executor's _set_control can SET: its explicit
-# CheckBox / SpinCtrl / SpinCtrlDouble / Choice branches, plus the wx classes
-# that reach its `hasattr(ctrl, "SetValue")` branch. A Button, a StaticText, a
-# custom panel or the `layer_checks` dict has no SetValue, so a param
-# resolving to one is logged "no control ..., ignored" however its name
-# matches.
-_SETTABLE_WX = frozenset({'CheckBox', 'SpinCtrl', 'SpinCtrlDouble', 'Choice',
-                          'TextCtrl', 'ComboBox', 'RadioButton', 'Slider',
+# The wx classes that reach the executor's `hasattr(ctrl, "SetValue")`
+# branch. A Button, a StaticText, a custom panel or the `layer_checks` dict
+# has no SetValue, so a param resolving to one is logged "no control ...,
+# ignored" however its name matches. (So did a RadioBox, which has no
+# SetValue either, until _set_control grew a branch for it: bga_fanout's
+# --primary-escape was a known gap for exactly that reason.)
+_SETVALUE_WX = frozenset({'TextCtrl', 'ComboBox', 'RadioButton', 'Slider',
                           'ToggleButton', 'Gauge'})
+
+
+@functools.lru_cache(maxsize=None)
+def _settable_wx():
+    """The widget classes the executor's _set_control can SET.
+
+    Its explicit `isinstance(ctrl, wx.X)` / `(wx.X, wx.Y)` branches, READ from
+    ai_plan.py rather than listed here -- a hand-kept copy said RadioBox was
+    settable whether or not the branch existed -- plus _SETVALUE_WX when the
+    function still has its `hasattr(ctrl, "SetValue")` fallback.
+    """
+    tree = ast.parse((REPO / "kicad_routing_plugin" / "ai_plan.py").read_text(
+        encoding='utf-8'))
+    fn = _function(tree, '_set_control')
+    if fn is None:
+        return frozenset()
+    out, fallback = set(), False
+    for c in ast.walk(fn):
+        if not (isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+                and len(c.args) == 2):
+            continue
+        if c.func.id == 'isinstance':
+            kinds = (c.args[1].elts if isinstance(c.args[1], ast.Tuple)
+                     else [c.args[1]])
+            out |= {k.attr for k in kinds
+                    if isinstance(k, ast.Attribute)
+                    and isinstance(k.value, ast.Name) and k.value.id == 'wx'}
+        elif (c.func.id == 'hasattr' and isinstance(c.args[1], ast.Constant)
+              and c.args[1].value == 'SetValue'):
+            fallback = True
+    return frozenset(out | (_SETVALUE_WX if fallback else set()))
 
 _GUI_FILES = ("swig_gui.py", "differential_gui.py", "fanout_gui.py",
               "planes_gui.py")
@@ -1026,8 +1071,9 @@ def _class_widgets():
                             continue
                         for x in tables[loop.iter.id]:
                             widgets[x + suffix] = kind
+            settable = _settable_wx()
             for attr in [a for a, k in widgets.items()
-                         if k not in _SETTABLE_WX]:
+                         if k not in settable]:
                 del widgets[attr]
     return out
 
@@ -1481,6 +1527,306 @@ def check_group_flags():
     return bad
 
 
+def check_rejected_steps():
+    """A recorded command its tool REFUSES -- at argparse, or in a check its
+    main makes after parsing -- ran nothing on the CLI, so it must not become a
+    plan step that runs in the GUI.
+
+    hexberry_fpga recorded `qfn_fanout.py ... --dry-run` (qfn_fanout has no
+    --dry-run: exit 2, no board). The pruner keeps commands by the boards they
+    NAME, not by whether they ran, so a refused command that is the last to
+    name a board a later step reads was kept and converted -- hexberry's escaped
+    only because it named no output. Self-contained synthetic chains:
+      A  an argparse rejection is that last writer: no fanout step at all.
+      B  it is a rejected RETRY of an accepted command: the plan's fanout is
+         the accepted one (no --width), since that is the board the route
+         step really read.
+      C  a POST-PARSE refusal as the last writer: route_planes' nets/layers
+         count mismatch, which the converter paired up itself into a
+         runnable plane step.
+      D  a post-parse refusal as a retry: route.py --force-reroute with no
+         scope, which would have converted to nets '*' -- a GUI step that
+         rips the WHOLE board, the thing the CLI guard exists to prevent.
+    Each must be named, counted, on stderr.
+    """
+    import contextlib
+    import io
+    import shutil
+    import tempfile
+    bad = []
+    qfn = "python3 py_router/qfn_fanout.py b0.kicad_pcb --output b1.kicad_pcb --component U7"
+    route = "python3 py_router/route.py b1.kicad_pcb b2.kicad_pcb --nets '*'"
+    planes = ("python3 py_router/route_planes.py b0.kicad_pcb b1.kicad_pcb "
+              "--nets GND VCC --plane-layers In1.Cu")
+    route0 = "python3 py_router/route.py b0.kicad_pcb b1.kicad_pcb"
+    # name: (lines, the plan's actions, the FIRST step's params (None: not
+    # checked), the refusal's text on stderr)
+    chains = {
+        'A': ([qfn + " --dry-run", route], ['route'], None,
+              'unrecognized arguments: --dry-run'),
+        'B': ([qfn, qfn + " --width 0.1 --dry-run", route],
+              ['fanout', 'route'], {}, 'unrecognized arguments: --dry-run'),
+        'C': ([planes, route], ['route'], None, 'number of net arguments'),
+        'D': ([route0 + " --nets '*'", route0 + " --force-reroute",
+               "python3 py_router/route.py b1.kicad_pcb b2.kicad_pcb --nets GND"],
+              ['route', 'route'], {}, 'requires an explicit net scope'),
+    }
+    d = tempfile.mkdtemp()
+    try:
+        for name, (lines, want_actions, want_first_params, needle) in \
+                chains.items():
+            man = os.path.join(d, f'redo_{name}.sh')
+            with open(man, 'w', encoding='utf-8', newline='\n') as f:
+                f.write('#!/bin/sh\n' + '\n'.join(lines) + '\n')
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                steps, _skipped = m2p.plan_steps_from_manifest(man)
+            actions = [s.get('action') for s in steps]
+            if actions != want_actions:
+                bad.append((f'<chain {name}>',
+                            f"steps {actions}, want {want_actions}: a command "
+                            f"its tool refuses was converted into a runnable "
+                            f"step"))
+            if want_first_params is not None and steps and \
+                    (steps[0].get('params') or {}) != want_first_params:
+                bad.append((f'<chain {name}>',
+                            f"first step params {steps[0].get('params')}: the "
+                            f"plan took the REFUSED retry, not the command "
+                            f"that wrote the board the next step read"))
+            text = err.getvalue()
+            if not ('REJECTED' in text and needle in text):
+                bad.append((f'<chain {name}>',
+                            f"the refused command was not named on stderr "
+                            f"({needle!r})"))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    # Where a tool's parser cannot be built (a missing dependency in this
+    # interpreter) its flag list stands in, and must still refuse the unknown
+    # flag while accepting what argparse accepts: an unambiguous prefix, and
+    # the --flag=value spelling.
+    import cli_argv_check as cac
+    if not cac._flag_list_rejection('qfn_fanout.py', ['b0.kicad_pcb',
+                                                      '--dry-run']):
+        bad.append(('<fallback>', "the flag-list fallback accepted qfn_fanout "
+                                  "--dry-run"))
+    _ok = cac._flag_list_rejection('qfn_fanout.py', [
+        'b0.kicad_pcb', '--output', 'b1.kicad_pcb', '--comp', 'U7',
+        '--width=0.1'])
+    if _ok:
+        bad.append(('<fallback>', f"the flag-list fallback refused what "
+                                  f"argparse accepts: {_ok}"))
+    # The checked-in fixture must be a chain the real CLIs ACCEPT: a fixture
+    # line its tool rejects is now (rightly) not converted, and every flag
+    # check it carries would vanish from the count without a failure. Its
+    # bga_fanout line once passed the output positionally, which bga_fanout
+    # refuses (it takes --output): 13 BGA flag checks went that way.
+    _keep, fixture_rejected = m2p.prune_manifest(parse_manifest(FIXTURE),
+                                                 FIXTURE)
+    for i, why in sorted(fixture_rejected.items()):
+        bad.append(('<fixture>', f"command {i + 1} is rejected by its own "
+                                 f"tool ({why}); the flag checks it carries "
+                                 f"would silently drop out"))
+    return bad
+
+
+#: The converted tools' mains, as REFUSAL_SITES names them: (source, the
+#: function, or None for an `if __name__ == '__main__':` block).
+_MAINS = {
+    'route.py': ('py_router/route.py', None),
+    'route_diff.py': ('py_router/route_diff.py', None),
+    'route_planes.py': ('py_router/route_planes.py', 'main'),
+    'repair_planes.py': ('py_router/repair_planes.py', 'main'),
+    'bga_fanout.py': ('py_router/bga_fanout/__init__.py', 'main'),
+    'qfn_fanout.py': ('py_router/qfn_fanout/__init__.py', 'main'),
+    'place_fanout_clearance.py': ('py_placer/place_fanout_clearance.py', 'main'),
+}
+#: Helpers a main calls that END the run on a bad argument or named file
+#: (raise SystemExit / return an exit code) -- the AST below cannot see into
+#: them, so each is a site of its own.
+_EXITING_HELPERS = ('fab_tier_from_args', 'read_brief_keep_away',
+                    'load_net_clearances', 'load_intent_or_exit',
+                    'tether_gate_spec', 'declared_cap_rotations')
+
+
+def refusal_sites(tool):
+    """{fingerprint: line} of every refusal in `tool`'s main after its
+    parse_args: a `.error(...)` call (by its message head), a non-zero
+    `exit(...)` / `return` / `raise SystemExit` (by the `if` guarding it),
+    and a call to an _EXITING_HELPERS helper (`call:<name>`)."""
+    rel, fn = _MAINS[tool]
+    tree = ast.parse((REPO / rel).read_text(encoding='utf-8'))
+    if fn is None:
+        body = next(n for n in tree.body if isinstance(n, ast.If)
+                    and isinstance(n.test, ast.Compare)
+                    and getattr(n.test.left, 'id', '') == '__name__')
+    else:
+        body = _function(tree, fn)
+    parent = {c: p for p in ast.walk(body) for c in ast.iter_child_nodes(p)}
+    start = min(c.lineno for c in ast.walk(body)
+                if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+                and c.func.attr == 'parse_args')
+
+    def guard(node):
+        # The nearest `if` (or `except`) that decides the refusal, inside the
+        # main -- never the `if __name__ == '__main__':` block itself.
+        p = parent.get(node)
+        while p is not None and p is not body:
+            if isinstance(p, ast.If):
+                return ('if ' + ast.unparse(p.test))[:70]
+            if isinstance(p, ast.ExceptHandler):
+                tried = next((ast.unparse(c.func) for s in parent[p].body
+                              for c in ast.walk(s) if isinstance(c, ast.Call)),
+                             '?')
+                return (f"except {ast.unparse(p.type) if p.type else ''} "
+                        f"from {tried}")[:70]
+            p = parent.get(p)
+        return '<unguarded>'
+
+    def nonzero(v):
+        return (isinstance(v, ast.Name) or (isinstance(v, ast.Constant)
+                and isinstance(v.value, int) and v.value != 0))
+
+    out = {}
+    for c in ast.walk(body):
+        if getattr(c, 'lineno', 0) <= start:
+            continue
+        key = None
+        if isinstance(c, ast.Call):
+            name = (c.func.attr if isinstance(c.func, ast.Attribute)
+                    else getattr(c.func, 'id', ''))
+            if name == 'error' and isinstance(c.func, ast.Attribute) and c.args:
+                # The message's first literal text, wherever it sits (an
+                # f-string, a `"..." % x`); a message with none -- error(_kae)
+                # -- is known by the `if` that guards it instead.
+                head = next((s.value for s in ast.walk(c.args[0])
+                             if isinstance(s, ast.Constant)
+                             and isinstance(s.value, str) and s.value.strip()),
+                            None)
+                key = head[:40] if head else guard(c)
+            elif name == 'exit' and c.args and nonzero(c.args[0]):
+                key = guard(c)
+            elif name in _EXITING_HELPERS:
+                key = 'call:' + name
+        elif isinstance(c, ast.Return) and c.value is not None and nonzero(c.value):
+            key = guard(c)
+        elif isinstance(c, ast.Raise) and 'SystemExit' in ast.unparse(c.exc or c):
+            key = guard(c)
+        if key:
+            out.setdefault(key, c.lineno)
+    return out
+
+
+def check_refusal_inventory():
+    """Every post-parse refusal in a converted tool's main is classified in
+    cli_argv_check.REFUSAL_SITES, and every check it names exists.
+
+    A command a main refuses AFTER parse_args (route_planes' nets/layers count,
+    route.py's --force-reroute without a scope, a missing --fab-overrides file)
+    ran nothing on the CLI, but the parser accepts it, so it used to convert
+    into a GUI step that runs -- with --force-reroute and no nets, a GUI step
+    that rips the whole board. cli_argv_check judges the argument- and
+    named-file checks; this keeps its table in step with the mains: an
+    unclassified site (a new refusal) or a stale entry fails here.
+    """
+    import cli_argv_check as cac
+    bad = []
+    for tool in _MAINS:
+        sites = refusal_sites(tool)
+        table = cac.REFUSAL_SITES.get(tool, {})
+        checks = {f.__name__ for f in cac.POST_PARSE.get(tool, ())}
+        for key, line in sorted(sites.items(), key=lambda kv: kv[1]):
+            if key not in table:
+                bad.append((tool, f"line {line}: refusal {key!r} is not in "
+                                  f"cli_argv_check.REFUSAL_SITES -- classify it "
+                                  f"(argv/file with its check, or board / never "
+                                  f"a step / after the run, with the reason)"))
+        for key, (disp, what) in table.items():
+            if key not in sites:
+                bad.append((tool, f"STALE REFUSAL_SITES entry {key!r}: no "
+                                  f"such refusal in the main any more"))
+            if disp in ('argv', 'file') and what not in checks:
+                bad.append((tool, f"{key!r} is judged by {what}, which is not "
+                                  f"in POST_PARSE[{tool!r}]"))
+    return bad
+
+
+#: (the POST_PARSE check it witnesses, the command's tool + arguments, what
+#: cli_argv_check must say: a refusal's text, or None = accepted), run from a
+#: folder holding fab.txt only ({tmp}) -- or, with a 4th element 'gone', from a
+#: recorded folder that does not exist here, where a named file is not judged.
+_POST_PARSE_WITNESSES = (
+    ('_fab_overrides_missing', 'route.py a.kicad_pcb b.kicad_pcb --nets X '
+     '--fab-overrides {tmp}/missing.txt', '--fab-overrides file not found'),
+    ('_fab_overrides_missing', 'route.py a.kicad_pcb b.kicad_pcb --nets X '
+     '--fab-overrides {tmp}/fab.txt', None),
+    ('_fab_overrides_missing', 'qfn_fanout.py a.kicad_pcb --output b.kicad_pcb '
+     '--fab-overrides fab.txt', None, 'gone'),
+    ('_output_twice', 'route.py a.kicad_pcb b.kicad_pcb --output c.kicad_pcb',
+     'were both given, and differ'),
+    ('_output_twice', 'route.py a.kicad_pcb b.kicad_pcb --output b.kicad_pcb',
+     None),
+    ('_route_group_empty', "route.py a.kicad_pcb --group ' '", 'empty name'),
+    ('_keep_away', 'route.py a.kicad_pcb b.kicad_pcb --nets X --keep-away A:B:x',
+     '--keep-away'),
+    ('_route_force_reroute_unscoped', 'route.py a.kicad_pcb b.kicad_pcb '
+     '--force-reroute', 'explicit net scope'),
+    ('_route_force_reroute_unscoped', 'route.py a.kicad_pcb b.kicad_pcb '
+     '--force-reroute --nets X', None),
+    ('_route_group_sources', 'route.py a.kicad_pcb --group U1 --group-by bogus',
+     'unknown group source'),
+    ('_net_clearances_unreadable', 'route_diff.py a.kicad_pcb b.kicad_pcb '
+     '--net-clearances {tmp}/missing.json', '--net-clearances'),
+    ('_planes_count_mismatch', 'route_planes.py a.kicad_pcb b.kicad_pcb '
+     '--nets GND VCC --plane-layers In1.Cu', 'number of net arguments (2)'),
+    ('_planes_count_mismatch', 'route_planes.py a.kicad_pcb b.kicad_pcb '
+     '--nets GND VCC --plane-layers In1.Cu In2.Cu', None),
+    ('_repair_count_mismatch', 'repair_planes.py a.kicad_pcb b.kicad_pcb '
+     '--nets GND VCC --plane-layers In1.Cu', 'counts must match'),
+    ('_cap_clearance_not_finite', 'place_fanout_clearance.py a.kicad_pcb '
+     '--clearance nan', 'finite number'),
+    ('_cap_clearance_not_finite', 'place_fanout_clearance.py a.kicad_pcb '
+     '--clearance 0.1', None),
+    ('_cap_intent_unreadable', 'place_fanout_clearance.py a.kicad_pcb '
+     '--intent {tmp}/missing.intent.json', 'cannot load intent'),
+)
+
+
+def check_post_parse_witnesses():
+    """Each argument/named-file check of cli_argv_check refuses its witness
+    command with its own reason, and accepts the near miss beside it; every
+    check in POST_PARSE has a refusing witness, so none is decorative."""
+    import shlex
+    import shutil
+    import tempfile
+    import cli_argv_check as cac
+    bad = []
+    tmp = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(tmp, 'fab.txt'), 'w', encoding='utf-8') as f:
+            f.write('# no override\n')
+        gone = os.path.join(tmp, 'not-here')
+        refusing = set()
+        for check, cmd, want, *where in _POST_PARSE_WITNESSES:
+            argv = ['python3'] + shlex.split(cmd.format(tmp=tmp))
+            got = cac.rejection(argv, cwd=gone if where == ['gone'] else tmp)
+            if want is None and got:
+                bad.append((check, f"refused a command its tool accepts: "
+                                   f"{cmd} -> {got}"))
+            elif want is not None and not (got and want in got
+                                           and 'after parsing' in got):
+                bad.append((check, f"{cmd}: want a post-parse refusal "
+                                   f"naming {want!r}, got {got!r}"))
+            elif want is not None:
+                refusing.add(check)
+        for checks in cac.POST_PARSE.values():
+            for fn in checks:
+                if fn.__name__ not in refusing:
+                    bad.append((fn.__name__, "no witness command it refuses"))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return sorted(set(bad))
+
+
 def check_refused_tools():
     """#431: placement tools must be REFUSED loudly, and must not break the chain.
 
@@ -1536,6 +1882,120 @@ def check_refused_tools():
     return bad
 
 
+#: The KRT_TOOL kinds that can write a board (krt_registry.KINDS): an `actor`
+#: changes the board, a `conditional` does under an opt-in flag or to a
+#: scratch copy. Neither may fall through to the unknown-tool path, which only
+#: bumps a counter -- so a converted plan reads complete without the step.
+BOARD_WRITING_KINDS = ('actor', 'conditional')
+
+#: The checkout the registry is read from: this file's own tree, except when
+#: a harness runs this gate on a PARTIAL copy (test_route_flag_plan_coverage_
+#: controls copies only what the flag checks read -- no awx/, no skills, no
+#: git index). The registry is a property of the checkout, so that harness
+#: points this at the real one; the check still RUNS, against the copy's
+#: converter tables. It relocates the read and never skips it: a root with no
+#: registry fails the import, and one with no declarations the vacuity guard.
+REGISTRY_ROOT = Path(os.environ.get('KRT_REGISTRY_ROOT') or REPO)
+
+
+def board_writing_tools():
+    """[(repo-relative path, kind)] for every tracked tool DECLARED as a
+    board-writing kind. Read by AST through krt_registry.declaration, never by
+    import or by running the tool -- the registry's own rule."""
+    root = str(REGISTRY_ROOT)
+    sys.path.insert(0, root)
+    import krt_registry
+    rows = []
+    for rel in krt_registry.tracked_python(root):
+        decl = krt_registry.declaration(root, rel)
+        if decl and decl.get('kind') in BOARD_WRITING_KINDS:
+            rows.append((rel, decl['kind']))
+    return rows
+
+
+def tool_dispositions(rows, mapped, refused, noop):
+    """[(path, why)] for every board-writing tool without EXACTLY ONE
+    disposition. A `conditional` named check_* is the fourth: is_check_cmd
+    drops it before conversion (what it may write is a debug or staged copy).
+    An ACTOR named check_* gets no such pass -- is_check_cmd would drop the
+    board it writes without a word."""
+    bad = []
+    for rel, kind in rows:
+        base = os.path.basename(rel)
+        disp = [name for name, table in (('mapped', mapped), ('refused', refused),
+                                         ('no-op', noop)) if base in table]
+        if kind == 'conditional' and base.startswith('check_'):
+            disp.append('check')
+        if not disp:
+            bad.append((rel, f"a board-writing KRT_TOOL ({kind}) that "
+                             "manifest_to_plan neither maps, refuses nor lists "
+                             "as a no-op -- it converts as an unknown tool, a "
+                             "bare `skipped` count, and the plan reads complete"))
+        elif len(disp) > 1:
+            bad.append((rel, f"more than one disposition: {disp}"))
+    return bad
+
+
+def check_registry_dispositions():
+    """#431 / #937: the membership check, ENFORCED FROM THE REGISTRY.
+
+    The hand-kept tuple in check_refused_tools catches a DELETION from
+    REFUSED_TOOLS; it cannot see a tool nobody added. This reads every
+    board-writing KRT_TOOL declaration and requires each to be mapped to a
+    plan action, refused with a reason, or listed as a no-op with a reason --
+    so a new board-writing tool cannot slip through by being unknown.
+    """
+    bad = []
+    rows = board_writing_tools()
+    actors = sum(1 for _r, k in rows if k == 'actor')
+    # Vacuity guard: a scan that read nothing would report a clean tree.
+    if actors < 30:
+        bad.append(('<registry>', f"only {actors} actor declaration(s) read -- "
+                                  "the scan is not looking where it thinks"))
+    noop = getattr(m2p, 'NOOP_TOOLS', {})
+    cap_tool = getattr(m2p, 'CAP_TOOL', None)
+    if cap_tool is None:
+        bad.append(('<manifest_to_plan>', "no CAP_TOOL: the optimize_caps "
+                                          "mapping is not a named table entry"))
+    mapped = set(m2p.TOOL_ACTIONS) | ({cap_tool} if cap_tool else set())
+    bad += tool_dispositions(rows, mapped, m2p.REFUSED_TOOLS, noop)
+
+    # Each refusal and no-op says WHY, and converts the way it is declared.
+    for name, table, key in (('REFUSED_TOOLS', m2p.REFUSED_TOOLS, '_refused'),
+                             ('NOOP_TOOLS', noop, '_noop')):
+        for tool, why in sorted(table.items()):
+            if not str(why or '').strip():
+                bad.append((tool, f"{name} entry carries no reason"))
+            step = m2p.parse_command(['python3', tool, 'a.kicad_pcb',
+                                      'b.kicad_pcb'])
+            if not step or key not in step:
+                bad.append((tool, f"in {name} but converts to {step!r}"))
+
+    # NEGATIVE CONTROL: the check must name a tool whose entry is removed --
+    # one per table, so no table's membership is checked by nothing.
+    controls = []
+    for table_name in ('mapped', 'refused', 'no-op'):
+        tables = {'mapped': set(mapped), 'refused': dict(m2p.REFUSED_TOOLS),
+                  'no-op': dict(noop)}
+        hit = next((os.path.basename(r) for r, _k in rows
+                    if os.path.basename(r) in tables[table_name]), None)
+        if hit is None:
+            bad.append((f'<control {table_name}>', "no registered tool sits in "
+                                                   "this table to remove"))
+            continue
+        if isinstance(tables[table_name], set):
+            tables[table_name].discard(hit)
+        else:
+            tables[table_name].pop(hit)
+        found = {os.path.basename(r) for r, _w in tool_dispositions(
+            rows, tables['mapped'], tables['refused'], tables['no-op'])}
+        controls.append((table_name, hit, hit in found))
+        if hit not in found:
+            bad.append((f'<control {table_name}>', f"removing {hit} was NOT "
+                                                   "reported -- the check is dead"))
+    return bad, len(rows), controls
+
+
 def main():
     # Corpus manifests give broad coverage; the checked-in fixture makes the gate
     # self-contained (runs on a fresh checkout with no corpus) AND is always
@@ -1557,8 +2017,8 @@ def main():
             total_bad += 1
             continue
         board_bad = []
-        for argv, step in pairs:
-            n, bad = check_pair(argv, step)
+        for argv, step, base in pairs:
+            n, bad = check_pair(argv, step, base)
             total += n
             for flag, why in bad:
                 board_bad.append((step.get('action'), flag, why))
@@ -1628,8 +2088,32 @@ def main():
     for f, why in ref_bad:
         print(f"    {f}: {why}")
 
+    reg_bad, n_reg, controls = check_registry_dispositions()
+    print(f"Board-writing registry tools: {'OK' if not reg_bad else 'FAILED'} "
+          f"({n_reg} declared actor/conditional tool(s), each mapped, refused "
+          f"or a no-op; negative controls: "
+          + ", ".join(f"{t} without {h} {'reported' if ok else 'MISSED'}"
+                      for t, h, ok in controls) + ").")
+    for f, why in reg_bad:
+        print(f"    {f}: {why}")
+
+    rej_bad = check_rejected_steps()
+    print(f"Refused commands: {'OK' if not rej_bad else 'FAILED'} "
+          f"(at argparse or after it: never plan steps; the board binds to "
+          f"its real writer; named).")
+    for f, why in rej_bad:
+        print(f"    {f}: {why}")
+
+    inv_bad = check_refusal_inventory() + check_post_parse_witnesses()
+    _n_sites = sum(len(refusal_sites(t)) for t in _MAINS)
+    print(f"Post-parse refusals: {'OK' if not inv_bad else 'FAILED'} "
+          f"({_n_sites} sites in {len(_MAINS)} mains, each classified; every "
+          f"argument/file check refuses its witness).")
+    for f, why in inv_bad:
+        print(f"    {f}: {why}")
+
     return 1 if (total_bad or res_bad or cap_bad or own_bad or flag_bad
-                 or grp_bad or ref_bad) else 0
+                 or grp_bad or ref_bad or reg_bad or rej_bad or inv_bad) else 0
 
 
 if __name__ == "__main__":

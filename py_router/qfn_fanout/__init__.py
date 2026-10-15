@@ -1108,6 +1108,32 @@ def _neighbour_escape_reserves(footprint, pcb_data, layer, extension, window):
     return out
 
 
+def resolve_escape_layer(footprint: Footprint, layer: Optional[str] = None,
+                         ref: Optional[str] = None
+                         ) -> Tuple[str, Optional[str], bool]:
+    """The layer a QFN fanout's stubs go on, and what to say about it.
+
+    `layer` None (qfn_fanout.py with no --layer, the QFN panel's "Mounted
+    layer") is the part's MOUNTED layer (issue #96: B.Cu-mounted parts silently
+    got F.Cu stubs floating over their pads, and route.py then reported their
+    nets routed while electrically open). Any other layer is honoured, with a
+    warning when it is not the mounted one. Both fronts call this, so the
+    escape layer and the #96 warning cannot drift apart.
+
+    Returns (layer, message, is_warning); message is None when there is
+    nothing to say.
+    """
+    ref = ref or footprint.reference
+    if layer is None:
+        layer = footprint.layer or 'F.Cu'
+        return layer, f"  Layer: {layer} (from footprint)", False
+    if footprint.layer and layer != footprint.layer:
+        return layer, (f"  WARNING: --layer {layer} differs from {ref}'s "
+                       f"mounted layer {footprint.layer} - stubs will NOT "
+                       f"touch the SMD pads unless this is intentional"), True
+    return layer, None, False
+
+
 def generate_qfn_fanout(footprint: Footprint,
                         pcb_data: PCBData,
                         net_filter: Optional[List[str]] = None,
@@ -1865,17 +1891,12 @@ def main():
     print(f"  Rotation: {footprint.rotation}deg")
     print(f"  Pads: {len(footprint.pads)}")
 
-    # Default the stub layer to the component's mounted layer (issue #96:
-    # B.Cu-mounted parts silently got F.Cu stubs floating over their pads,
-    # and route.py then reported their nets routed while electrically open).
-    layer = args.layer
-    if layer is None:
-        layer = footprint.layer or 'F.Cu'
-        print(f"  Layer: {layer} (from footprint)")
-    elif footprint.layer and layer != footprint.layer:
-        print(f"  WARNING: --layer {layer} differs from {args.component}'s "
-              f"mounted layer {footprint.layer} - stubs will NOT touch the "
-              f"SMD pads unless this is intentional")
+    # Default the stub layer to the component's mounted layer (#96); the QFN
+    # panel resolves its layer choice through the same function.
+    layer, _layer_note, _ = resolve_escape_layer(footprint, args.layer,
+                                                 args.component)
+    if _layer_note:
+        print(_layer_note)
 
     # #621: the CLI passes no cancel_check. The engine's cooperative cancel is
     # the GUI's (its Cancel button / the plan executor's Stop); a CLI-side
@@ -1971,10 +1992,19 @@ def main():
     # pipeline step and check_drc grade at the clearance the fanout used -- only
     # lowers, never tightens (issue #160).
     import clearance_ledger as _cl
-    from fix_kicad_drc_settings import fanout_written_floors
+    from fix_kicad_drc_settings import fanout_fix_kwargs
     eff_clearance = _cl.effective(args.clearance)
-    _floors, _via_floors = fanout_written_floors('qfn', tracks, vias)
-    if out_path and os.path.isfile(out_path) and not _floors:
+    # The one fanout writeback decision (fix_kicad_drc_settings), which the GUI
+    # fanout tab applies to the live board. #1195: None when this run drew no
+    # copper; the via floors only when it drew a via (stub mode never does, and
+    # its --via-size/--via-drill defaults lowered the declared via and hole
+    # floors on every run). #439: fanout escapes route to --clearance, so the
+    # classes are always clamped to it.
+    _fix_kw = fanout_fix_kwargs('qfn', tracks, vias, clearance=eff_clearance,
+                                track_width=args.width,
+                                via_size=getattr(args, 'via_size', None),
+                                via_drill=getattr(args, 'via_drill', None))
+    if out_path and os.path.isfile(out_path) and _fix_kw is None:
         # #1195: a run that changed no copper writes no floors -- the board
         # went through unchanged, so its project does too (with every other
         # sibling), never a writeback of sizes nothing was drawn at.
@@ -1992,16 +2022,7 @@ def main():
             and not getattr(args, 'no_fix_drc_settings', False):
         try:
             from fix_kicad_drc_settings import fix_project_for_output
-            fix_project_for_output(
-                out_path, input_pcb=args.pcb,
-                clearance=eff_clearance,
-                track_width=args.width,
-                # #1195: the via floors only when this run drew a via. Stub
-                # mode never does, and its --via-size/--via-drill defaults
-                # lowered the declared via and hole floors on every run.
-                via_diameter=(getattr(args, 'via_size', None) if _via_floors else None),
-                via_drill=(getattr(args, 'via_drill', None) if _via_floors else None),
-                clamp_nondefault_netclasses=True)  # #439: fanout escapes route to --clearance; always clamp
+            fix_project_for_output(out_path, input_pcb=args.pcb, **_fix_kw)
         except Exception as _e:
             print(f"  (skipped DRC-settings fix: {_e})")
     if out_path and os.path.isfile(out_path) \

@@ -24,6 +24,21 @@ def set_ui_status_mirror(fn):
     _UI_STATUS_MIRROR = fn
 
 
+#: Set True on a plan step's owner (the routing dialog, or the tab that runs
+#: the step) when its operation PRODUCED ITS RESULT -- applied to the live
+#: board, an empty result included. It is the GUI's "the step's output board
+#: exists": a CLI step that refuses, fails or is interrupted writes no output,
+#: so the next step of the chain fails on the missing file and the chain stops
+#: there. The plan executor clears it before each step and stops the plan when
+#: the step ends without it, so a refusal path nobody marks still stops.
+PLAN_STEP_PRODUCED = '_plan_step_produced'
+
+
+def mark_plan_step_produced(owner):
+    """Record that `owner`'s operation produced its result (see above)."""
+    setattr(owner, PLAN_STEP_PRODUCED, True)
+
+
 # Timestamp of the last UI-category event-loop pump (see ui_thread_status):
 # throttles the YieldFor so a fast message burst stays cheap.
 _LAST_UI_YIELD = 0.0
@@ -768,7 +783,8 @@ def default_netclass(board):
 def update_live_drc_floors(board, *, clearance=None, track_width=None,
                            via_size=None, via_drill=None,
                            hole_to_hole=None, edge_clearance=None,
-                           nondefault_clamp_mm=None, log=None):
+                           nondefault_clamp_mm=None, log=None,
+                           same_net_pad_clearance=None):
     """Per-step live DRC floor update -- the GUI twin of the CLI's
     per-step fix_project_for_output (#160). KiCad holds project settings in
     memory, so only the design-settings API affects a DRC run right after a
@@ -808,9 +824,10 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
     Best-effort: never raises."""
     # #521: manual (non-plan) runs consume the engine-noted protection
     # candidates here -- the per-step floor update is the GUI's step boundary.
-    # Written to the sibling .kicad_pro JSON like the CLI writeback; KiCad may
-    # overwrite it if the user saves the project from KiCad afterwards (same
-    # caveat as the plan executor's best-effort persistence).
+    # Recorded in the board's records (tool_records): its .kicad_pro, like the
+    # CLI writeback, AND the board itself, because KiCad's own project save
+    # rewrites the .kicad_pro from the copy it loaded and drops them. A board
+    # with no project, or no file yet, records on the board alone.
     try:
         from protected_nets import (consume_protection_candidates,
                                     consume_impedance_specs,
@@ -819,13 +836,22 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
                                     persist_impedance_specs,
                                     persist_pour_served_pads,
                                     pro_path_for_board)
-        _bf = board.GetFileName() if board is not None else ""
-        if _bf:
-            _pro = pro_path_for_board(_bf)
-            persist_protected_nets(_pro, consume_protection_candidates())
-            persist_impedance_specs(_pro, consume_impedance_specs())
+        if board is not None:
+            _bf = board.GetFileName() or ""
+            _pro = pro_path_for_board(_bf) if _bf else ""
+            persist_protected_nets(_pro, consume_protection_candidates(),
+                                   board=board)
+            persist_impedance_specs(_pro, consume_impedance_specs(), board=board)
             # #678: the fanout tab's pour-served balls, same step boundary.
-            persist_pour_served_pads(_pro, consume_pour_served_pads())
+            persist_pour_served_pads(_pro, consume_pour_served_pads(),
+                                     board=board)
+            # #581: an ACTIVE same-net pad via clearance, as every CLI routing
+            # step records it, so a later chain step keeps vias off same-net
+            # pads too (the persist is a no-op for <= 0).
+            if same_net_pad_clearance is not None:
+                from protected_nets import persist_same_net_pad_clearance
+                persist_same_net_pad_clearance(_pro, same_net_pad_clearance,
+                                               board=board)
     except Exception:
         pass
     _clamped = []
@@ -849,7 +875,8 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
         except Exception:
             _fab_origin = {}
         _objs = {'min_track_width': [], 'min_via_diameter': [],
-                 'min_via_annular_width': []}   # mm, for the disclosure census
+                 'min_via_annular_width': [],
+                 'min_via_drill': []}   # mm, for the disclosure census
 
         # Actual board minima (copper tracks/vias only).
         min_w = min_via = min_drill = min_ann = None
@@ -875,6 +902,8 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
                     ann = (w - d) // 2
                     min_ann = ann if min_ann is None else min(min_ann, ann)
                     _objs['min_via_diameter'].append(w / 1e6)
+                    if d:
+                        _objs['min_via_drill'].append(d / 1e6)
                     if w > d:
                         _objs['min_via_annular_width'].append((w - d) / 2e6)
                 else:
@@ -883,14 +912,47 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
                     _objs['min_track_width'].append(w / 1e6)
             except Exception:
                 continue
+        # The hole-diameter floor spans EVERY hole on the board, pads included,
+        # as the file writer's scan_board_minima reads it: KiCad grades a pad
+        # drill against min_through_hole_diameter too.
+        min_hole = min_drill
+        try:
+            for _fp in board.GetFootprints():
+                for _pad in _fp.Pads():
+                    try:
+                        _ds = _pad.GetDrillSize()
+                        _d = max(_ds.x, _ds.y)
+                    except Exception:
+                        continue
+                    if _d:
+                        min_hole = _d if min_hole is None else min(min_hole, _d)
+        except Exception:
+            pass
+
+        from fix_kicad_drc_settings import (
+            LIVE_RULE_ATTR, DEFAULT_CLASS_CLEARANCE_KEY, live_declared_rules,
+            live_declares_default_class, note_live_declared,
+            note_live_session_rule)
+        _rule_of = {a: k for k, a in LIVE_RULE_ATTR.items()}
+        # What the board DECLARES before this writer touches it. A rule it does
+        # not declare is a MISSING key to the file writer, which writes the
+        # target there outright rather than only-lowering against pcbnew's
+        # factory stand-in (fix_kicad_drc_settings.apply_targets_to_board).
+        _declared = live_declared_rules(board) or {}
+        _class_declared = live_declares_default_class(board)
 
         def lower(attr, mm, board_min_iu=None):
             if mm is None and board_min_iu is None:
                 return
+            # The CLI's writeback writes every rule it targets, so it is
+            # declared from here on (fix_kicad_drc_settings.live_declared_rules)
+            # even where only-lower leaves the live value where it was.
+            if attr in _rule_of:
+                note_live_declared(board, (_rule_of[attr],))
             iu = mm_to_iu(float(mm)) if mm is not None else None
             if board_min_iu is not None:
                 iu = board_min_iu if iu is None else min(iu, board_min_iu)
-            if getattr(bds, attr) > iu:
+            if getattr(bds, attr) > iu or _rule_of.get(attr) not in _declared:
                 setattr(bds, attr, iu)
         # #498 parity with fix_project_for_output: cap the board's ABSOLUTE
         # min-clearance floor at the smallest .kicad_dru layer rule -- the
@@ -916,10 +978,18 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
         lower('m_MinClearance', _clr_floor)
         lower('m_TrackMinWidth', track_width, min_w)
         lower('m_ViasMinSize', via_size, min_via)
-        lower('m_MinThroughDrill', via_drill, min_drill)
-        lower('m_ViasMinAnnularWidth',
-              (float(via_size) - float(via_drill)) / 2
-              if via_size and via_drill else None, min_ann)
+        lower('m_MinThroughDrill', via_drill, min_hole)
+        # The annular-ring floor is the board's own smallest ring, as the file
+        # writer's compute_targets sets it -- not one derived from this step's
+        # via size and drill, which a step that laid no such via never drew.
+        lower('m_ViasMinAnnularWidth', None, min_ann)
+        # The repo's via-drill floor (pcbnew has no attribute for it): what the
+        # file writer writes, min(this step's drill, the board's smallest via
+        # drill), held for the session and disclosed with the others.
+        _vdr = [v for v in (via_drill, (min_drill / 1e6) if min_drill else None)
+                if v is not None]
+        if _vdr:
+            note_live_session_rule(board, 'min_via_drill', min(float(v) for v in _vdr))
         lower('m_HoleToHoleMin', hole_to_hole)
         # CLI parity (#338/#441): 0.0 edge clearance means "not enforced this
         # step", NOT "lower the rule to zero". Unlike every other floor here,
@@ -930,8 +1000,10 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
         from fix_kicad_drc_settings import fab_edge_floor
         _edge_pin = max(edge_clearance or 0.0, fab_edge_floor())
         if _edge_pin > 0:
+            note_live_declared(board, ('min_copper_edge_clearance',))
             _pin_iu = mm_to_iu(float(_edge_pin))
-            if getattr(bds, 'm_CopperEdgeClearance', 0) < _pin_iu:
+            if getattr(bds, 'm_CopperEdgeClearance', 0) < _pin_iu \
+                    or 'min_copper_edge_clearance' not in _declared:
                 bds.m_CopperEdgeClearance = _pin_iu
         try:
             _nc = default_netclass(board)
@@ -942,8 +1014,12 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
                     iu = mm_to_iu(float(mm)) if mm is not None else None
                     if board_min_iu is not None:
                         iu = board_min_iu if iu is None else min(iu, board_min_iu)
-                    if get() > iu:
+                    # pcbnew's stock class on a project-less board is not a
+                    # declared one: the file writer creates the class at the
+                    # routed clearance there.
+                    if get() > iu or not _class_declared:
                         set_(iu)
+                    note_live_declared(board, (DEFAULT_CLASS_CLEARANCE_KEY,))
                 # Clearance only: the class track/via/drill are DRAW defaults
                 # (KiCad loads them SetOpt, not SetMin). Lowering them to the
                 # board's smallest object was the #842 ratchet -- one 0.127
@@ -971,12 +1047,20 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
         # board's ORIGINAL floors, every step it is still true, counted off the
         # live copper. print(), not `log` -- every tab's apply phase routes
         # prints into its log (redirect_prints_to_log), and no caller passes
-        # `log`. Silent when nothing is under its origin.
+        # `log`. Silent when nothing is under its origin. The floors compared
+        # are the ones the board DECLARES, as the CLI compares its project's:
+        # pcbnew's factory values on a project-less board are not a floor
+        # anyone set.
+        # The step's own input is passed too, as the file writer passes its
+        # rules_before: it says whether THIS step lowered a floor or inherited
+        # it, and stands in for a floor the origin does not carry.
         try:
             from fix_kicad_drc_settings import (live_fab_floor_disclosure,
-                                                live_fab_floor_rules)
+                                                live_declared_fab_floor_rules,
+                                                live_step_rules_before)
             for _line in live_fab_floor_disclosure(
-                    _fab_origin, live_fab_floor_rules(bds), _objs):
+                    _fab_origin, live_declared_fab_floor_rules(board), _objs,
+                    rules_before=live_step_rules_before(board)):
                 print(_line)
         except Exception:
             pass
@@ -984,7 +1068,87 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
     except Exception as e:
         if log:
             log(f"(live DRC floor update skipped: {e})\n")
+    finally:
+        # The step's last live writer. #1160: a Default class this step's
+        # automatic descents lowered below what it asked for is recorded and
+        # said, as the file writeback does. Whatever an engine wrote into the
+        # project during the step (the planes engine's #581 record, say) goes
+        # onto the board too, the copy KiCad's save keeps. Then the next origin
+        # seed is the next step's.
+        try:
+            from fix_kicad_drc_settings import (close_live_step,
+                                                record_live_class_clearance_descent)
+            for _line in record_live_class_clearance_descent(board):
+                print(_line)
+            import tool_records
+            tool_records.mirror_project_to_live_board(board)
+            close_live_step(board)
+        except Exception:
+            pass
     return _clamped
+
+
+def apply_cap_moves_to_live_board(board, pcb_data, moves):
+    """#666's scoped cap move on the LIVE board.
+
+    The GUI twin of route.py's file-mode `write_placed_output(output_file,
+    output_file, moves)` and its pcb_data mirror: the bare-ball rescue shipped
+    an escape via onto a MOVABLE cap with a relocation verified at rescue time,
+    and batch_route posts the move as results_data['pending_cap_moves']
+    because only the applier holds the live board. Each move names a PCBData
+    key (#726: `C5~2` for a duplicated reference), resolved through
+    `live_footprints_by_key`. The footprint is set to (new_x, new_y); its
+    rotation is the cap's own and is set only if it differs. The applied moves
+    are mirrored into `pcb_data` with the CLI's own mirror
+    (`net_rescue.mirror_cap_moves`, idempotent). A part that draws the board
+    outline is not moved (#829, where write_placed_output raises), and a
+    reference the live board lacks is named rather than skipped silently.
+
+    Returns the moves applied (each carrying its `net_names`, the re-weld
+    scope). Never raises: like the CLI's block, a failed move is reported and
+    the apply carries on.
+    """
+    moves = list(moves or [])
+    if not moves:
+        return []
+    try:
+        import pcbnew
+        from kicad_parser import mm_to_iu
+        from net_rescue import mirror_cap_moves
+        print(f"  #666 scoped cap move: relocating {len(moves)} cap(s) off "
+              f"rescue via(s): " + ', '.join(m['reference'] for m in moves))
+        live = live_footprints_by_key(board)
+        applied, skipped = [], []
+        for mv in moves:
+            ref = mv['reference']
+            fp = live.get(ref) or board.FindFootprintByReference(ref)
+            pd = (pcb_data.footprints.get(ref)
+                  if pcb_data is not None else None)
+            if fp is None:
+                skipped.append(f"{ref} (not on the live board)")
+                continue
+            if getattr(pd, 'owns_board_outline', False):
+                skipped.append(f"{ref} (draws the board outline, #829)")
+                continue
+            rot = mv.get('new_rotation')
+            if rot is not None and abs(
+                    (fp.GetOrientationDegrees() - rot + 180.0) % 360.0
+                    - 180.0) > 1e-6:
+                fp.SetOrientationDegrees(rot)
+            # mm_to_iu, never FromMM: FromMM truncates (#493).
+            fp.SetPosition(pcbnew.VECTOR2I(mm_to_iu(mv['new_x']),
+                                           mm_to_iu(mv['new_y'])))
+            applied.append(mv)
+        if skipped:
+            print(f"  #666 scoped cap move: NOT MOVED: {', '.join(skipped)}")
+        if applied:
+            board.SetModified()
+            if pcb_data is not None:
+                mirror_cap_moves(pcb_data, applied)
+        return applied
+    except Exception as e:
+        print(f"  (scoped cap move failed: {e})")
+        return []
 
 
 def run_kicad_oracle_on_live_board(board, net_names, *, clearance,
@@ -1005,7 +1169,8 @@ def run_kicad_oracle_on_live_board(board, net_names, *, clearance,
     stranded-fragment deletions, #508 finding 15) back onto the live board.
 
     Shared core for the planes tab's post-apply recheck and the signal tab's
-    plane-finalize oracle leg -- one implementation, both fronts. Callers
+    plane-finalize oracle leg and #666 cap-move re-weld -- one
+    implementation, both fronts. Callers
     refill zones AFTER this returns (the routed links change the fill).
     Returns the oracle result dict, or None when skipped (no kicad-cli).
     Skips quietly on any error: the recheck is an earner, never a blocker.

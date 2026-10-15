@@ -33,7 +33,7 @@ def _find_pad(board, component_ref, pad_number):
     silent, but still a swap that quietly does not happen. Resolve by key
     first, and keep the old lookup as the fallback.
     """
-    from gui_utils import live_footprints_by_key
+    from .gui_utils import live_footprints_by_key
     footprint = (live_footprints_by_key(board).get(component_ref)
                  or board.FindFootprintByReference(component_ref))
     if footprint is None:

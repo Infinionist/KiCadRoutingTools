@@ -132,6 +132,24 @@ def run():
     check('z-multi' not in out,
           "a multi-layer pour IS removable when every layer it covers is replaced")
 
+    # #1164: replacing GND's B.Cu pour must not take a GND TEARDROP on B.Cu
+    # with it -- a teardrop is routing output, not the pour being replaced.
+    V10_TEARDROP = ('(kicad_pcb\n'
+                    '\t(zone\n\t\t(net "GND")\n\t\t(layer "B.Cu")\n'
+                    '\t\t(uuid "z-pour")\n\t\t(polygon\n\t\t\t(pts\n'
+                    '\t\t\t\t(xy 0 0) (xy 5 0) (xy 5 5)\n\t\t\t)\n\t\t)\n\t)\n'
+                    '\t(zone\n\t\t(net "GND")\n\t\t(layer "B.Cu")\n'
+                    '\t\t(uuid "z-tear")\n'
+                    '\t\t(attr\n\t\t\t(teardrop\n\t\t\t\t(type padvia)\n'
+                    '\t\t\t)\n\t\t)\n\t\t(polygon\n\t\t\t(pts\n'
+                    '\t\t\t\t(xy 1 1) (xy 2 1) (xy 2 2)\n\t\t\t)\n\t\t)\n\t)\n)\n')
+    out = filter_zones_from_content(V10_TEARDROP, [(1, 'B.Cu')],
+                                    zone_names_to_remove=[('GND', 'B.Cu')])
+    check('z-pour' not in out, "the same-net pour on the layer is replaced")
+    check('z-tear' in out,
+          "a same-net TEARDROP on the layer must survive the pour's "
+          "replacement (#1164: a teardrop is not a pour)")
+
     # check_existing_zones must reach the same conclusion from the span.
     multi = ZoneInfo(net_id=1, net_name='GND', layer='B.Cu', uuid='z-multi',
                      span=('F.Cu', 'B.Cu'))
