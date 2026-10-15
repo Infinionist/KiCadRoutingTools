@@ -135,6 +135,16 @@ def compare(name, path, want=None):
     diffs = [d for d in compare_pcb_data(g, f) if 'sheet_' in d]
     check(not diffs, '%s: compare_pcb_data reports no sheet difference' % name,
           diffs[:3])
+    # ...and it LOOKS: a name changed on one side is reported. Without this
+    # a comparator that skipped the sheet fields would pass the arm above.
+    k0 = sorted(g.footprints)[0]
+    saved = g.footprints[k0].sheet_name
+    g.footprints[k0].sheet_name = saved + '#witness'
+    seen = [d for d in compare_pcb_data(g, f) if 'sheet_name' in d]
+    g.footprints[k0].sheet_name = saved
+    check(len(seen) == 1 and k0 in seen[0],
+          '%s: compare_pcb_data reports a sheet name changed on one side'
+          % name, seen[:3])
     ia, ib = instances(f), instances(g)
     check(ia == ib and (ia or want == {('', '')}),
           '%s: replicate lists the same %d sheet instances from both paths'

@@ -105,7 +105,7 @@ def board(td, name='b', *, drop=(), locked=(), back=(), nets=None,
     at = at or {}
     all_nets = ['GND', 'VCC'] + ['/%s/%s' % (s, n) for s in sorted(SHEET)
                                  for n in ('IN', 'OUT')]
-    all_nets += sorted({n for n in nets.values() if n not in all_nets})
+    all_nets += sorted({n for n in nets.values() if n and n not in all_nets})
     ids = {n: i + 1 for i, n in enumerate(all_nets)}
     out = ['(kicad_pcb (version 20241229) (generator "pcbnew")',
            '  (layers (0 "F.Cu" signal) (31 "B.Cu" signal)'
@@ -152,10 +152,12 @@ def board(td, name='b', *, drop=(), locked=(), back=(), nets=None,
             if net is None:
                 net = ('/%s/%s' % (sheet, role) if role in ('IN', 'OUT')
                        else role)
+            # '' is no net at all: the pad carries no `(net ...)`.
             lines.append('    (pad "%d" smd rect (at %s %s %s) (size 0.6 0.6)'
-                         ' (layers "%s.Cu") (net %d "%s"))'
+                         ' (layers "%s.Cu")%s)'
                          % (i, _fmt(px), _fmt(py), _fmt(rot), side,
-                            ids[net], net))
+                            ' (net %d "%s")' % (ids[net], net) if net
+                            else ''))
             if i == 1 and ref in sheet_after_pad:
                 lines.extend(sheet_lines)
         lines[-1] += ')'
@@ -278,7 +280,30 @@ def test_nets_not_wired_alike_are_refused():
                  refuse='not wired alike', code=4)
         assert 'already maps to' in r.stderr, r.stderr[-800:]
         assert not os.path.exists(out)
-        print('  shared-net and one-to-one breaks refused at 4, pads named')
+        # Two source nets onto ONE target net (R2's OUT pad and U2's OUT pad
+        # both on /S2/IN): each source net still reaches one net, so only
+        # the one-to-one arm can say no.
+        inp = board(td, 'merge', nets={('R2', '2'): '/S2/IN',
+                                       ('U2', '3'): '/S2/IN'})
+        r = pose(inp, out, 'replicate', '--from', 'S1', '--to', 'S2',
+                 refuse='not wired alike', code=4)
+        assert '/S2/IN is already reached from /S1/IN' in r.stderr, (
+            r.stderr[-800:])
+        # A pad on a SOURCE channel net that maps nowhere else: copying U1
+        # alone, U2's OUT pad on S1's own input.
+        inp = board(td, 'onto', nets={('U2', '3'): '/S1/IN'})
+        r = pose(inp, out, 'replicate', '--from', 'S1', '--to', 'S2',
+                 '--only', 'U1', refuse='not wired alike', code=4)
+        assert 'so only itself may map to it' in r.stderr, r.stderr[-800:]
+        # A pad with no net against one with a net.
+        inp = board(td, 'nonet', nets={('R2', '1'): ''})
+        r = pose(inp, out, 'replicate', '--from', 'S1', '--to', 'S2',
+                 refuse='not wired alike', code=4)
+        assert 'one pad has no net and the other has one' in r.stderr, (
+            r.stderr[-800:])
+        assert not os.path.exists(out)
+        print('  shared-net, function, one-to-one, source-net and no-net '
+              'breaks refused at 4, pads named')
 
 
 def test_a_pad_wired_differently_by_design_is_waived_per_pad():
@@ -415,6 +440,18 @@ def test_a_partial_copy_moves_only_the_parts_it_names():
         pose(inp, o3, 'replicate', '--from', 'S1', '--to', 'S2', '--to',
              'S3', '--only', 'U1,C1', accept=True)
         assert poses(o3) == poses(o1), 'only U1,C1 != skip R1'
+        # Leaving the op-amp out moves the default anchor to the largest
+        # part copied into every target (R and C tie at two pads; C1 first):
+        # C2 keeps its place and R2 is laid around it.
+        o4 = os.path.join(td, 'o4.kicad_pcb')
+        r = pose(inp, o4, 'replicate', '--from', 'S1', '--to', 'S2',
+                 '--skip', 'U1', accept=True)
+        b = summary(r)['replicate'][0]['to'][0]['offset_basis']
+        assert (b['source'], b['target']) == ('C1', 'C2'), b
+        got = poses(o4)
+        assert near(got['C2'], (40, 12, 90)) and near(got['R2'], (45, 6, 0)), (
+            got['C2'], got['R2'])
+        assert near(got['U2'], orig['U2'])
         # A part left out needs no counterpart, may differ in footprint, and
         # cannot break the net rule.
         for kw, skip in ((dict(drop=('C2',)), 'C1'),
