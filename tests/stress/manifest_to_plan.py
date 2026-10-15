@@ -11,7 +11,8 @@ Maps each routing command to a plan step (action + nets/pairs/assignments +
 params). Since the GUI accepts ANY snake_case option name in params, every
 recognized --flag value is carried over (--max-iterations, --max-ripup,
 --grid-step, ...). Check/grade commands and unknown tools are skipped with a
-note. Only the file-dependency chain to the FINAL board is emitted (retries
+note; every board-WRITING tool the registry declares is instead mapped,
+refused by name (REFUSED_TOOLS, loud on stderr) or a named no-op (NOOP_TOOLS). Only the file-dependency chain to the FINAL board is emitted (retries
 that were superseded are dropped), mirroring redo_stress_test's pruning.
 """
 import json
@@ -70,9 +71,11 @@ REFUSED_TOOLS = {
         'an angle is a decision. Run it on the CLI and start the plan from '
         'the board seeded at the chosen angle'),
     'place_pose.py': (
-        'applies a pose the MODEL chose (#892); the plan format has no '
-        'placement step, and a pose is a decision rather than a replayable '
-        'parameter set. Run it on the CLI and start the plan from its output'),
+        'applies a pose the MODEL chose (#892), stamps or strips a KiCad lock, '
+        'or copies one sheet instance\'s arrangement onto its siblings '
+        '(`replicate`, #1211); the plan format has no placement step, and a '
+        'pose is a decision rather than a replayable parameter set. Run it on '
+        'the CLI and start the plan from its output'),
     'render_placement.py': (
         'renders a PNG; it changes no board and has nothing to replay'),
     'beautify_labels.py': (
@@ -82,7 +85,111 @@ REFUSED_TOOLS = {
         'writes a copper keep-out rule area that every later route step obeys '
         '(#1200); the plan format has no step for it. Run it on the CLI and '
         'start the plan from its output'),
+    # Every board-writing KRT_TOOL (krt_registry `kind` actor or conditional)
+    # is mapped, refused here, or in NOOP_TOOLS below: the parity gate reads
+    # the registry and fails on one that is none of the three (#937).
+    'make_unplaced.py': (
+        'piles every pad-bearing part off the outline to build a from-scratch '
+        'placement input; the plan format has no placement step. Run it on '
+        'the CLI and start the plan from its output'),
+    'compare_seeds.py': (
+        'seeds the board once per seed and ranks them; the plan format has no '
+        'placement step, and adopting a seed is a decision. Run it on the CLI '
+        'and start the plan from the adopted board'),
+    'converge.py': (
+        'the placement convergence driver (ledger, ranked poses, stepping '
+        'back); its moves are decisions and the plan format has no placement '
+        'step. Run it on the CLI and start the plan from its output'),
+    'fix_kicad_drc_settings.py': (
+        'rewrites the project\'s DRC floors and severities with values of its '
+        'own; a GUI plan writes only the floors its steps routed to (per step '
+        'and at the end), so the explicit ones would be lost. Run it on the '
+        'CLI over the board the plan leaves'),
+    'pack_river.py': (
+        'compacts routed bus lanes off-grid after routing (#658); the plan '
+        'format has no step for it. Run it on the CLI over the plan\'s output'),
+    'run_plan.py': (
+        'runs a whole GUI plan on the CLI (#507); a plan step cannot hold a '
+        'plan. Load that plan in the AI tab instead'),
+    # The awx bus router and its benches. route_bus is the one that sits in a
+    # board's chain (the bus step); the rest build or replay research benches.
+    'route_bus.py': (
+        'routes an array pair\'s bus with the awx bus router (the bus step); '
+        'the plan format has no bus step. Run it on the CLI and start the plan '
+        'from its output'),
+    'route_lanes.py': (
+        'routes chosen lanes of an awx bus plan one at a time; the plan format '
+        'has no bus step. Run it on the CLI'),
+    'joint_escape.py': (
+        'plans and lays one awx escape for every signal ball of an array; the '
+        'plan\'s fanout step is bga_fanout / qfn_fanout, not this. Run it on '
+        'the CLI and start the plan from its output'),
+    'braid.py': (
+        'emits the awx braid for a fanned-out bus; the plan format has no bus '
+        'step. Run it on the CLI and start the plan from its output'),
+    'pack_board.py': (
+        'packs a braided awx board again; the plan format has no bus step. Run '
+        'it on the CLI and start the plan from its output'),
+    'baseline_freerouting.py': (
+        'routes an awx rung with Freerouting, another router; no plan step '
+        'runs it. Run it on the CLI'),
+    'make_bench.py': (
+        'builds an awx bench article from a board, not a step of the board\'s '
+        'own chain. Run it on the CLI'),
+    'human_ends_bench.py': (
+        'builds an awx bench whose ends are the human\'s, not a step of the '
+        'board\'s own chain. Run it on the CLI'),
+    'baseline_bench.py': (
+        'routes an awx bench with two other routers and the designer\'s, for '
+        'comparison, not a step of the board\'s own chain. Run it on the CLI'),
+    'synth_bus.py': (
+        'generates awx bus articles with known answers (#622), not a step of '
+        'a board\'s chain. Run it on the CLI'),
+    'synth_handoff.py': (
+        'generates awx trunk-to-ring handoff cases (#622), not a step of a '
+        'board\'s chain. Run it on the CLI'),
+    'synth_layers.py': (
+        'generates awx many-layer whole-route cases (#622), not a step of a '
+        'board\'s chain. Run it on the CLI'),
+    'whole_route.py': (
+        'runs the awx whole route on a bench rung end to end; the plan format '
+        'has no bus step. Run it on the CLI'),
+    'whole_ladder.py': (
+        'runs the awx whole route over a ladder of benches; a research driver, '
+        'not a board-chain step. Run it on the CLI'),
+    'resolve_round.py': (
+        'replays one awx round\'s first solve on that round\'s own files; a '
+        'research driver, not a board-chain step. Run it on the CLI'),
+    'whole_compare.py': (
+        'renders an awx rung\'s routed board beside the human\'s; a research '
+        'tool, not a board-chain step. Run it on the CLI'),
+    'fanout_logdiff.py': (
+        'compares two awx fanout logs; a research tool, not a board-chain '
+        'step. Run it on the CLI'),
 }
+
+# Board-writing tools whose recorded command has NOTHING to replay on a live
+# board -- distinct from a refusal, whose absence makes the replay diverge.
+# They stay in the manifest, so compute_prune_keep's file chain still links
+# their input to their output, and convert to no plan step BY NAME rather than
+# through the unknown-tool path's bare `skipped` count.
+NOOP_TOOLS = {
+    'copy_board.py': (
+        'copies a board with its sibling project files (#441); a plan runs on '
+        'the live board, which the next step reads as it is, with the open '
+        'project, so there is nothing to copy'),
+    'fill_for_delivery.py': (
+        'writes a FILLED copy of the board for delivery (#910); KiCad fills '
+        'the live board itself (every GUI step refills its zones), as for '
+        'route.py\'s --write-fill'),
+    'plane_score.py': (
+        'scores plane fragility on a scratch copy; nothing the chain reads is '
+        'written'),
+}
+
+# The decap-placement step: no TOOL_ACTIONS entry because it converts through
+# cap_optimization_step into a standalone `optimize_caps` step (see there).
+CAP_TOOL = 'place_fanout_clearance.py'
 
 # CLI flag -> plan params key (numbers parsed; lists collected).
 FLAG_PARAMS = {
@@ -405,6 +512,8 @@ def parse_command(argv):
         if base in REFUSED_TOOLS:
             # Named and reported, not silently tallied into `skipped`.
             return {'_refused': f"{base}: {REFUSED_TOOLS[base]}"}
+        if base in NOOP_TOOLS:
+            return {'_noop': f"{base}: {NOOP_TOOLS[base]}"}
     if tool is None:
         return None
     # A `--help` invocation (the agent inspecting a tool during the run) is not a
@@ -741,10 +850,11 @@ def plan_steps_from_manifest(manifest, keep_files=False):
     steps = []
     skipped = 0
     refused = []
+    noops = []
     for i, (_cwd, argv) in enumerate(cmds):
         if i not in keep or is_check_cmd(argv):
             continue  # pruned out, or a check/grade command (no GUI step)
-        if any(os.path.basename(a) == 'place_fanout_clearance.py' for a in argv):
+        if any(os.path.basename(a) == CAP_TOOL for a in argv):
             # standalone optimize_caps step, matching the live GUI plan (see above)
             step = cap_optimization_step(argv, cwd=_cwd)
             step['_files'] = [a for a in argv if a.endswith('.kicad_pcb')]
@@ -762,6 +872,12 @@ def plan_steps_from_manifest(manifest, keep_files=False):
             # report these, because an unroute silently missing from a replay
             # leaves copper the recorded chain had removed.
             refused.append(step['_refused'])
+            skipped += 1
+            continue
+        if '_noop' in step:
+            # Nothing to replay on a live board (NOOP_TOOLS); named, so the
+            # skip is a declared one rather than an unknown tool's.
+            noops.append(step['_noop'].split(':', 1)[0])
             skipped += 1
             continue
         if step['action'] == 'repair_planes' and 'assignments' not in step:
@@ -784,6 +900,12 @@ def plan_steps_from_manifest(manifest, keep_files=False):
             print(f"  - {r}", file=sys.stderr)
         print("  The replayed plan will DIVERGE from the recorded chain at "
               "these steps. Run them on the CLI.", file=sys.stderr)
+    if noops:
+        counts = {n: noops.count(n) for n in sorted(set(noops))}
+        print("NOTE: no plan step for " + ", ".join(
+            f"{n}" + (f" x{c}" if c > 1 else "") for n, c in counts.items())
+              + " -- nothing to replay on a live board (NOOP_TOOLS)",
+              file=sys.stderr)
     return steps, skipped
 
 

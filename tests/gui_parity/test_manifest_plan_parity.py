@@ -167,7 +167,7 @@ def _plan_pairs(manifest):
     for i, (_cwd, argv) in enumerate(cmds):
         if i not in keep or is_check_cmd(argv):
             continue
-        if any(os.path.basename(a) == 'place_fanout_clearance.py' for a in argv):
+        if any(os.path.basename(a) == m2p.CAP_TOOL for a in argv):
             steps.append(m2p.cap_optimization_step(argv, cwd=_cwd))
             # A cap step is still appended (route_planes inheritance below
             # needs the sequence) but never enters `pairs`, because check_pair
@@ -179,7 +179,9 @@ def _plan_pairs(manifest):
             # every cap flag IS asserted, just not from this loop.
             continue
         step = m2p.parse_command(argv)
-        if step is None:
+        # A named refusal or no-op converts to NO step, as in
+        # plan_steps_from_manifest; there are no flags of it to assert.
+        if step is None or '_refused' in step or '_noop' in step:
             continue
         if step['action'] == 'repair_planes' and 'assignments' not in step:
             for prev in reversed(steps):
@@ -1536,6 +1538,120 @@ def check_refused_tools():
     return bad
 
 
+#: The KRT_TOOL kinds that can write a board (krt_registry.KINDS): an `actor`
+#: changes the board, a `conditional` does under an opt-in flag or to a
+#: scratch copy. Neither may fall through to the unknown-tool path, which only
+#: bumps a counter -- so a converted plan reads complete without the step.
+BOARD_WRITING_KINDS = ('actor', 'conditional')
+
+#: The checkout the registry is read from: this file's own tree, except when
+#: a harness runs this gate on a PARTIAL copy (test_route_flag_plan_coverage_
+#: controls copies only what the flag checks read -- no awx/, no skills, no
+#: git index). The registry is a property of the checkout, so that harness
+#: points this at the real one; the check still RUNS, against the copy's
+#: converter tables. It relocates the read and never skips it: a root with no
+#: registry fails the import, and one with no declarations the vacuity guard.
+REGISTRY_ROOT = Path(os.environ.get('KRT_REGISTRY_ROOT') or REPO)
+
+
+def board_writing_tools():
+    """[(repo-relative path, kind)] for every tracked tool DECLARED as a
+    board-writing kind. Read by AST through krt_registry.declaration, never by
+    import or by running the tool -- the registry's own rule."""
+    root = str(REGISTRY_ROOT)
+    sys.path.insert(0, root)
+    import krt_registry
+    rows = []
+    for rel in krt_registry.tracked_python(root):
+        decl = krt_registry.declaration(root, rel)
+        if decl and decl.get('kind') in BOARD_WRITING_KINDS:
+            rows.append((rel, decl['kind']))
+    return rows
+
+
+def tool_dispositions(rows, mapped, refused, noop):
+    """[(path, why)] for every board-writing tool without EXACTLY ONE
+    disposition. A `conditional` named check_* is the fourth: is_check_cmd
+    drops it before conversion (what it may write is a debug or staged copy).
+    An ACTOR named check_* gets no such pass -- is_check_cmd would drop the
+    board it writes without a word."""
+    bad = []
+    for rel, kind in rows:
+        base = os.path.basename(rel)
+        disp = [name for name, table in (('mapped', mapped), ('refused', refused),
+                                         ('no-op', noop)) if base in table]
+        if kind == 'conditional' and base.startswith('check_'):
+            disp.append('check')
+        if not disp:
+            bad.append((rel, f"a board-writing KRT_TOOL ({kind}) that "
+                             "manifest_to_plan neither maps, refuses nor lists "
+                             "as a no-op -- it converts as an unknown tool, a "
+                             "bare `skipped` count, and the plan reads complete"))
+        elif len(disp) > 1:
+            bad.append((rel, f"more than one disposition: {disp}"))
+    return bad
+
+
+def check_registry_dispositions():
+    """#431 / #937: the membership check, ENFORCED FROM THE REGISTRY.
+
+    The hand-kept tuple in check_refused_tools catches a DELETION from
+    REFUSED_TOOLS; it cannot see a tool nobody added. This reads every
+    board-writing KRT_TOOL declaration and requires each to be mapped to a
+    plan action, refused with a reason, or listed as a no-op with a reason --
+    so a new board-writing tool cannot slip through by being unknown.
+    """
+    bad = []
+    rows = board_writing_tools()
+    actors = sum(1 for _r, k in rows if k == 'actor')
+    # Vacuity guard: a scan that read nothing would report a clean tree.
+    if actors < 30:
+        bad.append(('<registry>', f"only {actors} actor declaration(s) read -- "
+                                  "the scan is not looking where it thinks"))
+    noop = getattr(m2p, 'NOOP_TOOLS', {})
+    cap_tool = getattr(m2p, 'CAP_TOOL', None)
+    if cap_tool is None:
+        bad.append(('<manifest_to_plan>', "no CAP_TOOL: the optimize_caps "
+                                          "mapping is not a named table entry"))
+    mapped = set(m2p.TOOL_ACTIONS) | ({cap_tool} if cap_tool else set())
+    bad += tool_dispositions(rows, mapped, m2p.REFUSED_TOOLS, noop)
+
+    # Each refusal and no-op says WHY, and converts the way it is declared.
+    for name, table, key in (('REFUSED_TOOLS', m2p.REFUSED_TOOLS, '_refused'),
+                             ('NOOP_TOOLS', noop, '_noop')):
+        for tool, why in sorted(table.items()):
+            if not str(why or '').strip():
+                bad.append((tool, f"{name} entry carries no reason"))
+            step = m2p.parse_command(['python3', tool, 'a.kicad_pcb',
+                                      'b.kicad_pcb'])
+            if not step or key not in step:
+                bad.append((tool, f"in {name} but converts to {step!r}"))
+
+    # NEGATIVE CONTROL: the check must name a tool whose entry is removed --
+    # one per table, so no table's membership is checked by nothing.
+    controls = []
+    for table_name in ('mapped', 'refused', 'no-op'):
+        tables = {'mapped': set(mapped), 'refused': dict(m2p.REFUSED_TOOLS),
+                  'no-op': dict(noop)}
+        hit = next((os.path.basename(r) for r, _k in rows
+                    if os.path.basename(r) in tables[table_name]), None)
+        if hit is None:
+            bad.append((f'<control {table_name}>', "no registered tool sits in "
+                                                   "this table to remove"))
+            continue
+        if isinstance(tables[table_name], set):
+            tables[table_name].discard(hit)
+        else:
+            tables[table_name].pop(hit)
+        found = {os.path.basename(r) for r, _w in tool_dispositions(
+            rows, tables['mapped'], tables['refused'], tables['no-op'])}
+        controls.append((table_name, hit, hit in found))
+        if hit not in found:
+            bad.append((f'<control {table_name}>', f"removing {hit} was NOT "
+                                                   "reported -- the check is dead"))
+    return bad, len(rows), controls
+
+
 def main():
     # Corpus manifests give broad coverage; the checked-in fixture makes the gate
     # self-contained (runs on a fresh checkout with no corpus) AND is always
@@ -1628,8 +1744,17 @@ def main():
     for f, why in ref_bad:
         print(f"    {f}: {why}")
 
+    reg_bad, n_reg, controls = check_registry_dispositions()
+    print(f"Board-writing registry tools: {'OK' if not reg_bad else 'FAILED'} "
+          f"({n_reg} declared actor/conditional tool(s), each mapped, refused "
+          f"or a no-op; negative controls: "
+          + ", ".join(f"{t} without {h} {'reported' if ok else 'MISSED'}"
+                      for t, h, ok in controls) + ").")
+    for f, why in reg_bad:
+        print(f"    {f}: {why}")
+
     return 1 if (total_bad or res_bad or cap_bad or own_bad or flag_bad
-                 or grp_bad or ref_bad) else 0
+                 or grp_bad or ref_bad or reg_bad) else 0
 
 
 if __name__ == "__main__":

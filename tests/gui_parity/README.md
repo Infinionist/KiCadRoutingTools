@@ -238,6 +238,19 @@ that `reset_params_to_defaults` does not restore, since a plan step that sets
 it would leak it into every later step. Its run_all half, with the negative
 controls, is `tests/test_route_flag_plan_coverage.py`.
 
+The same blindness applies one level up, to whole TOOLS: an unknown tool only
+bumps the converter's `skipped` count, so a converted plan reads complete
+without its step. `check_registry_dispositions` therefore reads every
+board-writing `KRT_TOOL` declaration (`kind` actor or conditional, by AST via
+`krt_registry`) and requires each to be MAPPED to a plan action (or
+`CAP_TOOL`), REFUSED with a reason (`REFUSED_TOOLS`, loud on stderr), or a
+named NO-OP with a reason (`NOOP_TOOLS`: `copy_board`, `fill_for_delivery`,
+`plane_score` -- nothing to replay on a live board); a `check_*` conditional
+is dropped by `is_check_cmd`. It runs three negative controls every time (one
+entry removed from each table must be reported). `KRT_REGISTRY_ROOT` points
+the registry read at the real checkout when a harness runs the gate on a
+partial copy of the tree (`tests/test_route_flag_plan_coverage_controls.py`).
+
 ## Cap-param delivery (test_772_cap_params_reach_engine.py)
 
 Needs KiCad's python (wx + pcbnew); re-execs into it automatically.

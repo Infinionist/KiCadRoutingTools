@@ -134,6 +134,10 @@ class NegativeControls(unittest.TestCase):
         gate = self._path(GATE_REL)
         fixture = self._path('tests/gui_parity/fixtures/'
                              'sample_redo_commands.sh')
+        # The copy has no krt_registry, awx/ or git index: the gate's
+        # board-writing-tool check reads the registry from the REAL checkout
+        # (KRT_REGISTRY_ROOT) and the converter tables from the copy.
+        kw.setdefault('env', dict(os.environ, KRT_REGISTRY_ROOT=_ROOT))
         return run_utils.check([sys.executable, '-X', 'utf8', gate, fixture],
                                cwd=self.tmp, timeout=300, **kw)
 
