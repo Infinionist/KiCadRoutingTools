@@ -70,13 +70,15 @@ def test_end_to_end_ranked_table_from_relative_paths():
 
         # Deliberately RELATIVE paths from a cwd that is neither ROOT nor the
         # temp dir's parent: without absolutize-at-the-door every place_seed/
-        # probe subprocess (cwd=ROOT) would silently miss them.
+        # probe subprocess (cwd=ROOT) would silently miss them. --jobs 2: the
+        # two seeds' full-board probes are this test's whole cost, and serial
+        # they were the slowest unit in the suite.
         r = subprocess.run(
             [sys.executable, '-X', 'utf8',
              os.path.join(ROOT, 'py_placer', 'compare_seeds.py'),
              os.path.relpath(pile, d),
              '--intent', os.path.relpath(intent_path, d),
-             '--seeds', '0', '1',
+             '--seeds', '0', '1', '--jobs', '2',
              '--out-dir', 'seedcmp'],
             capture_output=True, text=True, encoding='utf-8',
             errors='replace', cwd=d, timeout=3600,
@@ -121,6 +123,44 @@ def test_end_to_end_ranked_table_from_relative_paths():
         else:
             assert s['best_seed'] is None
     print("  PASS: ranked table + seeds.json from caller-relative paths")
+
+
+def test_jobs_keeps_seed_order():
+    """--jobs runs arms at once, yet rows and console lines come back in
+    --seeds order (seed 0 finishes LAST here), and a stop ends the rows at
+    the stopping seed as the serial loop's `break` did."""
+    import contextlib
+    import io
+    import time
+    import types
+    import compare_seeds as cs
+    real = cs._seed_arm
+
+    def fake(args, seed, full_nets, say):
+        time.sleep(0.3 if seed == 0 else 0.0)
+        say(f"[seed {seed}] a")
+        say(f"[seed {seed}] b")
+        return {'seed': seed}, seed == args.stop_at
+    cs._seed_arm = fake
+    try:
+        for jobs in (1, 3):
+            for stop_at in (None, 1):
+                args = types.SimpleNamespace(seeds=[0, 1, 2], jobs=jobs,
+                                             stop_at=stop_at)
+                buf, rows = io.StringIO(), []
+                with contextlib.redirect_stdout(buf):
+                    for row, stop in cs._seed_arms(args, ['*']):
+                        rows.append(row['seed'])
+                        if stop:
+                            break
+                want = [0, 1] if stop_at == 1 else [0, 1, 2]
+                assert rows == want, (jobs, stop_at, rows)
+                assert buf.getvalue().split('\n')[:-1] == [
+                    f"[seed {s}] {x}" for s in want for x in 'ab'], \
+                    (jobs, stop_at, buf.getvalue())
+    finally:
+        cs._seed_arm = real
+    print("  PASS: --jobs 1 and 3 give the same rows and lines, in seed order")
 
 
 def test_duplicate_seeds_refused():
