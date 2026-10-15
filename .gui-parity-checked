@@ -1,3 +1,155 @@
+0fd9547d 2026-10-15 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit of 287d7574..b861d208 (174 commits, 167 non-merge; 134 touching
+py_router/, py_placer/, py_tools/, kicad_routing_plugin/ or manifest_to_plan:
+the P1/P2 placement PRs #1221/#1239, the 1014-15 placement batches #1240-#1259,
+#1211 replicate, #1247 length-match auto, #1248 pad-to-die, #1253 brief
+keep-away, #1164 teardrops, #1222 stackup sublayers, #1226/#1228/#530 per-net
+via rungs, #1214 footprint keep-outs, #1238). Then, at Andy's request, EVERY
+parity problem found was fixed, old and new: 598a2462..0fd9547d (47 commits,
+79 files). Every OPEN and RECORDED item of the earlier entries was taken up;
+one cannot be fixed through SWIG (below).
+
+METHOD. As before: AST diff of every argparse flag in range; the signatures of
+batch_route, batch_route_diff_pairs, create_plane, generate_bga/qfn_fanout,
+add_gnd_vias_to_existing_board, build_base_obstacle_map, both parse entry
+points, the parser dataclasses and GridRouteConfig; every changed line of the
+routing mains attributed to its function; the three GUI diffs read. Parser: a
+compare_pcb_data sweep over 511 boards (33 in-repo + the 478 normalized
+routing inputs) and the 478 raw corpus sources, each diff kind bucketed and
+checked against the parser at 287d7574.
+
+IN RANGE, NO GAP: no routing-CLI flag and no engine signature changed. New
+flags are placement/agent/grader-only (place_pose replicate, place_seed
+--baseline/--body-model, placement_score --length-groups, accept_blocking.py,
+check_complete --baseline, make_unplaced --keep-local-zones). #1247 `auto` is
+read in routing_common.run_length_matching, and the GUI field gives the same
+[['auto']]. #1253: both tabs mirror main()'s brief refusal in-commit and the
+engine reads the brief beside input_file (the GUI passes its board file; it
+never passes final_reconcile, so the outermost read runs). #1164: both GUI
+zone-suggestion sites filter through pour_zones in-commit. #1238 is
+engine-side. GridRouteConfig.run_via is engine-internal. New parser fields
+Pad.die_length/die_delay, Footprint.sheet_name/sheet_file and Zone.teardrop
+are filled by both paths. route_render/stage3d/make_film are not reached by
+the GUI. Writer flip (#1248): test_714 mirror gate PASS.
+
+FIXED -- parse paths (pcbnew is the ground truth unless the text path was the
+faithful one):
+  * Gate blind spots: compare_pcb_data now compares Zone.teardrop (per
+    net+layer multiset; 15,105 teardrop zones on 31 raw boards agree), the
+    stackup layer by layer (it compared the count only; #1222 rewrote both
+    readers), zone outlines to the nm, custom-pad polygons as unions both ways
+    (never compared before: 1,670 diffs on 54 boards), footprint locks, the
+    hole floor and the tool records; paste openings pair by nearest bounds (a
+    float sort mis-paired 412 openings on 8 boards).
+  * Zone and rule-area outlines with (arc ...) vertices: the text parser
+    dropped all-arc pours (key_ripper's F&B.Cu GND, xerxes, amigaa500dram) or
+    lost their arcs (kevinbotv3 95 vs 7). KiCad 10's arc polyline is ported
+    and matches pcbnew to 0 nm; outline arcs tessellate at 1000 nm on KiCad
+    10 and 5000 nm on KiCad 9 (documented: a KiCad 9 GUI reports vertex-count
+    differences on such arcs, under 5 um of copper).
+  * A zone outline's repeated closing vertex is dropped on every format (the
+    old comment said pcbnew keeps it; it does not). Zones on no copper layer
+    (a *.Mask opening read as 'UNDEFINED') are skipped on both paths.
+    Edge.Cuts gr_poly with a repeated closing point / arc vertices: the text
+    path built a 5-vertex ring where KiCad has the rectangle.
+  * Pads: stroked custom-pad primitives get KiCad's round caps and joins (the
+    text path was up to 83 um fat), rounded-rect primitives and large rings
+    match; padstack size is the max over the pad's own copper layers; an
+    anchor-only custom pad is sized by its anchor on both paths (pcbnew's
+    GetBoundingBox was hole-centred); pad layer sets canonicalised as pcbnew
+    loads them (F&B.Cu, *.Adhes, a PTH pad's *.Cu); copper-less pad numbers,
+    exponent drills ((drill 1e-06) read as 1 mm), #1211 sheet properties by
+    file version; polygon (arc ...) points in graphic copper and paste shapes
+    (apple1's 38 segments, zynq7020_som's 6 apertures); an unfilled zero-width
+    shape strokes at 0.1 mm as pcbnew loads it; a stitching via's net from
+    the single fill it sits in.
+  Sweeps after: 511/511 normalized boards report 0 diffs; raw sources 0 in
+  every kind (25 KiCad 5 files refused by design, fsae_custom_bms unloadable
+  by pcbnew). CLI parse changes: 79 of 511 normalized boards (74 custom-pad
+  geometry), thunderscope's arc rule areas, the Castor faceplate outline.
+
+FIXED -- behaviour:
+  * #666 cap move (OPEN A of 108cac8b): the Route tab moves the cap and
+    re-welds it in-run on a staged board at the CLI's sequence points,
+    feeding #984 (post-apply only as the no-staging fallback); the CLI now
+    applies moves its plane-finalize sub-runs queue (it dropped them); a move
+    is queued only when its escape ships, the would-short guard judging the
+    board with the cap relocated (since f2100875 it judged the cap in place,
+    so the escape always declined and the queued move moved the cap with no
+    via). Gate test_666_cap_move_gui (56 checks).
+  * Placement Apply mirrors the result board's locks (OPEN B of 108cac8b).
+    Four plugin lines imported gui_utils absolutely, so Placement Apply, its
+    label apply, the fanout cap pass and live pad swaps raised
+    ModuleNotFoundError inside KiCad since #726 (every gate put the plugin dir
+    on sys.path); test_plugin_sibling_imports checks the loader's sys.path.
+  * A GUI plan stops at a step that produces no result (refused
+    optimize_caps, declined/failed/cancelled route, route_diff, fanout,
+    planes), as a CLI chain stops on the missing file.
+  * manifest_to_plan: every board-writing registry tool is mapped, refused
+    (23) or a named no-op (copy_board, fill_for_delivery, plane_score), and
+    the gate enforces it from krt_registry; a recorded command its tool's
+    argparse or main() rejects (48 post-parse sites inventoried by AST) is
+    never a plan step; --net-clearances (8 corpus steps; was IGNORE_FLAGS)
+    and --fab-overrides paths resolve to absolute.
+  * The plan-gate KNOWN GAPS are empty: diff --diff-pair-centerline-setback
+    (with an override box, since explicit 0 and auto differ: 3.0 vs 6.0 mm
+    minimum coupled length), BGA --primary-escape (RadioBox branch), planes
+    --min-thickness/--plane-max-iterations/--voronoi-seed-interval (controls),
+    --skip-existing-zones (the CLI REPLACES a pour without it; the GUI always
+    kept it -- now a checkbox, and a replaced pour no longer deletes same-net
+    teardrops on either front), qfn --layer (Escape layer choice, #96
+    warning shared), --net-clearances (Advanced-tab file).
+  * The hole-clearance cache served the first value per path for the whole
+    KiCad session; it is keyed on the project's stamp, and the GUI prices the
+    live board's own min hole clearance. The GUI reads only floors the live
+    board DECLARES (pcbnew's factory values on a project-less board are not
+    declarations), so origin recording, the FAB FLOOR RELAXED disclosure, the
+    #1187 floor and the staged snapshot projects match the CLI. The fanout
+    tab writes the floors bga_fanout/qfn_fanout write (one decision,
+    fanout_fix_kwargs); the QFN tab now passes its clearance, via and #581
+    to the writeback.
+  * KiCad's own save drops what a GUI run writes into the .kicad_pro after
+    load. The kicad_routing_tools namespace now also lives on the board as
+    (property "kicad_routing_tools" ...), newest copy by records_rev
+    (tool_records.py; CLAUDE.md updated); manual GUI steps record #581,
+    #1160 and min_via_drill (repo_rules) as the CLI does. CLI readers return
+    the same value old vs new on all 4291 corpus projects.
+
+OPEN, for Andy: KiCad 10's SWIG has no SetSeverity (and no DRCE_*), so the
+GUI's "relax DRC severities" option has never changed a severity there; the
+GUI now says so and records no saved_severities. Fixing it needs another
+channel (the IPC API, #24).
+
+RECORDED: these fixes change CLI copper on the boards named above (custom-pad
+geometry, the arc and outline reads, the restored #666 move, teardrops kept on
+pour replacement). They are fidelity fixes, not new defaults; Andy deferred the
+corpus A/B to before the next full release. _find_cap_relocation measures a
+pad by a disc where the guard uses its rectangle (conservative: a corner graze
+now declines). Standalone repair_planes.py still drops moves its sub-runs
+queue (no GUI counterpart).
+
+GATES RUN (macOS, KiCad 10.0.0) on 0fd9547d's tree: all 64 tests in
+tests/gui_parity pass (test_966/967/engine_kwarg_parity under KiCad's python);
+test_gui_engine_parity PARITY, copper sets IDENTICAL, kicad unconnected 0/0,
+drc 0/0; test_gui_livechain_rp2350 PASS; test_manifest_plan_parity 7908 flag
+checks over 404 manifests, 0 mismatches; validate_pcb_data 22/22;
+mutation_anchors 2639, none stale. New gates: test_666_cap_move_gui,
+test_1164_teardrop_parity, test_zone_arc_outline_parity,
+test_zone_closing_vertex_parity, test_noncopper_zone_parity,
+test_edge_poly_outline_parity, test_pad_loader_parity,
+test_placement_apply_locks, test_plan_refused_step_stops,
+test_plan_flags_reach_dialog, test_skip_existing_zones_gui,
+test_live_hole_clearance, test_fanout_floor_parity_gui,
+test_records_survive_save; wx-free test_1038_hole_floor_fresh,
+test_tool_records, test_zone_outline_points, test_plugin_sibling_imports.
+Modal suite on 9a072a44: 929 passed, 5 failed (two AST guards lost the cap
+re-weld's config name, a hole-floor stamp tuple read as a sibling list, a
+new CLI spawn undeclared, test_908's width-0 invariant contradicted by
+pcbnew's 0.1 mm load stroke); fixed in 345a3ef2..0fd9547d; the suite
+re-run on 0fd9547d: 934 passed, 0 failed, 50/50 shards (+9 self-skipped:
+no KiCad/Blender/playwright/ortools in the image, or gitignored wk/
+artifacts; none is a gate this entry adds).
+
 287d7574 2026-10-08 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
 Audit of 4e10db45..287d7574 (2 commits), for the v0.23.0 release. 69a90e95 is
 the previous audit's own marker. 287d7574 fixes restore_dialog_settings, which
