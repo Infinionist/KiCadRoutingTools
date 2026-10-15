@@ -37,9 +37,12 @@ from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
 
 EPS = 1e-6
 
-#: #1127: confirm a box `PairShortfall.stack` on the pads' own outlines
-#: (`_exact_pad_stack`, the check check_assembly's pad_intersection channel
-#: makes) before the gate refuses a pose for it. Read ONCE, when a
+#: #1127: confirm the per-pad sweep's box hits on the pads' own outlines
+#: before the gate refuses a pose for them. ONE switch for both conjuncts the
+#: boxes decide: `PairShortfall.stack` (`_exact_pad_stack`, the check
+#: check_assembly's pad_intersection channel makes) and the PAD conjunct --
+#: `pad` and `pad_overlap` -- re-measured by check_drc's own pad-pad check at
+#: the pair's requirement (`LegalityContext._pad_confirmed`). Read ONCE, when a
 #: `PartPads` / `LegalityContext` is built, so one context never mixes the two
 #: answers. Off: the conservative box answer, unchanged.
 STACK_EXACT_CONFIRM = False
@@ -3484,8 +3487,10 @@ def pad_stack_census(pcb_data, clearance: float) -> Dict[str, object]:
 # is invisible on its own side. This layer adds the missing geometry in the
 # GATE currency (rotation-inflated axis-aligned pad rects, the proven
 # fanout_clearance._Cap pattern): conservative -- it can falsely reject, never
-# falsely accept. Exact pad geometry (check_drc) is used only by
-# `grade_pad_legality` for REPORTS, so summaries carry no AABB phantoms.
+# falsely accept. Exact pad geometry (check_drc) is used by
+# `grade_pad_legality` for REPORTS, so summaries carry no AABB phantoms, and
+# by the gate itself only under `STACK_EXACT_CONFIRM` (#1127), which confirms
+# the per-pad sweep's box hits -- stack and pad conjuncts -- on the outlines.
 #
 # Baseline semantics: engines gate moves per-PAIR against the SEED poses
 # ("never worse than the board you were handed"), so pre-existing violations
@@ -4770,6 +4775,11 @@ class LegalityContext:
         # context never mixes the two answers -- `seed_baseline` caches its
         # verdicts for the whole run.
         self.stack_exact = bool(STACK_EXACT_CONFIRM)
+        # ...and the PAD conjunct on them, from the same switch: a stack-exact
+        # gate whose clearance shortfall stayed box refused 29 of #1064's 35
+        # C4/Y1 poses anyway (#1154). Two attributes so one can be measured
+        # without the other; the cached baselines make either fixed per run.
+        self.pad_exact = bool(STACK_EXACT_CONFIRM)
         self._posed_pads: Dict[Tuple, Optional[List]] = {}
         # run-19: a PILE seed is not a license. Every conjunct of pads_ok is
         # relative to seed_baseline, and on a pile the seed pair carries huge
@@ -4952,6 +4962,20 @@ class LegalityContext:
                     continue
                 eff = clr if fa is None else model.pair(fa, floors_b[bi])
                 if g < eff - EPS:
+                    # #1127: under the switch the box hit is re-measured on
+                    # the pads' outlines, and the PAD conjunct charges what
+                    # check_drc would grade -- 0.0 for a box-only graze. A
+                    # short is then a different-net stack, the very
+                    # predicate `stack` confirms with.
+                    conf = (self._pad_confirmed(a, ai, (xa, ya, ra),
+                                                b, bi, (xb, yb, rb), eff)
+                            if self.pad_exact else None)
+                    if conf is not None:
+                        pad_short += conf
+                        if g < 0.0 and conf > 0.0 and not overlap:
+                            overlap = self._stack_confirmed(
+                                a, ai, (xa, ya, ra), b, bi, (xb, yb, rb))
+                        continue
                     pad_short += eff - g
                     if g < 0.0:
                         overlap = True
@@ -4995,6 +5019,28 @@ class LegalityContext:
                 or bi >= len(pb_pads)):
             return True
         return _exact_pad_stack(pa_pads[ai], pb_pads[bi], ['F.Cu', 'B.Cu'])
+
+    def _pad_confirmed(self, a, ai, pose_a, b, bi, pose_b,
+                       eff: float) -> Optional[float]:
+        """The clearance shortfall (mm) between pad `ai` of `a` and pad `bi`
+        of `b` on the pads' OUTLINES (#1127): check_drc's
+        `check_pad_pad_overlap` -- the check check_drc grades pad-pad
+        clearance with, and `grade_pad_legality` confirms its census with --
+        at the pair's requirement `eff` (`PadClearanceModel.pair`, check_drc's
+        own resolution) and margin 0, on the two outer faces as
+        `_stack_confirmed` asks. 0.0 when the outlines clear `eff`. None, the
+        box's answer, whenever a pad cannot be posed: the gate may falsely
+        reject, never falsely accept."""
+        pa_pads = self._posed_copper(a, pose_a)
+        pb_pads = self._posed_copper(b, pose_b)
+        if (pa_pads is None or pb_pads is None or ai >= len(pa_pads)
+                or bi >= len(pb_pads)):
+            return None
+        from check_drc import check_pad_pad_overlap
+        hit, over, _pt = check_pad_pad_overlap(pa_pads[ai], pb_pads[bi], eff,
+                                               ['F.Cu', 'B.Cu'],
+                                               clearance_margin=0.0)
+        return float(over) if hit else 0.0
 
     def seed_baseline(self, a: str, b: str) -> PairShortfall:
         # The single choke point every consumer routes through (pads_ok and

@@ -713,6 +713,17 @@ boards, a defect in that text, disclosed in
 the census does not observe `relocate.exact_refusal`, `place_pose`,
 `reseat`, `portfolio` or `perturb`.
 
+The same toggle now confirms the PAD conjunct too: a box clearance shortfall
+in the per-pad sweep is re-measured by check_drc's pad-pad check
+(`check_pad_pad_overlap`, margin 0) at the pair's requirement, and charged
+check_drc's own millimetres; a different-net box overlap is a short only when
+the outlines intersect. On the C4/Y1 grid `pads_ok` then agrees with
+check_drc's pad-pad clearance and check_assembly's pad_intersection channel
+at all 121 poses (42 disagree off, 27 with the stack alone confirmed;
+`tests/test_1127_stack_exact_confirm.py`). The over-cap extent branch and
+the NPTH hole channel stay box answers, and a part that cannot be posed keeps
+the box's answer. Still default off.
+
 ## place_fanout_clearance.py — decoupling-cap clearance repair (issue #130)
 
 Run **after** `bga_fanout.py`. Nudges decoupling caps near a BGA so their

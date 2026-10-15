@@ -1,6 +1,6 @@
-"""The #1127 mutation battery: the placement gate's stack test confirmed on
-the pads' outlines (`legality.STACK_EXACT_CONFIRM`, shipped OFF), and the
-check_drc caches it relies on.
+"""The #1127 mutation battery: the placement gate's stack test and PAD
+conjunct confirmed on the pads' outlines (`legality.STACK_EXACT_CONFIRM`,
+shipped OFF), and the check_drc caches they rely on.
 
 Kept apart from the other batteries so it can be dropped with the toggle.
 The toggle ships off because the pre-registered census
@@ -53,6 +53,9 @@ CONTACT = _t(T, 'contact_not_nearness')
 MODE = _t(T, 'mode_is_fixed')
 CACHE = _t(T, 'caches_hold')
 IN_PLACE = _t(T, 'changed_in_place')
+PAD_GRID = _t(T, 'pad_conjunct_agrees')
+OUTLINES = _t(T, 'charges_the_outlines')
+PAD_BOX = _t(T, 'snapshotless_part_keeps')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -84,6 +87,28 @@ ROWS = [
      "            return True\n        return _exact_pad_stack(",
      "            return False\n        return _exact_pad_stack(",
      (MODE,), 'KILLED'),
+    ('pad-confirm-never-runs', 'legality',
+     "        self.pad_exact = bool(STACK_EXACT_CONFIRM)",
+     "        self.pad_exact = False",
+     (PAD_GRID,), 'KILLED'),
+    ('pad-charges-the-box', 'legality',
+     "                        pad_short += conf",
+     "                        pad_short += eff - g",
+     (OUTLINES,), 'KILLED'),
+    ('pad-overlap-unconfirmed', 'legality',
+     "                            overlap = self._stack_confirmed(",
+     "                            overlap = True or self._stack_confirmed(",
+     (OUTLINES,), 'KILLED'),
+    ('pad-confirm-at-check-drc-default-margin', 'legality',
+     "                                               clearance_margin=0.0)\n"
+     "        return float(over) if hit else 0.0",
+     "                                               )\n"
+     "        return float(over) if hit else 0.0",
+     (OUTLINES,), 'KILLED'),
+    ('unposable-pad-charges-nothing', 'legality',
+     "            return None\n        from check_drc import check_pad_pad_overlap",
+     "            return 0.0\n        from check_drc import check_pad_pad_overlap",
+     (PAD_BOX,), 'KILLED'),
     ('perimeter-cache-serves-another-pad', 'drc',
      "    if hit is not None and hit[2] is pad and hit[0] == fp:",
      "    if hit is not None and hit[0] == fp:",
