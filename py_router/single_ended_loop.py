@@ -310,15 +310,8 @@ def _stub_swap_rescue(pcb_data, net_id, config, state, results,
         return None
     # Stub-vs-stub overlap registry for the validator: every OTHER net's
     # segments grouped by layer (rescues are rare; a linear scan is fine).
-    all_stubs_by_layer = {}
-    by_net_layer = {}
-    for s in pcb_data.segments:
-        if s.net_id == net_id:
-            continue
-        by_net_layer.setdefault((s.net_id, s.layer), []).append(s)
-    for (nid, layer), segs in by_net_layer.items():
-        nname = pcb_data.nets[nid].name if nid in pcb_data.nets else str(nid)
-        all_stubs_by_layer.setdefault(layer, []).append((nname, segs))
+    from stub_layer_switching import foreign_stub_registry
+    all_stubs_by_layer = foreign_stub_registry(pcb_data, net_id)
 
     # Candidate layers cheapest-first, skipping forbidden (negative cost).
     costs = config.get_layer_costs() or [1000] * len(config.layers)
@@ -384,8 +377,15 @@ def _stub_swap_rescue(pcb_data, net_id, config, state, results,
                     if rec is not None:
                         rips.append(rec)
                 if rips:
+                    # Re-validate against the board AFTER the rips: the
+                    # registry above still holds the ripped nets' segments,
+                    # so re-using it refused every swap a rip had cleared
+                    # (#1261 follow-up). A restore puts the same objects
+                    # back, so the original registry stays right for the
+                    # next layer once these rips are undone.
                     ok, _why = validate_single_swap(
-                        stub, dest, all_stubs_by_layer, pcb_data, config)
+                        stub, dest, foreign_stub_registry(pcb_data, net_id),
+                        pcb_data, config)
             if not ok:
                 _restore_rips(rips)
                 continue
