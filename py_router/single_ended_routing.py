@@ -1960,6 +1960,18 @@ def _per_net_via_config(config: GridRouteConfig, pcb_data, net_id: int) -> GridR
 
 
 def route_net_with_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteConfig,
+                              obstacles: GridObstacleMap, *args, **kwargs) -> Optional[dict]:
+    """Route a single net on `obstacles`; see `_route_net_with_obstacles_impl`.
+
+    Net-filtered keep-outs binding this net are stamped for the
+    duration of the route and removed afterwards (`net_keepouts.stamp`)."""
+    from net_keepouts import stamp as _nk_stamp
+    with _nk_stamp(obstacles, pcb_data, (net_id,), config):
+        return _route_net_with_obstacles_impl(pcb_data, net_id, config, obstacles,
+                                              *args, **kwargs)
+
+
+def _route_net_with_obstacles_impl(pcb_data: PCBData, net_id: int, config: GridRouteConfig,
                               obstacles: GridObstacleMap,
                               attraction_path: Optional[List[Tuple[int, int, int]]] = None,
                               reverse_direction: bool = False,
@@ -3962,7 +3974,19 @@ def _draw_at_own_via(vias, pcb_data, net_id: int, config, obstacles) -> None:
                        'multipoint via kept at the run size', count=kept)
 
 
-def route_multipoint_main(
+def route_multipoint_main(pcb_data: PCBData, net_id: int, config: GridRouteConfig,
+                          obstacles: 'GridObstacleMap', *args, **kwargs) -> Optional[dict]:
+    """Phase 1 of multi-point routing; see `_route_multipoint_main_impl`.
+
+    Net-filtered keep-outs binding this net are stamped for the
+    duration of the route and removed afterwards (`net_keepouts.stamp`)."""
+    from net_keepouts import stamp as _nk_stamp
+    with _nk_stamp(obstacles, pcb_data, (net_id,), config):
+        return _route_multipoint_main_impl(pcb_data, net_id, config, obstacles,
+                                           *args, **kwargs)
+
+
+def _route_multipoint_main_impl(
     pcb_data: PCBData,
     net_id: int,
     config: GridRouteConfig,
@@ -4669,10 +4693,13 @@ def route_multipoint_taps(
         ring_rungs = tuple(populated_via_rungs(obstacles))
     except ImportError:
         ring_rungs = ()
+    # Net-filtered keep-outs binding this net, removed on every exit.
+    from net_keepouts import stamp as _nk_stamp
     try:
-        return _route_multipoint_taps_impl(
-            pcb_data, net_id, config, obstacles, main_result,
-            global_offset, global_total, global_failed, ring_cells, ring_rungs)
+        with _nk_stamp(obstacles, pcb_data, (net_id,), config):
+            return _route_multipoint_taps_impl(
+                pcb_data, net_id, config, obstacles, main_result,
+                global_offset, global_total, global_failed, ring_cells, ring_rungs)
     finally:
         release_own_pad_lift(obstacles, net_id, _oplift)
         if ring_cells:

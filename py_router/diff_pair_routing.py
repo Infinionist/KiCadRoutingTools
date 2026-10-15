@@ -4228,6 +4228,21 @@ def seam_reask_chain_leg(pcb_data, pair, config, leg_obstacles, layer_names,
 def route_diff_pair_with_obstacles(pcb_data: PCBData, diff_pair: DiffPairNet,
                                     config: GridRouteConfig,
                                     obstacles: GridObstacleMap,
+                                    *args, **kwargs) -> Optional[dict]:
+    """Route a differential pair; see `_route_diff_pair_with_obstacles_impl`.
+
+    Net-filtered keep-outs binding EITHER member are stamped for the
+    duration of the route (the pair is laid as one centreline, so a region
+    forbidden to one member is forbidden to the pair) and removed afterwards."""
+    from net_keepouts import stamp as _nk_stamp
+    with _nk_stamp(obstacles, pcb_data, (diff_pair.p_net_id, diff_pair.n_net_id), config):
+        return _route_diff_pair_with_obstacles_impl(pcb_data, diff_pair, config, obstacles,
+                                                    *args, **kwargs)
+
+
+def _route_diff_pair_with_obstacles_impl(pcb_data: PCBData, diff_pair: DiffPairNet,
+                                    config: GridRouteConfig,
+                                    obstacles: GridObstacleMap,
                                     base_obstacles: GridObstacleMap = None,
                                     unrouted_stubs: List[Tuple[float, float]] = None,
                                     flip_source: bool = False,

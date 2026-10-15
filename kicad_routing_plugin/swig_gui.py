@@ -131,6 +131,21 @@ def net_clearances_file_error(path):
     return None
 
 
+def net_keepouts_file_error(path):
+    """Why the Net Keep-outs File (route.py / route_diff.py --net-keepouts)
+    cannot be used, or None when it is empty or loads -- through the loader
+    the engine calls, so a file the CLI would fail on is refused here too."""
+    path = (path or '').strip()
+    if not path:
+        return None
+    try:
+        from net_keepouts import load_net_keepouts
+        load_net_keepouts(path)
+    except (OSError, ValueError) as e:
+        return f"Net Keep-outs File: {e}"
+    return None
+
+
 def explicit_net_clearances(path, pcb_data):
     """{net_id: mm} from the Net Clearances File, or None when it is empty.
 
@@ -1182,6 +1197,30 @@ class RoutingDialog(wx.Dialog):
                                                 self._on_browse_net_clearances)
                 ncl_sizer.Add(self.net_clearances_browse, 0)
                 grid.Add(ncl_sizer, 0, wx.EXPAND)
+                # route.py / route_diff.py --net-keepouts FILE, named after
+                # the plan param: regions that block tracks/vias only for the
+                # nets they bind (net_keepouts.py).
+                grid.Add(wx.StaticText(parent, label="Net Keep-outs File:"), 0,
+                         wx.ALIGN_CENTER_VERTICAL)
+                nko_sizer = wx.BoxSizer(wx.HORIZONTAL)
+                self.net_keepouts_path = wx.TextCtrl(parent)
+                self.net_keepouts_path.SetMinSize((60, -1))
+                self.net_keepouts_path.SetToolTip(
+                    "Optional JSON list of net-filtered copper keep-outs "
+                    "(route.py / route_diff.py --net-keepouts): each entry is a "
+                    "polygon with layers, tracks/vias flags and appliesToNets / "
+                    "exemptNets globs. While a net the region binds routes, the "
+                    "region is a keep-out; exempt nets route through. Used by the "
+                    "Route and Differential tabs. Empty = off.")
+                nko_sizer.Add(self.net_keepouts_path, 1, wx.EXPAND | wx.RIGHT, 4)
+                self.net_keepouts_browse = wx.Button(parent, label="…",
+                                                     style=wx.BU_EXACTFIT)
+                self.net_keepouts_browse.SetToolTip(
+                    "Browse for a net-filtered keep-out JSON file")
+                self.net_keepouts_browse.Bind(wx.EVT_BUTTON,
+                                              self._on_browse_net_keepouts)
+                nko_sizer.Add(self.net_keepouts_browse, 0)
+                grid.Add(nko_sizer, 0, wx.EXPAND)
             r = defaults.PARAM_RANGES[name]
             grid.Add(wx.StaticText(parent, label=label), 0, wx.ALIGN_CENTER_VERTICAL)
             ctrl = wx.SpinCtrlDouble(parent, min=r['min'], max=r['max'], initial=default, inc=r['inc'])
@@ -1284,6 +1323,17 @@ class RoutingDialog(wx.Dialog):
             if dlg.ShowModal() == wx.ID_CANCEL:
                 return
             self.net_clearances_path.SetValue(dlg.GetPath())
+
+    def _on_browse_net_keepouts(self, event):
+        """Browse for a net-filtered keep-out JSON file (--net-keepouts)."""
+        cur = self.net_keepouts_path.GetValue().strip()
+        ddir = os.path.dirname(cur) if cur else ""
+        with wx.FileDialog(self, "Select net-filtered keep-out file", defaultDir=ddir,
+                           wildcard="JSON files (*.json)|*.json|All files (*.*)|*.*",
+                           style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as dlg:
+            if dlg.ShowModal() == wx.ID_CANCEL:
+                return
+            self.net_keepouts_path.SetValue(dlg.GetPath())
 
     def _add_recent_fab_override(self, path):
         """Put `path` at the top of the override-file dropdown (deduped, capped)."""
@@ -2909,6 +2959,8 @@ class RoutingDialog(wx.Dialog):
         self.keep_away.SetValue("")
         # Empty = route.py with no --net-clearances: the net classes' map.
         self.net_clearances_path.SetValue("")
+        # Empty = route.py with no --net-keepouts.
+        self.net_keepouts_path.SetValue("")
         self.keep_away_free.SetValue(defaults.KEEP_AWAY_FREE)
         self.keep_away_cost.SetValue(defaults.KEEP_AWAY_COST)
         self.vertical_attraction_radius.SetValue(defaults.VERTICAL_ATTRACTION_RADIUS)
@@ -3215,6 +3267,11 @@ class RoutingDialog(wx.Dialog):
             wx.MessageBox(err, "Invalid Net Clearances File",
                           wx.OK | wx.ICON_WARNING)
             return None, None
+        err = net_keepouts_file_error(self.net_keepouts_path.GetValue())
+        if err:
+            wx.MessageBox(err, "Invalid Net Keep-outs File",
+                          wx.OK | wx.ICON_WARNING)
+            return None, None
 
         return selected_nets, selected_layers
 
@@ -3272,6 +3329,8 @@ class RoutingDialog(wx.Dialog):
             # --net-clearances FILE (Advanced tab); the route and diff workers
             # replace their class-derived map with it (explicit_net_clearances).
             'net_clearances_path': self.net_clearances_path.GetValue().strip(),
+            # --net-keepouts FILE (Advanced tab), handed to both engines.
+            'net_keepouts_path': self.net_keepouts_path.GetValue().strip(),
             'escalation': self._escalation_policy(),
             'board_floors': self._board_floor_dict(),
             # #1262: what KiCad grades a Default net at when the DRC
@@ -3842,6 +3901,7 @@ class RoutingDialog(wx.Dialog):
                     keep_away=split_keep_away_specs(config.get('keep_away')) or None,
                     keep_away_free=config.get('keep_away_free', defaults.KEEP_AWAY_FREE),
                     keep_away_cost=config.get('keep_away_cost', defaults.KEEP_AWAY_COST),
+                    net_keepouts=config.get('net_keepouts_path') or None,
                     bga_proximity_radius=config.get('bga_proximity_radius', 7.0),
                     bga_proximity_cost=config.get('bga_proximity_cost', 0.2),
                     vertical_attraction_radius=config.get('vertical_attraction_radius', 1.0),

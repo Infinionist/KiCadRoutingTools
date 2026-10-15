@@ -278,6 +278,9 @@ _FINALIZE_ROUTE_KNOBS = (
     'bus_enabled', 'bus_detection_radius', 'bus_attraction_radius',
     'bus_attraction_bonus', 'bus_min_nets',
     'keep_away', 'keep_away_free', 'keep_away_cost',
+    # Net-filtered keep-outs (net_keepouts.py): a reconnect of a bound net
+    # must stay out of the regions the step kept it out of.
+    'net_keepouts',
     # #1260: the step's pour barriers, so a casualty reconnect cannot cut
     # the out-of-scope pours the step itself was kept out of.
     'pour_barriers',
@@ -1176,6 +1179,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 coplanar_nets: Optional[List[str]] = None,
                 power_nets: Optional[List[str]] = None,
                 power_nets_widths: Optional[List[float]] = None,
+                net_keepouts: Optional[str] = None,
                 power_tap_neckdown: bool = True,
                 neckdown_length: float = 2.5,
                 neckdown_taper_length: float = 0.5,
@@ -1522,6 +1526,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # keeps its parent's mark, as it keeps the parent's ledgers.
         from rip_up_reroute import mark_input_copper
         mark_input_copper(pcb_data)
+
+    # Net-filtered keep-outs, stamped per net while a bound net routes.
+    if net_keepouts:
+        from net_keepouts import load_net_keepouts, attach as _nk_attach
+        _nk_attach(pcb_data, load_net_keepouts(net_keepouts))
 
     # KICAD_DUP_TRAP=1: report the call site that re-appends the SAME copper
     # object to pcb_data. Inert otherwise. Armed here so it covers the whole
@@ -8064,6 +8073,11 @@ For differential pair routing, use route_diff.py:
                         help="Glob patterns for power nets (e.g., '*GND*' '*VCC*'). Must pair with --power-nets-widths.")
     parser.add_argument("--power-nets-widths", nargs="*", type=float, default=[],
                         help="Track widths in mm for each power-net pattern (must match --power-nets length)")
+    parser.add_argument("--net-keepouts", type=str, default=None, metavar="FILE",
+                        help="JSON list of net-filtered copper keep-outs (a region a KiCad "
+                             "insideArea() DRC rule restricts by net name, with appliesToNets/"
+                             "exemptNets globs): each region blocks tracks/vias only for the nets "
+                             "it binds; exempt nets route through (see net_keepouts.py)")
     parser.add_argument("--no-power-tap-neckdown", action="store_true",
                         help="Disable neck-down retry of failed power-net tap edges (issue #72): by default a "
                              "wide tap that cannot fit is re-routed at the layer's default width near the pad")
@@ -8805,6 +8819,7 @@ For differential pair routing, use route_diff.py:
                 coplanar_nets=args.coplanar_nets,
                 power_nets=args.power_nets,
                 power_nets_widths=args.power_nets_widths,
+                net_keepouts=args.net_keepouts,
                 power_tap_neckdown=not args.no_power_tap_neckdown,
                 neckdown_length=args.neckdown_length,
                 neckdown_taper_length=args.neckdown_taper_length,
