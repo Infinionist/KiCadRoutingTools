@@ -918,9 +918,17 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
         except Exception:
             pass
 
-        from fix_kicad_drc_settings import (LIVE_RULE_ATTR, note_live_declared,
-                                            note_live_session_rule)
+        from fix_kicad_drc_settings import (
+            LIVE_RULE_ATTR, DEFAULT_CLASS_CLEARANCE_KEY, live_declared_rules,
+            live_declares_default_class, note_live_declared,
+            note_live_session_rule)
         _rule_of = {a: k for k, a in LIVE_RULE_ATTR.items()}
+        # What the board DECLARES before this writer touches it. A rule it does
+        # not declare is a MISSING key to the file writer, which writes the
+        # target there outright rather than only-lowering against pcbnew's
+        # factory stand-in (fix_kicad_drc_settings.apply_targets_to_board).
+        _declared = live_declared_rules(board) or {}
+        _class_declared = live_declares_default_class(board)
 
         def lower(attr, mm, board_min_iu=None):
             if mm is None and board_min_iu is None:
@@ -933,7 +941,7 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
             iu = mm_to_iu(float(mm)) if mm is not None else None
             if board_min_iu is not None:
                 iu = board_min_iu if iu is None else min(iu, board_min_iu)
-            if getattr(bds, attr) > iu:
+            if getattr(bds, attr) > iu or _rule_of.get(attr) not in _declared:
                 setattr(bds, attr, iu)
         # #498 parity with fix_project_for_output: cap the board's ABSOLUTE
         # min-clearance floor at the smallest .kicad_dru layer rule -- the
@@ -983,7 +991,8 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
         if _edge_pin > 0:
             note_live_declared(board, ('min_copper_edge_clearance',))
             _pin_iu = mm_to_iu(float(_edge_pin))
-            if getattr(bds, 'm_CopperEdgeClearance', 0) < _pin_iu:
+            if getattr(bds, 'm_CopperEdgeClearance', 0) < _pin_iu \
+                    or 'min_copper_edge_clearance' not in _declared:
                 bds.m_CopperEdgeClearance = _pin_iu
         try:
             _nc = default_netclass(board)
@@ -994,8 +1003,12 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
                     iu = mm_to_iu(float(mm)) if mm is not None else None
                     if board_min_iu is not None:
                         iu = board_min_iu if iu is None else min(iu, board_min_iu)
-                    if get() > iu:
+                    # pcbnew's stock class on a project-less board is not a
+                    # declared one: the file writer creates the class at the
+                    # routed clearance there.
+                    if get() > iu or not _class_declared:
                         set_(iu)
+                    note_live_declared(board, (DEFAULT_CLASS_CLEARANCE_KEY,))
                 # Clearance only: the class track/via/drill are DRAW defaults
                 # (KiCad loads them SetOpt, not SetMin). Lowering them to the
                 # board's smallest object was the #842 ratchet -- one 0.127

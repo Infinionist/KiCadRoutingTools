@@ -1992,10 +1992,19 @@ def main():
     # pipeline step and check_drc grade at the clearance the fanout used -- only
     # lowers, never tightens (issue #160).
     import clearance_ledger as _cl
-    from fix_kicad_drc_settings import fanout_written_floors
+    from fix_kicad_drc_settings import fanout_fix_kwargs
     eff_clearance = _cl.effective(args.clearance)
-    _floors, _via_floors = fanout_written_floors('qfn', tracks, vias)
-    if out_path and os.path.isfile(out_path) and not _floors:
+    # The one fanout writeback decision (fix_kicad_drc_settings), which the GUI
+    # fanout tab applies to the live board. #1195: None when this run drew no
+    # copper; the via floors only when it drew a via (stub mode never does, and
+    # its --via-size/--via-drill defaults lowered the declared via and hole
+    # floors on every run). #439: fanout escapes route to --clearance, so the
+    # classes are always clamped to it.
+    _fix_kw = fanout_fix_kwargs('qfn', tracks, vias, clearance=eff_clearance,
+                                track_width=args.width,
+                                via_size=getattr(args, 'via_size', None),
+                                via_drill=getattr(args, 'via_drill', None))
+    if out_path and os.path.isfile(out_path) and _fix_kw is None:
         # #1195: a run that changed no copper writes no floors -- the board
         # went through unchanged, so its project does too (with every other
         # sibling), never a writeback of sizes nothing was drawn at.
@@ -2013,16 +2022,7 @@ def main():
             and not getattr(args, 'no_fix_drc_settings', False):
         try:
             from fix_kicad_drc_settings import fix_project_for_output
-            fix_project_for_output(
-                out_path, input_pcb=args.pcb,
-                clearance=eff_clearance,
-                track_width=args.width,
-                # #1195: the via floors only when this run drew a via. Stub
-                # mode never does, and its --via-size/--via-drill defaults
-                # lowered the declared via and hole floors on every run.
-                via_diameter=(getattr(args, 'via_size', None) if _via_floors else None),
-                via_drill=(getattr(args, 'via_drill', None) if _via_floors else None),
-                clamp_nondefault_netclasses=True)  # #439: fanout escapes route to --clearance; always clamp
+            fix_project_for_output(out_path, input_pcb=args.pcb, **_fix_kw)
         except Exception as _e:
             print(f"  (skipped DRC-settings fix: {_e})")
     if out_path and os.path.isfile(out_path) \

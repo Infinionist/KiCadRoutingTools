@@ -712,31 +712,43 @@ def file_stamp(path: str):
     return (st.st_mtime_ns, st.st_size, st.st_ino)
 
 
-_PROJECT_RULES_CACHE: dict = {}
+_PROJECT_DOC_CACHE: dict = {}
 
 
-def project_rules(pcb_path: str) -> dict:
-    """``design_settings.rules`` of ``pcb_path``'s sibling .kicad_pro (``{}``
-    when there is none), re-read whenever the file changes. The live readers
-    below ask it on every obstacle-map build, so it is cached by stamp."""
+def _project_doc(pcb_path: str) -> dict:
+    """``pcb_path``'s sibling .kicad_pro as parsed JSON (``{}`` when there is
+    none), re-read whenever the file changes. The live readers below ask it on
+    every obstacle-map build, so it is cached by stamp. Callers must not
+    mutate what it returns."""
     pro = find_project(pcb_path) if pcb_path else ""
     if not pro:
         return {}
     stamp = file_stamp(pro)
-    hit = _PROJECT_RULES_CACHE.get(pro)
+    hit = _PROJECT_DOC_CACHE.get(pro)
     if hit is not None and hit[0] == stamp:
         return hit[1]
-    rules = {}
+    doc = {}
     if stamp is not None:
         try:
             with open(pro, "r", encoding="utf-8") as f:
-                rules = dict((((json.load(f).get("board") or {})
-                               .get("design_settings") or {})
-                              .get("rules") or {}))
+                doc = json.load(f)
         except Exception:                                       # noqa: BLE001
-            rules = {}
-    _PROJECT_RULES_CACHE[pro] = (stamp, rules)
-    return rules
+            doc = {}
+    _PROJECT_DOC_CACHE[pro] = (stamp, doc if isinstance(doc, dict) else {})
+    return _PROJECT_DOC_CACHE[pro][1]
+
+
+def project_rules(pcb_path: str) -> dict:
+    """``design_settings.rules`` of ``pcb_path``'s sibling .kicad_pro (``{}``
+    when there is none), re-read whenever the file changes."""
+    return dict((((_project_doc(pcb_path).get("board") or {})
+                  .get("design_settings") or {}).get("rules") or {}))
+
+
+#: The session-declaration key for the Default net class's clearance, which a
+#: project-less board holds at pcbnew's stock class: the file writer CREATES
+#: the class at the routed clearance when the project has none.
+DEFAULT_CLASS_CLEARANCE_KEY = "net_settings.Default.clearance"
 
 
 def live_board_key(board) -> str:
@@ -762,9 +774,27 @@ def note_live_declared(board, keys) -> None:
     """Record that a live writer of this session set or targeted ``keys``."""
     try:
         _LIVE_DECLARED.setdefault(live_board_key(board), set()).update(
-            k for k in keys if k in LIVE_RULE_ATTR)
+            k for k in keys
+            if k in LIVE_RULE_ATTR or k == DEFAULT_CLASS_CLEARANCE_KEY)
     except Exception:                                           # noqa: BLE001
         pass
+
+
+def live_declares_default_class(board) -> bool:
+    """Does the live board DECLARE its Default net class -- its project has
+    one, or a live writer of this session set its clearance? A project-less
+    board holds pcbnew's stock class, which no file declares; the file writer
+    creates the class at the routed clearance there rather than lowering a
+    stock one."""
+    try:
+        path = board.GetFileName() or ""
+    except Exception:                                           # noqa: BLE001
+        path = ""
+    if DEFAULT_CLASS_CLEARANCE_KEY in _LIVE_DECLARED.get(live_board_key(board), ()):
+        return True
+    classes = ((_project_doc(path).get("net_settings") or {}).get("classes")
+               or []) if path else []
+    return any(isinstance(c, dict) and c.get("name") == "Default" for c in classes)
 
 
 def live_declared_rules(board, keys=None):
@@ -1799,6 +1829,62 @@ def fanout_written_floors(kind, tracks, vias):
     return bool(tracks or vias), bool(vias)
 
 
+def fanout_fix_kwargs(kind, tracks, vias, *, clearance, track_width,
+                      via_size, via_drill):
+    """THE fanout writeback: the :func:`fix_project_for_output` keywords a
+    fanout step's floors are written with, or None when it writes none.
+
+    One decision for both fronts and both fanouts. bga_fanout's and
+    qfn_fanout's mains pass these to :func:`fix_project_for_output` for the
+    file, and the GUI fanout tab passes the same to :func:`apply_fix_to_board`
+    for the live board. What they write, from :func:`fanout_written_floors`
+    (#1195): the routed clearance (which also sets the copper-to-hole floor),
+    the track width, the via size and drill only when the step may write via
+    floors, and every non-Default class clamped to the clearance (#439 -- a
+    fanout routes its escapes at that one clearance whatever the class). NO
+    hole-to-hole and no edge clearance: the CLI fanouts pass neither, so the
+    edge floor is the fab copper-to-edge pin alone. The tab used to write its
+    hole-to-hole and edge settings, never the copper-to-hole floor, and
+    clamped classes only under the Min-Clearance ceiling."""
+    floors, via_floors = fanout_written_floors(kind, tracks, vias)
+    if not floors:
+        return None
+    return {"clearance": clearance, "track_width": track_width,
+            "via_diameter": via_size if via_floors else None,
+            "via_drill": via_drill if via_floors else None,
+            "clamp_nondefault_netclasses": True}
+
+
+def apply_fix_to_board(board, *, minima, clearance=None, hole_clearance=None,
+                       hole_to_hole=None, edge_clearance=None, track_width=None,
+                       via_diameter=None, via_drill=None, diff_pair_gap=None,
+                       diff_pair_width=None, clamp_nondefault_netclasses=True):
+    """:func:`fix_project_for_output`'s FLOOR writeback, applied to a LIVE
+    board -- the same :func:`compute_targets` call over the same keywords,
+    through :func:`apply_targets_to_board`. ``minima`` is the board's own
+    smallest objects (gui_utils.board_minima_from_live, the live twin of
+    :func:`scan_board_minima`). Returns the change strings.
+
+    Severities, the origin record's disclosure and the project file are not
+    written here: the caller's step ends with gui_utils.update_live_drc_floors,
+    which discloses, and the live board is what KiCad saves."""
+    path = ""
+    try:
+        path = board.GetFileName() or ""
+    except Exception:                                           # noqa: BLE001
+        path = ""
+    targets = compute_targets(clearance=clearance, hole_clearance=hole_clearance,
+                              hole_to_hole=hole_to_hole,
+                              edge_clearance=edge_clearance,
+                              track_width=track_width, via_diameter=via_diameter,
+                              via_drill=via_drill, minima=minima or {},
+                              fab_edge=fab_edge_floor(path or None))
+    return apply_targets_to_board(board, targets, {},
+                                  diff_pair_gap=diff_pair_gap,
+                                  diff_pair_width=diff_pair_width,
+                                  clamp_nondefault_netclasses=clamp_nondefault_netclasses)
+
+
 def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
                            hole_clearance=None, hole_to_hole=None, edge_clearance=None,
                            track_width=None, via_diameter=None, via_drill=None,
@@ -2166,6 +2252,13 @@ def apply_targets_to_board(board, targets: dict, sev_plan: dict,
         # checker disabled (parity with apply_targets_to_project).
         "min_connection": "m_MinConn",
     }
+    # What the board DECLARES before this writer touches it. A rule it does not
+    # declare is what the file writer sees as a MISSING key (`cur is None`), and
+    # it writes the target there outright -- not only-lower against pcbnew's
+    # factory stand-in. On a project-less board that is the difference between
+    # copper-to-edge 0.2 (the CLI's project) and 0.5 (pcbnew's factory value).
+    _declared = live_declared_rules(board) or {}
+    _class_declared = live_declares_default_class(board)
     for key, target in targets.items():
         a = attr.get(key)
         if a is None or target is None or not hasattr(bds, a):
@@ -2177,11 +2270,12 @@ def apply_targets_to_board(board, targets: dict, sev_plan: dict,
         note_live_declared(board, (key,))
         tgt_nm = round(float(target) * MM)
         cur = getattr(bds, a)
+        cur_declared = cur if key in _declared else None
         # Edge clearance may RAISE to the fab copper-to-edge floor (#441); every
         # other rule is only-lower. `target` already carries max(routed, fab_edge);
         # max with cur preserves a board rule above the fab floor.
         if key == "min_copper_edge_clearance":
-            new_nm = max(cur or 0, tgt_nm)
+            new_nm = max(cur_declared or 0, tgt_nm)
             if cur is None or abs(new_nm - cur) > EPS:
                 try:
                     setattr(bds, a, new_nm)
@@ -2189,10 +2283,11 @@ def apply_targets_to_board(board, targets: dict, sev_plan: dict,
                 except Exception:
                     pass
             continue
-        if cur is None or cur > tgt_nm + EPS:
+        if cur is None or (cur_declared is None and abs(cur - tgt_nm) > EPS) \
+                or cur > tgt_nm + EPS:
             try:
                 setattr(bds, a, tgt_nm)
-                changes.append(f"{a}: {cur/MM:.4g} -> {target:.4g} mm")
+                changes.append(f"{a}: {(cur or 0)/MM:.4g} -> {target:.4g} mm")
             except Exception:
                 pass
 
@@ -2219,15 +2314,24 @@ def apply_targets_to_board(board, targets: dict, sev_plan: dict,
             if target is None or not hasattr(default_nc, setter):
                 continue
             getter = "Get" + setter[3:]
+            # A class the board does not declare (pcbnew's stock one on a
+            # project-less board) is set to the routed value outright: the file
+            # writer CREATES the class at it there, it does not lower a stock 0.2.
             if hasattr(default_nc, getter):
                 try:
                     cur = getattr(default_nc, getter)()
-                    if cur is not None and cur <= round(float(target) * MM) + EPS:
+                    tgt_nm = round(float(target) * MM)
+                    if cur is not None and _class_declared and cur <= tgt_nm + EPS:
                         continue  # only loosen (lower); never raise
+                    if cur is not None and not _class_declared \
+                            and abs(cur - tgt_nm) <= EPS:
+                        note_live_declared(board, (DEFAULT_CLASS_CLEARANCE_KEY,))
+                        continue  # already there; now declared
                 except Exception:
                     pass
             try:
                 getattr(default_nc, setter)(round(float(target) * MM))
+                note_live_declared(board, (DEFAULT_CLASS_CLEARANCE_KEY,))
                 changes.append(f"net_class[Default].{setter} -> {target:.4g} mm")
             except Exception:
                 pass

@@ -2194,26 +2194,38 @@ class FanoutTab(wx.Panel):
         # 0.125 / 0.5-0.25 after step 9. Later steps resolve their geometry
         # from that class, so the fronts diverge from there.
         _fcfg = fanout_config or {}
-        # #1195: the floors of copper this step drew, as qfn_fanout's main
-        # writes them -- a QFN run with no copper writes none, one with no via
-        # leaves the via and hole floors alone.
-        from fix_kicad_drc_settings import fanout_written_floors
-        _floors, _via_floors = fanout_written_floors(fanout_kind, tracks, vias)
+        # The floors bga_fanout's / qfn_fanout's main writes, from the ONE
+        # decision both fronts read (fix_kicad_drc_settings.fanout_fix_kwargs):
+        # #1195 -- a QFN run with no copper writes none, one with no via leaves
+        # the via and hole floors alone -- and the routed clearance (which also
+        # sets the copper-to-hole floor), every class clamped to it, no
+        # hole-to-hole and no edge setting beyond the fab pin. This tab used to
+        # write its own set: hole-to-hole and edge from the config, never the
+        # copper-to-hole floor, classes only under the ceiling.
+        import clearance_ledger as _cl
+        from fix_kicad_drc_settings import fanout_fix_kwargs
+        _fclr = _fcfg.get('clearance')
+        _fix_kw = fanout_fix_kwargs(
+            fanout_kind, tracks, vias,
+            clearance=_cl.effective(_fclr) if _fclr is not None else None,
+            track_width=_fcfg.get('track_width'),
+            via_size=_fcfg.get('via_size'), via_drill=_fcfg.get('via_drill'))
         # #693: gated on the shared "Fix DRC settings after routing" checkbox.
         # This tab is the one whose shared params did not even CARRY the flag,
         # so the gate and the flag were added together -- see the
         # get_shared_params() that feeds FanoutTab in swig_gui.
-        if _fcfg.get('fix_drc_settings', True) and _floors:
+        if _fcfg.get('fix_drc_settings', True) and _fix_kw is not None:
             try:
-                from .gui_utils import update_live_drc_floors
+                from fix_kicad_drc_settings import apply_fix_to_board
+                from .gui_utils import (board_minima_from_live,
+                                        update_live_drc_floors)
+                apply_fix_to_board(board, minima=board_minima_from_live(board),
+                                   **_fix_kw)
+                # The step's last live writer: the protected / pour-served
+                # records (#521, #678), the cap pass's class clamp below and
+                # the FAB FLOOR disclosure. Its floors are already written.
                 _nd_changes = update_live_drc_floors(
                     board,
-                    clearance=_fcfg.get('clearance'),
-                    track_width=_fcfg.get('track_width'),
-                    via_size=_fcfg.get('via_size') if _via_floors else None,
-                    via_drill=_fcfg.get('via_drill') if _via_floors else None,
-                    hole_to_hole=_fcfg.get('hole_to_hole_clearance'),
-                    edge_clearance=_fcfg.get('board_edge_clearance'),
                     # #782: the writeback half of #768's GIVEN branch. This tab
                     # priced every class at min(class, ceiling) and then lowered
                     # NONE of them, so a Wide-class pair priced at 0.2 was graded

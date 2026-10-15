@@ -493,6 +493,19 @@ skip cleanly without KiCad python). Run any directly:
   control), and both fronts decide with
   `fix_kicad_drc_settings.fanout_written_floors`. On the pre-fix tab it fails
   3 checks: a stub QFN run lowered the via floor 0.5 -> 0.3.
+- `test_fanout_floor_parity_gui.py` -- the fanout tab's REAL
+  `_apply_fanout_results` writes the floors bga_fanout's / qfn_fanout's mains
+  write (`fix_kicad_drc_settings.fanout_fix_kwargs`, through the live twin
+  `apply_fix_to_board`): a BGA step with a track and a via, a QFN step with a
+  track, a QFN step with no copper, on flat_hierarchy (a project, Default 0.2 /
+  Wide 0.4) and on project-less splitflap_driver. The live copper is saved, the
+  original project put beside it and the CLI writeback run over it with the
+  mains' keywords spelled out in the test; every declared rule, the via-drill
+  floor and every class clearance must agree. On the pre-fix code it fails 8
+  of 12 checks: the copper-to-hole floor kept at 0.25 (CLI 0.15), Wide not
+  clamped (0.4 vs 0.15), and on the project-less board hole-to-hole written,
+  min_clearance 0 / edge 0.5 / hole diameter 0.3 left where the CLI writes
+  0.15 / 0.2 / 0.95 and creates the Default class.
 - `test_1187_live_web_floor.py` -- the narrow-pad-joint floor
   (`connection_width_floor`) on a live board reads the board's design settings
   through `PCBData.live_rules_provider`, at call time: after one GUI step's

@@ -110,10 +110,11 @@ REGISTRY = {
     'apply_stamps_in_memory': ['via_protection_stamps'],
     'print_via_protection_record': ['via_protection_stamps'],
     'via_snapshot': ['via_protection_stamps'],
-    # #1195: which floors a fanout step may lower (none for a QFN run with no
-    # copper, no via floors without a via). qfn_fanout's main and the fanout
-    # tab's apply both decide with it before their writeback.
-    'fanout_written_floors': ['_apply_fanout_results'],
+    # #1195: the fanout writeback -- which floors a step may lower (none for a
+    # QFN run with no copper, no via floors without a via) and the keywords
+    # they are written with. bga_fanout's and qfn_fanout's mains and the fanout
+    # tab's apply all decide with it before their writeback.
+    'fanout_fix_kwargs': ['_apply_fanout_results'],
 }
 # NOTE (deliberately NOT registered): move_copper_graphics_to_silkscreen runs
 # inside the shared plane WRITER (plane_io), not a main() -- so this gate, which
@@ -297,7 +298,7 @@ SAME_SYMBOL_TWINS = {
     'persist_protected_nets',
     'persist_impedance_specs',
     'persist_pour_served_pads',
-    'fanout_written_floors',
+    'fanout_fix_kwargs',
 }
 
 
