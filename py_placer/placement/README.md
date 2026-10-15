@@ -284,6 +284,17 @@ edge seat keeps such copper in the first place (#1241): stage 1 and
 `_seat_edge` move a rung whose pads would sit past the outline inward onto
 the board, and name a band only copper past the outline could meet in
 `edge_band_contradiction`, seated on its edge with its band error standing.
+No interior seat does either (#1257): `seeder.pose_ok`, the predicate behind
+every `_try_place` search (stages 1.5 to 3, the row seat, the pose census,
+the post-polish re-seat and `--repair`'s seat), refuses a pose at which
+check_assembly would gate the part's pad copper
+(`legality.pad_copper_gating_mm`: per pad, zero margin, an edge-straddling
+castellated pad exempt). It asks only a part whose pads reach past its
+courtyard by more than the board-edge margin (`_pad_copper_overhang`),
+since any other part's copper is on the board wherever its courtyard is.
+A part no pose can hold is left
+unseated, or under `--repair` unrepaired, by name. The polish does not
+search, and can still move such copper past the outline; the gate charges it.
 The seed's pad-pair and band channels read "moved" off the WRITTEN board, so
 a polish or re-seat move counts, on the delta (#1241).
 The gate also charges the body pairs check_assembly gates on the written

@@ -130,12 +130,29 @@ def pose_ok(state, ref: str, x: float, y: float, rot: float,
     `candidate_valid` for the same reason `count_legal_poses` puts the zone
     gate first -- a handful of float compares against a usually-empty tuple,
     where `candidate_valid` ends in the neighbour loop.
+
+    Containment is of the COURTYARD and, since #1257, of the PAD COPPER too,
+    for a part whose copper reaches past its own courtyard by more than the
+    edge margin the courtyard is held to: there a contained courtyard proves
+    nothing about the pads, and the search seated (and `--repair` "repaired")
+    a part with a pad 4 mm east of its courtyard past the outline -- the
+    top-priority placement defect, which check_assembly gates on. The copper
+    is judged by check_assembly's own gate (`legality.pad_copper_gating_mm`),
+    so a castellated module on its edge stays exempt as it is there. Every
+    other part skips it (`_pad_copper_overhang`): its copper lies within the
+    margin of a courtyard the outline test just passed, which is on the board.
     """
     part = state.parts[ref]
     # The grade ladder (#1182): board, keep-out and exclusive zone are the
     # floorplan grade's questions; `candidate_valid` asks the neighbours.
     r, tht = part.grade_rects(x, y, rot)
     if state.edge_gate.rect_outside_amount(r) > 1e-9:
+        return False
+    # #1257: the pad copper, for the few parts the courtyard test above cannot
+    # vouch for -- a cached float compare for every other one. 1e-6 is the
+    # gate's own threshold (`legality.EPS`, check_assembly's `d > EPS`).
+    if (_pad_copper_overhang(state, ref) > state.edge_gate.margin
+            and _pad_copper_off_board(state, ref, x, y, rot) > 1e-6):
         return False
     # BOTH rects, because `rule_keepout` grades both: a through-hole part's
     # leads pass through a keep-out even when its body sits on the far side,
@@ -169,6 +186,63 @@ def pose_ok(state, ref: str, x: float, y: float, rot: float,
     if not state.exclusive_clear(ref, (r, tht)):
         return False
     return state.candidate_valid(ref, x, y, rot, exclude=exclude)
+
+
+def _pad_copper_overhang(state, ref: str) -> float:
+    """How far `ref`'s pads can reach past its grade rect (the courtyard,
+    else the pad bbox), in mm, at ANY pose; 0.0 when they cannot (#1257).
+    Cached per part, because `pose_ok` is the seat search's inner loop.
+
+    Measured once, in the footprint's own frame: the pad box
+    (`_Part.padbox_local`, every pad at its full extent) against the grade
+    rect at rotation 0, as the DIAGONAL of the two axes' overhangs, which
+    bounds every pad point's distance from that rect. A turn moves both
+    together, so the bound holds at every angle the search tries.
+
+    Why that settles most parts: `pose_ok` has just held the courtyard inside
+    the outline at `edge_gate.margin`, so no ring edge comes within the
+    margin of it and everything within the margin is board. Copper reaching
+    no further than that is on the board; only a part reaching further needs
+    `_pad_copper_off_board`. (At a zero margin the courtyard test cannot see
+    a notch crossing a courtyard either; this inherits that, not more.)
+    """
+    cache = getattr(state, '_pad_copper_overhang_cache', None)
+    if cache is None:
+        cache = state._pad_copper_overhang_cache = {}
+    over = cache.get(ref)
+    if over is None:
+        part = state.parts[ref]
+        box = part.padbox_local
+        over = 0.0
+        if box is not None:
+            g = part.grade_by_rot[0.0]
+            over = math.hypot(max(0.0, g[0] - box[0], box[2] - g[2]),
+                              max(0.0, g[1] - box[1], box[3] - g[3]))
+        cache[ref] = over
+    return over
+
+
+def _pad_copper_off_board(state, ref: str, x: float, y: float,
+                          rot: float) -> float:
+    """How far `ref`'s pad copper reaches past the board outline at
+    `(x, y, rot)` by check_assembly's gate (`legality.pad_copper_gating_mm`,
+    zero margin, an edge-straddling castellated pad exempt); 0.0 when it
+    would not gate there (#1257). The part's `PartPads` is the state's own
+    when it carries a legality context, else built once and cached."""
+    from . import legality
+    pads = getattr(state, '_pad_copper_pads_cache', None)
+    if pads is None:
+        pads = state._pad_copper_pads_cache = {}
+    pp = pads.get(ref)
+    fp = state.pcb_data.footprints[ref]
+    if pp is None:
+        ctx = state.legality_ctx
+        pp = ctx.parts.get(ref) if ctx is not None else None
+        if pp is None:
+            pp = legality.PartPads(fp, state.clearance)
+        pads[ref] = pp
+    return legality.pad_copper_gating_mm(pp, fp, (x, y, rot),
+                                         _zero_edge_gate(state))
 
 
 # A pose census is a DIAGNOSTIC, not a search: it answers "is there room"
@@ -1647,9 +1721,10 @@ def _try_place(state, ref: str, tx: float, ty: float, exclude: Set[str],
     its #456 branch accepts poses that move strictly TOWARD the board while
     still outside it -- measured: a free LDO seeded 2.7mm outside the
     outline, "placed", unseated 0. Placement from scratch has no incumbent
-    worth improving on, so full containment is demanded explicitly; the only
-    deliberate off-board poses are the edge connectors, which stage 1 places
-    without this helper.
+    worth improving on, so full containment is demanded explicitly -- of the
+    courtyard, and since #1257 of the pad copper of a part whose pads reach
+    past it (`pose_ok`); the only deliberate off-board poses are the edge
+    connectors, which stage 1 places without this helper.
 
     The part's CURRENT rotation is tried in full first, then the rest of its
     90-degree lattice: an unplaced pile's rotation is a generator default,

@@ -32,7 +32,8 @@ so the seed exits 4 on THAT rather than on copper nobody can solder.
         body's overhang, never pad copper) and the repair seats J1 with its
         pads on the board, exit 4 on the band. Before: 0 violators, exit 0.
      R2 a repair that leaves copper past the outline exits 4 naming it.
-        Before: exit 0, the part called repaired.
+        Before: exit 0, the part called repaired. (Since #1257 only the
+        blind, courtyard-only search leaves it there; see the test.)
      R3 `repair_oob_split`: pinned listed apart, moved charged, the
         board's own reported on a `--reseat`.
      R4 a LOCKED part with pad copper past the outline fails a `--reseat`
@@ -261,15 +262,19 @@ class TheRepairGate(unittest.TestCase):
         self.assertEqual(s['grade_error_rules'], {'edge_connector': 1})
 
     def test_r2_a_repair_that_leaves_copper_past_the_outline_fails(self):
-        # R2's pad sits 4 mm outside its courtyard; the repair's seat search
-        # reads the courtyard and leaves the pad 0.904 mm past the east
-        # edge, while calling R2 repaired.
+        # R2's pad sits 4 mm outside its courtyard; the BLIND seat search
+        # (courtyard only, as before #1257) leaves the pad 0.904 mm past the
+        # east edge while calling R2 repaired, and the exit gate charges it
+        # anyway. The real search now re-seats R2 with its pad on the board,
+        # and a part no seat can hold is charged unrepaired
+        # (test_1257_seat_pad_copper.py).
         with tempfile.TemporaryDirectory() as td:
             lap0 = _lap0(td)
             r, s = _run(lap0, {}, code=4,
                         refuse='the repair leaves pad copper past the board '
                                'outline on R2',
-                        out_name='rep.kicad_pcb', flags=('--repair',))
+                        out_name='rep.kicad_pcb', flags=('--repair',),
+                        blind=True)
         self.assertEqual(s['pad_copper_off_board_charged'], [['R2', 0.904]])
         self.assertEqual(s['pad_copper_off_board_pinned'], [])
         self.assertEqual(s['grade_errors'], 0)

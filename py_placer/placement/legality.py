@@ -5470,6 +5470,28 @@ def pad_copper_overrun_mm(pads, gate) -> float:
     return over
 
 
+def pad_copper_gating_mm(pp, fp, pose, gate) -> float:
+    """check_assembly's pad-copper GATE for one part at a TRIAL pose (#1257):
+    how far its copper reaches past the outline, 0.0 when the part would not
+    be listed in `oob_pad_copper_gating_refs` there.
+
+    The two steps `grade_pad_legality` takes, in its order: the per-pad rect
+    magnitude (`pad_copper_outside_amount`) as the filter, then the distance
+    on each pad's true outline with an edge-straddling castellated pad exempt
+    (`pad_copper_overrun_mm`) for a part the filter keeps -- so a round pad
+    whose box corner alone crosses a curved board, or a castellated module on
+    its edge, is not refused here either. `pp` is the part's `PartPads`, `fp`
+    its footprint at any pose (`footprint_at_pose` moves the real pads), and
+    `gate` a ZERO-margin `BoardOutlineGate`, at which the #628 owned-ring
+    exemption the grade passes changes nothing: a ring edge contributes only
+    within the margin and a swallowed ring adds the margin, both 0 there.
+    """
+    x, y, rot = pose
+    if pad_copper_outside_amount(pp, x, y, rot, gate) <= EPS:
+        return 0.0
+    return pad_copper_overrun_mm(footprint_at_pose(fp, pose).pads, gate)
+
+
 class EdgeCopperContext:
     """`grade_pad_edge_clearance` with its per-board constants read once (#975).
 

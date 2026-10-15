@@ -181,6 +181,9 @@
  "seeder.py::_packed_starts": {
   "grade_rect": 1
  },
+ "seeder.py::_pad_copper_overhang": {
+  "grade_by_rot": 1
+ },
  "seeder.py::_row_extent": {
   "rect": 1
  },
