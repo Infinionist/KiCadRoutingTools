@@ -1947,7 +1947,15 @@ re-seating 85/92 while leaving its zone targets unmoved):
   not a fix). A part charged by decap rules ALONE is not moved by this seat
   (#1150 b): the seat is the nearest legal pose to the part's own and has no
   decap target, so it could only leave the finding or make it worse (esp_prog
-  C2 shipped 0.06-0.10 mm farther from U1 three ways). A part that takes part
+  C2 shipped 0.06-0.10 mm farther from U1 three ways) -- unless it is a
+  member of a pad, body or baseline-gating courtyard pair the census charged
+  to the OTHER member (#1259). Such a part waits until every charged member
+  has had its seat; if its pair is still on the board (the charged seat out
+  of proportion, absent, or taken without clearing it) it gets this seat,
+  kept only when the move clears the pair -- its pad/hole/stack shortfall
+  against the charged member falls with none of it growing, or the gating
+  courtyard pair is gone with no new one -- and is otherwise put back. watchy
+  C15/TP7 and splitflap C8/J7 shipped without it. A part that takes part
   in a decap finding -- its ref, or the cap / IC it measures -- is seated
   first where none of those findings grows, and ANY part a decap rule can
   measure (a graded cap, a cap serving a supply pin, an IC with supply pins

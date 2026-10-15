@@ -9460,8 +9460,11 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
     of each pair), and parts off the board outline -- except refs the intent
     declares as edge connectors, whose overhang is by design. A ref charged
     by decap rules ALONE is not moved by the ordinary seat, which has no
-    decap target; one that takes part in a decap finding is seated first
-    where no such finding grows (#1150 b, `_DecapView.no_worse`), and any
+    decap target -- unless it is a member of a pad, body or gating
+    courtyard pair the census charged to its OTHER member, when it takes
+    that seat and keeps it only if the move clears the pair (#1259,
+    `_seat_held_member`); one that takes part in a decap finding is seated
+    first where no such finding grows (#1150 b, `_DecapView.no_worse`), and any
     part a decap rule measures first where it creates no decap finding
     (#1150 follow-up) -- by the plain seat only when no such pose exists
     within any cap, which a note says.
@@ -9570,6 +9573,13 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
     # 0.50mm for no change in the graded result. So: try the partner only when
     # the preferred mover FAILS.
     partner_of: Dict[str, List[str]] = {}
+    # #1259: the FREE members of each pair the census charged to its OTHER
+    # member -- {member: {charged member}} for the pad and body pairs, and
+    # {member: {pair}} for the courtyard pairs that gate against the
+    # baseline. A ref charged by decap rules alone stays where it stands
+    # (#1150 b) unless it is in one of these; see `_seat_held_member`.
+    held_pad: Dict[str, Set[str]] = {}
+    held_cy: Dict[str, Set[frozenset]] = {}
 
     # #1150 (b): WHAT each ref is charged for, by channel ('pad', 'body',
     # ..., or the grade rule) -- the ordinary seat leaves a ref charged by
@@ -9753,6 +9763,7 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
         _charge(ordered[0], mm, 'pad')
         for partner in ordered[1:]:
             partner_of.setdefault(ordered[0], []).append(partner)
+            held_pad.setdefault(partner, set()).add(ordered[0])
 
     # Run-6: the ASSEMBLY census. Blocking body pairs (any-net cross-
     # footprint pad intersections -- the shipped C14-on-R14 class that the
@@ -9774,6 +9785,7 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
         _charge(ordered[0], max(1.0, bp.area_mm2), 'body')
         for partner in ordered[1:]:
             partner_of.setdefault(ordered[0], []).append(partner)
+            held_pad.setdefault(partner, set()).add(ordered[0])
 
     # CONTAINMENT census (run-22). The body census above reads
     # `blocking_pairs`, which is pad_intersection ONLY -- so a part sitting
@@ -9901,6 +9913,12 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
         cy_charged.setdefault(ordered[0], set()).add(frozenset((q.a, q.b)))
         for partner in ordered[1:]:
             partner_of.setdefault(ordered[0], []).append(partner)
+        # #1259: every other FREE member is held, the unmoved one too --
+        # `ordered` lists only the members that moved against the baseline.
+        for r in (q.a, q.b):
+            if (r != ordered[0] and r in state.parts
+                    and not state.parts[r].locked):
+                held_cy.setdefault(r, set()).add(frozenset((q.a, q.b)))
 
     # Off-board census on PAD/HOLE extents at ZERO margin -- copper or drill
     # off the outline is a fab defect; a COURTYARD poking past the edge is
@@ -10025,6 +10043,203 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                       or _dc0.get('max_distance_mm') is not None
                       or _dc0.get('max_pin_distance_mm') is not None)
                   else None)
+
+    def _ladder_seat(ref, ox, oy, rect, tol, said, for_what):
+        """The ordinary seat's search: the cap ladder around (ox, oy), the
+        part's pose. Returns the cap it seated `ref` at, or None (the part
+        where it was). Notes go to `said`; `for_what` names, in the note,
+        what the plain search seats a part for when the first ladder fails.
+
+        #1150 (b): a part that takes part in a decap finding (its ref, or
+        the cap / IC it measures) is seated first where none of those
+        findings grows -- the cap ladder walked with `no_worse` -- and only
+        when no such pose exists within any cap by the plain search, since
+        what it is charged for besides (a pad conflict, the outline) is a
+        defect the board cannot ship; that seat is then said, and the
+        honesty re-grade reports the finding it made worse. watchy C12
+        (pad-charged, U3's VBUS pin's nearest cap) went 7.78 -> 11.10 mm.
+        The same ladder keeps a part out of a decap finding it is NOT in
+        (#1150 follow-up): a cap moved off a pad conflict, or an IC moved
+        for its outline, is first seated where it strands no cap or pin
+        that passes -- splitflap's C8 and C12, perturbed, were moved off
+        their pad conflicts and out of their decap limits, and the move
+        was reported, not prevented."""
+        _nw = (decap_view.no_worse(ref, decap_stakes.get(ref) or ())
+               if decap_view is not None else None)
+        if _nw is not None:
+            # Its legality first: the decap numbers pose the part, which
+            # for an IC poses every pad, while most candidate poses fail the
+            # cheap seat test -- the same conjunction, asked in the cheaper
+            # order (`_try_place` asks `accept` before `pose_ok`).
+            _nw_d = _nw
+
+            def _nw(x, y, rot, _ref=ref, _d=_nw_d):
+                return (pose_ok(state, _ref, x, y, rot, set())
+                        and _d(x, y, rot))
+            _nw.what = _nw_d.what
+        for _acc in ((_nw, None) if _nw is not None else (None,)):
+            for cap in caps:
+                info: Dict = {}
+                with _search_scope(state, ref, ox, oy, cap):
+                    clr = _try_place(state, ref, ox, oy, set(),
+                                     rotations=_rot_ladder(ref),
+                                     constraint=rect, tol=tol, max_disp=cap,
+                                     info=info, accept=_acc)
+                if clr is not None:
+                    if info.get('anchor_zone'):
+                        said.append(f"{ref}: spec-coordinate zone -- seated "
+                                    f"by anchor point")
+                    if _nw is not None and _acc is None:
+                        said.append(
+                            f"{ref}: no pose within any cap {tuple(caps)}mm "
+                            f"{_nw.what} -- seated by the plain search for "
+                            f"{for_what}")
+                    return cap
+        return None
+
+    def _held_pad_state(ref):
+        """(stacks, different-net pad overlaps, pad + hole shortfall mm,
+        [members still in a pair with it]) of `ref` against the members of
+        its `held_pad` pairs at the state's live poses -- the pair measure
+        the zero-move re-grade reads."""
+        ctx = state.legality_ctx
+        n_stack = n_overlap = 0
+        amt = 0.0
+        live: List[str] = []
+        if ctx is None:
+            return n_stack, n_overlap, amt, live
+        for other in sorted(held_pad.get(ref, ())):
+            sf = ctx.pair_shortfall(ref, other)
+            n_stack += bool(sf.stack)
+            n_overlap += bool(sf.pad_overlap)
+            amt += sf.pad + sf.hole
+            if sf.stack or sf.pad_overlap or sf.pad + sf.hole > 1e-6:
+                live.append(other)
+        return n_stack, n_overlap, amt, live
+
+    def _cy_gating_of(ref):
+        """The courtyard pairs `ref` is in that gate against the baseline at
+        the state's live poses -- check_assembly's verdict, as the
+        repair's courtyard re-grade asks it. Empty without a baseline."""
+        if cy_census is None or cy_base is None:
+            return set()
+        poses = {r: (p.x, p.y, p.rot) for r, p in state.parts.items()}
+        got = cy_census.grade(poses, moved=_leg.moved_refs_at(
+            pcb_data, cy_base, poses))
+        return {frozenset((q.a, q.b)) for q in (got.gating or ())
+                if ref in (q.a, q.b)}
+
+    def _seat_held_member(ref) -> bool:
+        """#1259: seat a ref charged by decap rules alone that is a member of
+        a pair the census charged to its OTHER member -- the pad, body or
+        gating courtyard pair whose charged member's own seat can fail
+        (disproportionate, or none) and leave the pair on the board. Before
+        #1150 (b) the ordinary seat moved such a cap and cleared the pair as
+        a side effect; skipping it shipped watchy C15/TP7 (TP7's only seat
+        4.12 mm away, out of proportion) and splitflap C8/J7 (J7 seated on
+        its band, the pair still gating).
+
+        Seated as the ordinary seat seats it (`_ladder_seat`, `no_worse`
+        first, the proportion budget), and KEPT only when the move clears
+        what the pair measures: its pad / hole / stack shortfall against
+        the charged members falls with none of it growing, or a gating
+        courtyard pair it was held in is gone -- and, against a baseline,
+        it is in no gating courtyard pair it was not in before. Otherwise
+        it is put back and returns False: a decap-only zero move, as before.
+        True: moved, and recorded as a repair move."""
+        part = state.parts[ref]
+        ox, oy, orot = part.x, part.y, part.rot
+        pad0 = _held_pad_state(ref)
+        cy0 = _cy_gating_of(ref)
+        cy_held0 = cy0 & held_cy.get(ref, set())
+        if not (pad0[3] or cy_held0):
+            return False        # cleared already, by the charged member's
+                                # own seat or another move
+        by = sorted(set(pad0[3])
+                    | {r for p in cy_held0 for r in p if r != ref})
+        z = ref_zone.get(ref)
+        rect = z.rect if z is not None else None
+        tol = intent.zone_tolerance(z) if (intent and z is not None) else 0.5
+        said: List[str] = []
+        placed_at = _ladder_seat(ref, ox, oy, rect, tol, said,
+                                 f"its pair(s) with {', '.join(by)}")
+        why = None
+        if placed_at is None:
+            why = f"no legal pose within any cap {tuple(caps)}mm"
+        else:
+            d = math.hypot(part.x - ox, part.y - oy)
+            budget = max(DISPROPORTION_FLOOR_MM,
+                         DISPROPORTION_RATIO * weight.get(ref, 0.0))
+            if d > budget:
+                why = (f"its only seat is {d:.2f}mm away, out of proportion "
+                       f"(budget {budget:.2f}mm)")
+            elif d <= 1e-9 and part.rot == orot:
+                why = "the seat search kept its own pose"
+            else:
+                pad1 = _held_pad_state(ref)
+                cy1 = _cy_gating_of(ref)
+                gone, new = cy_held0 - cy1, cy1 - cy0
+                pad_better = (pad1[0] < pad0[0] or pad1[1] < pad0[1]
+                              or pad1[2] < pad0[2] - 1e-6)
+                pad_worse = (pad1[0] > pad0[0] or pad1[1] > pad0[1]
+                             or pad1[2] > pad0[2] + 1e-6)
+                if new:
+                    why = (f"its seat {d:.2f}mm away puts it in a gating "
+                           f"courtyard pair with "
+                           + ', '.join(sorted(r for p in new for r in p
+                                              if r != ref)))
+                elif pad_worse or not (pad_better or gone):
+                    why = (f"its seat {d:.2f}mm away does not clear them "
+                           f"(pad/hole shortfall {pad0[2]:.3f} -> "
+                           f"{pad1[2]:.3f}mm"
+                           + (f", {len(cy_held0)} gating courtyard pair(s) "
+                              f"-> {len(cy_held0 & cy1)}"
+                              if cy_held0 else '') + ")")
+                else:
+                    notes.extend(said)
+                    moves.append({'reference': ref, 'new_x': part.x,
+                                  'new_y': part.y, 'new_rotation': part.rot})
+                    repaired.append(ref)
+                    cleared = []
+                    if pad_better:
+                        cleared.append(f"pad/hole shortfall {pad0[2]:.3f} -> "
+                                       f"{pad1[2]:.3f}mm"
+                                       + (f", stacks {pad0[0]} -> {pad1[0]}"
+                                          if pad0[0] != pad1[0] else ''))
+                    if gone:
+                        cleared.append(
+                            "gating courtyard pair(s) with "
+                            + ', '.join(sorted(r for p in gone for r in p
+                                               if r != ref)) + " gone")
+                    notes.append(
+                        f"{ref}: re-seated {d:.2f}mm from its pose (cap "
+                        f"{placed_at}) -- charged by decap rules only, and "
+                        f"moved for its pair(s) with {', '.join(by)}, "
+                        f"charged to the other member: "
+                        + '; '.join(cleared))
+                    return True
+        if placed_at is not None:
+            state.apply_move(ref, ox, oy, orot)
+        notes.append(f"{ref}: in a pair charged to {', '.join(by)} -- "
+                     f"{why}; left where it stands")
+        return False
+
+    def _stays_decap_only(ref):
+        """A ref charged by decap rules alone, left where it stands: said,
+        and re-graded like any zero-move violator (#1150 b)."""
+        notes.append(
+            f"{ref}: charged by decap rules only "
+            f"({', '.join(sorted(charged_by.get(ref) or ()))}) -- the "
+            f"ordinary seat has no decap target and does not move it"
+            + ("" if repair_decaps else
+               " (--repair-decaps seats a cap toward its IC; an IC is "
+               "never moved for a decap finding)"))
+        repaired.append(ref)
+        zero_move.append(ref)
+
+    # #1259: the decap-only members of pairs charged to their other member,
+    # seated after the loop -- see there.
+    held_later: List[str] = []
     for ref in violators:
         part = state.parts[ref]
         was_locked = part.locked      # always False here: locked refs are
@@ -10038,18 +10253,17 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
         # from U1 (4.6253 -> 4.7248, 4.3647 -> 4.422, 4.575 -> 4.659 mm),
         # each shipped and reported unresolved. A cap is the decap rung's
         # (`repair_decaps`); an IC is never moved for a decap finding. Left
-        # where it stands, it is re-graded like any zero-move violator.
+        # where it stands, it is re-graded like any zero-move violator --
+        # unless it is a member of a pair the census charged to the OTHER
+        # member (#1259), which waits for that member's own seat (below).
+        # Not a declared edge part: its seat is the band's (`_seat_edge`
+        # below), which the containing ladder of `_seat_held_member` is not.
         _whys = charged_by.get(ref) or set()
         if _whys and all(is_decap_rule(w) for w in _whys):
-            notes.append(
-                f"{ref}: charged by decap rules only "
-                f"({', '.join(sorted(_whys))}) -- the ordinary seat has no "
-                f"decap target and does not move it"
-                + ("" if repair_decaps else
-                   " (--repair-decaps seats a cap toward its IC; an IC is "
-                   "never moved for a decap finding)"))
-            repaired.append(ref)
-            zero_move.append(ref)
+            if (ref in held_pad or ref in held_cy) and ref not in edge_entry:
+                held_later.append(ref)
+            else:
+                _stays_decap_only(ref)
             continue
 
         # Run-4 F2/B-6: a DECLARED edge part charged by the proximity rule
@@ -10094,56 +10308,12 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
         rect = z.rect if z is not None else None
         tol = intent.zone_tolerance(z) if (intent and z is not None) else 0.5
         ox, oy, orot = part.x, part.y, part.rot
-        placed_at = None
-        # #1150 (b): a part that takes part in a decap finding (its ref, or
-        # the cap / IC it measures) is seated first where none of those
-        # findings grows -- the cap ladder walked with `no_worse` -- and only
-        # when no such pose exists within any cap by the plain search, since
-        # what it is charged for besides (a pad conflict, the outline) is a
-        # defect the board cannot ship; that seat is then said, and the
-        # honesty re-grade reports the finding it made worse. watchy C12
-        # (pad-charged, U3's VBUS pin's nearest cap) went 7.78 -> 11.10 mm.
-        # The same ladder keeps a part out of a decap finding it is NOT in
-        # (#1150 follow-up): a cap moved off a pad conflict, or an IC moved
-        # for its outline, is first seated where it strands no cap or pin
-        # that passes -- splitflap's C8 and C12, perturbed, were moved off
-        # their pad conflicts and out of their decap limits, and the move
-        # was reported, not prevented.
-        _nw = (decap_view.no_worse(ref, decap_stakes.get(ref) or ())
-               if decap_view is not None else None)
-        if _nw is not None:
-            # Its legality first: the decap numbers pose the part, which
-            # for an IC poses every pad, while most candidate poses fail the
-            # cheap seat test -- the same conjunction, asked in the cheaper
-            # order (`_try_place` asks `accept` before `pose_ok`).
-            _nw_d = _nw
-
-            def _nw(x, y, rot, _ref=ref, _d=_nw_d):
-                return (pose_ok(state, _ref, x, y, rot, set())
-                        and _d(x, y, rot))
-            _nw.what = _nw_d.what
-        for _acc in ((_nw, None) if _nw is not None else (None,)):
-            for cap in caps:
-                info: Dict = {}
-                with _search_scope(state, ref, ox, oy, cap):
-                    clr = _try_place(state, ref, ox, oy, set(),
-                                     rotations=_rot_ladder(ref),
-                                     constraint=rect, tol=tol, max_disp=cap,
-                                     info=info, accept=_acc)
-                if clr is not None:
-                    placed_at = cap
-                    if info.get('anchor_zone'):
-                        notes.append(f"{ref}: spec-coordinate zone -- seated "
-                                     f"by anchor point")
-                    break
-            if placed_at is not None:
-                if _nw is not None and _acc is None:
-                    notes.append(
-                        f"{ref}: no pose within any cap {tuple(caps)}mm "
-                        f"{_nw.what} -- seated by "
-                        f"the plain search for what else it is charged for "
-                        f"({', '.join(sorted(charged_by.get(ref) or ()))})")
-                break
+        # #1150 (b): `no_worse` first where a decap rule measures the part,
+        # then the plain search -- see `_ladder_seat`.
+        placed_at = _ladder_seat(
+            ref, ox, oy, rect, tol, notes,
+            f"what else it is charged for "
+            f"({', '.join(sorted(charged_by.get(ref) or ()))})")
         if placed_at is None and z is not None:
             # current pose may be far from the zone: target the zone center
             zx = (z.rect[0] + z.rect[2]) / 2.0
@@ -10227,6 +10397,20 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
             # standing pose (metric mismatch). Classify honestly below.
             repaired.append(ref)
             zero_move.append(ref)
+
+    # #1259: the decap-only members of pairs the census charged to the OTHER
+    # member, now that every charged member has had its own seat. A pair that
+    # seat cleared leaves the member where it stands (a cheap pair measure,
+    # no search); one still on the board -- the charged member's seat out of
+    # proportion (watchy TP7, 4.12 mm for a 0.066 mm pair), absent, or taken
+    # without clearing it (splitflap J7 on its band, C8/J7 still gating) --
+    # gets the member's own ordinary seat, kept only if it clears the pair.
+    # Seated in weight order instead, ahead of the charged member, watchy's
+    # U4 (an IC held by TP2, whose own seat clears the pair) walked the whole
+    # cap ladder for nothing, and a found seat would have moved the IC.
+    for ref in held_later:
+        if not _seat_held_member(ref):
+            _stays_decap_only(ref)
 
     # #1066 (b): the decap rung, opt-in. After the ordinary seats, so it
     # measures the board they left; before both re-grades, which then judge
