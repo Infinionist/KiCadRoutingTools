@@ -147,6 +147,16 @@ keeps its given dimensions and carries the tilt in `rect_rotation`; the obstacle
 map and DRC rotate the pad rectangle by that angle. `check_pads.py` flags pads
 whose resolved copper overlaps a different-net neighbour (a modelling error).
 
+A **custom** pad carries its real copper in `polygons` (GLOBAL mm; their union
+is the copper), and its `size_x`/`size_y`/`rect_rotation` follow one rule on
+both parse paths: a pad whose copper IS its anchor -- no primitive, or every
+primitive inside the anchor shape -- is the anchor rect with its residual
+tilt, like an ordinary pad; otherwise it is the board-axis box of the copper
+(anchor shape plus primitives) about the copper centre, `rect_rotation` 0. The
+box never includes the drill (an NPTH custom pad is its anchor, not its hole)
+and is centred on the copper, not the hole, when the pad has a copper offset.
+`anchor_size` is the anchor in the pad frame.
+
 ### `Segment`
 
 | Field | Type | Meaning |

@@ -115,6 +115,7 @@ def main():
             assert any('unequal-axis circle' in row['reason'] for row in result['unmeasured'])
         print('PASS: near-cardinal exact tilt and unequal-axis circle coverage')
         padstack_arm(Path(scratch))
+        custom_size_arm(Path(scratch))
     assert hashlib.sha256(source.read_bytes()).hexdigest() == original
 
 
@@ -169,6 +170,68 @@ def padstack_arm(scratch):
         assert got == native, (label, got, native)
     print('PASS: padstack sizes are the max over the pad\'s own copper layers, '
           f'on both parsers: {native}')
+
+
+def custom_size_arm(scratch):
+    """A custom pad's `size_x/size_y/rect_rotation` on both parsers, against
+    pcbnew's own copper.
+
+    - Copper that IS the anchor (no primitive, or every primitive inside it)
+      is the anchor rect with its residual tilt: A (len42_filter2 SW1.3, a
+      4.572 x 0.406 anchor at 333 deg with a copper offset) and D (a
+      primitive inside a 2 x 1 anchor at 30 deg). The pcbnew builder sized A
+      from GetBoundingBox(), centred on the HOLE: 5.16 x 2.46.
+    - Real primitives give the board-frame box about the COPPER centre, rr 0:
+      B (awkb_36_split SW16.1, a gr_poly on a circle anchor at 345 deg), where
+      the text parser counted the circle anchor's bounding-rect corners.
+    - An NPTH custom pad is its anchor, not its bigger drill: C (usmu_smu J2,
+      a 0.6 anchor with a 0.65 drill), which the pcbnew builder sized 0.65."""
+    pads = (
+        '  (pad "A" smd custom (at 0 0 333) (size 4.572 0.4064) (drill (offset -0.4064 0.19525))'
+        ' (layers "F.Cu") (net 1 "/A") (options (clearance outline) (anchor rect))'
+        ' (primitives))\n'
+        '  (pad "B" smd custom (at 12 0 345) (size 2.4892 2.4892) (layers "F.Cu" "F.Mask")'
+        ' (net 1 "/A") (options (clearance outline) (anchor circle)) (primitives (gr_poly'
+        ' (pts (xy -1.2573 -1.194816) (xy -1.207516 -1.2446) (xy 1.207516 -1.2446)'
+        ' (xy 1.2573 -1.194816) (xy 1.2573 0.74676) (xy 0.75946 1.2446) (xy -1.207516 1.2446)'
+        ' (xy -1.2573 1.194816)) (width 0) (fill yes))))\n'
+        '  (pad "" np_thru_hole custom (at 20 0 270) (size 0.6 0.6) (drill 0.65)'
+        ' (layers "*.Cu" "*.Mask") (options (clearance outline) (anchor circle)) (primitives))\n'
+        '  (pad "D" smd custom (at 26 0 30) (size 2 1) (layers "F.Cu") (net 1 "/A")'
+        ' (options (clearance outline) (anchor rect)) (primitives (gr_poly (pts'
+        ' (xy -0.5 -0.3) (xy 0.5 -0.3) (xy 0.5 0.3) (xy -0.5 0.3)) (width 0.1) (fill yes))))\n')
+    path, board = _synthetic(scratch, 'custom_size', (
+        ' (footprint "L:CS" (layer "F.Cu") (at 15 20)\n'
+        '  (property "Reference" "U2" (at 0 -3 0) (layer "F.Cu") (hide yes)'
+        ' (effects (font (size 1 1) (thickness 0.15))))\n' + pads + ' )\n'))
+    live = list(next(iter(board.GetFootprints())).Pads())
+    text = parse_kicad_pcb(str(path)).footprints['U2'].pads
+    gui = build_pcb_data_from_board(board).footprints['U2'].pads
+    assert len(live) == len(text) == len(gui) == 4, (len(live), len(text), len(gui))
+    for lp, tp, gp in zip(live, text, gui):
+        tag = lp.GetNumber() or 'npth'
+        # Native copper: the effective polygon about the shape (copper) centre.
+        ol = lp.GetEffectivePolygon(pcbnew.F_Cu)
+        c = lp.ShapePos(pcbnew.F_Cu)
+        pts = [(pcbnew.ToMM(ol.COutline(o).CPoint(i).x - c.x),
+                pcbnew.ToMM(ol.COutline(o).CPoint(i).y - c.y))
+               for o in range(ol.OutlineCount()) for i in range(ol.COutline(o).PointCount())]
+        ext = (2 * max(abs(x) for x, _ in pts), 2 * max(abs(y) for _, y in pts))
+        for label, p in (('text', tp), ('pcbnew', gp)):
+            th = math.radians(p.rect_rotation)
+            box = (p.size_x * abs(math.cos(th)) + p.size_y * abs(math.sin(th)),
+                   p.size_x * abs(math.sin(th)) + p.size_y * abs(math.cos(th)))
+            # The model rect's board-axis extent IS pcbnew's copper extent
+            # (pcbnew's polygon sits inside arcs by its 5 um max error).
+            assert all(abs(a - b) < .006 for a, b in zip(box, ext)), (tag, label, box, ext)
+        assert (abs(tp.size_x - gp.size_x) < .006 and abs(tp.size_y - gp.size_y) < .006
+                and abs(tp.rect_rotation - gp.rect_rotation) < 1e-6), (
+            tag, (tp.size_x, tp.size_y, tp.rect_rotation), (gp.size_x, gp.size_y, gp.rect_rotation))
+    by = {(p.pad_number or 'npth'): (round(p.size_x, 4), round(p.size_y, 4), round(p.rect_rotation, 2))
+          for p in text}
+    assert by['A'] == (4.572, .4064, 27.0) and by['D'] == (2.0, 1.0, -30.0), by
+    assert by['B'][2] == 0.0 and by['npth'] == (0.6, 0.6, 0.0), by
+    print(f'PASS: custom-pad size/tilt agree on both parsers and with pcbnew\'s copper: {by}')
 
 
 if __name__ == '__main__':

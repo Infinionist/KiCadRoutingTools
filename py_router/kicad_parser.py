@@ -1165,14 +1165,55 @@ def _offset_polygon_outward(pts, hw):
     return out
 
 
+def _custom_anchor_kind(pad_text: str) -> str:
+    """'rect' or 'circle': a custom pad's anchor shape. KiCad's default anchor
+    is a circle; the file writes `(options ... (anchor rect))` otherwise."""
+    am = re.search(r'\(anchor\s+(\w+)\)', pad_text)
+    return 'rect' if am and am.group(1) == 'rect' else 'circle'
+
+
+def _custom_copper_is_anchor(pad_text: str, anchor_x: float, anchor_y: float,
+                             eps: float = 1e-4) -> bool:
+    """Is a custom pad's copper exactly its ANCHOR -- no primitive, or every
+    primitive inside the anchor shape?
+
+    Such a pad is its anchor rect (or circle), so it takes an ordinary pad's
+    size and residual tilt (`_resolve_pad_rect`) rather than the board-frame
+    box a custom pad with real primitives gets. awkb_36_split U1's 0.25 x 1
+    anchors at 187.5 deg and len42_filter2 SW1.3's 4.572 x 0.406 anchor at 333
+    deg carry `(primitives)` and nothing else. `build_pcb_data_from_board`
+    asks the same question of pcbnew's pad-frame merged copper. A primitive
+    this parser does not model (`gr_curve`) is never assumed inside."""
+    pm = re.search(r'\(primitives\b', pad_text)
+    if not pm:
+        return True
+    prim = pad_text[pm.start():find_matching_paren(pad_text, pm.start())]
+    if re.search(r'\(gr_(?!(?:poly|circle|rect|line|arc)\b)\w', prim):
+        return False
+    hx, hy = anchor_x / 2.0, anchor_y / 2.0
+    rect = _custom_anchor_kind(pad_text) == 'rect'
+    r = min(hx, hy)
+    for pts, hw in _custom_pad_primitive_points(pad_text):
+        for vx, vy in pts:
+            if rect:
+                if abs(vx) + hw > hx + eps or abs(vy) + hw > hy + eps:
+                    return False
+            elif math.hypot(vx, vy) + hw > r + eps:
+                return False
+    return True
+
+
 def _custom_pad_board_extent(pad_text: str, abs_rotation_deg: float,
                              anchor_x: float, anchor_y: float) -> Tuple[float, float]:
     """Board-frame half-extents (|x|, |y|) of a custom pad's copper about its
-    anchor: primitive points (per-primitive stroke half-width) plus the anchor
-    rect's corners, all rotated by the pad's ABSOLUTE angle (KiCad negate
-    convention). Matches build_pcb_data_from_board's symmetric bounding box, so
-    a 27deg/45deg custom pad models the same axis-aligned copper on both paths
-    (sofle_pico D26/LED*, eurorack_pmod U1). Returns (0, 0) with no primitives.
+    anchor: primitive points (per-primitive stroke half-width) plus the ANCHOR
+    SHAPE -- a rect's corners, a circle's radius -- all rotated by the pad's
+    ABSOLUTE angle (KiCad negate convention). Matches build_pcb_data_from_board's
+    symmetric box about the copper centre, so a 27deg/45deg custom pad models
+    the same axis-aligned copper on both paths (sofle_pico D26/LED*,
+    eurorack_pmod U1). A circle anchor used to count its bounding RECT's
+    corners, 23 um past the copper on awkb_36_split SW16 at 345 deg. Returns
+    (0, 0) with no primitives.
     """
     prims = _custom_pad_primitive_points(pad_text)
     if not prims:
@@ -1181,7 +1222,12 @@ def _custom_pad_board_extent(pad_text: str, abs_rotation_deg: float,
     cos_r, sin_r = math.cos(rad), math.sin(rad)
     ext_x = ext_y = 0.0
     hx, hy = anchor_x / 2.0, anchor_y / 2.0
-    prims = prims + [([(-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy)], 0.0)]
+    if _custom_anchor_kind(pad_text) == 'rect':
+        prims = prims + [([(-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy)], 0.0)]
+    else:
+        # A centre point plus its radius: rotation-invariant, as the circle
+        # primitives above. Same radius as the anchor polygon.
+        prims = prims + [([(0.0, 0.0)], min(hx, hy))]
     for pts, hw in prims:
         for vx, vy in pts:
             bx = vx * cos_r - vy * sin_r
@@ -1640,6 +1686,42 @@ def pad_to_die_from_pcbnew(pad) -> Tuple[float, float]:
     except Exception:
         delay = 0.0
     return length, delay
+
+
+def _pcbnew_custom_copper_is_anchor(pad, to_mm, eps: float = 1e-4) -> bool:
+    """`_custom_copper_is_anchor` for a live pcbnew custom pad: every vertex of
+    its PAD-FRAME merged copper (`MergePrimitivesAsPolygon`: anchor plus
+    primitives, about the anchor, orientation 0) lies inside the anchor shape.
+    The farthest point of a polygon from a convex shape is a vertex, so this
+    is the text path's test asked of pcbnew's own copper. False when pcbnew
+    cannot say."""
+    try:
+        import pcbnew as _pn
+        layer = pad.GetLayer()
+        sps = _pn.SHAPE_POLY_SET()
+        pad.MergePrimitivesAsPolygon(layer, sps)
+        try:
+            a = pad.GetSize(layer)
+            circle = pad.GetAnchorPadShape(layer) == getattr(_pn, 'PAD_SHAPE_CIRCLE', 0)
+        except TypeError:       # pre-padstack API: no layer argument
+            a = pad.GetSize()
+            circle = pad.GetAnchorPadShape() == getattr(_pn, 'PAD_SHAPE_CIRCLE', 0)
+        hx, hy = to_mm(a.x) / 2.0, to_mm(a.y) / 2.0
+        r = min(hx, hy)
+        n = 0
+        for oi in range(sps.OutlineCount()):
+            ol = sps.Outline(oi)
+            for i in range(ol.PointCount()):
+                x, y = to_mm(ol.CPoint(i).x), to_mm(ol.CPoint(i).y)
+                n += 1
+                if circle:
+                    if math.hypot(x, y) > r + eps:
+                        return False
+                elif abs(x) > hx + eps or abs(y) > hy + eps:
+                    return False
+        return n > 0
+    except Exception:
+        return False
 
 
 def pad_is_plated_through(pad) -> bool:
@@ -4226,8 +4308,11 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
             # covers the full local extent -- conservative (may over-block the
             # empty side of an asymmetric pad) but DRC-safe; modelling only the
             # anchor lets tracks graze copper that reaches past it.
+            # A custom pad whose copper IS its anchor (`_custom_copper_is_anchor`)
+            # is sized as the anchor rect, with its residual tilt, below.
             custom_resolved = False
-            if pad_shape == 'custom':
+            if pad_shape == 'custom' and not _custom_copper_is_anchor(
+                    pad_text, size_x, size_y):
                 # pad_rotation: the file's (at ...) angle is the pad's ABSOLUTE
                 # board angle (same convention as _custom_pad_global_polygons /
                 # _resolve_pad_rect).
@@ -7830,14 +7915,24 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
             # board axis and over-widens the pad (e.g. U9 QFN: narrow 0.28 -> 0.71).
             pad_polygons = None
             if shape == 'custom':
+                # A pad whose copper IS its anchor is the anchor rect with its
+                # residual tilt, as on the text path (`_custom_copper_is_anchor`);
+                # otherwise the board-frame box of the copper about the copper
+                # centre, set from the effective polygon below. GetBoundingBox()
+                # is centred on the HOLE and includes it: len42_filter2 SW1.3's
+                # 0.4 mm copper offset read 5.16 x 2.46 for a 4.26 x 2.44 box,
+                # and usmu_smu J2's 0.65 NPTH drill sized its 0.6 anchor.
+                _anchor_only = _pcbnew_custom_copper_is_anchor(pad, to_mm)
                 try:
                     bb = pad.GetBoundingBox()
                     pos = pad.GetPosition()
                     hx = max(abs(to_mm(bb.GetLeft() - pos.x)), abs(to_mm(bb.GetRight() - pos.x)))
                     hy = max(abs(to_mm(bb.GetTop() - pos.y)), abs(to_mm(bb.GetBottom() - pos.y)))
-                    size_x, size_y, rect_rotation = 2 * hx, 2 * hy, 0.0
+                    _bbox_size = (2 * hx, 2 * hy, 0.0)
                 except Exception:
-                    size_x, size_y, rect_rotation = _resolve_pad_rect(size_x, size_y, pad_rotation)
+                    _bbox_size = _resolve_pad_rect(size_x, size_y, pad_rotation)
+                _anchor_rect = _resolve_pad_rect(size_x, size_y, pad_rotation)
+                size_x, size_y, rect_rotation = _anchor_rect if _anchor_only else _bbox_size
                 # Carry the real copper outline so the obstacle map / DRC model the
                 # finger channels, not the bounding box (issue #188). pcbnew's
                 # effective polygon is already in GLOBAL board coordinates.
@@ -7857,6 +7952,24 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                     pad_polygons = polys or None
                 except Exception:
                     pad_polygons = None
+                if not _anchor_only:
+                    # The copper's board-frame box about the COPPER centre
+                    # (global_x/y carry the offset), without the hole: the
+                    # effective SHAPE's box is exact, where the effective
+                    # polygon sits up to the board's max error inside a curve
+                    # (mokya_lora_phone U9.5's 1.04 mm ring: 2.08 vs 2.07).
+                    try:
+                        _eb = pad.GetEffectiveShape(pad.GetLayer()).BBox()
+                        size_x = 2 * max(abs(to_mm(_eb.GetLeft()) - global_x),
+                                         abs(to_mm(_eb.GetRight()) - global_x))
+                        size_y = 2 * max(abs(to_mm(_eb.GetTop()) - global_y),
+                                         abs(to_mm(_eb.GetBottom()) - global_y))
+                        rect_rotation = 0.0
+                    except Exception:
+                        if pad_polygons:
+                            size_x = 2 * max(abs(x - global_x) for _r in pad_polygons for x, _ in _r)
+                            size_y = 2 * max(abs(y - global_y) for _r in pad_polygons for _, y in _r)
+                            rect_rotation = 0.0
             else:
                 # Resolve the pad rectangle into board space (keyed on the absolute
                 # total rotation, not pad_rotation alone — see the text-parser path).
