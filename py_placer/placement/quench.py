@@ -758,6 +758,13 @@ _NEAR_MAX_CELLS = 4096
 #: and `_sweep_others` keeps it.
 _NEAR_INDEX_MIN_PARTS = 32
 
+#: A box reaching farther from the origin than this (mm) is not bucketed: a
+#: footprint is returned for every query, a query sweeps everything.
+#: `_NEAR_SLACK_MM` covers the rounding of the cell arithmetic only while an
+#: ulp is far below it -- about 1e-10 mm here, where it passes 1e-6 near
+#: 1e10 mm.
+_NEAR_MAX_COORD_MM = 1e6
+
 
 class _NearIndex:
     """Every part's NEIGHBOUR FOOTPRINT -- the box spanning `rect()` and
@@ -780,7 +787,10 @@ class _NearIndex:
     its division). The survivors come back in `parts` order, so the loops
     see the sequence they always saw, less parts that would have contributed
     nothing -- the same first violator, the same float sum, the same early
-    exit. A NaN or infinite footprint is in every answer.
+    exit. A footprint with a NaN or infinite coordinate -- in any box it
+    spans, a far side's clusters included -- is in every answer, unpruned;
+    one past `_NEAR_MAX_COORD_MM` is in every answer and pruned by the exact
+    test alone.
 
     A stale footprint would be a silent wrong answer, so staleness is not
     left to call sites: every write to a field the footprint reads
@@ -822,9 +832,12 @@ class _NearIndex:
     @staticmethod
     def _cells(x0, y0, x1, y1):
         """The cell range (cx0, cy0, cx1, cy1) a box touches, or None when it
-        is not finite, is inverted, or spans more than `_NEAR_MAX_CELLS`
-        cells."""
-        g, e = _NEAR_CELL_MM, _NEAR_SLACK_MM
+        is not finite, reaches past `_NEAR_MAX_COORD_MM`, is inverted, or
+        spans more than `_NEAR_MAX_CELLS` cells."""
+        g, e, m = _NEAR_CELL_MM, _NEAR_SLACK_MM, _NEAR_MAX_COORD_MM
+        if not (-m <= x0 <= m and -m <= y0 <= m and -m <= x1 <= m
+                and -m <= y1 <= m):
+            return None                                # far, or NaN
         try:
             r = (math.floor((x0 - e) / g), math.floor((y0 - e) / g),
                  math.floor((x1 + e) / g), math.floor((y1 + e) / g))
@@ -901,15 +914,30 @@ class _NearIndex:
 
 def _footprint_box(rect, tht):
     """The box spanning a courtyard rect and an optional far-side rect (a
-    `FarSide` IS its union box), or None when a coordinate is NaN."""
+    `FarSide` IS its union box), or None unless every coordinate is finite.
+
+    Every coordinate means every box the far side stands for
+    (`legality.far_boxes`), not just its four union numbers: those are a
+    min/max over its clusters, and `min`/`max` skip a NaN that is not
+    first, while `rect_gap` returns `max(dx, NaN) == dx` -- a cluster NaN in
+    y is compared in x alone, so the union would prove a separation the
+    sweep does not see. An infinity is refused with it: `inf - inf` is the
+    other way a gap goes NaN, and an inverted box can reach it. With every
+    coordinate finite no gap the sweeps take is NaN, and each is at least
+    every axis separation of the boxes it compares."""
     if tht is None:
         box = tuple(rect)
+        s = box[0] + box[1] + box[2] + box[3]
     else:
         box = (min(rect[0], tht[0]), min(rect[1], tht[1]),
                max(rect[2], tht[2]), max(rect[3], tht[3]))
-    for v in tuple(rect) + (tuple(tht) if tht is not None else ()):
-        if v != v:
-            return None
+        s = (rect[0] + rect[1] + rect[2] + rect[3]
+             + sum(map(sum, legality.far_boxes(tht))))
+    # `s - s` is 0.0 exactly when `s` is finite, and `s` is finite only
+    # when every term is: a NaN or an infinity propagates (an overflow is
+    # refused too, which only costs the prune).
+    if s - s != 0.0:
+        return None
     return box
 
 
