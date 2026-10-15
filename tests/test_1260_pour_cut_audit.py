@@ -99,9 +99,24 @@ def test_end_to_end(tmp):
           and cuts[0]['open_pads_after'] >= 1, str(cuts))
     check("JSON_SUMMARY_MIN carries it", mins.get('pour_cuts') == ['ZONE_NET'],
           str(mins.get('pour_cuts')))
-    g = run_utils.check(PY + [CHECK_CONNECTED, out], refuse='ZONE_NET')
-    check("the grader agrees ZONE_NET is open on the written board",
-          'ZONE_NET' in g.stdout and g.returncode == 1)
+    # The grader cross-check needs KiCad's refill: the run writes the pour's
+    # fill as it found it, so without kicad-cli check_connected reads that
+    # whole fill, sees no cut, and says it graded without the refill. The
+    # audit above needs no KiCad (its fill models are its own).
+    import subprocess
+    g = subprocess.run(PY + [CHECK_CONNECTED, out], capture_output=True,
+                       text=True, encoding='utf-8', errors='replace', cwd=ROOT,
+                       timeout=900)
+    gout = g.stdout + g.stderr
+    if g.returncode not in (0, 1) or 'Traceback' in gout:
+        raise AssertionError(f'BROKEN TEST: check_connected exited '
+                             f'{g.returncode}\n{gout[-1500:]}')
+    if 'refill cross-check: DID NOT RUN' in gout:
+        print("  [skip] the grader agrees ZONE_NET is open: check_connected "
+              "graded without KiCad's refill, which this cut needs to be seen")
+    else:
+        check("the grader agrees ZONE_NET is open on the written board",
+              'ZONE_NET' in g.stdout and g.returncode == 1, gout[-400:])
 
     # Control: without SIG (whose J1 made the island crossable) the guard
     # blocks the island, SIG2 fails, and there is no cut to report.
