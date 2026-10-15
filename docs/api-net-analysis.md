@@ -311,10 +311,13 @@ pad_to_die_length(pads) -> float            # mm, sum of Pad.die_length
 pad_to_die_delay(pads) -> float             # ps, sum of Pad.die_delay
 net_pad_to_die_length(pcb_data, net_id) -> float   # every pad of the net
 net_pad_to_die_delay(pcb_data, net_id) -> float
-net_match_pad_to_die(pcb_data, net_id, mode='total') -> float
+net_match_pad_to_die(pcb_data, net_id, mode='total', attr='die_length') -> float
 ```
 
-`net_match_pad_to_die` is the term `net_match_length` adds in `mode`.
+`net_match_pad_to_die` is the term `net_match_length` adds in `mode`; with
+`attr='die_delay'` it sums the same pads' delays (ps) instead. `placement_score
+--length-groups` adds it to each member's length floor, so a floor bounds
+what `board_score` grades.
 
 ```python
 from kicad_parser import parse_kicad_pcb

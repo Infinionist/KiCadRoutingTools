@@ -834,11 +834,12 @@ LENGTH_FLOOR_CANNOT_SEE = (
     'fly-by and T topologies: a multipoint floor (farthest pad pair on '
     'different parts) bounds the total copper of any tree that spans the '
     'net, not one driver-to-receiver path',
-    'pad die_length (package delay; parsed since #1248 but not added to a '
-    'floor) and where a track '
-    'enters a pad (pad-edge entry)',
-    '`mode: pin_pair` is echoed, not used: the floor is the net floor above, '
-    'not the pads[0] -> pads[1] path board_score grades in that mode',
+    'where a track enters a pad (pad-edge entry). Not pad die_length: since '
+    '#1248 each floor adds its pads\' pad-to-die length as board_score does '
+    '(pad_to_die_mm) and the ps figure their die_delay (pad_to_die_ps)',
+    '`mode: pin_pair` only picks the pad-to-die pads (the first two, as '
+    'board_score): the copper floor is the net floor above, not the '
+    'pads[0] -> pads[1] path board_score grades in that mode',
 )
 
 
@@ -938,6 +939,14 @@ def length_group_floors(pcb_data, groups, source=None) -> dict:
     spread with NO pass/fail: meanders can always add copper, so a floor
     spread is not a routed spread.
 
+    Each floor includes the member's PAD-TO-DIE length (#1248), the term
+    `board_score` adds to the routed length it grades -- the same pads in
+    the same mode (`net_queries.net_match_pad_to_die`) -- so a member's
+    `floor_mm` bounds that measure and the spread is KiCad's. The ps figure
+    adds the same pads' `die_delay` to the copper's time (KiCad 10 never
+    converts one into the other). A group whose pads declare either names
+    the term in `pad_to_die_mm` / `pad_to_die_ps`.
+
     NOT a term. It is not in `TERM_ORDER`, so `compare_terms` and the lap
     ledger are unchanged; a search or the seeder may rank by it only after
     `tests/test_placement_ab.py` (>= 3 distinct boards, paired and
@@ -950,6 +959,7 @@ def length_group_floors(pcb_data, groups, source=None) -> dict:
                     reason='no --length-groups given; no matched group\'s '
                            'length floors are measured')
     from impedance import get_layer_ps_per_mm
+    from net_queries import net_match_pad_to_die
     outer, inner = _velocity_layers(pcb_data)
     stackup = bool(getattr(pcb_data.board_info, 'stackup', None))
     ps_mm = {'outer': get_layer_ps_per_mm(pcb_data, outer),
@@ -995,12 +1005,31 @@ def length_group_floors(pcb_data, groups, source=None) -> dict:
                 f'fewer than 2 of its nets have a floor (a net needs copper '
                 f'pads on two parts): {len(members)} of {len(found)} found'))
             continue
-        raw = {n: m.pop('_raw') for n, m in members.items()}
+        cu = {n: m.pop('_raw') for n, m in members.items()}
+        # #1248: a member's length carries its pads' PAD-TO-DIE term, which
+        # board_score adds to the routed length it grades: the same pads in
+        # the same mode (`net_match_pad_to_die`, read as score_length reads
+        # `mode`), so each floor bounds that measure and the spread is the
+        # one KiCad's length/skew DRC would see. The ps figure adds the same
+        # pads' die_delay to the copper's time, never a converted length.
+        mode = 'pin_pair' if spec.get('mode') == 'pin_pair' else 'total'
+        die = {n: net_match_pad_to_die(pcb_data, by_name[n], mode)
+               for n in members}
+        die_ps = {n: net_match_pad_to_die(pcb_data, by_name[n], mode,
+                                          attr='die_delay') for n in members}
+        raw = {n: cu[n] + die[n] for n in members}
+        for n, m in members.items():
+            if die[n]:
+                m['floor_mm'] = round(raw[n], 3)
         longest = max(sorted(raw), key=raw.get)
         shortest = min(sorted(raw), key=raw.get)
         hi = raw[longest]
-        ps = {'outer': {'layer': outer, 'ps': round(hi * ps_mm['outer'], 1)},
-              'inner': ({'layer': inner, 'ps': round(hi * ps_mm['inner'], 1)}
+        ps = {'outer': {'layer': outer,
+                        'ps': round(cu[longest] * ps_mm['outer']
+                                    + die_ps[longest], 1)},
+              'inner': ({'layer': inner,
+                         'ps': round(cu[longest] * ps_mm['inner']
+                                     + die_ps[longest], 1)}
                         if inner else None)}
         out[gname] = dict(
             g, ran=True, reason=None, members=members, unmeasured=unmeasured,
@@ -1009,6 +1038,14 @@ def length_group_floors(pcb_data, groups, source=None) -> dict:
             spread_mm=round(hi - raw[shortest], 3),
             copper_to_add_mm=round(sum(hi - v for v in raw.values()), 3),
             longest_floor_ps=ps)
+        # Disclosed only where a pad declares one, under board_score's own
+        # key, so a floor moved by a term no pad position shows names it.
+        if any(die.values()):
+            out[gname]['pad_to_die_mm'] = {n: round(v, 4)
+                                           for n, v in die.items() if v}
+        if any(die_ps.values()):
+            out[gname]['pad_to_die_ps'] = {n: round(v, 4)
+                                           for n, v in die_ps.items() if v}
     ran = any(g['ran'] for g in out.values())
     return dict(base, ran=ran, groups=out, velocity=velocity,
                 reason=None if ran else (

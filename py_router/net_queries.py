@@ -425,17 +425,21 @@ def net_match_length(pcb_data: PCBData, net_id: int, mode: str = 'total',
 
 
 def net_match_pad_to_die(pcb_data: PCBData, net_id: int,
-                         mode: str = 'total') -> float:
+                         mode: str = 'total', attr: str = 'die_length') -> float:
     """The pad-to-die term `net_match_length` adds in `mode` (#1248), in mm:
     every pad of the net for 'total' (KiCad's DRC), the first two pads for
     'pin_pair' (the pads that path joins; KiCad's tuner adds its start and end
-    pads')."""
+    pads').
+
+    `attr='die_delay'` sums the same pads' delays instead, in ps -- the time
+    twin over the same pad choice, never a converted length."""
+    _sum = pad_to_die_delay if attr == 'die_delay' else pad_to_die_length
     if mode == 'pin_pair':
-        return pad_to_die_length((pcb_data.pads_by_net.get(net_id) or [])[:2])
+        return _sum((pcb_data.pads_by_net.get(net_id) or [])[:2])
     if mode != 'total':
         raise ValueError(f"net_match_length: unknown mode {mode!r} "
                          f"(expected 'total' or 'pin_pair')")
-    return net_pad_to_die_length(pcb_data, net_id)
+    return _sum((getattr(pcb_data, 'pads_by_net', None) or {}).get(net_id))
 
 
 def _net_track_graph(pcb_data: PCBData, net_id: int, pads,

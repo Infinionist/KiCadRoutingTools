@@ -457,10 +457,13 @@ farthest pad pair on different parts -- the longest floor and its net, the
 spread, `copper_to_add_mm` = Σ(longest − own floor), and the longest floor in
 ps on an outer and an inner layer (`impedance.get_layer_ps_per_mm`).
 `tolerance_mm` is printed beside the spread with no pass/fail: a floor spread
-is not a routed spread, because meanders can always add copper. `cannot_see`
-lists what a floor misses (detours, layers and vias, meander room, fly-by/T
-topologies, pad `die_length` -- parsed since #1248 but not added to a floor --
-and pad-edge entry). A group with fewer than
+is not a routed spread, because meanders can always add copper. Each floor
+includes the member's pad-to-die length (`(die_length ...)`, #1248) on the
+pads `board_score` adds it for (`net_queries.net_match_pad_to_die`: every pad,
+or the first two in `pin_pair` mode), and the ps figure the same pads'
+`die_delay`; a group whose pads declare either names it in `pad_to_die_mm` /
+`pad_to_die_ps`. `cannot_see` lists what a floor misses (detours, layers and
+vias, meander room, fly-by/T topologies and pad-edge entry). A group with fewer than
 two of its nets on the board is `ran: false` with a reason; a path that is not
 a readable file of that shape exits 2 (where `board_score` reads it as
 ungraded).
