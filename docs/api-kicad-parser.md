@@ -564,9 +564,14 @@ difference strings; empty list means they match. Useful to validate
 actually consumes: board info (layers, bounds, and the stackup layer by layer:
 name, type, thickness, epsilon_r, loss tangent), nets, footprint locks,
 footprint and per-pad geometry (position, size, `rect_rotation`, `roundrect_rratio`,
-`local_clearance`, drill, layers), track and via geometry (matched as a
-multiset, not just counts), zones, board outline/cutouts, keepout zones, and
-guide paths. Zones are compared per (net, layer) as a multiset of the teardrop
+`local_clearance`, drill, layers, and a custom pad's `polygons`, compared as
+the UNION each path describes -- pcbnew merges the primitives into one ring,
+the text parser keeps one per primitive -- by `_polygon_union_excess`, both
+ways), track and via geometry (matched as a multiset, not just counts; net 0
+is the same net on both paths), zones, board outline/cutouts, keepout zones,
+guide paths, and the paste openings (paired within one signature by nearest
+bounds, `_pair_nearest_bounds`, never by a sort of float coordinates).
+Zones are compared per (net, layer) as a multiset of the teardrop
 flag, the outline's vertices on the nm grid, the priority and the
 island-removal semantics, so a pour and the teardrops that share its net and
 layer cannot be paired with the wrong partner; a disagreement on the flag is
