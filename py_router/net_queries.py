@@ -284,6 +284,118 @@ def pin_pair_path_length(pcb_data: PCBData, net_id: int,
     contact. Zone/pour connections are NOT traversed: a net that reaches its
     pads only through a plane has no track path and returns None.
     """
+    graph = _net_track_graph(pcb_data, net_id, (pad_a, pad_b), tolerance)
+    if graph is None:
+        return None
+    adjacency, pad_nodes = graph
+    starts = pad_nodes.get(id(pad_a)) or []
+    goals = set(pad_nodes.get(id(pad_b)) or [])
+    if not starts or not goals:
+        return None
+
+    import heapq
+    dist = {n: 0.0 for n in starts}
+    heap = [(0.0, i, n) for i, n in enumerate(starts)]
+    heapq.heapify(heap)
+    counter = len(starts)
+    while heap:
+        d, _, node = heapq.heappop(heap)
+        if d > dist.get(node, float('inf')) + 1e-12:
+            continue
+        if node in goals:
+            return d
+        for nxt, w in adjacency.get(node, ()):
+            nd = d + w
+            if nd < dist.get(nxt, float('inf')) - 1e-12:
+                dist[nxt] = nd
+                heapq.heappush(heap, (nd, counter, nxt))
+                counter += 1
+    return None
+
+
+def _copper_pads(pcb_data: PCBData, net_id: int) -> List[Pad]:
+    """The net's pads that carry copper (`pad_has_copper`): an NPTH pad has
+    none even when its layers list `*.Cu` (CLAUDE.md), and a paste-only pad is
+    a window, not a pin -- no track can ever join either."""
+    from kicad_parser import pad_has_copper
+    return [p for p in (pcb_data.pads_by_net.get(net_id) or ())
+            if pad_has_copper(p)]
+
+
+def net_pads_joined(pcb_data: PCBData, net_id: int, pads=None,
+                    tolerance: float = 0.02) -> bool:
+    """Are ALL of the net's copper pads joined to each other by its TRACK copper? (#1246)
+
+    The rule `pin_pair_path_length` applies to two pads, applied to every pad,
+    on the same graph: segments, T-junctions and vias join, zones/pours do NOT.
+    False for an unrouted net, a net carrying only fanout stubs, a broken net,
+    one whose pads meet only through a plane, and a net with fewer than two
+    copper pads. `pads` overrides which pads must be joined (default: every
+    copper pad of the net, NPTH and paste-only pads excluded).
+
+    This is what makes a total-copper length MEAN something: total copper on a
+    net whose pads are not joined is a stub length, or 0.0 with no copper at
+    all, and neither is the length of anything.
+    """
+    pads = list(_copper_pads(pcb_data, net_id) if pads is None else pads)
+    if len(pads) < 2:
+        return False
+    graph = _net_track_graph(pcb_data, net_id, pads, tolerance)
+    if graph is None:
+        return False
+    adjacency, pad_nodes = graph
+    seen = set(pad_nodes.get(id(pads[0])) or ())
+    todo = list(seen)
+    while todo:
+        node = todo.pop()
+        for nxt, _w in adjacency.get(node, ()):
+            if nxt not in seen:
+                seen.add(nxt)
+                todo.append(nxt)
+    return all(seen.intersection(pad_nodes.get(id(p)) or ()) for p in pads[1:])
+
+
+def net_match_length(pcb_data: PCBData, net_id: int, mode: str = 'total',
+                     tolerance: float = 0.02) -> Optional[float]:
+    """The length a length-match group grades ONE net at, or None when it cannot be measured (#1246).
+
+    One definition for every grader (`board_score --length-groups`, the
+    review-routed-board recipe), so a verdict depends on the board and not on
+    which mode or which tool asked:
+
+      mode 'total'     total net copper (segments + via barrels, as
+                       `net_copper_length`), but only when EVERY copper pad of
+                       the net is joined by track copper (`net_pads_joined`).
+      mode 'pin_pair'  the copper path between the net's first two pads
+                       (`pin_pair_path_length`).
+
+    None in both modes means "not routed yet" (unrouted, stub-only, broken, or
+    pads joined only through a zone). It is never 0.0 and never a stub length:
+    those are not the length of a signal, and grading them passed a copper-free
+    group and failed a stub-only one.
+    """
+    if mode == 'pin_pair':
+        pads = pcb_data.pads_by_net.get(net_id) or []
+        if len(pads) < 2:
+            return None
+        return pin_pair_path_length(pcb_data, net_id, pads[0], pads[1],
+                                    tolerance=tolerance)
+    if mode != 'total':
+        raise ValueError(f"net_match_length: unknown mode {mode!r} "
+                         f"(expected 'total' or 'pin_pair')")
+    if not net_pads_joined(pcb_data, net_id, tolerance=tolerance):
+        return None
+    return net_copper_length(pcb_data, net_id)
+
+
+def _net_track_graph(pcb_data: PCBData, net_id: int, pads,
+                     tolerance: float = 0.02):
+    """(adjacency, pad_nodes) over ONE net's track copper, with `pads` attached.
+
+    The weighted graph `pin_pair_path_length` walks (see its docstring for the
+    joining rules); `pad_nodes` maps id(pad) to the pad's per-layer hub nodes.
+    None when the net has no segments at all.
+    """
     segments = [s for s in pcb_data.segments if s.net_id == net_id]
     if not segments:
         return None
@@ -338,7 +450,7 @@ def pin_pair_path_length(pcb_data: PCBData, net_id: int,
         discs.append((v.x, v.y, radius, spanned,
                       lambda x, y, _v=v, _r=radius: math.hypot(x - _v.x, y - _v.y) <= _r + tolerance,
                       'via', v))
-    for pad in (pad_a, pad_b):
+    for pad in pads:
         pad_layers = [l for l in expand_pad_layers(pad.layers, copper_layers)]
         radius = max(pad.size_x, pad.size_y) / 2
         discs.append((pad.global_x, pad.global_y, radius, pad_layers,
@@ -436,29 +548,7 @@ def pin_pair_path_length(pcb_data: PCBData, net_id: int,
                     add_edge(hubs[0], other, 0.0)
             pad_nodes[id(obj)] = hubs
 
-    starts = pad_nodes.get(id(pad_a)) or []
-    goals = set(pad_nodes.get(id(pad_b)) or [])
-    if not starts or not goals:
-        return None
-
-    import heapq
-    dist = {n: 0.0 for n in starts}
-    heap = [(0.0, i, n) for i, n in enumerate(starts)]
-    heapq.heapify(heap)
-    counter = len(starts)
-    while heap:
-        d, _, node = heapq.heappop(heap)
-        if d > dist.get(node, float('inf')) + 1e-12:
-            continue
-        if node in goals:
-            return d
-        for nxt, w in adjacency.get(node, ()):
-            nd = d + w
-            if nd < dist.get(nxt, float('inf')) - 1e-12:
-                dist[nxt] = nd
-                heapq.heappush(heap, (nd, counter, nxt))
-                counter += 1
-    return None
+    return adjacency, pad_nodes
 
 
 def routable_pad_count(pcb_data: PCBData, net_id: int, off_board=None) -> int:

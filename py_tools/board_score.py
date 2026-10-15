@@ -889,13 +889,22 @@ def score_length(board: str, groups_file: str) -> dict:
     `mode: "pin_pair"` measures the driver->receiver PATH instead of total net
     copper. Use it for any multipoint or stubbed net: total copper sums every
     branch and matches no real signal path.
+
+    BOTH modes measure a member only once its pads are joined by track copper
+    (`net_queries.net_match_length`), and a member that is not makes its whole
+    group UNMEASURED (#1246). Total copper used to grade whatever the net had:
+    no copper read 0.0 mm, so two unrouted nets passed at spread 0.0, and
+    fanout stubs read their stub length, so a stub-only group FAILED and added
+    to `blocking` on top of `broken`. A partial group is unmeasured too, rather
+    than graded on the members that happen to be routed: a spread over a subset
+    is not the group's spread, and a pass on it would be a pass nobody earned.
     """
     if not groups_file:
         return skipped('no --length-groups given; length matching is ungraded')
     if not os.path.isfile(groups_file):
         return skipped(f'length-groups file not found: {groups_file}')
     from kicad_parser import parse_kicad_pcb
-    from net_queries import net_copper_lengths, pin_pair_path_length
+    from net_queries import net_match_length
 
     with open(groups_file, encoding='utf-8') as f:
         groups = json.load(f)
@@ -912,29 +921,29 @@ def score_length(board: str, groups_file: str) -> dict:
                                         f'board (missing: {missing})'}
             failures += 1          # a group naming nets that do not exist is a
             continue               # finding about the spec, not a pass
-        if spec.get('mode') == 'pin_pair':
-            lengths = {}
-            for n in names:
-                if n not in by_name:
-                    continue
-                pads = pcb.pads_by_net.get(by_name[n]) or []
-                L = (pin_pair_path_length(pcb, by_name[n], pads[0], pads[1])
-                     if len(pads) >= 2 else None)
-                if L is not None:
-                    lengths[n] = L
-            if len(lengths) < 2:
-                # NOT a failure. "Not routed yet" is what `unrouted`/`broken`
-                # already measure, and counting it here too made every 0-copper
-                # board score length=1 per group -- a permanent phantom blocker
-                # that no routing could ever clear. Distinct from the
-                # missing-nets case above, which IS a finding about the spec.
-                detail[gname] = {'skipped': 'no track path between the pad pair '
-                                            '(plane-only or broken)'}
-                unmeasured += 1
+        mode = 'pin_pair' if spec.get('mode') == 'pin_pair' else 'total'
+        lengths, unjoined = {}, []
+        for n in names:
+            if n not in by_name:
                 continue
-        else:
-            got = net_copper_lengths(pcb, ids)
-            lengths = {n: got[by_name[n]] for n in names if n in by_name}
+            L = net_match_length(pcb, by_name[n], mode=mode)
+            if L is None:
+                unjoined.append(n)
+            else:
+                lengths[n] = L
+        if unjoined:
+            # NOT a failure. "Not routed yet" is what `unrouted`/`broken`
+            # already measure, and counting it here too made every 0-copper
+            # board score length=1 per group -- a permanent phantom blocker
+            # that no routing could ever clear. Distinct from the
+            # missing-nets case above, which IS a finding about the spec.
+            detail[gname] = {'skipped': f'{len(unjoined)} of {len(ids)} member(s) '
+                                        f'have pads not joined by track copper '
+                                        f'(unrouted, stub-only, broken or '
+                                        f'plane-only)',
+                             'unjoined_nets': unjoined, 'missing_nets': missing}
+            unmeasured += 1
+            continue
         spread = max(lengths.values()) - min(lengths.values())
         ok = spread <= tol
         failures += 0 if ok else 1
@@ -944,7 +953,8 @@ def score_length(board: str, groups_file: str) -> dict:
     if unmeasured and unmeasured == len(detail):
         # Nothing could be measured at all -- report UNGRADED rather than a
         # clean 0, so the gate cannot be passed by a board nothing examined.
-        return dict(skipped('no group had a measurable track path yet'),
+        return dict(skipped('no group had every member joined by track '
+                            'copper yet'),
                     groups=detail)
     return {'ran': True, 'count': failures, 'groups': detail,
             'unmeasured_groups': unmeasured}
@@ -1098,6 +1108,9 @@ def declared_net_names(score: dict) -> dict:
         'components.length.groups[].worst':
             [g['worst'] for g in (length.get('groups') or {}).values()
              if isinstance(g, dict) and g.get('worst')],
+        'components.length.groups[].unjoined_nets':
+            [n for g in (length.get('groups') or {}).values()
+             if isinstance(g, dict) for n in (g.get('unjoined_nets') or ())],
     }
     return {k: v for k, v in fields.items() if v}
 

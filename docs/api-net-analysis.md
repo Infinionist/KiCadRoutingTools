@@ -279,6 +279,38 @@ print(f"{net.name}: {total:.2f} mm total copper, "
 # -> 2.5 mm of that net's copper is branch/stub, not on the signal path.
 ```
 
+```python
+net_pads_joined(pcb_data, net_id, pads=None, tolerance=0.02) -> bool
+net_match_length(pcb_data, net_id, mode='total', tolerance=0.02)
+    -> Optional[float]
+```
+
+`net_copper_length` reports whatever copper a net has, routed or not: a net
+with no copper reads `0.0` and one carrying only fanout stubs reads the stub
+length. Neither is the length of a signal, so a **length-match grade must not
+use it raw** (#1246). `net_pads_joined` asks the question first — are all of
+the net's copper pads (NPTH and paste-only pads excluded) joined to each other
+by its track copper, on the same graph `pin_pair_path_length` walks (zones are
+not traversed)?
+
+`net_match_length` is the one measurement every length-match grader uses
+(`board_score.py --length-groups`, the review-routed-board recipe): total net
+copper (`mode='total'`) only once `net_pads_joined` holds, or the path between
+the net's first two pads (`mode='pin_pair'`). `None` in either mode means "not
+routed yet" (unrouted, stub-only, broken or plane-only), never `0.0`.
+
+```python
+from kicad_parser import parse_kicad_pcb
+from net_queries import net_copper_length, net_match_length
+
+pcb = parse_kicad_pcb('kicad_files/orangecrab_ext_pll.kicad_pcb')
+nid = next(i for i, n in pcb.nets.items() if n.name == 'RAM_D8')
+print(f"{net_copper_length(pcb, nid):.2f} mm of copper, "
+      f"match length {net_match_length(pcb, nid)}")
+# 3.64 mm of copper, match length None
+# -> fanout stubs only: the net is not routed, so it has no length to match.
+```
+
 ### Ground domains
 
 ```python

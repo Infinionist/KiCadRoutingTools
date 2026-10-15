@@ -552,8 +552,12 @@ def _grade(a, doc):
                 'badly (reported, not counted against this board): '
                 + ', '.join(_ref(r) for r in floors['reference_too']))
     if ungraded:
+        # "Not asked" is one reason, not the only one: a --length-groups file
+        # whose nets are not routed yet is asked and still cannot measure
+        # anything (#1246), and saying "nothing was asked" there is false.
         why += ('. UNEXAMINED, and not passed: ' + ', '.join(ungraded)
-                + ' -- nothing was asked to grade them, so they are unknown '
+                + ' -- nothing graded them (no spec was given, or nothing '
+                  'they name is measurable yet), so they are unknown '
                   'rather than clean')
     doc['verdict'] = verdict
     doc['reason'] = why
