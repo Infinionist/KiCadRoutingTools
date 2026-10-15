@@ -116,11 +116,11 @@
   "rect": 4,
   "rects": 2
  },
+ "reconstruct.py::_seat_edge": {
+  "grade_rect": 1
+ },
  "reconstruct.py::edge_metric": {
   "rect": 1
- },
- "reconstruct.py::facing_seats.seat_edge": {
-  "grade_rect": 1
  },
  "reconstruct.py::part_extent_mm": {
   "rect": 1

@@ -525,6 +525,25 @@ Examples:
         report['edge_seated'] = {
             r: [state.parts[r].x, state.parts[r].y]
             for r in sorted(edge_pref) if r in set(moved)}
+        # #1242: an edge-less receptacle that ENDS on a reversed seat -- its
+        # input pose, which this tool does not turn where it stands -- is
+        # named, since no grade sees it without a declared edge.
+        for r in sorted(edge_entries):
+            rev = reconstruct.reversed_seat(state, r, edge_entries[r],
+                                            edge_pref[r])
+            if rev is None:
+                continue
+            report.setdefault('edge_reversed', {})[r] = rev
+            how = (f"faces the {rev['facing']} edge" if rev['facing']
+                   else "opens along it")
+            print(f"  {r}: left REVERSED on the {rev['edge']} edge (it {how}). "
+                  f"Its edge is withheld as suspect (#1155), so it is not "
+                  f"turned where it stands: declare the edge it belongs on "
+                  f"in the intent or the design brief (the {rev['edge']} edge "
+                  f"if it is only turned"
+                  + (f", the {rev['facing']} edge if it was displaced from "
+                     f"there" if rev['facing'] else "")
+                  + ") and re-run to have it seated facing out (#1242)")
 
     placements = [{'reference': r, 'new_x': pt.x, 'new_y': pt.y,
                    'new_rotation': pt.rot}

@@ -142,6 +142,7 @@ class TheSeatFacesOut(unittest.TestCase):
                          {'J2': {'from': 90.0, 'to': 270.0, 'edge': 'east'}})
         self.assertIn('J2: turned 90 -> 270deg, seated on the east edge',
                       r.stdout)
+        self.assertNotIn('edge_reversed', s)
         self.assertIn('facing east [courtyard+fab+marker, strong] pass',
                       g.stdout)
         self.assertNotIn("J2's body leaves its pad row", g.stdout)
@@ -160,6 +161,9 @@ class TheSeatFacesOut(unittest.TestCase):
         self.assertEqual(pose, SEAT + (90.0,))
         self.assertEqual((face['facing'], face['strong']), ('west', True))
         self.assertNotIn('edge_turned', _summary(text))
+        # ...and the reversed seat it ends on is named, not shipped silently.
+        self.assertEqual(_summary(text).get('edge_reversed'),
+                         {'J2': {'edge': 'east', 'facing': 'west'}})
 
     def test_2_the_candidate_list(self):
         from pose_score import make_state
@@ -272,6 +276,14 @@ class TheSeatFacesOut(unittest.TestCase):
             pose = _j2(evidence(out, 'reconstructed board'))[0]
         self.assertEqual(pose, (181.61, 90.1192, 90.0))
         self.assertNotIn('edge_turned', _summary(r.stdout))
+        # Not turned, but not silent: the reversed seat is named, with the
+        # declaration that would resolve it either way.
+        self.assertEqual(_summary(r.stdout).get('edge_reversed'),
+                         {'J2': {'edge': 'east', 'facing': 'west'}})
+        self.assertIn('J2: left REVERSED on the east edge (it faces the west '
+                      'edge)', r.stdout)
+        self.assertIn('the east edge if it is only turned, the west edge if '
+                      'it was displaced from there', r.stdout)
 
 
 if __name__ == '__main__':

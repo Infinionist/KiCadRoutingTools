@@ -937,38 +937,79 @@ def facing_seats(state, ref: str, entry: Dict, cands, band: float,
     declaration never forces a move. Only poses a vector or slot proposes
     are asked. A weak or absent face (no edge gets a strong facing turn)
     leaves the list exactly as it came."""
-    from placement import floorplan, seeder
-    from placement.part_class import SEAT_TOL_MM
+    from placement import seeder
     p = state.parts[ref]
-    turns = {e: seeder._strong_facing_rots(state, ref, dict(entry, edge=e))
-             for e in ('north', 'south', 'east', 'west')}
+    turns = _facing_turns(state, ref, entry)
     if not any(turns.values()):
         return list(cands)
-
-    def faces(edge, rot):
-        return any(abs((rot - r + 180.0) % 360.0 - 180.0) < 1e-6
-                   for r in (turns.get(edge) or ()))
-
-    def seat_edge(x, y, rot):
-        m = edge_metric(state, ref, x, y, band, rot=rot)
-        if m is None or m > SEAT_TOL_MM + 1e-9:
-            return None
-        return floorplan._nearest_edge(p.grade_rect(x, y, rot), state.board)
-
     lattice = [seeder._materialise_rotation(p, p.rot + 90.0 * k)
                for k in (1, 2, 3)]
     out = list(cands[:1])
     for c in cands[1:]:
         x, y = c[0], c[1]
-        edge = seat_edge(x, y, p.rot)
-        if edge is None or faces(edge, p.rot):
+        edge = _seat_edge(state, ref, x, y, p.rot, band)
+        if edge is None or _faces(turns, edge, p.rot):
             out.append(c)
         for rot in lattice:
-            edge = seat_edge(x, y, rot)
-            if (edge is not None and faces(edge, rot)
+            edge = _seat_edge(state, ref, x, y, rot, band)
+            if (edge is not None and _faces(turns, edge, rot)
                     and on_board(x, y, rot) and (x, y, rot) not in out):
                 out.append((x, y, rot))
     return out
+
+
+_EDGES = ('north', 'south', 'east', 'west')
+
+
+def _facing_turns(state, ref: str, entry: Dict) -> Dict[str, list]:
+    """{edge: the angles at which `ref`'s STRONG mating face points out of
+    that edge} (`seeder._strong_facing_rots`, which reads
+    `floorplan.edge_facing`); every list is empty for a weak or absent
+    face."""
+    from placement import seeder
+    return {e: seeder._strong_facing_rots(state, ref, dict(entry, edge=e))
+            for e in _EDGES}
+
+
+def _faces(turns: Dict[str, list], edge: str, rot: float) -> bool:
+    return any(abs((rot - r + 180.0) % 360.0 - 180.0) < 1e-6
+               for r in (turns.get(edge) or ()))
+
+
+def _seat_edge(state, ref: str, x: float, y: float, rot: float,
+               band: float) -> Optional[str]:
+    """The edge `ref` is SEATED on at a pose -- within the grade's seat
+    tolerance (`part_class.SEAT_TOL_MM`) of the edge it sits nearest (the
+    grade's `floorplan._nearest_edge`, on the grade rect), or overhanging
+    it in band -- else None."""
+    from placement import floorplan
+    from placement.part_class import SEAT_TOL_MM
+    m = edge_metric(state, ref, x, y, band, rot=rot)
+    if m is None or m > SEAT_TOL_MM + 1e-9:
+        return None
+    return floorplan._nearest_edge(state.parts[ref].grade_rect(x, y, rot),
+                                   state.board)
+
+
+def reversed_seat(state, ref: str, entry: Dict,
+                  band: float) -> Optional[Dict[str, Optional[str]]]:
+    """#1242: `{'edge', 'facing'}` when an edge-less receptacle's LIVE pose
+    is a seat on `edge` while its STRONG mating face points elsewhere
+    (`facing`: the edge it opens toward, None when it opens along one), else
+    None. Nothing grades this -- no edge is declared, and the emitter
+    withheld it because a reversed part is either turned on THIS edge or
+    displaced from the one it faces (#1155) -- and `facing_seats` will not
+    pick for it by turning the input pose, so the caller says it out loud."""
+    p = state.parts[ref]
+    turns = _facing_turns(state, ref, entry)
+    if not any(turns.values()):
+        return None
+    edge = _seat_edge(state, ref, p.x, p.y, p.rot, band)
+    if edge is None or _faces(turns, edge, p.rot):
+        return None
+    return {'edge': edge,
+            'facing': next((e for e in _EDGES if _faces(turns, e, p.rot)),
+                           None)}
 
 
 def damage_witnesses(state) -> Dict[str, str]:
