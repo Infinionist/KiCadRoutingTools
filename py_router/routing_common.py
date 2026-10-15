@@ -625,6 +625,18 @@ def filter_already_routed(
             # short of the pad, the case #578 was built to route. Ask the
             # authoritative graph which copper is dead, drop it, and re-count:
             # only if the REMAINDER is whole is there nothing left to route.
+            #
+            # A net whose copper is ALL KiCad-locked is not a route either
+            # (#1261). Its pads grade connected; the strict fragments are the
+            # designer's pinned copper, which no pass may move or remove, so
+            # "routing to join them" can only lay new copper beside it, and
+            # puts a net the user pinned in front of every rip ladder and
+            # stub-switch rung of the run.
+            if n > 1 and _all_copper_locked(net_segments, net_vias):
+                print(f"  {net_name}: pads grade connected and every segment "
+                      f"and via is KiCad-locked -- its {n} strict fragment(s) "
+                      f"are pinned copper, not a route to finish (#1261)")
+                n = 1
             if n > 1 and os.environ.get('KICAD_659_DIVERT', '1') != '0':
                 from check_connected import net_dead_copper
                 _dead_s, _dead_v = net_dead_copper(
@@ -683,6 +695,14 @@ def filter_already_routed(
                 print(f"  {net_name}: {reason}")
 
     return nets_to_route, already_routed
+
+
+def _all_copper_locked(segments, vias) -> bool:
+    """True when a net has copper and every track and via of it is
+    KiCad-locked (graphics are not the net's track copper)."""
+    items = [s for s in segments if not getattr(s, 'graphic', False)]
+    items += list(vias)
+    return bool(items) and all(getattr(x, 'locked', False) for x in items)
 
 
 def _max_fragments_within_one_outline(pcb_data, anchors):
