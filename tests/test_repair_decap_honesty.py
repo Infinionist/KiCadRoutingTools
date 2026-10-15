@@ -26,16 +26,21 @@ C3 alone at the human pose: 1.53mm from U2, the regulator it decouples since
   outside the rules loop, so no move can clear it) stays UNRESOLVED.
 * A re-grade that RAISES is not a pass: the ref is unresolved and says why.
 * A move that CREATES an error is not a repair (the phase-1 verifier's
-  counterexample): splitflap with 12 parts displaced, C8 and C12 are moved
+  counterexample): splitflap with 12 parts displaced, C8 and C12 were moved
   off pad conflicts and out of their decap limits -- unresolved, "created".
+  Since the ordinary seat prefers a pose that creates no decap finding
+  (#1150 follow-up), C12 finds one and is repaired with none; C8 has no
+  such pose within any cap, says so, and is still reported "created".
 * Leaving the decap search radius is not a fix: C3 pushed past a declared
   2mm radius from U2 becomes `decap_ungraded` (warn), and stays unresolved.
   Since #1150 (b) the seat prefers a pose no farther from U2 and keeps C3
   inside the radius; the push is pinned with that preference off.
 * A created `decap_pin_distance` (it names the IC) is charged to the CAP
   whose move stranded the pin, through its measured `cap` -- and, when the
-  finding names no moved ref at all, by COUNTERFACTUAL: watchy seed 2's C5
-  strands U4 pin 20 under a claim U4 already carried, naming only U4 and C3.
+  finding names no moved ref at all, by COUNTERFACTUAL: watchy seed 2's C5,
+  seated by the plain search, strands U4 pin 20 under a claim U4 already
+  carried, naming only U4 and C3 (with the preference on, C5 finds a pose
+  that strands nothing and is repaired).
 * A finding that only GREW is not "no change": watchy seed 1's C12 move grows
   U3's VBUS pin error 7.78 -> 11.10mm, and C12 is not repaired -- a move
   made only because no pose within any cap left the pin no worse, and said.
@@ -79,6 +84,7 @@ PLACE_SEED = os.path.join(ROOT, 'py_placer', 'place_seed.py')
 SOURCES = ('kicad', 'sheet')
 CLEARANCE = 0.2
 DECAP_RULES = ('decap_distance', 'decap_pin_distance')
+_TMP = tempfile.TemporaryDirectory(prefix='t1066_')
 
 
 def _intent(td, **decaps):
@@ -249,40 +255,83 @@ def _perturbed(board, td, n=12, mm=4.0, seed='1'):
     return src
 
 
+_SPLITFLAP1 = {}
+
+
+def _splitflap1():
+    """splitflap, decaps 2.5/2.5, 12 parts displaced up to 4mm (seed 1),
+    repaired once: (decap refs before, after, the repair's result)."""
+    if not _SPLITFLAP1:
+        board = os.path.join(ROOT, 'kicad_files', 'splitflap_driver.kicad_pcb')
+        td = _TMP.name
+        doc = fp.emit_intent(parse_kicad_pcb(board), board)
+        doc['decaps'] = dict(doc.get('decaps') or {}, max_distance_mm=2.5,
+                             max_pin_distance_mm=2.5)
+        ipath = os.path.join(td, 'intent_sf1.json')
+        with open(ipath, 'w', encoding='utf-8') as fh:
+            json.dump(doc, fh)
+        intent = fp.load_intent(ipath)
+        sub = os.path.join(td, 'sf1')
+        os.makedirs(sub)
+        src = _perturbed(board, sub)
+        before = {v.ref for v in fp.grade(
+            intent, parse_kicad_pcb(src), src, group_sources=SOURCES,
+            clearance=CLEARANCE).errors if v.rule in DECAP_RULES}
+        res = _repair(src, intent)
+        still = _decap_refs_after(src, res, intent, sub, 'c.kicad_pcb')
+        _SPLITFLAP1.update(before=before, still=still, res=res)
+    return _SPLITFLAP1['before'], _SPLITFLAP1['still'], _SPLITFLAP1['res']
+
+
 def test_a_move_that_creates_a_decap_error_is_not_repaired():
     """The phase-1 verifier's counterexample: charged claims alone are not
     enough, because a cap charged for a PAD conflict and moved off it can
     land outside its decap limit -- the charge clears, the board gains an
     error, and the cap read repaired. splitflap, 12 parts displaced up to
     4mm (seed 1): C8 and C12 were reported repaired with a decap_distance
-    error only the repair's move had created."""
-    board = os.path.join(ROOT, 'kicad_files', 'splitflap_driver.kicad_pcb')
-    with tempfile.TemporaryDirectory() as td:
-        doc = fp.emit_intent(parse_kicad_pcb(board), board)
-        doc['decaps'] = dict(doc.get('decaps') or {}, max_distance_mm=2.5,
-                             max_pin_distance_mm=2.5)
-        ipath = os.path.join(td, 'intent.json')
-        with open(ipath, 'w', encoding='utf-8') as fh:
-            json.dump(doc, fh)
-        intent = fp.load_intent(ipath)
-        src = _perturbed(board, td)
-        before = {v.ref for v in fp.grade(
-            intent, parse_kicad_pcb(src), src, group_sources=SOURCES,
-            clearance=CLEARANCE).errors if v.rule in DECAP_RULES}
-        res = _repair(src, intent)
-        still = _decap_refs_after(src, res, intent, td, 'c.kicad_pcb')
-        created = sorted(still - before)
-        assert created, ("no move created a decap error on this fixture, "
-                         "so the arm is vacuous", before, still)
-        for r in created:
-            note = [n for n in res['notes']
-                    if n.startswith(f'{r}: UNRESOLVED')]
-            assert note and 'created decap_distance' in note[0], (
-                r, res['notes'])
-            assert r in res['unresolved'], (r, res['unresolved'])
-        assert not set(res['repaired']) & still, (res['repaired'], still)
-    print(f"  PASS: {created} gained a decap error from their own move and "
-          f"are unresolved; repaired {sorted(res['repaired'])} carry none")
+    error only the repair's move had created.
+
+    Since the ordinary seat prefers a pose that creates no decap finding
+    (#1150 follow-up), only a part with NO such pose within any cap still
+    lands outside its limit, and it says so: here C8, charged for body and
+    pad overlaps, whose every legal pose within 5mm leaves U7's reach. The
+    created finding is still reported -- unresolved, "created"."""
+    before, still, res = _splitflap1()
+    created = sorted(still - before)
+    assert created == ['C8'], ("the fixture no longer forces a created "
+                               "decap error, so the arm is vacuous",
+                               before, still)
+    for r in created:
+        forced = [n for n in res['notes'] if n.startswith(
+            f'{r}: no pose within any cap') and 'creates no new decap' in n]
+        assert forced, (r, res['notes'])
+        note = [n for n in res['notes']
+                if n.startswith(f'{r}: UNRESOLVED')]
+        assert note and 'created decap_distance' in note[0], (
+            r, res['notes'])
+        assert r in res['unresolved'], (r, res['unresolved'])
+    assert not set(res['repaired']) & still, (res['repaired'], still)
+    print(f"  PASS: {created} had no pose within any cap free of a new "
+          f"decap finding ({forced[0]}), gained one and are unresolved; "
+          f"repaired {sorted(res['repaired'])} carry none")
+
+
+def test_the_ordinary_seat_avoids_creating_a_decap_error():
+    """#1150 follow-up: the same splitflap repair, C12. Charged for a pad
+    conflict, it used to be seated at the nearest legal pose, outside its
+    decap limit -- a decap_distance error only the repair created, reported
+    and shipped. A pose that creates no decap finding exists within the
+    cap ladder, so the seat takes that one: C12 moves, carries no decap
+    error, and is repaired."""
+    before, still, res = _splitflap1()
+    assert 'C12' not in before, before
+    assert 'C12' in {m['reference'] for m in res['moves']}, res['moves']
+    assert 'C12' not in still, still
+    assert 'C12' in res['repaired'], (res['repaired'], res['notes'])
+    assert not [n for n in res['notes'] if n.startswith(
+        'C12: no pose within any cap')], res['notes']
+    seat = [n for n in res['notes'] if n.startswith('C12: re-seated')]
+    print(f"  PASS: {seat[0]}, no decap error created")
 
 
 def test_a_cap_pushed_past_the_decap_radius_is_not_cleared():
@@ -415,28 +464,52 @@ def _watchy_repair(seed, td):
     return intent, src, _repair(src, intent)
 
 
+def _u4_pin20(intent, src, res, td, name):
+    after = os.path.join(td, name)
+    write_placed_output(src, after, res['moves'])
+    return [v for v in fp.grade(intent, parse_kicad_pcb(after), after,
+                                group_sources=SOURCES,
+                                clearance=CLEARANCE).errors
+            if v.rule == 'decap_pin_distance' and v.ref == 'U4'
+            and str((v.measured or {}).get('pad')) == '20']
+
+
 def test_a_stranded_pin_is_charged_to_the_cap_that_left_it():
     """The round-2 verifier's counterexample, which neither the claim key nor
     the names in the finding can see. watchy, 12 parts displaced (seed 2):
-    the repair moves C5 1.95mm, which strands U4's pin 20 -- a NEW finding,
-    but under a claim U4 already carried (pin 46), and naming U4 and the
-    now-nearest cap C3, neither of which moved. Only restoring C5 alone
-    clears it, so C5 is charged and is not repaired."""
+    the plain seat moves C5 1.95mm, which strands U4's pin 20 -- a NEW
+    finding, but under a claim U4 already carried (pin 46), and naming U4
+    and the now-nearest cap C3, neither of which moved. Only restoring C5
+    alone clears it, so C5 is charged and is not repaired.
+
+    Since #1150's follow-up the ordinary seat first looks for a pose that
+    strands no passing pin, and here it finds one: C5 moves, U4's pin 20
+    stays within its limit, and C5 is repaired (the preference avoiding the
+    finding). The plain seat is still what a part with NO such pose within
+    any cap gets, so the attribution -- the path that fallback takes -- is
+    pinned with the preference switched off (`_DecapView.no_worse`
+    answering None), as the radius case above pins its push."""
     with tempfile.TemporaryDirectory() as td:
         intent, src, res = _watchy_repair(2, td)
+        assert 'C5' in {m['reference'] for m in res['moves']}, res['moves']
+        assert 'C5' in res['repaired'], (res['repaired'], res['notes'])
+        assert not _u4_pin20(intent, src, res, td, 'w2.kicad_pcb')
+        seat = [n for n in res['notes'] if n.startswith('C5: re-seated')]
+
+        real = seeder._DecapView.no_worse
+        seeder._DecapView.no_worse = lambda self, ref, findings: None
+        try:
+            res = _repair(src, intent)
+        finally:
+            seeder._DecapView.no_worse = real
         assert 'C5' in {m['reference'] for m in res['moves']}, res['moves']
         assert 'C5' not in res['repaired'], res['repaired']
         note = [n for n in res['notes'] if n.startswith('C5: UNRESOLVED')]
         assert note and 'created decap_pin_distance' in note[0], note
-        after = os.path.join(td, 'w2.kicad_pcb')
-        write_placed_output(src, after, res['moves'])
-        pins = [v for v in fp.grade(intent, parse_kicad_pcb(after), after,
-                                    group_sources=SOURCES,
-                                    clearance=CLEARANCE).errors
-                if v.rule == 'decap_pin_distance' and v.ref == 'U4'
-                and str((v.measured or {}).get('pad')) == '20']
+        pins = _u4_pin20(intent, src, res, td, 'w2_plain.kicad_pcb')
         assert pins and pins[0].measured.get('cap') != 'C5', pins
-    print(f"  PASS: {note[0]}")
+    print(f"  PASS: {seat[0]} and strands nothing; the plain seat -- "
+          f"{note[0]}")
 
 
 def test_a_move_that_makes_a_finding_worse_is_not_repaired():
@@ -757,6 +830,7 @@ TESTS = [
     test_a_claim_the_pose_grader_cannot_reproduce_stays_unresolved,
     test_a_regrade_that_raises_is_not_a_pass,
     test_a_move_that_creates_a_decap_error_is_not_repaired,
+    test_the_ordinary_seat_avoids_creating_a_decap_error,
     test_a_cap_pushed_past_the_decap_radius_is_not_cleared,
     test_a_created_pin_error_is_charged_to_the_cap_that_moved,
     test_a_second_finding_under_one_claim_is_new,

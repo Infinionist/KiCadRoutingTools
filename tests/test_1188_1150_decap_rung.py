@@ -30,6 +30,11 @@ the closing note of an IC names the caps tried for it.
       bringing it closer is not; without the held list the gate is inert on
       it, as before.
 
+The ordinary seat (#1150 follow-up): its first rung refuses a pose that
+CREATES a decap finding too, not only one that grows a finding the part is
+already in -- on the #1188 board at a 3.5 mm limit, U1 moved away from C1
+strands its pin 1, C1 moved away strands both pins, C2 is free.
+
 The rung's speed (#1188 follow-up): its searches ask `pose_ok` against the
 parts within reach of the search disc only, and `accept` decides a check by a
 bound where the bound settles it. On esp_prog every pose two rung searches
@@ -360,6 +365,38 @@ def test_1150c_the_gate_holds_a_stranded_held_cap():
                    for f in st2.tether_failures(away)), 'not inert'
     print(f"  PASS: a move 2 mm farther from U1 is refused {fails}; one "
           f"0.5 mm closer is not; with no held list the gate is inert")
+
+
+# ---------------------------------------------------------------------------
+# The ordinary seat creates no decap finding where it can avoid one
+# ---------------------------------------------------------------------------
+
+def test_the_ordinary_seat_predicate_refuses_a_created_finding():
+    """#1150 follow-up: `_DecapView.no_worse` -- the ordinary seat's first
+    rung -- also holds the findings a move would CREATE, for a part in none
+    yet. The #1188 board with the pin limit at 3.5 mm, so both pins pass
+    through C1 (3.275 mm): U1 2 mm farther from C1 strands its pin 1 and is
+    refused, 0.5 mm nearer is not; C1 2 mm away strands both pins and is
+    refused; C2, which no pin relies on, may go where it likes."""
+    import pose_score
+    board = _shared_cap_board()
+    intent = _pin_intent(3.5)
+    assert _pin_findings(intent, board) == [], _pin_findings(intent, board)
+    pcb = _parse(board)
+    state = _quiet(pose_score.make_state, pcb, board, clearance=CLEARANCE)
+    view = seeder._DecapView(state, pcb, intent)
+    u1 = view.no_worse('U1', ())
+    assert u1 is not None and u1.what == 'creates no new decap finding'
+    p = state.parts['U1']
+    assert not u1(p.x - 2.0, p.y, p.rot)
+    assert u1(p.x + 0.5, p.y, p.rot)
+    c1, c2 = view.no_worse('C1', ()), view.no_worse('C2', ())
+    q = state.parts['C1']
+    assert not c1(q.x, q.y - 2.0, q.rot) and c1(q.x, q.y, q.rot)
+    r = state.parts['C2']
+    assert c2(r.x, r.y + 2.0, r.rot) and c2(r.x + 3.0, r.y, r.rot)
+    print("  PASS: U1 left 2 mm and C1 up 2 mm refused (a pin stranded), "
+          "U1 right 0.5 mm and C2 anywhere accepted")
 
 
 # ---------------------------------------------------------------------------

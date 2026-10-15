@@ -1949,9 +1949,12 @@ re-seating 85/92 while leaving its zone targets unmoved):
   decap target, so it could only leave the finding or make it worse (esp_prog
   C2 shipped 0.06-0.10 mm farther from U1 three ways). A part that takes part
   in a decap finding -- its ref, or the cap / IC it measures -- is seated
-  first where none of those findings grows, and by the plain seat only when
-  no such pose exists within any cap, which a note says. An IC is never
-  moved for a decap finding. `unresolved` sets no exit code of its own; exit 4 stays
+  first where none of those findings grows, and ANY part a decap rule can
+  measure (a graded cap, a cap serving a supply pin, an IC with supply pins
+  or caps elected to it) first where it creates no decap finding -- a cap
+  moved off a pad conflict used to be seated outside its limit, reported and
+  shipped; by the plain seat only when no such pose exists within any cap,
+  which a note says. An IC is never moved for a decap finding. `unresolved` sets no exit code of its own; exit 4 stays
   `unrepairable_failed_refs`' (a free violator no seat could place) and the
   final grade's. A locked violator (`(locked yes)`, `--lock`, a fixed pose)
   is `unrepairable_pinned_refs`: reported, not a gate failure, the

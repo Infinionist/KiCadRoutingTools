@@ -8293,9 +8293,25 @@ class _DecapView:
         self._rail: Dict[str, List[str]] = {}
         self.pins: List[_DecapPin] = []
         self.pins_of_cap: Dict[str, List[int]] = {}
-        if self.pin_limit is None:
+        # The caps `decap_distance` / `decap_ungraded` grade (elected to an
+        # IC on their rail, `groups.decap_populations`), and for each chip
+        # the caps whose election it stands in: what a move of either can
+        # turn into a NEW finding (`no_worse`). Membership reads no pose.
+        self.graded_caps: Set[str] = set()
+        self.caps_of_chip: Dict[str, List[str]] = {}
+        if self.pin_limit is None and self.dd_limit is None:
             return
         board = _fp._PosedState(state).board()
+        if self.dd_limit is not None:
+            near, beyond, _orphans = _groups.decap_populations(
+                board, radius=self.radius)
+            self.graded_caps = ({c for lst in near.values() for c, _d in lst}
+                                | {c for c, _ic, _d in beyond})
+            for c in sorted(self.graded_caps):
+                for r in _groups.rail_chips(self.pcb, c):
+                    self.caps_of_chip.setdefault(r, []).append(c)
+        if self.pin_limit is None:
+            return
         by_net = _fp._decap_caps_by_net(board)
         recs = _fp.supply_pins(board, pin_functions=spec.get('pin_functions'))
         for ic, rec in sorted(recs.items()):
@@ -8351,9 +8367,11 @@ class _DecapView:
 
     # ---- the measurements ----------------------------------------------------
 
-    def cap_distance(self, cap, sub=None) -> Optional[float]:
+    def cap_distance(self, cap, sub=None, sub_bounds=None) -> Optional[float]:
         """The distance the grade's election reads for `cap`: its pad
-        centroid to the nearest chip on its rail (`groups.elect_live`)."""
+        centroid to the nearest chip on its rail (`groups.elect_live`).
+        `sub_bounds`, a dict the caller keeps for one `sub`, holds the chip
+        bounds of `sub`'s refs across the caps it measures."""
         from placement import groups as _groups
         rail = self._rail.get(cap)
         if rail is None:
@@ -8361,7 +8379,12 @@ class _DecapView:
         cands = []
         for r in rail:
             if sub and r in sub:
-                cands.append((r, _groups.chip_bounds_of(sub[r])))
+                if sub_bounds is None:
+                    cands.append((r, _groups.chip_bounds_of(sub[r])))
+                    continue
+                if r not in sub_bounds:
+                    sub_bounds[r] = _groups.chip_bounds_of(sub[r])
+                cands.append((r, sub_bounds[r]))
                 continue
             key = (r,) + tuple(self._pose(r))
             b = self._bounds.get(key)
@@ -8411,12 +8434,12 @@ class _DecapView:
         return [i for i, p in enumerate(self.pins)
                 if p.ic == ic and p.pad_number == str(pad) and p.net == net]
 
-    def finding_value(self, v, sub=None) -> Optional[float]:
+    def finding_value(self, v, sub=None, sub_bounds=None) -> Optional[float]:
         """Finding `v` (a decap ERROR) re-measured with `sub`'s refs at
         their candidate poses; None when it is not one this view measures."""
         m = v.measured or {}
         if v.rule in ('decap_distance', 'decap_ungraded'):
-            return self.cap_distance(v.ref, sub)
+            return self.cap_distance(v.ref, sub, sub_bounds)
         if v.rule.startswith('decap_pin_distance'):
             vals = [self.pin_value(i, sub)
                     for i in self.pins_named(v.ref, m.get('pad'),
@@ -8656,27 +8679,90 @@ class _DecapView:
         return _ok
 
     def no_worse(self, ref, findings):
-        """`accept(x, y, rot)` for the ORDINARY seat of `ref` (#1150 b): True
-        when no decap finding in `findings` -- input errors `ref` takes part
-        in, as their ref or their measured cap / IC -- is measured larger
-        with `ref` there than it is now. The seat stays free to move the
-        part; it may not take it farther from the IC or pin it decouples."""
+        """`accept(x, y, rot)` for the ORDINARY seat of `ref`, or None when
+        `ref` there can change no decap finding: True when
+
+        * no decap finding in `findings` -- input errors `ref` takes part
+          in, as their ref or their measured cap / IC -- is measured larger
+          with `ref` there than it is now (#1150 b), and
+        * no decap finding is CREATED or made worse (#1150 follow-up): a
+          cap the decap rules grade -- `ref` itself, or one whose election
+          `ref` stands in as a chip on its rail -- that carries no finding
+          now gets none, and one that does gets no larger; a supply pin
+          `ref` serves as a usable cap, or carries as its IC, that is within
+          the limit now stays within it, and one past it gets no farther (a
+          pin finding is per pad NUMBER, so the pads sharing one are read
+          together, as the grade reads them).
+
+        The seat stays free to move the part; it may not take it farther
+        from the IC or pin it decouples, nor strand a cap or a pin that
+        passes. The predicate's `what` says what it holds, for the note a
+        fallback past it writes."""
+        L = _legality()
+        eps = L.EPS
+        worse = FINDING_WORSE_EPS_MM
         rows = []
         for v in findings:
             was = self.finding_value(v)
             if was is not None:
                 rows.append((v, was))
-        if not rows:
+        # (cap, its finding now or None) / (pins of one pad number, the
+        # value it may not exceed): the limit while it passes, else itself.
+        caps = []
+        for c in dict.fromkeys(([ref] if ref in self.graded_caps else [])
+                               + self.caps_of_chip.get(ref, [])):
+            caps.append((c, self.cap_finding(c, self.cap_distance(c))))
+        pins = []
+        if self.pin_limit is not None:
+            mine = list(self.pins_of_cap.get(ref, ())) + [
+                i for i, p in enumerate(self.pins) if p.ic == ref]
+            seen = set()
+            for i in mine:
+                p = self.pins[i]
+                key = (p.ic, p.pad_number, p.net)
+                if key in seen:
+                    continue
+                seen.add(key)
+                group = self.pins_named(*key)
+                vals = [x for x in (self.pin_value(j) for j in group)
+                        if x is not None]
+                now = max(vals) if vals else None
+                pins.append((group, self.pin_limit + eps
+                             if now is None or now <= self.pin_limit + eps
+                             else now + worse))
+        if not (rows or caps or pins):
             return None
         base = self.pcb.footprints[ref]
+        memo: Dict[Tuple[float, float, float], bool] = {}
 
-        def _ok(x, y, rot):
-            sub = {ref: _legality().footprint_at_pose(base, (x, y, rot))}
+        def _decide(x, y, rot):
+            sub = {ref: L.footprint_at_pose(base, (x, y, rot))}
+            sb: Dict[str, object] = {}
             for v, was in rows:
-                new = self.finding_value(v, sub)
-                if new is not None and new > was + FINDING_WORSE_EPS_MM:
+                new = self.finding_value(v, sub, sb)
+                if new is not None and new > was + worse:
+                    return False
+            for c, now in caps:
+                new = self.cap_finding(c, self.cap_distance(c, sub, sb))
+                if new is not None and (now is None or new > now + worse):
+                    return False
+            for group, thr in pins:
+                vals = [x for x in (self.pin_value(j, sub) for j in group)
+                        if x is not None]
+                if vals and max(vals) > thr:
                     return False
             return True
+
+        def _ok(x, y, rot):
+            key = (x, y, rot)
+            got = memo.get(key)
+            if got is None:
+                got = memo[key] = _decide(x, y, rot)
+            return got
+        held = (rows or any(now is not None for _c, now in caps)
+                or any(thr > self.pin_limit + eps for _g, thr in pins))
+        _ok.what = ('keeps its decap finding(s) no worse and creates no new '
+                    'one' if held else 'creates no new decap finding')
         return _ok
 
 
@@ -9095,7 +9181,10 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
     declares as edge connectors, whose overhang is by design. A ref charged
     by decap rules ALONE is not moved by the ordinary seat, which has no
     decap target; one that takes part in a decap finding is seated first
-    where no such finding grows (#1150 b, `_DecapView.no_worse`).
+    where no such finding grows (#1150 b, `_DecapView.no_worse`), and any
+    part a decap rule measures first where it creates no decap finding
+    (#1150 follow-up) -- by the plain seat only when no such pose exists
+    within any cap, which a note says.
 
     A must_lock ref is seeder-owned: its file lock is lifted in-memory for
     seating (the stamp in the file survives the positional rewrite, so no
@@ -9646,9 +9735,15 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
     edge_band_contradiction: Dict[str, Dict] = {}   # #1241, `_onto_the_board`
     # The decap rules' own numbers at the state's poses (#1188, #1150), built
     # only when a seat below or the rung will ask them.
+    # Wherever the intent declares a decap limit: the ordinary seat of ANY
+    # part a decap rule can measure asks it (#1150 follow-up), not only of a
+    # part already in a finding.
+    _dc0 = dict(getattr(intent, 'decaps', None) or {}) if intent else {}
     decap_view = (_DecapView(state, pcb_data, intent)
-                  if pose_grader is not None and (decap_stakes or rung_charged
-                                                  or repair_decaps)
+                  if pose_grader is not None and (
+                      decap_stakes or rung_charged or repair_decaps
+                      or _dc0.get('max_distance_mm') is not None
+                      or _dc0.get('max_pin_distance_mm') is not None)
                   else None)
     for ref in violators:
         part = state.parts[ref]
@@ -9728,8 +9823,25 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
         # defect the board cannot ship; that seat is then said, and the
         # honesty re-grade reports the finding it made worse. watchy C12
         # (pad-charged, U3's VBUS pin's nearest cap) went 7.78 -> 11.10 mm.
-        _nw = (decap_view.no_worse(ref, decap_stakes[ref])
-               if decap_view is not None and decap_stakes.get(ref) else None)
+        # The same ladder keeps a part out of a decap finding it is NOT in
+        # (#1150 follow-up): a cap moved off a pad conflict, or an IC moved
+        # for its outline, is first seated where it strands no cap or pin
+        # that passes -- splitflap's C8 and C12, perturbed, were moved off
+        # their pad conflicts and out of their decap limits, and the move
+        # was reported, not prevented.
+        _nw = (decap_view.no_worse(ref, decap_stakes.get(ref) or ())
+               if decap_view is not None else None)
+        if _nw is not None:
+            # Its legality first: the decap numbers pose the part, which
+            # for an IC poses every pad, while most candidate poses fail the
+            # cheap seat test -- the same conjunction, asked in the cheaper
+            # order (`_try_place` asks `accept` before `pose_ok`).
+            _nw_d = _nw
+
+            def _nw(x, y, rot, _ref=ref, _d=_nw_d):
+                return (pose_ok(state, _ref, x, y, rot, set())
+                        and _d(x, y, rot))
+            _nw.what = _nw_d.what
         for _acc in ((_nw, None) if _nw is not None else (None,)):
             for cap in caps:
                 info: Dict = {}
@@ -9748,7 +9860,7 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                 if _nw is not None and _acc is None:
                     notes.append(
                         f"{ref}: no pose within any cap {tuple(caps)}mm "
-                        f"keeps its decap finding(s) no worse -- seated by "
+                        f"{_nw.what} -- seated by "
                         f"the plain search for what else it is charged for "
                         f"({', '.join(sorted(charged_by.get(ref) or ()))})")
                 break
