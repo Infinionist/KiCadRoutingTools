@@ -96,8 +96,20 @@ def main():
     import pcbnew as _pcbnew
     import protected_nets as P
     from copy_board import copy_board
+    import tool_records
+    import fix_kicad_drc_settings as _F
     from fix_kicad_drc_settings import (apply_targets_to_board, compute_targets,
                                         declared_fab_floor, fix_project_for_output)
+
+    def declared_project_rule(pcb, key):
+        """The rule the next CLI step reads (fix_kicad_drc_settings.
+        declared_project_rule; on code without it, the project's rules)."""
+        fn = getattr(_F, 'declared_project_rule', None)
+        if fn is not None:
+            return fn(pcb, key)
+        with open(os.path.splitext(pcb)[0] + '.kicad_pro', encoding='utf-8') as f:
+            v = json.load(f)['board']['design_settings']['rules'].get(key)
+        return float(v) if isinstance(v, (int, float)) else None
     from kicad_parser import parse_kicad_pcb
     from kicad_routing_plugin.gui_utils import (board_minima_from_live,
                                                 update_live_drc_floors)
@@ -236,13 +248,12 @@ def main():
     with open(os.path.splitext(plan)[0] + '.kicad_pro', encoding='utf-8') as f:
         after = json.load(f)
     w_rules = written['board']['design_settings']['rules']
-    a_rules = after['board']['design_settings']['rules']
-    # `min_via_drill` is the repo's own floor, not a KiCad rule: KiCad's save
-    # keeps only its own rules, whichever front wrote the project (a CLI
-    # output saved in KiCad loses it the same way). Its durable copy is the
-    # fab_floor_origin record, which the disclosure compares against.
+    # Read back the way the next CLI step reads them: the project's rules,
+    # with the records' copy of a repo-private rule (min_via_drill, which
+    # KiCad's save drops when it was written after load).
+    a_rules = {k: declared_project_rule(plan, k) for k in w_rules}
     lost = {k: (w_rules[k], a_rules.get(k)) for k in w_rules
-            if k != 'min_via_drill' and isinstance(w_rules[k], (int, float))
+            if isinstance(w_rules[k], (int, float))
             and (not isinstance(a_rules.get(k), (int, float))
                  or abs(w_rules[k] - a_rules[k]) > 1e-6)}
     check("every rule the plan's writeback wrote survives the save", not lost,
@@ -255,6 +266,138 @@ def main():
     check("and every class clearance", not lost_c, f"(written, after save): {lost_c}")
     o = declared_fab_floor(plan, 'min_via_diameter')
     check("and the origin it recorded", o == declared_via, f"{o}")
+
+    def cli_twin(src, with_project, **kw):
+        """The CLI step's writeback over a fresh copy of the same board --
+        what that step would have written."""
+        dst = stage(src, with_project)
+        _quiet(fix_project_for_output, dst, input_pcb=src, **kw)
+        return dst
+
+    print("--- 4. #581: a manual step's same-net pad via clearance, then a save")
+    snpc = stage(DECLARING, True)
+    board4 = _pcbnew.LoadBoard(snpc)
+    _pcbnew.GetBoard = lambda: board4
+    try:
+        _quiet(update_live_drc_floors, board4, clearance=STEP['clearance'],
+               same_net_pad_clearance=0.15)
+    except TypeError:            # code whose step boundary takes no #581 value
+        _quiet(update_live_drc_floors, board4, clearance=STEP['clearance'])
+    _pcbnew.SaveBoard(snpc, board4)
+    cli4 = stage(DECLARING, True)
+    _quiet(P.persist_same_net_pad_clearance,
+           os.path.splitext(cli4)[0] + '.kicad_pro', 0.15)   # route.py's call
+    g4 = P.read_same_net_pad_clearance(os.path.splitext(snpc)[0] + '.kicad_pro')
+    c4 = P.read_same_net_pad_clearance(os.path.splitext(cli4)[0] + '.kicad_pro')
+    check("the CLI's reader returns the value the CLI step writes",
+          g4 == c4 == 0.15, f"GUI {g4}, CLI {c4}")
+    import ast
+    missing = []
+    for mod in ('swig_gui', 'differential_gui', 'planes_gui', 'fanout_gui'):
+        src = os.path.join(REPO, 'kicad_routing_plugin', mod + '.py')
+        tree = ast.parse(open(src, encoding='utf-8').read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and getattr(
+                    node.func, 'id', getattr(node.func, 'attr', None)) \
+                    == 'update_live_drc_floors':
+                if 'same_net_pad_clearance' not in {k.arg for k in node.keywords}:
+                    missing.append(f"{mod}:{node.lineno}")
+    check("every tab's step boundary passes its #581 value (each CLI routing "
+          "step records it)", not missing, f"{missing}")
+
+    from fix_kicad_drc_settings import severity_plan
+    from placement.legality import courtyard_severity_of
+    for label, src, with_pro in (("a project board", DECLARING, True),
+                                 ("a project-less board", PROJECTLESS, False)):
+        print(f"--- 5. #856: relaxed severities on {label}, then a save")
+        sev = stage(src, with_pro)
+        board5 = _pcbnew.LoadBoard(sev)
+        _pcbnew.GetBoard = lambda: board5
+        out5 = io.StringIO()
+        with contextlib.redirect_stdout(out5):
+            apply_targets_to_board(board5, compute_targets(
+                clearance=STEP['clearance'],
+                minima=board_minima_from_live(board5)), severity_plan())
+            update_live_drc_floors(board5, clearance=STEP['clearance'])
+        _pcbnew.SaveBoard(sev, board5)
+        cli5 = cli_twin(src, with_pro, clearance=STEP['clearance'],
+                        relax_severities=True)
+        g5 = tool_records.effective_namespace(sev).get('saved_severities')
+        c5 = tool_records.effective_namespace(cli5).get('saved_severities')
+        bds5 = board5.GetDesignSettings()
+        if hasattr(bds5, 'SetSeverity') and hasattr(_pcbnew, 'DRCE_ANNULAR_WIDTH'):
+            check("the saved severities are the ones the CLI step records",
+                  bool(c5) and g5 == c5, f"GUI {g5}, CLI {c5}")
+            g5c, c5c = (courtyard_severity_of(sev, 'courtyards_overlap'),
+                        courtyard_severity_of(cli5, 'courtyards_overlap'))
+            check("and the CLI's own reader (the courtyard grade) reads the same",
+                  g5c == c5c, f"GUI {g5c}, CLI {c5c}")
+        else:
+            # This pcbnew cannot change a severity (KiCad 10.0.0: no
+            # SetSeverity, no DRCE_* names), so the GUI changes none: a
+            # saved_severities record would claim a change that never happened.
+            check("this pcbnew cannot change a severity, so the GUI records "
+                  "none (the CLI, which changed them, records its originals)",
+                  not g5 and bool(c5), f"GUI {g5}, CLI {c5}")
+            check("and the GUI says the severities were NOT relaxed",
+                  'severities NOT relaxed' in out5.getvalue(),
+                  out5.getvalue()[-300:])
+
+    print("--- 6. #1160: a descent that lowers the Default class, then a save")
+    import fab_tiers
+    from fix_kicad_drc_settings import CLASS_CLEARANCE_RELAXED_KEY
+    net6 = next(n for n in parse_kicad_pcb(DECLARING).nets if n)
+
+    def descent():
+        """One clearance descent of this run, as an engine notes it."""
+        fab_tiers.set_escalation_policy(fab_tiers.DEFAULT_ESCALATION)
+        fab_tiers.note_narrowing(net6, 'clearance', 0.2, 0.15, 'test descent',
+                                 net_name='/RECORD_D')
+    cls6 = stage(DECLARING, True)
+    board6 = _pcbnew.LoadBoard(cls6)
+    _pcbnew.GetBoard = lambda: board6
+    descent()
+    out6 = io.StringIO()
+    with contextlib.redirect_stdout(out6):
+        apply_targets_to_board(board6, compute_targets(
+            clearance=0.15, minima=board_minima_from_live(board6)), {})
+        update_live_drc_floors(board6, clearance=0.15)
+    _pcbnew.SaveBoard(cls6, board6)
+    descent()
+    cli6 = cli_twin(DECLARING, True, clearance=0.15)
+    g6 = tool_records.effective_namespace(cls6).get(CLASS_CLEARANCE_RELAXED_KEY)
+    c6 = tool_records.effective_namespace(cli6).get(CLASS_CLEARANCE_RELAXED_KEY)
+    check("the class-descent record is the one the CLI step records",
+          bool(c6) and g6 == c6, f"GUI {g6}, CLI {c6}")
+    check("and the GUI step said so, as the writeback does",
+          'Default' in out6.getvalue() and '0.15' in out6.getvalue()
+          and 'RECORD_D' in out6.getvalue(), out6.getvalue()[-300:])
+    fab_tiers.set_escalation_policy(fab_tiers.DEFAULT_ESCALATION)
+
+    print("--- 7. the repo's via-drill floor, then a save, then the next CLI step")
+    vd = stage(DECLARING, True)
+    board7 = _pcbnew.LoadBoard(vd)
+    _pcbnew.GetBoard = lambda: board7
+    _quiet(update_live_drc_floors, board7, **STEP)
+    _pcbnew.SaveBoard(vd, board7)
+    cli7 = cli_twin(DECLARING, True, **{'clearance': STEP['clearance'],
+                                        'track_width': STEP['track_width'],
+                                        'via_diameter': STEP['via_size'],
+                                        'via_drill': STEP['via_drill']})
+    g7, c7 = declared_project_rule(vd, 'min_via_drill'), \
+        declared_project_rule(cli7, 'min_via_drill')
+    check("the CLI reads the via-drill floor the CLI step writes",
+          g7 is not None and g7 == c7, f"GUI {g7}, CLI {c7}")
+    nxt = {}
+    for tag, prev in (('GUI', vd), ('CLI', cli7)):
+        out = os.path.join(os.path.dirname(prev), 'next.kicad_pcb')
+        shutil.copyfile(prev, out)
+        shutil.copyfile(os.path.splitext(prev)[0] + '.kicad_pro',
+                        os.path.splitext(out)[0] + '.kicad_pro')
+        _quiet(fix_project_for_output, out, input_pcb=prev, via_drill=0.3)
+        nxt[tag] = declared_project_rule(out, 'min_via_drill')
+    check("and a next CLI step at a larger drill leaves both at the same floor",
+          nxt['GUI'] == nxt['CLI'] == c7, f"{nxt}")
 
     for d in tmpdirs:
         shutil.rmtree(d, ignore_errors=True)

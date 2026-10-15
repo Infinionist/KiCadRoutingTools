@@ -1489,7 +1489,9 @@ class DifferentialTab(wx.Panel):
                 via_size=_cfg.get('via_size'),
                 via_drill=_cfg.get('via_drill'),
                 hole_to_hole=_cfg.get('hole_to_hole_clearance'),
-                edge_clearance=_cfg.get('board_edge_clearance'))
+                edge_clearance=_cfg.get('board_edge_clearance'),
+                # #581: recorded as route_diff.py records it
+                same_net_pad_clearance=_cfg.get('same_net_pad_clearance'))
 
         return tracks_added, vias_added, tracks_removed
 

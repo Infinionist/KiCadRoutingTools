@@ -213,14 +213,36 @@ def persist_impedance_specs(pro_path: str, mapping: Dict[str, dict],
 
 
 def persist_same_net_pad_clearance(pro_path: str, value: float,
-                                   verbose: bool = True) -> bool:
+                                   verbose: bool = True, board=None) -> bool:
     """Record an ACTIVE (> 0) same-net pad via clearance (#581) so every later
     chain step keeps its vias off same-net pads too. Scalar, not a map: one
     board-wide assembly constraint. No-op for <= 0 (-1 = via-in-pad allowed,
     the default; 0 keeps its legacy stitching-only meaning and, per the
     compat contract, must not change any other step's behavior) or when the
-    project file is absent."""
-    if value is None or value <= 0 or not pro_path or not os.path.isfile(pro_path):
+    project file is absent.
+
+    ``board`` (the GUI): into the live board's records instead -- its project
+    when it has one and the board itself always, the copy KiCad's own save
+    keeps (tool_records), as _persist_map's live branch."""
+    if value is None or value <= 0:
+        return False
+    if board is not None:
+        try:
+            def _apply(ns):
+                if ns.get(SNPC_KEY) == value:
+                    return False
+                ns[SNPC_KEY] = value
+                return True
+            changed = tool_records.update_live_namespace(board, _apply)
+            if changed and verbose:
+                print(f"  Same-net pad via clearance {value:g}mm recorded on "
+                      f"the board (later steps keep vias off same-net pads)")
+            return changed
+        except Exception as e:
+            if verbose:
+                print(f"  (skipped same-net pad clearance record: {e})")
+            return False
+    if not pro_path or not os.path.isfile(pro_path):
         return False
     try:
         proj = tool_records.load_project(pro_path)

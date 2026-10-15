@@ -155,7 +155,11 @@ def main():
             return {}, {}
         with open(pro, encoding='utf-8') as f:
             doc = json.load(f)
-        r = ((doc.get('board') or {}).get('design_settings') or {}).get('rules') or {}
+        # The rules as the next CLI step reads them (a repo-private rule from
+        # the records when the project's rules lack it), where available.
+        _eff = getattr(F, '_effective_rules', None)
+        r = (_eff(doc) if _eff else
+             ((doc.get('board') or {}).get('design_settings') or {}).get('rules') or {})
         rules = {k: round(float(r[k]), 6) for k in RULES + ('min_via_drill',)
                  if k in r and r[k] is not None}
         cls = {c['name']: round(float(c['clearance']), 6)
@@ -190,8 +194,17 @@ def main():
         finally:
             _pcbnew.GetBoard = real
             dlg.Destroy()
-        # The CLI writeback over the SAME copper and the ORIGINAL project.
+        # The CLI writeback over the SAME copper and the ORIGINAL project --
+        # and none of the GUI session's records, which the live board carries
+        # on itself (tool_records) and the save would hand the CLI arm.
         _pcbnew.SaveBoard(cli, live, True)
+        import re as _re
+        with open(cli, encoding='utf-8') as f:
+            txt = f.read()
+        txt = _re.sub(r'(?m)^[ \t]*\(property "kicad_routing_tools" "(?:[^"\\]|\\.)*"\)\n',
+                      '', txt)
+        with open(cli, 'w', encoding='utf-8') as f:
+            f.write(txt)
         if os.path.isfile(src_pro):
             shutil.copyfile(src_pro, os.path.splitext(cli)[0] + '.kicad_pro')
         kw = cli_kwargs(kind, tracks, vias)
@@ -233,6 +246,27 @@ def main():
                      or abs(g_cls[k] - c_cls[k]) > 1e-6}
             check("and every net class's clearance", not cdiff,
                   f"(GUI, CLI): {cdiff}")
+
+    print("-- the configs the tab really applies with --")
+    # The arms above hand _apply_fanout_results this file's CFG. The tab
+    # builds its own, one dict literal per fanout kind, and a key missing
+    # there is a floor the real run never writes: the QFN dict carried no
+    # clearance at all, so the tab wrote no clearance where qfn_fanout does.
+    import ast
+    need = {'clearance', 'track_width', 'via_size', 'via_drill',
+            'fix_drc_settings', 'same_net_pad_clearance'}
+    tree = ast.parse(open(os.path.join(REPO, 'kicad_routing_plugin',
+                                       'fanout_gui.py'), encoding='utf-8').read())
+    lacking = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.keyword) and node.arg == 'fanout_config' \
+                and isinstance(node.value, ast.Dict):
+            keys = {k.value for k in node.value.keys
+                    if isinstance(k, ast.Constant)}
+            if need - keys:
+                lacking.append((node.value.lineno, sorted(need - keys)))
+    check("every fanout_config the tab builds carries what the writeback "
+          "reads", not lacking, f"{lacking}")
 
     for d in tmpdirs:
         shutil.rmtree(d, ignore_errors=True)

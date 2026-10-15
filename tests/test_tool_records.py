@@ -161,6 +161,49 @@ def main():
         check(not T.mirror_project_to_live_board(mb),
               "and mirroring again changes nothing")
 
+        print("\na repo-private rule (min_via_drill) rides in the records too")
+        import fix_kicad_drc_settings as F
+        rr = getattr(F, '_effective_rules', None)
+        dpr = getattr(F, 'declared_project_rule', None)
+        check(rr is not None and dpr is not None,
+              "the effective rule reader exists")
+        if rr is not None and dpr is not None:
+            vp = board(d, 'viadrill')
+            vpro = project(vp)
+            with open(vpro, encoding='utf-8') as fh:
+                doc = json.load(fh)
+            doc['board']['design_settings']['rules']['min_via_drill'] = 0.3
+            with open(vpro, 'w', encoding='utf-8') as fh:
+                json.dump(doc, fh)
+            check(dpr(vp, 'min_via_drill') == 0.3,
+                  "a project's own rule reads as before")
+            changes = F.apply_targets_to_project(doc, {'min_via_drill': 0.2}, {})
+            check(doc['board']['design_settings']['rules'].get('min_via_drill') == 0.2
+                  and (doc.get('kicad_routing_tools') or {}).get('repo_rules')
+                  == {'min_via_drill': 0.2},
+                  "the file writer lowers the rule and mirrors it into the records",
+                  f"{changes} {doc.get('kicad_routing_tools')}")
+            del doc['board']['design_settings']['rules']['min_via_drill']
+            check(rr(doc).get('min_via_drill') == 0.2,
+                  "with the rule dropped (KiCad's save), the records' copy is read")
+            F.apply_targets_to_project(doc, {'min_via_drill': 0.25}, {})
+            check('min_via_drill' not in doc['board']['design_settings']['rules'],
+                  "and a larger target is not written over it (only-lower)")
+            doc['board']['design_settings']['rules']['min_via_drill'] = 0.3
+            check(rr(doc).get('min_via_drill') == 0.2,
+                  "a stale rule KiCad kept beside a lower record reads the lower")
+
+        print("\n#581 on the live board")
+        sb = FakeBoard(board(d, 'snpc'))
+        spro = project(sb.path)
+        try:
+            P.persist_same_net_pad_clearance(spro, 0.15, verbose=False, board=sb)
+        except TypeError:
+            pass
+        check((T.live_board_namespace(sb) or {}).get('same_net_pad_clearance') == 0.15
+              and P.read_same_net_pad_clearance(spro) == 0.15,
+              "a GUI #581 record lands on the board and in the project")
+
     print(f"\n{_checks - _fails}/{_checks} checks passed")
     return 1 if _fails else 0
 

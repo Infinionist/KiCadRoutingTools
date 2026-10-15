@@ -1885,7 +1885,9 @@ class PlanesTab(wx.Panel):
                 track_width=_cfg.get('track_width'),
                 via_size=_cfg.get('via_size'),
                 via_drill=_cfg.get('via_drill'),
-                hole_to_hole=_cfg.get('hole_to_hole_clearance'))
+                hole_to_hole=_cfg.get('hole_to_hole_clearance'),
+                # #581: recorded as route_planes.py records it
+                same_net_pad_clearance=_cfg.get('same_net_pad_clearance'))
 
         # (No oracle recheck here, #562: after plane CREATION the remaining
         # gaps are deliberate -- the route step's in-run plane finalize and

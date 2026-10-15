@@ -589,6 +589,47 @@ FAB_FLOOR_KEYS_MEASURABLE = frozenset({
     "min_via_drill", "min_through_hole_diameter",
 })
 
+#: Rules this repo writes into ``design_settings.rules`` that are NOT KiCad
+#: rules. KiCad's own project save keeps an unknown key only when it was in the
+#: file when the board was loaded (probed, KiCad 10.0.0), so one written after
+#: load -- by a GUI step, or by the plan executor's writeback -- is gone after
+#: the user's save. Each is mirrored into the records (``kicad_routing_tools.
+#: repo_rules``, the copy that survives, tool_records) and read through
+#: :func:`_effective_rules`.
+REPO_RULE_KEYS = ("min_via_drill",)
+REPO_RULES_KEY = "repo_rules"
+
+
+def _effective_rules(proj: dict) -> dict:
+    """``design_settings.rules`` with each repo-private rule
+    (:data:`REPO_RULE_KEYS`) taken from the records when the rules lack it --
+    the lower of the two when both carry it, since every writer of these
+    floors only lowers them."""
+    rules = dict((((proj or {}).get("board") or {}).get("design_settings")
+                  or {}).get("rules") or {})
+    rec = (((proj or {}).get("kicad_routing_tools") or {})
+           .get(REPO_RULES_KEY) or {})
+    for k in REPO_RULE_KEYS:
+        v = rec.get(k)
+        if isinstance(v, (int, float)) and v > 0:
+            cur = rules.get(k)
+            rules[k] = (min(float(cur), float(v))
+                        if isinstance(cur, (int, float)) else float(v))
+    return rules
+
+
+def declared_project_rule(pcb_path: str, key: str):
+    """The rule ``key`` the board at ``pcb_path`` declares (mm), read the way
+    the writeback reads it: the project's rules, with the records' copy of a
+    repo-private rule (:func:`_effective_rules`). None when absent."""
+    try:
+        import tool_records
+        v = _effective_rules(tool_records.load_project(find_project(pcb_path))
+                             ).get(key)
+    except Exception:                                           # noqa: BLE001
+        return None
+    return float(v) if isinstance(v, (int, float)) else None
+
 
 def seed_fab_floor_origin(proj: dict, rules_before: dict):
     """``(origin, seeded_now)`` for ``proj``'s ``fab_floor_origin`` record.
@@ -775,7 +816,8 @@ def note_live_declared(board, keys) -> None:
     try:
         _LIVE_DECLARED.setdefault(live_board_key(board), set()).update(
             k for k in keys
-            if k in LIVE_RULE_ATTR or k == DEFAULT_CLASS_CLEARANCE_KEY)
+            if k in LIVE_RULE_ATTR or k == DEFAULT_CLASS_CLEARANCE_KEY
+            or str(k).startswith("severity:"))
     except Exception:                                           # noqa: BLE001
         pass
 
@@ -861,26 +903,51 @@ _LIVE_SESSION_RULES: dict = {}
 
 def note_live_session_rule(board, key: str, mm) -> None:
     """Lower the session-held ``key`` floor to ``mm`` (see
-    :data:`_LIVE_SESSION_RULES`); a None ``mm`` is ignored."""
+    :data:`_LIVE_SESSION_RULES`); a None ``mm`` is ignored. A repo-private
+    rule (:data:`REPO_RULE_KEYS`) also goes into the board's records, the
+    copy that survives KiCad's save (:func:`_effective_rules`)."""
     if mm is None:
         return
     try:
+        v = round(float(mm), 6)
         rules = _LIVE_SESSION_RULES.setdefault(live_board_key(board), {})
         cur = rules.get(key)
-        rules[key] = round(float(mm), 6) if cur is None else min(cur, round(float(mm), 6))
+        rules[key] = v if cur is None else min(cur, v)
+        if key in REPO_RULE_KEYS:
+            def _record(ns):
+                rec = ns.setdefault(REPO_RULES_KEY, {})
+                old = rec.get(key)
+                if isinstance(old, (int, float)) and old <= v + _FLOOR_EPS:
+                    return False
+                rec[key] = v
+                return True
+            import tool_records
+            tool_records.update_live_namespace(board, _record)
     except Exception:                                           # noqa: BLE001
         pass
 
 
 def live_declared_fab_floor_rules(board) -> dict:
     """The FAB_FLOOR_KEYS the live board DECLARES (:func:`live_declared_rules`,
-    plus the session-held floors pcbnew has no attribute for), positive values
+    plus the floors pcbnew has no attribute for: held for the session, or
+    carried in the board's records from an earlier one), positive values
     only, mm -- what the origin records and the disclosure compares, so a
     project-less board records and says what the CLI's writeback does on the
     same file: nothing at step 1."""
     out = {k: v for k, v in (live_declared_rules(board, FAB_FLOOR_LIVE_ATTR)
                              or {}).items() if v > 0}
+    extra = {}
+    try:
+        import tool_records
+        extra = {k: v for k, v in (tool_records.live_namespace(board)
+                                   .get(REPO_RULES_KEY) or {}).items()
+                 if k in REPO_RULE_KEYS and isinstance(v, (int, float))}
+    except Exception:                                           # noqa: BLE001
+        extra = {}
     for k, v in (_LIVE_SESSION_RULES.get(live_board_key(board)) or {}).items():
+        if v and v > 0:
+            extra[k] = min(v, extra[k]) if k in extra else v
+    for k, v in extra.items():
         if v and v > 0:
             out[k] = v
     return out
@@ -902,6 +969,55 @@ _LIVE_STEP_BEFORE: dict = {}
 def live_step_rules_before(board) -> dict:
     """The declared floors at the start of the board's current GUI step."""
     return dict(_LIVE_STEP_BEFORE.get(live_board_key(board)) or {})
+
+
+#: board key -> the Default class clearance the board DECLARED when its current
+#: GUI step started (None: a class it does not declare) -- the file
+#: writeback's ``_class_before`` (#1160).
+_LIVE_STEP_CLASS_BEFORE: dict = {}
+
+
+def _live_default_class_clearance(board):
+    """The live Default class clearance (mm) when the board declares the
+    class, else None -- what ``project_default_class_clearance`` reads off a
+    project."""
+    try:
+        if not live_declares_default_class(board):
+            return None
+        nc = board.GetDesignSettings().m_NetSettings.GetDefaultNetclass()
+        v = nc.GetClearance() / 1e6
+        return v if v > 0 else None
+    except Exception:                                           # noqa: BLE001
+        return None
+
+
+def record_live_class_clearance_descent(board) -> list:
+    """At a GUI step's end: :func:`record_class_clearance_descent` for the live
+    board -- the step's automatic descents lowered its Default class below what
+    it asked for -- recorded in the board's records (tool_records) as the file
+    writeback records it in the project. Returns the disclosure lines, as the
+    writeback prints them."""
+    key = live_board_key(board)
+    if key not in _LIVE_STEP_CLASS_BEFORE:
+        return []
+    before = _LIVE_STEP_CLASS_BEFORE.pop(key)
+    try:
+        import tool_records
+        ns = tool_records.live_namespace(board)
+        after = _live_default_class_clearance(board)
+        view = {"kicad_routing_tools": ns,
+                "net_settings": {"classes": ([{"name": "Default",
+                                               "clearance": after}]
+                                             if after else [])}}
+        rec, here = record_class_clearance_descent(view, before)
+        if here:
+            def _record(n):
+                n[CLASS_CLEARANCE_RELAXED_KEY] = dict(rec)
+                return True
+            tool_records.update_live_namespace(board, _record)
+        return class_clearance_disclosure(rec, here, after)
+    except Exception:                                           # noqa: BLE001
+        return []
 
 
 def open_live_step(board) -> None:
@@ -942,6 +1058,7 @@ def seed_live_fab_floor_origin(board) -> dict:
     key = live_board_key(board)
     if key not in _LIVE_STEP_OPEN:
         _LIVE_STEP_BEFORE[key] = dict(before)    # this step's rules_before
+        _LIVE_STEP_CLASS_BEFORE[key] = _live_default_class_clearance(board)
     # The records are the board's (tool_records): its project's copy and the
     # copy on the board itself, which KiCad's save keeps when it drops what
     # was written into the project after load.
@@ -1052,8 +1169,8 @@ def _fab_floor_disclosure(output_pcb: str, rules_before: dict, proj: dict,
     So: keep the relaxation (removing it re-manufactures phantom DRC), and
     make it impossible to miss. Counts, not adjectives.
     """
-    rules_after = ((proj.get("board") or {}).get("design_settings")
-                   or {}).get("rules") or {}
+    # A repo-private rule KiCad's save dropped is read from the records.
+    rules_after = _effective_rules(proj)
     origin = origin or {}
     relaxed = []
     for key, label in FAB_FLOOR_KEYS:
@@ -1370,6 +1487,16 @@ def apply_targets_to_project(proj: dict, targets: dict, sev_plan: dict,
             continue
         target = round(float(target), 6)
         cur = rules.get(key)
+        if key in REPO_RULE_KEYS:
+            # A repo-private rule KiCad's save may have dropped: decide on the
+            # records' copy too, and keep that copy in step with the rule.
+            cur = _effective_rules(proj).get(key)
+            if cur is None or cur > target + EPS:
+                changes.append(f"rules.{key}: {cur} -> {target} mm")
+                rules[key] = target
+                proj.setdefault("kicad_routing_tools", {}).setdefault(
+                    REPO_RULES_KEY, {})[key] = target
+            continue
         # min_copper_edge_clearance is the one floor that may RAISE (#441): it is
         # pinned to max(board rule, fab copper-to-edge minimum) because sub-fab
         # edge copper is a hard defect, so a board declaring a tiny/zero edge rule
@@ -1741,8 +1868,7 @@ def apply_routed_floors(board_pcb: str, clearance=None, hole_clearance=None,
     # writeback and is therefore the first thing in the chain that can move a
     # FAB_FLOOR_KEYS rule -- see seed_fab_floor_origin for what went silent
     # while this was the writeback's private business.
-    _rules_before = dict(((proj.get("board") or {}).get("design_settings")
-                          or {}).get("rules") or {})
+    _rules_before = _effective_rules(proj)
     targets = compute_targets(clearance=clearance, hole_clearance=hole_clearance)
     changes = apply_targets_to_project(
         proj, targets, {},
@@ -1935,8 +2061,7 @@ def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
     # them to whatever was routed. Kept so the relaxation can be disclosed
     # (see _fab_floor_disclosure): a clearance clamp is a grading decision, a
     # track/via floor is a statement about what the fab can make.
-    _rules_before = dict(((proj.get("board") or {}).get("design_settings")
-                          or {}).get("rules") or {})
+    _rules_before = _effective_rules(proj)
     # The floors the board declared BEFORE this chain touched anything. Seeded
     # on the first writeback and carried down with the project (same mechanism
     # as protected_nets / net_impedance, #521), so step N still knows what step
@@ -2353,7 +2478,32 @@ def apply_targets_to_board(board, targets: dict, sev_plan: dict,
         "lib_footprint_mismatch": "DRCE_LIBRARY_FOOTPRINT_MISMATCH",
         "starved_thermal": "DRCE_STARVED_THERMAL",
     }
-    if hasattr(bds, "SetSeverity") and hasattr(bds, "GetSeverity"):
+    _sev_api = (hasattr(bds, "SetSeverity") and hasattr(bds, "GetSeverity")
+                and all(hasattr(pcbnew, c) for c in code.values()))
+    if sev_plan and not _sev_api:
+        # KiCad 10.0.0's SWIG has no SetSeverity and no DRCE_* / RPT_SEVERITY_*
+        # names, and GetSeverity returns an opaque pointer (probed): there is
+        # no way to change a severity from here. Say so -- the CLI writes the
+        # relaxation into its project, and silence here read as "done". Nothing
+        # is changed, so nothing is recorded under saved_severities either.
+        print("  (DRC severities NOT relaxed: this pcbnew's scripting API "
+              "cannot change a rule severity -- set them in Board Setup > "
+              "Violation Severity if you want them relaxed)")
+    if _sev_api:
+        name_of = {v: k for k, v in sev_const.items()}
+        # What the board DECLARES for a category: its project's
+        # rule_severities, or this session's own setting. One it does not
+        # declare is "error" to the file writer (`sev.get(cat, "error")`), so it
+        # is here too -- for the decision and for the record below.
+        try:
+            _path = board.GetFileName() or ""
+        except Exception:
+            _path = ""
+        _proj_sev = ((((_project_doc(_path).get("board") or {})
+                       .get("design_settings") or {}).get("rule_severities")
+                      or {}) if _path else {})
+        _sess = _LIVE_DECLARED.get(live_board_key(board), set())
+        saved = {}
         for cat, level in sev_plan.items():
             cname = code.get(cat)
             drce = getattr(pcbnew, cname, None) if cname else None
@@ -2362,9 +2512,28 @@ def apply_targets_to_board(board, targets: dict, sev_plan: dict,
             tgt = sev_const[level]
             try:
                 cur = bds.GetSeverity(drce)
-                if rank.get(tgt, 2) < rank.get(cur, 2):   # only loosen
-                    bds.SetSeverity(drce, tgt)
+                cur_name = (name_of.get(cur, "error")
+                            if cat in _proj_sev or f"severity:{cat}" in _sess
+                            else "error")
+                if _SEV_RANK.get(level, 2) < _SEV_RANK.get(cur_name, 2):
+                    bds.SetSeverity(drce, tgt)               # only loosen
+                    note_live_declared(board, (f"severity:{cat}",))
+                    saved.setdefault(cat, cur_name)
                     changes.append(f"severity[{cat}] -> {level}")
+            except Exception:
+                pass
+        if saved:
+            # #856: the value a severity had before a tool lowered it, the
+            # FIRST writer's, as apply_targets_to_project records it -- into
+            # the board's records (tool_records), so it survives KiCad's save.
+            def _record(ns):
+                rec = ns.setdefault("saved_severities", {})
+                added = {c: v for c, v in saved.items() if c not in rec}
+                rec.update(added)
+                return bool(added)
+            try:
+                import tool_records
+                tool_records.update_live_namespace(board, _record)
             except Exception:
                 pass
     return changes

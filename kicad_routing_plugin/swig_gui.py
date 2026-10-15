@@ -4465,7 +4465,9 @@ class RoutingDialog(wx.Dialog):
                 via_size=config.get('via_size'),
                 via_drill=config.get('via_drill'),
                 hole_to_hole=config.get('hole_to_hole_clearance'),
-                edge_clearance=config.get('board_edge_clearance'))
+                edge_clearance=config.get('board_edge_clearance'),
+                # #581: recorded as route.py records --same-net-pad-clearance
+                same_net_pad_clearance=config.get('same_net_pad_clearance'))
 
     def _add_via_to_board(self, board, via, get_layer_id):
         """Add a via to the pcbnew board."""

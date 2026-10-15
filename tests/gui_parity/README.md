@@ -505,7 +505,10 @@ skip cleanly without KiCad python). Run any directly:
   of 12 checks: the copper-to-hole floor kept at 0.25 (CLI 0.15), Wide not
   clamped (0.4 vs 0.15), and on the project-less board hole-to-hole written,
   min_clearance 0 / edge 0.5 / hole diameter 0.3 left where the CLI writes
-  0.15 / 0.2 / 0.95 and creates the Default class.
+  0.15 / 0.2 / 0.95 and creates the Default class. A static arm checks every
+  `fanout_config` dict the tab really builds carries what the writeback reads:
+  the QFN one had no clearance, via size or drill, so the real QFN run wrote no
+  clearance where qfn_fanout does.
 - `test_records_survive_save.py` -- what a GUI step records survives the
   user's KiCad save. KiCad's project save rewrites the `.kicad_pro` from the
   copy it loaded and drops a `kicad_routing_tools` record written after load,
@@ -520,7 +523,18 @@ skip cleanly without KiCad python). Run any directly:
   carries it, and the plan executor's REAL `_write_drc_floors`, then a save,
   keeps every rule it wrote (it now writes them to the live board too, through
   `apply_fix_to_board`) and its origin. On the pre-fix code it fails 14
-  checks. The wx-free half is `tests/test_tool_records.py`.
+  checks. It also runs one arm per record a manual GUI step used to leave
+  unwritten -- each a GUI run, a KiCad save, then the CLI's own reader against
+  what the CLI step writes: an active #581 same-net pad via clearance (and every
+  tab's step boundary passing it), a #1160 Default-class descent record and its
+  disclosure, and the repo's `min_via_drill` floor (mirrored into
+  `kicad_routing_tools.repo_rules`, since KiCad's save drops a non-KiCad rule
+  written after load), including a next CLI step leaving both chains at the
+  same floor. #856 relaxed severities: KiCad 10.0.0's SWIG cannot change a
+  severity (no SetSeverity, no DRCE_* names), so the GUI changes none, records
+  no `saved_severities`, and now says so; where a pcbnew exposes the setter the
+  arm compares the records instead. Those arms fail 9 checks on the code
+  before them. The wx-free half is `tests/test_tool_records.py`.
 - `test_1187_live_web_floor.py` -- the narrow-pad-joint floor
   (`connection_width_floor`) on a live board reads the board's design settings
   through `PCBData.live_rules_provider`, at call time: after one GUI step's

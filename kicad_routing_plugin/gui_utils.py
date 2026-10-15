@@ -783,7 +783,8 @@ def default_netclass(board):
 def update_live_drc_floors(board, *, clearance=None, track_width=None,
                            via_size=None, via_drill=None,
                            hole_to_hole=None, edge_clearance=None,
-                           nondefault_clamp_mm=None, log=None):
+                           nondefault_clamp_mm=None, log=None,
+                           same_net_pad_clearance=None):
     """Per-step live DRC floor update -- the GUI twin of the CLI's
     per-step fix_project_for_output (#160). KiCad holds project settings in
     memory, so only the design-settings API affects a DRC run right after a
@@ -844,6 +845,13 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
             # #678: the fanout tab's pour-served balls, same step boundary.
             persist_pour_served_pads(_pro, consume_pour_served_pads(),
                                      board=board)
+            # #581: an ACTIVE same-net pad via clearance, as every CLI routing
+            # step records it, so a later chain step keeps vias off same-net
+            # pads too (the persist is a no-op for <= 0).
+            if same_net_pad_clearance is not None:
+                from protected_nets import persist_same_net_pad_clearance
+                persist_same_net_pad_clearance(_pro, same_net_pad_clearance,
+                                               board=board)
     except Exception:
         pass
     _clamped = []
@@ -1061,9 +1069,19 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
         if log:
             log(f"(live DRC floor update skipped: {e})\n")
     finally:
-        # The step's last live writer: the next origin seed is the next step's.
+        # The step's last live writer. #1160: a Default class this step's
+        # automatic descents lowered below what it asked for is recorded and
+        # said, as the file writeback does. Whatever an engine wrote into the
+        # project during the step (the planes engine's #581 record, say) goes
+        # onto the board too, the copy KiCad's save keeps. Then the next origin
+        # seed is the next step's.
         try:
-            from fix_kicad_drc_settings import close_live_step
+            from fix_kicad_drc_settings import (close_live_step,
+                                                record_live_class_clearance_descent)
+            for _line in record_live_class_clearance_descent(board):
+                print(_line)
+            import tool_records
+            tool_records.mirror_project_to_live_board(board)
             close_live_step(board)
         except Exception:
             pass

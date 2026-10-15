@@ -1958,6 +1958,8 @@ class FanoutTab(wx.Panel):
                 # #693: shared "Fix DRC settings after routing" checkbox --
                 # the apply path gates its live-floor writeback on this.
                 'fix_drc_settings': shared.get('fix_drc_settings', True),
+                # #581: recorded at the step boundary, as bga_fanout records it.
+                'same_net_pad_clearance': shared.get('same_net_pad_clearance', -1.0),
             },
             optimize_caps=config.get('optimize_caps', False),
         )
@@ -2034,11 +2036,20 @@ class FanoutTab(wx.Panel):
             fanout_config={
                 'track_width': track_width,
                 'extension': extension,
+                # The floors qfn_fanout's main writes back are this run's
+                # clearance and (when it drew a via) its via size and drill
+                # (fix_kicad_drc_settings.fanout_fix_kwargs). Without them here
+                # the tab wrote no clearance at all where the CLI writes it.
+                'clearance': clearance,
+                'via_size': via_size,
+                'via_drill': via_drill,
                 # Shared "Add teardrops" checkbox (#489 section 9).
                 'add_teardrops': shared.get('add_teardrops', False),
                 # #693: shared "Fix DRC settings after routing" checkbox --
                 # the apply path gates its live-floor writeback on this.
                 'fix_drc_settings': shared.get('fix_drc_settings', True),
+                # #581: recorded at the step boundary, as qfn_fanout records it.
+                'same_net_pad_clearance': shared.get('same_net_pad_clearance', -1.0),
             },
             fanout_kind='qfn',
         )
@@ -2226,6 +2237,7 @@ class FanoutTab(wx.Panel):
                 # the FAB FLOOR disclosure. Its floors are already written.
                 _nd_changes = update_live_drc_floors(
                     board,
+                    same_net_pad_clearance=_fcfg.get('same_net_pad_clearance'),
                     # #782: the writeback half of #768's GIVEN branch. This tab
                     # priced every class at min(class, ceiling) and then lowered
                     # NONE of them, so a Wide-class pair priced at 0.2 was graded
