@@ -19,6 +19,10 @@ this file runs without KiCad.
   4. KiROUND rounds halves away from zero (Python's round does not).
   5. A zone on no copper layer (mask, paste, silkscreen) is not modelled;
      one listing a copper layer among others is, on that layer only.
+  6. An Edge.Cuts polygon (gr_poly) keeps a repeated closing xy, as pcbnew's
+     pre-closed chain does, and its zero-length closing edge is skipped: a
+     rectangle written that way takes the plain-rectangle path, a pentagon is
+     a 5-vertex ring; an arc ending on the first point merges it.
 
     python3 tests/test_zone_outline_points.py
 """
@@ -31,7 +35,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(TESTS_DIR), 'py_router'))
 import zlib  # noqa: E402
 
 from kicad_parser import (extract_zones, extract_keepouts, zone_outline_points,  # noqa: E402
-                          kicad_arc_polyline, _kiround)
+                          kicad_arc_polyline, _kiround, kicad_poly_shape_points,
+                          extract_board_contours)
 
 failures = []
 
@@ -148,6 +153,21 @@ text = '(kicad_pcb\n\t(layers (0 "F.Cu" signal) (2 "B.Cu" signal))\n' + ''.join(
 got = sorted((z.priority, z.layer) for z in extract_zones(text))
 check("only the copper layers are modelled: F.Cu of the mixed zone, and B.Cu",
       got == [(4, 'F.Cu'), (5, 'B.Cu')], f"{got}")
+
+print("6. an Edge.Cuts polygon")
+check("a repeated closing xy is kept in a polygon shape (pcbnew holds 5 points)",
+      len(kicad_poly_shape_points('(xy 2 2) (xy 34 2) (xy 34 28) (xy 2 28) (xy 2 2)')) == 5)
+check("an arc ending on the first point merges it (the chain is already closed)",
+      kicad_poly_shape_points('(xy 3 1) (xy 33 1) (arc (start 33 1) (mid 34 2) (end 33 3)) '
+                              '(arc (start 33 3) (mid 18 20) (end 3 1))')[-1] != (3.0, 1.0))
+edge = '(kicad_pcb\n\t(gr_poly (pts %s) (stroke (width 0.1) (type solid)) (fill no) (layer "Edge.Cuts"))\n)\n'
+outers, cuts = extract_board_contours(edge % '(xy 2 2) (xy 34 2) (xy 34 28) (xy 2 28) (xy 2 2)')
+check("a rectangle with its closing point repeated takes the plain-rectangle path",
+      outers == [] and cuts == [], f"{[len(o) for o in outers]}")
+outers, cuts = extract_board_contours(
+    edge % '(xy 2 2) (xy 34 2) (xy 34 20) (xy 18 30) (xy 2 20) (xy 2 2)')
+check("a pentagon with its closing point repeated is one 5-vertex ring",
+      [len(o) for o in outers] == [5], f"{[len(o) for o in outers]}")
 
 if failures:
     print(f"\nFAILED: {failures}")

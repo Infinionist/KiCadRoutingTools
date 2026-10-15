@@ -2713,8 +2713,9 @@ def extract_board_bounds(content: str) -> Optional[Tuple[float, float, float, fl
                 max_y = max(max_y, py)
         found = True
 
-    # Look for gr_poly on Edge.Cuts (free-form board outlines)
-    for poly in _parse_gr_polys_on_layer(content, "Edge.Cuts"):
+    # Look for gr_poly on Edge.Cuts (free-form board outlines), with the
+    # points the outline scan reads (arc vertices included)
+    for poly in _edge_cuts_gr_poly_points(content):
         for px, py in poly:
             min_x = min(min_x, px)
             max_x = max(max_x, px)
@@ -2818,10 +2819,16 @@ def _collect_edge_cuts_segments(content: str) -> List[Tuple[Tuple[float, float],
         segments.append(((x2, y2), (x1, y2)))
         segments.append(((x1, y2), (x1, y1)))
 
-    # gr_poly - closed polygon outline, expand to line segments
-    for poly in _parse_gr_polys_on_layer(content, "Edge.Cuts"):
-        for i in range(len(poly)):
-            segments.append((poly[i], poly[(i + 1) % len(poly)]))
+    # gr_poly - closed polygon outline, expand to line segments. The points
+    # are pcbnew's (`kicad_poly_shape_points`: `(arc ..)` vertices too, which
+    # the old xy-only pattern did not match at all), and a ZERO-LENGTH edge is
+    # skipped as the gr_line reader above and the pcbnew builder skip it: a
+    # polygon written with its first point repeated at the end
+    # (Castor_and_Pollux's faceplate) otherwise chained into a 5-vertex ring
+    # here while the GUI saw the plain 4-edge rectangle KiCad's own board
+    # outline is.
+    for poly in _edge_cuts_gr_poly_points(content):
+        segments.extend(_closed_ring_segments(poly))
 
     # gr_curve - cubic bezier corner/edge (#304: crkbd's outline corners are
     # 100 gr_curves; without them the outline never chains closed, the halves'
@@ -2925,11 +2932,41 @@ def _collect_footprint_edge_segments_by_ref(content: str):
             poly_text = block[pm.start():p_end]
             if not re.search(r'\(layer\s+"Edge\.Cuts"\)', poly_text):
                 continue
-            pts = [to_g(float(xm.group(1)), float(xm.group(2)))
-                   for xm in re.finditer(r'\(xy\s+([\d.-]+)\s+([\d.-]+)\)', poly_text)]
-            for i in range(len(pts)):
-                out.append((pts[i], pts[(i + 1) % len(pts)]))
+            # pcbnew's points (arcs included), then the footprint transform,
+            # and no zero-length edge -- the gr_poly rule above.
+            pts = [to_g(x, y) for x, y in kicad_poly_shape_points(
+                poly_text[:find_matching_paren(poly_text, poly_text.find('(pts'))])]
+            out.extend(_closed_ring_segments(pts))
     return {r: segs for r, segs in out_by_ref.items() if segs}
+
+
+def _closed_ring_segments(pts):
+    """The edges of a closed ring of points, skipping a zero-length one
+    (under 1 um on both axes, the gr_line and pcbnew-builder rule)."""
+    segs = []
+    for i in range(len(pts)):
+        a, b = pts[i], pts[(i + 1) % len(pts)]
+        if abs(b[0] - a[0]) >= 0.001 or abs(b[1] - a[1]) >= 0.001:
+            segs.append((a, b))
+    return segs
+
+
+def _edge_cuts_gr_poly_points(content: str) -> List[List[Tuple[float, float]]]:
+    """The points of every board-level gr_poly on Edge.Cuts, as pcbnew holds
+    them (`kicad_poly_shape_points`). `content` is already pad-masked."""
+    polys = []
+    for m in re.finditer(r'\(gr_poly(?=[\s(])', content):
+        end = find_matching_paren(content, m.start())
+        blk = content[m.start():end]
+        if not re.search(r'\(layer\s+"Edge\.Cuts"\)', blk):
+            continue
+        p = blk.find('(pts')
+        if p < 0:
+            continue
+        pts = kicad_poly_shape_points(blk[p:find_matching_paren(blk, p)])
+        if pts:
+            polys.append(pts)
+    return polys
 
 
 def _parse_gr_polys_on_layer(content: str, layer: str) -> List[List[Tuple[float, float]]]:
@@ -6122,9 +6159,15 @@ class _KicadOutlineChain:
     Each point carries KiCad's pair of arc indices (first, second; -1 = none),
     because closing an outline can ROTATE it: mergeFirstLastPointIfNeeded
     drops a last point repeating the first and fixIndicesRotation then turns
-    the chain until it starts on a plain point or at an arc's start."""
+    the chain until it starts on a plain point or at an arc's start.
 
-    def __init__(self):
+    `closed=True` is a chain that is closed BEFORE its points arrive -- a
+    gr_poly / fp_poly's (EDA_SHAPE::SetPolyPoints -> SHAPE_POLY_SET::NewOutline
+    closes it): there the merge runs after every arc, never after an xy, so a
+    polygon whose last xy repeats its first point keeps it."""
+
+    def __init__(self, closed=False):
+        self.closed = closed
         self.keys = []        # (x_nm, y_nm)
         self.mm = []          # (x_mm, y_mm) as the file spells an xy point
         self.shapes = []      # [first, second] arc index per point
@@ -6162,8 +6205,10 @@ class _KicadOutlineChain:
             self.keys.append(p)
             self.mm.append((p[0] / 1e6, p[1] / 1e6))
             self.shapes.append([idx, -1])
+        if self.closed:
+            self._merge_closed()
         # mergeFirstLastPointIfNeeded, open branch
-        if len(self.keys) > 1 and self._shared(0):
+        elif len(self.keys) > 1 and self._shared(0):
             self.keys.append(self.keys[0])
             self.mm.append(self.mm[0])
             self.shapes.append([self.shapes[0][0], -1])
@@ -6186,7 +6231,12 @@ class _KicadOutlineChain:
         return self.arcs[self._arc_index(i)][0] == self.keys[i]
 
     def close(self):
-        """SetClosed(true) -> mergeFirstLastPointIfNeeded, closed branch."""
+        """SetClosed(true)."""
+        self.closed = True
+        self._merge_closed()
+
+    def _merge_closed(self):
+        """mergeFirstLastPointIfNeeded, closed branch."""
         if len(self.keys) > 1 and self.keys[0] == self.keys[-1]:
             last = self._arc_index(len(self.keys) - 1)
             if last != -1:
@@ -6206,18 +6256,10 @@ class _KicadOutlineChain:
                 rotations += 1
 
 
-def zone_outline_points(pts_text: str) -> List[Tuple[float, float]]:
-    """The vertices of one zone / rule-area ``(pts ...)`` as pcbnew loads it
-    (mm): each ``(xy X Y)`` as written, each ``(arc (start) (mid) (end))``
-    replaced by `kicad_arc_polyline` (vertices on the nm grid), a point
-    equal on the nm grid to the one before it dropped, the way
-    SHAPE_LINE_CHAIN::Append skips it, and a last point repeating the first
-    dropped once: parseZONE closes the outline (SetClosed(true) ->
-    mergeFirstLastPointIfNeeded) in every file format. KiCad never writes
-    one, but a KiCad 5-converted board does on every zone, and an outline
-    can end on its own start through an arc -- after which pcbnew turns the
-    chain to start on a plain point or an arc's start (`_KicadOutlineChain`)."""
-    chain = _KicadOutlineChain()
+def _read_outline_chain(pts_text: str, closed: bool) -> '_KicadOutlineChain':
+    """Every `(xy ..)` / `(arc ..)` vertex of a `(pts ...)` through a
+    `_KicadOutlineChain`, as KiCad's parseOutlinePoints feeds them."""
+    chain = _KicadOutlineChain(closed=closed)
     pos = 0
     while True:
         m = _OUTLINE_VERTEX_RE.search(pts_text, pos)
@@ -6240,8 +6282,33 @@ def zone_outline_points(pts_text: str) -> List[Tuple[float, float]]:
         if len(got) != 3:
             continue          # pcbnew refuses the file; nothing to mirror
         chain.append_arc(got['start'], got['mid'], got['end'])
+    return chain
+
+
+def zone_outline_points(pts_text: str) -> List[Tuple[float, float]]:
+    """The vertices of one zone / rule-area ``(pts ...)`` as pcbnew loads it
+    (mm): each ``(xy X Y)`` as written, each ``(arc (start) (mid) (end))``
+    replaced by `kicad_arc_polyline` (vertices on the nm grid), a point
+    equal on the nm grid to the one before it dropped, the way
+    SHAPE_LINE_CHAIN::Append skips it, and a last point repeating the first
+    dropped once: parseZONE closes the outline (SetClosed(true) ->
+    mergeFirstLastPointIfNeeded) in every file format. KiCad never writes
+    one, but a KiCad 5-converted board does on every zone, and an outline
+    can end on its own start through an arc -- after which pcbnew turns the
+    chain to start on a plain point or an arc's start (`_KicadOutlineChain`)."""
+    chain = _read_outline_chain(pts_text, closed=False)
     chain.close()
     return chain.mm
+
+
+def kicad_poly_shape_points(pts_text: str) -> List[Tuple[float, float]]:
+    """The vertices of a `gr_poly` / `fp_poly` ``(pts ...)`` as pcbnew holds
+    them in GetPolyShape().Outline(0) (mm, before a footprint's transform):
+    arcs as `kicad_arc_polyline`, consecutive duplicates dropped -- but the
+    chain is closed before its points arrive, so a last `xy` repeating the
+    first is KEPT (pcbnew keeps it; Castor_and_Pollux's faceplate outline)
+    and only an arc that ends on the first point merges it."""
+    return _read_outline_chain(pts_text, closed=True).mm
 
 
 def extract_zones(content: str, name_to_id: Dict[str, int] = None) -> List[Zone]:

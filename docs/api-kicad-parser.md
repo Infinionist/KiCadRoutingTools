@@ -592,6 +592,7 @@ large file:
 | `extract_zones(content, name_to_id=None)` | `List[Zone]` |
 | `extract_keepouts(content)` | `List[dict]` (keepout rule areas) |
 | `zone_outline_points(pts_text)` | the vertices of one zone / rule-area `(pts ...)` as pcbnew loads it (mm) |
+| `kicad_poly_shape_points(pts_text)` | the vertices of a `gr_poly` / `fp_poly` `(pts ...)` as pcbnew holds them (mm; a polygon shape's chain is closed before its points arrive) |
 | `kicad_arc_polyline(start, mid, end, max_error=ZONE_ARC_MAX_ERROR_NM)` | the polyline pcbnew holds for a three-point arc, integer nm |
 | `extract_board_contours(content)` | `(outline, cutouts)` |
 | `parse_guide_paths(content, layer)` | `List[GuidePath]` from a user layer |
@@ -636,9 +637,28 @@ large file:
   them -- and on degenerate arcs; `tests/test_zone_outline_points.py` pins
   vertices pcbnew produced). Before, only `(xy ..)` was read: an all-arc
   outline gave no points and its zone was dropped (key_ripper's `F&B.Cu` GND
-  pour), a mixed one lost its arcs. KiCad 9 polygonises the same arc at
-  5000 nm, so a KiCad 9 pcbnew holds fewer vertices on it than this parser;
-  the copper differs by under 5 µm.
+  pour), a mixed one lost its arcs.
+- **Outline-arc tessellation is KiCad-VERSION dependent, and the parser
+  follows KiCad 10.** pcbnew polygonises an outline arc at
+  `getArcPolygonizationMaxError()` = 1000 nm in KiCad 10, and at
+  `ARC_HIGH_DEF` = 5000 nm in KiCad 9. The text parser cannot know which
+  KiCad the GUI runs, so it uses `ZONE_ARC_MAX_ERROR_NM` = 1000 nm. On a
+  KiCad 9 GUI, `build_pcb_data_from_board` therefore holds fewer vertices on
+  every arc in a zone, rule-area or Edge.Cuts polygon outline, and
+  `compare_pcb_data` reports a vertex-count difference on each of them: that
+  is this known difference, not a parse bug, and the copper differs by under
+  5 µm. (`gr_arc` / `gr_circle` / `gr_curve` board edges are not affected:
+  both fronts tessellate those with the same function.)
+- **An Edge.Cuts `gr_poly` / `fp_poly` is read with pcbnew's points**
+  (`kicad_poly_shape_points`): its `(arc ..)` vertices as KiCad's polyline,
+  and -- because KiCad closes a polygon shape's chain BEFORE its points
+  arrive -- a last `xy` repeating the first point is kept (only an arc ending
+  on the first point merges it), while a zero-length edge is skipped, as both
+  fronts skip one from a `gr_line`. So a rectangle drawn as a polygon with its
+  closing point repeated takes the plain-rectangle path (no ring; the bounds),
+  as on the GUI and as in KiCad's own board outline (Castor_and_Pollux's
+  faceplate used to chain into a 5-vertex ring on the CLI), and a polygon
+  with an arc vertex is not lost (`tests/gui_parity/test_edge_poly_outline_parity.py`).
 - **`board_info.stackup` is on `board_info`**, not on `PCBData` directly,
   and is an empty list when the board file has no stackup section (impedance
   functions then fall back to FR4 defaults).
