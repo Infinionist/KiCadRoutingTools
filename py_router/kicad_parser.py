@@ -8630,33 +8630,57 @@ def compare_pcb_data(from_board: 'PCBData', from_file: 'PCBData', tolerance: flo
     _multiset_diff(from_board.vias, from_file.vias, _via_sig, "Via",
                    lambda v: f"({v[0]},{v[1]}) size={v[2]} drill={v[3]} net={v[4]} layers={list(v[5])}")
 
-    # --- Compare zones (net/layer/vertex count) ---
+    # --- Compare zones, as a multiset per (net, layer) ---
+    # Pairing the two lists by sort order on (net_id, layer) was ambiguous
+    # wherever two zones share a net and a layer -- a pour and the teardrops on
+    # its tracks (#1164), or two pours -- so a disagreement could land on the
+    # wrong partner, or two could cancel. Each (net, layer) group is compared as
+    # a multiset of what a consumer reads: the teardrop flag (#1164: it decides
+    # `pour_zones` membership -- rip-eligibility, the --force-reroute skip, the
+    # plane-finalize hand-off, the GUI's plane suggestions), the vertex count,
+    # and the fill semantics (#350: the priority-exact fill-point rejection and
+    # the island-patch gating diverge CLI vs GUI without them).
+    # island_area_min is only meaningful in mode 2: pcbnew's GetMinIslandArea()
+    # reports the C++ default (10mm^2) even when the file carries no token
+    # (mode 0/1 zones), so comparing it unconditionally manufactured phantom
+    # parity diffs (free_dap).
     if len(from_board.zones) != len(from_file.zones):
         diffs.append(f"Zone count: board={len(from_board.zones)} file={len(from_file.zones)}")
-    else:
-        # Compare zones by net_id and layer
-        b_zones = sorted(from_board.zones, key=lambda z: (z.net_id, z.layer))
-        f_zones = sorted(from_file.zones, key=lambda z: (z.net_id, z.layer))
-        for bz, fz in zip(b_zones, f_zones):
-            if bz.net_id != fz.net_id:
-                diffs.append(f"Zone net_id mismatch: board={bz.net_id} file={fz.net_id}")
-            if bz.layer != fz.layer:
-                diffs.append(f"Zone layer mismatch: board={bz.layer} file={fz.layer}")
-            if len(bz.polygon) != len(fz.polygon):
-                diffs.append(f"Zone net={bz.net_id} layer={bz.layer} vertex count: board={len(bz.polygon)} file={len(fz.polygon)}")
-            # Fill semantics (#350): both fronts must agree or the priority-
-            # exact fill-point rejection / island-patch gating diverge CLI vs GUI.
-            if getattr(bz, 'priority', 0) != getattr(fz, 'priority', 0):
-                diffs.append(f"Zone net={bz.net_id} layer={bz.layer} priority: board={bz.priority} file={fz.priority}")
-            if getattr(bz, 'island_removal_mode', 0) != getattr(fz, 'island_removal_mode', 0):
-                diffs.append(f"Zone net={bz.net_id} layer={bz.layer} island_removal_mode: board={bz.island_removal_mode} file={fz.island_removal_mode}")
-            # island_area_min is only meaningful in mode 2: pcbnew's
-            # GetMinIslandArea() reports the C++ default (10mm^2) even when
-            # the file carries no token (mode 0/1 zones), so comparing it
-            # unconditionally manufactured phantom parity diffs (free_dap).
-            if (getattr(bz, 'island_removal_mode', 0) == 2
-                    and abs(getattr(bz, 'island_area_min', 0.0) - getattr(fz, 'island_area_min', 0.0)) > 0.01):
-                diffs.append(f"Zone net={bz.net_id} layer={bz.layer} island_area_min: board={bz.island_area_min} file={fz.island_area_min}")
+
+    def _zone_sig(z):
+        mode = getattr(z, 'island_removal_mode', 0)
+        return (bool(getattr(z, 'teardrop', False)), len(z.polygon),
+                getattr(z, 'priority', 0), mode,
+                round(getattr(z, 'island_area_min', 0.0), 3) if mode == 2 else None)
+
+    def _zone_fmt(s):
+        return (f"[{'teardrop' if s[0] else 'pour'} vertices={s[1]} priority={s[2]} "
+                f"island_mode={s[3]}" + (f" island_area_min={s[4]}" if s[3] == 2 else '')
+                + ']')
+
+    from collections import Counter as _Counter
+    _zb, _zf = {}, {}
+    for _z in from_board.zones:
+        _zb.setdefault((_z.net_id, _z.layer), _Counter())[_zone_sig(_z)] += 1
+    for _z in from_file.zones:
+        _zf.setdefault((_z.net_id, _z.layer), _Counter())[_zone_sig(_z)] += 1
+    for _key in sorted(set(_zb) | set(_zf), key=lambda k: (k[0], str(k[1]))):
+        cb, cf = _zb.get(_key, _Counter()), _zf.get(_key, _Counter())
+        if cb == cf:
+            continue
+        net_id, layer = _key
+        td_b = sum(n for s, n in cb.items() if s[0])
+        td_f = sum(n for s, n in cf.items() if s[0])
+        if td_b != td_f:
+            diffs.append(f"Zone net={net_id} layer={layer} teardrop count: "
+                         f"board={td_b} file={td_f}")
+        only_b = sorted((cb - cf).elements())
+        only_f = sorted((cf - cb).elements())
+        diffs.append(
+            f"Zone net={net_id} layer={layer}: {len(only_b)} only in board "
+            f"{' '.join(map(_zone_fmt, only_b[:3]))}{' ...' if len(only_b) > 3 else ''}; "
+            f"{len(only_f)} only in file "
+            f"{' '.join(map(_zone_fmt, only_f[:3]))}{' ...' if len(only_f) > 3 else ''}")
 
     # --- Compare board outline / cutouts (used for edge & cutout obstacles) ---
     bo_b = bi_b.board_outline or []

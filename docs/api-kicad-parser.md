@@ -545,7 +545,11 @@ actually consumes: board info (layers, bounds, stackup), nets, footprint locks,
 footprint and per-pad geometry (position, size, `rect_rotation`, `roundrect_rratio`,
 `local_clearance`, drill, layers), track and via geometry (matched as a
 multiset, not just counts), zones, board outline/cutouts, keepout zones, and
-guide paths.
+guide paths. Zones are compared per (net, layer) as a multiset of the teardrop
+flag, the vertex count, the priority and the island-removal semantics, so a
+pour and the teardrops that share its net and layer cannot be paired with the
+wrong partner; a disagreement on the flag is named as a `teardrop count` line
+(#1164, pinned by `tests/gui_parity/test_1164_teardrop_parity.py`).
 
 ```python
 save_extracted_data(pcb_data: PCBData, output_path: str)
