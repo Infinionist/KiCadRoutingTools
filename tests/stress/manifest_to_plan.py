@@ -857,10 +857,12 @@ def cap_optimization_step(argv, cwd=None):
     return step
 
 
-def prune_manifest(cmds):
+def prune_manifest(cmds, manifest=None):
     """(keep, rejected) for a parsed manifest: the indices of the commands a
-    plan is built from, and {index: why} for every converted-tool command the
-    tool's OWN argparse rejects (cli_argv_check).
+    plan is built from, and {index: why} for every converted-tool command its
+    tool would refuse before routing (cli_argv_check): at argparse, or in a
+    post-parse check its main makes on the arguments or on a file they name,
+    resolved against the command's recorded cwd (else the manifest's folder).
 
     A rejected command ran nothing and wrote no board, so it is pruned as if it
     were not in the manifest: a board it names binds to the command that really
@@ -878,7 +880,8 @@ def prune_manifest(cmds):
     for i, (_cwd, argv) in enumerate(cmds):
         if is_check_cmd(argv) or '--help' in argv or '-h' in argv:
             continue
-        why = rejection(argv)
+        why = rejection(argv, cwd=_cwd or (os.path.dirname(os.path.abspath(
+            manifest)) if manifest else None))
         if why:
             rejected[i] = why
     keep, _info = compute_prune_keep(
@@ -914,7 +917,7 @@ def plan_steps_from_manifest(manifest, keep_files=False):
     from redo_stress_test import parse_manifest, is_check_cmd
 
     cmds = parse_manifest(manifest)
-    keep, rejected = prune_manifest(cmds)
+    keep, rejected = prune_manifest(cmds, manifest)
 
     steps = []
     skipped = len(rejected)

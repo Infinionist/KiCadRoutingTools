@@ -172,7 +172,7 @@ def _plan_pairs(manifest):
     cmds = parse_manifest(manifest)
     # The converter's own prune, which leaves out commands their tool's parser
     # rejects (the CLI ran nothing for them).
-    keep, _rejected = m2p.prune_manifest(cmds)
+    keep, _rejected = m2p.prune_manifest(cmds, manifest)
     steps = []
     pairs = []
     for i, (_cwd, argv) in enumerate(cmds):
@@ -1528,19 +1528,26 @@ def check_group_flags():
 
 
 def check_rejected_steps():
-    """A recorded command its tool's own argparse REJECTS ran nothing on the
-    CLI, so it must not become a plan step that runs in the GUI.
+    """A recorded command its tool REFUSES -- at argparse, or in a check its
+    main makes after parsing -- ran nothing on the CLI, so it must not become a
+    plan step that runs in the GUI.
 
     hexberry_fpga recorded `qfn_fanout.py ... --dry-run` (qfn_fanout has no
     --dry-run: exit 2, no board). The pruner keeps commands by the boards they
-    NAME, not by whether they ran, so a rejected command that is the last to
+    NAME, not by whether they ran, so a refused command that is the last to
     name a board a later step reads was kept and converted -- hexberry's escaped
-    only because it named no output. Self-contained: two synthetic chains.
-      A  the rejected command is that last writer: no fanout step at all.
+    only because it named no output. Self-contained synthetic chains:
+      A  an argparse rejection is that last writer: no fanout step at all.
       B  it is a rejected RETRY of an accepted command: the plan's fanout is
          the accepted one (no --width), since that is the board the route
          step really read.
-    Both must be named, counted, on stderr.
+      C  a POST-PARSE refusal as the last writer: route_planes' nets/layers
+         count mismatch, which the converter paired up itself into a
+         runnable plane step.
+      D  a post-parse refusal as a retry: route.py --force-reroute with no
+         scope, which would have converted to nets '*' -- a GUI step that
+         rips the WHOLE board, the thing the CLI guard exists to prevent.
+    Each must be named, counted, on stderr.
     """
     import contextlib
     import io
@@ -1549,14 +1556,25 @@ def check_rejected_steps():
     bad = []
     qfn = "python3 py_router/qfn_fanout.py b0.kicad_pcb --output b1.kicad_pcb --component U7"
     route = "python3 py_router/route.py b1.kicad_pcb b2.kicad_pcb --nets '*'"
+    planes = ("python3 py_router/route_planes.py b0.kicad_pcb b1.kicad_pcb "
+              "--nets GND VCC --plane-layers In1.Cu")
+    route0 = "python3 py_router/route.py b0.kicad_pcb b1.kicad_pcb"
+    # name: (lines, the plan's actions, the FIRST step's params (None: not
+    # checked), the refusal's text on stderr)
     chains = {
-        'A': ([qfn + " --dry-run", route], ['route'], None),
+        'A': ([qfn + " --dry-run", route], ['route'], None,
+              'unrecognized arguments: --dry-run'),
         'B': ([qfn, qfn + " --width 0.1 --dry-run", route],
-              ['fanout', 'route'], {}),
+              ['fanout', 'route'], {}, 'unrecognized arguments: --dry-run'),
+        'C': ([planes, route], ['route'], None, 'number of net arguments'),
+        'D': ([route0 + " --nets '*'", route0 + " --force-reroute",
+               "python3 py_router/route.py b1.kicad_pcb b2.kicad_pcb --nets GND"],
+              ['route', 'route'], {}, 'requires an explicit net scope'),
     }
     d = tempfile.mkdtemp()
     try:
-        for name, (lines, want_actions, want_fanout_params) in chains.items():
+        for name, (lines, want_actions, want_first_params, needle) in \
+                chains.items():
             man = os.path.join(d, f'redo_{name}.sh')
             with open(man, 'w', encoding='utf-8', newline='\n') as f:
                 f.write('#!/bin/sh\n' + '\n'.join(lines) + '\n')
@@ -1567,20 +1585,19 @@ def check_rejected_steps():
             if actions != want_actions:
                 bad.append((f'<chain {name}>',
                             f"steps {actions}, want {want_actions}: a command "
-                            f"its parser rejects was converted into a runnable "
+                            f"its tool refuses was converted into a runnable "
                             f"step"))
-            fan = [s for s in steps if s.get('action') == 'fanout']
-            if want_fanout_params is not None and fan and \
-                    (fan[0].get('params') or {}) != want_fanout_params:
+            if want_first_params is not None and steps and \
+                    (steps[0].get('params') or {}) != want_first_params:
                 bad.append((f'<chain {name}>',
-                            f"fanout params {fan[0].get('params')}: the plan "
-                            f"took the REJECTED retry, not the command that "
-                            f"wrote the board the route step read"))
+                            f"first step params {steps[0].get('params')}: the "
+                            f"plan took the REFUSED retry, not the command "
+                            f"that wrote the board the next step read"))
             text = err.getvalue()
-            if not ('REJECTED' in text and 'unrecognized arguments: --dry-run'
-                    in text):
+            if not ('REJECTED' in text and needle in text):
                 bad.append((f'<chain {name}>',
-                            "the rejected command was not named on stderr"))
+                            f"the refused command was not named on stderr "
+                            f"({needle!r})"))
     finally:
         shutil.rmtree(d, ignore_errors=True)
     # Where a tool's parser cannot be built (a missing dependency in this
@@ -1603,12 +1620,211 @@ def check_rejected_steps():
     # check it carries would vanish from the count without a failure. Its
     # bga_fanout line once passed the output positionally, which bga_fanout
     # refuses (it takes --output): 13 BGA flag checks went that way.
-    _keep, fixture_rejected = m2p.prune_manifest(parse_manifest(FIXTURE))
+    _keep, fixture_rejected = m2p.prune_manifest(parse_manifest(FIXTURE),
+                                                 FIXTURE)
     for i, why in sorted(fixture_rejected.items()):
         bad.append(('<fixture>', f"command {i + 1} is rejected by its own "
                                  f"tool ({why}); the flag checks it carries "
                                  f"would silently drop out"))
     return bad
+
+
+#: The converted tools' mains, as REFUSAL_SITES names them: (source, the
+#: function, or None for an `if __name__ == '__main__':` block).
+_MAINS = {
+    'route.py': ('py_router/route.py', None),
+    'route_diff.py': ('py_router/route_diff.py', None),
+    'route_planes.py': ('py_router/route_planes.py', 'main'),
+    'repair_planes.py': ('py_router/repair_planes.py', 'main'),
+    'bga_fanout.py': ('py_router/bga_fanout/__init__.py', 'main'),
+    'qfn_fanout.py': ('py_router/qfn_fanout/__init__.py', 'main'),
+    'place_fanout_clearance.py': ('py_placer/place_fanout_clearance.py', 'main'),
+}
+#: Helpers a main calls that END the run on a bad argument or named file
+#: (raise SystemExit / return an exit code) -- the AST below cannot see into
+#: them, so each is a site of its own.
+_EXITING_HELPERS = ('fab_tier_from_args', 'read_brief_keep_away',
+                    'load_net_clearances', 'load_intent_or_exit',
+                    'tether_gate_spec', 'declared_cap_rotations')
+
+
+def refusal_sites(tool):
+    """{fingerprint: line} of every refusal in `tool`'s main after its
+    parse_args: a `.error(...)` call (by its message head), a non-zero
+    `exit(...)` / `return` / `raise SystemExit` (by the `if` guarding it),
+    and a call to an _EXITING_HELPERS helper (`call:<name>`)."""
+    rel, fn = _MAINS[tool]
+    tree = ast.parse((REPO / rel).read_text(encoding='utf-8'))
+    if fn is None:
+        body = next(n for n in tree.body if isinstance(n, ast.If)
+                    and isinstance(n.test, ast.Compare)
+                    and getattr(n.test.left, 'id', '') == '__name__')
+    else:
+        body = _function(tree, fn)
+    parent = {c: p for p in ast.walk(body) for c in ast.iter_child_nodes(p)}
+    start = min(c.lineno for c in ast.walk(body)
+                if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+                and c.func.attr == 'parse_args')
+
+    def guard(node):
+        # The nearest `if` (or `except`) that decides the refusal, inside the
+        # main -- never the `if __name__ == '__main__':` block itself.
+        p = parent.get(node)
+        while p is not None and p is not body:
+            if isinstance(p, ast.If):
+                return ('if ' + ast.unparse(p.test))[:70]
+            if isinstance(p, ast.ExceptHandler):
+                tried = next((ast.unparse(c.func) for s in parent[p].body
+                              for c in ast.walk(s) if isinstance(c, ast.Call)),
+                             '?')
+                return (f"except {ast.unparse(p.type) if p.type else ''} "
+                        f"from {tried}")[:70]
+            p = parent.get(p)
+        return '<unguarded>'
+
+    def nonzero(v):
+        return (isinstance(v, ast.Name) or (isinstance(v, ast.Constant)
+                and isinstance(v.value, int) and v.value != 0))
+
+    out = {}
+    for c in ast.walk(body):
+        if getattr(c, 'lineno', 0) <= start:
+            continue
+        key = None
+        if isinstance(c, ast.Call):
+            name = (c.func.attr if isinstance(c.func, ast.Attribute)
+                    else getattr(c.func, 'id', ''))
+            if name == 'error' and isinstance(c.func, ast.Attribute) and c.args:
+                # The message's first literal text, wherever it sits (an
+                # f-string, a `"..." % x`); a message with none -- error(_kae)
+                # -- is known by the `if` that guards it instead.
+                head = next((s.value for s in ast.walk(c.args[0])
+                             if isinstance(s, ast.Constant)
+                             and isinstance(s.value, str) and s.value.strip()),
+                            None)
+                key = head[:40] if head else guard(c)
+            elif name == 'exit' and c.args and nonzero(c.args[0]):
+                key = guard(c)
+            elif name in _EXITING_HELPERS:
+                key = 'call:' + name
+        elif isinstance(c, ast.Return) and c.value is not None and nonzero(c.value):
+            key = guard(c)
+        elif isinstance(c, ast.Raise) and 'SystemExit' in ast.unparse(c.exc or c):
+            key = guard(c)
+        if key:
+            out.setdefault(key, c.lineno)
+    return out
+
+
+def check_refusal_inventory():
+    """Every post-parse refusal in a converted tool's main is classified in
+    cli_argv_check.REFUSAL_SITES, and every check it names exists.
+
+    A command a main refuses AFTER parse_args (route_planes' nets/layers count,
+    route.py's --force-reroute without a scope, a missing --fab-overrides file)
+    ran nothing on the CLI, but the parser accepts it, so it used to convert
+    into a GUI step that runs -- with --force-reroute and no nets, a GUI step
+    that rips the whole board. cli_argv_check judges the argument- and
+    named-file checks; this keeps its table in step with the mains: an
+    unclassified site (a new refusal) or a stale entry fails here.
+    """
+    import cli_argv_check as cac
+    bad = []
+    for tool in _MAINS:
+        sites = refusal_sites(tool)
+        table = cac.REFUSAL_SITES.get(tool, {})
+        checks = {f.__name__ for f in cac.POST_PARSE.get(tool, ())}
+        for key, line in sorted(sites.items(), key=lambda kv: kv[1]):
+            if key not in table:
+                bad.append((tool, f"line {line}: refusal {key!r} is not in "
+                                  f"cli_argv_check.REFUSAL_SITES -- classify it "
+                                  f"(argv/file with its check, or board / never "
+                                  f"a step / after the run, with the reason)"))
+        for key, (disp, what) in table.items():
+            if key not in sites:
+                bad.append((tool, f"STALE REFUSAL_SITES entry {key!r}: no "
+                                  f"such refusal in the main any more"))
+            if disp in ('argv', 'file') and what not in checks:
+                bad.append((tool, f"{key!r} is judged by {what}, which is not "
+                                  f"in POST_PARSE[{tool!r}]"))
+    return bad
+
+
+#: (the POST_PARSE check it witnesses, the command's tool + arguments, what
+#: cli_argv_check must say: a refusal's text, or None = accepted), run from a
+#: folder holding fab.txt only ({tmp}) -- or, with a 4th element 'gone', from a
+#: recorded folder that does not exist here, where a named file is not judged.
+_POST_PARSE_WITNESSES = (
+    ('_fab_overrides_missing', 'route.py a.kicad_pcb b.kicad_pcb --nets X '
+     '--fab-overrides {tmp}/missing.txt', '--fab-overrides file not found'),
+    ('_fab_overrides_missing', 'route.py a.kicad_pcb b.kicad_pcb --nets X '
+     '--fab-overrides {tmp}/fab.txt', None),
+    ('_fab_overrides_missing', 'qfn_fanout.py a.kicad_pcb --output b.kicad_pcb '
+     '--fab-overrides fab.txt', None, 'gone'),
+    ('_output_twice', 'route.py a.kicad_pcb b.kicad_pcb --output c.kicad_pcb',
+     'were both given, and differ'),
+    ('_output_twice', 'route.py a.kicad_pcb b.kicad_pcb --output b.kicad_pcb',
+     None),
+    ('_route_group_empty', "route.py a.kicad_pcb --group ' '", 'empty name'),
+    ('_keep_away', 'route.py a.kicad_pcb b.kicad_pcb --nets X --keep-away A:B:x',
+     '--keep-away'),
+    ('_route_force_reroute_unscoped', 'route.py a.kicad_pcb b.kicad_pcb '
+     '--force-reroute', 'explicit net scope'),
+    ('_route_force_reroute_unscoped', 'route.py a.kicad_pcb b.kicad_pcb '
+     '--force-reroute --nets X', None),
+    ('_route_group_sources', 'route.py a.kicad_pcb --group U1 --group-by bogus',
+     'unknown group source'),
+    ('_net_clearances_unreadable', 'route_diff.py a.kicad_pcb b.kicad_pcb '
+     '--net-clearances {tmp}/missing.json', '--net-clearances'),
+    ('_planes_count_mismatch', 'route_planes.py a.kicad_pcb b.kicad_pcb '
+     '--nets GND VCC --plane-layers In1.Cu', 'number of net arguments (2)'),
+    ('_planes_count_mismatch', 'route_planes.py a.kicad_pcb b.kicad_pcb '
+     '--nets GND VCC --plane-layers In1.Cu In2.Cu', None),
+    ('_repair_count_mismatch', 'repair_planes.py a.kicad_pcb b.kicad_pcb '
+     '--nets GND VCC --plane-layers In1.Cu', 'counts must match'),
+    ('_cap_clearance_not_finite', 'place_fanout_clearance.py a.kicad_pcb '
+     '--clearance nan', 'finite number'),
+    ('_cap_clearance_not_finite', 'place_fanout_clearance.py a.kicad_pcb '
+     '--clearance 0.1', None),
+    ('_cap_intent_unreadable', 'place_fanout_clearance.py a.kicad_pcb '
+     '--intent {tmp}/missing.intent.json', 'cannot load intent'),
+)
+
+
+def check_post_parse_witnesses():
+    """Each argument/named-file check of cli_argv_check refuses its witness
+    command with its own reason, and accepts the near miss beside it; every
+    check in POST_PARSE has a refusing witness, so none is decorative."""
+    import shlex
+    import shutil
+    import tempfile
+    import cli_argv_check as cac
+    bad = []
+    tmp = tempfile.mkdtemp()
+    try:
+        with open(os.path.join(tmp, 'fab.txt'), 'w', encoding='utf-8') as f:
+            f.write('# no override\n')
+        gone = os.path.join(tmp, 'not-here')
+        refusing = set()
+        for check, cmd, want, *where in _POST_PARSE_WITNESSES:
+            argv = ['python3'] + shlex.split(cmd.format(tmp=tmp))
+            got = cac.rejection(argv, cwd=gone if where == ['gone'] else tmp)
+            if want is None and got:
+                bad.append((check, f"refused a command its tool accepts: "
+                                   f"{cmd} -> {got}"))
+            elif want is not None and not (got and want in got
+                                           and 'after parsing' in got):
+                bad.append((check, f"{cmd}: want a post-parse refusal "
+                                   f"naming {want!r}, got {got!r}"))
+            elif want is not None:
+                refusing.add(check)
+        for checks in cac.POST_PARSE.values():
+            for fn in checks:
+                if fn.__name__ not in refusing:
+                    bad.append((fn.__name__, "no witness command it refuses"))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return sorted(set(bad))
 
 
 def check_refused_tools():
@@ -1882,13 +2098,22 @@ def main():
         print(f"    {f}: {why}")
 
     rej_bad = check_rejected_steps()
-    print(f"Parser-rejected commands: {'OK' if not rej_bad else 'FAILED'} "
-          f"(never plan steps; the board binds to its real writer; named).")
+    print(f"Refused commands: {'OK' if not rej_bad else 'FAILED'} "
+          f"(at argparse or after it: never plan steps; the board binds to "
+          f"its real writer; named).")
     for f, why in rej_bad:
         print(f"    {f}: {why}")
 
+    inv_bad = check_refusal_inventory() + check_post_parse_witnesses()
+    _n_sites = sum(len(refusal_sites(t)) for t in _MAINS)
+    print(f"Post-parse refusals: {'OK' if not inv_bad else 'FAILED'} "
+          f"({_n_sites} sites in {len(_MAINS)} mains, each classified; every "
+          f"argument/file check refuses its witness).")
+    for f, why in inv_bad:
+        print(f"    {f}: {why}")
+
     return 1 if (total_bad or res_bad or cap_bad or own_bad or flag_bad
-                 or grp_bad or ref_bad or reg_bad or rej_bad) else 0
+                 or grp_bad or ref_bad or reg_bad or rej_bad or inv_bad) else 0
 
 
 if __name__ == "__main__":
