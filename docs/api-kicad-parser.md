@@ -553,10 +553,13 @@ footprint and per-pad geometry (position, size, `rect_rotation`, `roundrect_rrat
 `local_clearance`, drill, layers), track and via geometry (matched as a
 multiset, not just counts), zones, board outline/cutouts, keepout zones, and
 guide paths. Zones are compared per (net, layer) as a multiset of the teardrop
-flag, the vertex count, the priority and the island-removal semantics, so a
-pour and the teardrops that share its net and layer cannot be paired with the
-wrong partner; a disagreement on the flag is named as a `teardrop count` line
-(#1164, pinned by `tests/gui_parity/test_1164_teardrop_parity.py`).
+flag, the outline's vertices on the nm grid, the priority and the
+island-removal semantics, so a pour and the teardrops that share its net and
+layer cannot be paired with the wrong partner; a disagreement on the flag is
+named as a `teardrop count` line (#1164, pinned by
+`tests/gui_parity/test_1164_teardrop_parity.py`). Both fronts hold the
+vertices pcbnew loads (arcs as KiCad's polyline, the closing vertex dropped),
+so they agree to the nanometre or not at all.
 On KiCad 10.0.0 the SWIG bindings do not wrap `BOARD_STACKUP`
 (`GetStackupDescriptor()` returns an opaque pointer), so
 `build_pcb_data_from_board` reads the stackup from the board FILE through
