@@ -8364,6 +8364,23 @@ def compare_pcb_data(from_board: 'PCBData', from_file: 'PCBData', tolerance: flo
 
     if len(bi_b.stackup) != len(bi_f.stackup):
         diffs.append(f"Stackup layer count: board={len(bi_b.stackup)} file={len(bi_f.stackup)}")
+    # Layer by layer (#1222): the impedance width solver and the via barrel
+    # length read thickness, epsilon_r and loss_tangent, so a front that
+    # combines a multi-sheet dielectric or reads a locked thickness differently
+    # sizes different tracks. Thickness to 1 nm (pcbnew holds it in integer
+    # nm); the two dielectric constants to 1e-6, well above float noise and
+    # far below any declared value's precision.
+    for i, (sb, sf) in enumerate(zip(bi_b.stackup, bi_f.stackup)):
+        if (sb.name, sb.layer_type) != (sf.name, sf.layer_type):
+            diffs.append(f"Stackup layer {i}: board={sb.name!r} ({sb.layer_type}) "
+                         f"file={sf.name!r} ({sf.layer_type})")
+            continue
+        for _attr, _tol in (('thickness', 1e-6), ('epsilon_r', 1e-6),
+                            ('loss_tangent', 1e-6)):
+            vb, vf = getattr(sb, _attr), getattr(sf, _attr)
+            if abs(vb - vf) > _tol:
+                diffs.append(f"Stackup layer {i} {sb.name!r} {_attr}: "
+                             f"board={vb!r} file={vf!r}")
 
     # --- Compare nets (net 0 = unconnected pseudo-net; one path may list it) ---
     board_net_ids = set(from_board.nets.keys()) - {0}

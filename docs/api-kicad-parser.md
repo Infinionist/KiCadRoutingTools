@@ -541,7 +541,8 @@ Compares two parses (e.g. live-board vs file) and returns human-readable
 difference strings; empty list means they match. Useful to validate
 `build_pcb_data_from_board` against `parse_kicad_pcb` (this is what the GUI's
 **Validate PCB Data** button runs). Coverage spans the fields the router
-actually consumes: board info (layers, bounds, stackup), nets, footprint locks,
+actually consumes: board info (layers, bounds, and the stackup layer by layer:
+name, type, thickness, epsilon_r, loss tangent), nets, footprint locks,
 footprint and per-pad geometry (position, size, `rect_rotation`, `roundrect_rratio`,
 `local_clearance`, drill, layers), track and via geometry (matched as a
 multiset, not just counts), zones, board outline/cutouts, keepout zones, and
@@ -550,6 +551,11 @@ flag, the vertex count, the priority and the island-removal semantics, so a
 pour and the teardrops that share its net and layer cannot be paired with the
 wrong partner; a disagreement on the flag is named as a `teardrop count` line
 (#1164, pinned by `tests/gui_parity/test_1164_teardrop_parity.py`).
+On KiCad 10.0.0 the SWIG bindings do not wrap `BOARD_STACKUP`
+(`GetStackupDescriptor()` returns an opaque pointer), so
+`build_pcb_data_from_board` reads the stackup from the board FILE through
+`extract_stackup`, the text parser's own reader, and the stackup comparison
+cannot disagree there; it guards a build whose SWIG branch answers.
 
 ```python
 save_extracted_data(pcb_data: PCBData, output_path: str)
