@@ -37,8 +37,10 @@ Everything else stays crossable, which keeps ordinary routing over a pour
 working. A full-board GND pour holds every pad on the board, and a track
 leaving a pad inside it opens a slot from a hole to the outer edge, which
 divides nothing. A small island on one pad loses only a sliver of copper to
-a cut. Another net CAN still cut an island that holds a routed terminal;
-the guard does not see that case.
+a cut. Another net CAN still cut an island that holds a routed terminal, so
+the outermost run grades those zone nets again on the copper it ships
+(`audit_pour_cuts`) and names any it left with more disconnected pads than
+the input had. The audit reports; it does not refuse.
 
 Scope: the zone nets outside the run, which are the ones the finalize
 excludes (`matches_net_filter` against the caller's net filter, the finalize's
@@ -403,3 +405,95 @@ def install_pour_barriers(config, pcb_data, routed_ids, net_names,
         print(f"Pour guard (#1260): no exact fill ({report['why']}); "
               f"blocking the zone OUTLINES, which cover more than the fill")
     return report
+
+
+# ------------------------------------------------------------------ the audit
+class _Copper:
+    """`base` read through another copper set, with a fill-model cache of
+    its own, so a grade of one copper state never answers from models built
+    for another (plane_fill_model caches its models ON the board object, and
+    a shared board would hand the "after" grade the "before" fill)."""
+
+    def __init__(self, base, segments, vias):
+        self._base = base
+        self.segments = list(segments)
+        self.vias = list(vias)
+        self._plane_fill_models = {}
+
+    def __getattr__(self, name):
+        return getattr(self._base, name)
+
+
+def snapshot_copper(pcb_data):
+    """Value copies of the board's tracks and vias, taken before the run
+    moves any of them in place, for `audit_pour_cuts`' "before"."""
+    import copy
+    return ([copy.copy(s) for s in pcb_data.segments],
+            [copy.copy(v) for v in pcb_data.vias])
+
+
+def _open_pads(board, net_id) -> int:
+    """Disconnected pads of `net_id` on `board`, by the fill-aware grade
+    check_connected uses, with every zone of the net modelled fresh against
+    the board's own copper."""
+    from check_connected import (check_net_connectivity,
+                                 net_break_within_outlines)
+    from plane_fill_model import ZoneFillModel
+    zones = [z for z in (board.zones or []) if z.net_id == net_id and z.polygon]
+    for z in zones:
+        board._plane_fill_models[(net_id, z.layer, id(z))] = ZoneFillModel(
+            board, z)
+    r = check_net_connectivity(
+        net_id, [s for s in board.segments if s.net_id == net_id],
+        [v for v in board.vias if v.net_id == net_id],
+        (board.pads_by_net or {}).get(net_id, []), zones, pcb_data=board)
+    broken, dis = net_break_within_outlines(board, r)
+    return len(dis or []) if broken else 0
+
+
+def audit_nets(report) -> List[str]:
+    """The out-of-scope zone nets a run's copper could still cut apart: those
+    with an island the guard left crossable because a routed net has a
+    terminal inside it. A barrier island is not entered, and a minor one has
+    at most one anchor, so neither can come apart."""
+    if not report:
+        return []
+    return sorted({r['net'] for r in report.get('pours') or []
+                   if r.get('crossable_islands')})
+
+
+def audit_pour_cuts(before_board, before_copper, after_board, after_copper,
+                    net_names) -> List[dict]:
+    """[{'net', 'open_pads_before', 'open_pads_after'}] for each of
+    `net_names` (two or more pads) that the run left with MORE disconnected
+    pads than the input had: its pour was cut where the guard let tracks
+    cross. Both states are graded the same way, so the raster model's own
+    error cancels."""
+    before = _Copper(before_board, *before_copper)
+    after = _Copper(after_board, *after_copper)
+    b_ids = {n.name: i for i, n in before.nets.items()}
+    a_ids = {n.name: i for i, n in after.nets.items()}
+    rows = []
+    for name in net_names:
+        bi, ai = b_ids.get(name), a_ids.get(name)
+        if bi is None or ai is None:
+            continue
+        if len((before.pads_by_net or {}).get(bi, []) or []) < 2:
+            continue
+        ob, oa = _open_pads(before, bi), _open_pads(after, ai)
+        if oa > ob:
+            rows.append({'net': name, 'open_pads_before': ob,
+                         'open_pads_after': oa})
+    return rows
+
+
+def format_pour_cuts(rows) -> str:
+    """One console line naming the cut pours, or '' when there are none."""
+    if not rows:
+        return ''
+    what = ', '.join(f"{r['net']} ({r['open_pads_before']} -> "
+                     f"{r['open_pads_after']} open pads)" for r in rows)
+    return (f"Pour cut (#1260): {what} -- this run's copper cut the pour of "
+            f"a zone net outside its nets, where a routed net's pad inside "
+            f"the pour kept it crossable; nothing in this run repairs it, so "
+            f"route that net in a later step or reroute the crossing")

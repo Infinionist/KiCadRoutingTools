@@ -393,6 +393,16 @@ in `JSON_SUMMARY.pour_guard`:
                           "crossable_islands": 0, "minor_islands": 0}]}
 ```
 
+A crossable island can still be cut by a net that has no terminal in it. So
+the outermost run grades every out-of-scope zone net with a crossable island
+again, on the board it ships (the written file; the GUI's write model) against
+the copper it started with. Both states are graded through fresh fill models
+(`pour_guard.audit_pour_cuts`). A net left with more disconnected pads than it
+had is named on the console (`Pour cut (#1260): ...`), in `--json-out` and the
+GUI's `results_data` as `pour_cuts: [{net, open_pads_before,
+open_pads_after}]`, and in `JSON_SUMMARY_MIN.pour_cuts` (the names). The audit
+only reports: it does not fail the run or revert it.
+
 ##### History congestion (#590), the only field that measures TIME
 
 Every other field prices the board's state *now*. This one prices how often a

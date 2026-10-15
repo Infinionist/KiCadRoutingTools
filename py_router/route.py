@@ -347,7 +347,8 @@ def _plane_finalize_active() -> bool:
 
 
 def _emit_summary_min(gate_report: Optional[dict] = None,
-                      status: Optional[str] = None) -> None:
+                      status: Optional[str] = None,
+                      pour_cuts: Optional[list] = None) -> None:
     """Print the ONE compact verdict line for an outermost run.
 
     Shared by the normal end-of-run path and the two "nothing to route" early
@@ -385,6 +386,9 @@ def _emit_summary_min(gate_report: Optional[dict] = None,
             pass
         if gate_report and gate_report.get('verdict') == 'reject':
             _min['improvement_gate'] = 'reverted'
+        if pour_cuts:
+            # #1260: the out-of-scope pours the shipped copper cut apart.
+            _min['pour_cuts'] = sorted({c['net'] for c in pour_cuts})
         print("JSON_SUMMARY_MIN: " + json.dumps(_min, sort_keys=True))
     except Exception as _e:                                     # noqa: BLE001
         print(f"  WARNING: could not emit JSON_SUMMARY_MIN: {_e}")
@@ -2778,6 +2782,15 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         config, pcb_data, all_net_ids_to_route + existing_rippable, net_names,
         given=pour_barriers)
     _reconcile_kwargs['pour_barriers'] = list(config.pour_barriers)
+    # ...and the out-of-scope zone nets it left crossable (a routed net has a
+    # pad inside their pour), whose connectivity the end of the run grades
+    # again on the shipped copper. Outermost run only.
+    _pour_audit = None
+    if final_reconcile and pour_barriers is None:
+        from pour_guard import audit_nets as _pa_nets_of, snapshot_copper
+        _pa_nets = _pa_nets_of(_pour_guard_report)
+        if _pa_nets:
+            _pour_audit = (_pa_nets, snapshot_copper(pcb_data))
     # #568: arming is run-scoped and the flag is module-global, so reset it
     # per call -- otherwise one unfrozen-base run would disarm rung-1 legality
     # for every later run in the same process (the GUI's whole session).
@@ -7244,6 +7257,39 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         if return_results and _rd_ka is not None and _ka_shipped is not None:
             _rd_ka['keep_away'] = keep_away_entries(_ka_shipped)
 
+    # #1260: did the shipped copper cut apart a pour the guard left
+    # crossable? A zone net outside --nets is repaired by nothing in this
+    # run, and the pour's fill in the file is the old one, so the board reads
+    # connected until KiCad refills it. Graded on the board this run ships
+    # (the written file; the GUI's write model) against the copper it
+    # started with, both through fresh fill models. Report-only.
+    _pour_cuts = None
+    if final_reconcile and not _ckpt_stop and _pour_audit is not None:
+        try:
+            from pour_guard import audit_pour_cuts, format_pour_cuts
+            _rd_pc = locals().get('results_data')
+            _pc_board = _pc_copper = None
+            if return_results and _rd_pc is not None:
+                _pc_s, _pc_v = _gui_write_model(_rd_pc)
+                _pc_board = pcb_data
+                _pc_copper = ([s for _l in _pc_s.values() for s in _l],
+                              [v for _l in _pc_v.values() for v in _l])
+            elif output_file and os.path.isfile(output_file):
+                from kicad_parser import parse_kicad_pcb as _pk_pc
+                _pc_board = _pk_pc(output_file)
+                _pc_copper = (_pc_board.segments, _pc_board.vias)
+            if _pc_board is not None:
+                _pour_cuts = audit_pour_cuts(pcb_data, _pour_audit[1],
+                                             _pc_board, _pc_copper,
+                                             _pour_audit[0])
+                if _pour_cuts:
+                    print(f"\n{RED}  {format_pour_cuts(_pour_cuts)}{RESET}")
+                if return_results and _rd_pc is not None:
+                    _rd_pc['pour_cuts'] = _pour_cuts
+        except Exception as _pce:                               # noqa: BLE001
+            print(f"  WARNING: pour-cut audit skipped "
+                  f"({type(_pce).__name__}: {_pce})")
+
     # Per-net story dump (KICAD_NET_STORY=1): the complete journey of every
     # net -- bus membership, ordering, failures with named blockers, rips,
     # rescues, Phase-3 tap order, costs -- assembled from state.
@@ -7261,6 +7307,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             # #1146: likewise the keep-away reading of the shipped board.
             if _merged is not None and _ka_shipped is not None:
                 _merged['keep_away'] = _ka_shipped
+            # #1260: likewise the pour-cut audit of the shipped board.
+            if _merged is not None and _pour_cuts:
+                _merged['pour_cuts'] = _pour_cuts
             # ALL-OR-NOTHING (#830). This was `open(json_out,'w')` +
             # `json.dump`, which truncates the destination before the first
             # chunk is encoded and then STREAMS into it -- so a failure partway
@@ -7515,7 +7564,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # DRC-floor writeback reports after this, so read the log for the line,
     # do not tail it.
     if final_reconcile:
-        _emit_summary_min(_gate_report)
+        _emit_summary_min(_gate_report, pour_cuts=_pour_cuts)
 
     if return_results:
         return successful, failed, total_time, results_data
