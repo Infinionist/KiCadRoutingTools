@@ -814,6 +814,22 @@ def apply_step_params(step, dialog):
                     getattr(tab, name).SetValue(float(params[name]))
                 except (TypeError, ValueError):
                     notes.append(f"ignored non-numeric {name}={params[name]!r}")
+        # The centerline setback has the same override box. A plan VALUE --
+        # 0 included, which is route_diff.py's explicit
+        # --diff-pair-centerline-setback 0, a setback of zero -- ticks it; no
+        # value leaves it as the reset left it, unticked = auto (the omitted
+        # flag). The generic loop has already set the spin; a plan can also
+        # name the box itself (centerline_setback_check: false = auto).
+        for _sb in ("centerline_setback", "diff_pair_centerline_setback"):
+            if params.get(_sb) is None:
+                continue
+            try:
+                tab.centerline_setback.SetValue(float(params[_sb]))
+                tab.centerline_setback_check.SetValue(True)
+                tab.centerline_setback.Enable(True)
+            except (TypeError, ValueError):
+                notes.append(f"ignored non-numeric {_sb}={params[_sb]!r}")
+            break
         # Impedance-controlled diff routing: per-layer width is derived from the
         # stackup, so this overrides diff_pair_width (the diff tab control above).
         if "impedance" in params:

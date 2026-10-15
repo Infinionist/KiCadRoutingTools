@@ -80,11 +80,20 @@ _NCL = {'/CLOCK_IN': 0.111, '+12V': 0.321}
 # A --fab-overrides file beside the manifest (a comment only: no override).
 _FAB_FILE = 'fab.txt'
 CASES = [
+    # (override box, spin, the setback the engine gets). Unticked = auto: the
+    # CLI's omitted flag, None to the engine.
     dict(label='route_diff --diff-pair-centerline-setback',
          cmd='python3 py_router/route_diff.py {src} {dst} "*"',
          flag='--diff-pair-centerline-setback 0.35',
          param=('centerline_setback', 0.35), probe='centerline_setback',
-         want=(0.35, 0.35), default=(0.0, None)),
+         want=(True, 0.35, 0.35), default=(False, 0.0, None)),
+    # An EXPLICIT 0 is a setback of zero to the engine, not auto -- the GUI's
+    # old "0 = auto" spin could not say it.
+    dict(label='route_diff --diff-pair-centerline-setback 0 (explicit zero)',
+         cmd='python3 py_router/route_diff.py {src} {dst} "*"',
+         flag='--diff-pair-centerline-setback 0',
+         param=('centerline_setback', 0), probe='centerline_setback',
+         want=(True, 0.0, 0.0), default=(False, 0.0, None)),
     dict(label='bga_fanout --primary-escape',
          cmd='python3 py_router/bga_fanout.py {src} --output {dst} '
              '--component U1',
@@ -164,6 +173,7 @@ def _probes(dlg):
         'net_clearances_path_diff': (dlg.net_clearances_path.GetValue(),
                                      diff_cfg.get('net_clearances_path')),
         'centerline_setback': (
+            d.centerline_setback_check.GetValue(),
             round(d.centerline_setback.GetValue(), 6),
             d.get_config().get('diff_pair_centerline_setback')),
         'escape_direction': (
@@ -394,7 +404,33 @@ def main():
                                         in w for w in b_cu[1]),
               f"layer={b_cu[0]!r}, warnings={b_cu[1]}")
 
-        print("\n[4] the Net Clearances File reaches the engines: the Route and "
+        print("\n[4] the centerline setback: the dialog's explicit 0 and its "
+              "auto are the CLI's explicit 0 and omitted flag to the engine, "
+              "and the two are different runs")
+        from routing_config import GridRouteConfig
+        from diff_pair_multipoint import diff_pair_min_coupled_length
+
+        def _min_coupled(setback):
+            # 0.3/0.3 geometry: auto's 4x half-spacing is 1.2 mm, so its 5x
+            # term (6 mm) clears the 3 mm floor and an explicit 0's does not.
+            return diff_pair_min_coupled_length(GridRouteConfig(
+                track_width=0.3, diff_pair_gap=0.3,
+                diff_pair_centerline_setback=setback))
+        k0 = next(k for k, c in enumerate(CASES) if 'explicit zero' in c['label'])
+        gui_zero = seen[2 * k0]['centerline_setback'][2]
+        gui_auto = seen[2 * k0 + 1]['centerline_setback'][2]
+        cli_zero, cli_auto = _min_coupled(0.0), _min_coupled(None)
+        check("the engine tells an explicit 0 from auto",
+              cli_zero != cli_auto,
+              f"min coupled length {cli_zero} mm (0) vs {cli_auto} mm (auto)")
+        check("the dialog's explicit-0 step routes as the CLI's explicit 0",
+              _min_coupled(gui_zero) == cli_zero,
+              f"setback {gui_zero!r} -> {_min_coupled(gui_zero)} mm")
+        check("the dialog's next step routes as the CLI's omitted flag",
+              _min_coupled(gui_auto) == cli_auto,
+              f"setback {gui_auto!r} -> {_min_coupled(gui_auto)} mm")
+
+        print("\n[5] the Net Clearances File reaches the engines: the Route and "
               "Differential workers hand them the file's map, as route.py / "
               "route_diff.py --net-clearances do")
         from kicad_parser import parse_kicad_pcb as _parse

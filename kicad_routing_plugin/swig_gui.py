@@ -3034,9 +3034,12 @@ class RoutingDialog(wx.Dialog):
         self.differential_tab.max_setback_angle.SetValue(defaults.DIFF_PAIR_MAX_SETBACK_ANGLE)
         self.differential_tab.max_turn_angle.SetValue(defaults.DIFF_PAIR_MAX_TURN_ANGLE)
         self.differential_tab.chamfer_extra.SetValue(defaults.DIFF_PAIR_CHAMFER_EXTRA)
-        # 0 = auto, the CLI's omitted --diff-pair-centerline-setback (None).
+        # Auto, the CLI's omitted --diff-pair-centerline-setback (None): the
+        # override box unticked and the spin back at its default, disabled.
+        self.differential_tab.centerline_setback_check.SetValue(False)
         self.differential_tab.centerline_setback.SetValue(
             defaults.DIFF_PAIR_CENTERLINE_SETBACK)
+        self.differential_tab.centerline_setback.Enable(False)
         # #381 D3: reset to EMPTY (deny all swaps) to match tab creation and the
         # CLI deny-by-default (#279); '*' here silently widened plan-replay swaps.
         self.differential_tab.polarity_swap_nets_text.SetValue("")

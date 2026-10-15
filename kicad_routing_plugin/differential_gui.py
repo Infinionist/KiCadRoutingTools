@@ -565,14 +565,33 @@ class DifferentialTab(wx.Panel):
         self.chamfer_extra.SetToolTip("Chamfer multiplier for meanders (>1 avoids P/N crossings)")
         param_grid.Add(self.chamfer_extra, 0, wx.EXPAND)
 
-        # Centerline setback
+        # Centerline setback -- the same override row as Pair Width / Gap.
+        # Unchecked = auto (route_diff.py with no --diff-pair-centerline-setback:
+        # the engine's 2x P-N distance); checked = the typed value, 0 INCLUDED
+        # -- an explicit 0 is a setback of zero to the engine, not auto, which
+        # the old "0 = auto" spin could not express.
         param_grid.Add(wx.StaticText(self, label="Centerline Setback (mm):"), 0, wx.ALIGN_CENTER_VERTICAL)
         r = defaults.PARAM_RANGES['diff_pair_centerline_setback']
+        cls_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.centerline_setback_check = wx.CheckBox(self, label="")
+        self.centerline_setback_check.SetValue(False)
+        self.centerline_setback_check.SetToolTip(
+            "Override the centerline setback (unchecked = auto: 2x the P-N "
+            "distance, route_diff.py's default)")
+        self.centerline_setback_check.Bind(wx.EVT_CHECKBOX,
+                                           self._on_diff_geom_override_check)
         self.centerline_setback = wx.SpinCtrlDouble(self, min=r['min'], max=r['max'],
                                                      initial=defaults.DIFF_PAIR_CENTERLINE_SETBACK, inc=r['inc'])
         self.centerline_setback.SetDigits(r['digits'])
-        self.centerline_setback.SetToolTip("Distance in front of stubs to start centerline route (0 = auto: 2x P-N spacing)")
-        param_grid.Add(self.centerline_setback, 0, wx.EXPAND)
+        self.centerline_setback.SetToolTip(
+            "Distance in front of the stubs to start the centerline route "
+            "(route_diff.py --diff-pair-centerline-setback); 0 starts it at "
+            "the stubs")
+        self.centerline_setback.Enable(False)
+        cls_sizer.Add(self.centerline_setback_check, 0,
+                      wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        cls_sizer.Add(self.centerline_setback, 1, wx.EXPAND)
+        param_grid.Add(cls_sizer, 0, wx.EXPAND)
 
         param_sizer.Add(param_grid, 0, wx.EXPAND | wx.ALL, 5)
 
@@ -666,10 +685,18 @@ class DifferentialTab(wx.Panel):
         self.SetSizer(main_sizer)
 
     def _short_params(self):
-        """Current (track_width, gap, centerline_setback) driving the short test."""
+        """Current (track_width, gap, centerline_setback) driving the short
+        test; the setback is None when it is auto."""
         return (self._effective_diff_pair_width(),
                 self._effective_diff_pair_gap(),
-                self.centerline_setback.GetValue())
+                self._centerline_setback_value())
+
+    def _centerline_setback_value(self):
+        """The setback the engine gets: None = auto (box unticked, the CLI's
+        omitted flag), else the typed value -- 0 included."""
+        if not self.centerline_setback_check.GetValue():
+            return None
+        return self.centerline_setback.GetValue()
 
     def _is_short_pair(self, p_net_id, n_net_id):
         """Whether this pair would be deferred to single-ended as electrically
@@ -677,7 +704,9 @@ class DifferentialTab(wx.Panel):
         per (params, pair)."""
         from diff_pair_multipoint import diff_pair_is_short
         width, gap, setback = self._short_params()
-        key = ((round(width, 6), round(gap, 6), round(setback, 6)), p_net_id, n_net_id)
+        key = ((round(width, 6), round(gap, 6),
+                None if setback is None else round(setback, 6)),
+               p_net_id, n_net_id)
         if key not in self._short_cache:
             try:
                 self._short_cache[key] = diff_pair_is_short(
@@ -1499,7 +1528,6 @@ class DifferentialTab(wx.Panel):
 
     def get_config(self):
         """Get the differential pair configuration."""
-        setback = self.centerline_setback.GetValue()
         return {
             'diff_pair_width': self._effective_diff_pair_width(),
             'diff_pair_gap': self._effective_diff_pair_gap(),
@@ -1513,7 +1541,8 @@ class DifferentialTab(wx.Panel):
             'max_setback_angle': self.max_setback_angle.GetValue(),
             'max_turn_angle': self.max_turn_angle.GetValue(),
             'diff_chamfer_extra': self.chamfer_extra.GetValue(),
-            'diff_pair_centerline_setback': setback if setback > 0 else None,  # 0 = auto
+            # None = auto (box unticked); a ticked 0 is an explicit 0.
+            'diff_pair_centerline_setback': self._centerline_setback_value(),
             'polarity_swap_nets': self.get_polarity_swap_nets(),
             'gnd_via_enabled': self.gnd_via_check.GetValue(),
             'diff_pair_intra_match': self.intra_match_check.GetValue(),
@@ -1524,10 +1553,14 @@ class DifferentialTab(wx.Panel):
         """Enable/disable the paired spinctrl for whichever override checkbox
         fired. Unchecked = the value comes from the board Default net-class."""
         chk = event.GetEventObject()
-        for name in ('diff_pair_width', 'diff_pair_gap'):
+        for name in ('diff_pair_width', 'diff_pair_gap', 'centerline_setback'):
             if getattr(self, name + '_check', None) is chk:
                 getattr(self, name).Enable(chk.GetValue())
                 break
+        if chk is getattr(self, 'centerline_setback_check', None):
+            # Auto <-> a typed setback moves the short-pair threshold.
+            self._on_short_param_changed(event)
+            return
         event.Skip()
 
     def _fab_floor_via_parent(self, ctrl_name, val):

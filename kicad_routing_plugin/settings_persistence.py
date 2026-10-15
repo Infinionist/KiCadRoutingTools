@@ -184,6 +184,7 @@ def get_dialog_settings(dialog):
         'max_turn_angle': dialog.differential_tab.max_turn_angle.GetValue(),
         'chamfer_extra': dialog.differential_tab.chamfer_extra.GetValue(),
         'centerline_setback': dialog.differential_tab.centerline_setback.GetValue(),
+        'centerline_setback_check': dialog.differential_tab.centerline_setback_check.GetValue(),
         'polarity_swap_nets_text': dialog.differential_tab.polarity_swap_nets_text.GetValue(),
         'gnd_via_check': dialog.differential_tab.gnd_via_check.GetValue(),
         'intra_match_check': dialog.differential_tab.intra_match_check.GetValue(),
@@ -643,6 +644,18 @@ def restore_dialog_settings(dialog, settings):
         dialog.differential_tab.chamfer_extra.SetValue(settings['chamfer_extra'])
     if 'centerline_setback' in settings:
         dialog.differential_tab.centerline_setback.SetValue(settings['centerline_setback'])
+    # The setback's override box. A settings file saved before it existed has
+    # only the value, where 0 meant auto and a positive value an explicit
+    # setback, so that is how such a file restores.
+    if 'centerline_setback_check' in settings:
+        _sb_on = bool(settings['centerline_setback_check'])
+    elif 'centerline_setback' in settings:
+        _sb_on = float(settings['centerline_setback'] or 0) > 0
+    else:
+        _sb_on = None
+    if _sb_on is not None:
+        dialog.differential_tab.centerline_setback_check.SetValue(_sb_on)
+        dialog.differential_tab.centerline_setback.Enable(_sb_on)
     if 'polarity_swap_nets_text' in settings:
         dialog.differential_tab.polarity_swap_nets_text.SetValue(
             settings['polarity_swap_nets_text'])
