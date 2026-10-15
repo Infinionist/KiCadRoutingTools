@@ -84,7 +84,9 @@ serves those nets from the fill.
   put the rows in the brief's or the intent's `proximity`, and report which
   you were given. A role read as `unknown` (a buck whose pins carry no pin
   function) names the part; which pin is SW is not guessed, so ask for the
-  pins too.
+  pins too. Ask in the same breath about the keep-away rules the same
+  section proposes (below): a crystal near a switch node is the other half
+  of the same question.
 - **Keep the noisy nets away from the sensitive ones, in the brief.** A
   proximity row says how CLOSE two parts must be. When the user says two net
   groups must stay APART (a switch node or a clock against a crystal's pins,
@@ -98,6 +100,21 @@ serves those nets from the fill.
   is the user's to say, so ask; do not infer it from net names. Report each
   pair inside the band, and say when a pair sits on opposite faces, since the
   grade is plan view.
+- **Ask about the keep-away rules board_context proposes.** The same
+  `board_context.py --json` document lists them in `emc_roles.keep_away`:
+  per crystal or oscillator, a `rule` keeping its clock nets away from every
+  switch node the pins name (a converter's SW, a discrete switch's drain).
+  Beside each are check_floorplan's reading of it on this board,
+  `emc_roles.keep_away[].measured.min_gap_mm`, and `inside_now`. The gap,
+  `emc_roles.keep_away_gap.gap_mm`, is a derived default, not a datasheet
+  value. A `candidate` rule has a side read off the nets, because that
+  part's pins carry no function. Show the user each rule with its gap and
+  its measured distance, and ask them to confirm the nets and the gap.
+  board_context writes each rule ready to paste as
+  `emc_roles.keep_away[].brief_row`: put each confirmed one in the brief's
+  `keep_away` list. When the user gives another gap, write it into the
+  rule and drop the `why`'s "derived default" sentence. Say which rules you
+  were given and which you left out.
 - **On a pile, read the emitter's decap line before you seed.** It says how
   many caps the per-supply-pin stage can claim, and which only once their
   owner ICs are seated. When `place_seed` then reports the decap stage

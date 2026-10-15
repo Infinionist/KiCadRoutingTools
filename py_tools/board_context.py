@@ -375,7 +375,12 @@ def build_context(pcb_data, pcb_file: str, *, clearance: float,
                          'to pad edge (legality.pad_rect + rect_gap), never '
                          'a loop area; `unknown` where the pins carry no '
                          'function; rows carry max_mm null -- the limit is '
-                         'the author\'s',
+                         'the author\'s. `keep_away`: PROPOSED design-brief '
+                         'rules (#1253), each clock part\'s nets against the '
+                         'switch nodes, in route.py\'s --keep-away syntax '
+                         '(parsed and resolved by keep_away), at a derived '
+                         'default gap, measured by check_floorplan\'s own '
+                         'keep_away grade',
             'body_mm / body_source': 'placement.body.board_bodies (#896)',
             'pads_by_face': 'placement.escape.assign_faces (#850)',
             'pin_order': 'placement.pair_order.pair_metrics; a pair through '
@@ -469,6 +474,50 @@ def _emc_md(sec) -> List[str]:
             for pr in rows:
                 L.append(f"- row, worst leg {pr['worst_leg_mm']} mm: "
                          f"`{json.dumps(pr['row'], sort_keys=True)}`")
+        L.append('')
+    L += _keep_away_md(sec)
+    return L
+
+
+def _keep_away_md(sec) -> List[str]:
+    """The keep-away PROPOSALS (#1253): each rule, what it protects from
+    what, check_floorplan's reading of it now, and the brief rows ready to
+    paste."""
+    props = sec.get('keep_away') or []
+    skipped = sec.get('keep_away_skipped') or []
+    if not props and not skipped:
+        return []
+    gap = sec.get('keep_away_gap') or {}
+    L = ['### Keep-away proposals (derived default gap -- NOT declared)', '',
+         sec.get('keep_away_note', ''), '',
+         f"Gap {gap.get('gap_mm')} mm: {gap.get('basis', '')}.", '']
+    if props:
+        L += ['| rule | clock | switch nodes | closest now (pad edge) |',
+              '|---|---|---|---|']
+        for p in props:
+            c, m = p['clock'], p.get('measured') or {}
+            sw = '; '.join(f"{s['net']} ({s['part']}, {s['kind']}, "
+                           f"{s['read']})" for s in p['switch_nodes'])
+            cl = m.get('closest') or {}
+            v, a = cl.get('victim') or {}, cl.get('aggressor') or {}
+            now = (f"{m['min_gap_mm']} mm, {v.get('ref')}.{v.get('pad')} "
+                   f"({v.get('side')}) to {a.get('ref')}.{a.get('pad')} "
+                   f"({a.get('side')})"
+                   + (', opposite faces' if cl.get('cross_face') else '')
+                   + (' -- INSIDE the proposed gap' if p.get('inside_now')
+                      else '')
+                   if m.get('min_gap_mm') is not None
+                   else f"not measured ({m.get('state')})")
+            L.append(f"| `{p['rule']}` | {c['part']} {c['role']} "
+                     f"({c['read']}) | {sw} | {now} |")
+        L += ['', "Ready to paste into the design brief's `keep_away`:", '',
+              '```json',
+              json.dumps({'keep_away': [p['brief_row'] for p in props]},
+                         indent=1),
+              '```', '']
+    for n in skipped:
+        L.append(f"- not proposed: {n}")
+    if skipped:
         L.append('')
     return L
 

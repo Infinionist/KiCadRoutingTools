@@ -531,6 +531,22 @@ cannot see coupling through planes or between faces (it is plan view, and each
 pad's side is named), tracks (the router measures those), or which nets are
 noisy (the rule says that).
 
+`board_context --json` **proposes** rules for this key, in `emc_roles.keep_away`.
+For each crystal or oscillator it writes one rule that keeps the clock nets
+away from every switch node the pins name: a converter's SW or LX pin, or a
+discrete switch's drain on an inductor net. Where a part's pins carry no
+function, that side is a `candidate` read off the nets: a pin-less buck's
+inductor end, or the one undecoupled output of a pin-less oscillator. The
+gap is 3 mm, a derived default and not a datasheet value. It is twice
+route.py's `--keep-away-free`, so the band reaches past the radius the router
+leaves unpriced around each net's own pins. Each proposal carries
+check_floorplan's reading of the rule on the board (`measured`, `inside_now`)
+and a `brief_row` to paste here. On watchy the rule is
+`Net-(D5-A):/32K_P,/32K_N:3`, and the human layout clears it at 15.34 mm. On
+ulx3s, `/power/L1,/power/L2,/power/L3:CLK_25MHz:3` is already inside at
+1.05 mm, with the oscillator Y1 and the buck U4 on opposite faces. Nothing
+reads a proposal until it is pasted.
+
 ## Deferred, and named rather than silently absent
 
 Height limits as geometry, thermal, panel/depanel, a cable keep-out WITHOUT a

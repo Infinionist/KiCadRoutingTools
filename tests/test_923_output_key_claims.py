@@ -31,7 +31,8 @@ column the key) and `references/boundary-criteria.md`'s `instrument -> path`
 lines -- were retired with that skill, and with them the four instruments
 only they quoted (board_context, check_pockets, check_floorplan's graded
 document, place_seed). What is run today is render_placement, board_score and
--- since #1254, whose `emc_roles` pcb-free-agent quotes -- board_context.
+-- since #1254, whose `emc_roles` pcb-free-agent quotes -- board_context, on
+the fixture and (since #1253's keep-away proposals) on watchy.
 
 WHAT IT STILL CANNOT SEE, said here rather than implied away:
 
@@ -79,6 +80,9 @@ FIXTURE = os.path.join(ROOT, 'tests', 'fixtures', 'run25',
 #: block rather than an empty one.
 BRIEF = os.path.join(ROOT, 'tests', 'fixtures', '902',
                      'esp_prog_proximity.design-brief.json')
+#: A tracked board with a switch node and two crystals, so board_context's
+#: keep-away proposals (#1253) are not an empty list.
+WATCHY = os.path.join(ROOT, 'kicad_files', 'watchy.kicad_pcb')
 
 SKILLS = os.path.join(ROOT, '.claude', 'skills')
 
@@ -213,6 +217,16 @@ def build_artifacts(tmp):
     run_utils.evidence(bc, 'the context document')
     art['board_context.py'] = [('--json',
                                 json.load(open(bc, encoding='utf-8')))]
+    # ...and on watchy, whose e-paper boost switch node and two crystals
+    # give `emc_roles.keep_away` rules to resolve (#1253): the fixture has a
+    # crystal but no switch node, so its list is empty and a claim about a
+    # proposal's keys would resolve against nothing.
+    bw = os.path.join(tmp, 'context_watchy.json')
+    _run([os.path.join('py_tools', 'board_context.py'), WATCHY, '--json',
+          '-o', bw])
+    run_utils.evidence(bw, 'the watchy context document')
+    art['board_context.py'].append(('--json (watchy)',
+                                    json.load(open(bw, encoding='utf-8'))))
 
     score = os.path.join('py_tools', 'board_score.py')
     parent = os.path.join(tmp, 'parent.json')
