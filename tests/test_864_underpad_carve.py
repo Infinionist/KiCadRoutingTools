@@ -19,6 +19,12 @@ Four things the fix relies on, pinned without routing a board:
   4. `generate_underpad_escape` runs with the cyclic collector paused, and
      restores it exactly -- re-enabled after the call, left off when the
      caller had it off, re-enabled on an exception.
+  5. The carve's cut -- `_Occ.cells_in_runs` over the `disk_runs` of any
+     number of disks, against `cell_columns(home)` -- is exactly the union of
+     their `disk_cells` intersected with home, on random disks (grid-edge
+     clipped and overlapping ones included) and random homes; and disk_runs
+     shares disk_cells' memo entry, so whichever is asked first under a
+     micron key decides the cells for both.
 """
 import math
 import os
@@ -95,6 +101,48 @@ def main():
         worst = max(worst, (len(got) - len(exact)) / max(1, len(exact)))
     if worst > 0.12:
         fails.append(f"the sampled capsule over-blocks by {worst:.0%} (> 12%) -- the inflation is too generous")
+    # 5. cells_in_runs(disk_runs...) == union of disk_cells & home, and one
+    # shared memo entry
+    for _ in range(80):
+        o5 = _Occ((0.0, 0.0, 10.0, 10.0), 0.025, ['F.Cu'])
+        home = set()
+        for _k in range(rng.randint(0, 3)):
+            home |= o5.disk_cells(rng.uniform(-0.5, 10.5), rng.uniform(-0.5, 10.5),
+                                  rng.uniform(0.05, 1.0))
+        home |= {(rng.randint(-5, o5.nx + 5), rng.randint(-5, o5.ny + 5)) for _k in range(300)}
+        cx, cy = rng.uniform(-0.5, 10.5), rng.uniform(-0.5, 10.5)
+        disks = [(cx + rng.uniform(-1, 1), cy + rng.uniform(-1, 1), rng.uniform(0.03, 1.5))
+                 for _k in range(rng.randint(1, 6))]
+        runs, want = {}, set()
+        for x, y, r in disks:
+            for a, b0, b1 in o5.disk_runs(x, y, r):
+                runs.setdefault(a, []).append((b0, b1))
+            want |= frozenset(o5._disk(x, y, r)) & home
+        got = _Occ.cells_in_runs(runs, _Occ.cell_columns(home))
+        if set(got) != want or len(got) != len(want):
+            fails.append(f"cells_in_runs over {len(disks)} disk(s) != their disk_cells & home: "
+                         f"{len(got)} ({len(set(got))} distinct) vs {len(want)} cells")
+            break
+    # (5.0, 5.0, 0.1) puts lattice point (5.1, 5.0) exactly on the rim; 0.4 um
+    # left of 5.0 it falls out -- a different disk under the same micron key
+    near, far = frozenset(occ._disk(5.0, 5.0, 0.1)), frozenset(occ._disk(5.0 - 4e-7, 5.0, 0.1))
+    if near == far:
+        fails.append("the shared-entry check lost its rim cell (fixture no longer discriminates)")
+    def _runs_cells(o, x, y, r):
+        return frozenset((a, b) for a, b0, b1 in o.disk_runs(x, y, r) for b in range(b0, b1 + 1))
+    for runs_first, first, second in ((True, 5.0, 5.0 - 4e-7), (False, 5.0, 5.0 - 4e-7),
+                                      (True, 5.0 - 4e-7, 5.0)):
+        o5 = _Occ((0.0, 0.0, 10.0, 10.0), 0.025, ['F.Cu'])
+        if runs_first:
+            a5 = _runs_cells(o5, first, 5.0, 0.1)
+            b5 = o5.disk_cells(second, 5.0, 0.1)
+        else:
+            b5 = o5.disk_cells(first, 5.0, 0.1)
+            a5 = _runs_cells(o5, second, 5.0, 0.1)
+        want = near if first == 5.0 else far
+        if a5 != want or b5 != want:
+            fails.append(f"disk_cells and disk_runs disagree on which ask decides a micron key "
+                         f"(first {'disk_runs' if runs_first else 'disk_cells'} at x={first})")
     # 4. the escape runs with the CYCLIC collector paused and restores it
     # exactly: the memo's live frozensets made every young collection
     # re-traverse millions of set members (see `_cyclic_gc_paused`).
@@ -133,7 +181,8 @@ def main():
         return 1
     print(f"PASS: disk_cells == _disk and memoised; the sampled capsule covers every cell within "
           f"keep on 60 random segments (worst over-block {worst:.1%}); the grid resolution is floored at 0.01 mm; "
-          f"the escape pauses the cyclic collector and restores it")
+          f"the escape pauses the cyclic collector and restores it; the carve's run-wise cut == the "
+          f"union of disk_cells & home on 80 random disk sets, and disk_runs shares the memo entry")
     return 0
 
 
