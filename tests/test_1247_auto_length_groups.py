@@ -36,6 +36,9 @@ series resistor: a group of its own, never matched against the Zynq side) --
 and, on synthetic results, the two route-step defects: the grouper's input is
 the call's scope (an out-of-scope rip-candidate registration never joins), and
 an `is_existing_route` registration is never reported as routed this run.
+Last, Phase 3's #444 seam re-ask never re-asks a member of a group the
+matching pass formed: it matched config.length_match_groups as name PATTERNS,
+so every `auto` member was re-askable.
 """
 import contextlib
 import io
@@ -49,7 +52,10 @@ sys.path.insert(0, os.path.join(ROOT, 'py_router'))
 from kicad_parser import Segment, Net, PCBData, BoardInfo, parse_kicad_pcb
 from routing_config import GridRouteConfig
 import length_matching
+import phase3_routing
 import routing_common
+from types import SimpleNamespace
+from kicad_parser import Pad
 from length_matching import (auto_group_ddr4_nets, classify_ddr_nets,
                              apply_length_matching_to_group)
 from run_utils import evidence
@@ -456,6 +462,73 @@ def run():
           'DDR_A1' in earlier, earlier.strip())
     check("negative control: a hybrid in-run member IS called routed this run",
           'DDR_A2' in this_run, this_run.strip())
+
+    # --- #444: Phase 3's seam re-ask never re-asks a MATCHED member ---------
+    # Length matching runs before Phase 3, so a multipoint member's meandered
+    # main route is what the re-ask would rip and re-route at natural length.
+    # The guard read config.length_match_groups as name PATTERNS, so an
+    # `auto` member (no pattern names it) was re-askable. It now reads the
+    # groups the matching pass formed.
+    print("#444 seam re-ask vs the formed groups")
+    names = {1: 'DDR_A0', 2: 'DDR_A1', 3: 'DDR_BA0', 4: 'DDR_CKE',
+             5: 'BUS_D0', 6: 'BUS_D1', 7: 'LED_GREEN'}
+    pads = {nid: [Pad('U1', f'{nid}a', 0.0, 2.0 * nid, 0, 0, 0.5, 0.5, 'rect',
+                      ['F.Cu'], nid, nm, pad_type='smd'),
+                  Pad('U2', f'{nid}b', 10.0, 2.0 * nid, 0, 0, 0.5, 0.5, 'rect',
+                      ['F.Cu'], nid, nm, pad_type='smd')]
+            for nid, nm in names.items()}
+    pcb = PCBData(footprints={}, nets={i: Net(i, n) for i, n in names.items()},
+                  segments=[], vias=[],
+                  board_info=BoardInfo(layers={}, copper_layers=['F.Cu', 'B.Cu']),
+                  pads_by_net=pads)
+
+    def tree(nid):
+        # a composed multipoint tree 2x its 10 mm MST bound: a re-ask candidate
+        y = 2.0 * nid
+        return {'new_segments': [Segment(0.0, y, 0.0, y + 5.0, 0.15, 'F.Cu', nid),
+                                 Segment(0.0, y + 5.0, 10.0, y + 5.0, 0.15, 'F.Cu', nid),
+                                 Segment(10.0, y + 5.0, 10.0, y, 0.15, 'F.Cu', nid)],
+                'new_vias': [], 'route_length': 20.0, 'is_multipoint': True,
+                'tap_edges_routed': 2}
+
+    routed = {nid: tree(nid) for nid in names}
+    cfg = GridRouteConfig(layers=['F.Cu', 'B.Cu'], track_width=0.15, clearance=0.15)
+    cfg.length_match_groups = [['auto'], ['BUS_D*']]
+    saved = routing_common.apply_length_matching_to_group
+    routing_common.apply_length_matching_to_group = lambda res, *a, **k: res
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            routing_common.run_length_matching(
+                routed, cfg.length_match_groups, cfg, pcb,
+                scope_net_ids=set(names))
+    finally:
+        routing_common.apply_length_matching_to_group = saved
+    ripped = []
+
+    def _rip(net_id, *a, **k):
+        ripped.append(names[net_id])
+        return None, None, None      # "nothing ripped": the re-ask stops here
+
+    state = SimpleNamespace(working_obstacles=None, net_obstacles_cache={},
+                            ripped_route_layer_costs={},
+                            ripped_route_via_positions={})
+    saved_rip = phase3_routing.rip_up_net
+    phase3_routing.rip_up_net = _rip
+    try:
+        for nid in names:
+            with contextlib.redirect_stdout(io.StringIO()):
+                phase3_routing.seam_reask_one_net(
+                    nid, pcb, cfg, state, None, None, set(), [], [], {},
+                    routed, {}, [], {}, {})
+    finally:
+        phase3_routing.rip_up_net = saved_rip
+    check("an auto group member is never re-asked (it was, by pattern)",
+          not ({'DDR_A0', 'DDR_A1', 'DDR_BA0', 'DDR_CKE'} & set(ripped)),
+          str(ripped))
+    check("a named group member is never re-asked",
+          not ({'BUS_D0', 'BUS_D1'} & set(ripped)), str(ripped))
+    check("negative control: a net in no group IS re-asked",
+          ripped == ['LED_GREEN'], str(ripped))
 
     print()
     if fails:

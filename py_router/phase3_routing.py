@@ -1958,13 +1958,15 @@ def seam_reask_one_net(net_id, pcb_data, config, state, base_obstacles,
         return False
     # #444 hard requirement: never re-ask a length/time-matched net -- the
     # meanders ARE the route; shortening a matched tree breaks the match
-    # (DDR address nets are multipoint AND matched).
-    if getattr(config, 'length_match_groups', None):
-        from length_matching import find_nets_matching_patterns
-        _name = pcb_data.nets[net_id].name if net_id in pcb_data.nets else ''
-        for _grp in config.length_match_groups:
-            if _name and find_nets_matching_patterns([_name], _grp):
-                return False
+    # (DDR address nets are multipoint AND matched). The members are the
+    # groups the matching pass FORMED, recorded on the config by
+    # run_length_matching (it runs before Phase 3). Matching
+    # config.length_match_groups as name patterns missed every `auto`
+    # member: no pattern names it (#1247).
+    _matched = getattr(config, '_length_matched_names', None)
+    if _matched and net_id in pcb_data.nets \
+            and pcb_data.nets[net_id].name in _matched:
+        return False
     if r_old.get('tap_edges_routed', 1) <= 1:
         return False  # single-edge tree: one A* already, nothing composed
     segs = r_old.get('new_segments') or []

@@ -167,13 +167,14 @@ def _stub_proximity_source_ids(config, pcb_data, all_unrouted_net_ids,
 # dataclasses.replace() copies only the dataclass fields, so a clone routing
 # through a builder carries these over (carry_run_state).
 _RUN_STATE_ATTRS = ('_pending_multipoint', '_multipoint_taps_done',
-                    '_fragility_field')
+                    '_fragility_field', '_length_matched_names')
 
 
 def carry_run_state(src, dst):
     """`dst` (a dataclasses.replace clone of `src` at the same grid) with the
     run state `src` carries: the pending multipoint taps the stub-proximity
-    sources read and the live plane-fragility field its commits refresh."""
+    sources read, the live plane-fragility field its commits refresh, and
+    the length-matched members Phase 3's seam re-ask must leave alone."""
     for a in _RUN_STATE_ATTRS:
         if hasattr(src, a):
             setattr(dst, a, getattr(src, a))

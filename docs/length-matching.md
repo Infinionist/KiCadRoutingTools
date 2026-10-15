@@ -81,7 +81,7 @@ The keys stay `byte_lane_<n>` and `command_address` on a board where that is una
 
 It also names each variant and the net it extends.
 
-`JSON_SUMMARY` carries the same membership as `length_match_groups` (one `{name, source, members}` record per group, named groups included, with `patterns`). The exclusions are in `length_match_auto`. The GUI's results carry `length_match_groups`. The #521 `length-matched` protected nets are drawn from these members: those routed this run or measured from earlier-step copper.
+`JSON_SUMMARY` carries the same membership as `length_match_groups` (one `{name, source, members}` record per group, named groups included, with `patterns`). The exclusions are in `length_match_auto`. The GUI's results carry `length_match_groups`. The #521 `length-matched` protected nets are drawn from these members: those routed this run or measured from earlier-step copper. The same members are safe within the run. Matching runs before Phase 3, whose seam re-ask (#444) rips a composed multipoint tree and re-routes it whole. That re-ask skips every member of a group this pass formed, `auto` or named, so a meandered main route is never re-routed at natural length.
 
 A name the rules do not cover is listed as ungrouped, never guessed. Pass explicit `--length-match-group` patterns for it.
 

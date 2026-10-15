@@ -837,6 +837,17 @@ def run_length_matching(
                         if result.get('new_vias'):
                             all_processed_vias.extend(result['new_vias'])
 
+    # #444: Phase 3 runs after this pass, and its seam re-ask must never
+    # re-ask a member -- the meanders are the route. It reads the members
+    # the groups were FORMED with (the same lists as JSON_SUMMARY's
+    # length_match_groups), never the patterns: an `auto` group has none
+    # that names its members (#1247).
+    try:
+        config._length_matched_names = (
+            frozenset(getattr(config, '_length_matched_names', None) or ())
+            | {n for g in formed_groups for n in g['members']})
+    except AttributeError:
+        pass
     if report is not None:
         report['groups'] = formed_groups
     return net_name_to_result
