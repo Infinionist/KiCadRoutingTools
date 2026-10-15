@@ -2642,6 +2642,14 @@ class RoutingDialog(wx.Dialog):
                 _po.gnd_via_distance.SetValue(defaults.GND_VIA_DISTANCE)
             if hasattr(_po, 'gnd_via_net'):
                 _po.gnd_via_net.SetValue(defaults.GND_VIA_NET)
+            # route_planes.py's argparse defaults for --min-thickness,
+            # --plane-max-iterations and --voronoi-seed-interval.
+            if hasattr(_po, 'min_thickness'):
+                _po.min_thickness.SetValue(defaults.PLANE_MIN_THICKNESS)
+            if hasattr(_po, 'plane_max_iterations'):
+                _po.plane_max_iterations.SetValue(defaults.MAX_ITERATIONS)
+            if hasattr(_po, 'voronoi_seed_interval'):
+                _po.voronoi_seed_interval.SetValue(defaults.VORONOI_SEED_INTERVAL)
         except Exception:
             pass
         # #581: the via-in-pad policy controls live on the Basic tab now

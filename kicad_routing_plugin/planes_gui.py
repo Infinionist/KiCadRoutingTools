@@ -461,7 +461,56 @@ class CreatePlanesOptionsPanel(wx.Panel):
         gnd_grid.Add(self.gnd_via_net, 0, wx.EXPAND)
 
         gnd_sizer.Add(gnd_grid, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
-        sizer.Add(gnd_sizer, 0, wx.EXPAND)
+        sizer.Add(gnd_sizer, 0, wx.EXPAND | wx.BOTTOM, 5)
+
+        # route_planes.py's zone-width and shared-layer knobs. Controls named
+        # after the create_plane params (min_thickness, plane_max_iterations,
+        # voronoi_seed_interval) so a plan step replaying --min-thickness /
+        # --plane-max-iterations / --voronoi-seed-interval sets them, and each
+        # starts at the CLI's argparse default.
+        adv_box = wx.StaticBox(self, label="Zone Width & Shared Layers (advanced)")
+        adv_sizer = wx.StaticBoxSizer(adv_box, wx.VERTICAL)
+        adv_grid = wx.FlexGridSizer(cols=2, hgap=10, vgap=5)
+        adv_grid.AddGrowableCol(1)
+
+        adv_grid.Add(wx.StaticText(self, label="Min Zone Width (mm):"), 0,
+                     wx.ALIGN_CENTER_VERTICAL)
+        r = defaults.PARAM_RANGES['plane_min_thickness']
+        self.min_thickness = wx.SpinCtrlDouble(
+            self, min=r['min'], max=r['max'],
+            initial=defaults.PLANE_MIN_THICKNESS, inc=r['inc'])
+        self.min_thickness.SetDigits(r['digits'])
+        self.min_thickness.SetToolTip(
+            "Minimum width of the poured copper: KiCad drops fill thinner "
+            "than this (route_planes.py --min-thickness)")
+        adv_grid.Add(self.min_thickness, 0, wx.EXPAND)
+
+        adv_grid.Add(wx.StaticText(self, label="Shared-Layer Max Iterations:"),
+                     0, wx.ALIGN_CENTER_VERTICAL)
+        r = defaults.PARAM_RANGES['max_iterations']
+        self.plane_max_iterations = wx.SpinCtrl(
+            self, min=r['min'], max=r['max'],
+            initial=defaults.MAX_ITERATIONS)
+        self.plane_max_iterations.SetToolTip(
+            "A* iteration budget for routing the spines that split a plane "
+            "layer several nets share (route_planes.py --plane-max-iterations)")
+        adv_grid.Add(self.plane_max_iterations, 0, wx.EXPAND)
+
+        adv_grid.Add(wx.StaticText(self, label="Shared-Layer Seed Interval (mm):"),
+                     0, wx.ALIGN_CENTER_VERTICAL)
+        r = defaults.PARAM_RANGES['voronoi_seed_interval']
+        self.voronoi_seed_interval = wx.SpinCtrlDouble(
+            self, min=r['min'], max=r['max'],
+            initial=defaults.VORONOI_SEED_INTERVAL, inc=r['inc'])
+        self.voronoi_seed_interval.SetDigits(r['digits'])
+        self.voronoi_seed_interval.SetToolTip(
+            "Longest gap between a spine's Voronoi seeds when several nets "
+            "share a plane layer: smaller follows each spine more closely "
+            "(route_planes.py --voronoi-seed-interval)")
+        adv_grid.Add(self.voronoi_seed_interval, 0, wx.EXPAND)
+
+        adv_sizer.Add(adv_grid, 0, wx.EXPAND | wx.ALL, 5)
+        sizer.Add(adv_sizer, 0, wx.EXPAND)
 
         self.SetSizer(sizer)
 
@@ -482,6 +531,9 @@ class CreatePlanesOptionsPanel(wx.Panel):
             'stitch_fence_pitch': self.stitch_fence_pitch.GetValue() or None,
             'stitch_inset': self.stitch_inset.GetValue() or None,
             'stitch_max_freq': self.stitch_max_freq.GetValue() or None,
+            'min_thickness': self.min_thickness.GetValue(),
+            'plane_max_iterations': int(self.plane_max_iterations.GetValue()),
+            'voronoi_seed_interval': self.voronoi_seed_interval.GetValue(),
         }
 
 
@@ -985,11 +1037,11 @@ class PlanesTab(wx.Panel):
                 # #381 D6: per-layer cost bias from the shared Basic-tab control
                 # (route_planes.py passes --layer-costs); None -> engine default.
                 layer_costs=config.get('layer_costs') or None,
-                # #381 D6: plane knobs the CLI threads but the GUI dropped -- now
-                # config-driven, defaulting to the same value route_planes.py's
-                # argparse uses so current GUI behavior is unchanged unless a
-                # plan/control sets them.
-                voronoi_seed_interval=config.get('voronoi_seed_interval', 2.0),
+                # #381 D6: plane knobs the CLI threads, supplied by the
+                # create panel's controls of the same names (each starting at
+                # route_planes.py's argparse default).
+                voronoi_seed_interval=config.get('voronoi_seed_interval',
+                                                 defaults.VORONOI_SEED_INTERVAL),
                 plane_max_iterations=config.get('plane_max_iterations', defaults.MAX_ITERATIONS),
                 debug_lines=config.get('debug_lines', False),
                 add_teardrops=config.get('add_teardrops', False),

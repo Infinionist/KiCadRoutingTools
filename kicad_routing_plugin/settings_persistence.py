@@ -244,6 +244,9 @@ def get_dialog_settings(dialog):
         'planes_stitch_inset': dialog.planes_tab.create_options.stitch_inset.GetValue(),
         'planes_stitch_max_freq': dialog.planes_tab.create_options.stitch_max_freq.GetValue(),
         'planes_gnd_via_net': dialog.planes_tab.create_options.gnd_via_net.GetValue(),
+        'planes_min_thickness': dialog.planes_tab.create_options.min_thickness.GetValue(),
+        'planes_plane_max_iterations': dialog.planes_tab.create_options.plane_max_iterations.GetValue(),
+        'planes_voronoi_seed_interval': dialog.planes_tab.create_options.voronoi_seed_interval.GetValue(),
         # Repair mode options
 
         # AI tab settings (issue #40; backend selection #503). Model/effort
@@ -771,6 +774,14 @@ def restore_dialog_settings(dialog, settings):
         dialog.planes_tab.create_options.stitch_max_freq.SetValue(settings['planes_stitch_max_freq'])
     if 'planes_gnd_via_net' in settings:
         dialog.planes_tab.create_options.gnd_via_net.SetValue(settings['planes_gnd_via_net'])
+    if 'planes_min_thickness' in settings:
+        dialog.planes_tab.create_options.min_thickness.SetValue(settings['planes_min_thickness'])
+    if 'planes_plane_max_iterations' in settings:
+        dialog.planes_tab.create_options.plane_max_iterations.SetValue(
+            int(settings['planes_plane_max_iterations']))
+    if 'planes_voronoi_seed_interval' in settings:
+        dialog.planes_tab.create_options.voronoi_seed_interval.SetValue(
+            settings['planes_voronoi_seed_interval'])
     # Repair mode options
 
     # Restore AI tab backend/model/effort (issue #40; #503). Per-backend

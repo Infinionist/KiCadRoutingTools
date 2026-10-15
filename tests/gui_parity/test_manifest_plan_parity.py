@@ -822,18 +822,11 @@ PLANES_CLI_ONLY = dict(
                                 "given (skip_existing_zones=True: keep an "
                                 "existing same-net zone on the live board); "
                                 "what it cannot replay is the flag's ABSENCE"})
-# KNOWN GAPS, PENDING ANDY'S DECISION (route_planes.py). No control on the
-# planes tab: planes_gui hands create_plane a fixed default for each, so a
-# recorded non-default value is lost. They steer the routed connections of a
-# multi-net (Voronoi split) plane layer and its zone fill. 0 recorded uses of
-# any of them.
-PLANES_KNOWN_GAPS = {
-    '--min-thickness': "no control; planes_gui passes "
-                       "defaults.PLANE_MIN_THICKNESS",
-    '--plane-max-iterations': "no control; planes_gui passes "
-                              "defaults.MAX_ITERATIONS",
-    '--voronoi-seed-interval': "no control; planes_gui passes 2.0",
-}
+# KNOWN GAPS (route_planes.py). EMPTY: --min-thickness, --plane-max-iterations
+# and --voronoi-seed-interval had no control (planes_gui handed create_plane a
+# fixed default for each) until the planes tab's advanced box got one of each,
+# named after the create_plane param and reset to the argparse default.
+PLANES_KNOWN_GAPS = {}
 
 BGA_CLI_ONLY = {f: ROUTE_CLI_ONLY[f] for f in ('--enable-used-layers',
                                                '--keep-thermal', '--output',

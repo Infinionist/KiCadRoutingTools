@@ -65,6 +65,8 @@ def _reexec_into_kicad():
 # value without it). Every probe returns (control value, engine config value).
 # A step's boards are filled in by the chain below, so the converter's pruning
 # keeps every step.
+_PLANES = ('python3 py_router/route_planes.py {src} {dst} --nets GND '
+           '--plane-layers B.Cu')
 CASES = [
     dict(label='route_diff --diff-pair-centerline-setback',
          cmd='python3 py_router/route_diff.py {src} {dst} "*"',
@@ -77,6 +79,18 @@ CASES = [
          flag='--primary-escape vertical',
          param=('escape_direction', 'vertical'), probe='escape_direction',
          want=('Vertical', 'vertical'), default=('Horizontal', 'horizontal')),
+    dict(label='route_planes --min-thickness',
+         cmd=_PLANES, flag='--min-thickness 0.0762',
+         param=('min_thickness', 0.0762), probe='min_thickness',
+         want=(0.0762, 0.0762), default=(0.1, 0.1)),
+    dict(label='route_planes --plane-max-iterations',
+         cmd=_PLANES, flag='--plane-max-iterations 50000',
+         param=('plane_max_iterations', 50000), probe='plane_max_iterations',
+         want=(50000, 50000), default=(200000, 200000)),
+    dict(label='route_planes --voronoi-seed-interval',
+         cmd=_PLANES, flag='--voronoi-seed-interval 3.25',
+         param=('voronoi_seed_interval', 3.25), probe='voronoi_seed_interval',
+         want=(3.25, 3.25), default=(2.0, 2.0)),
 ]
 
 
@@ -84,7 +98,15 @@ def _probes(dlg):
     """{probe name: (control value, engine config value)} right now."""
     d = dlg.differential_tab
     bga = dlg.fanout_tab.bga_options
+    po = dlg.planes_tab.create_options
+    # What the planes tab hands create_plane: its ONE assembly point.
+    plane_cfg = dlg.planes_tab._build_mode_config()
+    planes = {name: (round(getattr(po, name).GetValue(), 6),
+                     plane_cfg.get(name))
+              for name in ('min_thickness', 'plane_max_iterations',
+                           'voronoi_seed_interval')}
     return {
+        **planes,
         'centerline_setback': (
             round(d.centerline_setback.GetValue(), 6),
             d.get_config().get('diff_pair_centerline_setback')),

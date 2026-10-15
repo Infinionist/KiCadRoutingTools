@@ -232,6 +232,11 @@ FLAG_PARAMS = {
     '--stitch-fence-pitch': 'stitch_fence_pitch',
     '--stitch-inset': 'stitch_inset',
     '--stitch-max-freq': 'stitch_max_freq',
+    # route_planes' zone width and shared-layer (Voronoi split) knobs: the
+    # planes tab's controls of the create_plane param names.
+    '--min-thickness': 'min_thickness',
+    '--plane-max-iterations': 'plane_max_iterations',
+    '--voronoi-seed-interval': 'voronoi_seed_interval',
     '--exit-margin': 'exit_margin',
     '--extension': 'extension',
     # #860 follow-up: bga_fanout/qfn_fanout's escape selector. It was in

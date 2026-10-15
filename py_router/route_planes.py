@@ -3048,7 +3048,7 @@ def create_plane(
     dry_run: bool = False,
     layer_nets: Dict[str, List[str]] = None,
     board_edge_clearance: float = defaults.PLANE_EDGE_CLEARANCE,
-    voronoi_seed_interval: float = 2.0,
+    voronoi_seed_interval: float = defaults.VORONOI_SEED_INTERVAL,
     plane_max_iterations: int = defaults.MAX_ITERATIONS,
     debug_lines: bool = False,
     layer_costs: Optional[List[float]] = None,
@@ -4204,9 +4204,10 @@ Examples:
                         help="Track widths in mm for each power-net pattern (must match --power-nets length)")
 
     # Shared plane layer (the spine split) options
-    parser.add_argument("--voronoi-seed-interval", type=float, default=2.0,
+    parser.add_argument("--voronoi-seed-interval", type=float,
+                        default=defaults.VORONOI_SEED_INTERVAL,
                         help="Longest gap between a spine's Voronoi seeds on a layer several nets share (mm, "
-                             "default: 2.0)")
+                             f"default: {defaults.VORONOI_SEED_INTERVAL})")
     parser.add_argument("--plane-max-iterations", type=int, default=defaults.MAX_ITERATIONS,
                         help="Max A* iterations for routing a shared layer's spines (default: 200000)")
 

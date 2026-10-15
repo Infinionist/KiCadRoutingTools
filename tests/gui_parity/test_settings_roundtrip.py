@@ -112,6 +112,26 @@ def main():
             failures.append(f"restore with legacy keys raised "
                             f"{type(e).__name__}: {e}")
 
+        # 3b. RESTORE from a dict MISSING a key: a settings file saved before
+        #     that control existed. Each key is dropped alone (an empty dict
+        #     proves nothing -- restore returns before reading any key), so a
+        #     restore branch that reads a key it never tested for raises here.
+        raised = []
+        for key in sorted(settings):
+            older = dict(settings)
+            older.pop(key)
+            try:
+                restore_dialog_settings(dlg, older)
+            except Exception as e:
+                raised.append(f"{key}: {type(e).__name__}: {e}")
+        if raised:
+            failures.append(f"restore without a key raised for {len(raised)} "
+                            f"key(s): {raised}")
+        else:
+            print(f"  restore_dialog_settings (each of {len(settings)} keys "
+                  f"absent in turn): OK")
+        restore_dialog_settings(dlg, settings)
+
     # 4. Every key the SAVE emits must round-trip without the control
     #    vanishing: re-save and compare key sets.
     if settings is not None:

@@ -98,6 +98,9 @@ These options control the spines routed on a layer several nets share (see [Mult
 | `--voronoi-seed-interval` | 2.0 | Longest gap between a spine's Voronoi seeds (mm); nearer another net's point they run closer |
 | `--plane-max-iterations` | 200000 | Maximum A* iterations for routing a spine |
 
+The GUI planes tab exposes these two and `--min-thickness` in its "Zone Width &
+Shared Layers (advanced)" box, each starting at the CLI default above.
+
 A spine's keep-out from another net's via is not a setting: it is derived from the board (the via's radius plus the zone clearance plus half the zone's minimum width), and a spine pays no proximity cost.
 
 A net earns a zone on a shared layer if it has **any** connection point there — a stitching via, a pad, or a **virtual via** (a pad whose drop to this plane the route step will lay, #562). A net whose pads are all through-hole or already on the layer places zero stitching vias, but its zone is still poured (its spines join those pads); the partition is not gated on placing ≥1 via (issue #114).

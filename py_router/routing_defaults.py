@@ -259,6 +259,9 @@ DIFF_PAIR_CENTERLINE_SETBACK = 0.0  # mm - 0 = auto (2x P-N spacing)
 PLANE_ZONE_CLEARANCE = 0.2  # mm - zone fill clearance from other copper
 PLANE_MIN_THICKNESS = 0.1  # mm - minimum zone copper thickness
 PLANE_EDGE_CLEARANCE = 0.5  # mm - zone clearance from board edge
+# mm - longest gap between a spine's Voronoi seeds on a plane layer several
+# nets share (route_planes.py --voronoi-seed-interval, the planes tab control)
+VORONOI_SEED_INTERVAL = 2.0
 PLANE_MAX_SEARCH_RADIUS = 10.0  # mm - max radius to search for via position
 # #487: an SMD plane-net pad at least this wide in BOTH axes is a thermal/
 # exposed pad and gets a via ARRAY instead of one shared via. ON by default
@@ -393,7 +396,11 @@ PARAM_RANGES = {
     'diff_pair_centerline_setback': {'min': 0.0, 'max': 10.0, 'inc': 0.1, 'digits': 3},  # 0 = auto
     # Plane routing parameters
     'plane_zone_clearance': {'min': 0.05, 'max': 2.0, 'inc': 0.05, 'digits': 2},
-    'plane_min_thickness': {'min': 0.05, 'max': 1.0, 'inc': 0.05, 'digits': 2},
+    # route_planes.py --min-thickness / --voronoi-seed-interval, 4 and 3
+    # digits for the setback's reason above: the control must hold what the
+    # CLI is handed (a fab-floor width like 0.0762), not a rounding of it.
+    'plane_min_thickness': {'min': 0.01, 'max': 2.0, 'inc': 0.05, 'digits': 4},
+    'voronoi_seed_interval': {'min': 0.05, 'max': 50.0, 'inc': 0.5, 'digits': 3},
     'plane_edge_clearance': {'min': 0.0, 'max': 5.0, 'inc': 0.1, 'digits': 1},
     'plane_max_search_radius': {'min': 1.0, 'max': 50.0, 'inc': 1.0, 'digits': 1},
     'plane_max_via_reuse_radius': {'min': 0.0, 'max': 10.0, 'inc': 0.5, 'digits': 1},
