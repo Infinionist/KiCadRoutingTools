@@ -8096,6 +8096,153 @@ def _legality():
     return _LEGALITY
 
 
+#: Added to the largest interaction reach when pruning a bounded search's
+#: neighbours (`_search_scope`): a pruned list only has to be a SUPERSET of
+#: the parts any conjunct can refuse a pose for, so the slack costs a few
+#: extra neighbours and buys margin over every requirement the reach does not
+#: name (a hole keep-out radius past its extent, a dru rule).
+SCOPE_SLACK_MM = 1.0
+
+
+def _scope_reach(state, ref) -> float:
+    """How far from `ref`'s origin anything a seat test reads for it can
+    reach, at ANY rotation: the corner distance of every box the part
+    carries -- courtyard, grade rect, far side, pad box, pad/hole extent,
+    .Fab body. A box turned about the origin stays inside the square of
+    that radius, so `_search_scope` may bound every pose with it. Cached
+    per part (pose-invariant)."""
+    cache = getattr(state, '_scope_reach_cache', None)
+    if cache is None:
+        cache = state._scope_reach_cache = {}
+    got = cache.get(ref)
+    if got is None:
+        from .legality import far_boxes
+        part = state.parts[ref]
+        boxes = list(part.bounds_by_rot.values())
+        boxes += list(part.grade_by_rot.values())
+        for v in (part.tht_by_rot or {}).values():
+            boxes += list(far_boxes(v))
+        if part.padbox_local is not None:
+            boxes.append(part.padbox_local)
+        ctx = state.legality_ctx
+        pp = ctx.parts.get(ref) if ctx is not None else None
+        if pp is not None:
+            e = pp.extent_local(0.0)
+            if e is not None:
+                boxes.append(e)
+        fab = state.fab_rect(ref, 0.0, 0.0, 0.0)
+        if fab is not None:
+            boxes.append(fab)
+        got = max((math.hypot(max(abs(b[0]), abs(b[2])),
+                              max(abs(b[1]), abs(b[3]))) for b in boxes),
+                  default=0.0)
+        cache[ref] = got
+    return got
+
+
+def _scope_box(state, ref):
+    """`ref`'s union box at its CURRENT pose over the same rects
+    `_scope_reach` bounds (None when it has none)."""
+    from .legality import far_boxes
+    part = state.parts[ref]
+    boxes = [part.rect(), part.grade_rect()]
+    boxes += list(far_boxes(part.tht_rect()))
+    pb = part.padbox()
+    if pb is not None:
+        boxes.append(pb)
+    ctx = state.legality_ctx
+    pp = ctx.parts.get(ref) if ctx is not None else None
+    if pp is not None:
+        e = pp.extent(part.x, part.y, part.rot)
+        if e is not None:
+            boxes.append(e)
+    fab = state.fab_rect(ref)
+    if fab is not None:
+        boxes.append(fab)
+    return (min(b[0] for b in boxes), min(b[1] for b in boxes),
+            max(b[2] for b in boxes), max(b[3] for b in boxes))
+
+
+def _scope_neighbors(state, ref, tx, ty, max_disp) -> List[str]:
+    """Every part that can refuse `ref` a pose within `max_disp` of
+    (tx, ty) -- or at its incumbent pose, which `candidate_valid`'s escape
+    branch measures -- in `state.parts` order. A SUPERSET by construction
+    (`build_neighbor_lists`' argument with the travel budget replaced by
+    the search disc): a part whose union box stays farther than the largest
+    interaction reach from every box `ref` can take is clear of every test
+    the seat predicate makes."""
+    part = state.parts[ref]
+    R = _scope_reach(state, ref)
+    ctx = state.legality_ctx
+    floor = 0.0
+    if ctx is not None:
+        # The pad gate's own pair reach (`pair_shortfall`): the parts' flat
+        # clearance, pad floors and hole keep-out reach, all upper-bounded
+        # board-wide once.
+        floor = getattr(state, '_scope_floor', None)
+        if floor is None:
+            floor = state._scope_floor = max(
+                (max(getattr(p, 'max_floor', 0.0) or 0.0,
+                     getattr(p, 'hole_reach', 0.0) or 0.0,
+                     getattr(p, 'clearance', 0.0) or 0.0)
+                 for p in ctx.parts.values()), default=0.0)
+    m = max(state.clearance, floor) + SCOPE_SLACK_MM
+    d = max_disp + 1e-3
+    # Two boxes, not the box spanning both: a stranded cap's incumbent pose
+    # can be 40 mm from the disc, and the span would take in the board.
+    boxes = ((tx - d - R - m, ty - d - R - m, tx + d + R + m, ty + d + R + m),
+             (part.x - R - m, part.y - R - m, part.x + R + m, part.y + R + m))
+    out = []
+    for other in state.parts:
+        if other == ref:
+            continue
+        b = _scope_box(state, other)
+        if any(not (b[2] < q[0] or b[0] > q[2] or b[3] < q[1] or b[1] > q[3])
+               for q in boxes):
+            out.append(other)
+    return out
+
+
+class _search_scope:
+    """`with _search_scope(state, ref, tx, ty, max_disp):` -- one BOUNDED
+    seat search of `ref` against the parts that can refuse it, not every
+    part on the board (#1188 follow-up: the decap rung spent most of its
+    time in `candidate_valid`'s neighbour loop walking 270 parts per pose,
+    for searches confined to a few millimetres). It installs
+    `_scope_neighbors` as `ref`'s entry in `state._neighbors` -- the hook
+    `candidate_valid`, `violation_parts`, the body tests and the pad gate
+    already read -- and removes it after. The list is a superset in
+    `state.parts` order, so every verdict, and the first refusal a veto
+    names, is the one the full walk gives. A no-op when the state already
+    carries neighbour lists (a quench built them) or the search is not
+    bounded."""
+
+    def __init__(self, state, ref, tx, ty, max_disp):
+        self.state, self.active = state, False
+        if (max_disp is None or getattr(state, '_neighbors', None) is not None
+                or getattr(state, 'rotation_prefer', None) is not None):
+            return
+        self.near = _scope_neighbors(state, ref, tx, ty, max_disp)
+        self.ref, self.active = ref, True
+
+    def __enter__(self):
+        if self.active:
+            self.state._neighbors = {self.ref: self.near}
+        return self
+
+    def __exit__(self, *exc):
+        if self.active:
+            self.state._neighbors = None
+        return False
+
+
+def _pose_key(state) -> Tuple:
+    """Every part's pose, in `state.parts` order: what the repair grade
+    reads, so two equal keys grade equal (`PoseGrader` re-derives the board
+    from the poses on every call)."""
+    return tuple((r, p.x, p.y, p.rot) for r, p in state.parts.items())
+
+
 class _DecapPin(NamedTuple):
     """One supply pin `rule_decap_pin_distance` grades at ERROR, with the
     caps `decap_pin_caps` leaves it (`caps`, refs)."""
@@ -8334,7 +8481,16 @@ class _DecapView:
         clearance ladder), so each answer is kept; and a pose whose cap
         centre is too far from a target -- by a lower bound no posing can
         beat (the farthest pad edge from the cap's origin) -- is refused
-        before the footprint is posed."""
+        before the footprint is posed.
+
+        The footprint is posed only for a check no bound settles (#1188
+        follow-up, speed): a pin another cap already holds where this one
+        could only leave it (within the limit, or no worse than it is) is
+        not measured at all, and a pin, or the cap's own distance, whose
+        bound from the cap's origin already decides it -- every pad point
+        lies within `hi` of the origin and every pad centre within `cmax`,
+        at any angle -- is decided by that bound. Each shortcut answers what
+        the measurement would, so the verdict is the posed one."""
         from placement import floorplan as _fp
         L = _legality()
         eps = L.EPS
@@ -8382,36 +8538,109 @@ class _DecapView:
             return math.hypot(max(r[0] - x, x - r[2], 0.0),
                               max(r[1] - y, y - r[3], 0.0))
 
+        # ---- the bounds (see the docstring) ----
+        # `hi`: a pad's box at any tilt has half-extents summing to at most
+        # (size_x + size_y) / 2 about its centre. A custom pad's box is
+        # re-derived per angle (`legality._custom_box_at_pose`), so a cap
+        # with one is always posed.
+        _SL = 1e-4
+        bounded = not any(getattr(p, 'polygons', None) for p in base.pads)
+        cmax = max((math.hypot(p.global_x - base.x, p.global_y - base.y)
+                    for p in base.pads), default=0.0) + _SL
+        hi = max((math.hypot(p.global_x - base.x, p.global_y - base.y)
+                  + (p.size_x + p.size_y) / 2.0 for p in base.pads),
+                 default=0.0) + _SL
+        cap_nets = {p.net_id for p in base.pads}
+        # A target refuses only while no other cap holds it within the limit.
+        tgt = [(i, L.pad_rect(pads[i]),
+                bounded and self.pins[i].net_id in cap_nets)
+               for i in sorted(tset)
+               if not (static[i] is not None and static[i] <= lim + eps)]
+        # Another pin refuses only when it ends past `thr`: the limit for a
+        # pin within it now, else its own gap. `min(static, gap) <= static`,
+        # so a pin another cap holds at or under `thr` can never refuse.
+        oth = []
+        for i in others:
+            was = now[i]
+            thr = (lim + eps if (was is None or was <= lim + eps)
+                   else was + FINDING_WORSE_EPS_MM)
+            if static[i] is not None and static[i] <= thr:
+                continue
+            oth.append((i, thr, L.pad_rect(pads[i]),
+                        bounded and self.pins[i].net_id in cap_nets))
+        # The cap's own finding, when not what the search is for: it can only
+        # be refused by a distance past the limit (inside the radius) or past
+        # the radius, and never by one no worse than it is now.
+        st_check = is_cap and not own and not any(
+            fnmatch.fnmatchcase(cap, p) for p in self.exempt)
+        rail_b, c_all = [], 0.0
+        if st_check:
+            from placement import groups as _groups
+            self.cap_distance(cap)            # fills the rail
+            rail_b = [self._bounds.get((r,) + tuple(self._pose(r)))
+                      for r in self._rail.get(cap, ())]
+            rail_b = [b for b in rail_b if b is not None]
+            cx, cy = _groups._centroid(base)
+            c_all = math.hypot(cx - base.x, cy - base.y) + _SL
+
         def _decide(x, y, rot):
             for r in need:
                 if _point_rect(x, y, r) - reach > lim + eps:
                     return False
-            if chips and min(_point_rect(x, y, b) for b in chips) - c_off \
-                    > self.dd_limit + eps:
-                return False
+            dmin = None
+            if chips:
+                dmin = min(_point_rect(x, y, b) for b in chips)
+                if dmin - c_off > self.dd_limit + eps:
+                    return False
+            # A pin the bound says is clear is not measured; one it says is
+            # refused is refused. The gap from the pin's pad to the cap's
+            # rail pad is at least `dist - hi` and at most `dist + cmax` (the
+            # distance to that pad's centre), `dist` the pin's pad box to
+            # the cap's origin.
+            p_tgt = []
+            for i, r, b in tgt:
+                if b and _point_rect(x, y, r) + cmax <= lim + eps - _SL:
+                    continue
+                p_tgt.append(i)
+            p_oth = []
+            for i, thr, r, b in oth:
+                if b:
+                    dist = _point_rect(x, y, r)
+                    if dist - hi > thr + _SL:
+                        return False
+                    if dist + cmax <= thr - _SL:
+                        continue
+                p_oth.append((i, thr))
+            p_own = is_cap and own and not (
+                dmin is not None
+                and dmin + c_off + _SL <= self.dd_limit + eps)
+            p_st = st_check
+            if p_st and rail_b:
+                d_hi = min(_point_rect(x, y, b) for b in rail_b) + c_all
+                if ((d_hi <= self.radius
+                     and (not self.dd_error
+                          or d_hi <= self.dd_limit + eps))
+                        or (own0 is not None
+                            and d_hi <= own0 + FINDING_WORSE_EPS_MM)):
+                    p_st = False
+            if not (p_tgt or p_oth or p_own or p_st):
+                return True
             fp = L.footprint_at_pose(base, (x, y, rot))
-            for i in tset:
+            for i in p_tgt:
                 g = _fp._pin_gap(pads[i], fp, self.pins[i].net_id)
                 vals = [v for v in (static[i], g) if v is not None]
                 if vals and min(vals) > lim + eps:
                     return False
-            if is_cap and own:
+            if p_own:
                 d = self.cap_distance(cap, {cap: fp})
                 if d is None or d > self.dd_limit + eps:
                     return False
-            for i in others:
+            for i, thr in p_oth:
                 g = _fp._pin_gap(pads[i], fp, self.pins[i].net_id)
                 vals = [v for v in (static[i], g) if v is not None]
-                new = min(vals) if vals else None
-                if new is None:
-                    continue
-                was = now[i]
-                if was is None or was <= lim + eps:
-                    if new > lim + eps:
-                        return False
-                elif new > was + FINDING_WORSE_EPS_MM:
+                if vals and min(vals) > thr:
                     return False
-            if is_cap and not own:
+            if p_st:
                 st = self.cap_finding(cap, self.cap_distance(cap, {cap: fp}))
                 if st is not None and (
                         own0 is None or st > own0 + FINDING_WORSE_EPS_MM):
@@ -8511,6 +8740,20 @@ def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
             per_cap.append((str(v.ref), str(m.get('ic')), finding_key(v),
                             excess))
     out: Dict[str, Dict] = {}
+    # The grade at each board this rung has graded, by every part's pose: a
+    # finding is graded BEFORE it is tried, and after a search that found
+    # nothing, or a seat that was reverted, the board is the one already
+    # graded -- the second grade only repeated the first (glasgow: 56 of 98
+    # grades). `PoseGrader` reads nothing but the poses, so an equal key is
+    # an equal grade.
+    graded_at: Dict[Tuple, Tuple] = {}
+
+    def _grade_here():
+        key = _pose_key(state)
+        got = graded_at.get(key)
+        if got is None:
+            got = graded_at[key] = (grader.violations(), grader.legality_at())
+        return got
 
     def _rec(cap):
         return out.setdefault(cap, {'moved': False, 'tried': []})
@@ -8535,10 +8778,13 @@ def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
                 return (math.hypot(x - tx, y - ty) > inner
                         and (acc0 is None or acc0(x, y, rot)))
             for disp, acc in ((limit, acc0), (2.0 * limit, _annulus)):
-                if _try_place(state, cap, tx, ty, set(), max_disp=disp,
-                              rotations=rot_ladder(cap),
-                              accept=acc) is not None:
-                    return True
+                # Against the parts within reach of the pass's own disc
+                # (`_search_scope`: the same verdicts, not 270 parts a pose).
+                with _search_scope(state, cap, tx, ty, disp):
+                    if _try_place(state, cap, tx, ty, set(), max_disp=disp,
+                                  rotations=rot_ladder(cap),
+                                  accept=acc) is not None:
+                        return True
             return False
         if not _search(accept):
             row['result'] = 'no_legal_pose_within_limit'
@@ -8567,8 +8813,7 @@ def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
                     f"(budget {budget:.2f}mm) -- left in place")
                 return False
             d = math.hypot(part.x - ox, part.y - oy)
-        after = grader.violations()
-        leg1 = grader.legality_at()
+        after, leg1 = _grade_here()
         # Per FINDING (`new_or_worse`), not per claim: `grade_delta` cannot
         # see a second pin stranded under a claim its IC already carries, or
         # a finding that only grew -- the two ways a cap moved TO one pin
@@ -8617,7 +8862,7 @@ def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
 
     def _graded():
         try:
-            return grader.violations(), grader.legality_at()
+            return _grade_here()
         except (_fp.UntrustworthyOutline, ValueError) as exc:
             notes.append(f"decap rung: the grade is unavailable "
                          f"({type(exc).__name__}: {exc}) -- nothing seated")
@@ -9488,10 +9733,11 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
         for _acc in ((_nw, None) if _nw is not None else (None,)):
             for cap in caps:
                 info: Dict = {}
-                clr = _try_place(state, ref, ox, oy, set(),
-                                 rotations=_rot_ladder(ref), constraint=rect,
-                                 tol=tol, max_disp=cap, info=info,
-                                 accept=_acc)
+                with _search_scope(state, ref, ox, oy, cap):
+                    clr = _try_place(state, ref, ox, oy, set(),
+                                     rotations=_rot_ladder(ref),
+                                     constraint=rect, tol=tol, max_disp=cap,
+                                     info=info, accept=_acc)
                 if clr is not None:
                     placed_at = cap
                     if info.get('anchor_zone'):
@@ -9526,9 +9772,11 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
                 pp = state.parts[partner]
                 pox, poy, porot = pp.x, pp.y, pp.rot
                 for cap in caps:
-                    if _try_place(state, partner, pox, poy, set(),
-                                  max_disp=cap,
-                                  rotations=_rot_ladder(partner)) is not None:
+                    with _search_scope(state, partner, pox, poy, cap):
+                        hit = _try_place(state, partner, pox, poy, set(),
+                                         max_disp=cap,
+                                         rotations=_rot_ladder(partner))
+                    if hit is not None:
                         pd = math.hypot(pp.x - pox, pp.y - poy)
                         if pd > 1e-9:
                             seated_partner = (partner, pd)

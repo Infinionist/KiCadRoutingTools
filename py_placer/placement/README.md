@@ -1977,6 +1977,11 @@ re-seating 85/92 while leaving its zone targets unmoved):
   make no decap finding the cap takes part in new or worse
   (`_DecapView.accept`), and a pose nearest the target that is out of
   proportion is followed by a search within the budget of the cap's own pose.
+  What makes it affordable changes no verdict: a search (the ordinary seat's
+  too) asks `pose_ok` against only the parts within reach of its disc
+  (`_search_scope`, a superset kept in board order), `accept` settles a check
+  by a bound on the cap's pads where the bound decides it and poses the cap
+  only otherwise, and a board the rung has graded is not graded again.
   A seat is KEPT only when that finding is gone, no finding anywhere is new or
   worse, the overlap / off-board numbers did not grow, and the move is
   proportionate (the repair's own `DISPROPORTION_RATIO` / `_FLOOR_MM`,

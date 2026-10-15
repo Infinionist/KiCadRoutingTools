@@ -30,6 +30,12 @@ the closing note of an IC names the caps tried for it.
       bringing it closer is not; without the held list the gate is inert on
       it, as before.
 
+The rung's speed (#1188 follow-up): its searches ask `pose_ok` against the
+parts within reach of the search disc only, and `accept` decides a check by a
+bound where the bound settles it. On esp_prog every pose two rung searches
+ask gets the same `pose_ok` scoped as unscoped, and the same `accept` as the
+cap posed and measured.
+
     python3 -X utf8 tests/test_1188_1150_decap_rung.py [case ...]
 """
 import contextlib
@@ -354,6 +360,136 @@ def test_1150c_the_gate_holds_a_stranded_held_cap():
                    for f in st2.tether_failures(away)), 'not inert'
     print(f"  PASS: a move 2 mm farther from U1 is refused {fails}; one "
           f"0.5 mm closer is not; with no held list the gate is inert")
+
+
+# ---------------------------------------------------------------------------
+# The rung's speed shortcuts keep every verdict
+# ---------------------------------------------------------------------------
+
+def _accept_by_measurement(view, cap, x, y, rot, targets=(), own=False):
+    """What `_DecapView.accept` promises, measured with the cap POSED there:
+    every target pin within the limit, with `own` the cap's own distance
+    within the limit, and no pin the cap serves -- nor, without `own`, its
+    own finding -- new or worse."""
+    L = seeder._legality()
+    eps, worse = L.EPS, seeder.FINDING_WORSE_EPS_MM
+    sub = {cap: L.footprint_at_pose(view.pcb.footprints[cap], (x, y, rot))}
+    lim = view.pin_limit
+    for i in targets:
+        v = view.pin_value(i, sub)
+        if v is not None and v > lim + eps:
+            return False
+    if own:
+        d = view.cap_distance(cap, sub)
+        if d is None or d > view.dd_limit + eps:
+            return False
+    for i in view.pins_of_cap.get(cap, ()):
+        if i in targets:
+            continue
+        was, new = view.pin_value(i), view.pin_value(i, sub)
+        if new is None:
+            continue
+        if was is None or was <= lim + eps:
+            if new > lim + eps:
+                return False
+        elif new > was + worse:
+            return False
+    if not own and view.dd_limit is not None:
+        o0 = view.cap_finding(cap, view.cap_distance(cap))
+        st = view.cap_finding(cap, view.cap_distance(cap, sub))
+        if st is not None and (o0 is None or st > o0 + worse):
+            return False
+    return True
+
+
+def test_the_rung_shortcuts_give_the_measured_verdicts():
+    """#1188 follow-up (speed): the rung's searches ask `pose_ok` against the
+    parts within reach of the search disc (`_search_scope`), and
+    `_DecapView.accept` settles a check by a bound instead of posing the cap
+    where the bound decides it. Neither may change a verdict. On esp_prog
+    with C2 stranded (held) and a 2 mm pin limit, every pose two rung
+    searches can ask -- C2 home toward U1 (`own`), and a cap toward a failing
+    pin (`targets`) -- gets the same `pose_ok` scoped and unscoped at every
+    rung of the clearance ladder, and the same `accept` as the cap posed and
+    measured through the view's own numbers."""
+    board, intent = _esp_c2_at(118.0, 95.0)
+    doc = dict(intent.decaps)
+    doc['max_pin_distance_mm'] = 2.0
+    intent = fp.intent_from_dict({'schema': 1, 'kind': fp.KIND, 'units': 'mm',
+                                  'decaps': doc})
+    got = {}
+    real = seeder._repair_decap_rung
+
+    def grab(state, pcb_data, graded, grader, limits, rot_ladder, notes,
+             view=None):
+        got.update(state=state, pcb=pcb_data, graded=graded, limits=limits,
+                   view=view, ladder=rot_ladder)
+        return {}
+    seeder._repair_decap_rung = grab
+    try:
+        _rung(board, intent)
+    finally:
+        seeder._repair_decap_rung = real
+    state, view = got['state'], got['view']
+    assert view is not None and view.pins, 'no pin elected: vacuous'
+    jobs = []
+    tgt = seeder._decap_target(state, got['pcb'], 'C2', 'U1', None)
+    jobs.append(('C2', tgt, float(got['limits']['decap_ungraded']),
+                 dict(own=True)))
+    pins = [v for v in got['graded'].errors
+            if v.rule == 'decap_pin_distance']
+    assert pins, 'no failing pin: vacuous'
+    m = pins[0].measured
+    targets = view.pins_named(pins[0].ref, m['pad'], m['net'])
+    cap = view.rank_caps(targets)[0][0]
+    pp = view.posed(pins[0].ref).pads[view.pins[targets[0]].pad_index]
+    jobs.append((cap, (pp.global_x, pp.global_y), 2.0,
+                 dict(targets=targets)))
+    n_pose = n_acc = n_true = 0
+    L = seeder._legality()
+    posed = {'n': 0}
+    real_pose = L.footprint_at_pose
+
+    def counted(*a, **kw):
+        posed['n'] += 1
+        return real_pose(*a, **kw)
+    full = state.clearance
+    for ref, (tx, ty), limit, kw in jobs:
+        acc = view.accept(ref, **kw)
+        rots = got['ladder'](ref) or [state.parts[ref].rot + d
+                                      for d in (0.0, 90.0, 180.0, 270.0)]
+        poses = {(x, y, r % 360.0) for x, y in seeder.seat_candidates(
+            state, tx, ty, max_disp=2.0 * limit) for r in rots}
+        for x, y, rot in sorted(poses):
+            want = _accept_by_measurement(view, ref, x, y, rot, **kw)
+            L.footprint_at_pose = counted
+            try:
+                verdict = acc(x, y, rot)
+            finally:
+                L.footprint_at_pose = real_pose
+            assert verdict == want, (ref, kw, (x, y, rot), want)
+            n_acc += 1
+            n_true += want
+        for clr in seeder.seat_clearances(full):
+            seeder._set_seat_clearance(state, clr)
+            try:
+                plain = [seeder.pose_ok(state, ref, x, y, r, set())
+                         for x, y, r in sorted(poses)]
+                with seeder._search_scope(state, ref, tx, ty,
+                                          2.0 * limit) as sc:
+                    assert sc.active and len(sc.near) < len(state.parts) - 1
+                    scoped = [seeder.pose_ok(state, ref, x, y, r, set())
+                              for x, y, r in sorted(poses)]
+            finally:
+                seeder._set_seat_clearance(state, full)
+            assert scoped == plain, (ref, clr)
+            n_pose += len(poses)
+    assert 0 < n_true < n_acc, (n_true, n_acc)
+    # Not vacuous: the bounds decided a good share of the verdicts without
+    # posing the cap (about half, measured).
+    assert n_acc - posed['n'] > n_acc // 4, (posed['n'], n_acc)
+    print(f"  PASS: {n_acc} accept verdicts ({n_true} accepted, "
+          f"{posed['n']} posed) and {n_pose} pose_ok verdicts agree")
 
 
 TESTS = [v for k, v in sorted(globals().items())

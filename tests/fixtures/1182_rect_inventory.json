@@ -97,7 +97,8 @@
   "bounds_by_rot": 2
  },
  "quench.py::_Part.rects": {
-  "rect": 2
+  "bounds_by_rot": 1,
+  "rect": 3
  },
  "quench.py::_clause_failing": {
   "grade_rects": 1
@@ -189,6 +190,14 @@
  },
  "seeder.py::_row_offsets": {
   "rect": 1
+ },
+ "seeder.py::_scope_box": {
+  "grade_rect": 1,
+  "rect": 1
+ },
+ "seeder.py::_scope_reach": {
+  "bounds_by_rot": 1,
+  "grade_by_rot": 1
  },
  "seeder.py::_seat_array": {
   "rect": 2

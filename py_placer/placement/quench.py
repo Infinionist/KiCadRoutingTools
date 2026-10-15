@@ -745,10 +745,11 @@ class _Part:
                  'seed_x', 'seed_y', 'x', 'y', 'rot', 'locked',
                  'nets', 'halo', 'footprint_name', 'orig_rot',
                  'side', 'has_tht', 'sides', 'tht_by_rot', 'padbox_local',
-                 'padbox_by_rot', 'grade_by_rot')
+                 'padbox_by_rot', 'grade_by_rot', '_live_rects')
 
     def __init__(self, ref, fp, courtyard_sides, locked, halo_base, halo_coef,
                  body_local=None):
+        self._live_rects = None
         self.ref = ref
         self.footprint_name = fp.footprint_name
         self.pads_local = [(p.local_x, p.local_y, p.net_id)
@@ -916,6 +917,20 @@ class _Part:
         """
         if self.tht_by_rot is None:
             return self.rect(x, y, rot), None
+        if x is None and y is None and rot is None:
+            # A drilled part's rects at its LIVE pose, kept until it moves (or
+            # a rotation table grows): every neighbour test against it asks
+            # them, and its far side is a fresh `FarSide` per call -- on
+            # ulx3s's pile the decap rung built 7.8M of them, a fifth of its
+            # time. The key is everything the two reads depend on.
+            key = (self.x, self.y, self.rot, len(self.bounds_by_rot),
+                   len(self.tht_by_rot))
+            hit = self._live_rects
+            if hit is not None and hit[0] == key:
+                return hit[1]
+            got = (self.rect(), self.tht_rect())
+            self._live_rects = (key, got)
+            return got
         return self.rect(x, y, rot), self.tht_rect(x, y, rot)
 
     def gap_to(self, other, self_rects=None, other_rects=None):
