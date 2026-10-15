@@ -188,14 +188,21 @@ EDGE_BAND_SANITY_MM = 5.0
 #: the exit code only when the `severity` map promotes it; that it CAN is
 #: what the rule above asks about, so the bump is mandated. An older build
 #: refuses the key by name.
-READER_VERSION = 10
+#: 11 (#1211): `replicate[]` -- sibling instances of one hierarchical sheet
+#: laid out as translated copies of a SOURCE instance. `place_seed` acts on
+#: it (a stage after the polish copies the source through `place_pose
+#: replicate`'s engine) and the grade measures each target's distance from
+#: the source arrangement, WARN by default; that the seed moves parts for it
+#: and the grade can be promoted is what the rule above asks about. An older
+#: build refuses the key by name.
+READER_VERSION = 11
 
 _TOP_LEVEL_KEYS = {
     'schema', 'kind', 'board', 'units', 'envelope', 'defaults', 'blocks',
     'keepouts', 'edge_connectors', 'decaps', 'must_lock', 'legality_budget',
     'health', 'severity', 'context', 'overlap_waivers', 'min_reader',
     'assembly', 'proximity', 'dispositions', 'arrays', 'fixed_poses',
-    'keep_away',
+    'keep_away', 'replicate',
 }
 #: #959 (#997). WRITTEN answers to "why is this not graded", one map per kind
 #: of question: a rule the plan leaves dark, a budget key the emitter withheld,
@@ -333,6 +340,18 @@ _PROXIMITY_DEFAULT_BASIS = 'pad_edge'
 #: brief refuses by name: this is a relation between two NET groups at a
 #: functional distance, not a copper clearance between two parts.
 _KEEP_AWAY_KEYS = {'rule', 'note', 'source', 'context'}
+#: #1211. One declared channel copy: `from` and `to` name sheet INSTANCES
+#: (a sheet name or a path, as `place_pose replicate` takes them); the rest
+#: are that verb's own flags, so a declaration and a command line read
+#: alike. `tolerance_mm` is the grade's: how far a target part may sit from
+#: the source arrangement before it is reported.
+_REPLICATE_KEYS = {'from', 'to', 'anchor', 'allow_net_mismatch', 'only',
+                   'skip', 'search_mm', 'tolerance_mm', 'why', 'note',
+                   'source', 'context'}
+#: The default `replicate[].tolerance_mm`: the writer's coordinates are
+#: exact to 1e-6 mm, so a copy the tools made reads 0; this is room for a
+#: designer's hand copy snapped to a 0.05 mm grid.
+REPLICATE_TOLERANCE_MM = 0.05
 _DEFAULTS_KEYS = {'zone_tolerance_mm'}
 #: `zoned_blocks` is setdefault-injected into this same dict by `grade` after
 #: load, and `affinity_exempt_net_ids` is derived there from
@@ -485,6 +504,12 @@ class Intent:
     #: a design fact the board does not hold. Graded by `keep_away`; read by
     #: no placement search (`GRADE_ONLY_RULES`).
     keep_away: Tuple[Dict[str, object], ...] = ()
+    #: #1211. Declared channel copies, `[{from, to[], anchor?, ...}]`. NEVER
+    #: emitted: which instance is the template is a design decision. Copied
+    #: by `place_seed`'s replicate stage and by `place_pose replicate
+    #: --intent`; graded by `replicate`, which no seat search reads
+    #: (`GRADE_ONLY_RULES`).
+    replicate: Tuple[Dict[str, object], ...] = ()
 
     def assembly_sides(self) -> str:
         """The declared policy, or 'both' -- which constrains nothing.
@@ -874,6 +899,85 @@ def _keep_away_claims(raw: Dict) -> List[Dict]:
                               f"[{seen[spec]}]")
         seen[spec] = i
         out.append(dict(k))
+    return out
+
+
+def _replicate_claims(raw: Dict) -> List[Dict]:
+    """Validate `replicate[]` (#1211), AT LOAD: `place_seed` acts on it and
+    never calls `validate_intent`.
+
+    What needs no board is checked here -- the shapes, `from` not among its
+    own `to`, a target named twice (in one row or across rows: two copies
+    onto one instance would each undo the other), `only` with `skip`, a
+    waiver without a pad. Whether the sheets EXIST, and are wired alike, is
+    the board's question: the grade answers it per row
+    (`replicate_unresolved`), with `place_pose replicate`'s own reason."""
+    got = raw.get('replicate')
+    if got is None:
+        return []
+    if not isinstance(got, list):
+        raise IntentError(f"replicate: expected a list of rows, got "
+                          f"{type(got).__name__}")
+    from .replicate import norm_name
+
+    def _strs(v, where, *, empty_ok=False):
+        if (not isinstance(v, list) or (not v and not empty_ok)
+                or not all(isinstance(x, str) and x.strip() for x in v)):
+            raise IntentError(f"{where}: expected a list of non-empty "
+                              f"strings, got {v!r}")
+        return [x.strip() for x in v]
+
+    out: List[Dict] = []
+    targets: Dict[str, str] = {}
+    for i, r in enumerate(got):
+        where = f"replicate[{i}]"
+        if not isinstance(r, dict):
+            raise IntentError(f"{where}: expected an object with `from` and "
+                              f"`to` (sheet names or paths)")
+        _reject_unknown(r, _REPLICATE_KEYS, where)
+        _entry_context(r, where)
+        src = r.get('from')
+        if not isinstance(src, str) or not norm_name(src):
+            raise IntentError(f"{where}.from: expected a sheet name or path, "
+                              f"got {src!r}")
+        to = _strs(r.get('to'), f"{where}.to")
+        for t in to:
+            key = norm_name(t).casefold()
+            if key == norm_name(src).casefold():
+                raise IntentError(f"{where}.to: {t!r} is the `from` sheet "
+                                  f"itself")
+            if key in targets:
+                raise IntentError(
+                    f"{where}.to: {t!r} is already a target of "
+                    f"{targets[key]}; two copies onto one instance would "
+                    f"each undo the other")
+            targets[key] = where
+        if 'anchor' in r and (not isinstance(r['anchor'], str)
+                              or not r['anchor'].strip()):
+            raise IntentError(f"{where}.anchor: expected a reference, got "
+                              f"{r['anchor']!r}")
+        for tok in _strs(r.get('allow_net_mismatch', []),
+                         f"{where}.allow_net_mismatch", empty_ok=True):
+            ref, dot, pad = tok.partition('.')
+            if not (ref and dot and pad):
+                raise IntentError(f"{where}.allow_net_mismatch: {tok!r} is "
+                                  f"not REF.PAD (one pad per entry)")
+        for k in ('only', 'skip'):
+            if k in r:
+                _strs(r[k], f"{where}.{k}")
+        if 'only' in r and 'skip' in r:
+            raise IntentError(f"{where}: `only` and `skip` together have two "
+                              f"readings; declare one")
+        for k, low in (('search_mm', False), ('tolerance_mm', True)):
+            if k in r:
+                v = r[k]
+                if (isinstance(v, bool) or not isinstance(v, (int, float))
+                        or not math.isfinite(v) or v < 0
+                        or (v == 0 and not low)):
+                    raise IntentError(f"{where}.{k}: expected a "
+                                      f"{'non-negative' if low else 'positive'}"
+                                      f" number of mm, got {v!r}")
+        out.append(dict(r, to=to))
     return out
 
 
@@ -1583,6 +1687,7 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
         arrays=tuple(arrays),
         fixed_poses=tuple(fixed_poses),
         keep_away=tuple(_keep_away_claims(raw)),
+        replicate=tuple(_replicate_claims(raw)),
     )
     # A disposition for a rule the intent ARMS says "this is not graded" about
     # a rule that is -- the two statements cannot both be true, and a reader
@@ -3252,6 +3357,10 @@ class _Ctx:
         #: #1253. One row per declared keep-away rule, passing ones too: the
         #: closest pad pair, both pads' sides, and what the rule cannot see.
         self.keep_away_measured: List[Dict[str, object]] = []
+        #: #1211. One row per declared copy target, passing ones too: the
+        #: best-fit translation and each part's distance from the source's
+        #: arrangement.
+        self.replicate_measured: List[Dict[str, object]] = []
         #: #1051. One row per declared array, formed or not: the verdict,
         #: the order it could place and the members it could not.
         self.array_measured: List[Dict[str, object]] = []
@@ -6179,7 +6288,7 @@ KEEP_AWAY_NOT_MEASURED = (
 #: ERROR it fails the grade, and still no seat search, quench or repair rung
 #: refuses or prefers a pose over it -- that would be a placement objective
 #: term, which goes through tests/test_placement_ab.py first.
-GRADE_ONLY_RULES = ('keep_away',)
+GRADE_ONLY_RULES = ('keep_away', 'replicate')
 
 #: Aggressor pads measured against every victim pad at once.
 _KEEP_AWAY_CHUNK = 256
@@ -6376,6 +6485,84 @@ def rule_keep_away(ctx) -> Iterator[Violation]:
                 expected={'gap_mm': gap_mm})
 
 
+def rule_replicate(ctx) -> Iterator[Violation]:
+    """Each declared copy target laid out as a translated copy of its
+    source instance (#1211) -- how far it is from that, never how it got
+    there.
+
+    Per declaration, the parts are matched exactly as `place_pose
+    replicate` matches them (`replicate.measure_declared`, with the
+    declaration's waivers and `only` / `skip`); a declaration the verb would
+    refuse -- an unknown sheet, instances not wired alike -- is a
+    `replicate_unresolved` finding carrying the verb's own reason. Per
+    target, the parts' offsets are fitted by one translation (their median)
+    and each part's distance from it is its residual. One finding per target
+    whose worst residual exceeds `tolerance_mm`
+    (`REPLICATE_TOLERANCE_MM`), or with a part rotated or on the other side
+    from its source. WARN by default (both names); the `severity` map may
+    promote either. Every target is recorded on `ctx.replicate_measured`,
+    passing ones too. Grade only (`GRADE_ONLY_RULES`): no seat search reads
+    it -- `place_seed`'s replicate stage is what ACTS on the declaration."""
+    from .pose_ops import PoseRefusal
+    from .replicate import measure_declared
+    sev = ctx.intent.severity_of('replicate', default=WARN)
+    sev_unres = ctx.intent.severity_of('replicate_unresolved', default=WARN)
+    for i, decl in enumerate(ctx.intent.replicate):
+        key = f"replicate[{i}]"
+        head = f"{key} {decl['from']} -> {', '.join(decl['to'])}"
+        try:
+            rows = measure_declared(ctx.pcb, decl)
+        except PoseRefusal as exc:
+            ctx.replicate_measured.append({
+                'index': i, 'from': decl['from'], 'to': list(decl['to']),
+                'state': 'unresolved', 'passes': None, 'reason': exc.reason})
+            yield Violation(
+                rule='replicate_unresolved', severity=sev_unres,
+                message=f"{head}: not measured -- {exc.reason}",
+                measured={'index': i, 'code': exc.code},
+                expected={'from': decl['from'], 'to': list(decl['to'])})
+            continue
+        tol = float(decl.get('tolerance_mm', REPLICATE_TOLERANCE_MM))
+        for row in rows:
+            off = [p for p in row['parts']
+                   if p['residual_mm'] > tol + legality.EPS
+                   or p['rot_differs'] or p['side_differs']]
+            row.update(index=i, tolerance_mm=tol, passes=not off,
+                       off=len(off), state='measured')
+            ctx.replicate_measured.append(row)
+            if not off:
+                continue
+            worst = off[0]
+            yield Violation(
+                rule='replicate', severity=sev, ref=worst['ref'],
+                block=ctx.owner.get(worst['ref']),
+                message=(
+                    f"{key}: {row['to']} has {len(off)} of {row['pairs']} "
+                    f"part(s) off {row['from']}'s arrangement -- up to "
+                    f"{row['max_residual_mm']:.2f}mm (rms "
+                    f"{row['rms_residual_mm']:.2f}) from the best "
+                    f"translation ({row['fit_offset'][0]:+.2f}, "
+                    f"{row['fit_offset'][1]:+.2f})"
+                    + (f"; {row['rotated']} rotated differently"
+                       if row['rotated'] else '')
+                    + (f"; {row['flipped']} on the other side"
+                       if row['flipped'] else '')
+                    + f"; worst {worst['ref']} (as {worst['source']}, "
+                      f"{worst['residual_mm']:.2f}mm). `place_pose "
+                      f"replicate --intent` or place_seed copies it"),
+                measured={'index': i, 'to': row['to'], 'off': len(off),
+                          'pairs': row['pairs'],
+                          'max_residual_mm': row['max_residual_mm'],
+                          'rotated': row['rotated'],
+                          'flipped': row['flipped'],
+                          'worst': [p['ref'] for p in off[:NAMED_WORST]]},
+                expected={'tolerance_mm': tol})
+
+
+#: How many off-arrangement parts a `replicate` finding names.
+NAMED_WORST = 6
+
+
 def rule_pins_to_edge(ctx) -> Iterator[Violation]:
     """A part whose pad row faces the board outline with nothing beyond it.
 
@@ -6562,6 +6749,7 @@ RULES = (
     ('legality', rule_legality),
     ('pins_to_edge', rule_pins_to_edge),
     ('array_formation', rule_array_formation),
+    ('replicate', rule_replicate),
 )
 
 #: Rules whose violations are raised OUTSIDE the `RULES` loop, and so have no
@@ -6589,6 +6777,10 @@ _NON_RULE_SEVERITIES = frozenset({
     # no net on THIS board is a different claim from a distance. WARN by
     # default, like the rule it stands in for.
     'keep_away_unresolved',
+    # #1211, beside `replicate`: a declaration the board cannot resolve (an
+    # unknown sheet, instances not wired alike) is a different claim from a
+    # distance. WARN by default, like the rule it stands in for.
+    'replicate_unresolved',
     # #959 (#1001). Raised by `grade` itself when `mechanical.json` is read:
     # a part that moved off (or turned away from) its declared mechanical
     # pose. WARN for a move the grade-time anchor already reports at ERROR
@@ -6649,6 +6841,7 @@ _SKIP_REASON = {
     # connector on the board would be named for facing the edge it mates at.
     'pins_to_edge': 'the intent declares no edge_connectors',
     'array_formation': 'the intent declares no arrays',
+    'replicate': 'the intent declares no replicate copies',
 }
 
 
@@ -6821,6 +7014,8 @@ def _wants(intent: Intent, rule: str) -> bool:
         return bool(intent.edge_connectors)
     if rule == 'array_formation':
         return bool(intent.arrays)
+    if rule == 'replicate':
+        return bool(intent.replicate)
     return True
 
 
@@ -6849,6 +7044,7 @@ _ARMING_KEY = {
     'legality': 'legality_budget',
     'pins_to_edge': 'edge_connectors[]',
     'array_formation': 'arrays[]',
+    'replicate': 'replicate[]',
 }
 
 #: What each rule reports at when the intent's `severity` map says nothing.
@@ -6859,7 +7055,8 @@ _ARMING_KEY = {
 #: table cannot drift from the rules without failing.
 _RULE_DEFAULT_SEVERITY = dict({name: ERROR for name, _ in RULES},
                               assembly_side=WARN, decap_ungraded=WARN,
-                              pins_to_edge=WARN, keep_away=WARN)
+                              pins_to_edge=WARN, keep_away=WARN,
+                              replicate=WARN)
 
 #: A rule whose severity the intent's map cannot change, because the rule
 #: ignores the map (`rule_pins_to_edge` always yields WARN).
@@ -6886,6 +7083,11 @@ _POLICY_RULES = {
     # #1253. Which nets are noisy and which sensitive is a design fact.
     'keep_away': ('a design relation between two net groups; nothing on the '
                   'board says which nets are noisy and which are sensitive'),
+    # #1211. The board says which instances are siblings; that one of them
+    # is the TEMPLATE the others copy is a design decision.
+    'replicate': ('a design decision about which sheet instance is the '
+                  'template; the board says which instances are siblings, '
+                  'not that they must be laid out alike'),
 }
 
 
@@ -7247,6 +7449,10 @@ class GradeResult:
     #: included -- the closest pad pair and both pads' sides. Empty when the
     #: intent declares none.
     keep_away_measured: List[Dict[str, object]] = field(default_factory=list)
+    #: #1211: every declared copy target's distance from its source's
+    #: arrangement, passing ones included (plus one row per declaration the
+    #: board cannot resolve). Empty when the intent declares none.
+    replicate_measured: List[Dict[str, object]] = field(default_factory=list)
     #: #1051: every declared array's formation measurement, formed or not,
     #: with the members its pin order could not place. Empty when no array
     #: is declared.
@@ -8657,6 +8863,7 @@ def grade(intent: Intent, pcb_data, pcb_file: str, *,
         edge_seating=list(ctx.edge_seating),
         proximity_measured=list(ctx.proximity_measured),
         keep_away_measured=list(ctx.keep_away_measured),
+        replicate_measured=list(ctx.replicate_measured),
         array_measured=list(ctx.array_measured),
         edge_connector_evidence=list(ctx.edge_connector_evidence),
         decap_pin_evidence=pin_evidence,
@@ -10032,6 +10239,20 @@ def format_text(r: GradeResult) -> str:
     if r.keep_away_measured:
         lines.append("  keep-away is graded on pad copper in plan view; it "
                      "cannot see " + '; '.join(KEEP_AWAY_NOT_MEASURED))
+    # #1211: every declared copy target, passing ones included.
+    for m in r.replicate_measured:
+        if m.get('state') == 'unresolved':
+            lines.append(f"  replicate[{m['index']}] {m['from']} -> "
+                         f"{', '.join(m['to'])}: not measured")
+            continue
+        lines.append(
+            f"  replicate[{m['index']}] {m['from']} -> {m['to']}: "
+            + ('a copy' if m['passes'] else
+               f"{m['off']} of {m['pairs']} part(s) off")
+            + f", max {m['max_residual_mm']:.2f}mm from the best translation "
+              f"({m['fit_offset'][0]:+.2f}, {m['fit_offset'][1]:+.2f})"
+            + (f", {len(m['left_in_place'])} left out by the declaration"
+               if m.get('left_in_place') else ''))
     rows = [e for e in r.edge_seating
             if e.get('along_edge_offset_mm') is not None]
     if rows:
@@ -10554,6 +10775,8 @@ def to_json(r: GradeResult) -> Dict:
         **({'array_formation': r.array_measured} if r.array_measured
            else {}),
         **({'keep_away': r.keep_away_measured} if r.keep_away_measured
+           else {}),
+        **({'replicate': r.replicate_measured} if r.replicate_measured
            else {}),
         **({'pad_stacks': r.pad_stacks} if r.pad_stacks is not None
            else {}),

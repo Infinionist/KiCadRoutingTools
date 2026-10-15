@@ -681,6 +681,30 @@ or graphic copper off the board -- so a refused copy says which members to
 leave out. `--snap` does not apply: a copy is rigid. It is an
 opt-in verb, and no seeder or quench default reads it.
 
+**Declared in the intent (`replicate[]`, reader 11).** The same copy as a
+design declaration: `{"from": "CH1", "to": ["CH2", "CH3", "CH4"], "anchor":
+"J1"}` plus the verb's own settings (`allow_net_mismatch`, `only` / `skip`,
+`search_mm`). `place_seed` applies each declaration after its polish and
+re-seat (`replicate.apply_declared`), through `pose_ops.apply_poses` -- the
+engine, guards and verdict of the verb -- and writes the copy only if it
+grades no worse than the seed; a refused copy leaves the seed and names the
+colliding members in `summary.replicate[]`. `place_pose replicate --intent
+PATH` (no `--from`/`--to`) applies them by hand. check_floorplan grades each
+target (`replicate`, WARN): parts matched as the verb matches them, offsets
+fitted by their median, each part's residual from that fit. Measured on the
+untracked multichannel_mixer: its CH1 laid out and locked as the designer
+did, CH2-4 piled, `place_seed --seed 1` with the declaration copied 63 parts
+(crossings 226 -> 105, hpwl 2608.9 -> 2076.3 mm, exit 4 -> 0: the OFF arm's
+two blocking courtyard pairs were among the parts the copy moved) and every
+target graded a copy at 0.00 mm; with CH2-4's panel parts locked at the
+designer poses (seeded2) the copy grades 12 pad conflicts worse and is not
+written, leaving the seed identical to the undeclared run. An undeclared
+intent seeds identically to the code before this stage (esp_prog,
+splitflap_driver and two mixer piles: every pose, lock and summary value).
+The stage is declaration-driven and not in `tests/test_placement_ab.py`: the
+only tracked board with repeated sheet instances is glasgow_revC, whose
+IO_Buffer pair differs at its address straps and in layout.
+
 **A copy that does not fit.** Two answers, both opt-in:
 
 - a PARTIAL copy, `--only REF[,REF]` or `--skip REF[,REF]`. A `--from` ref

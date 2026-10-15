@@ -171,6 +171,7 @@ python py_placer/place_pose.py BOARD OUT face U1 W USB1
 python py_placer/place_pose.py BOARD OUT lock U1 CON1
 python py_placer/place_pose.py BOARD OUT set U1 129.9 98.3 rotate CON2 180 lock U1
 python py_placer/place_pose.py BOARD OUT replicate --from CH1 --to CH2 --to CH3 [--anchor REF | --offset DX DY] [--allow-net-mismatch REF.PAD ...] [--only REFS | --skip REFS] [--search MM]
+python py_placer/place_pose.py BOARD OUT --intent intent.json replicate   # the intent's replicate[]
 ```
 
 Several verbs in one call describe ONE arrangement: every op is resolved
@@ -286,8 +287,13 @@ The copy is graded as one arrangement like any other call, with the same lock
 rule; `--snap` does not apply. `summary.replicate` reports the mapping, the
 offset and the renamed and shared nets, and each moved member lists its new
 conflict pairs and the off-board / edge-band / keep-out findings it newly
-carries (`ops[].new_conflicts`), which is the list to `--skip` from. See
-`py_placer/placement/README.md`.
+carries (`ops[].new_conflicts`), which is the list to `--skip` from. The
+same copy can be DECLARED in a floorplan intent (`replicate[]`, reader 11,
+see `docs/floorplan-intent.md`): `replicate --intent PATH` with no
+`--from`/`--to` applies every declaration as one call, `place_seed` applies
+them after its polish (written only when the copy grades no worse than the
+seed), and `check_floorplan` grades each target's distance from the source
+arrangement. See `py_placer/placement/README.md`.
 
 Knobs come from the board (`list_nets.board_floor_knobs`) unless given — a
 CLI-supplied `--clearance` loosens the verdict on a tool whose job is to

@@ -49,6 +49,7 @@ needed it.
 """
 from __future__ import annotations
 
+import math
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from placement.arrays import natural_key
@@ -610,3 +611,124 @@ def plan(pcb, src_token: str, dst_tokens: Sequence[str], *, anchor: Optional[str
 def _rot_differs(a: float, b: float) -> bool:
     d = abs((a - b) % 360.0)
     return min(d, 360.0 - d) > 1e-6
+
+
+# ---------------------------------------------------------------------------
+# the intent's `replicate[]` declaration (#1211)
+# ---------------------------------------------------------------------------
+
+def declared_op(decl: Dict) -> Dict:
+    """The `place_pose` op one `replicate[]` declaration stands for -- the
+    same dict `place_pose replicate` builds from its flags, so a declaration
+    and a command line take one path through `pose_ops.resolve_ops`."""
+    return {'kind': 'replicate', 'from': decl['from'],
+            'to': list(decl['to']), 'anchor': decl.get('anchor'),
+            'offset': None,
+            'allow_net_mismatch': list(decl.get('allow_net_mismatch') or ()),
+            'only': list(decl.get('only') or ()),
+            'skip': list(decl.get('skip') or ()),
+            'search': decl.get('search_mm'), 'search_step': None,
+            'from_intent': True}
+
+
+def _median(values: Sequence[float]) -> float:
+    v = sorted(values)
+    n = len(v)
+    return v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2.0
+
+
+def measure_declared(pcb, decl: Dict) -> List[Dict]:
+    """How far each target of one declaration sits from the source's
+    arrangement, one row per target -- the `replicate` rule's measurement.
+
+    The parts are matched exactly as `place_pose replicate` would match
+    them (`plan`, with the declaration's waivers and `only` / `skip`), so a
+    declaration the verb would refuse raises the verb's own `PoseRefusal`.
+    For each target, the part offsets `target - source` are fitted by ONE
+    translation, their component-wise MEDIAN -- so a copy laid around any
+    anchor reads 0, and one stray part reads as itself instead of smearing
+    the fit -- and each part's residual is its distance from that fit. A
+    rotation or a side that differs from its source is reported apart: a
+    translation cannot fix it. Parts the declaration leaves out are not
+    measured."""
+    rows, report = plan(pcb, decl['from'], decl['to'],
+                        anchor=decl.get('anchor'),
+                        allow_net_mismatch=decl.get('allow_net_mismatch') or (),
+                        only=decl.get('only') or (),
+                        skip=decl.get('skip') or ())
+    from placement.legality import footprint_side
+    fps = pcb.footprints
+    out = []
+    for t in report['to']:
+        prefix = t['sheet']['path'].lstrip('/')
+        pairs = [(r['source'], r['ref']) for r in rows
+                 if r['target'] == prefix]
+        d = [(float(fps[tr].x) - float(fps[sr].x),
+              float(fps[tr].y) - float(fps[sr].y)) for sr, tr in pairs]
+        fx, fy = _median([a for a, _b in d]), _median([b for _a, b in d])
+        parts = []
+        for (sr, tr), (dx, dy) in zip(pairs, d):
+            fs, ft = fps[sr], fps[tr]
+            parts.append({
+                'ref': tr, 'source': sr,
+                'residual_mm': round(math.hypot(dx - fx, dy - fy), 4),
+                'rot_differs': _rot_differs(float(fs.rotation or 0.0),
+                                            float(ft.rotation or 0.0)),
+                'side_differs': footprint_side(fs) != footprint_side(ft)})
+        parts.sort(key=lambda p: (-p['residual_mm'], natural_key(p['ref'])))
+        res = [p['residual_mm'] for p in parts]
+        out.append({
+            'from': report['from']['name'] or report['from']['path'],
+            'to': t['sheet']['name'] or t['sheet']['path'],
+            'to_path': t['sheet']['path'],
+            'pairs': len(pairs),
+            'fit_offset': [round(fx, 4), round(fy, 4)],
+            'max_residual_mm': round(max(res), 4) if res else 0.0,
+            'rms_residual_mm': (round(math.sqrt(sum(r * r for r in res)
+                                                / len(res)), 4)
+                                if res else 0.0),
+            'rotated': sum(p['rot_differs'] for p in parts),
+            'flipped': sum(p['side_differs'] for p in parts),
+            'left_in_place': list(t['left_in_place']),
+            'parts': parts})
+    return out
+
+
+def apply_declared(board_path: str, intent, *, clearance=None,
+                   board_edge_clearance=None,
+                   group_sources: Sequence[str] = ()) -> List[Dict]:
+    """`place_seed`'s replicate stage (#1211): each `replicate[]`
+    declaration, in order, applied IN PLACE to `board_path` through
+    `pose_ops.apply_poses` -- the engine, the writer, the lock and plug
+    guards, the intent's zone check and the verdict `place_pose replicate
+    --intent` uses. A copy that verdict refuses (it grades worse than the
+    board it would replace, or would move a locked part) is NOT written: the
+    seed stays as it was and the record says why, naming the members that
+    collide. One record per declaration, `applied` True or False."""
+    from placement import pose_ops
+    out = []
+    for i, decl in enumerate(getattr(intent, 'replicate', ()) or ()):
+        rec = {'index': i, 'from': decl['from'], 'to': list(decl['to'])}
+        try:
+            s = pose_ops.apply_poses(
+                board_path, board_path, [declared_op(decl)],
+                clearance=clearance,
+                board_edge_clearance=board_edge_clearance,
+                intent=intent, group_sources=group_sources)
+        except PoseRefusal as exc:
+            summ = exc.extra.get('summary') or {}
+            rec.update(applied=False, code=exc.code, reason=exc.reason,
+                       new_conflicts={n['ref']: n['new_conflicts']
+                                      for n in summ.get('ops') or ()
+                                      if n.get('new_conflicts')})
+            out.append(rec)
+            continue
+        rep = (s.get('replicate') or [{}])[0]
+        rec.update(applied=True, moved=sorted(
+            (n['ref'] for n in s['moved']), key=natural_key),
+            targets=[{'sheet': t['sheet']['name'] or t['sheet']['path'],
+                      'offset': t['offset'], 'pairs': t['pairs'],
+                      'moved': t['moved'], 'search': t.get('search')}
+                     for t in rep.get('to') or ()])
+        out.append(rec)
+    return out

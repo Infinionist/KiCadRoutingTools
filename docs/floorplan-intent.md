@@ -149,12 +149,13 @@ source, suspect, suspect_reason
 | `assembly` | `sides` (`"F"`, `"B"` or `"both"`), `body_edge_mm` (#1255: the least distance in mm a component body may sit from the board edge, which arms check_assembly's `body_edge_band` gate; needs `min_reader` 9), `why`, `context` |
 | `proximity[]` | `ref`, `near`, `max_mm`, `basis` (`"pad_edge"` or `"body"`), `pads`, `note`, `context`, and the compiler-written `source` |
 | `keep_away[]` | `rule` (ONE rule in route.py's `--keep-away` syntax, `AGGRESSOR:VICTIM:GAP`), `note`, `context`, and the compiler-written `source` (#1253; see "`keep_away[]`" below; needs `min_reader` 10) |
+| `replicate[]` | `from` (a sheet instance: its name or path, as `place_pose replicate --from` takes it), `to` (a list of them), `anchor`, `allow_net_mismatch` (`REF.PAD` entries), `only` or `skip` (refs; not both), `search_mm`, `tolerance_mm`, `why`, `note`, `context`, `source` (#1211; see "`replicate[]`" below; needs `min_reader` 11) |
 | `arrays[]` | `name`, `members` (an ORDERED list of literal refs, at least two), `serves` (a ref, or `"unknown"`), `order` (`"pin"`, `"declared"` or `"unknown"`), `rotation` (degrees, `"shared"` or `"unknown"`), `pitch_mm` (`"auto"` or mm), `axis` (`"auto"`, `"x"` or `"y"`), `allow_mixed`, `why`, `note`, `context`, and the compiler-written `source` (#1051; see "Arrays" below; needs `min_reader` 7) |
 | `fixed_poses[]` | `ref`, `x`, `y`, `rot` (degrees or `"unknown"`), `side` (`"F"`, `"B"` or `"unknown"`), `basis` (`"declared"` or `"mechanical"`), `why`, `context`, `accept_courtyard_overlap` (a list of literal refs, #1060) (#1054; see "Fixed poses" below; needs `min_reader` 7) |
 | `legality_budget` | `overlap_area`, `oob_count`, `oob_amount` (`oob_area` refused — see below) |
 | `health` | `bus_corridors`, `classes`, `block_displacement_mm`, `ignore_net_ids`, `max_fanout`, `zoned_blocks`, `affinity_exempt_nets`, `affinity_exempt_net_ids`, `plane_layers` |
 | `health.bus_corridors[]` | `name`, `nets`, `width_mm` |
-| `severity` | any of the 42 rule names below |
+| `severity` | any of the 44 rule names below |
 | `overlap_waivers[]` | `pair`, `reason`, `context` |
 | `dispositions` | `rules`, `withheld`, `refs`, `contradictions` -- each `{key: why}`, a non-empty written reason (#959; see "The rule roster" below) |
 | `must_lock` | a list of reference globs (no nested keys) |
@@ -233,7 +234,7 @@ The top-level `context.basis` labels numbers and changes no verdict.
 intent file at once — far too blunt for "this build learned a new field".
 
 So field-level compatibility is a second number. `READER_VERSION` (currently
-`10`) is what this build can act on, and an intent sets `min_reader` when a
+`11`) is what this build can act on, and an intent sets `min_reader` when a
 claim must not be silently ignored:
 
 ```jsonc
@@ -305,6 +306,12 @@ older build refuses the key by name. The design brief compiles its
 only when `severity` promotes it, and that it can is what the bump is for. An
 older build refuses the key by name. The design brief compiles its
 `keep_away` with `min_reader` 10.
+
+**Reader 11 arrived with [#1211](https://github.com/drandyhaas/KiCadRoutingTools/issues/1211):**
+`replicate[]`. `place_seed` acts on it (a stage after the polish copies the
+declared channels) and the grade measures it at **warn** by default, which
+`severity` may promote, so the bump is mandated. An older build refuses the
+key by name.
 
 ### Arrays: parts that form one row (#1051)
 
@@ -992,6 +999,8 @@ status from this list:
 | `proximity_unresolved` | a proximity claim names a ref, or a pad number, this board does not have. A separate NAME so a DNP-variant board can demote it without demoting the distance claim | same |
 | `keep_away` | a pad of one DECLARED net group sits closer than GAP to a pad of the other, on two different parts ([#1253](https://github.com/drandyhaas/KiCadRoutingTools/issues/1253)). One finding per part pair, at its closest pads, naming each pad's side. **warn** by default; `severity` may promote it | `legality.pad_rect` + `rect_gap` (plan view), sides resolved by the router's `keep_away.resolve_rule_sides` |
 | `keep_away_unresolved` | a keep-away rule has a side that matches no net on this board (**warn** by default) | same |
+| `replicate` | a declared copy target is not laid out as a translated copy of its source instance ([#1211](https://github.com/drandyhaas/KiCadRoutingTools/issues/1211)): a part further than `tolerance_mm` (default 0.05) from the best translation, or rotated, or on the other side. One finding per target, naming the worst parts. **warn** by default; `severity` may promote it | `replicate.measure_declared`: parts matched by schematic symbol as `place_pose replicate` matches them, offsets fitted by their median |
+| `replicate_unresolved` | a declaration the board cannot resolve -- an unknown or ambiguous sheet, instances not wired alike, a waiver naming no pad -- with `place_pose replicate`'s own reason (**warn** by default) | same |
 | `must_lock` | a declared-critical part is not locked in the file | `parser.extract_locked_refs` |
 | `legality` | overlap or off-board parts exceed a budget. An overlap finding's `measured` carries `overlap_area` (the outline reading the budget grades), `overlap_area_rect`, the worst 50 `pairs` (`[a, b, rect, exact]`) with `pairs_total`, and `excluded` -- the containers, pad-less logos and silk-only parts the budget does not see (a silk body never gates, #896); `legality.overlap_area_excluded` counts them on every grade | overlap: `legality.courtyard_overlap_pairs` (check_assembly's drawn outlines, #1162); off-board: `QuenchState.legality_metrics` |
 | `block_unresolved` | a block matched no footprint | — |
@@ -1065,6 +1074,7 @@ reports the whole picture in `accept_basis`.
 | `decap_pin_distance` | yes | — | **yes** (#1043) | — armed by `decaps.max_pin_distance_mm` at error severity. Per (IC, declared supply pin), measured by CALLING `floorplan.nearest_rail_cap` over the rule's own cap set (`decap_pin_caps`) on footprints posed at the live poses |
 | `decap_distance` | yes | scope stage | **yes** (#1043) | — armed by `decaps.max_distance_mm` at error severity. The currency objection that kept it out is met by CALLING the grader's own distance (`groups.elect_live`: cap pad centroid to the inflated pad bbox of the nearest chip on its rail) rather than re-deriving one. The election is re-run per candidate pose over the chips on the cap's rail, because the grade re-elects: a frozen cap→IC pair is not conservative for a cap elected beyond the radius, which can walk into another chip's radius past the limit (run 32's C26). The population (which caps, graded or beyond the radius) is fixed once at state build (`floorplan.tether_pairings`) |
 | `legality` | yes | — | no | a whole-board aggregate against a BUDGET, so a per-pose form is non-local: whether A's move is admissible would depend on B's violation |
+| `replicate` | yes | after the polish (#1211): `replicate.apply_declared` | no | grade only (`GRADE_ONLY_RULES`): no seat search, quench or repair rung reads it. `place_seed` ACTS on the declaration once, after its polish, through `place_pose replicate`'s engine and verdict; a later quench or repair may move a copied part, and the grade then reports it. Holding a copy rigid in a search would be a placement objective change, which goes through `tests/test_placement_ab.py` first |
 | `keep_away` | yes | — | no | grade only (`GRADE_ONLY_RULES`, #1253): `PoseGrader` does not run it, so even promoted to ERROR no seat search, quench or repair rung refuses or prefers a pose over it. Making it a search term is a placement objective change, which goes through `tests/test_placement_ab.py` first |
 | `pins_to_edge` | yes | — | no | always-WARN advice for a reviewer: the exit gate never counts it, and the gate holds only what the exit gate counts |
 | `array_formation` | yes | stage 2.45 (#1051) | **by construction** | a declared array is a RIGID group in the quench: it only translates, its members sit out the single-part nudge and cross-member swaps, and a member leaves only through a release disclosed in `rigid_released`. The seeder owns the shared rotation |
@@ -1235,6 +1245,71 @@ router reads and what it declares), and JSON_SUMMARY counts them as
 beside the board is caught the same way, at `--emit-intent` too. No
 placement search reads the key either (see "Which rules the SEARCH can
 see").
+
+### `replicate[]`: sibling sheet instances laid out alike (#1211)
+
+```jsonc
+"replicate": [{ "from": "CH1", "to": ["CH2", "CH3", "CH4"], "anchor": "J1",
+                "why": "four identical channel strips at the front-panel pitch" }]
+```
+
+A board drawn from one hierarchical sheet instantiated several times (a
+mixer's channel strips, one I/O buffer per bank) already says which parts
+correspond: every footprint's `(path ...)` ends in the same symbol uuid in
+every instance. That one instance is the TEMPLATE the others copy is a design
+decision, so this key is never emitted; the AI declares the structure and the
+tools do the geometry, as `place_pose replicate` does by hand.
+
+A row names a SOURCE instance and its TARGETS, by sheet name or path as
+`place_pose replicate --from/--to` takes them, and carries that verb's own
+settings: `anchor` (the part that keeps its place in each target), one
+`allow_net_mismatch` entry per pad wired differently BY DESIGN (an address
+strap), `only` or `skip` (a partial copy), and `search_mm` (fit a copy that
+does not fit as asked). `tolerance_mm` is the grade's. The loader refuses a
+target named twice (two copies onto one instance would each undo the other),
+`from` among its own `to`, `only` with `skip`, and a waiver that is not
+`REF.PAD`. Whether the sheets exist and are wired alike is the board's
+question, answered when the row is used.
+
+Three things read it:
+
+- **`place_seed`**, after its polish and re-seat, applies each row in order
+  through `place_pose replicate`'s engine and verdict
+  (`replicate.apply_declared`): the copy is written only if it grades no worse
+  than the seeded board and moves no locked part. A refused copy leaves the
+  seed as it was, and `summary.replicate[]` and the console say which members
+  collide. The seed's own gates then judge the written board, copied parts
+  included. An intent declaring none runs nothing.
+- **`place_pose BOARD OUT replicate --intent PATH`** (no `--from`/`--to`)
+  applies every row as one call, with the verb's usual refusals.
+- **The grade** (`replicate`, **warn** by default) measures, per target, how
+  far the layout is from the source's: the parts are matched as the verb
+  matches them, their offsets are fitted by ONE translation (the median, so
+  a copy laid around any anchor reads 0 and one stray part reads as itself),
+  and each part's distance from it is its residual. A target with a part
+  past `tolerance_mm`, rotated or on the other side is one finding naming the
+  worst parts; every target prints a line, passing ones too, and `--json`
+  carries the readings as `replicate[]`. A row the board cannot resolve is
+  `replicate_unresolved`, with the verb's own reason.
+
+Measured on the multichannel_mixer demo (untracked): CH1 laid out and
+locked as the designer did, CH2-4 piled. `place_seed --seed 1` with the row
+above copied 63 parts after the polish -- crossings 226 -> 105, hpwl 2608.9
+-> 2076.3 mm -- and every target grades a copy at 0.00 mm; without the row
+the same seed leaves the three targets 41-53 mm off CH1's arrangement. With
+CH2-4's jacks and pots also locked at the designer poses the copy grades 12
+pad conflicts worse than the seed, so it is not written: the board is the
+undeclared run's, and the record names the colliding members (the
+`place_pose replicate` README section shows how `skip` fits such a copy).
+
+No placement SEARCH reads it: a later `place_optimize` or `place_seed
+--repair` may move a copied part, and the grade then reports it. Holding the
+copies rigid in the quench would be a placement objective term, which goes
+through `tests/test_placement_ab.py` first. That table has no row for it:
+the stage is declaration-driven, and the only tracked board with repeated
+sheet instances, glasgow_revC, has IO_Buffer instances wired differently at
+their address straps and laid out differently, so it is unmeasured by the
+A/B.
 
 ### A through-hole part is in a keep-out from either side
 

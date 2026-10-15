@@ -79,6 +79,8 @@ ARM_WITH = {
     # #1051: a declared row arms its formation rule.
     'array_formation': {'arrays': [{'name': 'row', 'members': ['R1', 'R2'],
                                     'order': 'declared'}]},
+    # #1211: a declared channel copy arms its grade.
+    'replicate': {'replicate': [{'from': 'CH1', 'to': ['CH2']}]},
 }
 
 

@@ -192,7 +192,11 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   the rest (`--skip` the members it names, which stay where they are, and
   repeat until the copy is accepted) or let it look nearby (`--search 2`
   keeps the nearest offset that grades no worse; it never moves a locked
-  part).
+  part). To have the SEED do it, declare the copy in the intent
+  (`"replicate": [{"from": "CH1", "to": ["CH2", "CH3"], "anchor": "J1"}]`,
+  `min_reader` 11): `place_seed` copies it after its polish when the copy
+  grades no worse, `place_pose ... --intent PATH replicate` applies it by
+  hand, and check_floorplan grades each target against the source.
 - **On a pile, rank the biggest IC's rotation before you keep a seed.** A
   pile part keeps its input rotation, which is a generator default, and
   `converge.py poses` cannot rank an IC's rotation once its decaps are packed

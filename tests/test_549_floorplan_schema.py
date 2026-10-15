@@ -132,7 +132,9 @@ KEY_SETS = {
         # #1051 / #1054: declared rows, and exact poses to seat.
         'arrays', 'fixed_poses',
         # #1253: two net groups apart, in route.py's rule syntax.
-        'keep_away'},
+        'keep_away',
+        # #1211: sibling sheet instances laid out as copies of one.
+        'replicate'},
     '_ENVELOPE_KEYS': {'rect', 'tolerance_mm'},
     '_DEFAULTS_KEYS': {'zone_tolerance_mm'},
     '_BLOCK_KEYS': {'name', 'group', 'refs', 'zone', 'side', 'exclusive',
@@ -188,6 +190,10 @@ KEY_SETS = {
                          'context', 'accept_courtyard_overlap'},
     # #1253: one rule per row, in route.py's own syntax.
     '_KEEP_AWAY_KEYS': {'rule', 'note', 'source', 'context'},
+    # #1211: `place_pose replicate`'s own flags, plus the grade's tolerance.
+    '_REPLICATE_KEYS': {'from', 'to', 'anchor', 'allow_net_mismatch', 'only',
+                        'skip', 'search_mm', 'tolerance_mm', 'why', 'note',
+                        'source', 'context'},
 }
 
 
@@ -242,6 +248,7 @@ def test_the_key_sets_are_exactly_what_is_documented():
         '_ARRAY_KEYS': 'arrays[]',
         '_FIXED_POSE_KEYS': 'fixed_poses[]',
         '_KEEP_AWAY_KEYS': 'keep_away[]',
+        '_REPLICATE_KEYS': 'replicate[]',
     }
     checked = 0
     for name, row in sorted(TABLE_ROWS.items()):
@@ -353,6 +360,13 @@ def test_an_intent_using_every_known_key_loads():
         # #1253. One rule per row, in route.py's own syntax.
         'keep_away': [{'rule': 'SW:FB,class=Analog:0.5', 'note': 'n',
                        'source': 'brief', 'context': {'why': 'w'}}],
+        # #1211. `only` and `skip` are exclusive, so the second row carries
+        # `skip`.
+        'replicate': [{'from': 'CH1', 'to': ['CH2', 'CH3'], 'anchor': 'J1',
+                       'allow_net_mismatch': ['U19.2'], 'only': ['U1'],
+                       'search_mm': 2.0, 'tolerance_mm': 0.1, 'why': 'w',
+                       'note': 'n', 'source': 's', 'context': {'why': 'w'}},
+                      {'from': 'CH1', 'to': ['CH4'], 'skip': ['R1']}],
     }
     # Every key of every set must appear above, or this proves less than it
     # claims -- the point is coverage of the vocabulary, not of a sample.
@@ -376,6 +390,8 @@ def test_an_intent_using_every_known_key_loads():
     seen |= set(raw['proximity'][0])
     seen |= set(raw['arrays'][0]) | set(raw['fixed_poses'][0])
     seen |= set(raw['keep_away'][0])
+    for r in raw['replicate']:
+        seen |= set(r)
     seen |= set(raw['dispositions'])
     for k in raw['keepouts']:
         seen |= set(k)
@@ -669,7 +685,10 @@ def test_severity_keys_are_checked_against_the_rule_names():
                                         'fixed_pose_overlap_waived',
                                         # #1253: a keep-away side matching
                                         # no net
-                                        'keep_away_unresolved'}
+                                        'keep_away_unresolved',
+                                        # #1211: a copy the board cannot
+                                        # resolve
+                                        'replicate_unresolved'}
     assert _SEVERITY_KEYS == expected, sorted(_SEVERITY_KEYS ^ expected)
     for name in sorted(expected):
         # Two names accept one direction only, and say so at load:

@@ -238,8 +238,9 @@ def test_the_summary_reports_what_did_not_run():
     # `decap_ungraded` and #705 added `decap_pin_distance`; 11 before #837
     # added `assembly_side`; 12 before #902 added `proximity`; 13 before the
     # run-26 series added `pins_to_edge`; 14 before #1051 added
-    # `array_formation`; 15 before #1253 added `keep_away`.
-    assert s['rules_skipped'] == 16, s['rules_skipped']
+    # `array_formation`; 15 before #1253 added `keep_away`; 16 before #1211
+    # added `replicate`.
+    assert s['rules_skipped'] == 17, s['rules_skipped']
     print(f"  PASS: an empty intent passes with rules_run=0, "
           f"rules_skipped={s['rules_skipped']} -- visibly vacuous")
 

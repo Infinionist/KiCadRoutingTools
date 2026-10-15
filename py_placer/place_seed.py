@@ -11,7 +11,10 @@ a legal starting placement (see placement/seeder.py for exactly what each
 construct becomes), stamps the intent's must_lock refs `(locked yes)` into the
 output, runs a quench polish over the free parts, and then GRADES its own
 output against the same intent -- a seed that fails the intent it was built
-from is a defect, not a result.
+from is a defect, not a result. An intent that declares `replicate[]`
+(#1211) has each declared channel copy applied after the polish, through
+`place_pose replicate`'s engine and verdict: written only when the copy
+grades no worse than the seed (`summary.replicate[]` says which, and why).
 
 Different --seed values produce genuinely different legal seeds (packing order
 and target jitter); the same seed reproduces byte for byte. Compose with
@@ -2063,6 +2066,63 @@ Examples:
         print(f"place_seed: outline cannot be trusted for grading: {exc}",
               file=sys.stderr)
         return UNPLACED_EXIT
+    # #1211: the intent's declared channel copies (`replicate[]`), AFTER the
+    # polish and the re-seat, so nothing in this run moves a copied part
+    # again. Each declaration goes through `place_pose replicate`'s own engine
+    # and verdict (`replicate.apply_declared`): a copy that grades worse than
+    # the seeded board, or would move a locked part, is NOT written -- the
+    # seed stands and the record says which members collide. The gates below
+    # then judge the written board, copied parts included (`_late`). An
+    # intent that declares none runs nothing here.
+    replicate_records = []
+    if getattr(intent, 'replicate', ()):
+        from placement.replicate import apply_declared
+        replicate_records = apply_declared(
+            args.output_file, intent, clearance=args.clearance,
+            board_edge_clearance=args.board_edge_clearance,
+            group_sources=sources)
+        for rec in replicate_records:
+            head = (f"  replicate[{rec['index']}] {rec['from']} -> "
+                    f"{', '.join(rec['to'])}: ")
+            if rec['applied']:
+                print(head + f"copied, {len(rec['moved'])} part(s) moved")
+            else:
+                print(head + f"NOT copied -- {rec['reason'][:300]}")
+                for ref, why in sorted(rec['new_conflicts'].items())[:8]:
+                    print(f"    {ref}: {', '.join(why[:4])}")
+        if any(rec['applied'] for rec in replicate_records):
+            graded = _grade()
+            if ratsnest.get('after'):
+                # The summary's crossings / hpwl are the polish's, measured
+                # BEFORE the copy moved parts: re-measured on the written
+                # board with the polish's own objective (make_state's
+                # defaults are its knobs), the staged parts left out as the
+                # polish left them out. The polish's figures are kept.
+                import fnmatch
+                from pose_score import make_state
+                _now = parse_kicad_pcb(args.output_file)
+                for _r in _staged:
+                    _now.footprints.pop(_r, None)
+                _ign = {nid for nid, n in _now.nets.items()
+                        if any(fnmatch.fnmatchcase(n.name, p)
+                               for p in (args.ignore_nets or ()))}
+                _cost = make_state(
+                    _now, args.output_file, clearance=args.clearance,
+                    board_edge_clearance=args.board_edge_clearance,
+                    grid_step=args.grid_step, ignore_net_ids=_ign or None,
+                    body_model=args.body_model).total_cost()
+                for rec in replicate_records:
+                    rec['polish_metrics'] = {
+                        k: ratsnest['after'].get(k)
+                        for k in ('crossings', 'hpwl')}
+                ratsnest['after'] = dict(ratsnest['after'],
+                                         crossings=_cost['crossings'],
+                                         hpwl=_cost['hpwl'])
+                print(f"  after the copies: crossings "
+                      f"{replicate_records[0]['polish_metrics']['crossings']}"
+                      f" -> {_cost['crossings']}, hpwl "
+                      f"{replicate_records[0]['polish_metrics']['hpwl']:.1f}"
+                      f" -> {_cost['hpwl']:.1f}mm")
     own, pinned = _split_pinned(graded, args.output_file, intent)
     _print_grade(own, pinned)
     # THE GATE LOOKS AT THE COPPER IT JUST ARRANGED (run 27).
@@ -2345,6 +2405,10 @@ Examples:
                # not SEAT: these were seated, and stay where the polish left
                # them.
                'reseat_declined': reseat_declined,
+               # #1211: one record per declared `replicate[]` copy -- applied
+               # (with the parts it moved), or not and why. [] when none is
+               # declared.
+               'replicate': replicate_records,
                # #1172: edge connectors stage 1 turned to an angle IT chose
                # or reordered -- {ref: {from, to, why, candidates}}: nothing
                # declared their angle and their input angle carried no

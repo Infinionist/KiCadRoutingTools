@@ -105,10 +105,10 @@ ROWS = [
     # wrong reason. `5 -> 1` is the same claim the row has always made.
     # RE-ANCHORED for #893, which took READER_VERSION 4 -> 5, #959
     # (#1000), which took it 5 -> 6, #1051, which took it 6 -> 7,
-    # #1142, which took it 7 -> 8, #1255, which took it 8 -> 9, and #1253,
-    # which took it 9 -> 10.
+    # #1142, which took it 7 -> 8, #1255, which took it 8 -> 9, #1253,
+    # which took it 9 -> 10, and #1211, which took it 10 -> 11.
     ('reader-version-not-bumped', 'fp',
-     "READER_VERSION = 10",
+     "READER_VERSION = 11",
      "READER_VERSION = 1",
      (TSCH, T712), KILLED),
 

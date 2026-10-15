@@ -518,9 +518,9 @@ def main():
     # #1051/#1052/#1054 (`arrays[]`, `fixed_poses[]`, `blocks[].rigid`); 8
     # since #1142 (`decaps.within_radius_refs`, `decaps.within_radius_mm`);
     # 9 since #1255 (`assembly.body_edge_mm`); 10 since #1253
-    # (`keep_away[]`).
+    # (`keep_away[]`); 11 since #1211 (`replicate[]`).
     check("reader version names the field it learned",
-          fp.READER_VERSION == 10, fp.READER_VERSION)
+          fp.READER_VERSION == 11, fp.READER_VERSION)
 
     check("graded every fixture", graded == len(EXPECT), f"{graded}")
     print(f"\n{'FAIL' if FAILURES else 'PASS'}: #837 census over {graded} "

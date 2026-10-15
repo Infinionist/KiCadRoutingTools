@@ -148,6 +148,11 @@ exact points given -- so --near / --snap need a call with ONE pose op):
                            no worse; targets are fitted in --to order. Every
                            candidate is written and re-graded. Exit 4 if
                            none fits; never moves a locked part
+  replicate                with NO --from/--to: apply the --intent file's
+                           replicate[] declarations (each one's from, to,
+                           anchor, allow_net_mismatch, only/skip, search_mm)
+                           as one call; exit 2 without --intent or with an
+                           intent that declares none
 """
 
 
@@ -298,10 +303,12 @@ def _verb_parsers(sub=None):
 
     q = _new('replicate', help='copy one placed sheet instance onto its '
                                'sibling instances (#1211)')
-    q.add_argument('--from', dest='from_sheet', required=True,
+    q.add_argument('--from', dest='from_sheet', default=None,
                    metavar='SHEET',
-                   help='the PLACED instance to copy: a sheet name or path')
-    q.add_argument('--to', dest='to_sheets', action='append', required=True,
+                   help='the PLACED instance to copy: a sheet name or path. '
+                        'Omit --from and --to to apply the --intent file\'s '
+                        'replicate[] declarations instead')
+    q.add_argument('--to', dest='to_sheets', action='append', default=[],
                    metavar='SHEET',
                    help='an instance to arrange like it; repeat for several')
     q.add_argument('--anchor', default=None, metavar='REF',
@@ -405,6 +412,29 @@ def parse_segments(segments, parsers, error):
         elif verb == 'unlock':
             unlocks.extend(a.refs)
         elif verb == 'replicate':
+            if a.from_sheet is None and not a.to_sheets:
+                # #1211: the intent's `replicate[]` declarations, expanded in
+                # main() once the intent is read. The declaration carries the
+                # anchor, waivers, selection and search, so a flag here would
+                # be a second, silent source of the same setting.
+                given = [f for f, v in (
+                    ('--anchor', a.anchor), ('--offset', a.offset),
+                    ('--allow-net-mismatch', a.allow_net_mismatch),
+                    ('--only', a.only), ('--skip', a.skip),
+                    ('--search', a.search),
+                    ('--search-step', a.search_step)) if v]
+                if given:
+                    error("`replicate` without --from/--to applies the "
+                          "--intent file's replicate[] declarations, which "
+                          "carry their own settings; %s here would override "
+                          "them silently. Edit the declaration, or name "
+                          "--from and --to" % ', '.join(given))
+                ops.append({'kind': 'replicate', 'declared': True})
+                continue
+            if a.from_sheet is None or not a.to_sheets:
+                error("`replicate` needs both --from and --to (or neither, "
+                      "to apply the --intent file's replicate[] "
+                      "declarations)")
             if a.offset is not None and len(a.to_sheets) > 1:
                 error("`replicate --offset` puts ONE copy at the source poses "
                       "+ (DX, DY), and this one names %d --to sheets, which "
@@ -449,7 +479,8 @@ def parse_segments(segments, parsers, error):
               "`set REF --near X Y` per call (lock / unlock may ride along), "
               "or give exact coordinates"
               % (len(ops), ', '.join('%s %s' % (o['kind'],
-                                                o.get('ref') or o.get('from'))
+                                                o.get('ref') or o.get('from')
+                                                or '(declared)')
                                      for o in ops)))
     return ops, locks, unlocks, snap
 
@@ -522,6 +553,23 @@ def main(argv=None):
             intent = floorplan.load_intent(args.intent)
         except floorplan.IntentError as exc:
             return _refuse(args, "cannot read the intent: %s" % exc, 2)
+    if any(o.get('declared') for o in ops):
+        # #1211: `replicate` with no --from/--to is the intent's
+        # `replicate[]`, one op per declaration, in file order -- the ops
+        # place_seed's replicate stage applies, through the same engine.
+        decls = tuple(getattr(intent, 'replicate', ()) or ()) if intent else ()
+        if not decls:
+            return _refuse(
+                args, "`replicate` without --from/--to applies the intent's "
+                "replicate[] declarations, and %s" % (
+                    'this call passes no --intent' if intent is None else
+                    '%s declares none' % args.intent), 2)
+        from placement.replicate import declared_op
+        expanded = []
+        for o in ops:
+            expanded.extend([declared_op(d) for d in decls]
+                            if o.get('declared') else [o])
+        ops = expanded
     if st.unplaced:
         # A NOTE, not a gate (see the module docstring): arranging a pile one
         # decision at a time is what this tool is for, and the relative
