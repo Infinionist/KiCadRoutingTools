@@ -136,7 +136,7 @@ vias and clearances *down toward* when it needs to. It is shared by every CLI
 |--------|---------|-------------|
 | `--fab-tier` | `auto` | `auto` (the standard floor, escalating to advanced when a fine-pitch fan-out, plane tap or last-resort via cannot fit; warned and counted), `standard` (no extra fab cost, **hard**) or `advanced` (tighter, "more costly", **hard**) |
 | `--fab-overrides` | - | Path to a file overlaying the tier's floors (only the keys it lists) |
-| `--escalation` | `fab` | How far below a **requested** size a failing net may be retried: `fab` (down to the fab tier floor, below the board's own minimums; completion first, every narrowing disclosed), `board` (down to the board's own Board Setup minimums, i.e. what KiCad's DRC accepts; an unset key falls back to the fab tier floor, except clearance, which falls back to the Default net class's clearance, #1160), `off` (never; the net fails and is reported) |
+| `--escalation` | `fab` | How far below a **requested** size a failing net may be retried: `fab` (down to the fab tier floor, below the board's own minimums; completion first, every narrowing disclosed), `board` (down to the board's own Board Setup minimums; an unset key falls back to the fab tier floor, except clearance, which falls back to the Default net class's clearance, #1160; with `--no-fix-drc-settings` clearance descents stop at the Default class floored at `min_clearance`, what KiCad grades the unchanged project at, #1262), `off` (never; the net fails and is reported) |
 | `--strict-sizes` | off | Exit 3 when any feature was delivered below its requested size or a fab-tier escalation fired. For `--power-nets` track widths this means copper that SHIPS under width (one `design_rules` row per power net, #1033), not every narrower routing attempt |
 
 The tier is a **floor ladder**:
@@ -162,9 +162,25 @@ last-resort vias. Under the default `fab`, a descent may go down to the fab tier
 floor, below the board's own declared minimums (the writeback then lowers the
 project's `rules.min_*` to match, as before); this is the completion-first setting.
 Under `board`, a descent stops at the board's own `rules.min_*` (Board Setup >
-Constraints), so the output is DRC-clean against the input project by construction;
-a minimum the board leaves unset (KiCad writes 0) falls back to the fab tier floor
-for that key. A board minimum bounds descents only
+Constraints); a minimum the board leaves unset (KiCad writes 0) falls back to the
+fab tier floor for that key, except `min_clearance`, which falls back to the
+Default class (#1160). Non-Default nets never descend below their own class.
+Whether KiCad then accepts the copper depends on the DRC-settings writeback:
+
+- **With it** (the default), a clearance descent below the Default class lowers
+  the OUTPUT project's Default class to the clearance used and says so, so the
+  board is DRC-clean against the project it ships with. It is not clean against
+  the INPUT project when `min_clearance` sits below the Default class: the input
+  still grades Default nets at the class.
+- **Without it** (`--no-fix-drc-settings`, or the GUI's "Fix DRC settings after
+  routing" unticked) the project is left as it was, so clearance descents stop
+  at the clearance KiCad grades a Default net at: the Default class, floored at
+  `min_clearance` (#1262). A run whose own clearance is already below that (an
+  explicit `--clearance` or `--clearance-ceiling`) descends no clearance at all.
+  No descent then goes below what KiCad grades the input project at.
+
+Either way a `.kicad_dru` layer rule or a pad clearance override replaces the
+base clearance where it applies, as KiCad does. A board minimum bounds descents only
 when the run's own request respects it: a request already below the declared
 minimum (the stock 0.5 mm via on a project nobody edited, routed with
 `--via-size 0.3`) marks that minimum as stale for the run, is said so on the

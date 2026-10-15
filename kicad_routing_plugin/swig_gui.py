@@ -644,9 +644,14 @@ class RoutingDialog(wx.Dialog):
             "-- sizes and clearances are exact, a net that cannot complete at them "
             "fails and is reported. board: down to the board's own declared floors "
             "(Board Setup > Constraints; an unset key falls back to the fab tier "
-            "floor), i.e. what KiCad's DRC accepts. fab (default): down to the fab "
-            "tier floor, below the board's own minimums -- completion first. Every "
-            "descent is counted in the run summary. Same as the CLI --escalation.")
+            "floor, an unset minimum clearance to the Default class). That is what "
+            "KiCad's DRC accepts once 'Fix DRC settings after routing' lowers the "
+            "Default class to the clearance used; with that box unticked the "
+            "board's settings stay as they are, so clearance descents stop at the "
+            "Default class (floored at the minimum clearance), what KiCad grades "
+            "it at. fab (default): down to the fab tier floor, below the board's "
+            "own minimums -- completion first. Every descent is counted in the run "
+            "summary. Same as the CLI --escalation.")
         self.escalation.Bind(wx.EVT_CHOICE, self._on_escalation_changed)
         grid.Add(self.escalation, 0, wx.EXPAND)
 
@@ -776,11 +781,18 @@ class RoutingDialog(wx.Dialog):
             # #1160: an unset Board Setup minimum leaves the Default class as
             # the clearance every Default net is graded at -- the CLI's
             # fab_tiers.board_floors_from_rules fallback.
-            nc = _get_netclass_parameters('Default') or {}
-            v = nc.get('clearance')
-            if isinstance(v, (int, float)) and v > 1e-9:
-                out['clearance'] = float(v)
+            v = self._default_class_clearance()
+            if v is not None:
+                out['clearance'] = v
         return out
+
+    def _default_class_clearance(self):
+        """The live board's Default net class clearance (mm), or None. With
+        "Fix DRC settings after routing" unticked nothing lowers it, so it is
+        what KiCad grades a Default net at, and --escalation board must not
+        descend below it (#1262, fab_tiers.board_policy_floors)."""
+        v = (_get_netclass_parameters('Default') or {}).get('clearance')
+        return float(v) if isinstance(v, (int, float)) and v > 1e-9 else None
 
     def _on_escalation_changed(self, event):
         """Escalation choice changed: under off/board the typed sizes are
@@ -1318,8 +1330,9 @@ class RoutingDialog(wx.Dialog):
             "so a manual DRC flags only genuine problems instead of stock-default "
             "noise. Never lowers net-class track/via draw sizes and never touches "
             "severities (#842/#856; see 'Relax DRC severities'). The board's next "
-            "save persists it. Mirrors the CLI's auto-fix (route.py, off via "
-            "--no-fix-drc-settings)")
+            "save persists it. Unticked, Escalation 'board' stops clearance "
+            "descents at the Default class, since nothing will lower it (#1262). "
+            "Mirrors the CLI's auto-fix (route.py, off via --no-fix-drc-settings)")
         options_inner.Add(self.fix_drc_check, 0, wx.ALL, 3)
 
         # Guide corridor: follow a user-drawn polyline (issue #7)
@@ -1884,6 +1897,9 @@ class RoutingDialog(wx.Dialog):
                 'fab_overrides_path': self.fab_overrides_path.GetValue().strip(),
                 'escalation': self._escalation_policy(),
                 'board_floors': self._board_floor_dict(),
+                # #1262: what KiCad grades a Default net at when the DRC
+                # settings writeback is off (fix_drc_settings False).
+                'default_class_clearance': self._default_class_clearance(),
                 # Edge.Cuts keep-out for QFN escape stubs/vias (issue #288);
                 # 0 = fall back to the copper clearance inside generate_qfn_fanout.
                 'board_edge_clearance': self._effective_board_edge_clearance(),
@@ -1997,6 +2013,9 @@ class RoutingDialog(wx.Dialog):
                 'fab_overrides_path': self.fab_overrides_path.GetValue().strip(),
                 'escalation': self._escalation_policy(),
                 'board_floors': self._board_floor_dict(),
+                # #1262: what KiCad grades a Default net at when the DRC
+                # settings writeback is off (fix_drc_settings False).
+                'default_class_clearance': self._default_class_clearance(),
                 # #489 section 9: planes_gui already READ config['add_teardrops']
                 # for the create path, but nothing ever supplied it, so the
                 # checkbox was dead here. Both plane modes get it now.
@@ -3152,6 +3171,9 @@ class RoutingDialog(wx.Dialog):
             'fab_overrides_path': self.fab_overrides_path.GetValue().strip(),
             'escalation': self._escalation_policy(),
             'board_floors': self._board_floor_dict(),
+            # #1262: what KiCad grades a Default net at when the DRC
+            # settings writeback is off (fix_drc_settings False).
+            'default_class_clearance': self._default_class_clearance(),
             'stub_proximity_radius': self.stub_proximity_radius.GetValue(),
             'stub_proximity_cost': self.stub_proximity_cost.GetValue(),
             'power_tap_neckdown': self.power_tap_neckdown_check.GetValue(),

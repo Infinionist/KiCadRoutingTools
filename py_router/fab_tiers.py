@@ -25,14 +25,34 @@ orthogonal to the tier and bounds every descent site in the engine:
 
   - ``off``    sizes and clearances are exact. A net that cannot complete at
                them fails and is reported; nothing is narrowed or shrunk.
-  - ``board``  (default) a failing net may be retried narrower / with a smaller
+  - ``board``  a failing net may be retried narrower / with a smaller
                via / tighter clearance, down to the BOARD'S OWN declared floors
-               (Board Setup ``rules.min_*``), i.e. what KiCad's DRC accepts. A
-               key the board leaves unset falls back to the fab tier floor for
-               that key. The output is DRC-clean against the input project by
-               construction.
-  - ``fab``    additionally may go below the board's floors down to the fab
-               tier floor (the pre-#857 reach), disclosed.
+               (Board Setup ``rules.min_*``). A key the board leaves unset
+               falls back to the fab tier floor for that key, except clearance,
+               which falls back to the Default class (#1160). Non-Default nets
+               never descend below their own class (``GridRouteConfig.
+               rule_floors``). What KiCad then accepts depends on the project
+               writeback:
+                 * WITH it (the default), a clearance descent below the
+                   Default class lowers the OUTPUT project's Default class to
+                   the clearance used, so the descended copper is DRC-clean
+                   against the project it ships with -- not against the input
+                   project when ``rules.min_clearance`` sits below the Default
+                   class.
+                 * WITHOUT it (``--no-fix-drc-settings``, or the GUI's "Fix DRC
+                   settings after routing" unticked) the project is left as it
+                   was, so the clearance floor is raised to what KiCad grades a
+                   Default net at: the Default class, floored at
+                   ``rules.min_clearance`` (#1262,
+                   :func:`floor_board_clearance_at_class`). No descent then
+                   goes below what KiCad grades the INPUT project at. A run
+                   whose own clearance is already below that (an explicit
+                   ``--clearance`` / ``--clearance-ceiling``) descends no
+                   clearance at all. ``.kicad_dru`` layer rules and pad
+                   clearance overrides keep their usual precedence: they
+                   replace the base clearance where they apply.
+  - ``fab``    (default) additionally may go below the board's floors down to
+               the fab tier floor (the pre-#857 reach), disclosed.
 
 Every descent is recorded in a per-run LEDGER (``note_narrowing`` /
 ``escalation_summary``) that the routing mains put in JSON_SUMMARY and print
@@ -189,9 +209,11 @@ def board_floors_from_rules(rules, default_class_clearance=None):
     ``default_class_clearance`` (#1160) is the Default net class's clearance:
     the clearance floor when ``min_clearance`` is unset. A board that leaves
     Board Setup's minimum at 0 still grades every Default net at its class,
-    so ``--escalation board`` -- "clean against your own project by
-    construction" -- must not descend below it. interf_u (min_clearance 0,
-    class 0.254) rescued 9 gaps down to 0.127 under board."""
+    so ``--escalation board`` must not descend below it. interf_u
+    (min_clearance 0, class 0.254) rescued 9 gaps down to 0.127 under board.
+    A DECLARED min_clearance below the class still wins here; when the
+    project writeback will not run, :func:`board_policy_floors` raises the
+    clearance floor to the class as well (#1262)."""
     out = {}
     for rk, fk in BOARD_RULE_TO_FLOOR_KEY.items():
         v = (rules or {}).get(rk)
@@ -210,6 +232,73 @@ def project_default_class_clearance(proj):
             v = cls.get('clearance')
             return float(v) if isinstance(v, (int, float)) and v > 0 else None
     return None
+
+
+def graded_default_clearance(min_clearance, default_class_clearance):
+    """The clearance KiCad grades a Default-class net at: the Default class
+    floored at ``rules.min_clearance`` (design_rules.resolve step 4). Either
+    may be unset (None / 0); None when both are."""
+    vals = [float(v) for v in (min_clearance, default_class_clearance)
+            if isinstance(v, (int, float)) and v > 0]
+    return max(vals) if vals else None
+
+
+def floor_board_clearance_at_class(floors, graded_clearance,
+                                   requested_clearance=None, announce=True):
+    """``--escalation board`` when the project writeback will NOT run (#1262).
+
+    With the writeback, a clearance descent below the Default class is
+    recorded and the output project's Default class is lowered to it
+    (#1160's ratchet), so the board grades clean against the project it ships
+    with. Without it (``--no-fix-drc-settings``, the GUI's "Fix DRC settings
+    after routing" unticked) the input project ships unchanged and KiCad
+    grades every Default net at ``graded_clearance``
+    (:func:`graded_default_clearance`), so a descent below it is a KiCad
+    violation the run's own ledger called legal. Measured on a SOT-23-6 strip
+    board (min_clearance 0.2, Default class 0.25): the rescue laid FB at its
+    0.2125 rung, check_drc at the input class found 42 violations and
+    kicad-cli flagged the same copper at 0.215-0.240 mm.
+
+    Raises the clearance floor in ``floors`` to ``graded_clearance``. A run
+    whose own clearance ``requested_clearance`` is already below it (an
+    explicit ``--clearance`` or ``--clearance-ceiling``) keeps the REQUEST as
+    its floor -- no automatic clearance descent at all, since every step below
+    the request would be graded a violation too. Callers handle the clearance
+    key here INSTEAD of in :func:`drop_stale_board_floors`, which would drop
+    it and send descents to the fab floor.
+
+    Only the clearance BASE moves: non-Default nets are floored at their own
+    class under every policy (``GridRouteConfig.rule_floors``), and a
+    ``.kicad_dru`` layer rule or a pad clearance override replaces the base
+    where it applies, at its usual precedence. Returns the new floors dict."""
+    out = dict(floors or {})
+    if not isinstance(graded_clearance, (int, float)) or graded_clearance <= 0:
+        return out
+    target = float(graded_clearance)
+    below = False
+    try:
+        if requested_clearance is not None and \
+                float(requested_clearance) < target - 1e-9:
+            target, below = float(requested_clearance), True
+    except (TypeError, ValueError):
+        pass
+    prev = out.get('clearance')
+    if prev is not None and abs(prev - target) <= 1e-9:
+        return out
+    out['clearance'] = target
+    if announce:
+        if below:
+            print(f"  --escalation board, project writeback off: the run's "
+                  f"clearance {target:g} mm is already below the "
+                  f"{float(graded_clearance):g} mm KiCad grades the unchanged "
+                  f"project's Default nets at; no clearance descent this run "
+                  f"(#1262)")
+        else:
+            print(f"  --escalation board, project writeback off: clearance "
+                  f"descents stop at {target:g} mm, the clearance KiCad grades "
+                  f"the unchanged project's Default nets at (was "
+                  f"{'unset' if prev is None else f'{prev:g} mm'}; #1262)")
+    return out
 
 
 # Routing request name -> FLOOR_KEYS entry, for drop_stale_board_floors.
@@ -868,9 +957,15 @@ def add_fab_tier_args(parser, *, include_escalation=True):
                  f"(default {DEFAULT_ESCALATION}). 'off': never -- sizes and clearances are exact, "
                  "a net that cannot complete at them fails and is reported. 'board': "
                  "down to the board's own declared floors (Board Setup rules.min_*; "
-                 "an unset key falls back to the fab tier floor), i.e. what KiCad's "
-                 "DRC accepts. 'fab': down to the fab tier floor, below the board's "
-                 "own minimums. Every descent is counted in JSON_SUMMARY design_rules.")
+                 "an unset key falls back to the fab tier floor, an unset "
+                 "min_clearance to the Default class). That is what KiCad's DRC "
+                 "accepts once the output project's Default class is lowered to "
+                 "the clearance used, which the DRC-settings writeback does; with "
+                 "--no-fix-drc-settings the project is left as it was, so "
+                 "clearance descents stop at the Default class (floored at "
+                 "min_clearance), what KiCad grades it at (#1262). 'fab': down to "
+                 "the fab tier floor, below the board's own minimums. Every "
+                 "descent is counted in JSON_SUMMARY design_rules.")
         parser.add_argument(
             '--clearance-ceiling', type=float, default=None, metavar='MM',
             help="Cap EVERY net class (Default included) at this copper clearance for "
@@ -891,7 +986,13 @@ def set_fab_tier_from_config(config):
     escalation policy from a config / shared-params dict carrying 'fab_tier',
     'fab_overrides_path', 'escalation' and 'board_floors' (a FLOOR_KEYS dict
     the GUI reads off the live board). Tolerates a missing or unreadable
-    override file (warns, falls back to the bare tier)."""
+    override file (warns, falls back to the bare tier).
+
+    'fix_drc_settings' False (the "Fix DRC settings after routing" box
+    unticked) means no tab writes the live board's DRC settings, so under
+    board the clearance floor is what KiCad grades the unchanged board's
+    Default nets at -- 'default_class_clearance' floored at the board's
+    min_clearance (#1262, :func:`board_policy_floors`, shared with the CLI)."""
     tier = (config.get('fab_tier') or DEFAULT_TIER)
     path = (config.get('fab_overrides_path') or '').strip()
     overrides = {}
@@ -901,12 +1002,22 @@ def set_fab_tier_from_config(config):
         except OSError as exc:
             print(f"WARNING: could not read fab overrides {path}: {exc}")
     set_default_fab_tier(tier, overrides)
-    floors = drop_stale_board_floors(
-        config.get('board_floors') or {},
-        {k: config.get(k) for k in ('track_width', 'clearance', 'via_size',
-                                    'via_drill', 'hole_to_hole_clearance',
-                                    'board_edge_clearance')})
-    set_escalation_policy(config.get('escalation') or DEFAULT_ESCALATION, floors)
+    policy = config.get('escalation') or DEFAULT_ESCALATION
+    declared = config.get('board_floors') or {}
+    requested = {k: config.get(k) for k in ('track_width', 'clearance', 'via_size',
+                                            'via_drill', 'hole_to_hole_clearance',
+                                            'board_edge_clearance')}
+    if policy == 'board':
+        floors = board_policy_floors(
+            policy, declared, requested,
+            # board_floors' clearance is min_clearance, else (unset) the
+            # Default class already (swig_gui._board_floor_dict, #1160).
+            graded_default_clearance(declared.get('clearance'),
+                                     config.get('default_class_clearance')),
+            writeback=bool(config.get('fix_drc_settings', True)))
+    else:
+        floors = drop_stale_board_floors(declared, requested)
+    set_escalation_policy(policy, floors)
 
 
 def fab_tier_from_args(args):
@@ -967,22 +1078,51 @@ def apply_clearance_ceiling(args, tool=''):
 def set_policy_from_args(args, pcb_path=None):
     """CLI helper: ``set_escalation_policy`` from ``--escalation`` plus the
     board's own ``rules.min_*`` read from the sibling .kicad_pro of
-    ``pcb_path`` (stdlib JSON read; no parser)."""
+    ``pcb_path`` (stdlib JSON read; no parser). ``--no-fix-drc-settings``
+    (``args.no_fix_drc_settings``) means the project writeback will not run:
+    see :func:`board_policy_floors`. Call it after ``args.clearance`` is
+    resolved (the run's clearance is the request the floor is capped at)."""
     import json
     floors = {}
+    graded = None
     if pcb_path:
         pro = os.path.splitext(pcb_path)[0] + '.kicad_pro'
         try:
             with open(pro, encoding='utf-8') as f:
                 proj = json.load(f)
             rules = ((proj.get('board') or {}).get('design_settings') or {}).get('rules') or {}
-            floors = board_floors_from_rules(
-                rules, project_default_class_clearance(proj))
+            dflt = project_default_class_clearance(proj)
+            floors = board_floors_from_rules(rules, dflt)
+            graded = graded_default_clearance(rules.get('min_clearance'), dflt)
         except (OSError, ValueError, AttributeError):
             floors = {}
+            graded = None
     policy = getattr(args, 'escalation', None) or DEFAULT_ESCALATION
-    if policy == 'board':
-        floors = drop_stale_board_floors(
-            floors, {k: getattr(args, k, None) for k in _REQUEST_FLOOR_KEY})
+    floors = board_policy_floors(
+        policy, floors, {k: getattr(args, k, None) for k in _REQUEST_FLOOR_KEY},
+        graded, writeback=not getattr(args, 'no_fix_drc_settings', False))
     set_escalation_policy(policy, floors)
     return floors
+
+
+def board_policy_floors(policy, floors, requested, graded_clearance,
+                        writeback=True):
+    """The floors ``--escalation board`` bounds descents at, for ONE run --
+    shared by the CLI (:func:`set_policy_from_args`) and the GUI
+    (:func:`set_fab_tier_from_config`) so the two fronts cannot disagree.
+
+    Under any other policy the floors pass through. Under ``board`` a declared
+    minimum the run's own request is already below is stale
+    (:func:`drop_stale_board_floors`), and when the project ``writeback`` will
+    not run the clearance floor is the clearance KiCad grades the unchanged
+    project's Default nets at, ``graded_clearance``
+    (:func:`floor_board_clearance_at_class`, #1262)."""
+    if policy != 'board':
+        return dict(floors or {})
+    if writeback:
+        return drop_stale_board_floors(floors, requested)
+    out = drop_stale_board_floors(
+        floors, {k: v for k, v in (requested or {}).items()
+                 if _REQUEST_FLOOR_KEY.get(k) != 'clearance'})
+    return floor_board_clearance_at_class(
+        out, graded_clearance, (requested or {}).get('clearance'))
