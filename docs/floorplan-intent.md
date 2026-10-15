@@ -790,8 +790,11 @@ comes from (exit 4, `pad_copper_off_board_seeded`), and so does
 `place_seed --repair`'s (`pad_copper_off_board_charged`): its census charges
 such copper on a declared edge connector too, since a band exempts the
 body's overhang and never pad copper, and the repair re-seats it through the
-same edge seat. A part locked in the input keeps the #1193 pinned contract
-there: reported, not charged.
+same edge seat. A part locked in the input is charged there too
+(`pad_copper_off_board_pinned`, and `unrepairable_pinned_off_board_refs` when
+the repair's census names it): pad copper past the outline is the one finding
+where a lock is no waiver, since placement stamps its own locks -- every other
+pinned finding keeps the #1193 contract.
 
 Every declared connector on the board gets a row in `edge_connector_evidence`
 (`--json`), including passing ones. Each row carries:

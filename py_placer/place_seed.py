@@ -32,15 +32,19 @@ ten seeds failed on it, so nothing the seeder did could ever be ranked.
 `--repair` keeps the same contract (#1193): a violator it may not move
 because it is locked (`(locked yes)`, a `--lock` glob, a `fixed_poses[]`
 ref) is named in `unrepairable_pinned_refs` and does not fail the gate; a
-free violator it could not seat (`unrepairable_failed_refs`) does. Its gate
-also charges pad copper the delivered board leaves past the outline (#1241,
+free violator it could not seat (`unrepairable_failed_refs`) does. The one
+exception is pad copper past the board outline, where a lock is no waiver
+(as in the seed gate, #1241): such a pinned ref is also named in
+`unrepairable_pinned_off_board_refs` and fails the gate, since placement
+stamps its own locks and check_assembly exempts none. The gate also charges
+pad copper the DELIVERED board leaves past the outline (#1241,
 `pad_copper_off_board_charged`): on any part `--repair` could move -- its
 census charges every such part, a declared edge connector's band exempting
 the body's overhang and never pad copper -- and, on a `--reseat` alone, on a
-part the pass moved. A pinned part's copper is reported in
-`pad_copper_off_board_pinned` and not charged, the contract above; an
+part the pass moved. A pinned part's copper there is named in
+`pad_copper_off_board_pinned` and fails the gate by the same rule; an
 unmoved part outside a `--reseat` scope is the board's own
-(`pad_copper_off_board_unscoped`).
+(`pad_copper_off_board_unscoped`), reported and not charged.
 
 Exit 5 (#959): the PLAN is refused before anything is written --
 `floorplan.plan_check` found an ERROR no arrangement can satisfy and the
@@ -505,9 +509,11 @@ def repair_oob_split(gating, overrun, pinned, moved, whole_board):
     on the DELIVERED board and `overrun` its distances. The seed's gate, in
     this path's contract:
       * PINNED -- `(locked yes)` in the input board, or a declared fixed pose
-        -- is reported, not charged: the #1193 contract, under which a
-        violator this tool may not move does not fail its gate (a seed has
-        no such contract, and charges a locked part);
+        -- is listed apart, and the caller charges it too: pad copper past
+        the outline is the one finding where a lock is no waiver, as in the
+        seed gate (placement stamps its own locks, check_assembly exempts
+        none). The #1193 contract keeps every OTHER pinned finding out of
+        the gate;
       * a part either pass MOVED is charged: it put that copper there, or
         left it there having moved the part;
       * any other part is charged when `whole_board` -- `--repair`, whose
@@ -1202,17 +1208,37 @@ Examples:
                                                          mv['new_y'] - fp.y))
             # #1193: `unrepairable` is two populations. A PINNED one is
             # locked (file, --lock, fixed pose) -- the pinned-part contract
-            # in this module's docstring: reported, never a gate failure. A
-            # FAILED one is a free violator no seat could place: exit 4.
+            # in this module's docstring: reported, not a gate failure (but
+            # see pad copper off the board, below). A FAILED one is a free
+            # violator no seat could place: exit 4.
             _pinned = list(result.get('unrepairable_pinned') or [])
             _failed = list(result.get('unrepairable_failed') or [])
+            # ...except pad copper past the outline, where a LOCK IS NO
+            # WAIVER, as in the seed gate (#1241): placement stamps its own
+            # locks, so a lock would launder an earlier lap's off-board seat,
+            # and check_assembly, which this answers to, exempts none
+            # (#1096). Graded by its gating measure on the board the repair
+            # started from -- a pinned part does not move.
+            _pinned_oob: list = []
+            if _pinned:
+                from placement.legality import grade_pad_legality as _gpl
+                _gating = set(_gpl(
+                    cur_pcb, args.clearance,
+                    edge_margin=args.board_edge_clearance,
+                    pcb_file=cur).get('oob_pad_copper_gating_refs') or ())
+                _pinned_oob = [r for r in _pinned if r in _gating]
             print(f"Repair: {len(result['violators'])} violator(s), "
                   f"{len(result['repaired'])} repaired "
                   f"({len(result['moves'])} moved, max {max_move:.2f}mm), "
                   f"{len(result.get('unresolved') or [])} unresolved, "
                   f"{len(result['unrepairable'])} unrepairable"
                   + (f" ({len(_pinned)} pinned: {', '.join(_pinned)} -- "
-                     f"locked, reported, not a gate failure)"
+                     f"locked, reported"
+                     + (", not a gate failure)" if not _pinned_oob else
+                        f"; {', '.join(_pinned_oob)} with pad copper past "
+                        f"the board outline fail the gate -- a lock is no "
+                        f"waiver, since placement stamps its own: unlock "
+                        f"it, or fix the step that seated it)")
                      if _pinned else ''))
             # #1066: the refs behind every count. `unresolved` was printed and
             # never written, so a caller reading JSON_SUMMARY could not tell
@@ -1240,6 +1266,10 @@ Examples:
                 'unrepairable_refs': list(result['unrepairable']),
                 'unrepairable_pinned_refs': _pinned,
                 'unrepairable_failed_refs': _failed,
+                # The pinned refs whose pad copper is past the outline: they
+                # fail the gate (a lock is no waiver there, as in the seed's
+                # `pad_copper_off_board_locked`).
+                'unrepairable_pinned_off_board_refs': _pinned_oob,
                 'moved_refs': [m['reference'] for m in result['moves']],
                 'max_move_mm': round(max_move, 3),
                 # #1182: check_assembly's gating courtyard pairs against
@@ -1256,7 +1286,7 @@ Examples:
             summary.update({f'{k}_before': v
                             for k, v in result['pad_report_before'].items()})
             _advance(result['moves'], 'repair')
-            if _failed:
+            if _failed or _pinned_oob:
                 exit_rc = 4
 
         if not args.dry_run:
@@ -1312,8 +1342,9 @@ Examples:
             # #1241: pad copper past the outline on the delivered board, by
             # the measure check_assembly gates on -- the seed's gate, which
             # this path lacked: `--repair` on a seed that kept a connector's
-            # pads 1.2 mm past the north edge exited 0. Pinned parts keep the
-            # #1193 contract (reported, not charged); see `repair_oob_split`.
+            # pads 1.2 mm past the north edge exited 0. A pinned part's copper
+            # is charged too -- a lock is no waiver here, as in the repair's
+            # own `unrepairable_pinned_off_board_refs`; see `repair_oob_split`.
             _pinned_in = {r for r, f in pcb.footprints.items()
                           if getattr(f, 'locked', False)}
             _pinned_in |= {str(f.get('ref')) for f in
@@ -1329,9 +1360,9 @@ Examples:
                              f"assembled nor routed"),
                     (_oob_p, "(locked yes) in the input, or at a declared "
                              "fixed pose, with pad copper past the board "
-                             "outline -- pinned, reported not charged "
-                             "(#1193): unlock it, or fix the step that "
-                             "seated it"),
+                             "outline -- a lock is no waiver, since "
+                             "placement stamps its own: unlock it, or fix "
+                             "the step that seated it"),
                     (_oob_u, "outside this re-seat's scope with pad copper "
                              "past the board outline -- the board's own, "
                              "reported not charged")):
@@ -1354,6 +1385,12 @@ Examples:
                       f"{', '.join(r for r, _mm in _oob_c)}, which can be "
                       f"neither assembled nor routed. It was still written, "
                       f"for inspection.", file=sys.stderr)
+            if _oob_p:
+                exit_rc = 4
+                print(f"place_seed: pad copper past the board outline on the "
+                      f"pinned {', '.join(r for r, _mm in _oob_p)} -- a lock "
+                      f"is no waiver, since placement stamps its own: unlock "
+                      f"it, or fix the step that seated it.", file=sys.stderr)
             if own:
                 exit_rc = 4
         else:

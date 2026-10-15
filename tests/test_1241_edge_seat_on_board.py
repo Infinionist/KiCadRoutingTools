@@ -33,8 +33,11 @@ so the seed exits 4 on THAT rather than on copper nobody can solder.
         pads on the board, exit 4 on the band. Before: 0 violators, exit 0.
      R2 a repair that leaves copper past the outline exits 4 naming it.
         Before: exit 0, the part called repaired.
-     R3 `repair_oob_split`: pinned reported (#1193), moved charged, the
+     R3 `repair_oob_split`: pinned listed apart, moved charged, the
         board's own reported on a `--reseat`.
+     R4 a LOCKED part with pad copper past the outline fails a `--reseat`
+        alone: a lock is no waiver (the rule the repair's own pinned
+        census follows). Before: "pinned, reported not charged", exit 0.
   W. THE WRITTEN POSES
      W1 `split_pad_pairs`: a pair moved only after stage 1 is the seed's
         when new or deeper, the board's own when no deeper.
@@ -276,7 +279,8 @@ class TheRepairGate(unittest.TestCase):
         split = place_seed.repair_oob_split
         gating = ['A', 'B', 'C', 'D']
         over = {'A': 1.0, 'B': 0.5, 'C': 0.25, 'D': 0.125}
-        # --repair: everything movable is charged, a pinned part is not.
+        # --repair: everything movable is charged; a pinned part is listed
+        # apart (the caller charges it too, R4).
         self.assertEqual(split(gating, over, {'A'}, {'B'}, True),
                          ([('B', 0.5), ('C', 0.25), ('D', 0.125)],
                           [('A', 1.0)], []))
@@ -285,6 +289,22 @@ class TheRepairGate(unittest.TestCase):
                          ([('B', 0.5)], [('A', 1.0)],
                           [('C', 0.25), ('D', 0.125)]))
         self.assertEqual(split((), over, set(), set(), True), ([], [], []))
+
+    def test_r4_a_locked_part_past_the_outline_fails_a_reseat(self):
+        # J1 locked with its tall pad 1.2 mm past the north edge; the re-seat
+        # scope is R1 alone, so nothing moves J1 and only the delivered-board
+        # gate can see it.
+        locked = _TALL_J1.replace('(at 20 20)', '(at 20 1.8)').replace(
+            '(layer "F.Cu")', '(locked yes) (layer "F.Cu")', 1)
+        with tempfile.TemporaryDirectory() as td:
+            path = _board(td, locked)
+            self.assertTrue(parse_kicad_pcb(path).footprints['J1'].locked)
+            r, s = _run(path, {}, code=4, refuse='a lock is no waiver',
+                        out_name='reseat.kicad_pcb',
+                        flags=('--reseat', 'R1'))
+        self.assertEqual(s['pad_copper_off_board_pinned'], [['J1', 1.2]])
+        self.assertEqual(s['pad_copper_off_board_charged'], [])
+        self.assertEqual(s['pad_copper_off_board_unscoped'], [])
 
 
 #: A part beside R4 (net 4) in `_scoped`'s placed half, which stage 1 never

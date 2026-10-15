@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """#1193: `place_seed --repair` charges pad COPPER off the outline, not the
-pad union's box, and a locked violator does not fail the gate.
+pad union's box, and a locked violator does not fail the gate -- unless its
+pad copper is past the outline, where a lock is no waiver (#1241).
 
 fa10 board 09 (StickHub): the north edge carries a 1 mm notch, and the locked
 J5's pad UNION box had a corner in it (0.65 mm) while no pad did --
@@ -23,8 +24,13 @@ The input is synthesized here: a 40 x 30 board whose north edge has a notch
 What each case pins:
 
 * J5 is not charged, and the run exits 0 -- the defect;
-* J6 is charged, reported PINNED, named in `unrepairable_pinned_refs`, and the
-  run still exits 0 -- the contract;
+* J6 is charged, reported PINNED, named in `unrepairable_pinned_refs`, and,
+  its pad copper being past the outline, named in
+  `unrepairable_pinned_off_board_refs` and fails the gate (exit 4) -- a lock is
+  no waiver there, since placement stamps its own locks (#1241);
+* J7 (locked, well inside the board, declared on the north edge it does not
+  sit on) is pinned for a finding that is not off-board copper, and the run
+  exits 0 -- the pinned-part contract;
 * R3 still exits 4, named in `unrepairable_failed_refs` -- the gate holds for
   what this tool could have moved;
 * H9 is still a violator -- a drill off the outline is not dropped.
@@ -113,6 +119,8 @@ J6 = _locked_pair('J6', 18.8, 3, (0, -2.5), (0, 2.5), 'u6')
 R3 = _res('R3', 20.0, 0.5, 'u7')
 #: H9: free, a pad-less 0.8 mm NPTH in the notch.
 H9 = _hole('H9', 21.0, 0.5, 'u9')
+#: J7: locked, well inside the board (pads at y 22, 8 mm from the south edge).
+J7 = _locked_pair('J7', 10, 22, (-1, 0), (1, 0), 'u7a')
 
 
 def _stage(d, extra=(), edge_claims=()):
@@ -176,7 +184,7 @@ def test_a_box_corner_in_a_notch_is_not_a_violator():
     print('  PASS: J5 not charged, exit 0')
 
 
-def test_a_locked_violator_is_pinned_named_and_not_a_failure():
+def test_a_locked_off_board_violator_is_pinned_named_and_fails():
     with tempfile.TemporaryDirectory() as d:
         board, intent = _stage(d, extra=(J6,))
         from kicad_parser import parse_kicad_pcb
@@ -185,13 +193,32 @@ def test_a_locked_violator_is_pinned_named_and_not_a_failure():
         assert 'J6' in g['oob_pad_copper_gating_refs'], g  # really off
         r = check([sys.executable, '-X', 'utf8', SEED, board,
                    os.path.join(d, 'out.kicad_pcb'), '--intent', intent,
-                   '--repair'], accept=True)
+                   '--repair'], refuse='a lock is no waiver', code=4)
     s = _summary(r)
     assert s['unrepairable_pinned_refs'] == ['J6'], s
+    assert s['unrepairable_pinned_off_board_refs'] == ['J6'], s
     assert s['unrepairable_failed_refs'] == [], s
     assert s['unrepairable_refs'] == ['J6'] and s['unrepairable'] == 1, s
     assert '1 pinned: J6' in r.stdout, r.stdout[-600:]
-    print('  PASS: J6 pinned and named, exit 0')
+    print('  PASS: J6 pinned, named, and off the board -> exit 4')
+
+
+def test_a_locked_violator_on_the_board_is_pinned_and_not_a_failure():
+    with tempfile.TemporaryDirectory() as d:
+        board, intent = _stage(
+            d, extra=(J7,),
+            edge_claims=[{'ref': 'J7', 'edge': 'north',
+                          'class': 'edge_receptacle'}])
+        r = check([sys.executable, '-X', 'utf8', SEED, board,
+                   os.path.join(d, 'out.kicad_pcb'), '--intent', intent,
+                   '--repair'], accept=True)
+    s = _summary(r)
+    assert s['unrepairable_pinned_refs'], s     # the premise: pinned
+    assert s['unrepairable_pinned_refs'] == ['J7'], s
+    assert s['unrepairable_pinned_off_board_refs'] == [], s
+    assert s['unrepairable_failed_refs'] == [], s
+    assert 'not a gate failure' in r.stdout, r.stdout[-600:]
+    print('  PASS: J7 pinned on the board, exit 0')
 
 
 def test_a_free_violator_it_cannot_seat_still_exits_4():
@@ -225,7 +252,8 @@ def test_a_drill_off_the_outline_is_still_charged():
 TESTS = [
     test_the_premise_box_in_the_notch_no_pad,
     test_a_box_corner_in_a_notch_is_not_a_violator,
-    test_a_locked_violator_is_pinned_named_and_not_a_failure,
+    test_a_locked_off_board_violator_is_pinned_named_and_fails,
+    test_a_locked_violator_on_the_board_is_pinned_and_not_a_failure,
     test_a_free_violator_it_cannot_seat_still_exits_4,
     test_a_drill_off_the_outline_is_still_charged,
 ]

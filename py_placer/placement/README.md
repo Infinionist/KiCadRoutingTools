@@ -278,7 +278,8 @@ polish move that took its copper no further past the outline.
 exempts nothing: stage 1.5 seats every unlocked, in-scope must_lock part.
 `place_seed --repair` charges the same copper on any part it could move
 (`pad_copper_off_board_charged`), and `--reseat` alone on a part it moved; a
-pinned part is reported (`pad_copper_off_board_pinned`, #1193's contract). No
+pinned part's such copper fails it too (`pad_copper_off_board_pinned`: a lock
+is no waiver, the one exception to #1193's pinned-part contract). No
 edge seat keeps such copper in the first place (#1241): stage 1 and
 `_seat_edge` move a rung whose pads would sit past the outline inward onto
 the board, and name a band only copper past the outline could meet in
@@ -1799,8 +1800,10 @@ re-seating 85/92 while leaving its zone targets unmoved):
   not a fix). `unresolved` sets no exit code of its own; exit 4 stays
   `unrepairable_failed_refs`' (a free violator no seat could place) and the
   final grade's. A locked violator (`(locked yes)`, `--lock`, a fixed pose)
-  is `unrepairable_pinned_refs`: reported, never a gate failure, the
-  pinned-part contract (#1193). The
+  is `unrepairable_pinned_refs`: reported, not a gate failure, the
+  pinned-part contract (#1193) -- except pad copper past the outline, where a
+  lock is no waiver, as in the seed gate (#1241): such a ref is also in
+  `unrepairable_pinned_off_board_refs` and exits 4. The
   off-board census grades each pad's copper and each hole ALONE
   (`legality.pad_copper_outside_amount`, the `oob_pad_copper_refs`
   measure), never the part's pad union, whose corner can sit in a notch no

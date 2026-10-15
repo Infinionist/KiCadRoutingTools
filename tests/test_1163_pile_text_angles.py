@@ -104,7 +104,7 @@ def _zone_uuids(path):
 
 
 def build(td):
-    with open(ESP, encoding='utf-8', newline='') as fh:
+    with open(ESP, encoding='utf-8') as fh:
         text = fh.read()
     c1 = _block(text, 'C1')
     if not re.search(r'\n\t\t\(at [^ ]+ [^ ]+ 90\)\n', c1):
