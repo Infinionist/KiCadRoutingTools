@@ -37,7 +37,9 @@ __all__ = ['merge_summaries', 'merge_route_summaries', 'summary_min',
            'RECONCILE_ABORTED', 'EFFORT_KEYS', 'SUMMARY_SINK',
            'RECONCILE_RAISED', 'FINAL_REGRADE', 'reset_run_state',
            'named_nets', 'regrade_record', 'GATE_RE',
-           'apply_improvement_gate']
+           'apply_improvement_gate', 'SHIPPED_RULES_RE',
+           'note_printed_summary', 'restamp_shipped_rules',
+           'apply_shipped_rules']
 
 SUMMARY_RE = re.compile(r'JSON_SUMMARY: (\{.*\})')
 # #962: `fab_notes`' ship-time via_in_pad record, printed after the summaries
@@ -48,6 +50,10 @@ REGRADE_RE = re.compile(r'JSON_REGRADE: (\{.*\})')
 # #1173: the outermost run's improvement-gate verdict, printed once after every
 # JSON_SUMMARY of that run. route.py publishes it on --json-out as well.
 GATE_RE = re.compile(r'JSON_IMPROVEMENT_GATE: (\{.*\})')
+# The floor and design-rule ledger the outermost run SHIPS, printed once after
+# every JSON_SUMMARY of that run when they differ from what a printed summary
+# carried (see restamp_shipped_rules).
+SHIPPED_RULES_RE = re.compile(r'JSON_SHIPPED_RULES: (\{.*\})')
 
 
 def apply_improvement_gate(merged: Optional[Dict], gate: Optional[Dict]):
@@ -82,6 +88,11 @@ def apply_improvement_gate(merged: Optional[Dict], gate: Optional[Dict]):
 SUMMARY_SINK: List[dict] = []
 RECONCILE_RAISED = [False]
 FINAL_REGRADE: List[Optional[dict]] = [None]
+# What each sink entry's SHIPPED_RULE_KEYS read when its JSON_SUMMARY line was
+# printed, in sink order -- so the end of the run can tell whether the log
+# already says what the shipped board was routed to.
+PRINTED_RULES: List[str] = []
+SHIPPED_RULE_KEYS = ('min_clearance_used', 'design_rules')
 
 
 def reset_run_state() -> None:
@@ -89,6 +100,68 @@ def reset_run_state() -> None:
     SUMMARY_SINK.clear()
     RECONCILE_RAISED[0] = False
     FINAL_REGRADE[0] = None
+    PRINTED_RULES.clear()
+
+
+def _rules_text(summary: Dict) -> str:
+    return json.dumps({k: summary.get(k) for k in SHIPPED_RULE_KEYS},
+                      sort_keys=True, default=str)
+
+
+def note_printed_summary(summary: Dict) -> None:
+    """Record what `summary` said about the floor as its line was printed.
+    Call it beside every `SUMMARY_SINK.append`."""
+    PRINTED_RULES.append(_rules_text(summary))
+
+
+def _stamp_rules(doc: Dict, min_clearance_used, design_rules) -> None:
+    doc['min_clearance_used'] = min_clearance_used
+    if isinstance(design_rules, dict):
+        # `unsupported_rules` is per summary (its own run's config); the rest
+        # of the block is the process-wide fab_tiers ledger.
+        _old = doc.get('design_rules')
+        _keep = ({'unsupported_rules': _old['unsupported_rules']}
+                 if isinstance(_old, dict) and 'unsupported_rules' in _old
+                 else {})
+        doc['design_rules'] = dict(design_rules, **_keep)
+
+
+def restamp_shipped_rules(min_clearance_used, design_rules) -> Optional[Dict]:
+    """Make every summary of this run say the floor the run SHIPS.
+
+    `min_clearance_used` and `design_rules` are measured when a summary is
+    BUILT, and the outermost run keeps routing after its first one: the plane
+    finalize's fine-pitch taps descend below the requested clearance, and
+    every descent is a `clearance` row in the ledger. main()'s .kicad_pro
+    writeback reads the LIVE ledger, so the project said 0.15 while
+    --json-out and JSON_SUMMARY_MIN said 0.2 (kit-dev-coldfire, `--nets GND
+    +3.3V`), and a grader working "at min_clearance_used" graded the board
+    stricter than it was routed.
+
+    Stamps every sink summary in place (both values are run-scoped, like
+    `board_scoped_keys` says) and returns the record to print as
+    `JSON_SHIPPED_RULES:` -- or None when every printed summary already said
+    it, so an ordinary run's log does not repeat a ledger that can run to
+    thousands of rows. `merge_route_summaries` applies the printed record, so
+    the log and --json-out stay one document (#830).
+    """
+    record = {'min_clearance_used': min_clearance_used}
+    if isinstance(design_rules, dict):
+        record['design_rules'] = design_rules
+    for s in SUMMARY_SINK:
+        _stamp_rules(s, min_clearance_used, design_rules)
+    if [_rules_text(s) for s in SUMMARY_SINK] == PRINTED_RULES:
+        return None
+    return record
+
+
+def apply_shipped_rules(merged: Optional[Dict], record: Optional[Dict]):
+    """`restamp_shipped_rules`' record, applied to a merged document."""
+    if merged is None or not record:
+        return merged
+    _stamp_rules(merged, record.get('min_clearance_used'),
+                 record.get('design_rules'))
+    return merged
 
 # The one-line compact tally route.py prints at the end of every OUTERMOST
 # run (CLI and GUI alike): the merged verdict in <1KB, where the big
@@ -588,6 +661,10 @@ def merge_route_summaries(log: str) -> Optional[Dict]:
     if rg and rg[-1].start() > log.rfind(raw[-1]):
         regrade = json.loads(rg[-1].group(1))
     merged = merge_summaries(summaries, aborted, regrade)
+    # The floor the run shipped, when it moved after a summary was printed.
+    sr = list(SHIPPED_RULES_RE.finditer(log))
+    if sr and sr[-1].start() > log.rfind(raw[-1]):
+        apply_shipped_rules(merged, json.loads(sr[-1].group(1)))
     # #962: the ship-time Type VII record runs after every JSON_SUMMARY line,
     # so it is printed on its own line; route.py sets the same record on the
     # merged `--json-out` document. The last one is the shipped board's.

@@ -5050,6 +5050,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         pass
     print(f"JSON_SUMMARY: {json.dumps(summary)}")
     _SUMMARY_SINK.append(summary)
+    from route_summary import note_printed_summary
+    note_printed_summary(summary)
 
     # Write output file or return results for direct application
     if return_results:
@@ -7118,6 +7120,29 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                           + f" -- JSON_SUMMARY power_widths{RESET}")
         except Exception as _pwe:                               # noqa: BLE001
             print(f"  (power-width disclosure skipped: {_pwe})")
+
+    # ---- THE FLOOR THIS RUN SHIPS ------------------------------------------
+    # Every summary measured min_clearance_used and design_rules when it was
+    # BUILT, and pass 1's predates the plane finalize, whose fine-pitch taps
+    # descend below --clearance. main()'s .kicad_pro writeback reads the live
+    # ledger, so the project said 0.15 while --json-out and JSON_SUMMARY_MIN
+    # said 0.2 (kit-dev-coldfire --nets GND +3.3V). Re-stamp every summary
+    # from the same ledgers, after the last pass that routes, so both report
+    # the floor the writeback stores; on the GUI front the plane-finalize
+    # oracle fallback (swig_gui, after apply) is the one leg still to come.
+    if final_reconcile and not _ckpt_stop and _SUMMARY_SINK:
+        try:
+            import clearance_ledger as _cl_ship
+            from fab_tiers import escalation_summary as _es_ship
+            from route_summary import restamp_shipped_rules
+            _rec_ship = restamp_shipped_rules(
+                _cl_ship.effective(clearance), _es_ship())
+            if _rec_ship is not None:
+                print(f"JSON_SHIPPED_RULES: {json.dumps(_rec_ship)}")
+        except Exception as _sre:                               # noqa: BLE001
+            print(f"  WARNING: the shipped floor was not re-stamped "
+                  f"({type(_sre).__name__}: {_sre}); min_clearance_used and "
+                  f"design_rules describe the first pass")
 
     # ---- FINAL RE-GRADE (#1069) --------------------------------------------
     # After the last pass that changes copper (the laps, the #589/#678 welds,
