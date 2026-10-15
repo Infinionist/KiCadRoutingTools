@@ -254,6 +254,12 @@ An existing pour for the **same** net on the target layer is replaced by default
   those layers together or by deleting it in KiCad.
 
 A pour is therefore removed only when every layer it covers is being replaced.
+A teardrop area on the net is not a pour (#1164) and is never removed with it.
+
+The GUI planes tab does the same. Its **Skip existing zones** checkbox is
+`--skip-existing-zones`, unticked by default as on the CLI: the tab then deletes
+the replaced pour from the live board and adds the new one, and a plan step
+that omits the flag runs unticked again.
 
 #### Choosing `--gnd-via-distance`
 

@@ -337,6 +337,22 @@ class CreatePlanesOptionsPanel(wx.Panel):
             "the plane instead of a single shared via (#487)")
         zone_sizer.Add(self.thermal_vias, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
 
+        # route_planes.py --skip-existing-zones, named after the create_plane
+        # param. Unchecked is the CLI default: a net's pour already on the
+        # target layer is REPLACED by one at this run's settings.
+        self.skip_existing_zones = wx.CheckBox(
+            self, label="Skip existing zones (keep a net's pour already on the layer)")
+        self.skip_existing_zones.SetValue(False)
+        self.skip_existing_zones.SetToolTip(
+            "Checked: a net that already has a pour on the target layer keeps "
+            "it as it is (no new zone; thermal via arrays and stitching still "
+            "apply). Unchecked (the CLI default): that pour is replaced by one "
+            "at this run's clearance, minimum width and outline. A pour that "
+            "also covers other layers is never deleted either way, and other "
+            "nets' pours on the layer are always kept.")
+        zone_sizer.Add(self.skip_existing_zones, 0,
+                       wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+
         sizer.Add(zone_sizer, 0, wx.EXPAND | wx.BOTTOM, 5)
 
         # (No Blocker Handling box: the pour step does no routing (#562
@@ -524,6 +540,7 @@ class CreatePlanesOptionsPanel(wx.Panel):
             'gnd_via_net': self.gnd_via_net.GetValue(),
             'thermal_relief': self.thermal_relief.GetValue(),
             'thermal_vias': self.thermal_vias.GetValue(),
+            'skip_existing_zones': self.skip_existing_zones.GetValue(),
             'stitch_vias': self.stitch_vias.GetValue(),
             'stitch_pitch': self.stitch_pitch.GetValue(),
             # 0 = auto/off in the controls -> None for the engine (CLI parity)
@@ -1087,11 +1104,13 @@ class PlanesTab(wx.Panel):
                 # #581: from the Basic tab via get_shared_params (explicit;
                 # -1 = via-in-pad allowed).
                 same_net_pad_clearance=config.get('same_net_pad_clearance', -1.0),
-                # #381 D6: config-driven (was hardcoded True). Interactive
-                # default stays True -- an interactive re-create on a live board
-                # should skip re-emitting an existing zone. A plan can override
-                # to False (the CLI default) to match a route_planes.py replay.
-                skip_existing_zones=config.get('skip_existing_zones', True),
+                # The "Skip existing zones" checkbox (route_planes.py
+                # --skip-existing-zones), default False like the CLI: a net's
+                # pour already on the layer is REPLACED, which the applier
+                # carries out on the live board (each returned zone says
+                # `replace_existing`). It was hardcoded True, so the GUI could
+                # never replay a step that omitted the flag.
+                skip_existing_zones=config.get('skip_existing_zones', False),
                 net_clearances=_plane_net_clearances,
                 clamp_netclasses=_plane_clamp,
                 clearance_ceiling=_plane_ceiling,
@@ -1233,13 +1252,16 @@ class PlanesTab(wx.Panel):
         # How many requested pours the ENGINE kept as-is because that net already
         # has a zone on that layer (skip_existing_zones). Without this the dialog
         # cannot distinguish "already there, nothing to do" from a real failure --
-        # both arrive as zero new zones.
+        # both arrive as zero new zones. Without the skip the engine pours every
+        # requested pair (replacing or out-ranking what is there), so nothing
+        # is kept.
         try:
             from kicad_parser import pour_zones
             _have = {(z.net_name, z.layer)
                      for z in pour_zones(getattr(self.pcb_data, 'zones', None))}
             zones_kept = sum(1 for _n, _l in zip(expanded_nets, expanded_layers)
-                             if (_n, _l) in _have)
+                             if (_n, _l) in _have) \
+                if config.get('skip_existing_zones', False) else 0
         except Exception:
             zones_kept = 0
 
@@ -1321,6 +1343,12 @@ class PlanesTab(wx.Panel):
             msg += f" on {len(nets)} net(s)\n" if nets else "\n"
         else:
             msg = "No plane was created.\n\n"
+        replaced = getattr(self, '_last_zones_replaced', 0)
+        if replaced:
+            msg += (f"Replaced existing: {replaced} zone(s) -- the pour that "
+                    f"net already had on that layer, now at this run's "
+                    f"settings.\nCheck 'Skip existing zones' to keep such a "
+                    f"pour instead.\n")
         kept = zones_skipped + result.get('zones_kept', 0)
         if kept:
             # The usual reason a pour looks like it did nothing. Covers both the
@@ -1336,6 +1364,8 @@ class PlanesTab(wx.Panel):
             msg += f"Failed pads (no via placed): {failed_pads}\n"
 
         status = f"Created: {zones_added} zone(s)"
+        if replaced:
+            status += f", {replaced} replaced"
         if kept:
             status += f", {kept} kept (already present)"
         if failed_pads:
@@ -1399,6 +1429,7 @@ class PlanesTab(wx.Panel):
         # Reset before the early return below, so the completion message can
         # never report a PREVIOUS run's zone tally.
         self._last_zone_counts = (0, 0)
+        self._last_zones_replaced = 0
         board = pcbnew.GetBoard()
         if board is None:
             return
@@ -1546,13 +1577,27 @@ class PlanesTab(wx.Panel):
         # Add zones from create_plane results
         zones_added = 0
         zones_skipped = 0
+        zones_replaced = 0
         new_zone_objs = []  # Track newly added zones so we can fill them below.
         if hasattr(self, '_new_zones') and self._new_zones:
-            # Snapshot which (net_name, layer) pairs already have a zone on
-            # the live board so we never add a duplicate.
+            # Snapshot which (net_name, layer) pairs already have a POUR on
+            # the live board so we never add a duplicate -- and, per pair, the
+            # single-layer pours a `replace_existing` zone supersedes, which
+            # are exactly the zones the CLI writer drops from the file
+            # (plane_io.filter_zones_from_content; footprint zones are not in
+            # board.Zones()). Teardrop and rule areas are no pour (#1164), so
+            # they neither block a pour as a "duplicate" nor get replaced.
             existing_zone_keys = set()
+            replaceable = {}
             try:
                 for existing_zone in board.Zones():
+                    try:
+                        if existing_zone.GetIsRuleArea():
+                            continue
+                        if existing_zone.IsTeardropArea():
+                            continue
+                    except Exception:
+                        pass
                     try:
                         existing_net = existing_zone.GetNet().GetNetname()
                     except Exception:
@@ -1565,6 +1610,14 @@ class PlanesTab(wx.Panel):
                     except Exception:
                         existing_layer = ''
                     existing_zone_keys.add((existing_net, existing_layer))
+                    try:
+                        _span = [id_to_name.get(l, '')
+                                 for l in existing_zone.GetLayerSet().Seq()]
+                    except Exception:
+                        _span = [existing_layer]
+                    if len(_span) == 1 and _span[0]:
+                        replaceable.setdefault((existing_net, _span[0]),
+                                               []).append(existing_zone)
             except Exception:
                 pass
 
@@ -1623,7 +1676,19 @@ class PlanesTab(wx.Panel):
                         print(f"Failed to add NPTH-slot keepout {kname}: {e}")
                     continue
                 key = (zone_data.get('net_name', ''), zone_data.get('layer', ''))
-                if key in existing_zone_keys:
+                if zone_data.get('replace_existing') and key in replaceable:
+                    # Skip existing zones UNCHECKED (route_planes.py without
+                    # --skip-existing-zones): the engine replaces this net's
+                    # pour on the layer, so delete the old one, as the CLI
+                    # writer does. Once per pair -- a shared layer's split
+                    # returns several polygons for one net, and the later
+                    # ones must not delete the earlier.
+                    for _old in replaceable.pop(key):
+                        board.RemoveNative(_old)
+                        zones_replaced += 1
+                    existing_zone_keys.discard(key)
+                    print(f"Replacing existing zone for '{key[0]}' on {key[1]}")
+                elif key in existing_zone_keys:
                     print(f"Skipping new zone for '{key[0]}' on {key[1]} "
                           f"(zone already exists on board)")
                     zones_skipped += 1
@@ -1706,8 +1771,10 @@ class PlanesTab(wx.Panel):
         # stopped placing taps (#492/#562), so a dialog reporting only those two
         # reads as "nothing happened" on a perfectly successful pour, and hides
         # the one number that explains a no-op: zones SKIPPED because the net
-        # already has a zone on that layer (skip_existing_zones, default on).
+        # already has a zone on that layer (the "Skip existing zones" box).
+        # Replacements are reported apart: they are pours that DID change.
         self._last_zone_counts = (zones_added, zones_skipped)
+        self._last_zones_replaced = zones_replaced
 
         # NO bare BuildConnectivity here: the taps/stitch vias just added sit
         # under the EXISTING (stale) fills, and building connectivity before

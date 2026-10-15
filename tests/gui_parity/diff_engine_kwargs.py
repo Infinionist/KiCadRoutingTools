@@ -32,9 +32,11 @@ create_plane / repair route_planes) when BOTH env vars are set:
 
 Benign-by-design differences are filtered: dry_run (the GUI applies via pcbnew,
 the CLI writes a file), return_results (same), layer_costs [] vs None (equivalent),
-routing_layers None vs the full copper stack (None auto-detects to it), and
-skip_existing_zones (moot on a board with no pre-existing pours). Everything else
-that differs is a real divergence to reconcile in the GUI call site.
+and routing_layers None vs the full copper stack (None auto-detects to it).
+Everything else that differs is a real divergence to reconcile in the GUI call
+site -- skip_existing_zones included: the planes tab passes its "Skip existing
+zones" box, unticked like the CLI's omitted flag, so a difference there means a
+replayed step kept a pour the CLI replaced (or the reverse).
 
 CAVEAT -- route calls pair by index, planes pair reliably. The plane engines fire
 a fixed number of times (create_plane once, repair route_planes once per repair
@@ -55,7 +57,6 @@ BENIGN_KEYS = {
     'dry_run', 'return_results',
     'layer_costs',        # [] (CLI) vs None (GUI) -- get_layer_costs treats equal
     'routing_layers',     # None (CLI auto-detect) vs full copper stack (GUI)
-    'skip_existing_zones',
     'net_names',          # order/expansion differences; connectivity-equivalent
 }
 

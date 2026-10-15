@@ -340,6 +340,10 @@ BOOL_FLAGS = {
     # generic loop).
     '--stitch-vias': 'stitch_vias',
     '--stitch-edge-fence': 'stitch_edge_fence',
+    # route_planes: keep a net's existing pour on the layer (the planes tab's
+    # "Skip existing zones" box; reset unticked, so a step WITHOUT the flag
+    # replaces the pour, as the CLI does).
+    '--skip-existing-zones': 'skip_existing_zones',
     '--no-gnd-vias': 'no_gnd_vias',
     # route.py spells it --no-bga-zones (plural, nargs='*'); bga_fanout uses the
     # singular. Both map to the GUI's no_bga_zone special (bare = exclude ALL).

@@ -8808,12 +8808,21 @@ def _extract_zones_from_pcbnew(board, to_mm, get_layer_name):
                 _td = bool(zone.IsTeardropArea())
             except Exception:
                 _td = False
+            # The text parser's (uuid ...): the one key that ties the per-layer
+            # entries of a multi-layer pour back together, which is how
+            # plane_io/route_planes tell a pour that ALSO covers other layers
+            # (never replaced) from one only on the target layer.
+            try:
+                _zuuid = str(zone.m_Uuid.AsString())
+            except Exception:
+                _zuuid = ""
             for zl in zone_layers:
                 zones.append(Zone(
                     net_id=net_id,
                     net_name=net_name,
                     layer=zl,
                     polygon=polygon,
+                    uuid=_zuuid,
                     priority=priority,
                     island_removal_mode=island_removal_mode,
                     island_area_min=island_area_min,

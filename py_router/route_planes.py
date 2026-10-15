@@ -3231,11 +3231,23 @@ def create_plane(
     existing_zones = []
     from kicad_parser import pour_zones
     if _live_pcb_data:
-        # POURS only (#1164), as plane_io.extract_zones reads the file.
-        for z in pour_zones(getattr(pcb_data, 'zones', None)):
+        # POURS only (#1164), as plane_io.extract_zones reads the file -- and
+        # with each pour's layer SPAN recovered from its uuid the same way, so
+        # check_existing_zones can tell a multi-layer pour (kept, never
+        # replaced) from one that covers only the target layer. Without it a
+        # live `(layers "F.Cu" "B.Cu")` pour read as single-layer.
+        _live = list(pour_zones(getattr(pcb_data, 'zones', None)))
+        _span_by_uuid: Dict[str, List[str]] = {}
+        for z in _live:
+            if getattr(z, 'uuid', ''):
+                _span_by_uuid.setdefault(z.uuid, []).append(z.layer)
+        for z in _live:
+            _zu = getattr(z, 'uuid', '') or ''
             existing_zones.append(ZoneInfo(net_id=z.net_id, net_name=z.net_name, layer=z.layer,
                                            in_footprint=getattr(z, 'in_footprint', False),
-                                           priority=int(getattr(z, 'priority', 0) or 0)))
+                                           priority=int(getattr(z, 'priority', 0) or 0),
+                                           uuid=_zu,
+                                           span=tuple(_span_by_uuid.get(_zu, [z.layer]))))
     else:
         try:
             existing_zones = list(extract_zones(input_file))
@@ -3253,6 +3265,9 @@ def create_plane(
 
     should_create_zones = []  # Per-net flag for whether to create zone
     zones_to_replace = []  # List of (net_id, layer) tuples for zones to replace
+    # The same decision keyed by the REQUESTED (net name, layer), which is how
+    # the returned zone dicts name their pour (see `replace_existing` below).
+    replaced_targets: Set[Tuple[str, str]] = set()
     # Fill priority per net for a plane that has to SHARE its layer with another
     # net's existing pour: ABOVE the incumbent, so the newly requested plane wins
     # the overlap deterministically (see plane_io.shared_layer_zone_priority --
@@ -3301,6 +3316,7 @@ def create_plane(
             shared_layer_priority[net_name] = shared_layer_zone_priority(foreign_zones)
         if zone_to_replace:
             zones_to_replace.append((zone_to_replace.net_id, zone_to_replace.layer))
+            replaced_targets.add((net_name, plane_layer))
             # #487: a REPLACED user pour keeps (at least) its own fill priority.
             # Writing only the shared-layer computed value silently reset e.g.
             # a priority-2 pour to 0, flipping which overlapping zone pulls back.
@@ -4118,6 +4134,17 @@ def create_plane(
         # gains the emitted copies (duplicated restored copper).
         # reconnect_strips LAST (#508): input copper the reconnect's cleanup
         # withdrew; the applier deletes these individually.
+        #
+        # Each returned pour says whether it REPLACES an existing same-net
+        # zone (skip_existing_zones False, the CLI default): the CLI writer
+        # drops the replaced zone from the file (zones_to_replace), and the
+        # GUI applier, which builds its pcbnew ZONEs from these dicts, must
+        # delete it from the live board the same way -- or keep the old pour
+        # and skip the new one as a duplicate, which is --skip-existing-zones.
+        for _zd in all_zone_data:
+            if not _zd.get('keepout'):
+                _zd['replace_existing'] = (
+                    (_zd.get('net_name'), _zd.get('layer')) in replaced_targets)
         return (total_vias_placed, total_traces_added, total_pads_needing_vias,
                 all_new_vias, all_new_segments, all_zone_data, total_failed_pads,
                 all_ripped_net_ids, reconnect_swap_data, reconnect_strips)

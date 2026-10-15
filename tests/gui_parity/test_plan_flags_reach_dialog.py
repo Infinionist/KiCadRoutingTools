@@ -91,6 +91,10 @@ CASES = [
          cmd=_PLANES, flag='--voronoi-seed-interval 3.25',
          param=('voronoi_seed_interval', 3.25), probe='voronoi_seed_interval',
          want=(3.25, 3.25), default=(2.0, 2.0)),
+    dict(label='route_planes --skip-existing-zones',
+         cmd=_PLANES, flag='--skip-existing-zones',
+         param=('skip_existing_zones', True), probe='skip_existing_zones',
+         want=(True, True), default=(False, False)),
 ]
 
 
@@ -105,6 +109,8 @@ def _probes(dlg):
                      plane_cfg.get(name))
               for name in ('min_thickness', 'plane_max_iterations',
                            'voronoi_seed_interval')}
+    planes['skip_existing_zones'] = (po.skip_existing_zones.GetValue(),
+                                     plane_cfg.get('skip_existing_zones'))
     return {
         **planes,
         'centerline_setback': (

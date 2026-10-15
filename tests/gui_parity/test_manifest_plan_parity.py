@@ -817,11 +817,10 @@ PLANES_CLI_ONLY = dict(
                                     '--verbose')},
     **{'--dry-run': "analysis only, writes no board (the planes tab always "
                     "runs create_plane with dry_run=True and applies the "
-                    "result to the live board itself)",
-       '--skip-existing-zones': "the planes tab always behaves as if it were "
-                                "given (skip_existing_zones=True: keep an "
-                                "existing same-net zone on the live board); "
-                                "what it cannot replay is the flag's ABSENCE"})
+                    "result to the live board itself)"})
+# (--skip-existing-zones left this list when the planes tab got its "Skip
+# existing zones" box: the tab used to behave as if the flag were ALWAYS
+# given, so a replayed step that omitted it kept a pour the CLI replaced.)
 # KNOWN GAPS (route_planes.py). EMPTY: --min-thickness, --plane-max-iterations
 # and --voronoi-seed-interval had no control (planes_gui handed create_plane a
 # fixed default for each) until the planes tab's advanced box got one of each,

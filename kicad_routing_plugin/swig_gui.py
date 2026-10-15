@@ -2650,6 +2650,10 @@ class RoutingDialog(wx.Dialog):
                 _po.plane_max_iterations.SetValue(defaults.MAX_ITERATIONS)
             if hasattr(_po, 'voronoi_seed_interval'):
                 _po.voronoi_seed_interval.SetValue(defaults.VORONOI_SEED_INTERVAL)
+            # --skip-existing-zones is a store_true switch: off, so a step
+            # without it REPLACES a net's existing pour, as route_planes does.
+            if hasattr(_po, 'skip_existing_zones'):
+                _po.skip_existing_zones.SetValue(False)
         except Exception:
             pass
         # #581: the via-in-pad policy controls live on the Basic tab now
