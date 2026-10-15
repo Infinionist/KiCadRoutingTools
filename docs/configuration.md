@@ -494,7 +494,9 @@ Length matching adds trombone-style meanders to match route lengths within group
 ```bash
 --length-match-group auto
 ```
-Groups nets by byte lane: DQ0-7 + DQS0, DQ8-15 + DQS1, etc.
+Groups nets by byte lane: DQ0-7 + DQS0, DQ8-15 + DQS1, etc., plus one
+command/address group, separately for each DRAM interface and channel
+(see [Length Matching](length-matching.md#ddr-auto-grouping)).
 
 **Manual grouping:**
 ```bash

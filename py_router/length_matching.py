@@ -2322,10 +2322,19 @@ def find_nets_matching_patterns(all_net_names: List[str], patterns: List[str]) -
 # prefix. Qualification reads the board's WHOLE net list (`context_names`), so
 # a step that routes only the address nets still recognises their interface.
 #
-# Groups are keyed by lane number across interfaces, as before: haasoscope's
-# LPDDR4 channels A and B share `byte_lane_0`. The clock (CK/CLK) joins
-# `command_address`, because the command/address bus is sampled on it and is
-# matched to it.
+# Groups are keyed per INTERFACE: a byte lane is matched to its own strobe,
+# so lanes of different interfaces are never one group. An interface is the
+# prefix, plus a CHANNEL where the names carry one: a trailing `_A`/`_B` is a
+# channel tag on a prefix where some signal appears with both letters on the
+# board (haasoscope's DQ0_A/DQ0_B) -- a lone `_B` is still active-low. The
+# clock (CK/CLK) joins `command_address`, because the command/address bus is
+# sampled on it and is matched to it; so command/address splits by channel
+# only where every channel carrying command nets has its OWN clock. When it
+# does not, the channels share one clock and one group (haasoscope's CK_t_A
+# net drives both channels' CK pins, so CS0_B is sampled on it). Keys stay
+# plain (`byte_lane_0`, `command_address`) on a board where that is
+# unambiguous, and carry the interface (`byte_lane_0 @ Net-(U1A- channel A`)
+# once two interfaces would share one.
 #
 # Accepted spellings seen on real boards: an optional SDRAM-controller prefix
 # `S`/`SD` (Allwinner SDQS0P / SA0 / SBA0, i.MX SDCLK0_P / SDBA0, STM32
@@ -2412,8 +2421,9 @@ def _ddr_signal(token: str):
 def _ddr_read_name(name: str):
     """Read one net name: a dict with its interface `prefix`, signal `kind`,
     `role` (data/strobe/mask/command/clock), the core's number `n`, its lane
-    `half` (L/U/H), the digits-only token right after it (`index`) and the
-    DRAM-only `qualifier` kind it contributes -- or None (no signal token)."""
+    `half` (L/U/H), the digits-only token right after it (`index`), the
+    tokens after it (`tail`) and the DRAM-only `qualifier` kind it
+    contributes -- or None (no signal token)."""
     canon = _ddr_canonical(name)
     toks = list(_DDR_TOKEN_RE.finditer(canon))
     for i in range(len(toks) - 1, -1, -1):
@@ -2441,6 +2451,7 @@ def _ddr_read_name(name: str):
         return {'prefix': canon[:toks[i].start()], 'kind': kind, 'role': role,
                 'n': int(num) if num else None, 'half': half,
                 'index': int(nxt) if nxt.isdigit() else None,
+                'tail': [t.group() for t in toks[i + 1:]],
                 'qualifier': qualifier}
     return None
 
@@ -2458,9 +2469,13 @@ def classify_ddr_nets(net_names: List[str],
     Membership never extends beyond `net_names`.
 
     Returns a dict:
-      groups      {key: [names, input order]}, keys in first-appearance order
+      groups      {key: [names, input order]}, keys in first-appearance order:
+                  `byte_lane_<n>` / `command_address`, or `<that> @ <prefix>
+                  [channel X]` on a board with more than one interface
       interfaces  {prefix: [qualifier kinds]} for the qualified prefixes that
                   hold at least one of `net_names`
+      channels    {prefix: [channel letters]} for those prefixes whose names
+                  carry a proven `_A`/`_B` channel tag
       lane_undeterminable  data/strobe/mask names whose lane cannot be read
       no_group_token       names under a qualified prefix with no group token
                            (RESET, ZQ, VREF, ...)
@@ -2491,17 +2506,50 @@ def classify_ddr_nets(net_names: List[str],
                  if len(ks) >= _DDR_MIN_QUALIFIER_KINDS}
     bit_indexed = {p for p, vals in dq_index_values.items() if len(vals) >= 8}
 
+    # Channel tags: a trailing `_A`/`_B` is a channel only on a prefix where
+    # one signal carries both letters (the block comment above).
+    tag_letters: Dict[str, Dict[tuple, set]] = {}
+    for name in context:
+        r = reads.get(name)
+        if r is None or not r['tail'] or r['tail'][-1].upper() not in ('A', 'B'):
+            continue
+        sig = (r['kind'], r['n'], r['half'],
+               tuple(t.upper() for t in r['tail'][:-1]))
+        tag_letters.setdefault(r['prefix'], {}).setdefault(sig, set()).add(
+            r['tail'][-1].upper())
+    channelled = {p for p, sigs in tag_letters.items()
+                  if any(len(v) >= 2 for v in sigs.values())}
+
+    def channel_of(r):
+        if r['prefix'] in channelled and r['tail'] \
+                and r['tail'][-1].upper() in ('A', 'B'):
+            return r['tail'][-1].upper()
+        return None
+
     def data_lane(r):
         if r['kind'] == 'DQ' and r['index'] is not None \
                 and r['prefix'] in bit_indexed:
             return r['n']            # DQ<byte>_<bit>
         return r['n'] // 8
 
-    data_lanes: Dict[str, set] = {}
+    # Per interface (prefix, channel), over the board: the data lanes, and
+    # which channels carry command nets and which carry a clock.
+    data_lanes: Dict[tuple, set] = {}
+    cmd_channels: Dict[str, set] = {}
+    clock_channels: Dict[str, set] = {}
     for name in context:
         r = reads.get(name)
-        if r is not None and r['role'] == 'data' and r['prefix'] in qualified:
-            data_lanes.setdefault(r['prefix'], set()).add(data_lane(r))
+        if r is None or r['prefix'] not in qualified:
+            continue
+        ch = channel_of(r)
+        if r['role'] == 'data':
+            data_lanes.setdefault((r['prefix'], ch), set()).add(data_lane(r))
+        elif r['role'] in ('command', 'clock'):
+            cmd_channels.setdefault(r['prefix'], set()).add(ch)
+            if r['role'] == 'clock':
+                clock_channels.setdefault(r['prefix'], set()).add(ch)
+    split_command = {p for p, chs in cmd_channels.items()
+                     if len(chs) > 1 and chs <= clock_channels.get(p, set())}
 
     def lane_of(r):
         if r['role'] == 'data':
@@ -2512,12 +2560,44 @@ def classify_ddr_nets(net_names: List[str],
             return 0 if r['half'] == 'L' else 1
         if r['index'] is not None:
             return r['index']        # DQS_0 / DM#1 style
-        lanes = data_lanes.get(r['prefix'], set())
+        lanes = data_lanes.get((r['prefix'], channel_of(r)), set())
         return next(iter(lanes)) if len(lanes) == 1 else None
+
+    def unit_of(r):
+        """(group, prefix, channel) for a name under a qualified prefix, or
+        None when its lane cannot be read."""
+        if r['role'] in ('command', 'clock'):
+            ch = channel_of(r) if r['prefix'] in split_command else None
+            return ('command_address', r['prefix'], ch)
+        lane = lane_of(r)
+        if lane is None:
+            return None
+        return (f'byte_lane_{lane}', r['prefix'], channel_of(r))
+
+    # A key carries its interface once two interfaces on the board would
+    # otherwise share it (judged over the board, so a key does not change
+    # with the step's scope).
+    seen_units: Dict[str, set] = {}
+    for name in context:
+        r = reads.get(name)
+        if r is None or r['prefix'] not in qualified:
+            continue
+        u = unit_of(r)
+        if u is not None:
+            seen_units.setdefault(u[0], set()).add(u[1:])
+    qualify_keys = any(len(v) > 1 for v in seen_units.values())
+
+    def key_of(unit):
+        group, prefix, ch = unit
+        if not qualify_keys:
+            return group
+        label = prefix or '(no prefix)'
+        return f"{group} @ {label}" + (f" channel {ch}" if ch else '')
 
     named_prefixes = [p for p in qualified if re.search(r'[0-9A-Za-z]', p)]
     groups: Dict[str, List[str]] = {}
     interfaces: Dict[str, List[str]] = {}
+    channels: Dict[str, List[str]] = {}
     lane_undeterminable: List[str] = []
     no_group_token: List[str] = []
     not_dram_interface: List[str] = []
@@ -2535,16 +2615,15 @@ def classify_ddr_nets(net_names: List[str],
             not_dram_interface.append(name)
             continue
         interfaces[r['prefix']] = sorted(kinds[r['prefix']])
-        if r['role'] in ('command', 'clock'):
-            key = 'command_address'
-        else:
-            lane = lane_of(r)
-            if lane is None:
-                lane_undeterminable.append(name)
-                continue
-            key = f'byte_lane_{lane}'
-        groups.setdefault(key, []).append(name)
-    return {'groups': groups, 'interfaces': interfaces,
+        if r['prefix'] in channelled:
+            channels[r['prefix']] = sorted(
+                set().union(*tag_letters[r['prefix']].values()))
+        unit = unit_of(r)
+        if unit is None:
+            lane_undeterminable.append(name)
+            continue
+        groups.setdefault(key_of(unit), []).append(name)
+    return {'groups': groups, 'interfaces': interfaces, 'channels': channels,
             'lane_undeterminable': lane_undeterminable,
             'no_group_token': no_group_token,
             'not_dram_interface': not_dram_interface,
@@ -2576,8 +2655,10 @@ def auto_group_ddr4_nets(net_names: List[str],
     print(f"  DDR auto-grouping: {len(groups)} group(s) from "
           f"{len(net_names)} net(s) in scope")
     if c['interfaces']:
+        chans = c.get('channels', {})
         print("    DRAM interface prefix(es): " + '; '.join(
             f"'{p}' ({', '.join(ks)})"
+            + (f" channels {', '.join(chans[p])}" if p in chans else '')
             for p, ks in sorted(c['interfaces'].items())))
     for key, nets in groups.items():
         print(f"    {key} ({len(nets)}): {_names(nets)}")

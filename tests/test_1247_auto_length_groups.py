@@ -21,11 +21,13 @@ Pinned here, on the boards' REAL net names:
   orangecrab   command_address = the 27 RAM_* address/command/clock nets;
                D0-7+LDM+LDQS+/- and D8-15+UDM+UDQS+/- are lanes 0 and 1;
                IO_A*, /sheetIO/A*, PGOOD_*, *_CMD are named as rejected.
-  haasoscope   (the board `auto` was written for) forms byte_lane_0 (22),
-               byte_lane_1 (22) and command_address (13): each lane is its
-               DQ, DQS and DMI (LPDDR4's data-mask-inversion is sampled with
-               its byte's DQ on the byte's strobe, so it is part of the
-               lane); RESET_n and ZQ0 are left out, by name.
+  haasoscope   (the board `auto` was written for) forms four lanes of 11,
+               lanes 0 and 1 of channel A and of channel B, each its DQ, DQS
+               and DMI (LPDDR4's data-mask-inversion is sampled with its
+               byte's DQ on the byte's strobe, so it is part of the lane),
+               and ONE command_address (13): the CA bus is shared by both
+               channels, so they share its clock. RESET_n and ZQ0 are left
+               out, by name.
 
 and, on synthetic results, the two route-step defects: the grouper's input is
 the call's scope (an out-of-scope rip-candidate registration never joins), and
@@ -154,27 +156,39 @@ def run():
     scope = [n for n in allnames if n.startswith('Net-(U1')]
     c = classify_ddr_nets(scope, allnames)
     g = grouped(c)
-    lane0 = ({f'Net-(U1A-DQ{i}_{ch})' for i in range(8) for ch in 'AB'}
-             | {f'Net-(U1A-DQS0_{p}_{ch})' for p in 'ct' for ch in 'AB'}
-             | {f'Net-(U1A-DMI0_{ch})' for ch in 'AB'})
-    lane1 = ({f'Net-(U1A-DQ{i}_{ch})' for i in range(8, 16) for ch in 'AB'}
-             | {f'Net-(U1A-DQS1_{p}_{ch})' for p in 'ct' for ch in 'AB'}
-             | {f'Net-(U1A-DMI1_{ch})' for ch in 'AB'})
+    # Why four lanes and one command group (the controller U3's own pin
+    # names say it): channel A is U3's lanes 0-1 (DDR_DQ[0:15], DQS[0:1],
+    # DM[0:1]) and channel B its lanes 2-3 (DDR_DQ[16:31], DQS[2:3],
+    # DM[2:3]). A lane is sampled on its OWN strobe, so A's lane 0 and B's
+    # lane 0 are different lanes and are never matched to each other. The
+    # command/address bus is SHARED: every CA/CK/CKE net carries both
+    # channels' pins (Net-(U1B-CA0_A) is U1's CA0_A and CA0_B), so channel B
+    # has no clock of its own and its CS0_B / ODT_CA_B are sampled on the
+    # same CK as channel A's -- one command/address group.
+    def lane(n, ch):
+        lo = 8 * n
+        return ({f'Net-(U1A-DQ{i}_{ch})' for i in range(lo, lo + 8)}
+                | {f'Net-(U1A-DQS{n}_{p}_{ch})' for p in 'ct'}
+                | {f'Net-(U1A-DMI{n}_{ch})'})
     cmd = ({f'Net-(U1B-CA{i}_A)' for i in range(6)}
            | {'Net-(U1B-CK_c_A)', 'Net-(U1B-CK_t_A)', 'Net-(U1B-CKE0_A)',
               'Net-(U1B-CS0_A)', 'Net-(U1B-CS0_B)', 'Net-(U1B-ODT_CA_A)',
               'Net-(U1B-ODT_CA_B)'})
-    check("haasoscope byte_lane_0 = DQ0-7 + DQS0 + DMI0 (22)",
-          g.get('byte_lane_0') == lane0 and len(lane0) == 22,
-          str(sorted(g.get('byte_lane_0', set()) ^ lane0)))
-    check("haasoscope byte_lane_1 = DQ8-15 + DQS1 + DMI1 (22)",
-          g.get('byte_lane_1') == lane1 and len(lane1) == 22,
-          str(sorted(g.get('byte_lane_1', set()) ^ lane1)))
-    check("haasoscope command_address unchanged (13)",
-          g.get('command_address') == cmd and len(cmd) == 13,
-          str(sorted(g.get('command_address', set()) ^ cmd)))
-    check("haasoscope has exactly those three groups",
-          set(g) == {'byte_lane_0', 'byte_lane_1', 'command_address'}, str(sorted(g)))
+    want = {f'byte_lane_{n} @ Net-(U1A- channel {ch}': lane(n, ch)
+            for n in (0, 1) for ch in 'AB'}
+    for key, members in want.items():
+        check(f"haasoscope {key} = its DQ, DQS and DMI (11)",
+              g.get(key) == members and len(members) == 11,
+              str(sorted(g.get(key, set()) ^ members)))
+    cmd_key = 'command_address @ Net-(U1B-'
+    check("haasoscope command_address is one group over both channels (13)",
+          g.get(cmd_key) == cmd and len(cmd) == 13,
+          str(sorted(g.get(cmd_key, set()) ^ cmd)))
+    check("haasoscope has exactly those five groups",
+          set(g) == set(want) | {cmd_key}, str(sorted(g)))
+    check("the report names the proven channels",
+          c.get('channels') == {'Net-(U1A-': ['A', 'B'], 'Net-(U1B-': ['A', 'B']},
+          str(c.get('channels')))
     check("haasoscope leaves exactly RESET_n and ZQ0 out, by name",
           set(c['no_group_token']) == {'Net-(U1B-RESET_n)', 'Net-(U1B-ZQ0)'},
           str(c['no_group_token']))
@@ -182,9 +196,52 @@ def run():
     # the BOARD, so a CA-only scope still forms its group.
     ca = [n for n in allnames if n.startswith('Net-(U1B-CA')]
     c = classify_ddr_nets(ca, allnames)
-    check("a CA-only scope still forms command_address (context = board)",
-          set(c['groups'].get('command_address', [])) == set(ca) and len(ca) == 6,
-          str(c['groups']))
+    check("a CA-only scope still forms command_address, keyed as on the "
+          "whole board (context = board)",
+          set(c['groups'].get(cmd_key, [])) == set(ca) and len(ca) == 6
+          and len(c['groups']) == 1, str(c['groups']))
+
+    # --- interfaces: lanes of different interfaces are never one group -------
+    print("interfaces and channels")
+    # Two channels, each with its OWN clock (an LPDDR4 part wired as two
+    # independent channels, JEDEC ball names): lanes AND command/address
+    # split by channel.
+    dual = ([f'LP4_DQ{i}_{ch}' for i in range(16) for ch in 'AB']
+            + [f'LP4_DQS{n}_{p}_{ch}' for n in (0, 1) for p in 'tc' for ch in 'AB']
+            + [f'LP4_CA{i}_{ch}' for i in range(6) for ch in 'AB']
+            + [f'LP4_CK_{p}_{ch}' for p in 'tc' for ch in 'AB']
+            + [f'LP4_CKE0_{ch}' for ch in 'AB'] + [f'LP4_CS0_{ch}' for ch in 'AB'])
+    c = classify_ddr_nets(dual)
+    g = grouped(c)
+    cmd_a = ({f'LP4_CA{i}_A' for i in range(6)}
+             | {'LP4_CK_t_A', 'LP4_CK_c_A', 'LP4_CKE0_A', 'LP4_CS0_A'})
+    check("each channel with its own clock gets its own command/address group",
+          g.get('command_address @ LP4_ channel A') == cmd_a
+          and len(g.get('command_address @ LP4_ channel B', ())) == 10,
+          str(sorted(g)))
+    check("...and its own lanes (lane 0 of A is not lane 0 of B)",
+          g.get('byte_lane_0 @ LP4_ channel A')
+          == {f'LP4_DQ{i}_A' for i in range(8)} | {'LP4_DQS0_t_A', 'LP4_DQS0_c_A'},
+          str(sorted(g.get('byte_lane_0 @ LP4_ channel A', []))))
+    # Two interfaces under different prefixes (lpddr5_testbed's spelling):
+    # lanes never mix, so the keys name the interface.
+    two = [f'/LPDDR5/LPDDR5_{x}.{s}' for x in 'AB'
+           for s in [f'DQ{i}' for i in range(16)]
+           + ['RDQS0_P', 'RDQS0_N', 'RDQS1_P', 'RDQS1_N', 'CA0', 'CA1', 'CS0',
+              'CK_P', 'CK_N']]
+    c = classify_ddr_nets(two)
+    g = grouped(c)
+    check("two prefixes: four lanes and two command groups, none shared",
+          set(g) == {f'{k} @ /LPDDR5/LPDDR5_{x}.' for x in 'AB'
+                     for k in ('byte_lane_0', 'byte_lane_1', 'command_address')}
+          and all(len({n.split('.')[0] for n in v}) == 1 for v in g.values()),
+          str(sorted(g)))
+    # A lone `_B` is active-low, not a channel: one interface, plain keys.
+    c = classify_ddr_nets(['DDR_A0', 'DDR_BA0', 'DDR_CKE', 'DDR_CS_B', 'DDR_WE_B',
+                           'DDR_DQ0', 'DDR_DQ1', 'DDR_DQS0_P', 'DDR_CK_P'])
+    check("a lone _B suffix is read as active-low, not as channel B",
+          'DDR_CS_B' in c['groups'].get('command_address', [])
+          and not c['channels'] and 'byte_lane_0' in c['groups'], str(c['groups']))
 
     # --- token rules on synthetic names --------------------------------------
     print("token rules")

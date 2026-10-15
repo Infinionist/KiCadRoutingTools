@@ -791,6 +791,7 @@ def run_length_matching(
                 report['auto'] = {
                     'scope_nets': len(auto_input_names),
                     'interfaces': _auto_report.get('interfaces', {}),
+                    'channels': _auto_report.get('channels', {}),
                     'lane_undeterminable': sorted(
                         _auto_report.get('lane_undeterminable', [])),
                     'no_group_token': sorted(

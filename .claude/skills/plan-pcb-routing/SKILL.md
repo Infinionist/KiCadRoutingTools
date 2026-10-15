@@ -778,7 +778,9 @@ Look for DDR signal patterns in the net list that may need length matching:
 If DDR signals detected:
 - Note that `--length-match-group auto` should be used
 - DQ0-7 + DQS0 (+ DM0 or LPDDR's DMI0) form byte lane 0, DQ8-15 + DQS1 form byte lane 1,
-  etc.; address/command/clock form `command_address`
+  etc.; address/command/clock form `command_address`. Each DRAM interface
+  (prefix, and `_A`/`_B` channel) gets its own lanes, so two channels' lanes
+  are never matched to each other
 - `auto` groups only the step's own `--nets`, by whole name token, and only
   under a prefix the board proves is DRAM (#1247). Preview it with
   `classify_ddr_nets` (snippet in the DDR section below). Any DDR net it
@@ -1911,6 +1913,7 @@ from length_matching import classify_ddr_nets
 names = [n.name for n in pcb.nets.values() if n.name]
 ddr = classify_ddr_nets(names)
 ddr_groups = ddr['groups']           # {'byte_lane_0': [...], 'command_address': [...]}
+# Two interfaces on one board name theirs: 'byte_lane_0 @ /LPDDR5/LPDDR5_A.'
 left_out = ddr['lane_undeterminable'] + ddr['no_group_token']
 ```
 
