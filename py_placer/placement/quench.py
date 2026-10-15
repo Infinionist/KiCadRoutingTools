@@ -829,6 +829,15 @@ class _NearIndex:
         same members -- QuenchState never adds or removes one)."""
         return parts is self.src and len(parts) == len(self.items)
 
+    def detach(self):
+        """Stop watching: a superseded index's dirty set leaves every part's
+        watch list, so later moves stop feeding a set nothing reads."""
+        mine = self.dirty
+        for _ref, p in self.items:
+            watch = getattr(p, '_ix_watch', None)
+            if watch:
+                watch[:] = [d for d in watch if d is not mine]
+
     @staticmethod
     def _cells(x0, y0, x1, y1):
         """The cell range (cx0, cy0, cx1, cy1) a box touches, or None when it
@@ -951,7 +960,11 @@ class _NearWatched:
     #: What `rect()` / `tht_rect()` read, and so what a `_NearIndex`
     #: footprint is computed from: a write to any of them marks the part
     #: stale in every index watching it. Reads are unaffected -- only
-    #: assignment goes through `__setattr__`.
+    #: assignment goes through `__setattr__`, and the memo slots
+    #: (`_pg_rot`, `_pg_pose`, `_live_rects`) are written with
+    #: `object.__setattr__` to skip it (~5% of a pad_globals miss).
+    #: tests/test_near_index_prune.py reads `rect()` / `tht_rect()`'s
+    #: source and fails when they read a field missing here.
     _GEOM_FIELDS = frozenset(('x', 'y', 'rot', 'bounds_by_rot',
                               'tht_by_rot', 'side', 'sides', 'has_tht'))
 
@@ -1173,7 +1186,7 @@ class _Part(_NearWatched):
             if hit is not None and hit[0] == key:
                 return hit[1]
             got = (self.rect(), self.tht_rect())
-            self._live_rects = (key, got)
+            object.__setattr__(self, '_live_rects', (key, got))  # not geometry
             return got
         return self.rect(x, y, rot), self.tht_rect(x, y, rot)
 
@@ -1203,7 +1216,8 @@ class _Part(_NearWatched):
         """
         memo = self._pg_rot
         if memo is None or memo[0] is not self.pads_local:
-            memo = self._pg_rot = (self.pads_local, {})
+            memo = (self.pads_local, {})
+            object.__setattr__(self, '_pg_rot', memo)      # not geometry
         offs = memo[1].get(rot)
         if offs is None:
             rad = math.radians(-rot)  # CRITICAL: negate the angle (as there)
@@ -1239,7 +1253,7 @@ class _Part(_NearWatched):
             return list(memo[2])
         out = [(mm_to_iu(x + dx) / IU_PER_MM, mm_to_iu(y + dy) / IU_PER_MM, n)
                for dx, dy, n in self._pad_offsets(rot)]
-        self._pg_pose = (key, self.pads_local, out)
+        object.__setattr__(self, '_pg_pose', (key, self.pads_local, out))
         return list(out)
 
 
@@ -2225,6 +2239,8 @@ class QuenchState:
             return self.parts.items()
         ix = self._near_ix
         if ix is None or (ix is not False and not ix.current(self.parts)):
+            if ix is not None:
+                ix.detach()                     # superseded: stop feeding it
             ix = self._near_ix = _NearIndex.build(self.parts) or False
         if ix is False:
             return self.parts.items()
