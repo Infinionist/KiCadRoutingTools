@@ -23,7 +23,7 @@
 # than as a new command: tests/test_506_507 pins the step sequence.
 set -e
 # cwd=/repo
-python3 -u -X utf8 bga_fanout.py board.kicad_pcb step1.kicad_pcb --component U1 --nets '*' '!GND' --clearance 0.09 --track-width 0.0762 --via-size 0.25 --via-drill 0.15 --grid-step 0.05 --escape-method auto --plane-net-layers GND:In1.Cu,In4.Cu +3V3:In2.Cu --check-for-previous --no-inner-top-layer --force-escape-direction --layer-costs 1 5 --diff-pairs '*CK*' '*DQS*' --diff-pair-gap 0.1143
+python3 -u -X utf8 bga_fanout.py board.kicad_pcb --output step1.kicad_pcb --component U1 --nets '*' '!GND' --clearance 0.09 --track-width 0.0762 --via-size 0.25 --via-drill 0.15 --grid-step 0.05 --escape-method auto --plane-net-layers GND:In1.Cu,In4.Cu +3V3:In2.Cu --check-for-previous --no-inner-top-layer --force-escape-direction --layer-costs 1 5 --diff-pairs '*CK*' '*DQS*' --diff-pair-gap 0.1143
 # cwd=/repo
 python3 -u -X utf8 route_diff.py step1.kicad_pcb step2.kicad_pcb --nets /USB/D+ /USB/D- --clearance 0.10 --diff-pair-gap 0.1 --via-size 0.45 --via-drill 0.2 --grid-step 0.05 --no-gnd-vias --no-bga-zones U7 U9 --diff-pair-intra-match --ac-couple-match --diff-chamfer-extra 2
 # cwd=/repo

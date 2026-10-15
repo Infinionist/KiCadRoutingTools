@@ -50,21 +50,47 @@ def _poses(placements):
                              round(p['new_rotation'], 6)) for p in placements}
 
 
+_GROUPED = {}
+
+
+def _grouped(name):
+    """`name`'s decap blocks quenched at step 0.5 for two passes:
+    `(placements, metrics_out)`, cached per board. ONE quench serves the two
+    cases that read it (the overlap case reads the placements, the objective
+    case the metrics) -- they used to run it twice with identical arguments.
+    `metrics_out` is filled after the pass loop and changes no move, and the
+    quench is deterministic, so sharing it changes neither case's input."""
+    if name not in _GROUPED:
+        f = _board(name)
+        blocks = derive_groups(parse_kicad_pcb(f), ('decap',))
+        metrics = {}
+        placements = quench(parse_kicad_pcb(f), pcb_file=f,
+                            max_displacement=2.0, step=0.5, max_passes=2,
+                            groups=blocks, metrics_out=metrics)
+        _GROUPED[name] = (placements, metrics)
+    return _GROUPED[name]
+
+
 # --- inertness: the load-bearing claim ---------------------------------------
 
 def test_no_groups_is_byte_identical():
     """With grouping off — the default — the group phase never runs and output
     must match the ungrouped engine exactly. This is what lets every existing
     bit-identity suite stay unmodified."""
+    # `groups=None` IS the default, so quenching once without the argument
+    # and once with `groups=None` was the same call made twice. The default
+    # is asserted instead, which keeps the claim (the default behaves as
+    # None) and still fails the day the default changes.
+    import inspect
+    default = inspect.signature(quench).parameters['groups'].default
+    assert default is None, f"quench's groups default is now {default!r}"
     for b in ('interf_u_unrouted', 'splitflap_driver'):
         f = _board(b)
         a = quench(parse_kicad_pcb(f), pcb_file=f, max_displacement=2.0,
                    step=1.0, max_passes=2)
         c = quench(parse_kicad_pcb(f), pcb_file=f, max_displacement=2.0,
                    step=1.0, max_passes=2, groups={})
-        d = quench(parse_kicad_pcb(f), pcb_file=f, max_displacement=2.0,
-                   step=1.0, max_passes=2, groups=None)
-        assert _poses(a) == _poses(c) == _poses(d), f"{b}: groups={{}} changed output"
+        assert _poses(a) == _poses(c), f"{b}: groups={{}} changed output"
     print("  PASS: groups off -> identical placements")
 
 
@@ -134,10 +160,7 @@ def test_block_move_does_not_create_an_overlap():
     """Intra-group pairs are excluded from validity (their geometry is invariant
     under a translate), but FOREIGN collisions must still veto a candidate."""
     f = _board('splitflap_driver')
-    pcb = parse_kicad_pcb(f)
-    blocks = derive_groups(pcb, ('decap',))
-    placements = quench(parse_kicad_pcb(f), pcb_file=f, max_displacement=2.0,
-                        step=0.5, max_passes=2, groups=blocks)
+    placements, _m = _grouped('splitflap_driver')
     out = parse_kicad_pcb(f)
     for p in placements:
         fp = out.footprints[p['reference']]
@@ -202,12 +225,10 @@ def test_block_moves_do_not_degrade_the_objective():
     # degradation. ulx3s takes minutes and belongs nowhere near --fast.
     for name in ('splitflap_driver',):
         f = _board(name)
-        blocks = derive_groups(parse_kicad_pcb(f), ('decap',))
-        plain, grouped = {}, {}
+        plain = {}
         quench(parse_kicad_pcb(f), pcb_file=f, max_displacement=2.0, step=0.5,
                max_passes=2, metrics_out=plain)
-        quench(parse_kicad_pcb(f), pcb_file=f, max_displacement=2.0, step=0.5,
-               max_passes=2, groups=blocks, metrics_out=grouped)
+        _placements, grouped = _grouped(name)
         p, g = plain['after']['total'], grouped['after']['total']
 
         # The invariant that actually holds, and the one worth pinning: every

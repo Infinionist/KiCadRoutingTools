@@ -29,11 +29,22 @@ check_drc share; a net no class claims is in ``Default``. Several rules may
 share one string, separated by whitespace or ``;`` (the GUI's one-line
 field). Net patterns and class names may therefore not contain ``:``, ``,``,
 ``;`` or whitespace; use ``?`` for such a character (``class=High?Speed``).
+
+Rules may also be DECLARED once, in the board's design brief
+(``<board>.design-brief.json``, key ``keep_away``, #1253). The routing
+engines read that sibling the way they read ``.kicad_dru`` and add its rules
+to the caller's (``resolve_keep_away``), so the CLI and the GUI both honour
+it with no flag; check_floorplan grades the same rules on the PLACED board,
+pad edge to pad edge, before any track exists (``floorplan.rule_keep_away``).
 """
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import math
+import os
 import re
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -137,6 +148,193 @@ def normalize_keep_away_specs(specs) -> Tuple[str, ...]:
     return tuple(r.spec for r in parse_keep_away_rules(specs))
 
 
+# --------------------------------------------------------------------------
+# The design brief's `keep_away` key (#1253): ONE declaration for both the
+# placement grade (check_floorplan, through the compiled intent) and the
+# router (batch_route / batch_route_diff_pairs, through the sibling file).
+
+#: The board's sibling design brief (#711). The same string as
+#: `placement.design_brief.BRIEF_EXT`, which this package cannot import;
+#: tests/test_1253_keep_away_placement.py pins the two equal.
+BRIEF_EXT = '.design-brief.json'
+#: The brief key, and the keys an object row may carry: `rule` plus the
+#: brief's usual prose slots, which the compiler moves into `context`.
+BRIEF_KEY = 'keep_away'
+BRIEF_ROW_KEYS = ('rule', 'why', 'requirement', 'note', 'context')
+#: "I do not know" (#711): the author looked and cannot say yet which nets
+#: are noisy or sensitive. Compiles to no rule and is reported as unknown.
+BRIEF_UNKNOWN = 'unknown'
+
+
+def brief_rule_rows(value, where: str = BRIEF_KEY) -> List[dict]:
+    """Validate a design brief's ``keep_away`` value; one row per rule.
+
+    The value is a list whose entries are each ONE rule in route.py's own
+    syntax -- a string, or ``{"rule": "...", "why": ...}`` -- or the string
+    "unknown" (no rows). Returns ``[{'row': i, 'rule': canonical spec,
+    <prose keys>}]``. The ONLY reader of the key: `design_brief` validates
+    the brief through it and the router reads the brief through it, so the
+    two cannot disagree about what a row says. Raises ValueError naming the
+    row and carrying the rule parser's own message."""
+    if value is None or value == BRIEF_UNKNOWN:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{where}: expected a list of rules "
+                         f"('AGGRESSOR:VICTIM:GAP') or {BRIEF_UNKNOWN!r}, got "
+                         f"{type(value).__name__}")
+    rows: List[dict] = []
+    seen: Dict[str, int] = {}
+    for i, entry in enumerate(value):
+        at = f"{where}[{i}]"
+        if isinstance(entry, dict):
+            bad = sorted(set(entry) - set(BRIEF_ROW_KEYS))
+            if bad:
+                raise ValueError(f"{at}: unknown key(s) {', '.join(bad)} "
+                                 f"(a row carries {', '.join(BRIEF_ROW_KEYS)})")
+            text = entry.get('rule')
+            if entry.get('context') is not None \
+                    and not isinstance(entry['context'], dict):
+                raise ValueError(f"{at}.context: expected an object")
+        else:
+            text = entry
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError(f"{at}: expected a rule 'AGGRESSOR:VICTIM:GAP' "
+                             f"(or an object with one in `rule`), got "
+                             f"{text!r}")
+        try:
+            parsed = parse_keep_away_rules(text)
+        except ValueError as exc:
+            raise ValueError(f"{at}: {exc}") from None
+        if len(parsed) != 1:
+            raise ValueError(f"{at}: {text!r} holds {len(parsed)} rules; write "
+                             f"one rule per entry, so each is graded and "
+                             f"reported under its own row")
+        spec = parsed[0].spec
+        if spec in seen:
+            raise ValueError(f"{at}: {spec!r} repeats {where}[{seen[spec]}] "
+                             f"-- one claim, declared twice")
+        seen[spec] = i
+        row = {'row': i, 'rule': spec}
+        if isinstance(entry, dict):
+            row.update({k: entry[k] for k in BRIEF_ROW_KEYS[1:]
+                        if entry.get(k) is not None})
+        rows.append(row)
+    return rows
+
+
+def brief_path_for(board_path: str) -> str:
+    """``<board>.design-brief.json``, or '' for an empty path."""
+    return os.path.splitext(board_path)[0] + BRIEF_EXT if board_path else ''
+
+
+def read_brief_keep_away(board_path: str = '', pcb_data=None
+                         ) -> Tuple[Tuple[str, ...], str]:
+    """(canonical rules, brief path) the board's sibling design brief
+    declares under ``keep_away``; ((), '') when it has no brief or declares
+    none. Discovered the way `.kicad_dru` is (#498): ``board_path`` when the
+    caller has one, else ``PCBData.source_path``.
+
+    Raises ValueError for a brief that cannot be read, or whose
+    ``keep_away`` is malformed: a declared rule the router silently skipped
+    is a constraint the author believes is honoured and nothing prices. Only
+    the ``keep_away`` key is read here; check_floorplan validates the rest."""
+    path = brief_path_for(board_path
+                          or getattr(pcb_data, 'source_path', '') or '')
+    if not path or not os.path.isfile(path):
+        return (), ''
+    try:
+        with open(path, encoding='utf-8') as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"cannot read design brief {path}: {exc}") from None
+    if not isinstance(raw, dict):
+        raise ValueError(f"design brief {path}: expected a JSON object")
+    rows = brief_rule_rows(raw.get(BRIEF_KEY),
+                           where=f"design brief {os.path.basename(path)} "
+                                 f"{BRIEF_KEY}")
+    return tuple(r['rule'] for r in rows), (path if rows else '')
+
+
+#: (brief path, rules) already announced in this process: a GUI session and
+#: a run's nested sub-runs resolve the same brief more than once.
+_BRIEF_ANNOUNCED: set = set()
+
+
+def resolve_keep_away(keep_away, input_file: str = '', pcb_data=None,
+                      announce: bool = True) -> Optional[List[str]]:
+    """The keep-away rules a routing run prices: the caller's (``--keep-away``
+    / the GUI field) first, then each rule the board's design brief declares
+    that is not already among them (#1253). None when there are none, so a
+    board with no declaration and no flag routes exactly as before.
+
+    Engine-side, so both fronts get it with no flag and no control: the CLI
+    passes ``input_file``, the GUI its board file, and an engine without one
+    is found through ``PCBData.source_path``."""
+    explicit = list(normalize_keep_away_specs(keep_away)) if keep_away else []
+    declared, path = read_brief_keep_away(input_file, pcb_data)
+    added = [s for s in declared if s not in explicit]
+    if announce and declared:
+        key = (os.path.abspath(path), declared, tuple(explicit))
+        if key not in _BRIEF_ANNOUNCED:
+            _BRIEF_ANNOUNCED.add(key)
+            if added:
+                print(f"Keep-away: {len(added)} rule(s) read from the design "
+                      f"brief {os.path.basename(path)} (#1253): "
+                      + ' '.join(repr(s) for s in added))
+            else:
+                print(f"Keep-away: the design brief {os.path.basename(path)} "
+                      f"declares {len(declared)} rule(s), all already given "
+                      f"(#1253)")
+    merged = explicit + added
+    return merged or None
+
+
+def unpriced_rules(rules, board_path: str = '', pcb_data=None) -> Dict:
+    """Which of ``rules`` the routing engines will NOT price on this board.
+
+    route.py, route_diff.py and the GUI read keep-away rules from exactly two
+    places: the run's own ``--keep-away`` (or the GUI field), and the design
+    brief beside the board (``resolve_keep_away``). A rule a floorplan
+    INTENT carries without the brief is graded on the placement by
+    check_floorplan and priced by no router, so a grade that passes says
+    nothing about the tracks. Answered from the same reader the engines use
+    (``read_brief_keep_away``), compared in canonical spelling.
+
+    Returns ``{'rules': [canonical rules not priced], 'brief': the brief the
+    engines read, or '' when there is none, 'brief_declares': its rules,
+    'brief_error': why that brief cannot be read (the engines then refuse
+    to route), or None}``."""
+    try:
+        declared, path = read_brief_keep_away(board_path, pcb_data)
+        err = None
+    except ValueError as exc:
+        declared, err = (), str(exc)
+        path = brief_path_for(board_path
+                              or getattr(pcb_data, 'source_path', '') or '')
+    if not path:
+        cand = brief_path_for(board_path
+                              or getattr(pcb_data, 'source_path', '') or '')
+        path = cand if cand and os.path.isfile(cand) else ''
+    out: List[str] = []
+    for r in rules or ():
+        for spec in normalize_keep_away_specs(r):
+            if spec not in declared and spec not in out:
+                out.append(spec)
+    return {'rules': out, 'brief': path, 'brief_declares': list(declared),
+            'brief_error': err}
+
+
+def resolve_rule_sides(pcb_data, rules) -> Tuple[
+        List[Tuple[frozenset, frozenset, float]], List[str], List[str]]:
+    """``([(aggressor ids, victim ids, gap)] per rule, notes, unmatched
+    specs)`` -- each rule's two sides resolved against ``pcb_data`` exactly
+    as the router resolves them (net patterns as ``--nets``, ``class=``
+    terms through the board's project). For a grader that measures the
+    rules without routing (check_floorplan's ``keep_away``, #1253)."""
+    st = _KeepAwayState(pcb_data, tuple(rules))
+    return list(st.groups), list(st.notes), list(st.unmatched)
+
+
 def keep_away_knob_error(free: float, cost: float) -> Optional[str]:
     """Why --keep-away-free / --keep-away-cost is refused, or None. The range
     is the one the GUI's spin controls offer, so a CLI value a plan carries
@@ -221,6 +419,10 @@ class _KeepAwayState:
         self.unmatched: List[str] = []
         self.notes: List[str] = []
         self._classes = None
+        # Each side resolves quietly (a name with a space written '?' is a
+        # wildcard, and expand_net_patterns counts every wildcard's matches):
+        # what a pattern got wrong lands in `notes`, once however many sides
+        # list it, and `announce` gives each rule one line of side counts.
         for r in rules:
             sides = [self._resolve_side(pcb_data, pats)
                      for pats in (r.aggressor, r.victim)]
@@ -233,6 +435,25 @@ class _KeepAwayState:
         self._field_bytes = 0
         self._exempt: Dict[tuple, np.ndarray] = {}
         self._composites: "OrderedDict[tuple, Optional[np.ndarray]]" = OrderedDict()
+
+    def _note(self, text: str) -> None:
+        if text and text not in self.notes:
+            self.notes.append(text)
+
+    def announce(self) -> None:
+        """One line per rule with the nets each side resolved to, then what
+        did not resolve."""
+        for i, (r, (a, v, _g)) in enumerate(zip(self.rules, self.groups), 1):
+            sides, gap = r.spec.rsplit(':', 1)
+            if len(sides) > 48:
+                sides = sides[:45] + '...'
+            print(f"Keep-away rule {i} '{sides}:{gap}': {len(a)} net(s) "
+                  f"vs {len(v)} net(s)")
+        for note in self.notes:
+            print(f"WARNING: keep-away: {note}")
+        for spec in self.unmatched:
+            print(f"WARNING: keep-away rule '{spec}' has a side that matches "
+                  f"no net on this board; it does nothing.")
 
     def _class_members(self, pcb_data) -> Dict[int, frozenset]:
         """{net_id: its net-class names} from the board's project, through
@@ -266,9 +487,14 @@ class _KeepAwayState:
             if nid and net.name:
                 name_to_id.setdefault(net.name, nid)
 
-        def by_name(patterns):
-            return {name_to_id[n] for n in expand_net_patterns(pcb_data, list(patterns))
-                    if n in name_to_id}
+        def by_name(patterns, report=True):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                names = expand_net_patterns(pcb_data, list(patterns), quiet=True)
+            if report:
+                for line in buf.getvalue().splitlines():
+                    self._note(re.sub(r'^\s*warning:\s*', '', line, flags=re.I))
+            return {name_to_id[n] for n in names if n in name_to_id}
         if not any(p.lstrip('!').startswith(CLASS_PREFIX) for p in pats):
             return frozenset(by_name(pats))
         classes = self._class_members(pcb_data)
@@ -279,8 +505,8 @@ class _KeepAwayState:
                    and not pcb_data.nets[nid].name.lower().startswith('unconnected-')}
             if not ids:
                 known = sorted({c for cs in classes.values() for c in cs})
-                self.notes.append(f"class '{cls_glob}' has no nets on this board "
-                                  f"(its classes: {', '.join(known) or 'none'})")
+                self._note(f"class '{cls_glob}' has no nets on this board "
+                           f"(its classes: {', '.join(known) or 'none'})")
             return ids
         incl, excl, incl_cls, excl_cls = [], [], [], []
         for p in pats:
@@ -292,10 +518,7 @@ class _KeepAwayState:
                 excl.append(p)
             else:
                 incl.append(p)
-        import contextlib
-        import io
-        with contextlib.redirect_stdout(io.StringIO()):   # a reference set,
-            everything = by_name(['*'])                   # not a request
+        everything = by_name(['*'], report=False)   # a reference set, not a request
         ids = by_name(incl) if incl else set()
         for c in incl_cls:
             ids |= by_class(c)
@@ -518,7 +741,7 @@ def _compose(fields: List[np.ndarray], exempt_xy: np.ndarray,
     return rows
 
 
-def _state(config, pcb_data) -> Optional[_KeepAwayState]:
+def _state(config, pcb_data, announce: bool = True) -> Optional[_KeepAwayState]:
     specs = tuple(getattr(config, 'keep_away', None) or ())
     if not specs or pcb_data is None:
         return None
@@ -528,12 +751,11 @@ def _state(config, pcb_data) -> Optional[_KeepAwayState]:
     key = (specs, tuple(config.layers), config.grid_step)
     st = store.get(key)
     if st is None:
+        # The rules resolve alike on every grid of one board: say so once.
+        announce = announce and not any(k[0] == specs for k in store)
         st = store[key] = _KeepAwayState(pcb_data, parse_keep_away_rules(specs))
-        for note in st.notes:
-            print(f"WARNING: keep-away: {note}")
-        for spec in st.unmatched:
-            print(f"WARNING: keep-away rule '{spec}' has a side that matches "
-                  f"no net on this board; it does nothing.")
+        if announce:
+            st.announce()
     return st
 
 
@@ -642,15 +864,16 @@ def _opposite_rows(geo, opp: Dict[int, float], kind: str, width: int) -> np.ndar
     return np.vstack(arrs) if arrs else np.empty((0, width + 2), dtype=np.float64)
 
 
-def keep_away_report(pcb_data, config) -> Optional[dict]:
+def keep_away_report(pcb_data, config, announce: bool = True) -> Optional[dict]:
     """Measure every keep-away net's tracks against the other side's copper.
 
     Per net: the track length whose edge comes closer than GAP to copper of a
     net the rules set it against (same layer), excluding the stretch within
     the free radius of its own pads, where the band is not priced either.
     Board-scoped: it reads all copper on the board, not only this run's.
-    None when no rule is set."""
-    st = _state(config, pcb_data)
+    None when no rule is set. `announce` False keeps the rules' resolution
+    off the log (a re-read of a board the run already announced them on)."""
+    st = _state(config, pcb_data, announce)
     if st is None:
         return None
     st.refresh(pcb_data)
@@ -758,13 +981,14 @@ def keep_away_report(pcb_data, config) -> Optional[dict]:
 
 def disclose_keep_away(board, config, title: str = 'Keep-away',
                        quiet: bool = False) -> Optional[dict]:
-    """keep_away_report on `board`, printed unless `quiet`. None without a
-    rule; {'error': ...} when the measurement raised, so a summary says the
-    reading is missing rather than dropping the key."""
+    """keep_away_report on `board`, printed unless `quiet` (which also keeps
+    the rules' resolution off the log). None without a rule; {'error': ...}
+    when the measurement raised, so a summary says the reading is missing
+    rather than dropping the key."""
     if not getattr(config, 'keep_away', None):
         return None
     try:
-        rep = keep_away_report(board, config)
+        rep = keep_away_report(board, config, announce=not quiet)
     except Exception as e:                                     # noqa: BLE001
         return {'error': str(e)}
     if rep is not None and not quiet:

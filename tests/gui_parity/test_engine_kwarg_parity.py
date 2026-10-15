@@ -19,8 +19,8 @@ first one is how that gap survived its own fix for an hour:
 
 Class 1 is checked STATICALLY (ast, no wx) so it runs anywhere. Class 2 needs to
 know whether a CONTROL exists for the key -- a key with no control legitimately
-falls back to the same default the CLI's argparse uses (11 plane knobs are
-deliberately unexposed) -- so it is checked LIVE against a real headless dialog,
+falls back to the same default the CLI's argparse uses -- so it is checked LIVE
+against a real headless dialog,
 and skips cleanly when wx/pcbnew are unavailable.
 
     python3 tests/gui_parity/test_engine_kwarg_parity.py

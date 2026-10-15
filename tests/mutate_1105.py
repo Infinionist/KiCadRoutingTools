@@ -1,5 +1,5 @@
-"""The #1105 mutation battery: seeder stage 3.5, stage 3's jitter draw, and the
-emitter's forecast.
+"""The #1105 mutation battery: seeder stage 3.5, its pile default, stage 3's
+jitter draw, and the emitter's forecast.
 
 One row per load-bearing line, each reverting it; every row names the test
 case that must fail. **THE ROWS TO LOOK AT FIRST if this file ever goes red**
@@ -10,7 +10,9 @@ restore a defect somebody measured:
   * `emitter-promises-2.5` -- the emitter promised "will seat 38 cap(s)" on
     that pile;
   * `forecast-drops-backup-owners` -- the phase-1 verifier: watchy's C12 is
-    served at U5 once U3's edge seat fails, and the forecast had dropped U5.
+    served at U5 once U3's edge seat fails, and the forecast had dropped U5;
+  * `pile-default-on-every-input` -- the stage is the default on a PILE
+    only; the corpus `decap-*` rows rejected it on placed boards.
 
 NOT named `test_*.py`, so `tests/run_all.py` does not collect it: it REWRITES
 the sources in place. One writer per tree. It refuses to start on a dirty
@@ -32,7 +34,11 @@ Not covered by a row, and why:
     point (an equivalent mutant); it differs only under anchors-first;
   * the decline's `state.apply_move(ref, *_was)` restore: a declined cap is
     still in `unplaced`, which every later seat excludes, and its own
-    centroid turn moves it again -- no observable difference.
+    centroid turn moves it again -- no observable difference;
+  * check_floorplan handing the forecast its `assessment=st`: without it
+    `decap_claim_resolved` assesses the same board itself and reaches the
+    same verdict (an equivalent mutant), so only the forecast's own reading
+    of the verdict has a row.
 """
 from __future__ import annotations
 
@@ -76,6 +82,16 @@ J = 'test_1105_stage3_jitter.py'
 JIT_SAME = _t(J, 'same_with_the_claim')
 JIT_OFF = _t(J, 'pre_1105_seeder')
 JIT_ANCHORS = _t(J, 'anchors_first')
+E = 'test_1105_emitter_on_a_pile.py'
+PILE_LINE = _t(E, 'esp_prog_pile')
+NO_FORECAST = _t(E, 'no_forecast')
+NO_CAP_LINE = _t(E, 'line_says_no_cap')
+PD = 'test_1105_pile_default.py'
+PD_RUN29 = _t(PD, 'run29_pile')
+PD_FLAG = _t(PD, 'explicit_flag_is_after_ics')
+PD_PLACED = _t(PD, 'placed_board')
+PD_FORECAST = _t(PD, 'forecast_reads')
+PD_PLACE_SEED = _t(PD, 'place_seed_on_a_pile')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -108,9 +124,51 @@ ROWS = [
      "               else True)",
      (OFF,), 'KILLED'),
     ('default-not-the-tables', 'seeder',
+     "DECAP_CLAIM_AFTER_ICS_DEFAULT = DECAP_ON_PILE",
      "DECAP_CLAIM_AFTER_ICS_DEFAULT = False",
-     "DECAP_CLAIM_AFTER_ICS_DEFAULT = True",
-     (DEFAULT, EMIT), 'KILLED'),
+     (DEFAULT, EMIT, PD_RUN29), 'KILLED'),
+    # the pile default (#1105, the maintainer's call on the second pile
+    # pilot): ON for a pile input, and nowhere else
+    ('pile-default-ignores-the-pile', 'seeder',
+     "    pile = bool(assessment is not None and assessment.pile)",
+     "    pile = False",
+     (PD_RUN29, PD_FORECAST, PILE_LINE), 'KILLED'),
+    ('pile-default-on-every-input', 'seeder',
+     "    pile = bool(assessment is not None and assessment.pile)",
+     "    pile = True",
+     (PD_PLACED,), 'KILLED'),
+    ('stage-blind-to-the-input', 'seeder',
+     "    late_on, late_by = decap_claim_resolved(late_on, input_assessment,\n"
+     "                                            pcb_data, pcb_file)",
+     "    late_on, late_by = decap_claim_resolved(late_on, None,\n"
+     "                                            None, None)",
+     (PD_RUN29,), 'KILLED'),
+    ('forecast-blind-to-the-pile', 'seeder',
+     "        out['late_armed'], assessment, pcb_data)",
+     "        out['late_armed'], None, None)",
+     (PD_FORECAST, PILE_LINE), 'KILLED'),
+    ('default-is-not-within-limit', 'seeder',
+     "DECAP_PILE_WITHIN_LIMIT = True",
+     "DECAP_PILE_WITHIN_LIMIT = False",
+     (DEFAULT, PD_RUN29), 'KILLED'),
+    # the maintainer's split: the pile default runs within-limit, the
+    # explicit flag after-ics -- each mutant runs one variant for both
+    ('pile-default-runs-the-flags-variant', 'seeder',
+     "    late_within = (DECAP_PILE_WITHIN_LIMIT if late_by == 'pile'",
+     "    late_within = (DECAP_LATE_WITHIN_LIMIT if late_by == 'pile'",
+     (PD_RUN29, PD_FLAG), 'KILLED'),
+    ('flag-runs-the-pile-variant', 'seeder',
+     "                   else DECAP_LATE_WITHIN_LIMIT)",
+     "                   else DECAP_PILE_WITHIN_LIMIT)",
+     (PD_FLAG, LIMIT), 'KILLED'),
+    ('explicit-flag-default-is-within-limit', 'seeder',
+     "DECAP_LATE_WITHIN_LIMIT = False",
+     "DECAP_LATE_WITHIN_LIMIT = True",
+     (DEFAULT, PD_FLAG), 'KILLED'),
+    ('note-hides-the-pile-default', 'place_seed',
+     "                    + (f\", on by default for a pile, {late.get('variant')}\"",
+     "                    + (f\"\"",
+     (PD_PLACE_SEED,), 'KILLED'),
     ('decline-limit-ignored', 'seeder',
      "                if _off > decline_beyond:",
      "                if False:",
@@ -150,14 +208,25 @@ ROWS = [
      (AGREE,), 'KILLED'),
     ('place-seed-flag-dropped', 'place_seed',
      "        diagonal_rotations=args.diagonal_rotations,\n"
-     "        decap_claim_after_ics=args.decap_claim_after_ics)",
+     "        decap_claim_after_ics=args.decap_claim_after_ics,",
      "        diagonal_rotations=args.diagonal_rotations,\n"
-     "        decap_claim_after_ics=None)",
+     "        decap_claim_after_ics=None,",
      (FLAGS,), 'KILLED'),
     ('emitter-promises-2.5', 'cf',
      "    if late and not armed:",
      "    if False:",
      (EMIT,), 'KILLED'),
+    # the emitter on a pile: "up to 0 of 4" read as a promise with a zero
+    # in it; the line now says the stage claims nothing, and how to change
+    # that.
+    ('emitter-zero-claim-reads-as-up-to-0', 'cf',
+     "    if not early and not (late and armed):",
+     "    if False:",
+     (NO_CAP_LINE,), 'KILLED'),
+    ('emitter-no-forecast-promises-seats', 'cf',
+     "        return (f\"; its per-supply-pin stage has {cen.get('seeder_pin_scope')}\"",
+     "        return (f\" and will seat up to {cen.get('seeder_pin_scope')}\"",
+     (NO_FORECAST,), 'KILLED'),
     ('emitter-forecast-not-taken', 'cf',
      "            _dcen['seeder_forecast'] = _seeder_forecast(doc, pcb, args.board,",
      "            _dcen['seeder_forecast_x'] = _seeder_forecast(doc, pcb, args.board,",

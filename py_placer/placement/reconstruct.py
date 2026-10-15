@@ -170,7 +170,7 @@ def format_gate(t) -> str:
                     for n, v in zip(GATE_TERMS, t))
 
 
-def measure(state, edge_bands=None) -> Tuple:
+def measure(state, edge_bands=None, *, overlap=None) -> Tuple:
     """The lexicographic gate tuple. Smaller-or-equal is acceptable.
 
     Order (run-8): LOCKED CONTACTS first, then pad conflicts, hole shortfall,
@@ -197,16 +197,24 @@ def measure(state, edge_bands=None) -> Tuple:
     STACKED because nothing above hpwl could see them: the stack-pair COUNT
     is the non-gameable per-pair channel (corpus-calibrated ZERO on all 33
     healthy boards, exact and AABB currencies), so it sits ABOVE hpwl where
-    the aggregate never can."""
+    the aggregate never can.
+
+    `overlap` (#1182), a callable `state -> mm2`, replaces the last term's
+    ruler: `reseat_scope` passes check_assembly's courtyard channel at the
+    state's poses (`CourtyardGrade.overlap_exact`), because the search's own
+    rects are pad boxes on a courtyard-less library -- One-Air-Max's reseat
+    read `0.4323 -> 0.4323` while four courtyard pairs gated."""
     m = state.pad_legality_metrics() if state.legality_ctx is not None else {}
     leg = state.legality_metrics()
+    ov = (overlap(state) if overlap is not None
+          else leg.get('overlap_area', 0.0))
     return (m.get('locked_contact_pairs', 0),
             m.get('pad_conflict_pairs', 0),
             round(m.get('hole_shortfall', 0.0), 4),
             round(pad_oob_amount(state, edge_bands), 4),
             m.get('pad_intersection_pairs', 0),
             round(leg.get('hpwl', 0.0), 3),
-            round(leg.get('overlap_area', 0.0), 4))
+            round(ov, 4))
 
 
 # --------------------------------------------------------------------------
@@ -877,16 +885,131 @@ EDGE_PREF_WEIGHT = 10.0
 
 
 def edge_metric(state, ref: str, x: float, y: float,
-                band: float) -> Optional[float]:
+                band: float, rot: Optional[float] = None) -> Optional[float]:
     """How far a pose is from being edge-seated, courtyard channel: 0 for an
     in-band overhang, else the courtyard edge clearance; None = past the
-    band (illegal as a seat)."""
+    band (illegal as a seat). `rot` defaults to the part's own angle; a
+    turned candidate (#1242) passes its own."""
     p = state.parts[ref]
-    rect = p.rect(x, y, p.rot)
+    rect = p.rect(x, y, p.rot if rot is None else rot)
     over = state.edge_gate.rect_outside_amount(rect)
     if over > 1e-6:
         return 0.0 if over <= band + 1e-6 else None
     return state.edge_gate.edge_clearance(rect)
+
+
+def cand_pose(state, ref: str, cand) -> Tuple[float, float, float]:
+    """(x, y, rot) of an assignment candidate. A candidate is `(x, y)` at the
+    part's own angle, or `(x, y, rot)` when it TURNS the part -- only
+    `facing_seats` makes those (#1242)."""
+    return (cand[0], cand[1],
+            cand[2] if len(cand) > 2 else state.parts[ref].rot)
+
+
+def facing_seats(state, ref: str, entry: Dict, cands, band: float,
+                 on_board) -> list:
+    """#1242: an edge-less receptacle's candidate list, with every SEAT made
+    to face out of the edge it sits on.
+
+    The candidates are translations at the part's own angle, and
+    `edge_metric` reads the courtyard against ANY edge, so a receptacle whose
+    input angle faces away from the edge a vector pulls it to was offered --
+    and took -- a reversed seat at metric 0. Measured on sonde_u: J2 (a DSUB-9
+    edge mount, strong face) at (171.45, 90.12) rot 90 with a (10.16, 0)
+    damage vector went to (181.606, 90.119) still at 90, its shell over the
+    board and its mating face pointing west.
+
+    Where a candidate is a seat -- within the grade's seat tolerance
+    (`part_class.SEAT_TOL_MM`) of the edge it sits nearest (the grade's
+    `floorplan._nearest_edge`, on the grade rect), or overhanging it in band --
+    and the part's STRONG face (`seeder._strong_facing_rots`, which reads
+    `floorplan.edge_facing`) points elsewhere, the candidate is dropped, as
+    the seeder refuses rather than seats reversed. At the same position each
+    other quarter turn on the part's lattice that seats facing out of the
+    edge it then sits on is offered instead, as `(x, y, rot)`, when
+    `on_board(x, y, rot)` passes the caller's pad-copper cull. The solvers
+    price it like any candidate: its edge metric at that angle, its pair rows
+    at that angle.
+
+    Index 0 -- the part's INPUT pose -- is never read: neither dropped nor
+    turned. Turning a part in place would read its input pose as the claim
+    that it belongs at that edge, which on a pile (#1103) it is not, and a
+    declaration never forces a move. Only poses a vector or slot proposes
+    are asked. A weak or absent face (no edge gets a strong facing turn)
+    leaves the list exactly as it came."""
+    from placement import seeder
+    p = state.parts[ref]
+    turns = _facing_turns(state, ref, entry)
+    if not any(turns.values()):
+        return list(cands)
+    lattice = [seeder._materialise_rotation(p, p.rot + 90.0 * k)
+               for k in (1, 2, 3)]
+    out = list(cands[:1])
+    for c in cands[1:]:
+        x, y = c[0], c[1]
+        edge = _edge_seated_on(state, ref, x, y, p.rot, band)
+        if edge is None or _faces(turns, edge, p.rot):
+            out.append(c)
+        for rot in lattice:
+            edge = _edge_seated_on(state, ref, x, y, rot, band)
+            if (edge is not None and _faces(turns, edge, rot)
+                    and on_board(x, y, rot) and (x, y, rot) not in out):
+                out.append((x, y, rot))
+    return out
+
+
+_EDGES = ('north', 'south', 'east', 'west')
+
+
+def _facing_turns(state, ref: str, entry: Dict) -> Dict[str, list]:
+    """{edge: the angles at which `ref`'s STRONG mating face points out of
+    that edge} (`seeder._strong_facing_rots`, which reads
+    `floorplan.edge_facing`); every list is empty for a weak or absent
+    face."""
+    from placement import seeder
+    return {e: seeder._strong_facing_rots(state, ref, dict(entry, edge=e))
+            for e in _EDGES}
+
+
+def _faces(turns: Dict[str, list], edge: str, rot: float) -> bool:
+    return any(abs((rot - r + 180.0) % 360.0 - 180.0) < 1e-6
+               for r in (turns.get(edge) or ()))
+
+
+def _edge_seated_on(state, ref: str, x: float, y: float, rot: float,
+               band: float) -> Optional[str]:
+    """The edge `ref` is SEATED on at a pose -- within the grade's seat
+    tolerance (`part_class.SEAT_TOL_MM`) of the edge it sits nearest (the
+    grade's `floorplan._nearest_edge`, on the grade rect), or overhanging
+    it in band -- else None."""
+    from placement import floorplan
+    from placement.part_class import SEAT_TOL_MM
+    m = edge_metric(state, ref, x, y, band, rot=rot)
+    if m is None or m > SEAT_TOL_MM + 1e-9:
+        return None
+    return floorplan._nearest_edge(state.parts[ref].grade_rect(x, y, rot),
+                                   state.board)
+
+
+def reversed_seat(state, ref: str, entry: Dict,
+                  band: float) -> Optional[Dict[str, Optional[str]]]:
+    """#1242: `{'edge', 'facing'}` when an edge-less receptacle's LIVE pose
+    is a seat on `edge` while its STRONG mating face points elsewhere
+    (`facing`: the edge it opens toward, None when it opens along one), else
+    None. Nothing grades this -- no edge is declared, and the emitter
+    withheld it because a reversed part is either turned on THIS edge or
+    displaced from the one it faces (#1155) -- and `facing_seats` will not
+    pick for it by turning the input pose, so the caller says it out loud."""
+    p = state.parts[ref]
+    turns = _facing_turns(state, ref, entry)
+    if not any(turns.values()):
+        return None
+    edge = _edge_seated_on(state, ref, p.x, p.y, p.rot, band)
+    if edge is None or _faces(turns, edge, p.rot):
+        return None
+    return {'edge': edge,
+            'facing': next((e for e in _EDGES if _faces(turns, e, p.rot)),
+                           None)}
 
 
 def damage_witnesses(state) -> Dict[str, str]:
@@ -960,7 +1083,7 @@ def prune_assignment(state, old: Dict[str, Tuple[float, float, float]],
                      edge_bands: Optional[Dict[str, float]] = None,
                      exempt: Optional[Set[str]] = None,
                      evidenced: Optional[Set[str]] = None,
-                     intent_probe=None) -> List[str]:
+                     intent_probe=None, overlap=None) -> List[str]:
     """Per-part revert sweep after an ACCEPTED assignment (run-4 F3b).
 
     The stage gate is one board-wide lexicographic tuple, so an assignment
@@ -1035,11 +1158,11 @@ def prune_assignment(state, old: Dict[str, Tuple[float, float, float]],
         p = state.parts[ref]
         if math.hypot(p.x - x, p.y - y) < 1e-9 and abs(p.rot - rot) < 1e-9:
             continue
-        base = measure(state, edge_bands)
+        base = measure(state, edge_bands, overlap=overlap)
         base_intent = intent_probe(ref) if intent_probe is not None else ()
         cur = (p.x, p.y, p.rot)
         state.apply_move(ref, x, y, rot)
-        after = measure(state, edge_bands)
+        after = measure(state, edge_bands, overlap=overlap)
         after_intent = intent_probe(ref) if intent_probe is not None else ()
         # `legality.EPS`, the same tolerance `quench.IntentProbe.licence` uses
         # for the same question -- "did a declared term RISE". One pass must
@@ -1553,7 +1676,8 @@ def airwire_cluster_vectors(state, *, cluster_tol: float = 1.5,
 def build_candidates(state, tiers: Tiers,
                      vectors: Sequence[Tuple[float, float]],
                      proposals: Dict[str, List[Tuple[float, float]]],
-                     edge_bands: Optional[Dict[str, float]] = None
+                     edge_bands: Optional[Dict[str, float]] = None,
+                     facing: Optional[Dict[str, Dict]] = None
                      ) -> Dict[str, List[Tuple[float, float]]]:
     """Per-part candidate positions: stay (always index 0), +/-each vector
     (kept only when the pad extent stays on-board), and any pattern-proposed
@@ -1565,10 +1689,15 @@ def build_candidates(state, tiers: Tiers,
     culled unconditionally (run 3's J1 was never offered its edge slot).
     Refs declared in ``edge_bands`` ({ref: band_max_mm}) may overhang up to
     their band; 'stay' stays index 0 -- a declaration never forces a move.
+
+    ``facing`` ({ref: intent entry}, the edge-less receptacles): their seats
+    face out of the edge they sit on (`facing_seats`, #1242), so their lists
+    may carry `(x, y, rot)` candidates -- read them through `cand_pose`.
     """
     out: Dict[str, List[Tuple[float, float]]] = {}
     pattern: Dict[str, Set[Tuple[float, float]]] = {}
     bands = edge_bands or {}
+    facing = facing or {}
     for ref in sorted(state.parts):
         p = state.parts[ref]
         cands = [(p.x, p.y)]
@@ -1584,22 +1713,32 @@ def build_candidates(state, tiers: Tiers,
         pp = (state.legality_ctx.parts.get(ref)
               if state.legality_ctx is not None else None)
         cur_oob = None
+
+        def on_board(x, y, rot):
+            nonlocal cur_oob
+            if pp is None:
+                return True
+            ext = pp.extent(x, y, rot)
+            if ext is None:
+                return True
+            if cur_oob is None:
+                e0 = pp.extent(p.x, p.y, p.rot)
+                cur_oob = (_bbox_outside(e0, state.board)
+                           if e0 is not None else 0.0)
+            # Never offer a candidate whose pad copper leaves the board MORE
+            # than the part already does (S1: the conflict gate must not be
+            # satisfiable by evacuation) -- except up to a declared edge
+            # band (run-4 F2).
+            allow = max(cur_oob, bands.get(ref, 0.0))
+            return _bbox_outside(ext, state.board) <= allow + 1e-6
+
         for i, (x, y) in enumerate(cands):
-            if i > 0 and pp is not None:
-                ext = pp.extent(x, y, p.rot)
-                if ext is not None:
-                    if cur_oob is None:
-                        e0 = pp.extent(p.x, p.y, p.rot)
-                        cur_oob = (_bbox_outside(e0, state.board)
-                                   if e0 is not None else 0.0)
-                    # Never offer a candidate whose pad copper leaves the
-                    # board MORE than the part already does (S1: the
-                    # conflict gate must not be satisfiable by evacuation)
-                    # -- except up to a declared edge band (run-4 F2).
-                    allow = max(cur_oob, bands.get(ref, 0.0))
-                    if _bbox_outside(ext, state.board) > allow + 1e-6:
-                        continue
+            if i > 0 and not on_board(x, y, p.rot):
+                continue
             kept.append((x, y))
+        if ref in facing and not p.locked and len(kept) > 1:
+            kept = facing_seats(state, ref, facing[ref], kept,
+                                bands.get(ref, 2.0), on_board)
         out[ref] = kept
     return out, pattern
 
@@ -1707,10 +1846,10 @@ def _body_contained(state, a: str, pos_a, b: str, pos_b) -> bool:
     pa, pb = state.parts[a], state.parts[b]
     if pa.side != pb.side:          # same rule as legality's fab channel
         return False
-    ra = state.fab_rect(a, pos_a[0], pos_a[1], pa.rot)
+    ra = state.fab_rect(a, *cand_pose(state, a, pos_a))
     if ra is None:
         return False
-    rb = state.fab_rect(b, pos_b[0], pos_b[1], pb.rot)
+    rb = state.fab_rect(b, *cand_pose(state, b, pos_b))
     if rb is None:
         return False
     area = legality.rect_overlap_area(ra, rb)
@@ -1733,9 +1872,8 @@ def _pair_conflicts(state, a: str, pos_a, b: str, pos_b) -> bool:
     if _body_contained(state, a, pos_a, b, pos_b):
         return True
     ctx = state.legality_ctx
-    pa, pb = state.parts[a], state.parts[b]
-    cur = ctx.pair_shortfall(a, b, pose_a=(pos_a[0], pos_a[1], pa.rot),
-                             pose_b=(pos_b[0], pos_b[1], pb.rot))
+    cur = ctx.pair_shortfall(a, b, pose_a=cand_pose(state, a, pos_a),
+                             pose_b=cand_pose(state, b, pos_b))
     # run-6: `stack` makes ANY-net pad intersection a conflict here too --
     # without it the assign/exchange solvers could co-place two same-net
     # parts in the same space (the shipped C14-on-R14 class: R14's
@@ -1761,11 +1899,12 @@ def _interacting_pairs(state, candidates):
         if pp is None:
             continue
         boxes = []
-        for (x, y) in cands:
-            e = pp.extent(x, y, state.parts[ref].rot)
+        for c in cands:
+            x, y, rot = cand_pose(state, ref, c)
+            e = pp.extent(x, y, rot)
             if e is not None:
                 boxes.append(e)
-            fb = state.fab_rect(ref, x, y, state.parts[ref].rot)
+            fb = state.fab_rect(ref, x, y, rot)
             if fb is not None:
                 boxes.append(fb)
         if boxes:
@@ -1795,18 +1934,19 @@ def _solve_ilp(state, candidates, tiers, move_penalty, notes, pattern,
     fixed = tiers.locked | tiers.zero_net
     for ref in refs:
         p = state.parts[ref]
-        for k, (x, y) in enumerate(candidates[ref]):
+        for k, cand in enumerate(candidates[ref]):
+            x, y, rot = cand_pose(state, ref, cand)
             var_of[(ref, k)] = len(costs)
             if ref in edge_pref:
                 # F2: class outranks the netlist proxy for edge parts (R1).
-                m = edge_metric(state, ref, x, y, edge_pref[ref])
+                m = edge_metric(state, ref, x, y, edge_pref[ref], rot=rot)
                 c = EDGE_PREF_WEIGHT * (m if m is not None else 100.0)
             else:
                 c = _net_anchor_cost(state, ref, x, y, fixed)
             # F1 nearest-slot tiebreak (see DIST_TIEBREAK_PER_MM). Applies to
             # every candidate; the stay pose charges 0 by construction.
             c += DIST_TIEBREAK_PER_MM * math.hypot(x - p.x, y - p.y)
-            if (x, y) in pattern.get(ref, ()):
+            if cand in pattern.get(ref, ()):
                 c -= PATTERN_BONUS_MM       # evidence, not a cost
             elif k > 0:
                 c += move_penalty
@@ -1888,7 +2028,11 @@ def _solve_ilp(state, candidates, tiers, move_penalty, notes, pattern,
         if notes is not None:
             notes.append(f'ILP status {res.status} ({res.message}) -- '
                          f'breakout-descent fallback')
-        return _solve_breakout(state, candidates, tiers, notes)
+        # The edge parts keep their EDGE objective in the fallback too: it
+        # was dropped here, so an infeasible board priced them by the
+        # net-anchor proxy the edge metric replaces (R1).
+        return _solve_breakout(state, candidates, tiers, notes,
+                               edge_pref=edge_pref)
     choice: Dict[str, int] = {}
     for ref in refs:
         for k in range(len(candidates[ref])):
@@ -1922,17 +2066,17 @@ def _solve_breakout(state, candidates, tiers, notes, max_sweeps: int = 60,
         return _pair_conflicts(state, a, pos(a), b, pos(b))
 
     def ref_cost(ref, k):
-        x, y = candidates[ref][k]
+        x, y, rot = cand_pose(state, ref, candidates[ref][k])
         w = 0.0
         for (a, b) in by_ref[ref]:
             other = b if a == ref else a
             oxy = pos(other)
             if _pair_conflicts(state, ref,
-                               (x, y), other, oxy):
+                               candidates[ref][k], other, oxy):
                 w += weights.get((a, b), 1.0)
         p = state.parts[ref]
         if edge_pref and ref in edge_pref:
-            m = edge_metric(state, ref, x, y, edge_pref[ref])
+            m = edge_metric(state, ref, x, y, edge_pref[ref], rot=rot)
             base_cost = EDGE_PREF_WEIGHT * (m if m is not None else 100.0)
         else:
             base_cost = _net_anchor_cost(state, ref, x, y,

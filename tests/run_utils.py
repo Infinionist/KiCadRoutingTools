@@ -83,6 +83,10 @@ def run(cmd: str, unbuffered: bool = False) -> None:
     Args:
         cmd: Command string to run (will be parsed using shell-style splitting)
         unbuffered: If True, add -u flag to python commands
+
+    It ASSERTS NOTHING: a failing command prints a line and the caller carries
+    on. A chain test built on it is green whatever its steps did -- use
+    `run_step` for a step whose success the test means to claim.
     """
     if unbuffered and cmd.startswith('python3 '):
         cmd = 'python3 -u ' + cmd[8:]
@@ -196,6 +200,51 @@ def evidence(path, what='evidence'):
     if os.path.getsize(path) == 0:
         raise AssertionError(f"{what} is empty: {path}")
     return path
+
+
+def run_step(argv, *, outputs=(), findings_ok=False):
+    """Run one step of a CLI chain and ASSERT it worked. `run()` never did.
+
+    `argv` is the script and its arguments (`['py_router/route.py', src,
+    out, ...]`), run as `sys.executable -X utf8 ...` from the repo root, with
+    its output echoed live and kept. The step FAILS -- AssertionError naming
+    the reason and the output's tail -- when:
+
+      * it exits non-zero (a checker passed `findings_ok=True` may also exit
+        1, its "found something" verdict, which it has printed);
+      * its output carries a traceback or another `_ACCIDENTS` marker, so a
+        crash that still exits 0 or 1 is not read as a verdict;
+      * any path in `outputs` is missing, empty, or older than the step --
+        a file left by an earlier run is not evidence this one wrote it.
+
+    Returns (returncode, output).
+    """
+    argv = [str(a) for a in argv]
+    before = {p: (os.path.getmtime(p) if os.path.exists(p) else None)
+              for p in outputs}
+    print(f"\n>>> {' '.join(argv)}", flush=True)
+    proc = subprocess.Popen([sys.executable, '-X', 'utf8'] + argv,
+                            cwd=ROOT_DIR, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True,
+                            encoding='utf-8', errors='replace')
+    lines = []
+    for line in proc.stdout:
+        print(line, end='', flush=True)
+        lines.append(line)
+    rc = proc.wait()
+    out = ''.join(lines)
+    acc = _accident(out)
+    allowed = (0, 1) if findings_ok else (0,)
+    if acc or rc not in allowed:
+        why = f"its output carries {acc!r}" if acc else f"it exited {rc}"
+        raise AssertionError(f"STEP FAILED -- {why}:\n  {' '.join(argv)}\n"
+                             f"{out[-1500:]}")
+    for p in outputs:
+        evidence(p, f"output of {os.path.basename(argv[0])}")
+        if before[p] is not None and os.path.getmtime(p) <= before[p]:
+            raise AssertionError(f"{p} was not rewritten by this step "
+                                 f"(it predates it) -- {' '.join(argv)}")
+    return rc, out
 
 
 def corpus_boards(pattern: str = 'kicad_files/*.kicad_pcb'):

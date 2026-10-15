@@ -9,14 +9,15 @@ The run-7 honesty re-grade re-checked pads, holes and containment only, so
 each intent-only violator was reported repaired with nothing moved -- glasgow
 run 34: "33 violator(s), 33 repaired (0 moved)", floorplan errors 43 -> 43.
 
-What each case pins (esp_prog, `decaps.max_distance_mm = 2.0`, which charges
-C3 alone at the human pose: 2.125mm from U1):
+What each case pins (esp_prog, `decaps.max_distance_mm = 1.5`, which charges
+C3 alone at the human pose: 1.53mm from U2, the regulator it decouples since
+#1249 -- before it, the limit was 2.0 and C3 read 2.125mm from U1):
 
 * ZERO MOVE: C3 at its human pose is not moved and is UNRESOLVED, naming
   decap_distance.
-* MOVED, STILL FAILING: C3 dropped onto Y1's pads is charged for the pad
+* MOVED, STILL FAILING: C3 dropped onto R1's pads is charged for the pad
   conflict AND the decap distance. The repair moves it off R1 -- and it is
-  still too far from U1, so it is UNRESOLVED too ("it moved"). Re-grading
+  still too far from U2, so it is UNRESOLVED too ("it moved"). Re-grading
   only the zero-move refs (the obvious half-fix) passes the first case and
   fails this one.
 * A REAL FIX is still repaired: R2 dropped onto R1 charges one pad conflict,
@@ -25,16 +26,24 @@ C3 alone at the human pose: 2.125mm from U1):
   outside the rules loop, so no move can clear it) stays UNRESOLVED.
 * A re-grade that RAISES is not a pass: the ref is unresolved and says why.
 * A move that CREATES an error is not a repair (the phase-1 verifier's
-  counterexample): splitflap with 12 parts displaced, C8 and C12 are moved
+  counterexample): splitflap with 12 parts displaced, C8 and C12 were moved
   off pad conflicts and out of their decap limits -- unresolved, "created".
-* Leaving the decap search radius is not a fix: C3 pushed past 5mm from U1
-  becomes `decap_ungraded` (warn), and stays unresolved.
+  Since the ordinary seat prefers a pose that creates no decap finding
+  (#1150 follow-up), C12 finds one and is repaired with none; C8 has no
+  such pose within any cap, says so, and is still reported "created".
+* Leaving the decap search radius is not a fix: C3 pushed past a declared
+  2mm radius from U2 becomes `decap_ungraded` (warn), and stays unresolved.
+  Since #1150 (b) the seat prefers a pose no farther from U2 and keeps C3
+  inside the radius; the push is pinned with that preference off.
 * A created `decap_pin_distance` (it names the IC) is charged to the CAP
   whose move stranded the pin, through its measured `cap` -- and, when the
-  finding names no moved ref at all, by COUNTERFACTUAL: watchy seed 2's C5
-  strands U4 pin 20 under a claim U4 already carried, naming only U4 and C3.
+  finding names no moved ref at all, by COUNTERFACTUAL: watchy seed 2's C5,
+  seated by the plain search, strands U4 pin 20 under a claim U4 already
+  carried, naming only U4 and C3 (with the preference on, C5 finds a pose
+  that strands nothing and is repaired).
 * A finding that only GREW is not "no change": watchy seed 1's C12 move grows
-  U3's VBUS pin error 7.78 -> 11.10mm, and C12 is not repaired.
+  U3's VBUS pin error 7.78 -> 11.10mm, and C12 is not repaired -- a move
+  made only because no pose within any cap left the pin no worse, and said.
 * CLI: `place_seed --repair` writes `violators`, `repaired_refs`,
   `unresolved_refs`, `unresolved_by_rule` (its exit 4 is the final grade's,
   as before), and -- the issue's own regression property -- the refs it
@@ -42,9 +51,10 @@ C3 alone at the human pose: 2.125mm from U1):
   the written board still charges a decap error to.
 
 #1066 (b), the opt-in decap rung (`repair_decaps` / `--repair-decaps`):
-splitflap seed 3 -- C2 is seated at its IC and fixed, C8's only fixing pose is
-disproportionate and refused; a fixing pose that adds a finding elsewhere is
-reverted; the flag needs `--repair` and its record reaches JSON_SUMMARY.
+splitflap seed 3 -- C2 is seated at its IC and fixed, C8 has no fixing pose
+within its limit, and a fixing pose out of proportion is refused (budget
+shrunk); a fixing pose that adds a finding elsewhere is reverted; the flag
+needs `--repair` and its record reaches JSON_SUMMARY.
 
     python3 tests/test_repair_decap_honesty.py
 """
@@ -74,11 +84,14 @@ PLACE_SEED = os.path.join(ROOT, 'py_placer', 'place_seed.py')
 SOURCES = ('kicad', 'sheet')
 CLEARANCE = 0.2
 DECAP_RULES = ('decap_distance', 'decap_pin_distance')
+_TMP = tempfile.TemporaryDirectory(prefix='t1066_')
 
 
-def _intent(td):
+def _intent(td, **decaps):
+    # 1.5mm since #1249: C3's partner is U2, the regulator it decouples,
+    # 1.53mm away at the human pose (it was U1 at 2.125mm, under 2.0).
     doc = {'schema': 1, 'kind': fp.KIND, 'units': 'mm',
-           'decaps': {'max_distance_mm': 2.0}}
+           'decaps': dict({'max_distance_mm': 1.5}, **decaps)}
     path = os.path.join(td, 'intent.json')
     with open(path, 'w', encoding='utf-8') as fh:
         json.dump(doc, fh)
@@ -135,14 +148,20 @@ def test_a_zero_move_decap_violator_is_unresolved():
 
 def test_a_moved_violator_still_failing_is_unresolved_and_a_real_fix_is_not():
     pcb = parse_kicad_pcb(ESP)
-    r1, y1 = pcb.footprints['R1'], pcb.footprints['Y1']
+    r3, r1 = pcb.footprints['R3'], pcb.footprints['R1']
     with tempfile.TemporaryDirectory() as td:
         intent, _p = _intent(td)
-        # C3 onto the crystal Y1: 3.555mm from U1, inside the decap radius
-        # (so graded, not `decap_ungraded`), and no move off Y1 that a pad
-        # conflict licenses brings it within 2mm. R2 onto R1.
+        # C3 onto R1: 3.11mm from U2, the regulator it decouples (#1249),
+        # inside the decap radius (so graded, not `decap_ungraded`), and the
+        # move off R1 a pad conflict licenses (1mm, the cap) does not bring
+        # it within 1.5mm. (Before #1249 this arm dropped C3 onto the
+        # crystal Y1, 3.555mm from U1; measured against U2 the repair's move
+        # off Y1 clears it.) R2 onto R3 -- not onto R1, which sits inside
+        # U2's silk-drawn body: since #1153 a part that moves off a pad
+        # conflict there and stays in that body is not repaired, so the real
+        # fix below could not be shown on it.
         board = _board(td, 'stacked.kicad_pcb',
-                       [('C3', y1.x, y1.y), ('R2', r1.x, r1.y + 0.3)])
+                       [('C3', r1.x, r1.y), ('R2', r3.x, r3.y + 0.3)])
         res = _repair(board, intent)
         moved = {m['reference'] for m in res['moves']}
         # The pad conflict moved C3 -- the arm is about a MOVED violator.
@@ -151,11 +170,9 @@ def test_a_moved_violator_still_failing_is_unresolved_and_a_real_fix_is_not():
         assert 'C3' not in res['repaired'], res['repaired']
         note = [n for n in res['notes'] if n.startswith('C3: UNRESOLVED')]
         assert note and 'it moved' in note[0], res['notes']
-        # R1/R2 is a pad conflict and nothing else: one of the pair moved
-        # off the other and that part IS repaired. (Its partner is repaired
-        # too without moving -- the pair is clear -- which is run-7 A2's
-        # legitimate zero-move case, not this issue's.)
-        fixed = {'R1', 'R2'} & set(res['repaired'])
+        # R2/R3 is a pad conflict and nothing else: one of the pair moved
+        # off the other and that part IS repaired.
+        fixed = {'R2', 'R3'} & set(res['repaired'])
         assert fixed & moved, (res['repaired'], moved)
         still = _decap_refs_after(board, res, intent, td, 'm.kicad_pcb')
         assert 'C3' in still, still
@@ -238,68 +255,140 @@ def _perturbed(board, td, n=12, mm=4.0, seed='1'):
     return src
 
 
+_SPLITFLAP1 = {}
+
+
+def _splitflap1():
+    """splitflap, decaps 2.5/2.5, 12 parts displaced up to 4mm (seed 1),
+    repaired once: (decap refs before, after, the repair's result)."""
+    if not _SPLITFLAP1:
+        board = os.path.join(ROOT, 'kicad_files', 'splitflap_driver.kicad_pcb')
+        td = _TMP.name
+        doc = fp.emit_intent(parse_kicad_pcb(board), board)
+        doc['decaps'] = dict(doc.get('decaps') or {}, max_distance_mm=2.5,
+                             max_pin_distance_mm=2.5)
+        ipath = os.path.join(td, 'intent_sf1.json')
+        with open(ipath, 'w', encoding='utf-8') as fh:
+            json.dump(doc, fh)
+        intent = fp.load_intent(ipath)
+        sub = os.path.join(td, 'sf1')
+        os.makedirs(sub)
+        src = _perturbed(board, sub)
+        before = {v.ref for v in fp.grade(
+            intent, parse_kicad_pcb(src), src, group_sources=SOURCES,
+            clearance=CLEARANCE).errors if v.rule in DECAP_RULES}
+        res = _repair(src, intent)
+        still = _decap_refs_after(src, res, intent, sub, 'c.kicad_pcb')
+        _SPLITFLAP1.update(before=before, still=still, res=res)
+    return _SPLITFLAP1['before'], _SPLITFLAP1['still'], _SPLITFLAP1['res']
+
+
 def test_a_move_that_creates_a_decap_error_is_not_repaired():
     """The phase-1 verifier's counterexample: charged claims alone are not
     enough, because a cap charged for a PAD conflict and moved off it can
     land outside its decap limit -- the charge clears, the board gains an
     error, and the cap read repaired. splitflap, 12 parts displaced up to
     4mm (seed 1): C8 and C12 were reported repaired with a decap_distance
-    error only the repair's move had created."""
-    board = os.path.join(ROOT, 'kicad_files', 'splitflap_driver.kicad_pcb')
-    with tempfile.TemporaryDirectory() as td:
-        doc = fp.emit_intent(parse_kicad_pcb(board), board)
-        doc['decaps'] = dict(doc.get('decaps') or {}, max_distance_mm=2.5,
-                             max_pin_distance_mm=2.5)
-        ipath = os.path.join(td, 'intent.json')
-        with open(ipath, 'w', encoding='utf-8') as fh:
-            json.dump(doc, fh)
-        intent = fp.load_intent(ipath)
-        src = _perturbed(board, td)
-        before = {v.ref for v in fp.grade(
-            intent, parse_kicad_pcb(src), src, group_sources=SOURCES,
-            clearance=CLEARANCE).errors if v.rule in DECAP_RULES}
-        res = _repair(src, intent)
-        still = _decap_refs_after(src, res, intent, td, 'c.kicad_pcb')
-        created = sorted(still - before)
-        assert created, ("no move created a decap error on this fixture, "
-                         "so the arm is vacuous", before, still)
-        for r in created:
-            note = [n for n in res['notes']
-                    if n.startswith(f'{r}: UNRESOLVED')]
-            assert note and 'created decap_distance' in note[0], (
-                r, res['notes'])
-            assert r in res['unresolved'], (r, res['unresolved'])
-        assert not set(res['repaired']) & still, (res['repaired'], still)
-    print(f"  PASS: {created} gained a decap error from their own move and "
-          f"are unresolved; repaired {sorted(res['repaired'])} carry none")
+    error only the repair's move had created.
+
+    Since the ordinary seat prefers a pose that creates no decap finding
+    (#1150 follow-up), only a part with NO such pose within any cap still
+    lands outside its limit, and it says so: here C8, charged for body and
+    pad overlaps, whose every legal pose within 5mm leaves U7's reach. The
+    created finding is still reported -- unresolved, "created"."""
+    before, still, res = _splitflap1()
+    created = sorted(still - before)
+    assert created == ['C8'], ("the fixture no longer forces a created "
+                               "decap error, so the arm is vacuous",
+                               before, still)
+    for r in created:
+        forced = [n for n in res['notes'] if n.startswith(
+            f'{r}: no pose within any cap') and 'creates no new decap' in n]
+        assert forced, (r, res['notes'])
+        note = [n for n in res['notes']
+                if n.startswith(f'{r}: UNRESOLVED')]
+        assert note and 'created decap_distance' in note[0], (
+            r, res['notes'])
+        assert r in res['unresolved'], (r, res['unresolved'])
+    assert not set(res['repaired']) & still, (res['repaired'], still)
+    print(f"  PASS: {created} had no pose within any cap free of a new "
+          f"decap finding ({forced[0]}), gained one and are unresolved; "
+          f"repaired {sorted(res['repaired'])} carry none")
+
+
+def test_the_ordinary_seat_avoids_creating_a_decap_error():
+    """#1150 follow-up: the same splitflap repair, C12. Charged for a pad
+    conflict, it used to be seated at the nearest legal pose, outside its
+    decap limit -- a decap_distance error only the repair created, reported
+    and shipped. A pose that creates no decap finding exists within the
+    cap ladder, so the seat takes that one: C12 moves, carries no decap
+    error, and is repaired."""
+    before, still, res = _splitflap1()
+    assert 'C12' not in before, before
+    assert 'C12' in {m['reference'] for m in res['moves']}, res['moves']
+    assert 'C12' not in still, still
+    assert 'C12' in res['repaired'], (res['repaired'], res['notes'])
+    assert not [n for n in res['notes'] if n.startswith(
+        'C12: no pose within any cap')], res['notes']
+    seat = [n for n in res['notes'] if n.startswith('C12: re-seated')]
+    print(f"  PASS: {seat[0]}, no decap error created")
 
 
 def test_a_cap_pushed_past_the_decap_radius_is_not_cleared():
     """`decap_distance` stops being graded past the search radius (it becomes
     `decap_ungraded`, warn): leaving the radius must not read as the charge
-    cleared. esp_prog, C3 6mm out from its pose (4.58mm from U1, on top of
-    its neighbours), which the repair pushes 0.5mm further -- past 5mm."""
+    cleared. esp_prog, C3 6mm out from its pose, on top of its neighbours
+    (charged for the pad conflict AND its decap distance). Since #1249 C3 is
+    measured against U2, 1.556mm away there, so the intent declares a 2.0mm
+    radius between the two.
+
+    Since #1150 (b) the seat first looks for a pose that takes C3 no farther
+    from U2, and here it finds one: C3 is moved off its neighbours, stays
+    inside the radius at no greater distance, and is still unresolved (it is
+    still past its limit). Before, the plain seat pushed it 0.5mm further,
+    to 2.056mm -- past the radius. That plain seat is still what a board
+    with NO such pose gets, so the honesty half is pinned with the
+    preference switched off (`_DecapView.no_worse` answering None): the push
+    past the radius reads as `decap_ungraded`, not as the charge cleared."""
     import math
     pcb = parse_kicad_pcb(ESP)
     c = pcb.footprints['C3']
     a = 2 * math.pi * 13 / 16
     with tempfile.TemporaryDirectory() as td:
-        intent, _p = _intent(td)
+        intent, _p = _intent(td, search_radius_mm=2.0)
         board = _board(td, 'far.kicad_pcb',
                        [('C3', c.x + 6.0 * math.cos(a),
                          c.y + 6.0 * math.sin(a))])
+
+        def c3_after(res, name):
+            out = os.path.join(td, name)
+            write_placed_output(board, out, res['moves'])
+            g = fp.grade(intent, parse_kicad_pcb(out), out,
+                         group_sources=SOURCES, clearance=CLEARANCE)
+            return [(v.rule, v.measured) for v in g.violations
+                    if v.ref == 'C3']
         res = _repair(board, intent)
-        out = os.path.join(td, 'far_out.kicad_pcb')
-        write_placed_output(board, out, res['moves'])
-        g = fp.grade(intent, parse_kicad_pcb(out), out,
-                     group_sources=SOURCES, clearance=CLEARANCE)
-        assert [v.rule for v in g.violations if v.ref == 'C3'] == [
-            'decap_ungraded'], [(v.rule, v.measured) for v in g.violations
-                                if v.ref == 'C3']
+        got = c3_after(res, 'near_out.kicad_pcb')
+        assert 'C3' in {m['reference'] for m in res['moves']}, res['moves']
+        assert [r for r, _m in got] == ['decap_distance'], got
+        assert got[0][1]['distance_mm'] <= 1.556 + 1e-3, got
+        assert 'C3' in res['unresolved'], (res['repaired'], res['notes'])
+        kept = [n for n in res['notes'] if n.startswith('C3: UNRESOLVED')]
+        assert kept and 'decap_distance' in kept[0], res['notes']
+
+        real = seeder._DecapView.no_worse
+        seeder._DecapView.no_worse = lambda self, ref, findings: None
+        try:
+            res = _repair(board, intent)
+        finally:
+            seeder._DecapView.no_worse = real
+        got = c3_after(res, 'far_out.kicad_pcb')
+        assert [r for r, _m in got] == ['decap_ungraded'], got
         assert 'C3' in res['unresolved'], (res['repaired'], res['notes'])
         note = [n for n in res['notes'] if n.startswith('C3: UNRESOLVED')]
         assert note and 'decap_ungraded' in note[0], res['notes']
-    print(f"  PASS: {note[0]}")
+    print(f"  PASS: kept inside the radius ({kept[0]}); the plain seat's "
+          f"push past it -- {note[0]}")
 
 
 def test_a_created_pin_error_is_charged_to_the_cap_that_moved():
@@ -375,41 +464,74 @@ def _watchy_repair(seed, td):
     return intent, src, _repair(src, intent)
 
 
+def _u4_pin20(intent, src, res, td, name):
+    after = os.path.join(td, name)
+    write_placed_output(src, after, res['moves'])
+    return [v for v in fp.grade(intent, parse_kicad_pcb(after), after,
+                                group_sources=SOURCES,
+                                clearance=CLEARANCE).errors
+            if v.rule == 'decap_pin_distance' and v.ref == 'U4'
+            and str((v.measured or {}).get('pad')) == '20']
+
+
 def test_a_stranded_pin_is_charged_to_the_cap_that_left_it():
     """The round-2 verifier's counterexample, which neither the claim key nor
     the names in the finding can see. watchy, 12 parts displaced (seed 2):
-    the repair moves C5 1.95mm, which strands U4's pin 20 -- a NEW finding,
-    but under a claim U4 already carried (pin 46), and naming U4 and the
-    now-nearest cap C3, neither of which moved. Only restoring C5 alone
-    clears it, so C5 is charged and is not repaired."""
+    the plain seat moves C5 1.95mm, which strands U4's pin 20 -- a NEW
+    finding, but under a claim U4 already carried (pin 46), and naming U4
+    and the now-nearest cap C3, neither of which moved. Only restoring C5
+    alone clears it, so C5 is charged and is not repaired.
+
+    Since #1150's follow-up the ordinary seat first looks for a pose that
+    strands no passing pin, and here it finds one: C5 moves, U4's pin 20
+    stays within its limit, and C5 is repaired (the preference avoiding the
+    finding). The plain seat is still what a part with NO such pose within
+    any cap gets, so the attribution -- the path that fallback takes -- is
+    pinned with the preference switched off (`_DecapView.no_worse`
+    answering None), as the radius case above pins its push."""
     with tempfile.TemporaryDirectory() as td:
         intent, src, res = _watchy_repair(2, td)
+        assert 'C5' in {m['reference'] for m in res['moves']}, res['moves']
+        assert 'C5' in res['repaired'], (res['repaired'], res['notes'])
+        assert not _u4_pin20(intent, src, res, td, 'w2.kicad_pcb')
+        seat = [n for n in res['notes'] if n.startswith('C5: re-seated')]
+
+        real = seeder._DecapView.no_worse
+        seeder._DecapView.no_worse = lambda self, ref, findings: None
+        try:
+            res = _repair(src, intent)
+        finally:
+            seeder._DecapView.no_worse = real
         assert 'C5' in {m['reference'] for m in res['moves']}, res['moves']
         assert 'C5' not in res['repaired'], res['repaired']
         note = [n for n in res['notes'] if n.startswith('C5: UNRESOLVED')]
         assert note and 'created decap_pin_distance' in note[0], note
-        after = os.path.join(td, 'w2.kicad_pcb')
-        write_placed_output(src, after, res['moves'])
-        pins = [v for v in fp.grade(intent, parse_kicad_pcb(after), after,
-                                    group_sources=SOURCES,
-                                    clearance=CLEARANCE).errors
-                if v.rule == 'decap_pin_distance' and v.ref == 'U4'
-                and str((v.measured or {}).get('pad')) == '20']
+        pins = _u4_pin20(intent, src, res, td, 'w2_plain.kicad_pcb')
         assert pins and pins[0].measured.get('cap') != 'C5', pins
-    print(f"  PASS: {note[0]}")
+    print(f"  PASS: {seat[0]} and strands nothing; the plain seat -- "
+          f"{note[0]}")
 
 
 def test_a_move_that_makes_a_finding_worse_is_not_repaired():
     """`grade_delta` counts claims, so an error that only GREW is 'no
     change'. watchy seed 1: the repair re-seats C12 4.24mm and U3's VBUS pin
-    error grows 7.78 -> 11.10mm -- a regression, not a repair."""
+    error grows 7.78 -> 11.10mm -- a regression, not a repair.
+
+    Since #1150 (b) the seat first looks for a pose that leaves U3's pin no
+    worse (C12 is the pin's nearest cap); here none exists within any cap,
+    and C12 is charged for body, containment and pad conflicts besides, so
+    the plain seat still moves it -- and now SAYS that it found no
+    no-worse pose before doing so."""
     with tempfile.TemporaryDirectory() as td:
         _intent_, _src, res = _watchy_repair(1, td)
         assert 'C12' in {m['reference'] for m in res['moves']}
         assert 'C12' not in res['repaired'], res['repaired']
         note = [n for n in res['notes'] if n.startswith('C12: UNRESOLVED')]
         assert note and '(made worse)' in note[0], note
-    print(f"  PASS: {note[0]}")
+        plain = [n for n in res['notes']
+                 if n.startswith('C12: no pose within any cap')]
+        assert plain and 'no worse' in plain[0], res['notes']
+    print(f"  PASS: {plain[0]}; {note[0]}")
 
 
 def _splitflap3(td):
@@ -427,9 +549,20 @@ def _splitflap3(td):
 
 def test_the_decap_rung_seats_a_cap_and_refuses_a_disproportionate_move():
     """#1066 (b), `repair_decaps=True`: C2 is seated toward its IC and its
-    decap error is gone from a fresh grade of the written board; C8's only
-    fixing pose is farther than the proportion budget allows, so it is left
-    where it stands and says so. Without the flag neither moves (control)."""
+    decap error is gone from a fresh grade of the written board. Without the
+    flag neither moves (control).
+
+    C8 used to read `disproportionate`: the search took the legal pose
+    nearest its target, 12.89mm away, and refused it for its size -- but
+    that pose would have made C8's own distance WORSE (graded, it reverts:
+    `decap_distance on C8 (worse)`). Since #1188 the search asks only poses
+    that clear the claim and make no other decap finding new or worse, and
+    there is none within the limit: `no_legal_pose_within_limit`, which is
+    what is true -- and none with the movable passives near U9 set aside
+    either (#1150 follow-up's aside pass, `no_pose_with_a_passive_aside`).
+    The refusal itself is pinned with the budget shrunk to
+    0.01mm: C2's fixing pose is then out of proportion, the search within
+    the budget of C2's own pose finds nothing, and C2 stays and says so."""
     with tempfile.TemporaryDirectory() as td:
         intent, src = _splitflap3(td)
         off = _repair(src, intent)
@@ -443,13 +576,30 @@ def test_the_decap_rung_seats_a_cap_and_refuses_a_disproportionate_move():
         rung = {c: [x['result'] for x in r['tried']]
                 for c, r in on['decap_rung'].items()}
         assert rung.get('C2') == ['seated'], rung
-        assert rung.get('C8') == ['disproportionate'], rung
+        assert rung.get('C8') == ['no_legal_pose_within_limit',
+                                  'no_pose_with_a_passive_aside'], rung
         assert 'C2' not in still_on and 'C8' in still_on, still_on
         assert 'C2' in on['repaired'] and 'C8' in on['unresolved'], on
         assert not set(on['repaired']) & still_on, (on['repaired'], still_on)
-        note = [n for n in on['notes'] if n.startswith('C8: decap rung')]
-        assert note and 'disproportionate' in note[0], on['notes']
-    print(f"  PASS: C2 seated and fixed; {note[0]}")
+        why = [n for n in on['notes'] if n.startswith('C8: UNRESOLVED')]
+        assert why and 'no_legal_pose_within_limit' in why[0], on['notes']
+        ratio, floor = seeder.DISPROPORTION_RATIO, seeder.DISPROPORTION_FLOOR_MM
+        seeder.DISPROPORTION_RATIO, seeder.DISPROPORTION_FLOOR_MM = 0.0, 0.01
+        try:
+            tight = seeder.repair_placement(
+                parse_kicad_pcb(src), src, intent, group_sources=SOURCES,
+                clearance=CLEARANCE, repair_decaps=True)
+        finally:
+            seeder.DISPROPORTION_RATIO = ratio
+            seeder.DISPROPORTION_FLOOR_MM = floor
+        row = tight['decap_rung']['C2']['tried'][0]
+        assert row['result'] == 'disproportionate', row
+        assert row['moved_mm'] > 0.01, row
+        assert 'C2' not in {m['reference'] for m in tight['moves']}, tight
+        note = [n for n in tight['notes'] if n.startswith('C2: decap rung')]
+        assert note and 'disproportionate' in note[0], tight['notes']
+    print(f"  PASS: C2 seated and fixed; C8 has no fixing pose ({why[0]}); "
+          f"with the budget shrunk, {note[0]}")
 
 
 def test_the_decap_rung_reverts_a_seat_that_adds_a_finding():
@@ -669,7 +819,11 @@ def test_cli_writes_the_refs_and_the_repaired_set_is_honest():
                                                       still)
         line = [ln for ln in r.stdout.splitlines()
                 if ln.startswith('Repair:')]
-        assert line and '1 unresolved' in line[0], line
+        # #1153: the other violator is R1, charged for sitting inside U2's
+        # silk-drawn body and never moved. It read "1 repaired (0 moved)"
+        # while the pair stayed on the board; it is unresolved too.
+        assert 'R1' in s['unresolved_refs'], s
+        assert line and '2 unresolved' in line[0], line
     print(f"  PASS: {line[0]}")
 
 
@@ -679,6 +833,7 @@ TESTS = [
     test_a_claim_the_pose_grader_cannot_reproduce_stays_unresolved,
     test_a_regrade_that_raises_is_not_a_pass,
     test_a_move_that_creates_a_decap_error_is_not_repaired,
+    test_the_ordinary_seat_avoids_creating_a_decap_error,
     test_a_cap_pushed_past_the_decap_radius_is_not_cleared,
     test_a_created_pin_error_is_charged_to_the_cap_that_moved,
     test_a_second_finding_under_one_claim_is_new,

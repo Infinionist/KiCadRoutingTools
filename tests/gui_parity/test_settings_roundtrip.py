@@ -112,6 +112,26 @@ def main():
             failures.append(f"restore with legacy keys raised "
                             f"{type(e).__name__}: {e}")
 
+        # 3b. RESTORE from a dict MISSING a key: a settings file saved before
+        #     that control existed. Each key is dropped alone (an empty dict
+        #     proves nothing -- restore returns before reading any key), so a
+        #     restore branch that reads a key it never tested for raises here.
+        raised = []
+        for key in sorted(settings):
+            older = dict(settings)
+            older.pop(key)
+            try:
+                restore_dialog_settings(dlg, older)
+            except Exception as e:
+                raised.append(f"{key}: {type(e).__name__}: {e}")
+        if raised:
+            failures.append(f"restore without a key raised for {len(raised)} "
+                            f"key(s): {raised}")
+        else:
+            print(f"  restore_dialog_settings (each of {len(settings)} keys "
+                  f"absent in turn): OK")
+        restore_dialog_settings(dlg, settings)
+
     # 4. Every key the SAVE emits must round-trip without the control
     #    vanishing: re-save and compare key sets.
     if settings is not None:
@@ -158,6 +178,38 @@ def main():
             else:
                 print(f"  escalation value round-trip: OK ({before!r} -> "
                       f"{got!r})")
+
+    # 6. The centerline setback's override box (route_diff.py's explicit
+    #    --diff-pair-centerline-setback vs the omitted flag). A settings file
+    #    saved before the box existed has only the value, where 0 meant auto
+    #    and a positive value an explicit setback; a new file can say an
+    #    explicit 0. Each must come back as the setback the engine gets.
+    if settings is not None:
+        dt = dlg.differential_tab
+        rows = (('old file, 0 (meant auto)', {'centerline_setback': 0.0}, None),
+                ('old file, 0.4', {'centerline_setback': 0.4}, 0.4),
+                ('new file, ticked 0 (explicit zero)',
+                 {'centerline_setback': 0.0, 'centerline_setback_check': True},
+                 0.0),
+                ('new file, unticked 0.4 (auto)',
+                 {'centerline_setback': 0.4, 'centerline_setback_check': False},
+                 None))
+        bad_rows = []
+        for label, keys, want in rows:
+            s = dict(settings)
+            s.pop('centerline_setback_check', None)
+            s.update(keys)
+            restore_dialog_settings(dlg, s)
+            got = dt.get_config().get('diff_pair_centerline_setback')
+            if got != want or dt.centerline_setback.IsEnabled() != (want is not None):
+                bad_rows.append(f"{label}: engine setback {got!r} (want {want!r}), "
+                                f"spin enabled {dt.centerline_setback.IsEnabled()}")
+        if bad_rows:
+            failures.append("centerline setback restore: " + "; ".join(bad_rows))
+        else:
+            print(f"  centerline setback override restore: OK ({len(rows)} "
+                  f"forms, old 0 -> auto, new ticked 0 -> explicit 0)")
+        restore_dialog_settings(dlg, settings)
 
     dlg.Destroy()
 

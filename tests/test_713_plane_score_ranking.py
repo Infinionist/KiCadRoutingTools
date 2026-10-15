@@ -186,13 +186,23 @@ check("a uniform run is NOT marked incomplete", s is not None
       and s.get('complete') is not False, str(s))
 
 # --- the happy path -------------------------------------------------------
+# ONE run serves this section and the scoping section below: both need a
+# fully scored run, and the scoping rows only add a count of the scorer's
+# calls, which printing a marker from the same stub provides. (They were two
+# portfolio runs of the same all-ok stub, one printing the marker and one not;
+# every contender gets the same plane terms either way, so the rank cannot
+# depend on which.)
 _ALL_OK = """
-def _stub(b, sp, **kw):
+_seen = []
+def _stub(board, specs, **kw):
+    _seen.append(board)
+    print('SCORED_CALL ' + str(len(_seen)))
     return ({'islands': 1, 'neck_sum': 2.0, 'cells': 1, 'per_net': {}},
             psc.PlaneScoreStatus('ok'))
 """
 
 rc, out, err, _d = _run_portfolio(_ALL_OK)
+_ok_out = out
 check("a fully scored run succeeds", rc in (0, 4), f"rc={rc}")
 s = _summary(out)
 check("the wire says ok and how many were scored",
@@ -220,18 +230,9 @@ check("with no --plane-score the wire says null, not a fake ok",
       s is not None and s.get('plane_score') is None, str(s))
 
 print("\n--- scoring is scoped to VIABLE candidates, as the help text says")
-_COUNTING = """
-_seen = []
-def _stub(board, specs, **kw):
-    _seen.append(board)
-    print('SCORED_CALL ' + str(len(_seen)))
-    return ({'islands': 1, 'neck_sum': 1.0, 'cells': 1, 'per_net': {}},
-            psc.PlaneScoreStatus('ok'))
-"""
-
-rc, out, err, _d = _run_portfolio(_COUNTING)
-s = _summary(out)
-_n_calls = out.count('SCORED_CALL ')
+# The happy-path run above, whose stub counts its own calls.
+s = _summary(_ok_out)
+_n_calls = _ok_out.count('SCORED_CALL ')
 check("one refill per contender, no more",
       _n_calls == s['plane_score']['of'],
       f"{_n_calls} refills for {s['plane_score']['of']} contenders")

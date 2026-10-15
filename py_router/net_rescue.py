@@ -38,6 +38,7 @@ Design constraints (#331/#371 review):
 """
 
 import env_knobs
+import contextlib
 import math
 import os
 import collections as _c
@@ -238,6 +239,26 @@ def _drills_too_close(vias, hole_to_hole: float) -> bool:
                     < ((a.drill or 0.0) + (b.drill or 0.0)) / 2.0 + h2h):
                 return True
     return False
+
+
+def escape_has_routable_layer(pad, config) -> bool:
+    """Whether a #666 escape for `pad` could join two layers this run routes.
+
+    An escape lays its dogbone trace on the pad's own layer and a via whose
+    only purpose is ANOTHER layer. A run restricted by --layers carries the
+    board's other copper layers in `config.layers` at FORBIDDEN cost (< 0):
+    they block, and a through via may span them, but nothing is routed on
+    them. So when the pad's layer is forbidden, or is the only routable
+    layer, an escape can only lay copper whose purpose is a forbidden layer:
+    the via reaches no routed copper, and the failed net it was laid for
+    ships it (#1260: `--layers F.Cu` left a via-in-pad down to B.Cu on each
+    of SIG's pads). A through via between two routable layers that happens
+    to span a forbidden one is still allowed."""
+    from net_queries import expand_pad_layers
+    routable = {l for l, c in zip(config.layers, config.get_layer_costs())
+                if c >= 0}
+    own = set(expand_pad_layers(pad.layers or [], list(config.layers)))
+    return bool(own & routable) and bool(routable - own)
 
 
 def _withdraw_unused_escapes(pcb_data, net_id, tap_results, config):
@@ -478,6 +499,20 @@ def _choose_grid(config, half_size):
     return fine
 
 
+def _via_step_down(config, net_id, **kw):
+    """A rung config whose via is a step DOWN for ``net_id``.
+
+    A net with its own #530 via (config.net_via_sizes) is re-pointed at that
+    via by route_net_with_obstacles before every search, so a rung that only
+    lowered via_size was searched -- and emitted -- at the class via again:
+    every step-down repeated the rung above it, map rebuild included. Taking
+    the net out of net_via_sizes on the rung makes the step-down reach the
+    search, judged at the rung map's rung 0, which is built at this via."""
+    nvs = dict(getattr(config, 'net_via_sizes', None) or {})
+    nvs.pop(net_id, None)
+    return replace(config, net_via_sizes=nvs, **kw)
+
+
 def _rescue_rungs(config, fine_grid, pcb_data, net_id):
     """The scoped retry ladder for one net (see module docstring)."""
     from plane_pad_tap import _clearance_ladder, fab_floor_clearance_track
@@ -557,18 +592,20 @@ def _rescue_rungs(config, fine_grid, pcb_data, net_id):
     # escalation_rungs: empty under --escalation off, raised to the board's
     # own minimums under board (#857) and to this net's rule minimums (#530).
     _ladder = escalation_rungs(n_layers, extra_floors=config.rule_floors(net_id))
+    # Smaller than the via this NET draws (its own #530 via, else the run's).
+    _own_via = config.net_via(net_id)[0]
     for floor in _ladder:
         v_dia, v_drill = floor['via_diameter'], floor['via_drill']
-        if v_dia >= config.via_size - 1e-9:
+        if v_dia >= _own_via - 1e-9:
             continue
         if v_dia < _ladder[0]['via_diameter'] - 1e-9:
             warn_fab_escalation(f"net rescue net_{net_id}")
-        rungs.append(replace(config, grid_step=fine_grid,
-                             clearance=floor_clearance,
-                             track_width=rescue_track, layer_widths={},
-                             power_net_widths=power_widths,
-                             via_size=v_dia, via_drill=v_drill,
-                             max_iterations=max_iters))
+        rungs.append(_via_step_down(config, net_id, grid_step=fine_grid,
+                                    clearance=floor_clearance,
+                                    track_width=rescue_track, layer_widths={},
+                                    power_net_widths=power_widths,
+                                    via_size=v_dia, via_drill=v_drill,
+                                    max_iterations=max_iters))
     return rungs
 
 
@@ -682,10 +719,16 @@ def _attempt_edge(pcb_data, net_id, gap, config, net_clearances,
         # BUS pad whose center sat 2.6mm outside). Stamp the same-net pad via
         # keep-out from the FULL board; cells outside the fenced window are
         # unreachable anyway, so the extra stamps are inert.
-        from obstacle_map import same_net_pad_via_keepout_cells
+        from obstacle_map import same_net_pad_via_keepout_cells, _stamp_rungs_at_own_via
         _cells581 = same_net_pad_via_keepout_cells(pcb_data, net_id, cfg)
         if len(_cells581):
             obstacles.add_blocked_vias_batch(_cells581)
+            # #1226: and the rungs the net may search at, each at its own via.
+            _stamp_rungs_at_own_via(
+                obstacles, cfg,
+                lambda s, c: s.add_blocked_vias_batch(
+                    same_net_pad_via_keepout_cells(pcb_data, net_id, c)),
+                populated_only=True)
         # Constrain the route to the window: drop endpoints outside it and keep the
         # source/target overrides from punching the fence, so the A* can never leave
         # the stamped region and cross foreign copper the window never modelled (#396).
@@ -951,6 +994,121 @@ def _cap_conflicts(pcb_data, fan_vias, net_id, config) -> dict:
     return conf
 
 
+def _cap_move_net_names(pcb_data, moves) -> list:
+    """Sorted names of the nets of every queued cap move's pads (#666).
+
+    The names the retry recorded when it queued the move win: a move handed
+    back from a board parsed separately (the plane finalize without live
+    reuse) carries net ids of THAT parse, and names are the same on both."""
+    names = set()
+    for mv in moves or []:
+        if mv.get('net_names'):
+            names.update(n for n in mv['net_names'] if n)
+            continue
+        names.update(pcb_data.nets[n].name for n in (mv.get('net_ids') or [])
+                     if n in pcb_data.nets and pcb_data.nets[n].name)
+    return sorted(names)
+
+
+@contextlib.contextmanager
+def _caps_at_relocation(pcb_data, moves):
+    """#666: the caps of `moves` at their RELOCATED poses for the length of
+    the block, then back exactly where they were.
+
+    The would-short guard judges a cap-conflicting escape on the board it
+    ships onto. Judged with the cap still on it, the escape's via is a short
+    against the very pad the move exists to clear, so it was always declined
+    (and its move, queued first, moved the cap with no via to make room for).
+    The guard is the stricter judge: `_find_cap_relocation` prices a pad
+    against a via or a track by a disc of half its longer side, the guard by
+    the pad's rectangle, so a relocation that clears by the disc and grazes
+    at a corner is declined here and the cap stays where it is."""
+    saved = []
+    for mv in moves or []:
+        fp = pcb_data.footprints.get(mv['reference'])
+        if fp is not None:
+            saved.append((fp, fp.x, fp.y,
+                          [(p, p.global_x, p.global_y) for p in fp.pads]))
+    try:
+        mirror_cap_moves(pcb_data, moves)
+        yield
+    finally:
+        for fp, x, y, pads in saved:
+            fp.x, fp.y = x, y
+            for p, gx, gy in pads:
+                p.global_x, p.global_y = gx, gy
+
+
+def mirror_cap_moves(pcb_data, moves) -> list:
+    """#666: mirror queued scoped cap moves into `pcb_data` -- the footprint's
+    x/y and every pad's global position, by the move's offset. The retry
+    queues the cap's OWN rotation, so a translation is the whole move.
+
+    Idempotent: the targets are absolute, so a second call moves nothing.
+    That is what lets the GUI mirror at the CLI's sequence point and again
+    when its applier moves the live footprint. A footprint that draws the
+    board outline (#829) stays where it is, as `write_placed_output` refuses
+    to move it. Returns the sorted names of the queued caps' nets: the scope
+    of the re-weld."""
+    for mv in moves or []:
+        fp = pcb_data.footprints.get(mv['reference'])
+        if fp is None or getattr(fp, 'owns_board_outline', False):
+            continue
+        dx = mv['new_x'] - fp.x
+        dy = mv['new_y'] - fp.y
+        fp.x = mv['new_x']
+        fp.y = mv['new_y']
+        for p in fp.pads:
+            p.global_x += dx
+            p.global_y += dy
+    return _cap_move_net_names(pcb_data, moves)
+
+
+def cap_move_reweld_spec(config, pcb_data, moves) -> dict:
+    """#666: the queued cap moves and the re-weld oracle's parameters,
+    resolved from THIS run's config.
+
+    route.py's re-weld is built from this on both fronts -- on the written
+    file (CLI), or on a staged board in-run (GUI) -- and on the GUI front
+    batch_route posts it as `results_data['pending_cap_moves']`, where the
+    Route tab's applier moves the live footprint and, for a move the engine
+    could not re-weld in-run, runs the staged-save oracle with it
+    (`gui_utils.run_kicad_oracle_on_live_board`). One builder, so the
+    re-welds cannot be priced differently. Each move gains `net_names`. The
+    per-net maps travel by NAME (#1133, #1137): the oracle re-parses its
+    board, and the GUI's staged save numbers its nets afresh. The widths are
+    the power widths only, as the CLI's re-weld has always passed."""
+    from kicad_oracle import oracle_net_widths_by_name
+    out = []
+    for mv in moves or []:
+        m = {k: mv[k] for k in ('reference', 'new_x', 'new_y',
+                                'new_rotation', 'net_ids') if k in mv}
+        m['net_names'] = _cap_move_net_names(pcb_data, [mv])
+        # GUI: where this move's re-weld ran -- 'in-run' (on a staged board
+        # at the CLI's sequence point), 'none' (no net to weld), or
+        # 'applier' (no staged board: the Route tab re-welds after apply).
+        m['reweld'] = mv.get('_666_done') or 'applier'
+        out.append(m)
+    return {
+        'moves': out,
+        'nets': _cap_move_net_names(pcb_data, moves),
+        'clearance': config.clearance,
+        'track_width': config.track_width,
+        'via_size': config.via_size,
+        'via_drill': config.via_drill,
+        'grid_step': config.grid_step,
+        'track_via_clearance': config.clearance,
+        'hole_to_hole_clearance': config.hole_to_hole_clearance,
+        'layer_clearances': dict(config.layer_clearances or {}),
+        'layers': list(config.layers or []),
+        'layer_costs': (list(config.layer_costs)
+                        if getattr(config, 'layer_costs', None) else []),
+        'net_widths_by_name': oracle_net_widths_by_name(
+            config, pcb_data.nets, fields=('power_net_widths',)),
+        'net_clearances_by_name': config.net_clearances_by_name(pcb_data.nets),
+    }
+
+
 def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                        progress_callback=None, cancel_check=None):
     """Scoped fine-parameter rescue for every still-failed/partial net.
@@ -1064,6 +1222,12 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                     for s in pcb_data.segments)
                 if not _bare:
                     continue
+                if not escape_has_routable_layer(_pad, config):
+                    print(f"    bare-ball escape: {_pad.component_ref}."
+                          f"{_pad.pad_number} skipped (no routable layer "
+                          f"for its via to reach besides the pad's own; "
+                          f"the rest are outside --layers)")
+                    continue
                 _cu = [l for l in _pad.layers if l.endswith('.Cu')]
                 try:
                     _tr = tap_pad_with_escalation(
@@ -1086,6 +1250,9 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                     # validated 2/2 on exactly this class (#666/#652).
                     _fp = pcb_data.footprints.get(_pad.component_ref)
                     _gsegs, _gvias = [], []
+                    # #666: the cap move(s) this escape needs, queued only
+                    # once the escape SHIPS (below the would-short guard).
+                    _capmv666 = []
                     if _fp is not None and len(_fp.pads) >= 12:
                         try:
                             from bga_fanout import generate_bga_fanout
@@ -1124,7 +1291,10 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                         # allow a MOVABLE cap conflict -- but ship it ONLY
                         # with a verified relocation for the cap, recorded
                         # for the post-write scoped cap move + re-weld
-                        # (route.py applies it; the full clearance step is
+                        # (route.py applies it to the written file; on the
+                        # GUI the Route tab's applier moves the live
+                        # footprint from results_data['pending_cap_moves'];
+                        # the full clearance step is
                         # pre-route only, the scoped move is not). Gate on
                         # NET-FILTERED emptiness: the raw lists can carry
                         # partial copper of a failed escape.
@@ -1193,23 +1363,24 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                                               f"relocation)")
                                         _ft, _fv = [], []
                                     else:
-                                        _pend = getattr(
-                                            pcb_data,
-                                            '_pending_cap_moves', None)
-                                        if _pend is None:
-                                            _pend = []
-                                            pcb_data._pending_cap_moves = \
-                                                _pend
-                                        _pend.extend(_moves)
+                                        # Held, not queued: the escape may
+                                        # still be declined below, and a
+                                        # move whose escape never ships
+                                        # moves a cap to make room for
+                                        # nothing.
+                                        _capmv666 = _moves
                                         for _mv in _moves:
+                                            _mv['net_names'] = sorted(
+                                                pcb_data.nets[n].name
+                                                for n in _mv['net_ids']
+                                                if n in pcb_data.nets)
                                             print(
                                                 f"    bare-ball escape: "
                                                 f"cap {_mv['reference']} "
                                                 f"conflicts -- relocation "
                                                 f"to ({_mv['new_x']:.2f},"
                                                 f"{_mv['new_y']:.2f}) "
-                                                f"verified, move queued "
-                                                f"for post-write (#666)")
+                                                f"verified")
                         _gsegs = [_Seg(
                             start_x=t['start'][0], start_y=t['start'][1],
                             end_x=t['end'][0], end_y=t['end'][1],
@@ -1237,23 +1408,28 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                     # emitted seg and via against foreign copper;
                     # decline the escape like any other no-escape
                     # outcome rather than ship it.
+                    # A cap-conflicting escape is judged with its caps
+                    # RELOCATED (#666): that is the board it ships onto, and
+                    # judged with a cap still on it the via is a short
+                    # against the pad the move exists to clear.
                     _lc666, _vc666 = _leg_clear, _via_site_clear
                     _short666 = None
-                    for _sg6 in _gsegs:
-                        if not _lc666(pcb_data,
-                                      [(_sg6.start_x, _sg6.start_y),
-                                       (_sg6.end_x, _sg6.end_y)],
-                                      _sg6.layer, _sg6.width,
-                                      config.clearance, net_id,
-                                      config=config):
-                            _short666 = 'seg'
-                            break
-                    if _short666 is None:
-                        for _v6 in _gvias:
-                            if not _vc666(pcb_data, _v6.x, _v6.y,
-                                          config, net_id):
-                                _short666 = 'via'
+                    with _caps_at_relocation(pcb_data, _capmv666):
+                        for _sg6 in _gsegs:
+                            if not _lc666(pcb_data,
+                                          [(_sg6.start_x, _sg6.start_y),
+                                           (_sg6.end_x, _sg6.end_y)],
+                                          _sg6.layer, _sg6.width,
+                                          config.clearance, net_id,
+                                          config=config):
+                                _short666 = 'seg'
                                 break
+                        if _short666 is None:
+                            for _v6 in _gvias:
+                                if not _vc666(pcb_data, _v6.x, _v6.y,
+                                              config, net_id):
+                                    _short666 = 'via'
+                                    break
                     # ...and against EACH OTHER (#1070): _via_site_clear sees
                     # only the board's vias, and this escape's own drills are
                     # not on it yet.
@@ -1264,7 +1440,11 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                         print(f"    bare-ball escape: "
                               f"{_pad.component_ref}.{_pad.pad_number} "
                               f"declined (escape {_short666} would "
-                              f"short routed copper)")
+                              f"short routed copper)"
+                              + (f"; cap(s) "
+                                 f"{', '.join(m['reference'] for m in _capmv666)}"
+                                 f" stay where they are" if _capmv666
+                                 else ""))
                         continue
                     pcb_data.segments.extend(_gsegs)
                     pcb_data.vias.extend(_gvias)
@@ -1273,9 +1453,17 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                     # serving answers computed before this escape existed.
                     pcb_data._copper_epoch = getattr(
                         pcb_data, '_copper_epoch', 0) + 1
+                    # The cap moves ride with the escape they make room for:
+                    # queued below, once the net's escapes are final.
+                    for _mv in _capmv666:
+                        # by net NAME: a move can be handed back from a
+                        # board parsed separately (route.py, sequence point 2)
+                        _mv['_escape_vias'] = [(v.x, v.y, net_name, v.size)
+                                               for v in _gvias]
                     tap_results.append({'new_segments': _gsegs,
                                         'new_vias': _gvias,
-                                        'iterations': 0})
+                                        'iterations': 0,
+                                        'cap_moves': _capmv666})
                     _tapped += 1
                     print(f"    bare-ball escape: {_pad.component_ref}."
                           f"{_pad.pad_number} fanout-rescue escape "
@@ -1315,6 +1503,7 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
 
         edge_results = []
         used_widths = []
+        stepped_vias = []   # (via the edge's rung drew, vias it shipped)
         failed_gaps = set()
         attempts = 0
         num = num0
@@ -1372,6 +1561,10 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                                     site='net rescue')
             edge_results.append(result)
             used_widths.append(used_cfg.track_width)
+            if result.get('new_vias') and \
+                    used_cfg.net_via(net_id)[0] < config.net_via(net_id)[0] - 1e-9:
+                stepped_vias.append((used_cfg.net_via(net_id)[0],
+                                     len(result['new_vias'])))
             print(f"    {GREEN}rescued a gap{RESET}: grid {used_cfg.grid_step:g}, "
                   f"clearance {used_cfg.clearance:g}, track "
                   f"{used_cfg.track_width:g} ({len(result['new_segments'])} segs, "
@@ -1381,6 +1574,21 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
         if tap_results and num <= 1:
             tap_results = _withdraw_unused_escapes(pcb_data, net_id,
                                                    tap_results, config)
+        # #666: queue the cap moves of the escapes that SHIP. A move is made
+        # for its escape's vias (they are what land on the cap), so an escape
+        # whose vias were withdrawn above makes room for nothing. The run's
+        # sequence points check the vias again before moving the cap: a later
+        # pass can still take them out.
+        for _r in tap_results:
+            if _r.get('cap_moves') and _r.get('new_vias'):
+                _pend = getattr(pcb_data, '_pending_cap_moves', None)
+                if _pend is None:
+                    _pend = pcb_data._pending_cap_moves = []
+                _pend.extend(_r['cap_moves'])
+                for _mv in _r['cap_moves']:
+                    print(f"    bare-ball escape: cap {_mv['reference']} move "
+                          f"to ({_mv['new_x']:.2f},{_mv['new_y']:.2f}) "
+                          f"queued for post-write (#666)")
         elapsed = time.time() - net_start
         if not edge_results and not tap_results:
             summary['unchanged'].append(net_name)
@@ -1537,6 +1745,14 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
             from fab_tiers import note_narrowing
             note_narrowing(net_id, 'track_width', _req_w, _del_w, 'net rescue',
                            net_name=net_name)
+        if stepped_vias:
+            # The via step-down rungs are a descent like the width's: what the
+            # edges routed on them shipped, against the via this net draws
+            # (its own #530 via, else the run's).
+            from fab_tiers import note_narrowing
+            note_narrowing(net_id, 'via_diameter', config.net_via(net_id)[0],
+                           min(v for v, _ in stepped_vias), 'net rescue',
+                           count=sum(n for _, n in stepped_vias), net_name=net_name)
         _thin = (f", {YELLOW}width {_del_w:g} vs requested {_req_w:g}{RESET}"
                  if _del_w < _req_w - 1e-9 else "")
         print(f"    {GREEN}{'fully reconnected' if fully else 'improved'}{RESET} "
@@ -1586,8 +1802,10 @@ def _escalation_ladder(config, pcb_data, net_id):
     # escalation_rungs: raised to the board's own minimums under board (#857)
     # and to this net's rule minimums (#530).
     ladder = escalation_rungs(n_layers, extra_floors=config.rule_floors(net_id))
+    # Smaller than the via this NET draws (its own #530 via, else the run's).
+    own_via = config.net_via(net_id)
     via_rungs = [(f['via_diameter'], f['via_drill']) for f in ladder
-                 if f['via_diameter'] < config.via_size - 1e-9]
+                 if f['via_diameter'] < own_via[0] - 1e-9]
     if not width_travel and not via_rungs:
         return []  # already at the floor: nothing to march
 
@@ -1613,21 +1831,27 @@ def _escalation_ladder(config, pcb_data, net_id):
         if m:
             v_dia, v_drill = via_rungs[min(m - 1, (k * m - 1) // n)]
         else:
-            v_dia, v_drill = config.via_size, config.via_drill
+            v_dia, v_drill = own_via
         key = (round(w, 6), round(v_dia, 6), round(v_drill, 6))
         if key == prev_key:
             continue  # discrete via ladder can repeat a rung; dedupe
         prev_key = key
         if m and v_dia < ladder[0]['via_diameter'] - 1e-9:
             warn_fab_escalation(f"terminal escalation net_{net_id}")
-        rungs.append(replace(config, track_width=w, layer_widths={},
-                             power_net_widths=power_widths,
-                             net_layer_widths=net_layer_widths,
-                             net_track_widths=net_track_widths,
-                             coplanar_net_ids=coplanar_ids,
-                             via_size=v_dia, via_drill=v_drill,
-                             bga_exclusion_zones=[],
-                             max_iterations=max_iters))
+        _rung = dict(track_width=w, layer_widths={},
+                     power_net_widths=power_widths,
+                     net_layer_widths=net_layer_widths,
+                     net_track_widths=net_track_widths,
+                     coplanar_net_ids=coplanar_ids,
+                     bga_exclusion_zones=[],
+                     max_iterations=max_iters)
+        if m:
+            rungs.append(_via_step_down(config, net_id, via_size=v_dia,
+                                        via_drill=v_drill, **_rung))
+        else:
+            # width only: the net keeps the via it draws (its own #530 via
+            # is re-applied by route_net_with_obstacles; the run via here)
+            rungs.append(replace(config, **_rung))
     return rungs
 
 
@@ -1817,16 +2041,17 @@ def terminal_geometry_escalation(state, single_ended_nets, net_clearances=None,
                   f"{RESET} ({elapsed:.1f}s)")
             continue
 
+        _acc_via = accepted_cfg.net_via(net_id)   # the via this net drew
         geom = (f"{accepted_cfg.track_width:.4g}x"
-                f"{accepted_cfg.via_size:.4g}/{accepted_cfg.via_drill:.4g}")
+                f"{_acc_via[0]:.4g}/{_acc_via[1]:.4g}")
         try:
             from fab_tiers import note_narrowing
             note_narrowing(net_id, 'track_width',
                            config.get_net_track_width(net_id, config.layers[0]),
                            accepted_cfg.track_width, 'terminal escalation',
                            net_name=net_name)
-            note_narrowing(net_id, 'via_diameter', config.via_size,
-                           accepted_cfg.via_size, 'terminal escalation',
+            note_narrowing(net_id, 'via_diameter', config.net_via(net_id)[0],
+                           _acc_via[0], 'terminal escalation',
                            net_name=net_name)
         except Exception:                                       # noqa: BLE001
             pass

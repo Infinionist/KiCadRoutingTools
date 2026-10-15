@@ -47,6 +47,8 @@ already grade and the existing seat search already honours — ordinarily an
 | `fixed[]` | `context.brief.fixed` — carried; a row with a `pose` also compiles to `fixed_poses[]` (see below) | `basis: "declared"` |
 | `arrays[]` | `arrays[]`, one intent row per brief row, validated by the intent's own loader; `requirement` moves into `context` | `source: "brief"`, `context.brief_row` |
 | `mount_mode`, `cable_entry`, `cable_envelope_mm`, `product.user_top_side` | compiled by `connector_consequences` into `max_setback_mm`, `side` and cable `keepouts[]` -- see [below](#connector-declarations-compile-to-clauses-959) | `context.basis`, `context.compiled_from` |
+| `assembly.body_edge_mm` | `assembly.body_edge_mm`, merged into the emitted `assembly` block; `why` and `requirement` move into `assembly.context.body_edge_mm`. Graded by check_assembly's `body_edge_band`, not by a floorplan rule (see [below](#assemblybody_edge_mm-the-assemblers-edge-rule-1255)) | `context.basis`: `declared`, `min_reader` 9 |
+| `keep_away` | `keep_away[]`, one intent row per rule, in its canonical spelling; `why` and `requirement` move into `context`. Graded by `keep_away`, and read by the routing engines too (see [below](#keep_away-two-net-groups-apart-1253)) | `source: "brief"`, `context.keep_away_note`, `min_reader` 10 |
 | `product`, `unknown[]` | `context` | — |
 
 ### The one key the compiler adds, and why that is the rule rather than an exception
@@ -65,11 +67,14 @@ parts, this far apart*:
 - `decaps.max_distance_mm` is **one board-wide budget over a derived
   population**, not a claim about a named pair — and its partner election is
   exactly what #902 is about. A decap is syntactic (`ref` starts with `C`,
-  bridges two nets) and the IC it is tethered to must carry ≥ 4 copper pads, so
-  a 3-pad SOT-89 regulator can never be a tether target *at any radius*.
-  Measured on the board that motivated the issue, the election gives
-  `C1 → USB1 2.03 mm` and `C3 → U1 1.83 mm`: the regulator's own bulk caps,
-  graded against a USB socket and a bridge IC.
+  bridges two nets), so an inductor, a crystal or an ESD array is never its
+  subject. When #902 landed, the IC it is tethered to had to carry ≥ 4 copper
+  pads, so a 3-pad SOT-89 regulator was never a tether target: on the board
+  that motivated the issue the election gave `C1 → USB1 2.03 mm` and
+  `C3 → U1 1.83 mm`, the regulator's own bulk caps graded against a USB socket
+  and a bridge IC. Since #1249 a supply owner (`groups.supply_owners`) is
+  elected too, and both caps tether to U2 at 0.95 mm — but the election still
+  measures to a pad box, not a named pin.
 - A **keep-out is an exclusion, not an attraction.** Compiling "beside" into
   "not inside" grades the opposite claim.
 
@@ -459,6 +464,93 @@ keep-out finding names the part that intrudes, never the connector), a fired
 `abstained` and keeps coverage incomplete, and a `derived_default` number
 carries authority `assumption`: the declaration is the author's, the number is
 this code's.
+
+## `assembly.body_edge_mm`: the assembler's edge rule (#1255)
+
+```jsonc
+"assembly": {"body_edge_mm": 2.5,
+             "why": "JLCPCB assembly, no edge rails"}
+```
+
+This is the least distance a component body may sit from the board edge. The
+rule belongs to the assembler, and the board file has nowhere to put it. The
+value is mm (> 0) or `"unknown"`. An `assembly` block with no `body_edge_mm`
+is refused, since it would constrain nothing. `sides` is not declarable here,
+because the emitter observes it off the board.
+
+It compiles to the intent's `assembly.body_edge_mm`, beside the observed
+`sides`, with `min_reader` 9. That arms check_assembly's `body_edge_band`
+gate, and render_placement's `a_body_edge_band` under `--gate`. With no
+declaration, both report against JLCPCB's 2.5 mm, labelled `derived_default`,
+and never gate. No floorplan rule grades it, so `check_floorplan` lists the
+clause as carried and names check_assembly as the grader. On the `--intent`
+path, an intent without the value drifts. A connector whose interface
+declares an `edge` is listed apart from the band rather than counted, like an
+edge-class part.
+
+## `keep_away`: two net groups apart (#1253)
+
+```jsonc
+"keep_away": [
+  {"rule": "Net-(D5-A):/32K_P,/32K_N:1",
+   "why": "32 kHz crystal vs the boost switch node"},
+  "class=Digital:class=Audio:0.5"
+]
+```
+
+Each entry is ONE rule in route.py's `--keep-away` syntax: `AGGRESSOR:VICTIM:
+GAP`, with net patterns and `class=` terms, as a string or as an object with
+`rule` and the usual prose slots. `"keep_away": "unknown"` says the author
+looked and cannot yet say which nets are noisy. A malformed rule is refused
+with the rule parser's own message. A string holding two rules, or one rule
+twice, is refused as well.
+
+This is the one brief key with **two readers**, and it is one declaration, not
+two copies. Both read it through `keep_away.brief_rule_rows`:
+
+- `compile_brief` turns each rule into an intent `keep_away[]` row, and
+  check_floorplan grades it on the PLACEMENT. Every aggressor pad is measured
+  against every victim pad on another part, pad edge to pad edge. A part pair
+  inside the band is a **warn** naming both pads and each pad's side, unless
+  the intent's `severity` promotes it. The rule is described in [the floorplan
+  intent](floorplan-intent.md).
+- The routing engines (`route.py`, `route_diff.py`, the GUI's Route and
+  Differential tabs) read the same key off the brief beside the board and price
+  it on the tracks, added to any `--keep-away` they are given. The brief
+  travels with every routed output, so later steps keep it.
+
+On the `--intent` path a rule the brief declares and the intent lacks drifts.
+So does a rule the intent carries from the brief that the brief no longer
+declares, because the router has stopped pricing it. Rules are compared in
+their canonical spelling, so `1.0` and `1` are the same rule. The reverse
+case is a rule the intent carries and the brief beside the board does not:
+a row written into the intent by hand, or compiled from a `--brief` naming
+another file. check_floorplan grades it, but no router reads it, so it
+prints a `WARNING keep_away` naming each such row and the brief to declare
+it in. `--json` carries the same as `keep_away_unpriced`.
+
+It is **not** `min_mm` on a `proximity[]` row, and that refusal stands. A
+proximity row is about two named parts and how close they must be. A keep-away
+is about two net groups and a functional distance between them. The grade
+cannot see coupling through planes or between faces (it is plan view, and each
+pad's side is named), tracks (the router measures those), or which nets are
+noisy (the rule says that).
+
+`board_context --json` **proposes** rules for this key, in `emc_roles.keep_away`.
+For each crystal or oscillator it writes one rule that keeps the clock nets
+away from every switch node the pins name: a converter's SW or LX pin, or a
+discrete switch's drain on an inductor net. Where a part's pins carry no
+function, that side is a `candidate` read off the nets: a pin-less buck's
+inductor end, or the one undecoupled output of a pin-less oscillator. The
+gap is 3 mm, a derived default and not a datasheet value. It is twice
+route.py's `--keep-away-free`, so the band reaches past the radius the router
+leaves unpriced around each net's own pins. Each proposal carries
+check_floorplan's reading of the rule on the board (`measured`, `inside_now`)
+and a `brief_row` to paste here. On watchy the rule is
+`Net-(D5-A):/32K_P,/32K_N:3`, and the human layout clears it at 15.34 mm. On
+ulx3s, `/power/L1,/power/L2,/power/L3:CLK_25MHz:3` is already inside at
+1.05 mm, with the oscillator Y1 and the buck U4 on opposite faces. Nothing
+reads a proposal until it is pasted.
 
 ## Deferred, and named rather than silently absent
 

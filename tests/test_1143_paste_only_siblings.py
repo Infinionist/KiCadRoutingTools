@@ -124,7 +124,10 @@ def test_the_predicate_keeps_npth_and_drilled_pads():
         # an NPTH with no drill and no copper layer: the NPTH clause alone
         # keeps it (the drill clause cannot)
         _pad('8', 21, 1, 1, '"*.Mask"', kind='np_thru_hole')])
-    got = {p.pad_number: pad_is_aperture_only(p)
+    # Keyed by the DECLARED number, read off the pad's x: the parser blanks
+    # an NPTH or aperture pad's number on load, as pcbnew does.
+    declared = {0: '1', 3: '2', 6: '3', 9: '4', 12: '5', 15: '6', 18: '7', 21: '8'}
+    got = {declared[round(p.local_x)]: pad_is_aperture_only(p)
            for p in pcb.footprints['U1'].pads}
     want = {'1': False, '2': True, '3': True, '4': False, '5': False,
             '6': False, '7': False, '8': False}

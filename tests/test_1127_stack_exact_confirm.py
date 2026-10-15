@@ -26,6 +26,23 @@ pins:
   turned about its own centre, reshaped, re-cornered or given new polygons
   is recomputed.
 
+The same toggle confirms the PAD conjunct (`pad`, `pad_overlap`), because a
+stack-exact gate still refused 27 of the grid's poses on a box clearance
+graze (#1154). What those cases pin:
+
+* the grid against the GRADERS on the written board -- check_drc's pad-pad
+  clearance at margin 0 and check_assembly's pad_intersection channel: with
+  the toggle `pads_ok` admits C4 exactly where both find nothing, the
+  seeder's absolute view names the same partners, and the shortfall it
+  charges each partner is check_drc's own overlap in mm. Without it 42 poses
+  disagree (27 refused on `pad`, 15 on `stack`), and with the stack alone
+  confirmed, 27 (all `pad`) -- the fixture arms that show the grid reaches
+  the pad conjunct at all;
+* the currency, on two circles: a diagonal box-only graze charges nothing, a
+  real shortfall charges check_drc's number, a diagonal near-touch is a
+  shortfall and neither a short nor a stack, a real short stays a short;
+* and a part built without a snapshot keeps the box's pad answer.
+
     python3 -X utf8 tests/test_1127_stack_exact_confirm.py [case ...]
 """
 import copy
@@ -328,8 +345,160 @@ def test_check_drc_cache_sees_a_pad_changed_in_place():
           "IN PLACE is recomputed, not served its old outline")
 
 
+def _graded(pose, clearance=0.2):
+    """The GRADERS' verdict on C4 at `pose`, read off the WRITTEN board:
+    `({partner: summed check_drc pad-pad overlap_mm}, {partners
+    check_assembly's pad_intersection channel names})`. check_drc grades at
+    margin 0 with the board's net classes, as its CLI resolves them."""
+    import contextlib
+    import io
+    import check_drc
+    from list_nets import read_design_rules, net_clearance_map
+    from placement.writer import write_placed_output
+    out = os.path.join(_TMP.name, 'graded.kicad_pcb')
+    rules = read_design_rules(ESP)
+    nc = None
+    if rules.get('classes'):
+        nets = parse_kicad_pcb(ESP).nets
+        nc = net_clearance_map(ESP, [n.name for n in nets.values()],
+                               rules=rules) or None
+    with contextlib.redirect_stdout(io.StringIO()):
+        write_placed_output(ESP, out, [{'reference': 'C4', 'new_x': pose[0],
+                                        'new_y': pose[1],
+                                        'new_rotation': pose[2]}])
+        pcb = parse_kicad_pcb(out)
+        found = check_drc.run_drc(out, clearance=clearance, quiet=True,
+                                  print_summary=False, clearance_margin=0.0,
+                                  check_sizes=False, net_clearances=nc,
+                                  pcb_data=pcb)
+    drc = {}
+    for v in found:
+        if v.get('type') != 'pad-pad':
+            continue
+        a, b = v['pad_ref'].split('.')[0], v['pad_ref2'].split('.')[0]
+        if 'C4' in (a, b):
+            other = b if a == 'C4' else a
+            drc[other] = drc.get(other, 0.0) + v['overlap_mm']
+    stack = {q.b if q.a == 'C4' else q.a
+             for q in legality.pad_intersection_pairs(pcb, clearance)
+             if 'C4' in (q.a, q.b)}
+    return drc, stack
+
+
+def test_the_pad_conjunct_agrees_with_check_drc():
+    on, stack_only, off = (_state(ESP, True), _state(ESP, True),
+                           _state(ESP, False))
+    stack_only.legality_ctx.pad_exact = False
+    assert on.legality_ctx.pad_exact and not off.legality_ctx.pad_exact
+    nbs = on._pad_neighbors('C4')
+    arms = (('on', on), ('stack_only', stack_only), ('off', off))
+    wrong = {name: {} for name, _st in arms}
+    charged = 0
+    for pose in _grid():
+        drc, stack = _graded(pose)
+        clean = not drc and not stack
+        for name, st in arms:
+            why = {}
+            if st.legality_ctx.pads_ok('C4', *pose, nbs, why=why) != clean:
+                k = why.get('kind', why.get('check'))
+                wrong[name][k] = wrong[name].get(k, 0) + 1
+        partners = set()
+        for nb in nbs:
+            if nb == 'C4':
+                continue
+            sf = on.legality_ctx.pair_shortfall('C4', nb, pose_a=pose)
+            if sf.pad > 1e-6 or sf.pad_overlap or sf.stack or sf.hole > 1e-6:
+                partners.add(nb)
+            # the CURRENCY: the gate charges check_drc's own overlap. To
+            # 1e-5 mm, not 1e-9: the gate poses the pads in memory and the
+            # grader re-parses the written pose (measured: 3.5e-7 apart).
+            assert abs(sf.pad - drc.get(nb, 0.0)) < 1e-5, (pose, nb, sf, drc)
+            charged += nb in drc
+        assert partners == set(drc) | stack, (pose, partners, drc, stack)
+    assert charged, 'no pose drew a check_drc pad-pad violation: the ' \
+                    'currency check compared zeros'
+    assert wrong['off'] == {'pad': 27, 'stack': 15}, \
+        (wrong['off'], 'the grid moved')
+    assert wrong['stack_only'] == {'pad': 27}, wrong['stack_only']
+    assert wrong['on'] == {}, wrong['on']
+    print(f"  PASS: 121 poses -- pads_ok and the graders disagree at 42 off "
+          f"(27 pad, 15 stack), 27 with the stack alone confirmed, 0 with "
+          f"both; {charged} check_drc pad-pad charge(s) matched in mm")
+
+
+ONE = ('(kicad_pcb (version 20240108) (generator "t1127")\n'
+       '  (layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))\n'
+       '  (net 0 "") (net 1 "N1") (net 2 "N2")\n'
+       '  (gr_rect (start 0 0) (end 20 20) (layer "Edge.Cuts"))\n'
+       '  (footprint "a" (layer "F.Cu") (at 10 10)\n'
+       '    (property "Reference" "A")\n'
+       '    (pad "1" smd circle (at 0 0) (size 1 1) (layers "F.Cu") (net 1 "N1")))\n'
+       '  (footprint "b" (layer "F.Cu") (at {bx} {by})\n'
+       '    (property "Reference" "B")\n'
+       '    (pad "1" smd circle (at 0 0) (size 1 1) (layers "F.Cu")'
+       ' (net 2 "N2"))))\n')
+
+
+def test_the_pad_conjunct_charges_the_outlines():
+    """Two 1 mm circles of different nets, at clearance 0.2 (no project, so
+    the flat scalar): `(B's centre, ON (pad, pad_overlap, stack), whether
+    pads_ok admits A at its file pose from a far seed)`."""
+    from check_drc import check_pad_pad_overlap
+    cases = (
+        # boxes 0.141 apart (corner to corner), circles 0.556: no graze
+        ('graze', 11.1, 11.1, (0.0, False, False), True),
+        # a real 0.1 mm shortfall: check_drc's number, not a box's
+        ('shortfall', 11.1, 10.0, (0.1, False, False), False),
+        # 0.005 mm short: under check_drc's DEFAULT 5% margin, so a gate
+        # confirming at that margin would wave it through. Margin 0 -- the
+        # gate is never looser than the strictest grade
+        ('sliver', 11.195, 10.0, (0.005, False, False), False),
+        # boxes overlap 0.25, circles 0.061 apart: short of clearance by
+        # 0.139, and neither a short nor a stack
+        ('near', 10.75, 10.75, (0.13934, False, False), False),
+        # a real short: the full requirement, and still a short and a stack
+        ('short', 10.9, 10.0, (0.2, True, True), False),
+    )
+    for name, bx, by, want, admit in cases:
+        path = os.path.join(_TMP.name, f'one_{name}.kicad_pcb')
+        with open(path, 'w', encoding='utf-8') as fh:
+            fh.write(ONE.format(bx=bx, by=by))
+        pcb = parse_kicad_pcb(path)
+        hit, over, _pt = check_pad_pad_overlap(
+            pcb.footprints['A'].pads[0], pcb.footprints['B'].pads[0], 0.2,
+            ['F.Cu', 'B.Cu'], clearance_margin=0.0)
+        st = _state(path, True)
+        sf = st.legality_ctx.pair_shortfall('A', 'B')
+        got = (round(sf.pad, 5), sf.pad_overlap, sf.stack)
+        assert got == want, (name, got, want)
+        assert abs(sf.pad - (over if hit else 0.0)) < 1e-12, (name, sf, over)
+        st.parts['A'].seed_x = 2.0          # seed: far apart
+        st.legality_ctx._baselines.clear()
+        assert st.legality_ctx.pads_ok('A', 10.0, 10.0, 0.0, ['B']) is admit
+        # the box charges every one of them, never less than the outlines
+        box = _state(path, False).legality_ctx.pair_shortfall('A', 'B')
+        assert box.pad > 0.0 and box.pad >= sf.pad - 1e-12, (name, box, sf)
+    print("  PASS: a diagonal box graze charges nothing, a real shortfall "
+          "check_drc's mm, a near-touch is no short, a short stays one")
+
+
+def test_a_snapshotless_part_keeps_the_box_pad_answer():
+    path = os.path.join(_TMP.name, 'one_graze_box.kicad_pcb')
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write(ONE.format(bx=11.1, by=11.1))
+    st = _state(path, False)               # parts built with no snapshot
+    st.legality_ctx.stack_exact = st.legality_ctx.pad_exact = True
+    sf = st.legality_ctx.pair_shortfall('A', 'B')
+    assert abs(sf.pad - (0.2 - 0.1 * 2 ** 0.5)) < 1e-9, sf
+    print("  PASS: a part that cannot be posed is charged the box's pad "
+          "shortfall (falsely reject, never accept)")
+
+
 TESTS = [
     test_the_grid_agrees_with_check_assembly,
+    test_the_pad_conjunct_agrees_with_check_drc,
+    test_the_pad_conjunct_charges_the_outlines,
+    test_a_snapshotless_part_keeps_the_box_pad_answer,
     test_a_real_stack_is_still_a_stack,
     test_a_box_only_hit_after_a_real_stack_keeps_the_stack,
     test_the_exact_check_needs_contact_not_nearness,

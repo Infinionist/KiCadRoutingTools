@@ -247,7 +247,7 @@ harmless.
    input-sibling projects at every step, and the replay seeder now carries
    `<board>.kicad_pro` for legacy stem-mismatched manifests).
 1b. PARSER-PARITY VALIDATION (per board, start AND end): run
-   `python3 <TOOLS_REPO>/validate_pcb_data.py <board>`
+   `python3 <TOOLS_REPO>/py_tools/validate_pcb_data.py <board>`
    on the input board before any routing step, and again on the final board.
    It diffs the pcbnew-built PCBData (the GUI's model) against the text parse
    (the CLI's model) — the headless twin of the GUI's "Validate PCB Data"
@@ -530,10 +530,10 @@ harmless.
    Assert on the `JSON_IMPROVEMENT_GATE:` line (`lost`/`gained`/`verdict`) rather
    than reading prose, and record a REVERTED step in `issues`.
 11. Verification (always, on the final board):
-    - `check_drc.py <final> --clearance <floor> --hole-to-hole-clearance <floor> 2>&1 | tee drc.log`
+    - `py_router/check_drc.py <final> --clearance <floor> --hole-to-hole-clearance <floor> 2>&1 | tee drc.log`
       (manufacturing floor from `--design-rules`, per step 7; note the flags used)
-    - `check_connected.py <final> 2>&1 | tee connectivity.log`
-    - `check_orphan_stubs.py <final> 2>&1 | tee orphans.log`
+    - `py_router/check_connected.py <final> 2>&1 | tee connectivity.log`
+    - `py_tools/check_orphan_stubs.py <final> 2>&1 | tee orphans.log`
 11b. COMPARE-TO-ORIGINAL (always, final step): run
     `python3 <TOOLS_REPO>/tests/stress/compare_to_original.py
      --ours <final> --orig ~/Documents/kicad_stress_test/boards_set<N>/<board>.kicad_pcb
@@ -555,8 +555,13 @@ harmless.
     ulx3s) is wedged, not slow. NEVER end your turn while
     a routing command is still running — you will be terminated and the run
     orphaned. Run commands in the FOREGROUND, and **pass an EXPLICIT timeout on
-    every routing/fanout/plane command: `timeout: 600000` (10 min, the maximum).
-    This is required, not an upper bound you may ignore (#599).** The Bash
+    every routing/fanout/plane command: `timeout: 10800000` (3 h, this rule's
+    per-command cap). This is required, not an upper bound you may ignore
+    (#599).** `run_board.sh` raises the Bash tool's maximum to that value by
+    exporting `BASH_MAX_TIMEOUT_MS=10800000`. Without it the maximum is 600000
+    (10 min), and a call that reaches it is MOVED TO THE BACKGROUND and stopped
+    10 min later. So a step over ~20 min dies even if you then poll for it,
+    which is how rein_r1 lost its first route attempt (2026-10-09). The Bash
     tool's DEFAULT timeout is 120000 ms — two minutes — while a route step
     routinely takes 3-20x that (`faderbank_16nx` 316 s, `wisweep_driver` 264 s,
     `crazyflie_fpga_deck` 189 s). Omitting the timeout killed at least one
@@ -566,11 +571,13 @@ harmless.
     violation when it was neither. The wrapper now prints the elapsed time and
     a "the caller's timeout is too short" hint when it dies far short of the
     3-hour cap — believe it, and re-run with the timeout rather than retrying
-    the same way or blaming the router. If a
-    command exceeds the 10-min foreground cap, keep waiting in foreground:
-    repeatedly run `until ! pgrep -f "<unique-cmd-fragment>" >/dev/null; do
-    sleep 10; done` (each up to 10 min) until the process exits, then read its
-    log and continue. Big/dense boards (FPGA/USB3-class: daisho, large BGAs)
+    the same way or blaming the router. **Outside `run_board.sh`** (a session
+    whose maximum is still 600000), a step that may run past ~20 min cannot be
+    waited out in the foreground. Launch it detached from the start --
+    `STRESS_ALLOW_ORPHAN=1 nohup bash run_limited.sh <cmd> > <step>.log 2>&1 &`
+    -- and poll with `until ! pgrep -f "<unique-cmd-fragment>" >/dev/null; do
+    sleep 10; done` calls that each end inside the cap, until the process exits.
+    Then read its log and continue. Big/dense boards (FPGA/USB3-class: daisho, large BGAs)
     can legitimately spend 30-90+ min in a single signal-route step — that is
     slow progress, NOT a hang. Only kill a command once it shows no log growth
     AND no output-file size change for >45 min, and record it as a hang.
@@ -726,7 +733,7 @@ boards" and "which commit broke connectivity".
   `upload` / `run` / `harvest` / `baseline` / `compare`.
 
   **The image carries KiCad by default (since 2026-08-23).** `--with-kicad` is
-  the default and builds on `kicad/kicad:10.0.0`, so the **oracle legs actually
+  the default and builds on `kicad/kicad:10.0.6`, so the **oracle legs actually
   run**. `--no-kicad` builds `debian_slim` instead, and there every oracle leg
   is **DEAD, not degraded** -- `oracle_reconnect` returns `available=False` the
   moment `find_kicad_cli()` is None -- so a change acting through the finalize
@@ -737,6 +744,16 @@ boards" and "which commit broke connectivity".
   arm name and arm = label + sha: two waves at the same commit differing only by
   the image would otherwise share rows, which is precisely the
   "the baseline was not the baseline" failure `arm_name()` exists to prevent.
+  The same holds between KiCad versions: `KICAD_SWEEP_KICAD_IMAGE` overrides the
+  default image, and a wave on any other image is labelled `-kc-<tag>` instead
+  (`-kc-10.0.0`), so it cannot resume another version's rows.
+  The default moved from `10.0.0` to `10.0.6` in #1224, and the default is read
+  from the code at the arm's commit, so a wave at an earlier commit ran 10.0.0
+  under the same plain `-kc`. When one arm of an A/B predates #1224 (a baseline
+  at an older merge-base, say), set `KICAD_SWEEP_KICAD_IMAGE` to one image for
+  both arms. An older harness still passes the variable to `modal_app.py`, but
+  prints `kicad/kicad:10.0.0` on its `image :` line whatever the container runs
+  and leaves the tag out of the arm name.
 
   Note the crate is built IN the image. When `rust_router/Cargo.toml` is ahead
   of the latest release tag (i.e. a crate bump whose binaries are not published
@@ -861,6 +878,28 @@ boards" and "which commit broke connectivity".
   the 2026-09-03 four-way A/B (old engine / new engine old policy / new
   engine new policy), which read -3 real DRC / -11 incomplete nets.
 
+### Per-net via sizes: `pernet_via_ab.py`
+
+Per-net via sizes (#530: a net drawn at its own class / rule via) are live only
+when route.py runs without `--via-size`, and 396 of the 403 recorded route
+steps pass one -- so `cloud_replay_sets.py` never exercises them, and a change
+to them A/Bs as a perfect null. `tests/stress/pernet_via_ab.py` replays one
+recorded route step per board with `--via-size`/`--via-drill` stripped:
+
+    python3 tests/stress/pernet_via_ab.py select                    # boards where per-net vias go live
+    python3 tests/stress/pernet_via_ab.py launch --label NAME [--only a,b]
+    python3 tests/stress/pernet_via_ab.py collect --label NAME
+
+`launch` deploys the sweep's image (clean `git archive HEAD` + KiCad) as the
+base arm and applies the working tree's `git diff HEAD` in the fix arm's
+container, so launch BEFORE committing the change. One spawn per (board, arm);
+each writes its own result to the `kicad-pernet-ab` volume, so a dropped link
+loses nothing. `collect` downloads to `<corpus>/pernet_ab/NAME`, grades both
+arms with the base checkers (shorts the run created = shorts absent from the
+graded input), and stops the app once every board is in. After editing the
+tool, `modal app stop pernet-via-ab -y` before relaunching: warm containers
+keep serving the previous code.
+
 ### Rules that make these trustworthy
 
 1. **The baseline is the RECORDED RUNS, re-graded — not an archived `ab_*` wave.**
@@ -875,11 +914,14 @@ boards" and "which commit broke connectivity".
    re-grades the kept boards locally by default (`--no-local-regrade` opts out).
 
    **On a KiCad image you can grade in the cloud and skip the regrade.** Since
-   2026-08-23 `--with-kicad` is the default (`kicad/kicad:10.0.0`), so the
-   containers run the SAME `kicad-cli` grader your machine does, and the two
-   have been checked to agree (drandyhaas, 2026-08-31). `--no-local-regrade` is
-   therefore the faster path on such a wave, and it does not violate this rule:
-   the rule is same-TERMS, and same terms is exactly what a shared grader gives.
+   2026-08-23 `--with-kicad` is the default (`kicad/kicad:10.0.6`), so the
+   containers carry a `kicad-cli` grader of their own, checked to agree with a
+   local one of the same version (drandyhaas, 2026-08-31, both 10.0.0).
+   `--no-local-regrade` is therefore the faster path on such a wave, and it does
+   not violate this rule: the rule is same-TERMS, and same terms is exactly what
+   a shared grader gives. It is shared only while both arms were graded on one
+   KiCad version: a machine whose `kicad-cli` is older than the image grades
+   differently from the containers, so grade both arms in one place.
 
    **The baseline arm can be re-graded in the cloud too.** `--regrade-baseline`
    re-grades on this machine; `modal_sweep/regrade_arm.py` runs the same
@@ -1146,10 +1188,17 @@ python3 -X utf8 tests/stress/strip_copper_only.py \
 **Do NOT use `strip_routing.py` or `prep_set2.py` for this.** They are corpus
 normalizers and they rewrite `Edge.Cuts`, so the subject would no longer share an
 outline with the human reference it is graded against. `strip_copper_only.py`
-drops exactly four form types (top-level `segment`, `arc`, `via`, and
-`filled_polygon` inside zones) and leaves poses, pads, zones, stackup and outline
-untouched; verified on castor_pollux, 14241 segments and 358 vias to zero with an
-identical pose digest and identical bounds.
+drops routing output and nothing else: top-level `segment`, `arc` and `via`,
+`filled_polygon` inside zones, TEARDROP zones (`(attr (teardrop ...))`, which
+KiCad generates on every pad or via a track meets), `generated` forms (length-
+tuning patterns, whose `base_line`/`origin`/`end` are the human track's
+coordinates) none of whose members survives, and groups that lost every member
+to those drops (#1164). Its summary line counts each kind. It leaves poses,
+pads, ordinary zones (pours, keep-outs), stackup and outline untouched;
+verified on castor_pollux, 14241 segments and 358 vias to zero with an
+identical pose digest and identical bounds. The placement gates count a
+teardrop zone as routed copper, so a board stripped by anything that keeps
+them is refused the way a routed one is.
 
 ### 1. Qualify the board (seconds, not an hour)
 

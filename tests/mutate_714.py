@@ -246,6 +246,19 @@ ROWS = [
      "        if False:\n",
      (REF,), 'SURVIVED'),
 
+    # #1248: the pad-to-die tokens are whitelisted pad children a flip leaves
+    # alone. No tracked board carries either, so before the injected tigard J7
+    # (RT's die arm, PAR's INJECTED) these rows could only SURVIVE -- and
+    # `die_delay` was in fact refused outright, unnoticed.
+    ('the-die-delay-pad-child-is-refused-again', 'wr',
+     "    'die_delay',\n})\n",
+     "})\n",
+     (RT, PAR), 'KILLED'),
+    ('the-die-length-pad-child-is-refused', 'wr',
+     "'thermal_width', 'die_length',\n",
+     "'thermal_width',\n",
+     (RT, PAR), 'KILLED'),
+
     # -------------------------------------------------- format and the ledger
     # Killed by RT ALONE: every value test passes, because the numbers are
     # right and only their SPELLING changed (`0.500` -> `0.5`). The exact

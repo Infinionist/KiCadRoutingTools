@@ -44,8 +44,12 @@ CENTROID_PCT = 3.0
 #: (subject, near, pad) -> the gap criterion 3 quoted, two decimals.
 PROXIMITY = {('Y1', 'U1', '1'): '2.69', ('Y1', 'U1', '2'): '1.62',
              ('C1', 'U2', '1'): '1.12', ('C3', 'U2', '1'): '0.29'}
-#: The two wrong-partner tether distances criterion 3 cited.
-WRONG_PARTNERS = ('1.83', '2.03')
+#: The regulator's own caps and the partner the tether election gives them.
+#: Criterion 3 cited C3 -> U1 1.83 mm and C1 -> USB1 2.03 mm as WRONG
+#: partners: U2 is a 3-pad SOT-89 regulator, and before #1249 a part under
+#: four copper pads could never be elected. It is a supply owner now
+#: (`groups.supply_owners`), so both caps elect the regulator they serve.
+REGULATOR_PARTNERS = {'C1': ('U2', '0.95'), 'C3': ('U2', '0.95')}
 
 FAILURES = []
 
@@ -245,12 +249,13 @@ def test_criterion_3_is_what_the_grader_reports():
     check('the body-basis pair was measured too',
           ('Q1', 'Q2', None) in gaps, sorted(gaps))
 
-    # The two tether distances criterion 3 cited as the WRONG partners.
+    # The two caps criterion 3 cited with WRONG partners (C3 -> U1 1.83,
+    # C1 -> USB1 2.03) now elect the regulator they serve (#1249).
     tethers = groups.decap_tethers(parse_kicad_pcb(FIXTURE))
-    wrong = sorted(mm for rows in (tethers or {}).values() for _, mm in rows)
-    check('the wrong-partner tether distances are 1.83 and 2.03',
-          tuple(f'{mm:.2f}' for mm in wrong[-2:]) == WRONG_PARTNERS,
-          [f'{mm:.2f}' for mm in wrong])
+    got = {cap: (ic, f'{mm:.2f}') for ic, rows in (tethers or {}).items()
+           for cap, mm in rows if cap in REGULATOR_PARTNERS}
+    check('the regulator caps C1/C3 tether to U2 at 0.95mm each',
+          got == REGULATOR_PARTNERS, got)
 
 
 TESTS = [test_criterion_1_and_2_are_what_the_instrument_reports,

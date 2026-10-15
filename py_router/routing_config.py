@@ -215,6 +215,12 @@ class GridRouteConfig:
     # dataclasses.replace CLONE for one retry search -- never mutate a shared
     # config, the field must not leak into sibling routes.
     via_rung: int = 0
+    # #1226: the RUN's (via_size, via_drill), recorded on the per-net clone
+    # single_ended_routing._per_net_via_config makes for a net at its own
+    # #530 via (None on the run config). The #568 small rung is stamped
+    # against the run's via, so a rung-1 retry from that clone must ship the
+    # pair the map was stamped at, not one derived from the net's own via.
+    run_via: Optional[Tuple[float, float]] = None
     neckdown_length: float = 2.5  # mm of narrow track from the target pad
     neckdown_taper_length: float = 0.5  # mm narrow->wide taper (0 = abrupt width step)
     gnd_via_enabled: bool = True  # Enable GND via placement near diff pair signal vias
@@ -377,6 +383,13 @@ class GridRouteConfig:
     # search prices each such net at its own via through the obstacle map's
     # via-legality RUNGS (obstacle_cache.via_rungs) and emits vias at it.
     net_via_sizes: Dict[int, Tuple[float, float]] = field(default_factory=dict)
+    # #1260: the copper pours this run may not CUT -- fill islands of zone
+    # nets outside the run's scope that no routed net has a terminal inside
+    # (pour_guard.install_pour_barriers), each {'net', 'layer', 'polygons',
+    # 'clearance'}. build_base_obstacle_map stamps them as hard track and via
+    # keep-outs. Engine-computed and handed down to nested sub-runs; no CLI
+    # flag and no GUI control (KICAD_POUR_GUARD=0 reverts). Empty = inert.
+    pour_barriers: List[dict] = field(default_factory=list)
 
     def net_via(self, net_id: int) -> Tuple[float, float]:
         """(diameter, drill) this net's vias are drawn at."""

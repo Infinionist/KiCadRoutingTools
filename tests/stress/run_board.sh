@@ -12,13 +12,23 @@
 # both backends' JSON event schemas are supported there.
 #
 # Usage: run_board.sh <board> <set:1|2|3...> [model]
-#   model: claude backend takes tier aliases (default: sonnet); opencode takes
-#          provider/model (e.g. anthropic/claude-sonnet-4-5; default: the
-#          user's configured opencode default model).
+#   model: claude backend takes tier aliases (default: sonnet, i.e. the latest
+#          Sonnet); opencode takes provider/model (e.g. anthropic/claude-sonnet-4-5;
+#          default: the user's configured opencode default model).
+#   effort: STRESS_AI_EFFORT=low|medium|high|xhigh|max (claude backend; default high).
 set -u
 BOARD="${1:?board}"; SET="${2:?set}"; MODEL="${3:-}"
 BACKEND="${STRESS_AI_BACKEND:-claude}"
 if [ "$BACKEND" = "claude" ] && [ -z "$MODEL" ]; then MODEL=sonnet; fi
+EFFORT="${STRESS_AI_EFFORT:-high}"
+# Raise the agent's Bash timeout cap to the RUNBOOK's 3-hour per-command cap
+# (rule 12). Without it the cap is 600000 ms, and a call that reaches it is
+# MOVED TO THE BACKGROUND and then stopped 10 min later -- so a route step over
+# ~20 min dies even when the agent polls exactly as told. rein_r1 lost its first
+# route attempt that way (2026-10-09). Measured: with this variable a 660 s
+# command ran as ONE foreground call; without it the same command was
+# backgrounded at 600 s.
+export BASH_MAX_TIMEOUT_MS="${BASH_MAX_TIMEOUT_MS:-10800000}"
 # Repo root is derived from this script's own location (tests/stress/run_board.sh),
 # so the script is portable; override with STRESS_REPO if needed.
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -106,8 +116,9 @@ Rules that matter most:
 - Keep fine (sub-Default) clearance LOCAL to fine-pitch escapes, never board-wide.
 - Run EVERY command in the FOREGROUND and BLOCK until it returns — even if a
   single route step takes an hour (hard 3-hour/command cap, ~3.5-hour board
-  budget). PASS AN EXPLICIT timeout: 600000 (10 min, the max) ON EVERY routing/
-  fanout/plane command — the DEFAULT is only 120000 ms (2 min) and route steps
+  budget). PASS AN EXPLICIT timeout: $BASH_MAX_TIMEOUT_MS (this worker's raised
+  cap) ON EVERY routing/fanout/plane command, so a long step can block in the
+  foreground — the DEFAULT is only 120000 ms (2 min) and route steps
   routinely take 3-20x that, so omitting it kills your own work and looks like a
   hang (#599: it cost 21 of 99 boards an attempt). If run_limited.sh prints
   'the CALLER's command timeout is too short', believe it: re-run WITH the
@@ -139,7 +150,7 @@ When fully done:
 # Note `board=` appears on BOTH the start and the exit line -- count launches with
 # `grep -c 'start='`, not `grep -c 'board='`.
 {
-  echo "[run_board] board=$BOARD set=$SET backend=$BACKEND model=${MODEL:-(backend default)} start=$(date)"
+  echo "[run_board] board=$BOARD set=$SET backend=$BACKEND model=${MODEL:-(backend default)} effort=$EFFORT start=$(date)"
   echo "[run_board] result=$RESULT"
 } >> "$RUNDIR/worker.log"
 
@@ -152,6 +163,7 @@ export KICAD_ROUTE_TRACE="${KICAD_ROUTE_TRACE:-1}"
 # narrative; worker.log keeps the wrapper markers + stderr.
 ( cd "$RUNDIR" && claude -p "$PROMPT" \
     --model "$MODEL" \
+    --effort "$EFFORT" \
     --dangerously-skip-permissions \
     --output-format stream-json --verbose \
     --add-dir "$ROOT" --add-dir "$REPO" ) > "$RUNDIR/transcript.jsonl" 2>> "$RUNDIR/worker.log"
@@ -191,7 +203,7 @@ print(fb if fb and os.path.exists(fb) else '')" 2>/dev/null)
     # must describe the same board, else the CLI and GUI route different worlds.
     # Mirrors redo_stress_test.py; non-fatal -- a FAIL is a parser bug to file,
     # not a routing failure. validate_pcb_data.py self-execs into KiCad's python.
-    if python3 "$REPO/validate_pcb_data.py" "$FB" > "$RUNDIR/validate_pcb_data.txt" 2>&1; then
+    if python3 "$REPO/py_tools/validate_pcb_data.py" "$FB" > "$RUNDIR/validate_pcb_data.txt" 2>&1; then
       :
     else
       echo "[run_board] PARSER-PARITY FAIL on $(basename "$FB") -- see validate_pcb_data.txt" >> "$RUNDIR/worker.log"

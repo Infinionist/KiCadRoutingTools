@@ -338,9 +338,9 @@ ROWS = [
     # further from its IC (esp_prog C2 5.64 -> 5.69 mm).
     ('repair-charges-held-caps', 'seeder',
      "            if v.rule == 'decap_ungraded':\n"
-     "                notes.append(\n",
+     "                if repair_decaps and v.ref in state.parts:\n",
      "            if False:\n"
-     "                notes.append(\n",
+     "                if repair_decaps and v.ref in state.parts:\n",
      (REPAIR,), 'KILLED'),
     ('held-by-reference-unreported', 'floorplan',
      "                      'held_by_reference': is_held},\n",

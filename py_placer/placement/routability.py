@@ -715,7 +715,10 @@ def health(state, pcb_data, blocks: Dict[str, Sequence[str]],
             # plane NETS. Left undeclared the ledger observes pours, and a
             # board being placed has none yet -- so the declaration is the
             # channel that actually carries an answer here.
-            plane_layers=spec.get('plane_layers'))
+            plane_layers=spec.get('plane_layers'),
+            # #1196: and every part fine at this board's own track and
+            # clearance, not only those fine by the two absolute pitches.
+            fine_at_board_rules=True)
     except Exception as exc:                      # noqa: BLE001
         out['skipped']['escape_lanes'] = f'not computed: {exc}'
         led = []
@@ -1194,12 +1197,18 @@ def face_lane_ledger(pcb_data, ref: str, *, clearance: float,
     # verdict that moves with `--grid-step` is exactly the confound the two
     # supply columns exist to keep out. `escape.part_escape` resolves the
     # same pair, so the two ledgers price one corridor.
+    # #1196: `through_row` -- a through-hole part's interior pins are demand
+    # on their nearest face (they are on every layer; their nets leave
+    # between the outer pins), the same call `escape.part_escape` makes.
     asg = _assign_faces(fp, own, lane_mm=pitch_routed, fallback_rect=ext,
-                        clearance=clearance, track_width=track_width)
+                        clearance=clearance, track_width=track_width,
+                        through_row=True)
 
     demand: Dict[str, set] = {f: set() for f in faces}
     interior_pads = 0
     interior_box = 0
+    through_row = 0
+    through_nets: set = set()
     interior_nets: set = set()
     interior_demand: set = set()
     for i, (pad, face) in enumerate(asg.faces):
@@ -1211,6 +1220,9 @@ def face_lane_ledger(pcb_data, ref: str, *, clearance: float,
         # function of clearance and track width; this one is not.
         if asg.box_faces and asg.box_faces[i] is None:
             interior_box += 1
+        row_pin = bool(asg.through_row and asg.through_row[i])
+        if row_pin:
+            through_row += 1
         # GEOMETRY FIRST, THE NET FILTER SECOND. The other way round, the
         # published interior count would be over the owner-filtered subset and
         # would not be comparable with `escape.PartEscape.interior_pads`,
@@ -1228,6 +1240,8 @@ def face_lane_ledger(pcb_data, ref: str, *, clearance: float,
         if face is None:
             interior_demand.add(nid)
             continue
+        if row_pin:
+            through_nets.add(nid)        # #1196: a row pin's net, as demand
         demand[FACE_LETTER[face]].add(nid)
     # A net with one pad interior and another on a face is NOT lost demand --
     # it still has to leave through that face. Only the nets with no pad on
@@ -1379,7 +1393,16 @@ def face_lane_ledger(pcb_data, ref: str, *, clearance: float,
                     # nothing naming where it went is how a ledger stops
                     # looking and reads as a fix.
                     'interior_pads_box': interior_box,
-                    'face_corridor_escapes': interior_box - interior_pads,
+                    'face_corridor_escapes': (interior_box - interior_pads
+                                              - through_row),
+                    # #1196: a through-hole part's pins the two rules above
+                    # call interior, charged to their nearest face because a
+                    # pin on every layer needs a lane between the outer
+                    # pins, not a via. The conservation law is
+                    # `interior_pads + face_corridor_escapes +
+                    # through_row_pads == interior_pads_box`.
+                    'through_row_pads': through_row,
+                    'through_row_nets': len(through_nets),
                     # ...and the basis the enclosure test ran at, so a reader
                     # diffing two runs can tell a placement that moved from a
                     # basis that moved. `source` says 'caller' when the

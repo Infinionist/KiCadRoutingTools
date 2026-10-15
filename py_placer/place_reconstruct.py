@@ -185,8 +185,8 @@ Examples:
         return UNPLACED_EXIT
     st = assess_placement(pcb, args.input_file)
     if st.has_copper:
-        print(f"place_reconstruct: board carries {st.segments} segment(s) / "
-              f"{st.vias} via(s); reconstruction moves footprints and would "
+        print(f"place_reconstruct: board carries {st.copper_carried}; "
+              f"reconstruction moves footprints and would "
               f"strand them. Strip or re-run from the unrouted board.",
               file=sys.stderr)
         return UNPLACED_EXIT
@@ -325,6 +325,7 @@ Examples:
     # proxy (R1: an edge part's position is not a netlist question; the
     # proxy would anchor them to their possibly-misplaced partners).
     edge_pref = {}
+    edge_entries = {}           # #1242: their entries, for the facing seat
     if intent is not None:
         # edge_claims(): the receptacle filter below already excluded the
         # weak class, but every engine read goes through the one split so a
@@ -340,6 +341,7 @@ Examples:
                     and c.get('class') == 'edge_receptacle'
                     and not state.parts[c['ref']].locked):
                 edge_pref[c['ref']] = edge_bands.get(c['ref'], 2.0)
+                edge_entries[c['ref']] = c
     if edge_pref:
         print("Edge-preference refs (no declared edge; class outranks the "
               "netlist proxy): " + ", ".join(sorted(edge_pref)))
@@ -400,8 +402,12 @@ Examples:
     xmoved_all = []
     if 'assign' in stages and (vectors or proposals):
         for rnd in range(max(1, args.assign_rounds)):
+            # #1242: an edge-less receptacle's seats face out of the edge
+            # they sit on -- a reversed one is not offered, the facing
+            # quarter turn at that position is (`facing_seats`).
             cands, pattern = reconstruct.build_candidates(
-                state, tiers, vectors, proposals, edge_bands=edge_bands)
+                state, tiers, vectors, proposals, edge_bands=edge_bands,
+                facing=edge_entries)
             n_multi = sum(1 for c in cands.values() if len(c) > 1)
             if rnd == 0:
                 print(f"  assign: {n_multi} part(s) with a real candidate set")
@@ -414,8 +420,8 @@ Examples:
                    for r in choice}
             for ref, k in sorted(choice.items()):
                 if k > 0:
-                    x, y = cands[ref][k]
-                    state.apply_move(ref, x, y, state.parts[ref].rot)
+                    state.apply_move(ref, *reconstruct.cand_pose(
+                        state, ref, cands[ref][k]))
             after = reconstruct.measure(state, edge_bands)
             before_round = base
             rmoved = []
@@ -446,6 +452,17 @@ Examples:
                       f"part(s) moved"
                       + (f" ({len(pruned)} pruned back)" if pruned else "")
                       + f"; gate now {reconstruct.format_gate(after)}")
+                for r in sorted(rmoved):
+                    # #1242: a turned candidate is only ever a facing seat.
+                    if len(cands[r][choice[r]]) > 2:
+                        to = state.parts[r].rot
+                        edge = floorplan._nearest_edge(
+                            state.parts[r].grade_rect(), state.board)
+                        print(f"    {r}: turned {old[r][2]:g} -> {to:g}deg, "
+                              f"seated on the {edge} edge at the angle its "
+                              f"mating face points out of it (#1242)")
+                        report.setdefault('edge_turned', {})[r] = {
+                            'from': old[r][2], 'to': to, 'edge': edge}
                 # The accept rule is smaller-OR-EQUAL, so a round can move
                 # parts and change nothing the gate can see. That is not
                 # neutral: displacement is unbounded, and a run was measured
@@ -508,6 +525,25 @@ Examples:
         report['edge_seated'] = {
             r: [state.parts[r].x, state.parts[r].y]
             for r in sorted(edge_pref) if r in set(moved)}
+        # #1242: an edge-less receptacle that ENDS on a reversed seat -- its
+        # input pose, which this tool does not turn where it stands -- is
+        # named, since no grade sees it without a declared edge.
+        for r in sorted(edge_entries):
+            rev = reconstruct.reversed_seat(state, r, edge_entries[r],
+                                            edge_pref[r])
+            if rev is None:
+                continue
+            report.setdefault('edge_reversed', {})[r] = rev
+            how = (f"faces the {rev['facing']} edge" if rev['facing']
+                   else "opens along it")
+            print(f"  {r}: left REVERSED on the {rev['edge']} edge (it {how}). "
+                  f"Its edge is withheld as suspect (#1155), so it is not "
+                  f"turned where it stands: declare the edge it belongs on "
+                  f"in the intent or the design brief (the {rev['edge']} edge "
+                  f"if it is only turned"
+                  + (f", the {rev['facing']} edge if it was displaced from "
+                     f"there" if rev['facing'] else "")
+                  + ") and re-run to have it seated facing out (#1242)")
 
     placements = [{'reference': r, 'new_x': pt.x, 'new_y': pt.y,
                    'new_rotation': pt.rot}

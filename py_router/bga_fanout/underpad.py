@@ -45,6 +45,7 @@ from __future__ import annotations
 import heapq
 import math
 import os
+from bisect import bisect_left, bisect_right
 from collections import Counter
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -238,16 +239,71 @@ class _Occ:
         one system76_launch net: 100M _disk yields, 397 of 433 s, most of it
         the GC re-traversing the freshly built sets). Adjacent balls share
         their neighbours, so the memo collapses that to one build per disk.
-        Built from _disk_spans, so membership is identical to _disk."""
-        key = (round(x, 6), round(y, 6), round(r, 6))
-        cells = self._disk_memo.get(key)
+        Built from _disk_spans, so membership is identical to _disk.
+
+        The carve takes its disks as column runs (disk_runs, the same memo
+        entry) and never builds them; this builds the set on first use."""
+        entry = self._disk_entry(x, y, r)
+        cells = entry[1]
         if cells is None:
-            cells = frozenset((a, b) for a, b0, b1 in self._disk_spans(x, y, r)
-                              for b in range(b0, b1 + 1))
+            cells = entry[1] = frozenset((a, b) for a, b0, b1 in entry[0]
+                                         for b in range(b0, b1 + 1))
+        return cells
+
+    def _disk_entry(self, x, y, r):
+        """The memo entry [spans, frozenset or None] for disk (x, y, r).
+
+        Keyed to a micron, so the FIRST (x, y, r) asked for under a key
+        decides the cells for every later ask -- both accessors share the
+        entry, so they always agree on which cells that is."""
+        key = (round(x, 6), round(y, 6), round(r, 6))
+        entry = self._disk_memo.get(key)
+        if entry is None:
+            entry = [self._disk_spans(x, y, r), None]
             if len(self._disk_memo) >= 200000:
                 self._disk_memo.clear()
-            self._disk_memo[key] = cells
-        return cells
+            self._disk_memo[key] = entry
+        return entry
+
+    def disk_runs(self, x, y, r):
+        """disk_cells(x, y, r) as column runs [(a, b0, b1)], from the same
+        memo entry (a disk is at most one run of rows per column)."""
+        return self._disk_entry(x, y, r)[0]
+
+    @staticmethod
+    def cell_columns(cells):
+        """``cells`` indexed for cells_in_runs: column a -> sorted rows b."""
+        cols = {}
+        for a, b in cells:
+            cols.setdefault(a, []).append(b)
+        for rows in cols.values():
+            rows.sort()
+        return cols
+
+    @staticmethod
+    def cells_in_runs(runs, cols):
+        """The cells of a set (``cols`` = its cell_columns) whose row lies in
+        one of its column's runs: ``runs`` maps a column to [(b0, b1)], the
+        disk_runs of any number of disks. That is the union of those disks
+        cut to the set, found per column by bisection, with neither a disk
+        nor the union ever built. Sorts the run lists in place."""
+        out = []
+        for a, iv in runs.items():
+            rows = cols.get(a)
+            if not rows:
+                continue
+            iv.sort()
+            lo, hi = iv[0]
+            for b0, b1 in iv:
+                if b0 > hi + 1:
+                    out.extend([(a, b) for b in rows[bisect_left(rows, lo):
+                                                    bisect_right(rows, hi)]])
+                    lo = b0
+                if b1 > hi:
+                    hi = b1
+            out.extend([(a, b) for b in rows[bisect_left(rows, lo):
+                                            bisect_right(rows, hi)]])
+        return out
 
     def block_layer(self, li, x, y, r):
         g = self.grid[li]
@@ -567,6 +623,40 @@ def stub_track_conflict(net_id, a, b, segs, layer_idx, half_width, clearance):
     return False
 
 
+def _cyclic_gc_paused(fn):
+    """Run `fn` with Python's CYCLIC collector paused, restored on exit.
+
+    The under-pad escape allocates tens of millions of small objects, and
+    CPython 3.14's incremental collector re-traverses what survives on its
+    young-generation schedule, at a cost that grows with everything else the
+    process holds. Measured on 3.14.0: building 0.8M cells in sets took 1.6 s
+    with nothing else retained, 12.4 s with 4M cells retained, 0.25 s paused.
+    It was found on the disk frozensets the #864 memo kept; with the carve no
+    longer building those (disk_runs), the pause still takes the escapes of
+    the rp2350 sheet:558c3023 group route from 81 to 67 s CPU (two pairs).
+    Reference counting still frees everything acyclic as it dies, and the
+    escape makes no cyclic garbage of its own (a gc.collect() after each of
+    glasgow U30's 50 escape calls at a 0.70 mm hole-to-hole floor found
+    none), so the pause changes WHEN a collection runs, never what is
+    computed -- the precedent is placement/fanout_clearance.py's cap sweep.
+    Nested calls are safe: only the outermost call re-enables, and only if
+    the collector was enabled when it started."""
+    import functools
+    import gc
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            if was_enabled:
+                gc.enable()
+    return wrapper
+
+
+@_cyclic_gc_paused
 def generate_underpad_escape(footprint: Footprint,
                              pcb_data: PCBData,
                              grid: BGAGrid,
@@ -1182,29 +1272,32 @@ def generate_underpad_escape(footprint: Footprint,
         c_lay: dict = {}
         if not home:
             return c_all, c_lay
+        # Every foreign disk below is kept as its column runs, per layer (None:
+        # all layers), and the union is cut to `home` once at the end
+        # (cells_in_runs): the disks overlap each other heavily -- adjacent
+        # balls, a track's sample disks -- and neither one disk nor their
+        # union is ever built cell by cell. The memo is still asked in the
+        # same order, so the same ask decides each micron key.
+        runs: dict = {}
 
         def near_pt(x, y, reach):
             return any((x - ax) ** 2 + (y - ay) ** 2 < reach * reach
                        for ax, ay in anchors)
 
-        def add(cells, li):
-            cells &= home
-            if not cells:
-                return
-            if li is None:
-                c_all.update(cells)
-            else:
-                c_lay.setdefault(li, set()).update(cells)
+        def add(x, y, r, li):
+            col_runs = runs.setdefault(li, {})
+            for a, b0, b1 in occ.disk_runs(x, y, r):
+                col_runs.setdefault(a, []).append((b0, b1))
 
         for (x, y, keep, li, nid) in carve_disks:
             if nid in net_ids or not near_pt(x, y, home_r + keep):
                 continue
-            add(occ.disk_cells(x, y, keep) & home, li)
+            add(x, y, keep, li)
         for v in vias_to_add:
             keep = v['size'] / 2.0 + track_width / 2 + clearance + margin
             if v['net_id'] in net_ids or not near_pt(v['x'], v['y'], home_r + keep):
                 continue
-            add(occ.disk_cells(v['x'], v['y'], keep) & home, None)
+            add(v['x'], v['y'], keep, None)
 
         def add_seg(x1, y1, x2, y2, keep, li):
             # #864: the capsule around a foreign track, as disks sampled every
@@ -1213,7 +1306,7 @@ def generate_underpad_escape(footprint: Footprint,
             # sqrt(keep^2 + (step/2)^2) at that spacing covers the capsule of
             # radius keep with no gap (the far point midway between samples is
             # exactly that far), so the carve only ever over-blocks, by at most
-            # 3% of keep. Each disk is memoised and cut to `home` at once.
+            # 3% of keep. Each disk is memoised and joins the layer's runs.
             dx, dy = x2 - x1, y2 - y1
             slen = math.hypot(dx, dy)
             step = max(res, keep / 2.0)
@@ -1227,11 +1320,9 @@ def generate_underpad_escape(footprint: Footprint,
                 k0 = max(0, int((t - reach) * n))
                 k1 = min(n, int((t + reach) * n) + 1)
                 idxs.update(range(k0, k1 + 1))
-            cells = set()
             for i in idxs:
                 t = i / n
-                cells |= occ.disk_cells(x1 + dx * t, y1 + dy * t, r_eff) & home
-            add(cells, li)
+                add(x1 + dx * t, y1 + dy * t, r_eff, li)
 
         def seg_near(x1, y1, x2, y2, reach):
             dx, dy = x2 - x1, y2 - y1
@@ -1260,6 +1351,16 @@ def generate_underpad_escape(footprint: Footprint,
             if not seg_near(x1, y1, x2, y2, home_r + trk_keep):
                 continue
             add_seg(x1, y1, x2, y2, trk_keep, layer_idx[tr['layer']])
+        if runs:
+            home_cols = occ.cell_columns(home)
+            for li, col_runs in runs.items():
+                cells = occ.cells_in_runs(col_runs, home_cols)
+                if not cells:
+                    continue
+                if li is None:
+                    c_all.update(cells)
+                else:
+                    c_lay[li] = set(cells)
         return c_all, c_lay
 
     def _eff_exempt(home, carve, li):

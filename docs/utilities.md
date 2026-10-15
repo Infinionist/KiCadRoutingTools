@@ -170,11 +170,17 @@ python py_placer/place_pose.py BOARD OUT rotate CON2 180 [--relative]
 python py_placer/place_pose.py BOARD OUT face U1 W USB1
 python py_placer/place_pose.py BOARD OUT lock U1 CON1
 python py_placer/place_pose.py BOARD OUT set U1 129.9 98.3 rotate CON2 180 lock U1
+python py_placer/place_pose.py BOARD OUT replicate --from CH1 --to CH2 --to CH3 [--anchor REF | --offset DX DY] [--allow-net-mismatch REF.PAD ...] [--only REFS | --skip REFS] [--search MM]
+python py_placer/place_pose.py BOARD OUT --intent intent.json replicate   # the intent's replicate[]
 ```
 
 Several verbs in one call describe ONE arrangement: every op is resolved
 against the INPUT board and written in a single pass, so no op sees another's
-effect. `set` takes exact coordinates positionally; `--near X Y` is the same
+effect, and the arrangement is graded at the exact points given -- so a snap
+needs a call with ONE pose op: `--near` beside a second pose op is refused at
+exit 2 before anything is graded (#1194; issue one `set REF --near X Y` per
+call, lock/unlock may ride along), and `--snap` there is skipped and says so.
+`set` takes exact coordinates positionally; `--near X Y` is the same
 point read as approximate and implies `--snap`, which takes the best legal
 pose within `--radius` (ranked by `pose_score`, then RE-GRADED here — the
 ranker's legality is an AABB gate and this verb's verdict is exact geometry,
@@ -231,6 +237,68 @@ in this verb's own currency before it is written. Measured on
 `set C4 --near 128.0 49.53 --radius 3`, because its gate is the absolute one,
 while 236 poses inside the same radius graded no worse — the nearest 0.354 mm
 away. `snap_census` reports both rungs and `snapped.rung` says which answered.
+The ranker judges the part from its pose on the INPUT board, the baseline the
+re-grade compares with, while it sweeps around the aimed point (#1256): built
+from the staged board, the request was its own baseline, and on esp_prog
+(C1 at a 1.5 mm pad clearance, `set C2 140.06 96.23 --rot 90 --snap
+--radius 2`) it ranked 8 poses carrying the very conflict that refused the
+request, all 8 then refused. The input pose is also the incumbent of the
+ranker's off-board escape branch (`QuenchState.incumbent_at`, #1259): measured
+at an off-board request, that branch admitted every pose merely less off the
+board than the request, and on esp_prog `set R3 146.0 101.5 --snap --radius 4`
+ranked 3 such poses and refused all 9 tries; it now ranks 9 and snaps to the
+7th, 3.89 mm away. Neither the snap nor the no-snap suggestion ever
+returns the request itself (`requested_dropped`). `input_pose_vetoed` is the
+ranker's verdict on the part's input pose: when it vetoes even that, its
+knobs are stricter than the board, and the refusal says so.
+When every candidate fails the re-grade, the refusal says what the census
+found instead (#1209) -- `regrade_refused_by` / `regrade_refused_pairs` per
+category, e.g. `hole_conflicts x4 (H1/TP1)` -- plus the `untried` count
+(raise `--snap-tries`) and the ranker's nearest pose past the bound
+(`nearest_beyond_radius`, raise `--radius`). It never offers back a pose its
+own re-grade refused, and never advises `--snap` to a call that snapped:
+`nearest_legal` on a snap is the pose it wrote, or null.
+
+`replicate` (#1211) copies one placed instance of a hierarchical sheet onto
+its sibling instances. Parts are matched by the symbol uuid that ends every
+footprint's `(path ...)`, the correspondence KiCad's "Repeat Layout" uses.
+Each target part takes its source part's rotation and side at the source
+position plus one offset. By default each target keeps its anchor in place:
+the source part with the most pads, or `--anchor REF` from any named sheet.
+`--offset DX DY` gives the offset directly, with one `--to` only. It refuses
+at exit 4, writing nothing, unless the instances are interchangeable: the
+same parts, the same footprints and pads, and nets that correspond one to
+one, with a net on both instances (GND, a rail) mapping to itself. The
+refusal names the refs and pads and spells, for each pad, the waiver
+`--allow-net-mismatch REF.PAD`: one pad per flag, for a pad wired
+differently per instance BY DESIGN (glasgow_revC's IO_Buffer address
+straps U19.2, U20.6, U21.2). REF on the `--from` sheet waives it in every
+target, on a `--to` sheet in that one; `nets_waived` reports each waived pad
+and whether it was needed. A copy that does not fit has two answers.
+`--only REF[,REF]` / `--skip REF[,REF]` copy part of the channel (a `--from`
+ref names that part in every target, a `--to` ref that one part); the rest
+stay where they are, need no counterpart and are not checked, but a rail on
+a part left out still counts as shared. `--search MM` (pitch
+`--search-step`, default 0.5 mm) tries each target's offset on a lattice
+within MM of the default, nearest first, and keeps the first one the call
+grades no worse; targets are fitted in `--to` order, each judged with the
+later targets left out of the grade (they are about to move), every
+candidate written and re-graded, a move of a locked part skipped. None
+within MM is exit 4, with `replicate.to[].search` saying what was tried
+and why each was refused. An unknown or ambiguous sheet (a name such
+as `CH1`, or a path or a unique start of one of 4+ characters) exits 2 and
+lists the instances.
+The copy is graded as one arrangement like any other call, with the same lock
+rule; `--snap` does not apply. `summary.replicate` reports the mapping, the
+offset and the renamed and shared nets, and each moved member lists its new
+conflict pairs and the off-board / edge-band / keep-out findings it newly
+carries (`ops[].new_conflicts`), which is the list to `--skip` from. The
+same copy can be DECLARED in a floorplan intent (`replicate[]`, reader 11,
+see `docs/floorplan-intent.md`): `replicate --intent PATH` with no
+`--from`/`--to` applies every declaration as one call, `place_seed` applies
+them after its polish (written only when the copy grades no worse than the
+seed), and `check_floorplan` grades each target's distance from the source
+arrangement. See `py_placer/placement/README.md`.
 
 Knobs come from the board (`list_nets.board_floor_knobs`) unless given — a
 CLI-supplied `--clearance` loosens the verdict on a tool whose job is to
@@ -259,8 +327,23 @@ python py_placer/compare_seeds.py board.kicad_pcb --intent floorplan.json \
 
 Per seed: a `place_seed` run (a seed failing its own intent gate is
 recorded but never ranked), then a probe of `'*'` minus the ignored nets
-with identical route args. Emits a ranked table, `seeds.json`, and a
-`JSON_SUMMARY` with `best_seed`. Exit 0 with a ranked winner, 4 when
+with identical route args. Seeds rank by probe failures, then, when failures
+tie, by the probe's vias, then its `copper_mm` (board_score's routed-copper
+measure, read off the routed probe board), then router iterations (#1191).
+A seed whose ONLY gate failure is decap rules (`decap_distance` /
+`decap_pin_distance`, with nothing unseated and no copper conflict seeded)
+is repaired with `place_seed --repair --repair-decaps` into
+`seed_N_repaired.kicad_pcb`. When the repaired board passes the same gate,
+that board is probed and ranked (gate `rep`, row `repair`), so a pile whose
+intent arms the decap rule is rankable. Emits a ranked table, `seeds.json`,
+and a `JSON_SUMMARY` with `best_seed` and `best_board`. `--jobs N` runs up
+to N seeds at once; each seed is its own place_seed / repair / probe
+subprocesses writing its own boards, and the console prints each seed's lines
+in seed order. N changes the wall clock only, with one caveat: a probe whose
+route falls back on a wall-clock limit (route.py's exact-fill refill, which
+then reports itself machine-dependent) can differ, and N concurrent arms make
+that likelier. Under `REDO_MANIFEST` the arms' own records interleave in
+completion order. Exit 0 with a ranked winner, 4 when
 nothing was rankable -- including when every probe ran but produced no
 verdict, which returned 0 with `best_seed: null` until #713 fixed it.
 When `place_seed` refuses the zone PLAN (its exit 5, #959), the plan is the
@@ -319,8 +402,9 @@ left unseated, or written at another angle, is a hard fail and ranks last. An
 angle where a seed's re-seat could not put the part back (`reseat_declined`,
 #1117) ranks after every angle whose seeds held it, and still ranks. The
 rest rank by unseated parts, then a probe verdict when `--probe` routed it
-(the top `--probe-top` angles, full-board, no timeout), then median crossings,
-hpwl and grade errors; a tie goes to the earlier angle in the ladder (the
+(the top `--probe-top` angles, full-board, no timeout) -- median failures,
+then median probe vias, then median probe `copper_mm` (#1191) -- then median
+crossings, hpwl and grade errors; a tie goes to the earlier angle in the ladder (the
 input angle when it is ranked). Any other seed that fails its intent gate is
 not a tier -- on a pile most do, for repairable reasons -- but each angle reports
 how many of its seeds did, and the winner line says so. A CONTROL arm seeds
@@ -369,7 +453,7 @@ python py_placer/plane_score.py board.kicad_pcb --plane-nets GND 3V3:F.Cu
 
 ## Placement Quality Terms (`placement_score.py`)
 
-Five terms a COPPER-FREE placement lap can be ranked by, because nothing else
+Six terms a COPPER-FREE placement lap can be ranked by, because nothing else
 can rank one: `blocking` on such a board is the unrouted count (the routing
 half's number, identical on every lap) and `quality` is `(0, 0.0, 0)` for every
 placement of every board.
@@ -377,15 +461,17 @@ placement of every board.
 ```bash
 python3 -X utf8 py_placer/placement_score.py board.kicad_pcb --json wk/terms.json
 python3 -X utf8 py_placer/placement_score.py board.kicad_pcb --intent floorplan.json
+python3 -X utf8 py_placer/placement_score.py board.kicad_pcb --length-groups groups.json
 ```
 
 | term | what it measures |
 |---|---|
-| `pair_length` | worst straight-line span of a declared differential pair, mm |
+| `pair_length` | worst span of a declared differential pair, mm. A pair two parts carry whole: the straight pad-centre span. A pair through per-leg series parts (AC caps, USB series resistors), composed by the router's own junction rule (`diff_xnet.find_ac_coupled_xnets`): the longer leg's pad-centre polyline through the series pads, with both legs and \|P−N\| in `pairs[]` as numbers, not a verdict (#1251). A pair neither covers is named in `not_measured` with why; the `basis` names the rule and the measured rows |
 | `pin_order_crossings` | part pairs whose pad order CROSSES, so a router must pay a via or a detour |
 | `cluster_to_pin` | worst distance from a passive to the pin it serves, mm — declared `proximity` claims first, the decap election for the rest |
 | `plane_cut_proxy` | length of each net's chord lying INSIDE a locked part's body, summed. Two-layer boards only; ground and rails excluded |
 | `balance` | pad-area first moment along the board's long axis, as a fraction of span. Copper pads only: NPTH and paste/mask-aperture pads are excluded, and the term names that population as its `basis` (#1143), so a lap scored before #1143 is reported `not-comparable` against one scored after it rather than as a move |
+| `edge_facing` | connected pads on a row that faces the board outline with nothing beyond it, over parts with 3+ connected pads; edge connectors excluded |
 
 **There is no aggregate and no weight.** Laps are compared by `compare_terms`,
 which is PARETO: `better` only when no measured term regressed, `mixed` naming
@@ -397,6 +483,27 @@ Each term publishes a `basis` when its population is not fixed by the board
 between laps the term is **not judged**: a total over a different population is
 not a larger or smaller version of the first.
 
+**`--length-groups FILE`** (the `board_score` / `check_complete` format,
+`{"G": {"nets": [...], "tolerance_mm": t, "mode": "pin_pair"}}`) fills a
+REPORT-ONLY `length_groups` section (#1252) that is **not a term**: it is not in
+`TERM_ORDER`, so `compare_terms` and the lap ledger never read it. Per group it
+reports each member's length FLOOR and its basis -- `2-part`, the octilinear
+distance of the closest pad pair across the two parts; `multipoint`, of the
+farthest pad pair on different parts -- the longest floor and its net, the
+spread, `copper_to_add_mm` = Σ(longest − own floor), and the longest floor in
+ps on an outer and an inner layer (`impedance.get_layer_ps_per_mm`).
+`tolerance_mm` is printed beside the spread with no pass/fail: a floor spread
+is not a routed spread, because meanders can always add copper. Each floor
+includes the member's pad-to-die length (`(die_length ...)`, #1248) on the
+pads `board_score` adds it for (`net_queries.net_match_pad_to_die`: every pad,
+or the first two in `pin_pair` mode), and the ps figure the same pads'
+`die_delay`; a group whose pads declare either names it in `pad_to_die_mm` /
+`pad_to_die_ps`. `cannot_see` lists what a floor misses (detours, layers and
+vias, meander room, fly-by/T topologies and pad-edge entry). A group with fewer than
+two of its nets on the board is `ran: false` with a reason; a path that is not
+a readable file of that shape exits 2 (where `board_score` reads it as
+ungraded).
+
 `board_score.py --placement-terms` embeds this document at a top-level
 `placement` key, report-only — it never enters `blocking` and never changes the
 exit code. `converge status` prints each lap's terms and its movement against
@@ -405,10 +512,25 @@ the row it was recorded against.
 ## Capacity Options (`check_capacity.py`)
 
 Answers "can this board hold its parts, and if not, what are the levers?" with
-measured numbers rather than a verdict. Five options, each reporting `measured`
+measured numbers rather than a verdict. Six options, each reporting `measured`
 / `expected` / `action` and naming what it does **not** model: grow the
 outline, add copper layers, move the neighbour eating a starved face, relax
-clearance (floored at what the fab can etch), and use a smaller package.
+clearance (floored at what the fab can etch), narrow the track so it crosses
+through-hole pin rows (`narrow_track`, #1196), and use a smaller package.
+
+The three escape options (`add_layers`, `move_blocker`, `relax_clearance`)
+ledger every part that is fine-pitch by the absolute pitches **or at the
+board's own rules** — no track of the board's width passes between two
+adjacent pads at its clearance, or two vias cannot sit side by side at the pad
+pitch (#1196, `escape.fine_by_rules`). The parts are fixed **once**, at the
+board's clearance, so a ladder rung at a tighter clearance grades the same
+parts rather than reading fewer of them as a gain. `narrow_track` reports the
+through-hole pin gaps a track of the board's width crosses on the routing
+grid, and the narrower widths that open the rest, down to the fab floor — the
+same measurement as `check_channels`' through-hole rows below. On a board of
+DIPs it is the capacity the lane ledgers cannot see: interf_u at its 0.4 mm
+class track read `relax_clearance: not measured -- no face is short of lanes`
+while its DIP rows crossed none of 115 gaps.
 
 **It reports; it never refuses and it never acts** — no outline is written, no
 stackup edited, no part moved. There is deliberately no exit code for "too
@@ -1603,6 +1725,23 @@ face against `--baseline`), **3** (nothing had a ledger, so the gate did not
 run — this is *not* a pass), and **2** (unreadable board). Without `--gate`
 it is 0 throughout.
 
+**Which parts are ledgered** without `--refs`: QFN/QFP/BGA packages, a part
+whose pad pitch is under twice the lane pitch, and — since #1196 — every part
+fine-pitch **at the floors this run resolved**: no track passes between two
+adjacent pads of a row (`gap < track + 2 × clearance`) or two vias cannot sit
+side by side at the pad pitch (`escape.fine_by_rules`). Absolute pitches alone
+never ledgered a SOIC (a 0.67 mm pin gap) on a board asking for track 0.3 /
+clearance 0.3, which needs 0.9 mm between pins. The population is larger, so
+`--gate` sees more parts: on the tracked `run23` pair the verdict is unchanged
+(exit 4) and it now names 18 damaged faces where it named U3's two.
+
+**The board's Board Setup minimums.** The floors are the Default net class,
+which is what `route.py` routes at when given no `--clearance`. When the
+board's Board Setup asks for a larger `min_clearance` or `min_track_width`, the
+header is followed by a `NOTE` naming them: KiCad's DRC grades the board at
+them (#1210), so pass the two flags it prints to ledger at the board's own
+minimums. JSON: `board_minimums_above`.
+
 ### Which face a pad points at, and the interior bucket
 
 Demand is *"nets with a pad **on** this face"*, and "on" is
@@ -1675,7 +1814,8 @@ way `escape_band_mm` is):
 | `interior_nets` | distinct nets among them |
 | `interior_demand_nets` | the subset that had **no** pad on any face, i.e. what the four faces actually lost |
 | `interior_pads_box` | the same count under the **box rule alone** — basis-free, and the number to read when you want the fanout fact without the parameter fact |
-| `face_corridor_escapes` | how many pads the corridor freed. `interior_pads + face_corridor_escapes == interior_pads_box` is a conservation law, not a second copy: a count that falls with nothing naming where it went is how a ledger stops looking |
+| `face_corridor_escapes` | how many pads the corridor freed. `interior_pads + face_corridor_escapes + through_row_pads == interior_pads_box` is a conservation law, not a second copy: a count that falls with nothing naming where it went is how a ledger stops looking |
+| `through_row_pads` / `through_row_nets` | **#1196.** On a through-hole part (plated pins outnumber SMD pads), a pin both rules call interior is charged to its **nearest face** instead: it is on every copper layer already, so it needs a lane between the outer pins, not a via. interf_u's PGA U9 reported "70 pad(s) on no face -- they need a via, not a lane; 40 net(s) left the faces"; its 70 pins and 40 nets are now face demand, printed once as `through-row`. An SMD part's thermal vias stay interior — on the other layers nothing of that part stands in their way. `through_row_nets` counts the nets that became demand that way |
 | `face_corridor_clearance_mm` / `face_corridor_track_mm` | the basis the enclosure test ran at |
 | `face_corridor_source` | `caller` when the corridor ran; `unmodelled`, `no_pad_boxes` or `not_measured` naming which degradation happened instead — three different facts, not one `unknown` |
 
@@ -1717,6 +1857,34 @@ haasoscope_pro_max, routed_output — 68 / 44 / 44 lanes short here against 0 on
 the escape ledger) now agree. Regenerate with
 `tests/measure_850_848_faces.py --table demand`, which prints the two
 ledgers' interior counts adjacent as its negative control.
+
+### Through-hole pin rows
+
+The face ledger asks whether a part's OWN pins can leave. On a board of DIPs,
+PGAs and headers the capacity is the other nets crossing those parts' pin
+rows between adjacent pins, so after the ledger the tool prints, per
+through-hole part, how many adjacent-pin gaps a track of the run's width
+crosses, and the narrower widths that open the rest, down to the fab floor
+(`placement.pin_rows`, #1196; JSON `tht_rows`):
+
+```
+Through-hole pin rows (...grid 0.1, clearance 0.254): 0.4 mm crosses 223/352 adjacent-pin gaps; 0.35 mm opens 223/352; 0.3 mm opens 271/352; ...
+  U1: 0.4 mm crosses 0/18 gaps (pitch 2.54); 0.35 mm opens 0/18; 0.3 mm opens 8/18; 0.25 mm opens 14/18; 0.2 mm opens 18/18
+```
+
+It is measured **on the routing grid, in the router's own obstacle map**
+(`build_base_obstacle_map`, every pad an obstacle), because the arithmetic is
+wrong by the grid's quantisation: interf_u's DIP rows have a 0.94 mm gap, and
+0.4 + 2 × 0.254 = 0.908 fits only within ±0.016 mm of the midpoint, which the
+0.1 mm stamp never lands on — 0 of 115 gaps cross, 48 at 0.3 mm, 91 at
+0.25 mm. A gap is open when one grid column between the two pins is free on
+some layer across the reach of the two pins' own keep-out (a straight
+crossing — the best a convex pad allows). A pin is a pad number's overlapping
+plated copper merged into one box (a Teensy draws each pin as two pads; a
+mounting hole's stitching vias sit on its own pad), and only gaps at a row's
+own pitch are counted. Existing copper is an obstacle, and so is the board
+edge: a header's outer row against the edge reads closed at every width,
+which is true — nothing crosses it toward the edge.
 
 ### The escape band
 

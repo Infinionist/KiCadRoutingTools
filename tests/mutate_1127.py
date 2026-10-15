@@ -1,6 +1,6 @@
-"""The #1127 mutation battery: the placement gate's stack test confirmed on
-the pads' outlines (`legality.STACK_EXACT_CONFIRM`, shipped OFF), and the
-check_drc caches it relies on.
+"""The #1127 mutation battery: the placement gate's stack test and PAD
+conjunct confirmed on the pads' outlines (`legality.STACK_EXACT_CONFIRM`,
+shipped OFF), and the check_drc caches they rely on.
 
 Kept apart from the other batteries so it can be dropped with the toggle.
 The toggle ships off because the pre-registered census
@@ -23,6 +23,9 @@ Not covered by a row, and why:
   * `_posed_copper`'s length check: on a part whose copper pads align with
     `pad_rects` (every part, by construction) it never fires -- an
     equivalent mutant.
+  * `eff` in the pad memo key: a pad pair's requirement is fixed by the two
+    pads' floors for the whole context, so no run asks one posed pair at two
+    requirements -- an equivalent mutant.
 """
 from __future__ import annotations
 
@@ -53,6 +56,9 @@ CONTACT = _t(T, 'contact_not_nearness')
 MODE = _t(T, 'mode_is_fixed')
 CACHE = _t(T, 'caches_hold')
 IN_PLACE = _t(T, 'changed_in_place')
+PAD_GRID = _t(T, 'pad_conjunct_agrees')
+OUTLINES = _t(T, 'charges_the_outlines')
+PAD_BOX = _t(T, 'snapshotless_part_keeps')
 
 # (name, target, old, new, tests, expect)
 ROWS = [
@@ -69,21 +75,51 @@ ROWS = [
      "                if g < 0.0:",
      (LATER,), 'KILLED'),
     ('posed-key-drops-rotation', 'legality',
-     "               round(pose[2] % 360.0, 6))",
-     "               0)",
+     "            round(pose[2] % 360.0, 6))",
+     "            0)",
      (GRID,), 'KILLED'),
     ('exact-threshold-loose', 'legality',
      "    return bool(hit and over >= eps - 1e-9)",
      "    return bool(hit and over > 0.0)",
      (CONTACT,), 'KILLED'),
     ('confirm-front-layer-only', 'legality',
-     "        return _exact_pad_stack(pa_pads[ai], pb_pads[bi], ['F.Cu', 'B.Cu'])",
-     "        return _exact_pad_stack(pa_pads[ai], pb_pads[bi], ['F.Cu'])",
+     "            pa_pads[ai], pb_pads[bi], ['F.Cu', 'B.Cu']))",
+     "            pa_pads[ai], pb_pads[bi], ['F.Cu']))",
      (REAL,), 'KILLED'),
     ('unposable-pad-accepts', 'legality',
-     "            return True\n        return _exact_pad_stack(",
-     "            return False\n        return _exact_pad_stack(",
+     "            return True\n        return self._remember(key, _exact_pad_stack(",
+     "            return False\n        return self._remember(key, _exact_pad_stack(",
      (MODE,), 'KILLED'),
+    ('pad-confirm-never-runs', 'legality',
+     "        self.pad_exact = bool(STACK_EXACT_CONFIRM)",
+     "        self.pad_exact = False",
+     (PAD_GRID,), 'KILLED'),
+    ('pad-charges-the-box', 'legality',
+     "                        pad_short += conf",
+     "                        pad_short += eff - g",
+     (OUTLINES,), 'KILLED'),
+    ('pad-overlap-unconfirmed', 'legality',
+     "                            overlap = self._stack_confirmed(",
+     "                            overlap = True or self._stack_confirmed(",
+     (OUTLINES,), 'KILLED'),
+    ('pad-confirm-at-check-drc-default-margin', 'legality',
+     "                                               clearance_margin=0.0)\n"
+     "        return self._remember(key, float(over) if hit else 0.0)",
+     "                                               )\n"
+     "        return self._remember(key, float(over) if hit else 0.0)",
+     (OUTLINES,), 'KILLED'),
+    ('unposable-pad-charges-nothing', 'legality',
+     "            return None\n        from check_drc import check_pad_pad_overlap",
+     "            return 0.0\n        from check_drc import check_pad_pad_overlap",
+     (PAD_BOX,), 'KILLED'),
+    ('stack-memo-key-drops-poses', 'legality',
+     "        key = ('stack', a, ai, _pose_key(pose_a), b, bi, _pose_key(pose_b))",
+     "        key = ('stack', a, ai, b, bi)",
+     (GRID,), 'KILLED'),
+    ('pad-memo-key-drops-poses', 'legality',
+     "        key = ('pad', a, ai, _pose_key(pose_a), b, bi, _pose_key(pose_b), eff)",
+     "        key = ('pad', a, ai, b, bi, eff)",
+     (PAD_GRID,), 'KILLED'),
     ('perimeter-cache-serves-another-pad', 'drc',
      "    if hit is not None and hit[2] is pad and hit[0] == fp:",
      "    if hit is not None and hit[0] == fp:",

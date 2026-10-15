@@ -36,10 +36,23 @@ churn by construction (route_planes since #562): there, re-tuning is
 impossible and the churn coverage must MOVE to a front-end that still rips,
 never be quietly dropped.
 
-    python3 tests/test_obstacle_map_balance.py
+Stage 1's route is ALSO the behavioural half of
+`tests/test_obstacle_content_single_ended.py` (invariant E, map CONTENT): one
+recipe graded two ways used to be routed twice, once per file. It is routed
+once, here, and graded for both -- `grade_route_py_log` lives in that file,
+next to the reasoning it encodes, and that file asserts the wiring.
+
+The four stages are independent (each starts from a tracked board), so
+`run_all` runs them as four units (`RUN_ALL_PARTS`); `--part I/N` runs every
+N-th stage from the I-th:
+
+    python3 tests/test_obstacle_map_balance.py              # all four
+    python3 tests/test_obstacle_map_balance.py --part 0/4   # stage 1 only
 """
+import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -61,6 +74,12 @@ TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 #: presented as slowness. The subprocess timeout below is raised to match, or
 #: the inner kill would just move the same problem one level down.
 RUN_ALL_TIMEOUT = 2400
+
+#: The four stages below are independent -- each starts from a tracked board,
+#: none reads another's output -- and the file ran 650 s as one unit, the
+#: second-longest in the suite and so a floor under every fan-out. Split, the
+#: slowest unit is one stage. `RUN_ALL_TIMEOUT` stays the PER-UNIT budget.
+RUN_ALL_PARTS = 4
 
 ROOT_DIR = os.path.dirname(TESTS_DIR)
 KF = os.path.join(ROOT_DIR, "kicad_files")
@@ -106,27 +125,35 @@ def run_cmd(args, audit=True, ledger=False, tap_verify=False,
     # Kept equal to RUN_ALL_TIMEOUT above: an inner kill lower than the outer
     # budget just relocates the same "a real result presented as slowness"
     # failure one level down, where it reads as a router hang instead.
+    # The child runs -X utf8, so its output is UTF-8; decoding it with the
+    # locale codec instead can raise on a byte cp1252 leaves undefined.
     p = subprocess.run([sys.executable, "-X", "utf8"] + args, cwd=ROOT_DIR,
-                       env=env, capture_output=True, text=True, timeout=2400)
-    return p.returncode, p.stdout + p.stderr
+                       env=env, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=2400)
+    return p.returncode, (p.stdout or "") + (p.stderr or "")
 
 
-def main():
-    tmp = tempfile.mkdtemp(prefix="map_balance_")
+def stage_route(tmp):
+    """1. route.py: signal churn, graded for balance AND map content.
 
-    # ---- 1. route.py: signal churn ------------------------------------------
+    Balance (invariants A/B/C) here; CONTENT (invariant E) by
+    test_obstacle_content_single_ended's grader, on the same log."""
+    if TESTS_DIR not in sys.path:
+        sys.path.insert(0, TESTS_DIR)
+    import test_obstacle_content_single_ended as content
+    check("route.py: churn fixture present",
+          os.path.isfile(content.CHURN_BOARD)
+          and os.path.getsize(content.CHURN_BOARD) > 0,
+          f"fixture missing: {content.CHURN_BOARD} -- this stage graded NOTHING")
     out1 = os.path.join(tmp, "route_churn.kicad_pcb")
-    rc, log = run_cmd(["py_router/route.py", os.path.join(KF, "flat_hierarchy.kicad_pcb"), out1,
-                       "--nets", "*", "!GND",
-                       "--track-width", "0.8", "--clearance", "0.7",
-                       "--via-size", "1.0", "--via-drill", "0.6",
-                       # 2026-08-05 re-tune (per this header: more congestion,
-                       # never delete): the two-layer recipe stopped churning
-                       # once the engine gained pre-existing rip candidacy +
-                       # the plain-net via rung -- it now routes clean at ANY
-                       # fatness on two layers. Single-layer restores real
-                       # churn: 64 rips / 13 tap windows, maps still BALANCED.
-                       "--layers", "F.Cu", "--max-ripup", "10"],
+    # The recipe is the content test's CHURN_ARGS, so the two gradings cannot
+    # drift onto different runs. Its 2026-08-05 re-tune (per this header: more
+    # congestion, never delete): the two-layer recipe stopped churning once
+    # the engine gained pre-existing rip candidacy + the plain-net via rung --
+    # it routes clean at ANY fatness on two layers. Single-layer restores real
+    # churn: 64 rips / 13 tap windows, maps still BALANCED.
+    rc, log = run_cmd(["py_router/route.py", content.CHURN_BOARD, out1]
+                      + list(content.CHURN_ARGS),
                       ledger=True, fragility_off=True)
     check("route.py: run completed", rc == 0, f"rc={rc}")
     rips = len(re.findall(r"[Rr]ipping|Extending to N", log))
@@ -138,8 +165,14 @@ def main():
           "BALANCED: ref-counted maps" in log and "LEAK/DESYNC" not in log)
     check("route.py: cache-object ledger balanced",
           "cache-object ledger BALANCED" in log and "UNBALANCED serial" not in log)
+    # Invariant E on the SAME log -- see test_obstacle_content_single_ended.
+    content.grade_route_py_log(
+        rc, log, lambda name, cond, detail="": check(
+            "route.py content: " + name, cond, detail))
 
-    # ---- 2. route_diff -------------------------------------------------------
+
+def stage_diff(tmp):
+    """2. route_diff: the same audit on route_diff's own working map."""
     out2 = os.path.join(tmp, "diff_bal.kicad_pcb")
     rc, log = run_cmd(["py_router/route_diff.py", os.path.join(KF, "lvds_converter_dualclk.kicad_pcb"),
                        out2, "--nets", "/CLK+", "/CLK-", "/DATA+", "/DATA-",
@@ -154,7 +187,9 @@ def main():
     check("route_diff: cache-object ledger balanced",
           "cache-object ledger BALANCED" in log and "UNBALANCED serial" not in log)
 
-    # ---- 3. route_planes: rip-blocker churn ----------------------------------
+
+def stage_planes(tmp):
+    """3. route_planes: the pour's via maps vs a fresh rebuild."""
     kit_out = os.path.join(tmp, "kit_out.kicad_pcb")
     kit_geom = ["--track-width", "0.2", "--clearance", "0.2", "--via-size", "0.5",
                 "--via-drill", "0.4", "--hole-to-hole-clearance", "0.3"]
@@ -190,7 +225,9 @@ def main():
           all(a == "BALANCED" for a in audits) and "DIVERGED" not in log,
           f"audits={audits}")
 
-    # ---- 4. repair_planes under TAP_MAP_VERIFY -------------------
+
+def stage_repair(tmp):
+    """4. repair_planes under TAP_MAP_VERIFY: the churn half of the via maps."""
     iu_plane = os.path.join(tmp, "iu_plane.kicad_pcb")
     iu_fan = os.path.join(tmp, "iu_fanout.kicad_pcb")
     iu_routed = os.path.join(tmp, "iu_routed.kicad_pcb")
@@ -251,10 +288,51 @@ def main():
           f"work, so the TAP_MAP_VERIFY coverage above is vacuous; re-tune the "
           f"recipe for more congestion rather than relaxing this check")
 
+
+STAGES = [stage_route, stage_diff, stage_planes, stage_repair]
+
+
+def _part(text):
+    """'I/N' -> (I, N), 0 <= I < N."""
+    try:
+        i, n = (int(x) for x in text.split("/"))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"--part wants I/N, got {text!r}")
+    if not 0 <= i < n:
+        raise argparse.ArgumentTypeError(f"--part {text}: need 0 <= I < N")
+    return i, n
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--part", type=_part, default=None, metavar="I/N",
+                    help="Run every N-th stage from the I-th (0-based): one "
+                         "of N disjoint slices (run_all splits the file this "
+                         "way)")
+    args = ap.parse_args(argv)
+    stages = STAGES
+    if args.part:
+        i, n = args.part
+        stages = STAGES[i::n]
+        print(f"part {i}/{n}: "
+              f"{', '.join(s.__name__ for s in stages) or 'none'}")
+        if not stages:
+            # More parts than stages is a legitimate split, not an error.
+            print("part is EMPTY -- nothing to run, asserting nothing")
+            return 0
+    tmp = tempfile.mkdtemp(prefix="map_balance_")
+    for stage in stages:
+        print(f"\n---- {stage.__doc__.splitlines()[0]}")
+        stage(tmp)
+
     print()
     if FAILS:
         print(f"FAILED: {len(FAILS)} check(s): {FAILS}")
+        print(f"boards kept for diagnosis: {tmp}")
         return 1
+    shutil.rmtree(tmp, ignore_errors=True)
     print("All checks passed.")
     return 0
 

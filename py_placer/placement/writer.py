@@ -7,9 +7,10 @@ to update the (at X Y [rotation]) of each footprint block.
 from __future__ import annotations
 
 import os
+import math
 import re
 import sys
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 from kicad_parser import (find_matching_paren, flip_layer_token,
                           iter_footprint_blocks, footprint_at_match,
@@ -265,6 +266,10 @@ def _rotate_pad_angles(fp_text: str, delta_rot: float) -> str:
         fix_pad, fp_text)
 
 
+#: A text node's own `(at x y [angle])`.
+_TEXT_AT = re.compile(r'\(at\s+([^\s()]+)\s+([^\s()]+)(?:\s+([^\s()]+))?\)')
+
+
 def _rotate_text_angles(fp_text: str, delta_rot: float, ref: str) -> str:
     """Add delta_rot to the FIRST `(at x y [a])` of every top-level text node
     (`property`, `fp_text`) in a footprint block.
@@ -283,32 +288,153 @@ def _rotate_text_angles(fp_text: str, delta_rot: float, ref: str) -> str:
     labelled. The flip path has always composed its texts (#714) and is
     untouched here -- one code path per mode, as `write_placed_output` says.
     """
+    def rotated(x, y, a):
+        na = round(((float(a) if a is not None else 0.0) + delta_rot) % 360, 6)
+        if a is not None or na != 0:
+            return f"(at {x} {y} {na:.6g})"
+        return f"(at {x} {y})"
+    return _rewrite_text_ats(fp_text, ref, rotated, 'this rotation')
+
+
+def _set_text_angles(fp_text: str, angle: float, ref: str) -> str:
+    """Set EVERY top-level text node's absolute angle to `angle` (#1163).
+
+    A pile must carry nothing about the poses it was made from. Composing a
+    text with the rotation change (`_rotate_text_angles`) is right for a real
+    rotation, but a pile sets every part to one rotation, so each text keeps
+    its text-to-part angle `T - R`; humans keep labels upright, and that
+    hands back the human rotation `R`. Writing one angle for every text
+    removes it, and the token is always written (KiCad 10's own spelling for
+    a text), so its presence carries nothing either.
+    """
+    def fixed(x, y, _a):
+        return f"(at {x} {y} {round(angle % 360, 6):.6g})"
+    return _rewrite_text_ats(fp_text, ref, fixed, 'this text-angle reset')
+
+
+def text_node_angles(fp_text: str) -> List[Optional[float]]:
+    """The angle token of each top-level text node's `(at ...)`, in order.
+
+    None where the token is absent (KiCad reads that as 0). For a check that
+    has to prove what a writer did to a block's texts (make_unplaced, #1163).
+    """
+    out = []
+    for head, s, e in _iter_sexpr_children(fp_text, 0):
+        if head in _FLIP_TEXTS:
+            m = _TEXT_AT.search(fp_text[s:e])
+            if m:
+                out.append(float(m.group(3)) if m.group(3) is not None else None)
+    return out
+
+
+def _rewrite_text_ats(fp_text: str, ref: str, new_at, what: str) -> str:
+    """Replace the FIRST `(at x y [a])` of every top-level text node
+    (`property`, `fp_text`) with `new_at(x, y, a)`; `a` is None when absent."""
     pieces = []
     for head, s, e in _iter_sexpr_children(fp_text, 0):
         if head not in _FLIP_TEXTS:
             continue
         node = fp_text[s:e]
-        m = re.search(r'\(at\s+([^\s()]+)\s+([^\s()]+)(?:\s+([^\s()]+))?\)',
-                      node)
+        m = _TEXT_AT.search(node)
         if not m:
             if re.search(r'\(at\b', node):
                 # Same doctrine as `_flip_at_angle`: an `(at ...)` that is
                 # there and does not parse must not be skipped silently, or
                 # the block ships with its pads turned and its texts not.
                 raise SideFlipUnsupported(
-                    f"{ref}: a text node has an `(at ...)` this rotation "
+                    f"{ref}: a text node has an `(at ...)` {what} "
                     f"cannot parse -- expected two or three plain numbers. "
                     f"Refusing rather than rotating the pads and leaving the "
                     f"text where it was: {node[:120]!r}")
             continue
-        x, y, a = m.group(1), m.group(2), m.group(3)
-        na = round(((float(a) if a is not None else 0.0) + delta_rot) % 360, 6)
-        if a is not None or na != 0:
-            rep = f"(at {x} {y} {na:.6g})"
-        else:
-            rep = f"(at {x} {y})"
+        rep = new_at(m.group(1), m.group(2), m.group(3))
         if rep != node[m.start():m.end()]:
             pieces.append((s + m.start(), s + m.end(), rep))
+    if not pieces:
+        return fp_text
+    out = []
+    prev = 0
+    for s, e, rep in pieces:
+        out.append(fp_text[prev:s])
+        out.append(rep)
+        prev = e
+    out.append(fp_text[prev:])
+    return ''.join(out)
+
+
+def _move_zone_pts(fp_text: str, ref: str, old_x: float, old_y: float,
+                   delta_rot: float, dx: float, dy: float) -> str:
+    """Translate and rotate a footprint's own keep-out zone `(pts ...)`.
+
+    A footprint-internal `(zone ...)` stores its `(polygon (pts (xy ...)))` in
+    ABSOLUTE board coordinates -- the same fact `_FLIP_NAMED_REFUSALS['zone']`
+    records for the mirror. The move/rotate path of `write_placed_output`
+    rewrites the footprint's `(at ...)` and rotates pad and text angles, but
+    until this existed left the zone's `(pts ...)` untouched, so moving a
+    footprint left its keep-out zone behind at the old absolute position
+    (#1214).
+
+    Each point is carried by the same rigid transform as the footprint: rotate
+    about the footprint's OLD origin by `delta_rot`, then translate by
+    `(dx, dy)`. The rotation is KiCad's, which with y pointing down means the
+    standard matrix at the NEGATED angle -- the one
+    `kicad_parser.local_to_global` places the pads with, so the zone turns
+    with its pads. At +delta_rot the zone turns the other way, which agrees
+    with the pads only at 0 and 180 degrees.
+
+    The flip path is deliberately untouched -- a zone there is still refused
+    by `_FLIP_NAMED_REFUSALS`, because a mirror is not a rigid motion and this
+    helper has no rule for it.
+
+    A zone whose `(pts ...)` does not parse is a refusal, not a skip: the
+    writer returns True unconditionally, so a silently-untouched zone is
+    indistinguishable from success at every call site, and a keep-out zone
+    left behind is exactly the failure this fix exists to remove.
+    """
+    if dx == 0 and dy == 0 and delta_rot % 360 == 0:
+        # An unchanged pose must write the zone byte for byte, or the
+        # identity write (test_714_identity_write_unchanged) re-spells it.
+        return fp_text
+    pieces = []
+    for head, s, e in _iter_sexpr_children(fp_text, 0):
+        if head != 'zone':
+            continue
+        node = fp_text[s:e]
+        if re.search(r'\(filled_polygon\b', node):
+            # A fill is also absolute, and a moved outline with a stale fill
+            # is a second way to ship copper where the part used to be.
+            raise SideFlipUnsupported(
+                f"{ref}: a footprint-internal (zone ...) carries a "
+                f"(filled_polygon ...), which this move does not carry. "
+                f"Refusing rather than leaving its fill behind: {node[:120]!r}")
+        polygons = list(re.finditer(
+            r'\(polygon\s+\(pts\s+((?:\(xy\s+[^\s()]+\s+[^\s()]+\)\s*)+)\)\s*\)', node))
+        if len(polygons) != len(re.findall(r'\(polygon\b', node)):
+            raise SideFlipUnsupported(
+                f"{ref}: a footprint-internal (zone ...) has a (polygon ...) "
+                f"this move cannot parse -- expected a (pts (xy x y) ...) "
+                f"list. Refusing rather than moving the footprint and "
+                f"leaving its keep-out zone behind: {node[:120]!r}")
+        if not polygons:
+            continue
+        rad = math.radians(-delta_rot)  # KiCad's sense, as local_to_global
+        c, s_ = math.cos(rad), math.sin(rad)
+        rep_parts = []
+        prev_end = 0
+        for m in polygons:
+            new_pts = []
+            for x, y in re.findall(r'\(xy\s+([^\s()]+)\s+([^\s()]+)\)', m.group(1)):
+                fx, fy = float(x), float(y)
+                rx = old_x + (fx - old_x) * c - (fy - old_y) * s_
+                ry = old_y + (fx - old_x) * s_ + (fy - old_y) * c
+                new_pts.append(f"(xy {rx + dx:.6f} {ry + dy:.6f})")
+            rep_parts.append(node[prev_end:m.start()])
+            rep_parts.append("(polygon (pts " + " ".join(new_pts) + "))")
+            prev_end = m.end()
+        rep_parts.append(node[prev_end:])
+        rep = ''.join(rep_parts)
+        if rep != node:
+            pieces.append((s, e, rep))
     if not pieces:
         return fp_text
     out = []
@@ -425,6 +551,12 @@ _PAD_HANDLED = frozenset({
     'clearance', 'thermal_bridge_angle', 'solder_paste_margin_ratio',
     'thermal_bridge_width', 'thermal_gap', 'thermal_width', 'die_length',
     'zone_layer_connections', 'tstamp', 'locked', 'chamfer_ratio',
+    # #1248: KiCad 10's pad-to-die DELAY (ps) is a per-pad scalar like
+    # `die_length` and mirror-invariant the same way: pcbnew's FOOTPRINT::Flip
+    # leaves both values unchanged (probed on 10.0.0). No tracked board
+    # carries either token, so the parity gate and the round trip pin it on
+    # an injected tigard J7; without it a part carrying one refused to flip.
+    'die_delay',
 })
 
 _SIDED_LAYER = re.compile(r'^[FB]\.')
@@ -865,6 +997,12 @@ def write_placed_output(input_file: str, output_file: str,
               `new_rotation` still means the FINAL orientation; pcbnew's
               `Flip` negates it and this does not, so the same call cannot
               mean different things depending on the input side.
+            - new_text_angle: float, OPTIONAL (#1163). Absent or None, every
+              text composes with the rotation change as pcbnew does (the
+              write is unchanged). Present, every top-level text node
+              (`property`, `fp_text`) is written at this ABSOLUTE angle
+              instead -- the pile builder's way to keep a text-to-part
+              angle from handing back the rotation it replaced.
 
     Returns:
         True if output was written successfully
@@ -1023,6 +1161,27 @@ def write_placed_output(input_file: str, output_file: str,
                 # they compose the same way; leaving them was how a rotated
                 # part shipped its Reference at the old angle.
                 new_fp_text = _rotate_text_angles(new_fp_text, delta_rot, key)
+            # A footprint-internal (zone ...) stores its (pts ...) in
+            # ABSOLUTE board coordinates, so a move or rotation must carry
+            # the zone's points with the footprint (#1214). Runs for a
+            # pure move too, not just a rotation; _move_zone_pts is a
+            # no-op when the pose is unchanged.
+            new_fp_text = _move_zone_pts(
+                new_fp_text, key,
+                float(at_match.group(1)), float(at_match.group(2)),
+                delta_rot, new_x - float(at_match.group(1)),
+                new_y - float(at_match.group(2)))
+
+        # #1163: an absolute text angle, after either path has composed its
+        # texts, so it holds whatever the rotation or the side did.
+        new_text_angle = placement.get('new_text_angle')
+        if new_text_angle is not None:
+            if isinstance(new_text_angle, bool) or \
+                    not isinstance(new_text_angle, (int, float)):
+                raise ValueError(f"{key}: new_text_angle must be a number of "
+                                 f"degrees, not {new_text_angle!r}")
+            new_fp_text = _set_text_angles(new_fp_text, float(new_text_angle),
+                                           key)
 
         content = content[:start] + new_fp_text + content[end:]
         modified_count += 1

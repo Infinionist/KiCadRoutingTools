@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.join(ROOT, 'py_router'))  # #522/py_placer layout
 sys.path.insert(0, os.path.join(ROOT, 'py_placer'))  # #522/py_placer layout
 sys.path.insert(0, os.path.join(ROOT, 'py_tools'))  # #522/py_placer layout
 
-from run_utils import check, evidence            # noqa: E402
+from run_utils import check, evidence, run_step  # noqa: E402
 
 BAD = []
 
@@ -132,13 +132,54 @@ def case_it_works_on_the_real_guards():
         except AssertionError:
             want(True, 'a real refusal for the WRONG stated reason fails the check')
 
+def case_run_step_asserts_what_run_did_not():
+    """`run_utils.run` printed a failing step and carried on, so the chain
+    tests built on it (test_interf_u, test_kit_route) were green whatever
+    their steps did. `run_step` must fail each way a step can fail."""
+    with tempfile.TemporaryDirectory() as tmp:
+        def script(name, body):
+            path = os.path.join(tmp, name)
+            open(path, 'w', encoding='utf-8').write(body)
+            return path
+        out = os.path.join(tmp, 'out.kicad_pcb')
+        writes = script('writes.py', 'import sys\n'
+                        'open(sys.argv[1], "w").write("(kicad_pcb)")\n')
+        rc, _ = run_step([writes, out], outputs=[out])
+        want(rc == 0, 'a step that exits 0 and writes its output passes')
+        want(_broken(lambda: run_step([script('fails.py',
+                                              'raise SystemExit(1)\n')]),
+                     'exited 1'),
+             'a step that exits 1 FAILS -- what run() printed and ignored')
+        verdict = script('verdict.py', 'print("FOUND 3"); raise SystemExit(1)\n')
+        rc, _ = run_step([verdict], findings_ok=True)
+        want(rc == 1, "a checker's exit-1 verdict passes under findings_ok")
+        want(_broken(lambda: run_step([script('two.py',
+                                              'raise SystemExit(2)\n')],
+                                      findings_ok=True), 'exited 2'),
+             'findings_ok accepts a verdict, never another failure')
+        crash = script('crash.py', 'import sys\n'
+                       'try:\n    {}["k"]\n'
+                       'except KeyError:\n'
+                       '    import traceback; traceback.print_exc()\n')
+        want(_broken(lambda: run_step([crash]), 'Traceback'),
+             'a traceback that still exits 0 is a FAILED step')
+        missing = os.path.join(tmp, 'never.kicad_pcb')
+        want(_broken(lambda: run_step([script('noop.py', 'pass\n')],
+                                      outputs=[missing]), 'does not exist'),
+             'a step that does not write its output FAILS')
+        want(_broken(lambda: run_step([script('noop2.py', 'pass\n')],
+                                      outputs=[out]), 'predates'),
+             'an output left by an EARLIER run is not evidence of this one')
+
+
 if __name__ == '__main__':
     for fn in (case_import_error_is_not_a_satisfied_guard,
                case_wrong_function_name_is_not_absence,
                case_missing_evidence_is_caught_before_the_run,
                case_a_guard_that_does_not_hold_is_caught,
                case_right_failure_wrong_reason_is_caught,
-               case_it_works_on_the_real_guards):
+               case_it_works_on_the_real_guards,
+               case_run_step_asserts_what_run_did_not):
         print(fn.__name__)
         try:
             fn()

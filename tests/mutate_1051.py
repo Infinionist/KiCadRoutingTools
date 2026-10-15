@@ -482,9 +482,9 @@ ROWS = [
 
     # ==== seeder: stage 0, the fixed poses ==================================
     ('fixed-abutting-refused', 'sd',
-     "    ra, ta = pa.rect(*pose_a), pa.tht_rect(*pose_a)",
-     "    ra, ta = tuple(v + d for v, d in zip(pa.rect(*pose_a), "
-     "(-0.02, -0.02, 0.02, 0.02))), pa.tht_rect(*pose_a)",
+     "    ra, rb = pa.grade_rect(*pose_a), pb.grade_rect(*pose_b)",
+     "    ra, rb = pa.grade_rect(*pose_a), pb.grade_rect(*pose_b)\n"
+     "    ra = tuple(v + d for v, d in zip(ra, (-0.02, -0.02, 0.02, 0.02)))",
      (T_SEED + '::test_abutting_fixed_poses_seat_and_overlapping_ones_both_refuse',),
      'KILLED'),
     ('fixed-overlap-allowed', 'sd',
@@ -853,7 +853,8 @@ ROWS = [
      (T_QB + '::test_a_cap_elected_beyond_the_radius_may_not_walk_into_another_ics',),
      'KILLED'),
     ('tether-ungraded-pair-never-counts', 'qu',
-     "            if ((grade_view or not t.data['graded'])\n"
+     "            if ((grade_view or not (t.data['graded']\n"
+     "                                    or t.data.get('stranded_error')))\n"
      "                    and d > t.data['radius'] + legality.EPS):",
      "            if (d > t.data['radius'] + legality.EPS):",
      (T_QB + '::test_a_cap_elected_beyond_the_radius_may_not_walk_into_another_ics',

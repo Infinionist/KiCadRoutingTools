@@ -9,6 +9,10 @@ Most `GridRouteConfig` fields map 1:1 to CLI flags; the flag-oriented view
 with tuning advice is in [Configuration](configuration.md). This page is the
 programmatic view.
 
+Examples run from the repository root with the engine directory on the
+import path: `PYTHONPATH=py_router python3 <your script>` (see the
+[overview](python-api.md)).
+
 ## `GridRouteConfig`
 
 ```python
@@ -34,6 +38,7 @@ automatically at other grid steps (see [cost scaling](#cost-scaling)).
 | `via_size` | `0.3` | Via outer diameter |
 | `via_drill` | `0.2` | Via hole diameter |
 | `via_rung` | `0` | #568 per-search via legality rung. `0` = the configured via size (normal). `1` = judge via placement at the SMALLER fab-ladder rung, used only on a `dataclasses.replace()` clone for one escalation retry when a route is blocked purely by via legality. There is no CLI flag or GUI control: the engine sets it, and `KICAD_VIA_RUNG` (`2` = default rust per-rung map, `1` = python overlay, `0` = off) is a kill switch. |
+| `run_via` | `None` | #1226: the run's `(via_size, via_drill)`, recorded on the clone `route_net_with_obstacles` makes for a net at its own via (`net_via_sizes`). The #568 small rung is stamped against the RUN's via, so a rung-1 retry from that clone ships the run's small fab via (only when it is smaller than the net's own) and judges which path vias need it at the net's own rung. Engine-set only, like `via_rung`. |
 | `grid_step` | `0.1` | Routing grid resolution |
 | `layers` | `['F.Cu', 'B.Cu']` | Copper layers available to the router |
 
@@ -218,7 +223,9 @@ layer. Rules are separated by spaces, so a space inside a net or class name
 is written `?` (`class=High?Speed`). `class=Digital:class=Audio:0.5` is KiCad's
 `A.NetClass == 'Digital' && B.NetClass == 'Audio'` as a soft rule; classes
 are read from the board's project by the resolver the router and `check_drc`
-share. While a net of either side is
+share. The run logs one line per rule with the number of nets each side
+resolved to, and a warning, once, for each pattern that matched nothing.
+While a net of either side is
 routed, every cell where its track would sit closer than GAP to the other
 side's copper (pads, tracks, vias -- pre-existing copper and copper routed
 earlier in the run alike) costs `keep_away_cost` on the **layer map**.
@@ -266,6 +273,25 @@ carries as a list, and the log prints when it differs. It reads the whole
 board, so `--keep-away-cost 0` grades a board without changing the route,
 including a board with nothing left to route. `route.py` and `route_diff.py` take the rules; in the GUI they are the
 Advanced tab's Keep-away field, used by the Route and Differential tabs.
+
+The rules can also be **declared once, in the board's design brief**
+(`<board>.design-brief.json`, key `keep_away`, #1253): a list of rules in this
+syntax, one per entry, as a string or `{"rule": ..., "why": ...}`. The engines
+(`batch_route`, `batch_route_diff_pairs`) read that key off the brief beside
+`input_file` (else `PCBData.source_path`) through
+`keep_away.resolve_keep_away`, the way `.kicad_dru` is discovered, and add
+each rule not already given after the caller's. So the CLI and the GUI both
+honour it with no flag or control. The run prints `Keep-away: N rule(s) read
+from the design brief`, and a malformed brief rule is refused with the rule
+parser's message (exit 2 on the CLI, a dialog in the GUI). `batch_route` reads
+the brief in its outermost call only; its nested sub-runs inherit the merged
+rules. A board with no brief, or a brief without the key, routes exactly as
+before. `check_floorplan` grades the same rules on the placed pads, before any
+track exists (`keep_away` in [the floorplan intent](floorplan-intent.md)).
+`keep_away.unpriced_rules(rules, board_path)` answers the reverse question
+with the same reader: which of a list of rules the engines will NOT price on
+that board. check_floorplan asks it about the intent it grades and warns
+about a `keep_away` row no brief beside the board declares.
 
 #### Via proximity multiplier: `via_proximity_cost`
 
@@ -332,6 +358,50 @@ repeat anywhere. The console prints a `WARNING` naming machine speed in the
 same case. There is deliberately no size pre-flight predicate: the corpus
 measurement behind that decision is in `tests/stress/RUNBOOK.md` ("Exact-fill
 timing census (#831)").
+
+##### Pour guard (#1260): an out-of-scope pour the run could only cut
+
+Not a cost: a hard obstacle. Routing through another net's pour is normal (the
+refill clears around the track), but a track that crosses a pour island from
+edge to edge cuts it in two, and KiCad's refill then deletes the piece that no
+longer touches a pad of the pour's net, or leaves that net open if the pour was
+its only connection. For a zone net in the run's scope the plane finalize
+repairs that; for one outside it (not matched by the caller's net filter, the
+`finalize_excluded_nets`) nothing does.
+
+So `batch_route` (`pour_guard.install_pour_barriers`, both fronts) blocks each
+fill island of an out-of-scope pour on a routing layer when **no routed net has
+a terminal inside it** (a pad, via or track end, holes included: a net with no
+terminal inside can enter the island only to cross it) and a cut would cost
+something. The island must touch two or more of its own net's pads, vias or
+tracks, or touch one and be at least the minimum island area (the zone's own in
+area-removal mode, else KiCad's default, 10 mm^2). The barriers land in
+`GridRouteConfig.pour_barriers`, and every `build_base_obstacle_map` stamps
+them as track and via keep-outs at the larger of the pair clearance and the
+zone's own clearance. Islands that hold a routed terminal stay crossable, so
+ordinary routing over a full-board pour is unchanged. Geometry: the exact KiCad
+fill (the GUI's live board, else a refill of the source file, memoised with the
+fragility field), else the zone outlines. Nested sub-runs (reconciliation laps,
+finalize repairs) inherit the outer run's list through the internal
+`pour_barriers` kwarg. `KICAD_POUR_GUARD=0` turns the guard off. The account is
+in `JSON_SUMMARY.pour_guard`:
+
+```json
+"pour_guard": {"source": "kicad_refill", "why": "",
+               "pours": [{"net": "ZONE_NET", "layer": "F.Cu",
+                          "blocked_islands": 1, "blocked_mm2": 334.3,
+                          "crossable_islands": 0, "minor_islands": 0}]}
+```
+
+A crossable island can still be cut by a net that has no terminal in it. So
+the outermost run grades every out-of-scope zone net with a crossable island
+again, on the board it ships (the written file; the GUI's write model) against
+the copper it started with. Both states are graded through fresh fill models
+(`pour_guard.audit_pour_cuts`). A net left with more disconnected pads than it
+had is named on the console (`Pour cut (#1260): ...`), in `--json-out` and the
+GUI's `results_data` as `pour_cuts: [{net, open_pads_before,
+open_pads_after}]`, and in `JSON_SUMMARY_MIN.pour_cuts` (the names). The audit
+only reports: it does not fail the run or revert it.
 
 ##### History congestion (#590), the only field that measures TIME
 
@@ -505,7 +575,8 @@ on the corpus.
 | `meander_amplitude` | `1.0` | Meander height |
 | `meander_spacing` | `2.0` | Centre-to-centre pitch of adjacent meander arms, in multiples of the net's routed track width (#501) |
 | `net_layer_widths` | `{}` | Per-net per-layer widths reapplied from stored `.kicad_pro` impedance declarations on a redo (#521); outranks the netclass scalar |
-| `net_via_sizes` | `{}` | `{net_id: (via_size, via_drill)}` for nets whose resolved class / rule via geometry differs from the call's `via_size`/`via_drill` (#530 decision 4). `config.net_via(net_id)` returns the pair a net draws. The obstacle cache keeps one via-legality **rung** per distinct pair (`obstacle_cache.via_rungs`, rung 0 = the call's size; rust `add_blocked_via_rung` / `is_via_blocked_rung`), every add/remove is mirrored into all rungs, and `route_net_with_obstacles` selects the net's rung before the search. Needs `grid_router` 0.22.0+; `route.py` prints a note and routes at the call size on an older binary |
+| `net_via_sizes` | `{}` | `{net_id: (via_size, via_drill)}` for nets whose resolved class / rule via geometry differs from the call's `via_size`/`via_drill` (#530 decision 4). `config.net_via(net_id)` returns the pair a net draws. The obstacle cache keeps one via-legality **rung** per distinct pair (`obstacle_cache.via_rungs`, rung 0 = the call's size; rust `add_blocked_via_rung` / `is_via_blocked_rung`), every add/remove -- cached or raw (#1226: the per-net adds behind `build_single_ended_obstacles`, the list add/remove twins, the board-edge bands) -- reaches every rung at THAT rung's own via and drill, never the call's size (a larger per-net via would sit (rung - call)/2 inside the copper), and `route_net_with_obstacles` selects the net's rung before the search. A MULTIPOINT net (3+ pads) is searched at the call's size, so its paths complete as they would with no class via, and each via it places is then drawn at the net's own size wherever that is legal at its rung; the rest keep the call's size and are disclosed as a `design_rules` descent. Needs `grid_router` 0.22.0+; `route.py` prints a note and routes at the call size on an older binary |
+| `pour_barriers` | `[]` | #1260: the fill islands of out-of-scope zone nets this run could only cut, `[{net, layer, polygons, clearance}]`, installed by `pour_guard.install_pour_barriers` and stamped by `build_base_obstacle_map` as track and via keep-outs (see "Pour guard (#1260)" above). Engine-computed and inherited by nested sub-runs; no CLI flag and no GUI control (`KICAD_POUR_GUARD=0` reverts). Empty = inert |
 | `time_matching` | `False` | Match propagation delay instead of length |
 | `time_match_tolerance` | `1.0` | Allowed spread (picoseconds) |
 
@@ -523,7 +594,7 @@ on the corpus.
 |-------|---------|---------|
 | `routing_clearance_margin` | `1.0` | Diff pairs only: multiplier on the track-to-via distance that sets the P/N via offset and the centerline's via keep-out (1.0 = exact DRC minimum). No single-ended obstacle reads it |
 | `hole_to_hole_clearance` | `0.25` | Drill-to-drill clearance, edge to edge. Net-blind, like KiCad's `hole_to_hole` rule: a new via keeps it from vias of its OWN net too -- the same-net via rings are `max(via_size + clearance, (d1 + d2)/2 + hole_to_hole)` (#1070) |
-| `hole_clearance` | `0.0` | Copper-to-HOLE floor (KiCad's `min_hole_clearance`) — keeps TRACKS off an NPTH wall (never below `routing_defaults.NPTH_TO_TRACK_CLEARANCE`), and whenever a floor resolves above 0 also keeps VIA copper `max(clearance, floor)` off it (#1038). NOT the same rule as `hole_to_hole_clearance` (drill-to-drill). `0` = read the board's own constraint (`rules.min_hole_clearance` or `fab_floor_origin`); the track keep-out then falls back to `NPTH_TO_TRACK_CLEARANCE`, the via keep-out to none. route.py's DRC writeback writes `min_hole_clearance` into each route step's output project, so every chain step after the first resolves a floor |
+| `hole_clearance` | `0.0` | Copper-to-HOLE floor (KiCad's `min_hole_clearance`) — keeps TRACKS off an NPTH wall (never below `routing_defaults.NPTH_TO_TRACK_CLEARANCE`), and whenever a floor resolves above 0 also keeps VIA copper `max(clearance, floor)` off it (#1038). NOT the same rule as `hole_to_hole_clearance` (drill-to-drill). `0` = read the board's own constraint (`rules.min_hole_clearance` or `fab_floor_origin`; on a PCBData built from pcbnew the rule is the live board's in-memory value, `obstacle_map.declared_hole_clearance`); the track keep-out then falls back to `NPTH_TO_TRACK_CLEARANCE`, the via keep-out to none. The project is re-read whenever it changes, so a long-lived process (the GUI) never keeps a superseded value. route.py's DRC writeback writes `min_hole_clearance` into each route step's output project, so every chain step after the first resolves a floor |
 | `board_edge_clearance` | `0.0` | Clearance from board edge (0 = use `clearance`) |
 | `same_net_pad_clearance` | `-1.0` | #581: edge-to-edge clearance between **every placed via** and **same-net SMD pads**. `> 0` forbids via-in-pad globally (routing/tap/rescue via placement blocks same-net SMD pads at this clearance; pad-centre swap vias are declined; the #189 in-pad rescue is disabled; the sub-grid via nudge honors it; BGA under-pad escapes run dog-bone, QFN refuses via-in-pad). #962: `> 0` also keeps vias out of the net's solder-paste OPENINGS at the same clearance -- graphic and paste-only openings, and pad openings larger than their pad -- in the routing, plane-via, nudge and seal-hint paths (the fanouts keep their own via-in-pad rules). `-1` **and** `0` preserve pre-#581 behavior exactly (0 keeps only its legacy meaning where `route_planes` passes it explicitly into its stitching via maps). Set from `--same-net-pad-clearance` (planes/route/route_diff/fanout/repair) or auto-read from the persisted `.kicad_pro` record (`kicad_routing_tools.same_net_pad_clearance`); an active flag value is persisted so later chain steps inherit it |
 | `net_clearances` | `{}` | `{net_id: class_clearance_mm}` — per-net **net-class** clearance for KiCad's cross-class rule (see below) |
@@ -563,7 +634,9 @@ assert config.obstacle_clearance(some_default_net) == 0.15  # not in the map -> 
   `route_diff.py` / the fanout and plane CLIs (and inside `batch_route` for any other
   caller). Only non-Default classes appear, so an all-Default board yields `{}`.
   Supply `--net-clearances <json>` (net name → mm) to override. The GUI derives the
-  same map from the live board.
+  same map from the live board, and the Advanced tab's **Net Clearances File** is
+  `--net-clearances` there: the Route and Differential tabs then use the file's map
+  instead, read through the same `list_nets.load_net_clearances`.
 - **`--clearance` is a ceiling on the map (#439).** When `--clearance` is GIVEN, each
   auto-read class is capped at it (`net_clearances[nid] = min(class, clearance)`) before
   it is installed — a class *tighter* than `--clearance` survives; a *looser* one is

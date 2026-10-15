@@ -243,7 +243,7 @@ def _seeder_forecast(doc, pcb, board, sources):
     the pile it seeds (place_seed's own rule, `stacked_suspect_refs`)."""
     from placement import seeder
     from placement.floorplan import resolve_blocks
-    from placement.placement_state import assess_placement
+    from placement.placement_state import SEED_STACKED, assess_placement
     try:
         intent = intent_from_dict(doc, board)
         blocks, _probs = resolve_blocks(intent, pcb, sources or ())
@@ -251,11 +251,15 @@ def _seeder_forecast(doc, pcb, board, sources):
         return {'unavailable': str(exc)}
     standing = set((doc.get('context') or {}).get('file_locked') or ())
     st = assess_placement(pcb, board)
-    partial = bool(st.partially_unplaced and not st.unplaced)
+    # place_seed's scope, by its own predicate (#1165: `seed_scope`).
+    partial = st.seed_scope == SEED_STACKED
     if partial:
         standing |= set(pcb.footprints) - set(st.stacked_suspect_refs)
+    # #1105: stage 3.5 is on by default for a pile input, so the forecast
+    # reads the same verdict place_seed will hold.
     out = seeder.decap_pin_forecast(pcb, intent, blocks,
-                                    standing=sorted(standing))
+                                    standing=sorted(standing),
+                                    assessment=st)
     out['standing'] = sorted(standing)
     # `--force` re-seeds every unlocked part, so the parts a partial pile
     # leaves standing are only standing without it (file locks survive it).
@@ -263,16 +267,45 @@ def _seeder_forecast(doc, pcb, board, sources):
     return out
 
 
+#: #1105: how an author seats an owner IC before the per-supply-pin stage --
+#: the routes `seeder.decap_pin_forecast` counts as "early".
+DECLARE_OWNERS_HOW = ('a fixed_poses[] entry, a must_lock pattern or a '
+                      'zoned block')
+
+#: #1105: the line's note when the pile default arms stage 3.5.
+LATE_ON_A_PILE = ('stage 3.5 is on by default because this board is a pile, '
+                  'undoing a seat that lands past the decap limit; place_seed '
+                  '--no-decap-claim-after-ics turns it off')
+
+#: #1105: what the flag runs, and where stage 3.5 is on without being asked
+#: -- said wherever the emitter tells a reader of a board that is NOT a pile
+#: to pass the flag.
+LATE_DEFAULT_SCOPE = ('keeping every seat it finds; the stage is on by '
+                      'default, undoing a seat past the decap limit, only '
+                      'when the input board is a pile -- the corpus A/B '
+                      'rejected it on placed boards')
+
+
 def _forecast_clause(cen):
     """#1105: the tail of the emitter's decap line -- what place_seed's pin
     stages can claim from this intent, by stage, and what they never can.
-    Falls back to the census's scope count when no forecast was taken."""
+
+    It promises only what the stage can do on the board it was emitted
+    from. The pin stage serves the supply pins of owner ICs seated BEFORE
+    it, so where no owner is placed, locked or declared it claims nothing
+    (run 38's StickHub pile: "will seat 38", then claimed 0 on every seed).
+    On a pile stage 3.5 is on by default and claims them once the centroid
+    stage has seated their owners, and the line says so and how to turn it
+    off; elsewhere it says the stage claims no cap and how to declare the
+    owners. With no forecast it states the scope as a scope, never as a
+    count of seats."""
     f = cen.get('seeder_forecast') or {}
     if not f or 'unavailable' in f:
-        return (f" and will seat up to {cen.get('seeder_pin_scope')} cap(s) "
-                f"per supply pin instead of zone-packing them"
-                + (f" (seeder forecast unavailable: {f['unavailable']})"
-                   if f else ''))
+        return (f"; its per-supply-pin stage has {cen.get('seeder_pin_scope')}"
+                f" cap(s) in scope and claims only those whose owner IC is "
+                f"seated before it ({DECLARE_OWNERS_HOW}, or a part already "
+                f"placed or file-locked) -- how many could not be forecast"
+                + (f" ({f['unavailable']})" if f else ''))
 
     def _refs(xs, n=8):
         xs = list(xs)
@@ -281,6 +314,30 @@ def _forecast_clause(cen):
 
     early, late = f.get('early') or [], f.get('late') or []
     armed = bool(f.get('late_armed'))
+    if not early and not (late and armed):
+        # Nothing to claim on THIS board. Said as a statement, not as "up
+        # to 0", which read as a promise with a zero in it.
+        owners = sorted(set(f.get('late_owners') or ()))
+        out = (f", but its per-supply-pin stage will claim NO cap on this "
+               f"board: of the {f.get('scope')} cap(s) in scope, none has an "
+               f"owner IC placed, locked or declared before the stage runs"
+               + (f" (their owners {_refs(owners)} are seated only by the "
+                  f"centroid stage, after it)" if owners else '')
+               + f", so they are zone-packed or seated by the centroid stage "
+                 f"instead. To claim them, declare the owners -- "
+                 f"{DECLARE_OWNERS_HOW} -- so they are seated first; "
+                 f"place_seed --decap-claim-after-ics claims after the "
+                 f"centroid stage instead ({LATE_DEFAULT_SCOPE})")
+        if f.get('ownerless'):
+            out += (f"; {len(f['ownerless'])} can never be claimed -- no "
+                    f"{f.get('owner_rule', 'U-prefixed cap owner')} carries "
+                    f"their rail ({_refs(f['ownerless'])})")
+        if f.get('exempt'):
+            out += f"; {len(f['exempt'])} exempt"
+        if f.get('array_members'):
+            out += (f"; {len(f['array_members'])} are declared array members "
+                    f"(the array wins)")
+        return out
     head = (f" and can claim up to {len(early) + (len(late) if armed else 0)} "
             f"of {f.get('scope')} cap(s) in scope at a supply pin instead of "
             f"zone-packing them")
@@ -296,19 +353,21 @@ def _forecast_clause(cen):
                      f"seated their owner IC(s) "
                      f"({_refs(f.get('late_owners') or ())})"
                      + ('' if early else ' -- no owner IC is seated before '
-                        'stage 2.5 on this board'))
+                        'stage 2.5 on this board')
+                     + (f" ({LATE_ON_A_PILE})"
+                        if f.get('late_armed_by') == 'pile' else ''))
     out = head + (': ' + ', '.join(parts) if parts else '')
     if late and not armed:
         out += (f"; {len(late)} are NOT claimed: their owner IC(s) "
                 f"({_refs(f.get('late_owners') or ())}) are seated only by "
-                f"the centroid stage, after the pin stage (declare them as "
-                f"fixed_poses or in a zoned block to seat them first; "
+                f"the centroid stage, after the pin stage (declare them -- "
+                f"{DECLARE_OWNERS_HOW} -- to seat them first; "
                 f"place_seed --decap-claim-after-ics claims after them, "
-                f"opt-in -- the corpus A/B rejected it as a default)")
+                f"{LATE_DEFAULT_SCOPE})")
     if f.get('ownerless'):
         out += (f"; {len(f['ownerless'])} can never be claimed -- no "
-                f"{f.get('owner_rule', 'U-prefixed')} part carries their "
-                f"rail ({_refs(f['ownerless'])})")
+                f"{f.get('owner_rule', 'U-prefixed cap owner')} carries "
+                f"their rail ({_refs(f['ownerless'])})")
     if f.get('exempt'):
         out += f"; {len(f['exempt'])} exempt"
     if f.get('array_members'):
@@ -329,6 +388,70 @@ def _brief_absence_reason(args, brief):
     if brief is None:
         return "no design brief was found beside this board"
     return "the brief found declares nothing gradable"
+
+
+def keep_away_unpriced(rows, board_path):
+    """#1253. The intent's `keep_away` rows that NO router will price, or
+    None when the intent carries none.
+
+    check_floorplan grades every `keep_away[]` row of the intent it is
+    given, but route.py, route_diff.py and the GUI read keep-away rules only
+    from the design brief beside the board they route (and a run's own
+    --keep-away), never from an intent. A row written straight into an
+    intent, or compiled from a brief the router does not read (`--brief`
+    naming another file), is therefore graded on the placement and never
+    priced on the tracks. Answered by the router's own reader
+    (`keep_away.unpriced_rules`), so this cannot disagree with what a route
+    step will read."""
+    rows = list(rows or ())
+    if not rows:
+        return None
+    from keep_away import brief_path_for, normalize_keep_away_specs, \
+        unpriced_rules
+    got = unpriced_rules([r.get('rule') for r in rows], board_path)
+    missing = set(got['rules'])
+    out = [{'index': i, 'rule': normalize_keep_away_specs(r['rule'])[0],
+            'source': r.get('source')}
+           for i, r in enumerate(rows)
+           if normalize_keep_away_specs(r['rule'])[0] in missing]
+    sibling = got['brief'] or brief_path_for(os.path.abspath(board_path))
+    name = os.path.basename(sibling)
+    rec = {'rules': out, 'checked': len(rows),
+           'router_brief': got['brief'] or None,
+           'router_brief_declares': got['brief_declares'],
+           'router_brief_error': got['brief_error'],
+           'warning': None, 'fix': None}
+    if not out:
+        return rec
+    if got['brief_error']:
+        where = (f"the design brief beside the board cannot be read, so the "
+                 f"route steps refuse to run ({got['brief_error']})")
+    elif got['brief']:
+        where = (f"the design brief beside the board ({name}) does not "
+                 f"declare {'it' if len(out) == 1 else 'them'}")
+    else:
+        where = f"no design brief sits beside the board ({name})"
+    rec['warning'] = (
+        f"{len(out)} keep_away rule(s) in this intent are graded on the "
+        f"placement but will NOT be priced by route.py, route_diff.py or the "
+        f"GUI: the routers read keep-away rules from the design brief beside "
+        f"the board, never from an intent, and {where}")
+    rec['fix'] = (
+        f"declare {'it' if len(out) == 1 else 'each rule'} in the "
+        f"`keep_away` list of {sibling}, the brief the route steps read "
+        f"beside this board, then re-run check_floorplan.py --emit-intent "
+        f"so the intent carries it from the brief")
+    return rec
+
+
+def _print_keep_away_unpriced(rec):
+    if not rec or not rec['rules']:
+        return
+    print(f"  WARNING keep_away: {rec['warning']}:")
+    for r in rec['rules']:
+        print(f"    - keep_away[{r['index']}] '{r['rule']}'"
+              + (f" (source {r['source']})" if r.get('source') else ''))
+    print(f"    fix: {rec['fix']}")
 
 
 def intent_doc_for_drift(path):
@@ -726,6 +849,10 @@ def main(argv=None):
                   f"{len(doc['must_lock'])} locked part(s)")
             print(f"  envelope {doc['envelope']['rect']} -- read from the "
                   f"board. The outline is not editable by this toolchain")
+            # #1253: rules compiled from a `--brief` that is not the one
+            # beside the board are graded and never routed.
+            _print_keep_away_unpriced(keep_away_unpriced(
+                doc.get('keep_away'), args.board))
             # #1103: a pile says what it did not read off its poses.
             _pcw = (doc.get('context') or {}).get('pose_claims_withheld')
             if _pcw:
@@ -768,6 +895,12 @@ def main(argv=None):
             if cen.get('decap_ungraded_promoted'):
                 print(f"  decaps: decap_ungraded promoted to error -- "
                       f"{cen['decap_ungraded_promoted']}")
+            # #1178: a placed reference with parts sharing an origin is read
+            # as placed (a pile is refused), and the shared ones are named.
+            if cen.get('reference_stacked_refs'):
+                print(f"  decaps: the reference was read as placed although "
+                      f"{', '.join(cen['reference_stacked_refs'])} share an "
+                      f"origin -- it is not a pile (#1109's `pile`)")
             # The two causes are printed SEPARATELY (#792). One number
             # used to carry both, and the doc explained it with a third
             # cause -- a predicate mismatch -- that measurement says does
@@ -869,6 +1002,11 @@ def main(argv=None):
         print(format_text(result))
         for line in _rc.format_rows(_rows):
             print(line)
+    # #1253. A keep_away row this intent carries without the brief beside
+    # the board is graded above and priced by no router.
+    ka_unpriced = keep_away_unpriced(intent.keep_away, args.board)
+    if not args.quiet:
+        _print_keep_away_unpriced(ka_unpriced)
     _contra_ids = [r['id'] for r in _rc.contradictions(_rows)]
     _answered = set((intent.dispositions or {}).get('contradictions', {}))
 
@@ -920,17 +1058,28 @@ def main(argv=None):
                                 consequences=(brief_report or {}).get(
                                     'consequences'))
     ledger_s = ledger_summary(ledger)
-    if not args.quiet and ledger_s['carried_facts']:
-        print(f"  {len(ledger_s['carried_facts'])} declared fact(s) are "
+    # #1255: a carried fact ANOTHER instrument grades is named with it, so
+    # the sentence below stays true of the facts it lists.
+    from placement.design_brief import GRADED_ELSEWHERE as _elsewhere
+    _carried = [f for f in ledger_s['carried_facts'] if f not in _elsewhere]
+    _graded_by = [f for f in ledger_s['carried_facts'] if f in _elsewhere]
+    if not args.quiet and _carried:
+        print(f"  {len(_carried)} declared fact(s) are "
               f"CARRIED, NOT physically checked -- no rule measures them, "
               f"whatever `complete` says: "
-              f"{', '.join(ledger_s['carried_facts'])}")
+              f"{', '.join(_carried)}")
+    if not args.quiet and _graded_by:
+        print(f"  {len(_graded_by)} declared fact(s) are graded by another "
+              f"instrument, not by this one: "
+              + ', '.join(f"{f} ({_elsewhere[f]})" for f in _graded_by))
 
     if args.json:
         doc = to_json(result)
         doc['brief_coverage'] = coverage
         doc['declaration_ledger'] = ledger
         doc['reconciliation'] = _rows
+        if ka_unpriced is not None:
+            doc['keep_away_unpriced'] = ka_unpriced
         with open(args.json, 'w', encoding='utf-8') as fh:
             json.dump(doc, fh, indent=1, sort_keys=True)
             fh.write('\n')
@@ -944,6 +1093,7 @@ def main(argv=None):
     s['brief_absent'] = len(brief_report.get('absent') or ())
     s['brief_unknown_keys'] = sorted(brief_report.get('unknown') or ())
     s['brief_drift'] = len(brief_drift)
+    s['keep_away_unpriced'] = len((ka_unpriced or {}).get('rules') or ())
     if coverage.get('clauses'):
         s['brief_clauses'] = len(coverage['clauses'])
         for _k in ('graded', 'uncovered', 'abstained', 'not_claimed',

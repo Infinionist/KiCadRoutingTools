@@ -35,6 +35,7 @@ PLUGIN = os.path.join(ROOT, "kicad_routing_plugin")
 # Called by name (update_live_drc_floors(...)), or reached as a bound method
 # (the Default netclass's SetDiffPairWidth / SetDiffPairGap).
 WRITERS = ("update_live_drc_floors", "apply_targets_to_board",
+           "apply_fix_to_board",
            "fix_project_for_output", "SetDiffPairWidth", "SetDiffPairGap")
 # A gate is any enclosing `if` whose test mentions the toggle. ai_plan reads the
 # live checkbox into a local first (it owns the real dialog), so accept that too.

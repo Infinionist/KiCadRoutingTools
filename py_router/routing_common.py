@@ -625,6 +625,18 @@ def filter_already_routed(
             # short of the pad, the case #578 was built to route. Ask the
             # authoritative graph which copper is dead, drop it, and re-count:
             # only if the REMAINDER is whole is there nothing left to route.
+            #
+            # A net whose copper is ALL KiCad-locked is not a route either
+            # (#1261). Its pads grade connected; the strict fragments are the
+            # designer's pinned copper, which no pass may move or remove, so
+            # "routing to join them" can only lay new copper beside it, and
+            # puts a net the user pinned in front of every rip ladder and
+            # stub-switch rung of the run.
+            if n > 1 and _all_copper_locked(net_segments, net_vias):
+                print(f"  {net_name}: pads grade connected and every segment "
+                      f"and via is KiCad-locked -- its {n} strict fragment(s) "
+                      f"are pinned copper, not a route to finish (#1261)")
+                n = 1
             if n > 1 and os.environ.get('KICAD_659_DIVERT', '1') != '0':
                 from check_connected import net_dead_copper
                 _dead_s, _dead_v = net_dead_copper(
@@ -685,6 +697,14 @@ def filter_already_routed(
     return nets_to_route, already_routed
 
 
+def _all_copper_locked(segments, vias) -> bool:
+    """True when a net has copper and every track and via of it is
+    KiCad-locked (graphics are not the net's track copper)."""
+    items = [s for s in segments if not getattr(s, 'graphic', False)]
+    items += list(vias)
+    return bool(items) and all(getattr(x, 'locked', False) for x in items)
+
+
 def _max_fragments_within_one_outline(pcb_data, anchors):
     """How many strict fragments share a single board outline (#479 parity:
     fragments split only ACROSS outlines are not joinable by copper)."""
@@ -705,7 +725,9 @@ def run_length_matching(
     routed_results: Dict[int, Dict],
     length_match_groups: List[List[str]],
     config: GridRouteConfig,
-    pcb_data: PCBData
+    pcb_data: PCBData,
+    scope_net_ids: Optional[Set[int]] = None,
+    report: Optional[Dict] = None,
 ) -> Dict[str, Dict]:
     """
     Apply length or time matching to all configured groups.
@@ -718,6 +740,20 @@ def run_length_matching(
         length_match_groups: List of pattern groups to match
         config: Routing configuration
         pcb_data: Parsed PCB data
+        scope_net_ids: the nets THIS call was asked to route (its --nets,
+            resolved before the already-connected filter). An `auto` group is
+            formed from these only (#1247): routed_results also holds every
+            pre-existing net the run registered as a rip candidate
+            (is_existing_route), and feeding those to the name grouper let
+            /power/*, JTAG and SD nets join -- and get meandered and recorded
+            as protected. A member the call names that an earlier step routed
+            still joins, measured from the board (#489 section 7). None: every
+            result that is not an is_existing_route registration.
+            Named-pattern groups are unchanged: they match every result.
+        report: when given, receives 'groups' -- one record per group formed,
+            {'name', 'source': 'auto'|'patterns', 'members'[, 'patterns']} --
+            and, when `auto` ran, 'auto' -- what the grouper left out and why
+            (the same lists it prints). Both fronts carry it in JSON_SUMMARY.
 
     Returns:
         Updated net_name_to_result mapping
@@ -742,6 +778,20 @@ def run_length_matching(
             net_name_to_result[net_name] = result
 
     all_routed_names = list(net_name_to_result.keys())
+    # #1247: the `auto` grouper's input is this call's scope, never the
+    # pre-existing nets registered as rip candidates.
+    auto_input_names = []
+    for net_id, result in routed_results.items():
+        if net_id not in pcb_data.nets:
+            continue
+        if scope_net_ids is not None:
+            if net_id not in scope_net_ids:
+                continue
+        elif result and result.get('is_existing_route'):
+            continue
+        auto_input_names.append(pcb_data.nets[net_id].name)
+    board_net_names = [n.name for n in pcb_data.nets.values() if n.name]
+    formed_groups: List[Dict] = []
 
     # Track all segments/vias from previously processed groups
     all_processed_segments = []
@@ -750,7 +800,26 @@ def run_length_matching(
     for group in length_match_groups:
         # Handle "auto" for DDR4 grouping
         if len(group) == 1 and group[0].lower() == 'auto':
-            auto_groups = auto_group_ddr4_nets(all_routed_names)
+            _auto_report: Dict = {}
+            auto_groups = auto_group_ddr4_nets(
+                auto_input_names, context_names=board_net_names,
+                report=_auto_report)
+            for _key, _members in _auto_report.get('groups', {}).items():
+                formed_groups.append({'name': _key, 'source': 'auto',
+                                      'members': sorted(_members)})
+            if report is not None:
+                report['auto'] = {
+                    'scope_nets': len(auto_input_names),
+                    'interfaces': _auto_report.get('interfaces', {}),
+                    'channels': _auto_report.get('channels', {}),
+                    'lane_undeterminable': sorted(
+                        _auto_report.get('lane_undeterminable', [])),
+                    'no_group_token': sorted(
+                        _auto_report.get('no_group_token', [])),
+                    'not_dram_interface': sorted(
+                        _auto_report.get('not_dram_interface', [])),
+                    'variants': _auto_report.get('variants', {}),
+                }
             for auto_group in auto_groups:
                 if len(auto_group) >= 2:
                     net_name_to_result = matching_func(
@@ -768,6 +837,9 @@ def run_length_matching(
         else:
             # Find nets matching the patterns in this group
             matching_nets = find_nets_matching_patterns(all_routed_names, group)
+            formed_groups.append({'name': ' '.join(group), 'source': 'patterns',
+                                  'patterns': list(group),
+                                  'members': sorted(matching_nets)})
             if len(matching_nets) >= 2:
                 match_type = "Time match" if config.time_matching else "Length match"
                 print(f"\n{match_type} group: {group}")
@@ -785,6 +857,19 @@ def run_length_matching(
                         if result.get('new_vias'):
                             all_processed_vias.extend(result['new_vias'])
 
+    # #444: Phase 3 runs after this pass, and its seam re-ask must never
+    # re-ask a member -- the meanders are the route. It reads the members
+    # the groups were FORMED with (the same lists as JSON_SUMMARY's
+    # length_match_groups), never the patterns: an `auto` group has none
+    # that names its members (#1247).
+    try:
+        config._length_matched_names = (
+            frozenset(getattr(config, '_length_matched_names', None) or ())
+            | {n for g in formed_groups for n in g['members']})
+    except AttributeError:
+        pass
+    if report is not None:
+        report['groups'] = formed_groups
     return net_name_to_result
 
 

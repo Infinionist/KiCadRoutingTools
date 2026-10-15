@@ -667,6 +667,66 @@ def _report_unrouted_ripped_nets(pcb_data, ripped_net_ids):
           f"{', '.join(ripped_names)}")
 
 
+def _pad_label(pads, ref, x, y):
+    """The pad number(s) of `ref` at a graded point, or None.
+
+    Pads whose copper centre IS the point first, every one of them: stacked
+    pads (a multi-number thermal pad) share the copper, so the grade cannot
+    tell them apart and the label names them all, `33/34`. Failing that, the
+    pads whose copper box holds the point, so a point off the exact centre is
+    still named rather than left `?`."""
+    mine = [p for p in pads if p.component_ref == ref]
+    hits = [p for p in mine
+            if abs(p.global_x - x) < 1e-3 and abs(p.global_y - y) < 1e-3]
+    if not hits:
+        hits = [p for p in mine
+                if abs(p.global_x - x) <= p.size_x / 2 + 1e-3
+                and abs(p.global_y - y) <= p.size_y / 2 + 1e-3]
+    nums = list(dict.fromkeys(str(p.pad_number) for p in hits))
+    return '/'.join(nums) if nums else None
+
+
+def grade_plane_completion(board_file: str, net_names) -> Dict:
+    """The plane nets this run was asked to connect, graded on the board it
+    SHIPS.
+
+    Nothing graded that board before. The engine's "Pads still unconnected"
+    line is a fill-MODEL reading taken before main()'s oracle reconnect lays
+    more copper, and the JSON_SUMMARY said `status: ok` whatever was left:
+    under `--escalation off` on watchy 6 pads stayed open, under
+    `--escalation board` on kit-dev-coldfire 5 (U102/U301 GND), both confirmed
+    by check_connected. This is the zone/fill-aware grade route.py's final
+    re-grade uses (improvement_gate.grade_nets, #1069), reported in the same
+    failure vocabulary (route_summary.regrade_record: failed_multipoint and
+    the multipoint pad deficit, failed_single / open_single for a 2-pad net),
+    with each open pad's number resolved, plus `unconnected_pads` as
+    "REF.PAD (NET)". Report-only: it changes no copper.
+    """
+    from improvement_gate import grade_nets
+    from route_summary import regrade_record
+    pcb = parse_kicad_pcb(board_file)
+    wanted = set(net_names or ())
+    grades: Dict[str, Dict] = {}
+    for nid, g in grade_nets(pcb, sorted(i for i, n in pcb.nets.items()
+                                         if n.name in wanted)).items():
+        pads = pcb.pads_by_net.get(nid) or []
+        for fp in g['failed_pads']:
+            label = _pad_label(pads, fp['component_ref'], fp['x'], fp['y'])
+            if label is not None:
+                fp['pad_number'] = label
+        grades[pcb.nets[nid].name] = g
+    rec = regrade_record([], grades, sorted(grades), board='file')
+    out = {k: rec[k] for k in (
+        'routed_single', 'failed_single', 'open_single', 'failed_multipoint',
+        'multipoint_pads_total', 'multipoint_pads_connected', 'successful',
+        'failed')}
+    out['unconnected_pads'] = [
+        f"{fp['component_ref']}.{fp['pad_number']} ({name})"
+        for name in sorted(grades) if grades[name]['broken']
+        for fp in grades[name]['failed_pads']]
+    return out
+
+
 def extract_zone_properties(pcb_data) -> Dict[Tuple[str, str], Dict]:
     """Per-zone (clearance, min_thickness) keyed by (net_name, layer).
 
@@ -1217,20 +1277,33 @@ def repair_planes(
     # set -- a blocker rip here strips the net for a later generic route.py
     # reconnect, which cannot reproduce matching/coupling/hand-routing. (The
     # tap simply fails over its other candidates.)
+    #
+    # Fail SAFE (#1261 follow-up): this lookup used to sit in a bare
+    # `except Exception: pass`, so a failure here silently left every net --
+    # locked copper included -- a candidate blocker. If protection cannot be
+    # read, say so and rip nothing this run (the tap fails over its other
+    # candidates, as it does for a protected blocker).
+    from protected_nets import protection_map
+    _protection_read = True
     try:
-        from protected_nets import protection_map
         _prot_names = protection_map(pcb_data)
-        if _prot_names:
-            _prot_ids = {nid for nid, n in pcb_data.nets.items()
-                         if n.name in _prot_names}
-            _prot_ids -= plane_net_ids
-            if _prot_ids and rip_blocker_nets:
-                _ex = sorted(pcb_data.nets[i].name for i in _prot_ids)[:4]
-                print(f"  {len(_prot_ids)} PROTECTED net(s) excluded from blocker "
-                      f"rip-up ({', '.join(_ex)}{'...' if len(_prot_ids) > 4 else ''})")
-            plane_net_ids |= _prot_ids
-    except Exception:
-        pass
+    except Exception as e:
+        _protection_read = False
+        _prot_names = {}
+        if rip_blocker_nets:
+            print(f"  WARNING: net protection (#521: protected nets and "
+                  f"KiCad-locked copper) could not be read "
+                  f"({type(e).__name__}: {e}) -- NO blocker will be ripped "
+                  f"this run")
+    if _prot_names:
+        _prot_ids = {nid for nid, n in pcb_data.nets.items()
+                     if n.name in _prot_names}
+        _prot_ids -= plane_net_ids
+        if _prot_ids and rip_blocker_nets:
+            _ex = sorted(pcb_data.nets[i].name for i in _prot_ids)[:4]
+            print(f"  {len(_prot_ids)} PROTECTED net(s) excluded from blocker "
+                  f"rip-up ({', '.join(_ex)}{'...' if len(_prot_ids) > 4 else ''})")
+        plane_net_ids |= _prot_ids
     ripped_net_ids: List[int] = []
     # #517 arm 3 (#524 root cause): nets whose immediate reconnect SUCCEEDED
     # leave ripped_net_ids (they are no longer casualties) -- but their
@@ -1529,7 +1602,8 @@ def repair_planes(
                         corridor_ghosts=corridor_ghosts,
                         plane_tap=True)  # #1179
                     _rips_before = len(ripped_net_ids)
-                    if not result.success and rip_blocker_nets:
+                    if (not result.success and rip_blocker_nets
+                            and _protection_read):
                         if not _allow_rip:
                             # #517 arm 3 phase 1: this pad needs a rip --
                             # defer it so the free-space pads claim first and
@@ -3273,6 +3347,13 @@ def repair_planes(
 
     if progress_callback:
         progress_callback(1, 1, "Plane repair complete")
+    # #666: the cap moves this repair's batch_route sub-runs queued, for the
+    # caller that owns the artifact. route.py's plane finalize applies them to
+    # its output and re-welds; with live reuse they are already on its own
+    # board's ledger (it dedupes), without it this board was a parse of its
+    # own and they would be lost.
+    repair_planes.handed_back_cap_moves = list(
+        getattr(pcb_data, '_pending_cap_moves', None) or [])
     return (total_routes, total_regions)
 
 
@@ -3869,9 +3950,28 @@ Examples:
     # A10: nets this step ripped and could neither reconnect nor restore. They
     # ship OPEN, so they belong in the summary by name and in the exit code.
     _summary["ripped_still_open"] = list(LAST_RIPPED_STILL_OPEN)
-    # `complete`/`status` are kept because consumers read them -- see
-    # route_summary's sticky-incompleteness merge. The CLI has no cancel
-    # source, so the run either finished or raised.
+    # What this run leaves unconnected, graded on the board it wrote, after
+    # the oracle reconnect above (the last pass that lays copper). Without it
+    # the summary said `status: ok` over open plane pads. A shortfall is
+    # `status: incomplete-pads` (route_planes' word for the same thing) with
+    # route.py's failure keys; the exit code stays 0, as route.py's and
+    # route_planes' do for a routing shortfall -- 4 is reserved for rip
+    # casualties, damage this run DID.
+    _open = []
+    if not args.dry_run and args.output_file and os.path.isfile(args.output_file):
+        try:
+            _graded = grade_plane_completion(args.output_file, net_names)
+            _summary.update(_graded)
+            _open = _graded['unconnected_pads']
+            if _open or _graded['failed']:
+                _summary["status"] = "incomplete-pads"
+        except Exception as _ge:                                # noqa: BLE001
+            _summary["status"] = "ungraded"
+            _summary["completion_error"] = f"{type(_ge).__name__}: {_ge}"
+    # `complete` keeps its route_summary meaning: the run FINISHED (it is never
+    # a partial tally -- the CLI has no cancel source, so it finished or
+    # raised). Whether the plane pads are connected is `status` and the
+    # failure keys above.
     _summary.setdefault("complete", True)
     _summary.setdefault("status", "ok")
     try:                       # #653: env knobs into the machine-readable
@@ -3881,6 +3981,24 @@ Examples:
         pass
     print('JSON_SUMMARY: ' + json.dumps(_summary, sort_keys=True, default=str),
           flush=True)
+
+    if _open or _summary.get("failed"):
+        print(f"{RED}PLANE PADS LEFT UNCONNECTED ({len(_open)}) on the written "
+              f"board: {', '.join(_open[:20])}"
+              f"{f' (+{len(_open) - 20} more)' if len(_open) > 20 else ''}"
+              f"{RESET}")
+        try:
+            from fab_tiers import get_escalation_policy
+            _pol = get_escalation_policy()[0]
+        except Exception:                                       # noqa: BLE001
+            _pol = None
+        if _pol in ('board', 'off'):
+            print(f"  --escalation {_pol} bounds the fine-pitch tap descent; "
+                  f"--escalation fab lets it step down to the fab floor.")
+    elif _summary.get("status") == "ungraded":
+        print(f"{YELLOW}Plane completion NOT graded "
+              f"({_summary.get('completion_error')}); verify with "
+              f"check_connected.py before reading this run as clean.{RESET}")
 
     if LAST_RIPPED_STILL_OPEN:
         print(f"{RED}RIP CASUALTIES SHIP OPEN ({len(LAST_RIPPED_STILL_OPEN)}): "

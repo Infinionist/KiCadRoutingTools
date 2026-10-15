@@ -19,6 +19,7 @@ from dataclasses import replace
 from diff_pair_routing import (route_diff_pair_with_obstacles, get_diff_pair_endpoints,
                                _route_direct_coupled_middle, _seg_to_seglist_min_edge)
 from blocking_analysis import analyze_frontier_blocking, print_blocking_analysis, filter_rippable_blockers, invalidate_obstacle_cache
+from protected_nets import rip_refusal
 from rip_up_reroute import rip_up_net, restore_net
 from obstacle_cache import refresh_net_obstacles  # #806
 from polarity_swap import apply_polarity_swap, get_canonical_net_id
@@ -384,7 +385,9 @@ def route_diff_pairs(
             self_canon = pair.p_net_id  # this pair's canonical id (p_net_id)
             if (gnet not in routed_results
                     or canonical in diff_pair_rip_exclude(state, pair.p_net_id, pair.n_net_id)
-                    or canonical in _graze_ancestry.get(self_canon, ())):
+                    or canonical in _graze_ancestry.get(self_canon, ())
+                    or rip_refusal(pcb_data, gnet, "diff-pair graze rip",
+                                   diff_pair_by_net_id)):
                 break  # not ours to rip, the global guard forbids it, or it would
                        # ping-pong (the grazed net already graze-ripped this pair)
             print(f"  Route would graze net {gnet}; ripping it to route {pair_name} "
@@ -466,7 +469,9 @@ def route_diff_pairs(
             seen_canonical_ids = set()
             for b in blockers:
                 canonical = get_canonical_net_id(b.net_id, diff_pair_by_net_id)
-                if canonical not in seen_canonical_ids and b.net_id in routed_results:
+                if (canonical not in seen_canonical_ids and b.net_id in routed_results
+                        and not rip_refusal(pcb_data, b.net_id, "diff-pair probe rip",
+                                            diff_pair_by_net_id)):
                     seen_canonical_ids.add(canonical)
                     rippable_blockers.append(b)
 
@@ -771,7 +776,8 @@ def route_diff_pairs(
                             print_blocking_analysis(fresh_blockers, prefix="    ")
                             next_blocker = None
                             for b in fresh_blockers:
-                                if b.net_id in routed_results:
+                                if b.net_id in routed_results and not rip_refusal(
+                                        pcb_data, b.net_id, "diff-pair rip ladder", diff_pair_by_net_id):
                                     canonical = get_canonical_net_id(b.net_id, diff_pair_by_net_id)
                                     if canonical not in ripped_canonical_ids:
                                         next_blocker = b

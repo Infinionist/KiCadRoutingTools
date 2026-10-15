@@ -22,6 +22,7 @@ from single_ended_routing import (route_net_with_obstacles,
 from diff_pair_routing import (route_diff_pair_with_obstacles, get_diff_pair_endpoints,
                                _route_direct_coupled_middle)
 from blocking_analysis import analyze_frontier_blocking, print_blocking_analysis, filter_rippable_blockers, invalidate_obstacle_cache, record_frontier_blocking
+from protected_nets import rip_refusal
 from rip_up_reroute import rip_up_net, restore_net
 from leg_rip import LEG_RIP_ENABLED, select_blocking_branch  # #510
 from rip_defer import queue_reroute, release_deferred  # #510 churn
@@ -170,7 +171,9 @@ def run_reroute_loop(
             _prot0 = set(state.restore_protected_net_ids) | {_vid}
             if not _owners0 or len(_owners0) > 3 or not all(
                     _o in routed_results and _o not in _prot0
-                    and _o not in diff_pair_by_net_id for _o in _owners0):
+                    and _o not in diff_pair_by_net_id
+                    and not rip_refusal(pcb_data, _o, "victim-priority restore")
+                    for _o in _owners0):
                 continue
             state.victim_authority_used.add(_vid)
             _vname = (pcb_data.nets[_vid].name
@@ -480,7 +483,8 @@ def run_reroute_loop(
                                 print_blocking_analysis(fresh_blockers, prefix="    ")
                                 next_blocker = None
                                 for b in fresh_blockers:
-                                    if b.net_id in routed_results:
+                                    if b.net_id in routed_results and not rip_refusal(
+                                            pcb_data, b.net_id, "reroute rip ladder", diff_pair_by_net_id):
                                         canonical = get_canonical_net_id(b.net_id, diff_pair_by_net_id)
                                         if canonical not in ripped_canonical_ids:
                                             next_blocker = b
@@ -962,7 +966,8 @@ def run_reroute_loop(
                                 print_blocking_analysis(fresh_blockers, prefix="    ")
                                 next_blocker = None
                                 for b in fresh_blockers:
-                                    if b.net_id in routed_results:
+                                    if b.net_id in routed_results and not rip_refusal(
+                                            pcb_data, b.net_id, "reroute rip ladder", diff_pair_by_net_id):
                                         canonical = get_canonical_net_id(b.net_id, diff_pair_by_net_id)
                                         if canonical not in ripped_canonical_ids:
                                             next_blocker = b

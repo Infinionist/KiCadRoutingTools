@@ -236,7 +236,71 @@ control that tool's plan action can set, or to be listed for that tool as
 CLI-only or as a known gap with the reason. It also fails a reached control
 that `reset_params_to_defaults` does not restore, since a plan step that sets
 it would leak it into every later step. Its run_all half, with the negative
-controls, is `tests/test_route_flag_plan_coverage.py`.
+controls, is `tests/test_route_flag_plan_coverage.py`. The widget classes it
+counts as settable are READ from `ai_plan._set_control`'s own `isinstance`
+branches, so a control the executor cannot set (a RadioBox, before it had a
+branch) cannot pass as reached.
+
+Two converter rules it also holds. FILE flags (`--net-clearances`,
+`--fab-overrides`, its `PATH_FLAGS`) must reach the plan as the absolute path
+the command opened them at, since the GUI would resolve a relative one against
+KiCad's own cwd. And a recorded command its tool REFUSES ran nothing on the
+CLI, so it must not become a plan step: `tests/stress/cli_argv_check.py` asks
+each tool's real parser (captured in a child process), then the post-parse
+checks its main makes on the arguments and on files they name;
+`manifest_to_plan.prune_manifest` prunes as if such a command were absent, and
+`check_rejected_steps` holds that on four synthetic chains (two argparse
+rejections, a route_planes count mismatch, a scope-less --force-reroute) and
+on the checked-in fixture itself, whose every line must be one the real CLIs
+accept or its flag checks would silently drop out of the count.
+`check_refusal_inventory` finds every post-parse refusal in the converted
+tools' mains by AST and requires each to be classified in
+`cli_argv_check.REFUSAL_SITES` (judged from the arguments, or out of scope
+because it reads the board), and `check_post_parse_witnesses` makes each
+argument check refuse a witness command and accept its near miss.
+
+What an AST cannot see is the run itself, which is
+`test_plan_flags_reach_dialog.py` (KiCad python, seconds): for each flag a
+closed gap made plan-reachable, a manifest line carrying it and then the same
+step without it go through `manifest_to_plan`'s CLI and the REAL PlanExecutor
+on the headless dialog, each action replaced by a probe. The flagged step's
+control AND the tab config its engine reads must hold the recorded value; the
+next step must be back at the CLI default. It also drives the QFN tab's real
+fanout run (engine spied) for `--layer` and both routing workers for
+`--net-clearances`, so the value is shown reaching the engine call.
+
+The same blindness applies one level up, to whole TOOLS: an unknown tool only
+bumps the converter's `skipped` count, so a converted plan reads complete
+without its step. `check_registry_dispositions` therefore reads every
+board-writing `KRT_TOOL` declaration (`kind` actor or conditional, by AST via
+`krt_registry`) and requires each to be MAPPED to a plan action (or
+`CAP_TOOL`), REFUSED with a reason (`REFUSED_TOOLS`, loud on stderr), or a
+named NO-OP with a reason (`NOOP_TOOLS`: `copy_board`, `fill_for_delivery`,
+`plane_score` -- nothing to replay on a live board); a `check_*` conditional
+is dropped by `is_check_cmd`. It runs three negative controls every time (one
+entry removed from each table must be reported). `KRT_REGISTRY_ROOT` points
+the registry read at the real checkout when a harness runs the gate on a
+partial copy of the tree (`tests/test_route_flag_plan_coverage_controls.py`).
+
+## Placement Apply locks (test_placement_apply_locks.py)
+
+Needs KiCad's python; re-execs into it. Drives the REAL
+`PlacementTab._on_apply` on a pcbnew board and requires every live footprint
+lock to equal the result board's (#1054) -- locked in place, moved and
+locked, unlocked and moved -- with each change named in the confirmation.
+It runs on the sys.path KiCad's own plugin loader builds (no
+`kicad_routing_plugin/` entry, asserted), which is how it caught Apply dying
+on `from gui_utils import` in KiCad itself; `tests/test_plugin_sibling_imports.py`
+is that rule's wx-free half.
+
+## A step that produces nothing stops the plan (test_plan_refused_step_stops.py)
+
+Needs KiCad's python; re-execs into it. A CLI step that refuses writes no
+board, so the chain stops on the missing file. The REAL `PlanExecutor` on the
+REAL dialog stops at a refused optimize_caps (#1067) or a declined route
+step with the next step unrun, completes a plan whose steps produce, runs a
+plane-net-only route step as a no-op, and each tab's real completion handler
+marks its success ending only (`gui_utils.mark_plan_step_produced`).
 
 ## Cap-param delivery (test_772_cap_params_reach_engine.py)
 
@@ -351,7 +415,9 @@ skip cleanly without KiCad python). Run any directly:
 - `test_settings_roundtrip.py` -- save/restore of the dialog's settings dict
   against the REAL headless dialog: the close path (`get_dialog_settings`),
   the reopen path (`restore_dialog_settings`), restore from a LEGACY dict
-  carrying keys a newer version dropped, and re-save key parity. Deleting or
+  carrying keys a newer version dropped, restore from a dict MISSING each key
+  in turn (a settings file saved before that control existed), and re-save
+  key parity. Deleting or
   renaming a control without updating persistence crashes on CLOSE and loses
   the user's settings -- this gate is what catches that. Key parity cannot see
   a VALUE that silently fails to come back, so it also round-trips one: a
@@ -375,6 +441,17 @@ skip cleanly without KiCad python). Run any directly:
   ORIGINAL fab floors in `kicad_routing_tools.fab_floor_origin` before lowering
   them, and prints FAB FLOOR RELAXED against it with a census of the live
   copper -- the file writers' rule (ad7f24de), which the GUI never followed.
+  It also runs the fanout tab's step, where `update_live_drc_floors` is the
+  ONLY writer: the other steps call `apply_targets_to_board` first, which
+  seeds, so they cannot see an `update_live_drc_floors` that seeds after
+  lowering (it then records the lowered 0.15/0.4 and prints nothing). And a
+  PROJECT-LESS board through two steps on both fronts: pcbnew's factory floors
+  (track 0.2, via 0.5, hole 0.3) are not the board's, so step 1 prints nothing
+  on either front, and step 2 prints the same relaxations (via drill
+  included, the repo's floor pcbnew has no attribute for). An unchanged step
+  says "unchanged by this step but still below", in the CLI's words. On the
+  code before that fix it fails 3 checks: the GUI's step 1 reported pcbnew's
+  factory floors as relaxed, and its step 2 named different floors and values.
 - `test_gnd_vias_gui.py` -- the Planes tab's **Add GND vias** step, run for
   real (nothing mocked) against `route_planes.py --add-gnd-vias` on the same
   files: return vias keep a net-class clearance (#1030), a `.kicad_dru` layer
@@ -382,6 +459,14 @@ skip cleanly without KiCad python). Run any directly:
   the fab copper-to-edge floor; GUI and CLI place identical vias. On the
   pre-2026-09-24 code it fails 9 checks, CLI included (its rules lookup read
   the output's not-yet-copied `.kicad_dru`).
+- `test_skip_existing_zones_gui.py` -- the Planes tab's **Skip existing
+  zones** box against `route_planes.py` with and without
+  `--skip-existing-zones`, on the real tab (create + apply on a live board):
+  a net's single-layer pour is replaced (old one deleted, one new pour at the
+  run's clearance and width), kept with the box, a multi-layer pour is never
+  deleted and is out-ranked, and a GND teardrop neither blocks the pour nor
+  goes with it. GUI and CLI leave identical GND pours; a negative control
+  strips the engine's `replace_existing` marks.
 - `test_1056_renamed_layers_gui.py` -- a board whose In1.Cu/In2.Cu are
   renamed "GND"/"+5V" in Board Setup (#1056). `board.GetLayerName()` returns
   that display name, so every live-board site that mapped through it missed:
@@ -408,6 +493,48 @@ skip cleanly without KiCad python). Run any directly:
   control), and both fronts decide with
   `fix_kicad_drc_settings.fanout_written_floors`. On the pre-fix tab it fails
   3 checks: a stub QFN run lowered the via floor 0.5 -> 0.3.
+- `test_fanout_floor_parity_gui.py` -- the fanout tab's REAL
+  `_apply_fanout_results` writes the floors bga_fanout's / qfn_fanout's mains
+  write (`fix_kicad_drc_settings.fanout_fix_kwargs`, through the live twin
+  `apply_fix_to_board`): a BGA step with a track and a via, a QFN step with a
+  track, a QFN step with no copper, on flat_hierarchy (a project, Default 0.2 /
+  Wide 0.4) and on project-less splitflap_driver. The live copper is saved, the
+  original project put beside it and the CLI writeback run over it with the
+  mains' keywords spelled out in the test; every declared rule, the via-drill
+  floor and every class clearance must agree. On the pre-fix code it fails 8
+  of 12 checks: the copper-to-hole floor kept at 0.25 (CLI 0.15), Wide not
+  clamped (0.4 vs 0.15), and on the project-less board hole-to-hole written,
+  min_clearance 0 / edge 0.5 / hole diameter 0.3 left where the CLI writes
+  0.15 / 0.2 / 0.95 and creates the Default class. A static arm checks every
+  `fanout_config` dict the tab really builds carries what the writeback reads:
+  the QFN one had no clearance, via size or drill, so the real QFN run wrote no
+  clearance where qfn_fanout does.
+- `test_records_survive_save.py` -- what a GUI step records survives the
+  user's KiCad save. KiCad's project save rewrites the `.kicad_pro` from the
+  copy it loaded and drops a `kicad_routing_tools` record written after load,
+  so the GUI keeps the namespace on the board too (`py_router/tool_records.py`,
+  the board property `kicad_routing_tools` that the same save writes into the
+  `.kicad_pcb`), and every reader takes the newer copy by `records_rev`. On
+  flat_hierarchy, then on project-less splitflap_driver: a manual GUI step's
+  writeback, `pcbnew.SaveBoard`, then the CLI's own readers find the origin,
+  protected nets, impedance specs and pour promises and the hole floor's
+  origin, and a CLI step still says FAB FLOOR RELAXED against the original.
+  Also the board's copy parses the same on both fronts and the CLI writer
+  carries it, and the plan executor's REAL `_write_drc_floors`, then a save,
+  keeps every rule it wrote (it now writes them to the live board too, through
+  `apply_fix_to_board`) and its origin. On the pre-fix code it fails 14
+  checks. It also runs one arm per record a manual GUI step used to leave
+  unwritten -- each a GUI run, a KiCad save, then the CLI's own reader against
+  what the CLI step writes: an active #581 same-net pad via clearance (and every
+  tab's step boundary passing it), a #1160 Default-class descent record and its
+  disclosure, and the repo's `min_via_drill` floor (mirrored into
+  `kicad_routing_tools.repo_rules`, since KiCad's save drops a non-KiCad rule
+  written after load), including a next CLI step leaving both chains at the
+  same floor. #856 relaxed severities: KiCad 10.0.0's SWIG cannot change a
+  severity (no SetSeverity, no DRCE_* names), so the GUI changes none, records
+  no `saved_severities`, and now says so; where a pcbnew exposes the setter the
+  arm compares the records instead. Those arms fail 9 checks on the code
+  before them. The wx-free half is `tests/test_tool_records.py`.
 - `test_1187_live_web_floor.py` -- the narrow-pad-joint floor
   (`connection_width_floor`) on a live board reads the board's design settings
   through `PCBData.live_rules_provider`, at call time: after one GUI step's
@@ -415,6 +542,23 @@ skip cleanly without KiCad python). Run any directly:
   `.kicad_pro` on disk still declares the original, and a live
   `min_connection` outranks `min_track_width`. On the pre-fix code it fails 3
   checks (the floor read the stale file, 0.3 where the board said 0.15).
+- `test_live_hole_clearance.py` -- the copper-to-hole floor
+  (`obstacle_map.resolve_hole_clearance`, NPTH track keep-out plus #1038's
+  via keep-out) on a live board is the board's in-memory `m_HoleClearance`,
+  read at call time: an UNSAVED Board Setup edit on `flat_hierarchy` is priced
+  by a PCBData built before it while the file still says 0.25, and
+  compare_pcb_data names the difference; after `pcbnew.SaveBoard` a file
+  parse in the same process reads the saved value; a project-less board loaded
+  at pcbnew's factory 0.25 reads 0.0 on both fronts, and after one GUI step's
+  writeback -- including one that targets exactly 0.25, which moves nothing in
+  memory -- the GUI reads the floor the CLI's next step reads from its own
+  writeback; the snapshot the oracle legs parse (`stage_live_project_rules`)
+  carries only the rules the board declares, so its hole floor and edge band
+  are the CLI's; an unsaved board (#1238) prices a live edit; and the
+  `pcbnew.DEFAULT_*` constants the declared view reads match a fresh board's
+  design settings. Its first 17 checks failed 7 on the code before the live
+  read (b861d208); the 5 the declared view added fail on the code before it
+  (0ec26d35). The wx-free half is `tests/test_1038_hole_floor_fresh.py`.
 - `test_581_fanout_via_in_pad_gui.py` -- the Basic tab's via-in-pad policy
   (#581) reaches BOTH escape engines from the REAL fanout tab, on glasgow's
   U30 (BGA) and U1 (QFN), engines spied: unticked with a 0.15 spin, each

@@ -92,6 +92,8 @@ commands on the grounds that the placement run must have run them.
 ## Step 1: Load and Analyze PCB Structure
 
 ```python
+import sys
+sys.path.insert(0, "py_router")
 from kicad_parser import parse_kicad_pcb
 pcb = parse_kicad_pcb('path/to/file.kicad_pcb')
 
@@ -124,6 +126,8 @@ Inspect the stackup now, before planning, and report the verdict **at the top of
 plan report** so problems surface before any routing work:
 
 ```python
+import sys
+sys.path.insert(0, "py_router")
 from kicad_parser import parse_kicad_pcb
 pcb = parse_kicad_pcb('path/to/file.kicad_pcb')
 for layer in pcb.board_info.stackup:  # List[StackupLayer], ordered top to bottom
@@ -604,6 +608,8 @@ Use the printed flags as-is:
 
   ```python
   from collections import Counter
+  import sys
+  sys.path.insert(0, "py_router")
   from kicad_parser import parse_kicad_pcb
   pcb = parse_kicad_pcb('out.kicad_pcb')
   print(Counter(round(s.width, 4) for s in pcb.segments
@@ -771,7 +777,14 @@ Look for DDR signal patterns in the net list that may need length matching:
 
 If DDR signals detected:
 - Note that `--length-match-group auto` should be used
-- DQ0-7 + DQS0 form byte lane 0, DQ8-15 + DQS1 form byte lane 1, etc.
+- DQ0-7 + DQS0 (+ DM0 or LPDDR's DMI0) form byte lane 0, DQ8-15 + DQS1 form byte lane 1,
+  etc.; address/command/clock form `command_address`. Each DRAM interface
+  (prefix, and `_A`/`_B` channel) gets its own lanes, so two channels' lanes
+  are never matched to each other
+- `auto` groups only the step's own `--nets`, by whole name token, and only
+  under a prefix the board proves is DRAM (#1247). Preview it with
+  `classify_ddr_nets` (snippet in the DDR section below). Any DDR net it
+  lists as not grouped needs its own `--length-match-group` patterns
 - If the DDR runs between two ball arrays (a SoC and its memory), plan the
   topo bus step for it (Step 1a, experimental) -- `awx/route_bus.py --find`
   names the bus.
@@ -992,14 +1005,31 @@ In a GUI plan the rules ride the step's `keep_away` param, which is the Advanced
 tab's one-line Keep-away field: rules separated by spaces, used by both the Route
 and the Differential tabs.
 
+**Declare it once, in the design brief, when the board has one** (#1253). Put
+each rule in the brief's `keep_away` list (`<board>.design-brief.json`, one rule
+per entry, as a string or `{"rule": ..., "why": ...}`). `route.py`,
+`route_diff.py` and the GUI read that list off the brief beside the board and
+add it to any `--keep-away` they are given, so no step has to repeat it. The
+run prints `Keep-away: N rule(s) read from the design brief`. Every routed
+output carries the brief, so later steps keep the rules. A malformed rule in
+the brief stops the step with the rule parser's message (exit 2). The same
+list is graded on the PLACEMENT by `check_floorplan`, before any track exists.
+
 **Grade it, and report it.** A run with rules prints a `Keep-away (...)` line and
 writes `keep_away` into JSON_SUMMARY: `in_band_mm` and `nets_in_band`, plus
 per-net `in_band_mm`, `min_spacing_mm` and `closest_net`. The cost is soft, so
 in-band length that remains means the router found no other way through. That is
 a capacity answer (a corridor too narrow for the gap, or placement putting the
-groups side by side), and you must report it rather than hide it. Then suggest a
-placement change, a user-drawn guide corridor, or a `User.2` keepout around the
-analog block if it matters. `--keep-away-cost 0` measures a board against the
+groups side by side), and you must report it rather than hide it. Tell the two
+apart by grading the placement against the same rule: with the rule in the
+brief, `check_floorplan.py <board> --intent <intent>` (the intent emitted from
+that brief) prints a `keep_away` WARN for each part pair whose pads already sit
+inside the band, with both pads' sides, and a `keep-away <rule>: closest ...`
+line when none do. A pad pair inside the band is the placement; none is the
+corridor. Then suggest a placement change (naming the part pair the grade
+named), a user-drawn guide corridor, or a `User.2` keepout around the analog
+block if it matters. The placement grade is plan view: a pair on opposite faces
+is reported with its sides, and you judge it. `--keep-away-cost 0` measures a board against the
 rules without changing a single route.
 
 **Keep the better run.** Route the step once more with the same rules at
@@ -2005,14 +2035,20 @@ route step's finalize like the main flow. If VCC wasn't fanned out, add
 For DDR memory or other length-matched buses, detect signals that need matching:
 
 ```python
-# Common DDR signal patterns
-ddr_patterns = ['DQ', 'DQS', 'DQM', 'DM', 'CLK', 'CK', 'CAS', 'RAS', 'WE', 'CS', 'ODT', 'CKE']
-ddr_nets = [n.name for n in pcb.nets.values()
-            if n.name and any(p in n.name.upper() for p in ddr_patterns)]
+# What `--length-match-group auto` will form -- the engine's own classifier.
+# Never substring-match: 'WE' is inside 'POWER', 'CK' inside 'JTAG_TCK' (#1247).
+from length_matching import classify_ddr_nets
+names = [n.name for n in pcb.nets.values() if n.name]
+ddr = classify_ddr_nets(names)
+ddr_groups = ddr['groups']           # {'byte_lane_0': [...], 'command_address': [...]}
+# Two interfaces on one board name theirs: 'byte_lane_0 @ /LPDDR5/LPDDR5_A.'
+left_out = ddr['lane_undeterminable'] + ddr['no_group_token']
 ```
 
 If DDR or length-matched signals detected, add to the plan:
-- `--length-match-group auto` for automatic DDR byte lane grouping
+- `--length-match-group auto` for automatic DDR byte lane grouping. It
+  groups only that step's `--nets`, so put the DDR nets the group needs in
+  the same step. Any DDR net in `left_out` needs explicit patterns
 - `--length-match-tolerance 0.1` for acceptable variance (mm)
 - `--time-matching` if routes span different layers (accounts for dielectric)
 
@@ -3251,6 +3287,8 @@ Lessons from a dry-run audit (an agent following this skill end-to-end):
    Compute the answer instead; it is one call, and it needs no stackup:
 
    ```python
+   import sys
+   sys.path.insert(0, "py_router")
    from impedance import achievability_note, tightest_pin_gap
    note, detail = achievability_note(
        pcb, 'F.Cu', 90.0, is_differential=True, spacing=0.15,

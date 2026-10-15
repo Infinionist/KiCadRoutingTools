@@ -398,6 +398,14 @@ changes.
                     in kicad_routing_tools.fab_floor_origin (exists) and logs each key.
 ```
 
+As shipped, `board`'s clearance floor is `rules.min_clearance` (the Default class
+when it is unset, #1160), and a descent below the Default class is still written
+back as the output's Default class -- so "no project writeback is needed" holds
+only when the run's `.kicad_pro` writeback is OFF (`--no-fix-drc-settings`, the
+GUI's "Fix DRC settings after routing" unticked). Then the clearance floor is the
+Default class floored at `min_clearance`, what KiCad grades the unchanged project
+at (#1262).
+
 Where a board leaves a minimum unset (KiCad writes 0; 96 of 445 corpus boards for
 `min_track_width`), `board` falls back to the fab profile's floor **for that key**, and
 says so in the disclosure. This keeps today's completion rate on undeclared boards while
@@ -486,7 +494,10 @@ changes:
    actually crossed, each logged and listed in `project_writes`. Under `board` the
    output is DRC-clean against the input project by construction, so the writeback is
    a no-op and the "route.py silently changes the routing on re-run" trap in CLAUDE.md
-   disappears with it.
+   disappears with it. (As shipped this holds for `rules.min_*` only: the clearance
+   floor is `min_clearance`, and a descent below the Default class still lowers the
+   output's Default class. Only with the writeback off is the floor the Default
+   class, so the descended copper is clean against the input project, #1262.)
 4. `min_clearance` is written as today (the clearance ledger's effective value, capped
    at the smallest honoured rule), because KiCad enforces it as an absolute floor and
    the fine-pitch tap ladder legitimately routes below the class.

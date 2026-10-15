@@ -19,6 +19,15 @@ _COLLAPSE_DEBUG = os.environ.get('KICAD_COLLAPSE_DEBUG')
 _PRUNE_CONN_VERIFY = os.environ.get('PRUNE_CONN_VERIFY')
 
 
+def _locked(item) -> bool:
+    """KiCad `(locked yes)` copper (#521). Every subtractive or rewriting
+    cleanup pass treats it exactly as it treats input copper under
+    keep_input_copper -- it anchors the models but is never removed, split,
+    moved or re-bent -- whether or not keep_input_copper is set (#1261).
+    This run never creates locked copper, so a locked item is input copper."""
+    return bool(getattr(item, 'locked', False))
+
+
 def _point_anchored(x: float, y: float, layer: str, via_pts, pad_pts,
                     seg_index, cell: float, ignore_seg, tol: float) -> bool:
     """A segment endpoint is anchored if it lands on a same-net via (vias span
@@ -305,6 +314,7 @@ def _safe_prune_net(net_id, prunable, vias, pads, zones,
     if not candidates:
         return prunable, []
 
+    from collections import defaultdict
     from check_connected import check_net_connectivity, analyze_conn_excluding
     anchor = anchor_segments or []
 
@@ -330,6 +340,9 @@ def _safe_prune_net(net_id, prunable, vias, pads, zones,
     _verify = _PRUNE_CONN_VERIFY
 
     def disconnected(segs):
+        """(physical, strict) disconnected-pad counts with only ``segs`` of the
+        prunable kept, and that state's strict (union-find, excluded universe
+        indices) for ``splits`` -- None without a strict graph."""
         if graph is not None:
             keep = {id(s) for s in segs}
             excl = {seg_pos[pid] for pid in prunable_ids if pid not in keep}
@@ -341,15 +354,58 @@ def _safe_prune_net(net_id, prunable, vias, pads, zones,
                     pcb_data=pcb_data)['disconnected_pads'])
                 assert n == ref, \
                     f"safe-prune fast-path mismatch: net {net_id} ({n} vs {ref})"
-            ns = (len(analyze_conn_excluding(graph_strict, excl)['disconnected_pads'])
-                  if graph_strict is not None else 0)
-            return (n, ns)
+            if graph_strict is None:
+                return (n, 0), None
+            ts = analyze_conn_excluding(graph_strict, excl, return_uf=True)
+            return (n, len(ts['disconnected_pads'])), (ts['uf'], excl)
         return (len(check_net_connectivity(
             net_id, anchor + segs, vias, pads, zones,
             zone_credit_validator=zone_credit_validator,
-            pcb_data=pcb_data)['disconnected_pads']), 0)
+            pcb_data=pcb_data)['disconnected_pads']), 0), None
 
-    base = disconnected(list(prunable))
+    def splits(state, trial):
+        """True when a removal breaks one of the accepted ``state``'s strict
+        copper components into pieces (#1227). A dead end hangs off the copper
+        at ONE end, so removing it never splits anything; a segment that does
+        split is carrying copper on both sides. The pad counts cannot see this
+        once the strict base is already split: a route committed with a
+        0.022mm hole of its own (strictly open) unwinds from the hole back to
+        its pad, the hole's bridge is rejected, and the fine-track steps behind
+        it each passed the physical gate on their neighbours' cap overlap --
+        11 of 18 segments chipped out, segment-endpoint-gap on every stump.
+        Compared against the CURRENT state, not the base: removing an island
+        lowers the component count, which must not pay for a split.
+
+        Only the removal's boundary is read: every surviving point of a
+        component the removal touches still reaches a surviving NEIGHBOUR of a
+        removed point (the step before its path first meets one), so the
+        component split iff those neighbours land in different pieces -- exact,
+        and O(removed) rather than O(net) per trial."""
+        if state is None or trial is None:
+            return False
+        uf_s, excl_s = state
+        uf_t, excl_t = trial
+        gone = set()
+        for i in excl_t - excl_s:
+            gone.add(2 * i)
+            gone.add(2 * i + 1)
+        piece = {}
+        for p in gone:
+            for u in strict_adj.get(p, ()):
+                if u in gone or (u < n_seg_points and (u >> 1) in excl_t):
+                    continue
+                t = uf_t.find(u)
+                if piece.setdefault(uf_s.find(u), t) != t:
+                    return True
+        return False
+
+    strict_adj = defaultdict(list)
+    n_seg_points = 2 * len(universe)
+    for _a, _b in (graph_strict or {}).get('edges', ()):
+        strict_adj[_a].append(_b)
+        strict_adj[_b].append(_a)
+
+    base, strict_state = disconnected(list(prunable))
     # Protect components of base-disconnected pads (see helper docstring):
     # index space here is the UNIVERSE list (anchor + prunable).
     _prot_roots, _prot_uf = _base_disconnected_component_ids(graph)
@@ -368,16 +424,22 @@ def _safe_prune_net(net_id, prunable, vias, pads, zones,
     # is left until a full pass removes nothing. A candidate whose removal would
     # strand a pad stays load-bearing no matter what other dead copper goes, so
     # cache those rejections and never re-test them (keeps it O(dead ends) and
-    # guarantees termination).
+    # guarantees termination). A split rejection is just as permanent:
+    # candidates come leaf-first, so whatever the candidate still carries was
+    # tried before it and kept.
     #
     # Fast path: try dropping the WHOLE round's candidate batch with one
     # connectivity check. Dead-end removal is monotonic -- removing copper never
     # reconnects a pad -- so if dropping every candidate strands no pad, then so
     # does every subset, and the batch result is identical to validating one at a
-    # time. This turns the plane sweep on a big pour net (hundreds of tap dead
-    # ends x a full-net union-find each) from O(dead ends) checks into ~O(rounds).
-    # Only when the batch DOES strand a pad do we fall back to per-candidate to
+    # time (leaf-first, each removal a leaf, so none splits either). This turns
+    # the plane sweep on a big pour net (hundreds of tap dead ends x a full-net
+    # union-find each) from O(dead ends) checks into ~O(rounds). Only when the
+    # batch DOES strand a pad or split copper do we fall back to per-candidate to
     # find the load-bearing one(s).
+    def accept(d, st):
+        return d[0] <= base[0] and d[1] <= base[1] and not splits(strict_state, st)
+
     rejected = set()
     while True:
         active = [c for c in candidates
@@ -386,18 +448,20 @@ def _safe_prune_net(net_id, prunable, vias, pads, zones,
             break
         aids = {id(c) for c in active}
         trial_all = [s for s in kept if id(s) not in aids]
-        _d = disconnected(trial_all)
-        if _d[0] <= base[0] and _d[1] <= base[1]:
+        _d, _st = disconnected(trial_all)
+        if accept(_d, _st):
             kept = trial_all
+            strict_state = _st
             kept_ids = {id(s) for s in kept}
             removed.extend(active)
         else:
             progress = False
             for c in active:
                 trial = [s for s in kept if s is not c]
-                _d = disconnected(trial)
-                if _d[0] <= base[0] and _d[1] <= base[1]:
+                _d, _st = disconnected(trial)
+                if accept(_d, _st):
                     kept = trial
+                    strict_state = _st
                     kept_ids.discard(id(c))
                     removed.append(c)
                     progress = True
@@ -1816,6 +1880,10 @@ def sweep_dead_ends(results, pcb_data: PCBData, scope_net_ids=None,
             # connectivity in the pruner) instead of offering it as a candidate.
             anchor = [s for s in net_segs if id(s) not in routed_seg_ids]
             net_segs = [s for s in net_segs if id(s) in routed_seg_ids]
+        if any(_locked(s) for s in net_segs):
+            # KiCad-locked copper anchors the same way, always (#1261).
+            anchor = anchor + [s for s in net_segs if _locked(s)]
+            net_segs = [s for s in net_segs if not _locked(s)]
         if _protected:
             # #672: the exemption keeps every landing site; a sub-cell
             # sliver is not one. Everything else on this net stays.
@@ -3098,6 +3166,11 @@ def remove_orphan_islands(results, pcb_data: PCBData, scope_net_ids=None,
                        and uf.find(via_reprs[j]) == root]
             if net_graphics and _touches_graphic(segs, _cv_gfx):
                 continue  # copper abutting input art (#337): physically joined
+            if any(_locked(s) for s in segs) or any(
+                    _locked(v) and via_reprs.get(j) is not None
+                    and uf.find(via_reprs[j]) == root
+                    for j, v in enumerate(net_vias)):
+                continue  # island holds KiCad-locked copper (#1261): keep it whole
             if keep_input_copper and (
                     any(id(s) not in seg_owner for s in segs)
                     or any(via_reprs.get(j) is not None
@@ -3191,6 +3264,7 @@ def trim_dangles_past_body_anchor(results, pcb_data: PCBData, scope_net_ids=None
         # input segments are read-only too: they anchor (all_net_segs feeds
         # every model) but are never split-trimmed.
         net_segs = [s for s in all_net_segs if not getattr(s, 'graphic', False)
+                    and not _locked(s)   # #1261
                     and not (keep_input_copper and id(s) not in routed_seg_ids)]
         if not net_segs:
             continue
@@ -3703,8 +3777,10 @@ def prune_redundant_cycles(results, pcb_data: PCBData, scope_net_ids=None,
             continue
         net_pads = pcb_data.pads_by_net.get(net_id, [])
         net_vias = vias_by_net.get(net_id, [])
-        _protected = ({id(s) for s in net_segs if id(s) not in routed_seg_ids}
-                      if keep_input_copper else None)
+        _protected = ({id(s) for s in net_segs
+                       if _locked(s)   # #1261: locked copper never pruned
+                       or (keep_input_copper and id(s) not in routed_seg_ids)}
+                      or None)
         kept, removed = _prune_net_cycles(net_id, net_segs, net_vias,
                                           net_pads, fgrid, _FCELL, fmax_rad, clearance,
                                           protected_ids=_protected)
@@ -4305,6 +4381,7 @@ def prune_grazing_segments(results, pcb_data: PCBData, scope_net_ids=None,
     for net_id, net_segs in segs_by_net.items():
         grazing = [s for s in net_segs
                    if (not keep_input_copper or id(s) in routed_seg_ids)
+                   and not _locked(s)   # #1261
                    and grazes(s)]
         if not grazing:
             continue
@@ -4714,6 +4791,7 @@ def nudge_grazing_octolinear(results, pcb_data: PCBData, scope_net_ids=None,
     for net_id, net_segs in segs_by_net.items():
         grazing = [s for s in net_segs
                    if (not keep_input_copper or id(s) in routed_seg_result)
+                   and not _locked(s)   # #1261
                    and grazes(s)]
         if not grazing:
             continue
@@ -6388,6 +6466,7 @@ def nudge_grazing_microshift(results, pcb_data: PCBData, scope_net_ids=None,
             grazing = [s for s in net_segs
                        if (not keep_input_copper or id(s) in routed_seg_result
                            or id(s) in added_ids)
+                       and not _locked(s)   # #1261
                        and grazes(s)]
             offenders = [(s, _seg_worst_offender(pcb_data, net_id, s, eff_clr(net_id),
                                                  net_clearances=net_clearances,
@@ -6417,11 +6496,12 @@ def nudge_grazing_microshift(results, pcb_data: PCBData, scope_net_ids=None,
                                 or vk(g.end_x, g.end_y) == vk(px, py)]
                     if any(g.layer != s.layer for g in incident):
                         return  # cross-layer joint without a recorded via: leave it
-                    if keep_input_copper and any(
+                    if any(_locked(g) for g in incident) or (keep_input_copper and any(
                             id(g) not in routed_seg_result and id(g) not in added_ids
-                            for g in incident):
+                            for g in incident)):
                         return  # a vertex move rewrites every incident segment;
-                                # read-only input copper pins this joint in place
+                                # read-only input copper (and KiCad-locked
+                                # copper, #1261) pins this joint in place
                     for m in (1.0, 1.8, 3.0):
                         d = (shortfall + MARGIN) * m
                         if d > max_shift:
@@ -7665,7 +7745,8 @@ def remove_route_from_pcb_data(pcb_data: PCBData, result: dict,
             kept_rev = []
             for seg in reversed(kept):
                 sig = _seg_rip_sig(seg)
-                if want.get(sig, 0) > 0:
+                # a look-alike never stands in for KiCad-locked copper (#1261)
+                if want.get(sig, 0) > 0 and not _locked(seg):
                     want[sig] -= 1
                 else:
                     kept_rev.append(seg)
@@ -7690,7 +7771,7 @@ def remove_route_from_pcb_data(pcb_data: PCBData, result: dict,
             kept_rev = []
             for via in reversed(kept_vias):
                 sig = _via_rip_sig(via)
-                if want_v.get(sig, 0) > 0:
+                if want_v.get(sig, 0) > 0 and not _locked(via):
                     want_v[sig] -= 1
                 else:
                     kept_rev.append(via)

@@ -407,7 +407,9 @@ def only_demand_moved(boards):
     real = E.assign_faces
 
     def old_rule(fp, geom, *, lane_mm, fallback_rect=None,
-                 clearance=None, track_width=None):
+                 clearance=None, track_width=None, through_row=False):
+        # `through_row` (#1196) is accepted and has nothing to act on: this
+        # rule has no interior bucket for a through-hole pin to leave.
         # `min` over |pad CENTRE - extent edge|, no tolerance, no interior --
         # `face_lane_ledger` as it stood at e239e067.
         ext = fallback_rect

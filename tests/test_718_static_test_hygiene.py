@@ -139,6 +139,12 @@ _JOIN_VAR_RE = re.compile(
 #: Tests that legitimately join the repo root with a VARIABLE inside a
 #: child-process argv. Declared with the reason, and held in both directions.
 _ROOT_JOIN_ARGV_OK = {
+    'stress/cli_argv_check.py':
+        'its `rel` values come from the module-level TOOL_PATHS table, every '
+        'one a directory-qualified literal ("py_router/route.py"), so the join '
+        'is over a relative path and not a bare basename; the child it spawns '
+        'reports a parser it cannot capture, and the caller then falls back '
+        'to the krt_capabilities flag list by name.',
     'test_431_skill_commands.py':
         'its `tool` values come from discovered_tools(), which yields paths '
         'ALREADY qualified by directory ("py_router/route.py") straight out '
@@ -737,6 +743,8 @@ _BASELINE_GATES = {
     'tests/placement_ab_baseline.json': 'tests/test_placement_ab.py',
     # #1105: fixed before any pile number existed; the gate pins its sha256.
     'tests/1105_pile_ab_prereg.json': 'tests/test_1105_pile_prereg.py',
+    # #1105 again, for #1142's per-cap signal; the same gate pins it.
+    'tests/1105_pile_ab_prereg_v2.json': 'tests/test_1105_pile_prereg.py',
     # #1127: fixed before the licence census and the stack-mode A/B.
     'tests/1127_stack_ab_prereg.json': 'tests/test_1127_prereg.py',
     'tests/placement_calibration_recovered.json':
@@ -808,7 +816,9 @@ _UNGATED_BASELINE_COUNT = 8     # 7 before run_all_durations.json
 #: verbatim, because the print string has since been reworded and the counts
 #: have moved -- a "measured" line spliced from two versions is exactly what
 #: #879 is about.)
-_DECLARED_BASELINE_COUNT = 25     # 23 before #1127's pre-registration; 24 before run_all_durations.json
+#: 23 before #1127's pre-registration, 24 before run_all_durations.json, 25
+#: before #1105's second pre-registration.
+_DECLARED_BASELINE_COUNT = 26
 
 #: Committed JSON/JSONL under `tests/` that is an INPUT, not a recorded
 #: measurement. Full-path regexes, each with its reason.
@@ -1095,8 +1105,16 @@ _UNRESOLVABLE = {}
 #: `mutate_1120_1121_1122.py`; 74 before #1123 and #1124 added
 #: `mutate_1123_1124.py`; 75 before #1125, #1126, #1128 and #1129 added
 #: `mutate_1125_1126_1128_1129.py`; 76 before #1127 added `mutate_1127.py`;
-#: 77 before #1142 and #1143 added `mutate_1142_1143.py`.
-_BATTERY_COUNT = 78
+#: 77 before #1142 and #1143 added `mutate_1142_1143.py`; 78 before #1213
+#: and #1151 added `mutate_1213_1151.py`; 79 before #1206 added
+#: `mutate_1206.py`; 80 before #1212 and #1184 added `mutate_1212_1184.py`;
+#: 81 before #1182 added `mutate_1182.py`; 82 before #1162 added
+#: `mutate_1162.py`; 83 before #1183 added `mutate_1183.py`; 84 before #1174
+#: added `mutate_1174.py`; 85 before #1176 added `mutate_1176.py`;
+#: 86 before #1201 added `mutate_1201.py`; 87 before #1155 added
+#: `mutate_1155.py`; 88 before #1172 added `mutate_1172.py`; 89 before #1211
+#: added `mutate_1211.py`.
+_BATTERY_COUNT = 90
 
 #: A floor well under today's 831, not a target. Same purpose as
 #: `test_the_scanners_still_match_something`: prove the corpus is populated.

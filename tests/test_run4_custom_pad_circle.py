@@ -15,8 +15,9 @@ unresolvable by re-grading (both sides shift). The 32-gon is what ships.
 
 This file therefore pins the SHIPPED geometry, not the reverted one:
 
-* the polygon is a fixed, inscribed 32-gon, with its sagitta stated;
-* `_adaptive_circle_n` is dead code -- restoring it must be a DECISION;
+* the polygon is an inscribed 32-gon, with its sagitta stated, for every
+  circle within pcbnew's 5 um max error at 32 vertices (R <= 1.038 mm); only
+  a bigger one is refined, through the one `_adaptive_circle_n` call;
 * the blind spot itself is reproduced synthetically, so the file fails loudly
   the moment the tessellation changes in either direction.
 
@@ -176,44 +177,46 @@ class TestShippedTessellation(unittest.TestCase):
                            'the model error still exceeds the run-3 shortfall '
                            '-- that graze is invisible BY DESIGN')
 
-    def test_adaptive_tessellation_has_no_call_sites(self):
-        """`_adaptive_circle_n` is dead -- restoring it must be a DECISION.
+    def test_the_32gon_is_refined_only_past_pcbnews_error_budget(self):
+        """The ONE call of `_adaptive_circle_n`, and what it decides.
 
-        6166a98b reverted the call, not the helper. A live-looking helper that
-        nothing calls is how a test came to pin behaviour the parser had
-        stopped exhibiting; this asserts the zero so re-wiring it is deliberate
-        and shows up here.
+        6166a98b reverted run-4 B6's 1 um tessellation because it moved every
+        board with circle primitives. The GUI-parity audit put back a
+        narrower one, as a measured change: the 32-gon stays wherever its
+        sagitta is within pcbnew's own 5 um max error (R <= 1.038 mm, every
+        circle above in this file), and only a bigger circle gets more
+        vertices -- kirdy_laser_drv's 2.75 mm rings sat 13 um inside pcbnew's
+        copper, past compare_pcb_data's 0.01 mm. Any other wiring (a finer
+        budget, a lower floor, a second call) shows up here.
         """
         src = os.path.join(ROOT, 'py_router', 'kicad_parser.py')
         with open(src, encoding='utf-8') as fh:
             tree = ast.parse(fh.read())
-        defs = [n for n in ast.walk(tree)
-                if isinstance(n, ast.FunctionDef)
-                and n.name == '_adaptive_circle_n']
         calls = [n for n in ast.walk(tree)
                  if isinstance(n, ast.Call)
                  and isinstance(n.func, ast.Name)
                  and n.func.id == '_adaptive_circle_n']
-        self.assertEqual(len(defs), 1, 'the helper should still be defined')
-        self.assertEqual(
-            len(calls), 0,
-            'kicad_parser now CALLS _adaptive_circle_n. That reverses '
-            '6166a98b, which moves obstacle geometry and DRC grading together '
-            'on every board with circle-primitive custom pads -- land it as a '
-            'measured baseline change and update this file, do not let it '
-            'drift back in.')
+        self.assertEqual(len(calls), 1, 'one call site, in the circle primitive')
+        kw = {k.arg: ast.literal_eval(k.value) for k in calls[0].keywords}
+        self.assertEqual((kw.get('eps'), kw.get('lo')), (0.005, 32), kw)
+        from kicad_parser import _adaptive_circle_n
+        self.assertEqual(_adaptive_circle_n(self.R, eps=0.005, lo=32, hi=128), 32)
+        self.assertEqual(_adaptive_circle_n(1.038, eps=0.005, lo=32, hi=128), 32)
+        for big in (1.2, 2.75, 5.0):
+            n = _adaptive_circle_n(big, eps=0.005, lo=32, hi=128)
+            self.assertGreater(n, 32, big)
+            self.assertLessEqual(big * (1 - math.cos(math.pi / n)), 0.005 + 1e-9, big)
 
 
 class TestRetainedAdaptiveHelper(unittest.TestCase):
-    """`_adaptive_circle_n` is dead code, and kept under test anyway.
+    """`_adaptive_circle_n`'s own arithmetic, at its default 1 um budget.
 
     6166a98b reverted the CALL, not the helper, explicitly so the accuracy can
-    be restored later "as a deliberate, measured baseline change". Keeping its
-    arithmetic pinned makes that a one-line rewire of a working helper rather
-    than a rewrite from the commit message. The zero call sites are asserted
-    separately in TestShippedTessellation -- the two together say "correct, and
-    deliberately unused". (Kept on edgehero's argument in PR #719; the first
-    draft of this file deleted this coverage along with the stale arm.)
+    be restored later "as a deliberate, measured baseline change"; the parity
+    audit's one call (5 um, floor 32) is pinned in TestShippedTessellation.
+    This keeps the helper's defaults pinned for whoever next tightens it.
+    (Kept on edgehero's argument in PR #719; the first draft of this file
+    deleted this coverage along with the stale arm.)
     """
 
     def test_it_still_computes_its_stated_budget(self):

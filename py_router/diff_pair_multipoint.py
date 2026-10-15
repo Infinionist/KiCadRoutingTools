@@ -294,15 +294,18 @@ def diff_pair_is_short(pcb_data: PCBData, p_net_id: int, n_net_id: int,
     are never reported short here. Reuses leg_electrically_short so the GUI and
     the router agree on what counts as short.
 
-    centerline_setback mirrors the GUI control: None or <= 0 means auto."""
+    centerline_setback is the run's setback exactly as the router reads it:
+    None = auto (route_diff.py with no --diff-pair-centerline-setback), and a
+    number -- 0 included, a setback of zero -- is that setback. (It used to
+    read 0 as auto too, the GUI spin's old convention, so the short test and
+    the router disagreed about an explicit 0.)"""
     from types import SimpleNamespace
     terminals = get_diff_pair_terminals(pcb_data, p_net_id, n_net_id)
     if len(terminals) != 2:
         return False
     cfg = SimpleNamespace(
         track_width=track_width, diff_pair_gap=diff_pair_gap,
-        diff_pair_centerline_setback=(centerline_setback
-                                      if centerline_setback else None))
+        diff_pair_centerline_setback=centerline_setback)
     return leg_electrically_short(terminals[0], terminals[1], cfg)
 
 

@@ -8,6 +8,7 @@
     place_pose.py BOARD OUT lock U1 CON1 CON2
     place_pose.py BOARD OUT unlock U1
     place_pose.py BOARD OUT set U1 129.9 98.3 --rot 270 rotate CON2 180 lock U1
+    place_pose.py BOARD OUT replicate --from CH1 --to CH2 --to CH3   # #1211
 
 Every verb writes through `placement.writer.write_placed_output` -- the same
 writer `place_seed` uses -- carries the sibling `.kicad_pro` / `.kicad_dru`
@@ -19,6 +20,9 @@ not when it is staged (#960).
 SEVERAL VERBS IN ONE CALL describe ONE arrangement: every op is resolved
 against the INPUT board and written in a single pass, so no op sees another's
 effect and the result is one board state rather than a replayed sequence.
+That arrangement is graded at the exact points given, so a snap needs a call
+with ONE pose op: `--near` with a second pose op is refused at exit 2 (one
+`set REF --near X Y` per call), and `--snap` there is skipped and said so.
 
 EXIT CODES. 0 written; 2 the request does not name a thing on this board (bad
 arguments, an unreadable board, an unknown ref, a face with no pad row) -- a
@@ -80,7 +84,7 @@ import json
 import os
 import sys
 
-VERBS = ('set', 'rotate', 'face', 'lock', 'unlock')
+VERBS = ('set', 'rotate', 'face', 'lock', 'unlock', 'replicate')
 
 #: The verbs and THEIR flags. `main()` parses with the verb-less parser, so
 #: what `--help` renders is THIS TEXT -- the subparsers exist for a reader who
@@ -90,16 +94,65 @@ VERBS = ('set', 'rotate', 'face', 'lock', 'unlock')
 #: `krt_capabilities.FLAG_SCRIPTS` for the same reason -- that contract is
 #: "every flag this script accepts is visible in --help as an option and
 #: accepted at the top level", and a per-verb flag is neither.)
-VERB_HELP = """verbs (several in one call describe ONE arrangement):
+VERB_HELP = """verbs (several in one call describe ONE arrangement, graded at the
+exact points given -- so --near / --snap need a call with ONE pose op):
 
   set REF [X Y] [--rot DEG] [--near X Y]
-            --near X Y   the same point read as APPROXIMATE; implies --snap
+            --near X Y   the same point read as APPROXIMATE; implies --snap.
+                         Only in a call with exactly one pose op (set /
+                         rotate / face; lock and unlock may ride along): a
+                         second pose op is refused at exit 2 -- issue one
+                         `set REF --near X Y` per call
             --rot DEG    absolute rotation; omitted, the part keeps its own
   rotate REF DEG [--relative]
             --relative   add to the current rotation instead of replacing it
   face REF FACE PARTNER      FACE names the row by the face it is on NOW
   lock REF [REF ...]
   unlock REF [REF ...]       the only way to move a KiCad-locked part
+  replicate --from SHEET --to SHEET [--to SHEET] [--anchor REF] [--offset DX DY]
+            [--allow-net-mismatch REF.PAD ...] [--only REFS | --skip REFS]
+            [--search MM [--search-step MM]]
+            copy one placed instance of a hierarchical sheet onto its
+            sibling instances (#1211). Parts are matched by schematic
+            symbol; the copy is refused (exit 4) unless every matched pair
+            has the same footprint and pads and the nets correspond one to
+            one, a net on both instances (GND, a rail) mapping to itself.
+            Each target part takes its source part's rotation and side at
+            the source's position plus one offset, and the whole copy is
+            graded as one arrangement (--snap does not apply). A target
+            part that would move and is KiCad-locked is refused like `set`.
+            SHEET is a sheet name (CH1 or /CH1/) or a sheet path (/<uuid>,
+            or a unique start of it, 4+ characters); an unknown or
+            ambiguous one is refused at exit 2 with the sheets listed
+            --to SHEET     repeatable, one copy per target instance
+            --anchor REF   the part that keeps its place in each target (a
+                           ref of any of the named sheets); default: the
+                           source part with the most pads, e.g. the op-amp
+            --offset DX DY place the copy at the source poses + (DX, DY)
+                           instead; with one --to, and not with --anchor
+            --allow-net-mismatch REF.PAD
+                           leave ONE pad wired differently per instance BY
+                           DESIGN (an I2C address strap) out of the net
+                           rule; REF on the --from sheet waives it in every
+                           target, on a --to sheet in that one. Repeat per
+                           pad: a refusal names each pad it would take
+            --only REF[,REF] / --skip REF[,REF]
+                           a PARTIAL copy: only these parts, or all but
+                           these (a --from ref names that part in every
+                           target, a --to ref that one part); the rest stay
+                           where they are and need no counterpart
+            --search MM [--search-step MM]
+                           when the copy as placed is refused, fit each
+                           target at the offset nearest its default, on a
+                           lattice (0.5mm) within MM, that this call grades
+                           no worse; targets are fitted in --to order. Every
+                           candidate is written and re-graded. Exit 4 if
+                           none fits; never moves a locked part
+  replicate                with NO --from/--to: apply the --intent file's
+                           replicate[] declarations (each one's from, to,
+                           anchor, allow_net_mismatch, only/skip, search_mm)
+                           as one call; exit 2 without --intent or with an
+                           intent that declares none
 """
 
 
@@ -142,7 +195,10 @@ def build_parser(with_verbs=True):
                         "pose_score, then RE-GRADED here -- the ranker's "
                         "legality is an AABB gate and this verb's verdict is "
                         "exact geometry, so a candidate is verified, never "
-                        "trusted). Implied by --near")
+                        "trusted). Implied by --near. Applies to a call with "
+                        "exactly ONE pose op (set/rotate/face): on a call "
+                        "with several it is skipped, and the summary and "
+                        "stderr say so")
     p.add_argument('--radius', type=float, default=2.0, metavar='MM',
                    help='How far --snap may move the part, as a straight-line '
                         "distance (default: 2.0mm). The underlying sweep is a "
@@ -219,7 +275,8 @@ def _verb_parsers(sub=None):
     q.add_argument('--near', nargs=2, type=float, metavar=('X', 'Y'),
                    help='the same coordinates read as APPROXIMATE: implies '
                         '--snap, so the engine seats the part at the best '
-                        'legal pose near the point you aimed at')
+                        'legal pose near the point you aimed at. One pose op '
+                        'per call: with a second one it is refused (exit 2)')
     q.add_argument('--rot', type=float, default=None,
                    help='absolute rotation in degrees; omitted, the part '
                         'keeps the rotation it has')
@@ -243,6 +300,45 @@ def _verb_parsers(sub=None):
         q = _new(verb, help="stamp / strip KiCad's `(locked yes)`")
         q.add_argument('refs', nargs='+')
         out[verb] = q
+
+    q = _new('replicate', help='copy one placed sheet instance onto its '
+                               'sibling instances (#1211)')
+    q.add_argument('--from', dest='from_sheet', default=None,
+                   metavar='SHEET',
+                   help='the PLACED instance to copy: a sheet name or path. '
+                        'Omit --from and --to to apply the --intent file\'s '
+                        'replicate[] declarations instead')
+    q.add_argument('--to', dest='to_sheets', action='append', default=[],
+                   metavar='SHEET',
+                   help='an instance to arrange like it; repeat for several')
+    q.add_argument('--anchor', default=None, metavar='REF',
+                   help='the part that keeps its place in each target; '
+                        'default: the source part with the most pads')
+    q.add_argument('--offset', nargs=2, type=float, default=None,
+                   metavar=('DX', 'DY'),
+                   help='put the copy at the source poses + (DX, DY) '
+                        'instead of keeping the anchor in place')
+    q.add_argument('--allow-net-mismatch', dest='allow_net_mismatch',
+                   action='append', default=[], metavar='REF.PAD',
+                   help='leave ONE pad, wired differently per instance by '
+                        'design (an address strap), out of the net rule; '
+                        'REF on the --from sheet (every target) or on one '
+                        '--to sheet (that one). Repeat per pad')
+    q.add_argument('--search', type=float, default=None, metavar='MM',
+                   help='when the copy as placed is refused, try each '
+                        "target's offset on a lattice within MM of it, "
+                        'nearest first, and keep the first one this call '
+                        'grades no worse; exit 4 if none is')
+    q.add_argument('--search-step', dest='search_step', type=float,
+                   default=None, metavar='MM',
+                   help='lattice pitch of --search (default: 0.5mm)')
+    q.add_argument('--only', action='append', default=[], metavar='REF[,REF]',
+                   help='copy only these parts (a --from ref: in every '
+                        'target; a --to ref: that part only); the rest '
+                        'stay where they are')
+    q.add_argument('--skip', action='append', default=[], metavar='REF[,REF]',
+                   help='copy every part but these (same reading as --only)')
+    out['replicate'] = q
     return out
 
 
@@ -315,6 +411,77 @@ def parse_segments(segments, parsers, error):
             locks.extend(a.refs)
         elif verb == 'unlock':
             unlocks.extend(a.refs)
+        elif verb == 'replicate':
+            if a.from_sheet is None and not a.to_sheets:
+                # #1211: the intent's `replicate[]` declarations, expanded in
+                # main() once the intent is read. The declaration carries the
+                # anchor, waivers, selection and search, so a flag here would
+                # be a second, silent source of the same setting.
+                given = [f for f, v in (
+                    ('--anchor', a.anchor), ('--offset', a.offset),
+                    ('--allow-net-mismatch', a.allow_net_mismatch),
+                    ('--only', a.only), ('--skip', a.skip),
+                    ('--search', a.search),
+                    ('--search-step', a.search_step)) if v]
+                if given:
+                    error("`replicate` without --from/--to applies the "
+                          "--intent file's replicate[] declarations, which "
+                          "carry their own settings; %s here would override "
+                          "them silently. Edit the declaration, or name "
+                          "--from and --to" % ', '.join(given))
+                ops.append({'kind': 'replicate', 'declared': True})
+                continue
+            if a.from_sheet is None or not a.to_sheets:
+                error("`replicate` needs both --from and --to (or neither, "
+                      "to apply the --intent file's replicate[] "
+                      "declarations)")
+            if a.offset is not None and len(a.to_sheets) > 1:
+                error("`replicate --offset` puts ONE copy at the source poses "
+                      "+ (DX, DY), and this one names %d --to sheets, which "
+                      "would all land on that spot. Issue one replicate per "
+                      "target, or drop --offset to keep each target's anchor "
+                      "in place" % len(a.to_sheets))
+            if a.offset is not None and a.anchor is not None:
+                error("`replicate` was given both --offset and --anchor: "
+                      "--offset fixes the translation, --anchor chooses the "
+                      "part that keeps its place; pass one")
+            only = [r for tok in a.only for r in tok.split(',') if r]
+            skip = [r for tok in a.skip for r in tok.split(',') if r]
+            if only and skip:
+                error("`replicate` was given both --only and --skip; pass "
+                      "one -- the parts to copy, or the parts to leave")
+            if a.search is not None and not a.search > 0:
+                error("`replicate --search` is a radius in mm and must be "
+                      "positive; %g is not" % a.search)
+            if a.search_step is not None and not a.search_step > 0:
+                error("`replicate --search-step` is a lattice pitch in mm and "
+                      "must be positive; %g is not" % a.search_step)
+            if a.search_step is not None and a.search is None:
+                error("`replicate --search-step` sets the pitch of --search, "
+                      "which this call does not ask for")
+            ops.append({'kind': 'replicate', 'from': a.from_sheet,
+                        'to': list(a.to_sheets), 'anchor': a.anchor,
+                        'offset': a.offset,
+                        'allow_net_mismatch': list(a.allow_net_mismatch),
+                        'only': only, 'skip': skip,
+                        'search': a.search, 'search_step': a.search_step})
+    if snap and len(ops) > 1:
+        # #1194: a call with several pose ops is ONE arrangement graded at the
+        # exact points given, and a snap relocates one part, so `apply_poses`
+        # cannot snap here. Refused BEFORE anything is graded, because the
+        # alternative grades points the caller marked approximate as exact
+        # and refuses them for it (fa10 board 10: two `set --near` ops
+        # refused at exit 4, while each alone snapped and was written). A
+        # usage error like its neighbours above.
+        error("--near snaps ONE pose op, and this call carries %d (%s): "
+              "several ops are one arrangement graded at the exact points "
+              "given, so a --near point would be graded as exact. Issue one "
+              "`set REF --near X Y` per call (lock / unlock may ride along), "
+              "or give exact coordinates"
+              % (len(ops), ', '.join('%s %s' % (o['kind'],
+                                                o.get('ref') or o.get('from')
+                                                or '(declared)')
+                                     for o in ops)))
     return ops, locks, unlocks, snap
 
 
@@ -373,11 +540,11 @@ def main(argv=None):
     if st.has_copper and not args.allow_routed:
         return _refuse(
             args,
-            "this board carries %d segment(s) and %d via(s); moving a "
+            "this board carries %s; moving a "
             "footprint strands every track attached to it. Pose the unrouted "
             "board, or pass --allow-routed if you mean to."
-            % (st.segments, st.vias), UNPLACED_EXIT,
-            segments=st.segments, vias=st.vias)
+            % st.copper_carried, UNPLACED_EXIT,
+            segments=st.segments, vias=st.vias, teardrops=st.teardrops)
     intent = None
     if args.intent:
         from placement import floorplan
@@ -386,6 +553,23 @@ def main(argv=None):
             intent = floorplan.load_intent(args.intent)
         except floorplan.IntentError as exc:
             return _refuse(args, "cannot read the intent: %s" % exc, 2)
+    if any(o.get('declared') for o in ops):
+        # #1211: `replicate` with no --from/--to is the intent's
+        # `replicate[]`, one op per declaration, in file order -- the ops
+        # place_seed's replicate stage applies, through the same engine.
+        decls = tuple(getattr(intent, 'replicate', ()) or ()) if intent else ()
+        if not decls:
+            return _refuse(
+                args, "`replicate` without --from/--to applies the intent's "
+                "replicate[] declarations, and %s" % (
+                    'this call passes no --intent' if intent is None else
+                    '%s declares none' % args.intent), 2)
+        from placement.replicate import declared_op
+        expanded = []
+        for o in ops:
+            expanded.extend([declared_op(d) for d in decls]
+                            if o.get('declared') else [o])
+        ops = expanded
     if st.unplaced:
         # A NOTE, not a gate (see the module docstring): arranging a pile one
         # decision at a time is what this tool is for, and the relative
@@ -489,7 +673,42 @@ def _report(summary):
                      " [%s row aimed %s]" % (n['face'], n['target_face']))
         if n.get('snapped'):
             extra += ' [snapped]'
+        if n['kind'] == 'replicate':
+            extra += ' [as %s]' % n['source']
+            if n.get('side'):
+                extra += ' [side %s -> %s]' % tuple(n['side'])
+            if n.get('new_conflicts'):
+                extra += ' NEW: %s' % ', '.join(n['new_conflicts'])
         print("  %-6s %-8s %s%s" % (n['kind'], n['ref'], arrow, extra))
+    for rep in summary.get('replicate') or ():
+        for t in rep['to']:
+            b = t['offset_basis']
+            print("replicate %s -> %s: %d parts matched by symbol, %d moved; "
+                  "offset (%+.4f, %+.4f) %s; nets: %d renamed, %d shared (%s)"
+                  % (rep['from']['name'] or rep['from']['path'],
+                     t['sheet']['name'] or t['sheet']['path'], t['pairs'],
+                     t['moved'], t['offset'][0], t['offset'][1],
+                     ('keeps %s where it is (anchor %s, %s)'
+                      % (b['target'], b['source'], b['chosen']))
+                     if b['kind'] == 'anchor' else 'as given',
+                     len(t['nets_renamed']), len(t['nets_shared']),
+                     ', '.join(t['nets_shared'][:6])
+                     + (', ...' if len(t['nets_shared']) > 6 else '')))
+            for w in t.get('nets_waived') or ():
+                print("  waived %s (--allow-net-mismatch %s)%s"
+                      % (w['pads'], w['as_given'],
+                         '' if w['needed'] else
+                         ' -- wired alike after all; the waiver was not needed'))
+            if t.get('left_in_place'):
+                print("  left in place (not copied): %s"
+                      % ', '.join(t['left_in_place']))
+            sr = t.get('search')
+            if sr and sr.get('found'):
+                print("  --search: the copy as asked was refused; kept offset "
+                      "%+.4f, %+.4f mm from it (%.4f mm), the nearest of %d "
+                      "tried that grades no worse"
+                      % (sr['delta'][0], sr['delta'][1], sr['dist_mm'],
+                         sr['tried']))
     print("pad legality: conflicts %s -> %s, holes %s -> %s, coarse outline "
           "%s -> %s" % (summary['pad_conflicts_before'],
                         summary['pad_conflicts_after'],

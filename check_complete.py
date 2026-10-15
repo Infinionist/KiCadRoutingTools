@@ -384,6 +384,7 @@ def _grade(a, doc):
         args = [os.path.join(SKILL_SCRIPTS, 'board_score.py'), a.board,
                 '--json', score_path, '--quiet']
         for flag, val in (('--clearance', a.clearance), ('--intent', a.intent),
+                          ('--baseline', a.baseline),
                           ('--length-groups', a.length_groups),
                           ('--net-min-widths', a.net_min_widths),
                           ('--min-track-width', a.min_track_width),
@@ -551,8 +552,12 @@ def _grade(a, doc):
                 'badly (reported, not counted against this board): '
                 + ', '.join(_ref(r) for r in floors['reference_too']))
     if ungraded:
+        # "Not asked" is one reason, not the only one: a --length-groups file
+        # whose nets are not routed yet is asked and still cannot measure
+        # anything (#1246), and saying "nothing was asked" there is false.
         why += ('. UNEXAMINED, and not passed: ' + ', '.join(ungraded)
-                + ' -- nothing was asked to grade them, so they are unknown '
+                + ' -- nothing graded them (no spec was given, or nothing '
+                  'they name is measurable yet), so they are unknown '
                   'rather than clean')
     doc['verdict'] = verdict
     doc['reason'] = why
@@ -568,6 +573,11 @@ def main(argv=None):
     ap.add_argument('--authored-from', default=None,
                     help='the board the chain STARTED from -- its project '
                          'carries the floors this one should still respect')
+    ap.add_argument('--baseline', default=None, metavar='BOARD',
+                    help='the board this one was derived from (the run\'s '
+                         'input), handed to board_score: it arms '
+                         'check_assembly\'s courtyard gate (#1183). Not '
+                         '--authored-from, which reads that board\'s FLOORS')
     ap.add_argument('--clearance', type=float, default=None)
     ap.add_argument('--intent', default=None)
     ap.add_argument('--impedance-nets', nargs='+', default=None)
@@ -601,6 +611,8 @@ def main(argv=None):
     a.board = os.path.abspath(a.board)
     if a.authored_from:
         a.authored_from = os.path.abspath(a.authored_from)
+    if a.baseline:
+        a.baseline = os.path.abspath(a.baseline)
 
     doc = {'schema': 1, 'kind': 'board-complete',
            'board': a.board, 'board_sha': None, 'components': {}, 'score': {},

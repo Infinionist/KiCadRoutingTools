@@ -345,6 +345,7 @@ def run_obstacle_content_audit(working_obstacles, net_obstacles_cache,
         except Exception:                      # noqa: BLE001
             pass
         n_nets = n_cells = n_missing = n_vias = n_vmissing = 0
+        n_rvias = n_rmissing = 0
         n_entry_stale = 0
         stale_nets = []
         stale_entries = []
@@ -370,6 +371,20 @@ def run_obstacle_content_audit(working_obstacles, net_obstacles_cache,
             for gx, gy in vias:
                 if not _exempt_free.is_via_blocked(int(gx), int(gy)):
                     vmiss += 1
+            # #1226: every via rung too. A search at rung r >= 1 reads that
+            # rung alone, so copper missing there is an under-block the
+            # rung-0 query above cannot see (it is how raw adds stamped only
+            # into rung 0 went unnoticed).
+            rmiss = 0
+            for _r, _rc in sorted((getattr(fresh, 'blocked_vias_rungs', None) or {}).items()):
+                if _rc is None or not len(_rc):
+                    continue
+                _rc = _unique_rows(np.asarray(_rc, dtype=np.int32).reshape(-1, 2))
+                n_rvias += len(_rc)
+                for gx, gy in _rc:
+                    if not _exempt_free.is_via_blocked_rung(int(gx), int(gy), int(_r)):
+                        rmiss += 1
+            n_rmissing += rmiss
             n_cells += len(cells)
             n_vias += len(vias)
             n_missing += miss
@@ -378,15 +393,17 @@ def run_obstacle_content_audit(working_obstacles, net_obstacles_cache,
             name = getattr(pcb_data.nets.get(nid), 'name', None) or str(nid)
             if entry_missing:
                 stale_entries.append((name, entry_missing, len(cells)))
-            if miss or vmiss:
-                stale_nets.append((name, miss, len(cells), vmiss, len(vias)))
+            if miss or vmiss or rmiss:
+                stale_nets.append((name, miss, len(cells), vmiss, len(vias), rmiss))
         print("\n" + "=" * 60)
         print(f"[OBSTACLE CONTENT{' ' + label if label else ''}"
               f"{'' if _on_clone else ' (LIVE MAP -- source/target exemptions counted)'}] "
               f"{n_nets} nets recomputed from pcb_data: {n_cells} cells checked, "
               f"{n_missing} NOT blocked in working map; {n_vias} via cells checked, "
               f"{n_vmissing} NOT via-blocked; {n_entry_stale} cells absent from "
-              f"their net's cache entry ({len(stale_entries)} stale entries)")
+              f"their net's cache entry ({len(stale_entries)} stale entries); "
+              f"{n_rvias} rung via cells checked, {n_rmissing} NOT blocked at "
+              f"their rung")
         for name, em, c in stale_entries[:12]:
             print(f"    stale entry {name}: {em}/{c} current cells not in its entry")
         if len(stale_entries) > 12:
@@ -394,8 +411,9 @@ def run_obstacle_content_audit(working_obstacles, net_obstacles_cache,
         if stale_nets:
             print(f"  UNDER-BLOCK: {len(stale_nets)} net(s) whose current copper "
                   f"the working map does not block:")
-            for name, m, c, vm, vc in stale_nets[:12]:
-                print(f"    {name}: {m}/{c} cells, {vm}/{vc} via cells missing")
+            for name, m, c, vm, vc, rm in stale_nets[:12]:
+                print(f"    {name}: {m}/{c} cells, {vm}/{vc} via cells missing"
+                      + (f", {rm} rung via cells missing" if rm else ""))
             if len(stale_nets) > 12:
                 print(f"    ... and {len(stale_nets) - 12} more")
         else:
@@ -404,6 +422,7 @@ def run_obstacle_content_audit(working_obstacles, net_obstacles_cache,
         print("=" * 60)
         return {'nets': n_nets, 'cells': n_cells, 'missing': n_missing,
                 'vias': n_vias, 'via_missing': n_vmissing,
+                'rung_vias': n_rvias, 'rung_via_missing': n_rmissing,
                 'entry_stale': n_entry_stale, 'stale_entries': stale_entries,
                 'stale_nets': stale_nets}
     except Exception as e:

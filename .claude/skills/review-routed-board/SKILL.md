@@ -100,36 +100,50 @@ touching-copper overlaps, `check_drc.py` is the authoritative one.
 If the board has length-matched groups (DDR byte lanes, matched buses — detect DQ/DQS patterns or ask the user for the groups and tolerance):
 
 ```python
+import sys
+sys.path.insert(0, "py_router")
 from kicad_parser import parse_kicad_pcb
-from net_queries import net_copper_lengths, pin_pair_path_length
+from net_queries import net_match_length
 
 pcb = parse_kicad_pcb('board.kicad_pcb')
 name_to_id = {n.name: nid for nid, n in pcb.nets.items()}
 for group_name, net_names in groups.items():
-    ids = [name_to_id[n] for n in net_names if n in name_to_id]
-    by_id = net_copper_lengths(pcb, ids)          # one pass over the copper
-    lengths = {n: by_id[name_to_id[n]] for n in net_names if n in name_to_id}
+    lengths = {n: net_match_length(pcb, name_to_id[n])    # total net copper
+               for n in net_names if n in name_to_id}
+    unjoined = [n for n, mm in lengths.items() if mm is None]
+    if unjoined:
+        # UNMEASURED, not a pass or a fail: these nets' pads are not joined by
+        # track copper (unrouted, fanout stubs only, broken, or plane-only).
+        print(f"{group_name}: unmeasured, not joined: {unjoined}")
+        continue
     spread = max(lengths.values()) - min(lengths.values())
     # PASS if spread <= tolerance (default 0.1 mm); report worst offender otherwise
 ```
 
-`net_copper_lengths` (and `net_copper_length` for one net) measures **total net
-copper**. That is the right number only for a clean point-to-point net. On a
-**multipoint or fly-by net, or any net with a stub**, total copper is the sum of
-every branch and matches no signal path — measure the driver→receiver path
-instead, and match on that:
+`net_match_length` is the measurement `board_score.py --length-groups` grades
+with, so the two cannot disagree. **Never grade raw `net_copper_lengths`
+spreads**: a net with no copper reads 0.0 mm and one with only fanout stubs
+reads the stub length, so two unrouted nets "pass" at spread 0.0 and a
+stub-only byte lane "fails" (#1246). `None` means not routed yet; report it as
+unmeasured, which `unrouted`/`broken` already count.
+
+The default mode measures **total net copper**. That is the right number only
+for a clean point-to-point net. On a **multipoint or fly-by net, or any net
+with a stub**, total copper is the sum of every branch and matches no signal
+path — measure the driver→receiver path instead, and match on that:
 
 ```python
-pads = pcb.pads_by_net[name_to_id['DQ0']]
-path_mm = pin_pair_path_length(pcb, name_to_id['DQ0'], pads[0], pads[1])
-# None = those two pads are not joined by TRACK copper (plane-only or broken)
+path_mm = net_match_length(pcb, name_to_id['DQ0'], mode='pin_pair')
+# None = the net's first two pads are not joined by TRACK copper
+# (plane-only or broken); pin_pair_path_length(pcb, nid, pad_a, pad_b)
+# measures any other pad pair
 ```
 
 Report both when they differ by more than the tolerance: a group that passes on
 total copper can fail on path length. Pads joined only through a zone return
 `None` — say so rather than reporting a length.
 
-For time-matched groups use `calculate_route_propagation_time_ps()` from `impedance.py` instead, and compare against the ps tolerance. Lengths include via barrels from the stackup, matching KiCad's measurement.
+For time-matched groups use `calculate_route_propagation_time_ps()` from `impedance.py` instead, plus each pad's `die_delay` (`net_pad_to_die_delay`, ps), and compare against the ps tolerance. Lengths include via barrels from the stackup and, in `net_match_length`, every pad's pad-to-die length (`(die_length ...)`, #1248) -- the terms KiCad's length/skew DRC adds. A board that declares pad-to-die is graded wrong by raw copper: KiCad sees the difference as skew.
 
 Report per group: the spread, the tolerance, and the worst offender net.
 
@@ -143,6 +157,8 @@ length/time-matched group (and any net with visible serpentines), audit the
 arm-to-arm spacing directly:
 
 ```python
+import sys
+sys.path.insert(0, "py_router")
 from kicad_parser import parse_kicad_pcb
 from geometry_utils import segment_to_segment_distance
 

@@ -347,7 +347,7 @@ def score_connectivity(root: str, board: str) -> dict:
             'broken_detail': detail}
 
 
-def unrouted_shape(board: str, unrouted_names) -> dict:
+def unrouted_shape(board: str, unrouted_names, pcb=None) -> dict:
     """Which unrouted nets are PLACEMENT-blocked, and which are merely open.
 
     `unrouted` is one bucket holding two different failure shapes, and the
@@ -370,7 +370,8 @@ def unrouted_shape(board: str, unrouted_names) -> dict:
     from check_drc import make_off_board_test
     from net_queries import routable_pad_count
     try:
-        pcb = parse_kicad_pcb(board)
+        if pcb is None:
+            pcb = parse_kicad_pcb(board)
         off = make_off_board_test(pcb.board_info)
     except Exception as exc:                                   # noqa: BLE001
         return {'error': f'{type(exc).__name__}: {exc}'}
@@ -391,7 +392,7 @@ def unrouted_shape(board: str, unrouted_names) -> dict:
             'open': sorted(open_nets)}
 
 
-#: check_assembly's seven `not_buildable` conjuncts, by the JSON key each one
+#: check_assembly's ten `not_buildable` conjuncts, by the JSON key each one
 #: publishes (check_assembly's `not_buildable = ...` line). `blocking` -- pad INTERSECTIONS -- is
 #: the first of them and is the only one this component used to read (#918).
 #:
@@ -412,20 +413,33 @@ def unrouted_shape(board: str, unrouted_names) -> dict:
 #:     `tests/test_918_assembly_verdict.py` builds, one stacked-capacitor
 #:     defect appears as a group AND as a containment.
 #:
-#: `courtyard_blocking_gating` is null here BY CONSTRUCTION: it is the
-#: moved-vs-baseline subset of the courtyard census, and board_score passes no
-#: --baseline, so check_assembly publishes null rather than 0. Reported as
-#: unmeasured, never counted as clean.
+#: `courtyard_blocking_gating` is the moved-vs-baseline subset of the
+#: courtyard census: armed only when board_score is handed `--baseline`, which
+#: it forwards to check_assembly (#1183). Unarmed, check_assembly publishes
+#: null rather than 0, and the scorer reports it unmeasured -- in
+#: `conjuncts_unmeasured` and in the top-level `ungraded` as
+#: 'assembly.courtyard_gating' -- never counted as clean.
+#:
+#: `testpoint_covered_gating` (#1250) is armed by the same `--baseline` on
+#: the same currency (a test point a moved member left under another part's
+#: drawn body), and is null when unarmed for the same reason.
+#:
+#: `body_edge_band_gating` (#1255) is armed by a DECLARATION instead -- the
+#: intent's `assembly.body_edge_mm` -- and is 0, not null, when nothing is
+#: declared: the census still ran, and an undeclared band gates nothing by
+#: policy, which is a measured answer rather than a missing one.
 ASSEMBLY_CONJUNCTS = ('blocking', 'locked_contacts', 'coincident_origins',
                       'containment_blocking', 'courtyard_blocking_gating',
-                      'oob_pad_copper_gating_count', 'mating_keepout_count')
+                      'oob_pad_copper_gating_count', 'mating_keepout_count',
+                      'pin_in_courtyard', 'testpoint_covered_gating',
+                      'body_edge_band_gating')
 
 #: The conjuncts that can ACTUALLY flip the verdict while `blocking` is 0, in
-#: this scorer's invocation. Two, not four:
+#: this scorer's invocation. Not every conjunct can:
 #:   * `locked_contacts` cannot -- it is a subset of `blocking` (above), so a
 #:     locked contact implies `blocking >= 1` and the board never had 0;
-#:   * `courtyard_blocking_gating` cannot -- it is `[]` unless `--baseline` was
-#:     passed, and board_score never passes one.
+#:   * `courtyard_blocking_gating` can since #1183, when `--baseline` arms it:
+#:     a part moved onto another's courtyard gates at `blocking` 0.
 #: Written down because the issue, and this file's first draft, claimed all
 #: four -- and a motivating case that cannot occur is not a motivating case.
 #: #1096 added `oob_pad_copper_gating_count`: pad copper past the outline
@@ -433,12 +447,22 @@ ASSEMBLY_CONJUNCTS = ('blocking', 'locked_contacts', 'coincident_origins',
 #: verdict, and it does not need `blocking` to fire. It overlaps `unrouted` /
 #: `broken` (such a part's nets cannot be routed) and adds at most 1 through
 #: the NOT-BUILDABLE floor, deliberately: CLAUDE.md ranks it first.
+#: fa10 P1 (#1212) added `pin_in_courtyard`: a pin frame's drilled pin inside
+#: another part's courtyard, absolute, so it too fires at `blocking` 0.
+#: #1250 added `testpoint_covered_gating`: a test point a moved member left
+#: under another part's drawn body, armed by `--baseline` like the courtyard
+#: gate -- its pads are not another part's pads, so `blocking` stays 0.
+#: #1255 added `body_edge_band_gating`: a body inside the body-to-edge band
+#: the intent declares, a fact about one part, so it too fires at
+#: `blocking` 0.
 ASSEMBLY_LIVE_CONJUNCTS = ('coincident_origins', 'containment_blocking',
-                           'oob_pad_copper_gating_count', 'mating_keepout_count')
+                           'oob_pad_copper_gating_count', 'mating_keepout_count',
+                           'pin_in_courtyard', 'courtyard_blocking_gating',
+                           'testpoint_covered_gating', 'body_edge_band_gating')
 
 
 def assembly_component(doc: dict, rc: int) -> dict:
-    """check_assembly's VERDICT, not one of its seven conjuncts (#918).
+    """check_assembly's VERDICT, not one of its ten conjuncts (#918).
 
     `not_buildable` is `blocking or locked_contact or stack_groups or
     containment_blocking or courtyard_gating`. This component read `blocking`
@@ -482,10 +506,10 @@ def assembly_component(doc: dict, rc: int) -> dict:
     buildable = doc.get('buildable')
     if not isinstance(buildable, bool):
         return skipped(
-            "check_assembly published no `buildable` key: `blocking` alone is "
-            "1 of its 7 not_buildable conjuncts (check_assembly's "
-            "`not_buildable` line), and this component will not re-derive "
-            "the other six")
+            f"check_assembly published no `buildable` key: `blocking` alone is "
+            f"1 of its {len(ASSEMBLY_CONJUNCTS)} not_buildable conjuncts "
+            f"(check_assembly's `not_buildable` line), and this component "
+            f"will not re-derive the other {len(ASSEMBLY_CONJUNCTS) - 1}")
     if (rc == 4) != (not buildable):
         return skipped(
             f"check_assembly contradicts itself: exit {rc} with "
@@ -525,6 +549,14 @@ def assembly_component(doc: dict, rc: int) -> dict:
     # --baseline, and a payload whose thesis is "not measured must never read
     # as measured" must not hardcode an armedness it never measured.
     _cg_basis = doc.get('courtyard_gating_basis')
+    # The per-pair lists, each with its full COUNT. `--json` carries every
+    # entry (`<list>_truncated` 0); the stdout SCORE_JSON caps them
+    # (`stdout_payload`, #1194), so the count is what a stdout reader keeps.
+    lists = {'pairs': doc.get('blocking_pairs') or [],
+             'locked_contact_pairs': doc.get('locked_contact_pairs') or [],
+             'coincident_origin_groups':
+                 doc.get('coincident_origin_groups') or [],
+             'containments': doc.get('containments') or []}
     return {'ran': True, 'count': count, 'count_basis': basis,
             'buildable': buildable, 'verdict': doc.get('verdict'),
             'conjuncts': conjuncts,
@@ -538,18 +570,82 @@ def assembly_component(doc: dict, rc: int) -> dict:
                 None if isinstance(conjuncts['courtyard_blocking_gating'], int)
                 else 'no --baseline was passed, so check_assembly\'s fifth '
                      'conjunct (moved-vs-baseline courtyard interpenetration) '
-                     'is unarmed and publishes null. board_score never passes '
-                     'one, so it is unarmed on every board this scorer grades'),
+                     'is unarmed and publishes null, and so is its ninth '
+                     '(a test point a move left under a body, #1250). Pass '
+                     '--baseline <the board this one was derived from> to arm '
+                     'it (#1183)'),
             'advisory_pairs': int(doc.get('advisory') or 0),
             'waived_pairs': int(doc.get('waived') or 0),
-            'pairs': doc.get('blocking_pairs') or [],
-            'locked_contact_pairs': doc.get('locked_contact_pairs') or [],
-            'coincident_origin_groups': doc.get('coincident_origin_groups') or [],
-            'containments': doc.get('containments') or []}
+            **lists,
+            **{k + '_count': len(v) for k, v in lists.items()},
+            **{k + '_truncated': 0 for k in lists}}
+
+
+#: How many entries of each assembly per-pair list the stdout SCORE_JSON
+#: carries (#1194). A pile's `pairs` alone made that one line 590 KB (2302
+#: pad-intersection pairs on One-Air-Max, each with its overlap rect and
+#: shorts), and it landed in every log and subprocess capture reading stdout.
+#: Every in-repo consumer of the full lists reads `--json`.
+STDOUT_LIST_CAP = 20
+ASSEMBLY_LISTS = ('pairs', 'locked_contact_pairs', 'coincident_origin_groups',
+                  'containments')
+
+
+def stdout_payload(score: dict, cap: int = STDOUT_LIST_CAP) -> dict:
+    """The SCORE_JSON copy of `score`: each assembly list capped at `cap`
+    entries, `<list>_count` the full length and `<list>_truncated` how many
+    were left out (#1194). `score` itself -- what `--json` writes -- is not
+    touched. Pure."""
+    asm = (score.get('components') or {}).get('assembly')
+    if not isinstance(asm, dict):
+        return score
+    long_ = [k for k in ASSEMBLY_LISTS
+             if isinstance(asm.get(k), list) and len(asm[k]) > cap]
+    if not long_:
+        return score
+    asm = dict(asm)
+    for k in long_:
+        full = asm[k]
+        asm[k] = full[:cap]
+        asm[k + '_count'] = len(full)
+        asm[k + '_truncated'] = len(full) - cap
+    return {**score, 'components': {**score['components'], 'assembly': asm}}
+
+
+def ungraded_entries(parts: dict) -> list:
+    """The top-level `ungraded` list: every component that did not run,
+    and 'assembly.courtyard_gating' whenever check_assembly's courtyard gate
+    was not armed (#964 item 2 / #1183) -- an UNARMED conjunct is
+    unexamined, and only a top-level entry is something a loop compares.
+    Listed whether or not assembly itself ran: a lap whose assembly FAILED
+    must still read as grading fewer things than an unarmed one, or
+    converge takes its lower `blocking` for a gain (phase-6 verifier: 10 ->
+    9 accepted, because the dotted entry vanished with the component)."""
+    return sorted(
+        [k for k, v in parts.items() if v.get('ran') is False]
+        + (['assembly.courtyard_gating']
+           if not (parts.get('assembly') or {}).get('courtyard_gating_armed')
+           else []))
+
+
+def baseline_problem(path: str):
+    """Why `path` cannot be a --baseline, or None: it must be a KiCad board
+    with at least one footprint (a cheap text test; check_assembly parses it
+    and refuses the same way)."""
+    try:
+        with open(path, encoding='utf-8', errors='replace') as fh:
+            text = fh.read()
+    except OSError as exc:
+        return f'unreadable ({exc})'
+    if '(kicad_pcb' not in text[:4096]:
+        return 'not a KiCad board'
+    if '(footprint ' not in text:
+        return 'a board with no footprints'
+    return None
 
 
 def score_assembly(root: str, board: str, intent: str, tmp: str,
-                   clearance=None) -> dict:
+                   clearance=None, baseline=None) -> dict:
     """Blocking BODY pairs (run-6): two footprints' pad copper in the same
     space -- physically unbuildable, invisible to every copper checker (the
     shipped C14-on-R14 stack). Runs check_assembly.py, which needs NO
@@ -578,6 +674,13 @@ def score_assembly(root: str, board: str, intent: str, tmp: str,
     # unnoticed; `advisory_pairs` and `waived_pairs` are not.
     if clearance is not None:
         args += ['--clearance', str(clearance)]
+    # #1183: the board this one was derived from ARMS check_assembly's fifth
+    # conjunct -- a courtyard pair a MOVED part entered gates. board_score had
+    # the flag since #962 and handed it to check_drc only, so One-Air-Max's
+    # seed graded `buildable` here and NOT BUILDABLE (22 of 22 pairs gating)
+    # under check_assembly --baseline.
+    if baseline:
+        args += ['--baseline', baseline]
     rc, text = run_tool(root, 'check_assembly.py', *args)
     if rc not in (0, 4) or not os.path.exists(out):
         return skipped(f'check_assembly rc {rc}: {text.strip()[-200:]}')
@@ -786,13 +889,27 @@ def score_length(board: str, groups_file: str) -> dict:
     `mode: "pin_pair"` measures the driver->receiver PATH instead of total net
     copper. Use it for any multipoint or stubbed net: total copper sums every
     branch and matches no real signal path.
+
+    BOTH modes measure a member only once its pads are joined by track copper
+    (`net_queries.net_match_length`), and a member that is not makes its whole
+    group UNMEASURED (#1246). Total copper used to grade whatever the net had:
+    no copper read 0.0 mm, so two unrouted nets passed at spread 0.0, and
+    fanout stubs read their stub length, so a stub-only group FAILED and added
+    to `blocking` on top of `broken`. A partial group is unmeasured too, rather
+    than graded on the members that happen to be routed: a spread over a subset
+    is not the group's spread, and a pass on it would be a pass nobody earned.
+
+    Each length includes the member's PAD-TO-DIE term (`(die_length ...)`,
+    #1248), as KiCad's length/skew DRC does: every pad of the net in total
+    mode, the measured pad pair in pin_pair mode. A group whose lengths carry
+    one names it in `pad_to_die_mm`.
     """
     if not groups_file:
         return skipped('no --length-groups given; length matching is ungraded')
     if not os.path.isfile(groups_file):
         return skipped(f'length-groups file not found: {groups_file}')
     from kicad_parser import parse_kicad_pcb
-    from net_queries import net_copper_lengths, pin_pair_path_length
+    from net_queries import net_match_length, net_match_pad_to_die
 
     with open(groups_file, encoding='utf-8') as f:
         groups = json.load(f)
@@ -809,39 +926,47 @@ def score_length(board: str, groups_file: str) -> dict:
                                         f'board (missing: {missing})'}
             failures += 1          # a group naming nets that do not exist is a
             continue               # finding about the spec, not a pass
-        if spec.get('mode') == 'pin_pair':
-            lengths = {}
-            for n in names:
-                if n not in by_name:
-                    continue
-                pads = pcb.pads_by_net.get(by_name[n]) or []
-                L = (pin_pair_path_length(pcb, by_name[n], pads[0], pads[1])
-                     if len(pads) >= 2 else None)
-                if L is not None:
-                    lengths[n] = L
-            if len(lengths) < 2:
-                # NOT a failure. "Not routed yet" is what `unrouted`/`broken`
-                # already measure, and counting it here too made every 0-copper
-                # board score length=1 per group -- a permanent phantom blocker
-                # that no routing could ever clear. Distinct from the
-                # missing-nets case above, which IS a finding about the spec.
-                detail[gname] = {'skipped': 'no track path between the pad pair '
-                                            '(plane-only or broken)'}
-                unmeasured += 1
+        mode = 'pin_pair' if spec.get('mode') == 'pin_pair' else 'total'
+        lengths, unjoined = {}, []
+        for n in names:
+            if n not in by_name:
                 continue
-        else:
-            got = net_copper_lengths(pcb, ids)
-            lengths = {n: got[by_name[n]] for n in names if n in by_name}
+            L = net_match_length(pcb, by_name[n], mode=mode)
+            if L is None:
+                unjoined.append(n)
+            else:
+                lengths[n] = L
+        if unjoined:
+            # NOT a failure. "Not routed yet" is what `unrouted`/`broken`
+            # already measure, and counting it here too made every 0-copper
+            # board score length=1 per group -- a permanent phantom blocker
+            # that no routing could ever clear. Distinct from the
+            # missing-nets case above, which IS a finding about the spec.
+            detail[gname] = {'skipped': f'{len(unjoined)} of {len(ids)} member(s) '
+                                        f'have pads not joined by track copper '
+                                        f'(unrouted, stub-only, broken or '
+                                        f'plane-only)',
+                             'unjoined_nets': unjoined, 'missing_nets': missing}
+            unmeasured += 1
+            continue
         spread = max(lengths.values()) - min(lengths.values())
         ok = spread <= tol
         failures += 0 if ok else 1
         detail[gname] = {'spread_mm': round(spread, 4), 'tolerance_mm': tol,
                          'pass': ok, 'missing_nets': missing,
                          'worst': max(lengths, key=lengths.get)}
+        # #1248: the lengths include each member's pad-to-die term, as KiCad's
+        # DRC does. Disclosed only where a pad declares one, so a grade moved
+        # by a term no copper shows says which term moved it.
+        die = {n: net_match_pad_to_die(pcb, by_name[n], mode) for n in lengths}
+        if any(die.values()):
+            detail[gname]['pad_to_die_mm'] = {n: round(v, 4)
+                                              for n, v in die.items() if v}
     if unmeasured and unmeasured == len(detail):
         # Nothing could be measured at all -- report UNGRADED rather than a
         # clean 0, so the gate cannot be passed by a board nothing examined.
-        return dict(skipped('no group had a measurable track path yet'),
+        return dict(skipped('no group had every member joined by track '
+                            'copper yet'),
                     groups=detail)
     return {'ran': True, 'count': failures, 'groups': detail,
             'unmeasured_groups': unmeasured}
@@ -995,11 +1120,17 @@ def declared_net_names(score: dict) -> dict:
         'components.length.groups[].worst':
             [g['worst'] for g in (length.get('groups') or {}).values()
              if isinstance(g, dict) and g.get('worst')],
+        'components.length.groups[].unjoined_nets':
+            [n for g in (length.get('groups') or {}).values()
+             if isinstance(g, dict) for n in (g.get('unjoined_nets') or ())],
+        'components.length.groups[].pad_to_die_mm':
+            [n for g in (length.get('groups') or {}).values()
+             if isinstance(g, dict) for n in (g.get('pad_to_die_mm') or {})],
     }
     return {k: v for k, v in fields.items() if v}
 
 
-def audit_net_names(board: str, score: dict) -> dict:
+def audit_net_names(board: str, score: dict, pcb=None) -> dict:
     """EVERY net name this score publishes must exist on the board it graded.
 
     The defect this exists to catch cannot be caught any other way: `poured_nets`
@@ -1026,7 +1157,8 @@ def audit_net_names(board: str, score: dict) -> dict:
             if os.path.isdir(_p) and _p not in sys.path:
                 sys.path.insert(0, _p)
         from kicad_parser import parse_kicad_pcb
-        pcb = parse_kicad_pcb(board)
+        if pcb is None:
+            pcb = parse_kicad_pcb(board)
     except Exception as exc:                                    # noqa: BLE001
         return {'ran': False,
                 'reason': f'board unparseable here: {type(exc).__name__}: {exc}'}
@@ -1051,14 +1183,15 @@ def audit_net_names(board: str, score: dict) -> dict:
             'unknown_count': sum(len(v) for v in unknown.values())}
 
 
-def quality(board: str) -> dict:
+def quality(board: str, pcb=None) -> dict:
     """Tie-breakers, compared ONLY once blocking == 0. Never a blocker itself:
     a board is not worse for having more copper if the alternative is a
     disconnected net."""
     try:
         from kicad_parser import parse_kicad_pcb
         import math
-        pcb = parse_kicad_pcb(board)
+        if pcb is None:
+            pcb = parse_kicad_pcb(board)
         # ROUTED copper only (#908). A footprint's own drawn copper -- a SOT89
         # tab, a PCB antenna -- parses as `graphic=True` Segments, and it is
         # identical in every candidate placement of the same board: counting
@@ -1135,7 +1268,9 @@ def build_parser():
                         'in a paste opening as inherited, and grades a graze of '
                         'footprint graphic copper that a part MOVE created (#962). '
                         'A via-in-paste left after that is the run\'s own and '
-                        'counts in BLOCKING (#1171)')
+                        'counts in BLOCKING (#1171). check_assembly then GATES '
+                        'a courtyard pair a moved part entered (#1183). '
+                        'Omitted, that gate is listed in `ungraded`')
     p.add_argument('--clearance', type=float,
                    help='grade DRC at this clearance. OMIT IT unless you know '
                         'better than the board: check_drc then reads the '
@@ -1181,11 +1316,21 @@ def build_parser():
                    help="the parent lap's board_score JSON. Each placement "
                         "term is then reported raw AND as a delta against it. "
                         "Ignored without --placement-terms")
-    p.add_argument('--json', metavar='PATH', help='write the full score here')
+    p.add_argument('--json', metavar='PATH',
+                   help='write the full score here. The stdout SCORE_JSON= '
+                        'line caps each components.assembly list (pairs, '
+                        'containments, locked_contact_pairs, '
+                        'coincident_origin_groups) at %d entries and says so '
+                        'in <list>_count / <list>_truncated; this file carries '
+                        'every entry' % STDOUT_LIST_CAP)
     p.add_argument('--label', default='', help='free text carried into the JSON '
                                                '(the ledger uses it for the lever)')
     p.add_argument('--quiet', '-q', action='store_true',
-                   help='print only SCORE_JSON= and the one-line summary')
+                   help='accepted for callers that pass it; changes nothing. '
+                        'stdout is already SCORE_JSON=, the BLOCKING= summary '
+                        'and the disclosure lines (ADVISORY, UNGRADED, ...), '
+                        'which stay because they are the difference between '
+                        'clean and unexamined')
     return p
 
 
@@ -1194,6 +1339,20 @@ def main():
     if not os.path.isfile(args.board):
         print(f"board not found: {args.board}", file=sys.stderr)
         return 3
+    if args.baseline is not None and not os.path.isfile(args.baseline):
+        # Unreadable, the gate it arms would sit unarmed with the caller
+        # believing it graded (#1183).
+        print(f"baseline not found: {args.baseline}", file=sys.stderr)
+        return 2
+    _bad = baseline_problem(args.baseline) if args.baseline else None
+    if _bad:
+        # A file that is not a board with footprints arms the gate against
+        # EVERY part: none is found in it, so each reads as moved (phase-6
+        # verifier: pristine ulx3s, 8 of 8 pairs gating against an empty
+        # file, 0 of 8 against itself).
+        print(f"baseline not usable: {args.baseline}: {_bad}",
+              file=sys.stderr)
+        return 2
     root = krt_dir()
     # In-process imports (kicad_parser, net_queries) come from the engine dir;
     # #522 + the placement split spread them over py_router/ and py_tools/, so
@@ -1215,7 +1374,7 @@ def main():
                                                 baseline=args.baseline)
         floorplan = score_floorplan(root, args.board, args.intent, tmp)
         assembly = score_assembly(root, args.board, args.intent, tmp,
-                                  args.clearance)
+                                  args.clearance, baseline=args.baseline)
         _imp_nets = ([g for tok in args.impedance_nets for g in tok.split(',') if g]
                      if args.impedance_nets else args.impedance_nets)
         imped = score_impedance(root, args.board, _imp_nets, tmp)
@@ -1239,7 +1398,17 @@ def main():
     # counts and the stranded pads, or 9.1a's lever 2 has nothing to act on.
     # ...and `unrouted` carries its SHAPE. `count` is deliberately untouched, so
     # `blocking` below is unchanged by construction.
-    shape = unrouted_shape(args.board, conn.get('unrouted_net_names', []))
+    # ONE in-process parse for the three readers below (#1194): each parsed
+    # the board itself, so a parser warning (the two-line NET-TAGGED copper
+    # graphic notice) printed three times. Read-only for all three. A board
+    # that will not parse leaves each to parse and report for itself.
+    try:
+        from kicad_parser import parse_kicad_pcb
+        _pcb = parse_kicad_pcb(args.board)
+    except Exception:                                        # noqa: BLE001
+        _pcb = None
+    shape = unrouted_shape(args.board, conn.get('unrouted_net_names', []),
+                           pcb=_pcb)
     parts = {'unrouted': {'ran': conn['ran'], 'count': conn.get('unrouted'),
                           'nets': conn.get('unrouted_net_names', []),
                           **shape},
@@ -1288,8 +1457,9 @@ def main():
              'label': args.label, 'blocking': blocking,
              'blocking_by': {k: v.get('count') for k, v in parts.items()},
              'advisory': {k: v.get('count') for k, v in advisory.items()},
-             'ungraded': sorted(k for k, v in parts.items() if v.get('ran') is False),
-             'unknown': sorted(unknown), 'quality': quality(args.board),
+             'ungraded': ungraded_entries(parts),
+             'unknown': sorted(unknown),
+             'quality': quality(args.board, pcb=_pcb),
              # BESIDE `quality`, never inside `parts` -- see score_placement.
              # Absent entirely without the flag, so a payload that carries the
              # key is one that asked for it.
@@ -1302,13 +1472,15 @@ def main():
     # Self-check the payload against the board it just graded (see
     # audit_net_names). Computed AFTER `score` is assembled so it audits what is
     # actually published, not what this function believes it published.
-    score['net_name_audit'] = audit_net_names(args.board, score)
+    score['net_name_audit'] = audit_net_names(args.board, score, pcb=_pcb)
 
     if args.json:
         with open(args.json, 'w', encoding='utf-8') as f:
             json.dump(score, f, indent=2, sort_keys=True)
 
-    print('SCORE_JSON=' + json.dumps(score, sort_keys=True, separators=(',', ':')))
+    # The assembly lists capped (#1194); `--json` above has every entry.
+    print('SCORE_JSON=' + json.dumps(stdout_payload(score), sort_keys=True,
+                                     separators=(',', ':')))
     bits = ' '.join(f'{k}={v}' for k, v in score['blocking_by'].items()
                     if v is not None)
     q = score['quality']

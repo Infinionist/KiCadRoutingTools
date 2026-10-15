@@ -238,8 +238,9 @@ def test_the_summary_reports_what_did_not_run():
     # `decap_ungraded` and #705 added `decap_pin_distance`; 11 before #837
     # added `assembly_side`; 12 before #902 added `proximity`; 13 before the
     # run-26 series added `pins_to_edge`; 14 before #1051 added
-    # `array_formation`.
-    assert s['rules_skipped'] == 15, s['rules_skipped']
+    # `array_formation`; 15 before #1253 added `keep_away`; 16 before #1211
+    # added `replicate`.
+    assert s['rules_skipped'] == 17, s['rules_skipped']
     print(f"  PASS: an empty intent passes with rules_run=0, "
           f"rules_skipped={s['rules_skipped']} -- visibly vacuous")
 
@@ -301,14 +302,23 @@ def test_the_full_json_carries_the_measured_numbers():
 def test_emit_writes_no_board_and_touches_nothing():
     """A report-only tool that mutates its input is the failure the whole
     design rests on not having."""
-    before = (os.path.getmtime(BOARD), os.path.getsize(BOARD))
-    listing = set(os.listdir(os.path.dirname(BOARD)))
+    # A private copy, siblings and all: kicad_files/ is shared, and a test
+    # running beside this one (run_all -j, a Modal shard) writes its outputs
+    # there, which a listing of that directory reads as this tool's stray.
+    sys.path.insert(0, os.path.join(ROOT, 'py_router'))
+    from copy_board import copy_board
+    home = os.path.join(_TMP, 'emit_home')
+    os.makedirs(home)
+    board = os.path.join(home, os.path.basename(BOARD))
+    copy_board(BOARD, board)
+    before = (os.path.getmtime(board), os.path.getsize(board))
+    listing = set(os.listdir(home))
     p = os.path.join(_TMP, 'emit2.json')
-    code, _out, _ = _run(BOARD, '--emit-intent', p)
+    code, _out, _ = _run(board, '--emit-intent', p)
     assert code == 0
-    assert (os.path.getmtime(BOARD), os.path.getsize(BOARD)) == before, \
+    assert (os.path.getmtime(board), os.path.getsize(board)) == before, \
         "the input board was modified"
-    assert set(os.listdir(os.path.dirname(BOARD))) == listing, \
+    assert set(os.listdir(home)) == listing, \
         "a stray file was written beside the board"
     print("  PASS: input board mtime/size unchanged, no stray siblings")
 

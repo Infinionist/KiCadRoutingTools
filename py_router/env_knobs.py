@@ -264,6 +264,10 @@ def refresh() -> None:
     # for A/B, and for the rare case where an operator genuinely wants the
     # regressed board on disk to inspect it.
     g['IMPROVEMENT_GATE'] = _s('KICAD_IMPROVEMENT_GATE', '1') != '0'
+    # #1260 foreign-pour guard: a pour island of a zone net outside the run
+    # that no routed net has a terminal inside is a hard obstacle, since a
+    # track can only cut it. '0' turns it off, for A/B.
+    g['POUR_GUARD'] = _s('KICAD_POUR_GUARD', '1') != '0'
     g['PLANE_PARTIAL_RESTORE'] = _s('KICAD_PLANE_PARTIAL_RESTORE') == '1'
     g['DUMP_BATCH_KWARGS_CONTINUE'] = _s('KICAD_DUMP_BATCH_KWARGS_CONTINUE') == '1'
     # #530 replay compatibility: read --clearance the pre-#530 way (#439), as a

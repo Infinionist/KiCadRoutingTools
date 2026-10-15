@@ -24,6 +24,7 @@ from routing_context import (build_single_ended_obstacles, build_incremental_obs
 from single_ended_routing import route_multipoint_taps, route_net_with_obstacles, route_multipoint_main
 from connectivity import get_multipoint_net_pads, get_copper_connected_terminal_groups
 from blocking_analysis import analyze_frontier_blocking, print_blocking_analysis, filter_rippable_blockers, invalidate_obstacle_cache, record_frontier_blocking
+from protected_nets import rip_refusal
 from rip_up_reroute import rip_up_net, restore_net
 from leg_rip import LEG_RIP_ENABLED, select_blocking_branch  # #510
 from polarity_swap import get_canonical_net_id
@@ -1025,7 +1026,9 @@ def try_phase3_ripup(
             # Find the most-blocking net that isn't already ripped
             next_blocker = None
             for b in fresh_blockers:
-                if b.net_id in routed_results:
+                if b.net_id in routed_results and not rip_refusal(
+                        pcb_data, b.net_id, "phase3 tap cascade",
+                        diff_pair_by_net_id):
                     canonical = get_canonical_net_id(b.net_id, diff_pair_by_net_id)
                     if canonical not in ripped_canonical_ids:
                         next_blocker = b
@@ -1493,7 +1496,9 @@ def _retry_victim_main_with_ripup(
             record_frontier_blocking(state, victim_id, fresh, "phase3_victim")
             next_blocker = None
             for b in fresh:
-                if b.net_id in routed_results:
+                if b.net_id in routed_results and not rip_refusal(
+                        pcb_data, b.net_id, "phase3 victim reroute",
+                        diff_pair_by_net_id):
                     canonical = get_canonical_net_id(b.net_id, diff_pair_by_net_id)
                     if canonical not in ripped_canonical_ids:
                         next_blocker = b
@@ -1958,13 +1963,15 @@ def seam_reask_one_net(net_id, pcb_data, config, state, base_obstacles,
         return False
     # #444 hard requirement: never re-ask a length/time-matched net -- the
     # meanders ARE the route; shortening a matched tree breaks the match
-    # (DDR address nets are multipoint AND matched).
-    if getattr(config, 'length_match_groups', None):
-        from length_matching import find_nets_matching_patterns
-        _name = pcb_data.nets[net_id].name if net_id in pcb_data.nets else ''
-        for _grp in config.length_match_groups:
-            if _name and find_nets_matching_patterns([_name], _grp):
-                return False
+    # (DDR address nets are multipoint AND matched). The members are the
+    # groups the matching pass FORMED, recorded on the config by
+    # run_length_matching (it runs before Phase 3). Matching
+    # config.length_match_groups as name patterns missed every `auto`
+    # member: no pattern names it (#1247).
+    _matched = getattr(config, '_length_matched_names', None)
+    if _matched and net_id in pcb_data.nets \
+            and pcb_data.nets[net_id].name in _matched:
+        return False
     if r_old.get('tap_edges_routed', 1) <= 1:
         return False  # single-edge tree: one A* already, nothing composed
     segs = r_old.get('new_segments') or []

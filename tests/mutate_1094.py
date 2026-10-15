@@ -67,10 +67,13 @@ T1101 = _t('test_1101_courtyard_waiver_seat.py')
 # (name, target, old, new, tests, expect)
 ROWS = [
     # --- #1094: courtyards and bodies as drawn -------------------------------
+    # Since fa10 P1 phase 0 check_assembly grades through the census, so
+    # test_1094 no longer reaches this reader; the census test pins the two
+    # to one outline.
     ('graded-parts-lose-their-outline', 'leg',
-     "                              poly=occupancy_shape(fp, lb, bodies.get(ref))))",
-     "                              poly=None))",
-     (T1094,), 'KILLED'),
+     "                              poly=occupancy_shape(fp, lb, bodies.get(ref)),",
+     "                              poly=None,",
+     (T1094, os.path.join(_TESTS, 'test_p1_courtyard_census.py')), 'KILLED'),
     ('fab-bodies-back-to-boxes', 'leg',
      "                ov, _depth, _ix = shape_overlap(sha, shb)",
      "                from shapely.geometry import box as _bx; ov, _depth, _ix = shape_overlap(_bx(*rca), _bx(*rcb))",
@@ -96,13 +99,13 @@ ROWS = [
      "            shape, how = shape, OUTLINE_HULL",
      (T1094,), 'KILLED'),
     ('micron-gap-not-joined', 'parser',
-     "            snapped = shapely.snap(ml, ml, _OUTLINE_JOIN_MM)",
-     "            snapped = ml",
+     "                if retry:",
+     "                if False:",
      (T1094,), 'KILLED'),
     # --- #1095: the project's courtyard severity -----------------------------
     ('project-ignore-not-read', 'leg',
-     "                  if _cy_sev == 'ignore' else '')",
-     "                  if False else '')",
+     "                                if self.severity == 'ignore' else '')",
+     "                                if False else '')",
      (T1095,), 'KILLED'),
     ('project-ignore-stops-at-a-lock', 'leg',
      "        if p.waiver.startswith(PROJECT_SEVERITY_WAIVER):",
@@ -137,8 +140,8 @@ ROWS = [
      (T1094,), 'KILLED'),
     # --- #1096: pad copper off the outline -----------------------------------
     ('off-outline-not-a-conjunct', 'asm',
-     "                         or courtyard_gating or off_outline_pads or mating)",
-     "                         or courtyard_gating or mating)",
+     "                         or courtyard_gating or off_outline_pads or mating",
+     "                         or courtyard_gating or mating",
      (T1096,), 'KILLED'),
     ('overrun-printed-as-the-sum', 'asm',
      "                      + ', '.join(f'{r} ({_overrun.get(r, a)}mm past the '",
@@ -164,12 +167,12 @@ ROWS = [
      "                    'allow': (_glob.escape(ref),),",
      (T1098,), 'KILLED'),
     ('net-tie-read-as-a-plug', 'fp',
-     "        if getattr(fp, 'net_tie_groups', None):",
-     "        if False:",
+     "    if getattr(fp, 'net_tie_groups', None):",
+     "    if False:",
      (T1098,), 'KILLED'),
     ('plug-not-a-conjunct', 'asm',
-     "                         or courtyard_gating or off_outline_pads or mating)",
-     "                         or courtyard_gating or off_outline_pads)",
+     "                         or courtyard_gating or off_outline_pads or mating",
+     "                         or courtyard_gating or off_outline_pads",
      (T1098,), 'KILLED'),
     ('grade-blind-to-the-plug', 'fp',
      "        if len(_ks) != len(intent.keepouts or ()):",
@@ -267,8 +270,8 @@ ROWS = [
      (T1101,), 'KILLED'),
     # --- #1098/#1099 review follow-ups ----------------------------------------
     ('jumper-read-as-a-plug', 'fp',
-     "        if sum(1 for p in pads if p.net_id) < MATING_MIN_FINGERS:",
-     "        if sum(1 for p in pads if p.net_id) < 2:",
+     "    return sum(1 for p in pads if p.net_id) >= MATING_MIN_FINGERS",
+     "    return sum(1 for p in pads if p.net_id) >= 2",
      (T1098,), 'KILLED'),
     ('plug-seated-across-an-edge', 'fp',
      "    if legality.pad_copper_overrun_mm(pads, gate) > legality.EPS:",

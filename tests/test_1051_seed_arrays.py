@@ -103,6 +103,51 @@ def _write(board, res, td, name):
     return out
 
 
+#: Per-module fixtures: work several cases used to repeat with identical
+#: arguments, done once per process. Each is built lazily, so a name-filtered
+#: run (the mutation batteries' killers) builds only what its cases read.
+_SHARED = {}
+
+
+def _emitted(board, derive_arrays='off'):
+    """A FRESH COPY of `emit_intent(parse_kicad_pcb(board), board,
+    derive_arrays=...)`. The emitter is deterministic and reads only the
+    board file, so one emission per (board, mode) serves every case; it is
+    deep-copied per call because cases edit the doc they are handed (arrays,
+    fixed_poses, decaps). glasgow's plain emission takes seconds, and four
+    cases asked for it."""
+    import copy
+    key = ('emit', board, derive_arrays)
+    if key not in _SHARED:
+        _SHARED[key] = fp.emit_intent(parse_kicad_pcb(board), board,
+                                      derive_arrays=derive_arrays)
+    return copy.deepcopy(_SHARED[key])
+
+
+def _shared_dir():
+    if 'tdo' not in _SHARED:
+        _SHARED['tdo'] = tempfile.TemporaryDirectory()
+    return _SHARED['tdo'].name
+
+
+def _splitflap_auto_seed():
+    """splitflap seeded at rng '0' from its `derive_arrays='auto'` intent,
+    and written: `(doc, intent, pcb, res, out)`. Three cases read this ONE seed
+    (the U4:47k row, the stage-2.4 seat order, the partner-centroid target);
+    each used to emit the same intent and run the same seed itself, and the
+    seeder is deterministic for a fixed rng string, so every case still gets
+    exactly the input it built before. READ-ONLY: a case that needs to change
+    any of it must copy first."""
+    if 'sf_auto' not in _SHARED:
+        td = _shared_dir()
+        doc = _emitted(SPLITFLAP, 'auto')
+        intent, _p = _intent(doc, td, 'sf_auto.json')
+        pcb, res = _seed(SPLITFLAP, intent)
+        out = _write(SPLITFLAP, res, td, 'sf_auto.kicad_pcb')
+        _SHARED['sf_auto'] = (doc, intent, pcb, res, out)
+    return _SHARED['sf_auto']
+
+
 def _graded_rows(intent, out):
     """{name: array_measured row} from the GRADER on the written board."""
     g = fp.grade(intent, parse_kicad_pcb(out), out, group_sources=SOURCES,
@@ -142,23 +187,18 @@ def _check_row(pcb, res, name, out, graded):
 
 
 def test_splitflap_u4_row_is_formed():
-    with tempfile.TemporaryDirectory() as td:
-        pcb = parse_kicad_pcb(SPLITFLAP)
-        doc = fp.emit_intent(pcb, SPLITFLAP, derive_arrays='auto')
-        names = [a['name'] for a in doc['arrays']]
-        assert 'U4:47k' in names, names
-        intent, _p = _intent(doc, td)
-        pcb, res = _seed(SPLITFLAP, intent)
-        out = _write(SPLITFLAP, res, td, 'sf.kicad_pcb')
-        graded = _graded_rows(intent, out)
-        rec = _check_row(pcb, res, 'U4:47k', out, graded)
-        assert sorted(rec['members']) == sorted(
-            next(a['members'] for a in doc['arrays']
-                 if a['name'] == 'U4:47k'))
-        assert not res['unseated'], res['unseated']
-        # The seeder's self-check and the grader agree on every row.
-        for n, r in res['arrays_formed'].items():
-            assert (r['verdict'] == 'formed') == bool(graded[n]['formed']), n
+    doc, intent, pcb, res, out = _splitflap_auto_seed()
+    names = [a['name'] for a in doc['arrays']]
+    assert 'U4:47k' in names, names
+    graded = _graded_rows(intent, out)
+    rec = _check_row(pcb, res, 'U4:47k', out, graded)
+    assert sorted(rec['members']) == sorted(
+        next(a['members'] for a in doc['arrays']
+             if a['name'] == 'U4:47k'))
+    assert not res['unseated'], res['unseated']
+    # The seeder's self-check and the grader agree on every row.
+    for n, r in res['arrays_formed'].items():
+        assert (r['verdict'] == 'formed') == bool(graded[n]['formed']), n
     print(f"  PASS: splitflap U4:47k is one row along {rec['axis']} at "
           f"{rec['rot']:g}deg, pitch {rec['pitch_mm']}mm, in U4's pin order, "
           f"after {rec['poses_tried']} pose(s); the grader agrees on all "
@@ -168,7 +208,7 @@ def test_splitflap_u4_row_is_formed():
 def test_glasgow_resistor_pair_and_buffer_bank_are_formed():
     with tempfile.TemporaryDirectory() as td:
         pcb = parse_kicad_pcb(GLASGOW)
-        doc = fp.emit_intent(pcb, GLASGOW, derive_arrays='auto')
+        doc = _emitted(GLASGOW, 'auto')
         # The buffer bank is a DECLINED bridge since phase-3 fix round 1;
         # a reader may still declare it by hand, which is this row.
         declined = []
@@ -225,7 +265,7 @@ def test_row_runs_the_way_its_host_pins_run():
     import pose_score
     with tempfile.TemporaryDirectory() as td:
         pcb = parse_kicad_pcb(WATCHY)
-        doc = fp.emit_intent(pcb, WATCHY, derive_arrays='auto')
+        doc = _emitted(WATCHY, 'auto')
         intent, _p = _intent(doc, td)
         _pcb, res = _seed(WATCHY, intent)
         out = _write(WATCHY, res, td, 'w.kicad_pcb')
@@ -369,7 +409,7 @@ def test_anchor_rounds_leave_a_formed_row_whole():
     time of writing; seed 1 before stage 2.4 went opt-in)."""
     with tempfile.TemporaryDirectory() as td:
         pcb = parse_kicad_pcb(WATCHY)
-        doc = fp.emit_intent(pcb, WATCHY, derive_arrays='auto')
+        doc = _emitted(WATCHY, 'auto')
         intent, _p = _intent(doc, td)
         res = rounds = None
         for seed in range(8):
@@ -394,22 +434,18 @@ def test_anchor_rounds_leave_a_formed_row_whole():
 def test_rows_seat_only_their_hosts_first():
     """Declared rows: stage 2.4 seats each non-zoned row's `serves` and the
     rows, nothing else. Every row comes after its own host."""
-    with tempfile.TemporaryDirectory() as td:
-        pcb = parse_kicad_pcb(SPLITFLAP)
-        doc = fp.emit_intent(pcb, SPLITFLAP, derive_arrays='auto')
-        assert (doc.get('decaps') or {}).get('max_distance_mm') is None
-        intent, _p = _intent(doc, td)
-        _pcb, res = _seed(SPLITFLAP, intent)
-        order = res['early_order']
-        rows = {a['name']: a for a in doc['arrays']}
-        hosts = {a['serves'] for a in rows.values() if a.get('serves')}
-        assert set(order) <= hosts | {f"array:{n}" for n in rows}, order
-        for name, a in rows.items():
-            key = f"array:{name}"
-            assert key in order, (key, order)
-            if a.get('serves'):
-                assert order.index(a['serves']) < order.index(key), order
-        assert res['decap_stage']['armed'] is False
+    doc, _intent_, _pcb, res, _out = _splitflap_auto_seed()
+    assert (doc.get('decaps') or {}).get('max_distance_mm') is None
+    order = res['early_order']
+    rows = {a['name']: a for a in doc['arrays']}
+    hosts = {a['serves'] for a in rows.values() if a.get('serves')}
+    assert set(order) <= hosts | {f"array:{n}" for n in rows}, order
+    for name, a in rows.items():
+        key = f"array:{name}"
+        assert key in order, (key, order)
+        if a.get('serves'):
+            assert order.index(a['serves']) < order.index(key), order
+    assert res['decap_stage']['armed'] is False
     print(f"  PASS: 2.4 seats only {sorted(hosts)} and the "
           f"{len(rows)} rows, each row after its host")
 
@@ -423,7 +459,7 @@ def test_a_row_member_is_never_seated_alone_before_its_row():
     2.4's seat order, and the bank forms."""
     with tempfile.TemporaryDirectory() as td:
         pcb = parse_kicad_pcb(GLASGOW)
-        doc = fp.emit_intent(pcb, GLASGOW)
+        doc = _emitted(GLASGOW)
         declined = []
         arr.suggest_arrays(pcb, declined=declined)
         # The UNZONED bank (RN7's side): the RN1-side bank lies in a zoned
@@ -511,35 +547,31 @@ def test_row_target_is_the_partner_centroid_not_the_host_pins():
     its target than its host pins; with the host-pins target the two
     coincide and no such row exists."""
     import math
-    with tempfile.TemporaryDirectory() as td:
-        pcb = parse_kicad_pcb(SPLITFLAP)
-        doc = fp.emit_intent(pcb, SPLITFLAP, derive_arrays='auto')
-        intent, _p = _intent(doc, td)
-        _pcb, res = _seed(SPLITFLAP, intent)
-        w = parse_kicad_pcb(_write(SPLITFLAP, res, td, 'sf.kicad_pcb'))
-        differ = []
-        for name, rec in res['arrays_formed'].items():
-            host = rec['serves']
-            if not host:
-                continue
-            mem = rec['members']
-            nets = {m: {p.net_id for p in w.footprints[m].pads if p.net_id}
-                    for m in mem}
-            pts = []
-            for m in mem:
-                own = nets[m] - set().union(*(nets[o] for o in mem if o != m))
-                q = [(p.global_x, p.global_y) for p in w.footprints[host].pads
-                     if p.net_id in own]
-                if q:
-                    pts.append((sum(a for a, _ in q) / len(q),
-                                sum(b for _, b in q) / len(q)))
-            hp = (sum(a for a, _ in pts) / len(pts),
-                  sum(b for _, b in pts) / len(pts))
-            if math.dist(rec['target'], hp) > 2.0:
-                differ.append(name)
-                assert (math.dist(rec['anchor'], rec['target'])
-                        < math.dist(rec['anchor'], hp)), (name, rec, hp)
-        assert differ, differ
+    _doc, _intent_, _pcb, res, out = _splitflap_auto_seed()
+    w = parse_kicad_pcb(out)
+    differ = []
+    for name, rec in res['arrays_formed'].items():
+        host = rec['serves']
+        if not host:
+            continue
+        mem = rec['members']
+        nets = {m: {p.net_id for p in w.footprints[m].pads if p.net_id}
+                for m in mem}
+        pts = []
+        for m in mem:
+            own = nets[m] - set().union(*(nets[o] for o in mem if o != m))
+            q = [(p.global_x, p.global_y) for p in w.footprints[host].pads
+                 if p.net_id in own]
+            if q:
+                pts.append((sum(a for a, _ in q) / len(q),
+                            sum(b for _, b in q) / len(q)))
+        hp = (sum(a for a, _ in pts) / len(pts),
+              sum(b for _, b in pts) / len(pts))
+        if math.dist(rec['target'], hp) > 2.0:
+            differ.append(name)
+            assert (math.dist(rec['anchor'], rec['target'])
+                    < math.dist(rec['anchor'], hp)), (name, rec, hp)
+    assert differ, differ
     print(f"  PASS: {', '.join(sorted(differ))} aim at their partner "
           f"centroid, away from their host pins, and sit nearer it")
 
@@ -554,7 +586,7 @@ def test_padless_fixed_pose_is_judged_by_its_hole():
     tig = os.path.join(BOARDS, 'tigard.kicad_pcb')
     got = {}
     with tempfile.TemporaryDirectory() as td:
-        doc = fp.emit_intent(parse_kicad_pcb(tig), tig)
+        doc = _emitted(tig)
         for pose in ((300.0, 300.0), (31.0, 33.0), (33.0, 33.0)):
             d = dict(doc, fixed_poses=[{'ref': 'H1', 'x': pose[0],
                                         'y': pose[1], 'rot': 0,
@@ -575,7 +607,7 @@ def test_padless_fixed_pose_is_judged_by_its_hole():
 
 def test_unseatable_row_is_disclosed_and_falls_through():
     with tempfile.TemporaryDirectory() as td:
-        doc = fp.emit_intent(parse_kicad_pcb(ESP), ESP)
+        doc = _emitted(ESP)
         doc['arrays'] = [dict(ESP_ROW, pitch_mm=0.3)]
         intent, _p = _intent(doc, td)
         pcb, res = _seed(ESP, intent)
@@ -594,7 +626,7 @@ def test_unseatable_row_is_disclosed_and_falls_through():
 
 def test_pose_cap_trips_and_says_so():
     with tempfile.TemporaryDirectory() as td:
-        doc = fp.emit_intent(parse_kicad_pcb(ESP), ESP)
+        doc = _emitted(ESP)
         doc['arrays'] = [dict(ESP_ROW)]
         intent, _p = _intent(doc, td)
         # CONTROL first: at the default cap the same row forms, so "capped"
@@ -637,7 +669,7 @@ def test_decaps_armed_claims_caps_once_the_owners_are_seated():
     with tempfile.TemporaryDirectory() as td:
         for board in (SPLITFLAP, WATCHY):
             pcb = parse_kicad_pcb(board)
-            doc = fp.emit_intent(pcb, board)
+            doc = _emitted(board)
             doc['decaps'] = dict(doc.get('decaps') or {}, max_distance_mm=3.0)
             owners, doc['fixed_poses'] = _owner_fixed_poses(pcb)
             assert owners, board
@@ -659,7 +691,7 @@ def test_the_decap_stage_says_why_it_claims_nothing():
     and what would seat one."""
     with tempfile.TemporaryDirectory() as td:
         for board in (SPLITFLAP, WATCHY):
-            doc = fp.emit_intent(parse_kicad_pcb(board), board)
+            doc = _emitted(board)
             doc['decaps'] = dict(doc.get('decaps') or {}, max_distance_mm=3.0)
             intent, _p = _intent(doc, td, os.path.basename(board) + '.json')
             _pcb, res = _seed(board, intent)
@@ -718,7 +750,7 @@ def _fp_pose(path, ref):
 def test_fixed_pose_exact_locked_and_survives_repair_and_force():
     from placement.portfolio import copy_siblings
     with tempfile.TemporaryDirectory() as td:
-        doc = fp.emit_intent(parse_kicad_pcb(ESP), ESP)
+        doc = _emitted(ESP)
         # R1 at its own (human) pose: small, so the repair control below has
         # room to move it -- a large part on this dense board has none.
         fixed = {'ref': 'R1', 'x': 136.4, 'y': 98.8, 'rot': 270, 'side': 'F',
@@ -787,18 +819,25 @@ def test_every_unhonoured_fixed_pose_fails_the_gate():
     assert 'R1' in _ps.fixed_pose_reason({'fixed_refused': {'R1': {}}})
     assert 'C1' in _ps.fixed_pose_reason({'fixed_seated': {
         'C1': {'at_written_pose': False}}})
+    # --body-model on every run (#1258): esp_prog draws no courtyard on 18
+    # of its 21 parts, so the default seat search spaces pad boxes and the
+    # seed leaves R4's drawn body in USB1's courtyard -- a pair the gate now
+    # charges, which would fail the control below for a reason that has
+    # nothing to do with R1. Seated on check_assembly's occupancy, the
+    # control is clean and the arm's exit 4 is the refusal's alone.
+    bm = ('--body-model',)
     with tempfile.TemporaryDirectory() as td:
-        doc = fp.emit_intent(parse_kicad_pcb(ESP), ESP)
+        doc = _emitted(ESP)
         at = {'ref': 'R1', 'x': 136.4, 'y': 98.8, 'rot': 270,
               'basis': 'declared', 'why': 'test datum'}
         _i, ip = _intent(dict(doc, fixed_poses=[at]), td, 'at.json')
         seeded = os.path.join(td, 'seeded.kicad_pcb')
         _run_seed([ESP, seeded, '--intent', ip, '--force', '--no-polish',
-                   '--clearance', str(CLEARANCE)])
+                   '--clearance', str(CLEARANCE), *bm])
         assert _fp_pose(seeded, 'R1') == (136.4, 98.8, 270.0, True)
         ctl = _run_seed([seeded, os.path.join(td, 'ctl.kicad_pcb'),
                          '--intent', ip, '--force', '--no-polish',
-                         '--clearance', str(CLEARANCE)])
+                         '--clearance', str(CLEARANCE), *bm])
         s = _summary(ctl)
         assert s['fixed_seated']['R1']['how'] == 'already_there', s
         assert ctl.returncode == 0, (
@@ -809,7 +848,7 @@ def test_every_unhonoured_fixed_pose_fails_the_gate():
         _i, ip_off = _intent(dict(doc, fixed_poses=[off]), td, 'off.json')
         r = _run_seed([seeded, os.path.join(td, 'off.kicad_pcb'),
                        '--intent', ip_off, '--force', '--no-polish',
-                       '--clearance', str(CLEARANCE)])
+                       '--clearance', str(CLEARANCE), *bm])
         s = _summary(r)
         assert 'R1' in s['fixed_refused'], s['fixed_refused']
         assert 'R1' not in s['unseated_refs'], s['unseated_refs']
@@ -827,7 +866,7 @@ def test_illegal_fixed_pose_is_refused_not_nudged():
     the one whose ref sorts first would decide by name. Q1, at its human
     pose, seats exactly and is locked."""
     with tempfile.TemporaryDirectory() as td:
-        doc = fp.emit_intent(parse_kicad_pcb(ESP), ESP)
+        doc = _emitted(ESP)
         doc['fixed_poses'] = [
             {'ref': 'R1', 'x': 100.0, 'y': 100.0, 'rot': 0,
              'basis': 'declared', 'why': 'off the board'},
@@ -853,9 +892,16 @@ def test_illegal_fixed_pose_is_refused_not_nudged():
         written = {p['reference']: p for p in res['placements']}
         assert (written['Q1']['new_x'], written['Q1']['new_y'],
                 written['Q1']['new_rotation']) == (139.0, 99.7, 180.0)
+        decl = {f['ref']: f for f in doc['fixed_poses']}
+        disp = res.get('unseated_disposition') or {}
         for r in ('R1', 'C1', 'C3', 'R2'):
             assert r in res['unseated'], (r, res['unseated'])
-            assert r not in written, r
+            # #1151: a refused part may be STAGED off the board, which
+            # writes it at its staging slot -- never at the refused pose.
+            if r in written:
+                assert disp[r]['disposition'] == 'staged', (r, disp.get(r))
+                assert (written[r]['new_x'], written[r]['new_y']) != (
+                    decl[r]['x'], decl[r]['y']), r
             assert r not in res['lock_refs'], r
         assert 'Q1' in res['lock_refs']
         assert sum('REFUSED' in n for n in res['notes']) == 4, res['notes']
@@ -875,7 +921,7 @@ def _glasgow_human_fixed(td, extra=()):
     buf = sorted(r for r, f in fps.items()
                  if 'SN74LVC1T45' in str(getattr(f, 'value', '')))
     assert len(rn) == 12 and len(buf) == 17, (rn, buf)
-    doc = fp.emit_intent(pcb, GLASGOW)
+    doc = _emitted(GLASGOW)
     doc['fixed_poses'] = [{'ref': r, 'x': fps[r].x, 'y': fps[r].y,
                            'rot': fps[r].rotation or 0, 'basis': 'declared',
                            'why': 'the human pose'}
@@ -976,7 +1022,7 @@ def test_a_named_courtyard_waiver_seats_u30_exactly():
     with tempfile.TemporaryDirectory() as td:
         pcb = parse_kicad_pcb(GLASGOW)
         u = pcb.footprints['U30']
-        doc = fp.emit_intent(pcb, GLASGOW)
+        doc = _emitted(GLASGOW)
         doc['fixed_poses'] = [{'ref': 'U30', 'x': u.x, 'y': u.y,
                                'rot': u.rotation or 0, 'basis': 'declared',
                                'why': 'the human pose, FID8 sits in its '
@@ -1192,7 +1238,7 @@ def test_refused_fixed_pose_stays_unwritten_under_anchors_first():
     largest free part, so it IS an anchor candidate -- the control arm
     without the fixed pose shows it in the anchor list."""
     with tempfile.TemporaryDirectory() as td:
-        doc = fp.emit_intent(parse_kicad_pcb(ESP), ESP)
+        doc = _emitted(ESP)
         _i, _p = _intent(doc, td, 'ctl.json')
         _pcb, ctl = _seed(ESP, _i, anchors_first=True)
         anote = [n for n in ctl['notes'] if n.startswith('anchors-first:')]
@@ -1204,7 +1250,11 @@ def test_refused_fixed_pose_stays_unwritten_under_anchors_first():
         _pcb, res = _seed(ESP, intent, anchors_first=True)
         assert 'CON2' in res['fixed_refused'], res['fixed_refused']
         assert 'CON2' in res['unseated'], res['unseated']
-        assert 'CON2' not in {p['reference'] for p in res['placements']}
+        # #1151: a refused part may be STAGED off the board (a row at its
+        # staging slot) -- never seated by the anchors queue.
+        if 'CON2' in {p['reference'] for p in res['placements']}:
+            assert (res['unseated_disposition']['CON2']['disposition']
+                    == 'staged'), res['unseated_disposition'].get('CON2')
         anote = [n for n in res['notes'] if n.startswith('anchors-first:')]
         assert anote and 'CON2' not in anote[0], anote
     print("  PASS: a refused fixed pose is no anchor and is not written "
@@ -1256,7 +1306,7 @@ def test_unarmed_seeds_are_identical_to_the_pre_phase3_seeder():
         for key, want in sorted(base.items()):
             board, s = key.split(':')
             path = boards[board]
-            doc = fp.emit_intent(parse_kicad_pcb(path), path)
+            doc = _emitted(path)
             assert not doc.get('arrays') and not doc.get('fixed_poses')
             assert (doc.get('decaps') or {}).get('max_distance_mm') is None
             intent, _p = _intent(doc, td, f'{board}.json')

@@ -6,6 +6,10 @@
 - **`connectivity.py`** — questions about *copper*: which segments are
   connected, where stubs end, which pads still need connecting.
 
+Examples run from the repository root with the engine directory on the
+import path: `PYTHONPATH=py_router python3 <your script>` (see the
+[overview](python-api.md)).
+
 ## `net_queries.py`
 
 ### Pattern matching
@@ -24,11 +28,15 @@ exclusion pattern. Exclusion-only lists match everything not excluded.
 
 ```python
 expand_net_patterns(pcb_data, patterns: List[str],
-                    exclude_unconnected: bool = True) -> List[str]
+                    exclude_unconnected: bool = True,
+                    quiet: bool = False) -> List[str]
 ```
 
 Expands patterns to the sorted list of actual net names on the board,
-dropping `unconnected-*` nets by default.
+dropping `unconnected-*` nets by default. It prints how many nets each
+wildcard matched; `quiet=True` prints only what is wrong with a pattern (it
+matched nothing, or an unqualified exclusion also took a namesake), for a
+caller that resolves many patterns and reports the totals itself.
 
 ```python
 from kicad_parser import parse_kicad_pcb
@@ -208,7 +216,9 @@ calculate_via_barrel_length(vias, pcb_data) -> float
 ```
 
 Total routed length in mm. With `pcb_data` (and a stackup), via barrel
-lengths are included — this matches KiCad's length measurements.
+lengths are included — this matches KiCad's track + via length. It is copper
+only: KiCad also adds each pad's **pad-to-die** length (`Pad.die_length`,
+#1248), which `net_match_length` below includes and this does not.
 
 ```python
 from kicad_parser import parse_kicad_pcb
@@ -269,6 +279,56 @@ print(f"{net.name}: {total:.2f} mm total copper, "
       f"{'no track path' if path is None else f'{path:.2f} mm pin-to-pin'}")
 # Net-(U2A-DATA_4): 25.99 mm total copper, 23.52 mm pin-to-pin
 # -> 2.5 mm of that net's copper is branch/stub, not on the signal path.
+```
+
+```python
+net_pads_joined(pcb_data, net_id, pads=None, tolerance=0.02) -> bool
+net_match_length(pcb_data, net_id, mode='total', tolerance=0.02)
+    -> Optional[float]
+```
+
+`net_copper_length` reports whatever copper a net has, routed or not: a net
+with no copper reads `0.0` and one carrying only fanout stubs reads the stub
+length. Neither is the length of a signal, so a **length-match grade must not
+use it raw** (#1246). `net_pads_joined` asks the question first — are all of
+the net's copper pads (NPTH and paste-only pads excluded) joined to each other
+by its track copper, on the same graph `pin_pair_path_length` walks (zones are
+not traversed)?
+
+`net_match_length` is the one measurement every length-match grader uses
+(`board_score.py --length-groups`, the review-routed-board recipe): total net
+copper (`mode='total'`) only once `net_pads_joined` holds, or the path between
+the net's first two pads (`mode='pin_pair'`). `None` in either mode means "not
+routed yet" (unrouted, stub-only, broken or plane-only), never `0.0`.
+
+Both modes add the pads' **pad-to-die** length, as KiCad does (#1248): every
+pad of the net in `'total'` mode (KiCad's length/skew DRC), the measured pad
+pair in `'pin_pair'` mode (KiCad's tuner adds its start and end pads'). Pass
+`include_pad_to_die=False` for copper only.
+
+```python
+pad_to_die_length(pads) -> float            # mm, sum of Pad.die_length
+pad_to_die_delay(pads) -> float             # ps, sum of Pad.die_delay
+net_pad_to_die_length(pcb_data, net_id) -> float   # every pad of the net
+net_pad_to_die_delay(pcb_data, net_id) -> float
+net_match_pad_to_die(pcb_data, net_id, mode='total', attr='die_length') -> float
+```
+
+`net_match_pad_to_die` is the term `net_match_length` adds in `mode`; with
+`attr='die_delay'` it sums the same pads' delays (ps) instead. `placement_score
+--length-groups` adds it to each member's length floor, so a floor bounds
+what `board_score` grades.
+
+```python
+from kicad_parser import parse_kicad_pcb
+from net_queries import net_copper_length, net_match_length
+
+pcb = parse_kicad_pcb('kicad_files/orangecrab_ext_pll.kicad_pcb')
+nid = next(i for i, n in pcb.nets.items() if n.name == 'RAM_D8')
+print(f"{net_copper_length(pcb, nid):.2f} mm of copper, "
+      f"match length {net_match_length(pcb, nid)}")
+# 3.64 mm of copper, match length None
+# -> fanout stubs only: the net is not routed, so it has no length to match.
 ```
 
 ### Ground domains

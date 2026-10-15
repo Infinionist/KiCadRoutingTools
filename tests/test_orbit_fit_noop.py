@@ -117,8 +117,15 @@ def main():
         f'from kicad_files/, re-measure the rows and update both.')
     print(f'corpus: {len(states)} healthy boards\n')
     bad = []
+    # {min_inliers: fired} for the rows that patch no guard -- the shipped
+    # guards. The SHIPPED CONFIGURATION check below is exactly one of these
+    # (no patch, min_inliers = R.ORBIT_MIN_INLIERS), so it reads the row's
+    # result instead of fitting all 22 boards a second time.
+    unpatched = {}
     for label, mi, patch, expect in MATRIX:
         fired = _fire(states, mi, patch)
+        if not patch:
+            unpatched[mi] = fired
         ok = len(fired) == expect
         print(f'  {"ok " if ok else "FAIL"} {label:<50} '
               f'{len(fired):>2} of {len(states)} fire  (expect {expect})')
@@ -127,7 +134,9 @@ def main():
 
     # The one that actually gates behaviour, stated separately so a reader
     # cannot miss it among the diagnostic rows.
-    shipped = _fire(states, R.ORBIT_MIN_INLIERS, {})
+    shipped = (unpatched[R.ORBIT_MIN_INLIERS]
+               if R.ORBIT_MIN_INLIERS in unpatched
+               else _fire(states, R.ORBIT_MIN_INLIERS, {}))
     print(f'\n  SHIPPED CONFIGURATION: {len(shipped)} of {len(states)} '
           f'healthy boards fire')
     if shipped:

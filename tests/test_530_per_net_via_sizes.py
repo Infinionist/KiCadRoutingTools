@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """#530 decision 4: each net's vias are drawn at ITS OWN class size.
 
-Two nets on the harness's synthetic board, each with one pad on F.Cu and
-one on B.Cu (so every route needs a via): net A in the Default class
-(via 0.6 / 0.3) and net P1 in class 'power' (via 0.8 / 0.4, pattern 'P*').
+Three nets on the harness's synthetic board, each with pads on F.Cu and
+B.Cu (so every route needs a via): net A in the Default class (via 0.6 /
+0.3), and nets P1 (two pads) and P2 (three pads, so it routes through the
+MULTIPOINT path) in class 'power' (via 0.8 / 0.4, pattern 'P*').
 
-  --via-size omitted   -> A's vias are 0.6/0.3, P1's are 0.8/0.4, the summary
+  --via-size omitted   -> A's vias are 0.6/0.3, P1's and P2's are 0.8/0.4, the summary
                           names the per-net sizes, check_drc is clean
   --via-size 0.5 given -> every via is 0.5/0.3 (an explicit request applies
                           to every net, as before)
@@ -32,7 +33,7 @@ def _route(board, out, extra):
     js = out + '.json'
     r = subprocess.run([sys.executable, '-X', 'utf8',
                         os.path.join(ROOT, 'py_router', 'route.py'), board, out,
-                        '--nets', 'A', 'P1', '--json-out', js] + extra,
+                        '--nets', 'A', 'P1', 'P2', '--json-out', js] + extra,
                        capture_output=True, text=True, encoding='utf-8',
                        errors='replace', cwd=ROOT)
     vias = [(float(s), float(d), int(n)) for s, d, n in VIA_RE.findall(open(out).read())] \
@@ -55,10 +56,17 @@ def main():
         fps = [{'ref': 'U1', 'x': 10, 'y': 10, 'net_id': 1, 'net_name': 'A', 'layer': 'F.Cu'},
                {'ref': 'U2', 'x': 20, 'y': 10, 'net_id': 1, 'net_name': 'A', 'layer': 'B.Cu'},
                {'ref': 'U3', 'x': 10, 'y': 20, 'net_id': 3, 'net_name': 'P1', 'layer': 'F.Cu'},
-               {'ref': 'U4', 'x': 20, 'y': 20, 'net_id': 3, 'net_name': 'P1', 'layer': 'B.Cu'}]
-        # NETS in the harness are {1: A, 2: B, 3: C}; give net 3 the name P1
+               {'ref': 'U4', 'x': 20, 'y': 20, 'net_id': 3, 'net_name': 'P1', 'layer': 'B.Cu'},
+               # P2: three pads -> route_multipoint_main + route_multipoint_taps,
+               # which used to search at the run's via and ship it
+               {'ref': 'U5', 'x': 10, 'y': 30, 'net_id': 2, 'net_name': 'P2', 'layer': 'F.Cu'},
+               {'ref': 'U6', 'x': 20, 'y': 30, 'net_id': 2, 'net_name': 'P2', 'layer': 'B.Cu'},
+               {'ref': 'U7', 'x': 30, 'y': 30, 'net_id': 2, 'net_name': 'P2', 'layer': 'F.Cu'}]
+        # NETS in the harness are {1: A, 2: B, 3: C}; give nets 3 and 2 the
+        # names P1 and P2
         import constraint_agreement as ca
         ca.NETS[3] = 'P1'
+        ca.NETS[2] = 'P2'
         try:
             write_board(board, footprints=fps,
                         classes=[{'name': 'power', 'clearance': 0.2, 'track_width': 0.4,
@@ -66,6 +74,7 @@ def main():
                         patterns=[('P*', 'power')])
         finally:
             ca.NETS[3] = 'C'
+            ca.NETS[2] = 'B'
         r, vias = _route(board, os.path.join(td, 'out.kicad_pcb'), [])
         if r.returncode != 0 or not vias:
             print(r.stdout[-3000:])
@@ -78,7 +87,11 @@ def main():
             fails.append(f"net A (Default class) vias: {by_net.get(1)} != {{(0.6, 0.3)}}")
         if by_net.get(3) != {(0.8, 0.4)}:
             fails.append(f"net P1 (power class) vias: {by_net.get(3)} != {{(0.8, 0.4)}}")
-        if 'Per-net via sizes for 1 net(s)' not in r.stdout:
+        if by_net.get(2) != {(0.8, 0.4)}:
+            fails.append(f"net P2 (power class, multipoint) vias: {by_net.get(2)} != {{(0.8, 0.4)}}")
+        if 'Multi-point' not in r.stdout and 'multi-point' not in r.stdout:
+            fails.append("P2 did not route through the multipoint path -- the row tests nothing")
+        if 'Per-net via sizes for 2 net(s)' not in r.stdout:
             fails.append("the run did not announce the per-net via sizes")
         g = subprocess.run([sys.executable, os.path.join(ROOT, 'py_router', 'check_drc.py'),
                             os.path.join(td, 'out.kicad_pcb'), '--quiet'],
@@ -95,8 +108,9 @@ def main():
     if fails:
         print("FAIL:\n  " + "\n  ".join(fails))
         return 1
-    print("PASS: nets are routed and emitted at their own class via size through per-net "
-          "via-legality rungs; an explicit --via-size still applies to every net")
+    print("PASS: nets -- multipoint ones included -- are routed and emitted at their own "
+          "class via size through per-net via-legality rungs; an explicit --via-size still "
+          "applies to every net")
     return 0
 
 

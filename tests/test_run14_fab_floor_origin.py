@@ -260,16 +260,37 @@ class LiveBoardOriginTest(unittest.TestCase):
         def GetDesignSettings(self):
             return self.bds
 
+    #: pcbnew's factory values for the two floors the fakes carry (KiCad 10's
+    #: DEFAULT_TRACKMINWIDTH / DEFAULT_VIASMINSIZE), injected: no pcbnew here.
+    FACTORY = {'min_track_width': 0.2, 'min_via_diameter': 0.5}
+
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.pcb = os.path.join(self.tmp, 'b.kicad_pcb')
         with open(self.pcb, 'w') as f:
             f.write('(kicad_pcb)\n')
-        F._LIVE_FAB_ORIGIN.clear()
+        self._clear_session()
+        self._factory = getattr(F, '_PCBNEW_FACTORY', None)
+        F._PCBNEW_FACTORY = dict(self.FACTORY)
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
-        F._LIVE_FAB_ORIGIN.clear()
+        self._clear_session()
+        F._PCBNEW_FACTORY = self._factory
+
+    @staticmethod
+    def _clear_session():
+        """The live records these fakes keep: the board copy (tool_records'
+        store for a board without property calls) and the session's
+        declarations and step marks."""
+        getattr(F, '_LIVE_FAB_ORIGIN', {}).clear()
+        getattr(F, '_LIVE_DECLARED', {}).clear()
+        getattr(F, '_LIVE_STEP_OPEN', set()).clear()
+        try:
+            import tool_records
+            tool_records._FALLBACK.clear()
+        except ImportError:
+            pass
 
     def _write_pro(self, origin=None):
         with open(self.pcb[:-len('.kicad_pcb')] + '.kicad_pro', 'w') as f:
@@ -284,7 +305,11 @@ class LiveBoardOriginTest(unittest.TestCase):
         bds = self._BDS(0.2, 0.5)
         board = self._Board(self.pcb, bds)
         origin = F.seed_live_fab_floor_origin(board)
-        self.assertEqual(origin, {'min_track_width': 0.2, 'min_via_diameter': 0.5})
+        # The project declares the via floor only. The track floor sits at
+        # pcbnew's factory 0.2, which nothing declared -- the CLI's writeback
+        # seeds its origin from the project's rules and records no track floor
+        # either.
+        self.assertEqual(origin, {'min_via_diameter': 0.5})
         self.assertEqual(self._pro_origin(), origin, 'recorded in the project')
         bds.m_ViasMinSize = int(0.3 * 1e6)          # the step lowers it
         again = F.seed_live_fab_floor_origin(board)
@@ -298,14 +323,36 @@ class LiveBoardOriginTest(unittest.TestCase):
         board = self._Board(self.pcb, self._BDS(0.2, 0.3))
         self.assertEqual(F.seed_live_fab_floor_origin(board)['min_via_diameter'], 0.8)
 
-    def test_a_board_with_no_project_keeps_it_for_the_session(self):
+    def test_a_board_with_no_project_records_what_it_declares(self):
+        """A project-less board at pcbnew's factory floors declares none, so
+        it records none -- the CLI's first writeback on it records none -- and
+        the next step seeds from what the first one lowered, as the CLI's
+        second step does from the project its first wrote."""
         bds = self._BDS(0.2, 0.5)
         board = self._Board(self.pcb, bds)
-        F.seed_live_fab_floor_origin(board)
-        bds.m_ViasMinSize = int(0.3 * 1e6)
-        self.assertEqual(F.seed_live_fab_floor_origin(board)['min_via_diameter'], 0.5)
+        self.assertEqual(F.seed_live_fab_floor_origin(board), {})
+        bds.m_ViasMinSize = int(0.3 * 1e6)            # step 1 lowered it
+        self.assertEqual(F.seed_live_fab_floor_origin(board),
+                         {'min_via_diameter': 0.3})
+        bds.m_ViasMinSize = int(0.25 * 1e6)           # step 2 lowers further
+        self.assertEqual(F.seed_live_fab_floor_origin(board)['min_via_diameter'],
+                         0.3, 'kept for the session once recorded')
         self.assertFalse(os.path.exists(self.pcb[:-len('.kicad_pcb')] + '.kicad_pro'),
                          'no project is created just to hold the record')
+
+    def test_a_floor_a_live_writer_targeted_is_declared_at_factory(self):
+        """The CLI's writeback WRITES every rule it targets; a GUI writer that
+        targets a rule at exactly pcbnew's factory value changes nothing in
+        memory, and only the session record says it is now declared."""
+        if not (hasattr(F, 'note_live_declared')
+                and hasattr(F, 'live_declared_fab_floor_rules')):
+            self.fail('no live declaration record: a writer that targets a '
+                      'rule at the factory value leaves nothing to say it is '
+                      'declared')
+        board = self._Board(self.pcb, self._BDS(0.2, 0.5))
+        F.note_live_declared(board, ('min_track_width',))
+        self.assertEqual(F.live_declared_fab_floor_rules(board),
+                         {'min_track_width': 0.2})
 
     def test_the_live_disclosure_names_the_original_and_counts(self):
         origin = {'min_track_width': 0.2, 'min_via_diameter': 0.5}

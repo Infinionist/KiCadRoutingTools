@@ -916,14 +916,19 @@ def filter_rippable_blockers(
     Filter blockers to only those that can be ripped (in routed_results),
     deduplicating by diff pair (P and N count as one).
 
-    With `pcb_data`, PROTECTED nets are also dropped (run-6 fix): this is the
-    one choke point all six in-run rip ladders flow through, and none of them
+    With `pcb_data`, PROTECTED nets are also dropped (run-6 fix): the six
+    in-run rip ladders build their first rip list here, and none of them
     consulted protection_map -- so a .kicad_pro protected net, KiCad-locked
     copper, or a protected net could be ripped mid-run by the phase-3
     cascade even though every PRE-run rip channel refused it (test-board run
     5, journal [10]: the #444 seam re-ask and the tap ladder churned a
-    committed net's copper repeatedly). Refusals are recorded in
-    PROTECTED_SKIPPED under `context` so they surface in JSON_SUMMARY.
+    committed net's copper repeatedly). It is NOT the only place a victim is
+    picked: the ladders' N>1 re-analysis, the via-in-pad decline blame and the
+    rescue rungs pick outside it, and every one of them asks the same
+    protected_nets.rip_refusal this filter does (#1261: the decline blame
+    ripped a KiCad-locked net the hint beside it called protected).
+    Refusals are recorded in PROTECTED_SKIPPED under `context` so they
+    surface in JSON_SUMMARY.
     The operator's exact-name overrides DO reach here (run-6 z2 fix): a net
     named exactly (no glob) in --rip-existing-nets / --nets is stashed by the
     pre-run filters (protected_nets.stash_rip_overrides) and lifts 'user'
@@ -942,26 +947,13 @@ def filter_rippable_blockers(
     Returns:
         Tuple of (rippable_blockers, seen_canonical_ids)
     """
-    protected = {}
-    overrides = set()
-    if pcb_data is not None:
-        from protected_nets import cached_protection_map, rip_override_names
-        protected = cached_protection_map(pcb_data)
-        overrides = rip_override_names(pcb_data)
+    from protected_nets import rip_refusal
     rippable_blockers = []
     seen_canonical_ids = set()
     for b in blockers:
         if b.net_id in routed_results:
-            if protected:
-                _net = pcb_data.nets.get(b.net_id)
-                _name = _net.name if _net else None
-                if _name and _name in protected and (
-                        protected[_name] == 'locked'
-                        or _name not in overrides):
-                    from protected_nets import PROTECTED_SKIPPED
-                    PROTECTED_SKIPPED.setdefault(context, {})[_name] = \
-                        protected[_name]
-                    continue
+            if rip_refusal(pcb_data, b.net_id, context, diff_pair_by_net_id):
+                continue
             canonical = get_canonical_net_id_func(b.net_id, diff_pair_by_net_id)
             if canonical not in seen_canonical_ids:
                 seen_canonical_ids.add(canonical)

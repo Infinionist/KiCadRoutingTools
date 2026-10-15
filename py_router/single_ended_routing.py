@@ -1952,7 +1952,9 @@ def _per_net_via_config(config: GridRouteConfig, pcb_data, net_id: int) -> GridR
         from obstacle_cache import rung_for_net
         d, h = sizes[net_id]
         return replace(config, via_size=float(d), via_drill=float(h),
-                       via_rung=rung_for_net(config, pcb_data, net_id))
+                       via_rung=rung_for_net(config, pcb_data, net_id),
+                       run_via=(getattr(config, 'run_via', None)
+                                or (config.via_size, config.via_drill)))
     except Exception:                                          # noqa: BLE001
         return config
 
@@ -2600,26 +2602,46 @@ def _power_width_ladder(net_width, layer_width):
 # _register_rung_path_vias, #568/#189) is a DIFFERENT mechanism and stays.
 
 
-def _register_rung_path_vias(pcb_data, obstacles, path, vs, dr):
+def _register_rung_path_vias(pcb_data, obstacles, path, vs, dr, own_rung: int = 0):
     """#568: register the small (dia, drill) for the path's via cells where
     the FULL size is blocked -- those transitions exist only by rung-1
     legality, so emission must ship the small rung (#339 re-validates).
     Cells legal at full size are NOT registered (they ship the configured
-    via; registering small there would shrink vias needlessly)."""
+    via; registering small there would shrink vias needlessly).
+
+    "Full size" is the via the net ships, judged at ITS rung (#1226): for a
+    net at its own #530 via that is `own_rung`, not rung 0 -- the run's via
+    is smaller, so a cell legal for it but not for the net's own via was
+    left unregistered and shipped full size after only a rung-1 check."""
     sizes = getattr(pcb_data, '_unblock_via_sizes', None)
     if sizes is None:
         sizes = pcb_data._unblock_via_sizes = {}
     for a, b in zip(path, path[1:]):
-        if a[2] != b[2] and obstacles.is_via_blocked(a[0], a[1]):
+        if a[2] != b[2] and obstacles.is_via_blocked_rung(a[0], a[1], own_rung):
             sizes.setdefault((a[0], a[1]), (vs, dr))
 
 
 def _rung_search_pair(config, pcb_data):
     """The (dia, drill) a via_rung=1 search would ship, or None when rust
     mode (KICAD_VIA_RUNG=2) is off or no smaller fab rung exists. Shared
-    selection rule with the obstacle-cache dual stamping by construction."""
+    selection rule with the obstacle-cache dual stamping by construction.
+
+    #1226: on a net's own-via clone (#530, `config.run_via` set) rung 1 is
+    still the small rung of the RUN's via -- that is what the map stamped --
+    so the pair is derived from the run's via, and a retry is offered only
+    when it is smaller than the net's own. Deriving it from the net's via
+    shipped, say, a 0.45 via that had been checked only at the 0.30 the map
+    holds; and with no small slot at all (the run via is the smallest fab
+    via) rung 1 is another net class's rung, not a smaller via."""
     from obstacle_cache import _small_via_pair
-    return _small_via_pair(config, pcb_data)
+    run = getattr(config, 'run_via', None)
+    if not run:
+        return _small_via_pair(config, pcb_data)
+    pair = _small_via_pair(replace(config, via_size=run[0], via_drill=run[1]),
+                           pcb_data)
+    if pair is None or pair[0] >= config.via_size - 1e-9:
+        return None
+    return pair
 
 
 def _edge_span_mm(sources, targets, grid_step):
@@ -3006,8 +3028,17 @@ def _route_with_via_unblock(router, obstacles, config, sources, targets, track_m
     # windowed board scan, no IPC-4761 via-in-pad note). Capped at the probe
     # budget, same fail-fast rationale as the placement retry below.
     # Pre-placement remains the fallback for genuinely small-rung-boxed pads.
+    # #1228: only when rung 1 itself holds copper. An empty rung 1 falls back
+    # to rung 0 -- the search that just failed -- and a rung 1 holding only
+    # in-progress via rings would let the search through every foreign
+    # track. (get_stats()[7] sums EVERY rung, so a populated per-net rung
+    # used to wave this through on an empty small rung.)
+    try:
+        _rung1_held = obstacles.rung_len(1) > 0
+    except (AttributeError, TypeError):
+        _rung1_held = obstacles.get_stats()[7] > 0
     if (((bwd_i and bwd_i < lim) or (fwd_i and fwd_i < lim))
-            and obstacles.get_stats()[7] > 0):
+            and _rung1_held):
         _rp = _rung_search_pair(config, pcb_data)
         if _rp is not None:
             _rcfg = replace(config, via_rung=1,
@@ -3024,7 +3055,8 @@ def _route_with_via_unblock(router, obstacles, config, sources, targets, track_m
                 # probes (see _place_shrunk_via_in_pad_impl).
                 if not getattr(config, 'plan_probe', False):
                     _register_rung_path_vias(pcb_data, obstacles, _r1[0],
-                                             _rp[0], _rp[1])
+                                             _rp[0], _rp[1],
+                                             own_rung=getattr(config, 'via_rung', 0))
                 return _r1 + ([], [])
 
     _dbg = _unblock_debug()
@@ -3887,6 +3919,49 @@ def _select_multipoint_main_edge(pcb_data, pad_info, pad_components,
     return mst_edges
 
 
+def _draw_at_own_via(vias, pcb_data, net_id: int, config, obstacles) -> None:
+    """#530 decision 4 for a multipoint net: draw each via it just placed at
+    the net's OWN via (config.net_via_sizes) wherever that is legal at the
+    net's own via-legality rung.
+
+    A multipoint net is SEARCHED at the run's via, so its paths -- and
+    whether it completes -- are what they would be with no class via; only
+    the vias change. A via whose cell is legal for the class via is drawn at
+    it; the rest keep the run's via and are disclosed as a descent in the
+    design_rules ledger. A via another mechanism already sized (an in-pad or
+    rung-1 shrink) keeps its size."""
+    sizes = getattr(config, 'net_via_sizes', None) or {}
+    own = sizes.get(net_id)
+    if not own or not vias:
+        return
+    own = (float(own[0]), float(own[1]))
+    if abs(own[0] - config.via_size) < 1e-9 and abs(own[1] - config.via_drill) < 1e-9:
+        return
+    try:
+        from obstacle_cache import rung_for_net
+        rung = rung_for_net(config, pcb_data, net_id)
+    except Exception:                                          # noqa: BLE001
+        return
+    if not rung:
+        return
+    coord = GridCoord(config.grid_step)
+    kept = 0
+    for v in vias:
+        if getattr(v, 'net_id', net_id) != net_id:
+            continue
+        if abs(v.size - config.via_size) > 1e-9 or abs(v.drill - config.via_drill) > 1e-9:
+            continue                      # sized by another mechanism, or already drawn
+        gx, gy = coord.to_grid(v.x, v.y)
+        if obstacles.is_via_blocked_rung(gx, gy, rung):
+            kept += 1
+        else:
+            v.size, v.drill = own
+    if kept:
+        from fab_tiers import note_narrowing
+        note_narrowing(net_id, 'via_diameter', own[0], config.via_size,
+                       'multipoint via kept at the run size', count=kept)
+
+
 def route_multipoint_main(
     pcb_data: PCBData,
     net_id: int,
@@ -4469,6 +4544,7 @@ def route_multipoint_main(
     segments = list(segments) + main_unblock_segments
 
     print(f"  Phase 1 routed in {total_iterations} iterations, {len(segments)} segments")
+    _draw_at_own_via(vias, pcb_data, net_id, config, obstacles)
 
     return {
         'new_segments': segments,
@@ -4582,22 +4658,28 @@ def route_multipoint_taps(
     # correct. Idempotent, and released on every exit beside the via rings.
     from routing_context import ensure_own_pad_lift, release_own_pad_lift
     _oplift = ensure_own_pad_lift(obstacles, pcb_data, net_id)
+    # #1228: the via rungs the rings reach -- those that already hold copper,
+    # snapshotted once so the removal below hits exactly what was stamped.
+    # An EMPTY rung (the #568 small rung of a map with no net cache) falls
+    # back to rung 0, which carries the rings; stamping the rings into it
+    # made them its ONLY entries, and a rung-1 search then saw no foreign
+    # copper at all.
+    try:
+        from obstacle_map import populated_via_rungs
+        ring_rungs = tuple(populated_via_rungs(obstacles))
+    except ImportError:
+        ring_rungs = ()
     try:
         return _route_multipoint_taps_impl(
             pcb_data, net_id, config, obstacles, main_result,
-            global_offset, global_total, global_failed, ring_cells)
+            global_offset, global_total, global_failed, ring_cells, ring_rungs)
     finally:
         release_own_pad_lift(obstacles, net_id, _oplift)
         if ring_cells:
             _rc = np.array(ring_cells, dtype=np.int32)
             obstacles.remove_blocked_vias_batch(_rc)
-            try:    # #568: mirror of the ring's small stamp (refcount balance)
-                from obstacle_map import _rung_small_armed as _rsa, _mirror_rungs_remove
-                if _rsa() and hasattr(obstacles, 'remove_blocked_vias_small_batch'):
-                    obstacles.remove_blocked_vias_small_batch(_rc)
-                _mirror_rungs_remove(obstacles, _rc)   # #530 per-net rungs
-            except (AttributeError, ImportError):
-                pass
+            for _r in ring_rungs:   # the same rungs the rings were stamped into
+                obstacles.remove_blocked_vias_rung_batch(_r, _rc)
 
 
 def inprogress_via_ring_cells(v, net_id: int, config: GridRouteConfig,
@@ -4634,7 +4716,8 @@ def _route_multipoint_taps_impl(
     global_offset: int = 0,
     global_total: int = 0,
     global_failed: int = 0,
-    _ring_cells: list = None
+    _ring_cells: list = None,
+    _ring_rungs: tuple = ()
 ) -> Optional[dict]:
     """
     Route the remaining MST edges for a multi-point net.
@@ -4700,27 +4783,18 @@ def _route_multipoint_taps_impl(
     # -- the VTT multipoint junction double-via (hole_to_hole DRC). The ring skips
     # the via's own cell so reuse stays open (sized by inprogress_via_ring_cells).
 
-    try:        # #568: armed once per tap run (see the ring mirror below)
-        from obstacle_map import _rung_small_armed as _rsa, _per_net_rungs as _pnr
-        _small_rung_on = _rsa() and hasattr(obstacles, 'add_blocked_via_small')
-        _pn_rungs = list(_pnr(obstacles))   # #530 per-net rungs (above the small map)
-    except ImportError:
-        _small_rung_on = False
-        _pn_rungs = []
-
     def _register_inprogress_via(v):
         vgx, vgy = coord.to_grid(v.x, v.y)
         obstacles.add_free_via(vgx, vgy)
         for cgx, cgy in inprogress_via_ring_cells(v, net_id, config, coord):
             obstacles.add_blocked_via(cgx, cgy)
-            # #568 MIRROR: a rung-1 tap search trusts ONLY the small map for
-            # dynamic copper, so without this it could drop a small via inside
-            # the ring of a via this very net just placed -- a real same-net
-            # hole-to-hole violation. The wrapper's finally removes both maps'
-            # cells (#309).
-            if _small_rung_on:
-                obstacles.add_blocked_via_small(cgx, cgy)
-            for _r in _pn_rungs:   # #530 per-net rungs
+            # #568/#530 MIRROR: a search at rung r >= 1 trusts ONLY that
+            # rung's map for dynamic copper, so without this it could drop a
+            # via inside the ring of a via this very net just placed -- a
+            # real same-net hole-to-hole violation. Only the rungs that hold
+            # copper (the wrapper's snapshot, #1228); the wrapper's finally
+            # removes from exactly those (#309).
+            for _r in _ring_rungs:
                 obstacles.add_blocked_via_rung(_r, cgx, cgy)
             # Ref-counted raw add: the wrapper removes these on exit so they
             # can't leak into a persistent working map (#309).
@@ -5276,6 +5350,7 @@ def _route_multipoint_taps_impl(
 
     print(f"  Phase 3 routing complete: {edges_routed} edges, {len(all_segments)} total segments, {len(all_vias)} total vias")
 
+    _draw_at_own_via(all_vias, pcb_data, net_id, config, obstacles)
     # Update result - preserve original fields, update segments/vias
     updated_result = dict(main_result)
     updated_result['new_segments'] = all_segments

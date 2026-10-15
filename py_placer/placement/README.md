@@ -39,7 +39,7 @@ Key options:
 | `--intent` | – | Floorplan intent JSON. Its declared zones, keep-outs and exclusive zones become HARD per-move gates; its `must_lock` globs and `edge_connectors` edge claims are locked. MONOTONE: it prevents a part being walked out of a zone, it does not walk one back in. Omitted, the run is bit-identical to one built before the flag existed (#702) |
 | `--no-rotate` / `--no-swap` | off | Disable rotation / swap moves. `--no-rotate` freezes every part's angle: nudges keep the current rotation, and same-footprint swaps are restricted to pairs that already share one, since a swap exchanges full poses and a mixed-angle pair would rotate both parts |
 
-> **The declared design brief reaches these CLIs THROUGH `--intent`, not through a flag of their own (#711).** `<board>.design-brief.json` is read by `check_floorplan.py` (and reported by `board_brief.py`); `check_floorplan --emit-intent` COMPILES it into `edge_connectors` / `keepouts`, and the placement CLIs then consume that intent. One artifact, one flag: a second channel into the same engine is exactly the divergence this module's `cli_gates` exists to prevent. `--brief` / `--no-brief` therefore exist on `check_floorplan.py` and `board_brief.py` only. See [docs/design-brief.md](../../docs/design-brief.md).
+> **The declared design brief reaches these CLIs THROUGH `--intent`, not through a flag of their own (#711).** `<board>.design-brief.json` is read by `check_floorplan.py` (and reported by `board_brief.py`); `check_floorplan --emit-intent` COMPILES it into `edge_connectors` / `keepouts`, and the placement CLIs then consume that intent. One artifact, one flag: a second channel into the same engine is exactly the divergence this module's `cli_gates` exists to prevent. `--brief` / `--no-brief` therefore exist on `check_floorplan.py` and `board_brief.py` only. See [docs/design-brief.md](../../docs/design-brief.md). One brief key has a second reader by design: `keep_away` (#1253) compiles into the intent's `keep_away[]`, which `check_floorplan` grades on the pads (WARN by default), and the ROUTING engines read the same key off the brief to price it on the tracks. No placement search reads it (`floorplan.GRADE_ONLY_RULES`).
 
 ## place_route_loop.py — router-in-the-loop repair
 
@@ -248,14 +248,14 @@ parts, and parts outside `seed_refs`, count as placed before stage 0):
 | stage | what it seats |
 |---|---|
 | 0 | `fixed_poses[]` (#1054): EXACTLY at the declared pose, a check and never a search -- courtyards may abut (KiCad's rule) but not overlap, pads and holes keep their clearance, and every declared pose is judged against every other one, so a clashing pair is refused BOTH; an illegal pose is refused with its measurement and the part held out of every later stage. Seated parts are stamped `(locked yes)` |
-| 1 | edge connectors on their declared edge, inside the overhang band. The edge seat bypasses `pose_ok` (it overhangs by design), so `edge_seat_ok` carries its own conjuncts -- band, pads on the board, keep-outs, exclusive zones and, since #1044, the board's rule-area `(tracks not_allowed)` bands, ABSOLUTE: a band pose is refused by name and the connector left to the later stages rather than seated where no track can reach its pad |
+| 1 | edge connectors on their declared edge, inside the overhang band. The edge seat bypasses `pose_ok` (it overhangs by design), so `edge_seat_ok` carries its own conjuncts -- band, pads on the board, keep-outs, exclusive zones and, since #1044, the board's rule-area `(tracks not_allowed)` bands, ABSOLUTE: a band pose is refused by name and the connector left to the later stages rather than seated where no track can reach its pad. Its ANGLE (#1172): an undeclared connector whose input angle carries no information -- the board is a pile, the part a stacked suspect, or every pad off the outline -- is tried at each quarter turn, least depth into the board first; a STRONG mating face (#1155, `mating.py`) decides it outright, and turns a part facing away from its edge on any board. A rung must clear the courtyards stage 1 has already seated as well as their pads (`_placed_courtyard_hits`, the floorplan budget's currency); only when no rung does -- or when every rung that does leaves pad copper inside the board-edge floor and the pad-only seat does not, since copper at the edge outranks a courtyard overlap -- is the old pad-only seat kept, and the overlap named. Stage 1's own angles are walked in its order: the first that seats clean is kept, else the first that seats pad-clear (overlapping only a placed courtyard, named; a clean seat short of the board-edge floor does not beat one that clears it); when every one seats crowded, is refused after the turn, or does not fit the edge at all (wider than it, or outside its window), the part gets the attempt it had before any angle was chosen, from its input angle -- the attempt stage 1 always made, which may still crowd, as it did before #1172 -- and the note says what it did and when that angle points a strong face away. Stage 1 never keeps a pad-crowded seat at an angle it CHOSE. An angle is dropped as deeper than the board only past the band's `max` overhang. Packing an edge's claims by width when equal fractions would put them on each other, on a part already on the band, or outside a claim's zone is an opt-in, off by default (`seeder._stage1_packed_starts`): it packs around the placed parts that share a side with a claim and reach its depth, keeps each claim in its zones' span along the edge, orders zoned claims by where their zone lies, and lays them at the largest common gap that fits (#1244) |
 | 1.5 | `must_lock` parts, at their current pose where it is legal |
 | 2 | zoned blocks, packed radially from the zone centre; a declared array whose members all sit in one zoned block is seated into it whole (stage 2.45) |
 | 2.4 | declared non-zoned arrays: each row's served part, then the row (stage 2.45), each row at its members' rank. A row member is never seated alone here. The order is disclosed in the seeder's `early_order` |
 | 2.45 | one declared array as ONE row (`_seat_array` -> `_seat_block`, #1051): the served part's pin order, one rotation, one pitch, a capped pose count (`ARRAY_SEAT_POSE_CAP`). A row not seated whole goes to `array_unseated` and its members are seated one by one |
 | 2.5 / 2.6 | the decap-governed caps, one per supply pin; what the pin stage declines is put back into its zone. `decap_stage` says what it claimed, and why when nothing -- on an unzoned seed, that no owner IC is seated before the stage (#1053) |
 | 3 | everything else, at the nearest legal pose to its connectivity centroid |
-| 3.5 | opt-in (`--decap-claim-after-ics`, #1105): inside stage 3, at the first scoped cap after the queue's last owner IC, the pin claim again over the owner ICs stage 3 seated (never one 2.5 served). It draws no RNG, so every part seated before it -- every IC -- is seated as without it; a cap it declines keeps its own turn. Stage 3's target jitter is drawn for every queue entry before the claim or the `after_queue` reorder, so the parts seated after it are aimed exactly as without it too. `decap_stage.late` says what it did. Rejected as a default by the `decap-*` A/B rows |
+| 3.5 | on by default when the INPUT board is a pile (`PlacementState.pile`), off otherwise (#1105; `--decap-claim-after-ics` / `--no-decap-claim-after-ics` force it): inside stage 3, at the first scoped cap after the queue's last owner IC, the pin claim again over the owner ICs stage 3 seated (never one 2.5 served). The pile default runs the within-limit variant, undoing a seat that lands past `decaps.max_distance_mm` as the grade measures it (`DECAP_PILE_WITHIN_LIMIT`); the explicit flag runs after-ics on any input, keeping every seat it finds (`DECAP_LATE_WITHIN_LIMIT`, off). It draws no RNG, so every part seated before it -- every IC -- is seated as without it; a cap it declines keeps its own turn. Stage 3's target jitter is drawn for every queue entry before the claim or the `after_queue` reorder, so the parts seated after it are aimed exactly as without it too. `decap_stage.late` says what it did, `late.armed_by` why it ran (`pile`, `not a pile`, or `set` by the flag) and `late.variant` which variant ran. The pile default is the maintainer's call on the `decap-pile-within-limit-*` A/B rows (tests/1105_pile_ab_prereg_v2.json): it pulls decaps in on every pile, at a cost in wire length or crossings on some, which the A/B's zero-tolerance guards alone would not accept. On placed boards the `decap-*` rows rejected every variant |
 | 3c / 3b | the eviction rung (`--evict-depth`, below), then the gated anchor re-seat rounds |
 
 `place_seed`'s `JSON_SUMMARY` carries what stages 0, 2.45 and 2.5 did, judged
@@ -265,7 +265,62 @@ Its final gate also names rule-area band pads (#1044): `keepout_copper_seeded`
 is `[ref, mm]` for each part the seed MOVED whose pad copper went deeper into a
 `(tracks not_allowed)` band than at its input pose, and exits 4 on it;
 `oob_keepout_copper_count` is the written board's total, inherited ones
-included (reported, not charged).
+included (reported, not charged). `pad_copper_off_board_seeded` (#1241) is
+`[ref, mm]` for each seated part whose pad copper the written seed leaves past
+the outline (check_assembly's gating measure), and exits 4 on it;
+`pad_copper_off_board_locked` is the same for a part `(locked yes)` in the
+input, which the seed cannot move and still answers for: placement stamps its
+own locks, so a lock would launder the last lap's overrun, and check_assembly
+exempts none. An unlocked part outside a partially-unplaced run's scope is
+the board's own, named and not charged -- at its input pose, or after a
+polish move that took its copper no further past the outline.
+`oob_pad_copper_gating_count` is the written board's total. `must_lock` alone
+exempts nothing: stage 1.5 seats every unlocked, in-scope must_lock part.
+`place_seed --repair` charges the same copper on any part it could move
+(`pad_copper_off_board_charged`), and `--reseat` alone on a part it moved; a
+pinned part's such copper fails it too (`pad_copper_off_board_pinned`: a lock
+is no waiver, the one exception to #1193's pinned-part contract). No
+edge seat keeps such copper in the first place (#1241): stage 1 and
+`_seat_edge` move a rung whose pads would sit past the outline inward onto
+the board, and name a band only copper past the outline could meet in
+`edge_band_contradiction`, seated on its edge with its band error standing.
+No interior seat does either (#1257): `seeder.pose_ok`, the predicate behind
+every `_try_place` search (stages 1.5 to 3, the row seat, the pose census,
+the post-polish re-seat and `--repair`'s seat), refuses a pose at which
+check_assembly would gate the part's pad copper
+(`legality.pad_copper_gating_mm`: per pad, zero margin, an edge-straddling
+castellated pad exempt). It asks only a part whose pads reach past its
+courtyard by more than the board-edge margin (`_pad_copper_overhang`),
+since any other part's copper is on the board wherever its courtyard is.
+A part no pose can hold is left
+unseated, or under `--repair` unrepaired, by name. The polish asks the same
+question (`QuenchState.candidate_valid`, through the same two functions):
+absolute on its ordinary path, and on the off-board unfreeze branch a part
+coming home may not end with its pad copper further past the outline than it
+starts. A declared `fixed_poses[]` pose whose courtyard is inside but whose
+pad copper is past the outline is REFUSED by stage 0 with its measurement,
+as an overhanging pose with copper past the outline always was.
+The seed's pad-pair and band channels read "moved" off the WRITTEN board, so
+a polish or re-seat move counts, on the delta (#1241).
+The gate also charges the body pairs check_assembly gates on the written
+board (#1258), read off its own grader (`grade_body_overlap`):
+`containment_seeded` (a drawn body inside another's, `[a, b, area_mm2,
+contained_frac]`) and `courtyard_blocking_seeded` (a courtyard
+interpenetration past the run-23 floors, `[a, b, area_mm2, depth_mm]`), each
+exiting 4. Stage 1's crowding edge seat is where they come from: glasgow's
+pile seeded J3 71% inside SW1 and used to exit 0. A pair is the seed's when
+a member is a part it placed, moved or kept; `*_unseated` (against a part it
+could not seat) and `*_inherited` (both members locked in the input, or out
+of a partial run's scope and unmoved) are named and not charged -- a locked
+pair keeps #1193's contract, unlike off-board copper. `--repair` /
+`--reseat` charge the same pairs on the board they deliver
+(`containment_charged`, `courtyard_blocking_charged`; a pinned pair is
+`*_pinned`, reported).
+`edge_angle_chosen` names every edge
+connector stage 1 turned to an angle IT chose or reordered (#1172) --
+`{ref: {from, to, why, candidates}}`: an undeclared one, or a declared
+`rotation_candidates` set reordered with its facing members first. A turn to
+an angle the author declared outright (#893, #1120) is not in it.
 
 Every `JSON_SUMMARY` it prints (seed, `--repair`, `--reseat`) carries
 `connector_requirements` (#974): the declared edge connectors' graded
@@ -305,6 +360,19 @@ quench, whose swaps no longer trade a declared angle away), an array's
 `fixed_poses[]` entry's `rot` (seated exactly, then locked). Explore rotations
 deliberately with `place_portfolio.py --strategy poses`, which with `--intent`
 explores a part a block declares only within its declaration (#1121).
+An undeclared EDGE connector is the exception to keeping the input angle:
+stage 1 chooses its angle when the input carries none, or when its strong
+mating face points away from its edge (#1172, above), and `_seat_edge`
+(`--repair`) turns such a part to the facing quarter turn or refuses it by
+name. Neither CHOOSES a reversed angle. What still leaves one is named and
+graded: an author's declaration -- a single `rotation`, a
+`rotation_candidates` set none of whose members faces the edge, or one whose
+facing members, tried first, seat only worse than another member (a pad short
+is worse than a facing error; each kept, with a note; `--repair` seats a
+declared ladder as declared) -- and stage
+1's fall-back to the input angle when no facing angle seats even pad-clear,
+including the later stages' seat of a part that attempt leaves to them
+(coldfire's pile, UARTCAN203). The facing grade reports every one.
 
 ### The eviction rung (`--evict-depth`, #630, #699)
 
@@ -375,6 +443,7 @@ in the JSON_SUMMARY and as a NOTE:
 | --- | --- | --- |
 | `keepout_blocks` | a **declared keep-out** is what refuses it — measured, not inferred: the poses are recounted with that keep-out lifted (#701) | move the keep-out, or add the part to its `allow` list if it owns it |
 | `zone_exclusive_blocks` | a **declared exclusive zone** is what refuses it, and the part is not a member of the block that reserved it — measured the same way, by recounting with that zone lifted (#797) | add the part to the block that owns the zone, move the zone, or drop its `exclusive` flag. There is no `allow` list here — **membership is the allow list** |
+| `frozen_blocks` | movable neighbours were censused and none frees a pose, but a **locked or declared-immovable neighbour** is what refuses it — measured: it frees poses when lifted, or ALONE refuses every open pose (#1213: rp2350's U6 against U8, the locked Teensy frame). With no movable neighbour at all the verdict stays `immovable_given_frozen`, whose note then carries the same counts | unlock it or relax the intent clause that froze it — or, for a file-locked frame, check how it is modelled: a pin ring is not a body |
 | `no_movable_neighbour` | nothing seated is near enough to be in the way | the outline, the zone or the part's own size refuses it |
 | `immovable_given_frozen` | the only neighbours in the way are locked or declared edge connectors, **named with the decision that froze each** | relax that lock, or accept the pose |
 | `no_single_lift_frees` | movable neighbours censused; no single lift frees a pose | try `--evict-depth 2` |
@@ -387,9 +456,19 @@ in the JSON_SUMMARY and as a NOTE:
 `no_pose_census[ref]` carries the counts those verdicts came from — `boxed`,
 `movable`, `censused`, `frozen`, `truncated`, `baseline`, `pairs_total`,
 `pairs_censused`, `pairs_truncated`, `best_pair`, `keepouts_freeing`,
-`keepouts_joint`, `zone_exclusive_freeing`, `zone_exclusive_joint` — so a
-capped sweep can never
-read as a complete one. `keepouts_freeing` is `{keep-out name: poses freed by
+`keepouts_joint`, `zone_exclusive_freeing`, `zone_exclusive_joint`,
+`frozen_lifted`, `frozen_alone`, `open_poses`, `frozen_truncated` — so a
+capped sweep can never read as a complete one. `frozen_lifted` is `{frozen
+neighbour: poses freed by lifting it}`, zeros included, for a part with no
+pose at all, nearest first and capped at `EVICT_MAX_BLOCKERS`
+(`frozen_truncated` says how many were not censused). `frozen_alone` is
+`{frozen neighbour: poses legal with it as the ONLY neighbour present}`,
+against `open_poses`, the poses legal with every neighbour lifted: 0 of a
+non-zero `open_poses` means that part alone refuses every pose the outline and
+zone allow. Both are needed (#1213): rp2350's U8 refused U6 everywhere, but by
+U6's turn the other parts had filled the frame, so lifting U8 alone freed
+nothing. `frozen_blocks` is derived from these two counts, and the rung still
+never moves those parts. `keepouts_freeing` is `{keep-out name: poses freed by
 lifting it}`, filled only for a part with no pose at all and only over the
 keep-outs that bind it; it is the count `keepout_blocks` is derived from, so
 the verdict cannot drift from a differently-computed claim.
@@ -438,6 +517,17 @@ a new stack would sit below it unread. At depth 0 — the default, and what
 `place_reconstruct`'s reseat rung uses — nothing outside the scope is touched
 and the counts are 0.
 
+**A scope edge claim is seated on its edge (#1242).** The seed never sees one
+-- `reseat_scope` drops the scope's declarations from the intent it seeds
+with, because stage 1 seats a claim with no legality gate -- so after the
+seed each is seated the way `--repair` seats it, through `_seat_edge`: the
+band, the declared angles or the strong mating face's (a reversed connector
+is turned), pads on the board, aimed at its zone or from where it stands.
+One that seats keeps its declaration in `intent_used`, the intent the result
+is graded against, and is exempt from `prune` (an edge seat is hpwl-worse by
+design); one that does not keeps the seed's answer and its band is dropped,
+as before (`edge_bands_dropped`).
+
 **An EXPLICIT scope is accepted on a different rule from the auto one (#698),
 and the difference is structural rather than a preference.** On
 `auto:damage_witnesses` the pass's win *is* `oob`, at index 3 of the gate tuple
@@ -460,7 +550,8 @@ part could never be re-seated whatever the search found. So:
   improve: the six hard gate terms, the scope's own HPWL, and the count of
   breached declared claims -- zone/keep-out AND, since #1068, the tether rules
   (`decap_distance`, `decap_pin_distance`, `proximity`), each claim counted
-  once; `accept_basis.intent_rules` names which. All are reported in `accept_basis` whether they
+  once, and since #1242 the `edge_connector` errors of a scope edge claim the
+  edge seat seated; `accept_basis.intent_rules` names which. All are reported in `accept_basis` whether they
   fired or not — a basis that measured nothing and a basis that measured no
   change must not look alike.
 - **The intent VECTOR is the guard; the intent COUNT is only the trigger.** A
@@ -504,7 +595,14 @@ part could never be re-seated whatever the search found. So:
 Requires an Edge.Cuts outline (exit 3 without one — the outline is spec-owned
 and will not be invented) and refuses a board that already looks placed
 (use `place_portfolio.py` to explore around an existing placement, or
-`--force` to discard it). Different `--seed` values give genuinely different
+`--force` to discard it). A KiCad lock is a placement decision, so a board
+whose UNLOCKED parts sit off the outline is a seeding target whatever its
+locked parts do: place and lock the fixed parts first, then seed (#1165).
+The gate and its scope are `PlacementState.seed_scope` — every unlocked
+part on an unplaced or off-outline board (`off_outline`, which measures the
+unlocked parts when some are locked), only the stacked suspects on a
+partially-unplaced one, nothing on a placed one — and `rank_rotations.py`
+and check_floorplan's seeder forecast read the same property. Different `--seed` values give genuinely different
 legal seeds; the same seed reproduces byte for byte. The two compose:
 `place_seed --seed N` → `place_portfolio` diversifies and ranks.
 
@@ -523,8 +621,114 @@ python py_placer/place_pose.py board.kicad_pcb out.kicad_pcb face U1 W USB1 lock
 
 Verbs: `set` (exact, or `--near X Y` which implies `--snap`), `rotate`
 (absolute, `--relative` for a delta), `face REF FACE PARTNER`, `lock`,
-`unlock`. Several verbs in one call are ONE arrangement — every op resolves
-against the input board and one `write_placed_output` call writes them all.
+`unlock`, `replicate` (below). Several verbs in one call are ONE arrangement
+— every op resolves against the input board and one `write_placed_output`
+call writes them all.
+
+**`replicate` (#1211) repeats one placed sheet channel onto its sibling
+instances.** Instances of one hierarchical sheet carry the same symbol uuid
+as the last component of every footprint's `(path ...)`, which is the
+correspondence KiCad's own "Repeat Layout" uses. The engine half is
+`placement/replicate.py`.
+
+```bash
+python py_placer/place_pose.py board.kicad_pcb out.kicad_pcb replicate --from CH1 --to CH2 --to CH3 --to CH4
+python py_placer/place_pose.py board.kicad_pcb out.kicad_pcb replicate --from CH1 --to CH2 --anchor J1
+```
+
+It maps parts by the path below each instance, nested sub-sheets included,
+and refuses (exit 4, nothing written) unless the instances are
+interchangeable:
+
+- the same parts on both sides;
+- the same footprint and pad list for every pair;
+- one-to-one nets over every mapped pad pair. A source net reaches one
+  target net, a target net comes from one source net, and a net on pads of
+  both instances (GND, a rail, a mix bus) maps to itself.
+
+The refusal names the offending refs and pads, and spells the waiver for
+each: `--allow-net-mismatch REF.PAD`, one pad per flag, leaves a pad wired
+differently BY DESIGN out of the net rule -- it neither breaks the rule nor
+makes a net look shared. REF on the `--from` sheet waives the pad in every
+target; REF on a `--to` sheet waives it there only. glasgow_revC's two
+IO_Buffer instances map 68 for 68 and differ only at their I2C address
+straps; `--allow-net-mismatch U19.2 --allow-net-mismatch U20.6
+--allow-net-mismatch U21.2` makes them correspond. `nets_waived` reports each
+waived pad pair and whether the rule needed it; an unknown ref or pad is
+refused at exit 2. Each target part takes its
+source part's rotation and side (a side change goes through the writer's
+#714 flip), at the source position plus one offset:
+
+- by default, each target keeps its anchor where it is. The anchor is the
+  source part with the most pads, or `--anchor REF`, a ref in any of the
+  named sheets;
+- `--offset DX DY` gives the offset directly (one `--to` only).
+
+A sheet is named by its name (`CH1`, `/CH1/`: `Footprint.sheet_name`,
+which both parse paths fill from the `(sheetname ...)` token or KiCad 6/7's
+`Sheetname` property, so a GUI caller resolves the same sheets) or by its
+path (`/<uuid>`, or a unique start of it, 4+ characters). An unknown or
+ambiguous one is refused at exit 2, with the instances listed, each with its
+sheet file.
+
+The copy is graded like any other call. A target part that moves while
+KiCad-locked is refused unless the call `unlock`s it, and a locked part
+already at its copied pose is not moved and not refused. Each moved member
+lists the new conflict pairs it is in (`ops[].new_conflicts`), and the
+per-part findings it newly carries -- pad copper past the outline
+(`oob_pad_copper REF`), in the edge band (`pad_edge REF.PAD`), in a keep-out
+or graphic copper off the board -- so a refused copy says which members to
+leave out. `--snap` does not apply: a copy is rigid. It is an
+opt-in verb, and no seeder or quench default reads it.
+
+**Declared in the intent (`replicate[]`, reader 11).** The same copy as a
+design declaration: `{"from": "CH1", "to": ["CH2", "CH3", "CH4"], "anchor":
+"J1"}` plus the verb's own settings (`allow_net_mismatch`, `only` / `skip`,
+`search_mm`). `place_seed` applies each declaration after its polish and
+re-seat (`replicate.apply_declared`), through `pose_ops.apply_poses` -- the
+engine, guards and verdict of the verb -- and writes the copy only if it
+grades no worse than the seed; a refused copy leaves the seed and names the
+colliding members in `summary.replicate[]`. `place_pose replicate --intent
+PATH` (no `--from`/`--to`) applies them by hand. check_floorplan grades each
+target (`replicate`, WARN): parts matched as the verb matches them, offsets
+fitted by their median, each part's residual from that fit. Measured on the
+untracked multichannel_mixer: its CH1 laid out and locked as the designer
+did, CH2-4 piled, `place_seed --seed 1` with the declaration copied 63 parts
+(crossings 226 -> 105, hpwl 2608.9 -> 2076.3 mm, exit 4 -> 0: the OFF arm's
+two blocking courtyard pairs were among the parts the copy moved) and every
+target graded a copy at 0.00 mm; with CH2-4's panel parts locked at the
+designer poses (seeded2) the copy grades 12 pad conflicts worse and is not
+written, leaving the seed identical to the undeclared run. An undeclared
+intent seeds identically to the code before this stage (esp_prog,
+splitflap_driver and two mixer piles: every pose, lock and summary value).
+The stage is declaration-driven and not in `tests/test_placement_ab.py`: the
+only tracked board with repeated sheet instances is glasgow_revC, whose
+IO_Buffer pair differs at its address straps and in layout.
+
+**A copy that does not fit.** Two answers, both opt-in:
+
+- a PARTIAL copy, `--only REF[,REF]` or `--skip REF[,REF]`. A `--from` ref
+  names that symbol in every target, a `--to` ref names that one target
+  part. The parts left out stay where they are, need no counterpart, may
+  differ in footprint and cannot break the net rule; a net on any pad of
+  either whole instance still counts as shared, so leaving a part out never
+  turns a rail into a channel net. `to[].left_in_place` lists them. The
+  default anchor is then the largest part copied into every target.
+- an offset SEARCH, `--search MM` (`--search-step`, default 0.5 mm). Only
+  when the copy as asked is refused: each target's offset is tried on a
+  lattice within MM of its default, nearest first (ties by dy, then dx), and
+  the first one the call's own verdict accepts is kept -- on a written,
+  re-parsed, re-graded board, never a model. Targets are fitted in `--to`
+  order; while one is fitted, the ones before it sit where they were
+  fitted and the ones after it are left out of the grade on both sides
+  (deleted from the parsed input and candidate alike), since their input
+  poses are about to be vacated. The last target is graded with nothing
+  left out, so the arrangement the search returns is the one the verdict
+  passes. An offset that would move a locked part (the anchor, off its
+  default) is skipped and counted. None found: exit 4, with
+  `to[].search` -- candidates, tried, skipped, and the categories that
+  refused them. On the 114-part multichannel_mixer each candidate costs
+  about 0.27 s.
 
 The engine half is `placement/pose_ops.py`, so the writer, the sibling carry
 (#441), the grade and the snap are shared rather than living in a CLI `main()`
@@ -542,35 +746,44 @@ this tool exists for. `--strict-legal` is the absolute arm, `--force` the
 waiver, and a KiCad `(locked yes)` is refused unless the same call `unlock`s
 it. See `docs/utilities.md` for the full contract.
 
-The SEARCH's own stack test (`legality.pads_ok` refusing a new
-`PairShortfall.stack`) is still measured on pad BOXES, conservative by
-design. `legality.STACK_EXACT_CONFIRM` (#1127, default off) confirms each box
-hit on the pads' outlines with `_exact_pad_stack`, the check check_assembly
-makes. `tests/measure_1127_stack_gate_census.py` measured it before any
-default: the corpus seeds and quenches almost never reach a box stack, and
-the placement A/B did not pass (the census and its numbers are in #1127), so
-it stays off.
+The SEARCH's own pad tests (`legality.pads_ok`) are measured on pad BOXES,
+conservative by design: a box can falsely refuse a pose, never falsely admit
+one. `legality.STACK_EXACT_CONFIRM` (#1127) is an OPT-IN switch, **off by
+default**, that confirms the per-pad sweep's box hits on the pads' own
+outlines before the gate refuses a pose for them. It covers both conjuncts
+the boxes decide:
 
-A second, pre-registered look (`tests/1127_stack_ab_prereg.json`) split the
-toggle into a LICENCE fix and the exact gate itself. The licence fix targets
-box mode's seed baseline, which records a box-only near-touch at the seed as
-a stack and so licenses a later real one with that neighbour. Its census,
-`tests/measure_1127_licence_census.py`, counts on an OFF run, inside the
-engine call only, every `pads_ok` decision the licence or the exact gate
-would take differently. It found 0 licence holes in every cell, StickHub
-included. On the committed corpus that zero is structural: no input carries
-a box-only licence, and a pile has none by `_degenerate_refs`. The exact gate
-has trial cells (a flip at the `pads_ok` verdict or at any pair level) on
-rp2350 and ulx3s only -- and only ONE call on the whole corpus changed a
-`pads_ok` verdict (ulx3s quench, R27). That is 2 boards per engine against
-the 3 CLAUDE.md's rule needs, so the run stopped there (STOP A) and nothing
-changed default. (The STOP comes from the plan and that rule; the prereg's
-own `family_B.combine` wording would have allowed a GO with no engine at 3
-boards, a defect in that text, disclosed in
-`tests/measure_1127_stack_modes_ab.py`'s docstring.) Two findings stand: the PAD conjunct is box currency too, so on the
-#1064 C4/Y1 grid the exact gate clears only 6 of the 35 box-only refusals; and
-the census does not observe `relocate.exact_refusal`, `place_pose`,
-`reseat`, `portfolio` or `perturb`.
+- the STACK (`PairShortfall.stack`): a box overlap counts only when
+  `_exact_pad_stack`, the check check_assembly's pad_intersection channel
+  makes, finds the outlines intersect;
+- the PAD conjunct (`pad`, `pad_overlap`): a box clearance shortfall is
+  re-measured by check_drc's pad-pad check (`check_pad_pad_overlap`, margin
+  0) at the pair's requirement and charged check_drc's own millimetres, and
+  a different-net overlap is a short only when the outlines intersect.
+
+With it on, `pads_ok` refuses what check_drc and check_assembly grade rather
+than what the boxes suggest (`tests/test_1127_stack_exact_confirm.py`). The
+over-cap extent branch and the NPTH hole channel stay box answers, a part
+that cannot be posed keeps the box's answer, the mode is read once when a
+context is built, and each exact answer is memoised per posed pad pair. An
+exact gate can leave a pair AT its clearance, and check_drc at margin 0 may
+then read it a fraction of a nanometre short: the gate admits within its
+`EPS`, and the board file rounds every pose to whole nanometres. KiCad's own
+DRC does not flag such a pair -- it stores integer nanometres and tolerates
+its DRC epsilon (0.0005 mm) -- so the gate's `EPS` stays as it is.
+
+It is opt-in because the corpus A/B did not adopt it: the decisions it
+changes move the placement A/B's signals in both directions across boards,
+which is not the directional, at-least-three-board result CLAUDE.md asks of
+a default. The measurement tools stay with it. `tests/1127_stack_ab_prereg.json`
+pre-registered the look, which also asked whether box mode's seed baseline
+LICENSES a real stack (a box-only near-touch at the seed recorded as a
+stack); no committed input carries such a licence, and a pile has none by
+`_degenerate_refs`, so no licence fix was built.
+`tests/measure_1127_licence_census.py` counts, on an OFF run inside the
+engine call, every `pads_ok` decision the switch (both conjuncts) or a
+licence fix would take differently; it does not observe
+`relocate.exact_refusal`, `place_pose`, `reseat`, `portfolio` or `perturb`.
 
 ## place_fanout_clearance.py — decoupling-cap clearance repair (issue #130)
 
@@ -1181,6 +1394,34 @@ parts worth knowing from here:
   believes they set and the grader never checks. `context` is the one exception,
   open by design at the top level and on every entry, because provenance with
   nowhere to go ends up in a key that IS graded.
+- **An edge connector is graded by the way it OPENS (#1155).** The edge
+  rule's facing conjunct fails a receptacle (declared, inferred by
+  `part_class`, or any `edge_mount` / `through_edge` entry) whose body leaves
+  its pad row away from its declared edge -- ERROR on a strong face, WARN on
+  a weak one -- and `--emit-intent` never declares an edge a STRONG face
+  points away from. A weak face that is itself wrong (a few stock jacks,
+  `mating.py`) is not caught: a part seated by it reads pass. A footprint's
+  own "PCB Edge" marker, where it draws one, confirms a face (strong) or
+  vetoes it (abstains) (#1245); those jacks draw none.
+- **An edge member's zone is open on its declared edge (#1174)** when that
+  zone side lies on the outline and the claim bounds its overhang
+  (`overhang_mm.max`): the edge rule grades how far past the edge it may go,
+  and the zone no longer ejects it for going there. Its pads stay graded
+  there, at zero. The grade, the quench term, feasibility, the plan checks
+  and the seeder's lock note open the same side. A seat search does not need
+  to: `seeder.zone_gate` keeps the closed side, but every search it serves
+  also demands the courtyard on the board (`pose_ok`), so an open side would
+  admit nothing. What keeps an edge member on its edge instead is the edge
+  seat: `--repair` seats an edge claim through `_seat_edge`, and since #1240
+  so does `place_seed`'s post-polish re-seat (`reseat_on_edge`), aimed at the
+  zone's centre and kept only when the part grades no zone, keep-out,
+  exclusive-zone or edge error there -- else the ordinary search runs, as
+  before. Emitted zones are clamped
+  inside the envelope as written, so an emitted intent's zones raise no
+  `intent_zone_outside_envelope` or `zone_containment` error on the board
+  it came from. That is an error-free grade, not a complete one: a channel
+  the grade abstains on (an `overlap_area` budget it cannot measure) still
+  exits `check_floorplan` 4 as NOT FULLY GRADED.
 - **`schema` is the format number; `min_reader` is the field vocabulary.** An
   intent sets `min_reader` when a claim must not be silently ignored, and a
   build whose `READER_VERSION` is lower refuses the file instead of grading it
@@ -1367,6 +1608,8 @@ is followed by a settle beat, so the moves only play once the camera has arrived
 | `escape.py` | Per-face escape-lane ledger: can the nets on this part's face get OUT? |
 | `pair_order.py` | Pin-order inversions between connected part pairs. A LOWER BOUND, not a proxy |
 | `part_class.py` | What determines a part's position — a pose-INDEPENDENT class |
+| `roles.py` | What a part IS (regulator, crystal, transistor, ...), read off footprint name, pins and prefix: the table `board_context` prints and the decap owner predicate (`groups.supply_owners`, #1249) reads |
+| `emc_roles.py` | Converters, crystals, oscillators and ESD arrays by pin function, each leg measured pad edge to pad edge, with a ready `proximity[]` row (`max_mm` null) -- `board_context --json`'s `emc_roles` (#1254). Also PROPOSES design-brief `keep_away` rules: each crystal's or oscillator's clock nets against the switch nodes (SW / LX, a discrete switch's drain; pin-less parts as `candidate`), at a 3 mm derived-default gap, measured by check_floorplan's own `keep_away` grade, with a `brief_row` to paste (#1253). Report only |
 | `options.py` | When a board cannot hold its parts, say so WITH THE NUMBER and the options |
 | `provenance.py` | Was every pose in this board produced by a registered engine lever? |
 | `lock_advisor.py` | Which parts should not be moved, and why (#431). Advice only |
@@ -1374,7 +1617,8 @@ is followed by a settle beat, so the moves only play once the camera has arrived
 | `cli_gates.py` | argparse shared by both placement CLIs so they cannot drift |
 | `../render_placement.py` | Headless PNG stills of placement status (#431) |
 | `legality.py` | Hard constraints shared by both engines: board side, real Edge.Cuts containment, and the OO/OoB graders (#456) |
-| `body.py` | THE body model (#896): courtyard -> fab -> silk U pads -> pad bbox, with the occupancy rect and the source that answered |
+| `body.py` | THE body model (#896): courtyard -> fab -> silk U pads -> pad bbox, with the occupancy rect and the source that answered; a fab MARKING (under 2% of the pad box) is never the body (#1201) |
+| `mating.py` | Which way a connector OPENS (#1155): its mating face, read off where the body sits relative to its pad row. The edge rule and the seeder both read it through `floorplan.edge_facing` |
 | `connector_geometry.py` | The DRAWN connector envelope against a declared compass edge (#961): the number an `overhang_mm` band is graded on, at zero margin, and the legacy occupancy reading named as the basis wherever no body can be measured |
 | `parser.py` | Courtyard, fab, silk and locked-footprint extraction |
 | `writer.py` | Writes new positions/rotations (rotates pad angles with the footprint, as KiCad stores pad angle = footprint + pad rotation). Resolves blocks through `kicad_parser.iter_footprint_blocks`, so one placement moves ONE block even when two share a reference (#726) |
@@ -1423,6 +1667,21 @@ because Y1's pads overhang its fab body.
 above the run-23 blocking floors and all five were logos (`logo`, `oshw:oshw`,
 `Glasgow:nono_hana_lines`).
 
+**A `.Fab` rung under 2% of the pad box is a MARKING, not a body (#1201).**
+The fab rung used to be taken unconditionally while silk had a tick-mark
+guard, so the 0.06 mm pin-1 `fp_circle` -- the only F.Fab item an
+EasyEDA-converted USB-C receptacle draws -- became that part's body, and its
+edge seat was graded on a dot ("seated 8.90mm from the nearest edge" for a
+part whose pads are 3.8 mm from it, CM5_MINIMA_3 J101). `fab_cannot_be_body`
+(`FAB_MIN_PAD_AREA_FRAC = 0.02`) rejects it: the DRAWN body falls to silk,
+else nothing, and `fab_rejected` records it. What the part OCCUPIES is
+deliberately unchanged -- the marking united with its pads, as before, now
+labelled `fab_marking` -- because a silk occupancy never gates (#896), so
+silk may not answer that question. Measured: the markings reach
+0.00466 of their pad box (all 204 on the fa10 designer boards), the least
+real bodies 0.0537 (KiCad's stock library) and 0.3114 on the tracked corpus
+(orangecrab J4), which loses none. A pad-less part keeps its fab body.
+
 **A silk-sourced body never GATES**, structurally rather than by a census
 coming out clean. On the shipped esp_prog, U2's OLIMEX SOT89 draws four corner
 brackets at +/-2.5 mm plus a pin-1 dot -- a 5.2 x 5.2 mm assembly square
@@ -1431,7 +1690,20 @@ real body by 2.1 mm, reads as 89% CONTAINED. The pair is reported, with its
 source; it does not decide. The exclusion is scoped per channel (containment
 reads `drawn_source`, the courtyard channel the occupancy source), because
 scoping it to one set threw away four pre-existing findings silk had nothing to
-do with.
+do with. check_assembly says WHY each contained pair does not gate
+(`gate_exempt`: `silk_drawn`, or the marker / container waiver that applies,
+#1201) instead of one sentence that described neither.
+
+**A mounting hole is decided by its ITEM name, not a substring (#1176).**
+`part_class.is_mount_hole_name` reads `MountingHole` at the start of the item
+or, singular, later in it (a house `M3_MountingHole_Pad`); the plural
+`MountingHoles` is what a part that merely HAS holes says (KiCad's horizontal
+D-subs' `MountingHolesOffset`, its modules' `WithMountingHoles`), and the
+substring rule read those as markers. The item rather than `lib:item`, because
+the pcbnew front drops the library prefix. A horizontal D-sub is therefore
+graded as an edge receptacle, so a part inside its drawn housing is a
+containment that gates check_assembly, where the marker waiver used to excuse
+it.
 
 **There is no offset constant, deliberately.** #896 proposes expanding silk by
 "the silk-to-body offset the library uses, ~0.2 mm on OLIMEX"; that turns its
@@ -1456,6 +1728,94 @@ Source mix over 1349 corpus parts: 1267 courtyard, 27 fab, 6 silk, 49 pad bbox,
 source each side rests on. `body_overlap_pairs` reports a depth only for pairs
 that already overlap, so a board a hair from a collision said nothing at all.
 
+**A test point under another part's body (#1250).** The marker waiver
+excuses a test point's courtyard pair and its containment, because a test
+point has nothing above board level that could be in anyone's way. It never
+asked whether something now sits over the test point. Glasgow's TP6, moved
+39.7 mm into U19's TSSOP body, graded `buildable`. `grade_body_overlap`'s
+`testpoint_covered` measures every test point's pad copper
+(`bodyless_pad_shape`) against each other same-face drawn body
+(`pads_under_body_frac`, at `CONTAINMENT_FRAC`, the #1106 measurement).
+check_assembly gates a finding only when a member moved relative to
+`--baseline` (`testpoint_covered_gating`, the courtyard gate's currency). It
+also needs the body to be `.Fab`, since silk never gates, and the pair must not
+be in the intent's `overlap_waivers`. Over the 22 tracked boards, 2 of 40 test
+points read covered: orangecrab TP26/TP27 under J4, both the designer's own
+poses, so they stay buildable. Fiducials are not graded here, because human
+boards seat them under connectors on purpose. This is the grader's census only.
+The movers' marker exemption (`body_exempt_refs`, `blocking_waived`) still
+admits such a seat, and this gate then charges it.
+
+**A body's distance to the board edge (#1255).** `legality.body_edge_band`
+measures every pad-bearing part's body against the real outline at margin 0.
+The body is the drawn one, else the courtyard, else the pad box, with the rung
+named. Edge-class parts, markers and parts with an edge in the intent are
+listed apart. The band is the intent's `assembly.body_edge_mm`; without it,
+JLCPCB's 2.5 mm (`BODY_EDGE_DEFAULT_MM`, labelled `derived_default`, with its
+citation). check_assembly and render_placement report the census, and it gates
+only when the band is declared. All five human boards measured break 2.5 mm
+(splitflap 10 of 58 parts, esp_prog 7 of 15, glasgow 4 of 232, watchy 10 of 70,
+ulx3s 9 of 210), and JLC adds edge rails when the file has none. It is the
+grader's census only: the quench's soft `edge_halo` (2.0 mm) does not read a
+declared band.
+
+## Mating face (`mating.py`, #1155)
+
+The toolchain could say which edge a connector's courtyard was NEAREST, and
+nothing else, so a DSUB edge-mount seated backwards -- shell over the board,
+opening pointing inward -- passed every grader whenever the back of its shell
+grazed its declared edge (sonde_xilinx J2). The fact that decides it is where
+the BODY sits relative to the PAD ROW: a horizontal connector solders at the
+back and extends forward to its opening. `mating_face_local` reads that
+offset in the footprint's own frame from two votes, the courtyard and the
+drawn body (fab after #1201's guard, else silk), and `facing_edge` maps it
+through the pose.
+
+It abstains, with a reason, on no pads, a board-copper plug (the board is the
+mating body), a `Vertical` footprint name, a symmetric part (offset under
+`FACE_MIN_OFFSET_MM` 0.57 mm, or under `FACE_DOMINANCE` times its cross-axis
+offset), votes that disagree, and a pose more than 30 degrees off every
+quarter turn.
+A face is STRONG at `FACE_STRONG_OFFSET_MM` (2 mm): only a strong face fails
+a declared edge at ERROR. The tiering is measured, not cautious -- KiCad's
+stock library has three receptacles whose PAD layout sets a confidently
+wrong face between 0.9 and 1.4 mm, among 60+ correct USB faces in the same
+range, and no wrong face is known above 2 mm. A wrong WEAK face is not
+caught: stage 1 also tries the angles that point a weak face at the edge
+first when it chooses an undeclared connector's angle, so such a jack can
+be seated opening into the board, and the facing conjunct then reads pass.
+
+The footprint's "PCB Edge" marker is the third source (#1245,
+`marker_face_local`, carried as `BodyGeometry.edge_marker` from
+`parser.extract_edge_markers`). It reads the LINE the marker labels -- the
+straight line parallel to the text's baseline (its stored angle less the
+footprint's rotation), nearest it, on any layer but a courtyard or copper --
+and the face is the side of it away from the pad row. The text's POSITION is
+not the reading: sonde_u's DSUB texts sit 21.55 mm along the edge line, and
+stock DIN41612s put theirs 2 mm off it with an arrow. It abstains on a
+diagonal text, no parallel line, a line within `FACE_MIN_OFFSET_MM` of the
+pad centre, a rival line on another face less than `MARKER_NEARER_RATIO`
+times and `MARKER_NEARER_MM` farther, and two markers that disagree. It
+never names a face alone: agreeing, it makes the body's face STRONG (basis
+`+marker`); contradicting, it makes it abstain, never fail. Calibrated by
+`tests/measure_1245_edge_marker.py` on KiCad 10's 154 marked stock
+footprints: 73 of 73 strong body faces agree, 75 weak ones agree, one weak
+one is vetoed (the RaspberryPi Pico W module's RF-edge marker), and no
+reading moves when the footprints are saved at 90, 180 or 270. The three
+wrong-faced stock jacks above draw no marker, so it does not reach them.
+
+One predicate, every consumer: `floorplan.edge_facing` is what
+`rule_edge_connector`'s facing conjunct grades, what `emit_intent` withholds
+a reversed edge by, and the function object the seeder seats by, so the
+seeder's angle choice and the grade read one answer for which way a part
+faces. A reversed seat is still possible -- an author's declared angle is
+kept, stage 1 falls back to the input angle when no facing angle seats, and
+the wrong weak face above misleads both alike -- and the grade reports the
+first two. `board_context`'s "Mating face" reads the same primitive. B-side parts need
+no extra mirror: the board file stores their local coordinates mirrored
+already. Census: `tests/measure_1155_mating_census.py` -- every decisive
+receptacle on the tracked and fa10 designer boards faces the edge it sits on.
+
 ## Legality model (`legality.py`, #456)
 
 What counts as a *legal* placement is decided in one place, so the optimizer and
@@ -1467,6 +1827,28 @@ any grader cannot disagree:
   not in copper), but not inside a front-side connector's pin field. Cross-side
   pairs also pay no halo penalty — spreading them apart buys no routing room.
   On a single-sided board every test reduces to plain courtyard-vs-courtyard.
+  The far side is one box per CLUSTER of drilled pads (#1206,
+  `legality.far_side_local`): holes merge single-link while their boxes are
+  within `FAR_SIDE_CLUSTER_GAP_MM` (2.54) of each other, so a pin row or a
+  2-row header stays one box and two mounting posts 48 mm apart are two.
+  The returned `FarSide` is still the union 4-tuple, so a consumer that does
+  not read `.boxes` gets the old (stricter) answer. CM5 human: 45 courtyard
+  pairs -> 14 (`tests/measure_1206_far_side_clusters.py`).
+- **Containers** (#1184, #1212, `legality.container_kinds`). A part is a
+  container only by GEOMETRY: at least `CONTAINER_RATIO` (0.5) of the board,
+  no drawn courtyard, and either an `outline` (no pads and no holes -- watchy's
+  e-paper REF**) or a `pin_frame` (at least `FRAME_DRILLED_FRAC` of its pads
+  drilled and none inside the box inset by `FRAME_BAND_FRAC` of its short
+  side -- rp2350's Teensy U8). Never by area alone (One-Air-Max's SMD 18650
+  holder BAT1 is a BODY) and never by a lock. Pose-independent: a turn grows a
+  rect, never a part's own box. An outline's courtyard pairs are listed,
+  waived `container_class`, locked or not. A pin frame's rect pairs leave the
+  courtyard channel and its drilled HOLES are graded instead, kind
+  `pin_in_courtyard` (KiCad's `pth_inside_courtyard`): check_assembly's
+  eighth conjunct, absolute; `tests/measure_1212_kicad_pins.py` cross-checks
+  it against kicad-cli. The search (`container_pin` veto), the seeder's
+  declared-pose and eviction checks and the repair census all ask
+  `CourtyardCensus.pin_hits`, the grader's own function.
 - **Board containment** measures against the real Edge.Cuts rings, not an inset
   of the axis-aligned `board_bounds`, so parts are not nudged into an L-shaped
   board's notch or an interior cutout. Three levels of short-circuit keep it
@@ -1540,7 +1922,9 @@ re-seating 85/92 while leaving its zone targets unmoved):
   NEW different-net pad intersection is never admitted). Exact `check_drc`
   geometry runs once per CLI for reports, so summaries carry no AABB phantoms.
 - **Quench integration (default ON)** — `candidate_valid`, the off-board
-  unfreeze branch and the swap phase all carry the pad gate; the halo term no
+  unfreeze branch and the swap phase all carry the pad gate (and, since
+  #1257, `candidate_valid` refuses pad copper past the outline for a part
+  whose pads reach past its courtyard -- veto `pad_copper_outline`); the halo term no
   longer saturates on overlap (existing overlaps now have a repair gradient);
   zero-net parts (mounting holes) are frozen by the quench unless
   `--move-unconnected`; zero-pad footprints with a courtyard are static
@@ -1560,18 +1944,108 @@ re-seating 85/92 while leaving its zone targets unmoved):
   finding naming no moved ref is charged by counterfactual, each moved ref
   restored alone), and a cap pushed past the
   decap search radius (its `decap_distance` became `decap_ungraded`, which is
-  not a fix). `unresolved` sets no exit code of its own; exit 4 stays
-  `unrepairable`'s and the final grade's. `place_reconstruct`'s legalize
+  not a fix). A part charged by decap rules ALONE is not moved by this seat
+  (#1150 b): the seat is the nearest legal pose to the part's own and has no
+  decap target, so it could only leave the finding or make it worse (esp_prog
+  C2 shipped 0.06-0.10 mm farther from U1 three ways) -- unless it is a
+  member of a pad, body or baseline-gating courtyard pair the census charged
+  to the OTHER member (#1259). Such a part waits until every charged member
+  has had its seat; if its pair is still on the board (the charged seat out
+  of proportion, absent, or taken without clearing it) it gets this seat,
+  kept only when the move clears the pair -- its pad/hole/stack shortfall
+  against the charged member falls with none of it growing, or the gating
+  courtyard pair is gone with no new one -- and is otherwise put back. watchy
+  C15/TP7 and splitflap C8/J7 shipped without it. A part that takes part
+  in a decap finding -- its ref, or the cap / IC it measures -- is seated
+  first where none of those findings grows, and ANY part a decap rule can
+  measure (a graded cap, a cap serving a supply pin, an IC with supply pins
+  or caps elected to it) first where it creates no decap finding -- a cap
+  moved off a pad conflict used to be seated outside its limit, reported and
+  shipped; by the plain seat only when no such pose exists within any cap,
+  which a note says. An IC is never moved for a decap finding. `unresolved` sets no exit code of its own; exit 4 stays
+  `unrepairable_failed_refs`' (a free violator no seat could place) and the
+  final grade's. A locked violator (`(locked yes)`, `--lock`, a fixed pose)
+  is `unrepairable_pinned_refs`: reported, not a gate failure, the
+  pinned-part contract (#1193) -- except pad copper past the outline, where a
+  lock is no waiver, as in the seed gate (#1241): such a ref is also in
+  `unrepairable_pinned_off_board_refs` and exits 4. The
+  off-board census grades each pad's copper and each hole ALONE
+  (`legality.pad_copper_outside_amount`, the `oob_pad_copper_refs`
+  measure), never the part's pad union, whose corner can sit in a notch no
+  pad enters. `place_reconstruct`'s legalize
   stage reports the same `unresolved` list.
-  `--repair-decaps` (#1066 b, opt-in) adds the missing actor: each cap a
-  `decap_distance` / `decap_pin_distance` error charges is seated toward its
-  IC's pin (the rail pad nearest it, or the declared supply pad) and KEPT
-  only when that finding is gone, no finding anywhere is new or worse, the
-  overlap / off-board numbers did not grow, and the move is proportionate
-  (the repair's own `DISPROPORTION_RATIO` / `_FLOOR_MM`, against how far the
-  cap is past its limit). Its record is `JSON_SUMMARY.decap_rung`. It stays
-  off by default: `tests/test_placement_ab.py`'s `repair-decaps-*` rows
-  improve two of five boards and regress none, short of the N-1 rule.
+  `--repair-decaps` (#1066 b, opt-in) adds the missing actor, and it moves
+  only CAPS (`DECAP_RUNG_RULES`). A `decap_distance` cap, or a cap a
+  --decaps-from reference holds and the board strands past the search radius
+  (`decap_ungraded` at error, #1150 a), is seated toward the IC pad on its
+  rail nearest it. A `decap_pin_distance` pin may be served by ANY usable cap
+  on its rail (#1188): every one is ranked, first those no other pin relies on
+  (not the only cap within the limit of a passing pin, not the nearest cap of
+  a failing one), nearest first, and the first one the grade keeps wins --
+  the finding's `measured.cap` is only the nearest, and moving it when it is
+  the nearest for several failing pins worsens the rest, and the grade
+  reverts it. Each search asks only poses that clear the target and
+  make no decap finding the cap takes part in new or worse
+  (`_DecapView.accept`), and a pose nearest the target that is out of
+  proportion is followed by a search within the budget of the cap's own pose.
+  What makes it affordable changes no verdict: a search (the ordinary seat's
+  too) asks `pose_ok` against only the parts within reach of its disc
+  (`_search_scope`, a superset kept in board order), `accept` settles a check
+  by a bound on the cap's pads where the bound decides it and poses the cap
+  only otherwise, and a board the rung has graded is not graded again.
+  A seat is KEPT only when that finding is gone, no finding anywhere is new or
+  worse, the overlap / off-board numbers did not grow, and the move is
+  proportionate (the repair's own `DISPROPORTION_RATIO` / `_FLOOR_MM`,
+  against how far the cap is past its limit). A finding still open because
+  every pose within the limit is taken is asked once more with the movable
+  PASSIVES near its target set aside (a resistor, capacitor, inductor or
+  ferrite with two copper pads, unlocked and undeclared -- never an IC, a
+  diode, a connector or a marker): the cap takes a pose with at most two of
+  them in its way, each of those moves to the nearest pose of its own within
+  the repair's cap ladder that creates no decap finding and makes none
+  worse (a decap set aside stays within its own limits), and the grade
+  judges the cap and the moved passives as one move. A passive moved aside
+  is in `moves` and in `decap_rung` (`moved_aside`, `aside_for`), not in
+  `repaired`. An IC still carrying a pin
+  finding is UNRESOLVED with a note naming the caps tried for each pin and
+  their result. Its record is `JSON_SUMMARY.decap_rung`. It stays
+  off by default: of `tests/test_placement_ab.py`'s five `repair-decaps-*`
+  rows one improves, three regress on a guard while clearing their decap
+  errors (watchy on crossings; esp_prog and glasgow on hpwl, from a passive
+  set aside), and one is neutral, short of the N-1 rule.
+  The repair also reads check_assembly's own channels (fa10 P1): a part
+  over a pin frame's drilled pin is charged absolutely (`Pin census`,
+  #1212), and the COURTYARD channel (`Courtyard census`, #1182) --
+  `CourtyardCensus` with the intent's waivers -- is charged only under
+  `--baseline BOARD`, because check_assembly gates a courtyard pair only
+  when a member moved against one. The member that moved is charged
+  (weight its depth, >= 1 mm), and the pairs are re-graded at the final
+  poses: a charged pair that still gates, or a gating pair a moved part
+  created, keeps its mover out of `repaired`, and the note says when the
+  search spaced pad boxes. `JSON_SUMMARY`'s repair record carries
+  `courtyard_gating_before` / `_after` (None without a baseline).
+- **`--body-model`** (#1182, from #916) arms every search state a
+  `place_seed` run builds -- seed, polish, the post-polish re-seat, repair,
+  reseat and its inner seed -- with `placement.body`'s occupancy (courtyard,
+  else the drawn .Fab body, else silk, each united with the pads). Only the
+  NEIGHBOUR currency moves (`quench._Part.rect`): every intent, zone,
+  keep-out, edge-claim and board question asks `_Part.grade_rect`, the
+  courtyard-else-pad-box ladder the floorplan grade reads off a default
+  state, so the armed search cannot refuse a seat the grade accepts and the
+  PoseGrader grades an armed state exactly as an unarmed one. For a library
+  that draws bodies and no courtyards (One-Air-Max: 197 of 204 parts) pad
+  boxes let bodies overlap. Measured on One-Air-Max's s180_0p with
+  `--repair --baseline`: armed, check_assembly's gating pairs went 6 -> 2;
+  unarmed, 5 of the 6 charged movers ended UNRESOLVED. **Opt-in**: the
+  `body-seed-*` rows of `test_placement_ab.py` mark REGRESS on all four
+  boards (wirelength, crossings or an intent error), so they are kept as
+  `rejected` rows.
+- **`--reseat`'s gate** measures its last term, courtyard overlap, on
+  check_assembly's geometry (`CourtyardGrade.overlap_exact` at the state's
+  poses), not the search's rects -- One-Air-Max read `0.4323 -> 0.4323` on
+  pad boxes while four pairs gated; it now reads 13.4736. hpwl still ranks
+  above it (run 4's order), so a re-seat that clears a pair at an hpwl cost
+  is refused, visibly.
 - **`place_reconstruct.py`** (`placement/reconstruct.py`) — the structural
   ("puzzle") solver: tier classification (frame -> anchors -> smalls),
   corner-inset pattern fit (propose-only), rigid ±v vector detection, ONE
@@ -1595,7 +2069,12 @@ re-seating 85/92 while leaving its zone targets unmoved):
   more agree" letter) and runs a per-part revert sweep (`prune_assignment`)
   after acceptance, because the board-wide gate tuple cannot see an
   individual mis-move smuggled inside a hugely-improving set (run 3's J7:
-  31.6 mm from home, worse than its 15.8 mm input).
+  31.6 mm from home, worse than its 15.8 mm input). Candidates are
+  translations at the part's own angle, with one exception (#1242): an
+  edge-less receptacle's seats face out of the edge they sit on
+  (`facing_seats`) -- a seat its strong mating face points away from is
+  dropped and the facing quarter turn there offered as `(x, y, rot)`, which
+  the ILP, the descent and the pair rows read through `cand_pose`.
 - **`render_placement --legality`** (default ON) draws the defects the caption
   used to only count: conflict rings/links, NPTH keepout circles (the real
   keep-out since #761 — it drew the bare drill at `--clearance >= 0.20`,

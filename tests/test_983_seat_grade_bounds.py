@@ -12,7 +12,8 @@ refusals) pin the function directly. A10 and B7 go through
   A.  (#983) A RUNG WRITTEN OUTSIDE ITS DECLARED ALONG-EDGE WINDOW is stepped
       one 0.001 mm grid unit along the edge, inside (`_window_nudge`); a rung
       the grade accepts is returned bit-identical.
-      A1  the issue's two blocker positions (both window ends), to the micron.
+      A1  the issue's two blocker positions (both window ends), to the micron
+          along the edge (#1241 moved one across it, see the arm).
       A2  a lattice slice through both ladders; a seat differs from the blind
           one only when a step fired (A6).
       A3  an asymmetric part at 0/90/180/270: the end that rounds out, and
@@ -188,6 +189,27 @@ def input_rotation():
     """The blind twin of C: stage 1 measures at the input rotation again."""
     return patch.object(seeder, '_stage1_geometry_rot',
                         lambda part, claim, fits=None: part.rot)
+
+
+def _pad_only(fn):
+    """#1172: run a #1125 walk test with the courtyard tier OFF.
+
+    These pin the walk's mechanics on PAD crowding. With the tier on,
+    stage 1 also refuses a rung over a placed courtyard, and on this fixture
+    J5's centred 180-degree seat overlaps J16 and J18 by 19.4 mm2 each, so
+    the walk takes 90 for a reason these tests do not describe -- that case
+    is test_c20."""
+    import functools
+
+    @functools.wraps(fn)
+    def run(self, *a, **k):
+        saved = seeder._edge_courtyard_tier
+        seeder._edge_courtyard_tier = False
+        try:
+            return fn(self, *a, **k)
+        finally:
+            seeder._edge_courtyard_tier = saved
+    return run
 
 
 class StageOneRotation(_Graded):
@@ -524,6 +546,7 @@ class StageOneRotation(_Graded):
     def j5_notes(self, res):
         return [n for n in res['notes'] if n.startswith('edge connector J5')]
 
+    @_pad_only
     def test_c14_a_member_that_only_crowds_is_walked_past(self):
         # #1125: J5 declared [180, 90] used to keep 180, whose only seat on
         # the north band crowds J17, and say so; 90 seats clear.
@@ -561,6 +584,7 @@ class StageOneRotation(_Graded):
         self.assertEqual(len([n for n in self.j5_notes(res)
                               if 'clears J17' in n]), 1)
 
+    @_pad_only
     def test_c16_a_member_that_seats_clear_is_not_walked(self):
         # Nothing crowds when J17 is not yet placed: J5 keeps its own angle,
         # and the author's order still decides between members that both
@@ -600,6 +624,48 @@ class StageOneRotation(_Graded):
             return real(state, part, *a, **k)
         return patch.object(seeder, 'edge_seat_ok', ok)
 
+    def test_c20_the_courtyard_tier_walks_past_an_overlapping_member(self):
+        """#1172: C16's case with the tier ON. J5's centred 180-degree seat
+        clears every pad but overlaps J16 and J18's courtyards (19.4 mm2
+        each); 90 seats clear of both, so the walk takes it and says why."""
+        doc = intent_doc(dict(self.J5, **self.CENTRE),
+                         blocks=[{'name': 'j5', 'refs': ['J5'],
+                                  'rotation_candidates': [180, 90]}])
+        res = self.stage1(SPLIT, doc, seed_refs={'J5', 'J17'})
+        self.assertAlmostEqual(self.pose(res, 'J5')[2] % 360.0, 90.0,
+                               delta=1e-9)
+        self.assertTrue([n for n in res['notes'] if '(#1125)' in n],
+                        res['notes'])
+
+    def test_c21_the_fall_back_note_names_the_pad_clear_seat_it_keeps(self):
+        """#1172 with #1125: 180 crowds J17's pads (or is refused after the
+        turn) and 90 seats pad-clear but over a placed courtyard (made so
+        here), so no member seats clean and the walk keeps 90's pad-clear
+        seat. The note names THAT seat -- it used to name 180's crowded seat,
+        or say J5 was "left to the later stages" while stage 1 had seated it
+        (final review)."""
+        real = seeder._placed_courtyard_hits
+
+        def hits(state, ref, pose, others):
+            if ref == 'J5' and abs((pose[2] - 90.0 + 180.0) % 360.0
+                                   - 180.0) < 1e-6:
+                return ['J16']
+            return real(state, ref, pose, others)
+        for refused in ((), (180.0,)):
+            with self.subTest(refused=refused), \
+                    patch.object(seeder, '_placed_courtyard_hits', hits), \
+                    self.refusing(refused):
+                res = self.seat_j5_set([180, 90])
+                self.assertAlmostEqual(self.pose(res, 'J5')[2] % 360.0, 90.0,
+                                       delta=1e-6)
+                notes = self.j5_notes(res)
+                self.assertTrue([n for n in notes if
+                                 'keeps the pad-clear seat of 90deg' in n],
+                                notes)
+                self.assertFalse([n for n in notes if 'crowded seat of' in n
+                                  or 'left to the later stages' in n], notes)
+
+    @_pad_only
     def test_c17_a_member_refused_after_the_turn_is_walked_past(self):
         clear90 = self.seat_j5_single(90)
         with self.refusing((180.0,)):
@@ -629,6 +695,7 @@ class StageOneRotation(_Graded):
                         res['notes'])
         self.assertFalse([n for n in res['notes'] if 'keeps the crowded' in n])
 
+    @_pad_only
     def test_c19_a_clear_seat_short_of_the_floor_is_not_walked(self):
         # A conflict-free rung the edge-copper floor reads short of is KEPT
         # (`_kept`) -- it crowds nothing, so it is not a member to walk past.
@@ -677,6 +744,17 @@ def key(pads=0, worst=0.0, overlap=None):
     return (pads, worst, dict(overlap or {}), None, None)
 
 
+def pads_past(path, pose, ref='J1'):
+    """How far `ref`'s pad copper reaches past the outline at `pose` (#1241)."""
+    import pose_score
+    st = pose_score.make_state(parse_kicad_pcb(path), path, clearance=.25,
+                               board_edge_clearance=.55)
+    part = st.parts[ref]
+    seeder._materialise_rotation(part, pose[2])
+    part.rot = pose[2]
+    return seeder._pads_past_outline(st, part, pose[0], pose[1])
+
+
 def no_nudge():
     """The blind twin of A: every rung is written where the clamp put it."""
     return patch.object(seeder, '_window_nudge',
@@ -703,13 +781,23 @@ class AlongEdgeWindow(_Graded):
     def test_a1_the_issues_two_positions_are_written_inside_the_window(self):
         # #983's own rows: the blind pose is the issue's, to the micron, and
         # outside the window; the stepped one is inside it at both ends.
-        for (bx, by), issue_pose in (((0.5, 14.6), (0.468, 14.693, 270.0)),
-                                     ((0.5, 15.65), (-0.04, 14.152, 270.0))):
+        #
+        # #1241: ALONG the edge, that is. At the issue's 15.65 pose
+        # (-0.04, 14.152) pad 2 reached 0.200 mm past the west edge, and a
+        # seat never keeps copper past the outline any more: the blind seat
+        # is that rung moved inward across the edge, to (0.711, 14.152),
+        # where the copper clears the board-edge floor. The along-edge
+        # coordinate -- the one #983 is about -- is the issue's.
+        for (bx, by), issue_pose, now in (
+                ((0.5, 14.6), (0.468, 14.693, 270.0), (0.468, 14.693, 270.0)),
+                ((0.5, 15.65), (-0.04, 14.152, 270.0), (0.711, 14.152, 270.0))):
             with self.subTest(blocker=(bx, by)):
                 path = self.issue_board(bx, by)
                 ok, blind, _ = self.seat(path, ALONG, blind=True, target=(2.18, -0.24))
                 self.assertTrue(ok)
-                self.assertEqual(blind, issue_pose)
+                self.assertEqual(blind, now)
+                self.assertEqual(blind[1:], issue_pose[1:])
+                self.assertEqual(pads_past(path, blind), 0.0)
                 before = self.graded(path, {'J1': blind}, intent_doc(ALONG))['J1']
                 self.assertIn('along_edge', before)
                 ok, pose, notes = self.seat(path, ALONG, target=(2.18, -0.24))
@@ -908,11 +996,12 @@ class AlongEdgeWindow(_Graded):
         self.assertEqual(seeder._window_nudge(st, part, mid, 'west', x, y, same), stepped)
 
     def test_a4c_a_step_that_raises_keeps_the_seat(self):
-        # The issue's two rows with the floor unreadable at every pose: the
-        # seat is kept where the ladder had it (and graded as #983 found it),
-        # rather than the error escaping the seat and unseating the part.
-        for (bx, by), issue_pose in (((0.5, 14.6), (0.468, 14.693, 270.0)),
-                                     ((0.5, 15.65), (-0.04, 14.152, 270.0))):
+        # The issue's two rows with the window step raising at every pose:
+        # the seat is kept where the ladder had it (the blind seat, as A1
+        # pins it), rather than the error escaping the seat and unseating the
+        # part.
+        for (bx, by), blind_pose in (((0.5, 14.6), (0.468, 14.693, 270.0)),
+                                     ((0.5, 15.65), (0.711, 14.152, 270.0))):
             with self.subTest(blocker=(bx, by)):
                 path = self.issue_board(bx, by)
                 real = seeder._window_step
@@ -923,7 +1012,7 @@ class AlongEdgeWindow(_Graded):
                     ok, pose, _ = self.seat(path, ALONG, target=(2.18, -0.24))
                 self.assertTrue(ok)
                 self.assertIs(seeder._window_step, real)
-                self.assertEqual(pose, issue_pose)
+                self.assertEqual(pose, blind_pose)
 
     def test_a10_the_issue_row_through_the_production_caller(self):
         # (0.5, 14.6): J1 already overlaps R9's courtyard by 0.0441 mm2 at

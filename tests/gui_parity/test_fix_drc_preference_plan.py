@@ -140,6 +140,9 @@ def main():
         def invoke():
             seen.append(dlg._build_routing_config(
                 [], ['F.Cu', 'B.Cu'])['fix_drc_settings'])
+            # Report a produced result, as the route tab's apply does: a step
+            # that marks none stops the plan (ai_plan._step_refusal).
+            gui_utils.mark_plan_step_produced(dlg)
             if stop_at is not None and len(seen) == stop_at:
                 ex.stop()
         ex._action_parts = lambda action: (invoke, lambda: False)

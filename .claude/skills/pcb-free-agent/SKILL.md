@@ -17,7 +17,8 @@ board and `route` for a placed one. The positive test for which one is
 read `pile` and `has_copper` on its `JSON_SUMMARY` line (the file carries
 them under `state`); exit codes are not the test. Read `pile`, not
 `unplaced`: a staging ring of parts around the outline is a pile but reads
-`unplaced: false` (#1109). The same line's `poured_nets` names the nets a
+`unplaced: false` (#1109), and so does a pile whose fixed parts you placed
+and locked first -- `pile` measures the unlocked parts (#1165). The same line's `poured_nets` names the nets a
 copper pour already serves (`pours` in the file: layers, filled or not,
 coverage), which `has_copper` does not count; route.py's plane finalize
 serves those nets from the fill.
@@ -65,23 +66,70 @@ serves those nets from the fill.
   rule stays unarmed: run 36 left StickHub's hub decaps 2.1-9.8 mm from
   their pins, where the human board keeps them within 2.2 mm. A cap the
   reference keeps within 5 mm of its chip and your board leaves beyond it is
-  then a `decap_ungraded` ERROR, named by ref (#1142). Nothing repairs it
-  automatically -- `--repair-decaps` covers `decap_distance` and
-  `decap_pin_distance` only -- so move the cap with `place_pose`.
+  then a `decap_ungraded` ERROR, named by ref (#1142). `place_seed --repair
+  --repair-decaps` pulls such a cap back toward its IC (#1150); one it
+  cannot seat stays in `unresolved_by_rule` as `decap_ungraded` -- move that
+  cap with `place_pose`.
+- **Ask for the EMC rows the board cannot state.** A crystal's load pins, a
+  converter's input cap and inductor, an ESD array's connector: how close
+  they sit decides EMC, and the emitted intent carries no `proximity` row for
+  any of them, because a limit read off the board would bless its pose. Run
+  `python3 -X utf8 py_tools/board_context.py <board> --json -o <ctx.json>`
+  and read `emc_roles.roles`: each converter, crystal, oscillator and ESD
+  array its pin functions name, every leg measured pad edge to pad edge in
+  `emc_roles.roles[].proximity[].legs`, and a ready row in
+  `emc_roles.roles[].proximity[].row` with `max_mm` left null. Ask the user
+  for the limits -- crystal to its load pins, input or bulk cap to the
+  regulator's VIN and PGND, inductor to SW, ESD array to its connector --
+  put the rows in the brief's or the intent's `proximity`, and report which
+  you were given. A role read as `unknown` (a buck whose pins carry no pin
+  function) names the part; which pin is SW is not guessed, so ask for the
+  pins too. Ask in the same breath about the keep-away rules the same
+  section proposes (below): a crystal near a switch node is the other half
+  of the same question.
+- **Keep the noisy nets away from the sensitive ones, in the brief.** A
+  proximity row says how CLOSE two parts must be. When the user says two net
+  groups must stay APART (a switch node or a clock against a crystal's pins,
+  an ADC input or a feedback node), put the rule in the brief's `keep_away`
+  list, in the router's own syntax (AGGRESSOR:VICTIM:GAP, with class= terms
+  allowed). Do not write it as a minimum distance on a proximity row, which
+  the brief refuses. check_floorplan then grades your placement against it
+  pad edge to pad edge: a WARN names each part pair inside the band, with
+  both pads' sides, and a passing rule prints its closest pair. The route
+  steps price the same rule from the brief with no flag. Which nets are noisy
+  is the user's to say, so ask; do not infer it from net names. Report each
+  pair inside the band, and say when a pair sits on opposite faces, since the
+  grade is plan view.
+- **Ask about the keep-away rules board_context proposes.** The same
+  `board_context.py --json` document lists them in `emc_roles.keep_away`:
+  per crystal or oscillator, a `rule` keeping its clock nets away from every
+  switch node the pins name (a converter's SW, a discrete switch's drain).
+  Beside each are check_floorplan's reading of it on this board,
+  `emc_roles.keep_away[].measured.min_gap_mm`, and `inside_now`. The gap,
+  `emc_roles.keep_away_gap.gap_mm`, is a derived default, not a datasheet
+  value. A `candidate` rule has a side read off the nets, because that
+  part's pins carry no function. Show the user each rule with its gap and
+  its measured distance, and ask them to confirm the nets and the gap.
+  board_context writes each rule ready to paste as
+  `emc_roles.keep_away[].brief_row`: put each confirmed one in the brief's
+  `keep_away` list. When the user gives another gap, write it into the
+  rule and drop the `why`'s "derived default" sentence. Say which rules you
+  were given and which you left out.
 - **On a pile, read the emitter's decap line before you seed.** It says how
-  many caps the per-supply-pin stage can claim, and which only once their
-  owner ICs are seated. When `place_seed` then reports the decap stage
-  claimed 0 because no owner IC was seated before it, the first remedy is
-  to seat the owners first (a `fixed_poses` entry or a zoned block). The
-  other is an EXPERIMENT, not a fix: re-seed with
-  `--decap-claim-after-ics` and keep it only if it grades better on
-  routed outcome. It claims the decaps once the centroid stage has seated
-  their ICs, and the seed places every IC exactly as without it -- only
-  the polish that follows can move one (#1105). The line's stage-2.5
-  count assumes those early seats succeed. The corpus A/B rejected it as
-  a default: it marked `regress` on all 7 of its boards. On run 38's
-  StickHub pile (seed 0, run 38's own arguments) it claimed 16 caps and
-  cut the seed's grade errors 16 to 7.
+  many caps the per-supply-pin stage claims at an owner IC seated before it
+  (stage 2.5), and how many stage 3.5 claims once the centroid stage has
+  seated their owners. On a pile stage 3.5 is ON by default (#1105): it
+  pulls the decaps to their supply pins and undoes a seat that lands past
+  the decap limit, at some cost in wire length or crossings on some boards,
+  and the seed places every IC exactly as without it -- only the polish
+  that follows can move one. If the routed outcome
+  looks worse for it, re-seed with `--no-decap-claim-after-ics` and keep
+  the better board. Seating the owners first (a `fixed_poses` entry, a
+  `must_lock` pattern or a zoned block) lets stage 2.5 claim at them
+  instead; the line's stage-2.5 count assumes those early seats succeed.
+  On a board that is not a pile the stage stays off, because the corpus
+  A/B rejected it there. `--decap-claim-after-ics` turns it on for any
+  input, and keeps every seat it finds, even one past the limit.
 - **Give `--intent` to every placement tool.** It is a per-move gate only in
   tools that receive it. It stops a part LEAVING its zone; it never moves one
   back in.
@@ -89,8 +137,11 @@ serves those nets from the fill.
   (`(locked yes)`), and there is no override. For a from-scratch experiment
   with everything off the board, build the input with
   `python3 -X utf8 .claude/skills/pcb-free-agent/scripts/make_unplaced.py <src> <dst>`.
-  It piles every pad-bearing part off the outline and removes each moved
-  part's lock. It refuses a routed input: strip that first with
+  It piles every pad-bearing part off the outline, removes each moved
+  part's lock, writes every moved part's texts at absolute 0, and drops the
+  board-level zones that outline the placement (a small zone holding a moved
+  part's pad; declare what it meant in the brief, or pass
+  `--keep-local-zones`). It refuses a routed input: strip that first with
   `python3 -X utf8 tests/stress/strip_copper_only.py <src> <dst>`, which keeps
   the outline bit-identical.
 - **Work in a run directory**, `wk/<run>/`. Copy every board with
@@ -107,7 +158,7 @@ Read `--help` before assuming a flag does not exist. Two runs declared
 
 | job | tools |
 |---|---|
-| score (the authority on `blocking`) | `py_tools/board_score.py <board> --intent <i> --json <out>`; `check_complete.py <board> --intent <i>` (fails closed) |
+| score (the authority on `blocking`) | `py_tools/board_score.py <board> --intent <i> --baseline <input> --json <out>`; `check_complete.py <board> --intent <i> --baseline <input>` (fails closed; `--baseline` arms check_assembly's moved-part gates, courtyard overlap and a test point buried under a body; without it both are unarmed, and `ungraded` says so) |
 | read the board | `py_tools/board_brief.py <board> --json <out>`, `py_tools/board_context.py --md` (per-part sheet: pin order, `CROSSED` pairs) |
 | place from scratch | lock the fixed parts with `py_placer/place_pose.py` first, then `py_placer/place_seed.py` (about 5–15 min on a 250-part board; rank seeds with `py_placer/compare_seeds.py`) |
 | improve a placement | `py_placer/place_optimize.py --max-displacement 3` (the quench, for ROUGH placements), `py_placer/place_reconstruct.py` (structural damage), `place_seed --repair` (local violations) / `--reseat` (parts far off), `py_placer/place_portfolio.py --intent --lock --full-probe` (on a SEEDED board), `py_placer/converge.py poses --ref X` (rank one part's poses), `py_placer/place_fanout_clearance.py` |
@@ -128,6 +179,25 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   (`place_pose set … --rot`, then `lock`, or the plan's `fixed_poses`). Then
   zone the rest and seed. The seeder puts undeclared parts at their
   connectivity centroid in the first rotation that fits.
+- **Repeated sheet instances (channel strips, one buffer per bank): arrange
+  ONE, then copy it** instead of writing a helper:
+  `python3 -X utf8 py_placer/place_pose.py <in> <out> replicate --from CH1 --to CH2 --to CH3 --anchor J1`
+  (#1211). It matches parts by schematic symbol and refuses unless the
+  instances are wired alike, naming the pads. A pad wired differently per
+  instance by design (an address strap) is waived one by one with
+  `--allow-net-mismatch REF.PAD`, which the refusal spells out; read the
+  pads before you waive them. Each target keeps its anchor
+  part where it is (default: the part with the most pads). A copy only
+  fits where the target has room for the whole channel: a refused copy
+  lists each colliding member under `ops[].new_conflicts`. Then either copy
+  the rest (`--skip` the members it names, which stay where they are, and
+  repeat until the copy is accepted) or let it look nearby (`--search 2`
+  keeps the nearest offset that grades no worse; it never moves a locked
+  part). To have the SEED do it, declare the copy in the intent
+  (`"replicate": [{"from": "CH1", "to": ["CH2", "CH3"], "anchor": "J1"}]`,
+  `min_reader` 11): `place_seed` copies it after its polish when the copy
+  grades no worse, `place_pose ... --intent PATH replicate` applies it by
+  hand, and check_floorplan grades each target against the source.
 - **On a pile, rank the biggest IC's rotation before you keep a seed.** A
   pile part keeps its input rotation, which is a generator default, and
   `converge.py poses` cannot rank an IC's rotation once its decaps are packed
@@ -183,7 +253,9 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   parts tens of mm off, use `--reseat`: `--repair` ran 5 min and attempted
   none of 11.
 - **Read `unseated_refs` after every `place_seed`.** A part in that
-  list is still in the staging pile, so seat it (`--repair`, or
+  list is NOT placed -- left where it came in, or staged below the board
+  when its input pose stacked on a seated part
+  (`unseated_disposition`) -- so seat it (`--repair`, or
   `place_pose.py`) before any route. The exit-4 line names these parts; run
   36 routed a board with C20 still in the pile and the router took GND off
   the board to reach it.
@@ -191,7 +263,16 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   - `place_seed --repair` counts a violator `repaired` only once its
     finding is gone; read `unresolved_refs` / `unresolved_by_rule` in its
     `JSON_SUMMARY` for the rest (#1066). Add `--repair-decaps` to seat
-    charged caps at their IC's pin (opt-in; `decap_rung` says what it did);
+    caps at their IC or at the pin a finding names -- any cap on that pin's
+    rail, not only the nearest (#1188) -- and to pull back a held cap
+    stranded past the radius, moving a resistor, capacitor, inductor or
+    ferrite aside when one takes the only room (opt-in; `decap_rung` says
+    what it did, a part it moved aside included, and an unresolved IC's
+    note names the caps it tried).
+    Pass `--baseline <input>` too: only then does the repair charge the
+    courtyard pairs check_assembly gates (#1182), and on a library that
+    draws bodies but no courtyards add `--body-model`, or the seat search
+    spaces pad boxes and such a pair stays unresolved;
   - `place_fanout_clearance` holds both decap limits when you pass it
     `--intent` (#1067): no cap move takes a decap claim past its limit and
     further than before, unless no clear pose keeps it -- then the cap
@@ -301,7 +382,7 @@ Read `--help` before assuming a flag does not exist. Two runs declared
    placement, the first routed board, the first DONE, each improvement, the
    final board, and tried-and-worse boards with `--rejected`.
    ```bash
-   python3 -X utf8 py_tools/board_score.py <board> --intent <i> --json <board>.score.json --quiet
+   python3 -X utf8 py_tools/board_score.py <board> --intent <i> --baseline <input> --json <board>.score.json --quiet
    python3 -X utf8 py_placer/converge.py record --ledger wk/<run>/ledger.jsonl \
        --board <board> --kind placement --parent <the board it was made from> \
        --lever "<what you did, one line>" --score-file <board>.score.json
@@ -345,7 +426,11 @@ Read `--help` before assuming a flag does not exist. Two runs declared
    replacing the verifier:
    ```bash
    python3 -X utf8 .claude/skills/pcb-free-agent/scripts/grade.py <board> --baseline <input> --intent <i> --mode <mode>
-   python3 -X utf8 .claude/skills/pcb-free-agent/scripts/measure.py --root .
+   python3 -X utf8 .claude/skills/pcb-free-agent/scripts/measure.py --self --evidence wk/<run>
    ```
    Add `--spec <name>=<value>` to `grade.py` for each spec flag the board
-   declares (e.g. `--spec net-min-widths=widths.json`).
+   declares (e.g. `--spec net-min-widths=widths.json`). `measure.py` must
+   run from your own shell: `--self` is the transcript making that call
+   (a subagent's included), checked against your work dir. It prints the
+   file it measured; if it refuses (exit 3), quote the refusal rather than
+   timing another transcript.

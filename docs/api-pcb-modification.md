@@ -9,6 +9,10 @@
 
 All coordinates are mm.
 
+Examples run from the repository root with the engine directory on the
+import path: `PYTHONPATH=py_router python3 <your script>` (see the
+[overview](python-api.md)).
+
 ## `pcb_modification.py`
 
 ### `add_route_to_pcb_data`
@@ -145,6 +149,32 @@ the routing pipeline applies both so the model and the output file agree.
 > of the outermost run, after the strict collapse
 > (`route._late_dangling_via_sweep1166`, both fronts, input copper included
 > unless `--keep-input-copper`), and on the "nothing to route" return too.
+
+> **#1261 -- KiCad-locked copper is read-only to every cleanup pass.** A
+> `(locked yes)` segment or via (`pcb_modification._locked`) is treated by
+> `sweep_dead_ends`, `remove_orphan_islands`, `prune_redundant_cycles`,
+> `trim_dangles_past_body_anchor`, `prune_grazing_segments`,
+> `nudge_grazing_octolinear` and `nudge_grazing_microshift` exactly as
+> `keep_input_copper` treats input copper -- it anchors their models but is
+> never removed, split, re-bent or moved -- whether or not that flag is set.
+> An island holding locked copper is kept whole, a micro-shift never moves a
+> vertex a locked segment touches, and the #284 stale-input strip and
+> `remove_route_from_pcb_data`'s signature fallback never take a locked item.
+
+> **#1227 -- a dead-end prune never splits copper.** Every gated dead-end pass
+> (`add_route_to_pcb_data`'s per-commit prune, `sweep_dead_ends`,
+> `trim_net_stub_debris`, `cleanup_plane_taps_grazing`) removes through
+> `_safe_prune_net`, which now also refuses a removal
+> that breaks one of the net's strict copper components into pieces. A dead end
+> hangs off the copper at one end, so a real one never splits anything. The
+> pad-count gates could not see this once the strict graph was already split: a
+> route committed with a 0.022 mm hole of its own unwound from the hole back to
+> its pad, and the fine-track steps behind the rejected bridge each passed on
+> their neighbours' cap overlap (18 segments committed, 7 kept,
+> `segment-endpoint-gap` on every stump). The test compares each trial against
+> the state it is tried on, not the base: removing an island lowers the
+> component count, and that must not pay for a split.
+> `analyze_conn_excluding(..., return_uf=True)` returns the union-find it uses.
 
 > **#672 -- sub-cell slivers.** `sweep_dead_ends(..., sliver_eps=mm)` is the one
 > exception to its `protect_net_ids` exemption (nets with unfinished pads keep

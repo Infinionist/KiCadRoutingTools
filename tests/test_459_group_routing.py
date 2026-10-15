@@ -19,6 +19,7 @@ Two scopes, because which one is right depends on the block, measured:
                decoupling cap bridges VCC to GND and both span the board.
 """
 
+import atexit
 import os
 import shutil
 import subprocess
@@ -58,6 +59,33 @@ FLAT = os.path.join(KF, 'tigard.kicad_pcb')                         # no sheets
 def _run(*args, timeout=1800):
     return subprocess.run([sys.executable, os.path.join(ROOT, 'py_router', 'route.py')] + list(args),
                           capture_output=True, text=True, cwd=ROOT, timeout=timeout)
+
+
+#: The one undo three tests read -- see `_undone_block`.
+_UNDONE = {}
+
+
+def _undone_block():
+    """(CompletedProcess, output path) of `route.py --undo` of the
+    sheet:558c3023 block at INTERNAL scope on ROUTED, run once per process.
+
+    Three tests grade this exact invocation -- the copper it removed, what its
+    report says it cannot invert, and a preview routed back from its output --
+    and each used to run it again into its own fresh temp file: the same input,
+    the same arguments, a fresh output path every time (so no sibling
+    `.kicad_pro` to read back). The output is only ever READ afterwards (the
+    preview writes nothing, which its test asserts), so sharing it is the same
+    evidence. It is removed at exit.
+    """
+    if not _UNDONE:
+        d = tempfile.mkdtemp(prefix='t459_undo_')
+        atexit.register(shutil.rmtree, d, ignore_errors=True)
+        fd, out = tempfile.mkstemp(suffix='.kicad_pcb', dir=d)
+        os.close(fd)
+        r = _run(ROUTED, out, '--group', 'sheet:558c3023', '--group-by', 'sheet',
+                 '--group-scope', 'internal', '--undo')
+        _UNDONE.update(r=r, out=out)
+    return _UNDONE['r'], _UNDONE['out']
 
 
 # --- scoping ------------------------------------------------------------------
@@ -155,32 +183,24 @@ def test_undo_removes_exactly_the_block_and_nothing_else():
     before_all = len(pcb.segments)
     assert before_in > 0, "fixture: the block must start with copper"
 
-    fd, out = tempfile.mkstemp(suffix='.kicad_pcb')
-    os.close(fd)
-    try:
-        r = _run(ROUTED, out, '--group', 'sheet:558c3023', '--group-by', 'sheet',
-                 '--group-scope', 'internal', '--undo')
-        assert r.returncode == 0, r.stdout[-800:]
-        after = parse_kicad_pcb(out)
-        ids2 = {n for n, x in after.nets.items() if x.name in nets}
-        after_in = sum(1 for s in after.segments if s.net_id in ids2)
-        assert after_in == 0, f"{after_in} segment(s) of the block survived"
-        # Everything NOT in the block is untouched.
-        assert before_all - before_in == len(after.segments), \
-            (f"collateral damage: {before_all}-{before_in} != {len(after.segments)}")
-        # VIAS too -- they are removed by POSITION, which is the one path where
-        # hitting another net's copper was actually plausible.
-        before_v = sum(1 for v in pcb.vias if v.net_id in ids)
-        assert before_v > 0, "fixture: the block must start with vias"
-        assert not [v for v in after.vias if v.net_id in ids2], "block vias survived"
-        assert len(pcb.vias) - before_v == len(after.vias), \
-            (f"via collateral: {len(pcb.vias)}-{before_v} != {len(after.vias)}")
-        print(f"  PASS: removed {before_in} segs + {before_v} vias, "
-              f"{len(after.segments)} segs / {len(after.vias)} vias untouched")
-    finally:
-        for p in (out, os.path.splitext(out)[0] + '.kicad_pro'):
-            if os.path.exists(p):
-                os.unlink(p)
+    r, out = _undone_block()
+    assert r.returncode == 0, r.stdout[-800:]
+    after = parse_kicad_pcb(out)
+    ids2 = {n for n, x in after.nets.items() if x.name in nets}
+    after_in = sum(1 for s in after.segments if s.net_id in ids2)
+    assert after_in == 0, f"{after_in} segment(s) of the block survived"
+    # Everything NOT in the block is untouched.
+    assert before_all - before_in == len(after.segments), \
+        (f"collateral damage: {before_all}-{before_in} != {len(after.segments)}")
+    # VIAS too -- they are removed by POSITION, which is the one path where
+    # hitting another net's copper was actually plausible.
+    before_v = sum(1 for v in pcb.vias if v.net_id in ids)
+    assert before_v > 0, "fixture: the block must start with vias"
+    assert not [v for v in after.vias if v.net_id in ids2], "block vias survived"
+    assert len(pcb.vias) - before_v == len(after.vias), \
+        (f"via collateral: {len(pcb.vias)}-{before_v} != {len(after.vias)}")
+    print(f"  PASS: removed {before_in} segs + {before_v} vias, "
+          f"{len(after.segments)} segs / {len(after.vias)} vias untouched")
 
 
 def test_undo_refuses_real_locked_copper():
@@ -234,16 +254,8 @@ def test_preview_exits_zero_even_when_nets_fail():
 def test_undo_reports_what_it_cannot_invert():
     """Pad/target swaps have no inverse and can touch nets outside the scope.
     Saying so is part of the feature, not a footnote."""
-    fd, out = tempfile.mkstemp(suffix='.kicad_pcb')
-    os.close(fd)
-    try:
-        r = _run(ROUTED, out, '--group', 'sheet:558c3023', '--group-by', 'sheet',
-                 '--group-scope', 'internal', '--undo')
-        assert 'swaps are NOT inverted' in r.stdout, r.stdout[-500:]
-    finally:
-        for p in (out, os.path.splitext(out)[0] + '.kicad_pro'):
-            if os.path.exists(p):
-                os.unlink(p)
+    r, _out = _undone_block()
+    assert 'swaps are NOT inverted' in r.stdout, r.stdout[-500:]
 
 
 def test_undo_is_a_pure_function_of_the_nets():
@@ -445,27 +457,19 @@ def test_preview_of_an_undone_block_reports_real_additions():
     """End to end: undo a block, then preview routing it back. The preview must
     report the copper it would add -- a zero there means the result keys drifted
     (they are new_segments/new_vias, not segments/vias)."""
-    fd, undone = tempfile.mkstemp(suffix='.kicad_pcb')
-    os.close(fd)
     never = os.path.join(tempfile.gettempdir(), 'preview_never.kicad_pcb')
     if os.path.exists(never):
         os.unlink(never)
-    try:
-        r = _run(ROUTED, undone, '--group', 'sheet:558c3023', '--group-by', 'sheet',
-                 '--group-scope', 'internal', '--undo')
-        assert r.returncode == 0, r.stdout[-500:]
-        r = _run(undone, never, '--group', 'sheet:558c3023', '--group-by', 'sheet',
-                 '--group-scope', 'internal', '--preview', '--max-iterations', '200000')
-        assert 'PREVIEW' in r.stdout, r.stdout[-600:]
-        line = [l for l in r.stdout.splitlines() if 'would ADD' in l][0]
-        added = int(line.split('would ADD')[1].split('segment')[0].strip(' :'))
-        assert added > 0, f"preview reported no additions after an undo: {line}"
-        assert not os.path.exists(never)
-        print(f"  PASS: {line.strip()}")
-    finally:
-        for p in (undone, os.path.splitext(undone)[0] + '.kicad_pro'):
-            if os.path.exists(p):
-                os.unlink(p)
+    r, undone = _undone_block()
+    assert r.returncode == 0, r.stdout[-500:]
+    r = _run(undone, never, '--group', 'sheet:558c3023', '--group-by', 'sheet',
+             '--group-scope', 'internal', '--preview', '--max-iterations', '200000')
+    assert 'PREVIEW' in r.stdout, r.stdout[-600:]
+    line = [l for l in r.stdout.splitlines() if 'would ADD' in l][0]
+    added = int(line.split('would ADD')[1].split('segment')[0].strip(' :'))
+    assert added > 0, f"preview reported no additions after an undo: {line}"
+    assert not os.path.exists(never)
+    print(f"  PASS: {line.strip()}")
 
 
 TESTS = [

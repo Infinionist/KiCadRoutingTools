@@ -28,6 +28,11 @@ WHY IT IS NOT VACUOUS, in four arms, all required:
   4. It runs on fixtures that already carry `(justify mirror)`, so the
      add-but-never-remove asymmetry has somewhere to show up.
 
+A PAD CHILD NO TRACKED BOARD CARRIES is exercised on an injected copy: the
+pad-to-die `(die_length ...)` / `(die_delay ...)` (#1248) on tigard J7. The
+part must flip (it used to refuse `die_delay`), keep every value pad for pad
+and token for token, and flip back byte-identically.
+
 DIRECTION IS PINNED. Measured (`tests/measure_714_mirror_convention.py`
 section F): `FLIP_DIRECTION_TOP_BOTTOM` is an involution on 15/15 fixtures;
 `LEFT_RIGHT` is not, on 4 of them, because its text-angle rule collapses to
@@ -106,6 +111,101 @@ def _block_span(path, ref):
         if key == ref:
             return text, s, e
     return text, None, None
+
+
+# #1248: a pad's pad-to-die length and delay. No tracked board carries either
+# token, so they are INJECTED into tigard J7, after each pad's `(net ...)`
+# where pcbnew 10 writes them: both on pad 1, one each on pads 2 and 3. A flip
+# leaves both per-pad scalars alone -- pcbnew's FOOTPRINT::Flip does, and
+# `tests/gui_parity/test_714_mirror_pcbnew_parity.py` holds this writer to it
+# on the same injection. Before `die_delay` was whitelisted the writer refused
+# to flip such a part at all.
+DIE_REF = 'J7'
+DIE_TOKENS = {'1': ('(die_length 1.25)\n\t\t\t(die_delay 7.5)', 1.25, 7.5),
+              '2': ('(die_length 0.333)', 0.333, 0.0),
+              '3': ('(die_delay 12.345678)', 0.0, 12.345678)}
+
+
+def _inject_die(src, dst):
+    """tigard with DIE_TOKENS added inside J7's pads, each after the pad's own
+    `(net ...)`. Raises when an anchor is missing, so the arm cannot grade a
+    board that carries no token."""
+    import re
+    from kicad_parser import iter_footprint_blocks
+    # Universal newlines: the anchor below is LF-only, and core.autocrlf
+    # checks tigard out with CRLF (so does `git archive` for the cloud image).
+    with open(src, encoding='utf-8') as fh:
+        text = fh.read()
+    for s, e, body, _raw, key in iter_footprint_blocks(text):
+        if key != DIE_REF:
+            continue
+        left = dict(DIE_TOKENS)
+        for m in reversed(list(re.finditer(r'\(pad\s+"([^"]*)"', body))):
+            if m.group(1) not in left:
+                continue
+            net = re.compile(r'\(net\s+"[^"]*"\)\n').search(body, m.start())
+            nxt = body.find('(pad ', m.end())
+            if net is None or (nxt != -1 and net.start() > nxt):
+                raise AssertionError(f"{DIE_REF} pad {m.group(1)}: no (net ...)")
+            body = (body[:net.end()] + '\t\t\t' + left.pop(m.group(1))[0]
+                    + '\n' + body[net.end():])
+        if left:
+            raise AssertionError(f"{DIE_REF} pads {sorted(left)} not found")
+        with open(dst, 'w', encoding='utf-8', newline='') as fh:
+            fh.write(text[:s] + body + text[e:])
+        return dst
+    raise AssertionError(f"{DIE_REF} not in {src}")
+
+
+def _die_arm(tmp, problems):
+    """The pad-to-die tokens survive a flip unchanged, and flip back exactly.
+    Returns True when the arm graded a flip."""
+    from kicad_parser import parse_kicad_pcb
+    from placement.writer import SideFlipUnsupported
+    src = os.path.join(REPO, 'kicad_files', 'tigard.kicad_pcb')
+    try:
+        inj = _inject_die(src, os.path.join(tmp, 'die_inj.kicad_pcb'))
+    except AssertionError as exc:
+        problems.append(f"die arm: injection failed ({exc}) -- re-anchor it")
+        return False
+    want = {n: (L, D) for n, (_t, L, D) in DIE_TOKENS.items()}
+    got0 = {p.pad_number: (p.die_length, p.die_delay)
+            for p in parse_kicad_pcb(inj).footprints[DIE_REF].pads
+            if p.pad_number in want}
+    if got0 != want:
+        problems.append(f"die arm: the injected board parses {got0}, not {want} "
+                        f"-- the fixture carries the wrong tokens")
+        return False
+    ctrl = _control(inj, os.path.join(tmp, 'die_ctrl.kicad_pcb'))
+    try:
+        f1 = _flip(ctrl, os.path.join(tmp, 'die_f1.kicad_pcb'), DIE_REF, 'B')
+    except SideFlipUnsupported as exc:
+        problems.append(f"die arm: the flip REFUSED a part carrying die_length/"
+                        f"die_delay: {exc}")
+        return False
+    after = parse_kicad_pcb(f1).footprints[DIE_REF]
+    if not (after.layer or '').startswith('B'):
+        problems.append(f"die arm: asked for side B, got {after.layer!r} -- "
+                        f"nothing was flipped, so the arm would pass for the "
+                        f"wrong reason")
+        return False
+    got1 = {p.pad_number: (p.die_length, p.die_delay) for p in after.pads
+            if p.pad_number in want}
+    if got1 != want:
+        problems.append(f"die arm: the flip changed the pad-to-die values "
+                        f"{want} -> {got1}; pcbnew's flip leaves them alone")
+    t1, s1, e1 = _block_span(f1, DIE_REF)
+    block = t1[s1:e1] if s1 is not None else ''
+    for tok in ('(die_length 1.25)', '(die_delay 7.5)', '(die_length 0.333)',
+                '(die_delay 12.345678)'):
+        if block.count(tok) != 1:
+            problems.append(f"die arm: {tok} appears {block.count(tok)} times in "
+                            f"the flipped block, not once, verbatim")
+    f2 = _flip(f1, os.path.join(tmp, 'die_f2.kicad_pcb'), DIE_REF, 'F')
+    if _sha(f2) != _sha(ctrl):
+        problems.append("die arm: flip-and-flip-back of the part carrying "
+                        "die_length/die_delay is NOT byte-identical")
+    return True
 
 
 def main():
@@ -233,6 +333,8 @@ def main():
                             "-- the transform is reformatting numbers instead "
                             "of toggling their sign, so it is an involution "
                             "only for input that was already minimal")
+        if _die_arm(tmp, problems):
+            checked += 1
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

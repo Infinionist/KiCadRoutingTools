@@ -589,6 +589,47 @@ FAB_FLOOR_KEYS_MEASURABLE = frozenset({
     "min_via_drill", "min_through_hole_diameter",
 })
 
+#: Rules this repo writes into ``design_settings.rules`` that are NOT KiCad
+#: rules. KiCad's own project save keeps an unknown key only when it was in the
+#: file when the board was loaded (probed, KiCad 10.0.0), so one written after
+#: load -- by a GUI step, or by the plan executor's writeback -- is gone after
+#: the user's save. Each is mirrored into the records (``kicad_routing_tools.
+#: repo_rules``, the copy that survives, tool_records) and read through
+#: :func:`_effective_rules`.
+REPO_RULE_KEYS = ("min_via_drill",)
+REPO_RULES_KEY = "repo_rules"
+
+
+def _effective_rules(proj: dict) -> dict:
+    """``design_settings.rules`` with each repo-private rule
+    (:data:`REPO_RULE_KEYS`) taken from the records when the rules lack it --
+    the lower of the two when both carry it, since every writer of these
+    floors only lowers them."""
+    rules = dict((((proj or {}).get("board") or {}).get("design_settings")
+                  or {}).get("rules") or {})
+    rec = (((proj or {}).get("kicad_routing_tools") or {})
+           .get(REPO_RULES_KEY) or {})
+    for k in REPO_RULE_KEYS:
+        v = rec.get(k)
+        if isinstance(v, (int, float)) and v > 0:
+            cur = rules.get(k)
+            rules[k] = (min(float(cur), float(v))
+                        if isinstance(cur, (int, float)) else float(v))
+    return rules
+
+
+def declared_project_rule(pcb_path: str, key: str):
+    """The rule ``key`` the board at ``pcb_path`` declares (mm), read the way
+    the writeback reads it: the project's rules, with the records' copy of a
+    repo-private rule (:func:`_effective_rules`). None when absent."""
+    try:
+        import tool_records
+        v = _effective_rules(tool_records.load_project(find_project(pcb_path))
+                             ).get(key)
+    except Exception:                                           # noqa: BLE001
+        return None
+    return float(v) if isinstance(v, (int, float)) else None
+
 
 def seed_fab_floor_origin(proj: dict, rules_before: dict):
     """``(origin, seeded_now)`` for ``proj``'s ``fab_floor_origin`` record.
@@ -641,16 +682,209 @@ FAB_FLOOR_LIVE_ATTR = {
     "min_hole_clearance": "m_HoleClearance",
 }
 
-#: Origins seeded for a live board this session, by board file. The project
-#: file is where the record belongs (it travels down a chain), but a board with
-#: no .kicad_pro has nowhere to keep it, and KiCad may rewrite the .kicad_pro
-#: from its in-memory copy when the user saves -- the same caveat the GUI's
-#: protected-net record carries. This keeps the session honest either way.
-_LIVE_FAB_ORIGIN: dict = {}
+#: Every design-settings rule a live reader takes from pcbnew -> the
+#: BOARD_DESIGN_SETTINGS attribute it lives in. The live twin of the
+#: ``design_settings.rules`` keys the file readers take from the .kicad_pro.
+LIVE_RULE_ATTR = {
+    "min_clearance": "m_MinClearance",
+    "min_track_width": "m_TrackMinWidth",
+    "min_connection": "m_MinConn",
+    "min_via_diameter": "m_ViasMinSize",
+    "min_through_hole_diameter": "m_MinThroughDrill",
+    "min_via_annular_width": "m_ViasMinAnnularWidth",
+    "min_hole_clearance": "m_HoleClearance",
+    "min_hole_to_hole": "m_HoleToHoleMin",
+    "min_copper_edge_clearance": "m_CopperEdgeClearance",
+}
+
+#: rule key -> the pcbnew constant BOARD_DESIGN_SETTINGS initialises it from
+#: (mm). The annular ring has no constant of its own; KiCad derives it from
+#: the via and drill ones, (0.5 - 0.3) / 2 = 0.1 on KiCad 10.
+_PCBNEW_DEFAULT_CONSTANT = {
+    "min_clearance": "DEFAULT_MINCLEARANCE",
+    "min_track_width": "DEFAULT_TRACKMINWIDTH",
+    "min_connection": "DEFAULT_MINCONNECTION",
+    "min_via_diameter": "DEFAULT_VIASMINSIZE",
+    "min_through_hole_diameter": "DEFAULT_MINTHROUGHDRILL",
+    "min_hole_clearance": "DEFAULT_HOLECLEARANCE",
+    "min_hole_to_hole": "DEFAULT_HOLETOHOLEMIN",
+    "min_copper_edge_clearance": "DEFAULT_COPPEREDGECLEARANCE",
+}
+_PCBNEW_FACTORY = None
+
+
+def pcbnew_rule_defaults() -> dict:
+    """pcbnew's factory value for each :data:`LIVE_RULE_ATTR` rule, mm: what a
+    board whose project does not declare the rule -- every project-less board
+    -- holds in memory. ``{}`` without pcbnew.
+
+    Read from the constants BOARD_DESIGN_SETTINGS initialises from, NEVER off a
+    throwaway ``pcbnew.BOARD()``: constructing and dropping a board in the GUI
+    process made the planes tab's next ZONE_FILLER.Fill segfault
+    (test_gui_engine_parity, 3 runs of 3)."""
+    global _PCBNEW_FACTORY
+    if _PCBNEW_FACTORY is None:
+        out = {}
+        try:
+            import pcbnew
+            for key, name in _PCBNEW_DEFAULT_CONSTANT.items():
+                v = getattr(pcbnew, name, None)
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    out[key] = float(v)
+            if "min_via_diameter" in out and "min_through_hole_diameter" in out:
+                out["min_via_annular_width"] = round(
+                    (out["min_via_diameter"] - out["min_through_hole_diameter"])
+                    / 2.0, 9)
+        except Exception:                                       # noqa: BLE001
+            out = {}
+        _PCBNEW_FACTORY = out
+    return dict(_PCBNEW_FACTORY)
+
+
+def file_stamp(path: str):
+    """``(mtime_ns, size, inode)`` of ``path``, or None when it does not exist:
+    what identifies a file's CONTENT without reading it. The inode is in it
+    because every writer here replaces a project atomically (tmp +
+    ``os.replace``), which gives it a new inode even inside one mtime tick."""
+    try:
+        st = os.stat(path)
+    except (OSError, ValueError, TypeError):
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
+_PROJECT_DOC_CACHE: dict = {}
+
+
+def _project_doc(pcb_path: str) -> dict:
+    """``pcb_path``'s sibling .kicad_pro as parsed JSON (``{}`` when there is
+    none), re-read whenever the file changes. The live readers below ask it on
+    every obstacle-map build, so it is cached by stamp. Callers must not
+    mutate what it returns."""
+    pro = find_project(pcb_path) if pcb_path else ""
+    if not pro:
+        return {}
+    stamp = file_stamp(pro)
+    hit = _PROJECT_DOC_CACHE.get(pro)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    doc = {}
+    if stamp is not None:
+        try:
+            with open(pro, "r", encoding="utf-8") as f:
+                doc = json.load(f)
+        except Exception:                                       # noqa: BLE001
+            doc = {}
+    _PROJECT_DOC_CACHE[pro] = (stamp, doc if isinstance(doc, dict) else {})
+    return _PROJECT_DOC_CACHE[pro][1]
+
+
+def project_rules(pcb_path: str) -> dict:
+    """``design_settings.rules`` of ``pcb_path``'s sibling .kicad_pro (``{}``
+    when there is none), re-read whenever the file changes."""
+    return dict((((_project_doc(pcb_path).get("board") or {})
+                  .get("design_settings") or {}).get("rules") or {}))
+
+
+#: The session-declaration key for the Default net class's clearance, which a
+#: project-less board holds at pcbnew's stock class: the file writer CREATES
+#: the class at the routed clearance when the project has none.
+DEFAULT_CLASS_CLEARANCE_KEY = "net_settings.Default.clearance"
+
+
+def live_board_key(board) -> str:
+    """The key a live board's session records are kept under: its file, or
+    the object itself when it has never been saved (#1238)."""
+    try:
+        path = board.GetFileName() or ""
+    except Exception:                                           # noqa: BLE001
+        path = ""
+    return os.path.normcase(os.path.abspath(path)) if path else f"id:{id(board)}"
+
+
+#: board key -> the LIVE_RULE_ATTR rules a live writer of this session set or
+#: targeted (apply_targets_to_board, gui_utils.update_live_drc_floors). The CLI
+#: writeback WRITES every rule it targets into the project, declared before or
+#: not, so on a project-less board those rules are declared from step 2 on --
+#: and a GUI writer that targets one at exactly pcbnew's factory value leaves
+#: nothing in memory to tell that apart from "never configured". This is it.
+_LIVE_DECLARED: dict = {}
+
+
+def note_live_declared(board, keys) -> None:
+    """Record that a live writer of this session set or targeted ``keys``."""
+    try:
+        _LIVE_DECLARED.setdefault(live_board_key(board), set()).update(
+            k for k in keys
+            if k in LIVE_RULE_ATTR or k == DEFAULT_CLASS_CLEARANCE_KEY
+            or str(k).startswith("severity:"))
+    except Exception:                                           # noqa: BLE001
+        pass
+
+
+def live_declares_default_class(board) -> bool:
+    """Does the live board DECLARE its Default net class -- its project has
+    one, or a live writer of this session set its clearance? A project-less
+    board holds pcbnew's stock class, which no file declares; the file writer
+    creates the class at the routed clearance there rather than lowering a
+    stock one."""
+    try:
+        path = board.GetFileName() or ""
+    except Exception:                                           # noqa: BLE001
+        path = ""
+    if DEFAULT_CLASS_CLEARANCE_KEY in _LIVE_DECLARED.get(live_board_key(board), ()):
+        return True
+    classes = ((_project_doc(path).get("net_settings") or {}).get("classes")
+               or []) if path else []
+    return any(isinstance(c, dict) and c.get("name") == "Default" for c in classes)
+
+
+def live_declared_rules(board, keys=None):
+    """``{rule: mm}``: the design-settings rules the LIVE board DECLARES, or
+    None when it has no design settings to read.
+
+    pcbnew holds every rule in memory whether or not anything declared it: a
+    project that does not declare a rule, and every project-less board, loads
+    it at the factory value (:func:`pcbnew_rule_defaults`). The file readers
+    see no rule there. So a live value counts as declared when the board's
+    project declares the key, or a live writer of this session set or targeted
+    it (:func:`note_live_declared`), or it differs from the factory value --
+    which someone set (Board Setup, or a GUI step's writeback). Everything else
+    is pcbnew's stand-in for "not configured" and is left out, so a board
+    pcbnew just loaded declares exactly what its file declares, and both
+    fronts read the same floors off it. A rule whose factory value cannot be
+    read is declared only by the project or the session.
+    """
+    try:
+        bds = board.GetDesignSettings()
+    except Exception:                                           # noqa: BLE001
+        return None
+    if bds is None:
+        return None
+    try:
+        path = board.GetFileName() or ""
+    except Exception:                                           # noqa: BLE001
+        path = ""
+    in_project = project_rules(path) if path else {}
+    session = _LIVE_DECLARED.get(live_board_key(board), set())
+    factory = pcbnew_rule_defaults()
+    out = {}
+    for key in (keys if keys is not None else LIVE_RULE_ATTR):
+        attr = LIVE_RULE_ATTR.get(key)
+        v = getattr(bds, attr, None) if attr else None
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
+            continue
+        mm = v / 1e6                              # nm -> mm; divide (#493)
+        if key in in_project or key in session \
+                or (key in factory and abs(mm - factory[key]) > 1e-9):
+            out[key] = mm
+    return out
 
 
 def live_fab_floor_rules(bds) -> dict:
-    """The FAB_FLOOR_KEYS a live board's design settings declare now, mm."""
+    """The FAB_FLOOR_KEYS a live board's design settings HOLD now, mm, every
+    one of them -- including pcbnew's factory stand-ins. What the board
+    DECLARES is :func:`live_declared_fab_floor_rules`."""
     out = {}
     for key, attr in FAB_FLOOR_LIVE_ATTR.items():
         v = getattr(bds, attr, None)
@@ -659,57 +893,206 @@ def live_fab_floor_rules(bds) -> dict:
     return out
 
 
+#: board key -> {rule: mm} for the FAB_FLOOR_KEYS a live writer of this session
+#: set that pcbnew has no attribute for: `min_via_drill`, the repo's own via-
+#: drill floor, which the CLI's writeback writes into the project beside the
+#: KiCad rules (compute_targets) and its disclosure reports. Only-lower, like
+#: the file writer.
+_LIVE_SESSION_RULES: dict = {}
+
+
+def note_live_session_rule(board, key: str, mm) -> None:
+    """Lower the session-held ``key`` floor to ``mm`` (see
+    :data:`_LIVE_SESSION_RULES`); a None ``mm`` is ignored. A repo-private
+    rule (:data:`REPO_RULE_KEYS`) also goes into the board's records, the
+    copy that survives KiCad's save (:func:`_effective_rules`)."""
+    if mm is None:
+        return
+    try:
+        v = round(float(mm), 6)
+        rules = _LIVE_SESSION_RULES.setdefault(live_board_key(board), {})
+        cur = rules.get(key)
+        rules[key] = v if cur is None else min(cur, v)
+        if key in REPO_RULE_KEYS:
+            def _record(ns):
+                rec = ns.setdefault(REPO_RULES_KEY, {})
+                old = rec.get(key)
+                if isinstance(old, (int, float)) and old <= v + _FLOOR_EPS:
+                    return False
+                rec[key] = v
+                return True
+            import tool_records
+            tool_records.update_live_namespace(board, _record)
+    except Exception:                                           # noqa: BLE001
+        pass
+
+
+def live_declared_fab_floor_rules(board) -> dict:
+    """The FAB_FLOOR_KEYS the live board DECLARES (:func:`live_declared_rules`,
+    plus the floors pcbnew has no attribute for: held for the session, or
+    carried in the board's records from an earlier one), positive values
+    only, mm -- what the origin records and the disclosure compares, so a
+    project-less board records and says what the CLI's writeback does on the
+    same file: nothing at step 1."""
+    out = {k: v for k, v in (live_declared_rules(board, FAB_FLOOR_LIVE_ATTR)
+                             or {}).items() if v > 0}
+    extra = {}
+    try:
+        import tool_records
+        extra = {k: v for k, v in (tool_records.live_namespace(board)
+                                   .get(REPO_RULES_KEY) or {}).items()
+                 if k in REPO_RULE_KEYS and isinstance(v, (int, float))}
+    except Exception:                                           # noqa: BLE001
+        extra = {}
+    for k, v in (_LIVE_SESSION_RULES.get(live_board_key(board)) or {}).items():
+        if v and v > 0:
+            extra[k] = min(v, extra[k]) if k in extra else v
+    for k, v in extra.items():
+        if v and v > 0:
+            out[k] = v
+    return out
+
+
+#: Board keys whose GUI step is OPEN: its first live writer
+#: (apply_targets_to_board) has run and its last (gui_utils.
+#: update_live_drc_floors) has not. A CLI step has ONE writer, which seeds the
+#: origin from the project as the step found it; a GUI step has two, and the
+#: second must not seed from what the first just lowered.
+_LIVE_STEP_OPEN: set = set()
+
+#: board key -> the floors the board declared when its current GUI step
+#: STARTED -- the CLI writeback's ``rules_before``, which its disclosure falls
+#: back to for a floor the origin does not carry.
+_LIVE_STEP_BEFORE: dict = {}
+
+
+def live_step_rules_before(board) -> dict:
+    """The declared floors at the start of the board's current GUI step."""
+    return dict(_LIVE_STEP_BEFORE.get(live_board_key(board)) or {})
+
+
+#: board key -> the Default class clearance the board DECLARED when its current
+#: GUI step started (None: a class it does not declare) -- the file
+#: writeback's ``_class_before`` (#1160).
+_LIVE_STEP_CLASS_BEFORE: dict = {}
+
+
+def _live_default_class_clearance(board):
+    """The live Default class clearance (mm) when the board declares the
+    class, else None -- what ``project_default_class_clearance`` reads off a
+    project."""
+    try:
+        if not live_declares_default_class(board):
+            return None
+        nc = board.GetDesignSettings().m_NetSettings.GetDefaultNetclass()
+        v = nc.GetClearance() / 1e6
+        return v if v > 0 else None
+    except Exception:                                           # noqa: BLE001
+        return None
+
+
+def record_live_class_clearance_descent(board) -> list:
+    """At a GUI step's end: :func:`record_class_clearance_descent` for the live
+    board -- the step's automatic descents lowered its Default class below what
+    it asked for -- recorded in the board's records (tool_records) as the file
+    writeback records it in the project. Returns the disclosure lines, as the
+    writeback prints them."""
+    key = live_board_key(board)
+    if key not in _LIVE_STEP_CLASS_BEFORE:
+        return []
+    before = _LIVE_STEP_CLASS_BEFORE.pop(key)
+    try:
+        import tool_records
+        ns = tool_records.live_namespace(board)
+        after = _live_default_class_clearance(board)
+        view = {"kicad_routing_tools": ns,
+                "net_settings": {"classes": ([{"name": "Default",
+                                               "clearance": after}]
+                                             if after else [])}}
+        rec, here = record_class_clearance_descent(view, before)
+        if here:
+            def _record(n):
+                n[CLASS_CLEARANCE_RELAXED_KEY] = dict(rec)
+                return True
+            tool_records.update_live_namespace(board, _record)
+        return class_clearance_disclosure(rec, here, after)
+    except Exception:                                           # noqa: BLE001
+        return []
+
+
+def open_live_step(board) -> None:
+    """A GUI step's first live writer has seeded the origin (see
+    :data:`_LIVE_STEP_OPEN`)."""
+    _LIVE_STEP_OPEN.add(live_board_key(board))
+
+
+def close_live_step(board) -> None:
+    """A GUI step's last live writer is done: the next seed belongs to the
+    next step."""
+    _LIVE_STEP_OPEN.discard(live_board_key(board))
+
+
 def seed_live_fab_floor_origin(board) -> dict:
     """:func:`seed_fab_floor_origin` for a live pcbnew board. Returns the origin.
 
     Call BEFORE lowering anything, from every live writer, exactly as the file
-    writers do. The first call of a session records the board's current floors
-    -- in its sibling .kicad_pro under ``kicad_routing_tools.fab_floor_origin``
-    when it has one and none is recorded there yet, and in memory regardless.
-    An origin already in the project wins, so a GUI step after a CLI chain (or
-    an earlier session) keeps the chain's original. Best-effort: never raises.
+    writers do. The first call of a session records the floors the board
+    DECLARES (:func:`live_declared_fab_floor_rules`) under
+    ``kicad_routing_tools.fab_floor_origin`` in the board's records
+    (tool_records: its .kicad_pro when it has one, and the board itself, the
+    copy KiCad's own save keeps) when none is recorded yet. An origin already
+    recorded wins, so a GUI step after a CLI chain (or an earlier session)
+    keeps the chain's original. A board that declares none (a
+    project-less one at pcbnew's factory values) records none, as the CLI's
+    first writeback records none on it; the next step then seeds from what the
+    first one wrote, as the CLI's second does -- the next STEP, not the second
+    writer of the same one (:data:`_LIVE_STEP_OPEN`). Best-effort: never
+    raises.
     """
     try:
-        before = live_fab_floor_rules(board.GetDesignSettings())
-        path = board.GetFileName() or ""
+        before = live_declared_fab_floor_rules(board)
+        import tool_records
+        ns = tool_records.live_namespace(board)
     except Exception:                                           # noqa: BLE001
         return {}
-    key = os.path.normcase(os.path.abspath(path)) if path else f"id:{id(board)}"
-    pro = os.path.splitext(path)[0] + ".kicad_pro" if path else ""
-    proj = None
-    if pro and os.path.isfile(pro):
+    key = live_board_key(board)
+    if key not in _LIVE_STEP_OPEN:
+        _LIVE_STEP_BEFORE[key] = dict(before)    # this step's rules_before
+        _LIVE_STEP_CLASS_BEFORE[key] = _live_default_class_clearance(board)
+    # The records are the board's (tool_records): its project's copy and the
+    # copy on the board itself, which KiCad's save keeps when it drops what
+    # was written into the project after load.
+    origin, seeded = seed_fab_floor_origin({"kicad_routing_tools": ns}, before)
+    if origin and not seeded:
+        return origin             # already recorded (a CLI chain, a session)
+    if key in _LIVE_STEP_OPEN:
+        # This step's first writer found nothing declared. What the board
+        # declares now is what that writer lowered, which the CLI's
+        # one-writer step records only at the NEXT step.
+        return {}
+    if seeded:
+        def _record(n):
+            n["fab_floor_origin"] = dict(origin)
+            return True
         try:
-            with open(pro, "r", encoding="utf-8") as f:
-                proj = json.load(f)
+            tool_records.update_live_namespace(board, _record)
         except Exception:                                       # noqa: BLE001
-            proj = None
-    if proj is not None:
-        origin, seeded = seed_fab_floor_origin(proj, _LIVE_FAB_ORIGIN.get(key)
-                                               or before)
-        if seeded:
-            try:
-                proj.setdefault("kicad_routing_tools", {})["fab_floor_origin"] = origin
-                tmp = pro + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(proj, f, indent=2)
-                    f.write("\n")
-                os.replace(tmp, pro)
-            except Exception:                                   # noqa: BLE001
-                pass
-    else:
-        origin = _LIVE_FAB_ORIGIN.get(key) or dict(before)
-    _LIVE_FAB_ORIGIN[key] = dict(origin)
+            pass
     return origin
 
 
 def live_fab_floor_disclosure(origin: dict, rules_after: dict,
-                              objects: dict = None) -> list:
+                              objects: dict = None,
+                              rules_before: dict = None) -> list:
     """The FAB FLOOR RELAXED lines for a live board: :func:`_fab_floor_disclosure`
     against the ORIGIN, with ``objects`` (``{rule key: [object sizes mm]}``
     measured off the live board) as the census -- the live copper is not on
-    disk to count."""
+    disk to count. ``rules_before`` is the step's input
+    (:func:`live_step_rules_before`), which the file writer falls back to for a
+    floor its origin does not carry; omitted, the origin stands in for it."""
     return _fab_floor_disclosure(
-        "", origin, {"board": {"design_settings": {"rules": rules_after}}},
+        "", origin if rules_before is None else rules_before,
+        {"board": {"design_settings": {"rules": rules_after}}},
         origin, objects=objects)
 
 
@@ -738,14 +1121,14 @@ def declared_fab_floor(pcb_path: str, key: str):
     silently, because 0.15 is a perfectly plausible value. The origin is the
     durable record; prefer the LARGER of the two (see
     :func:`obstacle_map.resolve_hole_clearance`).
+
+    The record is read through tool_records: the newer of the project's copy
+    and the board file's, which is where a GUI session's origin survives the
+    user's KiCad save.
     """
     try:
-        pro = os.path.splitext(pcb_path)[0] + '.kicad_pro'
-        if not os.path.exists(pro):
-            return None
-        with open(pro, 'r', encoding='utf-8') as fh:
-            proj = json.load(fh)
-        v = ((proj.get("kicad_routing_tools") or {})
+        import tool_records
+        v = (tool_records.effective_namespace(pcb_path)
              .get("fab_floor_origin") or {}).get(key)
         return float(v) if isinstance(v, (int, float)) and v > 0 else None
     except Exception:                                            # noqa: BLE001
@@ -786,8 +1169,8 @@ def _fab_floor_disclosure(output_pcb: str, rules_before: dict, proj: dict,
     So: keep the relaxation (removing it re-manufactures phantom DRC), and
     make it impossible to miss. Counts, not adjectives.
     """
-    rules_after = ((proj.get("board") or {}).get("design_settings")
-                   or {}).get("rules") or {}
+    # A repo-private rule KiCad's save dropped is read from the records.
+    rules_after = _effective_rules(proj)
     origin = origin or {}
     relaxed = []
     for key, label in FAB_FLOOR_KEYS:
@@ -1104,6 +1487,16 @@ def apply_targets_to_project(proj: dict, targets: dict, sev_plan: dict,
             continue
         target = round(float(target), 6)
         cur = rules.get(key)
+        if key in REPO_RULE_KEYS:
+            # A repo-private rule KiCad's save may have dropped: decide on the
+            # records' copy too, and keep that copy in step with the rule.
+            cur = _effective_rules(proj).get(key)
+            if cur is None or cur > target + EPS:
+                changes.append(f"rules.{key}: {cur} -> {target} mm")
+                rules[key] = target
+                proj.setdefault("kicad_routing_tools", {}).setdefault(
+                    REPO_RULES_KEY, {})[key] = target
+            continue
         # min_copper_edge_clearance is the one floor that may RAISE (#441): it is
         # pinned to max(board rule, fab copper-to-edge minimum) because sub-fab
         # edge copper is a hard defect, so a board declaring a tiny/zero edge rule
@@ -1354,8 +1747,8 @@ def warn_if_class_clearance_relaxed(input_pcb) -> bool:
     if not input_pcb:
         return False
     try:
-        with open(os.path.splitext(input_pcb)[0] + ".kicad_pro", encoding="utf-8") as f:
-            proj = json.load(f)
+        import tool_records
+        proj = tool_records.load_project(os.path.splitext(input_pcb)[0] + ".kicad_pro")
         from fab_tiers import project_default_class_clearance
         rec = (proj.get("kicad_routing_tools") or {}).get(CLASS_CLEARANCE_RELAXED_KEY)
         lines = class_clearance_disclosure(rec, False,
@@ -1466,8 +1859,8 @@ def apply_routed_floors(board_pcb: str, clearance=None, hole_clearance=None,
     if not os.path.isfile(pro):
         return []
     try:
-        with open(pro) as f:
-            proj = json.load(f)
+        import tool_records
+        proj = tool_records.load_project(pro)
     except (OSError, ValueError):
         return []
     # The floors the project declares BEFORE this pass lowers them. Captured
@@ -1475,8 +1868,7 @@ def apply_routed_floors(board_pcb: str, clearance=None, hole_clearance=None,
     # writeback and is therefore the first thing in the chain that can move a
     # FAB_FLOOR_KEYS rule -- see seed_fab_floor_origin for what went silent
     # while this was the writeback's private business.
-    _rules_before = dict(((proj.get("board") or {}).get("design_settings")
-                          or {}).get("rules") or {})
+    _rules_before = _effective_rules(proj)
     targets = compute_targets(clearance=clearance, hole_clearance=hole_clearance)
     changes = apply_targets_to_project(
         proj, targets, {},
@@ -1489,6 +1881,7 @@ def apply_routed_floors(board_pcb: str, clearance=None, hole_clearance=None,
         changes = list(changes) + ["kicad_routing_tools.fab_floor_origin: recorded"]
     try:
         # Atomic replace, same discipline as the writeback (#513 item 12).
+        tool_records.stamp_revision(proj)
         tmp_pro = pro + ".tmp"
         with open(tmp_pro, "w") as f:
             json.dump(proj, f, indent=2)
@@ -1547,6 +1940,62 @@ def fanout_written_floors(kind, tracks, vias):
     return bool(tracks or vias), bool(vias)
 
 
+def fanout_fix_kwargs(kind, tracks, vias, *, clearance, track_width,
+                      via_size, via_drill):
+    """THE fanout writeback: the :func:`fix_project_for_output` keywords a
+    fanout step's floors are written with, or None when it writes none.
+
+    One decision for both fronts and both fanouts. bga_fanout's and
+    qfn_fanout's mains pass these to :func:`fix_project_for_output` for the
+    file, and the GUI fanout tab passes the same to :func:`apply_fix_to_board`
+    for the live board. What they write, from :func:`fanout_written_floors`
+    (#1195): the routed clearance (which also sets the copper-to-hole floor),
+    the track width, the via size and drill only when the step may write via
+    floors, and every non-Default class clamped to the clearance (#439 -- a
+    fanout routes its escapes at that one clearance whatever the class). NO
+    hole-to-hole and no edge clearance: the CLI fanouts pass neither, so the
+    edge floor is the fab copper-to-edge pin alone. The tab used to write its
+    hole-to-hole and edge settings, never the copper-to-hole floor, and
+    clamped classes only under the Min-Clearance ceiling."""
+    floors, via_floors = fanout_written_floors(kind, tracks, vias)
+    if not floors:
+        return None
+    return {"clearance": clearance, "track_width": track_width,
+            "via_diameter": via_size if via_floors else None,
+            "via_drill": via_drill if via_floors else None,
+            "clamp_nondefault_netclasses": True}
+
+
+def apply_fix_to_board(board, *, minima, clearance=None, hole_clearance=None,
+                       hole_to_hole=None, edge_clearance=None, track_width=None,
+                       via_diameter=None, via_drill=None, diff_pair_gap=None,
+                       diff_pair_width=None, clamp_nondefault_netclasses=True):
+    """:func:`fix_project_for_output`'s FLOOR writeback, applied to a LIVE
+    board -- the same :func:`compute_targets` call over the same keywords,
+    through :func:`apply_targets_to_board`. ``minima`` is the board's own
+    smallest objects (gui_utils.board_minima_from_live, the live twin of
+    :func:`scan_board_minima`). Returns the change strings.
+
+    Severities, the origin record's disclosure and the project file are not
+    written here: the caller's step ends with gui_utils.update_live_drc_floors,
+    which discloses, and the live board is what KiCad saves."""
+    path = ""
+    try:
+        path = board.GetFileName() or ""
+    except Exception:                                           # noqa: BLE001
+        path = ""
+    targets = compute_targets(clearance=clearance, hole_clearance=hole_clearance,
+                              hole_to_hole=hole_to_hole,
+                              edge_clearance=edge_clearance,
+                              track_width=track_width, via_diameter=via_diameter,
+                              via_drill=via_drill, minima=minima or {},
+                              fab_edge=fab_edge_floor(path or None))
+    return apply_targets_to_board(board, targets, {},
+                                  diff_pair_gap=diff_pair_gap,
+                                  diff_pair_width=diff_pair_width,
+                                  clamp_nondefault_netclasses=clamp_nondefault_netclasses)
+
+
 def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
                            hole_clearance=None, hole_to_hole=None, edge_clearance=None,
                            track_width=None, via_diameter=None, via_drill=None,
@@ -1603,14 +2052,16 @@ def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
                     and os.path.abspath(src) != os.path.abspath(dst):
                 shutil.copyfile(src, dst)
 
-    with open(out_pro) as f:
-        proj = json.load(f)
+    # The records (origin, protected nets, ...) as the board holds them: the
+    # newer of the project's copy and the board file's, which is where a GUI
+    # session's records survive the user's KiCad save (tool_records).
+    import tool_records
+    proj = tool_records.load_project(out_pro)
     # The board's DECLARED manufacturing floors, before this function lowers
     # them to whatever was routed. Kept so the relaxation can be disclosed
     # (see _fab_floor_disclosure): a clearance clamp is a grading decision, a
     # track/via floor is a statement about what the fab can make.
-    _rules_before = dict(((proj.get("board") or {}).get("design_settings")
-                          or {}).get("rules") or {})
+    _rules_before = _effective_rules(proj)
     # The floors the board declared BEFORE this chain touched anything. Seeded
     # on the first writeback and carried down with the project (same mechanism
     # as protected_nets / net_impedance, #521), so step N still knows what step
@@ -1698,6 +2149,7 @@ def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
         return out_pro
     # Atomic replace (#513 item 12): a kill mid-dump must not leave a
     # truncated/unparseable project stranding the DRC floor.
+    tool_records.stamp_revision(proj)
     _tmp_pro = out_pro + ".tmp"
     with open(_tmp_pro, "w") as f:
         json.dump(proj, f, indent=2)
@@ -1876,6 +2328,11 @@ def apply_targets_to_board(board, targets: dict, sev_plan: dict,
     # gui_utils.update_live_drc_floors, and a writer that lowers without seeding
     # leaves the next one to record the already-lowered value (ad7f24de).
     seed_live_fab_floor_origin(board)
+    open_live_step(board)
+    # The repo's own via-drill floor, which pcbnew has no attribute for: the
+    # file writer writes it into the project's rules, so it is held for the
+    # session here (only-lower) and counted with the declared floors.
+    note_live_session_rule(board, "min_via_drill", targets.get("min_via_drill"))
 
     # #498 parity with fix_project_for_output: cap min_clearance at the
     # smallest .kicad_dru layer rule (an absolute board floor above a relaxing
@@ -1909,19 +2366,30 @@ def apply_targets_to_board(board, targets: dict, sev_plan: dict,
         # checker disabled (parity with apply_targets_to_project).
         "min_connection": "m_MinConn",
     }
+    # What the board DECLARES before this writer touches it. A rule it does not
+    # declare is what the file writer sees as a MISSING key (`cur is None`), and
+    # it writes the target there outright -- not only-lower against pcbnew's
+    # factory stand-in. On a project-less board that is the difference between
+    # copper-to-edge 0.2 (the CLI's project) and 0.5 (pcbnew's factory value).
+    _declared = live_declared_rules(board) or {}
+    _class_declared = live_declares_default_class(board)
     for key, target in targets.items():
         a = attr.get(key)
         if a is None or target is None or not hasattr(bds, a):
             continue
         if key == "min_connection" and not getattr(bds, a, 0):
             continue    # checker was OFF -- do not switch it on
+        # The file writer writes every rule it targets, so the rule is
+        # declared from here on even where only-lower leaves it unmoved.
+        note_live_declared(board, (key,))
         tgt_nm = round(float(target) * MM)
         cur = getattr(bds, a)
+        cur_declared = cur if key in _declared else None
         # Edge clearance may RAISE to the fab copper-to-edge floor (#441); every
         # other rule is only-lower. `target` already carries max(routed, fab_edge);
         # max with cur preserves a board rule above the fab floor.
         if key == "min_copper_edge_clearance":
-            new_nm = max(cur or 0, tgt_nm)
+            new_nm = max(cur_declared or 0, tgt_nm)
             if cur is None or abs(new_nm - cur) > EPS:
                 try:
                     setattr(bds, a, new_nm)
@@ -1929,10 +2397,11 @@ def apply_targets_to_board(board, targets: dict, sev_plan: dict,
                 except Exception:
                     pass
             continue
-        if cur is None or cur > tgt_nm + EPS:
+        if cur is None or (cur_declared is None and abs(cur - tgt_nm) > EPS) \
+                or cur > tgt_nm + EPS:
             try:
                 setattr(bds, a, tgt_nm)
-                changes.append(f"{a}: {cur/MM:.4g} -> {target:.4g} mm")
+                changes.append(f"{a}: {(cur or 0)/MM:.4g} -> {target:.4g} mm")
             except Exception:
                 pass
 
@@ -1959,15 +2428,24 @@ def apply_targets_to_board(board, targets: dict, sev_plan: dict,
             if target is None or not hasattr(default_nc, setter):
                 continue
             getter = "Get" + setter[3:]
+            # A class the board does not declare (pcbnew's stock one on a
+            # project-less board) is set to the routed value outright: the file
+            # writer CREATES the class at it there, it does not lower a stock 0.2.
             if hasattr(default_nc, getter):
                 try:
                     cur = getattr(default_nc, getter)()
-                    if cur is not None and cur <= round(float(target) * MM) + EPS:
+                    tgt_nm = round(float(target) * MM)
+                    if cur is not None and _class_declared and cur <= tgt_nm + EPS:
                         continue  # only loosen (lower); never raise
+                    if cur is not None and not _class_declared \
+                            and abs(cur - tgt_nm) <= EPS:
+                        note_live_declared(board, (DEFAULT_CLASS_CLEARANCE_KEY,))
+                        continue  # already there; now declared
                 except Exception:
                     pass
             try:
                 getattr(default_nc, setter)(round(float(target) * MM))
+                note_live_declared(board, (DEFAULT_CLASS_CLEARANCE_KEY,))
                 changes.append(f"net_class[Default].{setter} -> {target:.4g} mm")
             except Exception:
                 pass
@@ -2000,7 +2478,32 @@ def apply_targets_to_board(board, targets: dict, sev_plan: dict,
         "lib_footprint_mismatch": "DRCE_LIBRARY_FOOTPRINT_MISMATCH",
         "starved_thermal": "DRCE_STARVED_THERMAL",
     }
-    if hasattr(bds, "SetSeverity") and hasattr(bds, "GetSeverity"):
+    _sev_api = (hasattr(bds, "SetSeverity") and hasattr(bds, "GetSeverity")
+                and all(hasattr(pcbnew, c) for c in code.values()))
+    if sev_plan and not _sev_api:
+        # KiCad 10.0.0's SWIG has no SetSeverity and no DRCE_* / RPT_SEVERITY_*
+        # names, and GetSeverity returns an opaque pointer (probed): there is
+        # no way to change a severity from here. Say so -- the CLI writes the
+        # relaxation into its project, and silence here read as "done". Nothing
+        # is changed, so nothing is recorded under saved_severities either.
+        print("  (DRC severities NOT relaxed: this pcbnew's scripting API "
+              "cannot change a rule severity -- set them in Board Setup > "
+              "Violation Severity if you want them relaxed)")
+    if _sev_api:
+        name_of = {v: k for k, v in sev_const.items()}
+        # What the board DECLARES for a category: its project's
+        # rule_severities, or this session's own setting. One it does not
+        # declare is "error" to the file writer (`sev.get(cat, "error")`), so it
+        # is here too -- for the decision and for the record below.
+        try:
+            _path = board.GetFileName() or ""
+        except Exception:
+            _path = ""
+        _proj_sev = ((((_project_doc(_path).get("board") or {})
+                       .get("design_settings") or {}).get("rule_severities")
+                      or {}) if _path else {})
+        _sess = _LIVE_DECLARED.get(live_board_key(board), set())
+        saved = {}
         for cat, level in sev_plan.items():
             cname = code.get(cat)
             drce = getattr(pcbnew, cname, None) if cname else None
@@ -2009,9 +2512,28 @@ def apply_targets_to_board(board, targets: dict, sev_plan: dict,
             tgt = sev_const[level]
             try:
                 cur = bds.GetSeverity(drce)
-                if rank.get(tgt, 2) < rank.get(cur, 2):   # only loosen
-                    bds.SetSeverity(drce, tgt)
+                cur_name = (name_of.get(cur, "error")
+                            if cat in _proj_sev or f"severity:{cat}" in _sess
+                            else "error")
+                if _SEV_RANK.get(level, 2) < _SEV_RANK.get(cur_name, 2):
+                    bds.SetSeverity(drce, tgt)               # only loosen
+                    note_live_declared(board, (f"severity:{cat}",))
+                    saved.setdefault(cat, cur_name)
                     changes.append(f"severity[{cat}] -> {level}")
+            except Exception:
+                pass
+        if saved:
+            # #856: the value a severity had before a tool lowered it, the
+            # FIRST writer's, as apply_targets_to_project records it -- into
+            # the board's records (tool_records), so it survives KiCad's save.
+            def _record(ns):
+                rec = ns.setdefault("saved_severities", {})
+                added = {c: v for c, v in saved.items() if c not in rec}
+                rec.update(added)
+                return bool(added)
+            try:
+                import tool_records
+                tool_records.update_live_namespace(board, _record)
             except Exception:
                 pass
     return changes
@@ -2085,8 +2607,8 @@ def main():
                        "net_settings": {"classes": [], "meta": {"version": 0}}},
                       f, indent=2)
 
-    with open(pro) as f:
-        proj = json.load(f)
+    import tool_records
+    proj = tool_records.load_project(pro)
 
     # Compute the floors (routing params; sizes fall back to the board minima,
     # clearance to the project's Default net-class clearance) and the severity
@@ -2141,6 +2663,7 @@ def main():
         print("(dry run -- not written)")
         return
 
+    tool_records.stamp_revision(proj)
     with open(pro, "w") as f:
         json.dump(proj, f, indent=2)
         f.write("\n")

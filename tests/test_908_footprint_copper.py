@@ -20,7 +20,9 @@ is the sibling this is modelled on, including its anti-vacuity idiom):
      copper layer -- those coordinates are PAD-local and would land as
      phantom copper (urchin carries 136 of them).
   6. `(stroke (width 0))` on a filled poly -> the TRACK_WIDTH fallback;
-     an `fp_line` with width 0 -> nothing.
+     an `fp_line` with width 0 -> one segment at UNSTROKED_SHAPE_WIDTH
+     (0.1 mm), the stroke pcbnew gives an unfilled zero-width shape on load
+     (probed on KiCad 10.0.0 at file versions 20211014, 20240108, 20260206).
   7. The plural `(layers "F.Cu" "F.Mask")` form is read, and `F&B.Cu`
      emits on both copper sides -- the same answers the `gr_*` table gives.
   8. A vertex list that already repeats its first point emits N-1 segments,
@@ -47,7 +49,8 @@ sys.path.insert(0, ROOT_DIR)
 sys.path.insert(0, os.path.join(ROOT_DIR, 'py_router'))  # #522
 sys.path.insert(0, os.path.join(ROOT_DIR, 'py_tools'))  # #522
 
-from kicad_parser import extract_segments, local_to_global, parse_kicad_pcb
+from kicad_parser import (extract_segments, local_to_global, parse_kicad_pcb,
+                          UNSTROKED_SHAPE_WIDTH)
 import routing_defaults as defaults
 
 RUN_ALL_FAST_OK = True
@@ -132,8 +135,11 @@ def main():
           f'{sorted({s.width for s in segs})}')
     line0 = ('   (fp_line (start 0 0) (end 1 0)\n'
              '     (stroke (width 0) (type solid)) (layer "F.Cu") (uuid "l0"))')
-    check('an fp_line with width 0 emits nothing',
-          _graphics(_board(_fp(line0))) == [])
+    l0segs = _graphics(_board(_fp(line0)))
+    check('an fp_line with width 0 emits one segment at the stroke pcbnew '
+          'loads it with',
+          len(l0segs) == 1 and l0segs[0].width == UNSTROKED_SHAPE_WIDTH,
+          f'{[(s.width, s.drawn_width) for s in l0segs]}')
     line1 = ('   (fp_line (start 0 0) (end 1 0)\n'
              '     (stroke (width 0.2) (type solid)) (layer "F.Cu") (uuid "l1"))')
     lsegs = _graphics(_board(_fp(line1)))

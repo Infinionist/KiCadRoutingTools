@@ -76,6 +76,33 @@ class _StaticStampProxy:
         return getattr(self._real, name)
 
 
+class _RungPassStampProxy:
+    """#1226: the map of a #530 rung sub-build. The sub-build's DYNAMIC via
+    cells are what get copied into rung r, but the board edge, cutout and
+    milled-contour bands stamp the STATIC bitmap directly -- and a rung-r
+    query reads the PARENT's static bitmap, stamped at the run via. A larger
+    per-net via could then sit (rung - run)/2 inside the edge clearance. Here
+    every static VIA add lands in the dynamic map instead, so the copy carries
+    the band at the rung's own via (track cells do not depend on the via and
+    stay static)."""
+    __slots__ = ("_real",)
+
+    def __init__(self, real):
+        object.__setattr__(self, "_real", real)
+
+    def add_static_blocked_via(self, gx, gy):
+        self._real.add_blocked_via(gx, gy)
+
+    def add_static_blocked_vias_batch(self, vias):
+        self._real.add_blocked_vias_batch(vias)
+
+    def add_static_blocked_via_spans_batch(self, spans):
+        self._real.add_blocked_via_spans_batch(spans)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
 #: Shared empty set for the #908 own-pad lift lookup, so the hot segment
 #: loop allocates nothing per row.
 _EMPTY_NETS = frozenset()
@@ -159,6 +186,8 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
     obstacles = (_StaticStampProxy(_real_obstacles)
                  if static_base and hasattr(_real_obstacles, "add_static_blocked_cells_batch")
                  else _real_obstacles)
+    if _rung_pass:
+        obstacles = _RungPassStampProxy(_real_obstacles)
 
     # Set BGA proximity radius for is_in_bga_proximity() checks -- armed only
     # when the COST knob is on, so --bga-proximity-cost 0 is a real off-switch.
@@ -535,6 +564,10 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
 
     # Block KiCad native keep-out rule areas (zone (keepout ...)), per-layer (PR #25)
     add_rule_area_keepout_obstacles(obstacles, pcb_data, config)
+
+    # Pour islands of out-of-scope nets that this run could only cut (#1260)
+    add_pour_barrier_obstacles(obstacles, pcb_data, config, extra_clearance,
+                               _obstacle_clearance)
 
     # Add hole-to-hole clearance blocking for existing drills
     _report("drill holes", 0, 0, force=True)
@@ -1203,6 +1236,58 @@ def add_rule_area_keepout_obstacles(obstacles: GridObstacleMap, pcb_data: PCBDat
         if block_vias and via_mask.any():
             v_gx, v_gy = _box_masked_cells(o_gx_lo, o_gy_lo, o_nx, via_mask)
             obstacles.add_blocked_vias_batch(np.column_stack([v_gx, v_gy]))
+
+
+def add_pour_barrier_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
+                               config: GridRouteConfig,
+                               extra_clearance: float = 0.0,
+                               obstacle_clearance=None):
+    """Block tracks and vias on the pour islands this run must not cut (#1260).
+
+    `config.pour_barriers` (pour_guard.install_pour_barriers) holds the fill
+    islands of zone nets outside the run that no routed net has a terminal
+    inside. Each is stamped like the copper it is: track cells within half a
+    track width plus the clearance of the fill, and via cells within half a
+    via plus the clearance, on the island's layer, at the larger of the pair
+    clearance and the zone's own clearance (KiCad grades the written fill
+    against the zone's clearance). An empty list stamps nothing.
+
+    Not filtered by the map's `nets_to_route`: the zone nets of a run's
+    pours are always in it (tap relocation caches them per net), and the
+    list already holds only nets the run does not route."""
+    barriers = getattr(config, 'pour_barriers', None)
+    if not barriers:
+        return
+    name_to_id = {n.name: nid for nid, n in pcb_data.nets.items()}
+    coord = GridCoord(config.grid_step)
+    layer_map = build_layer_map(config.layers)
+    clip = getattr(pcb_data.board_info, 'board_bounds', None)
+    for b in barriers:
+        li = layer_map.get(b.get('layer'))
+        if li is None:
+            continue
+        nid = name_to_id.get(b.get('net'))
+        pair = (obstacle_clearance(nid)
+                if obstacle_clearance is not None and nid is not None
+                else config.clearance)
+        clear = max(pair, b.get('clearance') or 0.0) + extra_clearance
+        track_clear = clear + config.track_width / 2
+        via_clear = clear + config.via_size / 2
+        margin = max(track_clear, via_clear) + coord.grid_step
+        for poly in b.get('polygons') or []:
+            gx_lo, gy_lo, nx, _ny, inside, edge_dist = _rasterize_polygon_box(
+                poly, coord, margin, clip_bounds=clip)
+            if inside is None:
+                continue
+            # Boundary cells resolve OPEN, as the rule-area stamp does.
+            track_mask = inside | (edge_dist < track_clear - GRID_TIE_EPS)
+            via_mask = inside | (edge_dist < via_clear - GRID_TIE_EPS)
+            if track_mask.any():
+                t_gx, t_gy = _box_masked_cells(gx_lo, gy_lo, nx, track_mask)
+                _block_cells_sel(obstacles, t_gx, t_gy, [li])
+            if via_mask.any():
+                v_gx, v_gy = _box_masked_cells(gx_lo, gy_lo, nx, via_mask)
+                obstacles.add_blocked_vias_batch(np.column_stack([v_gx, v_gy]))
 
 
 def add_board_edge_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
@@ -1880,11 +1965,145 @@ def block_track_cells_near_override_pad_holes(obstacles: GridObstacleMap,
         obstacles.add_blocked_cells_batch(np.hstack([arr, layer_col]))
 
 
-_HOLE_CLR_CACHE = {}          # board path -> declared min_hole_clearance (mm)
-_HOLE_CLR_ANNOUNCED = set()
-_HOLE_CLR_ORIGIN = set()      # paths whose floor came from fab_floor_origin,
-                              # i.e. a later step's writeback had relaxed the
-                              # live rule below what the board declared
+_HOLE_CLR_CACHE = {}          # board path -> (project stamp, (rule, origin))
+_HOLE_CLR_ANNOUNCED = set()   # (board path, floor) pairs already printed
+_HOLE_CLR_ORIGIN = set()      # paths whose CURRENT floor came from
+                              # fab_floor_origin, i.e. a later step's writeback
+                              # had relaxed the rule below what the board declared
+
+
+def _project_stamp(path: str):
+    """What identifies the CONTENT of ``path``'s sibling ``.kicad_pro`` and of
+    the board file without reading them: an ``(mtime_ns, size, inode)`` per
+    file, or None when neither exists.
+
+    The hole-clearance cache is keyed on this, not on the path alone. A path
+    key served the FIRST value for the life of the process, and the GUI plugin
+    is one process for a whole KiCad session: a user who saved a new Board
+    Setup min hole clearance kept routing at the old one. The inode is in the
+    stamp because every writer here replaces the project atomically
+    (tmp + ``os.replace``), which gives the file a new inode even when the
+    write lands in the same mtime tick at the same size.
+    """
+    out = []
+    # The project, and the board file: the origin record may live on the
+    # board itself (tool_records), where a GUI session's survives KiCad's save.
+    # Not a sibling-copy list (copy_board.SIBLING_EXTS): exactly these two.
+    stem = os.path.splitext(path)[0]
+    for stamped in (stem + '.kicad_pro', stem + '.kicad_pcb'):
+        try:
+            st = os.stat(stamped)
+            out.append((st.st_mtime_ns, st.st_size, st.st_ino))
+        except (OSError, ValueError, TypeError):
+            out.append(None)
+    return tuple(out) if any(out) else None
+
+
+def _file_hole_floor(path: str):
+    """``(rule, origin)`` the board's sibling project declares, in mm.
+
+    ``rule`` is ``design_settings.rules.min_hole_clearance`` exactly as
+    :func:`list_nets.board_constraint` reads it -- None when the project does
+    not declare the key, a float (possibly 0.0) when it does -- and ``origin``
+    is ``kicad_routing_tools.fab_floor_origin.min_hole_clearance``
+    (:func:`fix_kicad_drc_settings.declared_fab_floor`, None when absent).
+
+    Cached per path and re-read whenever the project's stamp changes. The read
+    itself is not cheap enough to repeat: ``read_design_rules`` reads the whole
+    ``.kicad_pcb`` to count its copper layers, measured 0.07-3.4 ms per call on
+    the tracked boards (2.3 MB kit-dev-coldfire), and while a route step asks
+    a handful of times, ``plane_region_connector.npth_floor_ok`` asks once per
+    plane seed point. The stamp costs about 1 us.
+    """
+    stamp = _project_stamp(path)
+    hit = _HOLE_CLR_CACHE.get(path)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    try:
+        from list_nets import board_constraint
+        from fix_kicad_drc_settings import declared_fab_floor
+        rec = (board_constraint(path, 'min_hole_clearance'),
+               declared_fab_floor(path, 'min_hole_clearance'))
+    except Exception:                                           # noqa: BLE001
+        rec = (None, None)
+    _HOLE_CLR_CACHE[path] = (stamp, rec)
+    return rec
+
+
+def _live_hole_rule(pcb_data):
+    """The ``min_hole_clearance`` (mm) the LIVE board declares, when
+    ``pcb_data`` was built from a pcbnew board (``build_pcb_data_from_board``)
+    and the board declares one; else None, which leaves the file to decide.
+
+    Read through ``PCBData.live_rules_provider`` -- the #1187 channel, asked
+    NOW rather than captured at build, because mid-plan the floors the GUI's
+    writers lowered live only in pcbnew's memory and a PCBData built before a
+    step is still in use after it. The provider answers only DECLARED rules
+    (``fix_kicad_drc_settings.live_declared_rules``): pcbnew holds a project-
+    less board at a factory 0.25 that its file does not declare, and that
+    stand-in is not a floor."""
+    provider = getattr(pcb_data, 'live_rules_provider', None)
+    if not callable(provider):
+        return None
+    try:
+        live = provider()
+    except Exception:                                           # noqa: BLE001
+        return None
+    v = (live or {}).get('min_hole_clearance')
+    if not isinstance(v, (int, float)) or isinstance(v, bool):
+        return None
+    return float(v)
+
+
+def declared_hole_clearance(pcb_data: PCBData, pcb_file: str = None):
+    """``(floor_mm, source)``: the copper-to-HOLE floor this board declares.
+
+    The computation behind :func:`resolve_hole_clearance` -- no explicit
+    config override, no announcement -- shared with ``compare_pcb_data``, which
+    checks that a board built from pcbnew and the same board parsed from its
+    file declare the same floor. ``source`` is ``'fab_floor_origin'``,
+    ``'live board'``, ``'project'`` or ``''`` (declares nothing, floor 0.0).
+
+    THE FILE (every CLI, and any PCBData parsed from disk): the sibling
+    project's ``rules.min_hole_clearance`` when positive, raised to its
+    ``fab_floor_origin`` when that is larger -- exactly what this read before
+    the live branch existed.
+
+    THE LIVE BOARD (a PCBData from ``build_pcb_data_from_board``): the rule is
+    pcbnew's in-memory ``m_HoleClearance`` when the live board DECLARES it
+    (``fix_kicad_drc_settings.live_declared_rules``), so a Board Setup edit
+    counts before it is saved and a board with no file at all (#1238) is
+    still priced. pcbnew holds every project-less board -- 19 of the 22
+    tracked boards -- at a factory 0.25 its file does not declare; pricing
+    that would hold the GUI's tracks 0.25 off every NPTH wall and switch on
+    the #1038 via keep-out, where the CLI, which reads no rule from the same
+    file, holds tracks at the 0.20 fab floor (or the routing clearance, when
+    larger) and lays no via keep-out. A board that declares no rule live
+    reads the file, which then declares none either. The origin is the
+    file's either way: it is a record in the project, which pcbnew's design
+    settings do not carry.
+    """
+    path = pcb_file or getattr(pcb_data, 'source_path', "") or ""
+    rule, origin = _file_hole_floor(path) if path else (None, None)
+    # A live board's records are its own (what the session wrote, saved or
+    # not, and on a board with no file): PCBData.live_records_provider.
+    _records = getattr(pcb_data, 'live_records_provider', None)
+    if callable(_records):
+        try:
+            _o = ((_records() or {}).get('fab_floor_origin') or {}).get(
+                'min_hole_clearance')
+            origin = float(_o) if isinstance(_o, (int, float)) and _o > 0 else None
+        except Exception:                                       # noqa: BLE001
+            pass
+    live = _live_hole_rule(pcb_data)
+    if live is not None:
+        v, src = (live, 'live board') if live > 0 else (0.0, '')
+    else:
+        v = float(rule) if rule and rule > 0 else 0.0
+        src = 'project' if v > 0 else ''
+    if origin and origin > v:
+        v, src = float(origin), 'fab_floor_origin'
+    return v, src
 
 
 def resolve_hole_clearance(pcb_data: PCBData, config,
@@ -1997,46 +2216,38 @@ def resolve_hole_clearance(pcb_data: PCBData, config,
     and confirmed independently by kicad-cli. It was the single DRC failure on
     that board.
 
-    Cached per board path: the obstacle map is rebuilt per net, and this would
-    otherwise re-read the project file thousands of times in one run.
+    Where the value comes from -- the project file, or on the GUI the live
+    board's design settings -- is :func:`declared_hole_clearance`. The file
+    read is cached per path and re-read when the project changes
+    (:func:`_project_stamp`): the obstacle map is rebuilt per net, and a
+    path-only key kept a KiCad session on the first value it read.
     """
     explicit = getattr(config, 'hole_clearance', 0.0) or 0.0
     if explicit > 0:
         return float(explicit)
     path = pcb_file or getattr(pcb_data, 'source_path', "") or ""
-    if not path:
-        return 0.0
-    if path not in _HOLE_CLR_CACHE:
-        try:
-            from list_nets import board_constraint
-            v = board_constraint(path, 'min_hole_clearance')
-            v = float(v) if v and v > 0 else 0.0
-            # The DECLARED floor outranks the CURRENT rule, because the rule is
-            # not durable: every writeback clamps `rules.min_hole_clearance`
-            # down to the clearance that step routed at, so from step 2 onward
-            # the author's declaration is gone from the only place this used to
-            # look. Measured on a tigard pour+route chain declaring 0.25 -- the
-            # pour's writeback left rules at 0.15 and the route step then read
-            # 0.15, below the 0.20 fab floor, and silently stopped honouring
-            # the board. The original survives in `fab_floor_origin` (seeded at
-            # the first writeback, carried down with the project), so take the
-            # larger of the two. Raise-only, exactly like the rest of this
-            # helper: a board with no origin, or an origin at or below the
-            # rule, is bit-identical.
-            from fix_kicad_drc_settings import declared_fab_floor
-            _origin = declared_fab_floor(path, 'min_hole_clearance')
-            if _origin and _origin > v:
-                _HOLE_CLR_ORIGIN.add(path)
-                v = float(_origin)
-            _HOLE_CLR_CACHE[path] = v
-        except Exception:                                       # noqa: BLE001
-            _HOLE_CLR_CACHE[path] = 0.0
-    v = _HOLE_CLR_CACHE[path]
-    if v > defaults.NPTH_TO_TRACK_CLEARANCE and path not in _HOLE_CLR_ANNOUNCED:
-        _HOLE_CLR_ANNOUNCED.add(path)
+    # The DECLARED floor outranks the CURRENT rule, because the rule is not
+    # durable: every writeback clamps `rules.min_hole_clearance` down to the
+    # clearance that step routed at, so from step 2 onward the author's
+    # declaration is gone from the only place this used to look. Measured on a
+    # tigard pour+route chain declaring 0.25 -- the pour's writeback left rules
+    # at 0.15 and the route step then read 0.15, below the 0.20 fab floor, and
+    # silently stopped honouring the board. The original survives in
+    # `fab_floor_origin` (seeded at the first writeback, carried down with the
+    # project), so declared_hole_clearance takes the larger of the two.
+    # Raise-only, exactly like the rest of this helper: a board with no
+    # origin, or an origin at or below the rule, is bit-identical.
+    v, _source = declared_hole_clearance(pcb_data, pcb_file)
+    if _source == 'fab_floor_origin':
+        _HOLE_CLR_ORIGIN.add(path)
+    else:
+        _HOLE_CLR_ORIGIN.discard(path)
+    if v > defaults.NPTH_TO_TRACK_CLEARANCE \
+            and (path, v) not in _HOLE_CLR_ANNOUNCED:
+        _HOLE_CLR_ANNOUNCED.add((path, v))
         _src = ("the floor the board ORIGINALLY declared, which a later step's "
                 "writeback relaxed in the project"
-                if path in _HOLE_CLR_ORIGIN else "the board's own "
+                if _source == 'fab_floor_origin' else "the board's own "
                 "min_hole_clearance")
         # #1217: the floor holds copper off NPTH walls only; a via drill and a
         # PTH barrel are held at copper clearance. Say so where the number is
@@ -2242,8 +2453,11 @@ def add_drill_hole_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
 
 def add_net_stubs_as_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
                                 net_id: int, config: GridRouteConfig,
-                                extra_clearance: float = 0.0):
-    """Add a net's stub segments as obstacles to the map."""
+                                extra_clearance: float = 0.0, _shapes=None):
+    """Add a net's stub segments as obstacles to the map.
+
+    ``_shapes`` (internal): this net's #1181 filled graphic shapes, handed to
+    the #1226 rung re-run so it does not rescan the board for them."""
     coord = GridCoord(config.grid_step)
     layer_map = build_layer_map(config.layers)
     # Cross-class clearance (PR392): price this net's stub copper at its own KiCad
@@ -2254,6 +2468,7 @@ def add_net_stubs_as_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
 
     # Add segments - use actual segment width and the routing-side reserve width (#156)
     # FFI batching (2026-08-14): accumulate + stamp once per layer, byte-identical.
+    _via_only = isinstance(obstacles, _RungViaSink)   # #1226 rung re-run: vias only
     _nb_cells: Dict[int, list] = {}
     _nb_vias: list = []
     for seg in pcb_data.segments:
@@ -2270,11 +2485,12 @@ def add_net_stubs_as_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
         trk_clearance = config.track_obstacle_clearance(seg.net_id, seg_clearance)
         expansion_mm = reserve_width / 2 + seg_width / 2 + trk_clearance + extra_clearance
         via_block_mm = config.via_size / 2 + seg_width / 2 + seg_clearance + extra_clearance
-        _c = segment_blocked_cells_array(seg.start_x, seg.start_y,
-                                         seg.end_x, seg.end_y,
-                                         expansion_mm, coord.grid_step)
-        if len(_c):
-            _nb_cells.setdefault(layer_idx, []).append(_c)
+        if not _via_only:
+            _c = segment_blocked_cells_array(seg.start_x, seg.start_y,
+                                             seg.end_x, seg.end_y,
+                                             expansion_mm, coord.grid_step)
+            if len(_c):
+                _nb_cells.setdefault(layer_idx, []).append(_c)
         _v = segment_blocked_cells_array(seg.start_x, seg.start_y,
                                          seg.end_x, seg.end_y,
                                          via_block_mm, coord.grid_step)
@@ -2290,10 +2506,10 @@ def add_net_stubs_as_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
         _vall = np.concatenate(_nb_vias) if len(_nb_vias) > 1 else _nb_vias[0]
         obstacles.add_blocked_vias_batch(np.ascontiguousarray(_vall.astype(np.int32)))
     # #1181: a net-tagged filled graphic of this net is copper inside too.
-    from check_drc import filled_graphic_shapes
-    for _sh in filled_graphic_shapes(pcb_data):
-        if _sh.net_id != net_id:
-            continue
+    if _shapes is None:
+        from check_drc import filled_graphic_shapes
+        _shapes = [_sh for _sh in filled_graphic_shapes(pcb_data) if _sh.net_id == net_id]
+    for _sh in _shapes:
         _gx, _gy = filled_graphic_interior_cells(
             pcb_data, coord, _sh, getattr(pcb_data.board_info, 'board_bounds', None))
         if not len(_gx):
@@ -2303,6 +2519,12 @@ def add_net_stubs_as_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
             obstacles.add_blocked_cell_spans_batch(
                 filled_graphic_interior_spans(_gx, _gy, _li))
         obstacles.add_blocked_via_spans_batch(filled_graphic_interior_spans(_gx, _gy))
+    # #1226: a net searched at its own via size reads only its rung, so this
+    # copper must be there too, at that rung's via. These per-net adds build
+    # the maps routing_context.build_single_ended_obstacles returns; without
+    # this, every via of a routed net's search was legal on foreign copper.
+    _stamp_rungs_at_own_via(obstacles, config, lambda s, c: add_net_stubs_as_obstacles(
+        s, pcb_data, net_id, c, extra_clearance, _shapes=_shapes), populated_only=True)
 
 
 def add_diff_pair_own_stubs_as_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
@@ -2466,6 +2688,9 @@ def add_net_pads_as_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
     for pad in pads:
         _add_pad_obstacle(obstacles, pad, coord, layer_map, config, extra_clearance,
                           clearance_override=obs_clearance)
+    # #1226: into each per-net via rung too, at that rung's via.
+    _stamp_rungs_at_own_via(obstacles, config, lambda s, c: add_net_pads_as_obstacles(
+        s, pcb_data, net_id, c, extra_clearance), populated_only=True)
 
 
 def _via_h2h_cells(via, config: GridRouteConfig, coord: GridCoord):
@@ -2535,6 +2760,9 @@ def add_net_vias_as_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
         _h2h = _via_h2h_cells(via, config, coord)
         if _h2h is not None:
             obstacles.add_blocked_vias_batch(_h2h)
+    # #1226: into each per-net via rung too, at that rung's via and drill.
+    _stamp_rungs_at_own_via(obstacles, config, lambda s, c: add_net_vias_as_obstacles(
+        s, pcb_data, net_id, c, extra_clearance, diagonal_margin), populated_only=True)
 
 
 def _ledger_bracket(obstacles):
@@ -2549,6 +2777,8 @@ def _ledger_bracket(obstacles):
 
 
 def _ledger_close(obstacles, pre, tag: str):
+    if isinstance(obstacles, _RungViaSink):
+        return   # a #1226 rung re-run, not a map: nothing to account or watch
     import obstacle_cache as _oc
     # The cell watch is armed by its own env var and must see RAW ops too --
     # they are the other half of a cell's history -- so it runs before the
@@ -2568,20 +2798,21 @@ def _per_net_rungs(obstacles) -> range:
     a single-rung map or a 0.21.x binary). Rung 0 is the run's via; when the
     #568 small map is armed it holds rung 1 (obstacle_cache.via_rungs keeps
     that slot for it) and its own mirror stamps it, so per-net rungs start at
-    2 -- otherwise at 1. Raw copper adds mirror their full-size via cells into
-    every per-net rung, the same conservative over-block the small mirror
-    applies (never wrong; a rung-r search near raw copper is not told the
-    cells are legal)."""
+    2 -- otherwise at 1. FOREIGN copper must not be copied this way: a
+    per-net via is usually larger than the run via, so run-size cells leave
+    it short of the copper (#1226) -- raw copper adds use
+    _stamp_rungs_at_own_via instead.
+
+    Armed is not the same as HAVING a small slot: with no fab via smaller
+    than the run's (the run's is the ladder bottom, or --escalation off), a
+    per-net rung sits in slot 1 and this range misses it. Where the layout
+    matters, read it with _per_net_rung_geometry, as
+    prepare_obstacles_inplace does."""
     try:
         n = int(obstacles.rung_count())
     except Exception:                                          # noqa: BLE001
         return range(0)
     return range(2 if _rung_small_armed() else 1, n)
-
-
-def _extra_rungs(obstacles) -> int:
-    """Number of per-net rungs (see _per_net_rungs)."""
-    return len(_per_net_rungs(obstacles))
 
 
 def _mirror_rungs_add(obstacles, cells) -> None:
@@ -2598,6 +2829,168 @@ def _mirror_rungs_remove(obstacles, cells) -> None:
         arr = np.asarray(cells, dtype=np.int32)
         for r in rs:
             obstacles.remove_blocked_vias_rung_batch(r, arr)
+
+
+class _RungViaSink:
+    """#1226: the map a raw stamp is RE-RUN against to learn its via-block
+    rows at another via geometry. Records every via-block row the stamp adds
+    and drops every track-cell row (a track keep-out does not depend on the
+    via size). Reports a single-rung map, so the re-run mirrors nothing of
+    its own. A method not listed here raises, so a stamp that grows a new map
+    call fails loudly instead of being silently left out of the rungs."""
+    __slots__ = ('rows',)
+
+    def __init__(self):
+        self.rows = []
+
+    def add_blocked_via(self, gx, gy):
+        self.rows.append(np.array([[gx, gy]], dtype=np.int32))
+
+    def add_blocked_vias_batch(self, vias):
+        a = np.asarray(vias, dtype=np.int32).reshape(-1, 2)
+        if len(a):
+            self.rows.append(a.copy())
+
+    def add_blocked_via_spans_batch(self, spans):
+        from obstacle_cache import expand_via_spans
+        a = np.asarray(spans, dtype=np.int32).reshape(-1, 3)
+        if len(a):
+            self.rows.append(np.asarray(expand_via_spans(a), dtype=np.int32).reshape(-1, 2))
+
+    def add_blocked_cell(self, gx, gy, layer):
+        pass
+
+    def add_blocked_cells_batch(self, cells):
+        pass
+
+    def add_blocked_cell_spans_batch(self, spans):
+        pass
+
+    def add_blocked_vias_small_batch(self, vias):
+        pass
+
+    def rung_count(self):
+        return 1
+
+    def cells(self) -> np.ndarray:
+        if not self.rows:
+            return np.empty((0, 2), dtype=np.int32)
+        return np.ascontiguousarray(
+            self.rows[0] if len(self.rows) == 1 else np.concatenate(self.rows))
+
+
+def _per_net_rung_geometry(obstacles, config) -> List[Tuple[int, float, float]]:
+    """#1226: ``[(rung, via_size, via_drill)]`` for every per-net via rung
+    (#530) the map carries, at the geometry a search at that rung places.
+
+    A rung r >= 1 is read on its own (``is_via_blocked_rung`` never consults
+    rung 0's dynamic map), so raw copper must be stamped into it at that
+    rung's via, not the run's: a per-net via is usually LARGER than the run
+    via, and run-size cells leave it (rung - run)/2 short of every edge.
+
+    The layout comes from ``obstacle_cache.via_rungs``: the #568 small rung
+    (armed by default) takes slot 1 when the board HAS a smaller fab via, and
+    the per-net geometries follow, largest first. The raw adds see only
+    (map, config) -- not the board the small pair is read from -- so the
+    layout is recovered from the map's rung count:
+      * n == len(per-net)     : no small slot, rungs 1..n are per-net;
+      * n == len(per-net) + 1 : small slot at 1, per-net rungs 2..n.
+    The first reading is ambiguous only when a per-net via is SMALLER than
+    the run via, since that one may BE the small pair (via_rungs then merges
+    it into slot 1). There, and on any count that fits neither reading, each
+    rung is stamped at the largest geometry it could hold: every via keep-out
+    grows with the via and its drill, so that is a superset -- it can
+    over-block a rung, never under-block one. Rung 1 of the second reading
+    is the small rung's own and is left to its own mirror."""
+    try:
+        n = int(obstacles.rung_count()) - 1
+    except Exception:                                          # noqa: BLE001
+        return []
+    if n <= 0:
+        return []
+    run = (config.via_size, config.via_drill)
+    # via_rungs sorts every net_via_sizes entry; the raw adds ask once per net
+    # per stamp, so keep the answer on the config, keyed by what it reads.
+    _nvs = getattr(config, 'net_via_sizes', None) or {}
+    _key = (run, id(_nvs), len(_nvs))
+    _memo = config.__dict__.get('_rung_layout_memo')
+    if _memo is not None and _memo[0] == _key:
+        per = _memo[1]
+    else:
+        from obstacle_cache import via_rungs
+        per = via_rungs(config, None)
+        config.__dict__['_rung_layout_memo'] = (_key, per)
+    if n == len(per) + 1:
+        return [(r, per[r - 2][0], per[r - 2][1]) for r in range(2, n + 1)]
+    if n == len(per):
+        cands = {r: [per[r - 1]] for r in range(1, n + 1)}
+        for k, p in enumerate(per):
+            if p[0] < run[0] - 1e-9:   # may be the #568 small pair, merged to slot 1
+                rest = per[:k] + per[k + 1:]
+                cands[1].append(p)
+                for r in range(2, n + 1):
+                    cands[r].append(rest[r - 2])
+        return [(r, max(g[0] for g in cs), max(g[1] for g in cs))
+                for r, cs in sorted(cands.items())]
+    pool = per + [run]
+    d, h = max(g[0] for g in pool), max(g[1] for g in pool)
+    return [(r, d, h) for r in range(1, n + 1)]
+
+
+def _stamp_rungs_at_own_via(obstacles, config, stamp, remove: bool = False,
+                            populated_only: bool = False) -> None:
+    """#1226: re-run ``stamp(sink, rung_config)`` once per per-net rung at that
+    rung's own via geometry (see _per_net_rung_geometry) and add -- or, for a
+    remove twin, remove -- the via-block rows it records to rung r. The same
+    computation as precompute_net_obstacles' rung passes and
+    build_base_obstacle_map's rung sub-builds, so raw copper reaches every
+    rung exactly as cached copper does.
+
+    A remove twin passes the ADD stamp, so both sides derive a rung's rows
+    from one function at one geometry and stay ref-count balanced; such
+    twins stamp every rung of the layout, a set that cannot change between
+    the add and the remove.
+
+    ``populated_only`` is for add-only stamps on a per-route CLONE (the
+    per-net adds behind build_single_ended_obstacles): they reach only rungs
+    that already hold copper (populated_via_rungs, the #1070 rule), and with
+    it the #568 small rung, at the run's own via -- a superset for the
+    smaller fab via, as the list twins' small mirror stamps it. An
+    unpopulated rung falls back to rung 0 and already sees this copper there;
+    populating it with this copper ALONE would hide the base's (the small
+    rung of an unfrozen map holds no base copper at all)."""
+    geos = _per_net_rung_geometry(obstacles, config)
+    small = None
+    if populated_only:
+        pop = set(populated_via_rungs(obstacles))
+        geos = [g for g in geos if g[0] in pop]
+        if (1 in pop and _rung_small_armed() and not any(g[0] == 1 for g in geos)
+                and not isinstance(obstacles, _RungViaSink)):
+            small = (config.via_size, config.via_drill)
+    if not geos and small is None:
+        return
+    from dataclasses import replace as _dc_replace
+    rows_at = {}
+
+    def _rows(d, h):
+        if (d, h) not in rows_at:
+            sink = _RungViaSink()
+            stamp(sink, config if (d, h) == (config.via_size, config.via_drill)
+                  else _dc_replace(config, via_size=d, via_drill=h))
+            rows_at[(d, h)] = sink.cells()
+        return rows_at[(d, h)]
+
+    for r, d, h in geos:
+        cells = _rows(d, h)
+        if len(cells):
+            if remove:
+                obstacles.remove_blocked_vias_rung_batch(r, cells)
+            else:
+                obstacles.add_blocked_vias_rung_batch(r, cells)
+    if small is not None:
+        cells = _rows(*small)
+        if len(cells):
+            obstacles.add_blocked_vias_small_batch(cells)
 
 
 def _rung_small_armed():
@@ -2686,17 +3079,20 @@ def add_vias_list_as_obstacles(obstacles: GridObstacleMap, vias: list,
         _h2h = _via_h2h_cells(via, config, coord)
         if _h2h is not None:
             obstacles.add_blocked_vias_batch(_h2h)
-    # #568 small-map mirror (see _rung_small_armed); #530 per-net rungs too.
-    if vias and (_rung_small_armed() or _extra_rungs(obstacles)):
+    # #568 small-map mirror (see _rung_small_armed): full-size cells, a
+    # superset for the smaller fab via.
+    if vias and _rung_small_armed() and not isinstance(obstacles, _RungViaSink):
         _small = []
         for via in vias:
             _small.extend(_via_raw_block_cells(via, config, coord, num_layers,
                                                extra_clearance, diagonal_margin))
         if _small:
-            if _rung_small_armed():
-                obstacles.add_blocked_vias_small_batch(
-                    np.array(_small, dtype=np.int32))
-            _mirror_rungs_add(obstacles, np.array(_small, dtype=np.int32))  # per-net rungs
+            obstacles.add_blocked_vias_small_batch(np.array(_small, dtype=np.int32))
+    # #530 per-net rungs, at each rung's OWN via and drill (#1226): run-size
+    # cells left a larger per-net via (rung - run)/2 inside this copper.
+    if vias:
+        _stamp_rungs_at_own_via(obstacles, config, lambda s, c: add_vias_list_as_obstacles(
+            s, vias, c, extra_clearance, diagonal_margin))
     _ledger_close(obstacles, _pre, "add_vias_list")
 
 
@@ -2723,6 +3119,7 @@ def add_segments_list_as_obstacles(obstacles: GridObstacleMap, segments: list,
     # FFI batching (2026-08-14): accumulate the memoized capsule arrays and
     # stamp once per layer after the loop (byte-identical: same rows, same
     # order, commuting inserts). The remove twin below was already batched.
+    _via_only = isinstance(obstacles, _RungViaSink)   # #1226 rung re-run: vias only
     _cells_by_layer: Dict[int, list] = {}
     _via_arrs: list = []
     _small_arrs: list = []
@@ -2740,19 +3137,19 @@ def add_segments_list_as_obstacles(obstacles: GridObstacleMap, segments: list,
                 getattr(seg, 'net_id', 0), seg_clearance)
             expansion_mm = reserve_width / 2 + seg_width / 2 + trk_clearance + extra_clearance
             via_block_mm = config.via_size / 2 + seg_width / 2 + seg_clearance
-            _c = segment_blocked_cells_array(seg.start_x, seg.start_y,
-                                             seg.end_x, seg.end_y,
-                                             expansion_mm, coord.grid_step)
-            if len(_c):
-                _cells_by_layer.setdefault(layer_idx, []).append(_c)
+            if not _via_only:
+                _c = segment_blocked_cells_array(seg.start_x, seg.start_y,
+                                                 seg.end_x, seg.end_y,
+                                                 expansion_mm, coord.grid_step)
+                if len(_c):
+                    _cells_by_layer.setdefault(layer_idx, []).append(_c)
             _v = segment_blocked_cells_array(seg.start_x, seg.start_y,
                                              seg.end_x, seg.end_y,
                                              via_block_mm, coord.grid_step)
             if len(_v):
                 _via_arrs.append(_v)
-            # #568 small-map mirror (see _rung_small_armed): same via capsule;
-            # #530 per-net rungs mirror it too.
-            if len(_v) and (_rung_small_armed() or _extra_rungs(obstacles)):
+            # #568 small-map mirror (see _rung_small_armed): same via capsule.
+            if len(_v) and _rung_small_armed():
                 _small_arrs.append(_v)
     for _li, _arrs in sorted(_cells_by_layer.items()):
         _call = np.concatenate(_arrs) if len(_arrs) > 1 else _arrs[0]
@@ -2766,9 +3163,11 @@ def add_segments_list_as_obstacles(obstacles: GridObstacleMap, segments: list,
     if _small_arrs:
         _sall = (np.concatenate(_small_arrs) if len(_small_arrs) > 1
                  else _small_arrs[0])
-        if _rung_small_armed():
-            obstacles.add_blocked_vias_small_batch(np.asarray(_sall, dtype=np.int32))
-        _mirror_rungs_add(obstacles, np.asarray(_sall, dtype=np.int32))  # per-net rungs
+        obstacles.add_blocked_vias_small_batch(np.asarray(_sall, dtype=np.int32))
+    # #530 per-net rungs, at each rung's OWN via (#1226; see add_vias_list).
+    if segments:
+        _stamp_rungs_at_own_via(obstacles, config, lambda s, c: add_segments_list_as_obstacles(
+            s, segments, c, extra_clearance))
     _ledger_close(obstacles, _pre, "add_segments_list")
 
 
@@ -2835,7 +3234,11 @@ def remove_segments_list_from_obstacles(obstacles: GridObstacleMap, segments: li
         obstacles.remove_blocked_vias_batch(vias_array)
         if _rung_small_armed():  # #568: mirror of the add-side small stamp
             obstacles.remove_blocked_vias_small_batch(vias_array)
-        _mirror_rungs_remove(obstacles, vias_array)   # #530 per-net rungs
+    # #530 per-net rungs: the rows the ADD twin stamped at each rung's own via
+    # (#1226), derived from the add itself so both sides agree by construction.
+    if segments:
+        _stamp_rungs_at_own_via(obstacles, config, lambda s, c: add_segments_list_as_obstacles(
+            s, segments, c, extra_clearance), remove=True)
     _ledger_close(obstacles, _pre, "remove_segments_list")
 
 
@@ -2929,7 +3332,10 @@ def remove_vias_list_from_obstacles(obstacles: GridObstacleMap, vias: list,
         obstacles.remove_blocked_vias_batch(vias_array)
         if _rung_small_armed():  # #568: mirror of the add-side small stamp
             obstacles.remove_blocked_vias_small_batch(vias_array)
-        _mirror_rungs_remove(obstacles, vias_array)   # #530 per-net rungs
+    # #530 per-net rungs: the add twin's rows at each rung's own via (#1226).
+    if vias:
+        _stamp_rungs_at_own_via(obstacles, config, lambda s, c: add_vias_list_as_obstacles(
+            s, vias, c, extra_clearance, diagonal_margin), remove=True)
     _ledger_close(obstacles, _pre, "remove_vias_list")
 
 
@@ -3217,10 +3623,17 @@ def add_same_net_via_clearance(obstacles: GridObstacleMap, pcb_data: PCBData,
     _pad_cells = same_net_pad_via_keepout_cells(pcb_data, net_id, config)
     if len(_pad_cells):
         obstacles.add_blocked_vias_batch(_pad_cells)
+        # #1226: each per-net rung at ITS via (the keep-out is sized by the
+        # via that may land), and only rungs that hold copper -- the small
+        # rung included, at the run's via. Mirroring it unconditionally
+        # populated an unfrozen map's empty small rung with these cells ALONE,
+        # and a rung-1 retry there then saw no base copper at all.
         try:
-            if _rung_small_armed():
-                obstacles.add_blocked_vias_small_batch(_pad_cells)
-            _mirror_rungs_add(obstacles, _pad_cells)   # #530 per-net rungs
+            _stamp_rungs_at_own_via(
+                obstacles, config,
+                lambda s, c: s.add_blocked_vias_batch(
+                    same_net_pad_via_keepout_cells(pcb_data, net_id, c)),
+                populated_only=True)
         except (AttributeError, NameError):
             pass
 
@@ -3320,8 +3733,15 @@ def add_same_net_pad_drill_via_clearance(obstacles: GridObstacleMap, pcb_data: P
                 float(cxs[i]), float(cys[i]), p1x, p1y, p2x, p2y) < required_dist
         take &= ~((exf == 0) & (eyf == 0))  # keep the pad centre landable
         if take.any():
-            obstacles.add_blocked_vias_batch(np.column_stack(
-                [exf[take] + gx, eyf[take] + gy]).astype(np.int32))
+            _cells = np.column_stack([exf[take] + gx, eyf[take] + gy]).astype(np.int32)
+            obstacles.add_blocked_vias_batch(_cells)
+            # #1226: hole-to-hole is net-agnostic at the fab, and a net
+            # searched at its own via reads only its rung -- mirror into the
+            # POPULATED rungs as the same-net via ring above does (#1070).
+            # Already sized for this net's own drill (new_drill), so the cells
+            # are exact for its rung and conservative for any other.
+            for _r in populated_via_rungs(obstacles):
+                obstacles.add_blocked_vias_rung_batch(_r, _cells)
 
 
 def get_same_net_through_hole_positions(pcb_data: PCBData, net_id: int,
@@ -3519,7 +3939,9 @@ def _add_via_obstacle(obstacles: GridObstacleMap, via, coord: GridCoord,
 
     # Batched rasterization (issue #35) - emits the same cell multiset as the
     # per-cell loops it replaces (each layer gets the full circle pattern).
-    if isinstance(via_track_expansion_grid, list):
+    if isinstance(obstacles, _RungViaSink):
+        pass   # #1226 rung re-run: via cells only (track cells do not depend on the via)
+    elif isinstance(via_track_expansion_grid, list):
         # Per-layer blocking (impedance-controlled routing)
         for layer_idx in range(num_layers):
             layer_expansion = via_track_expansion_grid[layer_idx]
@@ -3964,7 +4386,8 @@ def _add_pad_obstacle(obstacles: GridObstacleMap, pad, coord: GridCoord,
                             blocked_cells[li].update(zip(gxs.tolist(), gys.tolist()))
 
         for poly in pad_polys:
-            for g_clr, g_idxs in clr_groups.items():
+            for g_clr, g_idxs in (() if isinstance(obstacles, _RungViaSink)   # #1226
+                                  else clr_groups.items()):
                 _emit(poly, config.track_width / 2 + g_clr + extra_clearance,
                       via_pass=False, layer_idxs=g_idxs)
             if on_copper:
@@ -3995,7 +4418,8 @@ def _add_pad_obstacle(obstacles: GridObstacleMap, pad, coord: GridCoord,
     # exact cell set of iter_pad_blocked_cells (verified bit-identical). The
     # rare skip_cell path (per-cell Python predicate, used for connector
     # exemptions) filters the array with the same predicate.
-    for g_clr, g_idxs in _clr_groups(expanded_layers).items():
+    for g_clr, g_idxs in (() if isinstance(obstacles, _RungViaSink)   # #1226: vias only
+                          else _clr_groups(expanded_layers).items()):
         cells = pad_blocked_cells_array(gx, gy, half_width, half_height,
                                         config.track_width / 2 + g_clr + extra_clearance,
                                         config.grid_step, corner_radius, corner_buffer,

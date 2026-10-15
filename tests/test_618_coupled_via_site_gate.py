@@ -58,6 +58,7 @@ sys.path.insert(0, os.path.join(ROOT, 'py_router'))
 sys.path.insert(0, os.path.join(ROOT, 'py_tools'))
 
 import contextlib                                              # noqa: E402
+import copy                                                    # noqa: E402
 import io                                                      # noqa: E402
 import math                                                    # noqa: E402
 from kicad_parser import parse_kicad_pcb                       # noqa: E402
@@ -114,6 +115,33 @@ def _fanout(path):
     return vias, buf.getvalue()
 
 
+#: {declared min_hole_to_hole: (vias, transcript)} -- see `_fanout_at`.
+_AT_FLOOR = {}
+
+
+def _fanout_at(h2h):
+    """`_fanout` of glasgow_revC with `min_hole_to_hole` declared as `h2h`
+    (None = undeclared), computed ONCE per floor per process.
+
+    Seven arms below read the unplanted board at only two floors (0.25 five
+    times, 0.70 three times), and each used to re-run the whole under-pad
+    fanout for it: same board, same project, same parameters, and
+    `generate_bga_fanout` is deterministic -- measured, a repeat returns the
+    identical via list. The 0.70 run is the expensive one (rip-swap rescues
+    under a floor the pitch cannot meet).
+
+    The transcript kept is the FIRST run's, i.e. what one CLI invocation
+    prints. A repeat in the same process omits the once-per-process fab
+    escalation warning, so this is the faithful one; no assertion here reads
+    that warning. Callers get their own copy of the vias.
+    """
+    if h2h not in _AT_FLOOR:
+        with tempfile.TemporaryDirectory() as tmp:
+            _AT_FLOOR[h2h] = _fanout(_board_with_floor(tmp, h2h))
+    vias, log = _AT_FLOOR[h2h]
+    return copy.deepcopy(vias), log
+
+
 def _min_drill_gap(vias):
     best = None
     for i, a in enumerate(vias):
@@ -132,8 +160,7 @@ class TestTheGateIsInertOnTheBoardAsShipped(unittest.TestCase):
     decline the geometry people actually run, or its cost is unbounded."""
 
     def test_the_shipped_board_still_escapes_and_still_couples(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            vias, log = _fanout(_board_with_floor(tmp, 0.25))
+        vias, log = _fanout_at(0.25)
         self.assertGreater(len(vias), 0, 'the rig escapes nothing, so it '
                                          'cannot show the gate is inert')
         self.assertIn('diff pairs coupled', log,
@@ -146,8 +173,7 @@ class TestTheGateIsInertOnTheBoardAsShipped(unittest.TestCase):
     def test_the_shipped_geometry_clears_its_own_declared_floor(self):
         """0.8mm pitch, drills clamped to 0.2: needs 0.4, has 0.8. Asserted so
         the inertness above has a REASON on the record, not just a count."""
-        with tempfile.TemporaryDirectory() as tmp:
-            vias, _log = _fanout(_board_with_floor(tmp, 0.25))
+        vias, _log = _fanout_at(0.25)
         gap = _min_drill_gap(vias)
         self.assertIsNotNone(gap)
         self.assertGreaterEqual(round(gap, 6), 0.25,
@@ -184,7 +210,7 @@ class TestNoViaLandsOnBoardCopper(unittest.TestCase):
         from kicad_writer import add_tracks_and_vias_to_pcb
         with tempfile.TemporaryDirectory() as tmp:
             plain = _board_with_floor(tmp, 0.25)
-            vias, _log = _fanout(plain)
+            vias, _log = _fanout_at(0.25)     # the unplanted run of `plain`
             self.assertTrue(vias, 'the rig emits no vias at all')
             target = vias[0]
             # Plant a foreign-net via ON that site, in the INPUT board.
@@ -215,9 +241,7 @@ class TestNoViaLandsOnBoardCopper(unittest.TestCase):
     def test_the_plant_is_what_moved_it(self):
         """Without this, the arm above passes on a rig where the engine simply
         never chooses that coordinate again for its own reasons."""
-        with tempfile.TemporaryDirectory() as tmp:
-            plain = _board_with_floor(tmp, 0.25)
-            vias, _log = _fanout(plain)
+        vias, _log = _fanout_at(0.25)
         self.assertTrue(vias)
         hit = [v for v in vias
                if math.hypot(v['x'] - vias[0]['x'], v['y'] - vias[0]['y'])
@@ -236,10 +260,8 @@ class TestTheDeclaredFloorIsHonoured(unittest.TestCase):
         """0.8mm pitch with 0.2mm drills clears 0.25 and cannot clear 0.7
         (0.2 + 0.7 = 0.9 > 0.8). MUTATION: revert `_h2h` to the flat
         HOLE_TO_HOLE_CLEARANCE -- this arm dies while the inert arms pass."""
-        with tempfile.TemporaryDirectory() as tmp:
-            _v_lo, log_lo = _fanout(_board_with_floor(tmp, 0.25))
-        with tempfile.TemporaryDirectory() as tmp:
-            v_hi, log_hi = _fanout(_board_with_floor(tmp, 0.70))
+        _v_lo, log_lo = _fanout_at(0.25)
+        v_hi, log_hi = _fanout_at(0.70)
         self.assertIn('Hole-to-hole 0.7mm', log_hi,
                       'the 0.7 declaration was not read at all')
         self.assertNotIn('Hole-to-hole 0.7mm', log_lo)
@@ -263,8 +285,7 @@ class TestTheDeclaredFloorIsHonoured(unittest.TestCase):
 
         MUTATION: `h2h_stats['coupled_pairs'].add(...)` -> a bare `+= 1`
         counter -- this arm dies."""
-        with tempfile.TemporaryDirectory() as tmp:
-            _v, log = _fanout(_board_with_floor(tmp, 0.70))
+        _v, log = _fanout_at(0.70)
         m = re.search(r'and (\d+) coupled pair\(s\) declined', log)
         found = re.search(r'Found (\d+) differential pair\(s\)', log)
         self.assertIsNotNone(found, 'the rig found no diff pairs at all')
@@ -280,8 +301,7 @@ class TestTheDeclaredFloorIsHonoured(unittest.TestCase):
         """#618's policy question, answered as WARN. MUTATION: delete the
         `h2h_stats` print -- the operator gets a worse board with no reason
         given, which is the state #618 objected to."""
-        with tempfile.TemporaryDirectory() as tmp:
-            _v, log = _fanout(_board_with_floor(tmp, 0.70))
+        _v, log = _fanout_at(0.70)
         self.assertIn('hole-to-hole floor', log,
                       'sites declined by the floor are not disclosed')
         self.assertIn('declined by the', log)

@@ -231,6 +231,40 @@ def lost_escape_share(ledgers, base_ledgers, min_demand,
     return out
 
 
+def _tht_rows(pcb, track, clearance, grid, fab_track):
+    """`pin_rows.tht_row_crossings` at the ledger's floors, its ladder walked
+    down to the fab floor (#1196), or `{'error': ...}` -- never a traceback:
+    the face ledger above is still worth printing without it."""
+    try:
+        from placement.pin_rows import tht_row_crossings
+        return tht_row_crossings(pcb, track_width=track, clearance=clearance,
+                                 grid_step=grid,
+                                 min_track_width=fab_track or 0.0)
+    except Exception as exc:                                   # noqa: BLE001
+        return {'error': f"{type(exc).__name__}: {exc}", 'gaps': None}
+
+
+def _board_minimums_above(board, track, clearance, trk_src, clr_src):
+    """{'min_clearance' / 'min_track_width': declared} for the Board Setup
+    minimums the board declares ABOVE the floors this ledger priced (#1210),
+    when those floors were resolved rather than asked for. KiCad's DRC
+    grades a board at max(class, minimum); the routing reading (and so this
+    ledger's default) stays the class, so the gap is named, not closed."""
+    out = {}
+    try:
+        from list_nets import board_constraint
+        for key, val, src in (('min_clearance', clearance, clr_src),
+                              ('min_track_width', track, trk_src)):
+            if src == 'cli':
+                continue
+            declared = board_constraint(board, key)
+            if declared is not None and declared > val + 1e-9:
+                out[key] = declared
+    except Exception:                                          # noqa: BLE001
+        return {}
+    return out
+
+
 def main():
     p = argparse.ArgumentParser(
         description="Per-face lane ledger + anchor channel widths.")
@@ -393,9 +427,24 @@ def main():
         print(f"cannot parse {args.board}: {exc}", file=sys.stderr)
         return 2
 
+    # #1196: the via half of "fine at this board's rules" -- two escape vias
+    # side by side -- priced at the clearance resolved above.
+    from placement import escape as _escape
+    try:
+        _vpitch = _escape.via_pitch(pcb, args.board, clearance=clearance)
+    except Exception:                                          # noqa: BLE001
+        _vpitch = 0.0
     refs = args.refs
     if not refs:
         pitch_floor = 2 * (track + clearance)
+        # #1196: ALSO every part fine relative to the floors resolved above --
+        # no track passes between two adjacent pads, or two vias cannot sit at
+        # the pad pitch (`escape.fine_by_rules`, the escape ledger's own
+        # population). The two pitch tests below are absolute or read one
+        # axis, so a SOIC at a board's own track 0.3 / clearance 0.3 (a 0.67
+        # mm gap against 0.9 needed) was never ledgered.
+        _rule_fine = set(_escape.fine_pitch_parts(
+            pcb, rules=(track, clearance, _vpitch)))
         refs = []
         for ref, fp in sorted((pcb.footprints or {}).items()):
             kind = None
@@ -404,7 +453,7 @@ def main():
                 kind = detect_package_type(fp)
             except Exception:
                 kind = None
-            if kind in ('QFN', 'QFP', 'BGA'):
+            if kind in ('QFN', 'QFP', 'BGA') or ref in _rule_fine:
                 refs.append(ref)
                 continue
             # Apertures (paste/mask windows) are not on the pin lattice (#1143).
@@ -431,6 +480,17 @@ def main():
           f"(track {track} [{trk_src}] clearance {clearance} [{clr_src}] "
           f"grid {grid} escape-band {_band.mm:g} [{_band.source}]; "
           f"taps NOT modeled -- v1):")
+    above = _board_minimums_above(args.board, track, clearance,
+                                  trk_src, clr_src)
+    if above:
+        _what = ' / '.join(f"{k} {v:g}" for k, v in above.items())
+        print(f"  NOTE: the board's Board Setup asks for {_what}, above what "
+              f"this ledger priced. KiCad's DRC grades the board at them "
+              f"(#1210); route.py routes at the Default class and lowers them "
+              f"in its output. Pass "
+              + ' '.join(f"--{'clearance' if k == 'min_clearance' else 'track-width'} {v:g}"
+                         for k, v in above.items())
+              + " to measure at the board's own minimums.")
     ledgers = {}
     # #849: the board's geometry is resolved ONCE for the whole sweep instead
     # of once per ref. Every ref here asks the same whole-board questions --
@@ -487,6 +547,16 @@ def main():
                      if lost else "; every one of their nets still has a pad "
                                   "on a face, so no face lost demand")
                   + extra)
+        if rows[0].get('through_row_pads'):
+            # #1196: a through-hole part's inner pins. They are on every
+            # layer, so "they need a via" was wrong about them -- they need a
+            # lane between the outer pins, and their nets are face demand.
+            print(f"  {ref}   through-row: {rows[0]['through_row_pads']} "
+                  f"through-hole pin(s) inside the outer rows are on every "
+                  f"layer already -- they need a lane between the outer pins, "
+                  f"not a via; their {rows[0].get('through_row_nets', 0)} "
+                  f"net(s) are demand on the nearest face above (see the "
+                  f"through-hole pin rows below for the gaps)")
 
     # The absolute deficit, summarised (run-12 Tier 3.6). Printed whether or
     # not --baseline was given, and never gated -- see _deficit_faces.
@@ -508,6 +578,41 @@ def main():
                   f"{e['supply_finest_grid']}){eaten}")
     elif ledgers:
         print("Faces in DEFICIT at the finest legal grid: 0")
+
+    # #1196: the capacity the face ledger cannot see. Every other net crosses
+    # a through-hole part's pin rows between adjacent pins, and on a 2-layer
+    # DIP board those crossings ARE the capacity. Measured in the router's own
+    # obstacle map, on its grid: the analytic gap test passes a 0.4 mm track
+    # through interf_u's 0.94 mm DIP gaps (0.908 needed) where the grid
+    # crosses none of the 115.
+    tht = _tht_rows(pcb, track, clearance, grid, _fab.get('track_width'))
+    if tht.get('error'):
+        print(f"Through-hole pin rows: not measured ({tht['error']})")
+    elif not tht['gaps']:
+        print("Through-hole pin rows: none on this board")
+    else:
+        from placement.pin_rows import ladder_phrase
+        print(f"Through-hole pin rows (a straight crossing between adjacent "
+              f"pins, in the router's obstacle map at grid {grid:g}, "
+              f"clearance {clearance:g}): "
+              + ladder_phrase(tht, what='adjacent-pin gaps')
+              + ('' if tht['open'] == tht['gaps'] else
+                 '. A row the track cannot cross is a wall every other net '
+                 'routes around; the narrower width is a net-class decision '
+                 'the board owner makes'
+                 if tht['opens_all_at'] is not None else
+                 '. Some gaps stay closed down to the fab floor -- the pads '
+                 'themselves, a neighbour or the board edge close them'))
+        _open = [p for p in tht['parts'] if p['open'] == p['gaps']]
+        for p in tht['parts']:
+            if p['open'] < p['gaps']:
+                print(f"  {p['ref']}: " + ladder_phrase(
+                    p, what=f"gaps (pitch {p['pitch_mm']:g})"))
+        if _open:
+            print(f"  ({len(_open)} part(s) with every gap open at "
+                  f"{tht['track_width']:g} mm: "
+                  + ', '.join(p['ref'] for p in _open[:12])
+                  + (', ...' if len(_open) > 12 else '') + ")")
 
     starved = _starved_faces(ledgers, args.min_demand)
     new_starved = None
@@ -652,6 +757,11 @@ def main():
                        # --min-demand) does not cover. Report-only.
                        'deficit_faces': deficit,
                        'baseline': args.baseline,
+                       # #1196: through-hole pin-row crossings at the floors
+                       # above and the width ladder below them.
+                       'tht_rows': tht,
+                       # #1210: Board Setup minimums above those floors.
+                       'board_minimums_above': above,
                        # HISTORICAL NAME. Since #847 this list is the union of
                        # three predicates and a row in it may have supply left,
                        # so it is no longer only "starved" faces. Kept because

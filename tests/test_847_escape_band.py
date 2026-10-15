@@ -368,8 +368,13 @@ def the_gate_has_a_tracked_true_positive():
     # And the negative control that matters most: turning the predicate off
     # must restore the old verdict, which is what says the SHARE form is what
     # catches this rather than something else that changed along the way.
+    # Scoped to U3, the part this control is about: since #1196 the auto-
+    # detect also ledgers parts fine at the board's own rules (its resistor
+    # arrays, U4-U6), and on the damaged board those lost their last lanes
+    # too -- other damage, which `lost_last_lane` reports at any demand.
     run_check([sys.executable, '-X', 'utf8', tool, dmg, '--baseline', ok,
-               '--gate', '--min-supply-drop', '0'], accept=True)
+               '--gate', '--min-supply-drop', '0', '--refs', 'U3'],
+              accept=True)
     check('...and with --min-supply-drop 0 the gate goes quiet again, which '
           'is what makes the share form the cause', True)
 

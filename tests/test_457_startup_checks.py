@@ -210,6 +210,124 @@ def test_gui_catches_the_new_exception_type():
     assert 'StartupCheckError' in src
 
 
+# --- the CLI gate FINDS the probed submodule; the GUI gate LOADS it ---------
+
+_PROBE_CHILD = textwrap.dedent("""
+    import sys
+    sys.path.insert(0, %r)
+    import startup_checks as S
+    try:
+        S.check_python_dependencies()
+        print('GATE-OK')
+    except S.StartupCheckError as e:
+        print('GATE-REFUSED', e)
+    print('OPTIMIZE-LOADED', 'scipy.optimize' in sys.modules)
+    print('DEEP', sorted(p.name for p in
+                         S.dependency_problems(S.ROUTING_PACKAGES)))
+    print('SHALLOW', sorted(p.name for p in S.dependency_problems(
+        S.ROUTING_PACKAGES, load=False)))
+""")
+
+# A numpy whose spec is FOUND but whose top-level import fails. `find_spec`
+# of a top-level name executes nothing, so a shallow probe that only FINDS it
+# passes it, and blames the scipy and shapely that fail behind it.
+_BROKEN_NUMPY = textwrap.dedent("""
+    import importlib.abc, importlib.util, sys
+    class _Broken(importlib.abc.Loader):
+        def create_module(self, spec):
+            return None
+        def exec_module(self, module):
+            raise ImportError('simulated broken numpy build')
+    class _Finder:
+        def find_spec(self, name, path=None, target=None):
+            if name == 'numpy':
+                return importlib.util.spec_from_loader(name, _Broken(),
+                                                       is_package=True)
+            return None
+    sys.meta_path.insert(0, _Finder())
+""")
+
+# A scipy.optimize whose spec is FOUND but whose import fails: the shape of a
+# broken compiled build (a DLL that will not load), which find_spec alone
+# cannot see.
+_BROKEN_OPTIMIZE = textwrap.dedent("""
+    import importlib.abc, importlib.util, sys
+    class _Broken(importlib.abc.Loader):
+        def create_module(self, spec):
+            return None
+        def exec_module(self, module):
+            raise ImportError('simulated broken scipy.optimize build')
+    class _Finder:
+        def find_spec(self, name, path=None, target=None):
+            if name == 'scipy.optimize':
+                return importlib.util.spec_from_loader(name, _Broken(),
+                                                       is_package=True)
+            return None
+    sys.meta_path.insert(0, _Finder())
+""")
+
+
+def _gate_child(prelude=''):
+    r = subprocess.run([sys.executable, '-X', 'utf8', '-c',
+                        prelude + _PROBE_CHILD % os.path.join(ROOT,
+                                                              'py_router')],
+                       capture_output=True, text=True, encoding='utf-8',
+                       errors='replace', cwd=ROOT)
+    out = r.stdout + r.stderr
+    assert 'OPTIMIZE-LOADED' in out, f"BROKEN TEST: the probe died: {out}"
+    return out
+
+
+def test_the_cli_gate_does_not_load_scipy_optimize():
+    """The point of `load=False`: `from scipy.optimize import ...` was ~0.9 s
+    of every CLI launch, and nothing at routing module scope needs it."""
+    out = _gate_child()
+    assert 'GATE-OK' in out, out
+    assert 'OPTIMIZE-LOADED False' in out, \
+        f"check_python_dependencies loaded scipy.optimize again: {out}"
+
+
+def test_a_missing_scipy_is_absent_through_either_probe():
+    """The user-facing refusal is unchanged: same Problem, same message."""
+    with _without('scipy'):
+        cli = startup_checks.dependency_problems(['scipy'], load=False)
+        gui = startup_checks.dependency_problems(['scipy'])
+    assert [(p.name, p.state) for p in cli] == [('scipy', 'absent')], cli
+    assert [(p.name, p.state) for p in gui] == [('scipy', 'absent')], gui
+    assert cli[0].describe() == gui[0].describe()
+
+
+def test_a_broken_submodule_is_the_deep_probes_job():
+    """The documented trade: a FOUND-but-unloadable scipy.optimize passes the
+    CLI gate (routing then degrades where it imports scipy) and is still
+    refused by the deep probe the GUI's first-launch dialog and the installer
+    run, which is where a broken install can be repaired."""
+    out = _gate_child(_BROKEN_OPTIMIZE)
+    assert 'GATE-OK' in out, out
+    assert "DEEP ['scipy']" in out, \
+        f"the deep probe no longer catches a broken submodule: {out}"
+
+
+def test_a_broken_top_level_is_named_by_the_cli_gate():
+    """A numpy that will not import is NAMED by the CLI gate, and the gate
+    reports the same packages the deep probe does -- not scipy and shapely
+    alone, whose pip command would answer 'already satisfied'."""
+    out = _gate_child(_BROKEN_NUMPY)
+    assert 'GATE-REFUSED' in out and 'numpy' in out.split('OPTIMIZE')[0], out
+    deep = next(l for l in out.splitlines() if l.startswith('DEEP '))
+    shallow = next(l for l in out.splitlines() if l.startswith('SHALLOW '))
+    assert "'numpy'" in shallow, f"the CLI gate never names numpy: {out}"
+    assert shallow[len('SHALLOW '):] == deep[len('DEEP '):], out
+
+
+def test_the_probed_module_is_read_from_the_one_table():
+    assert startup_checks.probed_module('scipy') == 'scipy.optimize'
+    assert startup_checks.probed_module('shapely') == 'shapely.geometry'
+    assert startup_checks.probed_module('numpy') == 'numpy'
+    assert startup_checks.probed_module('Pillow') == 'PIL'
+    assert startup_checks.probed_module('_kr_unlisted') == '_kr_unlisted'
+
+
 TESTS = [
     test_missing_python_dep_raises_not_exits,
     test_startup_check_error_is_a_runtime_error,
@@ -220,6 +338,11 @@ TESTS = [
     test_as_import_raises_instead,
     test_routing_clis_use_the_guard_at_module_scope,
     test_gui_catches_the_new_exception_type,
+    test_the_cli_gate_does_not_load_scipy_optimize,
+    test_a_missing_scipy_is_absent_through_either_probe,
+    test_a_broken_submodule_is_the_deep_probes_job,
+    test_a_broken_top_level_is_named_by_the_cli_gate,
+    test_the_probed_module_is_read_from_the_one_table,
 ]
 
 

@@ -130,7 +130,11 @@ KEY_SETS = {
         # #959 (#997): written answers to P1's refusals, never a verdict.
         'dispositions',
         # #1051 / #1054: declared rows, and exact poses to seat.
-        'arrays', 'fixed_poses'},
+        'arrays', 'fixed_poses',
+        # #1253: two net groups apart, in route.py's rule syntax.
+        'keep_away',
+        # #1211: sibling sheet instances laid out as copies of one.
+        'replicate'},
     '_ENVELOPE_KEYS': {'rect', 'tolerance_mm'},
     '_DEFAULTS_KEYS': {'zone_tolerance_mm'},
     '_BLOCK_KEYS': {'name', 'group', 'refs', 'zone', 'side', 'exclusive',
@@ -168,7 +172,8 @@ KEY_SETS = {
     # #837: the board-level assembly policy. `sides` is the claim; `why`
     # records how it was reached, and `emit_intent` fills it with the
     # observation rather than a reason nobody gave.
-    '_ASSEMBLY_KEYS': {'sides', 'why', 'context'},
+    # #1255: `body_edge_mm`, the assembler's least body-to-edge distance.
+    '_ASSEMBLY_KEYS': {'sides', 'why', 'context', 'body_edge_mm'},
     # #902: one declared claim -- these two named parts, no further apart
     # than `max_mm`. `ref` is a single ref here; the brief's list form is
     # sugar that `compile_brief` expands before it reaches this schema.
@@ -183,6 +188,12 @@ KEY_SETS = {
     # #1054: one exact pose to seat, and whose fact it is.
     '_FIXED_POSE_KEYS': {'ref', 'x', 'y', 'rot', 'side', 'basis', 'why',
                          'context', 'accept_courtyard_overlap'},
+    # #1253: one rule per row, in route.py's own syntax.
+    '_KEEP_AWAY_KEYS': {'rule', 'note', 'source', 'context'},
+    # #1211: `place_pose replicate`'s own flags, plus the grade's tolerance.
+    '_REPLICATE_KEYS': {'from', 'to', 'anchor', 'allow_net_mismatch', 'only',
+                        'skip', 'search_mm', 'tolerance_mm', 'why', 'note',
+                        'source', 'context'},
 }
 
 
@@ -236,6 +247,8 @@ def test_the_key_sets_are_exactly_what_is_documented():
         '_DISPOSITION_KEYS': 'dispositions',
         '_ARRAY_KEYS': 'arrays[]',
         '_FIXED_POSE_KEYS': 'fixed_poses[]',
+        '_KEEP_AWAY_KEYS': 'keep_away[]',
+        '_REPLICATE_KEYS': 'replicate[]',
     }
     checked = 0
     for name, row in sorted(TABLE_ROWS.items()):
@@ -318,6 +331,7 @@ def test_an_intent_using_every_known_key_loads():
         'overlap_waivers': [{'pair': ['U1', 'U2'], 'reason': 'net tie',
                              'context': {'why': 'w'}}],
         'assembly': {'sides': 'F', 'why': 'one reflow pass',
+                     'body_edge_mm': 2.5,
                      'context': {'quoted': 'the fab'}},
         # #959. `rules` is EMPTY here on purpose: this intent arms every
         # rule, and a disposition for an armed rule is refused at load.
@@ -343,6 +357,16 @@ def test_an_intent_using_every_known_key_loads():
                          'context': {'why': 'w'},
                          # #1060: a named courtyard waiver, with its `why`.
                          'accept_courtyard_overlap': ['H2']}],
+        # #1253. One rule per row, in route.py's own syntax.
+        'keep_away': [{'rule': 'SW:FB,class=Analog:0.5', 'note': 'n',
+                       'source': 'brief', 'context': {'why': 'w'}}],
+        # #1211. `only` and `skip` are exclusive, so the second row carries
+        # `skip`.
+        'replicate': [{'from': 'CH1', 'to': ['CH2', 'CH3'], 'anchor': 'J1',
+                       'allow_net_mismatch': ['U19.2'], 'only': ['U1'],
+                       'search_mm': 2.0, 'tolerance_mm': 0.1, 'why': 'w',
+                       'note': 'n', 'source': 's', 'context': {'why': 'w'}},
+                      {'from': 'CH1', 'to': ['CH4'], 'skip': ['R1']}],
     }
     # Every key of every set must appear above, or this proves less than it
     # claims -- the point is coverage of the vocabulary, not of a sample.
@@ -365,6 +389,9 @@ def test_an_intent_using_every_known_key_loads():
     seen |= set(raw['assembly'])
     seen |= set(raw['proximity'][0])
     seen |= set(raw['arrays'][0]) | set(raw['fixed_poses'][0])
+    seen |= set(raw['keep_away'][0])
+    for r in raw['replicate']:
+        seen |= set(r)
     seen |= set(raw['dispositions'])
     for k in raw['keepouts']:
         seen |= set(k)
@@ -655,7 +682,13 @@ def test_severity_keys_are_checked_against_the_rule_names():
                                         # #1054: fixed_pose_violations
                                         'fixed_pose_unresolved',
                                         # #1060: its courtyard waiver
-                                        'fixed_pose_overlap_waived'}
+                                        'fixed_pose_overlap_waived',
+                                        # #1253: a keep-away side matching
+                                        # no net
+                                        'keep_away_unresolved',
+                                        # #1211: a copy the board cannot
+                                        # resolve
+                                        'replicate_unresolved'}
     assert _SEVERITY_KEYS == expected, sorted(_SEVERITY_KEYS ^ expected)
     for name in sorted(expected):
         # Two names accept one direction only, and say so at load:

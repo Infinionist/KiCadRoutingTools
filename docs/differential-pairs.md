@@ -652,6 +652,7 @@ Differential pairs support length matching with trombone-style meanders. This wo
 - **Single-layer routes**: Meanders are added to straight sections of the centerline, then P/N paths are regenerated
 - **Multi-layer routes**: Meanders are applied to same-layer straight sections, preserving via positions. GND vias are regenerated after meander application
 - **Via barrel length**: Route length calculations include via barrel length (parsed from board stackup) for accurate length matching that matches KiCad's measurements
+- **Pad-to-die length**: each leg also carries its pads' `(die_length ...)` (#1248), the term KiCad's skew tuner and skew DRC add, so inter- and intra-pair matching equalize the lengths KiCad compares. In a match group a pair is its larger leg, each leg its own copper plus its own end pads' term, as KiCad's pair tuner measures it, so unequal legs (no intra-match) are exact too; a multipoint pair counts only its matched leg's terminals. Copper alone matches KiCad only on a board that declares none
 - **Stub via barrel length**: BGA pad vias in stubs are included using the actual stub-layer-to-pad-layer distance (not the full via span)
 
 ### Intra-Pair P/N Length Matching

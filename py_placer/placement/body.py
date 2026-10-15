@@ -90,11 +90,52 @@ SOURCE_COURTYARD = 'courtyard'
 SOURCE_FAB = 'fab'
 SOURCE_SILK = 'silk'
 SOURCE_PADS = 'pad_bbox'
+#: #1201: the occupancy of a part whose .Fab rung is a MARKING (a pin-1 dot,
+#: a zero-width line) rejected as its body: the marking united with the pads,
+#: exactly what that part occupied before the guard -- named for what it is.
+SOURCE_FAB_MARKING = 'fab_marking'
 SOURCE_NONE = 'none'
 
 #: Ladder order, for reporting a source mix in a stable sequence.
-SOURCES = (SOURCE_COURTYARD, SOURCE_FAB, SOURCE_SILK, SOURCE_PADS,
-           SOURCE_NONE)
+SOURCES = (SOURCE_COURTYARD, SOURCE_FAB, SOURCE_FAB_MARKING, SOURCE_SILK,
+           SOURCE_PADS, SOURCE_NONE)
+
+#: #1201. A .Fab rung whose bbox covers less than this fraction of the pad
+#: bbox's AREA is a marking, not a body. Measured
+#: (`tests/measure_1201_fab_and_silk.py` and the phase-3 verifier's sweep of
+#: KiCad 10's stock library): the markings reach 0.00466 -- all 204 on the
+#: fa10 designer boards, 203 EasyEDA 0.06 mm pin-1 dots (CM5_MINIMA_3's USB-C
+#: J101/USB701, One-Air-Max's BAT1) and CM5's Module301, whose only fab item
+#: is a zero-width 0 x 48 mm line -- and the smallest real bodies are 0.0537
+#: (stock TO-50-4_LongPad, PowerMacro_M234) and 0.3114 on the tracked corpus
+#: (orangecrab J4). 0.02 sits near the log-midpoint of 0.00466 and 0.0537,
+#: with a factor of about 2.7-4.3 either side; no stock footprint with a 2-D
+#: fab body is rejected at any of six non-orthogonal angles. The ten stock
+#: footprints it does reject are wire-bridge test points whose fab is a line.
+FAB_MIN_PAD_AREA_FRAC = 0.02
+
+
+def _area(b: Bbox) -> float:
+    return max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+
+
+def fab_cannot_be_body(fab: Optional[Bbox], pads: Optional[Bbox]) -> bool:
+    """True when a .Fab bbox is too small to be the body of a part with these
+    pads (#1201): under `FAB_MIN_PAD_AREA_FRAC` of the pad bbox's area.
+
+    The fab rung used to be accepted unconditionally, while silk had a
+    tick-mark guard: a 0.06 mm pin-1 `fp_circle` -- the only F.Fab item an
+    EasyEDA-converted USB-C receptacle draws -- became that part's body, so
+    its edge seat was graded on a point at the inboard corner ("seated 8.90mm
+    from the nearest edge" for a part whose pads are 3.8 mm from it). A part
+    with NO pads keeps its fab body: watchy's e-paper display draws one and
+    has nothing to compare it with."""
+    if fab is None or pads is None:
+        return False
+    pa = _area(pads)
+    if pa <= 0.0:
+        return False
+    return _area(fab) < FAB_MIN_PAD_AREA_FRAC * pa
 
 
 class BodyGeometry(NamedTuple):
@@ -141,6 +182,34 @@ class BodyGeometry(NamedTuple):
     # bboxes above as its broad phase.
     court_shape_local: object = None
     drawn_shape_local: object = None
+    # #1206 (phase-2 verifier). A courtyard the footprint draws on its FAR
+    # face, when it draws its own face too (`legality.far_courtyard_of`):
+    # part of a through-hole part's far side, which KiCad grades there.
+    far_court_local: Optional[Bbox] = None
+    # #1212 (second phase-3 verifier). How each courtyard outline was read
+    # (`parser.OUTLINE_POLYGON`: it closes; `OUTLINE_HULL`: it does not, and
+    # its vertices' hull stands in), and the far one's OUTLINE. KiCad tests a
+    # pin against a courtyard only when the outline closes -- an open one is
+    # `malformed_courtyard` and no courtyard at all -- and against the far
+    # one as drawn, not its bbox.
+    court_shape_how: str = ''
+    far_court_shape_local: object = None
+    far_court_shape_how: str = ''
+    # #1155. The pad bbox the ladders above united with (None for a pad-less
+    # part), in the same local frame. `mating.mating_face_local` reads a
+    # connector's mating face as the drawn body's offset off THIS box, so it
+    # is carried rather than recomputed by a second reader.
+    pads_local: Optional[Bbox] = None
+    # #1201. A .Fab drawing was present but rejected as a body
+    # (`fab_cannot_be_body`: a pin-1 dot), so the drawn ladder fell through
+    # to silk, then the occupancy ladder to courtyard / pads. A disclosure,
+    # like `silk_rejected`: the part is not body-less, its fab is a marking.
+    fab_rejected: bool = False
+    # #1245. The "PCB Edge" marker the footprint draws (`parser.EdgeMarker`:
+    # its texts and straight lines, local frame), or None when it draws
+    # none. Raw, like the bboxes above: `mating.marker_face_local` reads it,
+    # so every consumer of a mating face gets it through this record.
+    edge_marker: object = None
 
 
 def _union(a: Bbox, b: Bbox) -> Bbox:
@@ -168,10 +237,15 @@ def _for_side(sides: Optional[Dict[str, Bbox]],
 
 def _shape_for_side(shapes: Optional[Dict[str, tuple]], side: str):
     """The outline geometry `_for_side` would pick the bbox of, or None."""
+    return _shape_how_for_side(shapes, side)[0]
+
+
+def _shape_how_for_side(shapes: Optional[Dict[str, tuple]], side: str):
+    """`(geometry, how)` `_shape_for_side` picks, or `(None, '')`."""
     if not shapes:
-        return None
+        return None, ''
     got = shapes.get(side) or next(iter(shapes.values()))
-    return got[0] if got else None
+    return (got[0], got[1]) if got else (None, '')
 
 
 def body_geometry(fp, side: str,
@@ -180,7 +254,8 @@ def body_geometry(fp, side: str,
                   silk_sides: Optional[Dict[str, Bbox]] = None,
                   ref: str = '',
                   courtyard_shapes: Optional[Dict[str, tuple]] = None,
-                  fab_shapes: Optional[Dict[str, tuple]] = None
+                  fab_shapes: Optional[Dict[str, tuple]] = None,
+                  edge_marker=None
                   ) -> BodyGeometry:
     """THE ladder, for one footprint. Per-side bboxes come from the caller.
 
@@ -189,9 +264,16 @@ def body_geometry(fp, side: str,
     the file read once, and so the rung logic has exactly one home.
     """
     from placement.utility import compute_footprint_bbox_local
+    from placement.legality import far_courtyard_of
     from kicad_parser import non_aperture_pads
 
     ref = ref or getattr(fp, 'reference', '') or ''
+    far_court = far_courtyard_of(courtyard_sides, side)
+    far_shape, far_how = None, ''
+    if far_court is not None and courtyard_shapes:
+        _far = courtyard_shapes.get('B' if side == 'F' else 'F')
+        if _far:
+            far_shape, far_how = _far[0], _far[1]
     pads: Optional[Bbox] = None
     # An aperture-only pad is not a pad here (#1143): a part whose only pads
     # are paste windows has no pads rung, like a pad-less one.
@@ -203,6 +285,11 @@ def body_geometry(fp, side: str,
 
     fab = _for_side(fab_sides, side)
     silk = _for_side(silk_sides, side)
+    fab_rejected = False
+    marking: Optional[Bbox] = None
+    if fab is not None and fab_cannot_be_body(fab, pads):
+        # #1201: a marking, not a body -- the rung falls through to silk.
+        marking, fab, fab_rejected = fab, None, True
 
     # -- the DRAWN-BODY ladder: fab, else silk U pads. Courtyard is not on it.
     drawn_local: Optional[Bbox] = None
@@ -232,25 +319,46 @@ def body_geometry(fp, side: str,
     court = _for_side(courtyard_sides, side)
     if court is not None:
         body_local, source = court, SOURCE_COURTYARD
-    elif drawn_local is not None:
+    elif drawn_local is not None and not fab_rejected:
         body_local, source = drawn_local, drawn_source
+    elif fab_rejected:
+        # #1201: a part whose .Fab rung is a marking. Its BODY is its silk
+        # united with its pads (else its pads), never the dot; what it
+        # OCCUPIES is unchanged by the guard -- the marking united with the
+        # pads, as before, set below and labelled `fab_marking`. Not the
+        # silk: a silk occupancy never gates (#896).
+        body_local, source = (drawn_local or pads), SOURCE_FAB_MARKING
     elif pads is not None:
         body_local, source = pads, SOURCE_PADS
     else:
         return BodyGeometry(ref, None, None, SOURCE_NONE,
                             silk_rejected=silk_rejected,
-                            drawn_local=None, drawn_source=SOURCE_NONE)
+                            drawn_local=None, drawn_source=SOURCE_NONE,
+                            far_court_local=far_court,
+                            far_court_shape_local=far_shape,
+                            far_court_shape_how=far_how,
+                            pads_local=pads, fab_rejected=fab_rejected,
+                            edge_marker=edge_marker)
 
     occupancy = (body_local if pads is None else _union(body_local, pads))
-    court_shape = (_shape_for_side(courtyard_shapes, side)
-                   if source == SOURCE_COURTYARD else None)
+    if source == SOURCE_FAB_MARKING:
+        # The one rung whose occupancy is not body U pads (see above).
+        occupancy = _union(marking, pads)
+    court_shape, court_how = (_shape_how_for_side(courtyard_shapes, side)
+                              if source == SOURCE_COURTYARD else (None, ''))
     drawn_shape = (_shape_for_side(fab_shapes, side)
                    if drawn_source == SOURCE_FAB else None)
     return BodyGeometry(ref, body_local, occupancy, source,
                         silk_rejected=silk_rejected,
                         drawn_local=drawn_local, drawn_source=drawn_source,
                         court_shape_local=court_shape,
-                        drawn_shape_local=drawn_shape)
+                        drawn_shape_local=drawn_shape,
+                        far_court_local=far_court,
+                        court_shape_how=court_how,
+                        far_court_shape_local=far_shape,
+                        far_court_shape_how=far_how,
+                        pads_local=pads, fab_rejected=fab_rejected,
+                        edge_marker=edge_marker)
 
 
 def board_bodies(pcb_data, pcb_file: Optional[str] = None
@@ -269,8 +377,9 @@ def board_bodies(pcb_data, pcb_file: Optional[str] = None
     """
     from placement.legality import footprint_side
     from placement.parser import (extract_courtyard_shapes,
-                                  extract_courtyard_sides, extract_fab_shapes,
-                                  extract_fab_sides, extract_silk_sides)
+                                  extract_courtyard_sides, extract_edge_markers,
+                                  extract_fab_shapes, extract_fab_sides,
+                                  extract_silk_sides)
 
     path = pcb_file or getattr(pcb_data, 'source_path', None)
     crt: Dict[str, Dict[str, Bbox]] = {}
@@ -278,7 +387,12 @@ def board_bodies(pcb_data, pcb_file: Optional[str] = None
     silk: Dict[str, Dict[str, Bbox]] = {}
     crt_shapes: Dict[str, Dict[str, tuple]] = {}
     fab_shapes: Dict[str, Dict[str, tuple]] = {}
+    markers: Dict[str, object] = {}
     if path:
+        try:
+            markers = extract_edge_markers(path)
+        except Exception:                                    # noqa: BLE001
+            markers = {}
         for reader, target in ((extract_courtyard_shapes, crt_shapes),
                                (extract_fab_shapes, fab_shapes)):
             try:
@@ -306,7 +420,8 @@ def board_bodies(pcb_data, pcb_file: Optional[str] = None
                              fab_sides=fab.get(ref),
                              silk_sides=silk.get(ref), ref=ref,
                              courtyard_shapes=crt_shapes.get(ref),
-                             fab_shapes=fab_shapes.get(ref))
+                             fab_shapes=fab_shapes.get(ref),
+                             edge_marker=markers.get(ref))
         if geom.body_local is None and geom.source != SOURCE_NONE:
             continue
         out[ref] = geom

@@ -531,7 +531,10 @@ def test_the_evidence_says_HOW_a_clean_pass_was_reached():
     # Every channel is counted for every chip, fired or not -- "channel 1 found
     # 12" and "channel 1 was tried and found none" must not look alike.
     for ev in (u.decap_pin_evidence, g.decap_pin_evidence):
-        assert set(ev['by_channel']) == {'pintype', 'pinfunction', 'rail_net'}
+        # ...including #1249's `role` channel (a supply owner's pins), which
+        # yields nothing on these boards but is still counted.
+        assert set(ev['by_channel']) == {'role', 'pintype', 'pinfunction',
+                                         'rail_net'}
         assert ev['chips'] >= ev['chips_graded'] > 0
     # And the chips where the ladder's ORDER decided the answer are named.
     assert g.decap_pin_evidence['order_decided'], g.decap_pin_evidence

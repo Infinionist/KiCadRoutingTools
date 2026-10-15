@@ -71,12 +71,16 @@ ARM_WITH = {
     'decap_pin_distance': {'decaps': {'max_pin_distance_mm': 1.0}},
     'proximity': {'proximity': [{'ref': 'C1', 'near': 'U1',
                                  'max_mm': 2.0}]},
+    # #1253: a declared keep-away arms its grade.
+    'keep_away': {'keep_away': [{'rule': 'SW:FB:0.5'}]},
     'must_lock': {'must_lock': ['U1']},
     'legality': {'legality_budget': {'oob_count': 0}},
     'pins_to_edge': {'edge_connectors': [{'ref': 'J1', 'edge': 'west'}]},
     # #1051: a declared row arms its formation rule.
     'array_formation': {'arrays': [{'name': 'row', 'members': ['R1', 'R2'],
                                     'order': 'declared'}]},
+    # #1211: a declared channel copy arms its grade.
+    'replicate': {'replicate': [{'from': 'CH1', 'to': ['CH2']}]},
 }
 
 

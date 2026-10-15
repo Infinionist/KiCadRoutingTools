@@ -764,6 +764,11 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         config_kwargs['layer_widths'] = layer_widths
         config_kwargs['impedance_target'] = impedance
     config_kwargs['layer_costs'] = layer_costs  # per-layer bias for coupled diff routing (#193)
+    # #1253: the rules the board's design brief declares join the caller's,
+    # read in the engine (input_file, else PCBData.source_path) so the CLI
+    # and the GUI's Differential tab both get them with no flag.
+    from keep_away import resolve_keep_away
+    keep_away = resolve_keep_away(keep_away, input_file, pcb_data)
     if keep_away:
         from keep_away import normalize_keep_away_specs
         config_kwargs['keep_away'] = normalize_keep_away_specs(keep_away)
@@ -839,11 +844,24 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     # FPGA generic I/O, polarity-tolerant protocol - so deny by default);
     # '*' restores swap-everything.
     if polarity_swap_nets:
+        # A swap relabels the pair's pads and stub copper at one end, so a
+        # pair with KiCad-locked copper never swaps (#521: no override, #1261).
+        from protected_nets import locked_net_names
+        _locked_names = locked_net_names(pcb_data)
+        _locked_pairs = []
         for pair in diff_pairs.values():
             pair.polarity_swap_allowed = any(
                 matches_diff_pair_patterns(nname, pair.base_name,
                                            polarity_swap_nets)
                 for nname in (pair.p_net_name, pair.n_net_name) if nname)
+            if pair.polarity_swap_allowed and (
+                    pair.p_net_name in _locked_names
+                    or pair.n_net_name in _locked_names):
+                pair.polarity_swap_allowed = False
+                _locked_pairs.append(pair.base_name)
+        if _locked_pairs:
+            print(f"  {len(_locked_pairs)} pair(s) with KiCad-locked copper "
+                  f"denied a polarity swap: {', '.join(sorted(_locked_pairs)[:6])}")
         n_allowed = sum(p.polarity_swap_allowed for p in diff_pairs.values())
         print(f"  Polarity swaps allowed for {n_allowed}/{len(diff_pairs)} "
               f"pair(s) (--polarity-swap-nets)")
@@ -868,6 +886,10 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         if return_results:
             return 0, 0, 0.0, {'results': [], 'all_swap_vias': [], 'exclusion_zone_lines': [], 'boundary_debug_labels': []}
         return 0, 0, 0.0
+    # #1247: what this call was ASKED to route (both halves of every pair),
+    # before the already-connected filter -- the only nets a
+    # `--length-match-group auto` group may hold.
+    _length_match_scope_ids = {nid for _, nid in net_ids}
 
     # Flag target pads at/over the board edge before routing, so an unroutable
     # off-board pad reads as a clear warning rather than a silent search failure
@@ -987,6 +1009,19 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         pairs_being_routed = {name for name, pair in diff_pair_ids_to_route_set}
         swappable_pairs = [(name, pair) for name, pair in swappable_diff_pairs.items()
                           if name in pairs_being_routed]
+        # A target swap relabels the copper at the swapped targets: a pair
+        # with KiCad-locked copper never takes part (#521, #1261).
+        from protected_nets import locked_net_names
+        _locked_names = locked_net_names(pcb_data)
+        _locked_swap = sorted(name for name, pair in swappable_pairs
+                              if pair.p_net_name in _locked_names
+                              or pair.n_net_name in _locked_names)
+        if _locked_swap:
+            print(f"  {len(_locked_swap)} pair(s) with KiCad-locked copper "
+                  f"excluded from --swappable-nets: {', '.join(_locked_swap[:6])}")
+            _ls = set(_locked_swap)
+            swappable_pairs = [(name, pair) for name, pair in swappable_pairs
+                               if name not in _ls]
 
         if len(swappable_pairs) >= 2:
             # Generate debug labels if requested (before swaps, so we see original positions)
@@ -1537,8 +1572,11 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         state, diff_pair_ids_to_route)
 
     # Apply length matching if configured
+    _length_match_report = {}
     if length_match_groups:
-        run_length_matching(routed_results, length_match_groups, config, pcb_data)
+        run_length_matching(routed_results, length_match_groups, config, pcb_data,
+                            scope_net_ids=_length_match_scope_ids,
+                            report=_length_match_report)
 
     # Apply intra-pair P/N length matching if configured
     intra_pair_reports = []
@@ -1832,6 +1870,12 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         # pairs attempted P->P / N->N in-run (Class 2 - both members owned).
         'single_ended_fallback': se_fallback_summary,
     }
+    # #1247: every length-match group this call formed, by member name, and
+    # what `auto` left out and why (route.py reports the same keys).
+    if 'groups' in _length_match_report:
+        summary['length_match_groups'] = _length_match_report['groups']
+    if 'auto' in _length_match_report:
+        summary['length_match_auto'] = _length_match_report['auto']
     if ac_coupled_summary:
         summary['ac_coupled_xnets'] = ac_coupled_summary
     if impedance_width_clamped:
@@ -1895,6 +1939,10 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
             'pair_reports': pair_reports,
             'casualty_reconcile': casualty_summary,
             'single_ended_fallback': se_fallback_summary,
+            # #1247: same data as JSON_SUMMARY['length_match_groups'] (empty
+            # without a group); the `auto` report stays in
+            # JSON_SUMMARY['length_match_auto'], as in route.py.
+            'length_match_groups': summary.get('length_match_groups', []),
         }
     else:
         wrote = write_routed_output(
@@ -2353,7 +2401,13 @@ Examples:
             parse_keep_away_rules(args.keep_away)
         except ValueError as _kae:
             parser.error(f"--keep-away: {_kae}")
-    from keep_away import keep_away_knob_error
+    # #1253: a malformed keep_away in the board's design brief, refused as a
+    # usage error before the board is parsed (as route.py does).
+    from keep_away import read_brief_keep_away, keep_away_knob_error
+    try:
+        read_brief_keep_away(args.input_file)
+    except ValueError as _kae:
+        parser.error(str(_kae))
     _kae = keep_away_knob_error(args.keep_away_free, args.keep_away_cost)
     if _kae:
         parser.error(_kae)
@@ -2510,13 +2564,10 @@ Examples:
     # sibling .kicad_pro. All-Default boards -> empty map -> inert (byte-identical).
     _net_clearances_map = None
     if args.net_clearances:
-        import json as _jc
-        with open(args.net_clearances, encoding="utf-8") as _f:
-            _name_to_clr = _jc.load(_f)
-        _net_clearances_map = {}
-        for _nid, _net in pcb_data.nets.items():
-            if _net.name in _name_to_clr:
-                _net_clearances_map[_nid] = float(_name_to_clr[_net.name])
+        # The Differential tab reads its Net Clearances File the same way.
+        from list_nets import load_net_clearances, net_clearance_map_by_name
+        _net_clearances_map = net_clearance_map_by_name(
+            pcb_data.nets, load_net_clearances(args.net_clearances))
         print(f"Loaded per-net clearances for {len(_net_clearances_map)}/{len(pcb_data.nets)} nets "
               f"from {args.net_clearances}")
     else:
