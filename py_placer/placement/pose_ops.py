@@ -301,19 +301,71 @@ def bearing_face(from_xy, to_xy) -> str:
 # ---------------------------------------------------------------------------
 
 def resolve_ops(pcb_data, ops: Sequence[Dict], *, clearance: float,
-                track_width: float):
+                track_width: float, board_path: Optional[str] = None,
+                reports: Optional[List[Dict]] = None):
     """Turn caller ops into writer placements + a per-op note.
 
     Every op reads the INPUT board, so a call carrying several of them
     describes ONE arrangement rather than a sequence whose later members see
     the earlier ones' effects. That is what makes "a whole arrangement is one
     board state" true rather than merely intended.
+
+    A `replicate` op (#1211) expands into one note per TARGET part (kind
+    `replicate`, with its `source`) and a placement for each part that
+    actually moves -- so a KiCad-locked part already at its copied pose is
+    not refused for a move nobody made. `board_path` is read for the sheet
+    NAMES (the parser keeps only the paths); `reports` collects each op's
+    mapping for the summary.
     """
     placements: List[Dict] = []
     notes: List[Dict] = []
     seen = {}
+    sources = {}
+    sheet_names = None
     for op in ops:
         kind = op['kind']
+        if kind == 'replicate':
+            from placement import replicate
+            if sheet_names is None:
+                from placement.parser import extract_sheet_names
+                sheet_names = (extract_sheet_names(board_path)
+                               if board_path else {})
+            rows, report = replicate.plan(
+                pcb_data, sheet_names, op['from'], op['to'],
+                anchor=op.get('anchor'), offset=op.get('offset'))
+            for r in report['source_refs']:
+                sources.setdefault(r, report['from']['as_given'])
+            if reports is not None:
+                reports.append(report)
+            for row in rows:
+                ref = row['ref']
+                if ref in seen:
+                    raise PoseRefusal(
+                        "%s is named by two ops in one call (%s then "
+                        "replicate); one call describes one arrangement, so "
+                        "a part gets one pose" % (ref, seen[ref]), code=2)
+                seen[ref] = 'replicate'
+                fp = pcb_data.footprints[ref]
+                rot0 = float(fp.rotation or 0.0) % 360.0
+                note = {'ref': ref, 'kind': 'replicate',
+                        'source': row['source'],
+                        'from': [round(float(fp.x), 4), round(float(fp.y), 4),
+                                 rot0],
+                        'to': [round(row['x'], 4), round(row['y'], 4),
+                               row['rot']],
+                        'moved': bool(row['moved'])}
+                place = {'reference': ref, 'new_x': row['x'],
+                         'new_y': row['y'], 'new_rotation': row['rot']}
+                if row['flip']:
+                    # Only on a side CHANGE: a `new_side` key the writer does
+                    # not need would still be a different code path (#714).
+                    from placement.legality import footprint_side
+                    note['side'] = [footprint_side(fp), row['side']]
+                    place['new_side'] = row['side']
+                notes.append(note)
+                if row['moved']:
+                    placements.append(place)
+            continue
         ref = op['ref']
         fp = pcb_data.footprints.get(ref)
         if fp is None:
@@ -404,6 +456,20 @@ def resolve_ops(pcb_data, ops: Sequence[Dict], *, clearance: float,
         notes.append(note)
         placements.append({'reference': ref, 'new_x': x, 'new_y': y,
                            'new_rotation': rot})
+    # A replicate copies the INPUT poses of its source sheet, so a source part
+    # that another op in this call moves would leave the copy describing an
+    # arrangement the output does not have.
+    clash = sorted(r for r in {p['reference'] for p in placements}
+                   if r in sources)
+    if clash:
+        raise PoseRefusal(
+            "%s %s in the --from sheet of a replicate (%s) and %s moved by "
+            "this same call; the copy reads the INPUT board's poses, so the "
+            "two would disagree. Place the source sheet in one call, then "
+            "replicate it in the next" % (
+                ', '.join(clash), 'is' if len(clash) == 1 else 'are',
+                sources[clash[0]], 'is' if len(clash) == 1 else 'are'),
+            code=2, source_moved=clash)
     return placements, notes
 
 
@@ -868,8 +934,10 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
         knobs[key].update(requested=value, units='mm')
     pcb = pcb_data if pcb_data is not None else parse_kicad_pcb(board_path)
 
+    replicated: List[Dict] = []
     placements, notes = resolve_ops(pcb, ops, clearance=clearance,
-                                    track_width=track_width)
+                                    track_width=track_width,
+                                    board_path=board_path, reports=replicated)
     check_lock_refs(pcb, lock_refs, unlock_refs)
     # #1098: the intent's keep-outs reach every grade below, so a declared
     # `mating:<ref>` is the region this verb holds a move to.
@@ -951,6 +1019,8 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
         # it reports the path.
         'would_write': out_path,
     }
+    if replicated:
+        summary['replicate'] = replicated
 
     before = grade(pcb, board_path, clearance, board_edge_clearance,
                    declared_keepouts)
@@ -958,7 +1028,17 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
     try:
         cand = os.path.join(stage.name, 'candidate.kicad_pcb')
         if placements:
-            write_placed_output(board_path, cand, placements)
+            from placement.writer import OutlineOwnerMove, SideFlipUnsupported
+            try:
+                write_placed_output(board_path, cand, placements)
+            except (OutlineOwnerMove, SideFlipUnsupported) as exc:
+                # The writer REFUSES what it cannot write faithfully (#829 a
+                # part that draws the outline, #714 a side flip it would have
+                # to guess at -- `replicate` copies the source's side). Said
+                # with a summary like every other refusal, not a traceback.
+                summary.update(output=None, refused=(
+                    'the writer cannot write this arrangement: %s' % exc))
+                raise PoseRefusal(summary['refused'], summary=summary) from exc
         else:
             shutil.copyfile(board_path, cand)
         copy_siblings(board_path, cand)
@@ -968,7 +1048,14 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
         bad = worsened(before, after)
         snap_ran = False
 
-        if snap and len(placements) != 1:
+        if snap and replicated:
+            # A replicate is ONE rigid copy: snapping a member would break
+            # the arrangement it was asked for, even when only one part moved.
+            summary['snap_census'] = {
+                'skipped': 'snap relocates one part, and a replicate is a '
+                           'rigid copy of a whole sheet; it is graded as '
+                           'given'}
+        elif snap and len(placements) != 1:
             # SAID, not silently dropped: --snap/--near relocates ONE part,
             # and a call carrying several ops has no single point to sweep
             # around. A flag that quietly does nothing is how a caller
@@ -976,7 +1063,8 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
             summary['snap_census'] = {
                 'skipped': 'snap applies to exactly one pose op; this call '
                            'carries %d' % len(placements)}
-        if (bad or (strict and not is_clean(after))) and snap and len(placements) == 1:
+        if ((bad or (strict and not is_clean(after))) and snap
+                and len(placements) == 1 and not replicated):
             # Rank around the REQUESTED point, not the part's old one, and
             # judge the part against its pose on the INPUT board (#1256):
             # the state is built from `board_path` -- every seed, the
@@ -1189,6 +1277,22 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                 face_miss.append(n)
 
         summary.update(_legality_row(before, after))
+        if replicated:
+            # Per part, so a refused copy says WHICH members collide and with
+            # whom, not only which tally moved: the NEW pairs (and stacks)
+            # each moved replicate member is in.
+            fresh: Dict[str, List[str]] = {}
+            for pk in PAIR_KEYS:
+                had = {tuple(p[:2]) for p in (before.get(pk) or ())}
+                for p in after.get(pk) or ():
+                    if tuple(p[:2]) in had:
+                        continue
+                    for r in p[:2]:
+                        fresh.setdefault(r, []).append(
+                            '%s %s/%s' % (pk, p[0], p[1]))
+            for n in notes:
+                if n['kind'] == 'replicate' and n['moved']:
+                    n['new_conflicts'] = sorted(fresh.get(n['ref'], ()))
         for channel in ('pad_edge_before', 'pad_edge_after'):
             summary[channel]['source'] = knobs['board_edge_clearance']['source']
             summary[channel]['requested_mm'] = requested['board_edge_clearance']
@@ -1253,7 +1357,7 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
 
         if bad or (strict and not summary['legal']):
             if (summary['nearest_legal'] is None and len(placements) == 1
-                    and not snap_ran):
+                    and not snap_ran and not replicated):
                 # Name the alternative even when the caller did not ask to
                 # snap: a refusal that only says no costs the caller another
                 # round trip to find out what WOULD have worked. NOT on a call

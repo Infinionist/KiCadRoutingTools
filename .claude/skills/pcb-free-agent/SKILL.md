@@ -147,6 +147,14 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   (`place_pose set … --rot`, then `lock`, or the plan's `fixed_poses`). Then
   zone the rest and seed. The seeder puts undeclared parts at their
   connectivity centroid in the first rotation that fits.
+- **Repeated sheet instances (channel strips, one buffer per bank): arrange
+  ONE, then copy it** instead of writing a helper:
+  `python3 -X utf8 py_placer/place_pose.py <in> <out> replicate --from CH1 --to CH2 --to CH3 --anchor J1`
+  (#1211). It matches parts by schematic symbol and refuses unless the
+  instances are wired alike, naming the pads. Each target keeps its anchor
+  part where it is (default: the part with the most pads). A copy only
+  fits where the target has room for the whole channel: a refused copy
+  lists each colliding member under `ops[].new_conflicts`.
 - **On a pile, rank the biggest IC's rotation before you keep a seed.** A
   pile part keeps its input rotation, which is a generator default, and
   `converge.py poses` cannot rank an IC's rotation once its decaps are packed

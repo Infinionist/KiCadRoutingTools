@@ -141,12 +141,24 @@ def _centroid(fp) -> Tuple[float, float]:
             sum(p[1] for p in pts) / len(pts))
 
 
+def sheet_and_symbol(fp) -> Tuple[str, str]:
+    """`(sheet prefix, symbol uuid)` of a footprint's (path ...).
+
+    The prefix is every uuid but the last (`_sheet_of`); the LAST is the
+    schematic symbol. Two instances of one hierarchical sheet carry the SAME
+    symbol uuid under different prefixes -- multichannel_mixer's R4, R15, R26
+    and R37 all end in one uuid -- which is the correspondence KiCad's own
+    "Repeat Layout" uses and `replicate` maps by (#1211). A footprint with no
+    path yields ('', '')."""
+    parts = [q for q in (fp.sheet_path or '').split('/') if q]
+    return '/'.join(parts[:-1]), (parts[-1] if parts else '')
+
+
 def _sheet_of(fp) -> str:
     """The sheet prefix of a footprint's (path ...): everything but the LAST
     uuid, which is the symbol itself. A bare single-uuid path is top level and
     yields '' -- those must not all collapse into one bogus block."""
-    parts = [q for q in (fp.sheet_path or '').split('/') if q]
-    return '/'.join(parts[:-1])
+    return sheet_and_symbol(fp)[0]
 
 
 def _from_kicad(pcb_data, movable) -> Dict[str, List[str]]:

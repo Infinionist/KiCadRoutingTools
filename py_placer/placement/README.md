@@ -621,8 +621,51 @@ python py_placer/place_pose.py board.kicad_pcb out.kicad_pcb face U1 W USB1 lock
 
 Verbs: `set` (exact, or `--near X Y` which implies `--snap`), `rotate`
 (absolute, `--relative` for a delta), `face REF FACE PARTNER`, `lock`,
-`unlock`. Several verbs in one call are ONE arrangement — every op resolves
-against the input board and one `write_placed_output` call writes them all.
+`unlock`, `replicate` (below). Several verbs in one call are ONE arrangement
+— every op resolves against the input board and one `write_placed_output`
+call writes them all.
+
+**`replicate` (#1211) repeats one placed sheet channel onto its sibling
+instances.** Instances of one hierarchical sheet carry the same symbol uuid
+as the last component of every footprint's `(path ...)`, which is the
+correspondence KiCad's own "Repeat Layout" uses. The engine half is
+`placement/replicate.py`.
+
+```bash
+python py_placer/place_pose.py board.kicad_pcb out.kicad_pcb replicate --from CH1 --to CH2 --to CH3 --to CH4
+python py_placer/place_pose.py board.kicad_pcb out.kicad_pcb replicate --from CH1 --to CH2 --anchor J1
+```
+
+It maps parts by the path below each instance, nested sub-sheets included,
+and refuses (exit 4, nothing written) unless the instances are
+interchangeable:
+
+- the same parts on both sides;
+- the same footprint and pad list for every pair;
+- one-to-one nets over every mapped pad pair. A source net reaches one
+  target net, a target net comes from one source net, and a net on pads of
+  both instances (GND, a rail, a mix bus) maps to itself.
+
+The refusal names the offending refs and pads. Each target part takes its
+source part's rotation and side (a side change goes through the writer's
+#714 flip), at the source position plus one offset:
+
+- by default, each target keeps its anchor where it is. The anchor is the
+  source part with the most pads, or `--anchor REF`, a ref in any of the
+  named sheets;
+- `--offset DX DY` gives the offset directly (one `--to` only).
+
+A sheet is named by its name (`CH1`, `/CH1/`, read from the `(sheetname
+...)` token or KiCad 6/7's `Sheetname` property) or by its path (`/<uuid>`,
+or a unique start of it, 4+ characters). An unknown or ambiguous one is
+refused at exit 2, with the instances listed.
+
+The copy is graded like any other call. A target part that moves while
+KiCad-locked is refused unless the call `unlock`s it, and a locked part
+already at its copied pose is not moved and not refused. Each moved member
+lists the new conflict pairs it is in (`ops[].new_conflicts`), so a refused
+copy says who collides. `--snap` does not apply: a copy is rigid. It is an
+opt-in verb, and no seeder or quench default reads it.
 
 The engine half is `placement/pose_ops.py`, so the writer, the sibling carry
 (#441), the grade and the snap are shared rather than living in a CLI `main()`

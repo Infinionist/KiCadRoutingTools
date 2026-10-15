@@ -8,6 +8,7 @@
     place_pose.py BOARD OUT lock U1 CON1 CON2
     place_pose.py BOARD OUT unlock U1
     place_pose.py BOARD OUT set U1 129.9 98.3 --rot 270 rotate CON2 180 lock U1
+    place_pose.py BOARD OUT replicate --from CH1 --to CH2 --to CH3   # #1211
 
 Every verb writes through `placement.writer.write_placed_output` -- the same
 writer `place_seed` uses -- carries the sibling `.kicad_pro` / `.kicad_dru`
@@ -83,7 +84,7 @@ import json
 import os
 import sys
 
-VERBS = ('set', 'rotate', 'face', 'lock', 'unlock')
+VERBS = ('set', 'rotate', 'face', 'lock', 'unlock', 'replicate')
 
 #: The verbs and THEIR flags. `main()` parses with the verb-less parser, so
 #: what `--help` renders is THIS TEXT -- the subparsers exist for a reader who
@@ -108,6 +109,25 @@ exact points given -- so --near / --snap need a call with ONE pose op):
   face REF FACE PARTNER      FACE names the row by the face it is on NOW
   lock REF [REF ...]
   unlock REF [REF ...]       the only way to move a KiCad-locked part
+  replicate --from SHEET --to SHEET [--to SHEET] [--anchor REF] [--offset DX DY]
+            copy one placed instance of a hierarchical sheet onto its
+            sibling instances (#1211). Parts are matched by schematic
+            symbol; the copy is refused (exit 4) unless every matched pair
+            has the same footprint and pads and the nets correspond one to
+            one, a net on both instances (GND, a rail) mapping to itself.
+            Each target part takes its source part's rotation and side at
+            the source's position plus one offset, and the whole copy is
+            graded as one arrangement (--snap does not apply). A target
+            part that would move and is KiCad-locked is refused like `set`.
+            SHEET is a sheet name (CH1 or /CH1/) or a sheet path (/<uuid>,
+            or a unique start of it, 4+ characters); an unknown or
+            ambiguous one is refused at exit 2 with the sheets listed
+            --to SHEET     repeatable, one copy per target instance
+            --anchor REF   the part that keeps its place in each target (a
+                           ref of any of the named sheets); default: the
+                           source part with the most pads, e.g. the op-amp
+            --offset DX DY place the copy at the source poses + (DX, DY)
+                           instead; with one --to, and not with --anchor
 """
 
 
@@ -255,6 +275,23 @@ def _verb_parsers(sub=None):
         q = _new(verb, help="stamp / strip KiCad's `(locked yes)`")
         q.add_argument('refs', nargs='+')
         out[verb] = q
+
+    q = _new('replicate', help='copy one placed sheet instance onto its '
+                               'sibling instances (#1211)')
+    q.add_argument('--from', dest='from_sheet', required=True,
+                   metavar='SHEET',
+                   help='the PLACED instance to copy: a sheet name or path')
+    q.add_argument('--to', dest='to_sheets', action='append', required=True,
+                   metavar='SHEET',
+                   help='an instance to arrange like it; repeat for several')
+    q.add_argument('--anchor', default=None, metavar='REF',
+                   help='the part that keeps its place in each target; '
+                        'default: the source part with the most pads')
+    q.add_argument('--offset', nargs=2, type=float, default=None,
+                   metavar=('DX', 'DY'),
+                   help='put the copy at the source poses + (DX, DY) '
+                        'instead of keeping the anchor in place')
+    out['replicate'] = q
     return out
 
 
@@ -327,6 +364,20 @@ def parse_segments(segments, parsers, error):
             locks.extend(a.refs)
         elif verb == 'unlock':
             unlocks.extend(a.refs)
+        elif verb == 'replicate':
+            if a.offset is not None and len(a.to_sheets) > 1:
+                error("`replicate --offset` puts ONE copy at the source poses "
+                      "+ (DX, DY), and this one names %d --to sheets, which "
+                      "would all land on that spot. Issue one replicate per "
+                      "target, or drop --offset to keep each target's anchor "
+                      "in place" % len(a.to_sheets))
+            if a.offset is not None and a.anchor is not None:
+                error("`replicate` was given both --offset and --anchor: "
+                      "--offset fixes the translation, --anchor chooses the "
+                      "part that keeps its place; pass one")
+            ops.append({'kind': 'replicate', 'from': a.from_sheet,
+                        'to': list(a.to_sheets), 'anchor': a.anchor,
+                        'offset': a.offset})
     if snap and len(ops) > 1:
         # #1194: a call with several pose ops is ONE arrangement graded at the
         # exact points given, and a snap relocates one part, so `apply_poses`
@@ -340,7 +391,8 @@ def parse_segments(segments, parsers, error):
               "given, so a --near point would be graded as exact. Issue one "
               "`set REF --near X Y` per call (lock / unlock may ride along), "
               "or give exact coordinates"
-              % (len(ops), ', '.join('%s %s' % (o['kind'], o['ref'])
+              % (len(ops), ', '.join('%s %s' % (o['kind'],
+                                                o.get('ref') or o.get('from'))
                                      for o in ops)))
     return ops, locks, unlocks, snap
 
@@ -516,7 +568,27 @@ def _report(summary):
                      " [%s row aimed %s]" % (n['face'], n['target_face']))
         if n.get('snapped'):
             extra += ' [snapped]'
+        if n['kind'] == 'replicate':
+            extra += ' [as %s]' % n['source']
+            if n.get('side'):
+                extra += ' [side %s -> %s]' % tuple(n['side'])
+            if n.get('new_conflicts'):
+                extra += ' NEW: %s' % ', '.join(n['new_conflicts'])
         print("  %-6s %-8s %s%s" % (n['kind'], n['ref'], arrow, extra))
+    for rep in summary.get('replicate') or ():
+        for t in rep['to']:
+            b = t['offset_basis']
+            print("replicate %s -> %s: %d parts matched by symbol, %d moved; "
+                  "offset (%+.4f, %+.4f) %s; nets: %d renamed, %d shared (%s)"
+                  % (rep['from']['name'] or rep['from']['path'],
+                     t['sheet']['name'] or t['sheet']['path'], t['pairs'],
+                     t['moved'], t['offset'][0], t['offset'][1],
+                     ('keeps %s where it is (anchor %s, %s)'
+                      % (b['target'], b['source'], b['chosen']))
+                     if b['kind'] == 'anchor' else 'as given',
+                     len(t['nets_renamed']), len(t['nets_shared']),
+                     ', '.join(t['nets_shared'][:6])
+                     + (', ...' if len(t['nets_shared']) > 6 else '')))
     print("pad legality: conflicts %s -> %s, holes %s -> %s, coarse outline "
           "%s -> %s" % (summary['pad_conflicts_before'],
                         summary['pad_conflicts_after'],

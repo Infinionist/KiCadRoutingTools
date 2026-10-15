@@ -170,6 +170,7 @@ python py_placer/place_pose.py BOARD OUT rotate CON2 180 [--relative]
 python py_placer/place_pose.py BOARD OUT face U1 W USB1
 python py_placer/place_pose.py BOARD OUT lock U1 CON1
 python py_placer/place_pose.py BOARD OUT set U1 129.9 98.3 rotate CON2 180 lock U1
+python py_placer/place_pose.py BOARD OUT replicate --from CH1 --to CH2 --to CH3 [--anchor REF | --offset DX DY]
 ```
 
 Several verbs in one call describe ONE arrangement: every op is resolved
@@ -251,6 +252,24 @@ category, e.g. `hole_conflicts x4 (H1/TP1)` -- plus the `untried` count
 (`nearest_beyond_radius`, raise `--radius`). It never offers back a pose its
 own re-grade refused, and never advises `--snap` to a call that snapped:
 `nearest_legal` on a snap is the pose it wrote, or null.
+
+`replicate` (#1211) copies one placed instance of a hierarchical sheet onto
+its sibling instances. Parts are matched by the symbol uuid that ends every
+footprint's `(path ...)`, the correspondence KiCad's "Repeat Layout" uses.
+Each target part takes its source part's rotation and side at the source
+position plus one offset. By default each target keeps its anchor in place:
+the source part with the most pads, or `--anchor REF` from any named sheet.
+`--offset DX DY` gives the offset directly, with one `--to` only. It refuses
+at exit 4, writing nothing, unless the instances are interchangeable: the
+same parts, the same footprints and pads, and nets that correspond one to
+one, with a net on both instances (GND, a rail) mapping to itself. The
+refusal names the refs and pads. An unknown or ambiguous sheet (a name such
+as `CH1`, or a path or a unique start of one of 4+ characters) exits 2 and
+lists the instances.
+The copy is graded as one arrangement like any other call, with the same lock
+rule; `--snap` does not apply. `summary.replicate` reports the mapping, the
+offset and the renamed and shared nets, and each moved member lists its new
+conflict pairs. See `py_placer/placement/README.md`.
 
 Knobs come from the board (`list_nets.board_floor_knobs`) unless given — a
 CLI-supplied `--clearance` loosens the verdict on a tool whose job is to
