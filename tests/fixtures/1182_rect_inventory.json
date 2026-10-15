@@ -116,7 +116,7 @@
   "rect": 4,
   "rects": 2
  },
- "reconstruct.py::_seat_edge": {
+ "reconstruct.py::_edge_seated_on": {
   "grade_rect": 1
  },
  "reconstruct.py::edge_metric": {

@@ -947,11 +947,11 @@ def facing_seats(state, ref: str, entry: Dict, cands, band: float,
     out = list(cands[:1])
     for c in cands[1:]:
         x, y = c[0], c[1]
-        edge = _seat_edge(state, ref, x, y, p.rot, band)
+        edge = _edge_seated_on(state, ref, x, y, p.rot, band)
         if edge is None or _faces(turns, edge, p.rot):
             out.append(c)
         for rot in lattice:
-            edge = _seat_edge(state, ref, x, y, rot, band)
+            edge = _edge_seated_on(state, ref, x, y, rot, band)
             if (edge is not None and _faces(turns, edge, rot)
                     and on_board(x, y, rot) and (x, y, rot) not in out):
                 out.append((x, y, rot))
@@ -976,7 +976,7 @@ def _faces(turns: Dict[str, list], edge: str, rot: float) -> bool:
                for r in (turns.get(edge) or ()))
 
 
-def _seat_edge(state, ref: str, x: float, y: float, rot: float,
+def _edge_seated_on(state, ref: str, x: float, y: float, rot: float,
                band: float) -> Optional[str]:
     """The edge `ref` is SEATED on at a pose -- within the grade's seat
     tolerance (`part_class.SEAT_TOL_MM`) of the edge it sits nearest (the
@@ -1004,7 +1004,7 @@ def reversed_seat(state, ref: str, entry: Dict,
     turns = _facing_turns(state, ref, entry)
     if not any(turns.values()):
         return None
-    edge = _seat_edge(state, ref, p.x, p.y, p.rot, band)
+    edge = _edge_seated_on(state, ref, p.x, p.y, p.rot, band)
     if edge is None or _faces(turns, edge, p.rot):
         return None
     return {'edge': edge,
