@@ -73,7 +73,7 @@ def _edge(a, b, n):
 
 
 def build(td, pour=True):
-    with open(ESP, encoding='utf-8', newline='') as fh:
+    with open(ESP, encoding='utf-8') as fh:
         text = fh.read()
     lines = re.findall(r'\t\(gr_line\n(?:\t\t[^\n]*\n)*?\t\t\(layer "Edge\.Cuts"\)\n'
                        r'(?:\t\t[^\n]*\n)*?\t\)\n', text)

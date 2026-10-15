@@ -194,7 +194,7 @@ def case_kicad6_spelling():
 
 
 def main():
-    with open(ESP, encoding='utf-8', newline='') as fh:
+    with open(ESP, encoding='utf-8') as fh:
         text = fh.read()
     if ANCHOR not in text:
         raise AssertionError('BROKEN FIXTURE: esp_prog no longer ends with ' + repr(ANCHOR))
