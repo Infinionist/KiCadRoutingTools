@@ -1784,6 +1784,23 @@ def get_diff_pair_endpoints(pcb_data: PCBData, p_net_id: int, n_net_id: int,
     return paired_sources, paired_targets, None
 
 
+def layer_pair_spacing(config):
+    """Half the P/N centre pitch on each layer: (layer width + gap) / 2.
+
+    With per-layer widths (impedance solve or a layer-scoped design rule) a pair
+    on a stripline layer is narrower than on the outer microstrip; keeping the
+    outer pitch there widens the edge gap and misses the declared impedance.
+    Returns a float when every layer shares one width."""
+    if not getattr(config, 'layer_widths', None):
+        return (config.track_width + config.diff_pair_gap) / 2
+    names = list(config.layers)
+
+    def spacing(layer):
+        name = names[layer] if isinstance(layer, int) and 0 <= layer < len(names) else layer
+        return (config.get_track_width(name) + config.diff_pair_gap) / 2
+    return spacing
+
+
 def create_parallel_path_from_float(centerline_path, sign, spacing_mm=0.1, start_dir=None, end_dir=None):
     """
     Create a path parallel to centerline from float coordinates (no grid conversion).
@@ -1887,8 +1904,9 @@ def create_parallel_path_from_float(centerline_path, sign, spacing_mm=0.1, start
         else:
             corner_scale = 1.0
 
-        perp_x = -ndy * sign * spacing_mm * corner_scale
-        perp_y = ndx * sign * spacing_mm * corner_scale
+        sp = spacing_mm(layer) if callable(spacing_mm) else spacing_mm
+        perp_x = -ndy * sign * sp * corner_scale
+        perp_y = ndx * sign * sp * corner_scale
 
         result.append((x + perp_x, y + perp_y, layer))
 
@@ -3143,8 +3161,10 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
         # side P's vias are actually on. A genuine side-swap (P-via on opposite
         # sides at the two ends) costs one crossing either way, but this never
         # crosses BOTH legs gratuitously.
-        off_plus = create_parallel_path_from_float(centerline_float, sign=1, spacing_mm=spacing_mm)
-        off_minus = create_parallel_path_from_float(centerline_float, sign=-1, spacing_mm=spacing_mm)
+        off_plus = create_parallel_path_from_float(centerline_float, sign=1,
+                                                   spacing_mm=layer_pair_spacing(config))
+        off_minus = create_parallel_path_from_float(centerline_float, sign=-1,
+                                                    spacing_mm=layer_pair_spacing(config))
 
         # Choose which offset track is P by the SIDE the P pad sits on relative to the
         # local centerline direction at each end -- NOT raw distance to the middle's
@@ -4763,9 +4783,11 @@ def route_diff_pair_with_obstacles(pcb_data: PCBData, diff_pair: DiffPairNet,
         if math.hypot(fx - exact[0], fy - exact[1]) <= config.grid_step * 0.75:
             centerline_float[idx] = (exact[0], exact[1], flayer)
 
-    p_float_path = create_parallel_path_from_float(centerline_float, sign=p_sign, spacing_mm=spacing_mm,
+    p_float_path = create_parallel_path_from_float(centerline_float, sign=p_sign,
+                                                   spacing_mm=layer_pair_spacing(config),
                                                    start_dir=start_stub_dir, end_dir=end_stub_dir)
-    n_float_path = create_parallel_path_from_float(centerline_float, sign=n_sign, spacing_mm=spacing_mm,
+    n_float_path = create_parallel_path_from_float(centerline_float, sign=n_sign,
+                                                   spacing_mm=layer_pair_spacing(config),
                                                    start_dir=start_stub_dir, end_dir=end_stub_dir)
 
     # Process via positions
