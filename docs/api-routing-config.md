@@ -359,6 +359,40 @@ same case. There is deliberately no size pre-flight predicate: the corpus
 measurement behind that decision is in `tests/stress/RUNBOOK.md` ("Exact-fill
 timing census (#831)").
 
+##### Pour guard (#1260): an out-of-scope pour the run could only cut
+
+Not a cost: a hard obstacle. Routing through another net's pour is normal (the
+refill clears around the track), but a track that crosses a pour island from
+edge to edge cuts it in two, and KiCad's refill then deletes the piece that no
+longer touches a pad of the pour's net, or leaves that net open if the pour was
+its only connection. For a zone net in the run's scope the plane finalize
+repairs that; for one outside it (not matched by the caller's net filter, the
+`finalize_excluded_nets`) nothing does.
+
+So `batch_route` (`pour_guard.install_pour_barriers`, both fronts) blocks each
+fill island of an out-of-scope pour on a routing layer when **no routed net has
+a terminal inside it** (a pad, via or track end, holes included: a net with no
+terminal inside can enter the island only to cross it) and a cut would cost
+something. The island must touch two or more of its own net's pads, vias or
+tracks, or touch one and be at least the minimum island area (the zone's own in
+area-removal mode, else KiCad's default, 10 mm^2). The barriers land in
+`GridRouteConfig.pour_barriers`, and every `build_base_obstacle_map` stamps
+them as track and via keep-outs at the larger of the pair clearance and the
+zone's own clearance. Islands that hold a routed terminal stay crossable, so
+ordinary routing over a full-board pour is unchanged. Geometry: the exact KiCad
+fill (the GUI's live board, else a refill of the source file, memoised with the
+fragility field), else the zone outlines. Nested sub-runs (reconciliation laps,
+finalize repairs) inherit the outer run's list through the internal
+`pour_barriers` kwarg. `KICAD_POUR_GUARD=0` turns the guard off. The account is
+in `JSON_SUMMARY.pour_guard`:
+
+```json
+"pour_guard": {"source": "kicad_refill", "why": "",
+               "pours": [{"net": "ZONE_NET", "layer": "F.Cu",
+                          "blocked_islands": 1, "blocked_mm2": 334.3,
+                          "crossable_islands": 0, "minor_islands": 0}]}
+```
+
 ##### History congestion (#590), the only field that measures TIME
 
 Every other field prices the board's state *now*. This one prices how often a
@@ -532,6 +566,7 @@ on the corpus.
 | `meander_spacing` | `2.0` | Centre-to-centre pitch of adjacent meander arms, in multiples of the net's routed track width (#501) |
 | `net_layer_widths` | `{}` | Per-net per-layer widths reapplied from stored `.kicad_pro` impedance declarations on a redo (#521); outranks the netclass scalar |
 | `net_via_sizes` | `{}` | `{net_id: (via_size, via_drill)}` for nets whose resolved class / rule via geometry differs from the call's `via_size`/`via_drill` (#530 decision 4). `config.net_via(net_id)` returns the pair a net draws. The obstacle cache keeps one via-legality **rung** per distinct pair (`obstacle_cache.via_rungs`, rung 0 = the call's size; rust `add_blocked_via_rung` / `is_via_blocked_rung`), every add/remove -- cached or raw (#1226: the per-net adds behind `build_single_ended_obstacles`, the list add/remove twins, the board-edge bands) -- reaches every rung at THAT rung's own via and drill, never the call's size (a larger per-net via would sit (rung - call)/2 inside the copper), and `route_net_with_obstacles` selects the net's rung before the search. A MULTIPOINT net (3+ pads) is searched at the call's size, so its paths complete as they would with no class via, and each via it places is then drawn at the net's own size wherever that is legal at its rung; the rest keep the call's size and are disclosed as a `design_rules` descent. Needs `grid_router` 0.22.0+; `route.py` prints a note and routes at the call size on an older binary |
+| `pour_barriers` | `[]` | #1260: the fill islands of out-of-scope zone nets this run could only cut, `[{net, layer, polygons, clearance}]`, installed by `pour_guard.install_pour_barriers` and stamped by `build_base_obstacle_map` as track and via keep-outs (see "Pour guard (#1260)" above). Engine-computed and inherited by nested sub-runs; no CLI flag and no GUI control (`KICAD_POUR_GUARD=0` reverts). Empty = inert |
 | `time_matching` | `False` | Match propagation delay instead of length |
 | `time_match_tolerance` | `1.0` | Allowed spread (picoseconds) |
 

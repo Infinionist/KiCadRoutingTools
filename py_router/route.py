@@ -278,6 +278,9 @@ _FINALIZE_ROUTE_KNOBS = (
     'bus_enabled', 'bus_detection_radius', 'bus_attraction_radius',
     'bus_attraction_bonus', 'bus_min_nets',
     'keep_away', 'keep_away_free', 'keep_away_cost',
+    # #1260: the step's pour barriers, so a casualty reconnect cannot cut
+    # the out-of-scope pours the step itself was kept out of.
+    'pour_barriers',
 )
 
 
@@ -1190,7 +1193,13 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 # places and same-net SMD pads. None (default) -> auto-read
                 # the persisted .kicad_pro record; > 0 activates (and is
                 # persisted for later chain steps); 0 / -1 explicitly OFF.
-                same_net_pad_clearance: Optional[float] = None) -> Tuple[int, int, float]:
+                same_net_pad_clearance: Optional[float] = None,
+                # #1260: the pour islands this run may not cut
+                # (GridRouteConfig.pour_barriers). None (both fronts) ->
+                # computed from this call's scope; a list is the OUTER run's,
+                # handed to its reconciliation and finalize sub-runs so they
+                # block what it blocked. INTERNAL: no CLI flag, no GUI control.
+                pour_barriers: Optional[List[dict]] = None) -> Tuple[int, int, float]:
     """
     Route single-ended nets using the Rust router.
 
@@ -2758,6 +2767,17 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # the swap passes, above).
     install_track_clearances(config, track_clearances, input_file, pcb_data,
                              routed_net_ids=base_map_exclusions)
+    # #1260: a pour island of a zone net outside this run that no routed net
+    # has a terminal inside can only be CUT by this run (nothing here repairs
+    # it), so it is an obstacle on every map built from this config. Scope is
+    # the nets routed or rippable here -- not base_map_exclusions, whose
+    # relocatable_plane_ids hold every zone net for tap surgery. A sub-run
+    # inherits the outer run's list (pour_barriers) instead of recomputing it.
+    from pour_guard import install_pour_barriers
+    _pour_guard_report = install_pour_barriers(
+        config, pcb_data, all_net_ids_to_route + existing_rippable, net_names,
+        given=pour_barriers)
+    _reconcile_kwargs['pour_barriers'] = list(config.pour_barriers)
     # #568: arming is run-scoped and the flag is module-global, so reset it
     # per call -- otherwise one unfrozen-base run would disarm rung-1 legality
     # for every later run in the same process (the GUI's whole session).
@@ -4763,6 +4783,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     _pfg = getattr(config, '_plane_fragility_geometry', None)
     if _pfg is not None:
         summary['plane_fragility'] = dict(_pfg)
+    if _pour_guard_report is not None:
+        # #1260: which out-of-scope pours were blocked as obstacles and which
+        # were left crossable, and from what geometry. Absent when the run had
+        # no out-of-scope pour (or is a sub-run inheriting its parent's list).
+        summary['pour_guard'] = _pour_guard_report
     if impedance_width_clamped:
         # #610: layers whose impedance-solved width was clamped UP to the
         # width floor, {layer: [solved_mm, floor_mm]}. Those layers route at

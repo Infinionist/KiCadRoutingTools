@@ -565,6 +565,10 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
     # Block KiCad native keep-out rule areas (zone (keepout ...)), per-layer (PR #25)
     add_rule_area_keepout_obstacles(obstacles, pcb_data, config)
 
+    # Pour islands of out-of-scope nets that this run could only cut (#1260)
+    add_pour_barrier_obstacles(obstacles, pcb_data, config, extra_clearance,
+                               _obstacle_clearance)
+
     # Add hole-to-hole clearance blocking for existing drills
     _report("drill holes", 0, 0, force=True)
     add_drill_hole_obstacles(obstacles, pcb_data, config, nets_to_route_set,
@@ -1232,6 +1236,58 @@ def add_rule_area_keepout_obstacles(obstacles: GridObstacleMap, pcb_data: PCBDat
         if block_vias and via_mask.any():
             v_gx, v_gy = _box_masked_cells(o_gx_lo, o_gy_lo, o_nx, via_mask)
             obstacles.add_blocked_vias_batch(np.column_stack([v_gx, v_gy]))
+
+
+def add_pour_barrier_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
+                               config: GridRouteConfig,
+                               extra_clearance: float = 0.0,
+                               obstacle_clearance=None):
+    """Block tracks and vias on the pour islands this run must not cut (#1260).
+
+    `config.pour_barriers` (pour_guard.install_pour_barriers) holds the fill
+    islands of zone nets outside the run that no routed net has a terminal
+    inside. Each is stamped like the copper it is: track cells within half a
+    track width plus the clearance of the fill, and via cells within half a
+    via plus the clearance, on the island's layer, at the larger of the pair
+    clearance and the zone's own clearance (KiCad grades the written fill
+    against the zone's clearance). An empty list stamps nothing.
+
+    Not filtered by the map's `nets_to_route`: the zone nets of a run's
+    pours are always in it (tap relocation caches them per net), and the
+    list already holds only nets the run does not route."""
+    barriers = getattr(config, 'pour_barriers', None)
+    if not barriers:
+        return
+    name_to_id = {n.name: nid for nid, n in pcb_data.nets.items()}
+    coord = GridCoord(config.grid_step)
+    layer_map = build_layer_map(config.layers)
+    clip = getattr(pcb_data.board_info, 'board_bounds', None)
+    for b in barriers:
+        li = layer_map.get(b.get('layer'))
+        if li is None:
+            continue
+        nid = name_to_id.get(b.get('net'))
+        pair = (obstacle_clearance(nid)
+                if obstacle_clearance is not None and nid is not None
+                else config.clearance)
+        clear = max(pair, b.get('clearance') or 0.0) + extra_clearance
+        track_clear = clear + config.track_width / 2
+        via_clear = clear + config.via_size / 2
+        margin = max(track_clear, via_clear) + coord.grid_step
+        for poly in b.get('polygons') or []:
+            gx_lo, gy_lo, nx, _ny, inside, edge_dist = _rasterize_polygon_box(
+                poly, coord, margin, clip_bounds=clip)
+            if inside is None:
+                continue
+            # Boundary cells resolve OPEN, as the rule-area stamp does.
+            track_mask = inside | (edge_dist < track_clear - GRID_TIE_EPS)
+            via_mask = inside | (edge_dist < via_clear - GRID_TIE_EPS)
+            if track_mask.any():
+                t_gx, t_gy = _box_masked_cells(gx_lo, gy_lo, nx, track_mask)
+                _block_cells_sel(obstacles, t_gx, t_gy, [li])
+            if via_mask.any():
+                v_gx, v_gy = _box_masked_cells(gx_lo, gy_lo, nx, via_mask)
+                obstacles.add_blocked_vias_batch(np.column_stack([v_gx, v_gy]))
 
 
 def add_board_edge_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,

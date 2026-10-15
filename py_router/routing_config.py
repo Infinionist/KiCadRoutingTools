@@ -383,6 +383,13 @@ class GridRouteConfig:
     # search prices each such net at its own via through the obstacle map's
     # via-legality RUNGS (obstacle_cache.via_rungs) and emits vias at it.
     net_via_sizes: Dict[int, Tuple[float, float]] = field(default_factory=dict)
+    # #1260: the copper pours this run may not CUT -- fill islands of zone
+    # nets outside the run's scope that no routed net has a terminal inside
+    # (pour_guard.install_pour_barriers), each {'net', 'layer', 'polygons',
+    # 'clearance'}. build_base_obstacle_map stamps them as hard track and via
+    # keep-outs. Engine-computed and handed down to nested sub-runs; no CLI
+    # flag and no GUI control (KICAD_POUR_GUARD=0 reverts). Empty = inert.
+    pour_barriers: List[dict] = field(default_factory=list)
 
     def net_via(self, net_id: int) -> Tuple[float, float]:
         """(diameter, drill) this net's vias are drawn at."""
