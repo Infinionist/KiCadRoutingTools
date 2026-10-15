@@ -76,6 +76,9 @@
   "rect": 1,
   "rects": 1
  },
+ "quench.py::_NearIndex._refresh": {
+  "rect": 1
+ },
  "quench.py::_Part.__init__": {
   "bounds_by_rot": 4,
   "grade_by_rot": 3

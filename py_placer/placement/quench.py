@@ -740,7 +740,208 @@ LOCK_PADLESS = 'has no pad: a static obstacle by its courtyard'
 LOCK_SEATED_PLUG = 'a PCB-edge plug seated at its edge (#1098)'
 
 
-class _Part:
+#: `_NearIndex` widens every query by this much past the clearance, so the
+#: prune stays a prune at the last ulp: `rect_gap`'s diagonal branch is a
+#: `math.hypot`, exact to an ulp rather than to the bit, and the grid's cell
+#: arithmetic divides.
+_NEAR_SLACK_MM = 1e-6
+
+#: `_NearIndex`'s bucket edge. Parts are a few mm across, so a query box
+#: usually touches a handful of cells.
+_NEAR_CELL_MM = 4.0
+
+#: A footprint spanning more cells than this (a wild pose, an infinite box)
+#: is not bucketed: it is returned for every query instead.
+_NEAR_MAX_CELLS = 4096
+
+#: Below this many parts a full sweep costs no more than the index does,
+#: and `_sweep_others` keeps it.
+_NEAR_INDEX_MIN_PARTS = 32
+
+
+class _NearIndex:
+    """Every part's NEIGHBOUR FOOTPRINT -- the box spanning `rect()` and
+    `tht_rect()` at its live pose, the two rects the courtyard pair tests
+    read -- bucketed on a uniform grid, so the full-board sweeps of
+    `violation_parts` and `candidate_valid` visit only the parts that can
+    come within the clearance. The seeder asks both at every candidate pose
+    against every part on the board; on a 272-part pile that sweep was 96%
+    of the seed.
+
+    A PRUNE, never a verdict. `near` returns a part unless its footprint
+    lies at least `reach` from the query box along one axis. Every gap the
+    sweeps compute (`rect_gap`, `far_gap`, `pair_min_gap`) is bounded below
+    by the axis separation of the boxes it compares, both of which sit
+    inside the two footprints, and IEEE subtraction rounds monotonically, so
+    a dropped part could neither fail the clearance nor add a shortfall. The
+    grid only narrows which footprints that exact test is asked about: a
+    footprint in no cell the query reaches is farther than `reach` already
+    (`_cells` widens the query by `_NEAR_SLACK_MM` against the rounding of
+    its division). The survivors come back in `parts` order, so the loops
+    see the sequence they always saw, less parts that would have contributed
+    nothing -- the same first violator, the same float sum, the same early
+    exit. A NaN or infinite footprint is in every answer.
+
+    A stale footprint would be a silent wrong answer, so staleness is not
+    left to call sites: every write to a field the footprint reads
+    (`_NearWatched._GEOM_FIELDS`, through its `__setattr__`) and every entry
+    `ensure_rotation` adds marks the part here, and `near` re-buckets marked
+    parts before it reads any."""
+
+    __slots__ = ('src', 'items', 'pos', 'boxes', 'spans', 'cells', 'always',
+                 'dirty')
+
+    def __init__(self, parts):
+        self.src = parts
+        self.items = list(parts.items())
+        self.pos = {ref: i for i, (ref, _p) in enumerate(self.items)}
+        self.boxes = [None] * len(self.items)
+        self.spans = [None] * len(self.items)
+        self.cells: Dict[Tuple[int, int], Set[int]] = {}
+        self.always: Set[int] = set()
+        self.dirty = set(self.pos)
+        for _ref, p in self.items:
+            try:
+                p._ix_watch.append(self.dirty)
+            except AttributeError:
+                p._ix_watch = [self.dirty]
+
+    @classmethod
+    def build(cls, parts):
+        """An index over `parts`, or None when one is not a `_Part` (it
+        could be moved without marking the index)."""
+        if not all(type(p) is _Part for p in parts.values()):
+            return None
+        return cls(parts)
+
+    def current(self, parts) -> bool:
+        """Whether this index still describes `parts` (the same dict, the
+        same members -- QuenchState never adds or removes one)."""
+        return parts is self.src and len(parts) == len(self.items)
+
+    @staticmethod
+    def _cells(x0, y0, x1, y1):
+        """The cell range (cx0, cy0, cx1, cy1) a box touches, or None when it
+        is not finite, is inverted, or spans more than `_NEAR_MAX_CELLS`
+        cells."""
+        g, e = _NEAR_CELL_MM, _NEAR_SLACK_MM
+        try:
+            r = (math.floor((x0 - e) / g), math.floor((y0 - e) / g),
+                 math.floor((x1 + e) / g), math.floor((y1 + e) / g))
+        except (OverflowError, ValueError):            # inf, NaN
+            return None
+        if (r[2] < r[0] or r[3] < r[1]
+                or (r[2] - r[0] + 1) * (r[3] - r[1] + 1) > _NEAR_MAX_CELLS):
+            return None
+        return r
+
+    def _refresh(self):
+        cells, always = self.cells, self.always
+        for ref in self.dirty:
+            i = self.pos.get(ref)
+            if i is None:
+                continue
+            old = self.spans[i]
+            if old is None:
+                always.discard(i)
+            else:
+                for cx in range(old[0], old[2] + 1):
+                    for cy in range(old[1], old[3] + 1):
+                        cells[(cx, cy)].discard(i)
+            p = self.items[i][1]
+            try:
+                box = _footprint_box(p.rect(), p.tht_rect())
+            except Exception:                              # noqa: BLE001
+                # Unmeasurable now: the sweep measures it itself, so it
+                # raises (or not) exactly where it always did.
+                box = None
+            span = None if box is None else self._cells(*box)
+            self.boxes[i] = box
+            self.spans[i] = span
+            if span is None:
+                always.add(i)
+            else:
+                for cx in range(span[0], span[2] + 1):
+                    for cy in range(span[1], span[3] + 1):
+                        c = cells.get((cx, cy))
+                        if c is None:
+                            c = cells[(cx, cy)] = set()
+                        c.add(i)
+        self.dirty.clear()
+
+    def near(self, q, reach):
+        """[(ref, part)] in `parts` order, less every part whose footprint
+        is at least `reach` from box `q` along x or y; None when `q` cannot
+        be bucketed (the caller sweeps everything)."""
+        if self.dirty:
+            self._refresh()
+        span = self._cells(q[0] - reach, q[1] - reach, q[2] + reach,
+                           q[3] + reach)
+        if span is None:
+            return None
+        cells = self.cells
+        got = set(self.always)
+        for cx in range(span[0], span[2] + 1):
+            for cy in range(span[1], span[3] + 1):
+                c = cells.get((cx, cy))
+                if c:
+                    got |= c
+        q0, q1, q2, q3 = q
+        boxes, items = self.boxes, self.items
+        out = []
+        for i in sorted(got):
+            b = boxes[i]
+            if b is not None and (q0 - b[2] >= reach or b[0] - q2 >= reach
+                                  or q1 - b[3] >= reach
+                                  or b[1] - q3 >= reach):
+                continue
+            out.append(items[i])
+        return out
+
+
+def _footprint_box(rect, tht):
+    """The box spanning a courtyard rect and an optional far-side rect (a
+    `FarSide` IS its union box), or None when a coordinate is NaN."""
+    if tht is None:
+        box = tuple(rect)
+    else:
+        box = (min(rect[0], tht[0]), min(rect[1], tht[1]),
+               max(rect[2], tht[2]), max(rect[3], tht[3]))
+    for v in tuple(rect) + (tuple(tht) if tht is not None else ()):
+        if v != v:
+            return None
+    return box
+
+
+class _NearWatched:
+    """The `_NearIndex` side of `_Part`: the indexes watching this part, and
+    the write hook that marks it stale in them. A base class, so `_Part`'s
+    own slots stay as they were."""
+
+    __slots__ = ('_ix_watch',)
+
+    #: What `rect()` / `tht_rect()` read, and so what a `_NearIndex`
+    #: footprint is computed from: a write to any of them marks the part
+    #: stale in every index watching it. Reads are unaffected -- only
+    #: assignment goes through `__setattr__`.
+    _GEOM_FIELDS = frozenset(('x', 'y', 'rot', 'bounds_by_rot',
+                              'tht_by_rot', 'side', 'sides', 'has_tht'))
+
+    def __setattr__(self, name, value):
+        object.__setattr__(self, name, value)
+        if name in _NearWatched._GEOM_FIELDS:
+            # getattr: construction, a copy or an unpickle may write a
+            # geometry field before the watch list exists.
+            for dirty in getattr(self, '_ix_watch', ()):
+                dirty.add(self.ref)
+
+    def _near_stale(self):
+        """Mark this part stale in every index watching it."""
+        for dirty in getattr(self, '_ix_watch', ()):
+            dirty.add(self.ref)
+
+
+class _Part(_NearWatched):
     __slots__ = ('ref', 'pads_local', 'pin_count', 'bounds_by_rot',
                  'seed_x', 'seed_y', 'x', 'y', 'rot', 'locked',
                  'nets', 'halo', 'footprint_name', 'orig_rot',
@@ -849,16 +1050,25 @@ class _Part:
         made after construction (#1206): the far side is turned cluster by
         cluster (`legality.rotate_far`), so no cache can flatten a FarSide
         to its union box -- four inline copies of this fill (three in the
-        seeder, one in the swap) each could."""
+        seeder, one in the swap) each could.
+
+        An entry it adds can change what `rect()` answers for a part already
+        AT that angle (a missing key falls back to the 0-degree bounds), so
+        it marks the part stale in every `_NearIndex` watching it."""
+        added = False
         if rot not in self.bounds_by_rot:
             self.bounds_by_rot[rot] = _rotate_local_bounds(
                 *self.bounds_by_rot[0.0], rot)
+            added = True
         if rot not in self.grade_by_rot:
             self.grade_by_rot[rot] = _rotate_local_bounds(
                 *self.grade_by_rot[0.0], rot)
         if self.tht_by_rot is not None and rot not in self.tht_by_rot:
             self.tht_by_rot[rot] = legality.rotate_far(self.tht_by_rot[0.0],
                                                        rot)
+            added = True
+        if added:
+            self._near_stale()
 
     def rect(self, x=None, y=None, rot=None):
         x = self.x if x is None else x
@@ -1507,6 +1717,9 @@ class QuenchState:
 
         # Optional pruned neighbour lists (see build_neighbor_lists)
         self._neighbors = None
+        # The full-sweep prune (`_sweep_others`), built on first use; False
+        # when `parts` cannot be indexed.
+        self._near_ix = None
         # Displacement budget, for the outline gate's reachability prune. Unknown
         # until build_neighbor_lists is told it, and UNBOUNDED until then so the
         # prune can only ever be conservative (every part pays for the exact ring
@@ -1973,6 +2186,24 @@ class QuenchState:
         board, overlap = self.violation_parts(ref, x, y, rot, exclude, limit)
         return board + overlap
 
+    def _sweep_others(self, rects, clr):
+        """The full-board sweep's `(ref, part)` pairs for a part presenting
+        `rects` (its `rects()` at the pose asked about) at clearance `clr`:
+        `parts` in order, less the parts `_NearIndex` proves stay `clr`
+        clear of it. For the courtyard loops of `violation_parts` and
+        `candidate_valid` only -- a pair test with another reach (halo, pad
+        floors, bodies) needs its own bound."""
+        if len(self.parts) < _NEAR_INDEX_MIN_PARTS:
+            return self.parts.items()
+        ix = self._near_ix
+        if ix is None or (ix is not False and not ix.current(self.parts)):
+            ix = self._near_ix = _NearIndex.build(self.parts) or False
+        if ix is False:
+            return self.parts.items()
+        q = _footprint_box(rects[0], rects[1])
+        near = None if q is None else ix.near(q, clr + _NEAR_SLACK_MM)
+        return self.parts.items() if near is None else near
+
     def violation_parts(self, ref, x=None, y=None, rot=None,
                         exclude: Optional[Set[str]] = None,
                         limit: Optional[float] = None):
@@ -2004,7 +2235,8 @@ class QuenchState:
         overlap = 0.0
         if limit is not None and board > limit:
             return board, overlap
-        if self._neighbors is not None and ref in self._neighbors:
+        swept = not (self._neighbors is not None and ref in self._neighbors)
+        if not swept:
             others = ((o, self.parts[o]) for o in self._neighbors[ref])
         else:
             others = self.parts.items()
@@ -2021,6 +2253,8 @@ class QuenchState:
             return board, overlap + self._pin_violation(ref, x, y, rot,
                                                         exclude)
         clr = self.clearance
+        if swept:
+            others = self._sweep_others(rects, clr)
         rect = rects[0]
         tht = part.has_tht
         skip_containers = (ref in self.container_refs)
@@ -2534,11 +2768,11 @@ class QuenchState:
             if legal and self._body_overlap_at(ref, x, y, rot, exclude):
                 legal = False
         elif legal:
+            clr = self.clearance
             if self._neighbors is not None and ref in self._neighbors:
                 others = ((o, self.parts[o]) for o in self._neighbors[ref])
             else:
-                others = self.parts.items()
-            clr = self.clearance
+                others = self._sweep_others(rects, clr)
             tht = part.has_tht
             skip_containers = (ref in self.container_refs)
             for other_ref, other in others:
