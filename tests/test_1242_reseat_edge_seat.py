@@ -94,7 +94,10 @@ class TheReseatTurnsIt(unittest.TestCase):
         self.assertEqual((s['unseated'], s['edge_bands_dropped']), ([], {}))
         self.assertEqual(s['grade_errors'], 0)
         self.assertIn('J2', s['connector_requirements']['declared_refs'])
-        self.assertIn('facing east [courtyard+fab, strong] pass', g.stdout)
+        # sonde_u J2 draws a "PCB Edge" marker that agrees with its body
+        # face, so the basis carries it (#1245).
+        self.assertIn('facing east [courtyard+fab+marker, strong] pass',
+                      g.stdout)
 
     def test_1_blind_twin_leaves_it_reversed(self):
         # The edge seat patched out is the old path: the seed alone, which
