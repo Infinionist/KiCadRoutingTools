@@ -40,7 +40,7 @@ from typing import Dict, List, NamedTuple, Sequence, Tuple, Set, Optional
 
 import numpy as np
 
-from kicad_parser import PCBData, local_to_global
+from kicad_parser import IU_PER_MM, PCBData, mm_to_iu
 from paste_apertures import pad_has_copper as _pad_has_copper
 from connectivity import compute_mst_edges
 from placement.parser import (courtyard_for_side, extract_courtyard_sides,
@@ -745,7 +745,8 @@ class _Part:
                  'seed_x', 'seed_y', 'x', 'y', 'rot', 'locked',
                  'nets', 'halo', 'footprint_name', 'orig_rot',
                  'side', 'has_tht', 'sides', 'tht_by_rot', 'padbox_local',
-                 'padbox_by_rot', 'grade_by_rot', '_live_rects')
+                 'padbox_by_rot', 'grade_by_rot', '_live_rects',
+                 '_pg_rot', '_pg_pose')
 
     def __init__(self, ref, fp, courtyard_sides, locked, halo_base, halo_coef,
                  body_local=None):
@@ -836,6 +837,11 @@ class _Part:
         self.locked = locked
         self.nets = sorted({n for _, _, n in self.pads_local})
         self.halo = halo_base + halo_coef * math.sqrt(max(self.pin_count, 1))
+        # `pad_globals` memos -- see there. Both carry the `pads_local` list
+        # they were built from, so a reassigned list can never be served a
+        # stale answer.
+        self._pg_rot = None
+        self._pg_pose = None
 
     def ensure_rotation(self, rot):
         """Fill both rotation caches for `rot`, as given (a caller that
@@ -946,12 +952,57 @@ class _Part:
         return pair_min_gap(self.sides, self.side, sr[0], sr[1],
                             other.sides, other.side, orr[0], orr[1])
 
+    def _pad_offsets(self, rot):
+        """[(dx, dy, net)]: each connected pad's offset from the origin at
+        rotation `rot` -- `local_to_global`'s rotation half, by the SAME
+        expressions in the same order, so `x + dx` is the very sum it forms.
+
+        Memoised per rotation: the trig and the products depend on the
+        rotation alone, and a quench asks for the same handful of rotations
+        at every candidate position. A key that compares equal but differs in
+        the sign of a zero (0.0 / -0.0) changes only the sign of a zero
+        offset, which the integer-nm snap in `pad_globals` erases.
+        """
+        memo = self._pg_rot
+        if memo is None or memo[0] is not self.pads_local:
+            memo = self._pg_rot = (self.pads_local, {})
+        offs = memo[1].get(rot)
+        if offs is None:
+            rad = math.radians(-rot)  # CRITICAL: negate the angle (as there)
+            cos_r = math.cos(rad)
+            sin_r = math.sin(rad)
+            offs = memo[1][rot] = [(lx * cos_r - ly * sin_r,
+                                    lx * sin_r + ly * cos_r, n)
+                                   for lx, ly, n in self.pads_local]
+        return offs
+
     def pad_globals(self, x=None, y=None, rot=None):
+        """[(gx, gy, net)] of every connected pad at a pose (default: live).
+
+        BIT-IDENTICAL to `local_to_global(x, y, rot, lx, ly)` per pad -- the
+        offset from `_pad_offsets`, then the same integer-nm snap
+        (`mm_to_iu(...) / IU_PER_MM`) -- and
+        tests/test_quench_pad_globals_memo.py holds it to that, bit for bit.
+
+        The last pose's answer is memoised: a candidate is evaluated net by
+        net and asks for the same pose once per net, and `_net_points` asks
+        every OTHER part on a net for its live pose. Measured on
+        routed_output (place_optimize --max-passes 1), this transform was 78%
+        of the run. Every call still returns a NEW list, so a caller that
+        edits its copy cannot reach the memo.
+        """
         x = self.x if x is None else x
         y = self.y if y is None else y
         rot = self.rot if rot is None else rot
-        return [(*local_to_global(x, y, rot, lx, ly), n)
-                for lx, ly, n in self.pads_local]
+        key = (x, y, rot)
+        memo = self._pg_pose
+        if (memo is not None and memo[1] is self.pads_local
+                and memo[0] == key):
+            return list(memo[2])
+        out = [(mm_to_iu(x + dx) / IU_PER_MM, mm_to_iu(y + dy) / IU_PER_MM, n)
+               for dx, dy, n in self._pad_offsets(rot)]
+        self._pg_pose = (key, self.pads_local, out)
+        return list(out)
 
 
 class QuenchState:
