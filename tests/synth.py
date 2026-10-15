@@ -135,3 +135,90 @@ def write_board(text, path=None):
     with open(path, 'w', encoding='utf-8') as fh:
         fh.write(text)
     return path
+
+
+class RoutingBoard:
+    """A small routable .kicad_pcb as TEXT (#1261): footprints with one pad
+    each, tracks and vias that may carry `(locked yes)` in KiCad's canonical
+    token position, and a rectangular outline. `layers` names the copper
+    stack. Uuids are deterministic (`uid` overrides one) so a test can find
+    an item again in the routed output."""
+
+    _IDS = {'F.Cu': 0, 'In1.Cu': 1, 'In2.Cu': 2, 'B.Cu': 31}
+
+    def __init__(self, w=40, h=30, layers=('F.Cu', 'B.Cu')):
+        self.w, self.h, self.layers = w, h, list(layers)
+        self.nets = ['']
+        self.items = []
+        self._n = 0
+
+    def _uid(self):
+        self._n += 1
+        return 'synth-%04d' % self._n
+
+    def net(self, name):
+        if name not in self.nets:
+            self.nets.append(name)
+        return self.nets.index(name)
+
+    def pad(self, ref, x, y, net, sx=0.8, sy=0.8, tht=False):
+        n = self.net(net)
+        if tht:
+            pad = ('(pad "1" thru_hole circle (at 0 0) (size %s %s) (drill 0.8) '
+                   '(layers "*.Cu" "*.Mask") (net %d "%s") (uuid "%s"))'
+                   % (sx, sy, n, net, self._uid()))
+        else:
+            pad = ('(pad "1" smd rect (at 0 0) (size %s %s) (layers "F.Cu" '
+                   '"F.Mask") (net %d "%s") (uuid "%s"))'
+                   % (sx, sy, n, net, self._uid()))
+        self.items.append(
+            '  (footprint "synth:P" (layer "F.Cu") (uuid "%s") (at %s %s)\n'
+            '    (property "Reference" "%s" (at 0 -2 0) (layer "F.SilkS") '
+            '(uuid "%s")\n      (effects (font (size 0.5 0.5) (thickness 0.1))))\n'
+            '    %s\n  )' % (self._uid(), x, y, ref, self._uid(), pad))
+
+    def seg(self, x1, y1, x2, y2, net, w=0.3, layer='F.Cu', locked=False,
+            uid=None):
+        self.items.append(
+            '  (segment (start %s %s) (end %s %s) (width %s)%s (layer "%s") '
+            '(net %d) (uuid "%s"))'
+            % (x1, y1, x2, y2, w, ' (locked yes)' if locked else '', layer,
+               self.net(net), uid or self._uid()))
+
+    def via(self, x, y, net, size=0.5, drill=0.3, locked=False, uid=None):
+        self.items.append(
+            '  (via (at %s %s) (size %s) (drill %s)%s (layers "F.Cu" "B.Cu") '
+            '(net %d) (uuid "%s"))'
+            % (x, y, size, drill, ' (locked yes)' if locked else '',
+               self.net(net), uid or self._uid()))
+
+    def ring(self, pts, net, w=0.2, layer='F.Cu', locked=False):
+        for (x1, y1), (x2, y2) in zip(pts, list(pts[1:]) + [pts[0]]):
+            self.seg(x1, y1, x2, y2, net, w=w, layer=layer, locked=locked)
+
+    def text(self):
+        lay = ' '.join('(%d "%s" signal)' % (self._IDS[l], l) for l in self.layers)
+        out = ['(kicad_pcb (version 20241229) (generator "synth") '
+               '(generator_version "9.0")\n'
+               '  (general (thickness 1.6) (legacy_teardrops no))\n'
+               '  (paper "A4")\n'
+               '  (layers %s (37 "F.SilkS" user) (39 "F.Mask" user) '
+               '(38 "B.Mask" user) (44 "Edge.Cuts" user))\n'
+               '  (setup (pad_to_mask_clearance 0))' % lay]
+        out += ['  (net %d "%s")' % (i, n) for i, n in enumerate(self.nets)]
+        out += self.items
+        out.append('  (gr_rect (start 0 0) (end %s %s) (layer "Edge.Cuts") '
+                   '(stroke (width 0.1) (type solid)) (fill none) '
+                   '(uuid "synth-edge"))' % (self.w, self.h))
+        return '\n'.join(out) + '\n)\n'
+
+
+def locked_items(path):
+    """Every `(locked yes)` track/via line of a board written in the
+    single-line form RoutingBoard emits -- the output writer copies input
+    copper verbatim, so a locked item that survived comes back byte-identical."""
+    with open(path, encoding='utf-8') as fh:
+        text = fh.read()
+    import re
+    return sorted(re.findall(r'\((?:segment|via) [^\n]*\(locked yes\)[^\n]*\)',
+                             text))

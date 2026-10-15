@@ -35,10 +35,55 @@ class StubInfo:
     pad_x: float
     pad_y: float
     has_pad_via: bool  # True if pad already has via to other layers
+    # A switch would move KiCad-LOCKED copper (#1261): the stub is fixed.
+    locked: bool = False
+
+
+def stub_switch_segments(pcb_data: PCBData, stub: StubInfo) -> List[Segment]:
+    """The segments apply_stub_layer_switch MOVES for `stub`: its walked chain
+    plus every same-net, same-layer segment touching the pad position.
+    Copper graphics never move (#583). get_stub_info reads the same set to
+    decide whether the stub is locked, so the two cannot disagree."""
+    tolerance = STUB_POSITION_TOLERANCE
+    moved = [s for s in stub.segments if not getattr(s, 'graphic', False)]
+    ids = set(id(s) for s in moved)
+    for seg in pcb_data.segments:
+        if seg.net_id != stub.net_id or seg.layer != stub.layer:
+            continue
+        if getattr(seg, 'graphic', False) or id(seg) in ids:
+            continue
+        if (abs(seg.start_x - stub.pad_x) < tolerance and abs(seg.start_y - stub.pad_y) < tolerance) or \
+           (abs(seg.end_x - stub.pad_x) < tolerance and abs(seg.end_y - stub.pad_y) < tolerance):
+            ids.add(id(seg))
+    for seg in pcb_data.segments:
+        if id(seg) in ids and seg not in moved:
+            moved.append(seg)
+    return moved
+
+
+def _locked_net_ids(pcb_data: PCBData) -> frozenset:
+    """Nets holding KiCad-locked copper. Memoized against the copper lists'
+    identity and length: get_stub_info runs per stub per candidate layer, and
+    a board without locked copper must not pay a walk for each call."""
+    key = (id(pcb_data.segments), len(pcb_data.segments),
+           id(pcb_data.vias), len(pcb_data.vias))
+    memo = getattr(pcb_data, '_locked_net_ids_memo', None)
+    if memo is None or memo[0] != key:
+        ids = frozenset({s.net_id for s in pcb_data.segments
+                         if getattr(s, 'locked', False)}
+                        | {v.net_id for v in pcb_data.vias
+                           if getattr(v, 'locked', False)})
+        memo = (key, ids)
+        try:
+            pcb_data._locked_net_ids_memo = memo
+        except Exception:
+            pass
+    return memo[1]
 
 
 def get_stub_info(pcb_data: PCBData, net_id: int, stub_x: float, stub_y: float,
-                  stub_layer: str, tolerance: float = STUB_POSITION_TOLERANCE) -> Optional[StubInfo]:
+                  stub_layer: str, tolerance: float = STUB_POSITION_TOLERANCE,
+                  include_locked: bool = False) -> Optional[StubInfo]:
     """
     Gather information about a stub for layer switching analysis.
 
@@ -48,9 +93,17 @@ def get_stub_info(pcb_data: PCBData, net_id: int, stub_x: float, stub_y: float,
         stub_x, stub_y: Position of the stub free end
         stub_layer: Current layer of the stub
         tolerance: Distance tolerance for matching
+        include_locked: a stub whose switch would move KiCad-locked copper
+            (#1261) is returned only when True, marked `locked`. Every caller
+            that may MOVE the stub leaves it False and gets None -- that is
+            the one gate all the layer-switch paths (upfront swaps, MPS,
+            global plan, the SE stub-swap rescue, diff-pair fallbacks, the
+            boxed-stub switch) pass through. Registries that only READ stubs
+            as obstacles pass True so a locked stub still blocks others.
 
     Returns:
         StubInfo with all relevant data, or None if stub can't be analyzed
+        (or is locked and include_locked is False)
     """
     # Get segments forming the stub
     segments = get_stub_segments(pcb_data, net_id, stub_x, stub_y, stub_layer, tolerance)
@@ -158,7 +211,7 @@ def get_stub_info(pcb_data: PCBData, net_id: int, stub_x: float, stub_y: float,
                 has_pad_via = True
                 break
 
-    return StubInfo(
+    stub = StubInfo(
         net_id=net_id,
         x=stub_x,
         y=stub_y,
@@ -168,6 +221,14 @@ def get_stub_info(pcb_data: PCBData, net_id: int, stub_x: float, stub_y: float,
         pad_y=pad_y,
         has_pad_via=has_pad_via
     )
+    # KiCad-locked copper is never moved (#521, #1261): a switch of this stub
+    # would re-layer it, so the stub is not a switch candidate. Only a net
+    # that holds locked copper pays for the switch-set walk.
+    stub.locked = (net_id in _locked_net_ids(pcb_data) and any(
+        getattr(s, 'locked', False) for s in stub_switch_segments(pcb_data, stub)))
+    if stub.locked and not include_locked:
+        return None
+    return stub
 
 
 def needs_pad_via_for_switch(stub: StubInfo) -> bool:
@@ -204,40 +265,30 @@ def apply_stub_layer_switch(pcb_data: PCBData, stub: StubInfo, new_layer: str,
         - new_vias: List of new vias created (pad vias if switching from F.Cu)
         - segment_modifications: List of dicts with segment layer changes for writing to file
     """
+    # Find ALL segments on this layer for this net that connect to either the stub position
+    # or the pad position. This handles cases where get_stub_segments walked the wrong direction.
+    # Copper graphics are immovable board copper: the writer emits them from
+    # the original file on their ORIGINAL layer, so relayering one here would
+    # only corrupt the in-memory obstacle model (#583).
+    all_segments = stub_switch_segments(pcb_data, stub)
+    _locked = [s for s in all_segments if getattr(s, 'locked', False)]
+    if _locked:
+        # Backstop (#1261): get_stub_info hands a mover no locked stub, but a
+        # caller holding a StubInfo built another way must still not move
+        # KiCad-locked copper. Nothing is changed, so pcb_data stays exactly
+        # the board the caller will route against.
+        net = pcb_data.nets.get(stub.net_id)
+        print(f"      layer switch of {net.name if net else stub.net_id} "
+              f"refused: {len(_locked)} KiCad-locked segment(s) would move "
+              f"(#1261)")
+        return [], []
+
     # Moves segments to another layer in place and may add a pad via:
     # invalidate what was cached against the old copper.
     from pcb_modification import bump_copper_epoch
     bump_copper_epoch(pcb_data)
     new_vias = []
     segment_mods = []
-
-    # Find ALL segments on this layer for this net that connect to either the stub position
-    # or the pad position. This handles cases where get_stub_segments walked the wrong direction.
-    tolerance = STUB_POSITION_TOLERANCE
-    segments_to_switch = set(id(s) for s in stub.segments
-                             if not getattr(s, 'graphic', False))
-
-    for seg in pcb_data.segments:
-        if seg.net_id != stub.net_id or seg.layer != stub.layer:
-            continue
-        if getattr(seg, 'graphic', False):
-            # Copper graphics are immovable board copper: the writer emits them
-            # from the original file on their ORIGINAL layer, so relayering one
-            # here only corrupts the in-memory obstacle model (#583).
-            continue
-        if id(seg) in segments_to_switch:
-            continue
-        # Check if segment connects to pad position
-        if (abs(seg.start_x - stub.pad_x) < tolerance and abs(seg.start_y - stub.pad_y) < tolerance) or \
-           (abs(seg.end_x - stub.pad_x) < tolerance and abs(seg.end_y - stub.pad_y) < tolerance):
-            segments_to_switch.add(id(seg))
-
-    # Get actual segment objects (graphics filtered again in case a caller's
-    # StubInfo predates the get_stub_segments graphic exclusion)
-    all_segments = [s for s in stub.segments if not getattr(s, 'graphic', False)]
-    for seg in pcb_data.segments:
-        if id(seg) in segments_to_switch and seg not in all_segments:
-            all_segments.append(seg)
 
     if debug:
         print(f"      apply_stub_layer_switch: net={stub.net_id}, from {stub.layer} to {new_layer}")
@@ -1134,6 +1185,11 @@ def validate_swap(stub_p: StubInfo, stub_n: StubInfo, dest_layer: str,
     Returns:
         (is_valid, error_message)
     """
+    # #1261: a stub whose switch would move KiCad-locked copper is fixed.
+    for stub in (stub_p, stub_n):
+        if getattr(stub, 'locked', False):
+            return False, "stub carries KiCad-locked copper (#1261)"
+
     # #581: an active (> 0) same-net pad via clearance forbids pad-centre vias.
     if getattr(config, 'same_net_pad_clearance', -1.0) > 0:
         for stub in (stub_p, stub_n):
@@ -1237,9 +1293,11 @@ def collect_stubs_by_layer(pcb_data: PCBData, all_pair_layer_info: Dict,
     for pair_name, (src_layer, tgt_layer, sources, targets, pair) in all_pair_layer_info.items():
         # Collect source stubs
         src_p_stub = get_stub_info(pcb_data, pair.p_net_id,
-                                    sources[0][5], sources[0][6], src_layer)
+                                    sources[0][5], sources[0][6], src_layer,
+                                    include_locked=True)
         src_n_stub = get_stub_info(pcb_data, pair.n_net_id,
-                                    sources[0][7], sources[0][8], src_layer)
+                                    sources[0][7], sources[0][8], src_layer,
+                                    include_locked=True)
         if src_p_stub and src_n_stub:
             segments = src_p_stub.segments + src_n_stub.segments
             if src_layer not in stubs_by_layer:
@@ -1248,9 +1306,11 @@ def collect_stubs_by_layer(pcb_data: PCBData, all_pair_layer_info: Dict,
 
         # Collect target stubs
         tgt_p_stub = get_stub_info(pcb_data, pair.p_net_id,
-                                    targets[0][5], targets[0][6], tgt_layer)
+                                    targets[0][5], targets[0][6], tgt_layer,
+                                    include_locked=True)
         tgt_n_stub = get_stub_info(pcb_data, pair.n_net_id,
-                                    targets[0][7], targets[0][8], tgt_layer)
+                                    targets[0][7], targets[0][8], tgt_layer,
+                                    include_locked=True)
         if tgt_p_stub and tgt_n_stub:
             segments = tgt_p_stub.segments + tgt_n_stub.segments
             if tgt_layer not in stubs_by_layer:
@@ -1463,6 +1523,10 @@ def validate_single_swap(stub: StubInfo, dest_layer: str,
     Returns:
         (is_valid, error_message)
     """
+    # #1261: a stub whose switch would move KiCad-locked copper is fixed.
+    if getattr(stub, 'locked', False):
+        return False, "stub carries KiCad-locked copper (#1261)"
+
     # #581: an active (> 0) same-net pad via clearance forbids the pad-centre
     # via this switch would drill -- decline the swap instead.
     if (getattr(config, 'same_net_pad_clearance', -1.0) > 0
@@ -1549,7 +1613,7 @@ def collect_single_ended_stubs_by_layer(pcb_data: PCBData, single_net_layer_info
         # Collect source stub
         # sources is list of (gx, gy, layer_idx, orig_x, orig_y)
         if sources:
-            src_stub = get_stub_info(pcb_data, net_id, sources[0][3], sources[0][4], src_layer)
+            src_stub = get_stub_info(pcb_data, net_id, sources[0][3], sources[0][4], src_layer, include_locked=True)
             if src_stub:
                 if src_layer not in stubs_by_layer:
                     stubs_by_layer[src_layer] = []
@@ -1557,7 +1621,7 @@ def collect_single_ended_stubs_by_layer(pcb_data: PCBData, single_net_layer_info
 
         # Collect target stub
         if targets:
-            tgt_stub = get_stub_info(pcb_data, net_id, targets[0][3], targets[0][4], tgt_layer)
+            tgt_stub = get_stub_info(pcb_data, net_id, targets[0][3], targets[0][4], tgt_layer, include_locked=True)
             if tgt_stub:
                 if tgt_layer not in stubs_by_layer:
                     stubs_by_layer[tgt_layer] = []

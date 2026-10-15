@@ -288,6 +288,9 @@ def _validate_single_ended_swap(
     """Validate that a single-ended stub can move to dest_layer without conflicts."""
     from stub_layer_switching import segments_intersect_2d
 
+    if getattr(stub, 'locked', False):
+        return False    # #1261: KiCad-locked copper never moves
+
     if exclude_net_ids is None:
         exclude_net_ids = set()
 
@@ -1727,9 +1730,14 @@ def _classify_multipoint_endpoints(
         if layer_idx >= len(config.layers):
             return None
         layer_name = config.layers[layer_idx]
-        stub = get_stub_info(pcb_data, net_id, ox, oy, layer_name)
+        # include_locked: a locked stub is still this endpoint's copper (its
+        # layer is what the endpoint lives on); it is just never 'movable'.
+        stub = get_stub_info(pcb_data, net_id, ox, oy, layer_name,
+                             include_locked=True)
         if stub is not None and stub.segments:
-            movable = _stub_free_end_is_open(pcb_data, stub, tol, connected_pads)
+            movable = (not stub.locked
+                       and _stub_free_end_is_open(pcb_data, stub, tol,
+                                                  connected_pads))
             if movable:
                 # apply_stub_layer_switch moves the walked chain (plus
                 # pad-touching segments); if the free-end walk did not cover
