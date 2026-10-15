@@ -1865,6 +1865,30 @@ channels first, and the other escapes leave round it.
 
 ### Next, the whole route (`whole_*.py`)
 
+- **A tooth on the source's far face.** Today no lane may leave the source
+  by the face turned away from the destination: `whole_frame.build` refuses
+  it by name (`FarFace`), the ends model's source menus leave such moves out
+  and refuse one laid there, and the fanout audit refuses the board. But a
+  pinout can put a bus's balls on that side. On sdi_mipi_conv (the corpus)
+  the SDI bus's balls sit on U11's side away from U15. The human leaves them
+  by U11's far and south faces and runs round U11, some of them over the
+  top of the board. The escape fanout sent the bus through U11's interior
+  instead, two lanes still on its far face, and the round was refused. To
+  try: the destination's rings, mirrored at the source.
+  - **Source rings:** a north and a south ring round the source, from its
+    far face to the trunk's start (`braid.ring_spine` on the source's hull).
+    The far face is cut between them at the widest gap of its teeth, as the
+    destination's far face is cut between its berths.
+  - **The orders:** the teeth unrolled at that cut, not at the middle of
+    the far face (`perim_s`).
+  - **Joining the trunk:** a source ring's lanes join it at a start stepped
+    out of the source's hull, as a destination ring's lanes leave it at Hk.
+    Their crossings stay on the trunk, as a ring's do.
+  - **Downstream:** the solve and the geometry handle a source ring as they
+    handle a destination ring. The ends model prices it and searches its
+    cut, as WINDING does at the destination. The menus and the audit allow
+    far-face teeth.
+
 - **The zynq's LVDS bus (U1 to U5) on four layers.** With `route_bus
   --escape` (see [the bus step](#the-bus-step-on-a-real-board)) the whole
   route lays 30 of its first 32 nets, 37 of 40 and 43 of the whole bus's 47,

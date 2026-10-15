@@ -597,6 +597,12 @@ def joint_berths(st, board, choice, log=print):
         f'hand {len(rep.get("hands_held") or ())}/{len(rep.get("hands_held") or ()) + len(rep.get("hands_free") or ())}'
         + (f' (NO berth pair of it: {rep["hands_free"]})' if rep.get('hands_free') else '')
         + f', phase 1 {rep.get("phase1_tiers")}')
+    # (each berth the joint plan placed elsewhere than the ends model's, named: the ends are chosen again on these)
+    desc = lambda m_: f'{m_.kind}/{m_.direction}/{m_.layer}@({m_.exit_pt[0]:.2f},{m_.exit_pt[1]:.2f})'
+    moved = [nm for nm in choice if nm not in out or sr.move_sig(out[nm]) != sr.move_sig(choice[nm])]
+    if moved:
+        log(f'  berths the joint plan moved: ' + '; '.join(
+            f'{je.short_name(nm)} {desc(choice[nm])} -> {desc(out[nm]) if nm in out else "none"}' for nm in moved))
     return out
 
 
@@ -1442,12 +1448,7 @@ def main():
     # else its frame stops on. Such a board is set aside, named, and no board goes to the stage after
     sp, far, stops = fanout_audit(out_path, names, dref) if os.path.isfile(out_path) else ([], [], [])
     if sp or far or stops:
-        held = out_path[:-len('.kicad_pcb')] + '.refused.kicad_pcb'
-        os.replace(out_path, held)
-        # (the findings, for the chain's feedback: the next round frees the ends named -- whole_feedback --refused)
-        with open(out_path[:-len('.kicad_pcb')] + '.refused.json', 'w', encoding='utf-8') as f_:
-            json.dump({'splits': [[pr_, end_, list(ls_)] for pr_, end_, ls_ in sp], 'far': list(far),
-                       'stops': stops}, f_, indent=1)
+        held = set_aside_refused(out_path, sp, far, stops)
         print(f'REFUSED by the fanout audit: {_audit_line(sp, far, stops)} -- the board set aside as '
               f'{os.path.basename(held)}')
         return 3
@@ -1820,6 +1821,31 @@ def _split_legs(names):
     """{a pair's lane name: its legs} as the whole route names a pair (pairs.pair_names), for the run's nets"""
     import pairs as _pairs_s
     return {b: tuple(pr) for b, pr in _pairs_s.pair_names(list(names)).items()}
+
+
+def set_aside_refused(out_path, splits, far, stops):
+    """A fanout board the audit refuses, set aside: OUT.kicad_pcb becomes OUT.refused.kicad_pcb, with what a board
+    carries beside it -- the whole route's last resort lays this board:
+    - its project and rules (#441: a board with no project beside it is laid under a stock one, which the step's OUT
+      then carries -- the board's DRC exclusions, rule severities and edge clearance lost);
+    - its plan sidecar (OUT.plan.json, and the taut cache): the solve reads the ends model's fronts from it, the braid
+      its corridors, and on more than two layers the via ends are moved onto the solve's layers by it -- without it
+      they stay as laid, on layers the plan does not route them on, and the band meets no tooth (TOOTH-OUT). Copied,
+      not moved: the last resort reads the round's own OUT.plan.json too;
+    and the findings beside it in OUT.refused.json, for the chain's feedback (whole_feedback --refused frees the ends
+    named). Returns the set-aside board's path"""
+    from copy_board import copy_siblings
+    base = out_path[:-len('.kicad_pcb')]
+    held = base + '.refused.kicad_pcb'
+    os.replace(out_path, held)
+    copy_siblings(out_path, held)
+    for ext in ('.plan.json', '.taut.json'):
+        if os.path.isfile(base + ext):
+            shutil.copy2(base + ext, base + '.refused' + ext)
+    with open(base + '.refused.json', 'w', encoding='utf-8') as f_:
+        json.dump({'splits': [[pr_, end_, list(ls_)] for pr_, end_, ls_ in splits], 'far': list(far),
+                   'stops': stops}, f_, indent=1)
+    return held
 
 
 def fanout_audit(board, names, dest):

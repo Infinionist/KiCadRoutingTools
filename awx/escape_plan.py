@@ -431,25 +431,66 @@ def incremental_fixed(st, names):
     return fixed
 
 
-def lay(base, out, moves, byname, log=print):
-    """the chosen moves' runs laid on `base` as they are (their stubs and vias stand on it): OUT, and the clearance
-    faults between the runs laid (two nets' runs on one layer within the rule), which the selector's lane test should
-    have left none of"""
-    r = _rules.active()
+def run_tracks(moves, byname, r):
+    """the chosen moves' runs as tracks, each leg on its move's own layer (the stubs and vias stand on the field)"""
     tracks = []
-    with contextlib.redirect_stdout(sys.stderr):
-        pcb = parse_kicad_pcb(base)
     for nm, m in moves:
         nid = byname[nm][0]
         for p, q, L in m.legs:
             if L == m.layer and math.hypot(q[0] - p[0], q[1] - p[1]) > 1e-6:
                 tracks.append({'start': tuple(p), 'end': tuple(q), 'width': r.fan_track, 'layer': L, 'net_id': nid})
-    faults = []
-    for i, t in enumerate(tracks):
-        for u in tracks[i + 1:]:
-            if t['layer'] == u['layer'] and t['net_id'] != u['net_id'] and \
-                    seg_seg(t['start'], t['end'], u['start'], u['end']) < r.fan_track + r.fan_clear - 1e-6:
-                faults.append((t['net_id'], u['net_id'], t['layer']))
+    return tracks
+
+
+def run_faults(a, b, r):
+    """(net, net, layer) for each run of `a` and run of `b` -- two nets' -- on one layer within the rule"""
+    return [(t['net_id'], u['net_id'], t['layer']) for t in a for u in b
+            if t['layer'] == u['layer'] and t['net_id'] != u['net_id']
+            and seg_seg(t['start'], t['end'], u['start'], u['end']) < r.fan_track + r.fan_clear - 1e-6]
+
+
+def clear_lanes(moves, byname, lanes, r):
+    """(the moves kept, the lanes left out): `lanes` [[net, ..]] in launch order, a pair's two legs one lane, each
+    kept when its runs stand clear of every kept lane's -- two nets' runs on one layer within the rule are copper no
+    stage after can lay. The rest are left out of the round and read off the board. (sdi_mipi_conv's SDI bus: its
+    ends chosen again on the dog-boned field, where three lanes had no clean tooth and were offered as they stood,
+    laid three runs on one channel line of U11 on In2.Cu, which the round's last resort then built on.)"""
+    by = collections.defaultdict(list)
+    for nm, m in moves:
+        by[nm].append(m)
+    kept_t, kept, left = [], [], []
+    for lg in lanes:
+        mv = [(nm, m) for nm in lg for m in by.get(nm, ())]
+        tr = run_tracks(mv, byname, r)
+        if run_faults(tr, kept_t, r):
+            left.append(list(lg))
+            continue
+        kept += mv
+        kept_t += tr
+    return kept, left
+
+
+def lanes_of(launch):
+    """the lanes of `launch` in its order: a pair's legs one lane, each other net its own"""
+    import pairs as _pairs
+    leg = {n: pr for pr in _pairs.pair_names(list(launch)).values() for n in pr}
+    out, seen = [], set()
+    for nm in launch:
+        lg = list(leg.get(nm, (nm,)))
+        if nm not in seen:
+            out.append(lg)
+            seen.update(lg)
+    return out
+
+
+def lay(base, out, moves, byname, log=print):
+    """the chosen moves' runs laid on `base` as they are (their stubs and vias stand on it): OUT, and the clearance
+    faults between the runs laid (two nets' runs on one layer within the rule), which clear_lanes leaves none of"""
+    r = _rules.active()
+    with contextlib.redirect_stdout(sys.stderr):
+        pcb = parse_kicad_pcb(base)
+    tracks = run_tracks(moves, byname, r)
+    faults = [f for i, t in enumerate(tracks) for f in run_faults([t], tracks[i + 1:], r)]
     pcb_nets = {i: n.name for i, n in pcb.nets.items()}
     with contextlib.redirect_stdout(sys.stderr):
         ok = add_tracks_and_vias_to_pcb(base, out, tracks, [], net_id_to_name=pcb_nets)
@@ -643,6 +684,15 @@ def run(out_path, K, base, log=print):
         log(f'  no escape chosen for {missing}')
     moves = [(nm, teeth[nm]) for nm in st['launch'] if nm in teeth] + \
             [(nm, berths[nm]) for nm in st['launch'] if nm in berths]
+    # (no two lanes' runs laid on one layer within the rule: a lane whose runs meet a kept one's is left out)
+    moves, left = clear_lanes(moves, byname, lanes_of(st['launch']), _rules.active())
+    if left:
+        log(f'  left out of the round, their runs on one layer within the rule of another lane\'s: '
+            f'{[ "+".join(lg) for lg in left]}')
+        for lg in left:
+            for nm in lg:
+                teeth.pop(nm, None)
+                berths.pop(nm, None)
     ok, faults = lay(base, out_path, moves, byname, log=log)
     if ok and joint_laid:
         # (the joint field's vias planned with the passives movable: the cap nudge moves those beneath the array off
@@ -665,12 +715,11 @@ def run(out_path, K, base, log=print):
     # THE FANOUT AUDIT, as fanout_from_plan's: a board the whole route would refuse is set aside and named
     import fanout_from_plan as fp_
     sp, far, stops = fp_.fanout_audit(out_path, names, dref)
+    if faults:
+        # (never handed on: two lanes' runs on one layer within the rule -- clear_lanes leaves none, this the guard)
+        stops = list(stops) + [f'{len(faults)} run(s) on one layer within the rule of another lane\'s']
     if sp or far or stops:
-        held = out_path[:-len('.kicad_pcb')] + '.refused.kicad_pcb'
-        os.replace(out_path, held)
-        with open(out_path[:-len('.kicad_pcb')] + '.refused.json', 'w', encoding='utf-8') as f_:
-            json.dump({'splits': [[pr_, end_, list(ls_)] for pr_, end_, ls_ in sp], 'far': list(far),
-                       'stops': stops}, f_, indent=1)
+        held = fp_.set_aside_refused(out_path, sp, far, stops)
         log(f'REFUSED by the fanout audit: {fp_._audit_line(sp, far, stops)} -- the board set aside as '
             f'{os.path.basename(held)}')
         return 3
