@@ -1711,6 +1711,44 @@ def pad_drill_circles(pad, step: float = 0.0) -> List[Tuple[float, float, float]
             for i in range(n + 1)]
 
 
+def _padstack_copper_size(pad_text: str, base: Tuple[float, float],
+                          pad_layers: Sequence[str],
+                          board_copper: Sequence[str]) -> Tuple[float, float]:
+    """A pad's size (pad frame) as the per-axis MAX over the copper layers it
+    is on, each read from its KiCad 9 `(padstack ...)` entry.
+
+    The base `(size ...)` is the F.Cu geometry. `front_inner_back` adds an
+    `"Inner"` and a `"B.Cu"` entry; `custom` one entry per named layer; a
+    layer with no entry keeps the base. Only the pad's own copper layers
+    within the board's copper count -- a padstack entry for a layer the pad is
+    not on describes no copper. `build_pcb_data_from_board` takes the same
+    max over `PAD.GetSize(layer)` for the same layers."""
+    m = re.search(r'\(padstack\b', pad_text)
+    if not m:
+        return base
+    blk = pad_text[m.start():find_matching_paren(pad_text, m.start())]
+    mm = re.search(r'\(mode\s+(\w+)\)', blk)
+    mode = mm.group(1) if mm else 'normal'
+    per = {}
+    for lm in re.finditer(r'\(layer\s+"([^"]+)"', blk):
+        lb = blk[lm.start():find_matching_paren(blk, lm.start())]
+        sm = re.search(r'\(size\s+(%s)\s+(%s)\)' % (AT_NUM, AT_NUM), lb)
+        if sm:
+            per[lm.group(1)] = (float(sm.group(1)), float(sm.group(2)))
+    on = [ln for ln in board_copper if '*.Cu' in pad_layers or ln in pad_layers]
+    if not on:
+        return base
+
+    def size_on(ln):
+        if ln == 'F.Cu' or mode not in ('front_inner_back', 'custom'):
+            return base
+        if mode == 'front_inner_back':
+            return per.get('B.Cu' if ln == 'B.Cu' else 'Inner', base)
+        return per.get(ln, base)
+    got = [size_on(ln) for ln in on]
+    return max(s[0] for s in got), max(s[1] for s in got)
+
+
 def _resolve_pad_rect(size_x: float, size_y: float,
                       pad_rotation_deg: float) -> Tuple[float, float, float]:
     """Resolve a pad rectangle (given in the pad's own frame) into board space.
@@ -4144,23 +4182,40 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
             # (size resolution below was already fixed to the absolute angle).
             total_rotation = pad_rotation % 360
 
-            # Extract size. A KiCad 9 custom PADSTACK gives per-copper-layer
-            # geometry inside the pad: e.g. an oval 2.54x1.27 on top but a larger
-            # custom 2.6416x1.778 on B.Cu (apple1_mainboard DIP pads). The base
+            # Extract layers, quoted (KiCad 7+) or bare (KiCad 6), as the SET
+            # pcbnew loads (canonical_pad_layers): `F&B.Cu` is F.Cu + B.Cu,
+            # and a plated pad is on every copper layer of the board.
+            layers_section = re.search(r'\(layers\s+([^)]+)\)', pad_text)
+            pad_layers = []
+            if layers_section:
+                pad_layers = canonical_pad_layers(
+                    layer_list_tokens(layers_section.group(1)), board_copper,
+                    plated_through=(pad_type == 'thru_hole'))
+            # pcbnew's reader blanks the number of a pad that cannot carry
+            # one -- an NPTH hole, or an SMD/connector pad with no copper (an
+            # aperture) -- whatever the file wrote (PAD::CanHaveNumber;
+            # ovc5_camera_carrier's KiCad 6 mounting holes are pad "1").
+            if pad_type == 'np_thru_hole' or (
+                    pad_type in ('smd', 'connect')
+                    and not any(ln.endswith('.Cu') for ln in pad_layers)):
+                pad_num = ''
+
+            # Extract size. A KiCad 9 PADSTACK gives per-copper-layer geometry
+            # inside the pad: e.g. an oval 2.54x1.27 on top but a larger custom
+            # 2.6416x1.778 on B.Cu (apple1_mainboard DIP pads). The base
             # (size ...) alone UNDER-models the pad on the bigger layer -- the
             # router then drops vias against that layer's copper (apple1: a via
             # 0.027mm from a B.Cu pad KiCad flags but check_drc missed, because
             # both read only the 2.54x1.27 base). Take the MAX extent over the
-            # base and every padstack layer's (size ...): DRC-safe (reserves for
-            # the largest copper on any layer), slightly conservative where a
-            # layer's copper is smaller. pad_text is the balanced pad sexpr, so
-            # these matches are all THIS pad's (base + padstack), never the next.
+            # layers the pad has COPPER on (`_padstack_copper_size`): DRC-safe,
+            # slightly conservative where a layer's copper is smaller. A layer
+            # the pad is not on has no copper, so its entry does not count --
+            # mokya_lora_phone's SW1 pads are 0.65 mm on F.Cu, their only layer,
+            # and were read as their 1.905 x 1.27 inner/back entries.
             sizes = re.findall(r'\(size\s+([\d.-]+)\s+([\d.-]+)\)', pad_text)
-            if sizes:
-                size_x = max(float(sx) for sx, _ in sizes)
-                size_y = max(float(sy) for _, sy in sizes)
-            else:
-                size_x = size_y = 0.5  # default
+            size_x, size_y = _padstack_copper_size(
+                pad_text, (float(sizes[0][0]), float(sizes[0][1])) if sizes
+                else (0.5, 0.5), pad_layers, board_copper)
             # #962: a custom pad's ANCHOR size (the base `(size ...)`), in the
             # pad frame. KiCad sizes the paste-ratio term from it.
             _anchor_size = ((float(sizes[0][0]), float(sizes[0][1]))
@@ -4196,24 +4251,6 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
             # rect_rotation the obstacle/DRC geometry applies.
             if not custom_resolved:
                 size_x, size_y, rect_rotation = _resolve_pad_rect(size_x, size_y, pad_rotation)
-
-            # Extract layers, quoted (KiCad 7+) or bare (KiCad 6), as the SET
-            # pcbnew loads (canonical_pad_layers): `F&B.Cu` is F.Cu + B.Cu,
-            # and a plated pad is on every copper layer of the board.
-            layers_section = re.search(r'\(layers\s+([^)]+)\)', pad_text)
-            pad_layers = []
-            if layers_section:
-                pad_layers = canonical_pad_layers(
-                    layer_list_tokens(layers_section.group(1)), board_copper,
-                    plated_through=(pad_type == 'thru_hole'))
-            # pcbnew's reader blanks the number of a pad that cannot carry
-            # one -- an NPTH hole, or an SMD/connector pad with no copper (an
-            # aperture) -- whatever the file wrote (PAD::CanHaveNumber;
-            # ovc5_camera_carrier's KiCad 6 mounting holes are pad "1").
-            if pad_type == 'np_thru_hole' or (
-                    pad_type in ('smd', 'connect')
-                    and not any(ln.endswith('.Cu') for ln in pad_layers)):
-                pad_num = ''
 
             # Extract net - try KiCad 9 format first, then KiCad 10
             net_match = re.search(r'\(net\s+(\d+)\s+"%s"\)' % _ESC_STR, pad_text)
@@ -7313,6 +7350,7 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
         for lid, lname in id_to_name.items():
             if enabled.Contains(lid) and lid in copper_id_to_name:
                 copper_layers.append(lname)
+    _board_cu_names = set(copper_layers)
 
     # Board bounds from Edge.Cuts drawings. We use each drawing's bounding
     # box rather than GetStart()/GetEnd() because the latter only describes
@@ -7746,13 +7784,16 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
             # #962: the anchor size, kept before the custom-pad extent
             # override below (parity with the text parser's base `(size ...)`).
             _anchor_size_b = (size_x, size_y)
+            # Only the copper layers the pad is ON, within the board's copper
+            # (`_padstack_copper_size` on the text side): an entry for a layer
+            # the pad has no copper on is not copper.
             try:
-                cu = list(pad.GetLayerSet().CuStack())
-                if len(cu) > 1:
-                    for _lyr in cu:
-                        _s = pad.GetSize(_lyr)
-                        size_x = max(size_x, to_mm(_s.x))
-                        size_y = max(size_y, to_mm(_s.y))
+                cu = [_lyr for _lyr in pad.GetLayerSet().CuStack()
+                      if copper_id_to_name.get(_lyr) in _board_cu_names]
+                if cu:
+                    _ss = [pad.GetSize(_lyr) for _lyr in cu]
+                    size_x = max(to_mm(_s.x) for _s in _ss)
+                    size_y = max(to_mm(_s.y) for _s in _ss)
             except (TypeError, AttributeError, Exception):
                 pass  # older API / no per-layer size: keep the default GetSize()
 

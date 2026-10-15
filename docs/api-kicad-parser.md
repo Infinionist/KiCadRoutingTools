@@ -119,7 +119,7 @@ section. Used for accurate length/time matching.
 | `pad_number` | str | Pad identifier (`'1'`, `'H2'`; may be empty). `''` for a pad that cannot carry a number -- an NPTH hole, or an SMD/connector pad with no copper layer (an aperture) -- whatever the file wrote, as pcbnew's reader blanks it (`PAD::CanHaveNumber`) |
 | `global_x`, `global_y` | float | Absolute board position (footprint rotation applied) |
 | `local_x`, `local_y` | float | Position relative to footprint origin (before rotation) |
-| `size_x`, `size_y` | float | Pad dimensions in board space |
+| `size_x`, `size_y` | float | Pad dimensions in board space. A KiCad 9 `(padstack ...)` pad is the per-axis MAX over the copper layers it is ON (within the board's copper): an entry for a layer the pad has no copper on does not count (both parse paths) |
 | `shape` | str | `'circle'`, `'rect'`, `'roundrect'`, `'oval'`, `'trapezoid'`, `'custom'` |
 | `layers` | List[str] | Layers the pad is on, as the SET pcbnew loads (`canonical_pad_layers`): `'*.Cu'` = every copper layer; `F&B.Cu` reads as `'F.Cu', 'B.Cu'` and `*.Adhes` / `*.Fab` / `*.CrtYd` / `*In.Cu` as their members; `*.Mask` / `*.Paste` / `*.SilkS` stay wildcards (two explicit members collapse to one); a **plated** through-hole pad is on every copper layer of the board whatever the file lists. File order is kept otherwise. Both parse paths give the same set |
 | `net_id` | int | Net ID (0 = unconnected) |

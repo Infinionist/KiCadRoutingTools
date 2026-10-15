@@ -114,7 +114,61 @@ def main():
             assert not result['complete'], result
             assert any('unequal-axis circle' in row['reason'] for row in result['unmeasured'])
         print('PASS: near-cardinal exact tilt and unequal-axis circle coverage')
+        padstack_arm(Path(scratch))
     assert hashlib.sha256(source.read_bytes()).hexdigest() == original
+
+
+SYN_HEAD = ('(kicad_pcb (version 20241229) (generator "pcbnew") (general (thickness 1.6))\n'
+            ' (paper "A4") (layers (0 "F.Cu" signal) (1 "In1.Cu" signal) (2 "In2.Cu" signal)'
+            ' (31 "B.Cu" signal) (34 "B.Paste" user) (35 "F.Paste" user) (38 "B.Mask" user)'
+            ' (39 "F.Mask" user) (44 "Edge.Cuts" user))\n (setup)\n (net 0 "") (net 1 "/A")\n'
+            ' (gr_rect (start 0 0) (end 60 40) (stroke (width 0.1) (type solid)) (fill none)'
+            ' (layer "Edge.Cuts"))\n')
+
+
+def _synthetic(scratch, name, footprints):
+    path = scratch/f'{name}.kicad_pcb'
+    path.write_text(SYN_HEAD + footprints + ')\n', encoding='utf-8')
+    board = pcbnew.LoadBoard(str(path))
+    assert board is not None, f'pcbnew refused the {name} fixture'
+    return path, board
+
+
+def padstack_arm(scratch):
+    """A KiCad 9 padstack's per-layer size counts only on a layer the pad has
+    COPPER on. mokya_lora_phone's SW1 pads are 0.65 mm on F.Cu, their only
+    copper, with 1.905 x 1.27 inner/back entries: the text parser read them
+    as 1.905 x 1.27. A pad on B.Cu only is its B.Cu entry, where the pcbnew
+    builder read the F.Cu base. Each pad is checked against native
+    `PAD.GetSize(layer)` on every copper layer it is on."""
+    stack = ('(padstack (mode front_inner_back) (layer "Inner" (shape roundrect)'
+             ' (size 1.905 1.27) (roundrect_rratio 0.15)) (layer "B.Cu" (shape'
+             ' roundrect) (size %s) (roundrect_rratio 0.15)))')
+    pads = ''.join(
+        f'  (pad "{n}" {kind} roundrect (at {x} 0) (size 0.65 0.65){drill}'
+        f' (layers {lys}) (roundrect_rratio 0.15) (net 1 "/A") {stack % back})\n'
+        for n, kind, x, drill, lys, back in (
+            ('1', 'smd', 0, '', '"F.Cu" "F.Mask" "F.Paste"', '1.905 1.27'),
+            ('2', 'smd', 4, '', '"B.Cu" "B.Mask" "B.Paste"', '1.2 0.9'),
+            ('3', 'thru_hole', 8, ' (drill 0.4)', '"*.Cu" "*.Mask"', '1.2 0.9')))
+    path, board = _synthetic(scratch, 'padstack', (
+        ' (footprint "L:PS" (layer "F.Cu") (at 20 20)\n'
+        '  (property "Reference" "U1" (at 0 -3 0) (layer "F.Cu") (hide yes)'
+        ' (effects (font (size 1 1) (thickness 0.15))))\n' + pads + ' )\n'))
+    cu_ids = {pcbnew.F_Cu, pcbnew.B_Cu, pcbnew.In1_Cu, pcbnew.In2_Cu}
+    native = {}
+    for pad in next(iter(board.GetFootprints())).Pads():
+        on = [l for l in pad.GetLayerSet().CuStack() if l in cu_ids]
+        native[pad.GetNumber()] = (max(pcbnew.ToMM(pad.GetSize(l).x) for l in on),
+                                   max(pcbnew.ToMM(pad.GetSize(l).y) for l in on))
+    assert native == {'1': (.65, .65), '2': (1.2, .9), '3': (1.905, 1.27)}, native
+    for label, parsed in (('text', parse_kicad_pcb(str(path))),
+                          ('pcbnew', build_pcb_data_from_board(board))):
+        got = {p.pad_number: (round(p.size_x, 6), round(p.size_y, 6))
+               for p in parsed.footprints['U1'].pads}
+        assert got == native, (label, got, native)
+    print('PASS: padstack sizes are the max over the pad\'s own copper layers, '
+          f'on both parsers: {native}')
 
 
 if __name__ == '__main__':
