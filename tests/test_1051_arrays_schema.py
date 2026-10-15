@@ -198,8 +198,9 @@ def test_every_load_refusal_carries_its_reason():
 
 def test_a_reader_6_file_still_loads_and_a_reader_7_claim_refuses_old():
     # 8 since #1142 (`decaps.within_radius_refs`), 9 since #1255
-    # (`assembly.body_edge_mm`); arrays still need 7.
-    assert fp.READER_VERSION == 9, fp.READER_VERSION
+    # (`assembly.body_edge_mm`), 10 since #1253 (`keep_away[]`); arrays
+    # still need 7.
+    assert fp.READER_VERSION == 10, fp.READER_VERSION
     fp.intent_from_dict(_base(min_reader=6,
                               blocks=[{'name': 'b', 'refs': ['U1']}]))
     saved = fp.READER_VERSION

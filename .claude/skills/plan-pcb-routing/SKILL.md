@@ -1000,14 +1000,31 @@ In a GUI plan the rules ride the step's `keep_away` param, which is the Advanced
 tab's one-line Keep-away field: rules separated by spaces, used by both the Route
 and the Differential tabs.
 
+**Declare it once, in the design brief, when the board has one** (#1253). Put
+each rule in the brief's `keep_away` list (`<board>.design-brief.json`, one rule
+per entry, as a string or `{"rule": ..., "why": ...}`). `route.py`,
+`route_diff.py` and the GUI read that list off the brief beside the board and
+add it to any `--keep-away` they are given, so no step has to repeat it. The
+run prints `Keep-away: N rule(s) read from the design brief`. Every routed
+output carries the brief, so later steps keep the rules. A malformed rule in
+the brief stops the step with the rule parser's message (exit 2). The same
+list is graded on the PLACEMENT by `check_floorplan`, before any track exists.
+
 **Grade it, and report it.** A run with rules prints a `Keep-away (...)` line and
 writes `keep_away` into JSON_SUMMARY: `in_band_mm` and `nets_in_band`, plus
 per-net `in_band_mm`, `min_spacing_mm` and `closest_net`. The cost is soft, so
 in-band length that remains means the router found no other way through. That is
 a capacity answer (a corridor too narrow for the gap, or placement putting the
-groups side by side), and you must report it rather than hide it. Then suggest a
-placement change, a user-drawn guide corridor, or a `User.2` keepout around the
-analog block if it matters. `--keep-away-cost 0` measures a board against the
+groups side by side), and you must report it rather than hide it. Tell the two
+apart by grading the placement against the same rule: with the rule in the
+brief, `check_floorplan.py <board> --intent <intent>` (the intent emitted from
+that brief) prints a `keep_away` WARN for each part pair whose pads already sit
+inside the band, with both pads' sides, and a `keep-away <rule>: closest ...`
+line when none do. A pad pair inside the band is the placement; none is the
+corridor. Then suggest a placement change (naming the part pair the grade
+named), a user-drawn guide corridor, or a `User.2` keepout around the analog
+block if it matters. The placement grade is plan view: a pair on opposite faces
+is reported with its sides, and you judge it. `--keep-away-cost 0` measures a board against the
 rules without changing a single route.
 
 **Keep the better run.** Route the step once more with the same rules at

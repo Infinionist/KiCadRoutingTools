@@ -842,9 +842,12 @@ class DifferentialTab(wx.Panel):
         config = {**routing_config, **diff_config}
 
         # #1146: refuse a malformed keep-away rule before routing starts.
+        # #1253: and one the board's design brief declares (the engine adds
+        # the brief's rules to the field's).
         try:
-            from keep_away import parse_keep_away_rules
+            from keep_away import parse_keep_away_rules, read_brief_keep_away
             parse_keep_away_rules(config.get('keep_away'))
+            read_brief_keep_away(self.board_filename)
         except ValueError as e:
             wx.MessageBox(str(e), "Invalid Keep-away Rule", wx.OK | wx.ICON_WARNING)
             return

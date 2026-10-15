@@ -238,10 +238,10 @@ ROWS = [
     # arrives -- so it reverts 4 to the version before this key, exactly as it
     # used to revert 3 to the version before `assembly.sides`.
     # ...and again for #959 (#1000), 5 -> 6, for #1051, 6 -> 7, for
-    # #1142, 7 -> 8, and for #1255, 8 -> 9.
+    # #1142, 7 -> 8, for #1255, 8 -> 9, and for #1253, 9 -> 10.
     ('the-reader-version-does-not-move', 'fp',
+     "READER_VERSION = 10\n",
      "READER_VERSION = 9\n",
-     "READER_VERSION = 8\n",
      (CEN,), 'KILLED'),
 
     # ------------------------------------------------------- the arithmetic

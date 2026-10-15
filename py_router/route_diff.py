@@ -735,6 +735,11 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         config_kwargs['layer_widths'] = layer_widths
         config_kwargs['impedance_target'] = impedance
     config_kwargs['layer_costs'] = layer_costs  # per-layer bias for coupled diff routing (#193)
+    # #1253: the rules the board's design brief declares join the caller's,
+    # read in the engine (input_file, else PCBData.source_path) so the CLI
+    # and the GUI's Differential tab both get them with no flag.
+    from keep_away import resolve_keep_away
+    keep_away = resolve_keep_away(keep_away, input_file, pcb_data)
     if keep_away:
         from keep_away import normalize_keep_away_specs
         config_kwargs['keep_away'] = normalize_keep_away_specs(keep_away)
@@ -2354,7 +2359,13 @@ Examples:
             parse_keep_away_rules(args.keep_away)
         except ValueError as _kae:
             parser.error(f"--keep-away: {_kae}")
-    from keep_away import keep_away_knob_error
+    # #1253: a malformed keep_away in the board's design brief, refused as a
+    # usage error before the board is parsed (as route.py does).
+    from keep_away import read_brief_keep_away, keep_away_knob_error
+    try:
+        read_brief_keep_away(args.input_file)
+    except ValueError as _kae:
+        parser.error(str(_kae))
     _kae = keep_away_knob_error(args.keep_away_free, args.keep_away_cost)
     if _kae:
         parser.error(_kae)

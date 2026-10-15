@@ -1836,6 +1836,16 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         debug_memory=debug_memory, layer_costs=layer_costs
     )
     config_kwargs['power_tap_neckdown'] = power_tap_neckdown
+    # #1253: the rules the board's design brief declares join the caller's,
+    # read here in the engine so the CLI and the GUI both get them with no
+    # flag. Only the OUTERMOST call reads the brief: the nested sub-runs (the
+    # reconcile laps, the plane finalize's reroutes) are handed the merged
+    # list through _reconcile_kwargs, and a lap's input is the output file,
+    # whose brief sibling main() has not written yet.
+    if final_reconcile:
+        from keep_away import resolve_keep_away
+        keep_away = resolve_keep_away(keep_away, input_file, pcb_data)
+        _reconcile_kwargs['keep_away'] = keep_away
     if keep_away:
         from keep_away import normalize_keep_away_specs
         config_kwargs['keep_away'] = normalize_keep_away_specs(keep_away)
@@ -8114,7 +8124,14 @@ For differential pair routing, use route_diff.py:
             parse_keep_away_rules(args.keep_away)
         except ValueError as _kae:
             parser.error(f"--keep-away: {_kae}")
-    from keep_away import keep_away_knob_error
+    # #1253: a malformed keep_away in the board's design brief is refused
+    # here too, as a usage error, before the board is parsed (the engine,
+    # which reads it, would otherwise refuse it mid-run with a traceback).
+    from keep_away import read_brief_keep_away, keep_away_knob_error
+    try:
+        read_brief_keep_away(args.input_file)
+    except ValueError as _kae:
+        parser.error(str(_kae))
     _kae = keep_away_knob_error(args.keep_away_free, args.keep_away_cost)
     if _kae:
         parser.error(_kae)

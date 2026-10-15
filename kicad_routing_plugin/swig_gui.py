@@ -3086,10 +3086,12 @@ class RoutingDialog(wx.Dialog):
             return None, None
 
         # #1146: refuse a malformed keep-away rule before routing starts
-        # (route.py refuses it at argparse time).
+        # (route.py refuses it at argparse time). #1253: and one the board's
+        # design brief declares, which the engine adds to this field's.
         try:
-            from keep_away import parse_keep_away_rules
+            from keep_away import parse_keep_away_rules, read_brief_keep_away
             parse_keep_away_rules(self.keep_away.GetValue())
+            read_brief_keep_away(self.board_filename)
         except ValueError as e:
             wx.MessageBox(str(e), "Invalid Keep-away Rule",
                           wx.OK | wx.ICON_WARNING)

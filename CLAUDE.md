@@ -214,7 +214,16 @@ Validate routed boards against the *real* spec, with the right checker — most
   constraint system -- so it adds no intent key, and the placement CLIs receive
   it through the `--intent` they already take rather than through a flag of
   their own. (Unlike `.kicad_dru`, which EVERY routing step reads, the brief is
-  read by those two tools and reaches the rest as a compiled intent.)
+  read by those two tools and reaches the rest as a compiled intent -- with ONE
+  exception, #1253: its `keep_away` list of route.py `AGG:VICTIM:GAP` rules is
+  ALSO read by the routing engines, `batch_route` and `batch_route_diff_pairs`,
+  the way `.kicad_dru` is (input_file, else `PCBData.source_path`), through
+  `keep_away.resolve_keep_away`, and added to any `--keep-away` with no flag
+  or GUI control; the run prints `Keep-away: N rule(s) read from the design
+  brief`. One declaration, two readers through one parser
+  (`keep_away.brief_rule_rows`): check_floorplan grades it pad edge to pad
+  edge on the placement, WARN unless `severity` promotes it, and no placement
+  search reads it, `floorplan.GRADE_ONLY_RULES`.)
   `--brief PATH` overrides, `--no-brief` is the OFF arm,
   `--require-brief` refuses a grade with nothing declared behind it. On the
   `--intent` path it reports DRIFT instead of merging, because the graded

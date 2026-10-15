@@ -84,6 +84,19 @@ serves those nets from the fill.
   you were given. A role read as `unknown` (a buck whose pins carry no pin
   function) names the part; which pin is SW is not guessed, so ask for the
   pins too.
+- **Keep the noisy nets away from the sensitive ones, in the brief.** A
+  proximity row says how CLOSE two parts must be. When the user says two net
+  groups must stay APART (a switch node or a clock against a crystal's pins,
+  an ADC input or a feedback node), put the rule in the brief's `keep_away`
+  list, in the router's own syntax (AGGRESSOR:VICTIM:GAP, with class= terms
+  allowed). Do not write it as a minimum distance on a proximity row, which
+  the brief refuses. check_floorplan then grades your placement against it
+  pad edge to pad edge: a WARN names each part pair inside the band, with
+  both pads' sides, and a passing rule prints its closest pair. The route
+  steps price the same rule from the brief with no flag. Which nets are noisy
+  is the user's to say, so ask; do not infer it from net names. Report each
+  pair inside the band, and say when a pair sits on opposite faces, since the
+  grade is plan view.
 - **On a pile, read the emitter's decap line before you seed.** It says how
   many caps the per-supply-pin stage can claim, and which only once their
   owner ICs are seated. When `place_seed` then reports the decap stage

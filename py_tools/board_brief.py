@@ -1060,7 +1060,10 @@ def format_text(b):
                  # when there are, because a declared claim nobody prints is
                  # one the reader has no way to know was ever made.
                  + (f", {c['proximity']} proximity row(s)"
-                    if c.get('proximity') else ''))
+                    if c.get('proximity') else '')
+                 # #1253, appended on the same terms as proximity.
+                 + (f", {c['keep_away']} keep-away rule(s)"
+                    if c.get('keep_away') else ''))
         # Unknowns first: an unknown is the thing an author must go resolve.
         for k in (db.get('unknown') or ()):
             L.append(f"  !! design brief UNKNOWN: {k}")

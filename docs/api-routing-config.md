@@ -274,6 +274,21 @@ board, so `--keep-away-cost 0` grades a board without changing the route,
 including a board with nothing left to route. `route.py` and `route_diff.py` take the rules; in the GUI they are the
 Advanced tab's Keep-away field, used by the Route and Differential tabs.
 
+The rules can also be **declared once, in the board's design brief**
+(`<board>.design-brief.json`, key `keep_away`, #1253): a list of rules in this
+syntax, one per entry, as a string or `{"rule": ..., "why": ...}`. The engines
+(`batch_route`, `batch_route_diff_pairs`) read that key off the brief beside
+`input_file` (else `PCBData.source_path`) through
+`keep_away.resolve_keep_away`, the way `.kicad_dru` is discovered, and add
+each rule not already given after the caller's. So the CLI and the GUI both
+honour it with no flag or control. The run prints `Keep-away: N rule(s) read
+from the design brief`, and a malformed brief rule is refused with the rule
+parser's message (exit 2 on the CLI, a dialog in the GUI). `batch_route` reads
+the brief in its outermost call only; its nested sub-runs inherit the merged
+rules. A board with no brief, or a brief without the key, routes exactly as
+before. `check_floorplan` grades the same rules on the placed pads, before any
+track exists (`keep_away` in [the floorplan intent](floorplan-intent.md)).
+
 #### Via proximity multiplier: `via_proximity_cost`
 
 Not a field — a multiplier consumed at via placement in BOTH routers:

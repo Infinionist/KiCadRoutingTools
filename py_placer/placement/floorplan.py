@@ -183,13 +183,19 @@ EDGE_BAND_SANITY_MM = 5.0
 #: check_assembly's `body_edge_band` census from report-only into a
 #: `not_buildable` conjunct, so it changes the exit code and the rule above
 #: mandates the bump; an older build refuses the key by name.
-READER_VERSION = 9
+#: 10 (#1253): `keep_away[]` -- two NET GROUPS no closer than GAP mm, pad edge
+#: to pad edge, in route.py's own rule syntax. WARN by default, so it changes
+#: the exit code only when the `severity` map promotes it; that it CAN is
+#: what the rule above asks about, so the bump is mandated. An older build
+#: refuses the key by name.
+READER_VERSION = 10
 
 _TOP_LEVEL_KEYS = {
     'schema', 'kind', 'board', 'units', 'envelope', 'defaults', 'blocks',
     'keepouts', 'edge_connectors', 'decaps', 'must_lock', 'legality_budget',
     'health', 'severity', 'context', 'overlap_waivers', 'min_reader',
     'assembly', 'proximity', 'dispositions', 'arrays', 'fixed_poses',
+    'keep_away',
 }
 #: #959 (#997). WRITTEN answers to "why is this not graded", one map per kind
 #: of question: a rule the plan leaves dark, a budget key the emitter withheld,
@@ -320,6 +326,13 @@ _PROXIMITY_KEYS = {'ref', 'near', 'max_mm', 'basis', 'pads', 'note', 'source',
 #: courtyard, so the word would name geometry the board does not have.
 _PROXIMITY_BASES = ('pad_edge', 'body')
 _PROXIMITY_DEFAULT_BASIS = 'pad_edge'
+#: #1253. One declared keep-away: `rule` is ONE rule in route.py's own
+#: syntax (`AGGRESSOR:VICTIM:GAP`, `class=` terms), parsed by the router's
+#: `keep_away.parse_keep_away_rules`, so the grade and the router read the
+#: same declaration the same way. NOT a `min_mm` on `proximity[]`, which the
+#: brief refuses by name: this is a relation between two NET groups at a
+#: functional distance, not a copper clearance between two parts.
+_KEEP_AWAY_KEYS = {'rule', 'note', 'source', 'context'}
 _DEFAULTS_KEYS = {'zone_tolerance_mm'}
 #: `zoned_blocks` is setdefault-injected into this same dict by `grade` after
 #: load, and `affinity_exempt_net_ids` is derived there from
@@ -467,6 +480,11 @@ class Intent:
     #: #1054. Exact poses to seat, `[{ref, x, y, rot?, side?, basis, why?}]`.
     #: Graded by an anchor `grade` compiles from each entry.
     fixed_poses: Tuple[Dict[str, object], ...] = ()
+    #: #1253. Declared keep-aways, `[{rule, source?, note?, context?}]`, one
+    #: rule each. NEVER emitted: which nets are noisy and which sensitive is
+    #: a design fact the board does not hold. Graded by `keep_away`; read by
+    #: no placement search (`GRADE_ONLY_RULES`).
+    keep_away: Tuple[Dict[str, object], ...] = ()
 
     def assembly_sides(self) -> str:
         """The declared policy, or 'both' -- which constrains nothing.
@@ -811,6 +829,51 @@ def _proximity_claims(raw: Dict) -> List[Dict]:
                             f"`Pad.pad_number` is a string, so {n!r} would "
                             f"match no pad, measure nothing, and grade clean")
         out.append(dict(p))
+    return out
+
+
+def _keep_away_claims(raw: Dict) -> List[Dict]:
+    """Validate `keep_away[]` (#1253), AT LOAD, for `_proximity_claims`'s
+    reason: `place_seed` and `place_reconstruct` load an intent and never
+    call `validate_intent`.
+
+    Each `rule` is parsed by the ROUTER's own `parse_keep_away_rules`, so a
+    rule this loader accepts is one route.py prices, and a malformed one is
+    refused with the router's message. One rule per row, and no rule twice:
+    a row is one claim, reported under its own index."""
+    got = raw.get('keep_away')
+    if got is None:
+        return []
+    if not isinstance(got, list):
+        raise IntentError(f"keep_away: expected a list of rows, got "
+                          f"{type(got).__name__}")
+    from keep_away import parse_keep_away_rules
+    out: List[Dict] = []
+    seen: Dict[str, int] = {}
+    for i, k in enumerate(got):
+        where = f"keep_away[{i}]"
+        if not isinstance(k, dict):
+            raise IntentError(f"{where}: expected an object with a `rule` "
+                              f"('AGGRESSOR:VICTIM:GAP')")
+        _reject_unknown(k, _KEEP_AWAY_KEYS, where)
+        _entry_context(k, where)
+        text = k.get('rule')
+        if not isinstance(text, str) or not text.strip():
+            raise IntentError(f"{where}: `rule` must be a rule "
+                              f"'AGGRESSOR:VICTIM:GAP', got {text!r}")
+        try:
+            rules = parse_keep_away_rules(text)
+        except ValueError as exc:
+            raise IntentError(f"{where}: {exc}") from None
+        if len(rules) != 1:
+            raise IntentError(f"{where}: {text!r} holds {len(rules)} rules; "
+                              f"one rule per row")
+        spec = rules[0].spec
+        if spec in seen:
+            raise IntentError(f"{where}: {spec!r} repeats keep_away"
+                              f"[{seen[spec]}]")
+        seen[spec] = i
+        out.append(dict(k))
     return out
 
 
@@ -1519,6 +1582,7 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
         basis=_checked_basis(context, decaps),
         arrays=tuple(arrays),
         fixed_poses=tuple(fixed_poses),
+        keep_away=tuple(_keep_away_claims(raw)),
     )
     # A disposition for a rule the intent ARMS says "this is not graded" about
     # a rule that is -- the two statements cannot both be true, and a reader
@@ -3169,6 +3233,9 @@ class _Ctx:
         #: repo has a dedicated test class against, so the rule RECORDS what
         #: it measures and the consumer reads it.
         self.proximity_measured: List[Dict[str, object]] = []
+        #: #1253. One row per declared keep-away rule, passing ones too: the
+        #: closest pad pair, both pads' sides, and what the rule cannot see.
+        self.keep_away_measured: List[Dict[str, object]] = []
         #: #1051. One row per declared array, formed or not: the verdict,
         #: the order it could place and the members it could not.
         self.array_measured: List[Dict[str, object]] = []
@@ -6082,6 +6149,217 @@ def rule_proximity(ctx) -> Iterator[Violation]:
                 expected={'max_mm': limit})
 
 
+#: #1253. What `keep_away` cannot see, stated with every reading of it.
+KEEP_AWAY_NOT_MEASURED = (
+    'tracks: route.py --keep-away prices and reports those once routed',
+    'coupling through planes or between faces: the distance is plan view, '
+    "and each pad's side is named so a reader can judge",
+    'which nets are noisy or sensitive: the rule declares that, nothing on '
+    'the board says it',
+)
+
+#: Rules graded by `grade` and NOT by `PoseGrader`, the seat searches' grade
+#: (#1253). A rule here is a verdict, never a search input: promoted to
+#: ERROR it fails the grade, and still no seat search, quench or repair rung
+#: refuses or prefers a pose over it -- that would be a placement objective
+#: term, which goes through tests/test_placement_ab.py first.
+GRADE_ONLY_RULES = ('keep_away',)
+
+#: Aggressor pads measured against every victim pad at once.
+_KEEP_AWAY_CHUNK = 256
+
+
+def _keep_away_face(pad) -> Optional[Tuple[str, ...]]:
+    """The copper layers a pad's copper is on -- `('*',)` for a pad through
+    every layer -- or None for a pad with no copper (an NPTH hole, an
+    aperture), which no keep-away is about."""
+    if getattr(pad, 'pad_type', '') == 'np_thru_hole':
+        return None
+    layers = [str(L) for L in (pad.layers or ())]
+    if '*.Cu' in layers or getattr(pad, 'pad_type', '') == 'thru_hole':
+        return ('*',)
+    cu = tuple(sorted(L for L in layers if L.endswith('.Cu')))
+    return cu or None
+
+
+def _keep_away_side(face) -> str:
+    return 'through-hole' if face == ('*',) else '+'.join(face)
+
+
+def _keep_away_cross(fa, fb) -> bool:
+    """The two pads share no copper layer: plan view is all this measures."""
+    return '*' not in fa and '*' not in fb and not (set(fa) & set(fb))
+
+
+def _keep_away_gaps(a, b):
+    """`legality.rect_gap` of every row of `a` against every row of `b`
+    ((n, 4) and (m, 4) rects) as an (n, m) array -- the same formula, so the
+    pair it picks is the pair `rect_gap` picks."""
+    import numpy as np
+    dx = np.maximum(a[:, None, 0] - b[None, :, 2], b[None, :, 0] - a[:, None, 2])
+    dy = np.maximum(a[:, None, 1] - b[None, :, 3], b[None, :, 1] - a[:, None, 3])
+    both_neg = (dx < 0) & (dy < 0)
+    both_pos = (dx > 0) & (dy > 0)
+    return np.where(both_neg, np.maximum(dx, dy),
+                    np.where(both_pos, np.hypot(dx, dy), np.maximum(dx, dy)))
+
+
+def rule_keep_away(ctx) -> Iterator[Violation]:
+    """Two declared net groups no closer than GAP mm, pad edge to pad edge
+    (#1253) -- the placement half of route.py's `--keep-away`.
+
+    The routing keep-away (#1146) measures TRACKS: a net with none is
+    skipped, so on a placed, unrouted board it checks nothing, and by the
+    time it can, the parts are fixed. This measures the PADS the placement
+    put down, in `proximity`'s currency (`legality.pad_rect` + `rect_gap`),
+    from the same declaration -- a rule in the router's syntax, its sides
+    resolved by the router's own resolver (net patterns as `--nets`,
+    `class=` terms through the board's project).
+
+    Per rule, every aggressor pad against every victim pad, except two kinds
+    of pair placement cannot change: two pads of ONE net (a net on both
+    sides), and two pads of ONE part, whose footprint fixes their gap (the
+    router's free radius exempts the same pins). One finding per PART PAIR
+    inside the band, at that pair's closest pads, naming both pads' sides.
+    WARN by default; ERROR only when the intent's `severity` map says so.
+    Pads are read off `ctx.pcb.footprints`, never `pads_by_net`, so a
+    `PoseGrader` view's moved parts would be measured where they stand.
+    Every rule is recorded on `ctx.keep_away_measured`, passing ones too,
+    with what it cannot see (`KEEP_AWAY_NOT_MEASURED`).
+
+    TOTAL OVER ITS RULES, like `proximity`: each yields a measured pass, a
+    `keep_away` finding, a `keep_away_unresolved` finding (a side matching
+    no net), or an abstention (nothing between two parts to measure).
+    """
+    import numpy as np
+    from keep_away import parse_keep_away_rules, resolve_rule_sides
+    sev = ctx.intent.severity_of('keep_away', default=WARN)
+    sev_unres = ctx.intent.severity_of('keep_away_unresolved', default=WARN)
+    owned = []                     # (ref, pad, face) over the board AS POSED
+    for ref, fp_obj in sorted((ctx.pcb.footprints or {}).items()):
+        for pad in fp_obj.pads or ():
+            if pad.net_id and pad.net_id > 0:
+                face = _keep_away_face(pad)
+                if face is not None:
+                    owned.append((ref, pad, face))
+    names = {nid: n.name for nid, n in (ctx.pcb.nets or {}).items()}
+    for i, entry in enumerate(ctx.intent.keep_away):
+        rule = parse_keep_away_rules(entry['rule'])[0]
+        spec, gap_mm = rule.spec, float(rule.gap)
+        akey = f"keep_away[{i}]"
+        rec: Dict[str, object] = {
+            'index': i, 'rule': spec, 'gap_mm': gap_mm,
+            'source': entry.get('source'),
+            'not_measured': list(KEEP_AWAY_NOT_MEASURED)}
+        ctx.keep_away_measured.append(rec)
+        groups, notes, _unmatched = resolve_rule_sides(ctx.pcb, (rule,))
+        agg, vic, _gap = groups[0]
+        rec.update({'aggressor_nets': len(agg), 'victim_nets': len(vic)})
+        if notes:
+            # A pattern that matched nothing, kept even when its side still
+            # resolved: the side is then smaller than the rule says.
+            rec['notes'] = list(notes)
+        if not agg or not vic:
+            empty = [side for side, ids in (('aggressor', agg),
+                                            ('victim', vic)) if not ids]
+            rec.update({'state': 'unresolved', 'passes': None})
+            yield Violation(
+                rule='keep_away_unresolved', severity=sev_unres,
+                message=(f"{akey} '{spec}': the {' and '.join(empty)} "
+                         f"side{'s match' if len(empty) > 1 else ' matches'} "
+                         f"no net on this board, so nothing is measured"
+                         + (f" ({'; '.join(notes)})" if notes else '')),
+                measured={'rule': spec, 'index': i, 'empty_sides': empty},
+                expected={'gap_mm': gap_mm})
+            continue
+        A = [t for t in owned if t[1].net_id in agg]
+        V = [t for t in owned if t[1].net_id in vic]
+        rec.update({'aggressor_pads': len(A), 'victim_pads': len(V)})
+        if not A or not V:
+            rec.update({'state': 'abstained', 'passes': None})
+            ctx.abstain(akey, f"the {'aggressor' if not A else 'victim'} "
+                              f"nets of '{spec}' have no pad copper, so there "
+                              f"is nothing to measure pad edge to pad edge -- "
+                              f"route.py --keep-away still prices their tracks")
+            continue
+        ra = np.array([legality.pad_rect(p) for _r, p, _f in A], dtype=float)
+        rv = np.array([legality.pad_rect(p) for _r, p, _f in V], dtype=float)
+        a_net = np.array([p.net_id for _r, p, _f in A])
+        v_net = np.array([p.net_id for _r, p, _f in V])
+        a_ref = np.array([r for r, _p, _f in A], dtype=object)
+        v_ref = np.array([r for r, _p, _f in V], dtype=object)
+        measured = same_part = 0
+        best = None                            # (gap, ai, vi)
+        inside: Dict[Tuple[str, str], Tuple[float, int, int]] = {}
+        for lo in range(0, len(A), _KEEP_AWAY_CHUNK):
+            hi = min(len(A), lo + _KEEP_AWAY_CHUNK)
+            g = _keep_away_gaps(ra[lo:hi], rv)
+            same_net = a_net[lo:hi, None] == v_net[None, :]
+            one_part = a_ref[lo:hi, None] == v_ref[None, :]
+            same_part += int((one_part & ~same_net).sum())
+            ok = ~(same_net | one_part)
+            measured += int(ok.sum())
+            if not ok.any():
+                continue
+            g = np.where(ok, g, np.inf)
+            k = int(np.argmin(g))
+            if best is None or float(g.flat[k]) < best[0]:
+                best = (float(g.flat[k]), lo + k // g.shape[1],
+                        k % g.shape[1])
+            for ia, iv in zip(*np.nonzero(g < gap_mm - legality.EPS)):
+                ai, vi = lo + int(ia), int(iv)
+                key = (A[ai][0], V[vi][0])
+                val = float(g[ia, iv])
+                if key not in inside or val < inside[key][0]:
+                    inside[key] = (val, ai, vi)
+        rec.update({'pairs_measured': measured, 'same_part_pairs': same_part})
+        if best is None:
+            rec.update({'state': 'abstained', 'passes': None})
+            ctx.abstain(akey, f"every pad pair of '{spec}' lies on one part, "
+                              f"whose footprint fixes the gap -- there is "
+                              f"nothing placement can move")
+            continue
+
+        def _end(t):
+            ref, pad, face = t
+            return {'ref': ref, 'pad': pad.pad_number,
+                    'net': names.get(pad.net_id) or None,
+                    'side': _keep_away_side(face)}
+
+        def _gap(ai, vi):
+            # The reported number is `rect_gap`'s own, on the chosen pair.
+            return legality.rect_gap(legality.pad_rect(A[ai][1]),
+                                     legality.pad_rect(V[vi][1]))
+        _g0, ai, vi = best
+        rec.update({
+            'state': 'inside' if inside else 'pass',
+            'passes': not inside,
+            'min_gap_mm': round(_gap(ai, vi), 4),
+            'closest': {'victim': _end(V[vi]), 'aggressor': _end(A[ai]),
+                        'cross_face': _keep_away_cross(V[vi][2], A[ai][2])},
+            'part_pairs_inside': len(inside)})
+        for (aref, vref), (_v, ai, vi) in sorted(
+                inside.items(), key=lambda kv: (kv[1][0], kv[0])):
+            gv = _gap(ai, vi)
+            va, aa = _end(V[vi]), _end(A[ai])
+            cross = _keep_away_cross(V[vi][2], A[ai][2])
+            yield Violation(
+                rule='keep_away', severity=sev, ref=vref,
+                block=ctx.owner.get(vref),
+                message=(f"{vref} pad {va['pad']} ({va['side']}) on "
+                         f"{va['net']} is {gv:.2f}mm from {aref} pad "
+                         f"{aa['pad']} ({aa['side']}) on {aa['net']}, inside "
+                         f"the {gap_mm:.2f}mm keep-away"
+                         + ("; the pads are on opposite faces, so this is "
+                            "the plan-view distance and the board between "
+                            "them is not measured" if cross else '')
+                         + f" ({akey} '{spec}')"),
+                measured={'gap_mm': round(gv, 4), 'rule': spec, 'index': i,
+                          'victim': va, 'aggressor': aa,
+                          'cross_face': cross, 'basis': 'pad_edge'},
+                expected={'gap_mm': gap_mm})
+
+
 def rule_pins_to_edge(ctx) -> Iterator[Violation]:
     """A part whose pad row faces the board outline with nothing beyond it.
 
@@ -6263,6 +6541,7 @@ RULES = (
     ('decap_ungraded', rule_decap_ungraded),
     ('decap_pin_distance', rule_decap_pin_distance),
     ('proximity', rule_proximity),
+    ('keep_away', rule_keep_away),
     ('must_lock', rule_must_lock),
     ('legality', rule_legality),
     ('pins_to_edge', rule_pins_to_edge),
@@ -6290,6 +6569,10 @@ _NON_RULE_SEVERITIES = frozenset({
     # so a DNP-variant board legitimately missing a part can demote the
     # resolution finding without demoting the distance one.
     'proximity_unresolved',
+    # #1253, beside `keep_away` for proximity's reason: a side that matches
+    # no net on THIS board is a different claim from a distance. WARN by
+    # default, like the rule it stands in for.
+    'keep_away_unresolved',
     # #959 (#1001). Raised by `grade` itself when `mechanical.json` is read:
     # a part that moved off (or turned away from) its declared mechanical
     # pose. WARN for a move the grade-time anchor already reports at ERROR
@@ -6343,6 +6626,7 @@ _SKIP_REASON = {
     'decap_ungraded': 'the intent declares no decaps.max_distance_mm',
     'decap_pin_distance': 'the intent declares no decaps.max_pin_distance_mm',
     'proximity': 'the intent declares no proximity claims',
+    'keep_away': 'the intent declares no keep_away rules',
     'must_lock': 'the intent declares no must_lock patterns',
     'legality': 'the intent declares no legality_budget',
     # The rule's exclusion list IS the declaration: without it every
@@ -6508,6 +6792,8 @@ def _wants(intent: Intent, rule: str) -> bool:
         return (intent.decaps or {}).get('max_distance_mm') is not None
     if rule == 'proximity':
         return bool(intent.proximity)
+    if rule == 'keep_away':
+        return bool(intent.keep_away)
     if rule == 'must_lock':
         return bool(intent.must_lock)
     if rule == 'legality':
@@ -6542,6 +6828,7 @@ _ARMING_KEY = {
     'decap_ungraded': 'decaps.max_distance_mm',
     'decap_pin_distance': 'decaps.max_pin_distance_mm',
     'proximity': 'proximity[]',
+    'keep_away': 'keep_away[]',
     'must_lock': 'must_lock[]',
     'legality': 'legality_budget',
     'pins_to_edge': 'edge_connectors[]',
@@ -6556,7 +6843,7 @@ _ARMING_KEY = {
 #: table cannot drift from the rules without failing.
 _RULE_DEFAULT_SEVERITY = dict({name: ERROR for name, _ in RULES},
                               assembly_side=WARN, decap_ungraded=WARN,
-                              pins_to_edge=WARN)
+                              pins_to_edge=WARN, keep_away=WARN)
 
 #: A rule whose severity the intent's map cannot change, because the rule
 #: ignores the map (`rule_pins_to_edge` always yields WARN).
@@ -6580,6 +6867,9 @@ _POLICY_RULES = {
     'array_formation': ('a design decision about which parts form one row; '
                         'nothing on the board says which identical parts '
                         'belong together'),
+    # #1253. Which nets are noisy and which sensitive is a design fact.
+    'keep_away': ('a design relation between two net groups; nothing on the '
+                  'board says which nets are noisy and which are sensitive'),
 }
 
 
@@ -6605,6 +6895,8 @@ def _brief_claims(rule: str, brief_fragment) -> List[str]:
                 if c.get('edge')]
     if rule == 'array_formation':
         return [str(a.get('name')) for a in frag.get('arrays') or ()]
+    if rule == 'keep_away':
+        return [str(k.get('rule')) for k in frag.get('keep_away') or ()]
     return []
 
 #: Part classes whose presence makes the edge rules applicable. Strict on
@@ -6935,6 +7227,10 @@ class GradeResult:
     #: declares no proximity claim, which is DIFFERENT from every claim
     #: passing, and the consumer must not confuse the two.
     proximity_measured: List[Dict[str, object]] = field(default_factory=list)
+    #: #1253: every declared keep-away rule's reading, passing rules
+    #: included -- the closest pad pair and both pads' sides. Empty when the
+    #: intent declares none.
+    keep_away_measured: List[Dict[str, object]] = field(default_factory=list)
     #: #1051: every declared array's formation measurement, formed or not,
     #: with the members its pin order could not place. Empty when no array
     #: is declared.
@@ -7058,17 +7354,20 @@ class UntrustworthyOutline(ValueError):
         super().__init__('; '.join(self.problems))
 
 
-def _run_rules(ctx, abstained=None):
+def _run_rules(ctx, abstained=None, leave_out=()):
     """`(violations, ran, skipped)`: every rule in RULES over one `_Ctx`.
 
     The one loop both `grade` and `PoseGrader` run, so a grade asked about a
     pose nothing has written yet cannot drift from the grade of the board.
     `abstained` is the emitter's withheld-budget map, used only to word a
-    skip reason."""
+    skip reason. `leave_out` names rules not run at all (`PoseGrader` leaves
+    out `GRADE_ONLY_RULES`)."""
     found: List[Violation] = []
     ran: List[str] = []
     skipped: Dict[str, str] = {}
     for name, fn in RULES:
+        if name in leave_out:
+            continue
         if not _wants(ctx.intent, name):
             reason = _SKIP_REASON.get(name, 'not requested')
             # "declares no X" is true but reads as "nobody wanted one". Say
@@ -7382,7 +7681,9 @@ class PoseGrader:
             self._census = legality.CourtyardCensus(state.pcb_data,
                                                     state.pcb_file)
         ctx._census = self._census
-        found, _ran, _skipped = _run_rules(ctx)
+        # #1253: a grade-only rule is a verdict on the written board, never
+        # a reason for a seat search to refuse or prefer a pose.
+        found, _ran, _skipped = _run_rules(ctx, leave_out=GRADE_ONLY_RULES)
         return found
 
 
@@ -8339,6 +8640,7 @@ def grade(intent: Intent, pcb_data, pcb_file: str, *,
         budget_abstained=abstained,
         edge_seating=list(ctx.edge_seating),
         proximity_measured=list(ctx.proximity_measured),
+        keep_away_measured=list(ctx.keep_away_measured),
         array_measured=list(ctx.array_measured),
         edge_connector_evidence=list(ctx.edge_connector_evidence),
         decap_pin_evidence=pin_evidence,
@@ -9692,6 +9994,28 @@ def format_text(r: GradeResult) -> str:
                if a.get('unchecked') else '')
             + (f"; order unresolved for {', '.join(sorted(un))}"
                if un else ''))
+    # #1253: every declared keep-away, passing ones included, with the
+    # closest pad pair and both sides -- and once, what none of them sees.
+    for k in r.keep_away_measured:
+        head = f"  keep-away {k['rule']}: "
+        c = k.get('closest')
+        if c:
+            v, a = c['victim'], c['aggressor']
+            lines.append(
+                head + f"closest {k['min_gap_mm']:.2f}mm, {v['ref']} pad "
+                f"{v['pad']} ({v['side']}) to {a['ref']} pad {a['pad']} "
+                f"({a['side']}), "
+                + (f"{k['part_pairs_inside']} part pair(s) INSIDE the "
+                   f"{k['gap_mm']:.2f}mm band" if k.get('part_pairs_inside')
+                   else f"outside the {k['gap_mm']:.2f}mm band")
+                + (" -- opposite faces, plan view" if c['cross_face'] else ''))
+        else:
+            lines.append(head + f"not measured ({k.get('state')})")
+        for note in k.get('notes') or ():
+            lines.append(f"    note: {note}")
+    if r.keep_away_measured:
+        lines.append("  keep-away is graded on pad copper in plan view; it "
+                     "cannot see " + '; '.join(KEEP_AWAY_NOT_MEASURED))
     rows = [e for e in r.edge_seating
             if e.get('along_edge_offset_mm') is not None]
     if rows:
@@ -9941,8 +10265,16 @@ def declaration_ledger(intent: Intent, rows, *, result=None,
     # COMPILED anchor block (`fixed:<ref>`, or `mech:<ref>` when the file's
     # anchor grades it) -- not any zone the ref happens to fail.
     anchor_err: set = set()
+    # #1253: a keep-away finding names a PART PAIR, never the clause, so a
+    # brief `keep_away[N]` clause is judged by its RULE text, which every
+    # finding carries; WARN is its default, so a warn is not a pass.
+    ka_err: set = set()
+    ka_warn: set = set()
     if result is not None:
         for v in result.violations:
+            if v.rule in ('keep_away', 'keep_away_unresolved'):
+                (ka_err if v.severity == ERROR else ka_warn).add(
+                    str((v.measured or {}).get('rule') or ''))
             if v.severity == ERROR:
                 by_rule_err.setdefault(v.rule, set()).add(v.ref or '')
                 if v.rule == 'keepout':
@@ -10038,7 +10370,13 @@ def declaration_ledger(intent: Intent, rows, *, result=None,
                  'uncovered': 'uncovered', 'abstained': 'abstained'}
     for c in (coverage or {}).get('clauses') or ():
         st = c.get('state')
-        if st == 'graded':
+        if st == 'graded' and c.get('kind') == 'keep_away':
+            spec = str(c.get('keep_away_rule') or '')
+            status = ('pending' if result is None
+                      else 'graded_fail' if spec in ka_err
+                      else 'graded_warn' if spec in ka_warn
+                      else 'graded_pass')
+        elif st == 'graded':
             grader = c.get('grader') or c.get('rule') or ''
             status = _verdict(
                 grader, c.get('ref'),
@@ -10198,6 +10536,8 @@ def to_json(r: GradeResult) -> Dict:
         'decap_pin_evidence': r.decap_pin_evidence,
         'n_footprints': r.n_footprints,
         **({'array_formation': r.array_measured} if r.array_measured
+           else {}),
+        **({'keep_away': r.keep_away_measured} if r.keep_away_measured
            else {}),
         **({'pad_stacks': r.pad_stacks} if r.pad_stacks is not None
            else {}),

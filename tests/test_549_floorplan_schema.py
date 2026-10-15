@@ -130,7 +130,9 @@ KEY_SETS = {
         # #959 (#997): written answers to P1's refusals, never a verdict.
         'dispositions',
         # #1051 / #1054: declared rows, and exact poses to seat.
-        'arrays', 'fixed_poses'},
+        'arrays', 'fixed_poses',
+        # #1253: two net groups apart, in route.py's rule syntax.
+        'keep_away'},
     '_ENVELOPE_KEYS': {'rect', 'tolerance_mm'},
     '_DEFAULTS_KEYS': {'zone_tolerance_mm'},
     '_BLOCK_KEYS': {'name', 'group', 'refs', 'zone', 'side', 'exclusive',
@@ -184,6 +186,8 @@ KEY_SETS = {
     # #1054: one exact pose to seat, and whose fact it is.
     '_FIXED_POSE_KEYS': {'ref', 'x', 'y', 'rot', 'side', 'basis', 'why',
                          'context', 'accept_courtyard_overlap'},
+    # #1253: one rule per row, in route.py's own syntax.
+    '_KEEP_AWAY_KEYS': {'rule', 'note', 'source', 'context'},
 }
 
 
@@ -237,6 +241,7 @@ def test_the_key_sets_are_exactly_what_is_documented():
         '_DISPOSITION_KEYS': 'dispositions',
         '_ARRAY_KEYS': 'arrays[]',
         '_FIXED_POSE_KEYS': 'fixed_poses[]',
+        '_KEEP_AWAY_KEYS': 'keep_away[]',
     }
     checked = 0
     for name, row in sorted(TABLE_ROWS.items()):
@@ -345,6 +350,9 @@ def test_an_intent_using_every_known_key_loads():
                          'context': {'why': 'w'},
                          # #1060: a named courtyard waiver, with its `why`.
                          'accept_courtyard_overlap': ['H2']}],
+        # #1253. One rule per row, in route.py's own syntax.
+        'keep_away': [{'rule': 'SW:FB,class=Analog:0.5', 'note': 'n',
+                       'source': 'brief', 'context': {'why': 'w'}}],
     }
     # Every key of every set must appear above, or this proves less than it
     # claims -- the point is coverage of the vocabulary, not of a sample.
@@ -367,6 +375,7 @@ def test_an_intent_using_every_known_key_loads():
     seen |= set(raw['assembly'])
     seen |= set(raw['proximity'][0])
     seen |= set(raw['arrays'][0]) | set(raw['fixed_poses'][0])
+    seen |= set(raw['keep_away'][0])
     seen |= set(raw['dispositions'])
     for k in raw['keepouts']:
         seen |= set(k)
@@ -657,7 +666,10 @@ def test_severity_keys_are_checked_against_the_rule_names():
                                         # #1054: fixed_pose_violations
                                         'fixed_pose_unresolved',
                                         # #1060: its courtyard waiver
-                                        'fixed_pose_overlap_waived'}
+                                        'fixed_pose_overlap_waived',
+                                        # #1253: a keep-away side matching
+                                        # no net
+                                        'keep_away_unresolved'}
     assert _SEVERITY_KEYS == expected, sorted(_SEVERITY_KEYS ^ expected)
     for name in sorted(expected):
         # Two names accept one direction only, and say so at load:

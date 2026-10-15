@@ -148,12 +148,13 @@ source, suspect, suspect_reason
 | `decaps` | `max_distance_mm`, `exempt`, `search_radius_mm`, `max_pin_distance_mm`, `pin_functions`, `same_side`, and the `--decaps-from`-written `within_radius_refs` / `within_radius_mm` (#1142: the caps the reference keeps within that radius of their chip, each held to it per cap; the two come together, need `max_distance_mm`, must match `search_radius_mm`, and need `min_reader` 8) |
 | `assembly` | `sides` (`"F"`, `"B"` or `"both"`), `body_edge_mm` (#1255: the least distance in mm a component body may sit from the board edge, which arms check_assembly's `body_edge_band` gate; needs `min_reader` 9), `why`, `context` |
 | `proximity[]` | `ref`, `near`, `max_mm`, `basis` (`"pad_edge"` or `"body"`), `pads`, `note`, `context`, and the compiler-written `source` |
+| `keep_away[]` | `rule` (ONE rule in route.py's `--keep-away` syntax, `AGGRESSOR:VICTIM:GAP`), `note`, `context`, and the compiler-written `source` (#1253; see "`keep_away[]`" below; needs `min_reader` 10) |
 | `arrays[]` | `name`, `members` (an ORDERED list of literal refs, at least two), `serves` (a ref, or `"unknown"`), `order` (`"pin"`, `"declared"` or `"unknown"`), `rotation` (degrees, `"shared"` or `"unknown"`), `pitch_mm` (`"auto"` or mm), `axis` (`"auto"`, `"x"` or `"y"`), `allow_mixed`, `why`, `note`, `context`, and the compiler-written `source` (#1051; see "Arrays" below; needs `min_reader` 7) |
 | `fixed_poses[]` | `ref`, `x`, `y`, `rot` (degrees or `"unknown"`), `side` (`"F"`, `"B"` or `"unknown"`), `basis` (`"declared"` or `"mechanical"`), `why`, `context`, `accept_courtyard_overlap` (a list of literal refs, #1060) (#1054; see "Fixed poses" below; needs `min_reader` 7) |
 | `legality_budget` | `overlap_area`, `oob_count`, `oob_amount` (`oob_area` refused — see below) |
 | `health` | `bus_corridors`, `classes`, `block_displacement_mm`, `ignore_net_ids`, `max_fanout`, `zoned_blocks`, `affinity_exempt_nets`, `affinity_exempt_net_ids`, `plane_layers` |
 | `health.bus_corridors[]` | `name`, `nets`, `width_mm` |
-| `severity` | any of the 39 rule names below |
+| `severity` | any of the 42 rule names below |
 | `overlap_waivers[]` | `pair`, `reason`, `context` |
 | `dispositions` | `rules`, `withheld`, `refs`, `contradictions` -- each `{key: why}`, a non-empty written reason (#959; see "The rule roster" below) |
 | `must_lock` | a list of reference globs (no nested keys) |
@@ -232,7 +233,7 @@ The top-level `context.basis` labels numbers and changes no verdict.
 intent file at once — far too blunt for "this build learned a new field".
 
 So field-level compatibility is a second number. `READER_VERSION` (currently
-`9`) is what this build can act on, and an intent sets `min_reader` when a
+`10`) is what this build can act on, and an intent sets `min_reader` when a
 claim must not be silently ignored:
 
 ```jsonc
@@ -298,6 +299,12 @@ board edge. Declared, it turns check_assembly's `body_edge_band` census from
 report-only into a `not_buildable` conjunct, so it changes the exit code. An
 older build refuses the key by name. The design brief compiles its
 `assembly.body_edge_mm` with `min_reader` 9.
+
+**Reader 10 arrived with [#1253](https://github.com/drandyhaas/KiCadRoutingTools/issues/1253):**
+`keep_away[]`. It grades at **warn** by default, so it changes the exit code
+only when `severity` promotes it, and that it can is what the bump is for. An
+older build refuses the key by name. The design brief compiles its
+`keep_away` with `min_reader` 10.
 
 ### Arrays: parts that form one row (#1051)
 
@@ -983,6 +990,8 @@ status from this list:
 | `decap_pin_uncovered` | a declared supply pin's rail carries no decoupling cap at all, anywhere. A design fact, not a placement failure, so **warn** and per (IC, rail) rather than per pin | same |
 | `proximity` | two DECLARED parts are further apart than `max_mm` ([#902](https://github.com/drandyhaas/KiCadRoutingTools/issues/902)). Per SUBJECT pad when the claim names `pads`, once per pair when it does not | `legality.pad_rect` + `rect_gap`, or `placement.body`'s DRAWN body for `basis: "body"` |
 | `proximity_unresolved` | a proximity claim names a ref, or a pad number, this board does not have. A separate NAME so a DNP-variant board can demote it without demoting the distance claim | same |
+| `keep_away` | a pad of one DECLARED net group sits closer than GAP to a pad of the other, on two different parts ([#1253](https://github.com/drandyhaas/KiCadRoutingTools/issues/1253)). One finding per part pair, at its closest pads, naming each pad's side. **warn** by default; `severity` may promote it | `legality.pad_rect` + `rect_gap` (plan view), sides resolved by the router's `keep_away.resolve_rule_sides` |
+| `keep_away_unresolved` | a keep-away rule has a side that matches no net on this board (**warn** by default) | same |
 | `must_lock` | a declared-critical part is not locked in the file | `parser.extract_locked_refs` |
 | `legality` | overlap or off-board parts exceed a budget. An overlap finding's `measured` carries `overlap_area` (the outline reading the budget grades), `overlap_area_rect`, the worst 50 `pairs` (`[a, b, rect, exact]`) with `pairs_total`, and `excluded` -- the containers, pad-less logos and silk-only parts the budget does not see (a silk body never gates, #896); `legality.overlap_area_excluded` counts them on every grade | overlap: `legality.courtyard_overlap_pairs` (check_assembly's drawn outlines, #1162); off-board: `QuenchState.legality_metrics` |
 | `block_unresolved` | a block matched no footprint | — |
@@ -1056,6 +1065,7 @@ reports the whole picture in `accept_basis`.
 | `decap_pin_distance` | yes | — | **yes** (#1043) | — armed by `decaps.max_pin_distance_mm` at error severity. Per (IC, declared supply pin), measured by CALLING `floorplan.nearest_rail_cap` over the rule's own cap set (`decap_pin_caps`) on footprints posed at the live poses |
 | `decap_distance` | yes | scope stage | **yes** (#1043) | — armed by `decaps.max_distance_mm` at error severity. The currency objection that kept it out is met by CALLING the grader's own distance (`groups.elect_live`: cap pad centroid to the inflated pad bbox of the nearest chip on its rail) rather than re-deriving one. The election is re-run per candidate pose over the chips on the cap's rail, because the grade re-elects: a frozen cap→IC pair is not conservative for a cap elected beyond the radius, which can walk into another chip's radius past the limit (run 32's C26). The population (which caps, graded or beyond the radius) is fixed once at state build (`floorplan.tether_pairings`) |
 | `legality` | yes | — | no | a whole-board aggregate against a BUDGET, so a per-pose form is non-local: whether A's move is admissible would depend on B's violation |
+| `keep_away` | yes | — | no | grade only (`GRADE_ONLY_RULES`, #1253): `PoseGrader` does not run it, so even promoted to ERROR no seat search, quench or repair rung refuses or prefers a pose over it. Making it a search term is a placement objective change, which goes through `tests/test_placement_ab.py` first |
 | `pins_to_edge` | yes | — | no | always-WARN advice for a reviewer: the exit gate never counts it, and the gate holds only what the exit gate counts |
 | `array_formation` | yes | stage 2.45 (#1051) | **by construction** | a declared array is a RIGID group in the quench: it only translates, its members sit out the single-part nudge and cross-member swaps, and a member leaves only through a release disclosed in `rigid_released`. The seeder owns the shared rotation |
 | `fixed_poses[]` (anchor `fixed:<ref>`) | yes, as `zone_containment` on the anchor | stage 0 (#1054): the exact pose, checked, never searched | **by freezing, once seeded** | stage 0 stamps the seated part `(locked yes)`, and `place_seed --repair` treats every entry as locked even unstamped. The quench itself has no fixed-pose term: on a board where the part is NOT locked (never seeded by `place_seed`), a quenching CLI may move it and only the grade's anchor reports it |
@@ -1167,6 +1177,49 @@ check_assembly as its grader. The design brief declares it as
 `assembly.body_edge_mm` too, and that compiles here. The key is spelled
 `body_edge_mm` rather than "...band", so it cannot be confused with
 `edge_connectors[].along_edge_band`, which is a position along an edge.
+
+### `keep_away[]`: two net groups apart, before any track exists (#1253)
+
+```jsonc
+"keep_away": [{ "rule": "Net-(D5-A):/32K_P,/32K_N:1" }]
+```
+
+A rule is route.py's own `--keep-away` rule, `AGGRESSOR:VICTIM:GAP`, with net
+patterns and `class=` terms, parsed by the router's `parse_keep_away_rules`
+and resolved by its own resolver. One rule per row. The routing keep-away
+(#1146) measures tracks, so on a placed, unrouted board it checks nothing;
+this rule measures the pads the placement put down. Per rule, it measures
+every aggressor pad against every victim pad, pad edge to pad edge
+(`legality.pad_rect` + `rect_gap`, the currency of `proximity`'s `pad_edge`
+basis). It skips two kinds of pair that placement cannot change: two pads of
+one net, and two pads of one part, whose footprint fixes their gap. A part
+pair closer than GAP is one **warn** finding at its closest pads, naming each
+pad's side:
+
+```
+[warn ] keep_away: Y1 pad 1 (F.Cu) on /32K_P is 0.91mm from L2 pad 1 (F.Cu) on Net-(D5-A), inside the 1.00mm keep-away (keep_away[0] 'Net-(D5-A):/32K_P,/32K_N:1')
+```
+
+`severity: {"keep_away": "error"}` promotes it. Every rule also prints its
+closest pair when it passes (`keep-away <rule>: closest 15.34mm, ...`), and
+`--json` carries those readings as `keep_away[]`. A side that matches no net
+is `keep_away_unresolved` (**warn**). A rule with nothing between two parts to
+measure abstains.
+
+What it cannot see is printed beside the readings. It does not see tracks,
+which route.py prices and reports once routed. It does not see coupling
+through planes or between faces, because the distance is plan view; each
+pad's side is named, and a pair on opposite faces says so (ulx3s: `Y1 pad 3
+(F.Cu) on CLK_25MHz is 1.05mm from U4 pad 3 (B.Cu) on /power/L2`). It does not
+know which nets are noisy or sensitive; the rule declares that.
+
+It is **not** a `min_mm` on `proximity[]`, which the design brief refuses by
+name. That would be a copper clearance between two parts; this is a
+functional distance between two net groups. Declare it in the design brief
+(`keep_away`), not here by hand. The brief compiles it into this key, and
+route.py, route_diff.py and the GUI read the same brief key and price it. A
+row written straight into an intent is graded, but no router reads it. No
+placement search reads it either (see "Which rules the SEARCH can see").
 
 ### A through-hole part is in a keep-out from either side
 

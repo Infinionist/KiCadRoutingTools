@@ -29,13 +29,22 @@ check_drc share; a net no class claims is in ``Default``. Several rules may
 share one string, separated by whitespace or ``;`` (the GUI's one-line
 field). Net patterns and class names may therefore not contain ``:``, ``,``,
 ``;`` or whitespace; use ``?`` for such a character (``class=High?Speed``).
+
+Rules may also be DECLARED once, in the board's design brief
+(``<board>.design-brief.json``, key ``keep_away``, #1253). The routing
+engines read that sibling the way they read ``.kicad_dru`` and add its rules
+to the caller's (``resolve_keep_away``), so the CLI and the GUI both honour
+it with no flag; check_floorplan grades the same rules on the PLACED board,
+pad edge to pad edge, before any track exists (``floorplan.rule_keep_away``).
 """
 
 from __future__ import annotations
 
 import contextlib
 import io
+import json
 import math
+import os
 import re
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -137,6 +146,158 @@ def parse_keep_away_rules(specs) -> Tuple[KeepAwayRule, ...]:
 def normalize_keep_away_specs(specs) -> Tuple[str, ...]:
     """Validated, canonical rule strings for GridRouteConfig.keep_away."""
     return tuple(r.spec for r in parse_keep_away_rules(specs))
+
+
+# --------------------------------------------------------------------------
+# The design brief's `keep_away` key (#1253): ONE declaration for both the
+# placement grade (check_floorplan, through the compiled intent) and the
+# router (batch_route / batch_route_diff_pairs, through the sibling file).
+
+#: The board's sibling design brief (#711). The same string as
+#: `placement.design_brief.BRIEF_EXT`, which this package cannot import;
+#: tests/test_1253_keep_away_placement.py pins the two equal.
+BRIEF_EXT = '.design-brief.json'
+#: The brief key, and the keys an object row may carry: `rule` plus the
+#: brief's usual prose slots, which the compiler moves into `context`.
+BRIEF_KEY = 'keep_away'
+BRIEF_ROW_KEYS = ('rule', 'why', 'requirement', 'note', 'context')
+#: "I do not know" (#711): the author looked and cannot say yet which nets
+#: are noisy or sensitive. Compiles to no rule and is reported as unknown.
+BRIEF_UNKNOWN = 'unknown'
+
+
+def brief_rule_rows(value, where: str = BRIEF_KEY) -> List[dict]:
+    """Validate a design brief's ``keep_away`` value; one row per rule.
+
+    The value is a list whose entries are each ONE rule in route.py's own
+    syntax -- a string, or ``{"rule": "...", "why": ...}`` -- or the string
+    "unknown" (no rows). Returns ``[{'row': i, 'rule': canonical spec,
+    <prose keys>}]``. The ONLY reader of the key: `design_brief` validates
+    the brief through it and the router reads the brief through it, so the
+    two cannot disagree about what a row says. Raises ValueError naming the
+    row and carrying the rule parser's own message."""
+    if value is None or value == BRIEF_UNKNOWN:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{where}: expected a list of rules "
+                         f"('AGGRESSOR:VICTIM:GAP') or {BRIEF_UNKNOWN!r}, got "
+                         f"{type(value).__name__}")
+    rows: List[dict] = []
+    seen: Dict[str, int] = {}
+    for i, entry in enumerate(value):
+        at = f"{where}[{i}]"
+        if isinstance(entry, dict):
+            bad = sorted(set(entry) - set(BRIEF_ROW_KEYS))
+            if bad:
+                raise ValueError(f"{at}: unknown key(s) {', '.join(bad)} "
+                                 f"(a row carries {', '.join(BRIEF_ROW_KEYS)})")
+            text = entry.get('rule')
+            if entry.get('context') is not None \
+                    and not isinstance(entry['context'], dict):
+                raise ValueError(f"{at}.context: expected an object")
+        else:
+            text = entry
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError(f"{at}: expected a rule 'AGGRESSOR:VICTIM:GAP' "
+                             f"(or an object with one in `rule`), got "
+                             f"{text!r}")
+        try:
+            parsed = parse_keep_away_rules(text)
+        except ValueError as exc:
+            raise ValueError(f"{at}: {exc}") from None
+        if len(parsed) != 1:
+            raise ValueError(f"{at}: {text!r} holds {len(parsed)} rules; write "
+                             f"one rule per entry, so each is graded and "
+                             f"reported under its own row")
+        spec = parsed[0].spec
+        if spec in seen:
+            raise ValueError(f"{at}: {spec!r} repeats {where}[{seen[spec]}] "
+                             f"-- one claim, declared twice")
+        seen[spec] = i
+        row = {'row': i, 'rule': spec}
+        if isinstance(entry, dict):
+            row.update({k: entry[k] for k in BRIEF_ROW_KEYS[1:]
+                        if entry.get(k) is not None})
+        rows.append(row)
+    return rows
+
+
+def brief_path_for(board_path: str) -> str:
+    """``<board>.design-brief.json``, or '' for an empty path."""
+    return os.path.splitext(board_path)[0] + BRIEF_EXT if board_path else ''
+
+
+def read_brief_keep_away(board_path: str = '', pcb_data=None
+                         ) -> Tuple[Tuple[str, ...], str]:
+    """(canonical rules, brief path) the board's sibling design brief
+    declares under ``keep_away``; ((), '') when it has no brief or declares
+    none. Discovered the way `.kicad_dru` is (#498): ``board_path`` when the
+    caller has one, else ``PCBData.source_path``.
+
+    Raises ValueError for a brief that cannot be read, or whose
+    ``keep_away`` is malformed: a declared rule the router silently skipped
+    is a constraint the author believes is honoured and nothing prices. Only
+    the ``keep_away`` key is read here; check_floorplan validates the rest."""
+    path = brief_path_for(board_path
+                          or getattr(pcb_data, 'source_path', '') or '')
+    if not path or not os.path.isfile(path):
+        return (), ''
+    try:
+        with open(path, encoding='utf-8') as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"cannot read design brief {path}: {exc}") from None
+    if not isinstance(raw, dict):
+        raise ValueError(f"design brief {path}: expected a JSON object")
+    rows = brief_rule_rows(raw.get(BRIEF_KEY),
+                           where=f"design brief {os.path.basename(path)} "
+                                 f"{BRIEF_KEY}")
+    return tuple(r['rule'] for r in rows), (path if rows else '')
+
+
+#: (brief path, rules) already announced in this process: a GUI session and
+#: a run's nested sub-runs resolve the same brief more than once.
+_BRIEF_ANNOUNCED: set = set()
+
+
+def resolve_keep_away(keep_away, input_file: str = '', pcb_data=None,
+                      announce: bool = True) -> Optional[List[str]]:
+    """The keep-away rules a routing run prices: the caller's (``--keep-away``
+    / the GUI field) first, then each rule the board's design brief declares
+    that is not already among them (#1253). None when there are none, so a
+    board with no declaration and no flag routes exactly as before.
+
+    Engine-side, so both fronts get it with no flag and no control: the CLI
+    passes ``input_file``, the GUI its board file, and an engine without one
+    is found through ``PCBData.source_path``."""
+    explicit = list(normalize_keep_away_specs(keep_away)) if keep_away else []
+    declared, path = read_brief_keep_away(input_file, pcb_data)
+    added = [s for s in declared if s not in explicit]
+    if announce and declared:
+        key = (os.path.abspath(path), declared, tuple(explicit))
+        if key not in _BRIEF_ANNOUNCED:
+            _BRIEF_ANNOUNCED.add(key)
+            if added:
+                print(f"Keep-away: {len(added)} rule(s) read from the design "
+                      f"brief {os.path.basename(path)} (#1253): "
+                      + ' '.join(repr(s) for s in added))
+            else:
+                print(f"Keep-away: the design brief {os.path.basename(path)} "
+                      f"declares {len(declared)} rule(s), all already given "
+                      f"(#1253)")
+    merged = explicit + added
+    return merged or None
+
+
+def resolve_rule_sides(pcb_data, rules) -> Tuple[
+        List[Tuple[frozenset, frozenset, float]], List[str], List[str]]:
+    """``([(aggressor ids, victim ids, gap)] per rule, notes, unmatched
+    specs)`` -- each rule's two sides resolved against ``pcb_data`` exactly
+    as the router resolves them (net patterns as ``--nets``, ``class=``
+    terms through the board's project). For a grader that measures the
+    rules without routing (check_floorplan's ``keep_away``, #1253)."""
+    st = _KeepAwayState(pcb_data, tuple(rules))
+    return list(st.groups), list(st.notes), list(st.unmatched)
 
 
 def keep_away_knob_error(free: float, cost: float) -> Optional[str]:

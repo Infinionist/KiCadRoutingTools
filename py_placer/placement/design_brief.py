@@ -102,7 +102,15 @@ class BriefError(fp.IntentError):
 
 _TOP_LEVEL_KEYS = {'schema', 'kind', 'board', 'units', 'min_reader',
                    'product', 'interfaces', 'keepouts', 'fixed', 'unknown',
-                   'proximity', 'context', 'arrays', 'assembly'}
+                   'proximity', 'context', 'arrays', 'assembly', 'keep_away'}
+#: #1253. Two NET groups no closer than GAP mm: a list of rules in route.py's
+#: own `--keep-away` syntax (`AGGRESSOR:VICTIM:GAP`, `class=` terms), each a
+#: string or `{"rule": ..., "why": ...}`, or "unknown". ONE declaration with
+#: two readers: `compile_brief` turns each row into an intent `keep_away[]`
+#: row that check_floorplan grades pad edge to pad edge, and the routing
+#: engines read this same key off the sibling file (`keep_away.
+#: resolve_keep_away`) and price it. Both parse it with `keep_away.
+#: brief_rule_rows`, so the two cannot read one row two ways.
 #: #1255. What the board's ASSEMBLER requires that the board file cannot say.
 #: `body_edge_mm` (mm, or "unknown") compiles to the intent's
 #: `assembly.body_edge_mm`, which arms check_assembly's `body_edge_band`
@@ -234,6 +242,11 @@ class Brief:
     #: #1255. The assembler's requirements (`body_edge_mm`). Defaulted, like
     #: `proximity`, so a brief declaring none compiles exactly as before.
     assembly: Dict[str, object] = field(default_factory=dict)
+    #: #1253. Declared keep-away rules, one row each (`keep_away.
+    #: brief_rule_rows`); `keep_away_unknown` is the declared "unknown".
+    #: Defaulted, like `proximity`.
+    keep_away: Tuple[Dict[str, object], ...] = ()
+    keep_away_unknown: bool = False
 
 
 def empty_brief(board: str = '') -> Brief:
@@ -785,6 +798,15 @@ def _brief_from_dict(raw: Dict, source_path: str = '') -> Brief:
             "assembly: declares no `body_edge_mm`, so it constrains nothing. "
             "Give it a distance in mm (or \"unknown\"), or drop the key")
 
+    # #1253. Read by the ROUTER's own reader of this key, so a row the brief
+    # accepts is a row route.py prices, and a malformed rule is refused with
+    # the rule parser's own message.
+    from keep_away import brief_rule_rows, BRIEF_UNKNOWN
+    try:
+        keep_away = brief_rule_rows(raw.get('keep_away'))
+    except ValueError as exc:
+        raise BriefError(str(exc)) from None
+
     unknown = fp._str_tuple(raw.get('unknown'), 'unknown')
     return Brief(schema=SCHEMA_VERSION, kind=KIND,
                  board=str(raw.get('board') or ''), units=units,
@@ -793,7 +815,8 @@ def _brief_from_dict(raw: Dict, source_path: str = '') -> Brief:
                  unknown=unknown, proximity=tuple(proximity),
                  context=fp._obj(raw.get('context'), 'context'),
                  source_path=source_path, arrays=tuple(arrays),
-                 assembly=dict(assembly))
+                 assembly=dict(assembly), keep_away=tuple(keep_away),
+                 keep_away_unknown=raw.get('keep_away') == BRIEF_UNKNOWN)
 
 
 def _fixed_pose(f: Dict, where: str, interface_refs) -> None:
@@ -1151,9 +1174,31 @@ def compile_brief(brief: Brief, *, board_refs: Sequence[str] = (),
         asm = {'body_edge_mm': float(bem),
                'context': {'body_edge_mm': actx}}
 
+    # #1253. Compiled 1:1 into the intent's own `keep_away[]`, the rule in
+    # its canonical spelling and the prose in `context`, as `proximity` does.
+    # The clause id is the ROW (`keep_away[N].rule`): a rule's text carries
+    # `:` and `,`, which a `brief-clause:<id>:<why>` waiver could not split.
+    kaway: List[Dict[str, object]] = []
+    for r in brief.keep_away:
+        ctx: Dict[str, object] = dict(r.get('context') or {})
+        ctx['brief_row'] = int(r['row'])
+        for key in ('why', 'requirement'):
+            if r.get(key):
+                ctx[key] = r[key]
+        entry: Dict[str, object] = {'rule': r['rule'], 'source': 'brief',
+                                    'context': ctx}
+        if r.get('note'):
+            entry['note'] = str(r['note'])
+        declared.append(f"keep_away[{r['row']}].rule")
+        kaway.append(entry)
+    if brief.keep_away_unknown:
+        unknown.append('keep_away')
+
     fragment: Dict[str, object] = {}
     if asm:
         fragment['assembly'] = asm
+    if kaway:
+        fragment['keep_away'] = kaway
     if conns:
         fragment['edge_connectors'] = conns
     if keeps:
@@ -1184,6 +1229,9 @@ def compile_brief(brief: Brief, *, board_refs: Sequence[str] = (),
     if asm:
         # #1255: reader 9 introduced `assembly.body_edge_mm`.
         need_reader = max(need_reader, 9)
+    if kaway:
+        # #1253: reader 10 introduced `keep_away[]`.
+        need_reader = max(need_reader, 10)
     if need_reader:
         fragment['min_reader'] = need_reader
 
@@ -1216,6 +1264,8 @@ def compile_brief(brief: Brief, *, board_refs: Sequence[str] = (),
     # Added only when declared, for `proximity`'s reason above.
     if brief.arrays:
         counts['arrays'] = len(brief.arrays)
+    if brief.keep_away:
+        counts['keep_away'] = len(brief.keep_away)
     if fposes:
         counts['fixed_poses'] = len(fposes)
     report = {
@@ -1245,6 +1295,12 @@ def compile_brief(brief: Brief, *, board_refs: Sequence[str] = (),
         'fixed': [dict(f) for f in brief.fixed],
         'product': dict(brief.product),
     }
+    if kaway:
+        # #1253: the rule each `keep_away[N].rule` clause declares, by row,
+        # so coverage can ask whether the graded intent carries THAT rule.
+        # Only when declared, for `counts`' reason above.
+        report['keep_away_rules'] = {str(r['row']): r['rule']
+                                     for r in brief.keep_away}
     return fragment, report
 
 
@@ -1658,7 +1714,9 @@ def merge_into_intent(emitted: Dict, fragment: Dict, report: Dict) -> Dict:
     # #1051/#1054. APPENDED, for proximity's reason: `emit_intent` writes no
     # `arrays` and no `fixed_poses` by default, so there is no inference to
     # outrank.
-    for key in ('arrays', 'fixed_poses'):
+    # #1253 `keep_away` too: the emitter writes none, since which nets are
+    # noisy is not readable off a board.
+    for key in ('arrays', 'fixed_poses', 'keep_away'):
         if fragment.get(key):
             out[key] = list(emitted.get(key) or []) + list(fragment[key])
     # #1255. Merged INTO the emitted block, which carries the observed
@@ -1730,6 +1788,14 @@ def merge_into_intent(emitted: Dict, fragment: Dict, report: Dict) -> Dict:
             f"one. They are graded from the intent, not by any seat search, "
             f"so a violation is a finding to act on rather than a pose the "
             f"engine will refuse.")
+    if fragment.get('keep_away'):
+        ctx['keep_away_note'] = (
+            f"{len(fragment['keep_away'])} keep-away rule(s) DECLARED by the "
+            f"design brief {os.path.basename(report.get('path') or '')}. "
+            f"check_floorplan grades them on the placed pads (WARN unless "
+            f"`severity` promotes them); route.py, route_diff.py and the GUI "
+            f"read the SAME rules off the brief and price them on the tracks. "
+            f"No placement search reads them.")
     out['context'] = ctx
     return out
 
@@ -1948,7 +2014,38 @@ def drift_pairs(intent_doc: Dict, fragment: Dict) -> List[Tuple[str, str]]:
         out.append(('assembly.body_edge_mm',
                     f"assembly.body_edge_mm: the intent carries {cur!r} "
                     f"from the brief, which no longer declares it"))
+    # #1253. Keyed on the CANONICAL rule, so a respelling is not drift and a
+    # changed gap or net list is. A brief-sourced rule the brief no longer
+    # declares drifts too: route.py reads the brief, so the grade would be
+    # measuring a rule the router has stopped pricing -- two copies again.
+    have_ka = {_canonical_rule(k.get('rule')): k
+               for k in (intent_doc.get('keep_away') or [])}
+    frag_ka = set()
+    for k in (fragment.get('keep_away') or []):
+        spec = str(k.get('rule'))
+        frag_ka.add(spec)
+        if spec not in have_ka:
+            row = (k.get('context') or {}).get('brief_row')
+            out.append((f"keep_away[{row}].rule" if row is not None else '',
+                        f"keep-away {spec!r}: the brief declares this rule; "
+                        f"the intent does not carry it"))
+    for spec, cur in sorted(have_ka.items(), key=lambda kv: str(kv[0])):
+        if cur.get('source') == 'brief' and spec not in frag_ka:
+            out.append(('', f"keep-away {spec!r}: the intent carries it from "
+                            f"the brief, which no longer declares it -- "
+                            f"route.py no longer prices it"))
     return out
+
+
+def _canonical_rule(text) -> str:
+    """A keep-away rule in its canonical spelling, or the text as given when
+    it does not parse (the intent loader has refused that already)."""
+    from keep_away import normalize_keep_away_specs
+    try:
+        specs = normalize_keep_away_specs(str(text or ''))
+    except ValueError:
+        return str(text)
+    return specs[0] if len(specs) == 1 else str(text)
 
 
 def drift(intent_doc: Dict, fragment: Dict) -> List[str]:
@@ -1981,7 +2078,9 @@ _CLAUSE_RULE = {'interfaces': 'edge_connector',
                 'product': None,
                 # #1255: graded by check_assembly --intent (`body_edge_band`),
                 # which this floorplan grade does not run.
-                'assembly': None}
+                'assembly': None,
+                # #1253: `keep_away[N].rule`, graded by `keep_away`.
+                'keep_away': 'keep_away'}
 
 #: #1255. Clauses another INSTRUMENT grades, by clause id. The floorplan
 #: grade carries them -- no rule of its own measures them -- and says where
@@ -1996,7 +2095,8 @@ GRADED_ELSEWHERE = {
 _CLAUSE_CARRIED = {'mount_mode', 'cable_entry', 'cable_envelope_mm'}
 
 _CLAUSE_RE = re.compile(
-    r'^(?P<kind>interfaces|keepouts|proximity|arrays|fixed|product|assembly)'
+    r'^(?P<kind>interfaces|keepouts|proximity|arrays|fixed|product|assembly'
+    r'|keep_away)'
     r'(?:\[(?P<inner>.*)\])?'
     r'(?:\.(?P<key>[a-z_]+))?$')
 
@@ -2022,6 +2122,14 @@ def parse_clause_id(cid: str) -> Optional[Dict[str, object]]:
                               'key': key, 'row': None}
     if kind in ('product', 'assembly'):
         out['ref'] = None
+        return out
+    if kind == 'keep_away':
+        # #1253: `keep_away[<row>].rule`, or the bare `keep_away` a brief
+        # declaring "unknown" reports. No ref: a rule names nets.
+        if inner is not None and not inner.isdigit():
+            return None
+        out.update({'ref': None,
+                    'row': int(inner) if inner is not None else None})
         return out
     if inner is None:
         return None
@@ -2063,16 +2171,34 @@ def _intent_has(intent_doc, path: str) -> bool:
     return node is not None
 
 
-def _clause_state(rec, intent_doc, rules_run, abstained, cons=None):
+def _clause_state(rec, intent_doc, rules_run, abstained, cons=None,
+                  keep_away_rules=None):
     """The verdict for ONE declared clause. Five states, kept apart.
 
     `graded` is the only one that means a rule reached a verdict. Collapsing
     the other four into "not graded" would rebuild the failure this whole
     channel exists against one key over: run 25 passed with `rules_run: 6` and
     every declared clause unmeasured, because a COUNT cannot say WHICH.
+
+    `keep_away_rules` is the report's `{row: rule}` (#1253): a keep-away
+    clause is carried when the intent carries THAT rule, at whatever index.
     """
     kind, ref, near, key = rec['kind'], rec['ref'], rec['near'], rec['key']
     rule = _CLAUSE_RULE.get(kind)
+    if kind == 'keep_away' and rec.get('row') is not None:
+        want = (keep_away_rules or {}).get(str(rec['row']))
+        hits = [j for j, k in enumerate(intent_doc.get('keep_away') or ())
+                if want is not None and _canonical_rule(k.get('rule')) == want]
+        if not hits:
+            return ('uncovered', f"the intent carries no keep_away rule "
+                                 f"{want!r}", rule)
+        if rule not in rules_run:
+            return 'uncovered', f"`{rule}` did not run on this grade", rule
+        for j in hits:
+            why = (abstained or {}).get(f"keep_away[{j}]")
+            if why:
+                return 'abstained', why, rule
+        return 'graded', '', rule
     if kind == 'interfaces' and key in _CLAUSE_CARRIED:
         # #959 (#1000): graded when `connector_consequences` compiled it
         # and the intent carries what it compiled to; otherwise carried,
@@ -2233,15 +2359,20 @@ def clause_coverage(report: Dict, intent_doc: Dict, *,
     clauses = []
     counts = {'graded': 0, 'abstained': 0, 'uncovered': 0,
               'not_claimed': 0, 'carried': 0, 'drifted': 0}
+    ka_rules = report.get('keep_away_rules') or {}
     for cid in list(report.get('declared') or ()):
         rec = parse_clause_id(cid)
         if rec is None:
             continue
         state, why, rule = _clause_state(rec, intent_doc, tuple(rules_run),
-                                         abstained, cons)
+                                         abstained, cons,
+                                         keep_away_rules=ka_rules)
         row = {'id': cid, 'kind': rec['kind'], 'ref': rec['ref'],
                'rule': rule, 'state': state, 'why': why,
                'drifted': cid in drift_set}
+        if rec['kind'] == 'keep_away':
+            # The rule text the ledger attributes a finding by (#1253).
+            row['keep_away_rule'] = ka_rules.get(str(rec.get('row')))
         # The FINDING that grades it, where it differs from the rule that
         # runs it (the side finding runs inside `edge_connector`), and the
         # keep-out a cable envelope compiled to -- so the ledger attributes
@@ -2354,6 +2485,8 @@ def format_report(report: Dict, *, path: str = '') -> str:
                        if c.get('fixed_poses') else ', carried not asserted'))
     if c.get('arrays'):
         bits.append(f"{c['arrays']} array(s)")
+    if c.get('keep_away'):
+        bits.append(f"{c['keep_away']} keep-away rule(s)")
     if report.get('unknown'):
         bits.append(f"{len(report['unknown'])} declared UNKNOWN")
     if report.get('absent'):
