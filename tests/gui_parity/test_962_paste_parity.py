@@ -123,8 +123,15 @@ def bounds_delta(f, g):
         gb[identity_key(a, g.nets)].append(a.bounds)
     worst, where = 0.0, ''
     for k, la in ga.items():
-        lb = gb.get(k, [])
-        for ba, bb in zip(sorted(la), sorted(lb)):
+        lb = list(gb.get(k, []))
+        # Nearest partner, not sorted rank: two float spellings of one
+        # coordinate re-rank a row of identical openings (compare_pcb_data's
+        # _pair_nearest_bounds has the measured case).
+        for ba in la:
+            if not lb:
+                break
+            j = min(range(len(lb)), key=lambda i: max(abs(x - y) for x, y in zip(ba, lb[i])))
+            bb = lb.pop(j)
             d = max(abs(x - y) for x, y in zip(ba, bb))
             if d > worst:
                 worst, where = d, '%s: %s vs %s' % (k[:4], ba, bb)
@@ -248,6 +255,42 @@ def main():
             '  (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net 1 "/A")))\n'
             ')\n')
     boards.append(p)
+    # - what a reader of `(xy ...)` alone and of the file's stroke width alone
+    #   got wrong: a polygon written as ARCS only (apple1_mainboard's F.Cu
+    #   gr_poly, zynq7020_som U9's F.Paste openings -- here in a part at 30
+    #   deg, so the arcs are transformed before they are linearized), one
+    #   mixing (xy) and arcs with a shared point, and UNFILLED zero-width
+    #   shapes, which pcbnew strokes at 0.1 mm on load (piunora MP1's
+    #   `(width 0) (fill none)` paste outlines; a zero-width copper line).
+    p = os.path.join(syn_dir, 'syn_arcs.kicad_pcb')
+    with open(p, 'w', encoding='utf-8') as fh:
+        fh.write(
+            '(kicad_pcb (version 20241229) (generator "pcbnew") (general (thickness 1.6))\n'
+            ' (paper "A4") (layers (0 "F.Cu" signal) (31 "B.Cu" signal) (34 "B.Paste" user)'
+            ' (35 "F.Paste" user) (37 "F.SilkS" user) (44 "Edge.Cuts" user))\n'
+            ' (setup)\n (net 0 "") (net 1 "/A")\n'
+            ' (gr_rect (start 0 0) (end 60 40) (stroke (width 0.1) (type solid)) (fill none) '
+            '(layer "Edge.Cuts"))\n'
+            ' (gr_poly (pts (arc (start 10.889 8.6792) (mid 10 8.407884) (end 9.111 8.6792))'
+            ' (arc (start 9.111 11.3208) (mid 10 11.592116) (end 10.889 11.3208)))'
+            ' (stroke (width 0) (type solid)) (fill yes) (layer "F.Cu"))\n'
+            ' (footprint "L:A" (layer "F.Cu") (at 30 20 30)\n'
+            '  (property "Reference" "U9" (at 0 -4 30) (layer "F.SilkS") '
+            '(effects (font (size 1 1) (thickness 0.15))))\n'
+            '  (fp_poly (pts (arc (start -0.95 -2.3) (mid -0.993934 -2.406066) (end -1.1 -2.45))'
+            ' (arc (start -2.3 -2.45) (mid -2.406066 -2.406066) (end -2.45 -2.3))'
+            ' (arc (start -2.45 -1.1) (mid -2.406066 -0.993934) (end -2.3 -0.95))'
+            ' (arc (start -1.1 -0.95) (mid -0.993934 -0.993934) (end -0.95 -1.1)))'
+            ' (stroke (width 0) (type solid)) (fill yes) (layer "F.Paste"))\n'
+            '  (fp_poly (pts (xy 1 1) (xy 2.5 1) (arc (start 2.5 1) (mid 3 1.5) (end 2.5 2))'
+            ' (xy 1 2)) (stroke (width 0) (type solid)) (fill yes) (layer "F.Paste"))\n'
+            '  (fp_poly (pts (xy 1 -1) (xy 2 -1) (xy 2 -2) (xy 1 -2))'
+            ' (stroke (width 0) (type solid)) (fill none) (layer "F.Paste"))\n'
+            '  (fp_line (start -2 3) (end 2 3) (stroke (width 0) (type solid)) (layer "F.Cu"))\n'
+            '  (pad "1" smd rect (at 0 0 30) (size 1 1) (layers "F.Cu") (net 1 "/A"))\n'
+            '  (pad "2" smd rect (at 0 2 30) (size 1 1) (layers "F.Cu") (net 1 "/A")))\n'
+            ')\n')
+    boards.append(p)
 
     # -- comparator self-test: a dropped aperture must be SEEN ---------------
     esp = os.path.join(REPO, 'kicad_files', 'esp_prog.kicad_pcb')
@@ -366,6 +409,21 @@ def main():
             # circle filled by token; poly filled by the no-token rule
             if fill == {'rect': {True, False}, 'circle': {True}, 'poly': {True}}:
                 witnessed['syn_copper: fill by token and by the no-token rule'] += 1
+        if name == 'syn_arcs':
+            ga = sorted((a for a in f.paste_apertures if a.owner_ref == 'U9'),
+                        key=lambda a: len(a.rings[0]))
+            # the unfilled square (4 points, stroked 0.1), the mixed poly
+            # (4 + one linearized arc), the arcs-only one (4 linearized arcs)
+            if (len(ga) == 3 and len(ga[0].rings[0]) == 4 and not ga[0].filled
+                    and abs(ga[0].width - 0.1) < 1e-9
+                    and 6 < len(ga[1].rings[0]) < len(ga[2].rings[0])
+                    and len(ga[2].rings[0]) > 40):
+                witnessed['syn_arcs: arcs-only and mixed paste polys, a 0.1 mm unfilled stroke'] += 1
+            cu = [s for s in f.segments if s.graphic]
+            if (sum(1 for s in cu if s.owner_ref == '' and s.graphic_kind == 'poly') > 20
+                    and any(s.owner_ref == 'U9' and s.graphic_kind == 'line'
+                            and abs(s.width - 0.1) < 1e-9 for s in cu)):
+                witnessed['syn_arcs: arcs-only board copper poly, a 0.1 mm copper line'] += 1
 
         # -- native oracle: every pad opening's margin is KiCad's own --------
         live = {}
@@ -435,7 +493,9 @@ def main():
     for w in ('esp_prog U2 F.Paste graphic', 'glasgow J1 pin-in-paste graphics',
               'ulx3s pad ratio -0.2', 'watchy U4 windowpanes concern a net',
               'syn_copper: visible copper text only',
-              'syn_copper: fill by token and by the no-token rule'):
+              'syn_copper: fill by token and by the no-token rule',
+              'syn_arcs: arcs-only and mixed paste polys, a 0.1 mm unfilled stroke',
+              'syn_arcs: arcs-only board copper poly, a 0.1 mm copper line'):
         check(witnessed[w] == 1, 'witness present: %s' % w,
               'a named witness vanished; the parity arms above could then pass '
               'on an empty model')

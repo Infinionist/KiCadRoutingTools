@@ -2367,6 +2367,96 @@ def _arc_to_segments(start: Tuple[float, float], mid: Tuple[float, float],
     return segments
 
 
+_PTS_XY_OR_ARC_RE = re.compile(r'\(xy\s+(-?[\d.]+)\s+(-?[\d.]+)\)|' + _PTS_ARC_RE)
+
+
+def _ring_without_repeats(pts):
+    """Consecutive duplicate points dropped, and a last point equal to the
+    first: an arc's end and the next element's start are written twice."""
+    out = []
+    for p in pts:
+        if not out or p != out[-1]:
+            out.append(p)
+    if len(out) > 1 and out[0] == out[-1]:
+        out.pop()
+    return out
+
+
+def poly_points_with_arcs(blk: str, transform) -> List[Tuple[float, float]]:
+    """The vertices of a graphic's `(pts ...)` list in file order, each
+    `(arc (start) (mid) (end))` entry linearized (`_arc_to_segments`) AFTER its
+    three control points are transformed -- the order the pcbnew builder uses
+    on the live chain's arcs (`_pcbnew_chain_points`), so both parse paths
+    emit the same points. A KiCad 7+ polygon may be arcs only (apple1_mainboard's
+    F.Cu gr_poly, zynq7020_som U9's F.Paste openings), which a reader of
+    `(xy ...)` alone saw as no shape at all. A list with no arc is returned
+    exactly as written."""
+    if '(arc' not in blk:
+        return [transform(float(x), float(y)) for x, y in
+                re.findall(r'\(xy\s+([-\d.]+)\s+([-\d.]+)\)', blk)]
+    pts = []
+    for m in _PTS_XY_OR_ARC_RE.finditer(blk):
+        if m.group(1) is not None:
+            pts.append(transform(float(m.group(1)), float(m.group(2))))
+            continue
+        s = transform(float(m.group(3)), float(m.group(4)))
+        mid = transform(float(m.group(5)), float(m.group(6)))
+        e = transform(float(m.group(7)), float(m.group(8)))
+        segs = _arc_to_segments(s, mid, e)
+        pts.append(segs[0][0])
+        pts.extend(p1 for _p0, p1 in segs)
+    return _ring_without_repeats(pts)
+
+
+def _pcbnew_chain_points(chain, to_mm) -> List[Tuple[float, float]]:
+    """A live SHAPE_LINE_CHAIN's vertices, `poly_points_with_arcs`' twin: a
+    chain with no arc is its points as pcbnew stores them; an arc in it is
+    linearized by `_arc_to_segments` from its own start / mid / end, not taken
+    from pcbnew's approximation, so the two parse paths emit the same
+    points."""
+    n = chain.PointCount()
+    pts = [(to_mm(chain.CPoint(k).x), to_mm(chain.CPoint(k).y)) for k in range(n)]
+    try:
+        n_arcs = chain.ArcCount()
+    except Exception:
+        n_arcs = 0
+    if not n_arcs:
+        return pts
+    arcs = []
+    for i in range(n_arcs):
+        a = chain.Arc(i)
+        arcs.append(((to_mm(a.GetP0().x), to_mm(a.GetP0().y)),
+                     (to_mm(a.GetArcMid().x), to_mm(a.GetArcMid().y)),
+                     (to_mm(a.GetP1().x), to_mm(a.GetP1().y))))
+    out, k, used = [], 0, set()
+    while k < n:
+        if chain.IsArcStart(k):
+            hit = next((i for i, (s, _m, _e) in enumerate(arcs)
+                        if i not in used and s == pts[k]), None)
+            if hit is None:
+                hit = next((i for i, (_s, _m, e) in enumerate(arcs)
+                            if i not in used and e == pts[k]), None)
+            if hit is not None:
+                used.add(hit)
+                s, mid, e = arcs[hit]
+                if e == pts[k] and s != pts[k]:
+                    s, e = e, s
+                segs = _arc_to_segments(s, mid, e)
+                out.append(segs[0][0])
+                out.extend(p1 for _p0, p1 in segs)
+                j = k + 1
+                while j < n and not chain.IsArcEnd(j):
+                    j += 1
+                if j >= n:
+                    break
+                # A point two arcs share is the next arc's start too.
+                k = j if chain.IsArcStart(j) else j + 1
+                continue
+        out.append(pts[k])
+        k += 1
+    return _ring_without_repeats(out)
+
+
 # Regex gap that matches anything EXCEPT the start of another graphic element,
 # so a lazy match can't run past the current element to a later (layer "...")
 # token. A plain `.*?` gap let a silk/fab gr_* element match across element
@@ -5339,6 +5429,21 @@ def _shape_filled(blk: str, kind: str, width: float) -> bool:
     return False
 
 
+#: The stroke pcbnew's reader gives an UNFILLED shape whose file stroke width
+#: is 0 (KiCad's DEFAULT_LINE_WIDTH). Probed on pcbnew 10.0.0 at file versions
+#: 20211014, 20221018 and 20241229, for lines, arcs, rects, circles and polys:
+#: unfilled -> 0.1, filled -> 0 kept. piunora's KiCad 6 MP1 paste outlines
+#: are `(width 0) (fill none)` polys, which loaded as 0.1 mm stroked openings.
+UNSTROKED_SHAPE_WIDTH = 0.1
+
+
+def _loaded_stroke_width(blk: str, kind: str, width: float) -> float:
+    """A graphic's stroke width as pcbnew loads it (UNSTROKED_SHAPE_WIDTH)."""
+    if width <= 0 and not _shape_filled(blk, kind, width):
+        return UNSTROKED_SHAPE_WIDTH
+    return width
+
+
 def _paste_shape_record(tag: str, blk: str, owner: str, transform):
     """One paste graphic as the `paste_apertures.graphic_aperture` dict, or
     None. `transform` maps a block-local point to global mm (the identity for
@@ -5355,11 +5460,12 @@ def _paste_shape_record(tag: str, blk: str, owner: str, transform):
         return (float(m.group(1)), float(m.group(2))) if m else None
 
     kind = tag.split('_', 1)[1]
-    rec = {'owner_ref': owner, 'kind': kind, 'width': width,
-           'filled': _shape_filled(blk, kind, width), 'uuid': uuid}
+    filled = _shape_filled(blk, kind, width)
+    rec = {'owner_ref': owner, 'kind': kind,
+           'width': _loaded_stroke_width(blk, kind, width),
+           'filled': filled, 'uuid': uuid}
     if kind == 'poly':
-        rec['points'] = [transform(float(x), float(y)) for x, y in
-                         re.findall(r'\(xy\s+([-\d.]+)\s+([-\d.]+)\)', blk)]
+        rec['points'] = poly_points_with_arcs(blk, transform)
     elif kind == 'rect':
         a, b = xy('start'), xy('end')
         if not (a and b):
@@ -5971,6 +6077,8 @@ def extract_segments(content: str, name_to_id: Dict[str, int] = None) -> List[Se
             layers, w, nid, uuid = _blk_fields(blk)
             if not layers:
                 continue
+            # pcbnew strokes an UNFILLED zero-width shape at 0.1 mm on load.
+            w = _loaded_stroke_width(blk, tag[3:], w)
             if tag in ('gr_line', 'gr_arc') and w <= 0:
                 continue        # unstroked line/arc: no copper to model
             for layer in layers:
@@ -5990,8 +6098,7 @@ def extract_segments(content: str, name_to_id: Dict[str, int] = None) -> List[Se
                                 width=w, layer=layer, net_id=nid, uuid=uuid, graphic=True,
                                 drawn_width=w, graphic_kind='arc'))
                 elif tag == 'gr_poly':
-                    pts = [(float(x), float(y)) for x, y in
-                           re.findall(r'\(xy\s+([-\d.]+)\s+([-\d.]+)\)', blk)]
+                    pts = poly_points_with_arcs(blk, lambda x, y: (x, y))
                     _emit_outline(pts, w, layer, nid, uuid,
                                   filled=_shape_filled(blk, 'poly', w))
                 elif tag == 'gr_rect':
@@ -6062,6 +6169,7 @@ def extract_segments(content: str, name_to_id: Dict[str, int] = None) -> List[Se
                 layers, w, nid, uuid = _blk_fields(blk)
                 if not layers:
                     continue
+                w = _loaded_stroke_width(blk, tag[3:], w)   # see the board pass
                 if tag in ('fp_line', 'fp_arc') and w <= 0:
                     continue    # unstroked line/arc: no copper to model
                 for layer in layers:
@@ -6088,9 +6196,7 @@ def extract_segments(content: str, name_to_id: Dict[str, int] = None) -> List[Se
                                     uuid=uuid, graphic=True,
                                     drawn_width=w, graphic_kind='arc'))
                     elif tag == 'fp_poly':
-                        pts = [_g(float(x), float(y)) for x, y in
-                               re.findall(r'\(xy\s+([-\d.]+)\s+([-\d.]+)\)',
-                                          blk)]
+                        pts = poly_points_with_arcs(blk, _g)
                         _emit_outline(pts, w, layer, nid, uuid,
                                       filled=_shape_filled(blk, 'poly', w))
                     elif tag == 'fp_rect':
@@ -7192,9 +7298,8 @@ def _pcbnew_paste_graphics(board, live_fps, live_keys, get_layer_name, to_mm):
         def pt(v):
             return (to_mm(v.x), to_mm(v.y))
         if shape == _POLY:
-            ol = d.GetPolyShape().Outline(0)
-            rec.update(kind='poly',
-                       points=[pt(ol.CPoint(k)) for k in range(ol.PointCount())])
+            rec.update(kind='poly', points=_pcbnew_chain_points(
+                d.GetPolyShape().Outline(0), to_mm))
         elif shape == _RECT:
             try:
                 corners = [pt(c) for c in d.GetRectCorners()]
@@ -8430,10 +8535,8 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                     _ow = _w if _w > 0 else defaults.TRACK_WIDTH
                     try:
                         if _shape == _POLY:
-                            _ps = _d.GetPolyShape()
-                            _ol = _ps.Outline(0)
-                            _pts = [(to_mm(_ol.CPoint(k).x), to_mm(_ol.CPoint(k).y))
-                                    for k in range(_ol.PointCount())]
+                            _pts = _pcbnew_chain_points(
+                                _d.GetPolyShape().Outline(0), to_mm)
                             if len(_pts) >= 2:
                                 _emit_outline_b(_pts, _ow)
                         elif _shape == _RECT:
