@@ -293,8 +293,13 @@ castellated pad exempt). It asks only a part whose pads reach past its
 courtyard by more than the board-edge margin (`_pad_copper_overhang`),
 since any other part's copper is on the board wherever its courtyard is.
 A part no pose can hold is left
-unseated, or under `--repair` unrepaired, by name. The polish does not
-search, and can still move such copper past the outline; the gate charges it.
+unseated, or under `--repair` unrepaired, by name. The polish asks the same
+question (`QuenchState.candidate_valid`, through the same two functions):
+absolute on its ordinary path, and on the off-board unfreeze branch a part
+coming home may not end with its pad copper further past the outline than it
+starts. A declared `fixed_poses[]` pose whose courtyard is inside but whose
+pad copper is past the outline is REFUSED by stage 0 with its measurement,
+as an overhanging pose with copper past the outline always was.
 The seed's pad-pair and band channels read "moved" off the WRITTEN board, so
 a polish or re-seat move counts, on the delta (#1241).
 The gate also charges the body pairs check_assembly gates on the written
@@ -1802,7 +1807,9 @@ re-seating 85/92 while leaving its zone targets unmoved):
   NEW different-net pad intersection is never admitted). Exact `check_drc`
   geometry runs once per CLI for reports, so summaries carry no AABB phantoms.
 - **Quench integration (default ON)** — `candidate_valid`, the off-board
-  unfreeze branch and the swap phase all carry the pad gate; the halo term no
+  unfreeze branch and the swap phase all carry the pad gate (and, since
+  #1257, `candidate_valid` refuses pad copper past the outline for a part
+  whose pads reach past its courtyard -- veto `pad_copper_outline`); the halo term no
   longer saturates on overlap (existing overlaps now have a repair gradient);
   zero-net parts (mounting holes) are frozen by the quench unless
   `--move-unconnected`; zero-pad footprints with a courtyard are static

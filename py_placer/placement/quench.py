@@ -69,10 +69,27 @@ EPS_IMPROVE = 1e-6
 #: #1113: every label `QuenchState.candidate_veto` can return, in the order
 #: candidate_valid asks (intent first, the tether last); 'unattributed' is a
 #: refusal no label covered and is a bug for `tests/test_1113_pose_veto.py`.
-VETO_CHECKS = ('intent', 'board_bbox', 'outline', 'waived_drill',
-               'waived_pads', 'body_overlap', 'courtyard', 'container_pin',
-               'body_contained', 'pads_under_body', 'keepout_band', 'pads',
-               'tether', 'escape_overlap')
+VETO_CHECKS = ('intent', 'board_bbox', 'outline', 'pad_copper_outline',
+               'waived_drill', 'waived_pads', 'body_overlap', 'courtyard',
+               'container_pin', 'body_contained', 'pads_under_body',
+               'keepout_band', 'pads', 'tether', 'escape_overlap')
+
+
+_SEEDER = None
+
+
+def _seeder():
+    """`placement.seeder`, imported on first use (it imports this module).
+    `candidate_valid` reads the #1257 pad conjunct through the module
+    object, so a test that patches `seeder._pad_copper_overhang` switches
+    the seat search's and the quench's copies off together."""
+    global _SEEDER
+    if _SEEDER is None:
+        from . import seeder
+        _SEEDER = seeder
+    return _SEEDER
+
+
 #: mm2 of .Fab body overlap `_body_overlap_at` counts: bodies that abut
 #: (a shared edge, area 0) are not overlapping.
 _BODY_OVERLAP_EPS = 1e-6
@@ -2379,6 +2396,16 @@ class QuenchState:
                 legal = False
                 if self._why is not None:
                     self._veto('outline')
+        # #1257: and the PAD COPPER of a part whose pads reach past its
+        # courtyard by more than the margin the two tests above hold it to --
+        # the polish pushed `_scoped`'s R2 (a pad 4 mm east of its courtyard)
+        # 1.5 mm past the outline with the courtyard legal. ABSOLUTE, like the
+        # outline; a part coming home from off the board gets the escape
+        # branch's own, monotone, form below.
+        if legal and self._pad_copper_past(ref, x, y, rot) > EPS_IMPROVE:
+            legal = False
+            if self._why is not None:
+                self._veto('pad_copper_outline')
         if legal and getattr(self, 'courtyards_ignored', False):
             # #1101: courtyards waived by the project, so the neighbour test
             # asks the PAD question instead, ABSOLUTELY and at each pair's own
@@ -2556,7 +2583,8 @@ class QuenchState:
         if not (cand_overlap <= EPS_IMPROVE
                 and cand_board < cur_board - EPS_IMPROVE):
             if (self._why is not None and cand_overlap > EPS_IMPROVE
-                    and self._why.get('check') in ('board_bbox', 'outline')):
+                    and self._why.get('check') in ('board_bbox', 'outline',
+                                                   'pad_copper_outline')):
                 # #1113: a part coming home from off the board, refused for
                 # OVERLAP -- the board term the ordinary path named is not
                 # what stopped it (a courtyard label keeps its blocker).
@@ -2567,6 +2595,16 @@ class QuenchState:
         # refusal below is theirs, not the ordinary path's board term.
         if self._why is not None:
             self._why.clear()
+        # #1257: coming home, the pad copper of a part `_pad_copper_past`
+        # measures may not end further past the outline than it starts --
+        # the courtyard term above can improve while a pad reaching past the
+        # courtyard moves off the board.
+        cand_pad = self._pad_copper_past(ref, x, y, rot)
+        if cand_pad > EPS_IMPROVE and cand_pad > self._pad_copper_past(
+                ref, part.x, part.y, part.rot) + EPS_IMPROVE:
+            if self._why is not None:
+                self._veto('pad_copper_outline')
+            return False
         # #1101: ...and the same BODY conjunct the ordinary path has. Coming in
         # from the pile, a part whose courtyard is small and whose drawn body
         # is large (StickHub's lying-down electrolytic C38: a 6.3 x 11.5 mm
@@ -2982,6 +3020,19 @@ class QuenchState:
             v = self.violation_parts(ref, exclude=exclude)
             self._inc_violation[key] = v
         return v
+
+    def _pad_copper_past(self, ref, x, y, rot) -> float:
+        """#1257: how far `ref`'s pad copper reaches past the outline at the
+        pose by check_assembly's gate, for a part whose pads reach past its
+        courtyard by more than `edge_gate.margin`; 0.0 for every other part,
+        whose copper a courtyard held inside at that margin keeps on the
+        board, after one cached compare. `seeder.pose_ok`'s conjunct, through
+        the seeder's own two functions (`_pad_copper_overhang`,
+        `_pad_copper_off_board`) rather than a copy."""
+        sd = _seeder()
+        if sd._pad_copper_overhang(self, ref) <= self.edge_gate.margin:
+            return 0.0
+        return sd._pad_copper_off_board(self, ref, x, y, rot)
 
     def _edges_near(self, ref) -> list:
         """Cached: the Edge.Cuts edges this part's reachable disk can touch.

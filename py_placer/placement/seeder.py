@@ -205,6 +205,11 @@ def _pad_copper_overhang(state, ref: str) -> float:
     no further than that is on the board; only a part reaching further needs
     `_pad_copper_off_board`. (At a zero margin the courtyard test cannot see
     a notch crossing a courtyard either; this inherits that, not more.)
+
+    Three readers ask the pair in this order: `pose_ok`, `_fixed_pose_check`
+    on a contained pose, and the quench's `candidate_valid` (through this
+    module, `QuenchState._pad_copper_past`), each after its own courtyard
+    test at the same margin.
     """
     cache = getattr(state, '_pad_copper_overhang_cache', None)
     if cache is None:
@@ -5075,7 +5080,8 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple],
 
     Everything else at its normal rule, ABSOLUTE (a declared pose has no
     incumbent to be "no worse than"): the outline (containment at the
-    board-edge margin), declared keep-outs and exclusive zones, #1031's
+    board-edge margin, and since #1257 the pad copper of a part whose pads
+    reach past its courtyard), declared keep-outs and exclusive zones, #1031's
     rule-area keep-out band (`legality_ctx.keepout_amount`), and to every
     obstacle `legality_ctx.pair_shortfall`'s pad clearance, hole clearance,
     pad short and cross-part pad stack -- `pads_ok`'s conjuncts, called.
@@ -5219,6 +5225,15 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple],
             reasons.append(f"{holes_out} of {n_holes} drill hole(s) past "
                            f"the outline")
         return (None if reasons else 'overhang'), reasons, conflicts
+    # #1257: a CONTAINED courtyard proves nothing about a pad that reaches
+    # past it, so such a part's copper is asked too, by check_assembly's gate
+    # (`pose_ok`'s conjunct) -- and refused with its measurement, exactly as
+    # the overhang branch above refuses pad copper past the outline: the pose
+    # is a fact, never nudged.
+    if _pad_copper_overhang(state, ref) > state.edge_gate.margin:
+        off = _pad_copper_off_board(state, ref, x, y, rot)
+        if off > 1e-6:
+            reasons.append(f"pad copper {off:.3f}mm past the outline")
     return (None if reasons else 'contained'), reasons, conflicts
 
 

@@ -30,8 +30,27 @@ pads reach past its courtyard by more than the edge margin
   N. A part whose pad cannot be on the board in any pose: the seed leaves it
      UNSEATED by name, `--repair` reports it unrepaired by name and its gate
      charges the copper. Before: seeded 33.2 mm past, and "repaired" 0 mm.
+
+The polish and a declared fixed pose asked only the courtyard too; both now
+ask the same pad question (second #1257 commit):
+
+  Q. THE QUENCH (`candidate_valid`)
+     Q1 the old seat is refused, veto `pad_copper_outline`; blind admits it.
+     Q2 the off-board unfreeze branch: coming home, a part may not end with
+        its pad copper further past the outline than it starts -- refused
+        from a start whose pads are on the board, admitted from one whose
+        pads are further out.
+     Q3 end to end, the polish keeps R2's pad on the board (R2 placed 0.5 mm
+        inside: kept inside; placed 0.5 mm past: brought 0.5 mm inside),
+        exit 0. Before: pulled 1.5 mm past, exit 4.
+  F. A FIXED POSE whose courtyard is inside and whose pad copper is past the
+     outline is REFUSED with its measurement and the part held out, exit 4,
+     as an overhanging pose with copper past the outline always was; the pose
+     with its pad on the board is seated. Before: seated, exit 4 on copper.
 """
 
+import contextlib
+import io
 import os
 import random
 import re
@@ -270,7 +289,7 @@ class NoPoseExists(unittest.TestCase):
                          'they came in or staged below the board, and NOT '
                          'placed: R8')
             # Blind, it was seated with the pad 33.2 mm past the edge.
-            _rb, sb = _run(path, {}, code=4, out_name='b.kicad_pcb',
+            _rb, sb = _run(path, {}, code=4, out_name='blind.kicad_pcb',
                            refuse='pad copper past the board outline on R8',
                            blind=True)
         self.assertEqual(s['unseated_refs'], ['R8'])
@@ -287,7 +306,7 @@ class NoPoseExists(unittest.TestCase):
                         flags=('--repair',),
                         refuse='the repair leaves pad copper past the board '
                                'outline on R8')
-            _rb, sb = _run(path, {}, code=4, out_name='b.kicad_pcb',
+            _rb, sb = _run(path, {}, code=4, out_name='blind.kicad_pcb',
                            flags=('--repair',), blind=True,
                            refuse='the repair leaves pad copper past the '
                                   'board outline on R8')
@@ -298,6 +317,109 @@ class NoPoseExists(unittest.TestCase):
                          ['R8'])
         # Blind, it was "repaired" where it stood.
         self.assertIn('R8', sb['repaired_refs'])
+
+
+def _veto(st, ref, pose):
+    """`candidate_veto` with every other part excluded."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        return st.candidate_veto(ref, *pose, exclude=set(st.parts) - {ref})
+
+
+class TheQuench(unittest.TestCase):
+
+    def test_q1_the_old_seat_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            st = _state(_synthetic(td, _scoped()))
+            self.assertEqual(_veto(st, 'R2', OLD_SEAT),
+                             ('pad_copper_outline', None))
+            self.assertIsNone(_veto(st, 'R2', (34.404, 21.482, 0.0)))
+            with _blind():
+                self.assertIsNone(_veto(st, 'R2', OLD_SEAT))
+
+    def test_q2_coming_home_the_copper_may_not_go_further_out(self):
+        # R2's courtyard pokes past the east edge either way, so the
+        # candidate (37, 20, 0) -- courtyard inside, pad 2.5 mm past --
+        # reaches the unfreeze branch, whose courtyard term improves.
+        home = (37.0, 20.0, 0.0)
+        with tempfile.TemporaryDirectory() as td:
+            st = _state(_synthetic(td, _scoped()))
+            # From (39.6, 20, 90): pad pointing north, on the board.
+            st.apply_move('R2', 39.6, 20.0, 90.0)
+            self.assertEqual(st._pad_copper_past('R2', 39.6, 20.0, 90.0), 0.0)
+            self.assertEqual(_veto(st, 'R2', home),
+                             ('pad_copper_outline', None))
+            with _blind():
+                self.assertIsNone(_veto(st, 'R2', home))
+            # From (39.5, 20, 0): pad 5 mm past -- the candidate is better.
+            st.apply_move('R2', 39.5, 20.0, 0.0)
+            self.assertAlmostEqual(
+                st._pad_copper_past('R2', 39.5, 20.0, 0.0), 5.0)
+            self.assertIsNone(_veto(st, 'R2', home))
+
+    def test_q3_the_polish_keeps_the_pad_on_the_board(self):
+        # `_scoped` without --force: R2 is outside the seed's scope and only
+        # the polish moves it (`_R2_ROT` holds its angle).
+        for x, gap in (('34', 0.5), ('35', 0.5)):
+            with self.subTest(x=x), tempfile.TemporaryDirectory() as td:
+                path = _synthetic(td, [p.replace('(at 34 20)',
+                                                 f'(at {x} 20)', 1)
+                                       for p in _scoped()])
+                r, s = _run(path, _R2_ROT, code=0, flags=())
+                _rb, sb = _run(path, _R2_ROT, code=4, flags=(),
+                               out_name='blind.kicad_pcb', blind=True,
+                               refuse='pad copper past the board outline '
+                                      'on R2')
+                self.assertAlmostEqual(
+                    s['pad_edge_after']['minimum_gap_by_ref_mm']['R2'], gap)
+                self.assertEqual(s['pad_copper_off_board_seeded'], [])
+                self.assertNotIn('past the board outline', r.stdout)
+                # Blind, the polish pulled it 1.5 mm past the edge.
+                self.assertEqual(sb['pad_copper_off_board_seeded'],
+                                 [['R2', 1.5]])
+
+
+def _fixed(x):
+    return {'fixed_poses': [{'ref': 'R2', 'x': x, 'y': 21.482, 'rot': 0,
+                             'basis': 'declared'}]}
+
+
+class TheFixedPose(unittest.TestCase):
+
+    def test_f_the_check_names_the_copper(self):
+        with tempfile.TemporaryDirectory() as td:
+            st = _state(_synthetic(td, _scoped()))
+            got = seeder._fixed_pose_check(st, 'R2', OLD_SEAT, {})
+            self.assertEqual(got, (None, ['pad copper 0.904mm past the '
+                                          'outline'], {}))
+            self.assertEqual(seeder._fixed_pose_check(
+                st, 'R2', (34.404, 21.482, 0.0), {})[0], 'contained')
+            with _blind():
+                self.assertEqual(seeder._fixed_pose_check(
+                    st, 'R2', OLD_SEAT, {})[0], 'contained')
+
+    def test_f_place_seed_refuses_it_by_name(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = _synthetic(td, _scoped())
+            r, s = _run(path, _fixed(OLD_SEAT[0]), code=4,
+                        refuse='UNSEATED -- left where they came in or '
+                               'staged below the board, and NOT placed: R2')
+            _rb, sb = _run(path, _fixed(OLD_SEAT[0]), code=4,
+                           out_name='blind.kicad_pcb', blind=True,
+                           refuse='pad copper past the board outline on R2')
+            _rc, sc = _run(path, _fixed(34.404), code=0,
+                           out_name='c.kicad_pcb')
+        self.assertEqual(s['fixed_refused']['R2']['reason'],
+                         'pad copper 0.904mm past the outline')
+        self.assertIn('fixed pose R2: REFUSED at (35.404, 21.482, 0deg) -- '
+                      'pad copper 0.904mm past the outline. The pose is a '
+                      'fact, so it is never nudged', r.stdout)
+        self.assertEqual(s['pad_copper_off_board_seeded'], [])
+        # Blind, it was seated there and its copper charged.
+        self.assertEqual(list(sb['fixed_seated']), ['R2'])
+        self.assertEqual(sb['pad_copper_off_board_seeded'], [['R2', 0.904]])
+        # The control: the same declaration with its pad on the board.
+        self.assertEqual(list(sc['fixed_seated']), ['R2'])
+        self.assertEqual(sc['fixed_refused'], {})
 
 
 if __name__ == '__main__':

@@ -19,15 +19,14 @@ this gate: it is seated on its edge with its pads on the board and the band's
 minimum named. The gate's attribution is pinned here on R2 instead, a part
 whose pad lies 4 mm outside its courtyard.
 
-Since #1257 the seat search refuses that copper too (test_1257_seat_pad_
-copper.py), so no SEARCH keeps R2's off-board seat any more; the polish, which
-does not search, still pushes it there (`TheWrittenPoseDecides`' polish tests,
-unpatched). The tests built on lap 0 -- a seat the seed KEPT, must_lock, a
-lock the last lap stamped, in place -- run place_seed with the search's
-courtyard-only predicate put back (`blind=True`, the search as #1241 left
-it), so the gate is still handed the copper they are about: what they pin is
-the gate's attribution, which answers for every step that can put copper
-there, not the search.
+Since #1257 the seat search and the polish refuse that copper too
+(test_1257_seat_pad_copper.py), so neither puts R2's pad past the outline
+any more. The tests that need such a seat -- lap 0 and what is built on it (a
+seat the seed KEPT, must_lock, a lock the last lap stamped, in place) and the
+polish moves -- run place_seed with both checks' courtyard-only form put back
+(`blind=True`, place_seed as #1241 left it), so the gate is still handed the
+copper they are about: what they pin is the gate's attribution, which
+answers for every step that can put copper there, not the search or polish.
 """
 
 import json
@@ -47,10 +46,11 @@ from test_1174_emit_round_trip import _TALL_J1, _box, _synthetic  # noqa: E402
 
 PY = sys.executable
 
-#: #1257: place_seed with the seat search's pad-copper conjunct switched off
-#: (`seeder._pad_copper_overhang` reads 0.0 for every part, so `pose_ok`
-#: skips it): the courtyard-only search #1241 was written against. See the
-#: module docstring for why the lap-0 tests need it.
+#: #1257: place_seed with the pad-copper conjunct switched off in the seat
+#: search and the polish (`seeder._pad_copper_overhang` reads 0.0 for every
+#: part, so `pose_ok` and `QuenchState.candidate_valid` skip it): the
+#: courtyard-only place_seed #1241 was written against. See the module
+#: docstring for why the tests that need copper past the outline use it.
 _PATHS = [os.path.join(ROOT, p) for p in ('py_placer', 'py_router')]
 _BLIND_SEARCH = (
     "import runpy, sys\n"
@@ -217,10 +217,11 @@ class TheWrittenPoseDecides(unittest.TestCase):
                           flags=('--no-polish',))
             self.assertGreater(s0['pad_edge_after']['minimum_gap_by_ref_mm']
                                ['R2'], 0.0)
-            # The polish pulls R2 toward R3 and its pad ends past the edge.
+            # The (blind) polish pulls R2 toward R3 and its pad ends past
+            # the edge; the real one now keeps it on the board (#1257).
             r, summary = _run(path, _R2_ROT, code=4, flags=(),
                               refuse='pad copper past the board outline '
-                                     'on R2')
+                                     'on R2', blind=True)
         self.assertEqual([ref for ref, _mm in
                           summary['pad_copper_off_board_seeded']], ['R2'])
         self.assertNotIn("the board's own", r.stdout)
@@ -242,11 +243,13 @@ class TheWrittenPoseDecides(unittest.TestCase):
 
     def _r2_at(self, x, code, refuse=None):
         """`_scoped` with the out-of-scope R2 at `x` (its pad's east end at
-        x + 5.5, against the outline at 40), seeded with the polish on."""
+        x + 5.5, against the outline at 40), seeded with the BLIND polish on
+        (the real one moves no pad past the outline, #1257)."""
         with tempfile.TemporaryDirectory() as td:
             path = _synthetic(td, [p.replace('(at 34 20)', f'(at {x} 20)', 1)
                                    for p in _scoped()])
-            return _run(path, _R2_ROT, code=code, refuse=refuse, flags=())
+            return _run(path, _R2_ROT, code=code, refuse=refuse, flags=(),
+                        blind=True)
 
     def test_a_polish_move_that_shrinks_the_overrun_is_not_charged(self):
         # R2 comes in 2.5 mm past the east edge; the polish pulls it to 1.5.
@@ -361,7 +364,7 @@ class InPlace(unittest.TestCase):
             r, summary = _run(path, _R2_ROT, code=4, flags=(),
                               refuse='pad copper past the board outline '
                                      'on R2',
-                              out_name=os.path.basename(path))
+                              out_name=os.path.basename(path), blind=True)
         self.assertEqual([ref for ref, _mm in
                           summary['pad_copper_off_board_seeded']], ['R2'])
         self.assertNotIn("the board's own", r.stdout)
