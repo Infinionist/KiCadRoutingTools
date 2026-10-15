@@ -853,7 +853,8 @@ ROWS = [
      (T_QB + '::test_a_cap_elected_beyond_the_radius_may_not_walk_into_another_ics',),
      'KILLED'),
     ('tether-ungraded-pair-never-counts', 'qu',
-     "            if ((grade_view or not t.data['graded'])\n"
+     "            if ((grade_view or not (t.data['graded']\n"
+     "                                    or t.data.get('stranded_error')))\n"
      "                    and d > t.data['radius'] + legality.EPS):",
      "            if (d > t.data['radius'] + legality.EPS):",
      (T_QB + '::test_a_cap_elected_beyond_the_radius_may_not_walk_into_another_ics',

@@ -2702,7 +2702,8 @@ class QuenchState:
                     'cap': row['cap'], 'ic': row['ic'],
                     'rail': tuple(row['rail']),
                     'rail_set': frozenset(row['rail']),
-                    'graded': row['graded'], 'radius': row['radius']}))
+                    'graded': row['graded'], 'radius': row['radius'],
+                    'stranded_error': bool(row.get('stranded_error'))}))
             elif rule == 'decap_pin_distance':
                 terms.append(_TetherTerm(rule, name, refs, lim, 'pin', {
                     'ic': row['ic'], 'pad_index': row['pad_index'],
@@ -2833,14 +2834,19 @@ class QuenchState:
             _ic, d = _groups.elect_live(self._posed_fp(cap, override), cands)
             if d is None:
                 return 0.0
-            if ((grade_view or not t.data['graded'])
+            if ((grade_view or not (t.data['graded']
+                                    or t.data.get('stranded_error')))
                     and d > t.data['radius'] + legality.EPS):
                 # Outside the radius the grade calls it `decap_ungraded`
                 # (warn): not a finding this term counts. INSIDE it is graded,
                 # so a pair elected beyond the radius may not walk in past
                 # the limit -- that would be a new error the grade sees. A
                 # pair graded at build stays measured beyond it: leaving the
-                # radius is not how a cap may stop being too far.
+                # radius is not how a cap may stop being too far. So does a
+                # cap STRANDED beyond it whose `decap_ungraded` is an error
+                # (#1150 c: a --decaps-from reference holds it, #1142): it
+                # read 0 here, so the gate let it drift further out; the
+                # monotone gate now lets it come home and nothing else.
                 return 0.0
             return d
         if t.kind == 'pin':

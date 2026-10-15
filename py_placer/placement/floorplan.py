@@ -3020,11 +3020,20 @@ def tether_gate_spec(intent: Intent) -> Dict[str, object]:
     d = dict(intent.decaps or {})
     if (d.get('max_distance_mm') is not None
             and intent.severity_of('decap_distance') == ERROR):
+        # #1150 (c): the caps whose `decap_ungraded` is an ERROR, read as
+        # `rule_decap_ungraded` reads it -- a cap a --decaps-from reference
+        # holds (#1142) unless `severity.decap_ungraded` is explicit, or
+        # every cap when that severity is error board-wide (#1102).
+        explicit = 'decap_ungraded' in (intent.severity or {})
         out['decap_distance'] = {
             'limit': float(d['max_distance_mm']),
             'radius': float(d.get('search_radius_mm',
                                   groups_mod.DECAP_RADIUS_MM)),
-            'exempt': tuple(d.get('exempt') or ())}
+            'exempt': tuple(d.get('exempt') or ()),
+            'held': (() if explicit else
+                     tuple(sorted(d.get('within_radius_refs') or ()))),
+            'ungraded_error': intent.severity_of(
+                'decap_ungraded', default=WARN) == ERROR}
     if (d.get('max_pin_distance_mm') is not None
             and intent.severity_of('decap_pin_distance') == ERROR):
         out['decap_pin_distance'] = {
@@ -3066,7 +3075,9 @@ def tether_pairings(tethers: Dict[str, object], pcb_data
     are carried too: the grade calls them `decap_ungraded` (warn; per cap an
     error for a cap a --decaps-from reference holds, #1142), and one
     that walks INTO the radius past the limit becomes an error, which the gate
-    must see.
+    must see. One whose `decap_ungraded` IS an error there is
+    `stranded_error: True` (#1150 c), and the gate measures it wherever it
+    stands, so a stranded cap may come home but not drift further out.
     """
     out: List[Dict[str, object]] = []
     fps = pcb_data.footprints or {}
@@ -3077,6 +3088,7 @@ def tether_pairings(tethers: Dict[str, object], pcb_data
         rows = [(cap, ic, True) for ic in sorted(near)
                 for cap, _d in near[ic]]
         rows += [(cap, ic, False) for cap, ic, _d in beyond]
+        held = frozenset(dd.get('held') or ())
         for cap, ic, graded in sorted(rows):
             if any(fnmatch.fnmatchcase(cap, p) for p in dd['exempt']):
                 continue
@@ -3084,6 +3096,10 @@ def tether_pairings(tethers: Dict[str, object], pcb_data
             out.append({'rule': 'decap_distance', 'name': f"{cap}->{ic}",
                         'refs': (cap,) + rail, 'cap': cap, 'ic': ic,
                         'rail': rail, 'graded': graded,
+                        # #1150 (c): beyond the radius at election, but an
+                        # ERROR there (`decap_ungraded` for a held cap).
+                        'stranded_error': (not graded and (
+                            cap in held or bool(dd.get('ungraded_error')))),
                         'limit': dd['limit'], 'radius': dd['radius']})
     dp = tethers.get('decap_pin_distance')
     if dp:
