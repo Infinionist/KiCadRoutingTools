@@ -158,9 +158,32 @@ def test_jobs_keeps_seed_order():
                 assert buf.getvalue().split('\n')[:-1] == [
                     f"[seed {s}] {x}" for s in want for x in 'ab'], \
                     (jobs, stop_at, buf.getvalue())
+        # An arm that raises: its own lines still print, before its error,
+        # after every earlier seed's, as the serial run's streamed lines do.
+        def boom(args, seed, full_nets, say):
+            say(f"[seed {seed}] a")
+            if seed == 1:
+                raise RuntimeError('arm 1 failed')
+            return {'seed': seed}, False
+        cs._seed_arm = boom
+        for jobs in (1, 3):
+            args = types.SimpleNamespace(seeds=[0, 1, 2], jobs=jobs)
+            buf, rows = io.StringIO(), []
+            try:
+                with contextlib.redirect_stdout(buf):
+                    for row, _stop in cs._seed_arms(args, ['*']):
+                        rows.append(row['seed'])
+            except RuntimeError as exc:
+                assert str(exc) == 'arm 1 failed', exc
+            else:
+                raise AssertionError(f"--jobs {jobs}: the arm's error was lost")
+            assert rows == [0], (jobs, rows)
+            assert buf.getvalue().split('\n')[:-1] == [
+                "[seed 0] a", "[seed 1] a"], (jobs, buf.getvalue())
     finally:
         cs._seed_arm = real
-    print("  PASS: --jobs 1 and 3 give the same rows and lines, in seed order")
+    print("  PASS: --jobs 1 and 3 give the same rows and lines, in seed order,"
+          " and a failing arm's lines print before its error")
 
 
 def test_duplicate_seeds_refused():

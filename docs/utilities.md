@@ -333,8 +333,12 @@ that board is probed and ranked (gate `rep`, row `repair`), so a pile whose
 intent arms the decap rule is rankable. Emits a ranked table, `seeds.json`,
 and a `JSON_SUMMARY` with `best_seed` and `best_board`. `--jobs N` runs up
 to N seeds at once; each seed is its own place_seed / repair / probe
-subprocesses writing its own boards, so N changes no result, and the console
-prints each seed's lines in seed order. Exit 0 with a ranked winner, 4 when
+subprocesses writing its own boards, and the console prints each seed's lines
+in seed order. N changes the wall clock only, with one caveat: a probe whose
+route falls back on a wall-clock limit (route.py's exact-fill refill, which
+then reports itself machine-dependent) can differ, and N concurrent arms make
+that likelier. Under `REDO_MANIFEST` the arms' own records interleave in
+completion order. Exit 0 with a ranked winner, 4 when
 nothing was rankable -- including when every probe ran but produced no
 verdict, which returned 0 with `best_seed: null` until #713 fixed it.
 When `place_seed` refuses the zone PLAN (its exit 5, #959), the plan is the

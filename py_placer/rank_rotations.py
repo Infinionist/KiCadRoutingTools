@@ -57,8 +57,9 @@ import os
 import statistics
 import sys
 
-from compare_seeds import (_split_forwarded, decap_only, probe_full,
-                           probe_nets, probe_order, run_place_seed)
+from compare_seeds import (_split_forwarded, decap_only, ordered_jobs,
+                           probe_full, probe_nets, probe_order,
+                           run_place_seed)
 
 #: Flags --seed-args may not carry: the ranker sets them itself, or they
 #: would make an arm something other than a polished seed from this pile.
@@ -555,19 +556,11 @@ def main():
             return run_place_seed(args.input_file, sp[1], sp[2], sp[3],
                                   ignore_nets=args.ignore_nets,
                                   seed_args=seed_args)
-        if args.jobs <= 1:
-            for sp in specs:
-                print(f"[{sp[0]}, seed {sp[2]}] place_seed -> "
-                      f"{os.path.basename(sp[3])}")
-                yield sp, _run(sp)
-            return
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=args.jobs) as ex:
-            futs = [ex.submit(_run, sp) for sp in specs]
-            for sp, fut in zip(specs, futs):
-                print(f"[{sp[0]}, seed {sp[2]}] place_seed -> "
-                      f"{os.path.basename(sp[3])}")
-                yield sp, fut.result()
+
+        def _announce(sp):
+            print(f"[{sp[0]}, seed {sp[2]}] place_seed -> "
+                  f"{os.path.basename(sp[3])}")
+        return ordered_jobs(specs, _run, args.jobs, announce=_announce)
 
     # The CONTROL: the same seeds with the intent as given, no rotation
     # declared -- the seed the caller would have got. Never ranked.

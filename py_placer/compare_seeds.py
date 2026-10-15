@@ -117,8 +117,12 @@ Examples:
     p.add_argument("--jobs", type=int, default=1,
                    help="Run up to N seeds at once (default 1). Each seed is "
                         "its own place_seed / repair / probe subprocesses "
-                        "writing its own boards, so N changes no result; the "
-                        "console prints each seed's lines in seed order")
+                        "writing its own boards, and the console prints each "
+                        "seed's lines in seed order. N changes the wall clock "
+                        "only -- but a probe whose route falls back on a "
+                        "wall-clock limit (route.py's exact-fill refill) can "
+                        "differ, and concurrent arms make that likelier; "
+                        "under REDO_MANIFEST the arms' own records interleave")
     return p
 
 
@@ -351,32 +355,57 @@ def _seed_arm(args, seed, full_nets, say):
     return row, False
 
 
+def ordered_jobs(specs, run, jobs, announce=None):
+    """`(spec, run(spec))` per spec, in spec order, up to `jobs` at once --
+    the one runner behind this tool's --jobs and rank_rotations' (#1202).
+    `announce(spec)` is called as a spec's turn comes: before it runs when
+    serial, so a long arm is named while it runs, and before its result is
+    handed back when concurrent. Closing the generator early (a stop) or an
+    error leaves the specs still queued unstarted, as a serial loop never
+    reaches them; arms already running are waited for, since their
+    subprocesses are not this thread's to interrupt."""
+    if jobs <= 1:
+        for spec in specs:
+            if announce is not None:
+                announce(spec)
+            yield spec, run(spec)
+        return
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=jobs) as ex:
+        futs = [ex.submit(run, spec) for spec in specs]
+        try:
+            for spec, fut in zip(specs, futs):
+                if announce is not None:
+                    announce(spec)
+                yield spec, fut.result()
+        finally:
+            for fut in futs:
+                fut.cancel()
+
+
 def _seed_arms(args, full_nets):
     """`(row, stop)` per seed, in --seeds order. Up to --jobs arms at once;
     a concurrent arm's lines are held and printed when its turn comes, so the
-    console reads as the serial run's. One serial arm streams its lines."""
+    console reads as the serial run's, and an arm that raises prints its lines
+    before its error does. One serial arm streams its lines."""
     if args.jobs <= 1:
         for seed in args.seeds:
             yield _seed_arm(args, seed, full_nets, print)
         return
-    from concurrent.futures import ThreadPoolExecutor
 
     def _held(seed):
         lines = []
-        return lines, _seed_arm(args, seed, full_nets, lines.append)
-    with ThreadPoolExecutor(max_workers=args.jobs) as ex:
-        futs = [ex.submit(_held, seed) for seed in args.seeds]
         try:
-            for fut in futs:
-                lines, got = fut.result()
-                for line in lines:
-                    print(line)
-                yield got
-        finally:
-            # A stop (or an error) leaves the seeds still queued unstarted,
-            # as the serial loop never reached them.
-            for fut in futs:
-                fut.cancel()
+            return lines, _seed_arm(args, seed, full_nets, lines.append), None
+        except Exception as exc:                        # noqa: BLE001
+            return lines, None, exc                     # raised in its turn
+    for _seed, (lines, got, exc) in ordered_jobs(args.seeds, _held,
+                                                 args.jobs):
+        for line in lines:
+            print(line)
+        if exc is not None:
+            raise exc
+        yield got
 
 
 def main():
