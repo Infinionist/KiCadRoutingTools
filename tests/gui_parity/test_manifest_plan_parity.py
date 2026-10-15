@@ -82,6 +82,7 @@ SCALAR_FLAGS = {
 PATH_FLAGS = {
     '--net-clearances': 'net_clearances_path',
     '--fab-overrides': 'fab_overrides_path',
+    '--sense-branches': 'sense_branches_path',
 }
 BOOL_FLAGS = {
     '--no-bga-zones': 'no_bga_zone', '--no-bga-zone': 'no_bga_zone',

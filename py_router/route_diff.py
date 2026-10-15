@@ -21,6 +21,7 @@ from __future__ import annotations
 KRT_TOOL = {'scope': ['routing', 'combined'], 'kind': 'actor'}
 
 import env_knobs
+from sense_branch import restoring as _sense_restoring
 import sys
 import os
 from dataclasses import replace
@@ -254,6 +255,8 @@ def diff_cleanup_scope(pairs, routed_results, single_ended_nets, member_connecte
     return scope
 
 
+# A caller-owned PCBData leaves on its real nets (sense_branch.isolate).
+@_sense_restoring
 def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[str],
                 layers: List[str] = None,
                 # #530: cap every auto-read net class at this clearance (the
@@ -289,6 +292,7 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                 bus_attraction_radius: float = defaults.BUS_ATTRACTION_RADIUS,
                 bus_attraction_bonus: int = defaults.BUS_ATTRACTION_BONUS,
                 bus_min_nets: int = defaults.BUS_MIN_NETS,
+                sense_branches: Optional[str] = None,
                 keepout_enabled: bool = False,
                 keepout_layer: str = defaults.KEEPOUT_LAYER,
                 proximity_heuristic_factor: float = defaults.PROXIMITY_HEURISTIC_FACTOR,
@@ -464,6 +468,11 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         pcb_data = parse_kicad_pcb(input_file, keepout_layer=keepout_layer)
     else:
         print("Using provided PCB data...")
+    # Protected Kelvin sense copper becomes its own net for the run
+    # (sense_branch.py), before anything records the input copper.
+    if sense_branches:
+        from sense_branch import load_sense_branches, isolate as _sb_isolate
+        _sb_isolate(pcb_data, load_sense_branches(sense_branches))
     from rip_up_reroute import reset_run_ledgers, mark_input_copper
     reset_run_ledgers(pcb_data)
     mark_input_copper(pcb_data)  # #980
@@ -2210,6 +2219,9 @@ Examples:
                         help=f"Cost bonus for staying near neighbor track (default: {defaults.BUS_ATTRACTION_BONUS})")
     parser.add_argument("--bus-min-nets", type=int, default=defaults.BUS_MIN_NETS,
                         help=f"Minimum nets to form a bus group (default: {defaults.BUS_MIN_NETS})")
+    parser.add_argument("--sense-branches", type=str, default=None, metavar="FILE",
+                        help="JSON list of protected Kelvin sense branches: sense copper joins "
+                             "its net only at the join pad (see sense_branch.py)")
     parser.add_argument("--keepout", action="store_true",
                         help="Keep routed tracks out of polygons drawn on a User layer (issue #27)")
     parser.add_argument("--keepout-layer", type=str, default=defaults.KEEPOUT_LAYER,
@@ -2616,6 +2628,7 @@ Examples:
                 bus_attraction_bonus=args.bus_attraction_bonus,
                 bus_min_nets=args.bus_min_nets,
                 keepout_enabled=args.keepout,
+                sense_branches=args.sense_branches,
                 keepout_layer=args.keepout_layer,
                 stub_proximity_radius=args.stub_proximity_radius,
                 stub_proximity_cost=args.stub_proximity_cost,

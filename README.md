@@ -798,6 +798,7 @@ One-line summaries below (all of these modules live in `py_router/`); the
 | `obstacle_map.py` | Obstacle map building from PCB data |
 | `obstacle_cache.py` | Net obstacle caching for incremental obstacle map builds |
 | `obstacle_costs.py` | Stub and track proximity cost calculations |
+| `sense_branch.py` | Protected Kelvin sense branches (`--sense-branches`): existing sense copper is foreign to its own net for the run, so new copper joins only at the declared join pad |
 | `keep_away.py` | Pairwise keep-away between net groups (#1146): the per-net band cost and the in-band report; the design brief's `keep_away` rules, read for the router and the placement grade alike (#1253) |
 | `bresenham_utils.py` | Bresenham line-walking utilities for grid-based segment operations |
 | `geometry_utils.py` | Shared geometry calculations (point-to-segment distance, segment intersection, UnionFind) |
