@@ -1250,6 +1250,10 @@ class PlanesTab(wx.Panel):
 
         # Apply results to board
         self._apply_results_to_board()
+        # The plan executor's "this step produced its result" (gui_utils);
+        # every return above this line is a cancel, no result or an error.
+        from .gui_utils import mark_plan_step_produced
+        mark_plan_step_produced(self)
 
         # Show completion message. Lead with ZONES: the pour is what this tab
         # produces. Vias/traces are legacy tap counters that are structurally 0

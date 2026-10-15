@@ -116,6 +116,9 @@ def _get_net_classes_from_board():
 #: #1067: how `_optimize_decoupling_caps` says it refused to run, which
 #: `run_cap_optimization` reads to skip the post-pass a run would owe.
 CAP_NOT_RUN = "Cap optimization NOT run"
+#: How it says the pass raised -- where place_fanout_clearance.py would exit
+#: non-zero and write no board. Neither summary is a produced result.
+CAP_FAILED = "Cap optimization skipped (error"
 
 
 def cap_optimization_summary(result):
@@ -1650,6 +1653,10 @@ class FanoutTab(wx.Panel):
                     failed_nets=res.get('failed'),
                     vias_to_remove=res.get('vias_to_remove'),
                     **apply_kw)
+            # The plan executor's "this step produced its result" (gui_utils);
+            # the error and cancel returns above produce none.
+            from .gui_utils import mark_plan_step_produced
+            mark_plan_step_produced(self)
         finally:
             self._end_run()
 
@@ -2550,7 +2557,7 @@ class FanoutTab(wx.Panel):
         except Exception as e:
             import traceback
             traceback.print_exc()
-            return f"Cap optimization skipped (error: {e})"
+            return f"{CAP_FAILED}: {e})"
 
     def run_cap_optimization(self, log=None):
         """Standalone decoupling-cap optimization on the live board (#130).
@@ -2637,6 +2644,11 @@ class FanoutTab(wx.Panel):
                     print(f"(non-Default net-class clamp skipped: {_nde})")
             if not _refused:
                 refill_all_zones(board)   # never bare BuildConnectivity: net flips
+            # The plan executor's "this step produced its result" (gui_utils):
+            # a refusal or a raised pass is the CLI's exit without a board.
+            if summary and not _refused and not summary.startswith(CAP_FAILED):
+                from .gui_utils import mark_plan_step_produced
+                mark_plan_step_produced(self)
         pcbnew.Refresh()
         if summary:
             self.status_text.SetLabel(summary)

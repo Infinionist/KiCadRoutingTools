@@ -1174,6 +1174,10 @@ class DifferentialTab(wx.Panel):
 
         # Apply results to the board
         tracks_added, vias_added, tracks_removed = self._apply_results_to_board(results_data)
+        # The plan executor's "this step produced its result" (gui_utils);
+        # every return above this line is a refusal, a failure or a cancel.
+        from .gui_utils import mark_plan_step_produced
+        mark_plan_step_produced(self)
 
         self.status_text.SetLabel(f"Complete: {successful} routed, {failed} failed in {total_time:.1f}s")
 

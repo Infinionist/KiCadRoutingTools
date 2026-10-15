@@ -3809,6 +3809,11 @@ class RoutingDialog(wx.Dialog):
         the button (the plan executor's busy signal)."""
         try:
             handler(*args)
+            # The apply handler returned: this step's result is on the board.
+            # The cancel and error handlers produce none (ai_plan stops there).
+            if handler == self._apply_results_to_board:
+                from .gui_utils import mark_plan_step_produced
+                mark_plan_step_produced(self)
         finally:
             self._apply_pending = False
 

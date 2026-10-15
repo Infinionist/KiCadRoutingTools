@@ -1003,6 +1003,12 @@ def apply_step_selection(step, dialog, all_steps=None):
     # before selection, so a stale glob list from an earlier route step would
     # silently grant protection-override to nets this step never named.
     dialog._plan_net_globs = None
+    # Why this step has nothing to do BY THE PLAN'S OWN RULE, or None. Set only
+    # when the plane-net safety net below empties a selection that matched
+    # something: that is a GUI-side exclusion, not a refusal (the CLI would
+    # have routed those nets), so the executor runs the step as a no-op rather
+    # than stopping the plan on the tab's "no nets selected".
+    dialog._plan_step_noop = None
     if action == "route":
         # route.py --component (one or more refs, #537): its nets, composed
         # with the step's patterns exactly as route.py composes them. The
@@ -1023,7 +1029,12 @@ def apply_step_selection(step, dialog, all_steps=None):
         # the engine skips plane-connected nets and track-patches only pads
         # the plane steps left disconnected (#479).
         if _precedes_first_plane_step(step, all_steps):
+            _matched = names
             names = _drop_plane_nets(names, globs, plane_nets, notes, "route")
+            if _matched and not names:
+                dialog._plan_step_noop = ("every net it selects is a plan "
+                                          "plane net, excluded before the "
+                                          "planes exist")
         # #459: a recorded `--group BLOCK` scopes the step to one placement
         # block. Without this the block is lost and `globs` falls back to ["*"],
         # so the GUI routes the WHOLE BOARD where the CLI routed one block.
@@ -1062,7 +1073,11 @@ def apply_step_selection(step, dialog, all_steps=None):
             notes.append(f"fanout: component {ref} not in dropdown")
         globs = step.get("nets") or ["*"]
         names = _component_net_names(dialog.pcb_data, ref, globs)
+        _matched = names
         names = _drop_plane_nets(names, globs, plane_nets, notes, "fanout")
+        if _matched and not names:
+            dialog._plan_step_noop = ("every net it selects is a plan plane "
+                                      "net, excluded from the fanout")
         if not names:
             notes.append(f"fanout: no nets match {globs} on {ref}")
         tab.net_panel.set_selected_nets(names)
@@ -1270,7 +1285,9 @@ class PlanExecutor:
     Each step: re-apply its selection, switch to its tab, invoke the tab's
     own action handler, then poll the tab's action button (every tab disables
     it while working and re-enables on completion, including error paths)
-    until the operation finishes. Stops on the first failed step.
+    until the operation finishes. Stops on the first step that raises OR
+    ends without producing its result (see `_step_refusal`), as a CLI chain
+    stops on a step that wrote no output board.
 
     Callbacks (all on the main thread):
       on_status(step_index, status)
@@ -1820,6 +1837,23 @@ class PlanExecutor:
             if self._fix_drc_pref is False:
                 restore_fix_drc_preference(self.dialog, False)
             invoke, busy = self._action_parts(step["action"])
+            # A CLI step that refuses writes no board and the chain stops on
+            # the missing file; here the owning tab marks a produced result
+            # and _poll_until_idle stops the plan on a step that ends without
+            # one. Cleared HERE, after the reset and selection above, so only
+            # this step's own operation can set it.
+            from .gui_utils import PLAN_STEP_PRODUCED, mark_plan_step_produced
+            _owner = self._action_owner(step["action"])
+            if _owner is not None:
+                setattr(_owner, PLAN_STEP_PRODUCED, False)
+            _noop = getattr(self.dialog, '_plan_step_noop', None)
+            if _noop:
+                def invoke(_why=_noop, _o=_owner, _n=index + 1,
+                           _a=step["action"]):
+                    self.log(f"AI plan: step {_n} ({_a}) runs nothing: {_why}")
+                    if _o is not None:
+                        mark_plan_step_produced(_o)
+                busy = lambda: False                       # noqa: E731
             import time as _time
             self._step_started = _time.time()
             # Push-mirror for UI-thread steps (fanout, cap optimize, the
@@ -1885,7 +1919,45 @@ class PlanExecutor:
                 self.log(f"AI plan: step {index + 1} stopped (cancelled)")
                 self._next_step()
                 return
+        refusal = self._step_refusal(index)
+        if refusal is not None:
+            action = self.steps[index]["action"]
+            self.on_status(index, "failed")
+            self.log(f"AI plan: step {index + 1} ({action}) produced no result "
+                     f"({refusal}); the plan stops here, as a CLI chain stops "
+                     f"on the step's missing output board")
+            self._finish(f"step {index + 1} ({action}) refused: {refusal}")
+            return
         self._completed += 1
         self.on_status(index, "done")
         self.log(f"AI plan: step {index + 1} finished")
         self._next_step()
+
+    def _step_refusal(self, index):
+        """None when step `index` produced its result, else what its tab says.
+
+        FAIL CLOSED: a step is done only when its owner marked a produced
+        result (gui_utils.PLAN_STEP_PRODUCED) -- the one place each tab
+        applies its result. Every other ending counts: a declined handler
+        (no nets / pairs / component / assignments selected, a malformed
+        keep-away rule -- the CLI's argparse or "matched nothing" exit), an
+        engine error, a cancel from the tab's own button, and optimize_caps'
+        refusal (#1067's unloadable intent) or raised pass. Each is a CLI step
+        that writes no board, so the chain stops there. `repair_planes` is a
+        no-op by construction (#562) and always produces.
+        """
+        action = self.steps[index]["action"]
+        if action == "repair_planes":
+            return None
+        from .gui_utils import PLAN_STEP_PRODUCED
+        owner = self._action_owner(action)
+        if owner is None or getattr(owner, PLAN_STEP_PRODUCED, False) is True:
+            return None
+        label = ""
+        try:
+            st = getattr(owner, "status_text", None)
+            label = (st.GetLabel() if st is not None else "").strip()
+        except Exception:                                  # noqa: BLE001
+            pass
+        return ("its tab reported no result"
+                + (f"; tab status: {label!r}" if label else ""))

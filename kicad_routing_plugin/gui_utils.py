@@ -24,6 +24,21 @@ def set_ui_status_mirror(fn):
     _UI_STATUS_MIRROR = fn
 
 
+#: Set True on a plan step's owner (the routing dialog, or the tab that runs
+#: the step) when its operation PRODUCED ITS RESULT -- applied to the live
+#: board, an empty result included. It is the GUI's "the step's output board
+#: exists": a CLI step that refuses, fails or is interrupted writes no output,
+#: so the next step of the chain fails on the missing file and the chain stops
+#: there. The plan executor clears it before each step and stops the plan when
+#: the step ends without it, so a refusal path nobody marks still stops.
+PLAN_STEP_PRODUCED = '_plan_step_produced'
+
+
+def mark_plan_step_produced(owner):
+    """Record that `owner`'s operation produced its result (see above)."""
+    setattr(owner, PLAN_STEP_PRODUCED, True)
+
+
 # Timestamp of the last UI-category event-loop pump (see ui_thread_status):
 # throttles the YieldFor so a fast message burst stays cheap.
 _LAST_UI_YIELD = 0.0
