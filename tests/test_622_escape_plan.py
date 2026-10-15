@@ -24,7 +24,11 @@ ball netted -- at the zynq LVDS run's sizes (clearance 0.09, escape track 0.12, 
    fanout_from_plan's does: a round the whole route lays nothing on names lanes from it (whole_feedback --name), and
    with it empty the zynq LVDS bus's 47 nets on escapes named none -- three rounds laid the same ends;
 10. a net with no tooth escape (its via walled in) is no lane of the ends model, as one with no berth is: the run
-   leaves it out and names it (the joint ends had crashed on it).
+   leaves it out and names it (the joint ends had crashed on it);
+11. dogbone_arrays: a NO-CONNECT ball -- its net no other pad on the board -- is left bare, no via and no stub, as
+   bga_fanout fans none (#122), every other ball dog-boned as before (h616_lpddr4's H616 NC balls, dog-boned, put
+   vias on the decaps beneath it and the bus step refused its own board). Each other ball's net has a second pad, on
+   a connector J1 far off the arrays.
 """
 import contextlib
 import io
@@ -51,10 +55,13 @@ from kicad_parser import parse_kicad_pcb  # noqa: E402
 N, PITCH = 5, 0.8
 
 
-def board(extra=''):
+def board(extra='', nc=()):
     nets = '\n'.join(f'  (net {i + 1} "N{i}")' for i in range(N * N))
     pads = '\n'.join(f'    (pad "{i}" smd circle (at {(i % N) * PITCH:.3f} {(i // N) * PITCH:.3f}) (size 0.4 0.4) '
                      f'(layers "F.Cu" "F.Mask") (net {i + 1} "N{i}"))' for i in range(N * N))
+    # (each ball's net a second pad on J1, 30 mm off -- a ball whose net has none is a no-connect; N0 meets U2 too)
+    jpads = '\n'.join(f'    (pad "{i}" smd rect (at {i * 1.0:.3f} 0) (size 0.5 0.5) (layers "F.Cu" "F.Mask") '
+                      f'(net {i + 1} "N{i}"))' for i in range(1, N * N) if i not in nc)
     return f"""(kicad_pcb (version 20240108) (generator "test")
   (general (thickness 1.6))
   (layers (0 "F.Cu" signal) (1 "In1.Cu" signal) (2 "In2.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))
@@ -69,6 +76,10 @@ def board(extra=''):
   (footprint "BGA2" (layer "F.Cu") (at 20 0)
     (property "Reference" "U2" (at 0 0) (layer "F.SilkS"))
     (pad "1" smd circle (at 0 0) (size 0.4 0.4) (layers "F.Cu" "F.Mask") (net 1 "N0"))
+  )
+  (footprint "CONN" (layer "F.Cu") (at -30 30)
+    (property "Reference" "J1" (at 0 0) (layer "F.SilkS"))
+{jpads}
   )
 {extra}
 )
@@ -108,6 +119,16 @@ for i, a in enumerate(u1):
     for b in u1[i + 1:]:
         check(math.hypot(a['x'] - b['x'], a['y'] - b['y']) >= 0.45 + 0.09 - 1e-6,
               f'1: vias of nets {a["net_id"]} and {b["net_id"]} {math.hypot(a["x"] - b["x"], a["y"] - b["y"]):.3f} apart')
+
+# 11. a no-connect ball left bare
+NCB = N * N // 2                                      # the middle ball (no outer ball's way out), its net on no other pad
+pcb_nc, _p = parse(board(nc=(NCB,)))
+with contextlib.redirect_stdout(io.StringIO()):
+    t_nc, v_nc, st_nc = dga.dogbone(pcb_nc, ['U1', 'U2'], log=lambda *a: None)
+check(not any(v['net_id'] == NCB + 1 for v in v_nc) and not any(t['net_id'] == NCB + 1 for t in t_nc),
+      '11: the no-connect ball has no dog-bone via or stub')
+check(st_nc['U1'][0] == N * N - 1 and not st_nc['U1'][2],
+      f'11: every other U1 ball dog-boned: {st_nc["U1"]}')
 
 # the dog-boned board, for the menus
 vtxt = '\n'.join(f'  (via (at {v["x"]:.4f} {v["y"]:.4f}) (size 0.45) (drill 0.3) (layers "F.Cu" "B.Cu") '

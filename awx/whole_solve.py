@@ -49,6 +49,11 @@ MARG = CLR                             # a crossing starts a clearance past both
 K_SWEEP = 4.0
 W_V = 10 ** 6                          # per via: vias first (an integer: the objective stays CP-SAT's exact one)
 W_OVER_X = 5                           # each via a net carries past two costs this many vias MORE (whole_ends.W_OVER)
+PLANE_RUN = int(awx_settings.get('SOLVE_PLANE_RUN') or '1')   # a lane's run on a PLANE's layer (_plane_weights: a pour
+#                                        covering a quarter of the board's largest), in whole vias, more layers than
+#                                        two and a plane-free layer among them: the run cuts the pour, and the reference
+#                                        under its neighbours -- h616_lpddr4's LPDDR4, unpriced, ran 322 of its 655 mm
+#                                        between the arrays on the In1/In2 GND planes, where the human's runs none
 SOLVE_BATCHES = int(awx_settings.get('WHOLE_SOLVE_BATCHES', '100'))  # CP-SAT interleaved batches: the plan-finders' most
 PROBE_BATCHES = int(awx_settings.get('WHOLE_SOLVE_PROBE', '10'))    # the bound-raising workers' (run)
 SOLVE_WORKERS = 4
@@ -735,6 +740,18 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         print(f'   pair zigzags with no room in their windows for a turn, left to the geometry: {n_zz}')
     # ---- layer changes
     cost = []
+    # (a PLANE's layer priced per run (PLANE_RUN): the flat price of each run a lane lays on it, whatever its length --
+    # the layer kept for the lanes that save a via by it. Priced per cell (by the pour's fragility), the zynq's first
+    # solve took 709 s for 308 and laid 78 vias for 40)
+    PL_IDX = []
+    if NL > 2 and PLANE_RUN:
+        _w, kinds_ = _plane_weights(ctx, LAYN)
+        PL_IDX = [i_ for i_, L_ in enumerate(LAYN) if kinds_[L_] != '-']
+        if len(PL_IDX) == NL:
+            PL_IDX = []                 # (every layer a plane's: no layer to keep them off)
+        if PL_IDX:
+            print(f'   a run on a plane\'s layer priced {PLANE_RUN} via(s): '
+                  + ', '.join(f'{LAYN[i_]} ({kinds_[LAYN[i_]]})' for i_ in PL_IDX))
     chg, tot = {}, {}
     T0 = {c_[0] for c_ in LAYER_CUTS if c_[1] == 0} | CHAN_T0 | TVIA   # (a blocked tooth's change may stand in the face's band)
     for n in M:
@@ -787,6 +804,18 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
                 m.Add(y_[k + 1] != y_[k]).OnlyEnforceIf(act[k])
                 m.Add(y_[k + 1] == y_[k]).OnlyEnforceIf(act[k].Not())
             YL[n] = y_
+            if PL_IDX:
+                # (run k is laid when k is 0 or its change is active; a run past the last change keeps that one's layer)
+                tab_ = [int(i_ in PL_IDX) for i_ in range(NL)]
+                for k in range(KMAX + 1):
+                    on_ = m.NewIntVar(0, 1, '')
+                    m.AddElement(y_[k], tab_, on_)
+                    if k == 0:
+                        cost.append(W_V * PLANE_RUN * on_)
+                    else:
+                        b_ = m.NewBoolVar('')
+                        m.Add(b_ >= on_ + act[k - 1] - 1)
+                        cost.append(W_V * PLANE_RUN * b_)
         else:
             m.AddBoolXOr(act + ([m.NewConstant(1)] if tl[n] == dl[n] else []))
         tot[n] = sum(act); chg[n] = (cs_, act)

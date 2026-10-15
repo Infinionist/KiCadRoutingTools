@@ -1676,19 +1676,25 @@ def cut_phase(E, state, vp, log=print, into=None):
         t_c = time.time()
         s_ = Ec.iterate(Ec.search(state, log=quiet), log=quiet)
         t_s = time.time() - t_c
-        s_, vp_ = Ec.best_exact(s_, log=quiet)
-        return Ec, s_, vp_, t_s, time.time() - t_c - t_s
+        # (the searched ends routed exact first, and the search's other best ends (best_exact) only when these come
+        # within EXACT_MARGIN of the far cut's less WIND_GAIN -- the pool stands within EXACT_MARGIN of them by the
+        # estimate. A cut far from winning spent up to seven exact routes at the work limit to lose: h616_lpddr4's
+        # LPDDR4 on four layers tried 57 cuts in its two fanouts, none taken, 1726 s of its 3318)
+        v1, p1 = Ec.score(s_, exact=True)
+        far_ = not p0.get('exact_failed') and not p1.get('exact_failed') and v1 >= v0 - WIND_GAIN + EXACT_MARGIN
+        s_, vp_ = (s_, (v1, p1)) if far_ else Ec.best_exact(s_, log=quiet)
+        return Ec, s_, vp_, t_s, time.time() - t_c - t_s, far_
     # (the first cut on this thread, the others on the ends model's pool -- THREADS in all)
     futs = [_pool().submit(one, c) for _v, c in tried[1:]]
     runs = ([one(tried[0][1])] if tried else []) + [f_.result() for f_ in futs]
-    for (v_est, c), (Ec, s_, vp_, t_s, t_x) in zip(tried, runs):
+    for (v_est, c), (Ec, s_, vp_, t_s, t_x, far_) in zip(tried, runs):
         E._memo.update(Ec._memo)
         E.pool = Ec.pool
         pv = lambda p_: (f'{p_["fan"] + p_["route"]} v, ride {p_["ride"]}, cong {p_.get("cong", 0)}, '
                          f'{p_["crossings"]} x')
         log(f'  whole ends: winding, the cut at {c[0]} {c[1]:.3f} (estimate {v_est:.2f} on the far cut\'s ends): '
             f'objective {vp_[0]:.2f} ({pv(vp_[1])}) against the far cut\'s {v0:.2f} ({pv(p0)}); '
-            f'searched in {t_s:.0f} s, routed exact in {t_x:.0f} s')
+            f'searched in {t_s:.0f} s, routed exact in {t_x:.0f} s' + (' (its searched ends alone)' if far_ else ''))
         # (taken when it lays FEWER vias than the far cut's ends (the fanout's and the route's, predicted) and beats
         # their objective by WIND_GAIN -- winding trades length for vias; a cut that saves none won on the estimate's
         # other terms alone, which its own search, held at another cut, had one more chance to move: shuf_k12s3_g3,

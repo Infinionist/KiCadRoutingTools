@@ -371,6 +371,18 @@ and the pairs, the other nets, the plane balls), each held before the next; a
 tier left undecided in its time is asked instead for the most of it served,
 and that is held (U1's 98 plane balls, undecided at four times the time).
 
+**The destination's berths, held where the ends chose them.** The joint plan
+of the destination array that places the bus's berths (`joint_berths`) is
+solved twice: preferring the ends model's berths, and with every one of them
+held there and the other balls planned round them. The one with the better
+objective is kept, of those that serve every ball. Held, the plan is the
+preferring one's with the berths fixed, so it can score higher only where the
+preferring search missed it: that search starts from the served tier's
+answer, any plan serving every ball, and does not find its way back. On
+h616_lpddr4's U2 it put SRST and SDQM3 on the far face, each crossing the
+whole bus (119 crossings to 195, and the solve found no plan); held, every
+ball was still served and the objective was higher.
+
 **The other nets escape on the plane layers too, where they must.** They are
 offered every copper layer, and a leg on a plane layer -- an inner layer with
 a pour the run does not route on (`joint_escape.plane_layers`) -- costs ten
@@ -434,7 +446,8 @@ them fixed.
 human escapes a ball grid array:
 
 - **The balls dog-boned** (`dogbone_arrays.py`): each netted ball of both
-  arrays gets a short stub on its own layer to a through via on one of its
+  arrays (a no-connect, a net with no other pad on the board, left bare)
+  gets a short stub on its own layer to a through via on one of its
   four diagonal gap points -- toward the other array along the axis it lies
   along most, out of the array's middle on the other -- or, where no gap is
   clear, a via in its pad. The ball lines (the rows and columns through the
@@ -847,7 +860,14 @@ a copy of the model, beside the teeth's search from the berths as they stand;
 a winding that moves the berths sends that search again from them. The ends
 model takes four threads at most, its caller's counted (`THREADS`): each
 exact route is one CP-SAT worker, which gives up the GIL as it solves. The
-two-end bus's fanout went from 163 s to 98 s, its plan the same.
+two-end bus's fanout went from 163 s to 98 s, its plan the same. Each cut's
+searched ends are routed exact first, and the search's other best ends only
+when those come within `EXACT_MARGIN` of beating the far cut: on
+h616_lpddr4's LPDDR4 bus on four layers every one of the 57 cuts its two
+fanouts tried lost, each after up to seven exact routes at the work limit.
+With one each, that bus's first winding took 151 s for 436, and the two-end
+bus's cuts and their outcomes are the same, round for round. A wound state
+of 300 crossings still runs its one exact route to the limit.
 
 **Laid as asked, or not kept.** The destination is chosen, fanned out and
 audited in passes (`DST_ITERS`, 8):
@@ -1003,7 +1023,13 @@ once, proved optimal in its vias.
    stubs' own and its lane's changes; a tie via the fanout laid is not counted
    toward the two, leg by leg, as the ends model counts it) -- a price, never
    a cap;
-2. the fewest vias, a pair's change one;
+2. the fewest vias, a pair's change one, and **a run on a plane's layer
+   one more** (`PLANE_RUN`; more routing layers than two, a plane-free one
+   among them): a lane takes a pour's layer only where it saves a via
+   there. On h616_lpddr4 the first solve laid 24 vias for 26 and its round
+   routed all 45 nets (43 unpriced, 45 a round later), the In1 GND plane
+   left in one piece (three unpriced); on the two-end bus, the same vias
+   and nets and 12% less bus copper on In1 and In2;
 3. **history** congestion, below a via: every place an earlier round's audit
    found the plan short (`whole_gate --hot`), priced by how many audits found
    it so -- a crossing there a lane pitch square of copper, a change a via's
@@ -1834,11 +1860,13 @@ channels first, and the other escapes leave round it.
 - **A row part at one end** beyond a QFN (TSOP-II SDRAM, SODIMM, edge
   connectors): `escape_moves.row_part` reads their rows, and none has been
   routed.
-- **A pour priced, not only graded.** A bus on a plane's layer cuts the plane
-  where its lanes run; the step names a split after the route. The solve and
-  the geometry could price each lane's cut through a pour, or keep a pour's
-  corridor whole (the zynq's USB and Ethernet buses split VCC_1V8 between U1
-  and the PHYs).
+- **A small pour kept whole.** The solve prices a run on a plane's layer,
+  but not which pour it cuts there. h616_lpddr4's LPDDR4 lanes wind round
+  U2 on In2 inside VCC_DRAM's island and leave it in two pieces, and the
+  route step then has no way to one of its pads past the bus's copper. The
+  same holds for the zynq's USB and Ethernet buses, which split VCC_1V8 between
+  U1 and the PHYs. Pricing a cut through a pour other than the layer's
+  largest, or keeping that pour's region whole, would protect it.
 - **A faster first solve.** On the two-end bus the first solve takes 182 s:
   the probe's 32 s find no plan, and the plan-finders, from nothing, stop at
   their 100 batches on 46 vias against a bound of 40. From the 46-via plan the

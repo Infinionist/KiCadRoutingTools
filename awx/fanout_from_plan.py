@@ -29,6 +29,7 @@ import awx_settings
 import shutil
 import subprocess
 import sys
+import time
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -585,10 +586,31 @@ def joint_berths(st, board, choice, log=print):
     names = [st['byname'][nm][1].name for nm in choice if nm in st['byname']]
     pcb = parse_kicad_pcb(board)
     hands = teeth_hands(pcb, list(choice), st['byname'], st['sref'])
-    with contextlib.redirect_stdout(io.StringIO()):
-        _h, rep = je.plan_array(pcb, dref, names, a['others'], spec['layers'], prefer=prefer,
-                                drops=a['drops'], debug=True, log=lambda *a_: None, hands=hands,
-                                vias_only=route_layers.escape_vias('dest'), exit_rays=True)
+    # (two plans: the bus PREFERRING the ends model's berths, and every bus berth HELD there, the other balls planned
+    # round them -- the better by the plan's own objective kept, of those that serve every ball (no tier short, none
+    # let go or unplanned). The held plan is the preferring one's model with the berths fixed, so it can score no
+    # higher than that model's optimum -- where it does, the preferring search did not reach it: phase 2 starts from
+    # phase 1's answer (any plan serving every ball, no cost) and never reshuffles back. h616_lpddr4's U2: the
+    # preferring plan put SRST and SDQM3 on the far face, crossing the whole bus (119 -> 195 crossings, the solve
+    # INFEASIBLE); held, every ball served and the objective 18,544 higher)
+    hold = {k: {'tooth': g['tooth'], 'direction': g['direction'], 'layer': g['layer']} for k, g in prefer.items()}
+    whole = lambda r_: not r_.get('unplanned') and not r_.get('let_go') and \
+        all(s_ == 'OPTIMAL' for _t, _n, s_ in r_.get('phase1_tiers') or ())
+    objective = lambda r_: (r_.get('debug') or {}).get('objective')
+    plans = {}
+    for how, h_ in (('preferring', None), ('held', hold)):
+        t_ = time.time()
+        with contextlib.redirect_stdout(io.StringIO()):
+            _h, plans[how] = je.plan_array(pcb, dref, names, a['others'], spec['layers'], prefer=prefer,
+                                           drops=a['drops'], debug=True, log=lambda *a_: None, hands=hands,
+                                           vias_only=route_layers.escape_vias('dest'), exit_rays=True, hold=h_)
+        plans[how]['_secs'] = time.time() - t_
+    rank = lambda how: (whole(plans[how]), objective(plans[how]) if objective(plans[how]) is not None else -math.inf)
+    how = 'held' if rank('held') > rank('preferring') else 'preferring'
+    rep = plans[how]
+    log('  berths: the plan preferring the ends model\'s berths and the plan holding them -- ' +
+        ', '.join(f'{h_} {"serves every ball" if whole(plans[h_]) else "a ball short"}, objective {objective(plans[h_])} '
+                  f'({plans[h_]["_secs"]:.0f} s)' for h_ in ('preferring', 'held')) + f': the {how} plan kept')
     out = {k.split('#')[0]: o for k, (kind, o) in (rep.get('debug', {}).get('chosen') or {}).items()
            if kind == 'escape' and k.split('#')[0] in choice}
     same = sum(1 for nm, o in out.items() if sr.move_sig(o) == sr.move_sig(choice[nm]))

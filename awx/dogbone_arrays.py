@@ -80,16 +80,37 @@ def dogbone(pcb, refs, log=print, only=None):
     vias = [(v.x, v.y, v.size, v.drill) for v in pcb.vias]
     holes = [(p.global_x, p.global_y, p.drill) for p in allpads if (p.drill or 0) > 0]
     near = lambda x, y, R=1.6: [p for p in allpads if abs(p.global_x - x) < R and abs(p.global_y - y) < R]
-    segs = list(pcb.segments) if only else []
+    # (the board's copper GRAPHICS -- a power net's drawn art, immutable (#337) -- kept clear on every array: a via
+    # site off every stroke and out of every filled shape of another net, a stub off the strokes on its own layer.
+    # h616_lpddr4's VDD_CPU and VDD_GPU art beneath the H616 took two dog-bone vias, a DRC the route never clears)
+    segs = list(pcb.segments) if only else [s for s in pcb.segments if s.graphic]
+    fills = [(s.graphic_ring, s.layer, s.net_id) for s in pcb.segments
+             if s.graphic and s.graphic_filled and s.graphic_ring and len(s.graphic_ring) >= 3]
+    fills = list(dict.fromkeys(fills))
     in_only = [False]               # (the array in hand is one of `only`'s: the board's tracks kept clear there alone)
-    near_s = lambda x, y, R=1.6: [s for s in segs if in_only[0] and min(s.start_x, s.end_x) - R < x
+    near_s = lambda x, y, R=1.6: [s for s in segs if (in_only[0] or s.graphic) and min(s.start_x, s.end_x) - R < x
                                   < max(s.start_x, s.end_x) + R and min(s.start_y, s.end_y) - R < y
                                   < max(s.start_y, s.end_y) + R]
+
+    def in_fill(x, y, own, layer=None):
+        """(x, y) inside a filled graphic of another net than `own`'s (on `layer`; None: any layer, a through via)"""
+        for ring, L, nid in fills:
+            if nid == own.net_id and nid or (layer is not None and L != layer):
+                continue
+            inside = False
+            for (ax, ay), (bx, by) in zip(ring, ring[1:] + ring[:1]):
+                if (ay > y) != (by > y) and x < ax + (y - ay) * (bx - ax) / (by - ay):
+                    inside = not inside
+            if inside:
+                return True
+        return False
 
     def site_ok(x, y, own):
         for s in near_s(x, y):
             if s.net_id != own.net_id and _seg_dist(x, y, s) < VIA / 2 + CLEAR + s.width / 2:
                 return False
+        if in_fill(x, y, own):
+            return False
         for p in near(x, y):
             if p is own or (p.net_id and p.net_id == own.net_id):
                 continue
@@ -110,6 +131,8 @@ def dogbone(pcb, refs, log=print, only=None):
             for s in near_s(x, y, 1.0):
                 if s.net_id != own.net_id and s.layer == home and _seg_dist(x, y, s) < STUB / 2 + CLEAR + s.width / 2:
                     return False
+            if in_fill(x, y, own, home):
+                return False
             for p in near(x, y, 1.0):
                 if p is own or (p.net_id and p.net_id == own.net_id) or p.pad_type == 'np_thru_hole':
                     continue
@@ -125,6 +148,11 @@ def dogbone(pcb, refs, log=print, only=None):
         held = 0
         in_only[0] = bool(only) and ref in only
         geo = pads                  # (the array's pitch, middle and outer ring: read off every ball, scoped or not)
+        # (a ball whose net has no other pad on the board -- a no-connect, KiCad's 'unconnected-(...)' -- has nothing
+        # to reach: no dog-bone, as bga_fanout fans none (#122). Dog-boned, h616_lpddr4's H616 NC balls put vias on
+        # the decaps beneath it and on the power nets' copper art, and the bus step refused its own board)
+        nc = [p for p in pads if len(pcb.pads_by_net.get(p.net_id, ())) < 2]
+        pads = [p for p in pads if len(pcb.pads_by_net.get(p.net_id, ())) >= 2]
         if only and ref in only:
             # (a shared array: its scoped nets' balls alone, a ball with its own net's copper on it held as it is)
             def carries(p):
@@ -231,6 +259,7 @@ def dogbone(pcb, refs, log=print, only=None):
         stats[ref] = (len(pads) - len(left), n_in, left)
         log(f'  {ref}: {len(pads) - len(left) - n_edge} of {len(pads)} balls dog-boned ({n_in} via in pad)'
             + (f', {n_edge} outer ball(s) left to leave on their own layer' if n_edge else '')
+            + (f', {len(nc)} no-connect ball(s) left bare' if nc else '')
             + (f'; none for {len(left)}: {left[:12]}' if left else ''))
     if moved:
         log(f'  beneath the arrays, left to the cap step: {len(moved)} part(s)')
