@@ -537,14 +537,24 @@ def preexisting_blocker_hint(blocked_cells, config, pcb_data, net_id,
                         break
             if _pnames:
                 _pq = ", ".join(f"'{n}' ({_pmap[n]})" for n in _pnames)
+                # #1261: only a non-'locked' reason has the exact-name
+                # override; KiCad-locked copper has none, so offering it
+                # sends the reader to a flag that will be refused.
+                _plock = [n for n in _pnames if _pmap[n] == 'locked']
+                _ovr = [n for n in _pnames if _pmap[n] != 'locked']
+                _fix = "reorder so this net routes BEFORE them"
+                if _ovr:
+                    _fix += (", or override deliberately by naming "
+                             + ("a non-locked one" if _plock else "the net")
+                             + " EXACTLY (no glob) in --rip-existing-nets")
+                if _plock:
+                    _fix += ("; KiCad-locked copper has no override -- "
+                             "unlock it in the board")
                 prot_txt = (f"\nHint: the box also includes PROTECTED "
                             f"net(s) {_pq} within 3mm of the failing "
                             f"endpoint(s). The router will NEVER rip these "
                             f"(#521). If one is the decisive wall, the "
-                            f"fixes are plan-level: reorder so this net "
-                            f"routes BEFORE them, or override deliberately "
-                            f"by naming the net EXACTLY (no glob) in "
-                            f"--rip-existing-nets.")
+                            f"fixes are plan-level: {_fix}.")
     except Exception:
         prot_txt = ""
     if not names:
@@ -570,10 +580,37 @@ def preexisting_blocker_hint(blocked_cells, config, pcb_data, net_id,
                    f"rip{f', and ripped {_nr}' if _nr else ''} (automatic "
                    f"candidacy or --rip-existing-nets): granting the flag "
                    f"adds no authority over them.")
+    # #1261: --rip-existing-nets is refused for KiCad-locked copper, so a
+    # locked blocker is never put in the retry command; it is named for what
+    # it is. A net protected for another reason (#521) stays in the command:
+    # naming it EXACTLY, as the command does, is the override its rule allows.
+    _prot = {}
+    try:
+        from protected_nets import protection_map
+        _prot = protection_map(pcb_data,
+                               getattr(pcb_data, 'source_path', None)) or {}
+    except Exception:
+        _prot = {}
+    locked_out = [n for n in outside if _prot.get(n) == 'locked']
+    outside = [n for n in outside if n not in set(locked_out)]
+    lock_txt = ""
+    if locked_out:
+        lock_txt = (f" {len(locked_out)} blocking net(s) "
+                    f"({' '.join(repr(n) for n in locked_out)}) carry "
+                    f"KiCad-locked copper, which no flag can rip (#521): "
+                    f"unlock it in the board, or plan around it.")
+    prot_out = [n for n in outside if n in _prot]
+    prot_out_txt = ""
+    if prot_out:
+        _pr = ", ".join(f"'{n}' ({_prot[n]})" for n in prot_out)
+        prot_out_txt = (f" {_pr} {'is' if len(prot_out) == 1 else 'are'} "
+                        f"protected (#521): naming {'it' if len(prot_out) == 1 else 'them'} "
+                        f"EXACTLY, as the command does, is the deliberate "
+                        f"override -- a glob would not lift it.")
     if not outside:
         return _ret(f"Hint: the blocking copper belongs to pre-existing "
                     f"net(s) committed by an earlier run/step.{had_txt}"
-                    + prot_txt, names)
+                    f"{lock_txt}" + prot_txt, names)
     quoted = " ".join(f"'{n}'" for n in outside)
     # The net list appears ONCE, in the retry command -- naming them in the
     # prose as well doubled a hint that already runs to several hundred
@@ -584,8 +621,8 @@ def preexisting_blocker_hint(blocked_cells, config, pcb_data, net_id,
             f"rip and re-route them in this run (issue #103) -- the decisive "
             f"blocker may be any of them, so start with the full set (each "
             f"ripped net is re-routed and the run reports honestly if one "
-            f"cannot be), then bisect if you want a minimal rip.{had_txt}"
-            + prot_txt, names)
+            f"cannot be), then bisect if you want a minimal rip.{prot_out_txt}"
+            f"{had_txt}{lock_txt}" + prot_txt, names)
 
 
 def fanout_dropped_ball_hint(pcb_data, config, net_id, net_name=None, *,
