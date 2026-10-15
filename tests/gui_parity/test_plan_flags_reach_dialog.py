@@ -77,6 +77,8 @@ _QFN_REF, _MOUNTED = 'U2', 'Mounted layer (default)'
 # the file's doing.
 _NCL_FILE = 'ncl.json'
 _NCL = {'/CLOCK_IN': 0.111, '+12V': 0.321}
+# A --fab-overrides file beside the manifest (a comment only: no override).
+_FAB_FILE = 'fab.txt'
 CASES = [
     dict(label='route_diff --diff-pair-centerline-setback',
          cmd='python3 py_router/route_diff.py {src} {dst} "*"',
@@ -119,6 +121,12 @@ CASES = [
          param=('net_clearances_path', '{tmp}/' + _NCL_FILE),
          probe='net_clearances_path_diff',
          want=('{tmp}/' + _NCL_FILE,) * 2, default=('', '')),
+    dict(label='route --fab-overrides (relative file)',
+         cmd='python3 py_router/route.py {src} {dst} --nets "*"',
+         flag='--fab-overrides ' + _FAB_FILE,
+         param=('fab_overrides_path', '{tmp}/' + _FAB_FILE),
+         probe='fab_overrides_path',
+         want=('{tmp}/' + _FAB_FILE,) * 2, default=('', '')),
     dict(label='qfn_fanout --layer',
          cmd='python3 py_router/qfn_fanout.py {src} --output {dst} '
              '--component ' + _QFN_REF,
@@ -151,6 +159,8 @@ def _probes(dlg):
                       qo.get_config().get('layer')),
         'net_clearances_path': (dlg.net_clearances_path.GetValue(),
                                 route_cfg.get('net_clearances_path')),
+        'fab_overrides_path': (dlg.fab_overrides_path.GetValue(),
+                               route_cfg.get('fab_overrides_path')),
         'net_clearances_path_diff': (dlg.net_clearances_path.GetValue(),
                                      diff_cfg.get('net_clearances_path')),
         'centerline_setback': (
@@ -296,6 +306,8 @@ def main():
         ncl_path = os.path.join(tmp, _NCL_FILE)
         with open(ncl_path, 'w', encoding='utf-8') as f:
             json.dump(_NCL, f)
+        with open(os.path.join(tmp, _FAB_FILE), 'w', encoding='utf-8') as f:
+            f.write('# no override: the path is what is under test\n')
         with open(manifest, 'w', encoding='utf-8', newline='\n') as f:
             f.write('\n'.join(lines) + '\n')
         conv = subprocess.run(

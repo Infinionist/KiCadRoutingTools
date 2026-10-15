@@ -64,7 +64,8 @@ SCALAR_FLAGS = {
     # invisible here, and no corpus manifest used --fab-overrides -- which is
     # why the FIXTURE now carries both (and always runs). When adding a CLI
     # flag, add it to the converter's FLAG_PARAMS and to this table.
-    '--fab-tier': 'fab_tier', '--fab-overrides': 'fab_overrides_path',
+    # (--fab-overrides is a FILE flag: checked in PATH_FLAGS, resolved.)
+    '--fab-tier': 'fab_tier',
     # The bus family travels together in a recorded run (runs_set12's
     # duodyne_backplane20 passes all three), so the fixture carries it whole.
     '--ordering': 'ordering_strategy',
@@ -75,6 +76,12 @@ SCALAR_FLAGS = {
     '--guide-corridor-spacing': 'guide_corridor_spacing_ctrl',
     '--keepout-layer': 'keepout_layer_ctrl',
     '--diff-chamfer-extra': 'chamfer_extra',
+}
+# FILE flags -> plan param: asserted RESOLVED against the command's folder
+# (check_pair), an independent expectation of manifest_to_plan.PATH_PARAMS.
+PATH_FLAGS = {
+    '--net-clearances': 'net_clearances_path',
+    '--fab-overrides': 'fab_overrides_path',
 }
 BOOL_FLAGS = {
     '--no-bga-zones': 'no_bga_zone', '--no-bga-zone': 'no_bga_zone',
@@ -159,7 +166,9 @@ def _num(v):
 
 def _plan_pairs(manifest):
     """Replicate manifest_to_plan.main()'s kept-command loop to yield
-    (argv, step) for every command that becomes a GUI step."""
+    (argv, step, base) for every command that becomes a GUI step -- `base`
+    being the folder a relative file the command named was opened from (its
+    recorded cwd, else the manifest's folder)."""
     cmds = parse_manifest(manifest)
     # The converter's own prune, which leaves out commands their tool's parser
     # rejects (the CLI ran nothing for them).
@@ -180,8 +189,8 @@ def _plan_pairs(manifest):
             # which stopped being true at #733 and is now actively misleading:
             # every cap flag IS asserted, just not from this loop.
             continue
-        step = m2p.parse_command(argv, cwd=_cwd or os.path.dirname(
-            os.path.abspath(manifest)))
+        base = _cwd or os.path.dirname(os.path.abspath(manifest))
+        step = m2p.parse_command(argv, cwd=base)
         # A named refusal or no-op converts to NO step, as in
         # plan_steps_from_manifest; there are no flags of it to assert.
         if step is None or '_refused' in step or '_noop' in step:
@@ -192,7 +201,7 @@ def _plan_pairs(manifest):
                     step['assignments'] = [dict(a) for a in prev['assignments']]
                     break
         steps.append(step)
-        pairs.append((argv, step))
+        pairs.append((argv, step, base))
     return pairs
 
 
@@ -272,8 +281,10 @@ def _component_refs(argv):
     return out
 
 
-def check_pair(argv, step):
-    """Return list of (flag, reason) mismatches for one command/step pair."""
+def check_pair(argv, step, base=None):
+    """Return list of (flag, reason) mismatches for one command/step pair.
+
+    `base`: the folder the command opened relative files from (PATH_FLAGS)."""
     params = step.get('params', {})
     scalar = dict(SCALAR_FLAGS)
     scalar.update(ACTION_SCALAR_OVERRIDES.get(step.get('action'), {}))
@@ -354,22 +365,24 @@ def check_pair(argv, step):
                             f"want {want_pairs} got {got_pairs} "
                             f"(missing {missing})"))
 
-    # --net-clearances FILE replaces the net classes' clearance map. It used
-    # to be consumed and dropped, so 8 kept route steps on 4 corpus boards
-    # replayed at the class clearances. The plan must name the SAME file, as
-    # an absolute path the GUI can open from KiCad's own cwd -- and it must be
-    # there, or the replay refuses where the recording routed.
-    if '--net-clearances' in argv:
-        k = argv.index('--net-clearances')
+    # FILE flags: the CLI opened a relative path from ITS cwd, the GUI would
+    # from KiCad's, so the plan must carry the same file as the absolute path
+    # it was opened at. --net-clearances (it replaces the net classes' map) was
+    # dropped outright until 8 kept route steps on 4 corpus boards replayed at
+    # the class clearances; --fab-overrides (0 corpus uses, the fixture's
+    # relative `my_fab.txt`) was carried raw.
+    for flag, key in PATH_FLAGS.items():
+        if flag not in argv:
+            continue
+        k = argv.index(flag)
         val = argv[k + 1] if k + 1 < len(argv) else ''
-        got = params.get('net_clearances_path')
+        want = (val if os.path.isabs(val) or not base
+                else os.path.normpath(os.path.join(base, val)))
+        got = params.get(key)
         n += 1
-        if not (isinstance(got, str) and os.path.isabs(got)
-                and os.path.basename(got) == os.path.basename(val)
-                and os.path.isfile(got)):
-            bad.append(('--net-clearances',
-                        f"want an absolute path to the existing {val!r}, "
-                        f"got net_clearances_path={got!r}"))
+        if not (isinstance(got, str) and os.path.isabs(got) and got == want):
+            bad.append((flag, f"want the absolute path {want!r} (recorded "
+                              f"{val!r}), got {key}={got!r}"))
 
     # Positional net names must survive into step['nets'] -- and must NOT be
     # silently widened to the ['*'] catch-all.
@@ -1788,8 +1801,8 @@ def main():
             total_bad += 1
             continue
         board_bad = []
-        for argv, step in pairs:
-            n, bad = check_pair(argv, step)
+        for argv, step, base in pairs:
+            n, bad = check_pair(argv, step, base)
             total += n
             for flag, why in bad:
                 board_bad.append((step.get('action'), flag, why))

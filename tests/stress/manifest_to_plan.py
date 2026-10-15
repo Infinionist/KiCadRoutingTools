@@ -531,8 +531,9 @@ def _num(v):
 # Plan params naming a FILE the CLI opened relative to ITS cwd. The GUI would
 # resolve a relative path against KiCad's own cwd, so parse_command makes it
 # absolute against the command's recorded cwd -- what #1067 does for a cap
-# step's --intent.
-PATH_PARAMS = {'net_clearances_path'}
+# step's --intent. (--fab-overrides was carried raw: a relative override file
+# then went unread, and the replay ran at the bare tier with escalation on.)
+PATH_PARAMS = {'net_clearances_path', 'fab_overrides_path'}
 
 
 def parse_command(argv, cwd=None):
