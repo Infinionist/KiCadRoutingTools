@@ -8837,6 +8837,37 @@ def _extract_zones_from_pcbnew(board, to_mm, get_layer_name):
     return zones
 
 
+def _pair_nearest_bounds(items_a, items_b):
+    """Pair two equal-length lists of objects carrying `.bounds` by GEOMETRY:
+    an exact match on the bounds rounded to 0.1 um first (the common case,
+    and linear), then each leftover with its nearest remaining partner by the
+    largest per-coordinate difference. Returns the list of (a, b) pairs.
+
+    A comparator that sorts both lists and zips them pairs by RANK, and two
+    float spellings of one coordinate (119.950866 vs 119.9508655) are enough
+    to re-rank a row of identical-size openings."""
+    def key(o):
+        return tuple(round(v, 4) for v in o.bounds)
+    pool = {}
+    for b in items_b:
+        pool.setdefault(key(b), []).append(b)
+    pairs, left_a = [], []
+    for a in items_a:
+        hit = pool.get(key(a))
+        if hit:
+            pairs.append((a, hit.pop()))
+        else:
+            left_a.append(a)
+    left_b = [b for bs in pool.values() for b in bs]
+    for a in left_a:
+        if not left_b:
+            break
+        j = min(range(len(left_b)), key=lambda k: max(
+            abs(x - y) for x, y in zip(a.bounds, left_b[k].bounds)))
+        pairs.append((a, left_b.pop(j)))
+    return pairs
+
+
 def compare_pcb_data(from_board: 'PCBData', from_file: 'PCBData', tolerance: float = 0.01) -> List[str]:
     """Compare two PCBData objects and return list of differences.
 
@@ -9267,21 +9298,31 @@ def compare_pcb_data(from_board: 'PCBData', from_file: 'PCBData', tolerance: flo
         return (ap.owner_ref, ap.layer, ap.source, ap.pad_number,
                 nm.name if nm else '')
     from collections import Counter as _Counter
-    _ab = sorted(from_board.paste_apertures or [],
-                 key=lambda a: (_ap_sig(from_board, a), a.bounds))
-    _af = sorted(from_file.paste_apertures or [],
-                 key=lambda a: (_ap_sig(from_file, a), a.bounds))
-    _cb = _Counter(_ap_sig(from_board, a) for a in _ab)
-    _cf = _Counter(_ap_sig(from_file, a) for a in _af)
+    _cb = _Counter(_ap_sig(from_board, a) for a in from_board.paste_apertures or [])
+    _cf = _Counter(_ap_sig(from_file, a) for a in from_file.paste_apertures or [])
     if _cb != _cf:
         diffs.append(f"Paste apertures: only board={sorted((_cb - _cf).elements())[:6]} "
                      f"only file={sorted((_cf - _cb).elements())[:6]}")
     else:
-        for a, b in zip(_ab, _af):
-            if (not all(close(x, y) for x, y in zip(a.bounds, b.bounds))
-                    or not all(close(x, y) for x, y in zip(a.margin, b.margin))):
-                diffs.append(f"Paste aperture {a.label()}: bounds/margin "
-                             f"board={a.bounds}/{a.margin} file={b.bounds}/{b.margin}")
+        # Pair the openings WITHIN one signature by geometry, never by a sort
+        # of the raw bounds: the openings of one QFN windowpane or one
+        # connector's paste graphics share every signature field, and their
+        # bounds agree between the paths only to float noise (119.950866 vs
+        # 119.9508655), which re-orders a sort and paired the board's opening
+        # #1 against the file's #4 -- 506 phantom diffs over 31 boards whose
+        # two sets were the same rectangles.
+        def _by_sig(pcb):
+            out = {}
+            for a in pcb.paste_apertures or []:
+                out.setdefault(_ap_sig(pcb, a), []).append(a)
+            return out
+        _gb, _gf = _by_sig(from_board), _by_sig(from_file)
+        for _sig in sorted(_gb, key=repr):
+            for a, b in _pair_nearest_bounds(_gb[_sig], _gf[_sig]):
+                if (not all(close(x, y) for x, y in zip(a.bounds, b.bounds))
+                        or not all(close(x, y) for x, y in zip(a.margin, b.margin))):
+                    diffs.append(f"Paste aperture {a.label()}: bounds/margin "
+                                 f"board={a.bounds}/{a.margin} file={b.bounds}/{b.margin}")
 
     # #962: what the off-outline grade discloses it could NOT measure. A front
     # that misses an entry reports a narrower blind spot than the other.
