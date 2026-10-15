@@ -776,6 +776,106 @@ def _late_strict_collapse1063(pcb_data, output_file, return_results, results_dat
         return 0, 0
 
 
+def _merge_staged_oracle_copper(orc, results_data, pcb_data,
+                                all_swap_segments, all_swap_vias,
+                                entry_name, label):
+    """GUI front: hand an in-run oracle's copper, routed on a STAGED board
+    (the live board plus this run's change-set), back through the change-set.
+
+    Shared by the plane finalize's oracle leg and the #666 cap-move re-weld.
+    The staged file is a throwaway, so the copper goes back through the SAME
+    channels the engine leg uses. Removals need GEOMETRY-key matching, not
+    id(): the oracle PARSED the staged temp file, so its removed_segments /
+    removed_vias are parse products whose id() can never equal a write-list
+    object's -- an identity de-dup here is dead code by construction (found by
+    two independent reviewers; the withdrawn copper then rode the remove
+    channel, no-op'd against the not-yet-populated live board because the
+    applier REMOVES FIRST and adds after, and shipped anyway). Three channels
+    are handled, all by geometry key:
+      1. removal names copper THIS run emitted (results' new_segments /
+         new_vias AND the swap channels) -> drop it from the write-list;
+      2. removal names pre-existing board copper -> ride segments_to_remove /
+         vias_to_remove for the applier;
+      3. EITHER WAY, mirror the removal into pcb_data so the passes after
+         this one route against the same board the applier will produce (the
+         CLI re-parses the oracle-edited file and gets this for free).
+    The additions ride a results entry named `entry_name` and go into
+    pcb_data too, so later passes price them as real obstacles."""
+    _os9 = list(orc.get('new_segments') or [])
+    _ov9 = list(orc.get('new_vias') or [])
+    _ors9 = list(orc.get('removed_segments') or [])
+    _orv9 = list(orc.get('removed_vias') or [])
+
+    def _skey9(s):
+        a = (round(s.start_x, 4), round(s.start_y, 4))
+        b = (round(s.end_x, 4), round(s.end_y, 4))
+        return (s.net_id, s.layer, min(a, b), max(a, b))
+
+    def _vkey9(v):
+        return (v.net_id, round(v.x, 4), round(v.y, 4))
+
+    _rm_skeys9 = {_skey9(s) for s in _ors9}
+    _rm_vkeys9 = {_vkey9(v) for v in _orv9}
+    _matched_skeys9, _matched_vkeys9 = set(), set()
+    if _rm_skeys9 or _rm_vkeys9:
+        _lists9 = [(_r, 'new_segments', 'new_vias')
+                   for _r in results_data.get('results', [])]
+        for _r, _sk, _vk in _lists9:
+            if _rm_skeys9 and _r.get(_sk):
+                _keep = [s for s in _r[_sk] if _skey9(s) not in _rm_skeys9]
+                if len(_keep) != len(_r[_sk]):
+                    _matched_skeys9.update(
+                        _skey9(s) for s in _r[_sk]
+                        if _skey9(s) in _rm_skeys9)
+                    _r[_sk] = _keep
+            if _rm_vkeys9 and _r.get(_vk):
+                _keep = [v for v in _r[_vk] if _vkey9(v) not in _rm_vkeys9]
+                if len(_keep) != len(_r[_vk]):
+                    _matched_vkeys9.update(
+                        _vkey9(v) for v in _r[_vk]
+                        if _vkey9(v) in _rm_vkeys9)
+                    _r[_vk] = _keep
+        # Swap channels are this-run copper too (the #284 withdrawn-copper
+        # class): a removal naming a swap via/segment must not ship it either.
+        if _rm_skeys9 and all_swap_segments:
+            _matched_skeys9.update(
+                _skey9(s) for s in all_swap_segments
+                if _skey9(s) in _rm_skeys9)
+            all_swap_segments[:] = [
+                s for s in all_swap_segments if _skey9(s) not in _rm_skeys9]
+        if _rm_vkeys9 and all_swap_vias:
+            _matched_vkeys9.update(
+                _vkey9(v) for v in all_swap_vias if _vkey9(v) in _rm_vkeys9)
+            all_swap_vias[:] = [
+                v for v in all_swap_vias if _vkey9(v) not in _rm_vkeys9]
+        # Channel 3: mirror EVERY removal into pcb_data.
+        pcb_data.segments[:] = [
+            s for s in pcb_data.segments if _skey9(s) not in _rm_skeys9]
+        pcb_data.vias[:] = [
+            v for v in pcb_data.vias if _vkey9(v) not in _rm_vkeys9]
+        bump_copper_epoch(pcb_data)
+    # Channel 2: only removals NOT matched to this-run copper ride the remove
+    # channels (the applier removes them from the live board before adding).
+    _ride_s9 = [s for s in _ors9 if _skey9(s) not in _matched_skeys9]
+    _ride_v9 = [v for v in _orv9 if _vkey9(v) not in _matched_vkeys9]
+    if _ride_s9 or _ride_v9:
+        results_data.setdefault('segments_to_remove', []).extend(_ride_s9)
+        results_data.setdefault('vias_to_remove', []).extend(_ride_v9)
+    if _os9 or _ov9:
+        results_data.setdefault('results', []).append({
+            'net_name': entry_name,
+            'success': True,
+            'new_segments': _os9, 'new_vias': _ov9})
+        pcb_data.segments.extend(_os9)
+        pcb_data.vias.extend(_ov9)
+        bump_copper_epoch(pcb_data)
+    print(f"  {label}: +{len(_os9)} seg(s) +{len(_ov9)} via(s), "
+          f"-{len(_ors9)} seg(s) -{len(_orv9)} via(s) merged into results "
+          f"({len(_ors9) - len(_ride_s9)} seg / "
+          f"{len(_orv9) - len(_ride_v9)} via removal(s) "
+          f"matched this run's own copper)")
+
+
 def _late_soft_joint_bridge984(pcb_data, output_file, return_results,
                                results_data, write_model, scope_names, config):
     """Bridge the soft joints copper laid AFTER the run's cleanup left (#984).
@@ -1370,6 +1470,15 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     if final_reconcile:
         from rip_up_reroute import reset_run_ledgers
         reset_run_ledgers(pcb_data)
+        # #666: the nets a nested run's cap-move re-weld laid copper on, for
+        # this (outermost) run's #984 bridge. Process-wide like the run's
+        # summary sink, so it starts empty here -- as does the plane repair's
+        # hand-back (sequence point 2), which a standalone repair in this
+        # process may have left behind.
+        batch_route._cap_reweld_nets666 = set()
+        _rpm666 = sys.modules.get('repair_planes')
+        if _rpm666 is not None and hasattr(_rpm666, 'repair_planes'):
+            _rpm666.repair_planes.handed_back_cap_moves = []
     if final_reconcile or not _pcb_in_memory:
         # #980: the copper this run was handed. A nested in-memory sub-run
         # keeps its parent's mark, as it keeps the parent's ledgers.
@@ -5035,6 +5144,270 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # #984: nets an ORACLE leg laid copper on -- after the run's cleanup, so
     # nothing has bridged their soft joints (_late_soft_joint_bridge984).
     _oracle_nets984 = set()
+
+    # ---- #666 scoped cap move: the SEQUENCE POINTS ---------------------------
+    # net_rescue's permissive bare-ball retry queues a verified relocation for
+    # a MOVABLE cap its shipped escape via lands on. Every queued move is
+    # applied -- the cap moved, the model mirrored, its nets re-welded by the
+    # oracle -- at the first sequence point after it was queued, by the run
+    # that owns the artifact:
+    #   * after the write (the main pass's moves),
+    #   * after the plane finalize (its repair sub-runs share this board),
+    #   * after each reconciliation lap.
+    # The CLI moves the cap in its written file; a CLI reconciliation lap is a
+    # file-mode sub-run that applies its own at its own write. The GUI has no
+    # file: it mirrors the model, re-welds on a STAGED board (stage_board_fn:
+    # the live board plus this run's change-set plus the moves applied so
+    # far, as the CLI's file has them) and merges the weld's copper into the
+    # change-set, as the finalize's oracle leg does -- or, with no staged
+    # board, leaves the re-weld to the applier. A move whose escape via did
+    # not ship (a later pass took it out) is dropped, not applied.
+    # The live footprint is always the applier's (results_data
+    # ['pending_cap_moves']). A move is marked `_666_done` when handled; the
+    # targets are absolute, so a mirror repeated is a mirror done once.
+    def _cap_moves_pending666():
+        return [m for m in (getattr(pcb_data, '_pending_cap_moves', None)
+                            or []) if not m.get('_666_done')]
+
+    def _shipped_vias666(board_file=None):
+        """[(x, y, net name)] of the vias this run ships: the board FILE on
+        the CLI (the one the move is about to be written into -- a run that
+        wrote nothing passed its input through, without this run's vias), the
+        change-set on the GUI."""
+        if board_file:
+            from kicad_parser import parse_kicad_pcb as _pk666
+            _b = _pk666(board_file)
+            return [(v.x, v.y, getattr(_b.nets.get(v.net_id), 'name', None))
+                    for v in _b.vias]
+        _vs = [v for _r in (locals_rd666() or {}).get('results', [])
+               for v in (_r.get('new_vias') or [])] + list(all_swap_vias)
+        return [(v.x, v.y, getattr(pcb_data.nets.get(v.net_id), 'name', None))
+                for v in _vs]
+
+    def _escape_shipped666(mv, pool):
+        """The via(s) a move makes room for are still on the board this run
+        ships (`pool`, _shipped_vias666). A via a later pass nudged (measured
+        0.08 mm) still sits on its site, so a same-net via within the escape
+        via's radius counts. A move recorded without its vias is kept."""
+        sites = mv.get('_escape_vias')
+        if not sites:
+            return True
+        for (x, y, name, size) in sites:
+            if any(n == name and ((vx - x) ** 2 + (vy - y) ** 2) ** 0.5
+                   <= size / 2.0 for vx, vy, n in pool):
+                return True
+        return False
+
+    def locals_rd666():
+        try:
+            return results_data
+        except NameError:
+            return None
+
+    def _take_shipped666(pend, where, board_file=None):
+        """Drop (mark done) the moves whose escape vias did not ship."""
+        keep = []
+        pool = None
+        for m in pend:
+            if m.get('_escape_vias') and pool is None:
+                pool = _shipped_vias666(board_file)
+            if _escape_shipped666(m, pool or []):
+                keep.append(m)
+            else:
+                m['_666_done'] = 'dropped'
+                print(f"  #666 scoped cap move: {m['reference']} NOT moved "
+                      f"-- the escape via it made room for did not ship "
+                      f"({where})")
+        return keep
+
+    def _cap_reweld666(board_file, names, cspec, gui):
+        """The re-weld: oracle_reconnect on the moved caps' nets, priced by
+        the shared spec (net_rescue.cap_move_reweld_spec)."""
+        from kicad_oracle import oracle_reconnect, oracle_net_ids_by_name
+        from kicad_dru import install_layer_clearances
+        _cfg = GridRouteConfig(
+            clearance=cspec['clearance'], track_width=cspec['track_width'],
+            via_size=cspec['via_size'], via_drill=cspec['via_drill'],
+            grid_step=cspec['grid_step'], layers=list(cspec['layers']),
+            layer_costs=list(cspec['layer_costs']))
+        # #1137: the board's .kicad_dru layer rules, installed exactly as the
+        # finalize leg's _ocfg installs them (no board, so no design-rules
+        # table either), and the run's resolved class map by NAME -- the
+        # oracle re-parses the file.
+        install_layer_clearances(_cfg, dict(cspec['layer_clearances']),
+                                 input_file, None)
+        _kw = {}
+        if gui:
+            # its copper comes back on THIS run's net ids (#1133), to merge
+            _kw['net_ids_by_name'] = oracle_net_ids_by_name(pcb_data.nets)
+        # The cap-move oracle leg; _report_reweld666 records its nets (#984).
+        _orc_cap = oracle_reconnect(
+            board_file, names, _cfg,
+            track_via_clearance=cspec['track_via_clearance'],
+            hole_to_hole_clearance=cspec['hole_to_hole_clearance'],
+            project_from=input_file,
+            net_clearances_by_name=cspec['net_clearances_by_name'],
+            # #1133: the power widths, by NAME as well
+            net_widths_by_name=cspec['net_widths_by_name'], **_kw)
+        return _orc_cap
+
+    def _report_reweld666(orc, names, tag=''):
+        # The FOURTH oracle_reconnect consumer, and the one #713 item 3's
+        # first pass missed. Without this it printed "0 link(s) welded, -1
+        # remaining" for an oracle that could not run, indistinguishable from
+        # one that ran and found nothing to do.
+        if not orc.get('available'):
+            print(f"  #666 cap-move re-weld{tag}: DID NOT RUN -- "
+                  f"{orc.get('why', 'no reason recorded')}; the re-weld is "
+                  f"unchecked")
+        else:
+            print(f"  #666 cap-move re-weld{tag}: "
+                  f"{orc.get('links_routed', 0)} link(s) welded, "
+                  f"{orc.get('remaining', -1)} remaining")
+        if orc.get('links_routed'):
+            # #984: the weld's copper lands after the run's cleanup. A nested
+            # file-mode run (a CLI reconciliation lap) has no bridge of its
+            # own, so the names also go to the outermost run's.
+            _oracle_nets984.update(names)
+            _sink = getattr(batch_route, '_cap_reweld_nets666', None)
+            if _sink is not None:
+                _sink.update(names)
+
+    def _cap_moves_to_file666(board_file, where):
+        """CLI: apply every unapplied queued move to `board_file`."""
+        _pend = _take_shipped666(_cap_moves_pending666(), where, board_file)
+        if not _pend:
+            return
+        try:
+            import _placer_path  # noqa: F401  (placement lives in py_placer/)
+            from placement.writer import write_placed_output
+            from net_rescue import mirror_cap_moves, cap_move_reweld_spec
+            print(f"  #666 scoped cap move: relocating {len(_pend)} cap(s) "
+                  f"off rescue via(s): "
+                  + ', '.join(m['reference'] for m in _pend))
+            if not write_placed_output(board_file, board_file, _pend):
+                return
+            for m in _pend:
+                m['_666_done'] = 'file'
+            _names = mirror_cap_moves(pcb_data, _pend)
+            if _names:
+                _orc = _cap_reweld666(
+                    board_file, _names,
+                    cap_move_reweld_spec(config, pcb_data, _pend), gui=False)
+                _report_reweld666(_orc, _names)
+        except Exception as _ecap:
+            for m in _pend:
+                m.setdefault('_666_done', 'refused')
+            print(f"  (scoped cap move failed: {_ecap})")
+
+    def _stage_change_set666(label, applying=()):
+        """GUI: a real board file for an in-run oracle -- the LIVE board
+        (stage_board_fn; never input_file, which lacks what earlier chain
+        steps applied in-session: staging from it measured GUI DRC 431 vs CLI
+        0) with this run's pending change-set written onto it, and the cap
+        moves this run has applied (plus `applying`, the ones being applied
+        now): exactly the ones the CLI's written file has at the same point,
+        no more. Returns (path or None, [temp paths to drop])."""
+        _tmps = []
+        if stage_board_fn is None:
+            return None, _tmps
+        try:
+            import tempfile as _tf666
+            _base = stage_board_fn()
+            if not _base:
+                return None, _tmps
+            _tmps.append(_base)
+            _fd, _stg = _tf666.mkstemp(suffix='.kicad_pcb')
+            os.close(_fd)
+            _tmps.append(_stg)
+            _rd = locals_rd666() or {}
+            if not write_routed_output(
+                    input_file=_base, output_file=_stg,
+                    results=_rd.get('results', []),
+                    all_segment_modifications=all_segment_modifications,
+                    all_swap_vias=all_swap_vias,
+                    all_swap_segments=all_swap_segments,
+                    target_swap_info=[],
+                    single_ended_target_swap_info=(
+                        single_ended_target_swap_info),
+                    pad_swaps=pad_swaps, pcb_data=pcb_data,
+                    skip_routing=skip_routing, add_teardrops=add_teardrops,
+                    segments_to_remove=_rd.get('segments_to_remove'),
+                    vias_to_remove=_rd.get('vias_to_remove')):
+                return None, _tmps
+            _q = [m for m in (getattr(pcb_data, '_pending_cap_moves', None)
+                              or [])
+                  if m.get('_666_done') in ('in-run', 'none', 'applier')
+                  or any(m is _a for _a in applying)]
+            if _q:
+                # A refused write (#829) leaves the staged board as it was,
+                # as the CLI's refusal leaves its file.
+                try:
+                    import _placer_path  # noqa: F401
+                    from placement.writer import write_placed_output as _wpo
+                    _wpo(_stg, _stg, _q)
+                except Exception as _em:
+                    print(f"  {label}: scoped cap move not staged ({_em})")
+            return _stg, _tmps
+        except Exception as _es:
+            print(f"  {label}: could not stage a board ({_es})")
+            return None, _tmps
+
+    def _drop_staged666(paths):
+        # ...and their SIBLINGS: write_routed_output seeds a .kicad_pro next
+        # to a staged board (copy_board's shared SIBLING_EXTS).
+        try:
+            from copy_board import SIBLING_EXTS as _sib
+        except Exception:
+            _sib = ('.kicad_pro', '.kicad_prl', '.kicad_dru',
+                    '.design-brief.json')
+        for _p in paths or []:
+            for _q in (_p,) + tuple(os.path.splitext(_p)[0] + _e
+                                    for _e in _sib):
+                try:
+                    os.unlink(_q)
+                except OSError:
+                    pass
+
+    def _cap_moves_in_run666(where):
+        """GUI: mirror every unapplied queued move and re-weld it IN-RUN on a
+        staged board, at the CLI's sequence point; with no staged board the
+        re-weld is the applier's (marked so in pending_cap_moves)."""
+        _pend = _take_shipped666(_cap_moves_pending666(), where)
+        if not _pend:
+            return
+        from net_rescue import mirror_cap_moves, cap_move_reweld_spec
+        print(f"  #666 scoped cap move (GUI, {where}): mirroring "
+              f"{len(_pend)} cap move(s) into the model: "
+              + ', '.join(m['reference'] for m in _pend))
+        _names = mirror_cap_moves(pcb_data, _pend)
+        _how = 'none' if not _names else 'applier'
+        if _names:
+            _stg, _tmps = _stage_change_set666('#666 cap-move re-weld (GUI)',
+                                               applying=_pend)
+            try:
+                if _stg:
+                    _orc = _cap_reweld666(
+                        _stg, _names,
+                        cap_move_reweld_spec(config, pcb_data, _pend),
+                        gui=True)
+                    _report_reweld666(_orc, _names, ' (in-run, staged board)')
+                    _merge_staged_oracle_copper(
+                        _orc, locals_rd666(), pcb_data, all_swap_segments,
+                        all_swap_vias, '(#666 cap-move re-weld)',
+                        '#666 cap-move re-weld (GUI)')
+                    _how = 'in-run'
+                else:
+                    print("  #666 cap-move re-weld: no staged board -- the "
+                          "Route tab re-welds after apply")
+            except Exception as _ew:
+                print(f"  (#666 cap-move re-weld (GUI) failed: {_ew}; the "
+                      f"Route tab re-welds after apply)")
+            finally:
+                _drop_staged666(_tmps)
+        for m in _pend:
+            m['_666_done'] = _how
+
     if summary['scope'] != 'run':
         # These are recomputed over the WHOLE board even in the subset pass, so
         # a reader merging tallies must not add them twice.
@@ -5089,20 +5462,14 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             # every key here is a list (`_empty_results_data`).
             'length_match_groups': summary.get('length_match_groups', []),
         }
-        # #666 scoped cap move, GUI front. The CLI applies a queued move to
-        # the file it is about to write and mirrors it into pcb_data HERE,
-        # before the plane finalize and the reconciliation read the board.
-        # There is no file on this front, so mirror the model at the same
-        # point -- those passes then price the cap where the CLI's do -- and
-        # leave the live footprint to the applier, which gets the moves and
-        # their re-weld spec as results_data['pending_cap_moves'] (posted at
-        # the end of the run, once every sub-run has queued its own).
-        # Outermost run only: this branch also runs in the CLI's nested
-        # in-memory sub-runs (the plane finalize's repairs share its
-        # pcb_data), where a mirror would move the model and not the file.
-        if final_reconcile and getattr(pcb_data, '_pending_cap_moves', None):
-            from net_rescue import mirror_cap_moves
-            mirror_cap_moves(pcb_data, pcb_data._pending_cap_moves)
+        # #666 sequence point 1, GUI front: the CLI applies the main pass's
+        # moves to the file it is about to write, mirrors them and re-welds
+        # HERE, before the plane finalize and the reconciliation read the
+        # board. Outermost run only: this branch also runs in the CLI's
+        # nested in-memory sub-runs (the plane finalize's repairs share its
+        # pcb_data), whose moves the CLI applies after the finalize.
+        if final_reconcile:
+            _cap_moves_in_run666('write')
     else:
         # Write output file using extracted output_writer module
         wrote = write_routed_output(
@@ -5292,76 +5659,12 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             # clearance step must NOT rerun post-route (strands every
             # moved cap's joints, measured 6->13); this moves ONLY the
             # conflicting cap(s).
-            # The GUI front has no file: it mirrors the model at this same
-            # point (the `if return_results:` branch above) and its applier
-            # moves the live footprint and re-welds from the SAME spec,
-            # results_data['pending_cap_moves'] (cap_move_reweld_spec).
-            _capmv = getattr(pcb_data, '_pending_cap_moves', None)
-            if _capmv:
-                try:
-                    from placement.writer import write_placed_output
-                    from net_rescue import (mirror_cap_moves,
-                                            cap_move_reweld_spec)
-                    print(f"  #666 scoped cap move: relocating "
-                          f"{len(_capmv)} cap(s) off rescue via(s): "
-                          + ', '.join(m['reference'] for m in _capmv))
-                    if write_placed_output(output_file, output_file,
-                                           _capmv):
-                        _mvnames = mirror_cap_moves(pcb_data, _capmv)
-                        if _mvnames:
-                            from kicad_oracle import oracle_reconnect
-                            _cspec = cap_move_reweld_spec(config, pcb_data,
-                                                          _capmv)
-                            _cap_cfg = GridRouteConfig(
-                                clearance=_cspec['clearance'],
-                                track_width=_cspec['track_width'],
-                                via_size=_cspec['via_size'],
-                                via_drill=_cspec['via_drill'],
-                                grid_step=_cspec['grid_step'],
-                                layers=list(_cspec['layers']),
-                                layer_costs=list(_cspec['layer_costs']))
-                            # #1137: the board's .kicad_dru layer rules,
-                            # installed exactly as the finalize leg's _ocfg
-                            # installs them (no board, so no design-rules
-                            # table either), and the run's resolved class map
-                            # by NAME -- the oracle re-parses the file.
-                            from kicad_dru import install_layer_clearances
-                            install_layer_clearances(
-                                _cap_cfg, dict(_cspec['layer_clearances']),
-                                input_file, None)
-                            _orc_cap = oracle_reconnect(
-                                output_file, _mvnames, _cap_cfg,
-                                track_via_clearance=(
-                                    _cspec['track_via_clearance']),
-                                hole_to_hole_clearance=(
-                                    _cspec['hole_to_hole_clearance']),
-                                project_from=input_file,
-                                net_clearances_by_name=(
-                                    _cspec['net_clearances_by_name']),
-                                # #1133: the power widths, by NAME as well
-                                net_widths_by_name=(
-                                    _cspec['net_widths_by_name']))
-                            # The FOURTH oracle_reconnect consumer, and the one
-                            # #713 item 3's first pass missed. Without this it
-                            # printed "0 link(s) welded, -1 remaining" for an
-                            # oracle that could not run, indistinguishable
-                            # from one that ran and found nothing to do.
-                            if _orc_cap.get('links_routed'):
-                                _oracle_nets984.update(_mvnames)
-                            if not _orc_cap.get('available'):
-                                _capwhy = _orc_cap.get(
-                                    'why', 'no reason recorded')
-                                print(f"  #666 cap-move re-weld: DID NOT RUN "
-                                      f"-- {_capwhy}; the re-weld is "
-                                      f"unchecked")
-                            else:
-                                print(f"  #666 cap-move re-weld: "
-                                      f"{_orc_cap.get('links_routed', 0)} "
-                                      f"link(s) welded, "
-                                      f"{_orc_cap.get('remaining', -1)} "
-                                      f"remaining")
-                except Exception as _ecap:
-                    print(f"  (scoped cap move failed: {_ecap})")
+            # Sequence point 1 of the run (see _cap_moves_to_file666): the
+            # plane finalize's moves follow after the finalize, and a
+            # reconciliation lap, a file-mode sub-run, applies its own here.
+            # The GUI front mirrors and re-welds at the same point (the
+            # `if return_results:` branch above, _cap_moves_in_run666).
+            _cap_moves_to_file666(output_file, 'write')
 
     # Update schematics with swap info if directory specified
     if schematic_dir and single_ended_target_swap_info:
@@ -5819,54 +6122,15 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             if _zpairs_all and not _gui9:
                 _orc_file9 = output_file
             elif _zpairs_all and _gui9 and stage_board_fn is not None:
-                try:
-                    import tempfile as _tf9
-                    _base9 = stage_board_fn()
-                    if _base9:
-                        _orc_tmp9.append(_base9)
-                        _fd9, _stg9 = _tf9.mkstemp(suffix='.kicad_pcb')
-                        os.close(_fd9)
-                        _orc_tmp9.append(_stg9)
-                        if write_routed_output(
-                                input_file=_base9, output_file=_stg9,
-                                results=results,
-                                all_segment_modifications=(
-                                    all_segment_modifications),
-                                all_swap_vias=all_swap_vias,
-                                all_swap_segments=all_swap_segments,
-                                target_swap_info=[],
-                                single_ended_target_swap_info=(
-                                    single_ended_target_swap_info),
-                                pad_swaps=pad_swaps, pcb_data=pcb_data,
-                                skip_routing=skip_routing,
-                                add_teardrops=add_teardrops,
-                                segments_to_remove=results_data.get(
-                                    'segments_to_remove'),
-                                vias_to_remove=results_data.get(
-                                    'vias_to_remove')):
-                            # #666: the CLI's written board already carries
-                            # the scoped cap move (its file-mode block runs
-                            # before this finalize), so the oracle must not
-                            # see the cap still sitting on the rescue via.
-                            # A refused write (#829) leaves the staged board
-                            # as it was, as the CLI's refusal leaves its file.
-                            _q9 = getattr(pcb_data, '_pending_cap_moves',
-                                          None)
-                            if _q9:
-                                try:
-                                    import _placer_path  # noqa: F401
-                                    from placement.writer import \
-                                        write_placed_output as _wpo9
-                                    _wpo9(_stg9, _stg9, list(_q9))
-                                except Exception as _e9m:
-                                    print(f"  Plane finalize (GUI): scoped "
-                                          f"cap move not staged for the "
-                                          f"oracle leg ({_e9m})")
-                            _orc_file9 = _stg9
-                except Exception as _e9:
-                    print(f"  Plane finalize (GUI): could not stage a board "
-                          f"for the oracle leg ({_e9}); deferring to apply")
-                    _orc_file9 = None
+                # The shared staging: the live board, this run's change-set
+                # and the #666 cap moves applied so far -- the CLI's written
+                # board carries those (its file block runs before this; a
+                # move the finalize itself queues comes after, on both).
+                # None (no save, nothing written, or an error it prints)
+                # falls back to the post-apply oracle below.
+                _orc_file9, _stg_tmps9 = _stage_change_set666(
+                    'Plane finalize (GUI)')
+                _orc_tmp9.extend(_stg_tmps9)
             if _zpairs_all and _gui9 and _orc_file9 is None:
                 # FALLBACK only (no stage_board_fn, or staging failed): post
                 # the net list + engine-resolved params and let the applier
@@ -6049,118 +6313,13 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                     # post-reconciliation re-audit (CLI file mode only).
                     _reaudit9 = (list(_zna), _ocfg, _ncbn9, _wbn9)
                 if _gui9:
-                    # The staged file is a throwaway: hand the oracle's copper
-                    # back through the SAME channels the engine leg uses.
-                    # Removals need GEOMETRY-key matching, not id(): the
-                    # oracle PARSED the staged temp file, so its
-                    # removed_segments/removed_vias are parse products whose
-                    # id() can never equal a write-list object's -- an
-                    # identity de-dup here is dead code by construction
-                    # (found by two independent reviewers; the withdrawn
-                    # copper then rode the remove channel, no-op'd against
-                    # the not-yet-populated live board because the applier
-                    # REMOVES FIRST and adds after, and shipped anyway).
-                    # Three channels are handled, all by geometry key:
-                    #   1. removal names copper THIS run emitted (results'
-                    #      new_segments/new_vias AND the swap channels) ->
-                    #      drop it from the write-list;
-                    #   2. removal names pre-existing board copper -> ride
-                    #      segments_to_remove/vias_to_remove for the applier;
-                    #   3. EITHER WAY, mirror the removal into pcb_data so
-                    #      the final reconciliation routes against the same
-                    #      board the applier will produce (the CLI reconcile
-                    #      re-parses the oracle-edited file and gets this
-                    #      for free).
-                    _os9 = list(_orc.get('new_segments') or [])
-                    _ov9 = list(_orc.get('new_vias') or [])
-                    _ors9 = list(_orc.get('removed_segments') or [])
-                    _orv9 = list(_orc.get('removed_vias') or [])
-
-                    def _skey9(s):
-                        a = (round(s.start_x, 4), round(s.start_y, 4))
-                        b = (round(s.end_x, 4), round(s.end_y, 4))
-                        return (s.net_id, s.layer, min(a, b), max(a, b))
-
-                    def _vkey9(v):
-                        return (v.net_id, round(v.x, 4), round(v.y, 4))
-
-                    _rm_skeys9 = {_skey9(s) for s in _ors9}
-                    _rm_vkeys9 = {_vkey9(v) for v in _orv9}
-                    _matched_skeys9, _matched_vkeys9 = set(), set()
-                    if _rm_skeys9 or _rm_vkeys9:
-                        _lists9 = [(_r, 'new_segments', 'new_vias')
-                                   for _r in results_data.get('results', [])]
-                        for _r, _sk, _vk in _lists9:
-                            if _rm_skeys9 and _r.get(_sk):
-                                _keep = [s for s in _r[_sk]
-                                         if _skey9(s) not in _rm_skeys9]
-                                if len(_keep) != len(_r[_sk]):
-                                    _matched_skeys9.update(
-                                        _skey9(s) for s in _r[_sk]
-                                        if _skey9(s) in _rm_skeys9)
-                                    _r[_sk] = _keep
-                            if _rm_vkeys9 and _r.get(_vk):
-                                _keep = [v for v in _r[_vk]
-                                         if _vkey9(v) not in _rm_vkeys9]
-                                if len(_keep) != len(_r[_vk]):
-                                    _matched_vkeys9.update(
-                                        _vkey9(v) for v in _r[_vk]
-                                        if _vkey9(v) in _rm_vkeys9)
-                                    _r[_vk] = _keep
-                        # Swap channels are this-run copper too (the #284
-                        # withdrawn-copper class): a removal naming a swap
-                        # via/segment must not ship it either.
-                        if _rm_skeys9 and all_swap_segments:
-                            _matched_skeys9.update(
-                                _skey9(s) for s in all_swap_segments
-                                if _skey9(s) in _rm_skeys9)
-                            all_swap_segments[:] = [
-                                s for s in all_swap_segments
-                                if _skey9(s) not in _rm_skeys9]
-                        if _rm_vkeys9 and all_swap_vias:
-                            _matched_vkeys9.update(
-                                _vkey9(v) for v in all_swap_vias
-                                if _vkey9(v) in _rm_vkeys9)
-                            all_swap_vias[:] = [
-                                v for v in all_swap_vias
-                                if _vkey9(v) not in _rm_vkeys9]
-                        # Channel 3: mirror EVERY removal into pcb_data.
-                        pcb_data.segments[:] = [
-                            s for s in pcb_data.segments
-                            if _skey9(s) not in _rm_skeys9]
-                        pcb_data.vias[:] = [
-                            v for v in pcb_data.vias
-                            if _vkey9(v) not in _rm_vkeys9]
-                        bump_copper_epoch(pcb_data)
-                    # Channel 2: only removals NOT matched to this-run copper
-                    # ride the remove channels (the applier removes them from
-                    # the live board before adding).
-                    _ride_s9 = [s for s in _ors9
-                                if _skey9(s) not in _matched_skeys9]
-                    _ride_v9 = [v for v in _orv9
-                                if _vkey9(v) not in _matched_vkeys9]
-                    if _ride_s9 or _ride_v9:
-                        results_data.setdefault(
-                            'segments_to_remove', []).extend(_ride_s9)
-                        results_data.setdefault(
-                            'vias_to_remove', []).extend(_ride_v9)
-                    if _os9 or _ov9:
-                        results_data.setdefault('results', []).append({
-                            'net_name': '(plane finalize oracle)',
-                            'success': True,
-                            'new_segments': _os9, 'new_vias': _ov9})
-                        # Also into pcb_data, so the final reconciliation
-                        # below prices this copper as a real obstacle and
-                        # sees the nets it just completed.
-                        pcb_data.segments.extend(_os9)
-                        pcb_data.vias.extend(_ov9)
-                        bump_copper_epoch(pcb_data)
-                    print(f"  Plane finalize oracle (GUI): +{len(_os9)} "
-                          f"seg(s) +{len(_ov9)} via(s), -{len(_ors9)} seg(s) "
-                          f"-{len(_orv9)} via(s) merged into results "
-                          f"({len(_ors9) - len(_ride_s9)} seg / "
-                          f"{len(_orv9) - len(_ride_v9)} via removal(s) "
-                          f"matched this run's own copper)")
+                    # The staged file is a throwaway: the oracle's copper
+                    # goes back through the change-set (shared with the #666
+                    # cap-move re-weld, _merge_staged_oracle_copper).
+                    _merge_staged_oracle_copper(
+                        _orc, results_data, pcb_data, all_swap_segments,
+                        all_swap_vias, '(plane finalize oracle)',
+                        'Plane finalize oracle (GUI)')
                 try:
                     import json as _json9
                     print('JSON_ORACLE: ' + _json9.dumps(
@@ -6369,6 +6528,33 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         os.unlink(_q9)
                     except OSError:
                         pass
+
+    # #666 sequence point 2: the cap moves the plane finalize's repair
+    # sub-runs queued. They share this board (live reuse), so they are on its
+    # ledger -- but this run's file block ran before the finalize, so on the
+    # CLI they reached no file and the escape via shipped on the cap. A
+    # finalize without live reuse (KICAD_PLANE_FINALIZE_LIVE=0) repaired a
+    # board it parsed itself and hands its moves back. Before the
+    # reconciliation, so it sees the moved caps (the CLI's lap re-parses the
+    # file, the GUI's routes on this model).
+    if final_reconcile and not _ckpt_stop:
+        try:
+            import repair_planes as _rpm666
+            _hb666 = list(getattr(_rpm666.repair_planes,
+                                  'handed_back_cap_moves', None) or [])
+            _rpm666.repair_planes.handed_back_cap_moves = []
+        except Exception:
+            _hb666 = []
+        if _hb666:
+            _q666b = getattr(pcb_data, '_pending_cap_moves', None)
+            if _q666b is None:
+                _q666b = pcb_data._pending_cap_moves = []
+            _q666b.extend(m for m in _hb666
+                          if not any(m is _m for _m in _q666b))
+        if return_results:
+            _cap_moves_in_run666('plane finalize')
+        elif output_file and os.path.isfile(output_file):
+            _cap_moves_to_file666(output_file, 'plane finalize')
 
     # #655: the zero-copper scan must run BEFORE the reconcile gate --
     # when the only casualties are phase-3 victims outside every bucket,
@@ -6769,6 +6955,12 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                         _rsnap.segments = _r.get('new_segments') or []
                         _rsnap.vias = _r.get('new_vias') or []
                         snap_pcb_data_to_iu_grid(_rsnap)
+                    # #666 sequence point 3: the cap moves this lap's sub-run
+                    # queued on the shared board. The CLI's lap is a file-mode
+                    # sub-run that applies its own at its write, before the
+                    # next lap re-parses; here the next lap routes on this
+                    # model, so apply them now.
+                    _cap_moves_in_run666('reconciliation lap')
                     # #572: same lap-authority rule as the CLI leg below.
                     _granted572 = bool(_lrfail) and _harvest_lap_authority572()
                     if not (_lrfail and (_lrok or _granted572)):
@@ -6818,16 +7010,6 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         except Exception as _e:
             _RECONCILE_RAISED[0] = True
             print(f"{RED}  final reconciliation pass failed: {_e}{RESET}")
-
-    # #666, GUI front: a cap move the reconciliation's (or the finalize's)
-    # in-memory sub-runs queued on this shared board. The CLI's reconcile
-    # sub-run applies its own to the file it writes; mirror the model the
-    # same way before the passes below read it (idempotent for the moves
-    # mirrored at the write).
-    if (return_results and final_reconcile
-            and getattr(pcb_data, '_pending_cap_moves', None)):
-        from net_rescue import mirror_cap_moves
-        mirror_cap_moves(pcb_data, pcb_data._pending_cap_moves)
 
     # #589 post-reconciliation oracle RE-AUDIT (KICAD_FINALIZE_REAUDIT=1,
     # experiment): the finalize's oracle leg audits BEFORE the final
@@ -6981,6 +7163,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # leg is skipped), so their soft joints were never bridged. Bridge them
     # here, after the last pass that lays copper and before the strict
     # collapse reads the board. Nothing to do when no oracle laid copper.
+    # #666: a CLI reconciliation lap's cap-move re-weld is a nested run with
+    # no bridge of its own; its nets come in through batch_route's sink.
+    if final_reconcile:
+        _oracle_nets984 |= set(getattr(batch_route, '_cap_reweld_nets666',
+                                       None) or ())
     if (final_reconcile and not skip_routing and not _ckpt_stop
             and _oracle_nets984 and not env_knobs.NO_SOFT_JOINT_BRIDGE):
         _late_soft_joint_bridge984(
@@ -7293,15 +7480,18 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         batch_route._forced_link_hints = {}
         batch_route._forced_link_landed = []
 
-    # #666 scoped cap move, GUI front: hand the applier every move queued on
-    # this board -- the main pass's and every in-memory sub-run's, which share
-    # its ledger -- with the re-weld spec the CLI's file-mode block builds its
-    # oracle call from. The Route tab moves the live footprint and runs the
-    # staged-save oracle on the moved cap's nets (swig_gui). Posted BEFORE the
+    # #666 scoped cap move, GUI front: hand the applier every move this run
+    # applied -- the main pass's and every in-memory sub-run's, which share
+    # its ledger -- with the re-weld spec the CLI builds its oracle call from.
+    # The Route tab moves the live footprint, and re-welds the moves marked
+    # 'applier' (no staged board was available in-run). Posted BEFORE the
     # improvement gate, so a rejected run's empty change-set withholds the
     # move together with the copper that needed it.
     if return_results and final_reconcile:
-        _q666 = list(getattr(pcb_data, '_pending_cap_moves', None) or [])
+        _cap_moves_in_run666('end of run')    # none expected: no later queue
+        _q666 = [m for m in (getattr(pcb_data, '_pending_cap_moves', None)
+                             or [])
+                 if m.get('_666_done') in ('in-run', 'none', 'applier')]
         _rd666 = locals().get('results_data')
         if _q666 and _rd666 is not None:
             from net_rescue import cap_move_reweld_spec

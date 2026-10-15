@@ -38,6 +38,7 @@ Design constraints (#331/#371 review):
 """
 
 import env_knobs
+import contextlib
 import math
 import os
 import collections as _c
@@ -974,11 +975,48 @@ def _cap_conflicts(pcb_data, fan_vias, net_id, config) -> dict:
 
 
 def _cap_move_net_names(pcb_data, moves) -> list:
-    """Sorted names of the nets of every queued cap move's pads (#666)."""
-    ids = set()
+    """Sorted names of the nets of every queued cap move's pads (#666).
+
+    The names the retry recorded when it queued the move win: a move handed
+    back from a board parsed separately (the plane finalize without live
+    reuse) carries net ids of THAT parse, and names are the same on both."""
+    names = set()
     for mv in moves or []:
-        ids.update(mv.get('net_ids') or [])
-    return sorted(pcb_data.nets[n].name for n in ids if n in pcb_data.nets)
+        if mv.get('net_names'):
+            names.update(n for n in mv['net_names'] if n)
+            continue
+        names.update(pcb_data.nets[n].name for n in (mv.get('net_ids') or [])
+                     if n in pcb_data.nets and pcb_data.nets[n].name)
+    return sorted(names)
+
+
+@contextlib.contextmanager
+def _caps_at_relocation(pcb_data, moves):
+    """#666: the caps of `moves` at their RELOCATED poses for the length of
+    the block, then back exactly where they were.
+
+    The would-short guard judges a cap-conflicting escape on the board it
+    ships onto. Judged with the cap still on it, the escape's via is a short
+    against the very pad the move exists to clear, so it was always declined
+    (and its move, queued first, moved the cap with no via to make room for).
+    The guard is the stricter judge: `_find_cap_relocation` prices a pad
+    against a via or a track by a disc of half its longer side, the guard by
+    the pad's rectangle, so a relocation that clears by the disc and grazes
+    at a corner is declined here and the cap stays where it is."""
+    saved = []
+    for mv in moves or []:
+        fp = pcb_data.footprints.get(mv['reference'])
+        if fp is not None:
+            saved.append((fp, fp.x, fp.y,
+                          [(p, p.global_x, p.global_y) for p in fp.pads]))
+    try:
+        mirror_cap_moves(pcb_data, moves)
+        yield
+    finally:
+        for fp, x, y, pads in saved:
+            fp.x, fp.y = x, y
+            for p, gx, gy in pads:
+                p.global_x, p.global_y = gx, gy
 
 
 def mirror_cap_moves(pcb_data, moves) -> list:
@@ -1010,11 +1048,12 @@ def cap_move_reweld_spec(config, pcb_data, moves) -> dict:
     """#666: the queued cap moves and the re-weld oracle's parameters,
     resolved from THIS run's config.
 
-    route.py's file-mode block builds its `oracle_reconnect` call from this,
-    and on the GUI front batch_route posts it as
-    `results_data['pending_cap_moves']`, where the Route tab's applier moves
-    the live footprint and runs the staged-save oracle with it
-    (`gui_utils.run_kicad_oracle_on_live_board`). One builder, so the two
+    route.py's re-weld is built from this on both fronts -- on the written
+    file (CLI), or on a staged board in-run (GUI) -- and on the GUI front
+    batch_route posts it as `results_data['pending_cap_moves']`, where the
+    Route tab's applier moves the live footprint and, for a move the engine
+    could not re-weld in-run, runs the staged-save oracle with it
+    (`gui_utils.run_kicad_oracle_on_live_board`). One builder, so the
     re-welds cannot be priced differently. Each move gains `net_names`. The
     per-net maps travel by NAME (#1133, #1137): the oracle re-parses its
     board, and the GUI's staged save numbers its nets afresh. The widths are
@@ -1022,8 +1061,13 @@ def cap_move_reweld_spec(config, pcb_data, moves) -> dict:
     from kicad_oracle import oracle_net_widths_by_name
     out = []
     for mv in moves or []:
-        m = dict(mv)
+        m = {k: mv[k] for k in ('reference', 'new_x', 'new_y',
+                                'new_rotation', 'net_ids') if k in mv}
         m['net_names'] = _cap_move_net_names(pcb_data, [mv])
+        # GUI: where this move's re-weld ran -- 'in-run' (on a staged board
+        # at the CLI's sequence point), 'none' (no net to weld), or
+        # 'applier' (no staged board: the Route tab re-welds after apply).
+        m['reweld'] = mv.get('_666_done') or 'applier'
         out.append(m)
     return {
         'moves': out,
@@ -1180,6 +1224,9 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                     # validated 2/2 on exactly this class (#666/#652).
                     _fp = pcb_data.footprints.get(_pad.component_ref)
                     _gsegs, _gvias = [], []
+                    # #666: the cap move(s) this escape needs, queued only
+                    # once the escape SHIPS (below the would-short guard).
+                    _capmv666 = []
                     if _fp is not None and len(_fp.pads) >= 12:
                         try:
                             from bga_fanout import generate_bga_fanout
@@ -1290,23 +1337,24 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                                               f"relocation)")
                                         _ft, _fv = [], []
                                     else:
-                                        _pend = getattr(
-                                            pcb_data,
-                                            '_pending_cap_moves', None)
-                                        if _pend is None:
-                                            _pend = []
-                                            pcb_data._pending_cap_moves = \
-                                                _pend
-                                        _pend.extend(_moves)
+                                        # Held, not queued: the escape may
+                                        # still be declined below, and a
+                                        # move whose escape never ships
+                                        # moves a cap to make room for
+                                        # nothing.
+                                        _capmv666 = _moves
                                         for _mv in _moves:
+                                            _mv['net_names'] = sorted(
+                                                pcb_data.nets[n].name
+                                                for n in _mv['net_ids']
+                                                if n in pcb_data.nets)
                                             print(
                                                 f"    bare-ball escape: "
                                                 f"cap {_mv['reference']} "
                                                 f"conflicts -- relocation "
                                                 f"to ({_mv['new_x']:.2f},"
                                                 f"{_mv['new_y']:.2f}) "
-                                                f"verified, move queued "
-                                                f"for post-write (#666)")
+                                                f"verified")
                         _gsegs = [_Seg(
                             start_x=t['start'][0], start_y=t['start'][1],
                             end_x=t['end'][0], end_y=t['end'][1],
@@ -1334,23 +1382,28 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                     # emitted seg and via against foreign copper;
                     # decline the escape like any other no-escape
                     # outcome rather than ship it.
+                    # A cap-conflicting escape is judged with its caps
+                    # RELOCATED (#666): that is the board it ships onto, and
+                    # judged with a cap still on it the via is a short
+                    # against the pad the move exists to clear.
                     _lc666, _vc666 = _leg_clear, _via_site_clear
                     _short666 = None
-                    for _sg6 in _gsegs:
-                        if not _lc666(pcb_data,
-                                      [(_sg6.start_x, _sg6.start_y),
-                                       (_sg6.end_x, _sg6.end_y)],
-                                      _sg6.layer, _sg6.width,
-                                      config.clearance, net_id,
-                                      config=config):
-                            _short666 = 'seg'
-                            break
-                    if _short666 is None:
-                        for _v6 in _gvias:
-                            if not _vc666(pcb_data, _v6.x, _v6.y,
-                                          config, net_id):
-                                _short666 = 'via'
+                    with _caps_at_relocation(pcb_data, _capmv666):
+                        for _sg6 in _gsegs:
+                            if not _lc666(pcb_data,
+                                          [(_sg6.start_x, _sg6.start_y),
+                                           (_sg6.end_x, _sg6.end_y)],
+                                          _sg6.layer, _sg6.width,
+                                          config.clearance, net_id,
+                                          config=config):
+                                _short666 = 'seg'
                                 break
+                        if _short666 is None:
+                            for _v6 in _gvias:
+                                if not _vc666(pcb_data, _v6.x, _v6.y,
+                                              config, net_id):
+                                    _short666 = 'via'
+                                    break
                     # ...and against EACH OTHER (#1070): _via_site_clear sees
                     # only the board's vias, and this escape's own drills are
                     # not on it yet.
@@ -1361,7 +1414,11 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                         print(f"    bare-ball escape: "
                               f"{_pad.component_ref}.{_pad.pad_number} "
                               f"declined (escape {_short666} would "
-                              f"short routed copper)")
+                              f"short routed copper)"
+                              + (f"; cap(s) "
+                                 f"{', '.join(m['reference'] for m in _capmv666)}"
+                                 f" stay where they are" if _capmv666
+                                 else ""))
                         continue
                     pcb_data.segments.extend(_gsegs)
                     pcb_data.vias.extend(_gvias)
@@ -1370,9 +1427,17 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                     # serving answers computed before this escape existed.
                     pcb_data._copper_epoch = getattr(
                         pcb_data, '_copper_epoch', 0) + 1
+                    # The cap moves ride with the escape they make room for:
+                    # queued below, once the net's escapes are final.
+                    for _mv in _capmv666:
+                        # by net NAME: a move can be handed back from a
+                        # board parsed separately (route.py, sequence point 2)
+                        _mv['_escape_vias'] = [(v.x, v.y, net_name, v.size)
+                                               for v in _gvias]
                     tap_results.append({'new_segments': _gsegs,
                                         'new_vias': _gvias,
-                                        'iterations': 0})
+                                        'iterations': 0,
+                                        'cap_moves': _capmv666})
                     _tapped += 1
                     print(f"    bare-ball escape: {_pad.component_ref}."
                           f"{_pad.pad_number} fanout-rescue escape "
@@ -1483,6 +1548,21 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
         if tap_results and num <= 1:
             tap_results = _withdraw_unused_escapes(pcb_data, net_id,
                                                    tap_results, config)
+        # #666: queue the cap moves of the escapes that SHIP. A move is made
+        # for its escape's vias (they are what land on the cap), so an escape
+        # whose vias were withdrawn above makes room for nothing. The run's
+        # sequence points check the vias again before moving the cap: a later
+        # pass can still take them out.
+        for _r in tap_results:
+            if _r.get('cap_moves') and _r.get('new_vias'):
+                _pend = getattr(pcb_data, '_pending_cap_moves', None)
+                if _pend is None:
+                    _pend = pcb_data._pending_cap_moves = []
+                _pend.extend(_r['cap_moves'])
+                for _mv in _r['cap_moves']:
+                    print(f"    bare-ball escape: cap {_mv['reference']} move "
+                          f"to ({_mv['new_x']:.2f},{_mv['new_y']:.2f}) "
+                          f"queued for post-write (#666)")
         elapsed = time.time() - net_start
         if not edge_results and not tap_results:
             summary['unchanged'].append(net_name)

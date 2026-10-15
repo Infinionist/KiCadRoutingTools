@@ -4050,15 +4050,18 @@ class RoutingDialog(wx.Dialog):
             if cleared:
                 print(f"Cleared {cleared} graphic(s) from the guide/keepout User layer(s)")
 
-        # #666 scoped cap move -- the GUI twin of route.py's file-mode block
-        # (write_placed_output + the pcb_data mirror + the re-weld oracle).
-        # The bare-ball rescue shipped an escape via onto a MOVABLE cap with a
-        # relocation verified at rescue time. The engine mirrored it into the
-        # model where the CLI does and posted it here, because only this
-        # applier holds the live board. Move the cap BEFORE the refill, so the
-        # pours knock out around its new pose; its nets are re-welded below,
-        # after the refill and before the plane-finalize fallback oracle --
-        # the CLI's order (its re-weld precedes the finalize).
+        # #666 scoped cap move -- the GUI twin of route.py moving the cap in
+        # its written file. The bare-ball rescue shipped an escape via onto a
+        # MOVABLE cap with a relocation verified at rescue time. The engine
+        # mirrored the move into the model and re-welded the cap's nets
+        # IN-RUN on a staged board at the CLI's sequence point (the weld's
+        # copper is already in this change-set), and posted the move here,
+        # because only this applier holds the live board. Move the cap BEFORE
+        # the refill, so the pours knock out around its new pose. A move the
+        # engine could not re-weld (no staged board: reweld == 'applier') is
+        # re-welded below, after the refill and before the plane-finalize
+        # fallback oracle -- the CLI's order (its re-weld precedes the
+        # finalize).
         _cmv = results_data.get('pending_cap_moves') or None
         _cmv_applied = []
         if _cmv and _cmv.get('moves'):
@@ -4079,11 +4082,15 @@ class RoutingDialog(wx.Dialog):
         if _rf:
             print(f"Refilled {_rf} zone(s) around the new copper")
 
-        # #666 re-weld: the CLI's oracle_reconnect on the moved cap's nets,
-        # as the staged-save oracle on the live board with the engine's spec
+        # #666 re-weld, FALLBACK only (the engine had no staged board): the
+        # CLI's oracle_reconnect on the moved cap's nets, as the staged-save
+        # oracle on the live board with the engine's spec
         # (net_rescue.cap_move_reweld_spec, the one the CLI builds its call
-        # from). Refill afterwards: welds change the fill.
+        # from). Post-apply, so its copper misses the engine's #984 soft-joint
+        # bridge -- the reason the in-run weld is the normal path. Refill
+        # afterwards: welds change the fill.
         _cmv_nets = sorted({n for _m in _cmv_applied
+                            if _m.get('reweld', 'applier') == 'applier'
                             for n in (_m.get('net_names') or [])})
         if _cmv_nets:
             try:
