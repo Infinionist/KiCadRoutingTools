@@ -683,46 +683,44 @@ this tool exists for. `--strict-legal` is the absolute arm, `--force` the
 waiver, and a KiCad `(locked yes)` is refused unless the same call `unlock`s
 it. See `docs/utilities.md` for the full contract.
 
-The SEARCH's own stack test (`legality.pads_ok` refusing a new
-`PairShortfall.stack`) is still measured on pad BOXES, conservative by
-design. `legality.STACK_EXACT_CONFIRM` (#1127, default off) confirms each box
-hit on the pads' outlines with `_exact_pad_stack`, the check check_assembly
-makes. `tests/measure_1127_stack_gate_census.py` measured it before any
-default: the corpus seeds and quenches almost never reach a box stack, and
-the placement A/B did not pass (the census and its numbers are in #1127), so
-it stays off.
+The SEARCH's own pad tests (`legality.pads_ok`) are measured on pad BOXES,
+conservative by design: a box can falsely refuse a pose, never falsely admit
+one. `legality.STACK_EXACT_CONFIRM` (#1127) is an OPT-IN switch, **off by
+default**, that confirms the per-pad sweep's box hits on the pads' own
+outlines before the gate refuses a pose for them. It covers both conjuncts
+the boxes decide:
 
-A second, pre-registered look (`tests/1127_stack_ab_prereg.json`) split the
-toggle into a LICENCE fix and the exact gate itself. The licence fix targets
-box mode's seed baseline, which records a box-only near-touch at the seed as
-a stack and so licenses a later real one with that neighbour. Its census,
-`tests/measure_1127_licence_census.py`, counts on an OFF run, inside the
-engine call only, every `pads_ok` decision the licence or the exact gate
-would take differently. It found 0 licence holes in every cell, StickHub
-included. On the committed corpus that zero is structural: no input carries
-a box-only licence, and a pile has none by `_degenerate_refs`. The exact gate
-has trial cells (a flip at the `pads_ok` verdict or at any pair level) on
-rp2350 and ulx3s only -- and only ONE call on the whole corpus changed a
-`pads_ok` verdict (ulx3s quench, R27). That is 2 boards per engine against
-the 3 CLAUDE.md's rule needs, so the run stopped there (STOP A) and nothing
-changed default. (The STOP comes from the plan and that rule; the prereg's
-own `family_B.combine` wording would have allowed a GO with no engine at 3
-boards, a defect in that text, disclosed in
-`tests/measure_1127_stack_modes_ab.py`'s docstring.) Two findings stand: the PAD conjunct is box currency too, so on the
-#1064 C4/Y1 grid the exact gate clears only 6 of the 35 box-only refusals; and
-the census does not observe `relocate.exact_refusal`, `place_pose`,
-`reseat`, `portfolio` or `perturb`.
+- the STACK (`PairShortfall.stack`): a box overlap counts only when
+  `_exact_pad_stack`, the check check_assembly's pad_intersection channel
+  makes, finds the outlines intersect;
+- the PAD conjunct (`pad`, `pad_overlap`): a box clearance shortfall is
+  re-measured by check_drc's pad-pad check (`check_pad_pad_overlap`, margin
+  0) at the pair's requirement and charged check_drc's own millimetres, and
+  a different-net overlap is a short only when the outlines intersect.
 
-The same toggle now confirms the PAD conjunct too: a box clearance shortfall
-in the per-pad sweep is re-measured by check_drc's pad-pad check
-(`check_pad_pad_overlap`, margin 0) at the pair's requirement, and charged
-check_drc's own millimetres; a different-net box overlap is a short only when
-the outlines intersect. On the C4/Y1 grid `pads_ok` then agrees with
-check_drc's pad-pad clearance and check_assembly's pad_intersection channel
-at all 121 poses (42 disagree off, 27 with the stack alone confirmed;
-`tests/test_1127_stack_exact_confirm.py`). The over-cap extent branch and
-the NPTH hole channel stay box answers, and a part that cannot be posed keeps
-the box's answer. Still default off.
+With it on, `pads_ok` refuses what check_drc and check_assembly grade rather
+than what the boxes suggest (`tests/test_1127_stack_exact_confirm.py`). The
+over-cap extent branch and the NPTH hole channel stay box answers, a part
+that cannot be posed keeps the box's answer, the mode is read once when a
+context is built, and each exact answer is memoised per posed pad pair. An
+exact gate can leave a pair AT its clearance, and check_drc at margin 0 may
+then read it a fraction of a nanometre short: the gate admits within its
+`EPS`, and the board file rounds every pose to whole nanometres. KiCad's own
+DRC does not flag such a pair -- it stores integer nanometres and tolerates
+its DRC epsilon (0.0005 mm) -- so the gate's `EPS` stays as it is.
+
+It is opt-in because the corpus A/B did not adopt it: the decisions it
+changes move the placement A/B's signals in both directions across boards,
+which is not the directional, at-least-three-board result CLAUDE.md asks of
+a default. The measurement tools stay with it. `tests/1127_stack_ab_prereg.json`
+pre-registered the look, which also asked whether box mode's seed baseline
+LICENSES a real stack (a box-only near-touch at the seed recorded as a
+stack); no committed input carries such a licence, and a pile has none by
+`_degenerate_refs`, so no licence fix was built.
+`tests/measure_1127_licence_census.py` counts, on an OFF run inside the
+engine call, every `pads_ok` decision the switch (both conjuncts) or a
+licence fix would take differently; it does not observe
+`relocate.exact_refusal`, `place_pose`, `reseat`, `portfolio` or `perturb`.
 
 ## place_fanout_clearance.py — decoupling-cap clearance repair (issue #130)
 

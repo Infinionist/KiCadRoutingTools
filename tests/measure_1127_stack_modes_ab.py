@@ -23,6 +23,9 @@ the census decision:
   is skipped). The arms are therefore #1144's toggle:
   - off  = `legality.STACK_EXACT_CONFIRM = False` (the prereg's 'box');
   - full = `legality.STACK_EXACT_CONFIRM = True` (the prereg's 'exact').
+    The switch has since taken the PAD conjunct too, so a FULL arm run now
+    confirms both, and the census's FULL counts the same (its pad conjunct
+    flips are `c_flip_any_pad`, a trial-cell trigger here as well).
 - The prereg's family B is licence -> full. A cell with no L-hole call makes
   every decision of the L run equal to the OFF run's, so on these cells
   "licence" IS "off". The L arm is therefore not run, and its seconds are
@@ -97,7 +100,8 @@ def trial_cells(census, doc):
     for key, r in sorted(census['cells'].items()):
         parts = key.split('|')
         board, engine, pile = parts[0], parts[1], len(parts) > 2
-        hit = (r['c_flip'] > 0 or r['c_flip_any'] > 0)
+        hit = (r['c_flip'] > 0 or r['c_flip_any'] > 0
+               or r.get('c_flip_any_pad', 0) > 0)
         if board in committed:
             if hit:
                 out.append((key, board, engine, pile))

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """#1127: the licence census -- what an OFF run admits and refuses that the
-licence (L) and exact (FULL) stack gates would decide differently.
+licence (L) and exact (FULL) gates would decide differently.
 
 Pre-registered in tests/1127_stack_ab_prereg.json (pinned by
 tests/test_1127_prereg.py), which this script reads its boards from.
@@ -14,38 +14,58 @@ without changing it:
 
 * L-HOLE -- a `pads_ok` call OFF admits and L refuses. L's stack conjunct is
   OFF's, OR (box-only licence at the seeds AND an exact stack now);
-* C-FLIP -- a call OFF refuses and FULL admits. FULL's stack conjunct is
-  exact(cur) and not exact(base). Also counted at ANY `pair_shortfall` level,
-  for the consumers that read `.stack` without a baseline.
+* C-FLIP -- a call OFF refuses and FULL admits. FULL is the switch,
+  `STACK_EXACT_CONFIRM`: its stack conjunct is exact(cur) and not
+  exact(base), and its PAD conjunct (`pad`, `pad_overlap`) is check_drc's
+  pad-pad answer on the outlines, against a baseline measured the same way.
+  Also counted at ANY `pair_shortfall` level, for the consumers that read a
+  pair without a baseline, per conjunct: a box stack the outlines clear
+  (`c_flip_any`), and a box pad shortfall or overlap they clear
+  (`c_flip_any_pad`).
+
+FULL confirms BOTH conjuncts because it has to be the switch. The
+trial-cell rule says a cell with no C-flip gives identical outputs in every
+arm, and the A/B's FULL arm sets `STACK_EXACT_CONFIRM`, which confirms the
+pad conjunct too since it was extended. A FULL that confirmed the stack
+alone would call a cell identical where the pad conjunct alone changes a
+decision. `Shim(pad_exact=False)` is the stack-only FULL the prereg
+measured (#1144's toggle); control 1 runs it to keep the prereg's pinned
+numbers.
 
 The SHIM makes this possible on an OFF run:
 - It wraps `PartPads.__init__` to take the footprint snapshot whatever
   `STACK_EXACT_CONFIRM` says. Under OFF no snapshot is taken, so
-  `_stack_confirmed` would return the box answer and every count would read 0.
+  `_stack_confirmed` and `_pad_confirmed` would return the box answer and
+  every count would read 0.
 - It re-evaluates every `pads_ok` call per neighbour in the three modes.
 - It computes exact answers by calling the real `pair_shortfall` with the
-  context's `stack_exact` set for that one call; the exact seed baselines go
-  in the shim's own cache, never in `_baselines`.
+  context's `stack_exact` and `pad_exact` set for that one call; the exact
+  seed baselines go in the shim's own cache, never in `_baselines`.
 
-FOUR CONTROLS run before any count is read. If one fails, the census is
+FIVE CONTROLS run before any count is read. If one fails, the census is
 broken: exit 2.
 1. Positive: esp_prog's C4/Y1 grid (121 poses at 315 degrees, #1064) gives
-   35 C-flips at the pair level, at least one of which survives to the
-   pads_ok verdict. Measured: 6 survive, because 29 of the 35 are also
-   refused by the box-currency PAD conjunct (Y1's other-net pads) in every
-   mode. This is the prereg's amended wording.
+   35 stack C-flips at the pair level, at least one of which survives to
+   the pads_ok verdict. With the stack alone exact (the prereg's FULL), 6
+   survive, because 29 of the 35 are also refused by the box-currency PAD
+   conjunct (Y1's other-net pads); that is the prereg's amended wording,
+   still pinned. With the pad conjunct exact too, the pads_ok-level count is
+   pinned as well (`GRID_FULL_PADS_OK`), so a drift in the instrument shows.
 2. Positive: a licence witness (C4 seeded at a box-only pose beside Y1, then
    asked for an exact-stack pose) gives one L-hole.
 3. Self-check: the shim's OFF verdict equals the real return on every call
    of every run.
 4. Purity: esp_prog's seed is placement-identical with and without the shim.
+5. FULL is the switch: on the grid, the shim's FULL verdict equals the
+   `pads_ok` return of a context built with `STACK_EXACT_CONFIRM` on, at
+   every pose.
 
 Then, per cell (board x engine; corpus seed and quench, pile seed, and
 StickHub as a diagnostic):
 - `pads_ok` calls, OFF refusals, L-holes (calls and distinct pairs), and
-  C-flips (`pads_ok` level and any level), each with its callers. The any
-  level is split into calls inside a `pads_ok` (already decided in all three
-  modes) and outside one;
+  C-flips (`pads_ok` level and any level, the any level per conjunct), each
+  with its callers. The any level is split into calls inside a `pads_ok`
+  (already decided in all three modes) and outside one;
 - every real pad stack in the OFF output (`pad_intersection_pairs`), classed
   at the input board as one of: box-only licence, genuine (exact) licence,
   over-cap pair, pile part, or unexplained (the prereg's term).
@@ -104,6 +124,10 @@ from test_1094_rotated_courtyards import stickhub        # noqa: E402
 
 PREREG = os.path.join(TESTS_DIR, '1127_stack_ab_prereg.json')
 CORPUS_ENGINES = ('seed', 'quench')
+#: control 1, FULL arm: the grid's pads_ok-level C-flips with both conjuncts
+#: exact (the switch), measured when the switch took the pad conjunct.
+#: Pinned like the stack-only 6, as a drift detector.
+GRID_FULL_PADS_OK = 42
 
 
 def _quiet(fn, *a, **k):
@@ -124,10 +148,15 @@ class Shim:
     (its pile cell's 2 any-level flips were all the grader's; Phase-3
     verifier). The controls, which call `pads_ok` directly, count always."""
 
-    def __init__(self, engine_only=False):
+    def __init__(self, engine_only=False, pad_exact=True):
         from placement import legality as L
         self.L = L
         self.engine_only = engine_only
+        # FULL = the switch: both conjuncts exact. False is the prereg's
+        # stack-only FULL (#1144's toggle), which control 1 still measures.
+        self.pad_exact = pad_exact
+        # control 5: a list receives every counted call's FULL verdict
+        self.full_log = None
         self.counting = not engine_only
         self._saved = {}
         self.reset()
@@ -145,6 +174,11 @@ class Shim:
         # consumers that read `.stack` with no baseline).
         self.c_flip_any_in_pads_ok = 0
         self.c_flip_any_outside = 0
+        # ...and the PAD conjunct's: a box pad shortfall or overlap that the
+        # outlines clear (FULL with `pad_exact` only), split the same way.
+        self.c_flip_any_pad = 0
+        self.c_flip_any_pad_in_pads_ok = 0
+        self.c_flip_any_pad_outside = 0
         self.l_hole_pairs = set()
         self.c_flip_refs = set()
         self.by_caller = collections.Counter()
@@ -153,23 +187,23 @@ class Shim:
 
     # -- exact answers, outside the context's own caches --------------------
     def _exact(self, ctx, a, b, pose_a=None, pose_b=None):
-        prev = ctx.stack_exact
-        ctx.stack_exact = True
+        prev = ctx.stack_exact, ctx.pad_exact
+        ctx.stack_exact, ctx.pad_exact = True, self.pad_exact
         try:
             return self._pair(ctx, a, b, pose_a=pose_a, pose_b=pose_b)
         finally:
-            ctx.stack_exact = prev
+            ctx.stack_exact, ctx.pad_exact = prev
 
     def _exact_base(self, ctx, a, b):
         L = self.L
         if a in ctx._degenerate_refs or b in ctx._degenerate_refs:
             return L.ZERO_SHORTFALL
         cache = ctx.__dict__.setdefault('_shim_xbase', {})
-        key = (a, b) if a <= b else (b, a)
+        a, b = (a, b) if a <= b else (b, a)
+        key = (a, b, self.pad_exact)
         if key not in cache:
-            cache[key] = self._exact(ctx, key[0], key[1],
-                                     pose_a=ctx.seed_of(key[0]),
-                                     pose_b=ctx.seed_of(key[1]))
+            cache[key] = self._exact(ctx, a, b, pose_a=ctx.seed_of(a),
+                                     pose_b=ctx.seed_of(b))
         return cache[key]
 
     def _modes(self, ctx, ref, pose, neighbors, exclude):
@@ -198,9 +232,14 @@ class Shim:
             box_only_licence = base.stack and not base_x.stack
             l_stack = off_stack or (box_only_licence and cur_x.stack)
             full_stack = cur_x.stack and not base_x.stack
+            # FULL's other conjuncts in its own currency: with `pad_exact`
+            # the pad pair is graded on the outlines on both sides
+            full_common = (cur_x.pad > base_x.pad + EPS
+                           or (cur_x.pad_overlap and not base_x.pad_overlap)
+                           or cur_x.hole > base_x.hole + EPS)
             o_ref = common or off_stack
             l_ref = common or l_stack
-            f_ref = common or full_stack
+            f_ref = full_common or full_stack
             if o_ref:
                 off_ok = False
             if l_ref:
@@ -234,20 +273,30 @@ class Shim:
 
         def pair_shortfall(ctx, a, b, pose_a=None, pose_b=None):
             sf = orig_pair(ctx, a, b, pose_a=pose_a, pose_b=pose_b)
-            if (sf.stack and not ctx.stack_exact and not shim._inside
+            box_pad = shim.pad_exact and (sf.pad > L.EPS or sf.pad_overlap)
+            if ((sf.stack or box_pad) and not ctx.stack_exact
+                    and not ctx.pad_exact and not shim._inside
                     and shim.counting):
                 shim._inside = True
                 try:
                     x = shim._exact(ctx, a, b, pose_a=pose_a, pose_b=pose_b)
                 finally:
                     shim._inside = False
-                if not x.stack:
+                caller = sys._getframe(1).f_code.co_name
+                if sf.stack and not x.stack:
                     shim.c_flip_any += 1
                     if shim._in_pads_ok:
                         shim.c_flip_any_in_pads_ok += 1
                     else:
                         shim.c_flip_any_outside += 1
-                    shim.by_caller['any:' + sys._getframe(1).f_code.co_name] += 1
+                    shim.by_caller['any:' + caller] += 1
+                if box_pad and not (x.pad > L.EPS or x.pad_overlap):
+                    shim.c_flip_any_pad += 1
+                    if shim._in_pads_ok:
+                        shim.c_flip_any_pad_in_pads_ok += 1
+                    else:
+                        shim.c_flip_any_pad_outside += 1
+                    shim.by_caller['any_pad:' + caller] += 1
             return sf
 
         def pads_ok(ctx, ref, x, y, rot, neighbors, exclude=None, why=None):
@@ -261,7 +310,7 @@ class Shim:
                 shim._in_pads_ok = prev_in
             if not shim.counting:
                 return real
-            if ctx.stack_exact:
+            if ctx.stack_exact or ctx.pad_exact:
                 raise AssertionError('the census observes an OFF run; this '
                                      'context was built exact')
             shim._inside = True
@@ -284,6 +333,8 @@ class Shim:
                 shim.c_flip += 1
                 shim.c_flip_refs.add(ref)
                 shim.by_caller['c_flip:' + caller] += 1
+            if shim.full_log is not None:
+                shim.full_log.append(f)
             return real
 
         L.PartPads.__init__ = pp_init
@@ -324,6 +375,9 @@ class Shim:
                 'c_flip': self.c_flip, 'c_flip_any': self.c_flip_any,
                 'c_flip_any_in_pads_ok': self.c_flip_any_in_pads_ok,
                 'c_flip_any_outside': self.c_flip_any_outside,
+                'c_flip_any_pad': self.c_flip_any_pad,
+                'c_flip_any_pad_in_pads_ok': self.c_flip_any_pad_in_pads_ok,
+                'c_flip_any_pad_outside': self.c_flip_any_pad_outside,
                 'c_flip_refs': sorted(self.c_flip_refs),
                 'by_caller': dict(self.by_caller)}
 
@@ -412,12 +466,11 @@ def _grid():
             for j in range(11) for i in range(11)]
 
 
-def controls(work):
-    from placement.writer import write_placed_output
-    esp = os.path.join(AB.BOARDS, 'esp_prog.kicad_pcb')
-    out = {}
-    # 1. the C4/Y1 grid: 35 box-only poses must read as C-flips.
-    with Shim() as sh:
+def _grid_census(esp, pad_exact):
+    """Control 1 in one FULL mode: the grid's box-only stacks, and its
+    C-flips at the pair and pads_ok levels, with the FULL verdict of every
+    pads_ok call (control 5 compares those with a real exact context)."""
+    with Shim(pad_exact=pad_exact) as sh:
         st = _esp_state(esp)
         ctx = st.legality_ctx
         box_only, both = [], []
@@ -429,21 +482,64 @@ def controls(work):
             elif b and e:
                 both.append((x, y))
         sh.reset()
+        sh.full_log = []
         for x, y in _grid():
             ctx.pads_ok('C4', x, y, 315.0, ['Y1'])
-        out['grid'] = {'box_only': len(box_only), 'both': len(both),
-                       'c_flip_pair_level': sh.c_flip_any,
-                       'c_flip_pads_ok': sh.c_flip, 'mismatch': sh.mismatch}
+        return box_only, both, sh.full_log, {
+            'box_only': len(box_only), 'both': len(both),
+            'c_flip_pair_level': sh.c_flip_any,
+            'c_flip_pad_pair_level': sh.c_flip_any_pad,
+            'c_flip_pads_ok': sh.c_flip, 'mismatch': sh.mismatch}
+
+
+def _real_exact_verdicts(esp, pad_exact):
+    """Control 5: the grid's pads_ok returns from a context built with
+    `STACK_EXACT_CONFIRM` on (its `pad_exact` set before any query, so the
+    seed baselines are measured in that mode), outside any shim."""
+    from placement import legality as L
+    saved = L.STACK_EXACT_CONFIRM
+    L.STACK_EXACT_CONFIRM = True
+    try:
+        st = _esp_state(esp)
+    finally:
+        L.STACK_EXACT_CONFIRM = saved
+    ctx = st.legality_ctx
+    ctx.pad_exact = pad_exact
+    return [ctx.pads_ok('C4', x, y, 315.0, ['Y1']) for x, y in _grid()]
+
+
+def controls(work):
+    from placement.writer import write_placed_output
+    esp = os.path.join(AB.BOARDS, 'esp_prog.kicad_pcb')
+    out = {}
+    # 1. the C4/Y1 grid: 35 box-only poses must read as C-flips -- with the
+    #    stack alone exact (the prereg's FULL) and with both (the switch).
+    box_only, both, stack_log, out['grid'] = _grid_census(esp, False)
+    _b, _e, full_log, out['grid_full'] = _grid_census(esp, True)
     # The prereg's control 1 (as amended): the pair-level count is #1064's 35,
     # and at least one survives to the pads_ok verdict -- 29 of the 35 are
     # also refused there by the box-currency PAD conjunct (Y1's other-net
-    # pads), in every mode.
-    ok1 = (out['grid']['box_only'] == 35
-           and out['grid']['c_flip_pair_level'] == 35
-           and out['grid']['c_flip_pads_ok'] >= 1
+    # pads) when only the stack is exact.
+    g, gf = out['grid'], out['grid_full']
+    ok1 = (g['box_only'] == 35
+           and g['c_flip_pair_level'] == 35
+           and g['c_flip_pads_ok'] >= 1
            # the prereg says >= 1; the measured value is pinned too, so a
            # drift in the instrument shows (Phase-3 verifier)
-           and out['grid']['c_flip_pads_ok'] == 6)
+           and g['c_flip_pads_ok'] == 6
+           # ...and with the pad conjunct exact too: the same stacks, and
+           # the pads_ok-level count pinned the same way
+           and gf['box_only'] == 35 and gf['c_flip_pair_level'] == 35
+           and gf['c_flip_pads_ok'] == GRID_FULL_PADS_OK
+           and gf['mismatch'] == 0)
+    # 5. FULL is the switch: the shim's FULL verdicts equal a real exact
+    #    context's, in both modes.
+    out['full_is_switch'] = {
+        'stack_only': stack_log == _real_exact_verdicts(esp, False),
+        'both': full_log == _real_exact_verdicts(esp, True),
+        'calls': len(full_log)}
+    ok5 = (out['full_is_switch']['stack_only']
+           and out['full_is_switch']['both'] and len(full_log) == 121)
     # 2. the licence witness: seed C4 at a box-only pose, ask for an exact
     #    stack -- OFF admits it (licensed), L refuses it.
     ok2 = False
@@ -473,7 +569,8 @@ def controls(work):
     with Shim():
         _quiet(AB._run_seed, esp, b, intent, {}, ignore_nets=['GND'])
     out['purity'] = _poses(a) == _poses(b)
-    ok = ok1 and ok2 and out['purity'] and out['grid']['mismatch'] == 0
+    ok = (ok1 and ok2 and out['purity'] and out['grid']['mismatch'] == 0
+          and ok5)
     return ok, out
 
 
@@ -515,7 +612,9 @@ def cell(board, engine, work, pile=False):
           f"({len(rec['l_hole_pairs'])} pair(s) {rec['l_hole_pairs'][:4]}), "
           f"C-flips {rec['c_flip']} (any level {rec['c_flip_any']}: "
           f"{rec['c_flip_any_in_pads_ok']} inside pads_ok, "
-          f"{rec['c_flip_any_outside']} outside), "
+          f"{rec['c_flip_any_outside']} outside; pad conjunct "
+          f"{rec['c_flip_any_pad']}: {rec['c_flip_any_pad_in_pads_ok']} "
+          f"inside, {rec['c_flip_any_pad_outside']} outside), "
           f"mismatch {rec['mismatch']}; OFF body_blocking "
           f"{rec['body_blocking']} = {att} ({rec['seconds']}s)", flush=True)
     return rec
@@ -541,7 +640,8 @@ def decide(cells, doc):
         trial[eng] = sorted({board_of(k) for k, r in cells.items()
                              if k.split('|')[1] == eng
                              and board_of(k) in committed
-                             and (r['c_flip'] > 0 or r['c_flip_any'] > 0)})
+                             and (r['c_flip'] > 0 or r['c_flip_any'] > 0
+                                  or r.get('c_flip_any_pad', 0) > 0)})
     stop_a = lv == 'L0-undemonstrated' and all(len(v) < 3
                                                for v in trial.values())
     return {'licence': lv, 'l_cells_corpus': l_corpus,
@@ -568,7 +668,7 @@ def main(argv=None):
         print("CONTROL FAILED: the census is broken, no count is read "
               "(exit 2)")
         return 2
-    print("controls: all four hold", flush=True)
+    print("controls: all five hold", flush=True)
     if a.controls_only:
         return 3
     boards = [os.path.join(AB.BOARDS, b) for b in doc['boards']]
