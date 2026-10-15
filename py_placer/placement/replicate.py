@@ -74,13 +74,15 @@ def _leaf(name: str) -> str:
     return name.rsplit('/', 1)[-1]
 
 
-def sheet_instances(pcb, sheet_names: Dict[str, str]) -> Dict[str, Dict]:
-    """`{prefix: {'names': [...], 'refs': [...]}}` for every NON-ROOT sheet
-    prefix on the board, ancestors of nested sheets included.
+def sheet_instances(pcb) -> Dict[str, Dict]:
+    """`{prefix: {'names': [...], 'files': [...], 'refs': [...]}}` for every
+    NON-ROOT sheet prefix on the board, ancestors of nested sheets included.
 
-    `refs` are every footprint at or below the prefix; `names` are the sheet
-    names the prefix's OWN parts declare (a sheet holding only sub-sheets
-    has none -- it is still reachable by path)."""
+    `refs` are every footprint at or below the prefix; `names` and `files`
+    are the sheet names and sheet files the prefix's OWN parts declare
+    (`Footprint.sheet_name` / `sheet_file`, which both parse paths fill). A
+    sheet holding only sub-sheets has none -- it is still reachable by
+    path."""
     out: Dict[str, Dict] = {}
     for ref, fp in pcb.footprints.items():
         prefix = _sheet_of(fp)
@@ -89,13 +91,17 @@ def sheet_instances(pcb, sheet_names: Dict[str, str]) -> Dict[str, Dict]:
         parts = prefix.split('/')
         for i in range(1, len(parts) + 1):
             row = out.setdefault('/'.join(parts[:i]),
-                                 {'names': set(), 'refs': []})
+                                 {'names': set(), 'files': set(), 'refs': []})
             row['refs'].append(ref)
-        name = norm_name(sheet_names.get(ref, ''))
+        name = norm_name(getattr(fp, 'sheet_name', '') or '')
         if name:
             out[prefix]['names'].add(name)
+        sfile = (getattr(fp, 'sheet_file', '') or '').strip()
+        if sfile:
+            out[prefix]['files'].add(sfile)
     for row in out.values():
         row['names'] = sorted(row['names'])
+        row['files'] = sorted(row['files'])
         row['refs'] = sorted(row['refs'], key=natural_key)
     return out
 
@@ -104,6 +110,7 @@ def describe(prefix: str, row: Dict) -> Dict:
     """One sheet instance as a refusal or a summary names it."""
     return {'name': row['names'][0] if row['names'] else None,
             'path': '/' + prefix,
+            'file': row['files'][0] if row.get('files') else None,
             'parts': len(row['refs']),
             'example': row['refs'][:3]}
 
@@ -114,7 +121,7 @@ def _phrase(d: Dict) -> str:
         ', '.join(d['example']) + (', ...' if d['parts'] > 3 else ''))
 
 
-def resolve_sheet(pcb, sheet_names: Dict[str, str], token: str, role: str,
+def resolve_sheet(pcb, token: str, role: str,
                   instances: Optional[Dict[str, Dict]] = None) -> str:
     """The sheet prefix `token` names, or a refusal (exit 2) listing the
     candidates.
@@ -126,8 +133,7 @@ def resolve_sheet(pcb, sheet_names: Dict[str, str], token: str, role: str,
     whole or by a unique leading part of it (`/28f12a69`) at least
     `MIN_PATH_START` characters long, so a short mistyped NAME cannot land
     on whichever uuid happens to start with it."""
-    inst = instances if instances is not None else sheet_instances(
-        pcb, sheet_names)
+    inst = instances if instances is not None else sheet_instances(pcb)
     listing = sorted((describe(p, r) for p, r in inst.items()),
                      key=lambda d: (d['name'] is None, d['name'] or '',
                                     d['path']))
@@ -308,8 +314,7 @@ def _anchor_rank(fp) -> Tuple:
     return (len(pads), (max(xs) - min(xs)) * (max(ys) - min(ys)))
 
 
-def plan(pcb, sheet_names: Dict[str, str], src_token: str,
-         dst_tokens: Sequence[str], *, anchor: Optional[str] = None,
+def plan(pcb, src_token: str, dst_tokens: Sequence[str], *, anchor: Optional[str] = None,
          offset: Optional[Sequence[float]] = None
          ) -> Tuple[List[Dict], Dict]:
     """`(rows, report)` for one `replicate` op.
@@ -327,10 +332,9 @@ def plan(pcb, sheet_names: Dict[str, str], src_token: str,
     the op-amp. The anchor keeps its (at x y); its rotation and side become
     the source's like every other part's.
     """
-    inst = sheet_instances(pcb, sheet_names)
-    src = resolve_sheet(pcb, sheet_names, src_token, '--from', inst)
-    dsts = [resolve_sheet(pcb, sheet_names, t, '--to', inst)
-            for t in dst_tokens]
+    inst = sheet_instances(pcb)
+    src = resolve_sheet(pcb, src_token, '--from', inst)
+    dsts = [resolve_sheet(pcb, t, '--to', inst) for t in dst_tokens]
     for t, d in zip(dst_tokens, dsts):
         if d == src:
             raise PoseRefusal('--to %r is the --from sheet itself (/%s); a '

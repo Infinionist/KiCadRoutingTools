@@ -84,12 +84,15 @@ def _fmt(v):
 
 
 def board(td, name='b', *, drop=(), locked=(), back=(), nets=None,
-          fpname=None, names=None, prop_names=False, bare_text=False):
+          fpname=None, names=None, prop_names=False, bare_text=False,
+          sheet_after_pad=()):
     """Write the fixture. `nets` overrides pad nets: {(ref, pad#): net};
     `fpname` overrides footprint names {ref: name}; `back` puts parts on
     B.Cu; `names` overrides an instance's sheet name {sheet: name};
     `prop_names` spells the name the KiCad 6/7 way; `bare_text` drops the
-    Reference's `(effects ...)`, which the writer's side flip needs (#714)."""
+    Reference's `(effects ...)`, which the writer's side flip needs (#714);
+    `sheet_after_pad` writes those refs' sheet name and file AFTER their
+    first pad, where no header field lives."""
     nets = nets or {}
     fpname = fpname or {}
     names = names or {}
@@ -120,12 +123,19 @@ def board(td, name='b', *, drop=(), locked=(), back=(), nets=None,
                     ' (effects (font (size 1 1) (thickness 0.15))%s)'
                     % (' (justify mirror)' if side == 'B' else '')),
                  '    (path "%s")' % path]
+        sfile = 'strip.kicad_sch' if sheet else 'top.kicad_sch'
         if prop_names:
-            lines.append('    (property "Sheetname" "%s" (at 0 0) (layer '
-                         '"F.Fab") (hide yes))' % sname)
+            sheet_lines = [
+                '    (property "Sheetname" "%s" (at 0 0) (layer "F.Fab") '
+                '(hide yes))' % sname,
+                '    (property "Sheetfile" "%s" (at 0 0) (layer "F.Fab") '
+                '(hide yes))' % sfile]
         else:
-            lines.append('    (sheetname "/%s/")' % sname if sname
-                         else '    (sheetname "/")')
+            sheet_lines = [('    (sheetname "/%s/")' % sname if sname
+                            else '    (sheetname "/")'),
+                           '    (sheetfile "%s")' % sfile]
+        if ref not in sheet_after_pad:
+            lines.extend(sheet_lines)
         lines.append('    (fp_rect (start -2.2 -1.6) (end 2.2 1.6) (stroke '
                      '(width 0.05) (type default)) (layer "%s.CrtYd"))' % side)
         for i, ((px, py), role) in enumerate(zip(pads, pad_nets), 1):
@@ -137,6 +147,8 @@ def board(td, name='b', *, drop=(), locked=(), back=(), nets=None,
                          ' (layers "%s.Cu") (net %d "%s"))'
                          % (i, _fmt(px), _fmt(py), _fmt(rot), side,
                             ids[net], net))
+            if i == 1 and ref in sheet_after_pad:
+                lines.extend(sheet_lines)
         lines[-1] += ')'
         out.extend(lines)
     out.append(')')
@@ -383,16 +395,36 @@ def test_side_is_copied():
 
 
 def test_both_sheet_name_spellings_are_read():
-    from placement.parser import extract_sheet_names
+    """`Footprint.sheet_name` / `sheet_file` as the FILE spells them, either
+    form, and only from the block header: a pad cannot lend a block a sheet.
+    (pcbnew's half of the parity is tests/gui_parity/
+    test_1211_sheet_name_parity.py.)"""
+    from kicad_parser import parse_kicad_pcb
     with tempfile.TemporaryDirectory() as td:
-        new = extract_sheet_names(board(td, 'tok'))
-        old = extract_sheet_names(board(td, 'prop', prop_names=True))
-        assert new['R2'] == '/S2/' and old['R2'] == 'S2', (new, old)
-        assert new['T1'] == '/' and old['T1'] == '', (new['T1'], old['T1'])
+        new = parse_kicad_pcb(board(td, 'tok')).footprints
+        old = parse_kicad_pcb(board(td, 'prop', prop_names=True)).footprints
+        assert new['R2'].sheet_name == '/S2/' and old['R2'].sheet_name == 'S2', (
+            new['R2'].sheet_name, old['R2'].sheet_name)
+        assert new['T1'].sheet_name == '/' and old['T1'].sheet_name == '', (
+            new['T1'].sheet_name, old['T1'].sheet_name)
+        assert (new['R2'].sheet_file, old['R2'].sheet_file) == (
+            'strip.kicad_sch', 'strip.kicad_sch'), (new['R2'].sheet_file,
+                                                     old['R2'].sheet_file)
+        # Escapes are undone, as pcbnew's GetSheetname() returns them.
+        esc = parse_kicad_pcb(board(td, 'esc', names={'S2': 'my \\"S2\\"'}))
+        assert esc.footprints['R2'].sheet_name == '/my "S2"/', (
+            esc.footprints['R2'].sheet_name)
+        # A sheet token AFTER the first pad is not the block's: R2 reads none.
+        late = parse_kicad_pcb(board(td, 'late', sheet_after_pad=('R2',)))
+        assert (late.footprints['R2'].sheet_name,
+                late.footprints['R2'].sheet_file) == ('', ''), (
+            late.footprints['R2'].sheet_name, late.footprints['R2'].sheet_file)
+        assert late.footprints['U2'].sheet_name == '/S2/'
         out = os.path.join(td, 'x.kicad_pcb')
         pose(os.path.join(td, 'prop.kicad_pcb'), out, 'replicate', '--from',
              'S1', '--to', 'S2', accept=True)
-        print('  (sheetname "/S2/") and (property "Sheetname" "S2") both read')
+        print('  (sheetname "/S2/") and (property "Sheetname" "S2") both read,'
+              ' with the sheet file; escapes undone')
 
 
 def test_glasgow_maps_by_symbol_and_names_the_address_straps():
@@ -402,13 +434,14 @@ def test_glasgow_maps_by_symbol_and_names_the_address_straps():
     strapped differently per instance -- the net rule's job is to say so."""
     from kicad_parser import parse_kicad_pcb
     from placement import replicate
-    from placement.parser import extract_sheet_names
     from placement.pose_ops import PoseRefusal
     pcb = parse_kicad_pcb(run_utils.evidence(GLASGOW, 'glasgow board'))
-    names = extract_sheet_names(GLASGOW)
-    inst = replicate.sheet_instances(pcb, names)
-    a = replicate.resolve_sheet(pcb, names, 'IO_Buffer_A', '--from', inst)
-    b = replicate.resolve_sheet(pcb, names, 'IO_Buffer_B', '--to', inst)
+    inst = replicate.sheet_instances(pcb)
+    a = replicate.resolve_sheet(pcb, 'IO_Buffer_A', '--from', inst)
+    b = replicate.resolve_sheet(pcb, 'IO_Buffer_B', '--to', inst)
+    assert (replicate.describe(a, inst[a])['file'],
+            replicate.describe(b, inst[b])['file']) == (
+        'io_buffer.kicad_sch', 'io_buffer.kicad_sch')
     ma, mb = replicate.members(pcb, a), replicate.members(pcb, b)
     assert len(ma) == len(mb) == 68 and set(ma) == set(mb), (len(ma), len(mb))
     try:

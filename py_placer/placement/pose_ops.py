@@ -301,8 +301,7 @@ def bearing_face(from_xy, to_xy) -> str:
 # ---------------------------------------------------------------------------
 
 def resolve_ops(pcb_data, ops: Sequence[Dict], *, clearance: float,
-                track_width: float, board_path: Optional[str] = None,
-                reports: Optional[List[Dict]] = None):
+                track_width: float, reports: Optional[List[Dict]] = None):
     """Turn caller ops into writer placements + a per-op note.
 
     Every op reads the INPUT board, so a call carrying several of them
@@ -313,25 +312,20 @@ def resolve_ops(pcb_data, ops: Sequence[Dict], *, clearance: float,
     A `replicate` op (#1211) expands into one note per TARGET part (kind
     `replicate`, with its `source`) and a placement for each part that
     actually moves -- so a KiCad-locked part already at its copied pose is
-    not refused for a move nobody made. `board_path` is read for the sheet
-    NAMES (the parser keeps only the paths); `reports` collects each op's
-    mapping for the summary.
+    not refused for a move nobody made. Sheets are named by
+    `Footprint.sheet_name`, which both parse paths fill; `reports` collects
+    each op's mapping for the summary.
     """
     placements: List[Dict] = []
     notes: List[Dict] = []
     seen = {}
     sources = {}
-    sheet_names = None
     for op in ops:
         kind = op['kind']
         if kind == 'replicate':
             from placement import replicate
-            if sheet_names is None:
-                from placement.parser import extract_sheet_names
-                sheet_names = (extract_sheet_names(board_path)
-                               if board_path else {})
             rows, report = replicate.plan(
-                pcb_data, sheet_names, op['from'], op['to'],
+                pcb_data, op['from'], op['to'],
                 anchor=op.get('anchor'), offset=op.get('offset'))
             for r in report['source_refs']:
                 sources.setdefault(r, report['from']['as_given'])
@@ -937,7 +931,7 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
     replicated: List[Dict] = []
     placements, notes = resolve_ops(pcb, ops, clearance=clearance,
                                     track_width=track_width,
-                                    board_path=board_path, reports=replicated)
+                                    reports=replicated)
     check_lock_refs(pcb, lock_refs, unlock_refs)
     # #1098: the intent's keep-outs reach every grade below, so a declared
     # `mating:<ref>` is the region this verb holds a move to.

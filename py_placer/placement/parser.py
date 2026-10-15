@@ -123,34 +123,6 @@ def extract_locked_refs(pcb_file: str) -> Set[str]:
     return locked
 
 
-#: KiCad 8+ writes a footprint's schematic sheet as a header token,
-#: `(sheetname "/CH1/")`; KiCad 6/7 wrote it as a property,
-#: `(property "Sheetname" "CH1" ...)`. Both spellings are in the tracked
-#: corpus, and the VALUE differs too: a full path on some boards ("/CH1/"),
-#: the bare sheet name on others ("IO_Buffer_B").
-_SHEETNAME_RE = re.compile(
-    r'\((?:sheetname|property\s+"Sheetname")\s+"((?:[^"\\]|\\.)*)"')
-
-
-def extract_sheet_names(pcb_file: str) -> Dict[str, str]:
-    """`{ref: sheet name as the FILE spells it}` for every footprint that
-    declares one (#1211).
-
-    The parser keeps the sheet PATH (`Footprint.sheet_path`, uuids) but not
-    the human name, and `place_pose replicate` lets a person type the name.
-    Read from the block header only (before the first pad), so a pad or a
-    graphic can never lend a block a name it does not carry.
-    """
-    out: Dict[str, str] = {}
-    for ref, fp_text in _file_blocks(pcb_file):
-        first_pad = fp_text.find('(pad ')
-        head = fp_text[:first_pad] if first_pad > 0 else fp_text
-        m = _SHEETNAME_RE.search(head)
-        if m:
-            out[ref] = m.group(1).replace('\\"', '"')
-    return out
-
-
 def _full_circle_arc(sx, sy, mx, my, ex, ey, grid=1e-6):
     """`((cx, cy), r)` when an fp_arc's start and end coincide (in KiCad's
     1 nm unit, `grid`) but its mid does not: KiCad draws that as a FULL

@@ -747,6 +747,16 @@ class Footprint:
     # parse paths fill them; APPENDED like the fields above.
     attrs: Tuple[str, ...] = ()
     has_model: bool = False
+    # #1211: the schematic sheet this footprint's symbol sits on, as the FILE
+    # spells it -- the human name beside `sheet_path`'s uuids. KiCad 8+ writes
+    # header tokens `(sheetname "/CH1/")` / `(sheetfile "strip.kicad_sch")`;
+    # KiCad 6/7 wrote `(property "Sheetname" "CH1")` / `(property "Sheetfile"
+    # ...)`, and the VALUE differs too (a full path "/CH1/" on some boards,
+    # the bare name "IO_Buffer_B" on others). Not normalised: pcbnew's
+    # GetSheetname()/GetSheetfile() return the same spelling, so both parse
+    # paths agree string for string. '' = the file names no sheet. Appended.
+    sheet_name: str = ""
+    sheet_file: str = ""
 
 
 #: The (attr ...) flags `Footprint.attrs` keeps -- the ones the text form and
@@ -1683,6 +1693,28 @@ def _unescape_kicad_string(s: str) -> str:
     if '\\' not in s:
         return s
     return s.replace('\\\\', '\\').replace('\\"', '"')
+
+
+#: #1211. A footprint's schematic sheet, both spellings: KiCad 8+ header
+#: tokens `(sheetname "...")` / `(sheetfile "...")`, KiCad 6/7 properties
+#: `(property "Sheetname" "...")` / `(property "Sheetfile" "...")`.
+_SHEET_FIELD_RE = {
+    which: re.compile(r'\((?:%s|property\s+"%s")\s+"((?:[^"\\]|\\.)*)"'
+                      % (which.lower(), which))
+    for which in ('Sheetname', 'Sheetfile')}
+
+
+def _footprint_sheet_fields(fp_text: str) -> Tuple[str, str]:
+    """`(sheet_name, sheet_file)` of one footprint block, as the file spells
+    them ('' when absent). Read from the block header -- before the first
+    `(pad ` -- so a pad or a graphic can never lend a block a sheet."""
+    first_pad = fp_text.find('(pad ')
+    head = fp_text[:first_pad] if first_pad > 0 else fp_text
+    out = []
+    for which in ('Sheetname', 'Sheetfile'):
+        m = _SHEET_FIELD_RE[which].search(head)
+        out.append(_unescape_kicad_string(m.group(1)) if m else '')
+    return out[0], out[1]
 
 
 _PAREN_OR_QUOTE = re.compile(r'["()]')
@@ -3923,6 +3955,10 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
         fp_uuid = uuid_or_tstamp(fp_text[:_uid_end])  # KiCad 6: (tstamp ...)
         _path_m = re.search(r'\(path\s+"([^"]*)"', fp_text)
         fp_path = _path_m.group(1) if _path_m else ""
+        # #1211: the sheet's NAME and FILE, either spelling (see
+        # Footprint.sheet_name), read from the header only -- before the
+        # first pad -- so a pad or graphic cannot lend a block a sheet.
+        fp_sheet_name, fp_sheet_file = _footprint_sheet_fields(fp_text)
 
         # Reference-label geometry (#481): parsed from the Reference sub-node's
         # own slice. None for the uuid-keyed reference-less footprints above.
@@ -3950,6 +3986,8 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
             parsed_pose=(fp_x, fp_y, fp_rotation, fp_layer),
             attrs=fp_attrs,
             has_model=fp_has_model,
+            sheet_name=fp_sheet_name,
+            sheet_file=fp_sheet_file,
         )
 
         # Extract pads
@@ -6968,6 +7006,19 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
             fp_path = str(fp.GetPath().AsString())
         except Exception:
             fp_path = ""
+        # #1211: the sheet's name and file, the text parser's
+        # `_footprint_sheet_fields`. Probed on KiCad 10.0.0: GetSheetname()
+        # is the file's spelling for BOTH forms -- "/CH2/" from a KiCad 8+
+        # `(sheetname ...)` token, "DDR3 16x1" from a KiCad 6 `Sheetname`
+        # property, which pcbnew's loader folds into the same field.
+        try:
+            fp_sheet_name = str(fp.GetSheetname())
+        except Exception:
+            fp_sheet_name = ""
+        try:
+            fp_sheet_file = str(fp.GetSheetfile())
+        except Exception:
+            fp_sheet_file = ""
 
         # Reference-label geometry (#481) -- parity with the text parser's
         # RefLabel. Probed on splitflap+ulx3s under KiCad 10:
@@ -7039,6 +7090,8 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
             parsed_pose=(fp_x, fp_y, fp_rotation, fp_layer),
             attrs=fp_attrs,
             has_model=fp_has_model,
+            sheet_name=fp_sheet_name,
+            sheet_file=fp_sheet_file,
         )
 
         # Extract pads
@@ -8384,6 +8437,13 @@ def compare_pcb_data(from_board: 'PCBData', from_file: 'PCBData', tolerance: flo
         bfc = getattr(bf, 'clearance', 0.0); ffc = getattr(ff, 'clearance', 0.0)
         if not close(bfc, ffc):
             diffs.append(f"Footprint {ref} clearance: board={bfc:.3f} file={ffc:.3f}")
+        # #1211: the schematic sheet, which `place_pose replicate` resolves a
+        # channel by (name) and maps its parts by (path). A pcbnew accessor
+        # that moved would hand the GUI a board with no sheets.
+        for _sheet in ('sheet_path', 'sheet_name', 'sheet_file'):
+            bs = getattr(bf, _sheet, ''); fs = getattr(ff, _sheet, '')
+            if bs != fs:
+                diffs.append(f"Footprint {ref} {_sheet}: board={bs!r} file={fs!r}")
         # Net-tie pad groups (#328): the pcbnew path wraps GetNetTiePadGroups() in a
         # broad try/except -> [], so a KiCad build that drops them would silently give
         # the GUI zero net-ties (phantom shorts / refused tie escapes) while the text

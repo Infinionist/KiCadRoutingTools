@@ -655,10 +655,12 @@ source part's rotation and side (a side change goes through the writer's
   named sheets;
 - `--offset DX DY` gives the offset directly (one `--to` only).
 
-A sheet is named by its name (`CH1`, `/CH1/`, read from the `(sheetname
-...)` token or KiCad 6/7's `Sheetname` property) or by its path (`/<uuid>`,
-or a unique start of it, 4+ characters). An unknown or ambiguous one is
-refused at exit 2, with the instances listed.
+A sheet is named by its name (`CH1`, `/CH1/`: `Footprint.sheet_name`,
+which both parse paths fill from the `(sheetname ...)` token or KiCad 6/7's
+`Sheetname` property, so a GUI caller resolves the same sheets) or by its
+path (`/<uuid>`, or a unique start of it, 4+ characters). An unknown or
+ambiguous one is refused at exit 2, with the instances listed, each with its
+sheet file.
 
 The copy is graded like any other call. A target part that moves while
 KiCad-locked is refused unless the call `unlock`s it, and a locked part
