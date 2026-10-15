@@ -885,14 +885,11 @@ class PCBData:
     # -- a value captured at build time read the pre-writeback floor there.
     # None = read the file (parse_kicad_pcb). It also answers
     # min_hole_clearance, the copper-to-hole floor obstacle_map prices NPTH
-    # holes at (declared_hole_clearance).
+    # holes at (declared_hole_clearance). It answers only the rules the live
+    # board DECLARES (fix_kicad_drc_settings.live_declared_rules): pcbnew's
+    # factory stand-ins on a project-less board are left out, as the file
+    # leaves them out.
     live_rules_provider: object = None
-    # pcbnew's FACTORY value for each live rule whose "not configured" the
-    # live board cannot express, {rule key: mm}: pcbnew loads a project that
-    # does not declare min_hole_clearance -- and every project-less board --
-    # at 0.25 (KiCad 10), where the file declares nothing at all. A constant
-    # of the pcbnew build, so captured at build. Empty on parse_kicad_pcb.
-    live_rule_defaults: Dict[str, float] = field(default_factory=dict)
     # #459: KiCad (group "name" (uuid ...) (members <uuid> ...)) blocks, as
     # {group name: [footprint reference, ...]}. The designer's own statement that
     # these parts belong together, so placement grouping ranks it above any
@@ -7323,19 +7320,23 @@ def stage_live_project_rules(board_path: str, board):
         rules = proj.setdefault('board', {}).setdefault(
             'design_settings', {}).setdefault('rules', {})
         bds = board.GetDesignSettings()
-        for key, attr in (('min_clearance', 'm_MinClearance'),
-                          ('min_track_width', 'm_TrackMinWidth'),
-                          ('min_via_diameter', 'm_ViasMinSize'),
-                          ('min_through_hole_diameter', 'm_MinThroughDrill'),
-                          ('min_via_annular_width', 'm_ViasMinAnnularWidth'),
-                          ('min_hole_to_hole', 'm_HoleToHoleMin'),
-                          ('min_hole_clearance', 'm_HoleClearance'),
-                          ('min_copper_edge_clearance',
-                           'm_CopperEdgeClearance')):
-            try:
-                rules[key] = getattr(bds, attr) / 1e6
-            except Exception:
-                pass
+        # The rules the live board DECLARES, not every value pcbnew holds: a
+        # project-less board sits at pcbnew's factory values (hole clearance
+        # 0.25, edge 0.5, ...), which its file does not declare, and the
+        # snapshot is parsed in-process by the oracle legs -- their hole floor
+        # (obstacle_map.resolve_hole_clearance) and edge band
+        # (effective_board_edge_clearance) read these rules, and would have
+        # priced floors the CLI reads nowhere. pcbnew loads a missing rule at
+        # that same factory value, so the snapshot's own refill is unchanged.
+        from fix_kicad_drc_settings import live_declared_rules, LIVE_RULE_ATTR
+        _declared = live_declared_rules(board) or {}
+        for key in LIVE_RULE_ATTR:
+            if key == 'min_connection':
+                continue          # never staged before; its own reader (#1187)
+            if key in _declared:
+                rules[key] = _declared[key]
+            else:
+                rules.pop(key, None)
         # Default net class: KiCad 10 accessor first (board.GetNetClasses()
         # returns an EMPTY map there), then the legacy map.
         nc = None
@@ -8965,57 +8966,23 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
         exact_fill_provider=_live_fill,
         # #1187: the floors the plan lowered live in memory, not in the file
         live_rules_provider=lambda _board=board: _live_design_rules(_board),
-        # #1038: what an unset live rule reads as, so the hole floor can tell
-        # pcbnew's stand-in from a declaration (obstacle_map)
-        live_rule_defaults=_pcbnew_rule_defaults(),
     )
-
-
-_PCBNEW_RULE_DEFAULTS = None
-
-
-def _pcbnew_rule_defaults():
-    """pcbnew's factory values for the live rules whose unset state a loaded
-    board cannot express -- today min_hole_clearance -- in mm
-    (PCBData.live_rule_defaults). {} when they cannot be read, which leaves
-    the hole floor on the file.
-
-    Read from the constant BOARD_DESIGN_SETTINGS initialises the rule from
-    (``DEFAULT_HOLECLEARANCE``, mm, 0.25 on KiCad 10), never off a throwaway
-    ``pcbnew.BOARD()``: constructing and dropping a board in the GUI process
-    made the planes tab's next ZONE_FILLER.Fill segfault (the engine-parity
-    replay, 3 runs of 3)."""
-    global _PCBNEW_RULE_DEFAULTS
-    if _PCBNEW_RULE_DEFAULTS is None:
-        out = {}
-        try:
-            import pcbnew
-            v = getattr(pcbnew, 'DEFAULT_HOLECLEARANCE', None)
-            if isinstance(v, (int, float)) and not isinstance(v, bool):
-                out['min_hole_clearance'] = float(v)
-        except Exception:
-            out = {}
-        _PCBNEW_RULE_DEFAULTS = out
-    return dict(_PCBNEW_RULE_DEFAULTS)
 
 
 def _live_design_rules(board):
     """What PCBData.live_rules_provider answers for a live pcbnew board
-    (#1187): the design-settings rules the connection-width floor reads, and
-    the copper-to-hole floor the obstacle map reads (#1038), in mm, or None
-    when the board has no design settings. A disabled min_connection reads 0,
-    as the file does."""
+    (#1187, #1038): the design-settings rules the connection-width floor and
+    the obstacle map's copper-to-hole floor read, in mm -- the ones the board
+    DECLARES (fix_kicad_drc_settings.live_declared_rules), so a project-less
+    board at pcbnew's factory values answers what its file answers: nothing.
+    None when the board declares none of them or has no design settings,
+    which sends both readers to the file, as before."""
     try:
-        bds = board.GetDesignSettings()
+        from fix_kicad_drc_settings import live_declared_rules
+        out = live_declared_rules(
+            board, ('min_track_width', 'min_connection', 'min_hole_clearance'))
     except Exception:
         return None
-    out = {}
-    for key, attr in (('min_track_width', 'm_TrackMinWidth'),
-                      ('min_connection', 'm_MinConn'),
-                      ('min_hole_clearance', 'm_HoleClearance')):
-        v = getattr(bds, attr, None)
-        if isinstance(v, (int, float)) and not isinstance(v, bool):
-            out[key] = v / 1e6                # divide, never multiply (#493)
     return out or None
 
 

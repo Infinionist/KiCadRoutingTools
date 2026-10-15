@@ -54,6 +54,16 @@ KICAD_PYTHONS = [
             key=path_version_key, reverse=True),
 ]
 
+#: rule -> BOARD_DESIGN_SETTINGS attribute, this gate's own table (the
+#: independent check on fix_kicad_drc_settings.LIVE_RULE_ATTR's constants).
+RULE_ATTR = {
+    'min_clearance': 'm_MinClearance', 'min_track_width': 'm_TrackMinWidth',
+    'min_connection': 'm_MinConn', 'min_via_diameter': 'm_ViasMinSize',
+    'min_through_hole_diameter': 'm_MinThroughDrill',
+    'min_via_annular_width': 'm_ViasMinAnnularWidth',
+    'min_hole_clearance': 'm_HoleClearance', 'min_hole_to_hole': 'm_HoleToHoleMin',
+    'min_copper_edge_clearance': 'm_CopperEdgeClearance',
+}
 DECLARING = os.path.join(REPO, 'kicad_files', 'flat_hierarchy.kicad_pcb')
 PROJECTLESS = os.path.join(REPO, 'kicad_files', 'splitflap_driver.kicad_pcb')
 FAILS = []
@@ -95,10 +105,12 @@ def main():
     for sub in ('', 'py_router', 'py_placer', 'py_tools'):
         sys.path.insert(0, os.path.join(REPO, sub))
     from copy_board import copy_board
+    import fix_kicad_drc_settings as F
     from fix_kicad_drc_settings import (apply_targets_to_board, compute_targets,
+                                        effective_board_edge_clearance,
                                         fix_project_for_output)
     from kicad_parser import (build_pcb_data_from_board, compare_pcb_data,
-                              parse_kicad_pcb)
+                              parse_kicad_pcb, stage_live_project_rules)
     from obstacle_map import resolve_hole_clearance
 
     def floor(pcb):
@@ -107,13 +119,24 @@ def main():
     def hole_diffs(a, b):
         return [d for d in compare_pcb_data(a, b) if 'Copper-to-hole' in d]
 
-    # What pcbnew really initialises the rule to -- the independent check on
-    # the constant the parser reads. The board is held while it is read: a
-    # temporary's design settings would be freed under the attribute read.
+    # What pcbnew really initialises each rule to -- the independent check on
+    # the constants the declared view reads. The board is held while it is
+    # read: a temporary's design settings would be freed under the attribute
+    # read. (A standalone script; the GUI process never builds one.)
     fresh = pcbnew.BOARD()
-    factory = fresh.GetDesignSettings().m_HoleClearance / 1e6
+    fresh_bds = fresh.GetDesignSettings()
+    factory = fresh_bds.m_HoleClearance / 1e6
     td = tempfile.mkdtemp(prefix='live_hc_')
     try:
+        print("--- pcbnew's factory values")
+        consts = getattr(F, 'pcbnew_rule_defaults', dict)()
+        wrong = {k: (consts.get(k), getattr(fresh_bds, a) / 1e6)
+                 for k, a in RULE_ATTR.items()
+                 if consts.get(k) is None
+                 or abs(consts[k] - getattr(fresh_bds, a) / 1e6) > 1e-9}
+        check("the factory values the declared view reads are what a fresh "
+              "board holds, every rule", not wrong, f"{wrong}")
+
         print("--- a board whose project declares 0.25 (flat_hierarchy)")
         path = os.path.join(td, 'decl', 'b.kicad_pcb')
         os.makedirs(os.path.dirname(path))
@@ -122,10 +145,6 @@ def main():
         pcbnew.GetBoard = lambda: board
         bds = board.GetDesignSettings()
         live = build_pcb_data_from_board(board)
-        check("the pcbnew path records pcbnew's factory hole clearance",
-              abs((getattr(live, 'live_rule_defaults', None) or {})
-                  .get('min_hole_clearance', -1) - factory) < 1e-9,
-              f"{getattr(live, 'live_rule_defaults', None)} vs {factory}")
         f0, l0 = floor(parse_kicad_pcb(path)), floor(live)
         check("fresh load: both fronts read the declared 0.25",
               abs(f0 - 0.25) < 1e-9 and abs(l0 - 0.25) < 1e-9, f"file {f0}, live {l0}")
@@ -183,6 +202,53 @@ def main():
         f4 = floor(parse_kicad_pcb(cli))
         check("the floor the CLI's next step reads from its own writeback's "
               "project", abs(f4 - l4) < 1e-9, f"CLI {f4}, GUI {l4}")
+
+        print("--- a writeback that targets exactly the factory 0.25")
+        at = os.path.join(td, 'at25', 'b.kicad_pcb')
+        os.makedirs(os.path.dirname(at))
+        shutil.copyfile(PROJECTLESS, at)
+        board4 = pcbnew.LoadBoard(at)
+        pcbnew.GetBoard = lambda: board4
+        live4 = build_pcb_data_from_board(board4)
+        _quiet(apply_targets_to_board, board4, compute_targets(clearance=0.25), {})
+        l7 = floor(live4)
+        cli25 = os.path.join(td, 'cli25', 'b.kicad_pcb')
+        os.makedirs(os.path.dirname(cli25))
+        shutil.copyfile(PROJECTLESS, cli25)
+        _quiet(fix_project_for_output, cli25, input_pcb=PROJECTLESS,
+               clearance=0.25)
+        f7 = floor(parse_kicad_pcb(cli25))
+        check("pcbnew's value does not move, yet the GUI's next step reads "
+              "0.25 -- the floor the CLI's writeback writes into its project",
+              abs(board4.GetDesignSettings().m_HoleClearance / 1e6 - 0.25) < 1e-9
+              and abs(l7 - 0.25) < 1e-9 and abs(f7 - 0.25) < 1e-9,
+              f"GUI {l7}, CLI {f7}")
+
+        print("--- the snapshot the GUI's oracle legs parse (stage_live_project_rules)")
+        fresh_bare = os.path.join(td, 'snapsrc', 'b.kicad_pcb')
+        os.makedirs(os.path.dirname(fresh_bare))
+        shutil.copyfile(PROJECTLESS, fresh_bare)
+        board5 = pcbnew.LoadBoard(fresh_bare)
+        snap = os.path.join(td, 'snap', 'staged.kicad_pcb')
+        os.makedirs(os.path.dirname(snap))
+        shutil.copyfile(PROJECTLESS, snap)
+        stage_live_project_rules(snap, board5)
+        with open(os.path.splitext(snap)[0] + '.kicad_pro', encoding='utf-8') as f:
+            staged_rules = json.load(f)['board']['design_settings']['rules']
+        check("a project-less board's snapshot declares none of pcbnew's "
+              "factory stand-ins", not staged_rules, f"{staged_rules}")
+        f8, c8 = floor(parse_kicad_pcb(snap)), floor(parse_kicad_pcb(fresh_bare))
+        check("so the oracle leg's hole floor is the CLI's on the same file",
+              f8 == c8 == 0.0, f"snapshot {f8}, CLI {c8}")
+        e8 = effective_board_edge_clearance(snap, 0.0)
+        ce8 = effective_board_edge_clearance(fresh_bare, 0.0)
+        check("and so is its copper-to-edge band (pcbnew's factory 0.5 used to "
+              "reach it)", abs(e8 - ce8) < 1e-9, f"snapshot {e8}, CLI {ce8}")
+        _quiet(apply_targets_to_board, board5, compute_targets(clearance=0.2), {})
+        stage_live_project_rules(snap, board5)
+        f9 = floor(parse_kicad_pcb(snap))
+        check("after a GUI writeback the snapshot carries what it lowered",
+              abs(f9 - 0.2) < 1e-9, f"{f9}")
 
         print("--- a board that was never saved (#1238)")
         board3 = pcbnew.BOARD()

@@ -17,12 +17,14 @@ served a value that was no longer the board's:
 
 Now the file read is keyed on the project's stamp (mtime, size, inode), and a
 PCBData built from pcbnew answers the rule from its in-memory design settings
-through `live_rules_provider`, at call time. A live value AT pcbnew's factory
-default on a board whose project does not declare the key reads as "declares
-nothing" -- what the file reads -- so the GUI and the CLI price the same
-floor on a board pcbnew just loaded.
+through `live_rules_provider`, at call time -- the rules the live board
+DECLARES (`fix_kicad_drc_settings.live_declared_rules`). A live value AT
+pcbnew's factory default counts only when the project declares the key or a
+GUI writer of this session targeted it, so the GUI and the CLI price the same
+floor on a board pcbnew just loaded, and after each one's writeback.
 
-wx-free (fake providers). The real-pcbnew half is
+wx-free: fake boards through the real declared view and provider, with
+pcbnew's factory values injected. The real-pcbnew half is
 tests/gui_parity/test_live_hole_clearance.py.
 
 Standalone, no pytest:  python3 tests/test_1038_hole_floor_fresh.py
@@ -40,8 +42,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 import obstacle_map                                              # noqa: E402
 from obstacle_map import resolve_hole_clearance                   # noqa: E402
+import fix_kicad_drc_settings as F                                # noqa: E402
+from kicad_parser import _live_design_rules                       # noqa: E402
 
-FACTORY = 0.25          # pcbnew's m_HoleClearance default (KiCad 10)
+FACTORY = 0.25          # pcbnew's DEFAULT_HOLECLEARANCE (KiCad 10)
 _checks = 0
 _fails = 0
 
@@ -95,15 +99,34 @@ def _resolve(pcb_data, config=None, pcb_file=None):
     return v, buf.getvalue()
 
 
-def _live(path, rules, defaults=None):
-    """A PCBData-shaped stand-in for build_pcb_data_from_board's output: the
-    provider is a callable read when asked (it closes over `rules`, so a test
-    can edit the 'live board' after building), the defaults are pcbnew's."""
-    return SimpleNamespace(
-        source_path=path,
-        live_rules_provider=lambda: dict(rules),
-        live_rule_defaults=({'min_hole_clearance': FACTORY}
-                            if defaults is None else defaults))
+class _BDS:
+    """A live board's design settings, nm, at pcbnew's factory values."""
+
+    def __init__(self, hole=FACTORY):
+        self.m_HoleClearance = int(round(hole * 1e6))
+        self.m_TrackMinWidth = 200000
+        self.m_MinConn = 0
+
+
+class _LiveBoard:
+    def __init__(self, path, hole=FACTORY):
+        self.path, self.bds = path, _BDS(hole)
+
+    def GetFileName(self):
+        return self.path
+
+    def GetDesignSettings(self):
+        return self.bds
+
+    def set_hole(self, mm):
+        self.bds.m_HoleClearance = int(round(mm * 1e6))
+
+
+def _live(board):
+    """What build_pcb_data_from_board gives the engine: the board's file and a
+    provider read when asked."""
+    return SimpleNamespace(source_path=board.path,
+                           live_rules_provider=lambda: _live_design_rules(board))
 
 
 def main():
@@ -167,70 +190,94 @@ def main():
             list_nets.board_constraint = real
 
         print("\nthe live board (a PCBData from build_pcb_data_from_board)")
-        _reset()
-        bare = _board(tmp, 'bare')                     # no project at all
-        v, _ = _resolve(_live(bare, {'min_hole_clearance': FACTORY}))
-        check(v == 0.0, "project-less board at pcbnew's factory 0.25 declares "
-              "nothing -- what the CLI reads from the same file", f"{v}")
-        v, _ = _resolve(_live(bare, {'min_hole_clearance': 0.30}))
-        check(v == 0.30, "a Board Setup edit on it counts before any save",
-              f"{v}")
-        v, _ = _resolve(_live(bare, {'min_hole_clearance': 0.20}))
-        check(v == 0.20, "so does a GUI step's writeback lowering it (the CLI's "
-              "next step reads its written rule the same way)", f"{v}")
+        saved_factory = getattr(F, '_PCBNEW_FACTORY', None)
+        F._PCBNEW_FACTORY = {'min_hole_clearance': FACTORY,
+                             'min_track_width': 0.2, 'min_connection': 0.0}
+        getattr(F, '_LIVE_DECLARED', {}).clear()
+        # A writer's declaration record; without one, nothing marks a rule a
+        # writer targeted at exactly the factory value, and the check below
+        # fails on the value it reads.
+        note_declared = getattr(F, 'note_live_declared', lambda *a: None)
+        try:
+            _reset()
+            bare = _LiveBoard(_board(tmp, 'bare'))       # no project at all
+            v, _ = _resolve(_live(bare))
+            check(v == 0.0, "project-less board at pcbnew's factory 0.25 "
+                  "declares nothing -- what the CLI reads from the same file",
+                  f"{v}")
+            bare.set_hole(0.30)
+            v, _ = _resolve(_live(bare))
+            check(v == 0.30, "a Board Setup edit on it counts before any save",
+                  f"{v}")
+            bare.set_hole(0.20)
+            v, _ = _resolve(_live(bare))
+            check(v == 0.20, "so does a GUI step's writeback lowering it (the "
+                  "CLI's next step reads its written rule the same way)", f"{v}")
 
-        d25 = _board(tmp, 'declares25')
-        _project(d25, rule=0.25)
-        v, _ = _resolve(_live(d25, {'min_hole_clearance': FACTORY}))
-        check(v == 0.25, "a project that DECLARES the factory value is "
-              "honoured at it", f"{v}")
-        d30 = _board(tmp, 'declares30')
-        _project(d30, rule=0.30)
-        v, _ = _resolve(_live(d30, {'min_hole_clearance': FACTORY}))
-        check(v == 0.25, "an unsaved edit of a declared 0.30 down to exactly "
-              "0.25 is the live 0.25, not the file's 0.30", f"{v}")
-        v, _ = _resolve(_live(d30, {'min_hole_clearance': 0.40}))
-        check(v == 0.40, "an unsaved edit up to 0.40 is priced at 0.40", f"{v}")
-        d0 = _board(tmp, 'declares0')
-        _project(d0, rule=0.0)
-        v, _ = _resolve(_live(d0, {'min_hole_clearance': 0.0}))
-        check(v == 0.0, "a declared 0 (not configured) stays 0", f"{v}")
+            sess = _LiveBoard(_board(tmp, 'session'))
+            note_declared(sess, ('min_hole_clearance',))
+            v, _ = _resolve(_live(sess))
+            check(v == 0.25, "a GUI writer that TARGETED the rule at exactly the "
+                  "factory 0.25 declared it, as the CLI's writeback writes 0.25 "
+                  "into the project", f"{v}")
 
-        og = _board(tmp, 'liveorigin')
-        _project(og, rule=0.25, origin=0.25)
-        v, _ = _resolve(_live(og, {'min_hole_clearance': 0.15}))
-        check(v == 0.25 and og in obstacle_map._HOLE_CLR_ORIGIN,
-              "a live rule a GUI step lowered is raised to the project's "
-              "fab_floor_origin, as the CLI's step 2 is", f"{v}")
+            d25 = _LiveBoard(_board(tmp, 'declares25'))
+            _project(d25.path, rule=0.25)
+            v, _ = _resolve(_live(d25))
+            check(v == 0.25, "a project that DECLARES the factory value is "
+                  "honoured at it", f"{v}")
+            d30 = _LiveBoard(_board(tmp, 'declares30'), hole=0.30)
+            _project(d30.path, rule=0.30)
+            d30.set_hole(FACTORY)
+            v, _ = _resolve(_live(d30))
+            check(v == 0.25, "an unsaved edit of a declared 0.30 down to exactly "
+                  "0.25 is the live 0.25, not the file's 0.30", f"{v}")
+            d30.set_hole(0.40)
+            v, _ = _resolve(_live(d30))
+            check(v == 0.40, "an unsaved edit up to 0.40 is priced at 0.40",
+                  f"{v}")
+            d0 = _LiveBoard(_board(tmp, 'declares0'), hole=0.0)
+            _project(d0.path, rule=0.0)
+            v, _ = _resolve(_live(d0))
+            check(v == 0.0, "a declared 0 (not configured) stays 0", f"{v}")
 
-        v, _ = _resolve(_live("", {'min_hole_clearance': 0.30}))
-        check(v == 0.30, "an UNSAVED board (#1238: no file at all) is priced "
-              "from its live rule", f"{v}")
-        v, _ = _resolve(_live("", {'min_hole_clearance': FACTORY}))
-        check(v == 0.0, "and at the factory value it declares nothing", f"{v}")
+            og = _LiveBoard(_board(tmp, 'liveorigin'), hole=0.15)
+            _project(og.path, rule=0.25, origin=0.25)
+            v, _ = _resolve(_live(og))
+            check(v == 0.25 and og.path in obstacle_map._HOLE_CLR_ORIGIN,
+                  "a live rule a GUI step lowered is raised to the project's "
+                  "fab_floor_origin, as the CLI's step 2 is", f"{v}")
 
-        rules = {'min_hole_clearance': 0.30}
-        built = _live(bare, rules)
-        v_before, _ = _resolve(built)
-        rules['min_hole_clearance'] = 0.35          # edited after the build
-        v_after, _ = _resolve(built)
-        check((v_before, v_after) == (0.30, 0.35),
-              "the provider is asked at CALL time, so a PCBData built before "
-              "an edit prices the edit", f"{v_before} -> {v_after}")
+            unsaved = _LiveBoard("", hole=0.30)
+            v, _ = _resolve(_live(unsaved))
+            check(v == 0.30, "an UNSAVED board (#1238: no file at all) is priced "
+                  "from its live rule", f"{v}")
+            unsaved.set_hole(FACTORY)
+            v, _ = _resolve(_live(unsaved))
+            check(v == 0.0, "and at the factory value it declares nothing", f"{v}")
 
-        v, _ = _resolve(_live(d30, {'min_hole_clearance': FACTORY}, defaults={}))
-        check(v == 0.30, "without pcbnew's factory value the live rule is not "
-              "guessed at: the file decides, as before", f"{v}")
-        v, _ = _resolve(_live(bare, {'min_track_width': 0.1}))
-        check(v == 0.0, "a provider that does not answer the key leaves the "
-              "file to decide", f"{v}")
-        v, _ = _resolve(_live(bare, {'min_hole_clearance': 0.30}),
-                        SimpleNamespace(hole_clearance=0.5))
-        check(v == 0.5, "an explicit config.hole_clearance still wins", f"{v}")
-        v, _ = _resolve(_live(os.path.join(tmp, 'elsewhere.kicad_pcb'),
-                              {'min_hole_clearance': FACTORY}), None, d30)
-        check(v == 0.25, "pcb_file names the file whose project is asked "
-              "whether it declares the key", f"{v}")
+            later = _LiveBoard(_board(tmp, 'later'), hole=0.30)
+            built = _live(later)
+            v_before, _ = _resolve(built)
+            later.set_hole(0.35)                         # edited after the build
+            v_after, _ = _resolve(built)
+            check((v_before, v_after) == (0.30, 0.35),
+                  "the provider is asked at CALL time, so a PCBData built before "
+                  "an edit prices the edit", f"{v_before} -> {v_after}")
+
+            F._PCBNEW_FACTORY = {}
+            nof = _LiveBoard(_board(tmp, 'nofactory'), hole=0.30)
+            v, _ = _resolve(_live(nof))
+            check(v == 0.0, "without pcbnew's factory value an undeclared live "
+                  "rule is not guessed at: the file decides, as before", f"{v}")
+            F._PCBNEW_FACTORY = {'min_hole_clearance': FACTORY}
+
+            v, _ = _resolve(_live(_LiveBoard(_board(tmp, 'expl'), hole=0.30)),
+                            SimpleNamespace(hole_clearance=0.5))
+            check(v == 0.5, "an explicit config.hole_clearance still wins", f"{v}")
+        finally:
+            F._PCBNEW_FACTORY = saved_factory
+            getattr(F, '_LIVE_DECLARED', {}).clear()
 
     print(f"\n{_checks - _fails}/{_checks} checks passed")
     return 1 if _fails else 0

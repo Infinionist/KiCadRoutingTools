@@ -444,7 +444,14 @@ skip cleanly without KiCad python). Run any directly:
   It also runs the fanout tab's step, where `update_live_drc_floors` is the
   ONLY writer: the other steps call `apply_targets_to_board` first, which
   seeds, so they cannot see an `update_live_drc_floors` that seeds after
-  lowering (it then records the lowered 0.15/0.4 and prints nothing).
+  lowering (it then records the lowered 0.15/0.4 and prints nothing). And a
+  PROJECT-LESS board through two steps on both fronts: pcbnew's factory floors
+  (track 0.2, via 0.5, hole 0.3) are not the board's, so step 1 prints nothing
+  on either front, and step 2 prints the same relaxations (via drill
+  included, the repo's floor pcbnew has no attribute for). An unchanged step
+  says "unchanged by this step but still below", in the CLI's words. On the
+  code before that fix it fails 3 checks: the GUI's step 1 reported pcbnew's
+  factory floors as relaxed, and its step 2 named different floors and values.
 - `test_gnd_vias_gui.py` -- the Planes tab's **Add GND vias** step, run for
   real (nothing mocked) against `route_planes.py --add-gnd-vias` on the same
   files: return vias keep a net-class clearance (#1030), a `.kicad_dru` layer
@@ -501,9 +508,15 @@ skip cleanly without KiCad python). Run any directly:
   compare_pcb_data names the difference; after `pcbnew.SaveBoard` a file
   parse in the same process reads the saved value; a project-less board loaded
   at pcbnew's factory 0.25 reads 0.0 on both fronts, and after one GUI step's
-  writeback the GUI reads the floor the CLI's next step reads from its own
-  writeback; an unsaved board (#1238) prices a live edit. On the pre-fix code
-  it fails 7 checks. The wx-free half is `tests/test_1038_hole_floor_fresh.py`.
+  writeback -- including one that targets exactly 0.25, which moves nothing in
+  memory -- the GUI reads the floor the CLI's next step reads from its own
+  writeback; the snapshot the oracle legs parse (`stage_live_project_rules`)
+  carries only the rules the board declares, so its hole floor and edge band
+  are the CLI's; an unsaved board (#1238) prices a live edit; and the
+  `pcbnew.DEFAULT_*` constants the declared view reads match a fresh board's
+  design settings. Its first 17 checks failed 7 on the code before the live
+  read (b861d208); the 5 the declared view added fail on the code before it
+  (0ec26d35). The wx-free half is `tests/test_1038_hole_floor_fresh.py`.
 - `test_581_fanout_via_in_pad_gui.py` -- the Basic tab's via-in-pad policy
   (#581) reaches BOTH escape engines from the REAL fanout tab, on glasgow's
   U30 (BGA) and U1 (QFN), engines spied: unticked with a 0.15 spin, each

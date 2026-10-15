@@ -1967,26 +1967,19 @@ def _file_hole_floor(path: str):
 
 
 def _live_hole_rule(pcb_data):
-    """``(live, factory)`` mm -- the LIVE board's ``min_hole_clearance`` and
-    pcbnew's factory value for it -- when ``pcb_data`` was built from a pcbnew
-    board (``build_pcb_data_from_board``), else None.
+    """The ``min_hole_clearance`` (mm) the LIVE board declares, when
+    ``pcb_data`` was built from a pcbnew board (``build_pcb_data_from_board``)
+    and the board declares one; else None, which leaves the file to decide.
 
-    The live value is read through ``PCBData.live_rules_provider`` -- the
-    #1187 channel, asked NOW rather than captured at build, because mid-plan
-    the floors the GUI's writers lowered live only in pcbnew's memory and a
-    PCBData built before a step is still in use after it. The factory value
-    (``PCBData.live_rule_defaults``) is a constant of the pcbnew build, so
-    capturing it at build is exact. :func:`declared_hole_clearance` decides
-    what the pair means."""
+    Read through ``PCBData.live_rules_provider`` -- the #1187 channel, asked
+    NOW rather than captured at build, because mid-plan the floors the GUI's
+    writers lowered live only in pcbnew's memory and a PCBData built before a
+    step is still in use after it. The provider answers only DECLARED rules
+    (``fix_kicad_drc_settings.live_declared_rules``): pcbnew holds a project-
+    less board at a factory 0.25 that its file does not declare, and that
+    stand-in is not a floor."""
     provider = getattr(pcb_data, 'live_rules_provider', None)
     if not callable(provider):
-        return None
-    factory = (getattr(pcb_data, 'live_rule_defaults', None)
-               or {}).get('min_hole_clearance')
-    if not isinstance(factory, (int, float)) or isinstance(factory, bool):
-        # Without the factory value a live 0.25 cannot be told from "never
-        # configured", which every project-less board loads as. Reading the
-        # file instead is the pre-live behaviour, never a guess.
         return None
     try:
         live = provider()
@@ -1995,7 +1988,7 @@ def _live_hole_rule(pcb_data):
     v = (live or {}).get('min_hole_clearance')
     if not isinstance(v, (int, float)) or isinstance(v, bool):
         return None
-    return float(v), float(factory)
+    return float(v)
 
 
 def declared_hole_clearance(pcb_data: PCBData, pcb_file: str = None):
@@ -2013,30 +2006,24 @@ def declared_hole_clearance(pcb_data: PCBData, pcb_file: str = None):
     the live branch existed.
 
     THE LIVE BOARD (a PCBData from ``build_pcb_data_from_board``): the rule is
-    pcbnew's in-memory ``m_HoleClearance``, so a Board Setup edit counts before
-    it is saved, and a board with no file at all (#1238) is still priced. One
-    case is read as "declares nothing": the live value AT pcbnew's factory
-    default (0.25 on KiCad 10) when the project does not declare the key.
-    That is what pcbnew loads for every project-less board -- 19 of the 22
-    tracked boards -- and pricing it would hold the GUI's tracks 0.25 off
-    every NPTH wall and switch on the #1038 via keep-out, where the CLI,
-    which reads no rule from the same file, holds tracks at the 0.20 fab
-    floor (or the routing clearance, when larger) and lays no via keep-out.
-    A live value that differs from the factory one was set by someone (Board
-    Setup, or a GUI step's writeback lowering it to what it routed, as the
-    CLI's writeback does in the file), and counts. The origin is the file's
-    either way: it is a record in the project, which pcbnew's design settings
-    do not carry.
+    pcbnew's in-memory ``m_HoleClearance`` when the live board DECLARES it
+    (``fix_kicad_drc_settings.live_declared_rules``), so a Board Setup edit
+    counts before it is saved and a board with no file at all (#1238) is
+    still priced. pcbnew holds every project-less board -- 19 of the 22
+    tracked boards -- at a factory 0.25 its file does not declare; pricing
+    that would hold the GUI's tracks 0.25 off every NPTH wall and switch on
+    the #1038 via keep-out, where the CLI, which reads no rule from the same
+    file, holds tracks at the 0.20 fab floor (or the routing clearance, when
+    larger) and lays no via keep-out. A board that declares no rule live
+    reads the file, which then declares none either. The origin is the
+    file's either way: it is a record in the project, which pcbnew's design
+    settings do not carry.
     """
     path = pcb_file or getattr(pcb_data, 'source_path', "") or ""
     rule, origin = _file_hole_floor(path) if path else (None, None)
     live = _live_hole_rule(pcb_data)
     if live is not None:
-        live_v, factory = live
-        if rule is None and abs(live_v - factory) <= 1e-9:
-            v, src = 0.0, ''
-        else:
-            v, src = (live_v, 'live board') if live_v > 0 else (0.0, '')
+        v, src = (live, 'live board') if live > 0 else (0.0, '')
     else:
         v = float(rule) if rule and rule > 0 else 0.0
         src = 'project' if v > 0 else ''

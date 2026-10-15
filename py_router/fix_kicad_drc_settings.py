@@ -641,16 +641,178 @@ FAB_FLOOR_LIVE_ATTR = {
     "min_hole_clearance": "m_HoleClearance",
 }
 
-#: Origins seeded for a live board this session, by board file. The project
-#: file is where the record belongs (it travels down a chain), but a board with
-#: no .kicad_pro has nowhere to keep it, and KiCad may rewrite the .kicad_pro
-#: from its in-memory copy when the user saves -- the same caveat the GUI's
-#: protected-net record carries. This keeps the session honest either way.
-_LIVE_FAB_ORIGIN: dict = {}
+#: Every design-settings rule a live reader takes from pcbnew -> the
+#: BOARD_DESIGN_SETTINGS attribute it lives in. The live twin of the
+#: ``design_settings.rules`` keys the file readers take from the .kicad_pro.
+LIVE_RULE_ATTR = {
+    "min_clearance": "m_MinClearance",
+    "min_track_width": "m_TrackMinWidth",
+    "min_connection": "m_MinConn",
+    "min_via_diameter": "m_ViasMinSize",
+    "min_through_hole_diameter": "m_MinThroughDrill",
+    "min_via_annular_width": "m_ViasMinAnnularWidth",
+    "min_hole_clearance": "m_HoleClearance",
+    "min_hole_to_hole": "m_HoleToHoleMin",
+    "min_copper_edge_clearance": "m_CopperEdgeClearance",
+}
+
+#: rule key -> the pcbnew constant BOARD_DESIGN_SETTINGS initialises it from
+#: (mm). The annular ring has no constant of its own; KiCad derives it from
+#: the via and drill ones, (0.5 - 0.3) / 2 = 0.1 on KiCad 10.
+_PCBNEW_DEFAULT_CONSTANT = {
+    "min_clearance": "DEFAULT_MINCLEARANCE",
+    "min_track_width": "DEFAULT_TRACKMINWIDTH",
+    "min_connection": "DEFAULT_MINCONNECTION",
+    "min_via_diameter": "DEFAULT_VIASMINSIZE",
+    "min_through_hole_diameter": "DEFAULT_MINTHROUGHDRILL",
+    "min_hole_clearance": "DEFAULT_HOLECLEARANCE",
+    "min_hole_to_hole": "DEFAULT_HOLETOHOLEMIN",
+    "min_copper_edge_clearance": "DEFAULT_COPPEREDGECLEARANCE",
+}
+_PCBNEW_FACTORY = None
+
+
+def pcbnew_rule_defaults() -> dict:
+    """pcbnew's factory value for each :data:`LIVE_RULE_ATTR` rule, mm: what a
+    board whose project does not declare the rule -- every project-less board
+    -- holds in memory. ``{}`` without pcbnew.
+
+    Read from the constants BOARD_DESIGN_SETTINGS initialises from, NEVER off a
+    throwaway ``pcbnew.BOARD()``: constructing and dropping a board in the GUI
+    process made the planes tab's next ZONE_FILLER.Fill segfault
+    (test_gui_engine_parity, 3 runs of 3)."""
+    global _PCBNEW_FACTORY
+    if _PCBNEW_FACTORY is None:
+        out = {}
+        try:
+            import pcbnew
+            for key, name in _PCBNEW_DEFAULT_CONSTANT.items():
+                v = getattr(pcbnew, name, None)
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    out[key] = float(v)
+            if "min_via_diameter" in out and "min_through_hole_diameter" in out:
+                out["min_via_annular_width"] = round(
+                    (out["min_via_diameter"] - out["min_through_hole_diameter"])
+                    / 2.0, 9)
+        except Exception:                                       # noqa: BLE001
+            out = {}
+        _PCBNEW_FACTORY = out
+    return dict(_PCBNEW_FACTORY)
+
+
+def file_stamp(path: str):
+    """``(mtime_ns, size, inode)`` of ``path``, or None when it does not exist:
+    what identifies a file's CONTENT without reading it. The inode is in it
+    because every writer here replaces a project atomically (tmp +
+    ``os.replace``), which gives it a new inode even inside one mtime tick."""
+    try:
+        st = os.stat(path)
+    except (OSError, ValueError, TypeError):
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
+_PROJECT_RULES_CACHE: dict = {}
+
+
+def project_rules(pcb_path: str) -> dict:
+    """``design_settings.rules`` of ``pcb_path``'s sibling .kicad_pro (``{}``
+    when there is none), re-read whenever the file changes. The live readers
+    below ask it on every obstacle-map build, so it is cached by stamp."""
+    pro = find_project(pcb_path) if pcb_path else ""
+    if not pro:
+        return {}
+    stamp = file_stamp(pro)
+    hit = _PROJECT_RULES_CACHE.get(pro)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    rules = {}
+    if stamp is not None:
+        try:
+            with open(pro, "r", encoding="utf-8") as f:
+                rules = dict((((json.load(f).get("board") or {})
+                               .get("design_settings") or {})
+                              .get("rules") or {}))
+        except Exception:                                       # noqa: BLE001
+            rules = {}
+    _PROJECT_RULES_CACHE[pro] = (stamp, rules)
+    return rules
+
+
+def live_board_key(board) -> str:
+    """The key a live board's session records are kept under: its file, or
+    the object itself when it has never been saved (#1238)."""
+    try:
+        path = board.GetFileName() or ""
+    except Exception:                                           # noqa: BLE001
+        path = ""
+    return os.path.normcase(os.path.abspath(path)) if path else f"id:{id(board)}"
+
+
+#: board key -> the LIVE_RULE_ATTR rules a live writer of this session set or
+#: targeted (apply_targets_to_board, gui_utils.update_live_drc_floors). The CLI
+#: writeback WRITES every rule it targets into the project, declared before or
+#: not, so on a project-less board those rules are declared from step 2 on --
+#: and a GUI writer that targets one at exactly pcbnew's factory value leaves
+#: nothing in memory to tell that apart from "never configured". This is it.
+_LIVE_DECLARED: dict = {}
+
+
+def note_live_declared(board, keys) -> None:
+    """Record that a live writer of this session set or targeted ``keys``."""
+    try:
+        _LIVE_DECLARED.setdefault(live_board_key(board), set()).update(
+            k for k in keys if k in LIVE_RULE_ATTR)
+    except Exception:                                           # noqa: BLE001
+        pass
+
+
+def live_declared_rules(board, keys=None):
+    """``{rule: mm}``: the design-settings rules the LIVE board DECLARES, or
+    None when it has no design settings to read.
+
+    pcbnew holds every rule in memory whether or not anything declared it: a
+    project that does not declare a rule, and every project-less board, loads
+    it at the factory value (:func:`pcbnew_rule_defaults`). The file readers
+    see no rule there. So a live value counts as declared when the board's
+    project declares the key, or a live writer of this session set or targeted
+    it (:func:`note_live_declared`), or it differs from the factory value --
+    which someone set (Board Setup, or a GUI step's writeback). Everything else
+    is pcbnew's stand-in for "not configured" and is left out, so a board
+    pcbnew just loaded declares exactly what its file declares, and both
+    fronts read the same floors off it. A rule whose factory value cannot be
+    read is declared only by the project or the session.
+    """
+    try:
+        bds = board.GetDesignSettings()
+    except Exception:                                           # noqa: BLE001
+        return None
+    if bds is None:
+        return None
+    try:
+        path = board.GetFileName() or ""
+    except Exception:                                           # noqa: BLE001
+        path = ""
+    in_project = project_rules(path) if path else {}
+    session = _LIVE_DECLARED.get(live_board_key(board), set())
+    factory = pcbnew_rule_defaults()
+    out = {}
+    for key in (keys if keys is not None else LIVE_RULE_ATTR):
+        attr = LIVE_RULE_ATTR.get(key)
+        v = getattr(bds, attr, None) if attr else None
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
+            continue
+        mm = v / 1e6                              # nm -> mm; divide (#493)
+        if key in in_project or key in session \
+                or (key in factory and abs(mm - factory[key]) > 1e-9):
+            out[key] = mm
+    return out
 
 
 def live_fab_floor_rules(bds) -> dict:
-    """The FAB_FLOOR_KEYS a live board's design settings declare now, mm."""
+    """The FAB_FLOOR_KEYS a live board's design settings HOLD now, mm, every
+    one of them -- including pcbnew's factory stand-ins. What the board
+    DECLARES is :func:`live_declared_fab_floor_rules`."""
     out = {}
     for key, attr in FAB_FLOOR_LIVE_ATTR.items():
         v = getattr(bds, attr, None)
@@ -659,22 +821,108 @@ def live_fab_floor_rules(bds) -> dict:
     return out
 
 
+#: board key -> {rule: mm} for the FAB_FLOOR_KEYS a live writer of this session
+#: set that pcbnew has no attribute for: `min_via_drill`, the repo's own via-
+#: drill floor, which the CLI's writeback writes into the project beside the
+#: KiCad rules (compute_targets) and its disclosure reports. Only-lower, like
+#: the file writer.
+_LIVE_SESSION_RULES: dict = {}
+
+
+def note_live_session_rule(board, key: str, mm) -> None:
+    """Lower the session-held ``key`` floor to ``mm`` (see
+    :data:`_LIVE_SESSION_RULES`); a None ``mm`` is ignored."""
+    if mm is None:
+        return
+    try:
+        rules = _LIVE_SESSION_RULES.setdefault(live_board_key(board), {})
+        cur = rules.get(key)
+        rules[key] = round(float(mm), 6) if cur is None else min(cur, round(float(mm), 6))
+    except Exception:                                           # noqa: BLE001
+        pass
+
+
+def live_declared_fab_floor_rules(board) -> dict:
+    """The FAB_FLOOR_KEYS the live board DECLARES (:func:`live_declared_rules`,
+    plus the session-held floors pcbnew has no attribute for), positive values
+    only, mm -- what the origin records and the disclosure compares, so a
+    project-less board records and says what the CLI's writeback does on the
+    same file: nothing at step 1."""
+    out = {k: v for k, v in (live_declared_rules(board, FAB_FLOOR_LIVE_ATTR)
+                             or {}).items() if v > 0}
+    for k, v in (_LIVE_SESSION_RULES.get(live_board_key(board)) or {}).items():
+        if v and v > 0:
+            out[k] = v
+    return out
+
+
+#: Origins seeded for a live board this session, by board key. The project
+#: file is where the record belongs (it travels down a chain), but a board with
+#: no .kicad_pro has nowhere to keep it, and KiCad may rewrite the .kicad_pro
+#: from its in-memory copy when the user saves -- the same caveat the GUI's
+#: protected-net record carries. This keeps the session honest either way.
+_LIVE_FAB_ORIGIN: dict = {}
+
+#: Board keys whose GUI step is OPEN: its first live writer
+#: (apply_targets_to_board) has run and its last (gui_utils.
+#: update_live_drc_floors) has not. A CLI step has ONE writer, which seeds the
+#: origin from the project as the step found it; a GUI step has two, and the
+#: second must not seed from what the first just lowered.
+_LIVE_STEP_OPEN: set = set()
+
+#: board key -> the floors the board declared when its current GUI step
+#: STARTED -- the CLI writeback's ``rules_before``, which its disclosure falls
+#: back to for a floor the origin does not carry.
+_LIVE_STEP_BEFORE: dict = {}
+
+
+def live_step_rules_before(board) -> dict:
+    """The declared floors at the start of the board's current GUI step."""
+    return dict(_LIVE_STEP_BEFORE.get(live_board_key(board)) or {})
+
+
+def open_live_step(board) -> None:
+    """A GUI step's first live writer has seeded the origin (see
+    :data:`_LIVE_STEP_OPEN`)."""
+    _LIVE_STEP_OPEN.add(live_board_key(board))
+
+
+def close_live_step(board) -> None:
+    """A GUI step's last live writer is done: the next seed belongs to the
+    next step."""
+    _LIVE_STEP_OPEN.discard(live_board_key(board))
+
+
 def seed_live_fab_floor_origin(board) -> dict:
     """:func:`seed_fab_floor_origin` for a live pcbnew board. Returns the origin.
 
     Call BEFORE lowering anything, from every live writer, exactly as the file
-    writers do. The first call of a session records the board's current floors
-    -- in its sibling .kicad_pro under ``kicad_routing_tools.fab_floor_origin``
-    when it has one and none is recorded there yet, and in memory regardless.
-    An origin already in the project wins, so a GUI step after a CLI chain (or
-    an earlier session) keeps the chain's original. Best-effort: never raises.
+    writers do. The first call of a session records the floors the board
+    DECLARES (:func:`live_declared_fab_floor_rules`) -- in its sibling
+    .kicad_pro under ``kicad_routing_tools.fab_floor_origin`` when it has one
+    and none is recorded there yet, and in memory regardless. An origin already
+    in the project wins, so a GUI step after a CLI chain (or an earlier
+    session) keeps the chain's original. A board that declares none (a
+    project-less one at pcbnew's factory values) records none, as the CLI's
+    first writeback records none on it; the next step then seeds from what the
+    first one wrote, as the CLI's second does -- the next STEP, not the second
+    writer of the same one (:data:`_LIVE_STEP_OPEN`). Best-effort: never
+    raises.
     """
     try:
-        before = live_fab_floor_rules(board.GetDesignSettings())
+        before = live_declared_fab_floor_rules(board)
         path = board.GetFileName() or ""
     except Exception:                                           # noqa: BLE001
         return {}
-    key = os.path.normcase(os.path.abspath(path)) if path else f"id:{id(board)}"
+    key = live_board_key(board)
+    if key in _LIVE_STEP_OPEN:
+        if not _LIVE_FAB_ORIGIN.get(key):
+            # This step's first writer found nothing declared. What the board
+            # declares now is what that writer lowered, which the CLI's
+            # one-writer step records only at the NEXT step.
+            return {}
+    else:
+        _LIVE_STEP_BEFORE[key] = dict(before)    # this step's rules_before
     pro = os.path.splitext(path)[0] + ".kicad_pro" if path else ""
     proj = None
     if pro and os.path.isfile(pro):
@@ -703,13 +951,17 @@ def seed_live_fab_floor_origin(board) -> dict:
 
 
 def live_fab_floor_disclosure(origin: dict, rules_after: dict,
-                              objects: dict = None) -> list:
+                              objects: dict = None,
+                              rules_before: dict = None) -> list:
     """The FAB FLOOR RELAXED lines for a live board: :func:`_fab_floor_disclosure`
     against the ORIGIN, with ``objects`` (``{rule key: [object sizes mm]}``
     measured off the live board) as the census -- the live copper is not on
-    disk to count."""
+    disk to count. ``rules_before`` is the step's input
+    (:func:`live_step_rules_before`), which the file writer falls back to for a
+    floor its origin does not carry; omitted, the origin stands in for it."""
     return _fab_floor_disclosure(
-        "", origin, {"board": {"design_settings": {"rules": rules_after}}},
+        "", origin if rules_before is None else rules_before,
+        {"board": {"design_settings": {"rules": rules_after}}},
         origin, objects=objects)
 
 
@@ -1876,6 +2128,11 @@ def apply_targets_to_board(board, targets: dict, sev_plan: dict,
     # gui_utils.update_live_drc_floors, and a writer that lowers without seeding
     # leaves the next one to record the already-lowered value (ad7f24de).
     seed_live_fab_floor_origin(board)
+    open_live_step(board)
+    # The repo's own via-drill floor, which pcbnew has no attribute for: the
+    # file writer writes it into the project's rules, so it is held for the
+    # session here (only-lower) and counted with the declared floors.
+    note_live_session_rule(board, "min_via_drill", targets.get("min_via_drill"))
 
     # #498 parity with fix_project_for_output: cap min_clearance at the
     # smallest .kicad_dru layer rule (an absolute board floor above a relaxing
@@ -1915,6 +2172,9 @@ def apply_targets_to_board(board, targets: dict, sev_plan: dict,
             continue
         if key == "min_connection" and not getattr(bds, a, 0):
             continue    # checker was OFF -- do not switch it on
+        # The file writer writes every rule it targets, so the rule is
+        # declared from here on even where only-lower leaves it unmoved.
+        note_live_declared(board, (key,))
         tgt_nm = round(float(target) * MM)
         cur = getattr(bds, a)
         # Edge clearance may RAISE to the fab copper-to-edge floor (#441); every

@@ -864,7 +864,8 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
         except Exception:
             _fab_origin = {}
         _objs = {'min_track_width': [], 'min_via_diameter': [],
-                 'min_via_annular_width': []}   # mm, for the disclosure census
+                 'min_via_annular_width': [],
+                 'min_via_drill': []}   # mm, for the disclosure census
 
         # Actual board minima (copper tracks/vias only).
         min_w = min_via = min_drill = min_ann = None
@@ -890,6 +891,8 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
                     ann = (w - d) // 2
                     min_ann = ann if min_ann is None else min(min_ann, ann)
                     _objs['min_via_diameter'].append(w / 1e6)
+                    if d:
+                        _objs['min_via_drill'].append(d / 1e6)
                     if w > d:
                         _objs['min_via_annular_width'].append((w - d) / 2e6)
                 else:
@@ -898,10 +901,35 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
                     _objs['min_track_width'].append(w / 1e6)
             except Exception:
                 continue
+        # The hole-diameter floor spans EVERY hole on the board, pads included,
+        # as the file writer's scan_board_minima reads it: KiCad grades a pad
+        # drill against min_through_hole_diameter too.
+        min_hole = min_drill
+        try:
+            for _fp in board.GetFootprints():
+                for _pad in _fp.Pads():
+                    try:
+                        _ds = _pad.GetDrillSize()
+                        _d = max(_ds.x, _ds.y)
+                    except Exception:
+                        continue
+                    if _d:
+                        min_hole = _d if min_hole is None else min(min_hole, _d)
+        except Exception:
+            pass
+
+        from fix_kicad_drc_settings import (LIVE_RULE_ATTR, note_live_declared,
+                                            note_live_session_rule)
+        _rule_of = {a: k for k, a in LIVE_RULE_ATTR.items()}
 
         def lower(attr, mm, board_min_iu=None):
             if mm is None and board_min_iu is None:
                 return
+            # The CLI's writeback writes every rule it targets, so it is
+            # declared from here on (fix_kicad_drc_settings.live_declared_rules)
+            # even where only-lower leaves the live value where it was.
+            if attr in _rule_of:
+                note_live_declared(board, (_rule_of[attr],))
             iu = mm_to_iu(float(mm)) if mm is not None else None
             if board_min_iu is not None:
                 iu = board_min_iu if iu is None else min(iu, board_min_iu)
@@ -931,10 +959,18 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
         lower('m_MinClearance', _clr_floor)
         lower('m_TrackMinWidth', track_width, min_w)
         lower('m_ViasMinSize', via_size, min_via)
-        lower('m_MinThroughDrill', via_drill, min_drill)
-        lower('m_ViasMinAnnularWidth',
-              (float(via_size) - float(via_drill)) / 2
-              if via_size and via_drill else None, min_ann)
+        lower('m_MinThroughDrill', via_drill, min_hole)
+        # The annular-ring floor is the board's own smallest ring, as the file
+        # writer's compute_targets sets it -- not one derived from this step's
+        # via size and drill, which a step that laid no such via never drew.
+        lower('m_ViasMinAnnularWidth', None, min_ann)
+        # The repo's via-drill floor (pcbnew has no attribute for it): what the
+        # file writer writes, min(this step's drill, the board's smallest via
+        # drill), held for the session and disclosed with the others.
+        _vdr = [v for v in (via_drill, (min_drill / 1e6) if min_drill else None)
+                if v is not None]
+        if _vdr:
+            note_live_session_rule(board, 'min_via_drill', min(float(v) for v in _vdr))
         lower('m_HoleToHoleMin', hole_to_hole)
         # CLI parity (#338/#441): 0.0 edge clearance means "not enforced this
         # step", NOT "lower the rule to zero". Unlike every other floor here,
@@ -945,6 +981,7 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
         from fix_kicad_drc_settings import fab_edge_floor
         _edge_pin = max(edge_clearance or 0.0, fab_edge_floor())
         if _edge_pin > 0:
+            note_live_declared(board, ('min_copper_edge_clearance',))
             _pin_iu = mm_to_iu(float(_edge_pin))
             if getattr(bds, 'm_CopperEdgeClearance', 0) < _pin_iu:
                 bds.m_CopperEdgeClearance = _pin_iu
@@ -986,12 +1023,20 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
         # board's ORIGINAL floors, every step it is still true, counted off the
         # live copper. print(), not `log` -- every tab's apply phase routes
         # prints into its log (redirect_prints_to_log), and no caller passes
-        # `log`. Silent when nothing is under its origin.
+        # `log`. Silent when nothing is under its origin. The floors compared
+        # are the ones the board DECLARES, as the CLI compares its project's:
+        # pcbnew's factory values on a project-less board are not a floor
+        # anyone set.
+        # The step's own input is passed too, as the file writer passes its
+        # rules_before: it says whether THIS step lowered a floor or inherited
+        # it, and stands in for a floor the origin does not carry.
         try:
             from fix_kicad_drc_settings import (live_fab_floor_disclosure,
-                                                live_fab_floor_rules)
+                                                live_declared_fab_floor_rules,
+                                                live_step_rules_before)
             for _line in live_fab_floor_disclosure(
-                    _fab_origin, live_fab_floor_rules(bds), _objs):
+                    _fab_origin, live_declared_fab_floor_rules(board), _objs,
+                    rules_before=live_step_rules_before(board)):
                 print(_line)
         except Exception:
             pass
@@ -999,6 +1044,13 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
     except Exception as e:
         if log:
             log(f"(live DRC floor update skipped: {e})\n")
+    finally:
+        # The step's last live writer: the next origin seed is the next step's.
+        try:
+            from fix_kicad_drc_settings import close_live_step
+            close_live_step(board)
+        except Exception:
+            pass
     return _clamped
 
 

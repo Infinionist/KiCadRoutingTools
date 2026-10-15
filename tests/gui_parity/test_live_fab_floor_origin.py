@@ -144,8 +144,13 @@ def main():
 
         print("--- a second step that lowers nothing more")
         out2 = _step(board)
-        check("still disclosed: the board is under its original",
-              'FAB FLOOR RELAXED' in out2 and 'via diameter: 0.8 -> 0.4 mm' in out2,
+        # In the file writer's own words for a floor this step inherited: the
+        # step's input is passed beside the origin, as the CLI passes its
+        # rules_before, so a step that lowered nothing does not claim it did.
+        check("still disclosed: the board is under its original, as inherited",
+              'FAB FLOOR RELAXED' in out2
+              and "via diameter: 0.4 mm, unchanged by this step but still below "
+                  "the board's ORIGINAL 0.8mm" in out2,
               out2[-400:])
         check("the origin is not re-seeded from the lowered value",
               (_origin(path) or {}).get('min_via_diameter') == 0.8, f"{_origin(path)}")
@@ -197,6 +202,82 @@ def main():
                   "new one", 'via diameter: 0.8 -> 0.4 mm' in out4, out4[-600:])
         finally:
             shutil.rmtree(td3, ignore_errors=True)
+
+        print("--- a PROJECT-LESS board, two steps, both fronts")
+        # pcbnew holds a project-less board at its factory floors (track 0.2,
+        # via 0.5, hole 0.3, ...), which no file declares. The CLI's first
+        # writeback on it records no origin and prints nothing; its second
+        # seeds the origin from what the first wrote. The GUI must record and
+        # print the same: the factory values are not floors anyone set.
+        getattr(F, '_LIVE_FAB_ORIGIN', {}).clear()
+        getattr(F, '_LIVE_DECLARED', {}).clear()
+        td4 = tempfile.mkdtemp(prefix='livefab_bare_')
+        try:
+            from fix_kicad_drc_settings import fix_project_for_output
+            gui = os.path.join(td4, 'gui', 'b.kicad_pcb')
+            cli0 = os.path.join(td4, 'cli', 'b.kicad_pcb')
+            cli1 = os.path.join(td4, 'cli', 'b1.kicad_pcb')
+            for d in (os.path.dirname(gui), os.path.dirname(cli0)):
+                os.makedirs(d)
+            shutil.copyfile(SRC, gui)
+            shutil.copyfile(SRC, cli0)
+            board4 = pcbnew.LoadBoard(gui)
+            pcbnew.GetBoard = lambda: board4
+
+            def _relaxed(text):
+                """The 'label: was -> now mm' lines of the FAB FLOOR block."""
+                out, inside = [], False
+                for ln in text.splitlines():
+                    if 'FAB FLOOR RELAXED' in ln:
+                        inside = True
+                        continue
+                    if inside and ln.strip().startswith('Every checker'):
+                        inside = False
+                    elif inside and ' -> ' in ln:
+                        out.append(ln.strip().split(';')[0])
+                return sorted(out)
+
+            g1 = _step(board4)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                fix_project_for_output(cli0, input_pcb=SRC,
+                                       track_width=STEP['track_width'],
+                                       via_diameter=STEP['via_size'],
+                                       via_drill=STEP['via_drill'])
+            c1 = buf.getvalue()
+            check("step 1: the CLI says nothing about a fab floor",
+                  'FAB FLOOR RELAXED' not in c1, c1[-400:])
+            check("step 1: neither does the GUI (pcbnew's factory floors are "
+                  "not the board's)", 'FAB FLOOR RELAXED' not in g1, g1[-600:])
+
+            STEP2 = {'track_width': 0.12, 'via_size': 0.35, 'via_drill': 0.18}
+            from fix_kicad_drc_settings import apply_targets_to_board
+            from kicad_routing_plugin.gui_utils import update_live_drc_floors
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                apply_targets_to_board(board4, {
+                    'min_track_width': STEP2['track_width'],
+                    'min_via_diameter': STEP2['via_size']}, {})
+                update_live_drc_floors(board4, **STEP2)
+            g2 = buf.getvalue()
+            shutil.copyfile(cli0, cli1)
+            shutil.copyfile(os.path.splitext(cli0)[0] + '.kicad_pro',
+                            os.path.splitext(cli1)[0] + '.kicad_pro')
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                fix_project_for_output(cli1, input_pcb=cli0,
+                                       track_width=STEP2['track_width'],
+                                       via_diameter=STEP2['via_size'],
+                                       via_drill=STEP2['via_drill'])
+            c2 = buf.getvalue()
+            check("step 2: both fronts print the banner",
+                  'FAB FLOOR RELAXED' in g2 and 'FAB FLOOR RELAXED' in c2,
+                  f"GUI: {g2[-300:]} CLI: {c2[-300:]}")
+            check("step 2: the same relaxations, original -> now, on both fronts",
+                  _relaxed(g2) == _relaxed(c2) and _relaxed(g2),
+                  f"GUI {_relaxed(g2)} CLI {_relaxed(c2)}")
+        finally:
+            shutil.rmtree(td4, ignore_errors=True)
     finally:
         shutil.rmtree(td, ignore_errors=True)
 
