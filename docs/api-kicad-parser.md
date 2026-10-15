@@ -239,7 +239,7 @@ off-outline grade (`check_drc.footprint_graphic_outline_census`, #962) reads
 |-------|------|---------|
 | `net_id`, `net_name` | int, str | Zone's net |
 | `layer` | str | Layer name |
-| `polygon` | List[Tuple[float, float]] | Outline vertices, as pcbnew loads them: a vertex equal on the nm grid to the one before it is dropped, and so is a last vertex repeating the first (pcbnew closes the outline as it parses it, in every file format; a KiCad 5-converted board writes one on every zone) |
+| `polygon` | List[Tuple[float, float]] | Outline vertices, as pcbnew loads them: an `(arc (start) (mid) (end))` vertex becomes KiCad's own polyline (`kicad_arc_polyline`, below), a vertex equal on the nm grid to the one before it is dropped, and so is a last vertex repeating the first (pcbnew closes the outline as it parses it, in every file format; a KiCad 5-converted board writes one on every zone) |
 | `uuid` | str | UUID from the file |
 | `priority` | int | `(priority N)`; higher-priority zones win where outlines overlap (0 when absent) |
 | `island_removal_mode` | int | 0 = always remove isolated islands (KiCad default), 1 = never, 2 = below `island_area_min` |
@@ -582,6 +582,8 @@ large file:
 | `extract_vias(content, name_to_id=None)` | `List[Via]` |
 | `extract_zones(content, name_to_id=None)` | `List[Zone]` |
 | `extract_keepouts(content)` | `List[dict]` (keepout rule areas) |
+| `zone_outline_points(pts_text)` | the vertices of one zone / rule-area `(pts ...)` as pcbnew loads it (mm) |
+| `kicad_arc_polyline(start, mid, end, max_error=ZONE_ARC_MAX_ERROR_NM)` | the polyline pcbnew holds for a three-point arc, integer nm |
 | `extract_board_contours(content)` | `(outline, cutouts)` |
 | `parse_guide_paths(content, layer)` | `List[GuidePath]` from a user layer |
 | `parse_keepout_zones(content, layer)` | `List[GuidePath]` (closed only) |
@@ -612,6 +614,22 @@ large file:
 - **`pad.layers` may contain `'*.Cu'`** (through-hole pads). Expand with
   [`net_queries.expand_pad_layers`](api-net-analysis.md#expand_pad_layers)
   before comparing to routing layers.
+- **A zone or rule-area outline can be drawn with arcs.** KiCad writes a
+  rounded outline as `(arc (start ..) (mid ..) (end ..))` vertices among its
+  `(xy ..)` points, keeps the arc, and hands every consumer its polyline.
+  `extract_zones` and `extract_keepouts` build that same polyline
+  (`kicad_arc_polyline`, a port of `SHAPE_ARC::ConvertToPolyline` as
+  `SHAPE_LINE_CHAIN::Append` calls it in KiCad 10.0.0, max error
+  `ZONE_ARC_MAX_ERROR_NM` = 1000 nm), so the CLI holds the GUI's vertices to
+  the nanometre (`tests/gui_parity/test_zone_arc_outline_parity.py` holds
+  it to pcbnew on random outlines -- radii 1 µm to 500 mm, both sweep
+  directions, chained, mixed with `xy` points, as written and as pcbnew saves
+  them -- and on degenerate arcs; `tests/test_zone_outline_points.py` pins
+  vertices pcbnew produced). Before, only `(xy ..)` was read: an all-arc
+  outline gave no points and its zone was dropped (key_ripper's `F&B.Cu` GND
+  pour), a mixed one lost its arcs. KiCad 9 polygonises the same arc at
+  5000 nm, so a KiCad 9 pcbnew holds fewer vertices on it than this parser;
+  the copper differs by under 5 µm.
 - **`board_info.stackup` is on `board_info`**, not on `PCBData` directly,
   and is an empty list when the board file has no stackup section (impedance
   functions then fall back to FR4 defaults).

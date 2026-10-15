@@ -5824,6 +5824,426 @@ def _iter_zone_blocks(content: str):
         yield content[body_start:zone_end], in_footprint
 
 
+# --- Zone outlines as pcbnew loads them ---------------------------------------
+# A zone or rule-area outline is a list of `(xy X Y)` points and
+# `(arc (start ..) (mid ..) (end ..))` vertices. pcbnew keeps the arc and hands
+# every consumer (Outline().CPoint) its polyline, built by
+# SHAPE_LINE_CHAIN::Append(SHAPE_ARC) -> SHAPE_ARC::ConvertToPolyline. The
+# helpers below port that code from KiCad 10.0.0 (shape_arc.cpp,
+# shape_line_chain.cpp, geometry_utils.cpp, trigo.cpp, eda_angle.h; unchanged
+# in 10.0.6 except for a CalcArcCenter early-out that only fires on arcs whose
+# three points lie within 5 nm, which are a single chord either way), so the
+# text parser's vertices are pcbnew's, on the nm grid.
+
+#: The max error SHAPE_LINE_CHAIN::Append(SHAPE_ARC) polygonises an outline arc
+#: at: getArcPolygonizationMaxError() = ARC_HIGH_DEF / 5 = 1000 nm in KiCad 10
+#: (KiCad 9 used ARC_HIGH_DEF itself, 5000 nm, so a KiCad 9 pcbnew holds
+#: fewer vertices on the same arc).
+ZONE_ARC_MAX_ERROR_NM = 1000
+
+_KI_DEG_TO_RAD = math.pi / 180.0
+_KI_SQRT1_2 = math.sqrt(0.5)          # M_SQRT1_2
+_KI_SQRT2 = math.sqrt(2.0)            # M_SQRT2
+_KI_DBL_EPS = sys.float_info.epsilon
+_KI_INT_MAX = 2 ** 31 - 1
+
+
+def _kiround(v: float, bits: int = 32) -> int:
+    """KiCad's KiROUND: std::llround (halves away from zero; Python's round
+    is half-to-even), clamped to the signed `bits`-bit range of its return
+    type (int unless a caller asks for an ecoord)."""
+    a = abs(v)
+    r = math.floor(a)
+    if a - r >= 0.5:
+        r += 1
+    r = int(r) if v >= 0 else -int(r)
+    return min(max(r, -(1 << (bits - 1))), (1 << (bits - 1)) - 1)
+
+
+def _board_iu(token: str) -> int:
+    """A file coordinate as pcbnew's parser stores it: KiROUND(mm * 1e6) nm,
+    clamped to INT_LIMIT (parseBoardUnits)."""
+    lim = float(_KI_INT_MAX - 10)
+    return _kiround(min(max(float(token) * 1e6, -lim), lim))
+
+
+def _ki_div(a: float, b: float) -> float:
+    """IEEE division as C++ does it: x/0 is a signed infinity and 0/0 NaN
+    (Python raises instead)."""
+    try:
+        return a / b
+    except ZeroDivisionError:
+        if a != a or a == 0.0:
+            return math.nan
+        return math.copysign(math.inf, a) * math.copysign(1.0, b)
+
+
+def _ki_floor(v: float) -> float:
+    return v if not math.isfinite(v) else float(math.floor(v))
+
+
+def _ki_norm_d(x: float, y: float) -> float:
+    """VECTOR2D::EuclideanNorm."""
+    if abs(x) == abs(y):
+        return abs(x) * _KI_SQRT2
+    if x == 0:
+        return abs(y)
+    if y == 0:
+        return abs(x)
+    return math.hypot(x, y)
+
+
+def _ki_arc_center(start, mid, end) -> Tuple[int, int]:
+    """CalcArcCenter(VECTOR2I start, mid, end): the double-precision center,
+    snapped to a round 100 / 10 nm value when that lies inside its own
+    propagated rounding uncertainty, then KiROUNDed."""
+    sx, sy = float(start[0]), float(start[1])
+    mx, my = float(mid[0]), float(mid[1])
+    ex, ey = float(end[0]), float(end[1])
+    yd21, xd21 = my - sy, mx - sx
+    yd32, xd32 = ey - my, ex - mx
+    if (xd21 == 0.0 and yd32 == 0.0) or (yd21 == 0.0 and xd32 == 0.0):
+        cx, cy = (sx + ex) / 2.0, (sy + ey) / 2.0
+    else:
+        if xd21 == 0.0:
+            xd21 = _KI_DBL_EPS
+        if xd32 == 0.0:
+            xd32 = -_KI_DBL_EPS
+        a_slope = yd21 / xd21
+        b_slope = yd32 / xd32
+        da_slope = a_slope * _ki_norm_d(_ki_div(0.5, yd21), _ki_div(0.5, xd21))
+        db_slope = b_slope * _ki_norm_d(_ki_div(0.5, yd32), _ki_div(0.5, xd32))
+        cx = cy = None
+        if a_slope == b_slope:
+            if sx == ex and sy == ey:
+                cx, cy = (sx + mx) / 2.0, (sy + my) / 2.0
+            else:
+                a_slope += _KI_DBL_EPS
+                b_slope -= _KI_DBL_EPS
+        if cx is None:
+            if a_slope == 0.0:
+                a_slope = 1e-10
+            if b_slope == 0.0:
+                b_slope = 1e-10
+            ab_y = a_slope * b_slope * (sy - ey)
+            t = _ki_div(_KI_SQRT1_2, sy - ey)
+            dab_y = ab_y * math.sqrt((da_slope / a_slope * da_slope / a_slope)
+                                     + (db_slope / b_slope * db_slope / b_slope)
+                                     + (t * t))
+            b_sm = b_slope * (sx + mx)
+            t = _ki_div(_KI_SQRT1_2, sx + mx)
+            db_sm = b_sm * math.sqrt((db_slope / b_slope * db_slope / b_slope) + (t * t))
+            a_me = a_slope * (mx + ex)
+            t = _ki_div(_KI_SQRT1_2, mx + ex)
+            da_me = a_me * math.sqrt((da_slope / a_slope * da_slope / a_slope) + (t * t))
+            twice = 2 * (b_slope - a_slope)
+            dtwice = 2 * math.sqrt(db_slope * db_slope + da_slope * da_slope)
+            num_x = ab_y + b_sm - a_me
+            dnum_x = math.sqrt(dab_y * dab_y + db_sm * db_sm + da_me * da_me)
+            cx = _ki_div(ab_y + b_sm - a_me, twice)
+            q1 = _ki_div(dnum_x, num_x)
+            q2 = _ki_div(dtwice, twice)
+            dcx = cx * math.sqrt((q1 * q1) + (q2 * q2))
+            num_y = (sx + mx) / 2.0 - cx
+            dnum_y = math.sqrt(1.0 / 8.0 + dcx * dcx)
+            first = num_y / a_slope
+            q1 = _ki_div(dnum_y, num_y)
+            q2 = da_slope / a_slope
+            dfirst = first * math.sqrt((q1 * q1) + (q2 * q2))
+            cy = first + (sy + my) / 2.0
+            dcy = math.sqrt(dfirst * dfirst + 1.0 / 8.0)
+            r100x = _ki_floor((cx + 50.0) / 100.0) * 100.0
+            r100y = _ki_floor((cy + 50.0) / 100.0) * 100.0
+            r10x = _ki_floor((cx + 5.0) / 10.0) * 10.0
+            r10y = _ki_floor((cy + 5.0) / 10.0) * 10.0
+            if abs(r100x - cx) < dcx and abs(r100y - cy) < dcy:
+                cx, cy = r100x, r100y
+            elif abs(r10x - cx) < dcx and abs(r10y - cy) < dcy:
+                cx, cy = r10x, r10y
+    lo, hi = float(-_KI_INT_MAX - 1 + 100), float(_KI_INT_MAX - 100)
+
+    def snap(v):
+        if v != v:
+            return 0
+        return _kiround(min(max(v, lo), hi))
+    return snap(cx), snap(cy)
+
+
+def _ki_angle_deg(x: float, y: float) -> float:
+    """EDA_ANGLE(VECTOR2D): exact at the eight 45-degree directions."""
+    if x == 0.0 and y == 0.0:
+        return 0.0
+    if y == 0.0:
+        return 0.0 if x >= 0 else -180.0
+    if x == 0.0:
+        return 90.0 if y >= 0.0 else -90.0
+    if x == y:
+        return 45.0 if x >= 0.0 else -180.0 + 45.0
+    if x == -y:
+        return -45.0 if x >= 0.0 else 180.0 - 45.0
+    return math.atan2(y, x) / _KI_DEG_TO_RAD
+
+
+def _ki_normalize_deg(v: float) -> float:
+    while v < -0.0:
+        v += 360.0
+    while v >= 360.0:
+        v -= 360.0
+    return v
+
+
+def _ki_cos(deg: float) -> float:
+    t = _ki_normalize_deg(deg)
+    if t == 0.0:
+        return 1.0
+    if t == 180.0:
+        return -1.0
+    if t == 90.0 or t == 270.0:
+        return 0.0
+    if t == 45.0 or t == 315.0:
+        return _KI_SQRT1_2
+    if t == 135.0 or t == 225.0:
+        return -_KI_SQRT1_2
+    return math.cos(deg * _KI_DEG_TO_RAD)
+
+
+def _ki_sin(deg: float) -> float:
+    t = _ki_normalize_deg(deg)
+    if t == 0.0 or t == 180.0:
+        return 0.0
+    if t == 45.0 or t == 135.0:
+        return _KI_SQRT1_2
+    if t == 225.0 or t == 315.0:
+        return -_KI_SQRT1_2
+    if t == 90.0:
+        return 1.0
+    if t == 270.0:
+        return -1.0
+    return math.sin(deg * _KI_DEG_TO_RAD)
+
+
+def _ki_arc_to_segment_count(radius: int, max_error: int, angle_deg: float) -> int:
+    """GetArcToSegmentCount."""
+    radius = max(1, radius)
+    max_error = max(1, max_error)
+    rel_error = max_error / radius
+    try:
+        inc = 180 / math.pi * math.acos(1.0 - rel_error) * 2
+    except ValueError:
+        inc = math.nan
+    inc = inc if inc < 360.0 / 8 else 360.0 / 8      # std::min(45, inc)
+    return max(_kiround(abs(angle_deg) / inc), 2)
+
+
+def _ki_circle_to_end_segment_delta_radius(radius: int, seg_count: int) -> int:
+    """CircleToEndSegmentDeltaRadius."""
+    if seg_count <= 2:
+        seg_count = 3
+    alpha = math.pi / seg_count
+    return _kiround(abs(radius * (1 - 1 / math.cos(alpha))))
+
+
+def _ki_seg_distance(a, b, p) -> int:
+    """SEG(a, b).Distance(p): the integer floor of the true distance."""
+    abx, aby = b[0] - a[0], b[1] - a[1]
+    apx, apy = p[0] - a[0], p[1] - a[1]
+    e = apx * abx + apy * aby
+    if e <= 0:
+        d2 = apx * apx + apy * apy
+    else:
+        f = abx * abx + aby * aby
+        if e >= f:
+            d2 = (p[0] - b[0]) ** 2 + (p[1] - b[1]) ** 2
+        else:
+            g = float(apx * apx + apy * apy) - (float(e) * e) / f
+            d2 = 0 if (g < 0 or g > float(2 ** 63 - 1)) else _kiround(g, 64)
+    return math.isqrt(d2)
+
+
+def kicad_arc_polyline(start: Tuple[int, int], mid: Tuple[int, int],
+                       end: Tuple[int, int],
+                       max_error: int = ZONE_ARC_MAX_ERROR_NM) -> List[Tuple[int, int]]:
+    """The polyline pcbnew holds for a three-point arc, in integer nm:
+    SHAPE_ARC(start, mid, end, 0).ConvertToPolyline(max_error), KiCad 10.0.0.
+
+    The start and end points are exact; between them each vertex sits at the
+    middle of its angular step, on a radius pushed out by half the effective
+    error so the chords straddle the arc."""
+    start, mid, end = tuple(start), tuple(mid), tuple(end)
+    c = _ki_arc_center(start, mid, end)
+    dx, dy = float(start[0] - c[0]), float(start[1] - c[1])
+    r = math.sqrt(dx * dx + dy * dy)
+    sa = _ki_normalize_deg(_ki_angle_deg(dx, dy))
+    if start == end:
+        ca = 360.0
+    else:
+        ca = (_ki_angle_deg(float(end[0] - c[0]), float(end[1] - c[1]))
+              - _ki_angle_deg(dx, dy))
+        v1 = (end[0] - mid[0], end[1] - mid[1])
+        v2 = (start[0] - mid[0], start[1] - mid[1])
+        if v1[0] * v2[1] - v1[1] * v2[0] > 0:        # IsCCW
+            if ca < 0.0:
+                ca += 360.0
+        elif ca > 0.0:
+            ca -= 360.0
+    half = max(1.0, max_error / 2.0)
+    if r < half or _ki_seg_distance(start, end, mid) < half:
+        n = 0
+        eff = r
+    else:
+        # The radius is passed as an int. Past 2^31 nm (a 2.1 m radius, an
+        # arc indistinguishable from its chord) that conversion is undefined
+        # in C++; arm64 saturates it, which is what this does.
+        ir = min(int(r), _KI_INT_MAX)
+        n = _ki_arc_to_segment_count(ir, max_error, ca)
+        seg360 = int(n * 360.0 / abs(ca))
+        eff = float(_ki_circle_to_end_segment_delta_radius(ir, seg360))
+    r += eff / 2
+    n *= 2
+    pts = [start]
+    for i in range(1, n, 2):
+        a = sa + (ca * i) / n
+        p = (_kiround(c[0] + r * _ki_cos(a)), _kiround(c[1] + r * _ki_sin(a)))
+        if p != pts[-1]:
+            pts.append(p)
+    if end != pts[-1]:
+        pts.append(end)
+    return pts
+
+
+_OUTLINE_VERTEX_RE = re.compile(r'\((xy|arc)(?=[\s(])')
+_OUTLINE_XY_RE = re.compile(r'\(xy\s+([-+\d.eE]+)\s+([-+\d.eE]+)\s*\)')
+_OUTLINE_ARC_PT_RE = re.compile(r'\((start|mid|end)\s+([-+\d.eE]+)\s+([-+\d.eE]+)\s*\)')
+
+
+class _KicadOutlineChain:
+    """The part of SHAPE_LINE_CHAIN (KiCad 10.0.0) a zone outline goes
+    through on load: Append(VECTOR2I), Append(SHAPE_ARC) and SetClosed(true).
+    Each point carries KiCad's pair of arc indices (first, second; -1 = none),
+    because closing an outline can ROTATE it: mergeFirstLastPointIfNeeded
+    drops a last point repeating the first and fixIndicesRotation then turns
+    the chain until it starts on a plain point or at an arc's start."""
+
+    def __init__(self):
+        self.keys = []        # (x_nm, y_nm)
+        self.mm = []          # (x_mm, y_mm) as the file spells an xy point
+        self.shapes = []      # [first, second] arc index per point
+        self.arcs = []        # (start_nm, end_nm) of each arc kept as an arc
+
+    def _shared(self, i):
+        return self.shapes[i][0] != -1 and self.shapes[i][1] != -1
+
+    def _arc_index(self, i):
+        return self.shapes[i][1] if self._shared(i) else self.shapes[i][0]
+
+    def append_xy(self, key, mm):
+        if not self.keys or self.keys[-1] != key:
+            self.keys.append(key)
+            self.mm.append(mm)
+            self.shapes.append([-1, -1])
+
+    def append_arc(self, start, mid, end):
+        chain = kicad_arc_polyline(start, mid, end)
+        idx = -1
+        if len(chain) > 2:
+            idx = len(self.arcs)
+            self.arcs.append((tuple(start), tuple(end)))
+        if not self.keys or chain[0] != self.keys[-1]:
+            self.keys.append(chain[0])
+            self.mm.append((chain[0][0] / 1e6, chain[0][1] / 1e6))
+            self.shapes.append([idx, -1])
+        elif idx != -1 and len(chain) > 1:
+            # the arc's first segment hangs off the point already held
+            if self.shapes[-1] == [-1, -1]:
+                self.shapes[-1][0] = idx
+            else:
+                self.shapes[-1][1] = idx
+        for p in chain[1:]:
+            self.keys.append(p)
+            self.mm.append((p[0] / 1e6, p[1] / 1e6))
+            self.shapes.append([idx, -1])
+        # mergeFirstLastPointIfNeeded, open branch
+        if len(self.keys) > 1 and self._shared(0):
+            self.keys.append(self.keys[0])
+            self.mm.append(self.mm[0])
+            self.shapes.append([self.shapes[0][0], -1])
+            self.shapes[0] = [self.shapes[0][1], -1]
+
+    def _is_arc_segment(self, i):
+        nxt = i + 1
+        if nxt > len(self.shapes) - 1:
+            if nxt == len(self.shapes) and self._shared(0):    # closed
+                nxt = 0
+            else:
+                return False
+        return self.shapes[i] != [-1, -1] and self._arc_index(i) == self.shapes[nxt][0]
+
+    def _is_arc_start(self, i):
+        if not self._is_arc_segment(i):
+            return False
+        if self._shared(i):
+            return True
+        return self.arcs[self._arc_index(i)][0] == self.keys[i]
+
+    def close(self):
+        """SetClosed(true) -> mergeFirstLastPointIfNeeded, closed branch."""
+        if len(self.keys) > 1 and self.keys[0] == self.keys[-1]:
+            last = self._arc_index(len(self.keys) - 1)
+            if last != -1:
+                self.shapes[0] = [last, self.shapes[0][0]]
+            self.keys.pop()
+            self.mm.pop()
+            self.shapes.pop()
+            # fixIndicesRotation
+            if len(self.shapes) <= 1:
+                return
+            rotations = 0
+            while self._arc_index(0) != -1 and not self._is_arc_start(0):
+                for lst in (self.keys, self.mm, self.shapes):
+                    lst.insert(0, lst.pop())
+                if rotations > len(self.shapes):
+                    return
+                rotations += 1
+
+
+def zone_outline_points(pts_text: str) -> List[Tuple[float, float]]:
+    """The vertices of one zone / rule-area ``(pts ...)`` as pcbnew loads it
+    (mm): each ``(xy X Y)`` as written, each ``(arc (start) (mid) (end))``
+    replaced by `kicad_arc_polyline` (vertices on the nm grid), a point
+    equal on the nm grid to the one before it dropped, the way
+    SHAPE_LINE_CHAIN::Append skips it, and a last point repeating the first
+    dropped once: parseZONE closes the outline (SetClosed(true) ->
+    mergeFirstLastPointIfNeeded) in every file format. KiCad never writes
+    one, but a KiCad 5-converted board does on every zone, and an outline
+    can end on its own start through an arc -- after which pcbnew turns the
+    chain to start on a plain point or an arc's start (`_KicadOutlineChain`)."""
+    chain = _KicadOutlineChain()
+    pos = 0
+    while True:
+        m = _OUTLINE_VERTEX_RE.search(pts_text, pos)
+        if not m:
+            break
+        if m.group(1) == 'xy':
+            xm = _OUTLINE_XY_RE.match(pts_text, m.start())
+            pos = m.end()
+            if not xm:
+                continue
+            chain.append_xy((_board_iu(xm.group(1)), _board_iu(xm.group(2))),
+                            (float(xm.group(1)), float(xm.group(2))))
+            pos = xm.end()
+            continue
+        end = find_matching_paren(pts_text, m.start())
+        body = pts_text[m.start():end]
+        pos = end
+        got = {k: (_board_iu(x), _board_iu(y))
+               for k, x, y in _OUTLINE_ARC_PT_RE.findall(body)}
+        if len(got) != 3:
+            continue          # pcbnew refuses the file; nothing to mirror
+        chain.append_arc(got['start'], got['mid'], got['end'])
+    chain.close()
+    return chain.mm
+
+
 def extract_zones(content: str, name_to_id: Dict[str, int] = None) -> List[Zone]:
     """Extract all filled zones from PCB file.
 
@@ -5967,35 +6387,17 @@ def extract_zones(content: str, name_to_id: Dict[str, int] = None) -> List[Zone]
                     break
 
         pts_content = zone_content[pts_start:pts_end + 1]
-        # Parse all (xy x y) points
-        xy_pattern = r'\(xy\s+([\d.-]+)\s+([\d.-]+)\)'
-        polygon = [(float(m.group(1)), float(m.group(2)))
-                   for m in re.finditer(xy_pattern, pts_content)]
-
-        # Drop CONSECUTIVE coincident vertices: pcbnew never sees them --
-        # SHAPE_LINE_CHAIN::Append (aAllowDuplication=false, integer-nm
-        # compare) silently skips a point equal to the previously appended
-        # one on load, so an outline written with a redundant duplicate
-        # vertex (route_planes rewrites can emit these) loads with fewer
-        # points than the file text and parser-parity flags a phantom
-        # vertex-count mismatch. Mirror pcbnew exactly: consecutive-only,
-        # on the nm grid; collinear runs are KEPT.
-        deduped = []
-        prev_key = None
-        for pt in polygon:
-            key = (round(pt[0] * 1e6), round(pt[1] * 1e6))
-            if key != prev_key:
-                deduped.append(pt)
-                prev_key = key
-        # A last vertex repeating the first is DROPPED, once:
-        # parseZONE closes the outline (SHAPE_LINE_CHAIN::SetClosed(true) ->
-        # mergeFirstLastPointIfNeeded) in every file format, KiCad 9 and 10.
-        # KiCad never writes one, but a KiCad 5-converted file does on every
-        # zone (kangyuzhe zynq7020_ad9364, format 20201116: all 76 outlines).
-        if len(deduped) > 1 and \
-                (round(deduped[0][0] * 1e6), round(deduped[0][1] * 1e6)) == prev_key:
-            deduped.pop()
-        polygon = deduped
+        # The outline as pcbnew loads it (`zone_outline_points`): an
+        # `(arc ...)` vertex becomes KiCad's own polyline -- reading only
+        # `(xy ...)` dropped an all-arc outline's zone outright (key_ripper's
+        # F&B.Cu GND pour) and cut the arcs out of a mixed one -- and a
+        # CONSECUTIVE coincident vertex is dropped, as
+        # SHAPE_LINE_CHAIN::Append (integer-nm compare) skips it on load
+        # (route_planes rewrites can emit these; parser parity used to flag a
+        # phantom vertex-count mismatch), and so is a last vertex repeating
+        # the first (pcbnew closes the outline as it parses it; a KiCad
+        # 5-converted board writes one on every zone). Collinear runs are KEPT.
+        polygon = zone_outline_points(pts_content)
 
         if not polygon:
             continue
@@ -6081,8 +6483,10 @@ def extract_keepouts(content: str) -> List[dict]:
                     if pc == 0:
                         p_end = i
                         break
-            pts = [(float(a), float(b)) for a, b in
-                   re.findall(r'\(xy\s+([\d.-]+)\s+([\d.-]+)\)', zc[p_start:p_end + 1])]
+            # As pcbnew loads it, `(arc ...)` vertices included: a rule area
+            # drawn with rounded corners kept only its straight runs, and an
+            # all-arc one (a round keep-out) was dropped.
+            pts = zone_outline_points(zc[p_start:p_end + 1])
             if len(pts) >= 3:
                 polys.append(pts)
             search = p_end + 1
@@ -8671,16 +9075,21 @@ def compare_pcb_data(from_board: 'PCBData', from_file: 'PCBData', tolerance: flo
     if len(from_board.zones) != len(from_file.zones):
         diffs.append(f"Zone count: board={len(from_board.zones)} file={len(from_file.zones)}")
 
+    # The outline itself, on pcbnew's nm grid: both fronts hold the vertices
+    # pcbnew loads (an `(arc ...)` vertex is KiCad's own polyline on both,
+    # `zone_outline_points`), so they agree to the nanometre or not at all.
     def _zone_sig(z):
         mode = getattr(z, 'island_removal_mode', 0)
         return (bool(getattr(z, 'teardrop', False)), len(z.polygon),
                 getattr(z, 'priority', 0), mode,
-                round(getattr(z, 'island_area_min', 0.0), 3) if mode == 2 else None)
+                round(getattr(z, 'island_area_min', 0.0), 3) if mode == 2 else None,
+                tuple((_kiround(x * 1e6), _kiround(y * 1e6)) for x, y in z.polygon))
 
     def _zone_fmt(s):
+        import zlib
         return (f"[{'teardrop' if s[0] else 'pour'} vertices={s[1]} priority={s[2]} "
                 f"island_mode={s[3]}" + (f" island_area_min={s[4]}" if s[3] == 2 else '')
-                + ']')
+                + f" outline=#{zlib.crc32(repr(s[5]).encode()):08x}]")
 
     from collections import Counter as _Counter
     _zb, _zf = {}, {}
