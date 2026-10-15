@@ -206,6 +206,7 @@ declares Type VII (#962, see the writer docs).
 | `layer` | str | `'F.Cu'` or `'B.Cu'` |
 | `pads` | List[Pad] | The footprint's pads |
 | `value` | str | Component value (`'100nF'`, `'MCF5213'`) |
+| `locked` | bool | KiCad `(locked yes)` on the footprint (also `(locked)` and KiCad 6's bare `locked` word): placement never moves it. Both parse paths set it (pcbnew: `FOOTPRINT.IsLocked()`) and `compare_pcb_data` diffs it, because the GUI's placement Apply sets every live lock from the text parse of the result board (#1054) |
 | `clearance` | float | Footprint-level `(clearance …)` override in mm (0 = none). Already **resolved into** each pad's `local_clearance` at parse time — read that field for clearance decisions; this records the raw footprint value (issue #326). |
 | `uuid` | str | The footprint's own `(uuid …)` (KiCad 6: `(tstamp …)`); KiCad's `(group …)` blocks list members by it (#459) |
 | `sheet_path` | str | The schematic `(path "/<sheet uuid>/…/<symbol uuid>")`. The LAST uuid is the symbol, the rest the sheet instance; two instances of one hierarchical sheet carry the SAME symbol uuid under different prefixes, which `place_pose replicate` maps parts by (#1211). A single-uuid path is top level |
@@ -540,8 +541,8 @@ Compares two parses (e.g. live-board vs file) and returns human-readable
 difference strings; empty list means they match. Useful to validate
 `build_pcb_data_from_board` against `parse_kicad_pcb` (this is what the GUI's
 **Validate PCB Data** button runs). Coverage spans the fields the router
-actually consumes: board info (layers, bounds, stackup), nets, footprint and
-per-pad geometry (position, size, `rect_rotation`, `roundrect_rratio`,
+actually consumes: board info (layers, bounds, stackup), nets, footprint locks,
+footprint and per-pad geometry (position, size, `rect_rotation`, `roundrect_rratio`,
 `local_clearance`, drill, layers), track and via geometry (matched as a
 multiset, not just counts), zones, board outline/cutouts, keepout zones, and
 guide paths.

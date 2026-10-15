@@ -8432,6 +8432,11 @@ def compare_pcb_data(from_board: 'PCBData', from_file: 'PCBData', tolerance: flo
             diffs.append(f"Footprint {ref} position: board=({bf.x:.3f},{bf.y:.3f}) file=({ff.x:.3f},{ff.y:.3f})")
         if not close(bf.rotation % 360, ff.rotation % 360):
             diffs.append(f"Footprint {ref} rotation: board={bf.rotation:.1f} file={ff.rotation:.1f}")
+        # #1054: the GUI's placement Apply sets each live lock from the TEXT
+        # parse of the result board, and every placement step decides what it
+        # may move from this field -- so the two paths must agree on it.
+        if bool(getattr(bf, 'locked', False)) != bool(getattr(ff, 'locked', False)):
+            diffs.append(f"Footprint {ref} locked: board={bf.locked} file={ff.locked}")
         # Footprint-level clearance override (#326): a divergence here shifts
         # EVERY inheriting pad's resolved local_clearance between the two paths.
         bfc = getattr(bf, 'clearance', 0.0); ffc = getattr(ff, 'clearance', 0.0)

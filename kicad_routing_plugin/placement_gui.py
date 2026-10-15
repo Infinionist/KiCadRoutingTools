@@ -965,13 +965,25 @@ class PlacementTab(wx.Panel):
             return
 
         moves = self._pose_moves(board, result_pcb, pcbnew)
+        locks = self._lock_changes(board, result_pcb)
         with_copper = self._mode == "place_route"
+
+        def _refs(refs):
+            return ", ".join(refs[:30]) + (", ..." if len(refs) > 30 else "")
         lines = [f"{len(moves)} footprint(s) will move."]
         if moves:
-            refs = ", ".join(r for r, _fp, _p in moves[:30])
-            if len(moves) > 30:
-                refs += ", ..."
-            lines.append(refs)
+            lines.append(_refs([r for r, _fp, _p in moves]))
+        # #1054: the run's locks are part of its result (the seeder stamps its
+        # seated fixed_poses, `place_pose lock/unlock` stamps and strips), so
+        # Apply mirrors them -- and NAMES them first, an unlock above all.
+        to_lock = [r for r, _fp, want in locks if want]
+        to_unlock = [r for r, _fp, want in locks if not want]
+        if to_lock:
+            lines.append(f"{len(to_lock)} footprint(s) will be LOCKED, as the "
+                         f"result board has them: {_refs(to_lock)}")
+        if to_unlock:
+            lines.append(f"{len(to_unlock)} footprint(s) will be UNLOCKED, as "
+                         f"the result board has them: {_refs(to_unlock)}")
         # #829: say what was NOT applied. A skip the dialog does not mention is
         # a live board that silently disagrees with the result board.
         _skipped = getattr(self, '_outline_skipped', None)
@@ -996,6 +1008,8 @@ class PlacementTab(wx.Panel):
 
         for _ref, fp, parsed in moves:
             self._apply_pose(fp, parsed, pcbnew)
+        for _ref, fp, want in locks:
+            fp.SetLocked(want)
         tracks_added = vias_added = 0
         if with_copper:
             tracks_added, vias_added = self._apply_copper(board, result_pcb, pcbnew)
@@ -1016,6 +1030,9 @@ class PlacementTab(wx.Panel):
                 f"{live_zones} - new zones are NOT imported by Apply; open "
                 "the result board file to get them.\n")
         msg = f"Applied: {len(moves)} footprint pose(s)"
+        if locks:
+            msg += (f", {len(to_lock)} lock(s) set and {len(to_unlock)} "
+                    f"cleared")
         if with_copper:
             msg += f", {tracks_added} track(s), {vias_added} via(s) (replaced)"
         msg += ". Use Edit -> Undo in pcbnew to revert."
@@ -1083,6 +1100,35 @@ class PlacementTab(wx.Panel):
                   "board, so their poses were not applied: %s"
                   % (len(unreachable), ', '.join(sorted(unreachable)[:12])))
         return moves
+
+    def _lock_changes(self, board, result_pcb):
+        """[(ref, live_fp, want_locked)] for every footprint whose KiCad lock
+        differs from the result board's (#1054).
+
+        A SEPARATE pass from `_pose_moves`, because a lock is not a pose: the
+        seeder stamps `(locked yes)` on a fixed_pose it seats, and one already
+        at its seat changes its lock and nothing else, so a pose diff never
+        sees it. The result board is mirrored in BOTH directions. Placement
+        unlocks on purpose -- `place_pose unlock` is the only way to move a
+        KiCad-locked part, and make_unplaced strips each moved part's lock --
+        so keeping the live lock would ship a part locked at a pose nobody
+        locked it at. The caller names every change before applying any.
+
+        An outline owner (#829) is included: `_pose_moves` skips it because
+        moving it would resize the board, and a lock moves nothing. A part
+        missing from the live board was already reported by `_pose_moves`.
+        """
+        from .gui_utils import live_footprints_by_key
+        live = live_footprints_by_key(board)
+        changes = []
+        for ref, parsed in sorted(result_pcb.footprints.items()):
+            fp = live.get(ref) or board.FindFootprintByReference(ref)
+            if fp is None:
+                continue
+            want = bool(getattr(parsed, 'locked', False))
+            if bool(fp.IsLocked()) != want:
+                changes.append((ref, fp, want))
+        return changes
 
     def _apply_pose(self, fp, parsed, pcbnew):
         from kicad_parser import mm_to_iu
