@@ -364,8 +364,15 @@ def main():
                                       on_status=lambda i, s: None,
                                       on_finished=lambda n, r: done.append(r))
             ex.POLL_MS = 10
+            def _probe_step(action):
+                seen.append(_probes(dlg))
+                # Report a produced result, as each tab's apply does: a step
+                # that marks none stops the plan (ai_plan._step_refusal).
+                owner = ex._action_owner(action)
+                if owner is not None:
+                    gui_utils.mark_plan_step_produced(owner)
             ex._action_parts = lambda action: (
-                lambda: seen.append(_probes(dlg)), lambda: False)
+                lambda: _probe_step(action), lambda: False)
             ex.start()
             run_until(lambda: bool(done), 120)
             qfn_runs = _qfn_engine_layers(dlg, run_until)
