@@ -199,6 +199,14 @@ KNOWN_CLI_ONLY = {
     'write_filled_board': 'route.py --write-fill: fills the WRITTEN board for '
                           'delivery; the GUI mutates a live board KiCad fills '
                           'itself, so there is no file to fill',
+    # Report-only grade of the plane nets on repair_planes' WRITTEN board,
+    # after its oracle reconnect -> JSON_SUMMARY status/failed_multipoint/
+    # unconnected_pads. No GUI front runs repair_planes' main (the planes tab
+    # lost repair in #562); the GUI's repair is the route step's in-run
+    # finalize, whose #1069 re-grade reports the same on both fronts.
+    'grade_plane_completion': 'repair_planes.py: grades the plane nets on the '
+                              'written board for JSON_SUMMARY (report-only, '
+                              'no board mutation)',
 }
 
 

@@ -643,6 +643,14 @@ grades the board at it. Obstacle maps for each retry are built on a small window
 around the pad, so fine grids stay cheap on large boards. Per-pad outcomes are printed, and pads that still fail are listed in
 the summary. Use `--no-repair-pads` to only reconnect zone islands.
 
+The standalone script then grades the plane nets on the board it wrote (after
+the KiCad-oracle reconnect, with the same fill-aware grade as route.py's final
+re-grade), and its `JSON_SUMMARY` says what is left: `status:
+"incomplete-pads"`, route.py's `failed_multipoint` / `multipoint_pads_total` /
+`multipoint_pads_connected`, and `unconnected_pads` (`"REF.PAD (NET)"`). A
+shortfall still exits 0, as on `route.py`; exit 4 means rip casualties ship
+open.
+
 **`route_planes.py` taps nothing** (#562, see the note at the top),
 so it is the ROUTE step's in-run plane finalize that runs this repair —
 including the fine-parameter retry (#104) — at the route step's own
