@@ -19,6 +19,15 @@ _COLLAPSE_DEBUG = os.environ.get('KICAD_COLLAPSE_DEBUG')
 _PRUNE_CONN_VERIFY = os.environ.get('PRUNE_CONN_VERIFY')
 
 
+def _locked(item) -> bool:
+    """KiCad `(locked yes)` copper (#521). Every subtractive or rewriting
+    cleanup pass treats it exactly as it treats input copper under
+    keep_input_copper -- it anchors the models but is never removed, split,
+    moved or re-bent -- whether or not keep_input_copper is set (#1261).
+    This run never creates locked copper, so a locked item is input copper."""
+    return bool(getattr(item, 'locked', False))
+
+
 def _point_anchored(x: float, y: float, layer: str, via_pts, pad_pts,
                     seg_index, cell: float, ignore_seg, tol: float) -> bool:
     """A segment endpoint is anchored if it lands on a same-net via (vias span
@@ -1871,6 +1880,10 @@ def sweep_dead_ends(results, pcb_data: PCBData, scope_net_ids=None,
             # connectivity in the pruner) instead of offering it as a candidate.
             anchor = [s for s in net_segs if id(s) not in routed_seg_ids]
             net_segs = [s for s in net_segs if id(s) in routed_seg_ids]
+        if any(_locked(s) for s in net_segs):
+            # KiCad-locked copper anchors the same way, always (#1261).
+            anchor = anchor + [s for s in net_segs if _locked(s)]
+            net_segs = [s for s in net_segs if not _locked(s)]
         if _protected:
             # #672: the exemption keeps every landing site; a sub-cell
             # sliver is not one. Everything else on this net stays.
@@ -3153,6 +3166,11 @@ def remove_orphan_islands(results, pcb_data: PCBData, scope_net_ids=None,
                        and uf.find(via_reprs[j]) == root]
             if net_graphics and _touches_graphic(segs, _cv_gfx):
                 continue  # copper abutting input art (#337): physically joined
+            if any(_locked(s) for s in segs) or any(
+                    _locked(v) and via_reprs.get(j) is not None
+                    and uf.find(via_reprs[j]) == root
+                    for j, v in enumerate(net_vias)):
+                continue  # island holds KiCad-locked copper (#1261): keep it whole
             if keep_input_copper and (
                     any(id(s) not in seg_owner for s in segs)
                     or any(via_reprs.get(j) is not None
@@ -3246,6 +3264,7 @@ def trim_dangles_past_body_anchor(results, pcb_data: PCBData, scope_net_ids=None
         # input segments are read-only too: they anchor (all_net_segs feeds
         # every model) but are never split-trimmed.
         net_segs = [s for s in all_net_segs if not getattr(s, 'graphic', False)
+                    and not _locked(s)   # #1261
                     and not (keep_input_copper and id(s) not in routed_seg_ids)]
         if not net_segs:
             continue
@@ -3758,8 +3777,10 @@ def prune_redundant_cycles(results, pcb_data: PCBData, scope_net_ids=None,
             continue
         net_pads = pcb_data.pads_by_net.get(net_id, [])
         net_vias = vias_by_net.get(net_id, [])
-        _protected = ({id(s) for s in net_segs if id(s) not in routed_seg_ids}
-                      if keep_input_copper else None)
+        _protected = ({id(s) for s in net_segs
+                       if _locked(s)   # #1261: locked copper never pruned
+                       or (keep_input_copper and id(s) not in routed_seg_ids)}
+                      or None)
         kept, removed = _prune_net_cycles(net_id, net_segs, net_vias,
                                           net_pads, fgrid, _FCELL, fmax_rad, clearance,
                                           protected_ids=_protected)
@@ -4360,6 +4381,7 @@ def prune_grazing_segments(results, pcb_data: PCBData, scope_net_ids=None,
     for net_id, net_segs in segs_by_net.items():
         grazing = [s for s in net_segs
                    if (not keep_input_copper or id(s) in routed_seg_ids)
+                   and not _locked(s)   # #1261
                    and grazes(s)]
         if not grazing:
             continue
@@ -4769,6 +4791,7 @@ def nudge_grazing_octolinear(results, pcb_data: PCBData, scope_net_ids=None,
     for net_id, net_segs in segs_by_net.items():
         grazing = [s for s in net_segs
                    if (not keep_input_copper or id(s) in routed_seg_result)
+                   and not _locked(s)   # #1261
                    and grazes(s)]
         if not grazing:
             continue
@@ -6443,6 +6466,7 @@ def nudge_grazing_microshift(results, pcb_data: PCBData, scope_net_ids=None,
             grazing = [s for s in net_segs
                        if (not keep_input_copper or id(s) in routed_seg_result
                            or id(s) in added_ids)
+                       and not _locked(s)   # #1261
                        and grazes(s)]
             offenders = [(s, _seg_worst_offender(pcb_data, net_id, s, eff_clr(net_id),
                                                  net_clearances=net_clearances,
@@ -6472,11 +6496,12 @@ def nudge_grazing_microshift(results, pcb_data: PCBData, scope_net_ids=None,
                                 or vk(g.end_x, g.end_y) == vk(px, py)]
                     if any(g.layer != s.layer for g in incident):
                         return  # cross-layer joint without a recorded via: leave it
-                    if keep_input_copper and any(
+                    if any(_locked(g) for g in incident) or (keep_input_copper and any(
                             id(g) not in routed_seg_result and id(g) not in added_ids
-                            for g in incident):
+                            for g in incident)):
                         return  # a vertex move rewrites every incident segment;
-                                # read-only input copper pins this joint in place
+                                # read-only input copper (and KiCad-locked
+                                # copper, #1261) pins this joint in place
                     for m in (1.0, 1.8, 3.0):
                         d = (shortfall + MARGIN) * m
                         if d > max_shift:
@@ -7720,7 +7745,8 @@ def remove_route_from_pcb_data(pcb_data: PCBData, result: dict,
             kept_rev = []
             for seg in reversed(kept):
                 sig = _seg_rip_sig(seg)
-                if want.get(sig, 0) > 0:
+                # a look-alike never stands in for KiCad-locked copper (#1261)
+                if want.get(sig, 0) > 0 and not _locked(seg):
                     want[sig] -= 1
                 else:
                     kept_rev.append(seg)
@@ -7745,7 +7771,7 @@ def remove_route_from_pcb_data(pcb_data: PCBData, result: dict,
             kept_rev = []
             for via in reversed(kept_vias):
                 sig = _via_rip_sig(via)
-                if want_v.get(sig, 0) > 0:
+                if want_v.get(sig, 0) > 0 and not _locked(via):
                     want_v[sig] -= 1
                 else:
                     kept_rev.append(via)

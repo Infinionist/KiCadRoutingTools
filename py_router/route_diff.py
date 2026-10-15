@@ -815,11 +815,24 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     # FPGA generic I/O, polarity-tolerant protocol - so deny by default);
     # '*' restores swap-everything.
     if polarity_swap_nets:
+        # A swap relabels the pair's pads and stub copper at one end, so a
+        # pair with KiCad-locked copper never swaps (#521: no override, #1261).
+        from protected_nets import locked_net_names
+        _locked_names = locked_net_names(pcb_data)
+        _locked_pairs = []
         for pair in diff_pairs.values():
             pair.polarity_swap_allowed = any(
                 matches_diff_pair_patterns(nname, pair.base_name,
                                            polarity_swap_nets)
                 for nname in (pair.p_net_name, pair.n_net_name) if nname)
+            if pair.polarity_swap_allowed and (
+                    pair.p_net_name in _locked_names
+                    or pair.n_net_name in _locked_names):
+                pair.polarity_swap_allowed = False
+                _locked_pairs.append(pair.base_name)
+        if _locked_pairs:
+            print(f"  {len(_locked_pairs)} pair(s) with KiCad-locked copper "
+                  f"denied a polarity swap: {', '.join(sorted(_locked_pairs)[:6])}")
         n_allowed = sum(p.polarity_swap_allowed for p in diff_pairs.values())
         print(f"  Polarity swaps allowed for {n_allowed}/{len(diff_pairs)} "
               f"pair(s) (--polarity-swap-nets)")
@@ -967,6 +980,19 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         pairs_being_routed = {name for name, pair in diff_pair_ids_to_route_set}
         swappable_pairs = [(name, pair) for name, pair in swappable_diff_pairs.items()
                           if name in pairs_being_routed]
+        # A target swap relabels the copper at the swapped targets: a pair
+        # with KiCad-locked copper never takes part (#521, #1261).
+        from protected_nets import locked_net_names
+        _locked_names = locked_net_names(pcb_data)
+        _locked_swap = sorted(name for name, pair in swappable_pairs
+                              if pair.p_net_name in _locked_names
+                              or pair.n_net_name in _locked_names)
+        if _locked_swap:
+            print(f"  {len(_locked_swap)} pair(s) with KiCad-locked copper "
+                  f"excluded from --swappable-nets: {', '.join(_locked_swap[:6])}")
+            _ls = set(_locked_swap)
+            swappable_pairs = [(name, pair) for name, pair in swappable_pairs
+                               if name not in _ls]
 
         if len(swappable_pairs) >= 2:
             # Generate debug labels if requested (before swaps, so we see original positions)

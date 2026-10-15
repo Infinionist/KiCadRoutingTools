@@ -739,7 +739,8 @@ def unreported_input_strips(orig_seg_by_net, orig_via_by_net, scope_net_ids,
     NEITHER GRAPHIC NOR LOCKED COPPER IS EVER A CANDIDATE. Graphic is the
     asymmetry that motivated this function (below). LOCKED copper is the same
     class for the same reason: KiCad's `(locked yes)` is user-pinned, every
-    prune site refuses it (`pcb_modification` 1645/2056/2072/2080/5156) and
+    prune, trim, re-bend and shift site refuses it (`pcb_modification._locked`,
+    #1261) and
     #521 makes its net never-rippable with no override -- so a locked original
     missing from the model is not something this pass may finish by deleting
     the user's copper from the output.

@@ -150,6 +150,17 @@ the routing pipeline applies both so the model and the output file agree.
 > (`route._late_dangling_via_sweep1166`, both fronts, input copper included
 > unless `--keep-input-copper`), and on the "nothing to route" return too.
 
+> **#1261 -- KiCad-locked copper is read-only to every cleanup pass.** A
+> `(locked yes)` segment or via (`pcb_modification._locked`) is treated by
+> `sweep_dead_ends`, `remove_orphan_islands`, `prune_redundant_cycles`,
+> `trim_dangles_past_body_anchor`, `prune_grazing_segments`,
+> `nudge_grazing_octolinear` and `nudge_grazing_microshift` exactly as
+> `keep_input_copper` treats input copper -- it anchors their models but is
+> never removed, split, re-bent or moved -- whether or not that flag is set.
+> An island holding locked copper is kept whole, a micro-shift never moves a
+> vertex a locked segment touches, and the #284 stale-input strip and
+> `remove_route_from_pcb_data`'s signature fallback never take a locked item.
+
 > **#1227 -- a dead-end prune never splits copper.** Every gated dead-end pass
 > (`add_route_to_pcb_data`'s per-commit prune, `sweep_dead_ends`,
 > `trim_net_stub_debris`, `cleanup_plane_taps_grazing`) removes through

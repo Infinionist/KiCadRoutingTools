@@ -139,6 +139,10 @@ def _compute_stale_input_copper(orig_by_net, scope_ids, final_copper,
 
     ``full_sig`` distinguishes a superseded item from a kept one; ``pos_sig`` is
     the coarser locus a replacement lands on (via drill hole / segment span).
+
+    A KiCad-LOCKED original is never stale (#1261): the position signatures
+    ignore width, drill and size, so a re-emitted twin would have replaced the
+    pinned item with an unlocked copy that can differ in exactly those.
     """
     final = {}
     if final_ids is None:
@@ -152,6 +156,8 @@ def _compute_stale_input_copper(orig_by_net, scope_ids, final_copper,
         nfinal = final.get(nid, ())
         nemit = emit.get(nid, ())
         for c in orig_by_net.get(nid, []):
+            if getattr(c, 'locked', False):
+                continue
             on_board = (id(c) in final_ids) if final_ids is not None \
                 else (full_sig(c) in nfinal)
             if not on_board or pos_sig(c) in nemit:
@@ -2264,12 +2270,24 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     if swappable_net_patterns:
         from target_swap import apply_single_ended_target_swaps, summarize_target_swaps
 
-        # Find matching single-ended nets
+        # Find matching single-ended nets. A target swap relabels the copper
+        # at the swapped targets to the other net, so a net with KiCad-locked
+        # copper never takes part (#521: no override, #1261).
         swappable_se_nets = find_single_ended_nets(
             pcb_data,
             swappable_net_patterns,
             exclude_net_ids=set()
         )
+        from protected_nets import locked_net_names
+        _locked_names = locked_net_names(pcb_data)
+        _locked_swap = sorted(n for n, _ in swappable_se_nets
+                              if n in _locked_names)
+        if _locked_swap:
+            print(f"  {len(_locked_swap)} KiCad-locked net(s) excluded from "
+                  f"--swappable-nets: {', '.join(_locked_swap[:6])}"
+                  f"{', ...' if len(_locked_swap) > 6 else ''}")
+            swappable_se_nets = [(n, i) for n, i in swappable_se_nets
+                                 if n not in _locked_names]
 
         if len(swappable_se_nets) >= 2:
             print(f"\nAnalyzing target swaps for {len(swappable_se_nets)} single-ended net(s)...")

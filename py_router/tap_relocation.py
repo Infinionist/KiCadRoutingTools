@@ -106,8 +106,11 @@ def find_relocation_candidate(pcb_data: PCBData, config: GridRouteConfig,
     for v in pcb_data.vias:
         if v.net_id not in plane_ids or id(v) in excl:
             continue
+        if getattr(v, 'locked', False):
+            continue    # KiCad-locked copper never moves (#521, #1261)
         d = math.hypot(v.x - ex, v.y - ey)
-        if d < best_d:
+        if d < best_d and not any(getattr(s, 'locked', False)
+                                  for s in _attached_stub(pcb_data, v)):
             best, best_d = v, d
     return best
 
