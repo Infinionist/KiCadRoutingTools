@@ -255,8 +255,11 @@ def _seeder_forecast(doc, pcb, board, sources):
     partial = st.seed_scope == SEED_STACKED
     if partial:
         standing |= set(pcb.footprints) - set(st.stacked_suspect_refs)
+    # #1105: stage 3.5 is on by default for a pile input, so the forecast
+    # reads the same verdict place_seed will hold.
     out = seeder.decap_pin_forecast(pcb, intent, blocks,
-                                    standing=sorted(standing))
+                                    standing=sorted(standing),
+                                    assessment=st)
     out['standing'] = sorted(standing)
     # `--force` re-seeds every unlocked part, so the parts a partial pile
     # leaves standing are only standing without it (file locks survive it).
@@ -269,6 +272,19 @@ def _seeder_forecast(doc, pcb, board, sources):
 DECLARE_OWNERS_HOW = ('a fixed_poses[] entry, a must_lock pattern or a '
                       'zoned block')
 
+#: #1105: the line's note when the pile default arms stage 3.5.
+LATE_ON_A_PILE = ('stage 3.5 is on by default because this board is a pile, '
+                  'undoing a seat that lands past the decap limit; place_seed '
+                  '--no-decap-claim-after-ics turns it off')
+
+#: #1105: what the flag runs, and where stage 3.5 is on without being asked
+#: -- said wherever the emitter tells a reader of a board that is NOT a pile
+#: to pass the flag.
+LATE_DEFAULT_SCOPE = ('keeping every seat it finds; the stage is on by '
+                      'default, undoing a seat past the decap limit, only '
+                      'when the input board is a pile -- the corpus A/B '
+                      'rejected it on placed boards')
+
 
 def _forecast_clause(cen):
     """#1105: the tail of the emitter's decap line -- what place_seed's pin
@@ -276,9 +292,11 @@ def _forecast_clause(cen):
 
     It promises only what the stage can do on the board it was emitted
     from. The pin stage serves the supply pins of owner ICs seated BEFORE
-    it, so on a pile, where no owner is placed, locked or declared, it
-    claims nothing (run 38's StickHub pile: "will seat 38", then claimed 0
-    on every seed) -- and the line says that, with how to declare the
+    it, so where no owner is placed, locked or declared it claims nothing
+    (run 38's StickHub pile: "will seat 38", then claimed 0 on every seed).
+    On a pile stage 3.5 is on by default and claims them once the centroid
+    stage has seated their owners, and the line says so and how to turn it
+    off; elsewhere it says the stage claims no cap and how to declare the
     owners. With no forecast it states the scope as a scope, never as a
     count of seats."""
     f = cen.get('seeder_forecast') or {}
@@ -309,8 +327,7 @@ def _forecast_clause(cen):
                  f"instead. To claim them, declare the owners -- "
                  f"{DECLARE_OWNERS_HOW} -- so they are seated first; "
                  f"place_seed --decap-claim-after-ics claims after the "
-                 f"centroid stage instead (opt-in -- the corpus A/B rejected "
-                 f"it as a default)")
+                 f"centroid stage instead ({LATE_DEFAULT_SCOPE})")
         if f.get('ownerless'):
             out += (f"; {len(f['ownerless'])} can never be claimed -- no "
                     f"{f.get('owner_rule', 'U-prefixed cap owner')} carries "
@@ -336,7 +353,9 @@ def _forecast_clause(cen):
                      f"seated their owner IC(s) "
                      f"({_refs(f.get('late_owners') or ())})"
                      + ('' if early else ' -- no owner IC is seated before '
-                        'stage 2.5 on this board'))
+                        'stage 2.5 on this board')
+                     + (f" ({LATE_ON_A_PILE})"
+                        if f.get('late_armed_by') == 'pile' else ''))
     out = head + (': ' + ', '.join(parts) if parts else '')
     if late and not armed:
         out += (f"; {len(late)} are NOT claimed: their owner IC(s) "
@@ -344,7 +363,7 @@ def _forecast_clause(cen):
                 f"the centroid stage, after the pin stage (declare them -- "
                 f"{DECLARE_OWNERS_HOW} -- to seat them first; "
                 f"place_seed --decap-claim-after-ics claims after them, "
-                f"opt-in -- the corpus A/B rejected it as a default)")
+                f"{LATE_DEFAULT_SCOPE})")
     if f.get('ownerless'):
         out += (f"; {len(f['ownerless'])} can never be claimed -- no "
                 f"{f.get('owner_rule', 'U-prefixed cap owner')} carries "

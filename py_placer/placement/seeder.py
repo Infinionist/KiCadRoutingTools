@@ -5466,24 +5466,70 @@ DIAGONAL_ROTATIONS_DEFAULT = False
 #: the owner ICs EARLY instead -- #1059's `seat_owners_first` (removed in
 #: f77b0acd) and the `--decap-owners-first` stage 2.5a PR #1110 proposed
 #: (e4317972, held out of the merge by a14f68f3) -- which moved the ICs and
-#: regressed on 4 of 4 A/B boards. Set by tests/test_placement_ab.py's `decap-after-ics-*` rows;
-#: `place_seed --decap-claim-after-ics` / `--no-decap-claim-after-ics`
-#: override it.
-DECAP_CLAIM_AFTER_ICS_DEFAULT = False
+#: regressed on 4 of 4 A/B boards.
+#:
+#: The default is `DECAP_ON_PILE`: ON when the INPUT board is a pile
+#: (`PlacementState.pile`, the one pile test -- `decap_claim_resolved`), OFF
+#: on every other input, and on a pile it runs the within-limit variant
+#: (`DECAP_PILE_WITHIN_LIMIT`). That is the population and the variant the
+#: second pile pilot measured (tests/1105_pile_ab_prereg_v2.json: seven
+#: `stage_unaided` piles seeded from a `--decaps-from` intent), where it
+#: lowered intent errors on every pile and pulled stranded held caps back
+#: inside the decap radius, at a cost in wire length or crossings on three
+#: piles. The A/B rule's zero-tolerance guards cannot accept that trade; the
+#: maintainer did (#1105, 2026-10-15), and the `decap-pile-within-limit-*`
+#: rows in tests/test_placement_ab.py pin it. A PLACED board keeps the stage
+#: off: the corpus `decap-*` rows, which re-seed as-placed boards, rejected
+#: every variant. True / False force it either way, and
+#: `place_seed --decap-claim-after-ics` / `--no-decap-claim-after-ics` do the
+#: same for one run -- an explicit ON runs `DECAP_LATE_WITHIN_LIMIT`'s
+#: variant, after-ics by default, exactly as it did before the pile default.
+DECAP_ON_PILE = 'pile'
+DECAP_CLAIM_AFTER_ICS_DEFAULT = DECAP_ON_PILE
 
 #: #1105: stage 3.5 undoes a seat that lands farther from its pin target than
 #: the declared `decaps.max_distance_mm`, and the cap keeps its own centroid
 #: turn. Two adjacent pins on different rails send their caps to one spot, and
 #: the second cap then lands mm away from the pin it claimed -- measured on
 #: the run-29 pile: C4 5.00mm from its target and graded 3.85mm from U1,
-#: where its own centroid turn seated it inside the limit.
+#: where its own centroid turn seated it inside the limit. This knob is the
+#: EXPLICIT arming's (`decap_claim_after_ics=True`, `--decap-claim-after-ics`):
+#: off, so the flag keeps every seat it finds (after-ics), as it always has.
 DECAP_LATE_WITHIN_LIMIT = False
+
+#: #1105: the same undo for the PILE DEFAULT (`late['armed_by'] == 'pile'`):
+#: on, because within-limit is the variant the pile pilot measured and the
+#: maintainer adopted. `late['variant']` says which ran.
+DECAP_PILE_WITHIN_LIMIT = True
 
 #: #1105: where stage 3.5 runs in stage 3's queue. 'after_last_owner' is the
 #: first scoped cap after the last owner IC; 'after_queue' holds every scoped
 #: cap back until the rest of the queue is seated, so a claimed cap never
 #: takes a pose a later resistor or LED would have had.
 DECAP_LATE_AT = 'after_last_owner'
+
+
+def decap_claim_resolved(value, assessment=None, pcb_data=None,
+                         pcb_file=None) -> Tuple[bool, str]:
+    """`(armed, by)`: whether stage 3.5 runs, for `value` -- an explicit
+    True / False, or `DECAP_CLAIM_AFTER_ICS_DEFAULT` when the caller passed
+    None (#1105).
+
+    `DECAP_ON_PILE` reads the INPUT board's pile verdict: `assessment` (the
+    `PlacementState` place_seed already holds), else `assess_placement` of
+    `pcb_data`. `by` says why, for `decap_stage['late']` and the emitter:
+    'set' (a bool, explicit or a constant), 'pile' (on: the input is a
+    pile), 'not a pile' (off: it is not)."""
+    if value != DECAP_ON_PILE:
+        return bool(value), 'set'
+    if assessment is None and pcb_data is not None:
+        try:
+            from .placement_state import assess_placement
+            assessment = assess_placement(pcb_data, pcb_file)
+        except Exception:                                    # noqa: BLE001
+            assessment = None
+    pile = bool(assessment is not None and assessment.pile)
+    return pile, ('pile' if pile else 'not a pile')
 
 
 def decap_owner_refs(pcb_data, owner_chips: bool = False) -> Set[str]:
@@ -5557,7 +5603,8 @@ def _decap_rail(nets, net_refs) -> Optional[int]:
 def decap_pin_forecast(pcb_data, intent, blocks, *,
                        standing: Sequence[str] = (),
                        owner_chips: bool = False,
-                       claim_after_ics: Optional[bool] = None) -> Dict:
+                       claim_after_ics: Optional[bool] = None,
+                       assessment=None) -> Dict:
     """What the pin stages CAN claim when this intent seeds this board (#1105).
 
     A forecast of PINS, not of seats: a cap counts as claimable when an
@@ -5569,7 +5616,10 @@ def decap_pin_forecast(pcb_data, intent, blocks, *,
     (ASSUMING those seats succeed: an edge claim's walk can fail, and then
     the cap falls to its `backup_owners`, the stage-3 owners of its rail);
     `late` caps have owners only the centroid stage seats, which stage 3.5
-    serves when armed (`late_armed`); `ownerless` caps have a rail no
+    serves when armed (`late_armed`: `claim_after_ics`, else the default,
+    which is ON for a pile -- `assessment`, the board's `PlacementState`,
+    or `pcb_data` assessed; `late_armed_by` says which, as
+    `decap_claim_resolved` does); `ownerless` caps have a rail no
     owner the stages serve (`decap_owner_refs`: the U-prefixed cap owners,
     every cap owner under `owner_chips`) carries, and neither stage can
     claim them. Same scope, rail and owner rules as the stages themselves
@@ -5587,6 +5637,8 @@ def decap_pin_forecast(pcb_data, intent, blocks, *,
         'backup_owners': [],
         'late_armed': (DECAP_CLAIM_AFTER_ICS_DEFAULT if claim_after_ics is None
                        else bool(claim_after_ics))}
+    out['late_armed'], out['late_armed_by'] = decap_claim_resolved(
+        out['late_armed'], assessment, pcb_data)
     if not out['armed']:
         return out
     fps = pcb_data.footprints
@@ -5713,7 +5765,12 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     `decap_claim_after_ics` arms stage 3.5 (#1105): the per-supply-pin decap
     claim, run again inside stage 3 once the centroid stage has seated the
     owner ICs that stage 2.5 found unplaced. None takes
-    `DECAP_CLAIM_AFTER_ICS_DEFAULT`; what it did is `decap_stage['late']`.
+    `DECAP_CLAIM_AFTER_ICS_DEFAULT`, which arms it when the input board is a
+    pile (`input_assessment.pile`) and nowhere else; what it did is
+    `decap_stage['late']`: `late['armed_by']` says why it ran or not, and
+    `late['variant']` which variant ran -- within-limit for the pile default
+    (`DECAP_PILE_WITHIN_LIMIT`), `DECAP_LATE_WITHIN_LIMIT`'s (after-ics) for
+    an explicit True.
     """
     if evict_depth not in (0, 1, 2):
         raise ValueError(
@@ -5783,6 +5840,10 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                                else bool(diagonal_rotations))
     late_on = (DECAP_CLAIM_AFTER_ICS_DEFAULT if decap_claim_after_ics is None
                else bool(decap_claim_after_ics))
+    # #1105: the default arms stage 3.5 on a PILE input only -- the board as
+    # given, before any seat (`input_assessment` when the caller holds it).
+    late_on, late_by = decap_claim_resolved(late_on, input_assessment,
+                                            pcb_data, pcb_file)
     if rotate_by_facing:
         import functools
         state.rotation_prefer = functools.partial(
@@ -7038,7 +7099,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         rails, the owners whose pins it found)`. Stage 2.5 runs it over the
         parts placed before it, stage 3.5 (#1105) over the owner ICs the
         centroid stage seated since. `tag` marks which stage wrote a note.
-        `decline_beyond` (stage 3.5 under `DECAP_LATE_WITHIN_LIMIT`) undoes a
+        `decline_beyond` (stage 3.5's within-limit variant) undoes a
         seat whose cap lands farther than that from its IC as the GRADE
         measures it (`decap_graded_distance`: pad centroid to the elected
         chip's pad box, over the placed chips on its rail), adding the cap to
@@ -7360,7 +7421,18 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # turn in the queue. Anchors-first can put a big cap ahead of the ICs,
     # which is why the trigger is "after the last owner", not "the first cap".
     late_claimed: List[str] = []
-    late: Dict[str, Any] = {'armed': late_on, 'at': None, 'owners': [],
+    # #1105: the pile default runs the measured variant (within-limit); an
+    # explicit arming runs `DECAP_LATE_WITHIN_LIMIT`'s (after-ics unless set).
+    late_within = (DECAP_PILE_WITHIN_LIMIT if late_by == 'pile'
+                   else DECAP_LATE_WITHIN_LIMIT)
+    late: Dict[str, Any] = {'armed': late_on, 'armed_by': late_by,
+                            'variant': (
+                                ('within-limit' if late_within
+                                 else 'after-ics')
+                                + ('' if DECAP_LATE_AT == 'after_last_owner'
+                                   else f'+{DECAP_LATE_AT}'))
+                            if late_on else None,
+                            'at': None, 'owners': [],
                             'pins': 0, 'caps': [], 'claimed': 0,
                             'declined': [], 'reason': None}
     late_left = len(unplaced & decap_scope)
@@ -7391,7 +7463,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 set(placed) - decap_owners_early, late_claimed,
                 tag=' (stage 3.5)',
                 decline_beyond=(float(decap_spec['max_distance_mm'])
-                                if DECAP_LATE_WITHIN_LIMIT else None),
+                                if late_within else None),
                 declined=late['declined'])
         if ref not in unplaced:
             continue    # #1105: claimed by stage 3.5 just above
@@ -7409,7 +7481,13 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         late['caps'] = list(late_claimed)
         late['claimed'] = len(late_claimed)
         if not late_on:
-            late['reason'] = 'off -- place_seed --decap-claim-after-ics arms it'
+            late['reason'] = (
+                'off -- the input board is not a pile, and the stage is on '
+                'by default only on a pile (#1105); place_seed '
+                '--decap-claim-after-ics arms it'
+                if late_by == 'not a pile' else
+                'off for this run (place_seed --no-decap-claim-after-ics); '
+                '--decap-claim-after-ics arms it')
         elif not late_left:
             late['reason'] = ('every scoped cap was claimed or put back '
                               'before the centroid stage')

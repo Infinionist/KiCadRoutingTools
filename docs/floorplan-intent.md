@@ -2030,12 +2030,23 @@ its own flag rather than folded into `--declare-classes`. `place_seed` reads
 reads its pins off ICs already placed -- by a fixed pose, must_lock, a zoned
 block or a declared row's `serves` -- so on an unzoned seed with none of
 those it claims nothing, and says so in a `NOTE:` and in
-`decap_stage.reason` (#1053). `place_seed --decap-claim-after-ics` (#1105)
-runs the same claim again inside the centroid stage, once that stage has
-seated the owner ICs (stage 3.5, `decap_stage.late`); every IC is seated
-exactly as without it. It is opt-in: `tests/test_placement_ab.py`'s
-`decap-*` rows rejected it, and two variants of it, as a default. At error
-severity the limit also arms the quench's per-move tether (#1043, above).
+`decap_stage.reason` (#1053). Stage 3.5 (#1105) runs the same claim again
+inside the centroid stage, once that stage has seated the owner ICs
+(`decap_stage.late`); every IC is seated exactly as without it. It is ON by
+default when the input board is a pile (`PlacementState.pile`) and OFF
+otherwise, and on a pile it runs the within-limit variant, which undoes a
+seat that lands past the limit as the grade measures it: on seven piles
+seeded from a `--decaps-from` intent that variant lowered intent errors on
+every one and pulled stranded held caps back inside the radius, at a cost
+in wire length or crossings on three, and the maintainer accepted that
+trade for a pile (the `decap-pile-within-limit-*` rows of
+`tests/test_placement_ab.py`, pre-registered in
+`tests/1105_pile_ab_prereg_v2.json`). On placed boards the `decap-*` rows
+rejected it, and two variants of it. `place_seed --decap-claim-after-ics`
+turns it on for any input and runs the after-ics variant, which keeps every
+seat it finds; `--no-decap-claim-after-ics` turns it off. `late.armed_by`
+says which applied and `late.variant` which variant ran. At error severity
+the limit also arms the quench's per-move tether (#1043, above).
 Measured:
 
 | board | in scope | graded | beyond the radius | no rail-carrying chip | predicate |
@@ -2087,14 +2098,17 @@ per supply pin" on run 38's StickHub pile, where the seed then claimed 0).
 Since #1105 it prints `context.decap_census.seeder_forecast` instead
 (`seeder.decap_pin_forecast`, the pin stages' own scope, rail and owner
 rules): which caps stage 2.5 can claim at an owner seated before it, which
-only stage 3.5 can (and that 3.5 is off unless `--decap-claim-after-ics` is
-passed), and which no stage can, because no U-prefixed cap owner carries
-their rail (watchy: 9 of 26). The owners are `groups.chip_refs`, the set the
+only stage 3.5 can (and whether 3.5 is on: by default only when the board is
+a pile, `late_armed_by`), and which no stage can, because no U-prefixed cap
+owner carries their rail (watchy: 9 of 26). The owners are `groups.chip_refs`, the set the
 grade elects from (#1249); the U prefix is the seeder's shipping restriction on
 that set (`seeder.decap_owner_refs`), because #792 measured the whole set as
-pin owners stranding four parts the U-prefixed subset seats. When the
-forecast holds NOTHING for stage 2.5 (and 3.5 is off) -- a pile, where no
-owner is placed, locked or declared before the stage runs -- the line says
+pin owners stranding four parts the U-prefixed subset seats. On a pile,
+where no owner is placed, locked or declared before the stage runs, the line
+says the caps are claimed at stage 3.5 because the board is a pile, with a
+seat past the limit undone, and that `--no-decap-claim-after-ics` turns that
+off. When the forecast holds NOTHING
+for stage 2.5 and 3.5 is off -- a board that is not a pile -- the line says
 the stage will claim no cap on this board, names the owners the centroid
 stage seats after it, and names the three ways to seat them first: a
 `fixed_poses[]` entry, a `must_lock` pattern or a zoned block

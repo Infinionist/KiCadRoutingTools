@@ -5,24 +5,28 @@ not promise a pin stage that cannot run on the board it emits from.
 place_seed's per-supply-pin stage (2.5) serves the supply pins of owner ICs
 seated BEFORE it -- placed, file-locked, or declared as a fixed pose, a
 must_lock pattern or a zoned block. On a pile none is, so the stage claims
-nothing; run 38's StickHub emitter still promised "will seat 38 cap(s)". The
-line now says the stage will claim NO cap on this board, names the owners the
-centroid stage seats after it, and names the three ways to declare them. It
-reads the same owner set as the stage (#1249: `seeder.decap_owner_refs`, so
-esp_prog's 3-pad regulator U2 is one of them).
+nothing; run 38's StickHub emitter still promised "will seat 38 cap(s)".
+Since #1105's pile default, stage 3.5 runs on a pile without being asked and
+claims those caps once the centroid stage has seated their owners, so the
+line on a pile says THAT, and how to turn it off. Where 3.5 is off (an input
+that is not a pile, or the explicit off switch) the line says the stage will
+claim NO cap, names the owners the centroid stage seats after it, and names
+the three ways to declare them. It reads the same owner set as the stage
+(#1249: `seeder.decap_owner_refs`, so esp_prog's 3-pad regulator U2 is one
+of them).
 
 Cases:
 * a `make_unplaced` pile of esp_prog and of tigard, each with its own board
-  as the `--decaps-from` reference: the line says NO cap and names the
-  declaration routes, the forecast's early set is empty, and the seed on
-  esp_prog's pile indeed claims 0 at stage 2.5 and 0 at 3.5;
+  as the `--decaps-from` reference: the forecast's early set is empty, 3.5
+  is armed by the pile default, and the line says the caps are claimed at
+  stage 3.5 and how to turn that off; the seed on esp_prog's pile claims 0
+  at stage 2.5 and some at 3.5, and none at all with 3.5 off;
+* the same forecast with 3.5 off: the line says NO cap, names the
+  declaration routes and where 3.5 is on by default;
 * control: the same esp_prog intent with U1 and U2 declared as fixed poses
   at the reference's poses -- the forecast moves their caps to stage 2.5,
   the line switches to "can claim up to N", and the seed claims caps;
 * with no forecast the line states the scope as a scope, never "will seat".
-
-The issue itself stays OPEN: seating owner ICs before stage 2.5 by default
-was measured NO-GO three times and is a policy call.
 
     python3 -X utf8 tests/test_1105_emitter_on_a_pile.py [case ...]
 """
@@ -52,6 +56,9 @@ MAKE_UNPLACED = os.path.join(ROOT, '.claude', 'skills', 'pcb-free-agent',
                              'scripts', 'make_unplaced.py')
 FLOORPLAN = os.path.join(ROOT, 'py_tools', 'check_floorplan.py')
 NO_CAP = 'will claim NO cap on this board'
+BY_PILE = ('stage 3.5 is on by default because this board is a pile, '
+           'undoing a seat that lands past the decap limit; place_seed '
+           '--no-decap-claim-after-ics turns it off')
 _TMP = tempfile.TemporaryDirectory(prefix='t1105e_')
 _PILES = {}
 
@@ -93,7 +100,7 @@ def _forecast(intent):
     return doc, doc['context']['decap_census']['seeder_forecast']
 
 
-def _seed(pile, doc, seed='0'):
+def _seed(pile, doc, seed='0', **kw):
     from kicad_parser import parse_kicad_pcb
     from placement import floorplan as fp, seeder
     with contextlib.redirect_stdout(io.StringIO()), \
@@ -101,37 +108,55 @@ def _seed(pile, doc, seed='0'):
         pcb = parse_kicad_pcb(pile)
         return seeder.seed_from_intent(
             pcb, pile, fp.intent_from_dict(doc, pile), random.Random(seed),
-            group_sources=('kicad', 'sheet'), clearance=0.2)
+            group_sources=('kicad', 'sheet'), clearance=0.2, **kw)
 
 
-def test_esp_prog_pile_says_the_stage_claims_nothing():
-    from check_floorplan import DECLARE_OWNERS_HOW
+def test_esp_prog_pile_says_stage_3_5_claims_them():
     pile, intent, out = _pile(ESP)
     line = _line(out)
-    assert NO_CAP in line, line
-    assert DECLARE_OWNERS_HOW in line, line
-    assert 'can claim up to' not in line and 'will seat' not in line, line
     doc, f = _forecast(intent)
     assert f['early'] == [] and f['scope'] == 4, f
+    assert f['late_armed'] is True and f['late_armed_by'] == 'pile', f
     # #1249: the regulator is an owner the stage reads.
     assert {'U1', 'U2'} <= set(f['late_owners']), f
+    assert NO_CAP not in line and 'will seat' not in line, line
+    assert f"can claim up to {len(f['late'])} of {f['scope']}" in line, line
+    assert f"{len(f['late'])} at stage 3.5" in line and BY_PILE in line, line
     assert 'U1, U2, USB1' in line, line
-    res = _seed(pile, doc)
-    ds = res['decap_stage']
-    assert ds['claimed'] == 0 and ds['late']['claimed'] == 0, ds
-    print(f"  PASS: esp_prog pile -- the line says {NO_CAP!r}; the seed "
-          f"claimed {ds['claimed']} ({ds['reason'][:60]}...)")
+    ds = _seed(pile, doc)['decap_stage']
+    assert ds['claimed'] == 0, ds
+    assert ds['late']['armed_by'] == 'pile' and ds['late']['claimed'] > 0, ds
+    off = _seed(pile, doc, decap_claim_after_ics=False)['decap_stage']
+    assert off['claimed'] == 0 and off['late']['claimed'] == 0, off
+    print(f"  PASS: esp_prog pile -- the line says 3.5 claims "
+          f"{len(f['late'])} by the pile default; the seed claimed "
+          f"{ds['late']['claimed']} there (0 with 3.5 off)")
 
 
-def test_tigard_pile_says_the_stage_claims_nothing():
-    from check_floorplan import DECLARE_OWNERS_HOW
+def test_tigard_pile_says_stage_3_5_claims_them():
     _pile_, intent, out = _pile(TIGARD)
     line = _line(out)
-    assert NO_CAP in line and DECLARE_OWNERS_HOW in line, line
     _doc, f = _forecast(intent)
     assert f['early'] == [] and f['scope'] > 20, f
-    print(f"  PASS: tigard pile -- {f['scope']} caps in scope, the line "
-          f"says none can be claimed and how to declare the owners")
+    assert f['late_armed'] is True and f['late_armed_by'] == 'pile', f
+    assert NO_CAP not in line and BY_PILE in line, line
+    print(f"  PASS: tigard pile -- {f['scope']} caps in scope, "
+          f"{len(f['late'])} forecast at stage 3.5 by the pile default")
+
+
+def test_with_3_5_off_the_line_says_no_cap():
+    """The same forecast with stage 3.5 off -- what an input that is not a
+    pile reads: NO cap, the declaration routes, and where 3.5 is on."""
+    import check_floorplan as CF
+    _pile_, intent, _out = _pile(ESP)
+    _doc, f = _forecast(intent)
+    f = dict(f, late_armed=False, late_armed_by='not a pile')
+    line = CF._forecast_clause({'seeder_forecast': f})
+    assert NO_CAP in line and CF.DECLARE_OWNERS_HOW in line, line
+    assert CF.LATE_DEFAULT_SCOPE in line, line
+    assert 'can claim up to' not in line and BY_PILE not in line, line
+    print("  PASS: with 3.5 off the line says NO cap, the declaration "
+          "routes, and that 3.5 is on by default only on a pile")
 
 
 def test_declared_owners_turn_the_line_and_the_seed():

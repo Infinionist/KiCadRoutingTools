@@ -518,12 +518,18 @@ def seed_structure_summary(result, graded, written):
     if decap and decap.get('armed'):
         late = decap.get('late') or {}
         if not late.get('armed'):
-            tail = ('; stage 3.5 is off (--decap-claim-after-ics arms it)'
-                    if late else '')
+            tail = ('; stage 3.5 is off ('
+                    + ('the input is not a pile, where it is on by default; '
+                       if late.get('armed_by') == 'not a pile' else
+                       '--no-decap-claim-after-ics; ')
+                    + '--decap-claim-after-ics arms it)' if late else '')
         else:
             tail = (f"; {late.get('claimed')} after the centroid stage seated "
-                    f"their owner IC(s) (3.5: "
-                    + (', '.join(late.get('owners') or ()) or 'none') + ")"
+                    f"their owner IC(s) (3.5"
+                    + (f", on by default for a pile, {late.get('variant')}"
+                       if late.get('armed_by') == 'pile' else '')
+                    + ": " + (', '.join(late.get('owners') or ()) or 'none')
+                    + ")"
                     + (f" -- {late['reason']}" if late.get('reason') else ''))
         print(f"  NOTE: decap stage: {decap.get('claimed')} of "
               f"{decap.get('scope')} cap(s) claimed at a supply pin"
@@ -869,9 +875,18 @@ Examples:
                         "found unplaced -- every IC on a pile or a flat board "
                         "-- claim their decaps at their supply pins, before "
                         "the caps' own centroid turn. ICs seat exactly as "
-                        "without it. Omitted, the seeder's measured default "
-                        "(DECAP_CLAIM_AFTER_ICS_DEFAULT) applies; "
-                        "JSON_SUMMARY.decap_stage.late says what it did.")
+                        "without it. Passed, it runs on any input and keeps "
+                        "every seat it finds (the after-ics variant). "
+                        "Omitted, it is ON when the input board is a pile, "
+                        "undoing a seat that lands past "
+                        "decaps.max_distance_mm (the within-limit variant, "
+                        "measured on seven piles: it pulls decaps in at some "
+                        "cost in wire length), and OFF otherwise -- the "
+                        "corpus A/B rejected it on placed boards "
+                        "(DECAP_CLAIM_AFTER_ICS_DEFAULT). "
+                        "--no-decap-claim-after-ics turns it off on a pile; "
+                        "JSON_SUMMARY.decap_stage.late says what it did, "
+                        "which variant ran and why.")
     p.add_argument("--evict-depth", type=int, default=0, choices=(0, 1, 2),
                    metavar="N",
                    help="Eviction rung (#630, #699). At every depth a part "

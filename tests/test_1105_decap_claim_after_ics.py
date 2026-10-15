@@ -24,12 +24,16 @@ inside stage 3, after the queue's last owner IC. What each case pins:
 * the stage OFF is the pre-#1105 seeder (tests/fixtures/1105/
   seed_off_baseline.json, recorded at 4aa33a88 with `--record`).
 * the emitter's line and its `seeder_forecast` say which caps 2.5 claims,
-  which only 3.5 can claim (and that 3.5 is off unless asked), and which no
-  stage can claim; the forecast agrees with what the seed did.
+  which only 3.5 can claim (on by default here, because the board is a
+  pile), and which no stage can claim; the forecast agrees with what the
+  seed did.
 * place_seed's `--decap-claim-after-ics` / `--no-decap-claim-after-ics`
   reach the seeder and print what the stage did.
-* `DECAP_CLAIM_AFTER_ICS_DEFAULT` is what tests/test_placement_ab.py's
-  `decap-*` rows measured: ON only if a variant passed the gate.
+* `DECAP_CLAIM_AFTER_ICS_DEFAULT` is what tests/test_placement_ab.py
+  measured: OFF on a placed board (every corpus `decap-*` family rejected),
+  ON on a pile (the `decap-pile-*` rows, adopted) with that family's
+  variant; the explicit flag keeps the after-ics family's.
+  tests/test_1105_pile_default.py pins the behaviour.
 
     python3 tests/test_1105_decap_claim_after_ics.py [name-substring ...]
     python3 tests/test_1105_decap_claim_after_ics.py --record <repo root>
@@ -453,14 +457,20 @@ def test_the_emitter_promises_only_what_the_seed_can_claim():
         f = doc['context']['decap_census']['seeder_forecast']
         assert f['early'] == ['C1'] and f['early_owners'] == ['USB1'], f
         assert f['late'] and 'U1' in f['late_owners'], f
-        assert f['late_armed'] is seeder.DECAP_CLAIM_AFTER_ICS_DEFAULT, f
-        if f['late_armed']:
-            assert 'at stage 3.5' in line[0], line[0]
-        else:
-            assert 'are NOT claimed' in line[0], line[0]
-            assert '--decap-claim-after-ics' in line[0], line[0]
-        n = len(f['early']) + (len(f['late']) if f['late_armed'] else 0)
-        assert f"up to {n} of {f['scope']}" in line[0], line[0]
+        # The run-29 board is a pile, so stage 3.5 is on by default (#1105).
+        assert f['late_armed'] is True and f['late_armed_by'] == 'pile', f
+        assert 'at stage 3.5' in line[0], line[0]
+        assert f"up to {len(f['early']) + len(f['late'])} of {f['scope']}" \
+            in line[0], line[0]
+        # The same forecast with 3.5 off -- an input that is not a pile:
+        # only stage 2.5's caps are promised, and the rest are named.
+        import check_floorplan as CF
+        off = CF._forecast_clause({'seeder_forecast': dict(
+            f, late_armed=False, late_armed_by='not a pile')})
+        assert 'are NOT claimed' in off and '--decap-claim-after-ics' in off, \
+            off
+        assert CF.LATE_DEFAULT_SCOPE in off, off
+        assert f"up to {len(f['early'])} of {f['scope']}" in off, off
         # control: U1 declared as a fixed pose moves its caps to stage 2.5
         pcb = parse_kicad_pcb(PILE)
         u1 = pcb.footprints['U1']
@@ -533,7 +543,8 @@ def test_place_seed_flag_pair():
         late_off, so_off = got['--no-decap-claim-after-ics']
         late_on, so_on = got['--decap-claim-after-ics']
         assert late_off['armed'] is False and late_off['claimed'] == 0
-        assert 'stage 3.5 is off (--decap-claim-after-ics arms it)' in so_off
+        assert ('stage 3.5 is off (--no-decap-claim-after-ics; '
+                '--decap-claim-after-ics arms it)') in so_off, so_off[-800:]
         assert late_on['armed'] is True and late_on['claimed'] > 0, late_on
         assert '(3.5: ' in so_on and 'decap stage 3.5:' in so_on, so_on[-800:]
     print(f"  PASS: the flag pair reaches the seeder (3.5 claimed "
@@ -541,24 +552,51 @@ def test_place_seed_flag_pair():
 
 
 def test_the_default_is_the_measured_one():
-    """Default ON only when a `decap-*` A/B family was adopted (no row of it
-    `rejected`); every family the table rejected keeps the stage opt-in."""
+    """The default follows tests/test_placement_ab.py. On a PLACED board
+    (the corpus `decap-*` families, which re-seed as-placed boards) it is ON
+    only if a family was adopted -- none was. On a PILE (the
+    `decap-pile-*` family, `input: 'pile'`) it is ON because that family
+    was adopted (pinned, not `rejected`, on >= 3 boards), and the pile
+    default's knobs are that family's ON arm, so the default is what was
+    measured. The EXPLICIT flag keeps the variant it always ran: the
+    corpus `decap-after-ics` family's ON arm (no within-limit undo)."""
     import test_placement_ab as ab
     fams = {}
     for row in ab.ROWS:
-        m = re.match(r'(decap-(?:after-ics|within-limit|after-queue))-',
-                     row['name'])
+        m = re.match(r'(decap-(?:pile-)?(?:after-ics|within-limit|'
+                     r'after-queue))-', row['name'])
         if m:
             fams.setdefault(m.group(1), []).append(row)
-    assert set(fams) == {'decap-after-ics', 'decap-within-limit',
-                         'decap-after-queue'}, sorted(fams)
+    placed = {'decap-after-ics', 'decap-within-limit', 'decap-after-queue'}
+    pile = set(fams) - placed
+    assert placed <= set(fams) and len(pile) == 1, sorted(fams)
     assert all(len(v) >= 3 for v in fams.values()), fams
-    adopted = [k for k, v in fams.items()
-               if not any(r.get('rejected') for r in v)]
-    assert seeder.DECAP_CLAIM_AFTER_ICS_DEFAULT is bool(adopted), adopted
+    adopted = sorted(k for k in placed
+                     if not any(r.get('rejected') for r in fams[k]))
+    assert not adopted, (f"{adopted} adopted on placed boards: the default "
+                         f"would be ON there too")
+    (pfam,) = pile
+    prow = fams[pfam]
+    assert all(r.get('input') == 'pile' and not r.get('rejected')
+               and r.get('expect') for r in prow), prow
+    assert seeder.DECAP_CLAIM_AFTER_ICS_DEFAULT == seeder.DECAP_ON_PILE, (
+        seeder.DECAP_CLAIM_AFTER_ICS_DEFAULT)
+    on = {k: v for r in prow for k, v in r['seeder_flags']['on'].items()}
+    assert set(on) == {'DECAP_LATE_WITHIN_LIMIT', 'DECAP_LATE_AT'}, on
+    assert seeder.DECAP_PILE_WITHIN_LIMIT == on['DECAP_LATE_WITHIN_LIMIT'], (
+        seeder.DECAP_PILE_WITHIN_LIMIT, on)
+    assert seeder.DECAP_LATE_AT == on['DECAP_LATE_AT'], on
+    flag = {k: v for r in fams['decap-after-ics']
+            for k, v in r['seeder_flags']['on'].items()}
+    assert flag['DECAP_LATE_WITHIN_LIMIT'] is False, flag
+    assert seeder.DECAP_LATE_WITHIN_LIMIT is False, (
+        "the explicit flag must stay after-ics")
+    assert all(r['seed_on'] == {'decap_claim_after_ics': True}
+               for r in prow), prow
     print(f"  PASS: DECAP_CLAIM_AFTER_ICS_DEFAULT is "
-          f"{seeder.DECAP_CLAIM_AFTER_ICS_DEFAULT}; adopted families: "
-          f"{adopted or 'none'}")
+          f"{seeder.DECAP_CLAIM_AFTER_ICS_DEFAULT!r}: no placed-board family "
+          f"adopted, {pfam} adopted on {len(prow)} piles with knobs {on}; "
+          f"the explicit flag stays after-ics")
 
 
 def _record():

@@ -116,19 +116,20 @@ serves those nets from the fill.
   rule and drop the `why`'s "derived default" sentence. Say which rules you
   were given and which you left out.
 - **On a pile, read the emitter's decap line before you seed.** It says how
-  many caps the per-supply-pin stage can claim, and which only once their
-  owner ICs are seated. When `place_seed` then reports the decap stage
-  claimed 0 because no owner IC was seated before it, the first remedy is
-  to seat the owners first (a `fixed_poses` entry or a zoned block). The
-  other is an EXPERIMENT, not a fix: re-seed with
-  `--decap-claim-after-ics` and keep it only if it grades better on
-  routed outcome. It claims the decaps once the centroid stage has seated
-  their ICs, and the seed places every IC exactly as without it -- only
-  the polish that follows can move one (#1105). The line's stage-2.5
-  count assumes those early seats succeed. The corpus A/B rejected it as
-  a default: it marked `regress` on all 7 of its boards. On run 38's
-  StickHub pile (seed 0, run 38's own arguments) it claimed 16 caps and
-  cut the seed's grade errors 16 to 7.
+  many caps the per-supply-pin stage claims at an owner IC seated before it
+  (stage 2.5), and how many stage 3.5 claims once the centroid stage has
+  seated their owners. On a pile stage 3.5 is ON by default (#1105): it
+  pulls the decaps to their supply pins and undoes a seat that lands past
+  the decap limit, at some cost in wire length or crossings on some boards,
+  and the seed places every IC exactly as without it -- only the polish
+  that follows can move one. If the routed outcome
+  looks worse for it, re-seed with `--no-decap-claim-after-ics` and keep
+  the better board. Seating the owners first (a `fixed_poses` entry, a
+  `must_lock` pattern or a zoned block) lets stage 2.5 claim at them
+  instead; the line's stage-2.5 count assumes those early seats succeed.
+  On a board that is not a pile the stage stays off, because the corpus
+  A/B rejected it there. `--decap-claim-after-ics` turns it on for any
+  input, and keeps every seat it finds, even one past the limit.
 - **Give `--intent` to every placement tool.** It is a per-move gate only in
   tools that receive it. It stops a part LEAVING its zone; it never moves one
   back in.

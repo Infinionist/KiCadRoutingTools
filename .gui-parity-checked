@@ -1422,3 +1422,18 @@ GATES RUN: test_cli_postpass_coverage: 14 registered, 22 in active use,
 2 CLI-only, 0 failures. test_manifest_plan_parity: OK.
 test_gui_engine_parity was not run: its trigger (routing group membership or
 the QFN pick moving) did not fire on any board.
+
+NOTE 2026-10-15 (#1105: seeder stage 3.5 on by default for a pile input; not
+an audit, so the first token above is unchanged).
+
+No GUI surface changes, and no new flag, dialog control or settings key.
+Nothing in kicad_routing_plugin/ calls the seeder: place_seed is a REFUSED
+tool in manifest_to_plan, and the placement GUI's Place / Place + Route drive
+the place_seed CLI through the /pcb-free-agent skill, so the GUI gets the new
+default exactly as the CLI does. The default is resolved inside the engine
+(seeder.decap_claim_resolved, called by seed_from_intent with the input
+board's PlacementState), not in place_seed's main, and check_floorplan's
+emitter forecast reads the same resolver.
+
+GATES RUN: test_cli_postpass_coverage: 15 registered, 25 in active use, 3
+CLI-only, 0 failures. test_manifest_plan_parity: OK.

@@ -731,10 +731,11 @@ ROWS += [
 # REJECTED, all three (#1105): no family improves on N-1 boards without a
 # regression -- the IC poses are unchanged, so what costs the guards is the
 # claim itself (a cap at a supply pin instead of its own net centroid, and
-# the 2-pin parts seated after it). `seeder.DECAP_CLAIM_AFTER_ICS_DEFAULT`
-# stays False and `place_seed --decap-claim-after-ics` opts in to the first
-# family, the one that claims the most caps on a pile. Kept as change
-# detectors with their measured marks; the numbers are in the baseline.
+# the 2-pin parts seated after it). These rows re-seed PLACED boards, which
+# is why `seeder.DECAP_CLAIM_AFTER_ICS_DEFAULT` keeps the stage off on every
+# input that is not a pile; the `decap-pile-*` rows below are the pile.
+# Kept as change detectors with their measured marks; the numbers are in the
+# baseline.
 _AFTER_ICS_BOARDS = ('esp_prog', 'splitflap_driver', 'tigard', 'watchy',
                      'glasgow_revC', 'ulx3s', 'orangecrab_ext_pll')
 #: (family, board) -> the measured mark of a rejected row.
@@ -794,6 +795,65 @@ ROWS += [
         ('decap-after-queue', {'DECAP_LATE_WITHIN_LIMIT': True,
                                'DECAP_LATE_AT': 'after_queue'}))
     for b in _AFTER_ICS_BOARDS
+]
+
+#: #1105's second pile pre-registration, sha-pinned by
+#: tests/test_1105_pile_prereg.py. The `decap-pile-*` rows take their boards,
+#: guards, ignored nets and candidate FROM it, never from a copy.
+PILE_PREREG_V2 = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              '1105_pile_ab_prereg_v2.json')
+with open(PILE_PREREG_V2, encoding='utf-8') as _fh:
+    _PV2 = json.load(_fh)
+
+# #1105, the pile basis (`input: 'pile'`, `_pile_inputs`): each board staged
+# as a `stage_unaided` pile and seeded from the one intent the CLI emits with
+# `--decaps-from` the board itself, OFF vs the second pre-registration's
+# candidate -- stage 3.5 with the within-limit undo, at the first scoped cap
+# after the last owner IC. Both arms explicit, so the rows measure the claim
+# whichever way the defaults point.
+#
+# ADOPTED by the maintainer's call (2026-10-15), NOT by `gate()`: the claim
+# lowers the signal on every pile, and on three it raises an arbiter guard,
+# which the zero-tolerance guards mark `regress`. That trade was accepted
+# for a pile, so `seeder.DECAP_CLAIM_AFTER_ICS_DEFAULT` is 'pile' and the
+# rows are pinned at their measured marks -- a change in either direction
+# is caught. The numbers are in the baseline.
+#: board -> the measured mark of a `decap-pile-within-limit-*` row.
+_PILE_DECAP_MARKS = {
+    'esp_prog': 'improve', 'splitflap_driver': 'regress',
+    'tigard': 'regress', 'watchy': 'improve', 'glasgow_revC': 'improve',
+    'ulx3s': 'improve', 'orangecrab_ext_pll': 'regress',
+}
+ROWS += [
+    {
+        'name': f"decap-pile-{_PV2['candidate']['name']}-{b[:-len('.kicad_pcb')]}",
+        'board': b,
+        'corridors': [],
+        'engine': 'seed',
+        'input': 'pile',
+        'seed_off': {'decap_claim_after_ics': False},
+        'seed_on': {'decap_claim_after_ics':
+                    _PV2['candidate']['decap_claim_after_ics']},
+        'seeder_flags': {'off': {},
+                         'on': {k: v for k, v in _PV2['candidate'].items()
+                                if k.isupper()}},
+        'ignore_nets': list(_PV2['ignore_nets']),
+        'signal': _PV2['signal'],
+        'guard': tuple(_PV2['arbiter_guards']),
+        'expect': _PILE_DECAP_MARKS[b[:-len('.kicad_pcb')]],
+        'why': ('MECHANISM: on a pile only the mechanical and file-locked '
+                'owners stand before stage 2.5, so the pin stage claims few '
+                'caps and the rest fall to their own centroid turn. The ON '
+                'arm claims them at their owners\' supply pins once stage 3 '
+                'has seated the owners, and undoes a seat that lands past '
+                'the decap limit as the grade measures it. The claim draws '
+                'no RNG, so every IC pose is the OFF arm\'s; the claimed '
+                'caps come back inside the decap radius (the held caps the '
+                'signal charges), and a cap at a supply pin can take a pose '
+                'a part seated after it wanted, which is what the guards '
+                'see.'),
+    }
+    for b in _PV2['boards']
 ]
 
 # --- #1051 / #1053 / #1043 / #1052: declared structure, OFF vs ON ----------
@@ -3089,9 +3149,14 @@ def _self_test_live():
 #: never changes which rows run or what they measure. A pair not listed is
 #: priced at the median of the rest.
 _ARM_SECONDS = {
+    ('pile', 'esp_prog.kicad_pcb'): 1,
     ('pile', 'glasgow_revC.kicad_pcb'): 416,
+    ('pile', 'orangecrab_ext_pll.kicad_pcb'): 16,
     ('pile', 'sonde_u.kicad_pcb'): 14,
     ('pile', 'splitflap_driver.kicad_pcb'): 53,
+    ('pile', 'tigard.kicad_pcb'): 6,
+    ('pile', 'ulx3s.kicad_pcb'): 40,
+    ('pile', 'watchy.kicad_pcb'): 5,
     ('quench', 'esp_prog.kicad_pcb'): 2,
     ('quench', 'kit-dev-coldfire-xilinx_5213.kicad_pcb'): 70,
     ('quench', 'orangecrab_ext_pll.kicad_pcb'): 37,
