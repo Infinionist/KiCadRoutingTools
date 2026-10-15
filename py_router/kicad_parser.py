@@ -890,6 +890,13 @@ class PCBData:
     # factory stand-ins on a project-less board are left out, as the file
     # leaves them out.
     live_rules_provider: object = None
+    # Callable returning the LIVE board's kicad_routing_tools records (the
+    # fab-floor origin, protected nets, impedance specs, pour promises, ...):
+    # the newer of its project's copy and the copy on the board itself
+    # (tool_records.live_namespace), read when called. The GUI keeps them on
+    # the board because KiCad's own project save drops what was written into
+    # the .kicad_pro after load. None = read the files (parse_kicad_pcb).
+    live_records_provider: object = None
     # #459: KiCad (group "name" (uuid ...) (members <uuid> ...)) blocks, as
     # {group name: [footprint reference, ...]}. The designer's own statement that
     # these parts belong together, so placement grouping ranks it above any
@@ -8966,7 +8973,19 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
         exact_fill_provider=_live_fill,
         # #1187: the floors the plan lowered live in memory, not in the file
         live_rules_provider=lambda _board=board: _live_design_rules(_board),
+        # The board's records, as the session holds them (tool_records)
+        live_records_provider=lambda _board=board: _live_records(_board),
     )
+
+
+def _live_records(board):
+    """What PCBData.live_records_provider answers: the live board's
+    kicad_routing_tools records (tool_records.live_namespace), {} on error."""
+    try:
+        import tool_records
+        return tool_records.live_namespace(board)
+    except Exception:
+        return {}
 
 
 def _live_design_rules(board):
@@ -9966,6 +9985,21 @@ def compare_pcb_data(from_board: 'PCBData', from_file: 'PCBData', tolerance: flo
                          f"file={_hc_f[0]} ({_hc_f[1] or 'none'})")
     except ImportError as _e:
         diffs.append(f"Copper-to-hole floor: not compared ({type(_e).__name__}: {_e})")
+    # The kicad_routing_tools records each front reads: the live board's
+    # (its project's copy and the copy on the board) against the file's (the
+    # project's copy and the board file's). Freshly loaded, they are the same.
+    _rb_p = getattr(from_board, 'live_records_provider', None)
+    _src = getattr(from_file, 'source_path', '') or ''
+    if callable(_rb_p) and _src:
+        try:
+            import tool_records
+            _rb, _rf = _rb_p() or {}, tool_records.effective_namespace(_src)
+            if _rb != _rf:
+                diffs.append(f"Tool records: board={sorted(_rb)} rev "
+                             f"{tool_records.revision(_rb)} file={sorted(_rf)} "
+                             f"rev {tool_records.revision(_rf)}")
+        except ImportError as _e:
+            diffs.append(f"Tool records: not compared ({type(_e).__name__}: {_e})")
 
     def _ap_sig(pcb, ap):
         nm = pcb.nets.get(ap.net_id)

@@ -4346,17 +4346,19 @@ class RoutingDialog(wx.Dialog):
         # impedance declarations, engine-noted during batch_route. The diff tab
         # does this via update_live_drc_floors; the signal tab's manual runs
         # end here, so consume at this step boundary or the notes linger until
-        # some later consumer writes them.
+        # some later consumer writes them. Into the board's records
+        # (tool_records): its project and the board itself, which KiCad's own
+        # save keeps when it rewrites the project.
         try:
             from protected_nets import (consume_protection_candidates,
                                         consume_impedance_specs,
                                         persist_protected_nets,
                                         persist_impedance_specs, pro_path_for_board)
-            _bf = board.GetFileName()
-            if _bf:
-                _pro = pro_path_for_board(_bf)
-                persist_protected_nets(_pro, consume_protection_candidates())
-                persist_impedance_specs(_pro, consume_impedance_specs())
+            _bf = board.GetFileName() or ""
+            _pro = pro_path_for_board(_bf) if _bf else ""
+            persist_protected_nets(_pro, consume_protection_candidates(),
+                                   board=board)
+            persist_impedance_specs(_pro, consume_impedance_specs(), board=board)
         except Exception:
             pass
 

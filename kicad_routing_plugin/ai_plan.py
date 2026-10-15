@@ -1650,8 +1650,10 @@ class PlanExecutor:
                                  f"board minima)")
             except Exception as e:
                 self.log(f"AI plan: live DRC settings skipped: {e}")
-            # Best-effort persistence for a later close/reopen; note KiCad
-            # may overwrite this if it saves its in-memory project state.
+            # The project file, for an in-session CLI step and a later reopen.
+            # KiCad's own save rewrites it from its in-memory state, so the
+            # same floors also go to the live board below, and the records to
+            # the board itself (tool_records).
             if board_file and os.path.isfile(board_file):
                 if _fixdrc693:
                     # #439: clamp non-Default classes in the written
@@ -1670,11 +1672,14 @@ class PlanExecutor:
                     # five values, read from the board the GUI already holds
                     # -- see gui_utils.board_minima_from_live.
                     from .gui_utils import board_minima_from_live
-                    _minima = (board_minima_from_live(board)
-                               if board is not None else {})
-                    from fix_kicad_drc_settings import fix_project_for_output
-                    fix_project_for_output(
-                        board_file, input_pcb=board_file,
+                    import pcbnew as _pcb_live
+                    _live = _pcb_live.GetBoard()
+                    _minima = (board_minima_from_live(_live)
+                               if _live is not None else {})
+                    from fix_kicad_drc_settings import (fix_project_for_output,
+                                                        apply_fix_to_board,
+                                                        close_live_step)
+                    _fix_kw = dict(
                         clearance=eff,
                         track_width=track_width,
                         via_diameter=floors.get('via_size'),
@@ -1683,26 +1688,47 @@ class PlanExecutor:
                         edge_clearance=floors.get('board_edge_clearance'),
                         diff_pair_width=floors.get('diff_pair_width'),
                         diff_pair_gap=floors.get('diff_pair_gap'),
-                        clamp_nondefault_netclasses=_clamp,
-                        minima=_minima)
-                # #521: persist the plan's protection-worthy nets (matched
-                # groups, routed diff pairs -- noted engine-side during the
-                # steps) so later steps/chains refuse to rip them.
-                try:
-                    from protected_nets import (consume_protection_candidates,
-                                                consume_impedance_specs,
-                                                consume_pour_served_pads,
-                                                persist_protected_nets,
-                                                persist_impedance_specs,
-                                                persist_pour_served_pads,
-                                                pro_path_for_board)
-                    _pro = pro_path_for_board(board_file)
-                    persist_protected_nets(_pro, consume_protection_candidates())
-                    persist_impedance_specs(_pro, consume_impedance_specs())
-                    # #678: the plan's fanout steps' pour-served balls.
-                    persist_pour_served_pads(_pro, consume_pour_served_pads())
-                except Exception as _pe:
-                    self.log(f"AI plan: protected-nets record skipped: {_pe}")
+                        clamp_nondefault_netclasses=_clamp)
+                    fix_project_for_output(board_file, input_pcb=board_file,
+                                           minima=_minima, **_fix_kw)
+                    # The SAME floors on the live board. KiCad's own save
+                    # rewrites this project from its in-memory settings, so a
+                    # rule written only into the file (the copper-to-hole floor,
+                    # the web, a clamped class) reverted on the user's save.
+                    if _live is not None:
+                        apply_fix_to_board(_live, minima=_minima, **_fix_kw)
+                        close_live_step(_live)
+            # #521: persist the plan's protection-worthy nets (matched groups,
+            # routed diff pairs -- noted engine-side during the steps) so later
+            # steps/chains refuse to rip them. Into the board's records
+            # (tool_records): the project, and the board itself, the copy
+            # KiCad's save keeps -- with whatever fix_project_for_output just
+            # recorded in the project (the origin, a class descent) put there
+            # too.
+            try:
+                import pcbnew as _pcb_live
+                import tool_records
+                from protected_nets import (consume_protection_candidates,
+                                            consume_impedance_specs,
+                                            consume_pour_served_pads,
+                                            persist_protected_nets,
+                                            persist_impedance_specs,
+                                            persist_pour_served_pads,
+                                            pro_path_for_board)
+                _live = _pcb_live.GetBoard()
+                _pro = pro_path_for_board(board_file) if board_file else ""
+                if _live is not None:
+                    tool_records.mirror_project_to_live_board(_live)
+                persist_protected_nets(_pro, consume_protection_candidates(),
+                                       board=_live)
+                persist_impedance_specs(_pro, consume_impedance_specs(),
+                                        board=_live)
+                # #678: the plan's fanout steps' pour-served balls.
+                persist_pour_served_pads(_pro, consume_pour_served_pads(),
+                                         board=_live)
+            except Exception as _pe:
+                self.log(f"AI plan: protected-nets record skipped: {_pe}")
+            if board_file and os.path.isfile(board_file):
                 if _fixdrc693:
                     self.log(f"AI plan: recorded DRC floors in the project "
                              f"file (clearance {eff:.4g}; live session "

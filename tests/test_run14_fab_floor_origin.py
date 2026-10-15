@@ -269,16 +269,28 @@ class LiveBoardOriginTest(unittest.TestCase):
         self.pcb = os.path.join(self.tmp, 'b.kicad_pcb')
         with open(self.pcb, 'w') as f:
             f.write('(kicad_pcb)\n')
-        F._LIVE_FAB_ORIGIN.clear()
-        getattr(F, '_LIVE_DECLARED', {}).clear()
+        self._clear_session()
         self._factory = getattr(F, '_PCBNEW_FACTORY', None)
         F._PCBNEW_FACTORY = dict(self.FACTORY)
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
-        F._LIVE_FAB_ORIGIN.clear()
-        getattr(F, '_LIVE_DECLARED', {}).clear()
+        self._clear_session()
         F._PCBNEW_FACTORY = self._factory
+
+    @staticmethod
+    def _clear_session():
+        """The live records these fakes keep: the board copy (tool_records'
+        store for a board without property calls) and the session's
+        declarations and step marks."""
+        getattr(F, '_LIVE_FAB_ORIGIN', {}).clear()
+        getattr(F, '_LIVE_DECLARED', {}).clear()
+        getattr(F, '_LIVE_STEP_OPEN', set()).clear()
+        try:
+            import tool_records
+            tool_records._FALLBACK.clear()
+        except ImportError:
+            pass
 
     def _write_pro(self, origin=None):
         with open(self.pcb[:-len('.kicad_pcb')] + '.kicad_pro', 'w') as f:

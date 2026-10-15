@@ -506,6 +506,21 @@ skip cleanly without KiCad python). Run any directly:
   clamped (0.4 vs 0.15), and on the project-less board hole-to-hole written,
   min_clearance 0 / edge 0.5 / hole diameter 0.3 left where the CLI writes
   0.15 / 0.2 / 0.95 and creates the Default class.
+- `test_records_survive_save.py` -- what a GUI step records survives the
+  user's KiCad save. KiCad's project save rewrites the `.kicad_pro` from the
+  copy it loaded and drops a `kicad_routing_tools` record written after load,
+  so the GUI keeps the namespace on the board too (`py_router/tool_records.py`,
+  the board property `kicad_routing_tools` that the same save writes into the
+  `.kicad_pcb`), and every reader takes the newer copy by `records_rev`. On
+  flat_hierarchy, then on project-less splitflap_driver: a manual GUI step's
+  writeback, `pcbnew.SaveBoard`, then the CLI's own readers find the origin,
+  protected nets, impedance specs and pour promises and the hole floor's
+  origin, and a CLI step still says FAB FLOOR RELAXED against the original.
+  Also the board's copy parses the same on both fronts and the CLI writer
+  carries it, and the plan executor's REAL `_write_drc_floors`, then a save,
+  keeps every rule it wrote (it now writes them to the live board too, through
+  `apply_fix_to_board`) and its origin. On the pre-fix code it fails 14
+  checks. The wx-free half is `tests/test_tool_records.py`.
 - `test_1187_live_web_floor.py` -- the narrow-pad-joint floor
   (`connection_width_floor`) on a live board reads the board's design settings
   through `PCBData.live_rules_provider`, at call time: after one GUI step's

@@ -823,9 +823,10 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
     Best-effort: never raises."""
     # #521: manual (non-plan) runs consume the engine-noted protection
     # candidates here -- the per-step floor update is the GUI's step boundary.
-    # Written to the sibling .kicad_pro JSON like the CLI writeback; KiCad may
-    # overwrite it if the user saves the project from KiCad afterwards (same
-    # caveat as the plan executor's best-effort persistence).
+    # Recorded in the board's records (tool_records): its .kicad_pro, like the
+    # CLI writeback, AND the board itself, because KiCad's own project save
+    # rewrites the .kicad_pro from the copy it loaded and drops them. A board
+    # with no project, or no file yet, records on the board alone.
     try:
         from protected_nets import (consume_protection_candidates,
                                     consume_impedance_specs,
@@ -834,13 +835,15 @@ def update_live_drc_floors(board, *, clearance=None, track_width=None,
                                     persist_impedance_specs,
                                     persist_pour_served_pads,
                                     pro_path_for_board)
-        _bf = board.GetFileName() if board is not None else ""
-        if _bf:
-            _pro = pro_path_for_board(_bf)
-            persist_protected_nets(_pro, consume_protection_candidates())
-            persist_impedance_specs(_pro, consume_impedance_specs())
+        if board is not None:
+            _bf = board.GetFileName() or ""
+            _pro = pro_path_for_board(_bf) if _bf else ""
+            persist_protected_nets(_pro, consume_protection_candidates(),
+                                   board=board)
+            persist_impedance_specs(_pro, consume_impedance_specs(), board=board)
             # #678: the fanout tab's pour-served balls, same step boundary.
-            persist_pour_served_pads(_pro, consume_pour_served_pads())
+            persist_pour_served_pads(_pro, consume_pour_served_pads(),
+                                     board=board)
     except Exception:
         pass
     _clamped = []

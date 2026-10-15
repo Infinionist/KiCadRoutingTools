@@ -1917,8 +1917,9 @@ _HOLE_CLR_ORIGIN = set()      # paths whose CURRENT floor came from
 
 
 def _project_stamp(path: str):
-    """What identifies the CONTENT of ``path``'s sibling ``.kicad_pro`` without
-    reading it: ``(mtime_ns, size, inode)``, or None when there is none.
+    """What identifies the CONTENT of ``path``'s sibling ``.kicad_pro`` and of
+    the board file without reading them: an ``(mtime_ns, size, inode)`` per
+    file, or None when neither exists.
 
     The hole-clearance cache is keyed on this, not on the path alone. A path
     key served the FIRST value for the life of the process, and the GUI plugin
@@ -1928,11 +1929,16 @@ def _project_stamp(path: str):
     (tmp + ``os.replace``), which gives the file a new inode even when the
     write lands in the same mtime tick at the same size.
     """
-    try:
-        st = os.stat(os.path.splitext(path)[0] + '.kicad_pro')
-    except (OSError, ValueError, TypeError):
-        return None
-    return (st.st_mtime_ns, st.st_size, st.st_ino)
+    out = []
+    # The project, and the board file: the origin record may live on the
+    # board itself (tool_records), where a GUI session's survives KiCad's save.
+    for ext in ('.kicad_pro', '.kicad_pcb'):
+        try:
+            st = os.stat(os.path.splitext(path)[0] + ext)
+            out.append((st.st_mtime_ns, st.st_size, st.st_ino))
+        except (OSError, ValueError, TypeError):
+            out.append(None)
+    return tuple(out) if any(out) else None
 
 
 def _file_hole_floor(path: str):
@@ -2021,6 +2027,16 @@ def declared_hole_clearance(pcb_data: PCBData, pcb_file: str = None):
     """
     path = pcb_file or getattr(pcb_data, 'source_path', "") or ""
     rule, origin = _file_hole_floor(path) if path else (None, None)
+    # A live board's records are its own (what the session wrote, saved or
+    # not, and on a board with no file): PCBData.live_records_provider.
+    _records = getattr(pcb_data, 'live_records_provider', None)
+    if callable(_records):
+        try:
+            _o = ((_records() or {}).get('fab_floor_origin') or {}).get(
+                'min_hole_clearance')
+            origin = float(_o) if isinstance(_o, (int, float)) and _o > 0 else None
+        except Exception:                                       # noqa: BLE001
+            pass
     live = _live_hole_rule(pcb_data)
     if live is not None:
         v, src = (live, 'live board') if live > 0 else (0.0, '')

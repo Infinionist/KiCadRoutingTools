@@ -886,13 +886,6 @@ def live_declared_fab_floor_rules(board) -> dict:
     return out
 
 
-#: Origins seeded for a live board this session, by board key. The project
-#: file is where the record belongs (it travels down a chain), but a board with
-#: no .kicad_pro has nowhere to keep it, and KiCad may rewrite the .kicad_pro
-#: from its in-memory copy when the user saves -- the same caveat the GUI's
-#: protected-net record carries. This keeps the session honest either way.
-_LIVE_FAB_ORIGIN: dict = {}
-
 #: Board keys whose GUI step is OPEN: its first live writer
 #: (apply_targets_to_board) has run and its last (gui_utils.
 #: update_live_drc_floors) has not. A CLI step has ONE writer, which seeds the
@@ -928,11 +921,12 @@ def seed_live_fab_floor_origin(board) -> dict:
 
     Call BEFORE lowering anything, from every live writer, exactly as the file
     writers do. The first call of a session records the floors the board
-    DECLARES (:func:`live_declared_fab_floor_rules`) -- in its sibling
-    .kicad_pro under ``kicad_routing_tools.fab_floor_origin`` when it has one
-    and none is recorded there yet, and in memory regardless. An origin already
-    in the project wins, so a GUI step after a CLI chain (or an earlier
-    session) keeps the chain's original. A board that declares none (a
+    DECLARES (:func:`live_declared_fab_floor_rules`) under
+    ``kicad_routing_tools.fab_floor_origin`` in the board's records
+    (tool_records: its .kicad_pro when it has one, and the board itself, the
+    copy KiCad's own save keeps) when none is recorded yet. An origin already
+    recorded wins, so a GUI step after a CLI chain (or an earlier session)
+    keeps the chain's original. A board that declares none (a
     project-less one at pcbnew's factory values) records none, as the CLI's
     first writeback records none on it; the next step then seeds from what the
     first one wrote, as the CLI's second does -- the next STEP, not the second
@@ -941,42 +935,32 @@ def seed_live_fab_floor_origin(board) -> dict:
     """
     try:
         before = live_declared_fab_floor_rules(board)
-        path = board.GetFileName() or ""
+        import tool_records
+        ns = tool_records.live_namespace(board)
     except Exception:                                           # noqa: BLE001
         return {}
     key = live_board_key(board)
-    if key in _LIVE_STEP_OPEN:
-        if not _LIVE_FAB_ORIGIN.get(key):
-            # This step's first writer found nothing declared. What the board
-            # declares now is what that writer lowered, which the CLI's
-            # one-writer step records only at the NEXT step.
-            return {}
-    else:
+    if key not in _LIVE_STEP_OPEN:
         _LIVE_STEP_BEFORE[key] = dict(before)    # this step's rules_before
-    pro = os.path.splitext(path)[0] + ".kicad_pro" if path else ""
-    proj = None
-    if pro and os.path.isfile(pro):
+    # The records are the board's (tool_records): its project's copy and the
+    # copy on the board itself, which KiCad's save keeps when it drops what
+    # was written into the project after load.
+    origin, seeded = seed_fab_floor_origin({"kicad_routing_tools": ns}, before)
+    if origin and not seeded:
+        return origin             # already recorded (a CLI chain, a session)
+    if key in _LIVE_STEP_OPEN:
+        # This step's first writer found nothing declared. What the board
+        # declares now is what that writer lowered, which the CLI's
+        # one-writer step records only at the NEXT step.
+        return {}
+    if seeded:
+        def _record(n):
+            n["fab_floor_origin"] = dict(origin)
+            return True
         try:
-            with open(pro, "r", encoding="utf-8") as f:
-                proj = json.load(f)
+            tool_records.update_live_namespace(board, _record)
         except Exception:                                       # noqa: BLE001
-            proj = None
-    if proj is not None:
-        origin, seeded = seed_fab_floor_origin(proj, _LIVE_FAB_ORIGIN.get(key)
-                                               or before)
-        if seeded:
-            try:
-                proj.setdefault("kicad_routing_tools", {})["fab_floor_origin"] = origin
-                tmp = pro + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(proj, f, indent=2)
-                    f.write("\n")
-                os.replace(tmp, pro)
-            except Exception:                                   # noqa: BLE001
-                pass
-    else:
-        origin = _LIVE_FAB_ORIGIN.get(key) or dict(before)
-    _LIVE_FAB_ORIGIN[key] = dict(origin)
+            pass
     return origin
 
 
@@ -1020,14 +1004,14 @@ def declared_fab_floor(pcb_path: str, key: str):
     silently, because 0.15 is a perfectly plausible value. The origin is the
     durable record; prefer the LARGER of the two (see
     :func:`obstacle_map.resolve_hole_clearance`).
+
+    The record is read through tool_records: the newer of the project's copy
+    and the board file's, which is where a GUI session's origin survives the
+    user's KiCad save.
     """
     try:
-        pro = os.path.splitext(pcb_path)[0] + '.kicad_pro'
-        if not os.path.exists(pro):
-            return None
-        with open(pro, 'r', encoding='utf-8') as fh:
-            proj = json.load(fh)
-        v = ((proj.get("kicad_routing_tools") or {})
+        import tool_records
+        v = (tool_records.effective_namespace(pcb_path)
              .get("fab_floor_origin") or {}).get(key)
         return float(v) if isinstance(v, (int, float)) and v > 0 else None
     except Exception:                                            # noqa: BLE001
@@ -1636,8 +1620,8 @@ def warn_if_class_clearance_relaxed(input_pcb) -> bool:
     if not input_pcb:
         return False
     try:
-        with open(os.path.splitext(input_pcb)[0] + ".kicad_pro", encoding="utf-8") as f:
-            proj = json.load(f)
+        import tool_records
+        proj = tool_records.load_project(os.path.splitext(input_pcb)[0] + ".kicad_pro")
         from fab_tiers import project_default_class_clearance
         rec = (proj.get("kicad_routing_tools") or {}).get(CLASS_CLEARANCE_RELAXED_KEY)
         lines = class_clearance_disclosure(rec, False,
@@ -1748,8 +1732,8 @@ def apply_routed_floors(board_pcb: str, clearance=None, hole_clearance=None,
     if not os.path.isfile(pro):
         return []
     try:
-        with open(pro) as f:
-            proj = json.load(f)
+        import tool_records
+        proj = tool_records.load_project(pro)
     except (OSError, ValueError):
         return []
     # The floors the project declares BEFORE this pass lowers them. Captured
@@ -1771,6 +1755,7 @@ def apply_routed_floors(board_pcb: str, clearance=None, hole_clearance=None,
         changes = list(changes) + ["kicad_routing_tools.fab_floor_origin: recorded"]
     try:
         # Atomic replace, same discipline as the writeback (#513 item 12).
+        tool_records.stamp_revision(proj)
         tmp_pro = pro + ".tmp"
         with open(tmp_pro, "w") as f:
             json.dump(proj, f, indent=2)
@@ -1941,8 +1926,11 @@ def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
                     and os.path.abspath(src) != os.path.abspath(dst):
                 shutil.copyfile(src, dst)
 
-    with open(out_pro) as f:
-        proj = json.load(f)
+    # The records (origin, protected nets, ...) as the board holds them: the
+    # newer of the project's copy and the board file's, which is where a GUI
+    # session's records survive the user's KiCad save (tool_records).
+    import tool_records
+    proj = tool_records.load_project(out_pro)
     # The board's DECLARED manufacturing floors, before this function lowers
     # them to whatever was routed. Kept so the relaxation can be disclosed
     # (see _fab_floor_disclosure): a clearance clamp is a grading decision, a
@@ -2036,6 +2024,7 @@ def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
         return out_pro
     # Atomic replace (#513 item 12): a kill mid-dump must not leave a
     # truncated/unparseable project stranding the DRC floor.
+    tool_records.stamp_revision(proj)
     _tmp_pro = out_pro + ".tmp"
     with open(_tmp_pro, "w") as f:
         json.dump(proj, f, indent=2)
@@ -2449,8 +2438,8 @@ def main():
                        "net_settings": {"classes": [], "meta": {"version": 0}}},
                       f, indent=2)
 
-    with open(pro) as f:
-        proj = json.load(f)
+    import tool_records
+    proj = tool_records.load_project(pro)
 
     # Compute the floors (routing params; sizes fall back to the board minima,
     # clearance to the project's Default net-class clearance) and the severity
@@ -2505,6 +2494,7 @@ def main():
         print("(dry run -- not written)")
         return
 
+    tool_records.stamp_revision(proj)
     with open(pro, "w") as f:
         json.dump(proj, f, indent=2)
         f.write("\n")

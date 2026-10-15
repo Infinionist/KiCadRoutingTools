@@ -2053,8 +2053,14 @@ def courtyard_severity_of(pcb_file: Optional[str],
         return None, 'no project'
     sev = (((doc.get('board') or {}).get('design_settings') or {})
            .get('rule_severities') or {})
-    saved_all = ((doc.get('kicad_routing_tools') or {})
-                 .get('saved_severities') or {})
+    # The records as the board holds them: the newer of the project's copy and
+    # the board file's (tool_records -- KiCad's own save keeps the latter).
+    try:
+        import tool_records
+        _ns = tool_records.effective_namespace(pcb_file)
+    except Exception:                                   # noqa: BLE001
+        _ns = doc.get('kicad_routing_tools') or {}
+    saved_all = (_ns.get('saved_severities') or {})
     saved = saved_all.get(rule)
     if saved is not None:
         return saved, "saved: the author's value, kept when a tool changed it"
