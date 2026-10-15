@@ -365,6 +365,44 @@ def rip_override_names(pcb_data) -> Set[str]:
     return getattr(pcb_data, '_rip_override_names', None) or set()
 
 
+def rip_refusal(pcb_data, net_id: int, context: str = "in-run rip ladder",
+                diff_pair_by_net_id: Optional[Dict] = None) -> Optional[str]:
+    """Why the IN-RUN rip machinery must leave `net_id` alone, or None.
+
+    The one predicate for every place a run picks a net to rip as somebody
+    else's blocker (#1261): filter_rippable_blockers, and every pick that does
+    not go through it -- the via-in-pad decline blame, the N>1 re-analysis
+    picks, the stub-swap rescue's swap-blocker rip, the diff-pair graze, probe
+    and fallback rips, the victim-priority squatter rip. Same rule as the
+    pre-run filters: 'locked' (KiCad-locked copper) never lifts; any other
+    reason lifts for a net the operator named exactly (stash_rip_overrides).
+    A diff pair rips as a unit, so its partner's protection refuses it too.
+    A refusal is recorded in PROTECTED_SKIPPED under `context` (JSON_SUMMARY).
+    """
+    if pcb_data is None:
+        return None
+    protected = cached_protection_map(pcb_data)
+    if not protected:
+        return None
+    ids = [net_id]
+    if diff_pair_by_net_id and net_id in diff_pair_by_net_id:
+        _pair = diff_pair_by_net_id[net_id][1]
+        ids = [i for i in (getattr(_pair, 'p_net_id', None),
+                           getattr(_pair, 'n_net_id', None))
+               if i is not None] or ids
+    for nid in ids:
+        net = pcb_data.nets.get(nid)
+        name = net.name if net else None
+        if not name or name not in protected:
+            continue
+        reason = protected[name]
+        if reason != 'locked' and name in rip_override_names(pcb_data):
+            continue
+        PROTECTED_SKIPPED.setdefault(context, {})[name] = reason
+        return reason
+    return None
+
+
 
 
 # What the last run's rip filters refused, and why: {context: {net: reason}}.

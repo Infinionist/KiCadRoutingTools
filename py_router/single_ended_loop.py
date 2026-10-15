@@ -82,6 +82,7 @@ from single_ended_routing import (route_net_with_obstacles,
                                   route_multipoint_main, route_oracle_links,
                                   deferred_diagnostics, flush_diagnostics)
 from blocking_analysis import analyze_frontier_blocking, print_blocking_analysis, filter_rippable_blockers, invalidate_obstacle_cache, record_frontier_blocking
+from protected_nets import rip_refusal
 from rip_up_reroute import rip_up_net, restore_net
 from leg_rip import LEG_RIP_ENABLED, select_blocking_branch  # #510
 from rip_defer import queue_reroute  # #510 churn
@@ -334,6 +335,8 @@ def _stub_swap_rescue(pcb_data, net_id, config, state, results,
             return None
         if diff_pair_by_net_id and bnid in diff_pair_by_net_id:
             return None    # v1: leave diff pairs alone
+        if rip_refusal(pcb_data, bnid, "stub-swap rescue"):
+            return None    # #1261: protected / KiCad-locked
         saved, ripped_ids, was_in = rip_up_net(
             bnid, pcb_data, routed_net_ids, routed_net_paths,
             routed_results, diff_pair_by_net_id or {}, remaining_net_ids,
@@ -1043,15 +1046,33 @@ def route_single_ended_nets(
                         from blocking_analysis import BlockingInfo
                         excluded = rip_exclude_set(state, net_id)
                         _unrippable_blame = []
+                        _protected_blame = []
                         for bid in sorted(blame_ids):
                             if bid in excluded:
                                 continue
+                            _n = pcb_data.nets.get(bid)
+                            _bn = _n.name if _n else str(bid)
                             if bid not in routed_results:
                                 # Validator-proved blocker that is PRE-EXISTING
                                 # copper: surface the rip-existing hint NOW
-                                # instead of only after the ladder exhausts.
-                                _n = pcb_data.nets.get(bid)
-                                _unrippable_blame.append(_n.name if _n else str(bid))
+                                # instead of only after the ladder exhausts --
+                                # unless it is KiCad-locked, which no flag
+                                # authorizes (#1261).
+                                from protected_nets import cached_protection_map
+                                if cached_protection_map(pcb_data).get(_bn) == 'locked':
+                                    _protected_blame.append(f"{_bn!r} (locked)")
+                                else:
+                                    _unrippable_blame.append(_bn)
+                                continue
+                            # The blame is a victim pick like any other: a
+                            # protected or KiCad-locked net is never ripped
+                            # (#521). It used to be inserted at the front of
+                            # the ladder unfiltered (#1261).
+                            _why = rip_refusal(pcb_data, bid,
+                                               "via-in-pad decline blame",
+                                               diff_pair_by_net_id)
+                            if _why:
+                                _protected_blame.append(f"{_bn!r} ({_why})")
                                 continue
                             canonical = get_canonical_net_id(bid, diff_pair_by_net_id)
                             if canonical in seen_canonical_ids:
@@ -1065,6 +1086,9 @@ def route_single_ended_nets(
                                 track_cells=0, via_cells=0, unique_cells=0,
                                 near_target_cells=0, near_source_cells=0,
                                 details="via-in-pad decline blame (#331)"))
+                        if _protected_blame:
+                            print(f"  Via-in-pad decline blamed PROTECTED net(s) "
+                                  f"{', '.join(_protected_blame)} - not ripped (#521)")
                         if _unrippable_blame:
                             print(f"  Via-in-pad decline blamed PRE-EXISTING net(s) "
                                   f"{', '.join(repr(n) for n in _unrippable_blame)} - not rippable "
@@ -1100,7 +1124,8 @@ def route_single_ended_nets(
                             # Find the most-blocking net that isn't already ripped
                             next_blocker = None
                             for b in fresh_blockers:
-                                if b.net_id in routed_results:
+                                if b.net_id in routed_results and not rip_refusal(
+                                        pcb_data, b.net_id, "SE rip ladder", diff_pair_by_net_id):
                                     canonical = get_canonical_net_id(b.net_id, diff_pair_by_net_id)
                                     if canonical not in ripped_canonical_ids:
                                         next_blocker = b
