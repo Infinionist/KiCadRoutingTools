@@ -272,7 +272,9 @@ def _inject(src, dst, ref, pads):
     added nothing would compare a fixture that carries no token at all.
     """
     from kicad_parser import iter_footprint_blocks
-    with open(src, encoding='utf-8', newline='') as fh:
+    # Universal newlines: the anchor below is LF-only, and core.autocrlf
+    # checks tigard out with CRLF.
+    with open(src, encoding='utf-8') as fh:
         text = fh.read()
     for s, e, fp_text, _raw, key in iter_footprint_blocks(text):
         if key != ref:

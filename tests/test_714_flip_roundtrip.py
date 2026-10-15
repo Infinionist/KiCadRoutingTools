@@ -132,7 +132,9 @@ def _inject_die(src, dst):
     board that carries no token."""
     import re
     from kicad_parser import iter_footprint_blocks
-    with open(src, encoding='utf-8', newline='') as fh:
+    # Universal newlines: the anchor below is LF-only, and core.autocrlf
+    # checks tigard out with CRLF (so does `git archive` for the cloud image).
+    with open(src, encoding='utf-8') as fh:
         text = fh.read()
     for s, e, body, _raw, key in iter_footprint_blocks(text):
         if key != DIE_REF:
