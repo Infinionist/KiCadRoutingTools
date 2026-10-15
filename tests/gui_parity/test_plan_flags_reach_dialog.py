@@ -23,7 +23,9 @@ Needs KiCad's python (re-execs into it); exits 77 when there is none. Seconds.
 
 Run: python3 tests/gui_parity/test_plan_flags_reach_dialog.py
 """
+import contextlib
 import glob
+import io
 import json
 import os
 import shutil
@@ -70,6 +72,11 @@ _PLANES = ('python3 py_router/route_planes.py {src} {dst} --nets GND '
 # splitflap_driver's U2 is mounted on F.Cu (the QFN engine is a spy below, so
 # its package does not matter). Item 0 of the QFN panel's escape-layer choice:
 _QFN_REF, _MOUNTED = 'U2', 'Mounted layer (default)'
+# A --net-clearances file beside the manifest. splitflap_driver is an
+# all-Default board, so its class-derived map is EMPTY and any entry here is
+# the file's doing.
+_NCL_FILE = 'ncl.json'
+_NCL = {'/CLOCK_IN': 0.111, '+12V': 0.321}
 CASES = [
     dict(label='route_diff --diff-pair-centerline-setback',
          cmd='python3 py_router/route_diff.py {src} {dst} "*"',
@@ -98,6 +105,20 @@ CASES = [
          cmd=_PLANES, flag='--skip-existing-zones',
          param=('skip_existing_zones', True), probe='skip_existing_zones',
          want=(True, True), default=(False, False)),
+    # A RELATIVE file, as the corpus records it: the plan must carry it
+    # absolute, resolved against the command's folder ({tmp}).
+    dict(label='route --net-clearances',
+         cmd='python3 py_router/route.py {src} {dst} --nets "*"',
+         flag='--net-clearances ' + _NCL_FILE,
+         param=('net_clearances_path', '{tmp}/' + _NCL_FILE),
+         probe='net_clearances_path',
+         want=('{tmp}/' + _NCL_FILE,) * 2, default=('', '')),
+    dict(label='route_diff --net-clearances',
+         cmd='python3 py_router/route_diff.py {src} {dst} "*"',
+         flag='--net-clearances ' + _NCL_FILE,
+         param=('net_clearances_path', '{tmp}/' + _NCL_FILE),
+         probe='net_clearances_path_diff',
+         want=('{tmp}/' + _NCL_FILE,) * 2, default=('', '')),
     dict(label='qfn_fanout --layer',
          cmd='python3 py_router/qfn_fanout.py {src} --output {dst} '
              '--component ' + _QFN_REF,
@@ -121,10 +142,17 @@ def _probes(dlg):
     planes['skip_existing_zones'] = (po.skip_existing_zones.GetValue(),
                                      plane_cfg.get('skip_existing_zones'))
     qo = dlg.fanout_tab.qfn_options
+    # The Route tab's config, and the Differential tab's merged one.
+    route_cfg = dlg._build_routing_config([], ['F.Cu', 'B.Cu'])
+    diff_cfg = {**d.get_routing_config(), **d.get_config()}
     return {
         **planes,
         'qfn_layer': (qo.qfn_layer.GetStringSelection(),
                       qo.get_config().get('layer')),
+        'net_clearances_path': (dlg.net_clearances_path.GetValue(),
+                                route_cfg.get('net_clearances_path')),
+        'net_clearances_path_diff': (dlg.net_clearances_path.GetValue(),
+                                     diff_cfg.get('net_clearances_path')),
         'centerline_setback': (
             round(d.centerline_setback.GetValue(), 6),
             d.get_config().get('diff_pair_centerline_setback')),
@@ -132,6 +160,58 @@ def _probes(dlg):
             bga.escape_direction.GetStringSelection(),
             bga.get_config().get('primary_escape')),
     }
+
+
+def _sub(value, tmp):
+    """A case value with its {tmp} placeholder filled in."""
+    if isinstance(value, str):
+        return value.replace('{tmp}', tmp)
+    if isinstance(value, tuple):
+        return tuple(_sub(v, tmp) for v in value)
+    return value
+
+
+def _worker_net_clearances(dlg, path):
+    """{'route' | 'diff': the per-net clearance map, BY NET NAME, that the
+    Route tab's and the Differential tab's REAL workers hand batch_route /
+    batch_route_diff_pairs} with the Net Clearances File set to `path`. Each
+    engine is a spy that records its kwargs and stops the run, so nothing
+    routes; wx.CallAfter is held so no completion handler fires later."""
+    import wx
+    import route
+    import route_diff
+
+    class _Stop(Exception):
+        pass
+
+    seen = {}
+
+    def _spy(tag):
+        def _engine(*a, **kw):
+            seen[tag] = kw.get('net_clearances')
+            raise _Stop('engine reached')
+        return _engine
+
+    names = {nid: n.name for nid, n in dlg.pcb_data.nets.items()}
+    real = (route.batch_route, route_diff.batch_route_diff_pairs, wx.CallAfter)
+    d = dlg.differential_tab
+    try:
+        route.batch_route = _spy('route')
+        route_diff.batch_route_diff_pairs = _spy('diff')
+        wx.CallAfter = lambda *a, **k: None
+        dlg.net_clearances_path.SetValue(path)
+        dlg._run_routing(dlg._build_routing_config(['/CLOCK_IN'],
+                                                   ['F.Cu', 'B.Cu']))
+        # (the diff worker print_exc()s the stop; it is not a failure)
+        with contextlib.redirect_stderr(io.StringIO()):
+            d._run_diff_routing({**d.get_routing_config(), **d.get_config()},
+                                ['/CLOCK_IN'])
+    finally:
+        route.batch_route, route_diff.batch_route_diff_pairs, wx.CallAfter = real
+        dlg.net_clearances_path.SetValue('')
+    return {tag: ({names.get(i, i): v for i, v in m.items()}
+                  if isinstance(m, dict) else m)
+            for tag, m in seen.items()}
 
 
 def _qfn_engine_layers(dlg, run_until):
@@ -213,6 +293,9 @@ def main():
                 n += 1
         manifest = os.path.join(tmp, 'redo_commands.sh')
         plan_path = os.path.join(tmp, 'plan.json')
+        ncl_path = os.path.join(tmp, _NCL_FILE)
+        with open(ncl_path, 'w', encoding='utf-8') as f:
+            json.dump(_NCL, f)
         with open(manifest, 'w', encoding='utf-8', newline='\n') as f:
             f.write('\n'.join(lines) + '\n')
         conv = subprocess.run(
@@ -234,6 +317,7 @@ def main():
               "plain step does not")
         for k, case in enumerate(CASES):
             key, val = case['param']
+            val = _sub(val, tmp)
             on, off = steps[2 * k], steps[2 * k + 1]
             got = (on.get('params') or {}).get(key, '<absent>')
             check(case['label'], got == val and key not in
@@ -263,6 +347,8 @@ def main():
             ex.start()
             run_until(lambda: bool(done), 120)
             qfn_runs = _qfn_engine_layers(dlg, run_until)
+            ncl_runs = {'file': _worker_net_clearances(dlg, ncl_path),
+                        'none': _worker_net_clearances(dlg, '')}
         finally:
             dlg.Destroy()
         if len(seen) != len(steps):
@@ -275,7 +361,8 @@ def main():
         for k, case in enumerate(CASES):
             on = seen[2 * k][case['probe']]
             off = seen[2 * k + 1][case['probe']]
-            want, default = tuple(case['want']), tuple(case['default'])
+            want = _sub(tuple(case['want']), tmp)
+            default = _sub(tuple(case['default']), tmp)
             check(case['label'] + ' (flagged step)', on == want,
                   f"(control, engine config) = {on!r}, want {want!r}")
             check(case['label'] + ' (next step, flag omitted)', off == default,
@@ -294,6 +381,25 @@ def main():
               b_cu[0] == 'B.Cu' and any('differs from' in w and 'mounted layer'
                                         in w for w in b_cu[1]),
               f"layer={b_cu[0]!r}, warnings={b_cu[1]}")
+
+        print("\n[4] the Net Clearances File reaches the engines: the Route and "
+              "Differential workers hand them the file's map, as route.py / "
+              "route_diff.py --net-clearances do")
+        from kicad_parser import parse_kicad_pcb as _parse
+        from list_nets import load_net_clearances, net_clearance_map_by_name
+        _cli = _parse(board_path)
+        cli_map = {_cli.nets[i].name: v for i, v in net_clearance_map_by_name(
+            _cli.nets, load_net_clearances(ncl_path)).items()}
+        check("the CLI's map from the file names both nets",
+              cli_map == _NCL, f"{cli_map}")
+        for tag in ('route', 'diff'):
+            got = ncl_runs['file'].get(tag, '<engine not reached>')
+            check(f"{tag} worker with the file: the engine gets the CLI's map",
+                  got == cli_map, f"{got}")
+            none = ncl_runs['none'].get(tag, '<engine not reached>')
+            check(f"{tag} worker with the field empty: the net classes' map "
+                  f"(empty on this all-Default board), not the file's",
+                  none == {}, f"{none}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

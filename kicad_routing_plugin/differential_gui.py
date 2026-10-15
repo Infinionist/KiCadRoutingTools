@@ -851,6 +851,14 @@ class DifferentialTab(wx.Panel):
         except ValueError as e:
             wx.MessageBox(str(e), "Invalid Keep-away Rule", wx.OK | wx.ICON_WARNING)
             return
+        # A Net Clearances File route_diff.py would fail to read is refused
+        # before routing, as on the Route tab.
+        from .swig_gui import net_clearances_file_error
+        _ncl_err = net_clearances_file_error(config.get('net_clearances_path'))
+        if _ncl_err:
+            wx.MessageBox(_ncl_err, "Invalid Net Clearances File",
+                          wx.OK | wx.ICON_WARNING)
+            return
 
         # Remember the routed floors so _apply_results_to_board can make the live
         # board's DRC constraints consistent with them (issue #160).
@@ -965,6 +973,13 @@ class DifferentialTab(wx.Panel):
             except Exception as e:
                 print(f"Warning: Could not get net class clearances: {e}")
                 net_clearances = None
+            # route_diff.py --net-clearances FILE (the Advanced tab's Net
+            # Clearances File): it replaces the class-derived map, as given.
+            from .swig_gui import explicit_net_clearances
+            _explicit = explicit_net_clearances(config.get('net_clearances_path'),
+                                                self.pcb_data)
+            if _explicit is not None:
+                net_clearances = _explicit
 
             successful, failed, total_time, results_data = batch_route_diff_pairs(
                 input_file=self.board_filename,

@@ -178,7 +178,8 @@ def _plan_pairs(manifest):
             # which stopped being true at #733 and is now actively misleading:
             # every cap flag IS asserted, just not from this loop.
             continue
-        step = m2p.parse_command(argv)
+        step = m2p.parse_command(argv, cwd=_cwd or os.path.dirname(
+            os.path.abspath(manifest)))
         # A named refusal or no-op converts to NO step, as in
         # plan_steps_from_manifest; there are no flags of it to assert.
         if step is None or '_refused' in step or '_noop' in step:
@@ -350,6 +351,23 @@ def check_pair(argv, step):
                 bad.append(('<positional pairs>',
                             f"want {want_pairs} got {got_pairs} "
                             f"(missing {missing})"))
+
+    # --net-clearances FILE replaces the net classes' clearance map. It used
+    # to be consumed and dropped, so 8 kept route steps on 4 corpus boards
+    # replayed at the class clearances. The plan must name the SAME file, as
+    # an absolute path the GUI can open from KiCad's own cwd -- and it must be
+    # there, or the replay refuses where the recording routed.
+    if '--net-clearances' in argv:
+        k = argv.index('--net-clearances')
+        val = argv[k + 1] if k + 1 < len(argv) else ''
+        got = params.get('net_clearances_path')
+        n += 1
+        if not (isinstance(got, str) and os.path.isabs(got)
+                and os.path.basename(got) == os.path.basename(val)
+                and os.path.isfile(got)):
+            bad.append(('--net-clearances',
+                        f"want an absolute path to the existing {val!r}, "
+                        f"got net_clearances_path={got!r}"))
 
     # Positional net names must survive into step['nets'] -- and must NOT be
     # silently widened to the ['*'] catch-all.
@@ -754,8 +772,10 @@ ROUTE_CLI_ONLY = {
                   "consumes results in memory",
     '--strict-sizes': "a harness EXIT-CODE flag (#857); changes no copper",
     '--keep-thermal': "deprecated no-op (#856)",
-    '--net-clearances': "a board-specific JSON path; the GUI derives the same "
-                        "map from the live board's net classes",
+    # (--net-clearances left this list: its file REPLACES the class-derived
+    # map, so "the GUI derives the same map from the net classes" was false
+    # for every file that differed. It is the Advanced tab's Net Clearances
+    # File now.)
     '--schematic-dir': "writes pad swaps back to .kicad_sch files, no copper; "
                        "the recorded path is the recording host's",
     '--write-fill': "fills zones in the OUTPUT FILE for delivery (#910); the "
@@ -801,9 +821,8 @@ _PROBE_VALUE = 'PROBE_VALUE'
 # the flag means the same thing there (the shared registrars and the file /
 # diagnostic flags); the rest are the tool's own.
 _SAME_AS_ROUTE = ('--debug-lines', '--debug-memory', '--enable-used-layers',
-                  '--keep-thermal', '--net-clearances', '--output',
-                  '--overwrite', '--schematic-dir', '--strict-sizes',
-                  '--verbose')
+                  '--keep-thermal', '--output', '--overwrite',
+                  '--schematic-dir', '--strict-sizes', '--verbose')
 
 DIFF_CLI_ONLY = {f: ROUTE_CLI_ONLY[f] for f in _SAME_AS_ROUTE}
 # KNOWN GAPS (route_diff.py). EMPTY: --diff-pair-centerline-setback left when

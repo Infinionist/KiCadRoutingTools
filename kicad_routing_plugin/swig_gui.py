@@ -116,6 +116,37 @@ def _nm_to_mm(nm):
     return nm / 1e6
 
 
+def net_clearances_file_error(path):
+    """Why the Net Clearances File (route.py / route_diff.py --net-clearances)
+    cannot be used, or None when it is empty or loads -- through the loader
+    the CLI mains call, so a file the CLI would fail on is refused here too."""
+    path = (path or '').strip()
+    if not path:
+        return None
+    try:
+        from list_nets import load_net_clearances
+        load_net_clearances(path)
+    except (OSError, ValueError) as e:
+        return f"Net Clearances File: {e}"
+    return None
+
+
+def explicit_net_clearances(path, pcb_data):
+    """{net_id: mm} from the Net Clearances File, or None when it is empty.
+
+    The CLI's --net-clearances semantics: the file's map REPLACES the one the
+    tab builds from the board's net classes and is used as given (no class
+    clamp, no ceiling), resolved by net NAME against the live board."""
+    path = (path or '').strip()
+    if not path:
+        return None
+    from list_nets import load_net_clearances, net_clearance_map_by_name
+    out = net_clearance_map_by_name(pcb_data.nets, load_net_clearances(path))
+    print(f"Loaded per-net clearances for {len(out)}/{len(pcb_data.nets)} nets "
+          f"from {path}")
+    return out
+
+
 def _get_netclass_parameters(class_name):
     """Get routing parameters for a specific net class from pcbnew.
 
@@ -1113,6 +1144,32 @@ class RoutingDialog(wx.Dialog):
                     "one side route against each other at the normal clearance. The "
                     "log reports per net the length left inside a band. Empty = off.")
                 grid.Add(self.keep_away, 0, wx.EXPAND)
+                # route.py / route_diff.py --net-clearances FILE, named after
+                # the plan param: an explicit per-net clearance map that
+                # replaces the one the Route and Differential tabs build from
+                # the board's net classes.
+                grid.Add(wx.StaticText(parent, label="Net Clearances File:"), 0,
+                         wx.ALIGN_CENTER_VERTICAL)
+                ncl_sizer = wx.BoxSizer(wx.HORIZONTAL)
+                self.net_clearances_path = wx.TextCtrl(parent)
+                self.net_clearances_path.SetMinSize((60, -1))
+                self.net_clearances_path.SetToolTip(
+                    "Optional JSON file mapping net name -> clearance in mm, "
+                    "e.g. {\"/USB_D+\": 0.12, \"/USB_D-\": 0.12} (route.py / "
+                    "route_diff.py --net-clearances). When set it REPLACES the "
+                    "per-net clearances the Route and Differential tabs read "
+                    "from the board's net classes, used as given (no class, no "
+                    "ceiling); a net it does not name routes at the run's "
+                    "clearance. Empty = from the net classes.")
+                ncl_sizer.Add(self.net_clearances_path, 1, wx.EXPAND | wx.RIGHT, 4)
+                self.net_clearances_browse = wx.Button(parent, label="…",
+                                                       style=wx.BU_EXACTFIT)
+                self.net_clearances_browse.SetToolTip(
+                    "Browse for a per-net clearance JSON file")
+                self.net_clearances_browse.Bind(wx.EVT_BUTTON,
+                                                self._on_browse_net_clearances)
+                ncl_sizer.Add(self.net_clearances_browse, 0)
+                grid.Add(ncl_sizer, 0, wx.EXPAND)
             r = defaults.PARAM_RANGES[name]
             grid.Add(wx.StaticText(parent, label=label), 0, wx.ALIGN_CENTER_VERTICAL)
             ctrl = wx.SpinCtrlDouble(parent, min=r['min'], max=r['max'], initial=default, inc=r['inc'])
@@ -1204,6 +1261,17 @@ class RoutingDialog(wx.Dialog):
             if dlg.ShowModal() == wx.ID_CANCEL:
                 return
             self._add_recent_fab_override(dlg.GetPath())
+
+    def _on_browse_net_clearances(self, event):
+        """Browse for a per-net clearance JSON file (--net-clearances)."""
+        cur = self.net_clearances_path.GetValue().strip()
+        ddir = os.path.dirname(cur) if cur else ""
+        with wx.FileDialog(self, "Select per-net clearance file", defaultDir=ddir,
+                           wildcard="JSON files (*.json)|*.json|All files (*.*)|*.*",
+                           style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as dlg:
+            if dlg.ShowModal() == wx.ID_CANCEL:
+                return
+            self.net_clearances_path.SetValue(dlg.GetPath())
 
     def _add_recent_fab_override(self, path):
         """Put `path` at the top of the override-file dropdown (deduped, capped)."""
@@ -2820,6 +2888,8 @@ class RoutingDialog(wx.Dialog):
         self.track_proximity_distance.SetValue(defaults.TRACK_PROXIMITY_DISTANCE)
         self.track_proximity_cost.SetValue(defaults.TRACK_PROXIMITY_COST)
         self.keep_away.SetValue("")
+        # Empty = route.py with no --net-clearances: the net classes' map.
+        self.net_clearances_path.SetValue("")
         self.keep_away_free.SetValue(defaults.KEEP_AWAY_FREE)
         self.keep_away_cost.SetValue(defaults.KEEP_AWAY_COST)
         self.vertical_attraction_radius.SetValue(defaults.VERTICAL_ATTRACTION_RADIUS)
@@ -3116,6 +3186,14 @@ class RoutingDialog(wx.Dialog):
                           wx.OK | wx.ICON_WARNING)
             return None, None
 
+        # A Net Clearances File route.py would fail to read is refused before
+        # routing starts, not routed at the net classes instead.
+        err = net_clearances_file_error(self.net_clearances_path.GetValue())
+        if err:
+            wx.MessageBox(err, "Invalid Net Clearances File",
+                          wx.OK | wx.ICON_WARNING)
+            return None, None
+
         return selected_nets, selected_layers
 
     @staticmethod
@@ -3169,6 +3247,9 @@ class RoutingDialog(wx.Dialog):
             'ordering_strategy': self.ordering_strategy.GetString(self.ordering_strategy.GetSelection()),
             'fab_tier': self.fab_tier.GetString(self.fab_tier.GetSelection()),
             'fab_overrides_path': self.fab_overrides_path.GetValue().strip(),
+            # --net-clearances FILE (Advanced tab); the route and diff workers
+            # replace their class-derived map with it (explicit_net_clearances).
+            'net_clearances_path': self.net_clearances_path.GetValue().strip(),
             'escalation': self._escalation_policy(),
             'board_floors': self._board_floor_dict(),
             'stub_proximity_radius': self.stub_proximity_radius.GetValue(),
@@ -3568,6 +3649,12 @@ class RoutingDialog(wx.Dialog):
             except Exception as e:
                 print(f"Warning: Could not get net class clearances: {e}")
                 # Fall back to using config clearance for all nets
+            # route.py --net-clearances FILE: the explicit map replaces the
+            # class-derived one above, used as given (route.py main).
+            _explicit = explicit_net_clearances(config.get('net_clearances_path'),
+                                                self.pcb_data)
+            if _explicit is not None:
+                net_clearances = _explicit
 
             # Refresh user-layer guide polylines from the live board so a path
             # drawn this session is used without saving the file first (issue #7).

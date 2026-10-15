@@ -580,6 +580,36 @@ def net_clearance_map_by_id(pcb_path, nets, design_rules=None):
     return out
 
 
+def load_net_clearances(path):
+    """{net name: clearance mm} from a ``--net-clearances`` JSON file.
+
+    route.py / route_diff.py take the file as an explicit override of the
+    class-derived map above, and the Route and Differential tabs read the same
+    file through this function (their "Net Clearances File" field), so both
+    fronts accept and refuse exactly the same files. Raises OSError when the
+    file cannot be read and ValueError when it is not a JSON object of numbers.
+    """
+    with open(path, encoding='utf-8') as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: --net-clearances wants a JSON object of net "
+                         f"name -> clearance mm, got a {type(data).__name__}")
+    try:
+        return {str(k): float(v) for k, v in data.items()}
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"{path}: a --net-clearances value is not a number "
+                         f"({e})") from None
+
+
+def net_clearance_map_by_name(nets, name_to_clr):
+    """{net_id: clearance} for the nets named in ``name_to_clr`` -- the
+    explicit ``--net-clearances`` map, used as-is: no net class and no ceiling
+    applies to it, and a net it does not name routes at the run's clearance.
+    ``nets`` is a PCBData ``nets`` dict ({net_id: Net})."""
+    return {nid: float(name_to_clr[net.name]) for nid, net in nets.items()
+            if net.name in name_to_clr}
+
+
 def net_class_memberships(pcb_path, nets, design_rules=None):
     """{net_id: set of net-class names} from the sibling .kicad_pro: the
     explicit ``netclass_assignments`` entry UNION every matching

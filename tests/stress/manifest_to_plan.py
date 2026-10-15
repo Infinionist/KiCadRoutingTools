@@ -279,6 +279,10 @@ FLAG_PARAMS = {
     '--guide-corridor-layer': 'guide_corridor_layer_ctrl',
     '--guide-corridor-spacing': 'guide_corridor_spacing_ctrl',
     '--keepout-layer': 'keepout_layer_ctrl',
+    # route.py / route_diff.py's explicit per-net clearance FILE: the
+    # Advanced tab's Net Clearances File field (a relative path is resolved
+    # against the recorded cwd, see PATH_PARAMS).
+    '--net-clearances': 'net_clearances_path',
     # route_diff.py's meander chamfer multiplier: the diff tab's control.
     '--diff-chamfer-extra': 'chamfer_extra',
     # route_diff.py's centerline setback: the diff tab's control of that name
@@ -432,9 +436,10 @@ GROUP_LIST_FLAGS = {
 }
 
 # Flags whose values are file paths / bookkeeping -- consumed, never params.
-# --output still feeds the chain-pruning file list. --net-clearances is a
-# board-specific JSON path; the GUI derives the same map from the board's live
-# net classes, so a replayed plan carries no param for it.
+# --output still feeds the chain-pruning file list. (--net-clearances left
+# this set: it names a per-net clearance FILE that replaces the net classes'
+# map, so dropping it replayed the step at different clearances. It is
+# FLAG_PARAMS' net_clearances_path now, made absolute like a cap --intent.)
 #
 # --deadline is a HARNESS budget, not a routing parameter: it changes nothing
 # about the copper, only how long the process is allowed to spend making it, and
@@ -445,7 +450,7 @@ GROUP_LIST_FLAGS = {
 # control matches, which the executor then drops silently; consuming it here
 # says so on purpose instead.
 IGNORE_FLAGS = {'--output', '--summary-json', '--schematic-dir', '--report',
-                '--net-clearances', '--deadline',
+                '--deadline',
                 # #856: deprecated no-op (routing steps no longer touch DRC
                 # severities; the control it drove is gone).
                 '--keep-thermal',
@@ -523,7 +528,14 @@ def _num(v):
         return v
 
 
-def parse_command(argv):
+# Plan params naming a FILE the CLI opened relative to ITS cwd. The GUI would
+# resolve a relative path against KiCad's own cwd, so parse_command makes it
+# absolute against the command's recorded cwd -- what #1067 does for a cap
+# step's --intent.
+PATH_PARAMS = {'net_clearances_path'}
+
+
+def parse_command(argv, cwd=None):
     tool = None
     for a in argv:
         base = os.path.basename(a)
@@ -610,7 +622,12 @@ def parse_command(argv):
             if vals:
                 step['params'].setdefault(GROUP_LIST_FLAGS[a], []).append(vals)
         elif a in tool_params or a in FLAG_PARAMS:
-            step['params'][tool_params.get(a) or FLAG_PARAMS[a]] = _num(argv[i + 1])
+            key = tool_params.get(a) or FLAG_PARAMS[a]
+            val = _num(argv[i + 1])
+            if (key in PATH_PARAMS and cwd and isinstance(val, str)
+                    and not os.path.isabs(val)):
+                val = os.path.normpath(os.path.join(cwd, val))
+            step['params'][key] = val
             i += 2
         elif a in LIST_FLAGS:
             vals = []
@@ -881,7 +898,10 @@ def plan_steps_from_manifest(manifest, keep_files=False):
             step['_files'] = [a for a in argv if a.endswith('.kicad_pcb')]
             steps.append(step)
             continue
-        step = parse_command(argv)
+        # A relative file the command named was opened from its recorded cwd
+        # (else the manifest's own folder, where the harness ran it).
+        step = parse_command(argv, cwd=_cwd or os.path.dirname(
+            os.path.abspath(manifest)))
         if step is None:
             # kept-but-not-GUI-representable (place_fanout_clearance, board_image,
             # --help, ...): pruning already accounted for it -- just emit no step.
