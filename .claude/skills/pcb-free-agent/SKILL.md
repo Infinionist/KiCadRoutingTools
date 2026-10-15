@@ -66,9 +66,10 @@ serves those nets from the fill.
   rule stays unarmed: run 36 left StickHub's hub decaps 2.1-9.8 mm from
   their pins, where the human board keeps them within 2.2 mm. A cap the
   reference keeps within 5 mm of its chip and your board leaves beyond it is
-  then a `decap_ungraded` ERROR, named by ref (#1142). Nothing repairs it
-  automatically -- `--repair-decaps` covers `decap_distance` and
-  `decap_pin_distance` only -- so move the cap with `place_pose`.
+  then a `decap_ungraded` ERROR, named by ref (#1142). `place_seed --repair
+  --repair-decaps` pulls such a cap back toward its IC (#1150); one it
+  cannot seat stays in `unresolved_by_rule` as `decap_ungraded` -- move that
+  cap with `place_pose`.
 - **Ask for the EMC rows the board cannot state.** A crystal's load pins, a
   converter's input cap and inductor, an ESD array's connector: how close
   they sit decides EMC, and the emitted intent carries no `proximity` row for
@@ -233,7 +234,10 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   - `place_seed --repair` counts a violator `repaired` only once its
     finding is gone; read `unresolved_refs` / `unresolved_by_rule` in its
     `JSON_SUMMARY` for the rest (#1066). Add `--repair-decaps` to seat
-    charged caps at their IC's pin (opt-in; `decap_rung` says what it did).
+    caps at their IC or at the pin a finding names -- any cap on that pin's
+    rail, not only the nearest (#1188) -- and to pull back a held cap
+    stranded past the radius (opt-in; `decap_rung` says what it did, and an
+    unresolved IC's note names the caps it tried).
     Pass `--baseline <input>` too: only then does the repair charge the
     courtyard pairs check_assembly gates (#1182), and on a library that
     draws bodies but no courtyards add `--body-model`, or the seat search

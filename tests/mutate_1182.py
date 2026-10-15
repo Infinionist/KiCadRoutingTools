@@ -67,7 +67,7 @@ ROWS = [
      (T1182,), 'KILLED'),
     # -- the repair --
     ('repair-charges-nothing', 's',
-     "        _charge(ordered[0], charge_mm)",
+     "        _charge(ordered[0], charge_mm, 'courtyard')",
      "        pass",
      (T1182,), 'KILLED'),
     ('repair-charges-the-unmoved-member', 's',

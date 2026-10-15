@@ -2793,18 +2793,16 @@
    "body_blocking": 0,
    "courtyard_blocking": 0,
    "courtyard_blocking_area": 0,
-   "crossings": 502,
+   "crossings": 504,
    "edge_facing_pads": 1,
    "health_block_displacement_max_mm": null,
    "health_bus_foreign_crossings": null,
    "hpwl": 1499.61,
-   "intent_errors": 2,
-   "intent_errors_by_rule": {
-    "decap_distance": 2
-   },
-   "intent_errors_enforced": 2,
+   "intent_errors": 0,
+   "intent_errors_by_rule": {},
+   "intent_errors_enforced": 0,
    "intent_errors_other": 0,
-   "inversions": 210,
+   "inversions": 211,
    "oob_keepout_copper_amount": 0.0,
    "oob_keepout_copper_count": 0,
    "unseated": 0
@@ -2812,7 +2810,7 @@
  },
  "repair-decaps-watchy": {
   "board": "watchy.kicad_pcb",
-  "mark": "improve",
+  "mark": "regress",
   "off": {
    "body_advisory": 1,
    "body_blocking": 0,
@@ -2840,19 +2838,19 @@
    "body_blocking": 0,
    "courtyard_blocking": 2,
    "courtyard_blocking_area": 11.7987,
-   "crossings": 159,
+   "crossings": 164,
    "edge_facing_pads": 1,
    "health_block_displacement_max_mm": null,
    "health_bus_foreign_crossings": null,
-   "hpwl": 771.99,
-   "intent_errors": 13,
+   "hpwl": 772.4,
+   "intent_errors": 11,
    "intent_errors_by_rule": {
-    "decap_distance": 3,
+    "decap_distance": 1,
     "edge_connector": 10
    },
-   "intent_errors_enforced": 3,
+   "intent_errors_enforced": 1,
    "intent_errors_other": 10,
-   "inversions": 77,
+   "inversions": 78,
    "oob_keepout_copper_amount": 0.0,
    "oob_keepout_copper_count": 0,
    "unseated": 0

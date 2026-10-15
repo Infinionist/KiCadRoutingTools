@@ -1872,7 +1872,14 @@ re-seating 85/92 while leaving its zone targets unmoved):
   finding naming no moved ref is charged by counterfactual, each moved ref
   restored alone), and a cap pushed past the
   decap search radius (its `decap_distance` became `decap_ungraded`, which is
-  not a fix). `unresolved` sets no exit code of its own; exit 4 stays
+  not a fix). A part charged by decap rules ALONE is not moved by this seat
+  (#1150 b): the seat is the nearest legal pose to the part's own and has no
+  decap target, so it could only leave the finding or make it worse (esp_prog
+  C2 shipped 0.06-0.10 mm farther from U1 three ways). A part that takes part
+  in a decap finding -- its ref, or the cap / IC it measures -- is seated
+  first where none of those findings grows, and by the plain seat only when
+  no such pose exists within any cap, which a note says. An IC is never
+  moved for a decap finding. `unresolved` sets no exit code of its own; exit 4 stays
   `unrepairable_failed_refs`' (a free violator no seat could place) and the
   final grade's. A locked violator (`(locked yes)`, `--lock`, a fixed pose)
   is `unrepairable_pinned_refs`: reported, not a gate failure, the
@@ -1884,15 +1891,29 @@ re-seating 85/92 while leaving its zone targets unmoved):
   measure), never the part's pad union, whose corner can sit in a notch no
   pad enters. `place_reconstruct`'s legalize
   stage reports the same `unresolved` list.
-  `--repair-decaps` (#1066 b, opt-in) adds the missing actor: each cap a
-  `decap_distance` / `decap_pin_distance` error charges is seated toward its
-  IC's pin (the rail pad nearest it, or the declared supply pad) and KEPT
-  only when that finding is gone, no finding anywhere is new or worse, the
-  overlap / off-board numbers did not grow, and the move is proportionate
-  (the repair's own `DISPROPORTION_RATIO` / `_FLOOR_MM`, against how far the
-  cap is past its limit). Its record is `JSON_SUMMARY.decap_rung`. It stays
-  off by default: `tests/test_placement_ab.py`'s `repair-decaps-*` rows
-  improve two of five boards and regress none, short of the N-1 rule.
+  `--repair-decaps` (#1066 b, opt-in) adds the missing actor, and it moves
+  only CAPS (`DECAP_RUNG_RULES`). A `decap_distance` cap, or a cap a
+  --decaps-from reference holds and the board strands past the search radius
+  (`decap_ungraded` at error, #1150 a), is seated toward the IC pad on its
+  rail nearest it. A `decap_pin_distance` pin may be served by ANY usable cap
+  on its rail (#1188): every one is ranked, first those no other pin relies on
+  (not the only cap within the limit of a passing pin, not the nearest cap of
+  a failing one), nearest first, and the first one the grade keeps wins --
+  the finding's `measured.cap` is only the nearest, and moving it when it is
+  the nearest for several failing pins worsens the rest, and the grade
+  reverts it. Each search asks only poses that clear the target and
+  make no decap finding the cap takes part in new or worse
+  (`_DecapView.accept`), and a pose nearest the target that is out of
+  proportion is followed by a search within the budget of the cap's own pose.
+  A seat is KEPT only when that finding is gone, no finding anywhere is new or
+  worse, the overlap / off-board numbers did not grow, and the move is
+  proportionate (the repair's own `DISPROPORTION_RATIO` / `_FLOOR_MM`,
+  against how far the cap is past its limit). An IC still carrying a pin
+  finding is UNRESOLVED with a note naming the caps tried for each pin and
+  their result. Its record is `JSON_SUMMARY.decap_rung`. It stays
+  off by default: of `tests/test_placement_ab.py`'s five `repair-decaps-*`
+  rows one improves, one (watchy) regresses on its crossings guard while
+  clearing decap errors, and three are neutral, short of the N-1 rule.
   The repair also reads check_assembly's own channels (fa10 P1): a part
   over a pin frame's drilled pin is charged absolutely (`Pin census`,
   #1212), and the COURTYARD channel (`Courtyard census`, #1182) --

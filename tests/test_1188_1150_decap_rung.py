@@ -1,14 +1,34 @@
 #!/usr/bin/env python3
-"""#1150 (c): the quench's tether gate holds a held cap stranded past the
-decap search radius.
+"""#1188 and #1150: the decap repair works with the caps a finding can use,
+and never takes a decap-charged cap farther from its IC.
 
-Under a --decaps-from intent a cap the reference keeps within the 5 mm radius
-and the board strands beyond it is a `decap_ungraded` ERROR (#1142), but the
-gate built its term `graded: False` and read it as 0 past the radius, so it
-let the quench take the cap -- or its IC -- anywhere. Now the term is
-`stranded_error` and measured wherever it stands: a move taking it farther
-from its IC is refused, one bringing it closer is not; without the held list
-the gate is inert on it, as before.
+#1188 -- the rung moved only `measured.cap`, the ONE nearest cap, so when one
+cap is the nearest for several failing pins, moving it to one pin worsened the
+others and the move was reverted (glasgow: 18 of 27 pin tries). Now every
+usable cap on the pin's rail is ranked, caps no other pin relies on first, and
+the closing note of an IC names the caps tried for it.
+
+  * the issue's minimal input, built here: two ICs on one rail, each with a
+    supply pin 3.275 mm from the SAME cap C1 (limit 2.5), and a second cap C2
+    on the rail that serves neither. The rung serves U1 with C2 and U2 with
+    C1; both findings clear. With the ranking off (the nearest cap only, the
+    old rung), C1 can serve neither pin without worsening the other, both
+    stay unresolved -- and each IC's note names C1 and what became of it.
+
+#1150 --
+  (a) a cap a --decaps-from reference holds, stranded past the search radius
+      (`decap_ungraded`, an ERROR), is pulled back toward its IC by the rung:
+      esp_prog C2 at (118, 95), 5.64 mm from U1 -> cleared. Without the rung
+      it is not charged and does not move, as #1142 left it.
+  (b) a cap charged by decap rules ALONE is not moved by the ordinary seat,
+      which has no decap target: esp_prog C2 at (119, 95.2), (119.3, 95.0),
+      (119, 96) used to ship 4.6253 -> 4.7248, 4.3647 -> 4.422 and
+      4.575 -> 4.659 mm from U1, each reported unresolved. It now stays at its
+      distance, unresolved, and says why.
+  (c) the quench's tether gate measures a STRANDED held cap past the radius
+      (it read 0 there): a move taking it farther from its IC is refused, one
+      bringing it closer is not; without the held list the gate is inert on
+      it, as before.
 
     python3 -X utf8 tests/test_1188_1150_decap_rung.py [case ...]
 """
@@ -26,11 +46,14 @@ sys.path.insert(0, TESTS_DIR)
 
 from kicad_parser import parse_kicad_pcb           # noqa: E402
 from placement import floorplan as fp              # noqa: E402
+from placement import seeder                       # noqa: E402
 from placement.writer import write_placed_output   # noqa: E402
+from run_utils import check, evidence              # noqa: E402
 
 RUN_ALL_TIMEOUT = 900
 
 ESP = os.path.join(ROOT, 'kicad_files', 'esp_prog.kicad_pcb')
+PLACE_SEED = os.path.join(ROOT, 'py_placer', 'place_seed.py')
 SOURCES = ('kicad', 'sheet')
 CLEARANCE = 0.2
 _TMP = tempfile.TemporaryDirectory(prefix='t1188_')
@@ -44,6 +67,166 @@ def _quiet(fn, *a, **kw):
 
 def _parse(path):
     return _quiet(parse_kicad_pcb, path)
+
+
+# ---------------------------------------------------------------------------
+# #1188's minimal input
+# ---------------------------------------------------------------------------
+
+NETS = {1: '+3V3', 2: 'GND', 3: '/S1', 4: '/S2', 5: '/S3', 6: '/S4',
+        7: '/S5', 8: '/S6'}
+_ROWS = (-1.905, -0.635, 0.635, 1.905)
+
+
+def _ic(ref, x, y, pin1_side, uid, sigs):
+    """An 8-pad IC whose pad 1 is a +3V3 `power_in` on the `pin1_side`
+    column (+1 right, -1 left) and pad 4 its GND."""
+    pads = []
+    s1 = iter(sigs)
+    for n in range(1, 9):
+        col = pin1_side if n <= 4 else -pin1_side
+        row = _ROWS[(n - 1) % 4]
+        if n == 1:
+            net, kind = 1, 'power_in'
+        elif n == 4:
+            net, kind = 2, 'power_in'
+        else:
+            net, kind = next(s1), 'bidirectional'
+        pads.append(
+            f'    (pad "{n}" smd rect (at {2.5 * col} {row}) (size 1.5 0.6) '
+            f'(layers "F.Cu" "F.Mask" "F.Paste") (net {net} "{NETS[net]}") '
+            f'(pintype "{kind}"))\n')
+    return (f'  (footprint "P:SOIC8" (layer "F.Cu") (uuid "{uid}") '
+            f'(at {x} {y})\n'
+            f'    (property "Reference" "{ref}" (at 0 -3 0) '
+            f'(layer "F.SilkS"))\n' + ''.join(pads) + '  )\n')
+
+
+def _cap(ref, x, y, uid):
+    """A vertical 0603: pad 1 (+3V3) above, pad 2 (GND) below."""
+    return (f'  (footprint "C:C_0603" (layer "F.Cu") (uuid "{uid}") '
+            f'(at {x} {y})\n'
+            f'    (property "Reference" "{ref}" (at 0 -1.5 0) '
+            f'(layer "F.SilkS"))\n'
+            f'    (pad "1" smd rect (at 0 -0.8) (size 0.95 0.9) '
+            f'(layers "F.Cu" "F.Mask" "F.Paste") (net 1 "+3V3"))\n'
+            f'    (pad "2" smd rect (at 0 0.8) (size 0.95 0.9) '
+            f'(layers "F.Cu" "F.Mask" "F.Paste") (net 2 "GND"))\n'
+            f'  )\n')
+
+
+def _shared_cap_board():
+    """U1's pin 1 and U2's pin 1 each 3.275 mm from C1's +3V3 pad; C2 on the
+    rail, 5.86 mm from either, serving neither."""
+    nets = ''.join(f' (net {k} "{v}")\n' for k, v in NETS.items())
+    text = ('(kicad_pcb (version 20240108) (generator "t1188")\n'
+            ' (general (thickness 1.6))\n'
+            ' (layers (0 "F.Cu" signal) (31 "B.Cu" signal)\n'
+            '  (44 "Edge.Cuts" user) (37 "F.SilkS" user) (39 "F.Mask" user)\n'
+            '  (35 "F.Paste" user) (49 "F.Fab" user) (47 "F.CrtYd" user))\n'
+            ' (setup)\n (net 0 "")\n' + nets +
+            ' (gr_rect (start 0 0) (end 40 30) (stroke (width 0.1) '
+            '(type solid)) (fill no) (layer "Edge.Cuts"))\n'
+            + _ic('U1', 13.0, 15.0, +1, 'u1', (3, 4, 5, 6, 7, 8))
+            + _ic('U2', 27.0, 15.0, -1, 'u2', (3, 4, 5, 6, 7, 8))
+            + _cap('C1', 20.0, 13.9, 'c1')
+            + _cap('C2', 20.0, 19.5, 'c2')
+            + ')\n')
+    path = os.path.join(tempfile.mkdtemp(dir=_TMP.name), 'shared.kicad_pcb')
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write(text)
+    return evidence(path, 'the #1188 fixture')
+
+
+def _pin_intent(limit=2.5):
+    return fp.intent_from_dict({'schema': 1, 'kind': fp.KIND, 'units': 'mm',
+                                'decaps': {'max_pin_distance_mm': limit}})
+
+
+def _pin_findings(intent, board, moves=()):
+    out = board
+    if moves:
+        out = os.path.join(tempfile.mkdtemp(dir=_TMP.name), 'after.kicad_pcb')
+        _quiet(write_placed_output, board, out, list(moves))
+    g = _quiet(fp.grade, intent, _parse(out), out, group_sources=SOURCES,
+               clearance=CLEARANCE)
+    return sorted((v.ref, str(v.measured['pad']), v.measured['cap'],
+                   v.measured['gap_mm'])
+                  for v in g.errors if v.rule == 'decap_pin_distance')
+
+
+def _rung(board, intent, **kw):
+    return _quiet(seeder.repair_placement, _parse(board), board, intent,
+                  group_sources=SOURCES, clearance=CLEARANCE,
+                  repair_decaps=True, **kw)
+
+
+def test_1188_a_cap_no_pin_relies_on_serves_first():
+    board = _shared_cap_board()
+    intent = _pin_intent()
+    before = _pin_findings(intent, board)
+    assert before == [('U1', '1', 'C1', 3.275), ('U2', '1', 'C1', 3.275)], \
+        before
+    res = _rung(board, intent)
+    after = _pin_findings(intent, board, res['moves'])
+    assert after == [], (after, res['notes'])
+    rows = {(c, x['ic']): (x['result'], x.get('shared'))
+            for c, r in res['decap_rung'].items() for x in r['tried']}
+    # U1 first (findings in IC order): C2 is relied on by no pin, so it is
+    # tried before C1, which U2's failing pin has as its nearest cap.
+    assert rows.get(('C2', 'U1')) == ('seated', False), rows
+    assert ('C1', 'U1') not in rows, rows
+    # ...after which U1 no longer needs C1, so C1 is free for U2.
+    assert rows.get(('C1', 'U2')) == ('seated', False), rows
+    assert not res['unresolved'], (res['unresolved'], res['notes'])
+    assert {'U1', 'U2'} <= set(res['repaired']), res['repaired']
+    print(f"  PASS: {before} -> no pin finding; rows {rows}")
+
+
+def test_1188_the_nearest_cap_alone_serves_neither_and_the_note_names_it():
+    """The old rung's candidate set -- the finding's nearest cap only --
+    reproduced by narrowing the ranking to it: C1 can move toward neither
+    pin without worsening the other, so both stay. Each IC's closing note
+    names C1 and its result instead of only saying the IC did not move."""
+    board = _shared_cap_board()
+    intent = _pin_intent()
+    real = seeder._DecapView.rank_caps
+
+    def nearest_only(self, targets):
+        got = real(self, targets)
+        best = min(got, key=lambda t: (t[2], t[0]))
+        return [best]
+    seeder._DecapView.rank_caps = nearest_only
+    try:
+        res = _rung(board, intent)
+    finally:
+        seeder._DecapView.rank_caps = real
+    after = _pin_findings(intent, board, res['moves'])
+    assert [r for r, *_ in after] == ['U1', 'U2'], after
+    assert sorted(res['unresolved']) == ['U1', 'U2'], res['unresolved']
+    for ic in ('U1', 'U2'):
+        note = [n for n in res['notes'] if n.startswith(f'{ic}: UNRESOLVED')]
+        assert note and 'never the IC' in note[0] \
+            and 'pin 1: C1 (' in note[0], res['notes']
+    print(f"  PASS: nearest-only leaves both: {note[0]}")
+
+
+def test_1188_cli_reports_the_cleared_board():
+    board = _shared_cap_board()
+    ipath = os.path.join(os.path.dirname(board), 'intent.json')
+    import json
+    with open(ipath, 'w', encoding='utf-8') as fh:
+        json.dump({'schema': 1, 'kind': fp.KIND, 'units': 'mm',
+                   'decaps': {'max_pin_distance_mm': 2.5}}, fh)
+    out = os.path.join(os.path.dirname(board), 'out.kicad_pcb')
+    r = check([sys.executable, '-X', 'utf8', PLACE_SEED, board, out,
+               '--intent', ipath, '--repair', '--repair-decaps',
+               '--clearance', str(CLEARANCE)], accept=True,
+              timeout=RUN_ALL_TIMEOUT)
+    line = [ln for ln in r.stdout.splitlines() if ln.startswith('Repair:')]
+    assert line and '0 unresolved' in line[0], r.stdout[-1500:]
+    assert _pin_findings(_pin_intent(), evidence(out, 'the output')) == []
+    print(f"  PASS: {line[0]}")
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +246,78 @@ def _esp_c2_at(x, y):
     doc = _quiet(fp.emit_intent, _parse(out), out, decaps_from=ESP)
     assert 'C2' in (doc['decaps'].get('within_radius_refs') or ()), doc
     return out, fp.intent_from_dict(doc)
+
+
+def _c2(intent, board, moves=()):
+    out = board
+    if moves:
+        out = os.path.join(tempfile.mkdtemp(dir=_TMP.name), 'after.kicad_pcb')
+        _quiet(write_placed_output, board, out, list(moves))
+    g = _quiet(fp.grade, intent, _parse(out), out, group_sources=SOURCES,
+               clearance=CLEARANCE)
+    return [(v.rule, v.severity, v.measured.get('distance_mm'))
+            for v in g.violations if v.ref == 'C2']
+
+
+def test_1150a_a_stranded_held_cap_is_pulled_back_by_the_rung():
+    board, intent = _esp_c2_at(118.0, 95.0)
+    assert _c2(intent, board) == [('decap_ungraded', 'error', 5.6441)], \
+        _c2(intent, board)
+    off = _quiet(seeder.repair_placement, _parse(board), board, intent,
+                 group_sources=SOURCES, clearance=CLEARANCE)
+    assert 'C2' not in off['violators'], off['violators']
+    assert 'C2' not in {m['reference'] for m in off['moves']}, off['moves']
+    on = _quiet(seeder.repair_placement, _parse(board), board, intent,
+                group_sources=SOURCES, clearance=CLEARANCE,
+                repair_decaps=True)
+    row = (on['decap_rung'].get('C2') or {}).get('tried') or []
+    assert [(x['rule'], x['result']) for x in row] == [
+        ('decap_ungraded', 'seated')], row
+    assert 'C2' in on['violators'] and 'C2' in on['repaired'], on
+    assert _c2(intent, board, on['moves']) == [], _c2(intent, board,
+                                                      on['moves'])
+    print(f"  PASS: C2 5.6441 mm out (held) -> seated "
+          f"{row[0]['moved_mm']} mm, no finding left")
+
+
+def test_1150a_a_held_cap_the_rung_cannot_seat_is_unresolved():
+    """The rung found nothing: the cap is reported UNRESOLVED on its
+    `decap_ungraded`, by the same honesty re-grade, never silent."""
+    board, intent = _esp_c2_at(118.0, 95.0)
+    real = seeder._DecapView.accept
+    seeder._DecapView.accept = (
+        lambda self, cap, **kw: (lambda x, y, rot: False))
+    try:
+        on = _quiet(seeder.repair_placement, _parse(board), board, intent,
+                    group_sources=SOURCES, clearance=CLEARANCE,
+                    repair_decaps=True)
+    finally:
+        seeder._DecapView.accept = real
+    assert 'C2' in on['unresolved'], (on['unresolved'], on['notes'])
+    assert on['unresolved_claims']['C2'] == ['decap_ungraded'], on
+    note = [n for n in on['notes'] if n.startswith('C2: UNRESOLVED')]
+    assert note and 'no_legal_pose_within_limit' in note[0], on['notes']
+    print(f"  PASS: {note[0]}")
+
+
+def test_1150b_a_decap_only_cap_is_not_seated_farther_from_its_ic():
+    for (x, y), was in (((119.0, 95.2), 4.6253), ((119.3, 95.0), 4.3647),
+                        ((119.0, 96.0), 4.575)):
+        board, intent = _esp_c2_at(x, y)
+        assert _c2(intent, board) == [('decap_distance', 'error', was)], \
+            _c2(intent, board)
+        res = _quiet(seeder.repair_placement, _parse(board), board, intent,
+                     group_sources=SOURCES, clearance=CLEARANCE)
+        assert 'C2' in res['violators'], res['violators']
+        assert 'C2' not in {m['reference'] for m in res['moves']}, (
+            (x, y), res['moves'])
+        assert _c2(intent, board, res['moves']) == [
+            ('decap_distance', 'error', was)]
+        assert 'C2' in res['unresolved'], res['unresolved']
+        why = [n for n in res['notes'] if n.startswith(
+            'C2: charged by decap rules only')]
+        assert why, res['notes']
+    print(f"  PASS: C2 stays at {was} mm (was nudged to 4.659); {why[0]}")
 
 
 def test_1150c_the_gate_holds_a_stranded_held_cap():

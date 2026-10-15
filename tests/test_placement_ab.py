@@ -999,21 +999,26 @@ ROWS += [
         'signal': 'intent_errors_enforced',
         'guard': ('crossings', 'hpwl', 'intent_errors_other',
                   'body_blocking'),
-        # REJECTED as a default, rows kept (the flag stays opt-in): it
-        # improves the boards whose seed leaves a repairable decap error and
-        # regresses none, but three of five seeds leave nothing it may fix --
-        # none charged, or only a cap whose fixing pose is disproportionate
-        # -- so it fails "improve on N-1". `derive_decaps='strict'` measured
-        # identically on all five, so those rows were not kept.
-        'expect': ('improve' if b in ('watchy.kicad_pcb', 'tigard.kicad_pcb')
-                   else 'neutral'),
+        # REJECTED as a default, rows kept (the flag stays opt-in): it clears
+        # decap errors on the boards whose seed leaves a repairable one, but
+        # three of five seeds leave nothing it may fix -- none charged, or
+        # only a cap whose fixing pose is disproportionate -- so it fails
+        # "improve on N-1". Since #1188/#1150 the rung tries every cap on a
+        # failing pin's rail, so on watchy it clears more of them than the
+        # one nearest cap could, and the caps it seats beside the ICs cost
+        # the crossings guard: that row regresses on its guard, not its
+        # signal. `derive_decaps='strict'` measured identically on all five,
+        # so those rows were not kept.
+        'expect': {'watchy.kicad_pcb': 'regress',
+                   'tigard.kicad_pcb': 'improve'}.get(b, 'neutral'),
         'rejected': True,
-        'why': ('MECHANISM: the ordinary repair seat is `_try_place` at '
-                'the part\'s CURRENT pose, which has no decap target, so '
-                'a decap violator is never moved; the ON arm seats each '
-                'charged cap toward its IC\'s pin and keeps the pose only '
-                'when the charged finding is gone, no finding is new or '
-                'worse, and the move is proportionate.'),
+        'why': ('MECHANISM: the ordinary repair seat has no decap target, '
+                'so a part charged only by decap rules is never moved; the '
+                'ON arm ranks every cap on a failing pin\'s rail (caps no '
+                'other pin relies on first), pulls back held caps stranded '
+                'past the search radius, and keeps a pose only when the '
+                'charged finding is gone, no finding is new or worse, and '
+                'the move is proportionate.'),
     }
     for b, ign in (('esp_prog.kicad_pcb', ['GND']),
                    ('splitflap_driver.kicad_pcb', ['GND']),

@@ -254,8 +254,10 @@ class DecapOnlySeedsAreRepairedAndRanked(unittest.TestCase):
         for row in doc['rows']:
             if row['decap_only']:
                 self.assertTrue(row['gated'])
+                # The rung's rules, read from the seeder as compare_seeds
+                # reads them (#1150 a added `decap_ungraded`).
                 self.assertTrue(set(row['grade_error_rules'])
-                                <= {'decap_distance', 'decap_pin_distance'})
+                                <= cs._decap_rules())
         decap = all(row['decap_only'] for row in gated)
         self.assertTrue(decap, 'seeds 0 and 2 gate on decap_distance alone')
         self.assertEqual('(place_seed --repair --repair-decaps)' in r.stdout,
@@ -286,10 +288,12 @@ class DecapOnlySeedsAreRepairedAndRanked(unittest.TestCase):
             # Decap rules and nothing else. Since #1249 the reference derives
             # esp_prog's PIN limit too (U2's VIN and VOUT are supply pins by
             # role: 4 covered pins, where 2 withheld it), so a seed may gate
-            # on decap_pin_distance as well.
+            # on decap_pin_distance as well -- and since #1150 (a) on a held
+            # cap stranded past the radius (`decap_ungraded`), which the
+            # rung now pulls back.
             self.assertTrue(row['grade_error_rules'], row)
             self.assertLessEqual(set(row['grade_error_rules']),
-                                 {'decap_distance', 'decap_pin_distance'})
+                                 cs._decap_rules())
             self.assertEqual(bool(row.get('repaired')), row['repair']['rc'] == 0)
         fixed = [row for row in tried if row.get('repaired')]
         self.assertTrue(fixed, 'no repair cleared its seed')

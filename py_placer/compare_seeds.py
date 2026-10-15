@@ -206,8 +206,10 @@ def _decap_rules():
 
 def decap_only(summary):
     """True when a gated seed's ONLY gate failure is decap rules (#1191):
-    its own grade errors are all `decap_distance` / `decap_pin_distance`,
-    and no other gate channel fired (no part unseated, no pad or hole
+    its own grade errors are all rules the decap rung repairs
+    (`DECAP_RUNG_RULES`: `decap_distance`, `decap_pin_distance`, and since
+    #1150 a held cap stranded past the radius, `decap_ungraded`), and no
+    other gate channel fired (no part unseated, no pad or hole
     conflict seeded, no keep-out copper, no pad copper left past the outline
     (#1241), no body inside another's or courtyard-blocking pair seeded
     (#1258), no fixed pose refused). That is the

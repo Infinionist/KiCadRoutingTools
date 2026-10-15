@@ -130,8 +130,8 @@ ROWS = [
 
     # The rung moves the IC, not the cap.
     ('the-rung-moves-the-ic', 's',
-     "            cap, ic, pad = v.ref, m.get('ic'), None\n",
-     "            cap, ic, pad = m.get('ic'), v.ref, None\n",
+     "            per_cap.append((str(v.ref), str(m.get('ic')), finding_key(v),\n",
+     "            per_cap.append((str(m.get('ic')), str(v.ref), finding_key(v),\n",
      (T1066,), 'KILLED'),
 
     # A fixing pose that adds a finding elsewhere is kept.
@@ -169,7 +169,7 @@ ROWS = [
 
     # A locked cap is searched like any other.
     ('the-rung-moves-a-locked-cap', 's',
-     "        if part.locked:\n"
+     "        if state.parts[cap].locked:\n"
      "            row['result'] = 'locked'\n",
      "        if False:\n"
      "            row['result'] = 'locked'\n",
