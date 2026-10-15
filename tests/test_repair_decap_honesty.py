@@ -558,7 +558,9 @@ def test_the_decap_rung_seats_a_cap_and_refuses_a_disproportionate_move():
     `decap_distance on C8 (worse)`). Since #1188 the search asks only poses
     that clear the claim and make no other decap finding new or worse, and
     there is none within the limit: `no_legal_pose_within_limit`, which is
-    what is true. The refusal itself is pinned with the budget shrunk to
+    what is true -- and none with the movable passives near U9 set aside
+    either (#1150 follow-up's aside pass, `no_pose_with_a_passive_aside`).
+    The refusal itself is pinned with the budget shrunk to
     0.01mm: C2's fixing pose is then out of proportion, the search within
     the budget of C2's own pose finds nothing, and C2 stays and says so."""
     with tempfile.TemporaryDirectory() as td:
@@ -574,7 +576,8 @@ def test_the_decap_rung_seats_a_cap_and_refuses_a_disproportionate_move():
         rung = {c: [x['result'] for x in r['tried']]
                 for c, r in on['decap_rung'].items()}
         assert rung.get('C2') == ['seated'], rung
-        assert rung.get('C8') == ['no_legal_pose_within_limit'], rung
+        assert rung.get('C8') == ['no_legal_pose_within_limit',
+                                  'no_pose_with_a_passive_aside'], rung
         assert 'C2' not in still_on and 'C8' in still_on, still_on
         assert 'C2' in on['repaired'] and 'C8' in on['unresolved'], on
         assert not set(on['repaired']) & still_on, (on['repaired'], still_on)

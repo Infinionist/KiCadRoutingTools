@@ -1988,12 +1988,23 @@ re-seating 85/92 while leaving its zone targets unmoved):
   A seat is KEPT only when that finding is gone, no finding anywhere is new or
   worse, the overlap / off-board numbers did not grow, and the move is
   proportionate (the repair's own `DISPROPORTION_RATIO` / `_FLOOR_MM`,
-  against how far the cap is past its limit). An IC still carrying a pin
+  against how far the cap is past its limit). A finding still open because
+  every pose within the limit is taken is asked once more with the movable
+  PASSIVES near its target set aside (a resistor, capacitor, inductor or
+  ferrite with two copper pads, unlocked and undeclared -- never an IC, a
+  diode, a connector or a marker): the cap takes a pose with at most two of
+  them in its way, each of those moves to the nearest pose of its own within
+  the repair's cap ladder that creates no decap finding and makes none
+  worse (a decap set aside stays within its own limits), and the grade
+  judges the cap and the moved passives as one move. A passive moved aside
+  is in `moves` and in `decap_rung` (`moved_aside`, `aside_for`), not in
+  `repaired`. An IC still carrying a pin
   finding is UNRESOLVED with a note naming the caps tried for each pin and
   their result. Its record is `JSON_SUMMARY.decap_rung`. It stays
   off by default: of `tests/test_placement_ab.py`'s five `repair-decaps-*`
-  rows one improves, one (watchy) regresses on its crossings guard while
-  clearing decap errors, and three are neutral, short of the N-1 rule.
+  rows one improves, three regress on a guard while clearing their decap
+  errors (watchy on crossings; esp_prog and glasgow on hpwl, from a passive
+  set aside), and one is neutral, short of the N-1 rule.
   The repair also reads check_assembly's own channels (fa10 P1): a part
   over a pin frame's drilled pin is charged absolutely (`Pin census`,
   #1212), and the COURTYARD channel (`Courtyard census`, #1182) --

@@ -1007,16 +1007,23 @@ ROWS += [
         # failing pin's rail, so on watchy it clears more of them than the
         # one nearest cap could, and the caps it seats beside the ICs cost
         # the crossings guard: that row regresses on its guard, not its
-        # signal. `derive_decaps='strict'` measured identically on all five,
-        # so those rows were not kept.
+        # signal. Since the aside pass (#1150 follow-up) the rung clears the
+        # last decap error of esp_prog's and glasgow's seeds too, by moving
+        # a passive out of the only room, and the moved passive lengthens
+        # its nets: those rows regress on the hpwl guard, not their signal.
+        # `derive_decaps='strict'` measured identically on all five, so those
+        # rows were not kept.
         'expect': {'watchy.kicad_pcb': 'regress',
+                   'esp_prog.kicad_pcb': 'regress',
+                   'glasgow_revC.kicad_pcb': 'regress',
                    'tigard.kicad_pcb': 'improve'}.get(b, 'neutral'),
         'rejected': True,
         'why': ('MECHANISM: the ordinary repair seat has no decap target, '
                 'so a part charged only by decap rules is never moved; the '
                 'ON arm ranks every cap on a failing pin\'s rail (caps no '
                 'other pin relies on first), pulls back held caps stranded '
-                'past the search radius, and keeps a pose only when the '
+                'past the search radius, sets a movable passive aside when '
+                'it takes the only room, and keeps a pose only when the '
                 'charged finding is gone, no finding is new or worse, and '
                 'the move is proportionate.'),
     }

@@ -264,8 +264,10 @@ Read `--help` before assuming a flag does not exist. Two runs declared
     `JSON_SUMMARY` for the rest (#1066). Add `--repair-decaps` to seat
     caps at their IC or at the pin a finding names -- any cap on that pin's
     rail, not only the nearest (#1188) -- and to pull back a held cap
-    stranded past the radius (opt-in; `decap_rung` says what it did, and an
-    unresolved IC's note names the caps it tried).
+    stranded past the radius, moving a resistor, capacitor, inductor or
+    ferrite aside when one takes the only room (opt-in; `decap_rung` says
+    what it did, a part it moved aside included, and an unresolved IC's
+    note names the caps it tried).
     Pass `--baseline <input>` too: only then does the repair charge the
     courtyard pairs check_assembly gates (#1182), and on a library that
     draws bodies but no courtyards add `--body-model`, or the seat search

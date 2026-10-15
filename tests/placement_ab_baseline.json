@@ -2630,7 +2630,7 @@
  },
  "repair-decaps-esp_prog": {
   "board": "esp_prog.kicad_pcb",
-  "mark": "neutral",
+  "mark": "regress",
   "off": {
    "body_advisory": 18,
    "body_blocking": 0,
@@ -2657,16 +2657,14 @@
    "body_blocking": 0,
    "courtyard_blocking": 0,
    "courtyard_blocking_area": 0,
-   "crossings": 47,
+   "crossings": 43,
    "edge_facing_pads": 3,
    "health_block_displacement_max_mm": null,
    "health_bus_foreign_crossings": null,
-   "hpwl": 240.97,
-   "intent_errors": 1,
-   "intent_errors_by_rule": {
-    "decap_distance": 1
-   },
-   "intent_errors_enforced": 1,
+   "hpwl": 242.89,
+   "intent_errors": 0,
+   "intent_errors_by_rule": {},
+   "intent_errors_enforced": 0,
    "intent_errors_other": 0,
    "inversions": 15,
    "oob_keepout_copper_amount": 0.0,
@@ -2676,7 +2674,7 @@
  },
  "repair-decaps-glasgow_revC": {
   "board": "glasgow_revC.kicad_pcb",
-  "mark": "neutral",
+  "mark": "regress",
   "off": {
    "body_advisory": 5,
    "body_blocking": 0,
@@ -2704,19 +2702,18 @@
    "body_blocking": 0,
    "courtyard_blocking": 7,
    "courtyard_blocking_area": 12.0745,
-   "crossings": 3419,
+   "crossings": 3415,
    "edge_facing_pads": 10,
    "health_block_displacement_max_mm": 20.3971,
    "health_bus_foreign_crossings": null,
-   "hpwl": 5179.77,
-   "intent_errors": 2,
+   "hpwl": 5180.35,
+   "intent_errors": 1,
    "intent_errors_by_rule": {
-    "decap_distance": 1,
     "edge_connector": 1
    },
-   "intent_errors_enforced": 1,
+   "intent_errors_enforced": 0,
    "intent_errors_other": 1,
-   "inversions": 1750,
+   "inversions": 1751,
    "oob_keepout_copper_amount": 0.0,
    "oob_keepout_copper_count": 0,
    "unseated": 0
@@ -2842,13 +2839,12 @@
    "edge_facing_pads": 1,
    "health_block_displacement_max_mm": null,
    "health_bus_foreign_crossings": null,
-   "hpwl": 772.4,
-   "intent_errors": 11,
+   "hpwl": 769.24,
+   "intent_errors": 10,
    "intent_errors_by_rule": {
-    "decap_distance": 1,
     "edge_connector": 10
    },
-   "intent_errors_enforced": 1,
+   "intent_errors_enforced": 0,
    "intent_errors_other": 10,
    "inversions": 78,
    "oob_keepout_copper_amount": 0.0,

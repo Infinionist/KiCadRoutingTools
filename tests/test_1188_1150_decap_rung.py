@@ -30,6 +30,11 @@ the closing note of an IC names the caps tried for it.
       bringing it closer is not; without the held list the gate is inert on
       it, as before.
 
+The aside pass (#1150 follow-up): U1's pin 1 boxed in by locked resistors and
+its own pads, R1 in the one spot within 1.5 mm. With R1 movable the rung
+seats C1 there and moves R1 aside (in `moves`, not `repaired`); with R1
+locked it does not; with no room for R1 of its own, both are put back.
+
 The ordinary seat (#1150 follow-up): its first rung refuses a pose that
 CREATES a decap finding too, not only one that grows a finding the part is
 already in -- on the #1188 board at a 3.5 mm limit, U1 moved away from C1
@@ -368,6 +373,133 @@ def test_1150c_the_gate_holds_a_stranded_held_cap():
 
 
 # ---------------------------------------------------------------------------
+# A movable passive in the only poses within the limit is moved aside
+# ---------------------------------------------------------------------------
+
+def _res(ref, x, y, uid, n1, n2, locked=False):
+    """A horizontal 0603 resistor on nets `n1` / `n2`."""
+    return (f'  (footprint "R:R_0603" (layer "F.Cu") '
+            + ('(locked yes) ' if locked else '')
+            + f'(uuid "{uid}") (at {x} {y})\n'
+            f'    (property "Reference" "{ref}" (at 0 -1.5 0) '
+            f'(layer "F.SilkS"))\n'
+            f'    (pad "1" smd rect (at -0.8 0) (size 0.9 0.95) '
+            f'(layers "F.Cu" "F.Mask" "F.Paste") (net {n1} "{NETS[n1]}"))\n'
+            f'    (pad "2" smd rect (at 0.8 0) (size 0.9 0.95) '
+            f'(layers "F.Cu" "F.Mask" "F.Paste") (net {n2} "{NETS[n2]}"))\n'
+            f'  )\n')
+
+
+def _boxed_pin_board(lock_r1=False):
+    """U1's supply pin 1 boxed in: locked resistors R2-R6 above it and below
+    to its right, U1's own pads to its left and below, and R1 -- movable --
+    in the one spot within 1.5 mm of it. C1, U1's only cap on +3V3, sits
+    16.95 mm away."""
+    nets = ''.join(f' (net {k} "{v}")\n' for k, v in NETS.items())
+    text = ('(kicad_pcb (version 20240108) (generator "t1188")\n'
+            ' (general (thickness 1.6))\n'
+            ' (layers (0 "F.Cu" signal) (31 "B.Cu" signal)\n'
+            '  (44 "Edge.Cuts" user) (37 "F.SilkS" user) (39 "F.Mask" user)\n'
+            '  (35 "F.Paste" user) (49 "F.Fab" user) (47 "F.CrtYd" user))\n'
+            ' (setup)\n (net 0 "")\n' + nets +
+            ' (gr_rect (start 0 0) (end 40 30) (stroke (width 0.1) '
+            '(type solid)) (fill no) (layer "Edge.Cuts"))\n'
+            + _ic('U1', 13.0, 15.0, +1, 'u1', (3, 4, 5, 6, 7, 8))
+            + _cap('C1', 32.0, 22.0, 'c1')
+            + _res('R1', 17.8, 13.1, 'r1', 3, 4, locked=lock_r1)
+            + _res('R2', 18.4, 11.6, 'r2', 5, 6, locked=True)
+            + _res('R3', 17.8, 14.9, 'r3', 7, 8, locked=True)
+            + _res('R4', 15.3, 11.6, 'r4', 5, 7, locked=True)
+            + _res('R5', 12.6, 11.6, 'r5', 6, 8, locked=True)
+            + _res('R6', 9.9, 11.6, 'r6', 6, 7, locked=True)
+            + ')\n')
+    path = os.path.join(tempfile.mkdtemp(dir=_TMP.name), 'boxed.kicad_pcb')
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write(text)
+    return evidence(path, 'the boxed-pin fixture')
+
+
+def _rows(res, ref):
+    return [(r['result'], r.get('lifted'), r.get('stuck'))
+            for r in (res['decap_rung'].get(ref) or {}).get('tried') or ()]
+
+
+def test_1150_followup_a_passive_in_the_way_is_moved_aside():
+    """Every pose within 1.5 mm of U1's pin 1 that C1 could take is refused:
+    U1's own pads, locked R2-R6, and R1. R1 is a movable passive, so the
+    rung asks again with it set aside: C1 is seated beside the pin, R1 goes
+    to the nearest pose of its own within the repair's cap ladder (asked
+    whether it makes a decap finding new or worse -- it is no cap, so
+    nothing), and the grade keeps the two moves together. R1's move is in
+    `moves`, but R1 was no violator and is not counted repaired."""
+    board = _boxed_pin_board()
+    intent = _pin_intent(1.5)
+    assert _pin_findings(intent, board) == [('U1', '1', 'C1', 16.9535)]
+    asked = []
+    real = seeder._DecapView.no_worse
+
+    def spy(self, ref, findings):
+        asked.append(ref)
+        return real(self, ref, findings)
+    seeder._DecapView.no_worse = spy
+    try:
+        res = _rung(board, intent)
+    finally:
+        seeder._DecapView.no_worse = real
+    assert _pin_findings(intent, board, res['moves']) == [], res['notes']
+    moved = {m['reference']: m for m in res['moves']}
+    assert set(moved) == {'C1', 'R1'}, moved
+    assert _rows(res, 'C1') == [('no_legal_pose_within_limit', None, None),
+                                ('seated', ['R1'], None)], _rows(res, 'C1')
+    assert _rows(res, 'R1') == [('moved_aside', None, None)]
+    assert 'R1' in asked, asked
+    d = ((moved['R1']['new_x'] - 17.8) ** 2
+         + (moved['R1']['new_y'] - 13.1) ** 2) ** 0.5
+    assert 0 < d <= seeder.REPAIR_CAPS_MM[-1] + 1e-9, d
+    assert 'R1' not in res['repaired'] and 'R1' not in res['violators']
+    assert not res['unresolved'], (res['unresolved'], res['notes'])
+    note = [n for n in res['notes'] if n.startswith('C1: decap rung seated')]
+    assert note and 'moving R1' in note[0] and 'aside' in note[0], note
+    print(f"  PASS: {note[0]}")
+
+
+def test_1150_followup_a_locked_blocker_is_not_moved_aside():
+    """The same board with R1 locked: nothing may be set aside, so the
+    rung's one search fails and U1 stays unresolved, naming what it tried."""
+    board = _boxed_pin_board(lock_r1=True)
+    intent = _pin_intent(1.5)
+    res = _rung(board, intent)
+    assert not res['moves'], res['moves']
+    assert _rows(res, 'C1') == [('no_legal_pose_within_limit', None, None)]
+    assert res['unresolved'] == ['U1'], res['unresolved']
+    print("  PASS: R1 locked -- no aside, U1 unresolved")
+
+
+def test_1150_followup_a_blocker_with_no_pose_puts_everything_back():
+    """R1 set aside must find a pose of its own: with the blocker's ladder
+    shrunk to 0.05 mm it has none beside C1's seat, so C1 and R1 are both
+    put back (`blocker_has_no_pose`, R1 named), the search is asked again
+    past the poses that needed R1, and finds none."""
+    board = _boxed_pin_board()
+    intent = _pin_intent(1.5)
+    real = seeder.REPAIR_CAPS_MM
+    seeder.REPAIR_CAPS_MM = (0.05,)
+    try:
+        res = _rung(board, intent)
+    finally:
+        seeder.REPAIR_CAPS_MM = real
+    assert not res['moves'], res['moves']
+    assert _rows(res, 'C1') == [
+        ('no_legal_pose_within_limit', None, None),
+        ('blocker_has_no_pose', ['R1'], 'R1'),
+        ('no_pose_with_a_passive_aside', None, None)], _rows(res, 'C1')
+    note = [n for n in res['notes'] if 'put back' in n]
+    assert note and 'R1 has no pose' in note[0], res['notes']
+    assert res['unresolved'] == ['U1'], res['unresolved']
+    print(f"  PASS: {note[0]}")
+
+
+# ---------------------------------------------------------------------------
 # The ordinary seat creates no decap finding where it can avoid one
 # ---------------------------------------------------------------------------
 
@@ -458,7 +590,7 @@ def test_the_rung_shortcuts_give_the_measured_verdicts():
     real = seeder._repair_decap_rung
 
     def grab(state, pcb_data, graded, grader, limits, rot_ladder, notes,
-             view=None):
+             view=None, **_kw):
         got.update(state=state, pcb=pcb_data, graded=graded, limits=limits,
                    view=view, ladder=rot_ladder)
         return {}

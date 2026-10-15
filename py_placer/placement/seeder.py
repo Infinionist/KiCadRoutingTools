@@ -8767,7 +8767,7 @@ class _DecapView:
 
 
 def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
-                       notes, view=None) -> Dict[str, Dict]:
+                       notes, view=None, frozen=()) -> Dict[str, Dict]:
     """#1066 (b): seat a cap for each decap rule the grade charges.
 
     `repair_placement`'s ordinary seat is `_try_place` at the part's CURRENT
@@ -8800,8 +8800,19 @@ def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
     A claim an earlier seat already cleared is skipped. Opt-in
     (`repair_decaps`), because it moves parts the repair did not move before.
 
-    Returns `{cap: {'moved': bool, 'tried': [row, ...]}}`; a pin row also
-    carries `shared` (the rank it was tried at)."""
+    A finding still open after that, whose caps found no pose (or only one
+    out of proportion), is asked once more with the movable PASSIVES near
+    its target set aside (#1150 follow-up, `_aside_candidates`: a resistor,
+    capacitor, inductor or ferrite, two copper pads, not locked, not in
+    `frozen` -- never an IC): a pose with at most ASIDE_MAX of them in the
+    way is taken, each of those is moved to the nearest pose of its own
+    within the repair's cap ladder that creates no decap finding and makes
+    none worse, and the grade judges the whole move. A blocker with no pose
+    of its own is not asked again for that cap (ASIDE_TRIES).
+
+    Returns `{ref: {'moved': bool, 'tried': [row, ...]}}`, a ref a cap or a
+    passive moved aside for one (`aside_for`, rows `moved_aside`); a pin
+    row also carries `shared` (the rank it was tried at)."""
     from placement import floorplan as _fp
     from .legality import EPS as _eps
     if view is None:
@@ -8845,11 +8856,58 @@ def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
         return out.setdefault(cap, {'moved': False, 'tried': []})
 
     def _seat(cap, ic, pad, claim, target, limit, budget, accept, before,
-              leg0, row):
+              leg0, row, lift=(), avoid=()):
         """One cap toward `target`, kept only when the grade calls it a fix.
-        True when kept."""
+        True when kept.
+
+        `lift` (#1150 follow-up): movable passives the search may treat as
+        absent. A pose is then taken only where nothing else is in the way
+        and at most `ASIDE_MAX` of them are, none in `avoid`; those are moved
+        aside -- each to the nearest pose within the repair's cap ladder of
+        its own that makes no decap finding new or worse
+        (`_DecapView.no_worse`, so a decap blocker stays within its own
+        reach) -- and the grade judges the cap and the moved blockers
+        together, as one move. Anything short of that puts every one of them
+        back; a blocker with no pose is named in `row['stuck']`."""
         part = state.parts[cap]
         ox, oy, orot = part.x, part.y, part.rot
+        lifted = set(lift)
+        avoid = set(avoid)
+        aside: Dict[str, Tuple[float, float, float]] = {}
+
+        def _blocking(x, y, rot):
+            """The parts in the way of `cap` at this pose, at the state's
+            clearance, in the order the seat test names them -- or None when
+            one of them is not liftable (or in `avoid`), or more than
+            ASIDE_MAX are. The seat test's pair checks are per part, so
+            naming each refusing part in turn and setting it aside finds
+            them all."""
+            out: List[str] = []
+            for _ in range(ASIDE_MAX + 1):
+                if pose_ok(state, cap, x, y, rot, set(out)):
+                    return out
+                v = state.candidate_veto(cap, x, y, rot, set(out))
+                b = v[1] if v is not None else None
+                if b not in lifted or b in avoid or b in out:
+                    return None
+                out.append(b)
+            return None
+
+        if lifted:
+            acc_in = accept
+
+            def accept(x, y, rot):
+                if acc_in is not None and not acc_in(x, y, rot):
+                    return False
+                if not pose_ok(state, cap, x, y, rot, lifted):
+                    return False
+                return _blocking(x, y, rot) is not None
+
+        def _restore():
+            for b, pose in aside.items():
+                state.apply_move(b, *pose)
+            aside.clear()
+            state.apply_move(cap, ox, oy, orot)
         # The rule measures to the chip's pad BOX (or the cap's own pads),
         # not to the target pad's centre, so a pose farther than the limit
         # from that centre can satisfy it: the search widens once, to twice
@@ -8867,13 +8925,26 @@ def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
                 # Against the parts within reach of the pass's own disc
                 # (`_search_scope`: the same verdicts, not 270 parts a pose).
                 with _search_scope(state, cap, tx, ty, disp):
-                    if _try_place(state, cap, tx, ty, set(), max_disp=disp,
-                                  rotations=rot_ladder(cap),
-                                  accept=acc) is not None:
-                        return True
+                    clr = _try_place(state, cap, tx, ty, set(lifted),
+                                     max_disp=disp, rotations=rot_ladder(cap),
+                                     accept=acc)
+                if clr is not None:
+                    found['clr'] = clr
+                    return True
+            return False
+        found: Dict[str, float] = {}
+        # With parts lifted, the widest pass at the floor clearance first: a
+        # search that can take no pose fails there in one pass (every
+        # conjunct here, the lifted ones' count included, refuses more as
+        # the clearance grows -- `_any_pose_at_floor`).
+        if lifted and not _any_pose_at_floor(
+                state, cap, tx, ty, 2.0 * limit, rot_ladder(cap), accept,
+                exclude=lifted):
+            row['result'] = 'no_pose_with_a_passive_aside'
             return False
         if not _search(accept):
-            row['result'] = 'no_legal_pose_within_limit'
+            row['result'] = ('no_pose_with_a_passive_aside' if lifted
+                             else 'no_legal_pose_within_limit')
             return False
         d = math.hypot(part.x - ox, part.y - oy)
         # The ordinary repair's proportion rule, in the violation's own
@@ -8899,6 +8970,51 @@ def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
                     f"(budget {budget:.2f}mm) -- left in place")
                 return False
             d = math.hypot(part.x - ox, part.y - oy)
+        if lifted:
+            # The parts in the cap's way where it now stands, at the
+            # clearance the seat was found at; each goes aside with the cap
+            # in place, or the whole move is put back.
+            full = state.clearance
+            _set_seat_clearance(state, found['clr'])
+            try:
+                way = _blocking(part.x, part.y, part.rot) or []
+            finally:
+                _set_seat_clearance(state, full)
+            for b in way:
+                bp = state.parts[b]
+                aside[b] = (bp.x, bp.y, bp.rot)
+                nw = view.no_worse(b, [v for v in before if is_decap_rule(
+                    v.rule) and v.severity == _fp.ERROR and b in {
+                        v.ref, (v.measured or {}).get('cap'),
+                        (v.measured or {}).get('ic')}])
+                seated = False
+                # The cap ladder's widest search, at the ladder's weakest
+                # clearance, first: a pose none of them can take fails here
+                # in one pass (`_any_pose_at_floor`).
+                if _any_pose_at_floor(state, b, bp.x, bp.y,
+                                      REPAIR_CAPS_MM[-1], rot_ladder(b), nw):
+                    for step in REPAIR_CAPS_MM:
+                        with _search_scope(state, b, bp.x, bp.y, step):
+                            if _try_place(state, b, aside[b][0],
+                                          aside[b][1], set(), max_disp=step,
+                                          rotations=rot_ladder(b),
+                                          accept=nw) is not None:
+                                seated = True
+                                break
+                if not seated:
+                    _restore()
+                    row['result'] = 'blocker_has_no_pose'
+                    row['lifted'] = list(way)
+                    row['stuck'] = b
+                    notes.append(
+                        f"{cap}: decap rung found a pose {d:.2f}mm away at "
+                        f"{ic}" + (f" pad {pad}" if pad is not None else '')
+                        + f" with {', '.join(way)} moved aside, but {b} has "
+                        f"no pose within {REPAIR_CAPS_MM[-1]:g}mm of its own"
+                        + (" that keeps its decap findings no worse and "
+                           "creates none" if nw is not None else '')
+                        + " -- put back")
+                    return False
         after, leg1 = _grade_here()
         # Per FINDING (`new_or_worse`), not per claim: `grade_delta` cannot
         # see a second pin stranded under a claim its IC already carries, or
@@ -8924,13 +9040,18 @@ def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
                      and any(v.rule == 'decap_ungraded' and v.ref == cap
                              for v in after)))
         if added or still:
-            state.apply_move(cap, ox, oy, orot)
+            moved_aside = list(aside)
+            _restore()
             row['result'] = 'reverted'
             row['added'] = added
             row['still'] = still
+            if moved_aside:
+                row['lifted'] = moved_aside
             notes.append(
                 f"{cap}: decap rung found a pose {d:.2f}mm away at {ic}"
                 + (f" pad {pad}" if pad is not None else '')
+                + (f" with {', '.join(moved_aside)} moved aside"
+                   if moved_aside else '')
                 + " and REVERTED it -- "
                 + '; '.join(([f"it would add {', '.join(added)}"]
                              if added else [])
@@ -8940,9 +9061,30 @@ def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
         _rec(cap)['moved'] = True
         row['result'] = 'seated'
         row['moved_mm'] = round(d, 3)
+        said = []
+        for b, (bx, by, br) in aside.items():
+            bp = state.parts[b]
+            bd = math.hypot(bp.x - bx, bp.y - by)
+            rec = _rec(b)
+            rec['moved'] = True
+            rec.setdefault('aside_for', []).append(cap)
+            brow = {'rule': claim[0], 'ref': claim[1], 'ic': ic, 'pad': pad,
+                    'result': 'moved_aside', 'for': cap,
+                    'moved_mm': round(bd, 3)}
+            turned = abs(((bp.rot - br) + 180.0) % 360.0 - 180.0) > 1e-9
+            if turned:
+                brow['rotated'] = [br, bp.rot]
+            rec['tried'].append(brow)
+            said.append(f"{b} {bd:.2f}mm"
+                        + (f" (turned {br:g} -> {bp.rot:g})" if turned
+                           else ''))
+        if said:
+            row['lifted'] = list(aside)
         notes.append(f"{cap}: decap rung seated it {d:.2f}mm from its pose, "
                      f"toward {ic}" + (f" pad {pad}" if pad is not None
                                        else '')
+                     + (f", moving {', '.join(said)} aside (a movable "
+                        f"passive in its way)" if said else '')
                      + f" -- {claim[0]} cleared, nothing added")
         return True
 
@@ -8953,6 +9095,12 @@ def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
             notes.append(f"decap rung: the grade is unavailable "
                          f"({type(exc).__name__}: {exc}) -- nothing seated")
             return None, exc
+
+    # Findings no cap could serve where the board stands, with the caps whose
+    # search found no pose (or only one out of proportion): the aside pass
+    # below asks them again with movable passives out of the way.
+    stuck: List[Tuple] = []
+    _BLOCKED = ('no_legal_pose_within_limit', 'disproportionate')
 
     # A cap's OWN claims first: only that cap can clear them. The pins come
     # after, and see those seats as caps another pin now relies on.
@@ -8975,8 +9123,11 @@ def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
             continue
         limit = float(limits[claim[0]])
         budget = max(DISPROPORTION_FLOOR_MM, DISPROPORTION_RATIO * excess)
-        _seat(cap, ic, None, claim, target, limit, budget,
-              view.accept(cap, own=True), before, leg0, row)
+        if (not _seat(cap, ic, None, claim, target, limit, budget,
+                      view.accept(cap, own=True), before, leg0, row)
+                and row.get('result') in _BLOCKED):
+            stuck.append((ic, None, claim, target, limit, budget,
+                          [(cap, {'own': True})], claim[1]))
 
     limit = float(limits.get('decap_pin_distance') or 0.0)
     for ic, pad, net, named, claim, excess in sorted(
@@ -9010,6 +9161,8 @@ def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
                       if named in state.parts else None)
             ranked = [(named, False, 0.0)] if named else []
         tried = skipped_locked = skipped_far = 0
+        blocked = []
+        seated = False
         for cap, shared, _gap in ranked:
             if cap not in state.parts:
                 continue
@@ -9033,7 +9186,14 @@ def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
             if _seat(cap, ic, pad, claim, target, limit, budget,
                      view.accept(cap, targets=targets) if targets else None,
                      before, leg0, row):
+                seated = True
                 break
+            if row.get('result') in _BLOCKED:
+                blocked.append((cap, {'targets': targets} if targets
+                                else None))
+        if not seated and blocked:
+            stuck.append((ic, pad, claim, target, limit, budget, blocked,
+                          ic))
         if not tried and named:
             row = {'rule': claim[0], 'ref': ic, 'ic': ic, 'pad': pad}
             row['result'] = ('no_target_pad' if target is None else
@@ -9046,7 +9206,127 @@ def _repair_decap_rung(state, pcb_data, graded, grader, limits, rot_ladder,
                     f"{skipped_locked} usable cap(s) on {net} locked, "
                     f"{skipped_far} too far to move within the proportion "
                     f"budget ({budget:.2f}mm)")
+
+    # #1150 follow-up: a finding no cap could serve because every pose
+    # within the limit is taken. Where a movable PASSIVE is what takes it --
+    # two copper pads, not locked, not declared (`frozen`), never an IC --
+    # the cap is asked again with the passives near the target lifted, and
+    # seated only where at most ASIDE_MAX of them are in its way and each
+    # of those finds a pose of its own nearby (`_seat`'s `lift`). Measured
+    # on glasgow's pin-limit seed: every pose within 2.5 mm of U8 pin 6 was
+    # refused, and lifting R46 alone freed 47-182 of them for five caps.
+    for ic, pad, claim, target, limit, budget, cands, ref in stuck:
+        before, leg0 = _graded()
+        if before is None:
+            return out
+        if claim not in findings_of(before):
+            continue
+        done = False
+        for cap, kw in cands:
+            if state.parts[cap].locked:
+                continue
+            lift = _aside_candidates(state, pcb_data, cap, target,
+                                     2.0 * limit, frozen)
+            if not lift:
+                continue
+            # A blocker with no pose of its own, with this cap seated, is not
+            # asked again for it; the search then looks past the poses that
+            # needed it. Per CAP: another cap lands elsewhere, and measured,
+            # FB1 had no pose beside C45 at U36 pin 6 and had one beside C59.
+            avoid: List[str] = []
+            for _try in range(ASIDE_TRIES):
+                row = {'rule': claim[0], 'ref': ref, 'ic': ic, 'pad': pad,
+                       'aside_of': list(lift)}
+                if avoid:
+                    row['avoid'] = list(avoid)
+                _rec(cap)['tried'].append(row)
+                if _seat(cap, ic, pad, claim, target, limit, budget,
+                         view.accept(cap, **kw) if kw is not None else None,
+                         before, leg0, row, lift=lift, avoid=avoid):
+                    done = True
+                    break
+                if row.get('result') != 'blocker_has_no_pose':
+                    break
+                avoid.append(row['stuck'])
+            if done:
+                break
+            before, leg0 = _graded()
+            if before is None:
+                return out
     return out
+
+
+#: The decap rung's aside pass (#1150 follow-up): how many movable passives
+#: one cap seat may move out of its way, and how many near the target it
+#: considers at all (nearest first).
+ASIDE_MAX = 2
+#: ...and how many times one cap's seat is asked again after a blocker found
+#: no pose of its own (each time past the poses that needed it).
+ASIDE_TRIES = 3
+#: The reference prefixes a part lifted aside may carry: two-terminal
+#: passives only.
+ASIDE_PREFIXES = ('R', 'C', 'L', 'FB')
+
+
+def _any_pose_at_floor(state, ref, tx, ty, max_disp, rotations,
+                       accept=None, exclude=()) -> bool:
+    """Whether ANY pose `_try_place(..., max_disp=max_disp)` can ask has a
+    seat: its candidates (a superset of every narrower cap's), its rotations,
+    at the weakest rung of its clearance ladder. Every seat test that reads
+    the clearance refuses MORE as it grows (a courtyard gap under it, an
+    overlap measured against it), so a pose refused at the floor is refused
+    on every rung, and a False here is the ladder's own answer, in one pass
+    instead of three per cap."""
+    part = state.parts[ref]
+    rots = (list(rotations) if rotations is not None else
+            [part.rot] + [(part.rot + d) % 360 for d in (90.0, 180.0, 270.0)])
+    for r in rots:
+        part.ensure_rotation(r)
+    full = state.clearance
+    _set_seat_clearance(state, seat_clearances(full)[-1])
+    try:
+        with _search_scope(state, ref, tx, ty, max_disp):
+            for x, y in seat_candidates(state, tx, ty, max_disp=max_disp):
+                for rot in rots:
+                    if accept is not None and not accept(x, y, rot):
+                        continue
+                    if pose_ok(state, ref, x, y, rot, set(exclude)):
+                        return True
+    finally:
+        _set_seat_clearance(state, full)
+    return False
+
+
+def _aside_candidates(state, pcb_data, cap, target, reach, frozen=()):
+    """The movable passives the aside pass may lift for `cap`'s search
+    toward `target`: a resistor, capacitor, inductor or ferrite (`ASIDE_
+    PREFIXES`) with exactly two copper pads, not locked, not in `frozen`,
+    whose union box comes within the search's reach of the target -- nearest
+    first. Never an IC (a chip has four pads or more,
+    `groups.DECAP_MIN_IC_PADS`), and never a diode, a connector or a
+    marker, whose pose can be a decision."""
+    from kicad_parser import non_aperture_pads
+    from .part_class import _prefix
+    tx, ty = target
+    R = _scope_reach(state, cap)
+    m = state.clearance + SCOPE_SLACK_MM
+    box = (tx - reach - R - m, ty - reach - R - m,
+           tx + reach + R + m, ty + reach + R + m)
+    out = []
+    for r, p in state.parts.items():
+        if (r == cap or p.locked or r in frozen
+                or _prefix(r) not in ASIDE_PREFIXES):
+            continue
+        fp = (pcb_data.footprints or {}).get(r)
+        if fp is None or len([q for q in non_aperture_pads(fp)
+                              if getattr(q, 'pad_type', '')
+                              != 'np_thru_hole']) != 2:
+            continue
+        b = _scope_box(state, r)
+        if b[2] < box[0] or b[0] > box[2] or b[3] < box[1] or b[1] > box[3]:
+            continue
+        out.append((math.hypot(p.x - tx, p.y - ty), r))
+    return [r for _d, r in sorted(out)]
 
 
 def decap_rung_tries(decap_rung: Dict[str, Dict]) -> Dict[str, List[str]]:
@@ -9962,7 +10242,9 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
         decap_rung = _repair_decap_rung(
             state, pcb_data, graded, pose_grader,
             {k: v for k, v in _limits.items() if v is not None},
-            _rot_ladder, notes, view=decap_view)
+            _rot_ladder, notes, view=decap_view,
+            # Never lifted aside: what the intent pins or declares.
+            frozen=set(must_lock) | set(edge_entry))
         for cap, rec in sorted(decap_rung.items()):
             if not rec['moved']:
                 continue
@@ -9970,6 +10252,10 @@ def repair_placement(pcb_data, pcb_file: str, intent, *,
             moves[:] = [m for m in moves if m['reference'] != cap]
             moves.append({'reference': cap, 'new_x': p.x, 'new_y': p.y,
                           'new_rotation': p.rot})
+            # A passive only moved ASIDE for a cap's seat (#1150 follow-up)
+            # was no violator: its move is reported, not counted repaired.
+            if not any(r.get('result') == 'seated' for r in rec['tried']):
+                continue
             zero_move[:] = [r for r in zero_move if r != cap]
             failed[:] = [r for r in failed if r != cap]
             if cap not in repaired:
