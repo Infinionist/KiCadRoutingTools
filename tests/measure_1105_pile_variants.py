@@ -1,36 +1,37 @@
 #!/usr/bin/env python3
 """#1105 PILOT: stage 3.5's decap claim on the issue's own basis, a pile.
 
-The go/no-go of `tests/1105_pile_ab_prereg.json` (`pilot`), run before any
-ladder engine is built. Each pre-registered board is staged as an unaided pile
-and its intent emitted by the CLI with `--decaps-from` the board itself
-(`test_placement_ab._pile_inputs`, the same helper the pile rows use); then
-the pile is seeded once with stage 3.5 OFF and once per variant ON, and every
-arm is graded with the A/B's own `_run_seed` / `_grade_row` against the one
-intent. Nothing here is a copy of the harness: the seed, the write, the grade
-and the verdict are the harness's functions.
+The go/no-go of a pre-registration's `pilot`: `--prereg` names it, by default
+`tests/1105_pile_ab_prereg_v2.json`, the one written for #1142's per-cap
+signal; `tests/1105_pile_ab_prereg.json` is the first, whose candidate
+(after_queue + within_limit) was NO-GO at 39affafb (#1144, numbers in #1105).
+Each pre-registered board is staged as an unaided pile and its intent emitted
+by the CLI with `--decaps-from` the board itself (`test_placement_ab.
+_pile_inputs`, the same helper the pile rows use); then the pile is seeded
+once with stage 3.5 OFF and once per variant ON, and every arm is graded with
+the A/B's own `_run_seed` / `_grade_row` against the one intent. Nothing here
+is a copy of the harness: the seed, the write, the grade and the verdict are
+the harness's functions.
 
-The GO rule is the pre-registration's, read from the file: the CANDIDATE
-(after_queue + within_limit) must improve -- the signal falls, no arbiter guard
-rises, intent errors do not rise -- on at least max(1, N-1) of the N ELIGIBLE
-boards. The other two variants are diagnostics: they cannot change the
-candidate. Eligibility is decided from the emitted intent alone, before any
-seed: the decap limit is armed and the forecast's scope is at least 1.
+The GO rule is the pre-registration's: its CANDIDATE (one of `VARIANTS`, read
+from the file) must improve -- the signal falls, no arbiter guard rises,
+intent errors do not rise -- on at least max(1, N-1) of the N ELIGIBLE boards,
+N >= 3. The other variants are diagnostics: they cannot change the verdict.
+Eligibility is decided from the emitted intent alone, before any seed: the
+decap limit is armed, the forecast's scope is at least 1, and -- when the
+file's `eligibility.held_list_required` says so -- the intent holds at least
+one cap within the radius (`decaps.within_radius_refs`, #1142), without which
+the board is graded on the old signal.
 
-Each arm also prints a DIAGNOSTIC the go rule does not read: how many caps
-the written board leaves beyond the 5 mm decap search radius of their chip,
-and their summed distance. The signal cannot see them -- under these intents
-`decap_ungraded` stays a WARN (#1142) -- so a variant that pushes caps out of
-the radius reads as better on the signal. Measured at 39affafb, after the
-#1141 fix: NO-GO, the candidate improved 1 of 7 piles (before that fix also
-1 of 7); the numbers are in #1105. Measured BEFORE #1142 made the promotion
-per cap (a held cap left beyond the radius is now an ERROR the signal does
-see); not re-measured since -- #1105 stays open.
+Each arm also prints DIAGNOSTICS the go rule does not read: its decap_* errors
+by rule (`decap_ungraded` errors are the held caps it strands, #1142), and how
+many caps the written board leaves beyond the 5 mm decap search radius of
+their chip, with their summed distance (held or not).
 
 Not collected by run_all (no `test_` prefix): about 30-45 minutes.
 
-    python3 -X utf8 tests/measure_1105_pile_variants.py [--workdir DIR]
-        [--json-out PATH] [--board esp_prog.kicad_pcb ...]
+    python3 -X utf8 tests/measure_1105_pile_variants.py [--prereg PATH]
+        [--workdir DIR] [--json-out PATH] [--board esp_prog.kicad_pcb ...]
 
 Exit 0 = GO, 1 = NO-GO, 2 = the measurement could not be taken, 3 = a
 partial (--board) run, which gives no verdict.
@@ -58,8 +59,12 @@ VARIANTS = {
 }
 
 
-def _prereg():
-    with open(AB.PILE_PREREG, encoding='utf-8') as fh:
+#: #1142's per-cap signal; the pilot's default since the first one's NO-GO.
+PREREG_V2 = os.path.join(TESTS_DIR, '1105_pile_ab_prereg_v2.json')
+
+
+def _prereg(path=PREREG_V2):
+    with open(path, encoding='utf-8') as fh:
         return json.load(fh)
 
 
@@ -72,9 +77,17 @@ def _candidate_name(pre):
     return names[0]
 
 
-def _decap_errors(m):
-    return sum(n for r, n in (m.get('intent_errors_by_rule') or {}).items()
-               if r.startswith('decap_'))
+def _decap_by_rule(m):
+    """{rule: count} of the arm's decap_* intent ERRORS."""
+    return {r: n for r, n in sorted((m.get('intent_errors_by_rule')
+                                     or {}).items()) if r.startswith('decap_')}
+
+
+def _decap_str(m):
+    by = _decap_by_rule(m)
+    return (f"decap {sum(by.values())}"
+            + (f" [{', '.join(f'{r[6:]} {n}' for r, n in by.items())}]"
+               if by else ''))
 
 
 def _beyond(path):
@@ -131,15 +144,23 @@ def measure(boards, workdir, pre):
             continue
         f = AB._pile_forecast(doc)
         dec = doc.get('decaps') or {}
+        held = dec.get('within_radius_refs')
         rec.update(eligible=bool(f.get('scope')),
                    scope=f.get('scope'), early=len(f.get('early') or ()),
                    late=len(f.get('late') or ()),
                    ownerless=len(f.get('ownerless') or ()),
                    limit=dec.get('max_distance_mm'),
                    pin_limit=dec.get('max_pin_distance_mm'),
+                   held=None if held is None else len(held),
+                   held_radius=dec.get('within_radius_mm'),
                    seed_refs=None if refs is None else len(refs))
         if not rec['eligible']:
             rec['why'] = 'the forecast scope is 0: no cap is charged'
+        elif (pre.get('eligibility') or {}).get('held_list_required') \
+                and not held:
+            rec['eligible'] = False
+            rec['why'] = ('the intent holds no cap within the radius '
+                          '(no decaps.within_radius_refs): the old signal')
         scope = {'seed_refs': refs} if refs is not None else {}
         with AB._seeder_flags({}):
             off = AB._run_seed(pile, os.path.join(d, 'off.kicad_pcb'), intent,
@@ -162,17 +183,19 @@ def measure(boards, workdir, pre):
         print(f"{b}: {'eligible' if rec['eligible'] else 'INELIGIBLE'} "
               f"scope {rec['scope']} (early {rec['early']}, late "
               f"{rec['late']}, ownerless {rec['ownerless']}), limit "
-              f"{rec['limit']}, pin limit {rec['pin_limit']}, "
-              f"{rec['seconds']}s", flush=True)
-        print(f"    OFF  intent_errors {off['intent_errors']} (decap "
-              f"{_decap_errors(off)}) crossings {off['crossings']} hpwl "
+              f"{rec['limit']}, pin limit {rec['pin_limit']}, held "
+              f"{rec['held']} within {rec['held_radius']} mm, "
+              f"{rec['seconds']}s"
+              + (f" -- {rec['why']}" if rec.get('why') else ''), flush=True)
+        print(f"    OFF  intent_errors {off['intent_errors']} "
+              f"({_decap_str(off)}) crossings {off['crossings']} hpwl "
               f"{off['hpwl']} unseated {off['unseated']} body_blocking "
               f"{off['body_blocking']} | beyond 5 mm {rec['off_beyond'][0]} "
               f"({rec['off_beyond'][1]} mm)", flush=True)
         for name in VARIANTS:
             on = rec[name]['on']
             print(f"    {name:<13} {rec[name]['mark']:<8} intent_errors "
-                  f"{on['intent_errors']} (decap {_decap_errors(on)}) "
+                  f"{on['intent_errors']} ({_decap_str(on)}) "
                   f"crossings {on['crossings']} hpwl {on['hpwl']} unseated "
                   f"{on['unseated']} body_blocking {on['body_blocking']} | "
                   f"beyond 5 mm {rec[name]['beyond'][0]} "
@@ -197,6 +220,9 @@ def verdict(out, cand):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--prereg', default=PREREG_V2,
+                    help='The pre-registration whose pilot this runs '
+                         '(default: %(default)s)')
     ap.add_argument('--workdir', default=None)
     ap.add_argument('--json-out', default=None)
     ap.add_argument('--board', action='append', default=None,
@@ -204,7 +230,7 @@ def main(argv=None):
                          'partial run prints its table but no GO verdict')
     args = ap.parse_args(argv)
     try:
-        pre = _prereg()
+        pre = _prereg(args.prereg)
     except Exception as exc:                      # noqa: BLE001 - exit 2
         print(f"MEASUREMENT NOT TAKEN: {type(exc).__name__}: {exc}",
               file=sys.stderr)
@@ -219,7 +245,8 @@ def main(argv=None):
     try:
         cand = _candidate_name(pre)
         work = args.workdir or tempfile.mkdtemp(prefix='m1105_')
-        print(f"pre-registered candidate: {cand}; workdir {work}", flush=True)
+        print(f"pre-registration {os.path.basename(args.prereg)}; candidate "
+              f"{cand}; workdir {work}", flush=True)
         out = measure(boards, work, pre)
         if args.json_out:
             with open(args.json_out, 'w', encoding='utf-8') as fh:
