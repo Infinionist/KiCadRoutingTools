@@ -44,7 +44,16 @@ the body's overhang and never pad copper -- and, on a `--reseat` alone, on a
 part the pass moved. A pinned part's copper there is named in
 `pad_copper_off_board_pinned` and fails the gate by the same rule; an
 unmoved part outside a `--reseat` scope is the board's own
-(`pad_copper_off_board_unscoped`), reported and not charged.
+(`pad_copper_off_board_unscoped`), reported and not charged. It also charges
+the body pairs check_assembly gates on the delivered board (#1258,
+`repair_pair_split`): a drawn body inside another's
+(`containment_charged`) when a member moved, or on `--repair`, whose census
+charges every such pair with a free member; and a courtyard pair past
+check_assembly's blocking floors (`courtyard_blocking_charged`) when a
+member moved against `--baseline`, else against the pass's input. A pair
+of two pinned parts keeps the #1193 contract (`containment_pinned`,
+`courtyard_blocking_pinned`: reported, not a gate failure), and the rest is
+the board's own (`*_inherited`).
 
 Exit 5 (#959): the PLAN is refused before anything is written --
 `floorplan.plan_check` found an ERROR no arrangement can satisfy and the
@@ -104,6 +113,27 @@ further past the outline. `must_lock` alone exempts nothing: stage 1.5 seats
 every unlocked, in-scope must_lock part. An unseated part is charged as
 unseated. `oob_pad_copper_gating_count` is the written board's total,
 inherited parts included.
+
+The gate charges the BODY pairs check_assembly gates on, too (#1258), read
+off its own grader (`grade_body_overlap`, through `body_gate_pairs`) on the
+written board: `containment_seeded`, a part's drawn body inside another's
+(`[a, b, area_mm2, contained_frac]`; no class waiver exempts it there), and
+`courtyard_blocking_seeded`, a courtyard interpenetration past the run-23
+floors (`[a, b, area_mm2, depth_mm]`; check_assembly gates it against a
+baseline, and a seed's baseline is its input). Stage 1 keeps an edge seat
+that crowds a placed courtyard when no rung clears it and leaves that
+overlap to check_assembly; before this, glasgow_revC's pile seeded J3's body
+71% inside SW1's and exited 0 on a NOT BUILDABLE board. A pair is the seed's
+when a member is a part it placed -- moved, or unlocked and in the run's
+scope at a pose it kept -- and is charged on the delta when its only moved
+member is an out-of-scope part the polish nudged. `*_unseated` is a pair
+against a part the seed could not seat, and `*_inherited` the board's own:
+both members locked in the input, or outside a partial run's scope and
+unmoved. Those two are named on the console and not charged. A locked
+pair keeps #1193's pinned-part contract here, unlike off-board copper:
+it is a contradiction between the board and the intent, which an
+`overlap_waivers` entry settles as check_assembly does, and failing every
+seed on it would leave compare_seeds nothing to rank (run 27).
 
 And `reseat_declined` (#1117) on every summary of a seed (not of --repair /
 --reseat, which run no post-polish re-seat):
@@ -313,6 +343,107 @@ def split_pad_pairs(worst, seeded, unseated, late=(), before=None):
         (against_unseated if (unseated & {w[0], w[1]}) - charged
          else mine).append(w)
     return mine, against_unseated
+
+
+def body_gate_pairs(pcb_data, pcb_file, clearance, intent):
+    """#1258: check_assembly's GATING body pairs at `pcb_data`'s poses,
+    `(containment, courtyard)`.
+
+    The call check_assembly makes -- `grade_body_overlap` at the project's
+    own courtyard severity, with the intent's `overlap_waivers` -- read where
+    check_assembly reads its verdict: `containment_blocking_pairs` (a body
+    wholly or mostly inside another's; it gates whatever a class waiver says,
+    so glasgow's J3 <-> SW1 is `waived:edge_class` and still NOT BUILDABLE)
+    and `courtyard_blocking_pairs` (a courtyard interpenetration past the
+    run-23 floors, which check_assembly gates when a member moved against
+    its baseline). Called, never mirrored: a copy here could disagree with
+    the verdict it answers to.
+    """
+    from placement.legality import grade_body_overlap
+    g = grade_body_overlap(
+        pcb_data, clearance, pcb_file=pcb_file,
+        intent_waivers=intent.waiver_pairs() if intent is not None else ())
+    return (list(g.get('containment_blocking_pairs') or ()),
+            list(g.get('courtyard_blocking_pairs') or ()))
+
+
+def _pair_needs_before(pairs, mine, late):
+    """Does any pair's moved side consist of `late` parts only? Only those
+    are judged on the delta, so only then is the input board graded -- a
+    pile's body grade is the expensive one (glasgow_revC's 272-part pile:
+    12.9 s, against 0.4 s for the seed written from it)."""
+    mine = set(mine)
+    late = set(late) - mine
+    for q in pairs:
+        moved = {q.a, q.b} & (mine | late)
+        if moved and moved <= late:
+            return True
+    return False
+
+
+def split_body_pairs(pairs, mine, unseated, late=(), before=None):
+    """#1258: check_assembly's gating body pairs on the written seed, split
+    `(seeded, against_unseated, inherited)`, each a list of the pairs.
+
+    The attribution is `split_pad_pairs`', called rather than copied, keyed
+    on the overlap AREA (`area_mm2`, the number check_assembly prints):
+      * a pair with a member in `mine` -- a part this seed placed: it moved
+        it, or it was the seed's to place (unlocked and in the run's scope)
+        and kept it where it was -- is the seed's;
+      * a pair whose only moved members are `late` (moved after stage 1 and
+        outside the run's scope: the polish nudged it) is the seed's on the
+        DELTA against `before` ({frozenset pair: area} on the input board): a
+        pair the input did not have, or a deeper one;
+      * a pair against a part the seed could NOT seat, at the pose it came in
+        with, is reported apart, as the pad channel's #982 bucket is;
+      * every other pair -- both members locked in the input, or outside a
+        partial run's scope and unmoved -- is the board's own. #1193's
+        pinned-part contract: a locked pair is a contradiction between the
+        board and the intent, settled by its author (an `overlap_waivers`
+        entry accepts it, as check_assembly does), and failing every seed on
+        it would leave compare_seeds nothing to rank (run 27). Pad copper
+        past the outline is the one finding where a lock is no waiver.
+    """
+    rows = [(q.a, q.b, float(q.area_mm2 or 0.0), i)
+            for i, q in enumerate(pairs)]
+    m, u = split_pad_pairs(rows, mine, unseated, late=late, before=before)
+    seeded = [pairs[w[3]] for w in m]
+    against = [pairs[w[3]] for w in u]
+    taken = {w[3] for w in m} | {w[3] for w in u}
+    inherited = [q for i, q in enumerate(pairs) if i not in taken]
+    return seeded, against, inherited
+
+
+def pair_areas(pairs):
+    """{frozenset pair: area mm2}, the deepest where a pair is listed on
+    more than one side -- the `before` of `split_body_pairs`."""
+    out = {}
+    for q in pairs:
+        k = frozenset((q.a, q.b))
+        out[k] = max(out.get(k, 0.0), float(q.area_mm2 or 0.0))
+    return out
+
+
+def containment_row(q):
+    """`[a, b, area_mm2, contained_frac]`: a containment pair as the
+    summary publishes it."""
+    return [q.a, q.b, q.area_mm2, round(float(q.contained_frac or 0.0), 4)]
+
+
+def courtyard_row(q):
+    """`[a, b, area_mm2, depth_mm]`: a courtyard-blocking pair as the
+    summary publishes it."""
+    return [q.a, q.b, q.area_mm2, q.depth_mm]
+
+
+def describe_containment(q):
+    return (f"{q.a} <-> {q.b} ({float(q.area_mm2 or 0.0):.3f}mm2, "
+            f"{float(q.contained_frac or 0.0):.0%} of the smaller body)")
+
+
+def describe_courtyard(q):
+    return (f"{q.a} <-> {q.b} ({float(q.area_mm2 or 0.0):.3f}mm2, depth "
+            f"{float(q.depth_mm or 0.0):.3f}mm)")
 
 
 def seed_structure_summary(result, graded, written):
@@ -533,6 +664,35 @@ def repair_oob_split(gating, overrun, pinned, moved, whole_board):
     return charged, held, unscoped
 
 
+def repair_pair_split(pairs, pinned, moved, whole_board):
+    """#1258: check_assembly's gating body pairs on the board `--repair` /
+    `--reseat` DELIVER, split `(charged, pinned, inherited)`.
+
+      * a pair whose every member is PINNED -- `(locked yes)` in the input,
+        or a declared fixed pose -- is the #1193 contract's: reported, not a
+        gate failure (the pass may move neither; the author settles it, and
+        an `overlap_waivers` entry is how check_assembly accepts it);
+      * a pair with a member either pass MOVED is charged: the pass put it
+        there, or moved a member and left it;
+      * any other pair is charged when `whole_board` -- `--repair` on
+        containment, whose census charges every containment pair with a free
+        member (check_assembly's gating pairs are a subset of it), so one
+        still on the board is a violator it did not repair -- and is the
+        board's own otherwise (`--reseat` alone, outside its scope; a
+        courtyard pair with no member moved against the baseline, which
+        check_assembly itself calls the baseline's own).
+    """
+    charged, held, inherited = [], [], []
+    for q in pairs:
+        if q.a in pinned and q.b in pinned:
+            held.append(q)
+        elif q.a in moved or q.b in moved or whole_board:
+            charged.append(q)
+        else:
+            inherited.append(q)
+    return charged, held, inherited
+
+
 def error_rules(errors):
     """`{rule: count}` of graded violations: WHICH rules a gate failure is
     made of (#1191). A count names nothing, so compare_seeds could not tell
@@ -544,7 +704,8 @@ def error_rules(errors):
     return out
 
 
-def gate_reason(unseated, own, my_pads, hole_delta, band=(), oob=()):
+def gate_reason(unseated, own, my_pads, hole_delta, band=(), oob=(),
+                contained=(), courtyard=()):
     """The one stderr line that says WHY this seed did not pass its gate.
 
     Two failures reach exit 4 and they are not the same failure, so the line
@@ -564,8 +725,17 @@ def gate_reason(unseated, own, my_pads, hole_delta, band=(), oob=()):
     fallback keeps such a seat rather than leave the connector unseated, and
     nothing after stage 1 charged it, so the seed exited 0 on a board
     check_assembly calls NOT BUILDABLE.
+
+    `contained` / `courtyard` (#1258): `(a, b)` pairs this seed placed that
+    check_assembly gates on -- a drawn body inside another's, and a
+    courtyard interpenetration past its blocking floors. Stage 1 keeps an
+    edge seat that crowds a placed courtyard when no rung clears it, and
+    defers that overlap to "the courtyard budget and check_assembly"; nothing
+    here charged it, so glasgow_revC's pile seeded J3's body 71% inside SW1's
+    and exited 0 on a board check_assembly calls NOT BUILDABLE.
     """
-    if not (unseated or own or my_pads or hole_delta or band or oob):
+    if not (unseated or own or my_pads or hole_delta or band or oob
+            or contained or courtyard):
         return None
     tail = " It was still written, for inspection."
     if unseated:
@@ -604,6 +774,15 @@ def gate_reason(unseated, own, my_pads, hole_delta, band=(), oob=()):
         ch.append(f"pad copper past the board outline on "
                   f"{', '.join(sorted(oob))}, which can be neither assembled "
                   f"nor routed")
+
+    def _pairs(rows):
+        return ', '.join(f"{a} <-> {b}" for a, b in rows)
+    if contained:
+        ch.append(f"a part's drawn body inside another's on "
+                  f"{_pairs(contained)}, which cannot be assembled")
+    if courtyard:
+        ch.append(f"courtyards interpenetrating past check_assembly's "
+                  f"blocking floors on {_pairs(courtyard)}")
     return ("place_seed: the seed satisfies its intent but leaves "
             + " and ".join(ch) + "." + tail)
 
@@ -1391,6 +1570,79 @@ Examples:
                       f"pinned {', '.join(r for r, _mm in _oob_p)} -- a lock "
                       f"is no waiver, since placement stamps its own: unlock "
                       f"it, or fix the step that seated it.", file=sys.stderr)
+            # #1258: check_assembly's gating BODY pairs on the delivered
+            # board. The repair charges containment by check_assembly's
+            # census and re-grades it (#1153), and courtyard pairs against
+            # --baseline (#1182), but an unresolved violator does not set
+            # exit 4 -- so a repair that could not clear a body inside
+            # another's exited 0 on a board check_assembly calls NOT
+            # BUILDABLE. Containment is absolute in check_assembly; the
+            # courtyard gate is moved-vs-baseline there, and this pass's
+            # baseline is --baseline when given, else its own input.
+            from placement.legality import moved_refs as _moved_refs
+            _cont_d, _cy_d = body_gate_pairs(pcb_out, args.output_file,
+                                             args.clearance, intent)
+            _moved_d = _moved_refs(pcb_out, pcb)
+            _cy_moved = (_moved_refs(pcb_out, parse_kicad_pcb(args.baseline))
+                         if args.baseline else _moved_d)
+            _cont_c, _cont_p, _cont_i = repair_pair_split(
+                _cont_d, _pinned_in, _moved_d, bool(args.repair))
+            _cy_c, _cy_p, _cy_i = repair_pair_split(
+                _cy_d, _pinned_in, _cy_moved, False)
+            for _rows, _fmt, _what in (
+                    (_cont_c, describe_containment,
+                     f"containment pair(s) -- a drawn body inside "
+                     f"another's -- left by this {_pass}"),
+                    (_cy_c, describe_courtyard,
+                     f"courtyard-blocking pair(s) left by this {_pass}, a "
+                     f"member moved against "
+                     + ("--baseline" if args.baseline else "its input")),
+                    (_cont_p, describe_containment,
+                     "containment pair(s) between pinned parts (locked "
+                     "yes, or a declared fixed pose) -- reported, not a "
+                     "gate failure: name the pair in the intent's "
+                     "overlap_waivers, or unlock one"),
+                    (_cy_p, describe_courtyard,
+                     "courtyard-blocking pair(s) between pinned parts -- "
+                     "reported, not a gate failure"),
+                    (_cont_i, describe_containment,
+                     "containment pair(s) outside this re-seat's scope -- "
+                     "the board's own, reported not charged"),
+                    (_cy_i, describe_courtyard,
+                     "courtyard-blocking pair(s) with no member moved -- "
+                     "the board's own, reported not charged")):
+                if _rows:
+                    print(f"  {len(_rows)} {_what}: "
+                          + '; '.join(_fmt(q) for q in _rows[:10])
+                          + ("" if len(_rows) <= 10 else
+                             f" ... and {len(_rows) - 10} more"))
+            summary['containment_charged'] = [containment_row(q)
+                                              for q in _cont_c]
+            summary['containment_pinned'] = [containment_row(q)
+                                             for q in _cont_p]
+            summary['containment_inherited'] = [containment_row(q)
+                                                for q in _cont_i]
+            summary['courtyard_blocking_charged'] = [courtyard_row(q)
+                                                     for q in _cy_c]
+            summary['courtyard_blocking_pinned'] = [courtyard_row(q)
+                                                    for q in _cy_p]
+            summary['courtyard_blocking_inherited'] = [courtyard_row(q)
+                                                       for q in _cy_i]
+            if _cont_c or _cy_c:
+                exit_rc = 4
+                _ch = []
+                if _cont_c:
+                    _ch.append("a part's drawn body inside another's on "
+                               + ', '.join(f"{q.a} <-> {q.b}"
+                                           for q in _cont_c))
+                if _cy_c:
+                    _ch.append("courtyards interpenetrating past "
+                               "check_assembly's blocking floors on "
+                               + ', '.join(f"{q.a} <-> {q.b}"
+                                           for q in _cy_c))
+                print(f"place_seed: the {_pass} leaves " + " and ".join(_ch)
+                      + ", which check_assembly calls NOT BUILDABLE. It was "
+                        "still written, for inspection.", file=sys.stderr)
             if own:
                 exit_rc = 4
         else:
@@ -1921,6 +2173,7 @@ Examples:
                                      or ())]
     # #1241: a part moved after stage 1 too; the band test is a delta
     # already, so it needs no rule of its own.
+    _stage1 = set(_seeded)
     _seeded = _seeded | _late
     _band_seeded = [(r, a) for r, a in _band_out
                     if r in _seeded and a > _band_in.get(r, 0.0) + 1e-6]
@@ -2007,6 +2260,72 @@ Examples:
         if _refs:
             print(f"  {len(_refs)} part(s) {_what}: "
                   + '; '.join(_fmt(r) for r in _refs))
+    # #1258: the BODY pairs check_assembly gates on, at the WRITTEN poses --
+    # a drawn body inside another's (`containment_blocking`, which no class
+    # waiver exempts) and a courtyard interpenetration past its blocking
+    # floors (gated there when a member moved against the baseline; this
+    # run's baseline is its input). Stage 1 keeps an edge seat that crowds a
+    # placed courtyard when no rung clears it and defers the overlap to
+    # check_assembly, which nothing here charged: glasgow_revC's pile seeded
+    # J3 71% inside SW1's body and exited 0 on a NOT BUILDABLE board.
+    #
+    # A pair is the seed's when a member is a part it placed: one it moved,
+    # or one that was its to place -- unlocked and in the run's scope -- at a
+    # pose it kept (#1241's escape: an unlocked part re-seated where it came
+    # in "did not move"). A part outside the scope that the polish nudged is
+    # judged on the delta. A pair between two parts the seed never placed --
+    # locked in the input, or out of scope and unmoved -- is the board's
+    # own, named and not charged (`split_body_pairs` says why a lock is a
+    # waiver here and not for off-board copper).
+    _in_scope = {r for r, f in _in_fps.items()
+                 if not getattr(f, 'locked', False)
+                 and (seed_refs is None or r in seed_refs)}
+    _body_mine = _stage1 | (_in_scope - set(result['unseated']))
+    _cont_out, _cy_out = body_gate_pairs(
+        parse_kicad_pcb(args.output_file), args.output_file, args.clearance,
+        intent)
+    _body_in = []
+
+    def _before(pairs, which):
+        """The input board's pairs of channel `which`, graded at most once
+        and only when a late-only pair needs them (`_pair_needs_before`)."""
+        if not _pair_needs_before(pairs, _body_mine, _late):
+            return None
+        if not _body_in:
+            _body_in.append(body_gate_pairs(pcb, args.input_file,
+                                            args.clearance, intent))
+        return pair_areas(_body_in[0][which])
+    _cont_seeded, _cont_unseated, _cont_inherited = split_body_pairs(
+        _cont_out, _body_mine, result['unseated'], late=_late,
+        before=_before(_cont_out, 0))
+    _cy_seeded, _cy_unseated, _cy_inherited = split_body_pairs(
+        _cy_out, _body_mine, result['unseated'], late=_late,
+        before=_before(_cy_out, 1))
+    for _rows, _fmt, _what in (
+            (_cont_seeded, describe_containment,
+             "containment pair(s) among the parts this seed placed -- a "
+             "drawn body inside another's, which check_assembly gates"),
+            (_cy_seeded, describe_courtyard,
+             "courtyard-blocking pair(s) among the parts this seed placed, "
+             "past check_assembly's blocking floors"),
+            (_cont_unseated, describe_containment,
+             "containment pair(s) against a part this seed could NOT seat, "
+             "which was written at the pose it came in with -- reported not "
+             "charged"),
+            (_cy_unseated, describe_courtyard,
+             "courtyard-blocking pair(s) against a part this seed could NOT "
+             "seat -- reported not charged"),
+            (_cont_inherited, describe_containment,
+             "containment pair(s) between parts this seed did not place -- "
+             "the board's own, reported not charged"),
+            (_cy_inherited, describe_courtyard,
+             "courtyard-blocking pair(s) between parts this seed did not "
+             "place -- the board's own, reported not charged")):
+        if _rows:
+            print(f"  {len(_rows)} {_what}: "
+                  + '; '.join(_fmt(q) for q in _rows[:10])
+                  + ("" if len(_rows) <= 10 else
+                     f" ... and {len(_rows) - 10} more"))
     after = ratsnest.get('after', {})
     summary = {'placed': placed_count(result),
                'unseated': len(result['unseated']),
@@ -2098,6 +2417,23 @@ Examples:
                                                for r, a in _oob_locked],
                'oob_pad_copper_gating_count':
                    _pads_out.get('oob_pad_copper_gating_count') or 0,
+               # #1258: check_assembly's gating body pairs on the written
+               # board, partitioned three ways like the pad pairs: the
+               # seed's (charged), against a part it could not seat, and
+               # the board's own. Containment rows are [a, b, area_mm2,
+               # contained_frac]; courtyard rows [a, b, area_mm2, depth_mm].
+               'containment_seeded': [containment_row(q)
+                                      for q in _cont_seeded],
+               'containment_unseated': [containment_row(q)
+                                        for q in _cont_unseated],
+               'containment_inherited': [containment_row(q)
+                                         for q in _cont_inherited],
+               'courtyard_blocking_seeded': [courtyard_row(q)
+                                             for q in _cy_seeded],
+               'courtyard_blocking_unseated': [courtyard_row(q)
+                                               for q in _cy_unseated],
+               'courtyard_blocking_inherited': [courtyard_row(q)
+                                                for q in _cy_inherited],
                'grade_warnings': len(graded.warnings),
                'crossings': after.get('crossings'),
                'hpwl': (round(after['hpwl'], 3)
@@ -2123,6 +2459,8 @@ Examples:
     print("JSON_SUMMARY: " + json.dumps(summary, sort_keys=True))
     _reason = gate_reason(result['unseated'], own, _my_pads, _hole_delta,
                           band=[r for r, _a in _band_seeded],
+                          contained=[(q.a, q.b) for q in _cont_seeded],
+                          courtyard=[(q.a, q.b) for q in _cy_seeded],
                           oob=[r for r, _a in _oob_seeded + _oob_locked])
     if _reason is None:
         _reason = fixed_pose_reason(summary)

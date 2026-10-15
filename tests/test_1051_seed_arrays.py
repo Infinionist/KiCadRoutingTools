@@ -787,6 +787,13 @@ def test_every_unhonoured_fixed_pose_fails_the_gate():
     assert 'R1' in _ps.fixed_pose_reason({'fixed_refused': {'R1': {}}})
     assert 'C1' in _ps.fixed_pose_reason({'fixed_seated': {
         'C1': {'at_written_pose': False}}})
+    # --body-model on every run (#1258): esp_prog draws no courtyard on 18
+    # of its 21 parts, so the default seat search spaces pad boxes and the
+    # seed leaves R4's drawn body in USB1's courtyard -- a pair the gate now
+    # charges, which would fail the control below for a reason that has
+    # nothing to do with R1. Seated on check_assembly's occupancy, the
+    # control is clean and the arm's exit 4 is the refusal's alone.
+    bm = ('--body-model',)
     with tempfile.TemporaryDirectory() as td:
         doc = fp.emit_intent(parse_kicad_pcb(ESP), ESP)
         at = {'ref': 'R1', 'x': 136.4, 'y': 98.8, 'rot': 270,
@@ -794,11 +801,11 @@ def test_every_unhonoured_fixed_pose_fails_the_gate():
         _i, ip = _intent(dict(doc, fixed_poses=[at]), td, 'at.json')
         seeded = os.path.join(td, 'seeded.kicad_pcb')
         _run_seed([ESP, seeded, '--intent', ip, '--force', '--no-polish',
-                   '--clearance', str(CLEARANCE)])
+                   '--clearance', str(CLEARANCE), *bm])
         assert _fp_pose(seeded, 'R1') == (136.4, 98.8, 270.0, True)
         ctl = _run_seed([seeded, os.path.join(td, 'ctl.kicad_pcb'),
                          '--intent', ip, '--force', '--no-polish',
-                         '--clearance', str(CLEARANCE)])
+                         '--clearance', str(CLEARANCE), *bm])
         s = _summary(ctl)
         assert s['fixed_seated']['R1']['how'] == 'already_there', s
         assert ctl.returncode == 0, (
@@ -809,7 +816,7 @@ def test_every_unhonoured_fixed_pose_fails_the_gate():
         _i, ip_off = _intent(dict(doc, fixed_poses=[off]), td, 'off.json')
         r = _run_seed([seeded, os.path.join(td, 'off.kicad_pcb'),
                        '--intent', ip_off, '--force', '--no-polish',
-                       '--clearance', str(CLEARANCE)])
+                       '--clearance', str(CLEARANCE), *bm])
         s = _summary(r)
         assert 'R1' in s['fixed_refused'], s['fixed_refused']
         assert 'R1' not in s['unseated_refs'], s['unseated_refs']

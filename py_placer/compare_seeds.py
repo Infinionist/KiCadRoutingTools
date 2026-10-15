@@ -209,7 +209,8 @@ def decap_only(summary):
     its own grade errors are all `decap_distance` / `decap_pin_distance`,
     and no other gate channel fired (no part unseated, no pad or hole
     conflict seeded, no keep-out copper, no pad copper left past the outline
-    (#1241), no fixed pose refused). That is the
+    (#1241), no body inside another's or courtyard-blocking pair seeded
+    (#1258), no fixed pose refused). That is the
     failure `place_seed --repair --repair-decaps` exists for. The channels
     are place_seed's `gate_reason` inputs as its summary publishes them, and
     the fixed-pose one is its own `fixed_pose_reason`."""
@@ -222,6 +223,8 @@ def decap_only(summary):
             and not summary.get('keepout_copper_seeded')
             and not summary.get('pad_copper_off_board_seeded')
             and not summary.get('pad_copper_off_board_locked')
+            and not summary.get('containment_seeded')
+            and not summary.get('courtyard_blocking_seeded')
             and fixed_pose_reason(summary) is None)
 
 

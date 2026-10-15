@@ -796,6 +796,15 @@ the repair's census names it): pad copper past the outline is the one finding
 where a lock is no waiver, since placement stamps its own locks -- every other
 pinned finding keeps the #1193 contract.
 
+A seat ladder that keeps a crowding seat -- one that overlaps a placed
+courtyard because no rung clears it -- leaves that overlap to check_assembly,
+and the seed's gate charges what check_assembly gates there (#1258): a drawn
+body inside another's (`containment_seeded`) and a courtyard pair past its
+blocking floors (`courtyard_blocking_seeded`), exit 4, when a member is a
+part the seed placed. A pair between two parts locked in the input is the
+board's own (`containment_inherited`), named and not charged: declare it in
+`overlap_waivers` if it is meant, as check_assembly reads it.
+
 Every declared connector on the board gets a row in `edge_connector_evidence`
 (`--json`), including passing ones. Each row carries:
 - `overhang_mm` and `overhang_basis` (`body:<layer>`, e.g. `body:F.Fab`,

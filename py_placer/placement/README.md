@@ -286,6 +286,20 @@ the board, and name a band only copper past the outline could meet in
 `edge_band_contradiction`, seated on its edge with its band error standing.
 The seed's pad-pair and band channels read "moved" off the WRITTEN board, so
 a polish or re-seat move counts, on the delta (#1241).
+The gate also charges the body pairs check_assembly gates on the written
+board (#1258), read off its own grader (`grade_body_overlap`):
+`containment_seeded` (a drawn body inside another's, `[a, b, area_mm2,
+contained_frac]`) and `courtyard_blocking_seeded` (a courtyard
+interpenetration past the run-23 floors, `[a, b, area_mm2, depth_mm]`), each
+exiting 4. Stage 1's crowding edge seat is where they come from: glasgow's
+pile seeded J3 71% inside SW1 and used to exit 0. A pair is the seed's when
+a member is a part it placed, moved or kept; `*_unseated` (against a part it
+could not seat) and `*_inherited` (both members locked in the input, or out
+of a partial run's scope and unmoved) are named and not charged -- a locked
+pair keeps #1193's contract, unlike off-board copper. `--repair` /
+`--reseat` charge the same pairs on the board they deliver
+(`containment_charged`, `courtyard_blocking_charged`; a pinned pair is
+`*_pinned`, reported).
 `edge_angle_chosen` names every edge
 connector stage 1 turned to an angle IT chose or reordered (#1172) --
 `{ref: {from, to, why, candidates}}`: an undeclared one, or a declared

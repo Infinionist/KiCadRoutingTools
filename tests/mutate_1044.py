@@ -65,8 +65,8 @@ ROWS = [
     # The gate line forgets the band. (#1241 appended `or oob` to the line;
     # the mutant keeps it, so only the band is forgotten.)
     ('the-gate-forgets-the-band', 'p',
-     "    if not (unseated or own or my_pads or hole_delta or band or oob):\n",
-     "    if not (unseated or own or my_pads or hole_delta or oob):\n",
+     "    if not (unseated or own or my_pads or hole_delta or band or oob\n",
+     "    if not (unseated or own or my_pads or hole_delta or oob\n",
      (T1044,), 'KILLED'),
 ]
 

@@ -177,7 +177,8 @@ class DecapOnlySeedsAreRepairedAndRanked(unittest.TestCase):
                 'unseated': 0, 'pad_conflicts_seeded': 0,
                 'hole_conflicts_added': 0, 'keepout_copper_seeded': [],
                 'pad_copper_off_board_seeded': [],
-                'pad_copper_off_board_locked': []}
+                'pad_copper_off_board_locked': [],
+                'containment_seeded': [], 'courtyard_blocking_seeded': []}
         self.assertTrue(cs.decap_only(base))
         for k, v in (('grade_error_rules', {'decap_distance': 1,
                                             'zone_containment': 1}),
@@ -187,6 +188,9 @@ class DecapOnlySeedsAreRepairedAndRanked(unittest.TestCase):
                      ('keepout_copper_seeded', [['U1', 0.1]]),
                      ('pad_copper_off_board_seeded', [['J1', 0.4]]),
                      ('pad_copper_off_board_locked', [['J2', 0.4]]),
+                     # #1258: check_assembly's gating body pairs.
+                     ('containment_seeded', [['J1', 'J2', 20.0, 1.0]]),
+                     ('courtyard_blocking_seeded', [['J1', 'J2', 20.0, 4.0]]),
                      ('fixed_refused', ['J1'])):
             self.assertFalse(cs.decap_only(dict(base, **{k: v})), (k, v))
 
