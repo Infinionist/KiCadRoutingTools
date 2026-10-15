@@ -2332,7 +2332,8 @@ def find_nets_matching_patterns(all_net_names: List[str], patterns: List[str]) -
 # SDNCAS, Atmel SDA10) -- never on a data line D<n> (`SD0` is SD-card data)
 # and never on a bare CK/CLK/CS (`SCK`, `SCLK`, `SCS` are SPI); an active-low
 # `n`/`N` (nCS, SDNWE) or trailing `N`/`B` (CSn, RASN); lane halves `L`/`U`/`H`
-# (LDQS, UDM, DQMH); `RDQS`; and `DQ<byte>_<bit>` when an interface's bit
+# (LDQS, UDM, DQMH); `RDQS`; LPDDR4/5 `DMI<n>` (the lane's data-mask-
+# inversion, sampled with its DQ); and `DQ<byte>_<bit>` when an interface's bit
 # index runs through all eight values. A bare DQS/DM (no digit, no half) gets
 # a lane only when its interface's data spans exactly one lane (an x8 part);
 # otherwise it is reported ungrouped BY NAME.
@@ -2344,6 +2345,9 @@ _DDR_CORE_SPECS = (
     ('DQS', 'strobe',
      r'(?P<h>[LU])?R?DQS(?P<h2>[LUH])?(?P<n>\d+)?[PNTCB]?(?P<n2>\d+)?'),
     ('DM', 'mask', r'(?P<h>[LU])?(?P<dqm>DQM|DM)(?P<h2>[LUH])?(?P<n>\d+)?'),
+    # LPDDR4/5 data-mask-inversion: one per byte, sampled with that byte's
+    # DQ on its DQS, so it is matched with the lane (DMI0 -> lane 0).
+    ('DMI', 'mask', r'DMI(?P<n>\d+)?'),
     ('BA', 'command', r'BA\d+'),
     ('BG', 'command', r'BG\d+'),
     ('BS', 'command', r'BS\d+'),
@@ -2459,7 +2463,7 @@ def classify_ddr_nets(net_names: List[str],
                   hold at least one of `net_names`
       lane_undeterminable  data/strobe/mask names whose lane cannot be read
       no_group_token       names under a qualified prefix with no group token
-                           (RESET, ZQ, DMI, VREF, ...)
+                           (RESET, ZQ, VREF, ...)
       not_dram_interface   names with a group token whose prefix carries no
                            DRAM-only signals (IO_A0, OLED_CS, SD0_CMD, ...)
       other_count          names with no DRAM reading at all

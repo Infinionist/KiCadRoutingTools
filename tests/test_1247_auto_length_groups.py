@@ -21,9 +21,11 @@ Pinned here, on the boards' REAL net names:
   orangecrab   command_address = the 27 RAM_* address/command/clock nets;
                D0-7+LDM+LDQS+/- and D8-15+UDM+UDQS+/- are lanes 0 and 1;
                IO_A*, /sheetIO/A*, PGOOD_*, *_CMD are named as rejected.
-  haasoscope   (the board `auto` was written for) still forms byte_lane_0
-               (20), byte_lane_1 (20), command_address (13), member for
-               member, and leaves exactly DMI0/1_A/B, RESET_n, ZQ0 out.
+  haasoscope   (the board `auto` was written for) forms byte_lane_0 (22),
+               byte_lane_1 (22) and command_address (13): each lane is its
+               DQ, DQS and DMI (LPDDR4's data-mask-inversion is sampled with
+               its byte's DQ on the byte's strobe, so it is part of the
+               lane); RESET_n and ZQ0 are left out, by name.
 
 and, on synthetic results, the two route-step defects: the grouper's input is
 the call's scope (an out-of-scope rip-candidate registration never joins), and
@@ -153,28 +155,28 @@ def run():
     c = classify_ddr_nets(scope, allnames)
     g = grouped(c)
     lane0 = ({f'Net-(U1A-DQ{i}_{ch})' for i in range(8) for ch in 'AB'}
-             | {f'Net-(U1A-DQS0_{p}_{ch})' for p in 'ct' for ch in 'AB'})
+             | {f'Net-(U1A-DQS0_{p}_{ch})' for p in 'ct' for ch in 'AB'}
+             | {f'Net-(U1A-DMI0_{ch})' for ch in 'AB'})
     lane1 = ({f'Net-(U1A-DQ{i}_{ch})' for i in range(8, 16) for ch in 'AB'}
-             | {f'Net-(U1A-DQS1_{p}_{ch})' for p in 'ct' for ch in 'AB'})
+             | {f'Net-(U1A-DQS1_{p}_{ch})' for p in 'ct' for ch in 'AB'}
+             | {f'Net-(U1A-DMI1_{ch})' for ch in 'AB'})
     cmd = ({f'Net-(U1B-CA{i}_A)' for i in range(6)}
            | {'Net-(U1B-CK_c_A)', 'Net-(U1B-CK_t_A)', 'Net-(U1B-CKE0_A)',
               'Net-(U1B-CS0_A)', 'Net-(U1B-CS0_B)', 'Net-(U1B-ODT_CA_A)',
               'Net-(U1B-ODT_CA_B)'})
-    check("haasoscope byte_lane_0 unchanged (20)",
-          g.get('byte_lane_0') == lane0 and len(lane0) == 20,
+    check("haasoscope byte_lane_0 = DQ0-7 + DQS0 + DMI0 (22)",
+          g.get('byte_lane_0') == lane0 and len(lane0) == 22,
           str(sorted(g.get('byte_lane_0', set()) ^ lane0)))
-    check("haasoscope byte_lane_1 unchanged (20)",
-          g.get('byte_lane_1') == lane1 and len(lane1) == 20,
+    check("haasoscope byte_lane_1 = DQ8-15 + DQS1 + DMI1 (22)",
+          g.get('byte_lane_1') == lane1 and len(lane1) == 22,
           str(sorted(g.get('byte_lane_1', set()) ^ lane1)))
     check("haasoscope command_address unchanged (13)",
           g.get('command_address') == cmd and len(cmd) == 13,
           str(sorted(g.get('command_address', set()) ^ cmd)))
     check("haasoscope has exactly those three groups",
           set(g) == {'byte_lane_0', 'byte_lane_1', 'command_address'}, str(sorted(g)))
-    check("haasoscope leaves exactly DMI0/1_A/B, RESET_n, ZQ0 out, by name",
-          set(c['no_group_token']) == {
-              'Net-(U1A-DMI0_A)', 'Net-(U1A-DMI0_B)', 'Net-(U1A-DMI1_A)',
-              'Net-(U1A-DMI1_B)', 'Net-(U1B-RESET_n)', 'Net-(U1B-ZQ0)'},
+    check("haasoscope leaves exactly RESET_n and ZQ0 out, by name",
+          set(c['no_group_token']) == {'Net-(U1B-RESET_n)', 'Net-(U1B-ZQ0)'},
           str(c['no_group_token']))
     # The quick test routes only the CA nets: the interface is still read off
     # the BOARD, so a CA-only scope still forms its group.
@@ -216,6 +218,9 @@ def run():
     check("DQ<byte>_<bit> naming reads the byte as the lane",
           set(c['groups'].get('byte_lane_1', [])) == set(dq_bits[8:]),
           str(sorted(c['groups'].get('byte_lane_1', []))))
+    c = classify_ddr_nets(['/PCH/DMI0_TXP', '/PCH/DMI0', '/PCH/DMI1', '/PCH/CLK'])
+    check("a DMI lane name outside a DRAM interface joins nothing (PCIe-style DMI)",
+          not c['groups'] and '/PCH/DMI0' in c['not_dram_interface'], str(c))
     c = classify_ddr_nets(['/DDR3/~{DDR3_CAS}', '/DDR3/DDR3_A0', '/DDR3/DDR3_BA0',
                            '/DDR3/DDR3_CKE'])
     check("a KiCad overbar does not split the interface prefix",

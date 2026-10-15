@@ -777,7 +777,7 @@ Look for DDR signal patterns in the net list that may need length matching:
 
 If DDR signals detected:
 - Note that `--length-match-group auto` should be used
-- DQ0-7 + DQS0 (+ DM0) form byte lane 0, DQ8-15 + DQS1 form byte lane 1,
+- DQ0-7 + DQS0 (+ DM0 or LPDDR's DMI0) form byte lane 0, DQ8-15 + DQS1 form byte lane 1,
   etc.; address/command/clock form `command_address`
 - `auto` groups only the step's own `--nets`, by whole name token, and only
   under a prefix the board proves is DRAM (#1247). Preview it with

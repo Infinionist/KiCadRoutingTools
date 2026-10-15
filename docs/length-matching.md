@@ -62,7 +62,7 @@ Each `--length-match-group` flag defines one group; nets matching *any* pattern 
 
 **Groups:**
 
-- **Byte lanes** `byte_lane_<n>`: data `DQ<n>`/`D<n>`/`DATA<n>` in lane `n // 8`. Strobes (`DQS<n>`, `RDQS<n>`, `LDQS`/`UDQS`) and masks (`DM<n>`, `DQM<n>`, `LDM`/`UDM`, `DQMH`/`DQML`) go in their numbered or lower/upper lane. A `DQ<byte>_<bit>` interface (bit index runs 0-7) is read by byte. A bare `DQS`/`DM` joins only when its interface's data spans exactly one lane (an x8 part). Otherwise it is listed as ungrouped by name.
+- **Byte lanes** `byte_lane_<n>`: data `DQ<n>`/`D<n>`/`DATA<n>` in lane `n // 8`. Strobes (`DQS<n>`, `RDQS<n>`, `LDQS`/`UDQS`) and masks (`DM<n>`, `DQM<n>`, `LDM`/`UDM`, `DQMH`/`DQML`, LPDDR4/5 `DMI<n>`) go in their numbered or lower/upper lane. `DMI` (data-mask-inversion) is sampled with its byte's DQ on that byte's strobe, so it is matched with the lane. A `DQ<byte>_<bit>` interface (bit index runs 0-7) is read by byte. A bare `DQS`/`DM` joins only when its interface's data spans exactly one lane (an x8 part). Otherwise it is listed as ungrouped by name.
 - **`command_address`**: `A<n>`, `BA<n>`, `BG<n>`, `BS<n>`, `CA<n>`, `RAS`, `CAS`, `WE`, `CS`, `CKE`, `ODT`, `ACT`, `PAR`, `CMD`, and the clock `CK`/`CLK`. The clock is in this group because the command/address bus is sampled on it and is matched to it.
 
 Accepted spellings include the active-low `n` prefix (`nCAS`), `N`/`B` suffixes (`CSn`, `RASN`), and SDRAM-controller `S`/`SD` prefixes (Allwinner `SDQS0P`/`SA0`, i.MX `SDCLK0_P`, STM32 `SDNCAS`). The prefixes are never accepted on a data line (`SD0` is SD-card data) or on a bare `CK`/`CLK`/`CS` (`SCK`, `SCLK`, `SCS` are SPI). Lanes are keyed by number across interfaces: LPDDR4 channels A and B share `byte_lane_0`.
@@ -70,12 +70,12 @@ Accepted spellings include the active-low `n` prefix (`nCAS`), `N`/`B` suffixes 
 **What it reports.** When a group forms, its members are printed by name, before any meander. Next come the interface prefixes it accepted, then every DRAM-looking net it left out, by name and reason:
 
 - lane not readable;
-- in the interface but no group token (`RESET`, `ZQ`, `DMI`, `VREF`);
+- in the interface but no group token (`RESET`, `ZQ`, `VREF`);
 - the name looks like DRAM but its prefix carries no DRAM-only signals.
 
 `JSON_SUMMARY` carries the same membership as `length_match_groups` (one `{name, source, members}` record per group, named groups included, with `patterns`). The exclusions are in `length_match_auto`. The GUI's results carry `length_match_groups`. The #521 `length-matched` protected nets are drawn from these members: those routed this run or measured from earlier-step copper.
 
-A name the rules do not cover (LPDDR5 `WCK`, LPDDR4 `DMI`, DDR5 `CB` check bits) is listed as ungrouped, never guessed. Pass explicit `--length-match-group` patterns for it.
+A name the rules do not cover (LPDDR5 `WCK`, DDR5 `CB` check bits) is listed as ungrouped, never guessed. Pass explicit `--length-match-group` patterns for it.
 
 ## The Trombone Meander
 
