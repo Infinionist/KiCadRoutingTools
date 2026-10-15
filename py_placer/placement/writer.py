@@ -551,6 +551,12 @@ _PAD_HANDLED = frozenset({
     'clearance', 'thermal_bridge_angle', 'solder_paste_margin_ratio',
     'thermal_bridge_width', 'thermal_gap', 'thermal_width', 'die_length',
     'zone_layer_connections', 'tstamp', 'locked', 'chamfer_ratio',
+    # #1248: KiCad 10's pad-to-die DELAY (ps) is a per-pad scalar like
+    # `die_length` and mirror-invariant the same way: pcbnew's FOOTPRINT::Flip
+    # leaves both values unchanged (probed on 10.0.0). No tracked board
+    # carries either token, so the parity gate and the round trip pin it on
+    # an injected tigard J7; without it a part carrying one refused to flip.
+    'die_delay',
 })
 
 _SIDED_LAYER = re.compile(r'^[FB]\.')

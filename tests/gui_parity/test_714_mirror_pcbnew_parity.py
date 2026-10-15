@@ -39,6 +39,12 @@ FIXTURES ARE ALL `generator_version "10.0"` boards. 7 of the 22 tracked boards
 are 9.0, and `SaveBoard` format-upgrades those, so the diff would be unreadable
 for reasons unrelated to the flip.
 
+A pad child no tracked board carries is compared on an INJECTED copy
+(`INJECTED`): today the pad-to-die `die_length` / `die_delay` (#1248), which
+pcbnew's flip leaves unchanged. Its tokens are required surfaces on pcbnew's
+own output, so an injection that stopped landing fails instead of comparing a
+fixture with nothing in it.
+
 ABSENCE IS AN ERROR, NOT A SKIP (exit 2). This is the acceptance criterion, and
 `tests/mutate_714.py` uses it as a killer gate: a gate that self-skips at exit 0
 reports every mutation row it guards as SURVIVED.
@@ -98,6 +104,18 @@ FIXTURES = [
     ('orangecrab_ext_pll', 'J1'),   # property on Eco1.User
 ]
 
+# Fixtures INJECTED into a copy of a tracked board, for pad children no
+# tracked board carries. (board, ref, {pad number: tokens added after the
+# pad's `(net ...)`, where pcbnew 10 writes them}). #1248: the pad-to-die
+# length and delay, both, one and the other -- a per-pad scalar a flip must
+# leave alone, and the writer refused `die_delay` outright before it was
+# whitelisted.
+INJECTED = [
+    ('tigard', 'J7', {'1': '(die_length 1.25)\n\t\t\t(die_delay 7.5)',
+                      '2': '(die_length 0.333)',
+                      '3': '(die_delay 12.345678)'}),
+]
+
 # Each fixture is compared TWICE: once against pcbnew's bare flip, and once
 # against a flip COMPOSED with a rotation the caller chose. The composed pass
 # exists because its absence hid a real bug -- the text-angle rule was the
@@ -128,8 +146,10 @@ COMPOSED_DELTAS = (None, 90.0, 180.0)
 ROTATE_DELTAS = (90.0, 270.0)
 # Flip rows first: the Y-mirror direction check runs once, on the first row
 # with pads, and must see a flip.
-PASSES = ([(b, r, d) for (b, r) in FIXTURES for d in COMPOSED_DELTAS]
-          + [(b, r, ('rotate', d)) for (b, r) in FIXTURES for d in ROTATE_DELTAS])
+_ALL = [(b, r, None) for (b, r) in FIXTURES] + [(b, r, inj) for (b, r, inj) in INJECTED]
+PASSES = ([(b, r, d, inj) for (b, r, inj) in _ALL for d in COMPOSED_DELTAS]
+          + [(b, r, ('rotate', d), inj) for (b, r, inj) in _ALL
+             for d in ROTATE_DELTAS])
 
 # A run that compared nothing must fail. Floors are below today's counts so a
 # board changing is not a failure, and far above zero so a vacuous run is.
@@ -137,8 +157,10 @@ MIN_FIXTURES = 36
 MIN_PADS = 1200
 MIN_NON_PAD_NODES = 1200
 # Surfaces at least one fixture must actually carry, so the set cannot silently
-# stop covering them.
-REQUIRED_SURFACES = ('fp_arc', 'fp_curve', 'model', 'fp_poly', 'fp_circle')
+# stop covering them. Counted on PCBNEW's output, so the die tokens also prove
+# pcbnew read the injection back rather than dropping it on both sides.
+REQUIRED_SURFACES = ('fp_arc', 'fp_curve', 'model', 'fp_poly', 'fp_circle',
+                     'die_length', 'die_delay')
 
 _NUM = re.compile(r'^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$')
 
@@ -241,6 +263,38 @@ def _block(path, ref):
     return None
 
 
+def _inject(src, dst, ref, pads):
+    """Copy `src` to `dst` with `pads`' tokens added inside `ref`'s block.
+
+    Each token goes after the pad's own `(net ...)`, located by walking that
+    pad node, so a net name repeated on several pads cannot place it on the
+    wrong one. Raises when an anchor is missing: an injection that silently
+    added nothing would compare a fixture that carries no token at all.
+    """
+    from kicad_parser import iter_footprint_blocks
+    with open(src, encoding='utf-8', newline='') as fh:
+        text = fh.read()
+    for s, e, fp_text, _raw, key in iter_footprint_blocks(text):
+        if key != ref:
+            continue
+        body, left = fp_text, dict(pads)
+        for m in reversed(list(re.finditer(r'\(pad\s+"([^"]*)"', body))):
+            num = m.group(1)
+            if num not in left:
+                continue
+            net = re.compile(r'\(net\s+"[^"]*"\)\n').search(body, m.start())
+            nxt = body.find('(pad ', m.end())
+            if net is None or (nxt != -1 and net.start() > nxt):
+                raise AssertionError(f"{ref} pad {num}: no (net ...) to anchor on")
+            body = body[:net.end()] + '\t\t\t' + left.pop(num) + '\n' + body[net.end():]
+        if left:
+            raise AssertionError(f"{ref}: pads {sorted(left)} not found -- fixture stale")
+        with open(dst, 'w', encoding='utf-8', newline='') as fh:
+            fh.write(text[:s] + body + text[e:])
+        return dst
+    raise AssertionError(f"{ref} not in {src} -- fixture stale")
+
+
 def _uuids(text):
     import collections
     return collections.Counter(re.findall(r'\(uuid\s+"([^"]+)"\)', text))
@@ -310,7 +364,7 @@ def main(argv=None):
 
     import pcbnew
     from kicad_parser import parse_kicad_pcb
-    from placement.writer import write_placed_output
+    from placement.writer import SideFlipUnsupported, write_placed_output
 
     tb = getattr(pcbnew, 'FLIP_DIRECTION_TOP_BOTTOM', False)
     tmp = tempfile.mkdtemp(prefix='krt714par')
@@ -319,12 +373,27 @@ def main(argv=None):
     waived = []
     surfaces = set()
     direction_checked = False
+    injected = {}
     try:
-        for board, ref, delta in PASSES:
+        for board, ref, delta, inj in PASSES:
             src = os.path.join(REPO, 'kicad_files', board + '.kicad_pcb')
             if not os.path.isfile(src):
                 problems.append(f"{board}: board not tracked -- fixture stale")
                 continue
+            if inj is not None:
+                key = (board, ref)
+                if key not in injected:
+                    try:
+                        injected[key] = _inject(
+                            src, os.path.join(tmp, f"{board}_{ref}_injected.kicad_pcb"),
+                            ref, inj)
+                    except AssertionError as exc:
+                        injected[key] = None
+                        problems.append(f"{board}:{ref} injection failed: {exc}")
+                if injected[key] is None:
+                    continue
+                src = injected[key]
+                board = board + '+inj'
 
             # ---- path B: pcbnew's own flip
             b = pcbnew.LoadBoard(src)
@@ -384,7 +453,14 @@ def main(argv=None):
                     'new_rotation': round(((-(fp0.rotation or 0.0))
                                            + (delta or 0.0)) % 360, 6),
                     'new_side': side}
-            write_placed_output(src, ours, [placement])
+            try:
+                write_placed_output(src, ours, [placement])
+            except SideFlipUnsupported as exc:
+                # Every fixture here is one pcbnew flips, so a refusal is a
+                # FAIL with its reason, not a crash that hides the rest.
+                problems.append(f"{board}:{ref} the writer REFUSED a flip "
+                                f"pcbnew performs: {exc}")
+                continue
 
             ta, tk = _block(ours, ref), _block(kout, ref)
             if ta is None or tk is None:
