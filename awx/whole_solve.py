@@ -43,6 +43,7 @@ VR_STAY = 1.1                          # a change's room from a stayer's crossin
 KMAX = 3                               # layer changes per lane at most (every proved plan K15-K51 has 2 at most: a
                                        # fourth only widened the model -- K51 proved in 37 s at 3 with SUBSOLVERS)
 G = PITCH / 5                          # the solve's time grid: a fifth of the lane pitch
+TVIA_REACH = 2.0                       # (probe SOLVE_TVIA_SITE) how far along its escape a tooth via's site is sought
 MARG = CLR                             # a crossing starts a clearance past both lanes' terminals (a lane leaving its tooth may cross at once)
 # a crossing's room along each lane: a STAYER's crossings a pitch apart, a MOVER's (a sweep crossing a bundle nearly
 # across the spine, its slope up to K_SWEEP) PITCH / sqrt(1 + K^2) apart along s; the geometry keeps the real pitch
@@ -58,6 +59,9 @@ SOLVE_BATCHES = int(awx_settings.get('WHOLE_SOLVE_BATCHES', '100'))  # CP-SAT in
 PROBE_BATCHES = int(awx_settings.get('WHOLE_SOLVE_PROBE', '10'))    # the bound-raising workers' (run)
 SOLVE_WORKERS = 4
 CHECK_WORK = 30.0                       # a check's deterministic work limit (solve(check=True)): past it, no verdict
+CHECK_RULES_MAX = 80                    # (rules=True) the core's rules dropped in turn to minimize it, at most
+CHECK_RULES_CORES = 4                   # (rules=True) the small cores sought after the first, at most
+CHECK_RULES_SMALL = 2                   # ...a small core: this many rules or fewer
 # ...running these: two LP workers (the default and the strongest relaxation), core-based search and the objective's
 # lower-bound search. The default four ran nothing that raises the bound, and a plan's vias are proved from below: K51's
 # first solve stopped unproved at 421 s (best 56 vias, bound 40), with these it proves 42 in 141 s, K41 in 17 s (38)
@@ -129,6 +133,65 @@ class _Held:
         return self.main.WallTime() + self.vals.WallTime()
 
 
+def _room_tie(m, sv, t, chg, YL, M, ROOM_T, G):
+    """(SOLVE_ROOM_TIE) the plan found, each change moved to where its column has the most room (ROOM_T, priced per
+    place): its crossings, its runs' layers and its count of changes held, nothing it pays allowed to grow (the
+    objective no more than the plan's). On a copy of the model, so the plane tie after it chooses the layers again on
+    the original. The plan's own values when no place prices lower"""
+    mc = m.clone()
+    ob_ = mc.Proto().objective
+    if ob_.scaling_factor not in (0.0, 1.0) or not len(ob_.vars):
+        return sv
+    lit_ = lambda r_: (mc.GetIntVarFromProtoIndex(r_) if r_ >= 0 else 1 - mc.GetIntVarFromProtoIndex(-r_ - 1))
+    mc.Add(sum(c_ * lit_(r_) for r_, c_ in zip(ob_.vars, ob_.coeffs))
+           <= int(round(sv.ObjectiveValue() - ob_.offset)))
+    mc.ClearObjective()
+    V = lambda v_: mc.GetIntVarFromProtoIndex(v_.Index())
+    for v_ in t.values():
+        mc.Add(V(v_) == sv.Value(v_))
+    for n in M:
+        for v_ in list(chg[n][1]) + list(YL.get(n, [])):
+            mc.Add(V(v_) == sv.Value(v_))
+    terms, cur, old = [], 0, {}
+    for n in M:
+        if n not in ROOM_T:
+            continue
+        lo_, tab_ = ROOM_T[n]
+        cs_, act = chg[n]
+        for k, (x_, a_) in enumerate(zip(cs_, act)):
+            if not sv.Value(a_):
+                continue
+            v_ = mc.NewIntVar(min(tab_), max(tab_), '')
+            mc.AddElement(V(x_) - lo_, tab_, v_)
+            terms.append(v_)
+            cur += tab_[sv.Value(x_) - lo_]
+            old[(n, k)] = sv.Value(x_)
+    if not terms:
+        return sv
+    mc.ClearHints()
+    n0 = len(m.Proto().variables)
+    for i_ in range(n0):
+        mc.AddHint(mc.GetIntVarFromProtoIndex(i_), sv.Value(m.GetIntVarFromProtoIndex(i_)))
+    mc.Minimize(sum(terms))
+    s_ = cp_model.CpSolver()
+    s_.parameters.num_workers = SOLVE_WORKERS
+    s_.parameters.subsolvers.extend(FALLBACK)
+    s_.parameters.interleave_search = True
+    s_.parameters.max_num_deterministic_batches = int(awx_settings.get('SOLVE_PLANE_BATCHES') or '20')
+    s_.parameters.share_glue_clauses = False
+    s_.parameters.share_binary_clauses = False
+    st_ = s_.Solve(mc)
+    ok_ = st_ in (cp_model.OPTIMAL, cp_model.FEASIBLE)
+    if not ok_ or s_.ObjectiveValue() >= cur:
+        print(f'   room tie: the plan kept ({cur}{"" if ok_ else ", no plan"}, {s_.WallTime():.1f}s)')
+        return sv
+    moved = sorted((n, round(old[(n, k)] * G, 2), round(s_.Value(V(chg[n][0][k])) * G, 2)) for (n, k) in old
+                   if s_.Value(V(chg[n][0][k])) != old[(n, k)])
+    print(f'   room tie: {cur} -> {s_.ObjectiveValue():.0f} [{s_.StatusName(st_)}] {s_.WallTime():.1f}s, '
+          f'{len(moved)} change(s) moved: ' + ', '.join(f'{n} {a_}->{b_}' for n, a_, b_ in moved))
+    return _Held(sv, s_)
+
+
 def _plane_tie(ctx, m, sv, OBJ, t, chg, YL, M, entry, end, LAYN, KMAX, Q):
     """(SOLVE_PLANE_TIE) the plan found, its runs' layers chosen again by the planes they split (_plane_weights): its
     crossings and changes held, nothing it pays allowed to grow (the objective no more than the plan's) -- a tie-break
@@ -194,7 +257,7 @@ def _plane_tie(ctx, m, sv, OBJ, t, chg, YL, M, entry, end, LAYN, KMAX, Q):
 
 
 def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, relax=0, front=None, check=False,
-          core=False):
+          core=False, rules=False):
     """the solve of the bench ctx (whole_ctx.plan()) round the destination part `dest`: the JSON
     whole_geo reads (crossings, changes, each lane's route coordinate), or None when CP-SAT finds no plan or none it
     proves optimal in its vias. `cuts`
@@ -472,14 +535,15 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
     # the lanes leave the source's surface escapes for whichever layer the plan gives them where the gap between the
     # arrays has no room for their changes (the zynq's U1 to U5)
     TVIA = {n for n in M if not via_end(n, 0)} if NL > 2 else set()     # (the bench's own: VIA_ENDS holds no tooth)
+    VIN0_ROOM = dict(VIN0)
     for n in TVIA:
         if n not in prs:
             VIN0[n] = 0.0
 
-    def site_clear(n, k_):
-        """a through via at single lane n's stub end k_ (0 its tooth, 1 its berth) clear of every other net's copper on
-        every layer by a via's room -- measured, as the ends model measures a blocked front's"""
-        pt_ = ctx.ends[n][k_]
+    def site_clear(n, k_, pt_=None):
+        """a through via at single lane n's stub end k_ (0 its tooth, 1 its berth) -- or at pt_ -- clear of every other
+        net's copper on every layer by a via's room -- measured, as the ends model measures a blocked front's"""
+        pt_ = ctx.ends[n][k_] if pt_ is None else pt_
         nid = ctx.byname[n][0]
         r_ = bd.VIA_SIZE / 2 + bd.CLEAR
         if any(s_.net_id != nid and _pairs._pt_seg(pt_, (s_.start_x, s_.start_y), (s_.end_x, s_.end_y))
@@ -497,6 +561,57 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
     BVIA = {n for n in M if n not in prs and not via_end(n, 1) and site_clear(n, 1)} if NL > 2 else set()
     for n in BVIA:
         VIN1[n] = 0.0
+    # (probe SOLVE_TVIA_SITE: a single tooth via's site MEASURED, as a berth via's is -- the first clear of every other
+    # net's copper on every layer, stepping along its escape from the stub's end, within DIVE_REACH; its window starts
+    # there. None in reach: no tooth via, the lane's end room and the face band as any lane's. Unmeasured, the window
+    # stood at the stub's end, where the source's fanout stacks another net's stub on an inner layer in the same
+    # channel: the zynq LVDS's six surface teeth on U1 all were, SPI_ENB's via laid on RX_D4_P's In2.Cu stub, and the
+    # snap could not stand it anywhere in its band)
+    if (awx_settings.get('SOLVE_TVIA_SITE') or '0') == '1':
+        for n in sorted(TVIA - set(prs)):
+            esc_ = ctx.tooth_dir.get(n)
+            if esc_ is None:
+                continue
+            p_ = tuple(map(float, ctx.ends[n][0]))
+            hit_ = next((q_ for q_ in ((p_[0] + G * i * esc_[0], p_[1] + G * i * esc_[1])
+                                       for i in range(int(TVIA_REACH / G) + 1)) if site_clear(n, 0, q_)), None)
+            if hit_ is None:
+                TVIA.discard(n)
+                VIN0[n] = VIN0_ROOM[n]
+                print(f'   tooth via {n}: no clear site within {TVIA_REACH} mm of its stub -- no tooth via')
+            else:
+                VIN0[n] = max(0.0, float(spine.project_pt(hit_)[0]) - entry[n])
+                print(f'   tooth via {n}: its first clear site {math.hypot(hit_[0] - p_[0], hit_[1] - p_[1]):.2f} mm '
+                      f'along its escape, {VIN0[n]:.2f} of route')
+    # (probe SOLVE_DIVE_PROJ: a pair's dive room at its tooth is PATH LENGTH along its escape, and the window reads it
+    # as route u -- an escape across the spine gains little u per mm: the zynq LVDS's S-face pairs, the spine ~22 deg
+    # off their face's normal, 0.37 u per mm, VIN0 1.55 = their dives past U1's SE corner among the E face's. The dive
+    # stands at the tooth + its room along the escape; its u is that point's on the spine)
+    if (awx_settings.get('SOLVE_DIVE_PROJ') or '0') in ('1', '2'):
+        for n in sorted(prs):
+            esc_ = ctx.tooth_dir.get(n)
+            if n in M and esc_ is not None:
+                p_ = Fr.start[n]
+                VIN0[n] = max(G, float(spine.project_pt((p_[0] + VIN0[n] * esc_[0], p_[1] + VIN0[n] * esc_[1]))[0])
+                              - entry[n])
+    # (SOLVE_DIVE_PROJ=2: the BERTH's dive room as well -- the dive stands its room out from the landing along the
+    # berth's stub, its u that point's on the lane's frame (the ring's for a ring lane): a berth on a face across the
+    # route took its whole path length as u, the zynq LVDS K47's RX_D1 1.57 at U5's top face, and with its tooth's room
+    # its window was empty)
+    if (awx_settings.get('SOLVE_DIVE_PROJ') or '0') == '2':
+        was_ = {}
+        for n in sorted(prs):
+            sd_ = ctx.stub_dir.get(n)
+            if n not in M or sd_ is None or n in bname:
+                # (a RING lane drops in to its berth ACROSS its ring, from its standoff: its berth's dive room stands
+                # out from the ring, an offset, not along it -- projected on the ring, the zynq LVDS's S-face berths
+                # took a grid step)
+                continue
+            q_ = (Fr.land[n][0] + VIN1[n] * sd_[0], Fr.land[n][1] + VIN1[n] * sd_[1])
+            u_q = spine.project_pt(q_)[0]
+            was_[n] = VIN1[n]
+            VIN1[n] = max(G, end[n] - float(u_q))
+        print('   berth dive rooms projected: ' + ', '.join(f'{n} {was_[n]:.2f}->{VIN1[n]:.2f}' for n in sorted(was_)))
     print('classes:', dict(collections.Counter(bname.get(n, 'W') for n in M)), 'W ends', sorted(round(end[n], 2) for n in M if n not in bname))
     Ln, Fn = list(Fr.launch), list(Fr.final)                  # both north to south (whole_frame)
     li = {n: i for i, n in enumerate(Ln)}; fi = {n: i for i, n in enumerate(Fn)}
@@ -550,9 +665,26 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
     else:
         t = {k: m.NewIntVar(Q(lo), Q(hi), f't_{k[0]}_{k[1]}') for k, (lo, hi) in win.items()}
     CROWD = {n: m.NewBoolVar(f'crowd_{n}') for n in M} if crowd else {}
+    # (the check's RULES core, rules=True: every rule kept() and present() guard held by an assumption of its own, one
+    # per (lane, rule family) -- a model with no plan names the lanes and the rules of theirs it could not hold
+    # together, which a core of crossing windows cannot: a lane with no change position left (its window empty or all
+    # cut) or a clique of crossings the layers cannot colour holds whatever the windows are. The model is the same:
+    # every assumption holds)
+    RLIT = {}
+
+    def rlit(n_, fam):
+        if (n_, fam) not in RLIT:
+            RLIT[(n_, fam)] = m.NewBoolVar(f'rule_{n_}_{fam}')
+        return RLIT[(n_, fam)]
+    rules_on = bool(check and core and rules and not crowd)
 
     def present(lit, n):
         """a crossing's room along lane n is there when `lit` -- and, in the CROWD diagnosis, n is not crowded"""
+        if rules_on:
+            q_, a_ = m.NewBoolVar(''), rlit(n, 'space')
+            m.AddBoolAnd([lit, a_]).OnlyEnforceIf(q_)
+            m.AddBoolOr([lit.Not(), a_.Not(), q_])
+            return q_
         if not CROWD:
             return lit
         q_ = m.NewBoolVar('')
@@ -560,13 +692,15 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         m.AddBoolOr([lit.Not(), CROWD[n], q_])
         return q_
 
-    def kept(*ns):
+    def kept(*ns, fam=''):
         """the enforcement of a rule on lanes `ns` that a CROWDED one sheds: none, or (the CROWD diagnosis) each of
         them not crowded -- a crowded lane keeps only its order in the braid and its count of changes: its crossings'
         layers, its changes' room from them, its ends' layers (VBAN, VSEP, a pair's tips) and a pair's zigzag and
         crossover go with its spacing, so the diagnosis names lanes on the layers' account too (the zynq LVDS bus on
         escapes: five lanes up the channel between the arrays across five along it, their ends' runs crossing in U5's
         own escapes, VSEP -- the spacing alone freed, no lane named, and three rounds laid the same ends)"""
+        if rules_on:
+            return [rlit(n_, fam) for n_ in ns]
         return [CROWD[n_].Not() for n_ in ns if n_ in CROWD]
     # ---- geometry cuts (whole_geo.py's islands a lane could not be kept off): none of that lane's crossings in the span
     CUTS = []
@@ -734,12 +868,13 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
                     n_zz += 1
                     continue
                 zb = m.NewBoolVar('')
-                m.Add(t[k1] + zq <= t[k2]).OnlyEnforceIf([zb] + kept(n))
-                m.Add(t[k2] + zq <= t[k1]).OnlyEnforceIf([zb.Not()] + kept(n))
+                m.Add(t[k1] + zq <= t[k2]).OnlyEnforceIf([zb] + kept(n, fam='zigzag'))
+                m.Add(t[k2] + zq <= t[k1]).OnlyEnforceIf([zb.Not()] + kept(n, fam='zigzag'))
     if n_zz:
         print(f'   pair zigzags with no room in their windows for a turn, left to the geometry: {n_zz}')
     # ---- layer changes
     cost = []
+    W_ENDS = int(awx_settings.get('SOLVE_ENDS_PRICE') or '0')
     # (a PLANE's layer priced per run (PLANE_RUN): the flat price of each run a lane lays on it, whatever its length --
     # the layer kept for the lanes that save a via by it. Priced per cell (by the pour's fragility), the zynq's first
     # solve took 709 s for 308 and laid 78 vias for 40)
@@ -753,6 +888,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
             print(f'   a run on a plane\'s layer priced {PLANE_RUN} via(s): '
                   + ', '.join(f'{LAYN[i_]} ({kinds_[LAYN[i_]]})' for i_ in PL_IDX))
     chg, tot = {}, {}
+    CDOM = {}                 # each lane's change places: (first, last) in steps of G
     T0 = {c_[0] for c_ in LAYER_CUTS if c_[1] == 0} | CHAN_T0 | TVIA   # (a blocked tooth's change may stand in the face's band)
     for n in M:
         # (more layers than two: never before the lane's own entry -- a tooth via's window starts AT the tooth, no end
@@ -767,11 +903,26 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         # 1.14 mm of route u from its tooth to its berth, a dive room of 0.69 at each end)
         lo_n = min(lo_n, hi_n + 1)
         cs_ = [m.NewIntVar(lo_n, hi_n + 1, f'c_{n}_{k}') for k in range(KMAX)]
+        CDOM[n] = (lo_n, hi_n + 1)
         act = [m.NewBoolVar('') for _ in range(KMAX)]
         for k in range(KMAX):
             m.Add(cs_[k] <= hi_n).OnlyEnforceIf(act[k]); m.Add(cs_[k] == hi_n + 1).OnlyEnforceIf(act[k].Not())
             if k:
                 m.Add(cs_[k] >= cs_[k - 1] + Q(Dv[n])).OnlyEnforceIf(act[k]); m.AddImplication(act[k], act[k - 1])
+        # (probe SOLVE_ENDS_PRICE, per step, far below a via: every change priced by its steps to the nearer end of its
+        # window -- dives at the ends, as the human's, the crossings between. Unpriced, a change stood wherever the
+        # search left it: the zynq LVDS's TX_D3, an S-face crossover pair, had its crossover 1.28 mm short of its berth,
+        # where its turn and its crossover's straight runs could not both fit, and the geometry laid it in a hairpin
+        # south. An inactive change stands past the window, -1 from its end, and prices 0: priced -1, every lane's spare
+        # changes summed below the next whole via, and the proof that floors the objective by a via read a 40-via plan
+        # as 39 and stopped the search as proved)
+        if W_ENDS:
+            for k in range(KMAX):
+                dd_ = m.NewIntVar(-1, hi_n - lo_n + 1, '')
+                m.AddMinEquality(dd_, [cs_[k] - lo_n, hi_n - cs_[k]])
+                d_ = m.NewIntVar(0, hi_n - lo_n + 1, '')
+                m.Add(d_ >= dd_)
+                cost.append(W_ENDS * d_)
         # a change's room from each of its lane's crossings, along s: a STAYER's via is passed by a steep mover at an
         # angle (VR_STAY x the room), a MOVER's via sits on its own steep track (the room itself) -- the room of both
         # lanes there, a PAIR crossing the via's lane the wider by its second leg: sized by the via's lane alone, SDQ13's
@@ -785,8 +936,8 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
             for k in range(KMAX):
                 bb = m.NewBoolVar('')
                 for h_, lit in ((h_st, stay), (h_mv, stay.Not())):
-                    m.Add(cs_[k] + h_ <= t[key]).OnlyEnforceIf([bb, lit] + kept(n))
-                    m.Add(cs_[k] - h_ >= t[key]).OnlyEnforceIf([bb.Not(), act[k], lit] + kept(n))
+                    m.Add(cs_[k] + h_ <= t[key]).OnlyEnforceIf([bb, lit] + kept(n, fam='room'))
+                    m.Add(cs_[k] - h_ >= t[key]).OnlyEnforceIf([bb.Not(), act[k], lit] + kept(n, fam='room'))
                 m.AddImplication(bb, act[k]); bits.append(bb)
             before[key] = bits
         if NL > 2:
@@ -797,9 +948,9 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
             for y_e, L_e, k_e in ((y_[0], tli[n], 0), (y_[KMAX], dli[n], 1)):
                 if (n, k_e) in VEND:
                     for L_b in sorted(VBAN.get((n, k_e), ())):
-                        m.Add(y_e != LAYN.index(L_b)).OnlyEnforceIf(kept(n))
+                        m.Add(y_e != LAYN.index(L_b)).OnlyEnforceIf(kept(n, fam='vban'))
                 else:
-                    m.Add(y_e == L_e).OnlyEnforceIf(kept(n))
+                    m.Add(y_e == L_e).OnlyEnforceIf(kept(n, fam='endlay'))
             for k in range(KMAX):
                 m.Add(y_[k + 1] != y_[k]).OnlyEnforceIf(act[k])
                 m.Add(y_[k + 1] == y_[k]).OnlyEnforceIf(act[k].Not())
@@ -828,7 +979,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
     # would be laid (whole_geo's XO_AT) -- the rule for every one
     for n in M:
         if n in prs and (NL > 2 or tl[n] == dl[n]) and _pairs.opposite_hands(ctx, n):
-            m.Add(chg[n][1][0] == 1).OnlyEnforceIf(kept(n))
+            m.Add(chg[n][1][0] == 1).OnlyEnforceIf(kept(n, fam='hands'))
     # two lanes' changes apart along one frame far enough that two on NEIGHBOURING lanes -- a lane pitch across -- clear
     # the via-to-via rule as the geometry plans it (a grid step over it): a via apart along left them 0.36 where the rule
     # is 0.38, for the geometry to spread. Only lanes that can BE neighbours: adjacent at the launch or at the berths,
@@ -906,11 +1057,11 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
     if NL > 2:
         end_y = lambda n, k_: YL[n][0] if k_ == 0 else YL[n][KMAX]
         for (n, k1_), (o_, k2_) in VSEP:
-            m.Add(end_y(n, k1_) != end_y(o_, k2_)).OnlyEnforceIf(kept(n, o_))
+            m.Add(end_y(n, k1_) != end_y(o_, k2_)).OnlyEnforceIf(kept(n, o_, fam='vsep'))
         for (n, k_), between_ in sorted(Fr.tip_between.items()):
             for o_ in between_:
                 if n in YL and o_ in YL:
-                    m.Add(end_y(n, k_) != end_y(o_, k_)).OnlyEnforceIf(kept(n, o_))
+                    m.Add(end_y(n, k_) != end_y(o_, k_)).OnlyEnforceIf(kept(n, o_, fam='tips'))
 
     def run_at(n, before):
         """(more layers than two) the layer of lane n's run where `before` -- its changes before a point, in order --
@@ -949,7 +1100,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         if NL > 2:
             # crossing lanes DIFFER: the run each is on there (its changes before the crossing: they stand in order)
             La_, Lb_ = run_at(a, ev[a][key]), run_at(b, ev[b][key])
-            m.Add(La_ != Lb_).OnlyEnforceIf(kept(a, b))
+            m.Add(La_ != Lb_).OnlyEnforceIf(kept(a, b, fam='layers'))
             for lane_, c_, mv_ in ((a, b, MV[key]), (b, a, MV[key].Not())):
                 vb = via_near(c_, key)
                 for w_, pres_ in ((w_move, mv_), (w_stay, mv_.Not())):
@@ -1076,6 +1227,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
     # on its layer there -- synth wwP's twelve lanes all on B under two walls of 0402s on B, a plan no geometry lays,
     # left to the loop to undo a cut at a time
     GATE_OVER = []
+    ISLB = None                                        # (the islands' boxes, on: SOLVE_ROOM_TIE reads them)
     if NL > 2 and (awx_settings.get('SOLVE_GATES') or '1') == '1':
         import numpy as np
         g2_ = ctx.cfg.grid_step / 2
@@ -1201,6 +1353,56 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
             print(f'   part gates: {len(GATE_OVER)} -- ' + ', '.join(
                 f'{k_[1][:28]} {k_[2]} {k_[0]} s {k_[3]:.2f}: room {k_[4]:.1f} for {len(k_[5])}' for k_, _v in GATE_OVER[:10])
                 + (' ...' if len(GATE_OVER) > 10 else ''))
+    # ---- ROOM CUTS (probe GEO_ROOM_CUTS, whole_geo.room_cuts): the geometry found layer L with no room between u_lo
+    # and u_hi for the lanes the plan put on it there -- it paid pitch, bound or static rows, spreading the shortfall,
+    # and the snap met it as a lane with no path. Of those lanes, at most `cap` on L there (the lanes less the
+    # shortfall in pitches and a margin): the plan leaves the geometry room to spare. A lane over is priced W_ROOM
+    # (SOLVE_ROOM_W vias, default 10: above a lane's change off the layer and its net over two, below a firm cut)
+    ROOM_OVER = []
+    W_ROOM = int(float(awx_settings.get('SOLVE_ROOM_W') or '10') * W_V)
+    CCUTS = []
+    for fn_ in cuts:
+        CCUTS += json.load(open(fn_)).get('ccuts', [])
+    if NL > 2 and CCUTS:
+        seen_r = set()
+        for c_ in CCUTS:
+            if c_['layer'] not in LAYN:
+                continue
+            L_ = LAYN.index(c_['layer'])
+            key_ = (c_['frame'], c_['layer'], round(c_['u_lo'], 2), round(c_['u_hi'], 2))
+            if key_ in seen_r:
+                continue
+            seen_r.add(key_)
+            terms_ = []
+            for n in c_['lanes']:
+                if n not in M:
+                    continue
+                a_, b_ = max(c_['u_lo'], entry[n]), min(c_['u_hi'], end[n])
+                if b_ < a_:
+                    continue
+                ons_ = []
+                for u_ in sorted({round(a_, 3), round((a_ + b_) / 2, 3), round(b_, 3)}):
+                    bef_ = []
+                    for x_, _a in zip(*chg[n]):
+                        c2_ = m.NewBoolVar('')
+                        m.Add(x_ <= Q(u_)).OnlyEnforceIf(c2_); m.Add(x_ > Q(u_)).OnlyEnforceIf(c2_.Not())
+                        bef_.append(c2_)
+                    e_ = m.NewBoolVar('')
+                    r_ = run_at(n, bef_)
+                    m.Add(r_ == L_).OnlyEnforceIf(e_); m.Add(r_ != L_).OnlyEnforceIf(e_.Not())
+                    ons_.append(e_)
+                on_ = m.NewBoolVar('')
+                m.AddMaxEquality(on_, ons_)
+                terms_.append(on_)
+            if len(terms_) <= c_['cap']:
+                continue                            # (it cannot bind)
+            ov_ = m.NewIntVar(0, len(terms_), '')
+            m.Add(sum(terms_) <= int(c_['cap']) + ov_)
+            ROOM_OVER.append((key_ + (int(c_['cap']), len(terms_)), ov_))
+        if ROOM_OVER:
+            print(f'   room cuts: {len(ROOM_OVER)} -- ' + ', '.join(
+                f'{k_[1]} {k_[0]} u {k_[2]}..{k_[3]}: at most {k_[4]} of {k_[5]}' for k_, _v in ROOM_OVER[:10])
+                + (' ...' if len(ROOM_OVER) > 10 else ''))
     # ---- PASSIVE REGIONS (more routing layers than two, SOLVE_REGIONS): parts whose pads stand on some routing layers
     # only -- decoupling caps, an RF network's 0402s -- leave a lane passing them on THEIR layers a channel a pad's
     # clearance wide, and the plan threads it with hundredths to spare (the zynq LVDS bus: lanes on F.Cu in the 1.2 mm
@@ -1210,6 +1412,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
     # priced W_REGION on the region's layers there, and the lanes it holds on one of them take at most half the room
     # that layer has open across the region (W_FIRM past it)
     REGION, REG_OVER, REG_ON = [], [], []
+    REF = None                                         # (the reference routes, on: SOLVE_ROOM_TIE reads them)
     if NL > 2 and (awx_settings.get('SOLVE_REGIONS') or '1') == '1':
         import numpy as np
         W_REGION = int(awx_settings.get('SOLVE_REGION_W') or '2') * W_V      # (whole vias: the proof reads them so)
@@ -1248,6 +1451,22 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
             out_ = 1.0 if ob1_ >= sp_.project_pt(DCEN_)[1] else -1.0
             orun_ = ob1_ if n in prs else ob1_ + out_ * STAND_
             srun_ = sb1_ - (STAND_ + TRK + CLR)
+            if (awx_settings.get('SOLVE_RING_STACK_REF') or '0') == '1':
+                # (probe SOLVE_RING_STACK_REF: along the ring at its place in the ring's STACK -- its handoff offset,
+                # in by each lane inside it as that one berths (the ring's lanes peel off in berth order, as
+                # SOLVE_RING_VCUTS=2 reads them) -- then into its landing. Out to its landing's offset at once, a
+                # pair's reference ran by U5's face while the geometry kept it stacked among the singles: the zynq LVDS
+                # K47's TX pairs 2.4 mm off RX7 here, across it on B.Cu there, and its region never priced them)
+                mem_ = [m_ for m_ in M if bname.get(m_) == k_]
+                sbe_ = {m_: end[m_] - Hn[m_] + rs[k_] for m_ in mem_}
+                inner_ = [(sbe_[m_], PITCH + (_pairs.pitch(TRK) if m_ in prs else 0.0))
+                          for m_ in mem_ if m_ != n and sbe_[m_] < sbe_[n]]
+                o_st = lambda sb_: ob0_ - out_ * sum(w_ for e_, w_ in inner_ if e_ <= sb_)
+                for sb_ in np.arange(sb0_, sb1_ + 1e-9, G):
+                    o_ = (o_st(sb_) if sb_ <= srun_ else
+                          float(np.interp(sb_, [srun_, sb1_], [o_st(srun_), ob1_])))
+                    pts_.append((u_ring(n, float(sb_)),) + sp_.xy(float(sb_), o_))
+                return pts_
             sout_ = sb0_ + abs(orun_ - ob0_)
             rp_ = ([(sb0_, ob0_), (sb1_, ob1_)] if k_ in Fr.branch else      # (a branch's: straight to its landing)
                    [(sb0_, ob0_), (sout_, orun_), (srun_, orun_), (sb1_, ob1_)] if sout_ < srun_ else
@@ -1371,6 +1590,80 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         if REGION:
             print(f'   passive regions: {len(REGION)} region-layers, {len(REG_ON)} lanes priced -- ' + '; '.join(
                 f'{r_[0]} {r_[1]} room {r_[2]:.2f}: {len(r_[3])}' for r_ in REGION[:12]) + (' ...' if len(REGION) > 12 else ''))
+    # ---- (probe SOLVE_ROOM_TIE) the ROOM where each change stands. A change is a via, on every layer at once -- a pair's
+    # two side by side -- so every lane beside it on any layer must give it room, and no term of the plan says where it
+    # stands in its window: the zynq LVDS K47's TX_D2 dived at U5's SW corner, twelve lanes there on four layers and a
+    # B.Cu part beyond, and its via pushed TX_D0 into that part; the next round's plan dived it 3 mm sooner and laid
+    # clean; K47 r2's CTRL_INs kept their layers and crossings and swapped their changes' places, and one was lost. Each
+    # lane's every place for a change priced by its column's crowding there -- the lanes that frame carries across it
+    # (each its pitch, a pair's legs too) over the room the column has round the lane's reference, each layer's open
+    # run there summed (a layer's: the arrays' boxes, its own islands and the board's edge, each grown by a lane's bar;
+    # the gap open on every layer at once is a pad gap where the reference passes between a layer's passives, not the
+    # corridor) -- and a pair's change twice. Read after the search, as a tie-break (_room_tie): nothing the plan pays
+    # may grow
+    ROOM_T = {}
+    if NL > 2 and (awx_settings.get('SOLVE_ROOM_TIE') or '0') == '1' and REF is not None and ISLB is not None:
+        OSL_ = np.arange(-8.0, 8.0 + 1e-9, PMIN_ / 8)
+        BOXL_ = [[Fr.SB, Fr.DB] + [b_ for (_l, ls_), b_ in ISLB.items() if L_ in ls_] for L_ in range(NL)]
+        col_ok_ = {}
+
+        def col_open(fk_, sp_, s_, L_):
+            """the column of frame fk_ at s_: which offsets in OSL_ are open on layer L_"""
+            key_ = (fk_, int(round(s_ / G)), L_)
+            if key_ not in col_ok_:
+                k_ = sp_.seg_of(s_)
+                t_ = s_ - sp_.S[k_]
+                cx_, cy_ = sp_.P[k_, 0] + t_ * sp_.d[k_, 0], sp_.P[k_, 1] + t_ * sp_.d[k_, 1]
+                X_, Y_ = cx_ + OSL_ * sp_.nrm[k_, 0], cy_ + OSL_ * sp_.nrm[k_, 1]
+                ok_ = (X_ >= BX0_ + EDGE_) & (X_ <= BX1_ - EDGE_) & (Y_ >= BY0_ + EDGE_) & (Y_ <= BY1_ - EDGE_)
+                for b_ in BOXL_[L_]:
+                    if b_[0] - BAR_ > cx_ + 8.5 or b_[2] + BAR_ < cx_ - 8.5 or b_[1] - BAR_ > cy_ + 8.5 \
+                            or b_[3] + BAR_ < cy_ - 8.5:
+                        continue
+                    ok_ &= ~((X_ > b_[0] - BAR_) & (X_ < b_[2] + BAR_) & (Y_ > b_[1] - BAR_) & (Y_ < b_[3] + BAR_))
+                col_ok_[key_] = ok_
+            return col_ok_[key_]
+
+        def width_at(ok_, o_):
+            """the open run of the column round offset o_ (the nearest open one where o_ is not), as lane room"""
+            i_ = int(np.argmin(np.abs(OSL_ - o_)))
+            if not ok_[i_]:
+                idx_ = np.flatnonzero(ok_)
+                if not len(idx_):
+                    return PMIN_
+                i_ = int(idx_[np.argmin(np.abs(idx_ - i_))])
+            a_ = b_ = i_
+            while a_ > 0 and ok_[a_ - 1]:
+                a_ -= 1
+            while b_ + 1 < len(ok_) and ok_[b_ + 1]:
+                b_ += 1
+            return float(OSL_[b_] - OSL_[a_]) + PMIN_
+
+        for n in M:
+            if not len(REF[n]):
+                continue
+            lo_, hi_ = CDOM[n]
+            # (a ring lane's reference: its trunk stretch to its ring's start, then its ring's, each in u order)
+            nT_ = len(np.arange(Fr.st[n][0], Hk[bname[n]] + 1e-9, G)) if n in bname else len(REF[n])
+            parts_ = [REF[n][:nT_], REF[n][nT_:]]
+            tab_ = []
+            for x_ in range(lo_, hi_ + 1):
+                u_ = x_ * G
+                if n in bname and u_ > Hn[n] and len(parts_[1]):
+                    fk_, sp_, R_ = bname[n], ring_of[bname[n]], parts_[1]
+                else:
+                    fk_, sp_, R_ = 'T', spine, parts_[0] if len(parts_[0]) else parts_[1]
+                xy_ = (float(np.interp(u_, R_[:, 0], R_[:, 1])), float(np.interp(u_, R_[:, 0], R_[:, 2])))
+                s_, o_ = (float(v_) for v_ in sp_.project_pt(xy_))
+                if fk_ == 'T':
+                    need_ = sum(wid_[m_] for m_ in M if entry[m_] < s_ < tend[m_])
+                else:
+                    need_ = sum(wid_[m_] for m_ in M if bname.get(m_) == fk_ and Hn[m_] < u_ring(m_, s_) < end[m_])
+                room_ = sum(width_at(col_open(fk_, sp_, s_, L_), o_) for L_ in range(NL))
+                tab_.append(int(round(100 * max(need_, wid_[n]) / room_ * (2 if n in prs else 1))))
+            ROOM_T[n] = (lo_, tab_)
+        print(f'   room tie: {len(ROOM_T)} lanes\' change places priced by their columns\' crowding '
+              f'({len(col_ok_)} columns)')
     # ---- HISTORY congestion (negotiated, as PathFinder prices a resource that was overused before): HIST=HOT.json,.. are
     # the audits' findings of earlier rounds (whole_gate --hot: where a plan was short -- a dive, a pitch, a static, a
     # shape), one file per audit. A finding marks the bins of route within a via's room of it, on the frame whose spine is
@@ -1554,7 +1847,8 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
             m.Add(W_OVER * sum(over.values()) + W_V * VIAS >= W_OVER * r_['over'] + W_V * r_['vias'])
             print(f"   the root's proof as a floor: {r_['over']} via(s) over two, {r_['vias']} vias")
     OBJ = W_OVER * sum(over.values()) + W_V * VIAS + W_SOFT * sum(soft_broken.values()) + sum(cost) \
-        + W_FIRM * sum(firm_broken.values()) + W_FIRM * sum(v_ for _k, v_ in GATE_OVER)
+        + W_FIRM * sum(firm_broken.values()) + W_FIRM * sum(v_ for _k, v_ in GATE_OVER) \
+        + W_ROOM * sum(v_ for _k, v_ in ROOM_OVER)
     if REG_ON:
         OBJ = OBJ + W_REGION * sum(v_ for _k, v_ in REG_ON) + W_FIRM * sum(v_ for _k, v_ in REG_OVER)
     if CROWD:
@@ -1566,17 +1860,62 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         # (whole_ends.solve_check: has this model a plan at all? Its first plan ends the search -- the verdict alone)
         m.ClearObjective()
         s_ = cp_model.CpSolver()
-        s_.parameters.num_workers = 1 if WLIT else SOLVE_WORKERS        # (a core is one worker's)
-        if WLIT:
-            m.AddAssumptions([m.GetBoolVarFromProtoIndex(i_) for i_ in sorted(WLIT)])
+        # (the rules' assumptions with no crossing as well: unassumed, a rule's literal was free, and a lane with no
+        # crossing and no change position read 'plan' with its rules dropped)
+        s_.parameters.num_workers = 1 if WLIT or RLIT else SOLVE_WORKERS        # (a core is one worker's)
+        if WLIT or RLIT:
+            m.AddAssumptions([m.GetBoolVarFromProtoIndex(i_) for i_ in sorted(WLIT)] + list(RLIT.values()))
         s_.parameters.stop_after_first_solution = True
         s_.parameters.max_deterministic_time = CHECK_WORK
         st_ = s_.Solve(m)
         STATUS['plan'] = st_ in (cp_model.OPTIMAL, cp_model.FEASIBLE)
         out_ = {'plan': STATUS['plan'], 'status': s_.StatusName(st_), 'crossings': len(t), 'lanes': len(M)}
-        if WLIT and st_ == cp_model.INFEASIBLE:
+        if (WLIT or RLIT) and st_ == cp_model.INFEASIBLE:
             suff_ = list(s_.SufficientAssumptionsForInfeasibility())
             out_['core'] = sorted({WLIT[i_] for i_ in suff_ if i_ in WLIT})
+            if RLIT:
+                # (the rules of the core, minimal: each dropped in turn -- its rule set free -- and kept out when the
+                # rest, with every window held, still has no plan; a core as CP-SAT returns it is sufficient, not
+                # minimal: the zynq LVDS at K47, 59 rules where 44 held the clique)
+                inv_ = {v_.Index(): k_ for k_, v_ in RLIT.items()}
+                keep_ = [inv_[i_] for i_ in suff_ if i_ in inv_]
+                wl_ = [m.GetBoolVarFromProtoIndex(i_) for i_ in sorted(WLIT)]
+                for k_ in list(keep_)[:CHECK_RULES_MAX]:
+                    m.ClearAssumptions()
+                    m.AddAssumptions(wl_ + [RLIT[k2_] for k2_ in keep_ if k2_ != k_])
+                    s2_ = cp_model.CpSolver()
+                    s2_.parameters.num_workers = 1
+                    s2_.parameters.max_deterministic_time = CHECK_WORK / 6
+                    if s2_.Solve(m) == cp_model.INFEASIBLE:
+                        keep_.remove(k_)
+                # ...and the cores after it while each is small (a lane's own rule or two: a crossed pair's HANDS with
+                # no place to cross over): set free in turn, as many as there are -- the zynq LVDS K47's RX_D1 and RX_D4
+                # each a core of its hands alone, and a sweep that settled one left the model as infeasible as before
+                all_, free_ = list(keep_), set(keep_)
+                for _it in range(CHECK_RULES_CORES):
+                    m.ClearAssumptions()
+                    m.AddAssumptions(wl_ + [v_ for k_, v_ in RLIT.items() if k_ not in free_])
+                    s3_ = cp_model.CpSolver()
+                    s3_.parameters.num_workers = 1
+                    s3_.parameters.max_deterministic_time = CHECK_WORK
+                    if s3_.Solve(m) != cp_model.INFEASIBLE:
+                        break
+                    nxt_ = [inv_[i_] for i_ in s3_.SufficientAssumptionsForInfeasibility() if i_ in inv_]
+                    if not nxt_ or len(nxt_) > 2 * CHECK_RULES_SMALL:
+                        break
+                    for k_ in list(nxt_):
+                        m.ClearAssumptions()
+                        m.AddAssumptions(wl_ + [RLIT[k2_] for k2_ in nxt_ if k2_ != k_])
+                        s4_ = cp_model.CpSolver()
+                        s4_.parameters.num_workers = 1
+                        s4_.parameters.max_deterministic_time = CHECK_WORK / 6
+                        if s4_.Solve(m) == cp_model.INFEASIBLE:
+                            nxt_.remove(k_)
+                    if len(nxt_) > CHECK_RULES_SMALL:
+                        break
+                    all_ += nxt_
+                    free_ |= set(nxt_)
+                out_['rules'] = sorted([list(k_) for k_ in all_])
         return out_
     # ...and STOPPED when it STALLS: once it has a plan, SOLVE_STALL of the search's own model reductions in a row with
     # no better plan and no better bound (its log's '#Model' against '#n' and '#Bound' lines, events of the
@@ -1692,12 +2031,38 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         sv, st, proved, known, secs = run(FALLBACK, SOLVE_BATCHES, known)
         print(f'   plan-finding workers: [{sv.StatusName(st)}] {secs:.0f}s (after {t_first:.0f}s)')
         solve_secs += secs
+    # (probe SOLVE_PHASE2, batches: the search stops at the via tier, so every term below a via -- the history, the
+    # change positions -- stood where the search left it. From that plan, its whole objective a bound (no worse in
+    # vias, nor below them), the terms below a via searched again. Only a plan proved in its vias: an unproved one kept
+    # FEASIBLE is what the caller asked for, and an OPTIMAL here would read as one never proved)
+    if int(awx_settings.get('SOLVE_PHASE2') or '0') and proved and st == cp_model.FEASIBLE:
+        best_ = int(round(sv.ObjectiveValue()))
+        m.ClearHints()
+        for i_ in range(len(m.Proto().variables)):
+            v_ = m.GetIntVarFromProtoIndex(i_)
+            m.AddHint(v_, sv.Value(v_))
+        m.Add(OBJ <= best_)
+        s2_ = cp_model.CpSolver()
+        s2_.parameters.num_workers = SOLVE_WORKERS
+        s2_.parameters.subsolvers.extend(SUBSOLVERS)
+        s2_.parameters.interleave_search = True
+        s2_.parameters.max_num_deterministic_batches = int(awx_settings.get('SOLVE_PHASE2'))
+        s2_.parameters.share_glue_clauses = False
+        s2_.parameters.share_binary_clauses = False
+        st2_ = s2_.Solve(m)
+        ok2_ = st2_ in (cp_model.OPTIMAL, cp_model.FEASIBLE)
+        print(f'   phase 2: [{s2_.StatusName(st2_)}] {s2_.WallTime():.1f}s, objective {best_} -> '
+              f'{(f"{s2_.ObjectiveValue():.0f}" if ok2_ else "no plan")} (bound {s2_.BestObjectiveBound():.0f})')
+        if ok2_ and s2_.ObjectiveValue() <= best_:
+            sv, st = s2_, st2_
     # (SOLVE_PLANE_TIE: the inner layers' MIRROR broken by the board. Every term prices two inner layers alike,
     # so a plan and its mirror -- each lane's In1 runs on In2 and back -- cost the same and the search returns either:
     # the zynq LVDS's loop re-solves flipped 18% of their lanes so, 24 of 33 at once, and a layer cut learned on one
     # layer was moot on the next round's plan. From the plan found, its crossings and changes held and nothing it
     # pays allowed to grow, the runs' layers chosen again by the PLANES they would split: a GND plane's dearer than a
     # power plane's, a layer with no plane free; between planes of one kind the one nearer F.Cu -- per step of run)
+    if ROOM_T and st in (cp_model.OPTIMAL, cp_model.FEASIBLE) and not CROWD and not check:
+        sv = _room_tie(m, sv, t, chg, YL, M, ROOM_T, G)
     if NL > 2 and (awx_settings.get('SOLVE_PLANE_TIE') or '1') == '1' and st in (cp_model.OPTIMAL, cp_model.FEASIBLE) \
             and not CROWD:
         sv = _plane_tie(ctx, m, sv, OBJ, t, chg, YL, M, entry, end, LAYN, KMAX, Q)
@@ -1758,6 +2123,9 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         print(f"   passive regions: {len(J['regions'])} of {len(REG_ON)} priced lane(s) on a region's layer"
               + (f" -- {', '.join(f'{a_} {b_} {c_}' for a_, b_, c_ in J['regions'][:12])}" if J['regions'] else '')
               + (f"; over half the room: {J['region_over']}" if J['region_over'] else ''))
+    if ROOM_OVER:
+        J['room_over'] = [list(k_) + [int(sv.Value(v_))] for k_, v_ in ROOM_OVER if sv.Value(v_)]
+        print(f"   room cuts over: {len(J['room_over'])} of {len(ROOM_OVER)}")
     if GATE_OVER:
         J['gate_over'] = [[k_[0], k_[1], k_[2], k_[3], int(sv.Value(v_))] for k_, v_ in GATE_OVER if sv.Value(v_)]
         print(f"   part gates over: {len(J['gate_over'])} of {len(GATE_OVER)}"

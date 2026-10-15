@@ -536,6 +536,13 @@ def build_and_solve(sides, prev=None):
         extra.append(cost)
         return nv + len(extra) - 1
 
+    # (probe GEO_SHARED_SLACK: one slack per RULE -- a pitch rule is written once per tangent and slope combination, a
+    # via's room once per tangent, each copy a cut of the same rule; each its own slack, a pitch shortfall paid up to
+    # thirteen times what a lane drawn into a box paid once, and the LP put the shortfall in the arrays' fields. Shared,
+    # the rule pays its largest copy's shortfall, once. Only those two kinds: a pair's dive tags its whole straight run,
+    # a rule per column, and a lane's slope and turn their two directions, one row each)
+    SHARED_ = ('pitch', 'via') if (awx_settings.get('GEO_SHARED_SLACK') or '0') == '1' else ()
+    slack_of = {}
     lazy = []
 
     def le(terms, b, elastic=None, tangent=False):
@@ -543,9 +550,13 @@ def build_and_solve(sides, prev=None):
         for j, a_ in terms:
             rows.append(r); cols.append(j); vals.append(a_)
         if elastic is not None:
-            e = newvar(W_HARD)
+            if elastic[0] in SHARED_ and elastic in slack_of:
+                e = slack_of[elastic]
+            else:
+                e = newvar(W_HARD)
+                slack_of[elastic] = e
+                tags.append((e, elastic))
             rows.append(r); cols.append(e); vals.append(-1.0)
-            tags.append((e, elastic))
         rhs.append(b)
         lazy.append(tangent)
 
@@ -1581,6 +1592,87 @@ if NL > 2:
     for n in res['uxy']:
         res['uxy'][n].sort()
 res['flips'] = sorted(FLIP)
+
+
+def room_cuts(sol_):
+    """(probe GEO_ROOM_CUTS) the geometry's ROOM back to the solve. A pitch, bound or static row the LP paid is a layer
+    with no room for what the plan put on it there -- every elastic row costs alike, so the LP spreads the shortfall
+    and the snap meets it later as a lane with no path (the zynq LVDS at K47: two lanes 6-7 mm inside U1's field, a
+    third squeezed onto its box line by the polish that pushed them out). Per frame, layer and column, the paid rows
+    of the lanes on that layer summed: where that passes GEO_ROOM_TOL, a run of such columns is a CAPACITY CUT --
+    'layer L between u_lo and u_hi holds at most `cap` of these lanes', `cap` the lanes there less the shortfall in
+    lane pitches and a margin (GEO_ROOM_MARGIN), so the solve plans room to spare, not a fit to the hundredth"""
+    # (a shortfall the geometry and the polish spread is no cut: half a lane pitch at the least -- every paid row a cut,
+    # the zynq LVDS K47's 19 cuts for shortfalls of 0.04 to 0.2 mm each took a lane off its layer, and the next round
+    # had 141 via rows short where the first had 25)
+    tol_ = float(awx_settings.get('GEO_ROOM_TOL') or str(P_MIN / 2))
+    marg_ = float(awx_settings.get('GEO_ROOM_MARGIN') or str(ctx.cfg.grid_step))
+    # (one row's shortfall once: a pitch row is written for each tangent and slope combination tried, the same pair at
+    # the same column several times -- the largest of them is that pair's shortfall there)
+    row_ = {}
+    for kind_ in ('pitch', 'bound'):
+        for q_ in sol_['paid'].get(kind_, []):
+            key_ = (kind_,) + tuple(q_[1:])
+            row_[key_] = max(row_.get(key_, 0.0), q_[0])
+    # (a PITCH shortfall is lanes too many on the layer there, counted in pitches; a lane that paid a BOUND row was
+    # drawn into a box -- it has no place on that layer there whatever the others do, and leaves it: summed in
+    # millimetres, a lane 7 mm inside an array's field asked 26 lanes off a layer that held 8. A STATIC row is the
+    # layer and via cuts' (lcuts, vcuts), and near a lane's fixed end a layer change cannot meet it at all -- K47's
+    # pairs at U5's west face each paid 0.49 against its dog-bone vias, and capped off their berths' layer the solve
+    # dived them there)
+    short_ = collections.defaultdict(float)                 # (frame, layer, column) -> the shortfall paid there
+    pitch_ = collections.defaultdict(float)                 # ...of it, the pitch rows'
+    stuck_ = collections.defaultdict(set)                   # ...the lanes that paid a bound or static row there
+    for key_, v_ in row_.items():
+        kind_, f_, k_ = key_[0], key_[1], key_[2]
+        if kind_ == 'pitch':
+            Ls_ = [key_[5]]
+        else:
+            n_ = key_[3]
+            Ls_ = sorted(layers_at(n_, lay_u(f_, n_, FR[f_]['u'](k_ * G))))
+        for L_ in Ls_:
+            short_[(f_, L_, k_)] += v_ / len(Ls_)
+            if kind_ == 'pitch':
+                pitch_[(f_, L_, k_)] += v_
+            elif v_ > tol_:
+                stuck_[(f_, L_, k_)].add(key_[3])
+    out_ = []
+    for (f_, L_) in sorted({(f_, L_) for (f_, L_, _k) in short_}):
+        ks_ = sorted(k_ for (f2_, L2_, k_) in short_ if f2_ == f_ and L2_ == L_ and short_[(f_, L_, k_)] > tol_)
+        runs_, cur_ = [], []
+        for k_ in ks_:
+            if cur_ and k_ - cur_[-1] > 2:
+                runs_.append(cur_)
+                cur_ = []
+            cur_.append(k_)
+        if cur_:
+            runs_.append(cur_)
+        for run_ in runs_:
+            kmax_ = max(run_, key=lambda k_: short_[(f_, L_, k_)])
+            on_ = [n_ for n_ in sol_['orders'].get((f_, kmax_), [])
+                   if L_ in layers_at(n_, lay_u(f_, n_, FR[f_]['u'](kmax_ * G)))]
+            if len(on_) < 2:
+                continue
+            pk_ = pitch_[(f_, L_, kmax_)]
+            drop_ = len(stuck_[(f_, L_, kmax_)]) + (int(math.ceil((pk_ + marg_) / P_MIN - 1e-9)) if pk_ >= tol_ else 0)
+            if drop_ == 0:
+                continue
+            drop_ = min(len(on_) - 1, max(1, drop_))
+            lanes_ = sorted({n_ for k_ in run_ for n_ in sol_['orders'].get((f_, k_), [])
+                             if L_ in layers_at(n_, lay_u(f_, n_, FR[f_]['u'](k_ * G)))})
+            out_.append({'frame': f_, 'layer': LNAME[L_], 'u_lo': round(FR[f_]['u'](min(run_) * G), 4),
+                         'u_hi': round(FR[f_]['u'](max(run_) * G), 4), 'lanes': lanes_, 'on': len(on_),
+                         'cap': len(on_) - drop_, 'short': round(short_[(f_, L_, kmax_)], 3),
+                         'stuck': sorted(stuck_[(f_, L_, kmax_)]), 'pitch': round(pk_, 3)})
+    return out_
+
+
+if (awx_settings.get('GEO_ROOM_CUTS') or '0') == '1':
+    res['ccuts'] = room_cuts(sol)
+    if res['ccuts']:
+        log('room cuts for the solve: ' + '; '.join(f"{c_['layer']} {c_['frame']} u {c_['u_lo']:.2f}..{c_['u_hi']:.2f} "
+                                                   f"at most {c_['cap']} of {c_['on']} (short {c_['short']:.2f})"
+                                                   for c_ in res['ccuts']))
 res['changes'] = {n: list(chg.get(n, [])) for n in res['lanes']}    # each lane's changes in route u, in order
 res['rules'] = {'grid': ctx.cfg.grid_step, 'track': TW, 'clear': CL, 'lane_min': bd.LANE_MIN}
 json.dump(res, open(OUT, 'w'))

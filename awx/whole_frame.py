@@ -30,6 +30,7 @@ import math
 
 import numpy as np
 
+import awx_settings
 import braid as bd
 import corridor as cr
 
@@ -517,6 +518,83 @@ def build(ctx, dest, _trunk=frozenset()):
     return F
 
 
+def _box_run(a, b, box, n=64):
+    """the length of the straight a->b inside box (whole_ends._box_run)"""
+    k = 0
+    for j in range(n):
+        t = (j + 0.5) / n
+        x, y = a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t
+        if box[0] < x < box[2] and box[1] < y < box[3]:
+            k += 1
+    return k / n * math.hypot(b[0] - a[0], b[1] - a[1])
+
+
+def _round_corner(p0, p1, box, tol=0.05):
+    """the corner of `box` a lane from p0 to p1 goes round where its straight runs through the box -- the shorter
+    detour whose two legs clear it (whole_ends.corner_slope's) -- None where the straight is clear, or no corner is"""
+    if _box_run(p0, p1, box) < tol:
+        return None
+    best = None
+    for c in ((box[0], box[1]), (box[0], box[3]), (box[2], box[1]), (box[2], box[3])):
+        if _box_run(p0, c, box) > tol or _box_run(c, p1, box) > tol:
+            continue
+        d = math.hypot(c[0] - p0[0], c[1] - p0[1]) + math.hypot(p1[0] - c[0], p1[1] - c[1])
+        if best is None or d < best[0]:
+            best = (d, c)
+    return None if best is None else best[1]
+
+
+def _hk_floor(F, k, mem, sg, s0, o_start, hull):
+    """(probe FRAME_HK_FLOOR) ring k's start along the trunk no earlier than its lanes that go round the SOURCE's corner
+    can reach their places on its stack: the corner's s, and the climb from the corner's offset to the lane's stack
+    offset at 45 degrees (a lane pitch more) -- the ring started at the handoff line alone, the zynq LVDS's S ring 0.5 mm
+    of route past U1's south-east corner, and the E-face lanes rounding it paid 2 mm climbing onto it (whole_ends'
+    ENDS_CORNER already prices the lanes as arriving there). Capped short of the hull's outermost point on the ring's
+    side (the ring must start before the corner it wraps) and outside the hull"""
+    best, why = s0, None
+    for n in mem:
+        c_ = _round_corner(F.start[n], F.spine.xy(s0, F.o_h[n]), F.SB)
+        if c_ is None:
+            continue
+        sc_, oc_ = (float(v) for v in F.spine.project_pt(c_))
+        need_ = sc_ + abs(F.o_h[n] - oc_) + bd.LANE_MIN
+        if need_ > best:
+            best, why = need_, (n, c_)
+    if why is None:
+        return s0
+    far_ = max(hull, key=lambda p_: sg * float(F.spine.project_pt(p_)[1]))
+    cap_ = float(F.spine.project_pt(far_)[0]) - bd.LANE_MIN
+    s1 = min(best, cap_)
+    while s1 > s0 and _inside(F.spine.xy(s1, o_start), hull, 2 * bd.LPITCH):
+        s1 -= bd.LANE_MIN / 5
+    s1 = max(s0, s1)
+    print(f'   ring {k} start floored {s0:.2f} -> {s1:.2f} (wanted {best:.2f} for {why[0]} round the source corner '
+          f'({why[1][0]:.2f}, {why[1][1]:.2f}); cap {cap_:.2f})')
+    return s1
+
+
+def _ring_start(F, k, near, s0, o_start, hull, side=None):
+    """(probe FRAME_RING_START=1, or =2 with `side` the ring's sign of o: the lanes berthing on the ring's own side of
+    the trunk alone, the ones its lanes stack outside of) ring k's start along the trunk a lane pitch past the LAST
+    lane the trunk berths: the facing face stands across the spine at a tilt, so its berths lie along the trunk from
+    the first (H0, where both rings started) some way on, and a ring started at H0 left the trunk while trunk lanes
+    still ran beside it to their berths, the two frames keeping no order between their lanes -- and on the tilted
+    handoff line a ring's stack stood behind the source's corner (zynq LVDS K47: the S ring's 2.4 mm behind U1's east
+    face, its lanes off that face climbing at slopes of 8 to 10 past the corner). Moved back along the trunk until its
+    start clears the hull, as the start at H0 is"""
+    on = [n for n in near if side is None or side * F.se[n][1] > 0]
+    if not on:
+        return s0
+    want = max(F.se[n][0] for n in on) + bd.LANE_MIN
+    s1 = want
+    while s1 > s0 and _inside(F.spine.xy(s1, o_start), hull, 2 * bd.LPITCH):
+        s1 -= bd.LANE_MIN / 5
+    s1 = max(s0, s1)
+    if s1 > s0 + 1e-9:
+        print(f'   ring {k} start past the trunk\'s last berth {s0:.2f} -> {s1:.2f} (wanted {want:.2f})')
+    return s1
+
+
 def _rings_round(p_):
     """a pad the rings go round: on two routing layers any; on more, one standing on every routing layer (drilled,
     or copper on every one) -- a part's pads on one face the lanes on the other layers pass under"""
@@ -569,6 +647,11 @@ def _stack_rings(F, ctx, pcb, src, dest, dpads, near, tails, north, width, cen, 
         hull = dpads + stubs + tails
         while _inside(F.spine.xy(s_start, o_start), hull, 2 * bd.LPITCH) and s_start > 0:
             s_start -= bd.LANE_MIN / 5
+        if (awx_settings.get('FRAME_HK_FLOOR') or '0') == '1':
+            s_start = _hk_floor(F, k, mem, sg, s_start, o_start, hull)
+        if (awx_settings.get('FRAME_RING_START') or '0') in ('1', '2'):
+            s_start = _ring_start(F, k, near, s_start, o_start, hull,
+                                  side=sg if awx_settings.get('FRAME_RING_START') == '2' else None)
         ccw = sum(bd.sweep_round(ctx.paths[n], cen) for n in mem) > 0
         if not far_cut(F.dcut):
             # (a cut off the far face: a ring's lanes past the far face are WOUND round it, their taut paths the short

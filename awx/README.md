@@ -1919,12 +1919,11 @@ channels first, and the other escapes leave round it.
 
 - **The zynq's LVDS bus (U1 to U5) on four layers.** With `route_bus
   --escape` (see [the bus step](#the-bus-step-on-a-real-board)) the whole
-  route lays 30 of its first 32 nets, 37 of 40 and 43 of the whole bus's 47,
-  connected and clean, the rest open -- and on another seed of the ends
-  model, 29, 35 and 33. The
-  lanes left open leave U1's south face for balls in U5's middle and climb the
-  3 mm channel between the arrays across the lanes from U1's east face to U5's
-  west face. The human runs every net from a dog-bone via at each array on one
+  route lays its first 32 and 40 nets clean and leaves 2 of the whole bus's
+  47 open. The lanes left open are pairs that leave U1 on the surface for a
+  dog-boned ball of U5 and must change layer just past U1's east face, and
+  singles crowded past that face and U1's south-east corner. The human runs
+  every net from a dog-bone via at each array on one
   layer end to end, each layer's nets a family that crosses nothing on it and
   rings U5 to enter it from every side -- on B.Cu nested bundles round U5's
   bottom, far side and top, the far side's lanes outermost -- and runs B.Cu
@@ -1948,6 +1947,28 @@ channels first, and the other escapes leave round it.
     the whole column, board edge to board edge; here the lanes pass the caps,
     T1 and X4 beside U5 with room to spare elsewhere on that column, so no
     gate binds.
+- **A dive given its room.** A lane that leaves its ball on the surface and
+  arrives at a dog-boned ball must change layer between the arrays -- for a
+  pair, two barrels side by side through every layer. Its exit stands where
+  the lanes leaving the same ball line on the other layers start too, and
+  they fan out across the room the dive needs: the geometry keeps a change
+  room along its own lane only, so it plans them through it, the snap finds
+  no site, and the round's feedback names the lane's exit, which can only
+  move to the next line. To try:
+  - the dive's two barrels an area every other lane is held off, on every
+    layer, in the geometry;
+  - a surface exit the ends model can take apart from the other layers' exits
+    on its ball line;
+  - a lane whose dive found no room given its ball's dog-bone the next round,
+    its change then the dog-bone's own via.
+- **The loop's immediate stop on crowded ends.** A loop round whose audit
+  finds a pitch or a static clearance at the ends stops the loop at once
+  (`whole_feedback --now`), and the round lays the plan its loop held,
+  however early that round. To try: the loop's own rounds first, stopping only
+  when the same findings stand two rounds running (`LOOP_NOW=0`).
+- **Robustness across seeds.** Every result here is one run of searches
+  whose ties CP-SAT breaks by its seed; `JOINT_SEED=N` seeds the joint ends'
+  search. To try: a change judged on several seeds of each ladder rung.
 - **Corners made robust.** Where two arrays stand a few millimetres apart and
   the lanes use two faces of one and every face of the other, nearly the whole
   route is corners: lanes from two faces merge at the source's corner, the
@@ -2159,6 +2180,45 @@ channels first, and the other escapes leave round it.
   estimate made the LP's own.
 - **Room beside a pair at an island** (`GEO_PAIR_ROOM=1`, opt-in): to try
   where a pair's pinch beside a part fails.
+- **Probes to judge.** Each is a setting, built and off by default, to be
+  judged on the ladder at several seeds before it is anyone's default:
+  - the ends model -- `ENDS_CORNER=1`: a lane the frame cannot lay round the
+    source's corner (a slope past `ENDS_CORNER_K`, 4, beyond the corner of
+    the source's box) costs `ENDS_CORNER_PRICE` vias (1000), the search run
+    first without the price and kept only where the priced one does better;
+    `ENDS_OPP_DIVE=N`: an opposite-hands pair whose lane changes layer anyway
+    pays N vias, for the crossover's room at its dive; `ENDS_ONE_WINDING=1`:
+    with no tooth laid, one search where two were run on the same model;
+    `ENDS_PORTFOLIO=N`: before the repair, the search's N best other states
+    that move a lane the check named asked of the solve; `ENDS_CHECK_RULES=1`:
+    where the check's core of crossings is empty, a core of rules (each lane's
+    rule families an assumption, made minimal), the repair pricing the
+    crossings among its lanes and a pair's hands;
+  - the solve -- `SOLVE_ENDS_PRICE=W`: each change priced W a step from the
+    nearer end of its window, so dives stand at the ends, with
+    `SOLVE_PHASE2=N`: the terms below a via searched again for N batches from
+    the proved plan; `SOLVE_DIVE_PROJ=1` (`2`: the berth's too): a pair's dive
+    room read along the spine, not along its escape; `SOLVE_TVIA_SITE=1`: a
+    single tooth via's window opened at its first clear site along its escape;
+    `SOLVE_RING_STACK_REF=1`: a ring lane's reference at its place in the
+    ring's stack, for the passive regions; `SOLVE_ROOM_TIE=1`: after the
+    search, each change moved to where its column has the most room, nothing
+    the plan pays allowed to grow;
+  - the geometry, the frame and the loop -- `GEO_SHARED_SLACK=1`: one slack
+    per pitch or via rule, not one per copy of it; `GEO_ROOM_CUTS=1`: a
+    layer's shortfall sent to the solve as a capacity cut, a lane over it
+    `SOLVE_ROOM_W` vias (10); `FRAME_HK_FLOOR=1`: a ring's start no earlier
+    than its lanes round the source's corner can reach their places;
+    `FRAME_RING_START=1` (`2`: the lanes on its own side): a ring's start past
+    the trunk's last berth; `LOOP_PICK_SNAP=N`: a loop that did not pass lays
+    the round whose snap leaves the fewest lanes unlaid, of the held round
+    and N-1 others;
+  - the snap -- `SNAP_XROOM_PAIRS=1`: a crossover's side chosen with the pairs
+    not yet laid weighed too (`2`: by the audit's margin; `3`: moved only to
+    keep its barrels off a pair's planned line); `SNAP_PAIR_OWN_VIAS=1`: a
+    pair's body kept off its own nets' vias; `SNAP_DEBUG=LANE` (or `*`): the
+    map round where a lane's snap stopped, each cell marked by the stage that
+    blocked it.
 - **A review's open findings:**
   - an island's room is measured alone (its neighbours' pads aside);
   - a lane paid across another lane's end, stub or stub via is never fed

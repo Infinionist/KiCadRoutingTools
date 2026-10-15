@@ -485,7 +485,7 @@ def loop(solve, out, rounds, env, log):
             fl = lambda fs: {tuple(x[:2]) for f in fs if f and os.path.isfile(f)
                              for x in json.load(open(f)).get('flips', [])}
             flipped = fl(st['flips'].split(','))
-            cuts, vcuts, lcuts = [], [], []
+            cuts, vcuts, lcuts, ccuts = [], [], [], []
             for f in [f for f in st['cuts'].split(',') if f]:
                 c = json.load(open(f))
                 # a cut from the geometry of round k whose flip that geometry had ALREADY been given (a polish of an
@@ -500,7 +500,8 @@ def loop(solve, out, rounds, env, log):
                          or (x['lane'], x['island']) in given]
                 vcuts += c.get('vcuts', [])
                 lcuts += [x for x in c.get('lcuts', []) if x not in lcuts]
-            json.dump({'cuts': cuts, 'vcuts': vcuts, 'lcuts': lcuts}, open(cuts_out, 'w'))
+                ccuts += [x for x in c.get('ccuts', []) if x not in ccuts]
+            json.dump({'cuts': cuts, 'vcuts': vcuts, 'lcuts': lcuts, 'ccuts': ccuts}, open(cuts_out, 'w'))
         except Exception:
             traceback.print_exc(file=err)
         soft = {'SOFT_CUTS': st['soft']} if st.get('soft') else {}
@@ -600,8 +601,14 @@ def loop(solve, out, rounds, env, log):
             lcuts += [c for c in gj.get('lcuts', []) + pj.get('lcuts', []) if c not in lcuts]
             if lcuts:
                 log(f"  layer cuts: {', '.join(c_['lane'] + ' under ' + c_['island'] for c_ in lcuts)}")
-            json.dump(own_spans({'cuts': cuts, 'vcuts': vcuts, 'lcuts': lcuts}, gj, pj), open(O(f'c{i}.json'), 'w'))
-            n = len(cuts) + len(vcuts) + len(lcuts)
+            # (probe GEO_ROOM_CUTS: the geometry's capacity cuts -- a layer with no room for the lanes the plan put on it
+            # there -- go to the solve as they are; each round's own, the solve holding every round's so far)
+            ccuts = gj.get('ccuts', [])
+            if ccuts:
+                log(f"  room cuts: {', '.join(c_['layer'] + ' ' + str(c_['cap']) + '/' + str(c_['on']) for c_ in ccuts)}")
+            json.dump(dict(own_spans({'cuts': cuts, 'vcuts': vcuts, 'lcuts': lcuts}, gj, pj), ccuts=ccuts),
+                      open(O(f'c{i}.json'), 'w'))
+            n = len(cuts) + len(vcuts) + len(lcuts) + len(ccuts)
             passes = gate(p, O(f'p{i}.audit'))[0] == 0
             if not passes and addhot(p, O(f'p{i}.audit'), O(f'hp{i}.json')):
                 n += 1
@@ -615,7 +622,9 @@ def loop(solve, out, rounds, env, log):
             # them is not one whose findings at the ends no solve moves)
             answered = newflips or (nl_ > 2 and bool(lcuts))
             hp, hp0 = O(f'hp{i}.json'), O(f'hp{i - 1}.json')
+            # (probe LOOP_NOW=0: not at once -- the loop's own rounds first, the two-rounds-running stop below still)
             if (not passes and not answered and os.path.isfile(hp) and os.path.isfile(sidecar)
+                    and (awx_settings.get('LOOP_NOW') or '1') == '1'
                     and run(['whole_feedback.py', '--now', sidecar, hp], env, to=unredirected)[0] == 0):
                 # ...and at once, when a finding there is one no solve moves (a pitch or a static clearance at the ends)
                 log(f"=== round {i}: ENDS CROWDED -- findings at the ends no solve moves: the fanout's to change")
@@ -937,14 +946,71 @@ def held_plan(loopd, env, i=None):
     return O(pre + 'plan.json') if os.path.isfile(O(pre + 'plan.json')) else None
 
 
-def lay_rounds(loopd, d, env, res, lay_, say):
+def snap_failed(loopd, plan):
+    """the NETS a held plan's snap left unlaid (held_plan's logs: each snap's last word, SNAP FAILED -- a lane a sweep
+    laid after it failed once is laid; a pair is two nets): zKP K40 r1, rounds 3 and 1 each with six FAILED lines, laid
+    10 and 6 open -- four pairs among the one's, one among the other's"""
+    m = re.search(r'/(held\d*_)plan\.json$', plan or '')
+    if not m:
+        return None
+    n = 0
+    for f, w in ((m.group(1) + 'pairs.log', 2), (m.group(1) + 'plan.log', 1)):
+        f = os.path.join(loopd, f)
+        if os.path.isfile(f):
+            for ln in open(f, errors='replace'):
+                mm = re.match(r'SNAP FAILED: \d+ lane\(s\) could not be laid: (.*)$', ln.strip())
+                if mm:
+                    n += w * len([x for x in mm.group(1).split(',') if x.strip()])
+    return n
+
+
+def pick_by_snap(loopd, env, plan, say):
+    """(probe LOOP_PICK_SNAP=N: a loop that did not pass holds the round its SNAP lays best, not its findings.) The held
+    plan (held_plan, snapped) and up to N-1 of the loop's other rounds, fewest findings first, each snapped as the held
+    one is; the plan whose snap left the fewest lanes unlaid is the one laid, the held one on a tie. Measured on the
+    zynq LVDS's rounds where two rounds were laid (LAY_TRY): the snap's failures ranked the two lays right in 6 of 6,
+    the findings in 3 -- a static clearance the snap goes round counts as a finding, and a lane the snap cannot lay
+    often had none"""
+    tries = int(awx_settings.get('LOOP_PICK_SNAP') or '1')
+    f0 = snap_failed(loopd, plan)
+    if tries <= 1 or not f0:
+        return plan
+    try:
+        held_i = int(json.load(open(os.path.join(loopd, 'best.json')))['i'])
+    except Exception:
+        held_i = None
+    sc = {}
+    for p in glob.glob(os.path.join(loopd, 'p*.json')):
+        m = re.search(r'/p(\d+)\.json$', p)
+        a = p[:-len('.json')] + '.audit'
+        if not m or int(m.group(1)) == held_i or not os.path.isfile(a):
+            continue
+        sc[int(m.group(1))] = findings(stripped(run(['whole_gate.py', p, a], env)[1]))
+    order = sorted(sc, key=lambda i: (sc[i], -i))[:tries - 1]
+    best, bf = plan, f0
+    for i in order:
+        hp = held_plan(loopd, env, i=i)
+        fi = snap_failed(loopd, hp) if hp else None
+        say(f"  round {i}'s plan snapped: {fi if fi is not None else 'nothing'} net(s) unlaid (the held round {held_i}: "
+            f"{f0})")
+        if hp and fi is not None and fi < bf:
+            best, bf = hp, fi
+        if bf == 0:
+            break
+    if best is not plan:
+        say(f"  held by its snap: {os.path.basename(best)} ({bf} net(s) unlaid against {f0})")
+    return best
+
+
+def lay_rounds(loopd, d, env, res, lay_, say, plan=None):
     """N = lay_tries() (LAY_TRY, else 2; 1 off): a loop that did not pass chooses its round by the LAY, not by its
     findings. The held round laid not clean (`res`, lay_'s result), the loop's other rounds' smooth plans, fewest
     findings first, each snapped as the held one is (held_plan) and laid (lay_(plan, tag) -> a result, or None) -- N
     boards in all (a plan that lays none not counted), stopping at the first clean one; the best by the lay's own key
     (DRC, open nets, vias, copper) kept, its board and logs copied over the held one's names in `d`. Measured on the
     zynq LVDS: the held round laid 10, 3, 2 and 2 open where the loop's best round laid 6, 0, 2 and 2 -- the findings
-    count a static clearance the snap goes round and a detour not at all"""
+    count a static clearance the snap goes round and a detour not at all. (`plan`: the probe LOOP_PICK_SNAP's held
+    plan in the held round's place)"""
     tries = lay_tries()
     if tries <= 1 or (res is not None and not res['open'] and not res['drc']):
         return res
@@ -952,6 +1018,11 @@ def lay_rounds(loopd, d, env, res, lay_, say):
         held_i = int(json.load(open(os.path.join(loopd, 'best.json')))['i'])
     except Exception:
         held_i = None
+    # (the round `res` was laid from: the held round's, or the one LOOP_PICK_SNAP held in its place -- left out of the
+    # others, and the held round tried among them)
+    m_ = re.search(r'held(\d+)_plan\.json$', plan or '')
+    if m_:
+        held_i = int(m_.group(1))
     sc = {}
     for p in glob.glob(os.path.join(loopd, 'p*.json')):
         m = re.search(r'/p(\d+)\.json$', p)
@@ -1354,6 +1425,8 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
             # a loop that did not pass is laid all the same, from the plan it held (held_plan): a lane it cannot lay
             # stays open, and the round's result stands against the others'
             plan = os.path.join(loopd, 'plan.json') if rc == 0 else held_plan(loopd, env)
+            if rc != 0 and plan is not None:
+                plan = pick_by_snap(loopd, env, plan, say)
             if rc != 0:
                 say(f"  the loop did not pass -- laid from the plan it held: "
                     f"{os.path.relpath(plan, d) if plan else 'none'}")
@@ -1361,7 +1434,7 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
             res = lay(r, d, plan, plan_bench(loopd, plan, bench), quiet=try_) if plan else None
             if try_:
                 res = lay_rounds(loopd, d, env, res, lambda hp, tag: lay(r, d, hp, plan_bench(loopd, hp, bench),
-                                                                          tag=tag, quiet=True), say)
+                                                                          tag=tag, quiet=True), say, plan=plan)
                 if res is not None:
                     say(res['grade'])
             if plan and res is None:
