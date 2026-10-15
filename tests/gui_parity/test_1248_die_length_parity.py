@@ -28,6 +28,12 @@ the first, so they must agree pad for pad. Arms:
      at 0.15 mm.
    - The same copper with the token deleted fails it at ~3.0 mm. So the
      router matched what KiCad measures, not what the copper alone measures.
+   - `route_diff.py --length-match-group` on two pairs WITHOUT intra-match,
+     one making a U-turn (legs ~1.2 mm apart) with 2.0 mm of pad-to-die on
+     its N leg. KiCad's per-leg lengths equal `net_match_length`, and the
+     pairs match as KiCad's DP tuner measures a pair: its larger leg, each
+     leg its own copper and its own end pads' term. The old rule (copper +
+     the larger die) is outside the tolerance on the same copper.
 
 Needs pcbnew; re-execs into KiCad's python automatically. Exits 2 when no
 pcbnew python (or no kicad-cli) is found, rather than 0, so a mutation battery
@@ -179,16 +185,21 @@ def kicad_drc(cli, board, rule_text):
 USB_RULE = ("(version 1)\n(rule usb_len\n"
             "  (condition \"A.NetName == '/RP2354A/USB_D+' || A.NetName == '/RP2354A/USB_D-'\")\n"
             "  (constraint length (max 1mm))\n  (constraint skew (max 0.1mm)))\n")
+PAIR_RULE = ("(version 1)\n(rule pair_len\n"
+             "  (condition \"A.NetName == 'DA_P' || A.NetName == 'DA_N' || "
+             "A.NetName == 'DB_P' || A.NetName == 'DB_N'\")\n"
+             "  (constraint length (max 1mm)))\n")
 SE_RULE = ("(version 1)\n(rule se_len\n"
            "  (condition \"A.NetName == 'SE1' || A.NetName == 'SE2'\")\n"
            "  (constraint length (max 1mm))\n  (constraint skew (max 0.15mm)))\n")
 
 
-def synthetic_se(path):
+def synthetic_se(path, pads=None):
     """Two straight 40 mm nets; SE1's first pad declares (die_length 3.0). The
-    same KiCad-10 single-pad-footprint form as tests/test_1248_pad_to_die.py."""
-    pads = [('P1', 10, 12, 'SE1', '(die_length 3.0)'), ('P2', 50, 12, 'SE1', ''),
-            ('P3', 10, 18, 'SE2', ''), ('P4', 50, 18, 'SE2', '')]
+    same KiCad-10 single-pad-footprint form as tests/test_1248_pad_to_die.py.
+    `pads` replaces the default set (ref, x, y, net, extra tokens)."""
+    pads = pads or [('P1', 10, 12, 'SE1', '(die_length 3.0)'), ('P2', 50, 12, 'SE1', ''),
+                    ('P3', 10, 18, 'SE2', ''), ('P4', 50, 18, 'SE2', '')]
     parts = ['(kicad_pcb\n\t(version 20260206)\n\t(generator "pcbnew")\n'
              '\t(generator_version "10.0")\n'
              '\t(general (thickness 1.6) (legacy_teardrops no))\n\t(paper "A4")\n'
@@ -217,6 +228,56 @@ def synthetic_se(path):
     with open(path, 'w', encoding='utf-8') as fh:
         fh.write('\n'.join(parts) + '\n)\n')
     return path
+
+
+def pair_group_arm(cli, tmp):
+    """Two diff pairs matched as one group WITHOUT intra-match, on the board of
+    tests/test_1248_pad_to_die.py section 4d: DA's legs are unequal (a U-turn)
+    and its N declares 2.0 mm of pad-to-die. KiCad's DP tuner measures a pair
+    as its larger leg, each leg its own copper plus its own end pads' term
+    (DP_MEANDER_PLACER::origPathLength); KiCad's DRC reports each leg."""
+    from net_queries import net_match_length
+    from test_1248_pad_to_die import PAIR_GROUP_ARGV, PAIR_GROUP_PADS
+    nets = ['DA_P', 'DA_N', 'DB_P', 'DB_N']
+    src = synthetic_se(os.path.join(tmp, 'pg.kicad_pcb'), PAIR_GROUP_PADS)
+    routed = os.path.join(tmp, 'pg_out.kicad_pcb')
+    p = subprocess.run([sys.executable, '-X', 'utf8', 'py_router/route_diff.py',
+                        src, routed] + PAIR_GROUP_ARGV,
+                       cwd=REPO, capture_output=True, text=True, timeout=600)
+    check(p.returncode == 0 and os.path.isfile(routed),
+          'route_diff.py --length-match-group routed the two-pair board',
+          (p.stdout + p.stderr)[-600:])
+    if not os.path.isfile(routed):
+        return
+    k, _sk = kicad_drc(cli, routed, PAIR_RULE)
+    check(set(k) == set(nets), 'KiCad reports all four leg lengths', k)
+    if set(k) != set(nets):
+        return
+    from kicad_parser import parse_kicad_pcb
+    pcb = parse_kicad_pcb(routed)
+    nid = {n.name: i for i, n in pcb.nets.items()}
+    ours = {n: net_match_length(pcb, nid[n]) for n in nets}
+    check(all(ours[n] is not None and abs(ours[n] - k[n]) <= KICAD_PRINT
+              for n in nets),
+          'net_match_length = KiCad DRC on every leg', (ours, k))
+    a, b = max(k['DA_P'], k['DA_N']), max(k['DB_P'], k['DB_N'])
+    check(abs(k['DA_P'] - k['DA_N']) > 0.3,
+          'witness: KiCad sees DA\'s legs unmatched (P %.4f, N %.4f)'
+          % (k['DA_P'], k['DA_N']))
+    check(abs(a - b) <= 0.15,
+          'KiCad: the pairs match as KiCad\'s DP tuner measures them, DA %.4f '
+          'vs DB %.4f (each its larger leg, die included)' % (a, b), k)
+    with open(routed, encoding='utf-8', newline='') as fh:
+        rtext = fh.read()
+    stripped = os.path.join(tmp, 'pg_nodie.kicad_pcb')
+    with open(stripped, 'w', encoding='utf-8', newline='') as fh:
+        fh.write(rtext.replace(' (die_length 2.0)', ''))
+    k0, _sk = kicad_drc(cli, stripped, PAIR_RULE)
+    if set(k0) == set(nets):
+        old = (k0['DA_P'] + k0['DA_N']) / 2 + 2.0
+        check(abs(old - a) >= 0.3,
+              'witness: the old rule (centreline + the larger die, %.4f) is '
+              '%.4f mm off KiCad\'s DA' % (old, abs(old - a)))
 
 
 def main():
@@ -324,6 +385,8 @@ def main():
             check(sk and abs(sk[0] - 3.0) <= 0.15,
                   'KiCad: the same copper WITHOUT the token is ~3.0 mm skewed '
                   '(the router compensated the die term)', sk)
+
+        pair_group_arm(cli, tmp)
 
     print('\n%d failure(s)' % len(FAILURES))
     for fl in FAILURES:

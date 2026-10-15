@@ -31,11 +31,19 @@ without KiCad:
    - a multipoint main edge;
    - a pair (the larger leg);
    - the delay.
+   3b. A pair is KiCad's pair tuner EXACTLY: each leg its own copper (stub
+   included) plus its own end pads' term, the pair the larger leg, under
+   either copper convention; a multipoint pair counts only its matched leg's
+   terminals (by the net each is on now); time the same way.
 4. End to end through the real CLIs on a synthetic board:
    - `route.py --length-match-group` meanders the die-free net up to the
      die-inclusive target;
    - `--time-matching` does the same with `die_delay`;
-   - `route_diff --diff-pair-intra-match` matches P + its die to N.
+   - `route_diff --diff-pair-intra-match` matches P + its die to N;
+   - `route_diff --length-match-group` on two pairs without intra-match, one
+     with unequal legs and a die on its N leg, matches the pairs as KiCad's
+     pair tuner measures them (the gui_parity gate has KiCad's DRC referee
+     the same board).
    Each is graded on the KiCad measure (within tolerance), with a witness that
    the copper itself differs by the declared term, so a run that did nothing
    cannot pass.
@@ -63,7 +71,7 @@ sys.path.insert(0, os.path.join(ROOT, 'py_router'))
 sys.path.insert(0, os.path.join(ROOT, 'py_tools'))
 
 import board_score  # noqa: E402
-from kicad_parser import Pad, parse_kicad_pcb  # noqa: E402
+from kicad_parser import Pad, Segment, parse_kicad_pcb  # noqa: E402
 from length_matching import member_pad_to_die  # noqa: E402
 from net_queries import (net_match_length, net_match_pad_to_die,  # noqa: E402
                          net_pad_to_die_delay, pin_pair_path_length)
@@ -189,6 +197,83 @@ def test_member_rule():
           'the delay sums die_delay (ps), never a converted die_length')
     check(member_pad_to_die({}, 'N1', None) == 0.0,
           'no board: no term')
+
+
+def _seg(net_id, length, layer='F.Cu'):
+    return Segment(start_x=0.0, start_y=float(net_id), end_x=float(length),
+                   end_y=float(net_id), width=0.2, layer=layer, net_id=net_id)
+
+
+def test_pair_rule(tmp):
+    print('\n3b. a pair is KiCad\'s DP tuner exactly: per leg, the larger leg')
+    # Legs whose COPPER differs (no intra-match): P 10.0 mm, N 11.5 mm, and
+    # dies P 1.5, N 0.5. KiCad (DP_MEANDER_PLACER::origPathLength):
+    # max(10 + 1.5, 11.5 + 0.5) = 12.0. The old rule, copper + max(1.5, 0.5),
+    # read 13.0 on a max-of-legs pair.
+    p1, p2 = _pad(3, 'U1', 1.5), _pad(3, 'U2')
+    n1, n2 = _pad(4, 'U1', 0.5), _pad(4, 'U2')
+    pcb = SimpleNamespace(pads_by_net={3: [p1, p2], 4: [n1, n2]},
+                          nets={3: SimpleNamespace(name='DP_P'),
+                                4: SimpleNamespace(name='DP_N')})
+    legs = [_seg(3, 10.0), _seg(4, 11.5)]
+    pair = {'is_diff_pair': True, 'p_net_id': 3, 'n_net_id': 4,
+            'new_segments': legs, 'new_vias': [],
+            'p_stub_length': 0.0, 'n_stub_length': 0.0}
+    intra = dict(pair, route_length=11.5)       # max(P, N): intra-match on
+    avg = dict(pair, route_length=10.75)        # the centreline average
+    got = (11.5 + member_pad_to_die(intra, 'DP_P', pcb),
+           10.75 + member_pad_to_die(avg, 'DP_P', pcb))
+    check(all(abs(v - 12.0) < 1e-9 for v in got),
+          'unequal legs, different dies: the pair length is max(10+1.5, '
+          '11.5+0.5) = 12.0 under either copper convention', got)
+    check(abs(member_pad_to_die(dict(intra, p_stub_length=1.0), 'DP_P', pcb)
+              - (12.5 - 11.5)) < 1e-9,
+          'each leg carries its OWN stub: P 10 + 1.0 stub + 1.5 = 12.5')
+    bare = SimpleNamespace(pads_by_net={3: [p2], 4: [n2]}, nets=pcb.nets)
+    check(member_pad_to_die(avg, 'DP_P', bare) == 0.0,
+          'a pair declaring no term keeps route_length exactly (the '
+          'centreline average included), so token-free copper cannot move')
+
+    # Multipoint pair: a chain of two coupled legs, T1 -> T2 (8 mm) and
+    # T2 -> T3 (12 mm). The matched span is the longer leg, and KiCad's tuner
+    # adds only ITS terminals' pads: P {p_b, p_c} 1.0, N {n_b, n_c} 0.25. T1's
+    # 5.0 mm, on a pad that leg never reaches, used to be counted.
+    pa, pb, pc = _pad(5, 'U1', 5.0), _pad(5, 'U2'), _pad(5, 'U3', 1.0)
+    na, nb, nc = _pad(6, 'U1'), _pad(6, 'U2', 0.25), _pad(6, 'U3')
+    mp = SimpleNamespace(pads_by_net={5: [pa, pb, pc], 6: [na, nb, nc]},
+                         nets={5: SimpleNamespace(name='M_P'),
+                               6: SimpleNamespace(name='M_N')})
+    leg1 = {'new_segments': [_seg(5, 8.0), _seg(6, 8.0)], 'new_vias': [],
+            'p_net_id': 5, 'n_net_id': 6, '_leg_terms': ((pa, na), (pb, nb))}
+    leg2 = {'new_segments': [_seg(5, 12.0), _seg(6, 12.0)], 'new_vias': [],
+            'p_net_id': 5, 'n_net_id': 6, '_leg_terms': ((pb, nb), (pc, nc))}
+    chain = {'is_diff_pair': True, 'is_multipoint': True, 'p_net_id': 5,
+             'n_net_id': 6, 'leg_results': [leg1, leg2], 'route_length': 12.0,
+             'new_segments': leg1['new_segments'] + leg2['new_segments']}
+    check(abs(member_pad_to_die(chain, 'M_P', mp) - 1.0) < 1e-9,
+          'multipoint pair: only the matched span\'s terminals count '
+          '(max(12+1.0, 12+0.25) - 12 = 1.0, not every pad\'s 6.0)',
+          member_pad_to_die(chain, 'M_P', mp))
+    # A polarity swap moves a terminal pad to the other net: the pad counts
+    # for the net it is ON now.
+    pc.net_id, nc.net_id = 6, 5
+    check(abs(member_pad_to_die(chain, 'M_P', mp) - 1.25) < 1e-9,
+          'a swapped terminal pad counts for the net it is on now '
+          '(N 0.25 + 1.0 = 1.25)', member_pad_to_die(chain, 'M_P', mp))
+    pc.net_id, nc.net_id = 5, 6
+
+    # Time: the same rule on each leg's delay and die_delay.
+    real = parse_kicad_pcb(_synthetic(os.path.join(tmp, 'v.kicad_pcb'),
+                                      [('V1', 10, 10, 'X', '')]))
+    tp = SimpleNamespace(pads_by_net={3: [_pad(3, 'U1', delay=30.0), p2],
+                                      4: [_pad(4, 'U1', delay=5.0), n2]},
+                         nets=pcb.nets, board_info=real.board_info)
+    from impedance import calculate_route_propagation_time_ps as tps
+    t_p, t_n = tps([legs[0]], [], tp), tps([legs[1]], [], tp)
+    want = max(t_p + 30.0, t_n + 5.0) - max(t_p, t_n)
+    check(abs(member_pad_to_die(pair, 'DP_P', tp, attr='die_delay') - want) < 1e-6,
+          'time: max(P time + 30 ps, N time + 5 ps) over the larger leg\'s '
+          'time (%.2f ps, not max(30, 5))' % want)
 
 
 # ---------------------------------------------------------------- end to end
@@ -319,6 +404,46 @@ def test_route_diff_intra(tmp):
           'witness: N\'s COPPER is ~1.5 mm longer than P\'s', L)
 
 
+#: Two pairs in one group, routed without intra-match. DA makes a U-turn, so
+#: its P leg's copper is ~1.2 mm longer than N's, and N declares 2.0 mm of
+#: pad-to-die; DB runs straight with none, and is the longer pair.
+#: tests/gui_parity/test_1248_die_length_parity.py routes the same board and
+#: has kicad-cli's DRC referee it.
+PAIR_GROUP_PADS = [
+    ('A1', 10, 12, 'DA_P', ''), ('A2', 10, 13.2, 'DA_N', '(die_length 2.0)'),
+    ('A3', 10, 30, 'DA_P', ''), ('A4', 10, 28.8, 'DA_N', ''),
+    ('B1', 23, 34, 'DB_P', ''), ('B2', 23, 35.2, 'DB_N', ''),
+    ('B3', 50, 34, 'DB_P', ''), ('B4', 50, 35.2, 'DB_N', '')]
+PAIR_GROUP_ARGV = ['DA_P', 'DA_N', 'DB_P', 'DB_N', '--track-width', '0.2',
+                   '--clearance', '0.15', '--diff-pair-gap', '0.15',
+                   '--length-match-group', 'D*', '--length-match-tolerance', '0.1']
+
+
+def test_route_pair_group(tmp):
+    print('\n4d. route_diff --length-match-group, no intra-match: a pair is its '
+          'larger leg, die included')
+    src = _synthetic(os.path.join(tmp, 'pg.kicad_pcb'), PAIR_GROUP_PADS)
+    out = os.path.join(tmp, 'pg_out.kicad_pcb')
+    log = _run(['py_router/route_diff.py', src, out] + PAIR_GROUP_ARGV,
+               'route_diff.py --length-match-group (two pairs)')
+    if log is None:
+        return
+    check('(pair, larger leg of' in log, 'the run names the pair\'s legs')
+    L = _lengths(out, ['DA_P', 'DA_N', 'DB_P', 'DB_N'])
+    check(L['DA_P'][1] - L['DA_N'][1] > 0.8,
+          'witness: DA\'s legs are NOT matched (P copper %.3f vs N %.3f)'
+          % (L['DA_P'][1], L['DA_N'][1]), L)
+    a = max(L['DA_P'][0], L['DA_N'][0])
+    b = max(L['DB_P'][0], L['DB_N'][0])
+    check(abs(a - b) <= 0.15,
+          'KiCad-measured pairs match: DA %.3f vs DB %.3f (each its larger '
+          'leg, die included)' % (a, b), L)
+    old = (L['DA_P'][1] + L['DA_N'][1]) / 2 + 2.0
+    check(abs(old - a) >= 0.3,
+          'witness: the old rule (centreline + the larger die, %.3f) is %.3f mm '
+          'off KiCad\'s DA, outside the tolerance' % (old, abs(old - a)))
+
+
 def test_board_score_cli(tmp):
     print('\n5. board_score --length-groups end to end')
     die = die_board(tmp)
@@ -412,9 +537,11 @@ def main():
         test_parse(tmp)
         test_kicad_reference(tmp)
         test_member_rule()
+        test_pair_rule(tmp)
         test_route_group(tmp)
         test_route_time(tmp)
         test_route_diff_intra(tmp)
+        test_route_pair_group(tmp)
         test_board_score_cli(tmp)
         test_placement_floor(tmp)
     finally:

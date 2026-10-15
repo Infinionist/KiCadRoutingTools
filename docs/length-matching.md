@@ -131,10 +131,22 @@ every matching pass adds them before it picks the target and the deltas:
   pad of a 2-pad net (KiCad's tuner adds the start and end pads, its DRC every
   pad, the same set here), the two pads of a multipoint net's matched main edge,
   every pad of a member measured from earlier copper (its length is the net's
-  total copper, as in KiCad's DRC), and for a pair the larger of its two legs.
-  The meanders still lengthen copper; the run prints `Pad-to-die included`.
-- **Time matching** adds each pad's `die_delay` in ps. KiCad 10 never converts a
-  `die_length` into a delay, and neither does this.
+  total copper, as in KiCad's DRC). The meanders still lengthen copper; the run
+  prints `Pad-to-die included`.
+- **A differential pair** is measured as KiCad's pair tuner measures it
+  (`DP_MEANDER_PLACER::origPathLength`): per leg, the leg's own copper (its
+  stub included) plus its own start and end pads' term, and the pair is the
+  larger leg. So legs whose copper differs -- a pair that turns, matched
+  without `--diff-pair-intra-match` -- are exact, where adding the larger leg's
+  term to the pair's copper is exact only while the legs are matched. A
+  multipoint pair is matched on its longest coupled leg, and only that leg's
+  two terminals' pads count, not every pad of each net. A pair whose pads
+  declare no term keeps its copper figure exactly (without intra-match, the
+  centreline average), so a board without the tokens routes identical copper;
+  the run prints each pair's legs (`pair, larger leg of P ..., N ...`).
+- **Time matching** adds each pad's `die_delay` in ps, a pair per leg the same
+  way. KiCad 10 never converts a `die_length` into a delay, and neither does
+  this.
 - **Intra-pair** (`--diff-pair-intra-match`) and **AC-coupled** matching add each
   leg's own pads' pad-to-die, as KiCad's skew tuner does.
 

@@ -112,30 +112,107 @@ def pair_leg_metric(result, metric_func, segments=None, vias=None):
                     [v for v in vs if v.net_id == n_id]))
 
 
-def multipoint_span_metric(result, metric_func):
-    """Metric of a pair's MATCHING SPAN. For a multipoint pair (a chain of
-    coupled 2-point legs) the span is the LONGEST leg -- the longest MST edge,
-    the same span the meander pass lengthens. Falls through to
-    pair_leg_metric for 2-point results (no leg_results)."""
+def pair_span(result, metric_func):
+    """The leg dict a pair is MATCHED on. A multipoint pair (a chain of coupled
+    2-point legs) is matched on its LONGEST leg by `metric_func` -- the longest
+    MST edge, the span the meander pass lengthens; a 2-point pair on itself."""
     legs = result.get('leg_results') if result.get('is_multipoint') else None
     if not legs:
-        return pair_leg_metric(result, metric_func)
-    return max(pair_leg_metric(lr, metric_func) for lr in legs)
+        return result
+    return max(legs, key=lambda lr: pair_leg_metric(lr, metric_func))
+
+
+def multipoint_span_metric(result, metric_func):
+    """Metric of a pair's MATCHING SPAN (`pair_span`): the longest coupled leg
+    of a multipoint pair, the pair itself for 2-point results."""
+    return pair_leg_metric(pair_span(result, metric_func), metric_func)
+
+
+def pair_leg_pads(leg: Optional[dict], pcb_data, p_net_id: int, n_net_id: int):
+    """(P pads, N pads) KiCad's tuner adds the pad-to-die of, for a pair's
+    matching span (#1248): the START and END pad of each leg's tuned path
+    (DP_MEANDER_PLACER / MEANDER_SKEW_PLACER take them from the path between
+    two pads). `leg` is a multipoint pair's span leg, None for a 2-point pair.
+
+    A 2-point pair joins its nets' pads end to end, so that is every pad of
+    each net. A multipoint span leg joins its own two terminals
+    (`_leg_terms`, each a (P pad, N pad)), whose pads go to a net by their
+    CURRENT net, so a polarity swap that moved them is honoured. A leg that
+    carries no terminals falls back to every pad of the net, KiCad's DRC
+    set."""
+    by_net = (getattr(pcb_data, 'pads_by_net', None) or {}) if pcb_data else {}
+    terms = (leg or {}).get('_leg_terms')
+    if terms:
+        pads = [p for t in terms for p in t]
+        return ([p for p in pads if p.net_id == p_net_id],
+                [p for p in pads if p.net_id == n_net_id])
+    return list(by_net.get(p_net_id, ())), list(by_net.get(n_net_id, ()))
+
+
+def pair_member_lengths(result: dict, pcb_data, attr: str = 'die_length'):
+    """Per-leg (copper, pad-to-die) of a diff pair's matching span (#1248):
+    {'P': (copper, die), 'N': (copper, die), 'base': the pair's copper figure}.
+
+    `attr='die_length'`: copper = the leg's own routed length plus its stub
+    (`p_stub_length` / `n_stub_length`, which a 2-point pair carries; a
+    multipoint pair's route_length is copper only, and so is this), and
+    `base` = route_length. `attr='die_delay'`: copper = the leg's propagation
+    time in ps, `base` = the larger leg's time, as `apply_time_matching_to_group`
+    times a pair. None when the result names no leg nets."""
+    from net_queries import pad_to_die_delay, pad_to_die_length
+    p_id, n_id = result.get('p_net_id'), result.get('n_net_id')
+    if p_id is None or n_id is None:
+        return None
+    if attr == 'die_delay':
+        from impedance import calculate_route_propagation_time_ps
+
+        def metric(s, v):
+            return calculate_route_propagation_time_ps(s, v, pcb_data)
+        _sum = pad_to_die_delay
+    else:
+        def metric(s, v):
+            return calculate_route_length(s, v, pcb_data)
+        _sum = pad_to_die_length
+    span = pair_span(result, metric)
+    multipoint = span is not result
+    segs = span.get('new_segments', []) or []
+    vias = span.get('new_vias', []) or []
+    p_pads, n_pads = pair_leg_pads(span if multipoint else None, pcb_data,
+                                   p_id, n_id)
+    out = {}
+    for leg, nid, pads in (('P', p_id, p_pads), ('N', n_id, n_pads)):
+        cu = metric([s for s in segs if s.net_id == nid],
+                    [v for v in vias if v.net_id == nid])
+        if attr != 'die_delay' and not multipoint:
+            cu += result.get(f'{leg.lower()}_stub_length', 0.0) or 0.0
+        out[leg] = (cu, _sum(pads))
+    if attr == 'die_delay':
+        out['base'] = max(out['P'][0], out['N'][0])
+    else:
+        out['base'] = result.get('route_length', max(out['P'][0], out['N'][0]))
+    return out
 
 
 def member_pad_to_die(result: dict, net_name: str, pcb_data,
                       attr: str = 'die_length') -> float:
     """The PAD-TO-DIE term a group member's length carries beyond its copper (#1248).
 
-    mm for attr='die_length', ps for attr='die_delay'. KiCad adds the pads'
-    pad-to-die to a net's length in its tuners (the tuned path's START and END
-    pads) and in its length/skew DRC (every pad of the net); the two agree on a
-    2-pad net. Which pads, per member:
+    mm for attr='die_length', ps for attr='die_delay': the amount to add to
+    the member's `route_length` (or, for time, its copper time) to get the
+    length KiCad measures. KiCad adds the pads' pad-to-die in its tuners (the
+    tuned path's START and END pads) and in its length/skew DRC (every pad of
+    the net); the two agree on a 2-pad net. Per member:
 
-      * a diff pair: each leg's pads, and the pair takes the larger leg, as
-        KiCad's DP_MEANDER_PLACER::origPathLength takes max(P total, N total).
-        Exact while the legs' copper is matched; a multipoint pair's legs
-        count every pad of their net.
+      * a diff pair: KiCad's DP tuner, EXACT per leg
+        (DP_MEANDER_PLACER::origPathLength = max(P copper + P's end pads'
+        term, N copper + N's end pads' term)): each leg its OWN copper (stubs
+        included) and its own pads (`pair_member_lengths`), the pair the
+        larger leg. On a multipoint pair the leg is its matching span and the
+        pads its two terminals' (`pair_leg_pads`), not every pad of the net.
+        A pair declaring no term on either leg returns 0.0 and keeps its
+        route_length exactly -- including the centreline average a pair is
+        matched on without --diff-pair-intra-match; one that declares a term
+        is measured as KiCad's tuner measures it, its larger leg.
       * a multipoint single-ended net routed this run: the two pads its main
         edge joins (`routed_pad_indices`), the span the meander lengthens.
       * anything else -- a 2-pad net, or a member measured from board copper,
@@ -153,7 +230,11 @@ def member_pad_to_die(result: dict, net_name: str, pcb_data,
 
     p_id, n_id = result.get('p_net_id'), result.get('n_net_id')
     if result.get('is_diff_pair') and p_id is not None and n_id is not None:
-        return max(_sum(pads_by_net.get(p_id, ())), _sum(pads_by_net.get(n_id, ())))
+        legs = pair_member_lengths(result, pcb_data, attr)
+        if not (legs['P'][1] or legs['N'][1]):
+            return 0.0
+        return max(legs['P'][0] + legs['P'][1],
+                   legs['N'][0] + legs['N'][1]) - legs['base']
     info = result.get('multipoint_pad_info')
     routed = result.get('routed_pad_indices')
     if (result.get('is_multipoint') and info and routed
@@ -164,6 +245,27 @@ def member_pad_to_die(result: dict, net_name: str, pcb_data,
     net_id = next((nid for nid, n in (getattr(pcb_data, 'nets', None) or {}).items()
                    if getattr(n, 'name', None) == net_name), None)
     return _sum(pads_by_net.get(net_id, ())) if net_id is not None else 0.0
+
+
+def _pad_to_die_note(terms: dict, group_results: dict, pcb_data, unit: str) -> str:
+    """The run line naming each member's pad-to-die term (#1248). A pair's
+    term is its larger leg's excess over its copper figure, so its legs are
+    printed too: which leg won is not visible in the one number."""
+    attr = 'die_delay' if unit == 'ps' else 'die_length'
+    parts = []
+    for n, v in terms.items():
+        if not v:
+            continue
+        r = group_results.get(n) or {}
+        legs = (pair_member_lengths(r, pcb_data, attr)
+                if r.get('is_diff_pair') else None)
+        if legs:
+            parts.append(f"{n} +{v:.3f}{unit} (pair, larger leg of "
+                         f"P {legs['P'][0]:.3f}+{legs['P'][1]:.3f}, "
+                         f"N {legs['N'][0]:.3f}+{legs['N'][1]:.3f})")
+        else:
+            parts.append(f"{n} +{v:.3f}{unit}")
+    return ', '.join(parts)
 
 
 class ClearanceIndex:
@@ -1568,10 +1670,9 @@ def _apply_meanders_to_net_with_iteration(
         # meander machinery below operates on the LEG; the splice at the end
         # folds the meandered copper back into the chain bookkeeping.
         mp_legs = result.get('leg_results') if result.get('is_multipoint') else None
-        if mp_legs:
-            span = max(mp_legs, key=lambda lr: pair_leg_metric(lr, metric_func))
-        else:
-            span = result
+        # The same leg `pair_span` names, so the leg lengthened here is the
+        # leg whose terminals member_pad_to_die counted (#1248).
+        span = pair_span(result, metric_func)
 
         # #520: measure ONE leg (max of P/N), not the sum of both legs, and
         # carry the entry offset (stub adders baked into current_metric that a
@@ -1942,7 +2043,7 @@ def apply_length_matching_to_group(
     print(f"  Length matching group: {len(group_results)} nets ({diff_pair_count} diff pairs, {single_count} single-ended), target={target_length:.2f}mm")
     if any(die.values()):
         print(f"  Pad-to-die included (#1248): "
-              + ', '.join(f"{n} +{v:.3f}mm" for n, v in die.items() if v))
+              + _pad_to_die_note(die, group_results, pcb_data, 'mm'))
 
     # Pre-collect segments/vias for clearance checking
     already_processed_segments: List[Segment] = list(prev_group_segments) if prev_group_segments else []
@@ -2150,7 +2251,7 @@ def apply_time_matching_to_group(
     print(f"  Time matching group: {len(group_results)} nets ({diff_pair_count} diff pairs, {single_count} single-ended), target={target_time:.2f}ps")
     if any(die_ps.values()):
         print(f"  Pad-to-die delay included (#1248): "
-              + ', '.join(f"{n} +{v:.3f}ps" for n, v in die_ps.items() if v))
+              + _pad_to_die_note(die_ps, group_results, pcb_data, 'ps'))
 
     # Pre-collect segments/vias for clearance checking
     already_processed_segments: List[Segment] = list(prev_group_segments) if prev_group_segments else []
