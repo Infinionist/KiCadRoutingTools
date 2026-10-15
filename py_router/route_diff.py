@@ -1787,8 +1787,8 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         swap_pairs = summarize_target_swaps(target_swaps)
         print(f"  Target swaps:  {len(swap_pairs)}")
     if single_ended_diff_pairs:
-        print(f"  Single-ended:  {len(single_ended_diff_pairs)} (electrically short - "
-              f"deferred to single-ended routing)")
+        print(f"  Single-ended:  {len(single_ended_diff_pairs)} (deferred to "
+              f"single-ended routing; pair_reports[].failure_reason says why)")
         # ...and say how those members ACTUALLY came out. The headline above
         # reads `Diff pairs: 0/2 routed` on a step where every member net got
         # copper and connected, so a log tail -- which is what a grep, a CI

@@ -282,6 +282,12 @@ def route_diff_pairs(
                 state.config = config
                 state.diff_pair_extra_clearance = diff_pair_extra_clearance
                 state.diff_pair_base_obstacles = diff_pair_base_obstacles
+            # The deferred branch below reads this reason back; one left by an
+            # earlier attempt on this pair (the bare-pad retry pass) must not
+            # leak into this one.
+            _diag = state.pair_diagnostics.get(pair_name, {})
+            if _diag.get('reason') == 'coupled-route-failed':
+                del _diag['reason']
             try:
                 leg_results, merged, peeled = route_multipoint_diff_pair(state, pair, pair_name, terminals)
             finally:
@@ -333,13 +339,17 @@ def route_diff_pairs(
                 refresh_net_obstacles(state.working_obstacles, state.net_obstacles_cache,
                                       pcb_data, config, (pair.p_net_id, pair.n_net_id))
             else:
-                # No leg was coupled - every leg was electrically short and
-                # deferred (peeled set above). Not a failure: the single-ended
-                # follow-up pass connects the whole pair.
-                print(f"  All {len(terminals) - 1} legs electrically short - "
-                      f"whole pair left for single-ended")
-                record_pair_diag(state, pair_name, outcome='deferred',
-                                 reason='electrically-short', stage='multipoint')
+                # No leg was coupled - every leg was electrically short, or no
+                # coupled chain routed (#165, reason recorded by the router) -
+                # and the whole pair was deferred (peeled set above). The
+                # single-ended follow-up pass connects it.
+                if state.pair_diagnostics.get(pair_name, {}).get('reason') == 'coupled-route-failed':
+                    print(f"  Coupled legs failed - whole pair left for single-ended")
+                else:
+                    print(f"  All {len(terminals) - 1} legs electrically short - "
+                          f"whole pair left for single-ended")
+                    record_pair_diag(state, pair_name, outcome='deferred',
+                                     reason='electrically-short', stage='multipoint')
             continue
 
         # Build complete obstacle map for diff pair routing
