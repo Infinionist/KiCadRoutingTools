@@ -398,7 +398,8 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
                    results_data: Optional[dict], write_model,
                    routing_scope: List[str], input_signature,
                    orig_seg_by_net: Dict[int, list],
-                   orig_via_by_net: Dict[int, list]) -> Optional[dict]:
+                   orig_via_by_net: Dict[int, list],
+                   orig_copper=None) -> Optional[dict]:
     """Grade the board this run SHIPS over every net it owns (#1069).
 
     The merged tally used to be the LAST summary's failure state, and each
@@ -417,6 +418,15 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
     they grade WORSE than on the input board, so a scoped step is never billed
     for another step's open nets, and never for the whole board.
 
+    Each state is graded through its own fill: the shipped copper on the
+    parsed file (CLI) or a `CopperView` of the write model (GUI), and the
+    input copper -- `orig_copper`, value copies taken before the run moved
+    anything, else the `orig_*_by_net` objects -- on a `CopperView` of
+    pcb_data. pcb_data's own zone fill models are built from whatever copper
+    it carries when a zone is first consulted, which here is the end of the
+    run, so grading the input on pcb_data read a pour this run cut as cut on
+    the input too, and the net was never charged.
+
     Prints the record as `JSON_REGRADE:` (merge_route_summaries reads it from
     the log), stores it for --json-out and JSON_SUMMARY_MIN, prints a
     whole-run headline, and returns it. Returns None when there is no board
@@ -425,12 +435,16 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
     import time as _t1069
     from route_summary import named_nets, regrade_record
     from improvement_gate import grade_nets, copper_signature
+    from plane_fill_model import CopperView
     _t0 = _t1069.time()
     if return_results:
-        board = pcb_data
-        segs_by_net, vias_by_net = write_model(results_data or {})
-        final_segs = [s for _l in segs_by_net.values() for s in _l]
-        final_vias = [v for _l in vias_by_net.values() for v in _l]
+        _wm_s, _wm_v = write_model(results_data or {})
+        final_segs = [s for _l in _wm_s.values() for s in _l]
+        final_vias = [v for _l in _wm_v.values() for v in _l]
+        # The write model on a view of its own: grading it on pcb_data read
+        # zones through pcb_data's end-of-run fill (#1069 audit).
+        board = CopperView(pcb_data, final_segs, final_vias)
+        segs_by_net = vias_by_net = None
         label = 'write_model'
     else:
         if not (output_file and os.path.isfile(output_file)):
@@ -455,8 +469,15 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
     grades = {name_of[nid]: g for nid, g in graded.items()}
     # A net graded only because its copper changed is the run's failure only
     # if the run made it worse: broken now and connected before, or more pads
-    # off than before. Graded on the input copper snapshot.
+    # off than before. Graded on the input copper snapshot, through a fill of
+    # its own.
     _in_id = {n.name: nid for nid, n in pcb_data.nets.items()}
+    if orig_copper is not None:
+        _in_board = CopperView(pcb_data, *orig_copper)
+    else:
+        _in_board = CopperView(
+            pcb_data, [s for _l in orig_seg_by_net.values() for s in _l],
+            [v for _l in orig_via_by_net.values() for v in _l])
     _worse: List[str] = []
     for n in extra:
         g = grades.get(n)
@@ -464,8 +485,7 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
             grades.pop(n, None)
             continue
         _pid = _in_id.get(n)
-        _before = (grade_nets(pcb_data, [_pid], segs_by_net=orig_seg_by_net,
-                              vias_by_net=orig_via_by_net).get(_pid)
+        _before = (grade_nets(_in_board, [_pid]).get(_pid)
                    if _pid is not None else None)
         if (_before and _before['broken']
                 and len(_before['failed_pads']) >= len(g['failed_pads'])):
@@ -486,8 +506,7 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
                           if n not in _scope_set0})
     _by_run: List[str] = []
     _ids_out = [_in_id[n] for n in _broken_out if n in _in_id]
-    _before_out = (grade_nets(pcb_data, _ids_out, segs_by_net=orig_seg_by_net,
-                              vias_by_net=orig_via_by_net) if _ids_out else {})
+    _before_out = (grade_nets(_in_board, _ids_out) if _ids_out else {})
     for n in _broken_out:
         _b = _before_out.get(_in_id.get(n))
         if _b is None:
@@ -1670,14 +1689,16 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     _orig_via_by_net: Dict[int, list] = {}
     for _v in pcb_data.vias:
         _orig_via_by_net.setdefault(_v.net_id, []).append(_v)
-    # #600, GUI front: the same copper as VALUE copies, for the improvement
-    # gate's "before" grade. The CLI gate re-reads the input file; the GUI's
-    # input is this board, whose track and via objects the run moves in place.
-    _orig_copper600 = None
-    if return_results and final_reconcile:
+    # The same copper as VALUE copies, for the "before" grades that run at the
+    # end of the outermost run: the #1069 re-grade (both fronts) and the #600
+    # gate's GUI branch (the CLI gate re-reads the input file). The run moves
+    # the track and via objects above in place.
+    _orig_copper_values = None
+    if final_reconcile:
         import copy as _copy600
-        _orig_copper600 = ([_copy600.copy(_s) for _s in pcb_data.segments],
-                           [_copy600.copy(_v) for _v in pcb_data.vias])
+        _orig_copper_values = (
+            [_copy600.copy(_s) for _s in pcb_data.segments],
+            [_copy600.copy(_v) for _v in pcb_data.vias])
     # #1069: the input copper as VALUES, so the end-of-run re-grade can tell
     # which nets this run changed (objects move in place; see copper_signature).
     # Outermost run only -- nested sub-runs do not re-grade.
@@ -7440,7 +7461,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 pcb_data, output_file, return_results,
                 locals().get('results_data'), _gui_write_model,
                 [_n for _n, _i in single_ended_nets], _input_sig1069,
-                _orig_seg_by_net, _orig_via_by_net)
+                _orig_seg_by_net, _orig_via_by_net,
+                orig_copper=_orig_copper_values)
             if _rg1069 is not None:
                 successful = _rg1069['successful']
                 failed = _rg1069['failed']
@@ -7689,7 +7711,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 # gate parses two files and never had that problem.
                 from plane_fill_model import CopperView
                 _after_s, _after_v = _gui_write_model(results_data)
-                _b_segs, _b_vias = (_orig_copper600 if _orig_copper600
+                _b_segs, _b_vias = (_orig_copper_values if _orig_copper_values
                                     else ([s for _l in _orig_seg_by_net.values()
                                            for s in _l],
                                           [v for _l in _orig_via_by_net.values()
