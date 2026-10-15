@@ -225,6 +225,35 @@ def protection_candidates(routed_results, pcb_data, pairs=None):
     return out
 
 
+def diff_cleanup_scope(pairs, routed_results, single_ended_nets, member_connected):
+    """The net ids route_diff's post-route cleanup (dead-end sweep and the rest)
+    may touch: the members of every pair routed in this run, except copper a
+    later single-ended pass still needs. A pair whose copper is single-ended
+    FALLBACK copper, or a multipoint pair whose far terminals were PEELED for
+    the single-ended follow-up (`single_ended_nets`, the run's
+    state.diff_pair_single_ended_nets), is swept only when BOTH members ended
+    fully connected (`member_connected(net_id)`) -- a 'partial' member's
+    remaining stubs are load-bearing for the downstream pass, exactly like a
+    deferred pair's. h616_lpddr4's /DRAM/SCK (U1, two U2 ball pairs, R4, C7):
+    its coupled U1->R4 leg ends on R4's B.Cu pads through the stub-swap vias
+    the writer adds later, so at the sweep it dangled, all 30 of its segments
+    were trimmed, and the pair went to route.py bare."""
+    scope = set()
+    for _pn, pair in pairs:
+        rr_p = routed_results.get(pair.p_net_id)
+        rr_n = routed_results.get(pair.n_net_id)
+        if rr_p is None or rr_n is None:
+            continue
+        if (rr_p.get('se_member_fallback') or rr_n.get('se_member_fallback')
+                or pair.p_net_id in single_ended_nets
+                or pair.n_net_id in single_ended_nets):
+            if not (member_connected(pair.p_net_id) and member_connected(pair.n_net_id)):
+                continue
+        scope.add(pair.p_net_id)
+        scope.add(pair.n_net_id)
+    return scope
+
+
 def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[str],
                 layers: List[str] = None,
                 # #530: cap every auto-read net class at this clearance (the
@@ -1604,23 +1633,10 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     # ONLY fully-routed pairs: a failed / single-ended-deferred pair's fanout stubs
     # have free ends by design (the single-ended follow-up connects them), so a
     # dead-end sweep there would strip copper the next pass needs.
-    dp_scope = set()
     from diff_pair_custody import _member_connected as _dpc_member_connected
-    for _pn, _pair in diff_pair_ids_to_route:
-        _rr_p = routed_results.get(_pair.p_net_id)
-        _rr_n = routed_results.get(_pair.n_net_id)
-        if _rr_p is None or _rr_n is None:
-            continue
-        if (_rr_p.get('se_member_fallback') or _rr_n.get('se_member_fallback')):
-            # Single-ended-fallback copper: sweep it only when BOTH members
-            # ended fully connected -- a 'partial' member's remaining stubs
-            # are load-bearing for the downstream pass, exactly like a
-            # deferred pair's.
-            if not (_dpc_member_connected(pcb_data, _pair.p_net_id)
-                    and _dpc_member_connected(pcb_data, _pair.n_net_id)):
-                continue
-        dp_scope.add(_pair.p_net_id)
-        dp_scope.add(_pair.n_net_id)
+    dp_scope = diff_cleanup_scope(
+        diff_pair_ids_to_route, routed_results, state.diff_pair_single_ended_nets,
+        lambda nid: _dpc_member_connected(pcb_data, nid))
     _dp_cleanup = run_post_route_cleanup(
         results, pcb_data, dp_scope, config,
         label='Diff-pair ', snap=False, phantom=False, neck=False,
