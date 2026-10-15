@@ -522,7 +522,12 @@ two copies. Both read it through `keep_away.brief_rule_rows`:
 On the `--intent` path a rule the brief declares and the intent lacks drifts.
 So does a rule the intent carries from the brief that the brief no longer
 declares, because the router has stopped pricing it. Rules are compared in
-their canonical spelling, so `1.0` and `1` are the same rule.
+their canonical spelling, so `1.0` and `1` are the same rule. The reverse
+case is a rule the intent carries and the brief beside the board does not:
+a row written into the intent by hand, or compiled from a `--brief` naming
+another file. check_floorplan grades it, but no router reads it, so it
+prints a `WARNING keep_away` naming each such row and the brief to declare
+it in. `--json` carries the same as `keep_away_unpriced`.
 
 It is **not** `min_mm` on a `proximity[]` row, and that refusal stands. A
 proximity row is about two named parts and how close they must be. A keep-away

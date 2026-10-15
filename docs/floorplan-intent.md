@@ -1218,8 +1218,23 @@ name. That would be a copper clearance between two parts; this is a
 functional distance between two net groups. Declare it in the design brief
 (`keep_away`), not here by hand. The brief compiles it into this key, and
 route.py, route_diff.py and the GUI read the same brief key and price it. A
-row written straight into an intent is graded, but no router reads it. No
-placement search reads it either (see "Which rules the SEARCH can see").
+row written straight into an intent is graded, but no router reads it, and
+check_floorplan says so. It asks the router's own reader
+(`keep_away.unpriced_rules`) which rules the brief beside the board
+declares, and warns about every intent row that is not among them:
+
+```
+WARNING keep_away: 1 keep_away rule(s) in this intent are graded on the placement but will NOT be priced by route.py, route_diff.py or the GUI: the routers read keep-away rules from the design brief beside the board, never from an intent, and no design brief sits beside the board (w.design-brief.json):
+  - keep_away[0] 'Net-(D5-A):/32K_P,/32K_N:1'
+  fix: declare it in the `keep_away` list of .../w.design-brief.json, the brief the route steps read beside this board, then re-run check_floorplan.py --emit-intent so the intent carries it from the brief
+```
+
+`--json` carries the same as `keep_away_unpriced` (the rows, the brief the
+router reads and what it declares), and JSON_SUMMARY counts them as
+`keep_away_unpriced`. A rule compiled from a `--brief` that is not the file
+beside the board is caught the same way, at `--emit-intent` too. No
+placement search reads the key either (see "Which rules the SEARCH can
+see").
 
 ### A through-hole part is in a keep-out from either side
 

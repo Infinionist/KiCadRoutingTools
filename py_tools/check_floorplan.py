@@ -371,6 +371,70 @@ def _brief_absence_reason(args, brief):
     return "the brief found declares nothing gradable"
 
 
+def keep_away_unpriced(rows, board_path):
+    """#1253. The intent's `keep_away` rows that NO router will price, or
+    None when the intent carries none.
+
+    check_floorplan grades every `keep_away[]` row of the intent it is
+    given, but route.py, route_diff.py and the GUI read keep-away rules only
+    from the design brief beside the board they route (and a run's own
+    --keep-away), never from an intent. A row written straight into an
+    intent, or compiled from a brief the router does not read (`--brief`
+    naming another file), is therefore graded on the placement and never
+    priced on the tracks. Answered by the router's own reader
+    (`keep_away.unpriced_rules`), so this cannot disagree with what a route
+    step will read."""
+    rows = list(rows or ())
+    if not rows:
+        return None
+    from keep_away import brief_path_for, normalize_keep_away_specs, \
+        unpriced_rules
+    got = unpriced_rules([r.get('rule') for r in rows], board_path)
+    missing = set(got['rules'])
+    out = [{'index': i, 'rule': normalize_keep_away_specs(r['rule'])[0],
+            'source': r.get('source')}
+           for i, r in enumerate(rows)
+           if normalize_keep_away_specs(r['rule'])[0] in missing]
+    sibling = got['brief'] or brief_path_for(os.path.abspath(board_path))
+    name = os.path.basename(sibling)
+    rec = {'rules': out, 'checked': len(rows),
+           'router_brief': got['brief'] or None,
+           'router_brief_declares': got['brief_declares'],
+           'router_brief_error': got['brief_error'],
+           'warning': None, 'fix': None}
+    if not out:
+        return rec
+    if got['brief_error']:
+        where = (f"the design brief beside the board cannot be read, so the "
+                 f"route steps refuse to run ({got['brief_error']})")
+    elif got['brief']:
+        where = (f"the design brief beside the board ({name}) does not "
+                 f"declare {'it' if len(out) == 1 else 'them'}")
+    else:
+        where = f"no design brief sits beside the board ({name})"
+    rec['warning'] = (
+        f"{len(out)} keep_away rule(s) in this intent are graded on the "
+        f"placement but will NOT be priced by route.py, route_diff.py or the "
+        f"GUI: the routers read keep-away rules from the design brief beside "
+        f"the board, never from an intent, and {where}")
+    rec['fix'] = (
+        f"declare {'it' if len(out) == 1 else 'each rule'} in the "
+        f"`keep_away` list of {sibling}, the brief the route steps read "
+        f"beside this board, then re-run check_floorplan.py --emit-intent "
+        f"so the intent carries it from the brief")
+    return rec
+
+
+def _print_keep_away_unpriced(rec):
+    if not rec or not rec['rules']:
+        return
+    print(f"  WARNING keep_away: {rec['warning']}:")
+    for r in rec['rules']:
+        print(f"    - keep_away[{r['index']}] '{r['rule']}'"
+              + (f" (source {r['source']})" if r.get('source') else ''))
+    print(f"    fix: {rec['fix']}")
+
+
 def intent_doc_for_drift(path):
     """The intent as a plain dict, for the drift diff. `{}` if unreadable --
     the loader has already refused a bad file by the time this runs, so a
@@ -766,6 +830,10 @@ def main(argv=None):
                   f"{len(doc['must_lock'])} locked part(s)")
             print(f"  envelope {doc['envelope']['rect']} -- read from the "
                   f"board. The outline is not editable by this toolchain")
+            # #1253: rules compiled from a `--brief` that is not the one
+            # beside the board are graded and never routed.
+            _print_keep_away_unpriced(keep_away_unpriced(
+                doc.get('keep_away'), args.board))
             # #1103: a pile says what it did not read off its poses.
             _pcw = (doc.get('context') or {}).get('pose_claims_withheld')
             if _pcw:
@@ -915,6 +983,11 @@ def main(argv=None):
         print(format_text(result))
         for line in _rc.format_rows(_rows):
             print(line)
+    # #1253. A keep_away row this intent carries without the brief beside
+    # the board is graded above and priced by no router.
+    ka_unpriced = keep_away_unpriced(intent.keep_away, args.board)
+    if not args.quiet:
+        _print_keep_away_unpriced(ka_unpriced)
     _contra_ids = [r['id'] for r in _rc.contradictions(_rows)]
     _answered = set((intent.dispositions or {}).get('contradictions', {}))
 
@@ -986,6 +1059,8 @@ def main(argv=None):
         doc['brief_coverage'] = coverage
         doc['declaration_ledger'] = ledger
         doc['reconciliation'] = _rows
+        if ka_unpriced is not None:
+            doc['keep_away_unpriced'] = ka_unpriced
         with open(args.json, 'w', encoding='utf-8') as fh:
             json.dump(doc, fh, indent=1, sort_keys=True)
             fh.write('\n')
@@ -999,6 +1074,7 @@ def main(argv=None):
     s['brief_absent'] = len(brief_report.get('absent') or ())
     s['brief_unknown_keys'] = sorted(brief_report.get('unknown') or ())
     s['brief_drift'] = len(brief_drift)
+    s['keep_away_unpriced'] = len((ka_unpriced or {}).get('rules') or ())
     if coverage.get('clauses'):
         s['brief_clauses'] = len(coverage['clauses'])
         for _k in ('graded', 'uncovered', 'abstained', 'not_claimed',

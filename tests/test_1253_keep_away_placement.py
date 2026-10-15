@@ -23,6 +23,11 @@ Rows:
     sides named and the plan-view caveat stated;
   - drift and clause coverage: a brief rule the intent lacks, and a
     brief-sourced intent rule the brief no longer declares;
+  - the reverse: a row the intent carries and the brief beside the board
+    does not is graded and priced by no router, so check_floorplan warns
+    (console, --json `keep_away_unpriced`, JSON_SUMMARY), and a row compiled
+    from that brief does not; a --brief naming another file is caught at
+    --emit-intent too;
   - the routing side: `resolve_keep_away` merges the brief's rules after the
     caller's, without duplicates, and changes NOTHING for a board with no
     brief or a brief without the key; both engines call it; batch_route
@@ -215,6 +220,91 @@ def test_watchy_demo_end_to_end():
         # moved board: see test_gui_engine_path_reads_the_brief.
 
 
+UNPRICED = ('keep_away rule(s) in this intent are graded on the placement '
+            'but will NOT be priced by route.py, route_diff.py or the GUI')
+
+
+def _summary(out):
+    line = next(l for l in out.splitlines() if l.startswith('JSON_SUMMARY:'))
+    return json.loads(line.split(':', 1)[1])
+
+
+def test_intent_only_rows_are_said_to_go_unrouted():
+    """A keep_away row the intent carries and the brief beside the board
+    does not is graded and priced by no router, so check_floorplan warns,
+    on its console and in --json; a row compiled from that brief does not.
+    Asked of the router's own reader (`keep_away.unpriced_rules`)."""
+    other = 'Net-(D5-A):/40M_P,/40M_N:2'
+    with tempfile.TemporaryDirectory() as td:
+        board = os.path.join(td, 'w.kicad_pcb')
+        rc, out = _run(_py('py_router/copy_board.py', WATCHY, board))
+        assert rc == 0, out
+        # The reader: canonical spelling, so `1.0` is RULE.
+        got = ka.unpriced_rules([RULE, other + '.0'], board)
+        assert got['rules'] == [RULE, other] and got['brief'] == '', got
+        brief = _write_brief(board, BRIEF)
+        got = ka.unpriced_rules(['Net-(D5-A):/32K_P,/32K_N:1.0', other], board)
+        assert got['rules'] == [other] and got['brief_declares'] == [RULE], got
+        assert os.path.samefile(got['brief'], brief), got
+
+        # Brief-compiled: no warning, and the JSON says it checked.
+        intent = os.path.join(td, 'intent.json')
+        rc, out = _run(_py('py_tools/check_floorplan.py', board,
+                           '--emit-intent', intent))
+        assert rc == 0 and UNPRICED not in out, out[-3000:]
+        js = os.path.join(td, 'brief.json')
+        rc, out = _run(_py('py_tools/check_floorplan.py', board, '--intent',
+                           evidence(intent, 'the emitted intent'), '--json',
+                           js))
+        assert 'keep-away Net-(D5-A):/32K_P,/32K_N:1: closest' in out, \
+            out[-3000:]                  # graded -- the run reached the rule
+        assert UNPRICED not in out, out[-3000:]
+        with open(evidence(js, 'the brief-compiled grade'),
+                  encoding='utf-8') as fh:
+            rec = json.load(fh)['keep_away_unpriced']
+        assert rec['rules'] == [] and rec['checked'] == 1 and \
+            rec['warning'] is None, rec
+        assert _summary(out)['keep_away_unpriced'] == 0
+
+        # Intent-only: the same intent plus a row written by hand.
+        doc = json.load(open(intent, encoding='utf-8'))
+        doc['keep_away'].append({'rule': other})
+        hand = os.path.join(td, 'hand.json')
+        with open(hand, 'w', encoding='utf-8') as fh:
+            json.dump(doc, fh)
+        js = os.path.join(td, 'hand_grade.json')
+        rc, out = _run(_py('py_tools/check_floorplan.py', board, '--intent',
+                           hand, '--json', js))
+        assert f"keep-away {other}: closest" in out, out[-3000:]
+        assert f"1 {UNPRICED}" in out, out[-3000:]
+        assert 'the design brief beside the board (w.design-brief.json) ' \
+               'does not declare it' in out, out[-3000:]
+        assert f"- keep_away[1] '{other}'" in out, out[-3000:]
+        assert f"fix: declare it in the `keep_away` list of {brief}" in out, \
+            out[-3000:]
+        with open(evidence(js, 'the hand-edited grade'),
+                  encoding='utf-8') as fh:
+            rec = json.load(fh)['keep_away_unpriced']
+        assert rec['rules'] == [{'index': 1, 'rule': other, 'source': None}], \
+            rec
+        assert rec['router_brief_declares'] == [RULE] and rec['fix'], rec
+        assert _summary(out)['keep_away_unpriced'] == 1
+
+        # No brief beside the board: the brief-compiled row is now unpriced
+        # too, and a --brief naming another file is caught at emit time.
+        moved = os.path.join(td, 'elsewhere.json')
+        os.replace(brief, moved)
+        rc, out = _run(_py('py_tools/check_floorplan.py', board, '--intent',
+                           intent, '--no-brief'))
+        assert f"1 {UNPRICED}" in out and 'no design brief sits beside the ' \
+            'board (w.design-brief.json)' in out, out[-3000:]
+        assert f"- keep_away[0] '{RULE}' (source brief)" in out, out[-3000:]
+        rc, out = _run(_py('py_tools/check_floorplan.py', board, '--brief',
+                           moved, '--emit-intent',
+                           os.path.join(td, 'other.json')))
+        assert rc == 0 and f"1 {UNPRICED}" in out, out[-3000:]
+
+
 def test_unresolved_side():
     pcb = parse_kicad_pcb(WATCHY)
     res = fp.grade(_intent(['NO_SUCH_NET:/32K_P:1']), pcb, WATCHY)
@@ -381,7 +471,8 @@ TESTS = [test_brief_ext_is_design_briefs, test_the_key_has_one_reader,
          test_ulx3s_cross_face, test_drift_and_coverage,
          test_resolve_changes_nothing_without_a_declaration,
          test_both_engines_resolve, test_gui_engine_path_reads_the_brief,
-         test_route_diff_reads_the_brief, test_watchy_demo_end_to_end]
+         test_route_diff_reads_the_brief, test_watchy_demo_end_to_end,
+         test_intent_only_rows_are_said_to_go_unrouted]
 
 
 if __name__ == '__main__':

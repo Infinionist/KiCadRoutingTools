@@ -289,6 +289,41 @@ def resolve_keep_away(keep_away, input_file: str = '', pcb_data=None,
     return merged or None
 
 
+def unpriced_rules(rules, board_path: str = '', pcb_data=None) -> Dict:
+    """Which of ``rules`` the routing engines will NOT price on this board.
+
+    route.py, route_diff.py and the GUI read keep-away rules from exactly two
+    places: the run's own ``--keep-away`` (or the GUI field), and the design
+    brief beside the board (``resolve_keep_away``). A rule a floorplan
+    INTENT carries without the brief is graded on the placement by
+    check_floorplan and priced by no router, so a grade that passes says
+    nothing about the tracks. Answered from the same reader the engines use
+    (``read_brief_keep_away``), compared in canonical spelling.
+
+    Returns ``{'rules': [canonical rules not priced], 'brief': the brief the
+    engines read, or '' when there is none, 'brief_declares': its rules,
+    'brief_error': why that brief cannot be read (the engines then refuse
+    to route), or None}``."""
+    try:
+        declared, path = read_brief_keep_away(board_path, pcb_data)
+        err = None
+    except ValueError as exc:
+        declared, err = (), str(exc)
+        path = brief_path_for(board_path
+                              or getattr(pcb_data, 'source_path', '') or '')
+    if not path:
+        cand = brief_path_for(board_path
+                              or getattr(pcb_data, 'source_path', '') or '')
+        path = cand if cand and os.path.isfile(cand) else ''
+    out: List[str] = []
+    for r in rules or ():
+        for spec in normalize_keep_away_specs(r):
+            if spec not in declared and spec not in out:
+                out.append(spec)
+    return {'rules': out, 'brief': path, 'brief_declares': list(declared),
+            'brief_error': err}
+
+
 def resolve_rule_sides(pcb_data, rules) -> Tuple[
         List[Tuple[frozenset, frozenset, float]], List[str], List[str]]:
     """``([(aggressor ids, victim ids, gap)] per rule, notes, unmatched

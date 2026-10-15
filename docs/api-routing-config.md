@@ -288,6 +288,10 @@ the brief in its outermost call only; its nested sub-runs inherit the merged
 rules. A board with no brief, or a brief without the key, routes exactly as
 before. `check_floorplan` grades the same rules on the placed pads, before any
 track exists (`keep_away` in [the floorplan intent](floorplan-intent.md)).
+`keep_away.unpriced_rules(rules, board_path)` answers the reverse question
+with the same reader: which of a list of rules the engines will NOT price on
+that board. check_floorplan asks it about the intent it grades and warns
+about a `keep_away` row no brief beside the board declares.
 
 #### Via proximity multiplier: `via_proximity_cost`
 
