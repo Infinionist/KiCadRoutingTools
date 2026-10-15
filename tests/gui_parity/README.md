@@ -236,7 +236,20 @@ control that tool's plan action can set, or to be listed for that tool as
 CLI-only or as a known gap with the reason. It also fails a reached control
 that `reset_params_to_defaults` does not restore, since a plan step that sets
 it would leak it into every later step. Its run_all half, with the negative
-controls, is `tests/test_route_flag_plan_coverage.py`.
+controls, is `tests/test_route_flag_plan_coverage.py`. The widget classes it
+counts as settable are READ from `ai_plan._set_control`'s own `isinstance`
+branches, so a control the executor cannot set (a RadioBox, before it had a
+branch) cannot pass as reached.
+
+What an AST cannot see is the run itself, which is
+`test_plan_flags_reach_dialog.py` (KiCad python, seconds): for each flag a
+closed gap made plan-reachable, a manifest line carrying it and then the same
+step without it go through `manifest_to_plan`'s CLI and the REAL PlanExecutor
+on the headless dialog, each action replaced by a probe. The flagged step's
+control AND the tab config its engine reads must hold the recorded value; the
+next step must be back at the CLI default. It also drives the QFN tab's real
+fanout run (engine spied) for `--layer` and both routing workers for
+`--net-clearances`, so the value is shown reaching the engine call.
 
 The same blindness applies one level up, to whole TOOLS: an unknown tool only
 bumps the converter's `skipped` count, so a converted plan reads complete
@@ -384,7 +397,9 @@ skip cleanly without KiCad python). Run any directly:
 - `test_settings_roundtrip.py` -- save/restore of the dialog's settings dict
   against the REAL headless dialog: the close path (`get_dialog_settings`),
   the reopen path (`restore_dialog_settings`), restore from a LEGACY dict
-  carrying keys a newer version dropped, and re-save key parity. Deleting or
+  carrying keys a newer version dropped, restore from a dict MISSING each key
+  in turn (a settings file saved before that control existed), and re-save
+  key parity. Deleting or
   renaming a control without updating persistence crashes on CLOSE and loses
   the user's settings -- this gate is what catches that. Key parity cannot see
   a VALUE that silently fails to come back, so it also round-trips one: a
@@ -415,6 +430,14 @@ skip cleanly without KiCad python). Run any directly:
   the fab copper-to-edge floor; GUI and CLI place identical vias. On the
   pre-2026-09-24 code it fails 9 checks, CLI included (its rules lookup read
   the output's not-yet-copied `.kicad_dru`).
+- `test_skip_existing_zones_gui.py` -- the Planes tab's **Skip existing
+  zones** box against `route_planes.py` with and without
+  `--skip-existing-zones`, on the real tab (create + apply on a live board):
+  a net's single-layer pour is replaced (old one deleted, one new pour at the
+  run's clearance and width), kept with the box, a multi-layer pour is never
+  deleted and is out-ranked, and a GND teardrop neither blocks the pour nor
+  goes with it. GUI and CLI leave identical GND pours; a negative control
+  strips the engine's `replace_existing` marks.
 - `test_1056_renamed_layers_gui.py` -- a board whose In1.Cu/In2.Cu are
   renamed "GND"/"+5V" in Board Setup (#1056). `board.GetLayerName()` returns
   that display name, so every live-board site that mapped through it missed:
