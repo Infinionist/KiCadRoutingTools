@@ -5049,9 +5049,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     except Exception:          # without re-reading logs
         pass
     print(f"JSON_SUMMARY: {json.dumps(summary)}")
-    _SUMMARY_SINK.append(summary)
-    from route_summary import note_printed_summary
-    note_printed_summary(summary)
+    from route_summary import sink_summary
+    sink_summary(summary)          # the sink and its printed-floor record
 
     # Write output file or return results for direct application
     if return_results:

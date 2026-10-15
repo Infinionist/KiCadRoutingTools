@@ -38,7 +38,7 @@ __all__ = ['merge_summaries', 'merge_route_summaries', 'summary_min',
            'RECONCILE_RAISED', 'FINAL_REGRADE', 'reset_run_state',
            'named_nets', 'regrade_record', 'GATE_RE',
            'apply_improvement_gate', 'SHIPPED_RULES_RE',
-           'note_printed_summary', 'restamp_shipped_rules',
+           'sink_summary', 'restamp_shipped_rules',
            'apply_shipped_rules']
 
 SUMMARY_RE = re.compile(r'JSON_SUMMARY: (\{.*\})')
@@ -108,9 +108,12 @@ def _rules_text(summary: Dict) -> str:
                       sort_keys=True, default=str)
 
 
-def note_printed_summary(summary: Dict) -> None:
-    """Record what `summary` said about the floor as its line was printed.
-    Call it beside every `SUMMARY_SINK.append`."""
+def sink_summary(summary: Dict) -> None:
+    """Add a just-printed summary to `SUMMARY_SINK`, recording what its line
+    said about the floor in `PRINTED_RULES`. The one place either list grows,
+    so they stay index-aligned: an append that skipped the record would make
+    every run print `JSON_SHIPPED_RULES`."""
+    SUMMARY_SINK.append(summary)
     PRINTED_RULES.append(_rules_text(summary))
 
 

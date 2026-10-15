@@ -48,7 +48,7 @@ def row_a_restamp_and_merge():
     print('A. the re-stamp, its printed record, and the log merge')
     try:
         import route_summary as rs
-        from route_summary import (restamp_shipped_rules, note_printed_summary,
+        from route_summary import (restamp_shipped_rules, sink_summary,
                                    merge_route_summaries, merge_summaries)
     except ImportError as e:
         check('route_summary carries the shipped-floor re-stamp', False, str(e))
@@ -66,8 +66,7 @@ def row_a_restamp_and_merge():
     log = ''
     for s in (pass1, sub):
         log += 'JSON_SUMMARY: ' + json.dumps(s) + '\n'
-        rs.SUMMARY_SINK.append(s)
-        note_printed_summary(s)
+        sink_summary(s)
 
     rec = restamp_shipped_rules(0.15, ledger1)
     check('every summary now says the shipped floor',
@@ -104,8 +103,9 @@ def row_a_restamp_and_merge():
     rs.reset_run_state()
     same = {'min_clearance_used': 0.2,
             'design_rules': dict(ledger0, unsupported_rules=[])}
-    rs.SUMMARY_SINK.append(same)
-    note_printed_summary(same)
+    sink_summary(same)
+    check('the sink and its printed record grow together',
+          len(rs.SUMMARY_SINK) == len(rs.PRINTED_RULES) == 1)
     check('no record when every printed summary already said it',
           restamp_shipped_rules(0.2, ledger0) is None)
     rs.reset_run_state()
