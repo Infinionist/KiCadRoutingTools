@@ -1897,10 +1897,10 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
             'pair_reports': pair_reports,
             'casualty_reconcile': casualty_summary,
             'single_ended_fallback': se_fallback_summary,
-            # #1247: same data as JSON_SUMMARY['length_match_groups'] /
-            # ['length_match_auto'] (empty / None without a group).
+            # #1247: same data as JSON_SUMMARY['length_match_groups'] (empty
+            # without a group); the `auto` report stays in
+            # JSON_SUMMARY['length_match_auto'], as in route.py.
             'length_match_groups': summary.get('length_match_groups', []),
-            'length_match_auto': summary.get('length_match_auto'),
         }
     else:
         wrote = write_routed_output(

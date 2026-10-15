@@ -73,7 +73,7 @@ Accepted spellings include the active-low `n` prefix (`nCAS`), `N`/`B` suffixes 
 - in the interface but no group token (`RESET`, `ZQ`, `DMI`, `VREF`);
 - the name looks like DRAM but its prefix carries no DRAM-only signals.
 
-`JSON_SUMMARY` carries the same membership as `length_match_groups` (one `{name, source, members}` record per group, named groups included, with `patterns`). The exclusions are in `length_match_auto`. The GUI's results carry both keys. The #521 `length-matched` protected nets are drawn from these members: those routed this run or measured from earlier-step copper.
+`JSON_SUMMARY` carries the same membership as `length_match_groups` (one `{name, source, members}` record per group, named groups included, with `patterns`). The exclusions are in `length_match_auto`. The GUI's results carry `length_match_groups`. The #521 `length-matched` protected nets are drawn from these members: those routed this run or measured from earlier-step copper.
 
 A name the rules do not cover (LPDDR5 `WCK`, LPDDR4 `DMI`, DDR5 `CB` check bits) is listed as ungrouped, never guessed. Pass explicit `--length-match-group` patterns for it.
 

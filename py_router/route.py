@@ -305,6 +305,7 @@ def _empty_results_data() -> dict:
         'fanout_dropped': [],
         'pad_pairs_open': [],
         'keep_away': [],
+        'length_match_groups': [],
     }
 
 
@@ -5082,10 +5083,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             # #1146: the nets JSON_SUMMARY['keep_away'] lists as left inside
             # a band, one dict per net (empty without a rule).
             'keep_away': keep_away_entries(summary.get('keep_away')),
-            # #1247: same data as JSON_SUMMARY['length_match_groups'] /
-            # ['length_match_auto'] (empty / None without a group).
+            # #1247: same data as JSON_SUMMARY['length_match_groups'] (empty
+            # without a group). The `auto` classification report is a dict
+            # or None, so it stays in JSON_SUMMARY['length_match_auto'] only:
+            # every key here is a list (`_empty_results_data`).
             'length_match_groups': summary.get('length_match_groups', []),
-            'length_match_auto': summary.get('length_match_auto'),
         }
     else:
         # Write output file using extracted output_writer module
