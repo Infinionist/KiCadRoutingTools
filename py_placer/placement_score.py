@@ -834,7 +834,8 @@ LENGTH_FLOOR_CANNOT_SEE = (
     'fly-by and T topologies: a multipoint floor (farthest pad pair on '
     'different parts) bounds the total copper of any tree that spans the '
     'net, not one driver-to-receiver path',
-    'pad die_length (package delay; not parsed, #1248) and where a track '
+    'pad die_length (package delay; parsed since #1248 but not added to a '
+    'floor) and where a track '
     'enters a pad (pad-edge entry)',
     '`mode: pin_pair` is echoed, not used: the floor is the net floor above, '
     'not the pads[0] -> pads[1] path board_score grades in that mode',

@@ -459,7 +459,8 @@ ps on an outer and an inner layer (`impedance.get_layer_ps_per_mm`).
 `tolerance_mm` is printed beside the spread with no pass/fail: a floor spread
 is not a routed spread, because meanders can always add copper. `cannot_see`
 lists what a floor misses (detours, layers and vias, meander room, fly-by/T
-topologies, pad `die_length` #1248 and pad-edge entry). A group with fewer than
+topologies, pad `die_length` -- parsed since #1248 but not added to a floor --
+and pad-edge entry). A group with fewer than
 two of its nets on the board is `ran: false` with a reason; a path that is not
 a readable file of that shape exits 2 (where `board_score` reads it as
 ungraded).

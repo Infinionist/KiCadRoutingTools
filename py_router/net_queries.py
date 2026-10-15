@@ -355,8 +355,36 @@ def net_pads_joined(pcb_data: PCBData, net_id: int, pads=None,
     return all(seen.intersection(pad_nodes.get(id(p)) or ()) for p in pads[1:])
 
 
+def pad_to_die_length(pads) -> float:
+    """Sum of the pads' pad-to-die lengths in mm (`Pad.die_length`, #1248)."""
+    return math.fsum(getattr(p, 'die_length', 0.0) or 0.0 for p in (pads or ()))
+
+
+def pad_to_die_delay(pads) -> float:
+    """Sum of the pads' pad-to-die delays in ps (`Pad.die_delay`, #1248)."""
+    return math.fsum(getattr(p, 'die_delay', 0.0) or 0.0 for p in (pads or ()))
+
+
+def net_pad_to_die_length(pcb_data: PCBData, net_id: int) -> float:
+    """The pad-to-die length KiCad's length/skew DRC adds to a net: EVERY pad of
+    the net (#1248). KiCad 10's DRC sums `GetPadToDieLength()` over each pad in
+    the rule's item set, next to the net's total track and via length
+    (drc_test_provider_matched_length -> LENGTH_DELAY_CALCULATION::
+    CalculateLengthDetails); its tuners add only the tuned path's START and END
+    pads, which is the same set on a 2-pad net."""
+    return pad_to_die_length((getattr(pcb_data, 'pads_by_net', None) or {}).get(net_id))
+
+
+def net_pad_to_die_delay(pcb_data: PCBData, net_id: int) -> float:
+    """The time twin of `net_pad_to_die_length`, in ps: KiCad 10 adds each
+    pad's `GetPadToDieDelay()` in the delay domain (it never converts a
+    die_length into a delay)."""
+    return pad_to_die_delay((getattr(pcb_data, 'pads_by_net', None) or {}).get(net_id))
+
+
 def net_match_length(pcb_data: PCBData, net_id: int, mode: str = 'total',
-                     tolerance: float = 0.02) -> Optional[float]:
+                     tolerance: float = 0.02,
+                     include_pad_to_die: bool = True) -> Optional[float]:
     """The length a length-match group grades ONE net at, or None when it cannot be measured (#1246).
 
     One definition for every grader (`board_score --length-groups`, the
@@ -365,27 +393,49 @@ def net_match_length(pcb_data: PCBData, net_id: int, mode: str = 'total',
 
       mode 'total'     total net copper (segments + via barrels, as
                        `net_copper_length`), but only when EVERY copper pad of
-                       the net is joined by track copper (`net_pads_joined`).
+                       the net is joined by track copper (`net_pads_joined`),
+                       plus every pad's pad-to-die length -- KiCad's
+                       length/skew DRC.
       mode 'pin_pair'  the copper path between the net's first two pads
-                       (`pin_pair_path_length`).
+                       (`pin_pair_path_length`) plus those two pads'
+                       pad-to-die lengths -- KiCad's tuner, which adds its
+                       start and end pads'.
+
+    `include_pad_to_die=False` leaves the pad-to-die term out (copper only).
+    Without it a board carrying `(die_length ...)` grades a spread KiCad does
+    not see (#1248).
 
     None in both modes means "not routed yet" (unrouted, stub-only, broken, or
     pads joined only through a zone). It is never 0.0 and never a stub length:
     those are not the length of a signal, and grading them passed a copper-free
     group and failed a stub-only one.
     """
+    die = (net_match_pad_to_die(pcb_data, net_id, mode)
+           if include_pad_to_die else 0.0)
     if mode == 'pin_pair':
         pads = pcb_data.pads_by_net.get(net_id) or []
         if len(pads) < 2:
             return None
-        return pin_pair_path_length(pcb_data, net_id, pads[0], pads[1],
+        path = pin_pair_path_length(pcb_data, net_id, pads[0], pads[1],
                                     tolerance=tolerance)
+        return None if path is None else path + die
+    if not net_pads_joined(pcb_data, net_id, tolerance=tolerance):
+        return None
+    return net_copper_length(pcb_data, net_id) + die
+
+
+def net_match_pad_to_die(pcb_data: PCBData, net_id: int,
+                         mode: str = 'total') -> float:
+    """The pad-to-die term `net_match_length` adds in `mode` (#1248), in mm:
+    every pad of the net for 'total' (KiCad's DRC), the first two pads for
+    'pin_pair' (the pads that path joins; KiCad's tuner adds its start and end
+    pads')."""
+    if mode == 'pin_pair':
+        return pad_to_die_length((pcb_data.pads_by_net.get(net_id) or [])[:2])
     if mode != 'total':
         raise ValueError(f"net_match_length: unknown mode {mode!r} "
                          f"(expected 'total' or 'pin_pair')")
-    if not net_pads_joined(pcb_data, net_id, tolerance=tolerance):
-        return None
-    return net_copper_length(pcb_data, net_id)
+    return net_pad_to_die_length(pcb_data, net_id)
 
 
 def _net_track_graph(pcb_data: PCBData, net_id: int, pads,

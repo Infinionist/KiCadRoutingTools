@@ -8,7 +8,7 @@ Implementation: `length_matching.py`, with propagation-delay calculations in `im
 
 Length matching runs after the nets in a group have been routed:
 
-1. Measure each route's length (or propagation time), including via barrels.
+1. Measure each route's length (or propagation time), including via barrels and each end pad's pad-to-die length (see [Pad-to-Die Length](#pad-to-die-length)).
 2. Find the longest route in the group — it becomes the target.
 3. For each shorter route, add meanders to a straight run of the route until its length is within tolerance of the target.
 
@@ -109,6 +109,29 @@ Route lengths include the vertical distance through vias so that results match K
 - **Stub via barrels**: when a BGA fanout stub switches layers, the barrel length from the *stub layer to the pad layer* is included (`calculate_stub_via_barrel_length()` in `connectivity.py`), not the via's full span.
 
 Without stackup information in the board file, default thicknesses are assumed.
+
+## Pad-to-Die Length
+
+A pad may declare the length of the bond wire or package trace inside the part,
+`(die_length <mm>)` in KiCad's pad properties ("Pad to die length"), and KiCad 10
+a delay, `(die_delay <ps>)`. KiCad adds both to the net in its length tuners and
+its length/skew DRC, so matching on copper alone ships the difference as skew
+(#1248). Both parse paths read them into `Pad.die_length` / `Pad.die_delay`, and
+every matching pass adds them before it picks the target and the deltas:
+
+- **Group matching** adds each member's pad-to-die (`member_pad_to_die()`): every
+  pad of a 2-pad net (KiCad's tuner adds the start and end pads, its DRC every
+  pad, the same set here), the two pads of a multipoint net's matched main edge,
+  every pad of a member measured from earlier copper (its length is the net's
+  total copper, as in KiCad's DRC), and for a pair the larger of its two legs.
+  The meanders still lengthen copper; the run prints `Pad-to-die included`.
+- **Time matching** adds each pad's `die_delay` in ps. KiCad 10 never converts a
+  `die_length` into a delay, and neither does this.
+- **Intra-pair** (`--diff-pair-intra-match`) and **AC-coupled** matching add each
+  leg's own pads' pad-to-die, as KiCad's skew tuner does.
+
+A board that declares neither token matches exactly as before. The graders read
+the same term: `board_score.py --length-groups` (`net_queries.net_match_length`).
 
 ## Multi-Layer Routes
 

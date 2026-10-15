@@ -216,7 +216,9 @@ calculate_via_barrel_length(vias, pcb_data) -> float
 ```
 
 Total routed length in mm. With `pcb_data` (and a stackup), via barrel
-lengths are included — this matches KiCad's length measurements.
+lengths are included — this matches KiCad's track + via length. It is copper
+only: KiCad also adds each pad's **pad-to-die** length (`Pad.die_length`,
+#1248), which `net_match_length` below includes and this does not.
 
 ```python
 from kicad_parser import parse_kicad_pcb
@@ -298,6 +300,21 @@ not traversed)?
 copper (`mode='total'`) only once `net_pads_joined` holds, or the path between
 the net's first two pads (`mode='pin_pair'`). `None` in either mode means "not
 routed yet" (unrouted, stub-only, broken or plane-only), never `0.0`.
+
+Both modes add the pads' **pad-to-die** length, as KiCad does (#1248): every
+pad of the net in `'total'` mode (KiCad's length/skew DRC), the measured pad
+pair in `'pin_pair'` mode (KiCad's tuner adds its start and end pads'). Pass
+`include_pad_to_die=False` for copper only.
+
+```python
+pad_to_die_length(pads) -> float            # mm, sum of Pad.die_length
+pad_to_die_delay(pads) -> float             # ps, sum of Pad.die_delay
+net_pad_to_die_length(pcb_data, net_id) -> float   # every pad of the net
+net_pad_to_die_delay(pcb_data, net_id) -> float
+net_match_pad_to_die(pcb_data, net_id, mode='total') -> float
+```
+
+`net_match_pad_to_die` is the term `net_match_length` adds in `mode`.
 
 ```python
 from kicad_parser import parse_kicad_pcb

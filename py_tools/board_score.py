@@ -898,13 +898,18 @@ def score_length(board: str, groups_file: str) -> dict:
     to `blocking` on top of `broken`. A partial group is unmeasured too, rather
     than graded on the members that happen to be routed: a spread over a subset
     is not the group's spread, and a pass on it would be a pass nobody earned.
+
+    Each length includes the member's PAD-TO-DIE term (`(die_length ...)`,
+    #1248), as KiCad's length/skew DRC does: every pad of the net in total
+    mode, the measured pad pair in pin_pair mode. A group whose lengths carry
+    one names it in `pad_to_die_mm`.
     """
     if not groups_file:
         return skipped('no --length-groups given; length matching is ungraded')
     if not os.path.isfile(groups_file):
         return skipped(f'length-groups file not found: {groups_file}')
     from kicad_parser import parse_kicad_pcb
-    from net_queries import net_match_length
+    from net_queries import net_match_length, net_match_pad_to_die
 
     with open(groups_file, encoding='utf-8') as f:
         groups = json.load(f)
@@ -950,6 +955,13 @@ def score_length(board: str, groups_file: str) -> dict:
         detail[gname] = {'spread_mm': round(spread, 4), 'tolerance_mm': tol,
                          'pass': ok, 'missing_nets': missing,
                          'worst': max(lengths, key=lengths.get)}
+        # #1248: the lengths include each member's pad-to-die term, as KiCad's
+        # DRC does. Disclosed only where a pad declares one, so a grade moved
+        # by a term no copper shows says which term moved it.
+        die = {n: net_match_pad_to_die(pcb, by_name[n], mode) for n in lengths}
+        if any(die.values()):
+            detail[gname]['pad_to_die_mm'] = {n: round(v, 4)
+                                              for n, v in die.items() if v}
     if unmeasured and unmeasured == len(detail):
         # Nothing could be measured at all -- report UNGRADED rather than a
         # clean 0, so the gate cannot be passed by a board nothing examined.
@@ -1111,6 +1123,9 @@ def declared_net_names(score: dict) -> dict:
         'components.length.groups[].unjoined_nets':
             [n for g in (length.get('groups') or {}).values()
              if isinstance(g, dict) for n in (g.get('unjoined_nets') or ())],
+        'components.length.groups[].pad_to_die_mm':
+            [n for g in (length.get('groups') or {}).values()
+             if isinstance(g, dict) for n in (g.get('pad_to_die_mm') or {})],
     }
     return {k: v for k, v in fields.items() if v}
 

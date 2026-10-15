@@ -443,6 +443,13 @@ class Pad:
     # but short of the drill is not connected there.
     # connectivity.pad_unflashed_layers reads it. Set by BOTH parse paths.
     unconnected_layer_mode: str = 'keep_all'
+    # #1248: KiCad's PAD-TO-DIE length (`(die_length mm)`, PAD::
+    # GetPadToDieLength) and delay (`(die_delay ps)`, GetPadToDieDelay): the
+    # bond wire / package trace inside the part, which KiCad adds to the net's
+    # length in its tuners and its length/skew DRC. 0.0 = none declared. Set by
+    # BOTH parse paths. Consumers: net_queries.pad_to_die_length/_delay.
+    die_length: float = 0.0
+    die_delay: float = 0.0
 
 
 _VIA_BIRTH_WATCH = None
@@ -1523,6 +1530,41 @@ def unconnected_layer_mode_from_pcbnew(pad) -> str:
                 else 'remove_all')
     except Exception:
         return 'keep_all'
+
+
+_DIE_LENGTH_RE = re.compile(r'\(die_length\s+(-?[\d.]+(?:[eE][-+]?\d+)?)\s*\)')
+_DIE_DELAY_RE = re.compile(r'\(die_delay\s+(-?[\d.]+(?:[eE][-+]?\d+)?)\s*\)')
+
+
+def pad_to_die_from_text(pad_text: str) -> Tuple[float, float]:
+    """A pad block's (die_length mm, die_delay ps); (0.0, 0.0) when unset (#1248).
+
+    KiCad writes each only when non-zero (pcb_io_kicad_sexpr). `die_delay` is
+    in ps in every file version: read up to 20250926 as board units and after
+    it as TIME units, both scale the file value by 1e6 IU, and pcbIUScale's
+    IU_PER_PS is 1e6 (probed on pcbnew 10.0.0: SetPadToDieDelay(12345) saves
+    `(die_delay 0.012345)`).
+    """
+    m = _DIE_LENGTH_RE.search(pad_text)
+    d = _DIE_DELAY_RE.search(pad_text)
+    return (float(m.group(1)) if m else 0.0, float(d.group(1)) if d else 0.0)
+
+
+def pad_to_die_from_pcbnew(pad) -> Tuple[float, float]:
+    """The pcbnew twin of pad_to_die_from_text: (mm, ps). KiCad 9 has no
+    delay getter, so its delay reads 0.0, as that KiCad's file would."""
+    try:
+        length = pad.GetPadToDieLength() / 1e6
+    except Exception:
+        length = 0.0
+    try:
+        import pcbnew
+        per_ps = float(getattr(getattr(pcbnew, 'pcbIUScale', None),
+                               'IU_PER_PS', 1e6))
+        delay = pad.GetPadToDieDelay() / per_ps
+    except Exception:
+        delay = 0.0
+    return length, delay
 
 
 def pad_is_plated_through(pad) -> bool:
@@ -4069,6 +4111,8 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
             # #962: the pad's own paste overrides (raw; inheritance is resolved
             # by paste_apertures, not here, so both parse paths share it).
             _pad_paste = _paste_overrides(pad_text, _file_version)
+            # #1248: pad-to-die length/delay, parity with the pcbnew path.
+            _pad_die = pad_to_die_from_text(pad_text)
 
             # Calculate global coordinates
             global_x, global_y = local_to_global(fp_x, fp_y, fp_rotation, local_x, local_y)
@@ -4135,6 +4179,8 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
                 paste_margin_ratio=_pad_paste[1],
                 anchor_size=_anchor_size,
                 unconnected_layer_mode=unconnected_layer_mode_from_text(pad_text),
+                die_length=_pad_die[0],
+                die_delay=_pad_die[1],
             )
 
             footprint.pads.append(pad)
@@ -7178,6 +7224,8 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
             # #962: the pad's own paste overrides (raw), parity with the text
             # parser; inheritance is resolved by paste_apertures.
             _pad_paste = _pcbnew_paste_overrides(pad, to_mm)
+            # #1248: pad-to-die length/delay, parity with the text parser.
+            _pad_die = pad_to_die_from_pcbnew(pad)
 
             # Castellated half-hole property (run-6 fix 1.7), parity with the
             # text parser's pad_prop_castellated.
@@ -7234,6 +7282,8 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                 paste_margin_ratio=_pad_paste[1],
                 anchor_size=_anchor_size_b if shape == 'custom' else None,
                 unconnected_layer_mode=unconnected_layer_mode_from_pcbnew(pad),
+                die_length=_pad_die[0],
+                die_delay=_pad_die[1],
             )
 
             footprint.pads.append(pad_obj)
@@ -8418,6 +8468,12 @@ def compare_pcb_data(from_board: 'PCBData', from_file: 'PCBData', tolerance: flo
                         diffs.append(f"Pad {ref}:{bp.pad_number} roundrect_rratio: board={brr:.3f} file={frr:.3f}")
                 if not close(bp.drill, fp.drill):
                     diffs.append(f"Pad {ref}:{bp.pad_number} drill: board={bp.drill:.3f} file={fp.drill:.3f}")
+                # #1248: pad-to-die length (mm) / delay (ps). A getter that read
+                # 0 would silently drop the term every length matcher adds.
+                for _die in ('die_length', 'die_delay'):
+                    bd = getattr(bp, _die, 0.0); fd = getattr(fp, _die, 0.0)
+                    if abs(bd - fd) > 1e-6:
+                        diffs.append(f"Pad {ref}:{bp.pad_number} {_die}: board={bd:.6f} file={fd:.6f}")
                 # Compare layers (as sets since order may differ)
                 if set(bp.layers) != set(fp.layers):
                     diffs.append(f"Pad {ref}:{bp.pad_number} layers: board={bp.layers} file={fp.layers}")

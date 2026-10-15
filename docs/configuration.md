@@ -507,6 +507,7 @@ Groups nets by byte lane: DQ0-7 + DQS0, DQ8-15 + DQS1, etc.
 - Calculates pad-to-pad length including existing stub segments and via barrel lengths (parsed from board stackup)
 - Stub via barrel lengths use actual stub-layer-to-pad-layer distance (not full via span for through-hole BGA pad vias)
 - Via barrel length matches KiCad's length calculation for accurate matching
+- Adds each pad's pad-to-die length (`(die_length ...)`, #1248) before picking the target, and with `--time-matching` each pad's `(die_delay ...)` in ps, as KiCad's tuners and length/skew DRC do
 - Finds longest straight segment for meander insertion
 - Iteratively adds meander bumps until length exceeds target, then scales down amplitude to hit exact target
 - Per-bump clearance checking reduces amplitude to avoid conflicts with other traces

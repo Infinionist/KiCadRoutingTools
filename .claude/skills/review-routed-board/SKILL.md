@@ -143,7 +143,7 @@ Report both when they differ by more than the tolerance: a group that passes on
 total copper can fail on path length. Pads joined only through a zone return
 `None` — say so rather than reporting a length.
 
-For time-matched groups use `calculate_route_propagation_time_ps()` from `impedance.py` instead, and compare against the ps tolerance. Lengths include via barrels from the stackup, matching KiCad's measurement.
+For time-matched groups use `calculate_route_propagation_time_ps()` from `impedance.py` instead, plus each pad's `die_delay` (`net_pad_to_die_delay`, ps), and compare against the ps tolerance. Lengths include via barrels from the stackup and, in `net_match_length`, every pad's pad-to-die length (`(die_length ...)`, #1248) -- the terms KiCad's length/skew DRC adds. A board that declares pad-to-die is graded wrong by raw copper: KiCad sees the difference as skew.
 
 Report per group: the spread, the tolerance, and the worst offender net.
 

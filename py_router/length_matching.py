@@ -123,6 +123,49 @@ def multipoint_span_metric(result, metric_func):
     return max(pair_leg_metric(lr, metric_func) for lr in legs)
 
 
+def member_pad_to_die(result: dict, net_name: str, pcb_data,
+                      attr: str = 'die_length') -> float:
+    """The PAD-TO-DIE term a group member's length carries beyond its copper (#1248).
+
+    mm for attr='die_length', ps for attr='die_delay'. KiCad adds the pads'
+    pad-to-die to a net's length in its tuners (the tuned path's START and END
+    pads) and in its length/skew DRC (every pad of the net); the two agree on a
+    2-pad net. Which pads, per member:
+
+      * a diff pair: each leg's pads, and the pair takes the larger leg, as
+        KiCad's DP_MEANDER_PLACER::origPathLength takes max(P total, N total).
+        Exact while the legs' copper is matched; a multipoint pair's legs
+        count every pad of their net.
+      * a multipoint single-ended net routed this run: the two pads its main
+        edge joins (`routed_pad_indices`), the span the meander lengthens.
+      * anything else -- a 2-pad net, or a member measured from board copper,
+        whose route_length is the net's TOTAL copper -- every pad of the net,
+        KiCad's DRC rule.
+
+    0.0 on every board that declares no `(die_length ...)`/`(die_delay ...)`,
+    so matching there is exactly what it was.
+    """
+    if pcb_data is None:
+        return 0.0
+    from net_queries import pad_to_die_delay, pad_to_die_length
+    _sum = pad_to_die_delay if attr == 'die_delay' else pad_to_die_length
+    pads_by_net = getattr(pcb_data, 'pads_by_net', None) or {}
+
+    p_id, n_id = result.get('p_net_id'), result.get('n_net_id')
+    if result.get('is_diff_pair') and p_id is not None and n_id is not None:
+        return max(_sum(pads_by_net.get(p_id, ())), _sum(pads_by_net.get(n_id, ())))
+    info = result.get('multipoint_pad_info')
+    routed = result.get('routed_pad_indices')
+    if (result.get('is_multipoint') and info and routed
+            and not result.get('from_board')):
+        # pad_info rows are (gx, gy, layer_idx, x, y, pad)
+        return _sum([info[i][5] for i in routed
+                     if 0 <= i < len(info) and len(info[i]) > 5])
+    net_id = next((nid for nid, n in (getattr(pcb_data, 'nets', None) or {}).items()
+                   if getattr(n, 'name', None) == net_name), None)
+    return _sum(pads_by_net.get(net_id, ())) if net_id is not None else 0.0
+
+
 class ClearanceIndex:
     """
     Spatial index for efficient clearance checking.
@@ -1891,9 +1934,15 @@ def apply_length_matching_to_group(
     diff_pair_count = sum(1 for r in group_results.values() if r.get('is_diff_pair'))
     single_count = len(group_results) - diff_pair_count
 
-    # Find target length
-    target_length = max(r['route_length'] for r in group_results.values())
+    # Find target length. A member's length includes its pad-to-die term
+    # (#1248), as KiCad's tuner and its length/skew DRC count it; route_length
+    # stays copper, so the meander loop below still works on copper.
+    die = {n: member_pad_to_die(r, n, pcb_data) for n, r in group_results.items()}
+    target_length = max(r['route_length'] + die[n] for n, r in group_results.items())
     print(f"  Length matching group: {len(group_results)} nets ({diff_pair_count} diff pairs, {single_count} single-ended), target={target_length:.2f}mm")
+    if any(die.values()):
+        print(f"  Pad-to-die included (#1248): "
+              + ', '.join(f"{n} +{v:.3f}mm" for n, v in die.items() if v))
 
     # Pre-collect segments/vias for clearance checking
     already_processed_segments: List[Segment] = list(prev_group_segments) if prev_group_segments else []
@@ -1926,7 +1975,7 @@ def apply_length_matching_to_group(
 
     # Apply meanders to shorter routes
     for net_name, result in group_results.items():
-        current_length = result['route_length']
+        current_length = result['route_length'] + die[net_name]
         delta = target_length - current_length
 
         if result.get('from_board'):
@@ -1954,13 +2003,15 @@ def apply_length_matching_to_group(
         suffix = " (diff pair)" if result.get('is_diff_pair') else ""
         print(f"    {net_name}{suffix}: {current_length:.2f}mm -> adding {delta:.2f}mm")
 
+        # The meander loop measures COPPER, so it gets the copper target.
         modified, new_segments, bump_count, new_length = _apply_meanders_to_net_with_iteration(
-            result, target_length, current_length, config.length_match_tolerance,
+            result, target_length - die[net_name], result['route_length'],
+            config.length_match_tolerance,
             config, pcb_data, already_processed_segments, already_processed_vias,
             group_clearance_index, length_metric, length_to_length
         )
 
-        print(f"      {net_name}: new length = {new_length:.2f}mm ({bump_count} bumps)")
+        print(f"      {net_name}: new length = {new_length + die[net_name]:.2f}mm ({bump_count} bumps)")
 
         if result.get('is_diff_pair'):
             result.update(modified)
@@ -2090,8 +2141,16 @@ def apply_time_matching_to_group(
             result, lambda s, v: calculate_route_propagation_time_ps(s, v, pcb_data))
         net_primary_layers[net_name] = get_route_primary_layer(segments)
 
-    target_time = max(net_times.values())
+    # A member's time includes its pads' pad-to-die DELAY (#1248): KiCad 10's
+    # delay domain adds each pad's die_delay (never a converted die_length).
+    # net_times stays copper time, which is what the meander loop measures.
+    die_ps = {n: member_pad_to_die(r, n, pcb_data, attr='die_delay')
+              for n, r in group_results.items()}
+    target_time = max(net_times[n] + die_ps[n] for n in net_times)
     print(f"  Time matching group: {len(group_results)} nets ({diff_pair_count} diff pairs, {single_count} single-ended), target={target_time:.2f}ps")
+    if any(die_ps.values()):
+        print(f"  Pad-to-die delay included (#1248): "
+              + ', '.join(f"{n} +{v:.3f}ps" for n, v in die_ps.items() if v))
 
     # Pre-collect segments/vias for clearance checking
     already_processed_segments: List[Segment] = list(prev_group_segments) if prev_group_segments else []
@@ -2116,7 +2175,7 @@ def apply_time_matching_to_group(
 
     # Apply meanders to shorter-time routes
     for net_name, result in group_results.items():
-        current_time = net_times[net_name]
+        current_time = net_times[net_name] + die_ps[net_name]
         delta_time = target_time - current_time
 
         if result.get('from_board'):
@@ -2153,13 +2212,15 @@ def apply_time_matching_to_group(
         def time_to_length(delta_ps):
             return delta_ps / ps_per_mm
 
+        # The meander loop measures COPPER time, so it gets the copper target.
         modified, new_segments, bump_count, new_time = _apply_meanders_to_net_with_iteration(
-            result, target_time, current_time, config.time_match_tolerance,
+            result, target_time - die_ps[net_name], net_times[net_name],
+            config.time_match_tolerance,
             config, pcb_data, already_processed_segments, already_processed_vias,
             group_clearance_index, time_metric, time_to_length
         )
 
-        print(f"      {net_name}: new time = {new_time:.2f}ps ({bump_count} bumps)")
+        print(f"      {net_name}: new time = {new_time + die_ps[net_name]:.2f}ps ({bump_count} bumps)")
 
         if result.get('is_diff_pair'):
             result.update(modified)
@@ -3448,8 +3509,17 @@ def apply_intra_pair_length_matching(
         p_stub_length = p_src_stub + p_tgt_stub
         n_stub_length = n_src_stub + n_tgt_stub
 
-    p_length = p_routed_length + p_stub_length
-    n_length = n_routed_length + n_stub_length
+    # #1248: each leg's PAD-TO-DIE length, as KiCad's skew tuner adds its
+    # start and end pads' (pns_meander_skew_placer) and its skew DRC every
+    # pad's. Read after any polarity swap, which moves the pads between nets.
+    # Folded into the leg's offset below, so the meander search (which
+    # measures copper) aims at the copper that matches the KiCad lengths.
+    from net_queries import net_pad_to_die_length
+    p_die = net_pad_to_die_length(pcb_data, p_net_id) if pcb_data is not None else 0.0
+    n_die = net_pad_to_die_length(pcb_data, n_net_id) if pcb_data is not None else 0.0
+
+    p_length = p_routed_length + p_stub_length + p_die
+    n_length = n_routed_length + n_stub_length + n_die
 
     # Debug: show length breakdown
     if config.verbose:
@@ -3458,8 +3528,8 @@ def apply_intra_pair_length_matching(
         n_seg_only = math.fsum(segment_length(s) for s in n_segments)
         p_via_barrel = calculate_via_barrel_length(p_vias, pcb_data)
         n_via_barrel = calculate_via_barrel_length(n_vias, pcb_data)
-        print(f"      P breakdown: {len(p_segments)} segs={p_seg_only:.3f}mm + {len(p_vias)} vias={p_via_barrel:.3f}mm + stub={p_stub_length:.3f}mm = {p_length:.3f}mm")
-        print(f"      N breakdown: {len(n_segments)} segs={n_seg_only:.3f}mm + {len(n_vias)} vias={n_via_barrel:.3f}mm + stub={n_stub_length:.3f}mm = {n_length:.3f}mm")
+        print(f"      P breakdown: {len(p_segments)} segs={p_seg_only:.3f}mm + {len(p_vias)} vias={p_via_barrel:.3f}mm + stub={p_stub_length:.3f}mm + pad-to-die={p_die:.3f}mm = {p_length:.3f}mm")
+        print(f"      N breakdown: {len(n_segments)} segs={n_seg_only:.3f}mm + {len(n_vias)} vias={n_via_barrel:.3f}mm + stub={n_stub_length:.3f}mm + pad-to-die={n_die:.3f}mm = {n_length:.3f}mm")
 
         # Calculate pad escape distances (distance from pad center to nearest segment endpoint)
         # KiCad includes this in its track length measurement, we don't
@@ -3503,6 +3573,7 @@ def apply_intra_pair_length_matching(
         shorter_net_id = p_net_id
         shorter_vias = p_vias
         shorter_stub_length = p_stub_length  # Already post-swap if polarity_fixed
+        shorter_die = p_die
         longer_net_id = n_net_id
         shorter_label = "P"
     else:
@@ -3510,6 +3581,7 @@ def apply_intra_pair_length_matching(
         shorter_net_id = n_net_id
         shorter_vias = n_vias
         shorter_stub_length = n_stub_length  # Already post-swap if polarity_fixed
+        shorter_die = n_die
         longer_net_id = p_net_id
         shorter_label = "N"
 
@@ -3521,9 +3593,11 @@ def apply_intra_pair_length_matching(
 
     # Lengthen the shorter track to match the longer one (shared meander
     # search — see _lengthen_net_with_meanders, also used by XNet matching).
+    # The pad-to-die rides with the stub as the leg's fixed offset (#1248).
     meandered_segments, new_shorter_length, bump_count = _lengthen_net_with_meanders(
         shorter_segments, shorter_net_id, longer_net_id, shorter_vias,
-        shorter_stub_length, shorter_length, target_length, delta, config, pcb_data,
+        shorter_stub_length + shorter_die, shorter_length, target_length, delta,
+        config, pcb_data,
     )
 
     if bump_count == 0:
@@ -3545,10 +3619,11 @@ def apply_intra_pair_length_matching(
 
     # Update result
     result['new_segments'] = new_segments
+    # Stored without the pad-to-die term, exactly as before #1248.
     if shorter_net_id == p_net_id:
-        result['p_routed_length'] = new_shorter_length
+        result['p_routed_length'] = new_shorter_length - shorter_die
     else:
-        result['n_routed_length'] = new_shorter_length
+        result['n_routed_length'] = new_shorter_length - shorter_die
 
     # Calculate new delta using fresh values (not stale result dict values from inter-pair)
     if shorter_net_id == p_net_id:
@@ -3564,19 +3639,23 @@ def apply_intra_pair_length_matching(
 
 
 def _board_pair_lengths(pcb_data, p_net_id, n_net_id):
-    """P and N copper lengths measured off the BOARD, for a pair with no
-    usable in-run pair result (#766). Returns (p_mm, n_mm) or None when either
-    member has no copper at all (nothing to compare)."""
+    """P and N lengths measured off the BOARD, for a pair with no usable
+    in-run pair result (#766): copper plus each net's pad-to-die length
+    (#1248), the two terms KiCad's skew DRC compares. Returns (p_mm, n_mm) or
+    None when either member has no copper at all (nothing to compare)."""
     if pcb_data is None:
         return None
     segs_p = [s for s in pcb_data.segments if s.net_id == p_net_id]
     segs_n = [s for s in pcb_data.segments if s.net_id == n_net_id]
     if not segs_p or not segs_n:
         return None
+    from net_queries import net_pad_to_die_length
     vias_p = [v for v in pcb_data.vias if v.net_id == p_net_id]
     vias_n = [v for v in pcb_data.vias if v.net_id == n_net_id]
-    return (calculate_route_length(segs_p, vias_p, pcb_data),
-            calculate_route_length(segs_n, vias_n, pcb_data))
+    return (calculate_route_length(segs_p, vias_p, pcb_data)
+            + net_pad_to_die_length(pcb_data, p_net_id),
+            calculate_route_length(segs_n, vias_n, pcb_data)
+            + net_pad_to_die_length(pcb_data, n_net_id))
 
 
 def run_intra_pair_matching(diff_pair_ids, routed_results, config, pcb_data,
@@ -3691,14 +3770,20 @@ def _ac_coupled_member_lengths(result, p_net_id, n_net_id, pcb_data):
     else:
         p_stub, n_stub = p_src + p_tgt, n_src + n_tgt
 
+    # #1248: each member net's pad-to-die, as intra-pair matching adds it.
+    from net_queries import net_pad_to_die_length
+    p_die = net_pad_to_die_length(pcb_data, p_net_id) if pcb_data is not None else 0.0
+    n_die = net_pad_to_die_length(pcb_data, n_net_id) if pcb_data is not None else 0.0
+
     return {
         'result': result,
         'p_net_id': p_net_id, 'n_net_id': n_net_id,
         'p_segs': p_segs, 'n_segs': n_segs,
         'p_vias': p_vias, 'n_vias': n_vias,
         'p_stub': p_stub, 'n_stub': n_stub,
+        'p_die': p_die, 'n_die': n_die,
         'p_routed': p_routed, 'n_routed': n_routed,
-        'p_len': p_routed + p_stub, 'n_len': n_routed + n_stub,
+        'p_len': p_routed + p_stub + p_die, 'n_len': n_routed + n_stub + n_die,
     }
 
 
@@ -3788,7 +3873,8 @@ def apply_ac_coupled_length_matching(xnet, routed_results, config, pcb_data):
         s_id, l_id = md[f'{S}_net_id'], md[f'{L}_net_id']
         cur = md[f'{S}_len']
         new_segs, new_len, bumps = _lengthen_net_with_meanders(
-            md[f'{S}_segs'], s_id, l_id, md[f'{S}_vias'], md[f'{S}_stub'],
+            md[f'{S}_segs'], s_id, l_id, md[f'{S}_vias'],
+            md[f'{S}_stub'] + md[f'{S}_die'],  # fixed offsets (#1248)
             cur, cur + want, want, config, pcb_data,
         )
         if bumps <= 0:
