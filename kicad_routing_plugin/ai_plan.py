@@ -315,9 +315,13 @@ _PARAM_CONTROL_ALIASES = {
     'diff_pair_intra_match': 'intra_match_check',
     'ac_couple_match': 'ac_couple_check',
     'diff_chamfer_extra': 'chamfer_extra',
+    'diff_pair_centerline_setback': 'centerline_setback',
     'check_for_previous': 'check_previous',
     'no_inner_top_layer': 'no_inner_top',
     'force_escape_direction': 'force_escape',
+    # bga_fanout --primary-escape (the engine's name): the BGA panel's
+    # escape_direction RadioBox, set by label in _set_control.
+    'primary_escape': 'escape_direction',
     # bga_fanout --diff-pairs, under the fallthrough name. (Its
     # --diff-pair-gap cannot be aliased: see the fanout block's note.)
     'diff_pairs': 'diff_pair_patterns_ctrl',
@@ -528,7 +532,13 @@ def apply_step_params(step, dialog):
                 ctrl.SetValue(int(float(value)))
             elif isinstance(ctrl, wx.SpinCtrlDouble):
                 ctrl.SetValue(float(value))
-            elif isinstance(ctrl, wx.Choice):
+            elif isinstance(ctrl, (wx.Choice, wx.RadioBox)):
+                # By the item's LABEL, case-insensitively (FindString's
+                # default), so a CLI choice value lands on its item: the BGA
+                # panel's escape_direction RadioBox shows "Horizontal" /
+                # "Vertical" for bga_fanout's --primary-escape horizontal /
+                # vertical. A RadioBox has no SetValue, so before this branch
+                # it fell through to "no control, ignored".
                 idx = ctrl.FindString(str(value))
                 if idx == wx.NOT_FOUND:
                     return False

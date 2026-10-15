@@ -806,15 +806,9 @@ _SAME_AS_ROUTE = ('--debug-lines', '--debug-memory', '--enable-used-layers',
                   '--verbose')
 
 DIFF_CLI_ONLY = {f: ROUTE_CLI_ONLY[f] for f in _SAME_AS_ROUTE}
-# KNOWN GAPS, PENDING ANDY'S DECISION (route_diff.py).
-DIFF_KNOWN_GAPS = {
-    '--diff-pair-centerline-setback': (
-        "its control exists (differential_tab.centerline_setback, 0 = auto, "
-        "which the diff tab passes as diff_pair_centerline_setback) but "
-        "reset_params_to_defaults never restores it, so an alias alone would "
-        "leak one step's setback into every later diff step. Fix: alias + "
-        "reset line. 0 recorded uses"),
-}
+# KNOWN GAPS (route_diff.py). EMPTY: --diff-pair-centerline-setback left when
+# it got its converter row, its alias and its reset line.
+DIFF_KNOWN_GAPS = {}
 
 PLANES_CLI_ONLY = dict(
     {f: ROUTE_CLI_ONLY[f] for f in ('--debug-lines', '--enable-used-layers',
@@ -844,16 +838,11 @@ PLANES_KNOWN_GAPS = {
 BGA_CLI_ONLY = {f: ROUTE_CLI_ONLY[f] for f in ('--enable-used-layers',
                                                '--keep-thermal', '--output',
                                                '--strict-sizes')}
-# KNOWN GAPS, PENDING ANDY'S DECISION (bga_fanout.py). (--diff-pairs and
-# --diff-pair-gap left when the BGA panel got its Coupled pairs field and its
-# own coupled-pair gap: 51 kept corpus steps on 36 boards carry both.)
-BGA_KNOWN_GAPS = {
-    '--primary-escape': (
-        "its control is the escape_direction RadioBox, which the plan "
-        "executor's _set_control cannot set (no RadioBox branch, no "
-        "SetValue) and reset_params_to_defaults does not restore. Needs a "
-        "special handler + reset line. 0 recorded uses"),
-}
+# KNOWN GAPS (bga_fanout.py). EMPTY: --diff-pairs and --diff-pair-gap left
+# when the BGA panel got its Coupled pairs field and its own coupled-pair gap
+# (51 kept corpus steps on 36 boards carry both), and --primary-escape when
+# _set_control learned to set a RadioBox by label and the reset restored it.
+BGA_KNOWN_GAPS = {}
 
 QFN_CLI_ONLY = dict(
     {f: ROUTE_CLI_ONLY[f] for f in ('--enable-used-layers', '--keep-thermal',
@@ -897,15 +886,45 @@ FLAG_COVERAGE = {
         cli_only=QFN_CLI_ONLY, known_gaps={}, reset_gaps={}),
 }
 
-# The widget classes the executor's _set_control can SET: its explicit
-# CheckBox / SpinCtrl / SpinCtrlDouble / Choice branches, plus the wx classes
-# that reach its `hasattr(ctrl, "SetValue")` branch. A Button, a StaticText, a
-# custom panel or the `layer_checks` dict has no SetValue, so a param
-# resolving to one is logged "no control ..., ignored" however its name
-# matches.
-_SETTABLE_WX = frozenset({'CheckBox', 'SpinCtrl', 'SpinCtrlDouble', 'Choice',
-                          'TextCtrl', 'ComboBox', 'RadioButton', 'Slider',
+# The wx classes that reach the executor's `hasattr(ctrl, "SetValue")`
+# branch. A Button, a StaticText, a custom panel or the `layer_checks` dict
+# has no SetValue, so a param resolving to one is logged "no control ...,
+# ignored" however its name matches. (So did a RadioBox, which has no
+# SetValue either, until _set_control grew a branch for it: bga_fanout's
+# --primary-escape was a known gap for exactly that reason.)
+_SETVALUE_WX = frozenset({'TextCtrl', 'ComboBox', 'RadioButton', 'Slider',
                           'ToggleButton', 'Gauge'})
+
+
+@functools.lru_cache(maxsize=None)
+def _settable_wx():
+    """The widget classes the executor's _set_control can SET.
+
+    Its explicit `isinstance(ctrl, wx.X)` / `(wx.X, wx.Y)` branches, READ from
+    ai_plan.py rather than listed here -- a hand-kept copy said RadioBox was
+    settable whether or not the branch existed -- plus _SETVALUE_WX when the
+    function still has its `hasattr(ctrl, "SetValue")` fallback.
+    """
+    tree = ast.parse((REPO / "kicad_routing_plugin" / "ai_plan.py").read_text(
+        encoding='utf-8'))
+    fn = _function(tree, '_set_control')
+    if fn is None:
+        return frozenset()
+    out, fallback = set(), False
+    for c in ast.walk(fn):
+        if not (isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+                and len(c.args) == 2):
+            continue
+        if c.func.id == 'isinstance':
+            kinds = (c.args[1].elts if isinstance(c.args[1], ast.Tuple)
+                     else [c.args[1]])
+            out |= {k.attr for k in kinds
+                    if isinstance(k, ast.Attribute)
+                    and isinstance(k.value, ast.Name) and k.value.id == 'wx'}
+        elif (c.func.id == 'hasattr' and isinstance(c.args[1], ast.Constant)
+              and c.args[1].value == 'SetValue'):
+            fallback = True
+    return frozenset(out | (_SETVALUE_WX if fallback else set()))
 
 _GUI_FILES = ("swig_gui.py", "differential_gui.py", "fanout_gui.py",
               "planes_gui.py")
@@ -1028,8 +1047,9 @@ def _class_widgets():
                             continue
                         for x in tables[loop.iter.id]:
                             widgets[x + suffix] = kind
+            settable = _settable_wx()
             for attr in [a for a, k in widgets.items()
-                         if k not in _SETTABLE_WX]:
+                         if k not in settable]:
                 del widgets[attr]
     return out
 

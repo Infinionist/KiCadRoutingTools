@@ -388,7 +388,9 @@ PARAM_RANGES = {
     'diff_pair_max_setback_angle': {'min': 10.0, 'max': 90.0, 'inc': 5.0, 'digits': 0},
     'diff_pair_max_turn_angle': {'min': 45.0, 'max': 360.0, 'inc': 15.0, 'digits': 0},
     'diff_pair_chamfer_extra': {'min': 1.0, 'max': 3.0, 'inc': 0.1, 'digits': 1},
-    'diff_pair_centerline_setback': {'min': 0.0, 'max': 10.0, 'inc': 0.1, 'digits': 1},  # 0 = auto
+    # digits 3: a SpinCtrlDouble rounds its value to its digits, so a plan's
+    # --diff-pair-centerline-setback 0.25 would have arrived as 0.2 at digits 1.
+    'diff_pair_centerline_setback': {'min': 0.0, 'max': 10.0, 'inc': 0.1, 'digits': 3},  # 0 = auto
     # Plane routing parameters
     'plane_zone_clearance': {'min': 0.05, 'max': 2.0, 'inc': 0.05, 'digits': 2},
     'plane_min_thickness': {'min': 0.05, 'max': 1.0, 'inc': 0.05, 'digits': 2},

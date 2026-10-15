@@ -2695,7 +2695,9 @@ class RoutingDialog(wx.Dialog):
                         _ctl.SetValue(_val)
                     except Exception:
                         pass
-            for _name in ('escape_method_choice',):
+            # Item 0 of each is the CLI default: escape method 'auto', and
+            # bga_fanout's --primary-escape 'horizontal' (the RadioBox).
+            for _name in ('escape_method_choice', 'escape_direction'):
                 _ctl = _fctl(_name)
                 if _ctl is not None:
                     try:
@@ -2948,6 +2950,9 @@ class RoutingDialog(wx.Dialog):
         self.differential_tab.max_setback_angle.SetValue(defaults.DIFF_PAIR_MAX_SETBACK_ANGLE)
         self.differential_tab.max_turn_angle.SetValue(defaults.DIFF_PAIR_MAX_TURN_ANGLE)
         self.differential_tab.chamfer_extra.SetValue(defaults.DIFF_PAIR_CHAMFER_EXTRA)
+        # 0 = auto, the CLI's omitted --diff-pair-centerline-setback (None).
+        self.differential_tab.centerline_setback.SetValue(
+            defaults.DIFF_PAIR_CENTERLINE_SETBACK)
         # #381 D3: reset to EMPTY (deny all swaps) to match tab creation and the
         # CLI deny-by-default (#279); '*' here silently widened plan-replay swaps.
         self.differential_tab.polarity_swap_nets_text.SetValue("")

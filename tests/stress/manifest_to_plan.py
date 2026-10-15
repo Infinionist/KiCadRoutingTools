@@ -240,6 +240,10 @@ FLAG_PARAMS = {
     # _PARAM_SPECIAL wants, so it worked BY LUCK and unasserted, exactly
     # like --fab-tier above. Registered so the parity gate binds it.
     '--escape-method': 'escape_method',
+    # bga_fanout's primary escape direction ('horizontal' / 'vertical'): the
+    # BGA panel's escape_direction RadioBox, which the plan executor sets by
+    # item label. The fallthrough's `primary_escape` matched no control.
+    '--primary-escape': 'escape_direction',
     # #581: same-net pad via clearance -- valid on planes, route, route_diff,
     # bga/qfn fanout and repair steps; the GUI control lives on the Basic tab.
     '--same-net-pad-clearance': 'same_net_pad_clearance',
@@ -272,6 +276,11 @@ FLAG_PARAMS = {
     '--keepout-layer': 'keepout_layer_ctrl',
     # route_diff.py's meander chamfer multiplier: the diff tab's control.
     '--diff-chamfer-extra': 'chamfer_extra',
+    # route_diff.py's centerline setback: the diff tab's control of that name
+    # (0 = auto there, which the tab hands the engine as None -- the CLI's
+    # omitted-flag default). The fallthrough spelled it after the flag, which
+    # no control matched, so a replay ran at the auto setback.
+    '--diff-pair-centerline-setback': 'centerline_setback',
     # (#856's --relax-drc-severities is a store_true switch and lives in
     # BOOL_FLAGS. It used to sit here, where the value branch consumed the
     # NEXT token as its value: `--relax-drc-severities --clearance 0.1`
