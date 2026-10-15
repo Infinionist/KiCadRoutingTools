@@ -251,6 +251,26 @@ entry removed from each table must be reported). `KRT_REGISTRY_ROOT` points
 the registry read at the real checkout when a harness runs the gate on a
 partial copy of the tree (`tests/test_route_flag_plan_coverage_controls.py`).
 
+## Placement Apply locks (test_placement_apply_locks.py)
+
+Needs KiCad's python; re-execs into it. Drives the REAL
+`PlacementTab._on_apply` on a pcbnew board and requires every live footprint
+lock to equal the result board's (#1054) -- locked in place, moved and
+locked, unlocked and moved -- with each change named in the confirmation.
+It runs on the sys.path KiCad's own plugin loader builds (no
+`kicad_routing_plugin/` entry, asserted), which is how it caught Apply dying
+on `from gui_utils import` in KiCad itself; `tests/test_plugin_sibling_imports.py`
+is that rule's wx-free half.
+
+## A step that produces nothing stops the plan (test_plan_refused_step_stops.py)
+
+Needs KiCad's python; re-execs into it. A CLI step that refuses writes no
+board, so the chain stops on the missing file. The REAL `PlanExecutor` on the
+REAL dialog stops at a refused optimize_caps (#1067) or a declined route
+step with the next step unrun, completes a plan whose steps produce, runs a
+plane-net-only route step as a no-op, and each tab's real completion handler
+marks its success ending only (`gui_utils.mark_plan_step_produced`).
+
 ## Cap-param delivery (test_772_cap_params_reach_engine.py)
 
 Needs KiCad's python (wx + pcbnew); re-execs into it automatically.
