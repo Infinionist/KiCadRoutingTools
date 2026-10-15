@@ -302,14 +302,23 @@ def test_the_full_json_carries_the_measured_numbers():
 def test_emit_writes_no_board_and_touches_nothing():
     """A report-only tool that mutates its input is the failure the whole
     design rests on not having."""
-    before = (os.path.getmtime(BOARD), os.path.getsize(BOARD))
-    listing = set(os.listdir(os.path.dirname(BOARD)))
+    # A private copy, siblings and all: kicad_files/ is shared, and a test
+    # running beside this one (run_all -j, a Modal shard) writes its outputs
+    # there, which a listing of that directory reads as this tool's stray.
+    sys.path.insert(0, os.path.join(ROOT, 'py_router'))
+    from copy_board import copy_board
+    home = os.path.join(_TMP, 'emit_home')
+    os.makedirs(home)
+    board = os.path.join(home, os.path.basename(BOARD))
+    copy_board(BOARD, board)
+    before = (os.path.getmtime(board), os.path.getsize(board))
+    listing = set(os.listdir(home))
     p = os.path.join(_TMP, 'emit2.json')
-    code, _out, _ = _run(BOARD, '--emit-intent', p)
+    code, _out, _ = _run(board, '--emit-intent', p)
     assert code == 0
-    assert (os.path.getmtime(BOARD), os.path.getsize(BOARD)) == before, \
+    assert (os.path.getmtime(board), os.path.getsize(board)) == before, \
         "the input board was modified"
-    assert set(os.listdir(os.path.dirname(BOARD))) == listing, \
+    assert set(os.listdir(home)) == listing, \
         "a stray file was written beside the board"
     print("  PASS: input board mtime/size unchanged, no stray siblings")
 
