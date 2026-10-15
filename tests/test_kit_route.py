@@ -136,10 +136,12 @@ def main():
         # The three checkers each run to a verdict (a crash fails here and
         # now); all three report before any verdict is judged.
         verdicts = {}
-        # Check for DRC errors
+        # Check for DRC errors -- at the floor the chain wrote back to the
+        # output's .kicad_pro, never a hardcoded one: repair_planes' pad taps
+        # descend toward the fab floor to reach a pad and record that floor
+        # (here 0.2 -> 0.15), so grading at 0.2 flags its own legal vias.
         verdicts['check_drc'], _ = run_step(
-            ['py_router/check_drc.py', out_conn, '--clearance', '0.2',
-             '--hole-to-hole-clearance', '0.3'], findings_ok=True)
+            ['py_router/check_drc.py', out_conn], findings_ok=True)
 
         # Check for connectivity
         verdicts['check_connected'], _ = run_step(
