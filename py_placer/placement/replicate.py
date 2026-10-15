@@ -41,7 +41,11 @@ cannot be asked for. What is asked for, over every mapped pad pair, is
 A pad pair that breaks one is named -- refs, pads and nets -- and the copy is
 refused: the two instances are not interchangeable there, so a geometric
 copy would seat a target pad where the source's DIFFERENT connection wanted
-it.
+it. The refusal spells the waiver for each such pad: `--allow-net-mismatch
+REF.PAD` (one pad per flag, never a blanket switch) leaves a pad wired
+differently BY DESIGN -- glasgow's per-instance I2C address straps -- out of
+the rule, and the summary reports every waived pad and whether the rule
+needed it.
 """
 from __future__ import annotations
 
@@ -208,7 +212,9 @@ def members(pcb, prefix: str) -> Dict[str, str]:
     return out
 
 
-def correspond(pcb, src: str, dst: str) -> Tuple[List[Tuple[str, str]], Dict]:
+def correspond(pcb, src: str, dst: str, *,
+               waive: Optional[Dict[Tuple[str, str], str]] = None
+               ) -> Tuple[List[Tuple[str, str]], Dict]:
     """`([(source ref, target ref), ...], nets)`, or a refusal (exit 4).
 
     Refused when the instances do not hold the same parts, when a mapped
@@ -216,7 +222,14 @@ def correspond(pcb, src: str, dst: str) -> Tuple[List[Tuple[str, str]], Dict]:
     THE NET RULE (module docstring). Pads are paired by INDEX, after the pad
     numbers have been checked equal index for index: a pad number is not
     unique within a footprint (#892), and one library footprint writes its
-    pads in one order."""
+    pads in one order.
+
+    `waive` (`--allow-net-mismatch`): `{(symbol key, pad number): as given}`
+    -- pads wired differently BY DESIGN (glasgow's I2C address straps), left
+    out of the net rule entirely: they neither break it nor make a net look
+    shared. Each is reported back with whether the rule needed it
+    (`nets['waived']`). A refusal names the pads it would take, as flags."""
+    waive = waive or {}
     fps = pcb.footprints
     sm, tm = members(pcb, src), members(pcb, dst)
     only_s = sorted((sm[k] for k in sm.keys() - tm.keys()), key=natural_key)
@@ -254,53 +267,81 @@ def correspond(pcb, src: str, dst: str) -> Tuple[List[Tuple[str, str]], Dict]:
         net = (pcb.nets or {}).get(nid)
         return (getattr(net, 'name', '') or '') if nid else '<no net>'
 
-    rows = [(s, sp, t, tp) for s, t in pairs
-            for sp, tp in zip(fps[s].pads or (), fps[t].pads or ())]
-    s_nets = {sp.net_id for _s, sp, _t, _tp in rows}
-    t_nets = {tp.net_id for _s, _sp, _t, tp in rows}
+    key_of = {sm[k]: k for k in sm}
+    rows, waived_rows = [], []
+    for s, t in pairs:
+        for sp, tp in zip(fps[s].pads or (), fps[t].pads or ()):
+            given = waive.get((key_of[s], sp.pad_number))
+            (waived_rows if given is not None else rows).append(
+                (s, sp, t, tp, given))
+    s_nets = {sp.net_id for _s, sp, _t, _tp, _g in rows}
+    t_nets = {tp.net_id for _s, _sp, _t, tp, _g in rows}
     fwd: Dict[int, Tuple[int, str]] = {}
     bwd: Dict[int, Tuple[int, str]] = {}
-    breaks = []
-    for s, sp, t, tp in rows:
-        a, b = sp.net_id, tp.net_id
-        at = '%s.%s %s -> %s.%s %s' % (s, sp.pad_number, _name(a),
-                                       t, tp.pad_number, _name(b))
-        why = None
+
+    def _at(s, sp, t, tp):
+        return '%s.%s %s -> %s.%s %s' % (s, sp.pad_number, _name(sp.net_id),
+                                         t, tp.pad_number, _name(tp.net_id))
+
+    def _why(a, b):
         if (a == 0) != (b == 0):
-            why = 'one pad has no net and the other has one'
-        elif a in fwd and fwd[a][0] != b:
-            why = '%s already maps to %s (%s)' % (_name(a), _name(fwd[a][0]),
-                                                  fwd[a][1])
-        elif b in bwd and bwd[b][0] != a:
-            why = '%s is already reached from %s (%s)' % (
+            return 'one pad has no net and the other has one'
+        if a in fwd and fwd[a][0] != b:
+            return '%s already maps to %s (%s)' % (_name(a), _name(fwd[a][0]),
+                                                   fwd[a][1])
+        if b in bwd and bwd[b][0] != a:
+            return '%s is already reached from %s (%s)' % (
                 _name(b), _name(bwd[b][0]), bwd[b][1])
-        elif a != b and a in t_nets:
-            why = ('%s is on pads of BOTH instances (a shared net), so it '
-                   'must map to itself' % _name(a))
-        elif a != b and b in s_nets:
-            why = ('%s is on pads of BOTH instances (a shared net), so only '
-                   'itself may map to it' % _name(b))
+        if a != b and a in t_nets:
+            return ('%s is on pads of BOTH instances (a shared net), so it '
+                    'must map to itself' % _name(a))
+        if a != b and b in s_nets:
+            return ('%s is on pads of BOTH instances (a shared net), so only '
+                    'itself may map to it' % _name(b))
+        return None
+
+    breaks = []
+    for s, sp, t, tp, _g in rows:
+        a, b = sp.net_id, tp.net_id
+        why = _why(a, b)
         if why:
-            breaks.append({'pads': at, 'why': why})
+            breaks.append({'pads': _at(s, sp, t, tp), 'why': why,
+                           'source_pad': '%s.%s' % (s, sp.pad_number),
+                           'target_pad': '%s.%s' % (t, tp.pad_number)})
             continue
         fwd.setdefault(a, (b, '%s.%s' % (s, sp.pad_number)))
         bwd.setdefault(b, (a, '%s.%s' % (t, tp.pad_number)))
     if breaks:
+        flags = []
+        for b in breaks:
+            if b['source_pad'] not in flags:
+                flags.append(b['source_pad'])
         raise PoseRefusal(
             'the two sheet instances are not wired alike: %d mapped pad '
             'pair(s) break a consistent net correspondence (each source net '
             'must reach one target net, each target net come from one source '
-            'net, and a net on both instances map to itself) -- %s%s' % (
+            'net, and a net on both instances map to itself) -- %s%s. If '
+            'those pads are wired differently BY DESIGN (an address strap, a '
+            'per-channel ID), waive each one: %s' % (
                 len(breaks),
                 '; '.join('%s: %s' % (b['pads'], b['why'])
                           for b in breaks[:NAMED]),
                 '; +%d more' % (len(breaks) - NAMED)
-                if len(breaks) > NAMED else ''),
-            net_breaks=breaks[:LISTED])
+                if len(breaks) > NAMED else '',
+                ' '.join('--allow-net-mismatch %s' % f
+                         for f in flags[:NAMED * 2])
+                + (' ... (%d in all, listed under suggest_waivers)'
+                   % len(flags) if len(flags) > NAMED * 2 else '')),
+            net_breaks=breaks[:LISTED], suggest_waivers=flags[:LISTED])
+    # A waiver the rule did not need is reported, not refused: the pads are
+    # wired alike after all, and the copy is the same either way.
+    waived = [{'pads': _at(s, sp, t, tp), 'as_given': g,
+               'needed': _why(sp.net_id, tp.net_id) is not None}
+              for s, sp, t, tp, g in waived_rows]
     renamed = {_name(a): _name(b) for a, (b, _w) in sorted(fwd.items())
                if a != b}
     shared = sorted(_name(a) for a, (b, _w) in fwd.items() if a == b and a)
-    return pairs, {'renamed': renamed, 'shared': shared}
+    return pairs, {'renamed': renamed, 'shared': shared, 'waived': waived}
 
 
 def _anchor_rank(fp) -> Tuple:
@@ -314,8 +355,56 @@ def _anchor_rank(fp) -> Tuple:
     return (len(pads), (max(xs) - min(xs)) * (max(ys) - min(ys)))
 
 
+def _locate_ref(pcb, ref: str, src: str, dsts: Sequence[str],
+                flag: str) -> Tuple[str, List[str]]:
+    """`(symbol key, [the target instances it applies to])` for a ref named
+    on the SOURCE instance (every target) or on one TARGET instance (that
+    one only), else a refusal (exit 2) listing where it looked."""
+    for prefix in [src] + list(dsts):
+        hit = [k for k, r in members(pcb, prefix).items() if r == ref]
+        if hit:
+            return hit[0], (list(dsts) if prefix == src else [prefix])
+    raise PoseRefusal(
+        '%s %s: %s is in neither the --from sheet nor a --to sheet (%s)' % (
+            flag, ref, ref, ', '.join('/' + p for p in [src] + list(dsts))),
+        code=2)
+
+
+def resolve_waivers(pcb, tokens: Sequence[str], src: str,
+                    dsts: Sequence[str]) -> Dict[str, Dict[Tuple[str, str], str]]:
+    """`--allow-net-mismatch REF.PAD ...` -> `{target prefix: {(symbol key,
+    pad number): token}}`.
+
+    REF is a part of the source instance (the pad is waived in every target)
+    or of one target instance (that target only). The split is at the FIRST
+    dot, since a reference has none and a pad number may (`1.1`). A pad
+    number repeated within a footprint (#892) waives every pad carrying it.
+    An unknown ref or pad is refused at exit 2: a waiver that names nothing
+    would read as one that was granted."""
+    out: Dict[str, Dict[Tuple[str, str], str]] = {d: {} for d in dsts}
+    for tok in tokens or ():
+        ref, dot, pad = str(tok).partition('.')
+        if not dot or not ref or not pad:
+            raise PoseRefusal(
+                '--allow-net-mismatch %r: expected REF.PAD, one pad per flag '
+                '(e.g. U19.2)' % tok, code=2)
+        key, applies = _locate_ref(pcb, ref, src, dsts,
+                                   '--allow-net-mismatch')
+        numbers = [p.pad_number for p in pcb.footprints[ref].pads or ()]
+        if pad not in numbers:
+            raise PoseRefusal(
+                '--allow-net-mismatch %s: %s has no pad %r (its pads: %s)' % (
+                    tok, ref, pad, ', '.join(sorted(set(numbers),
+                                                    key=natural_key)[:24])),
+                code=2)
+        for d in applies:
+            out[d][(key, pad)] = str(tok)
+    return out
+
+
 def plan(pcb, src_token: str, dst_tokens: Sequence[str], *, anchor: Optional[str] = None,
-         offset: Optional[Sequence[float]] = None
+         offset: Optional[Sequence[float]] = None,
+         allow_net_mismatch: Sequence[str] = ()
          ) -> Tuple[List[Dict], Dict]:
     """`(rows, report)` for one `replicate` op.
 
@@ -331,6 +420,9 @@ def plan(pcb, src_token: str, dst_tokens: Sequence[str], *, anchor: Optional[str
     (then the widest pad extent, then the first ref): on a channel strip,
     the op-amp. The anchor keeps its (at x y); its rotation and side become
     the source's like every other part's.
+
+    `allow_net_mismatch`: `REF.PAD` tokens left out of THE NET RULE
+    (`resolve_waivers`, `correspond`).
     """
     inst = sheet_instances(pcb)
     src = resolve_sheet(pcb, src_token, '--from', inst)
@@ -369,6 +461,7 @@ def plan(pcb, src_token: str, dst_tokens: Sequence[str], *, anchor: Optional[str
                 '(%s)' % (anchor, ', '.join('/' + p for p in [src] + dsts)),
                 code=2)
 
+    waivers = resolve_waivers(pcb, allow_net_mismatch, src, dsts)
     rows: List[Dict] = []
     targets = []
     src_members = members(pcb, src)
@@ -377,7 +470,7 @@ def plan(pcb, src_token: str, dst_tokens: Sequence[str], *, anchor: Optional[str
             tuple(-v for v in _anchor_rank(fps[src_members[k]])),
             natural_key(src_members[k])))
     for token, dst in zip(dst_tokens, dsts):
-        pairs, nets = correspond(pcb, src, dst)
+        pairs, nets = correspond(pcb, src, dst, waive=waivers[dst])
         if offset is not None:
             dx, dy = float(offset[0]), float(offset[1])
             basis = {'kind': 'explicit'}
@@ -417,7 +510,8 @@ def plan(pcb, src_token: str, dst_tokens: Sequence[str], *, anchor: Optional[str
                         'moved': moved, 'offset': [round(dx, 6), round(dy, 6)],
                         'offset_basis': basis, 'side_flips': flips,
                         'nets_renamed': nets['renamed'],
-                        'nets_shared': nets['shared']})
+                        'nets_shared': nets['shared'],
+                        'nets_waived': nets['waived']})
     s_desc = describe(src, inst[src])
     s_desc['as_given'] = src_token
     report = {'from': s_desc, 'to': targets,

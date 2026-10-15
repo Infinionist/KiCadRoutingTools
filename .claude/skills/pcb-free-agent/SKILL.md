@@ -182,7 +182,10 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   ONE, then copy it** instead of writing a helper:
   `python3 -X utf8 py_placer/place_pose.py <in> <out> replicate --from CH1 --to CH2 --to CH3 --anchor J1`
   (#1211). It matches parts by schematic symbol and refuses unless the
-  instances are wired alike, naming the pads. Each target keeps its anchor
+  instances are wired alike, naming the pads. A pad wired differently per
+  instance by design (an address strap) is waived one by one with
+  `--allow-net-mismatch REF.PAD`, which the refusal spells out; read the
+  pads before you waive them. Each target keeps its anchor
   part where it is (default: the part with the most pads). A copy only
   fits where the target has room for the whole channel: a refused copy
   lists each colliding member under `ops[].new_conflicts`.

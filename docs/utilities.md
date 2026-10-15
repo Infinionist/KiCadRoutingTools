@@ -170,7 +170,7 @@ python py_placer/place_pose.py BOARD OUT rotate CON2 180 [--relative]
 python py_placer/place_pose.py BOARD OUT face U1 W USB1
 python py_placer/place_pose.py BOARD OUT lock U1 CON1
 python py_placer/place_pose.py BOARD OUT set U1 129.9 98.3 rotate CON2 180 lock U1
-python py_placer/place_pose.py BOARD OUT replicate --from CH1 --to CH2 --to CH3 [--anchor REF | --offset DX DY]
+python py_placer/place_pose.py BOARD OUT replicate --from CH1 --to CH2 --to CH3 [--anchor REF | --offset DX DY] [--allow-net-mismatch REF.PAD ...]
 ```
 
 Several verbs in one call describe ONE arrangement: every op is resolved
@@ -263,7 +263,12 @@ the source part with the most pads, or `--anchor REF` from any named sheet.
 at exit 4, writing nothing, unless the instances are interchangeable: the
 same parts, the same footprints and pads, and nets that correspond one to
 one, with a net on both instances (GND, a rail) mapping to itself. The
-refusal names the refs and pads. An unknown or ambiguous sheet (a name such
+refusal names the refs and pads and spells, for each pad, the waiver
+`--allow-net-mismatch REF.PAD`: one pad per flag, for a pad wired
+differently per instance BY DESIGN (glasgow_revC's IO_Buffer address
+straps U19.2, U20.6, U21.2). REF on the `--from` sheet waives it in every
+target, on a `--to` sheet in that one; `nets_waived` reports each waived pad
+and whether it was needed. An unknown or ambiguous sheet (a name such
 as `CH1`, or a path or a unique start of one of 4+ characters) exits 2 and
 lists the instances.
 The copy is graded as one arrangement like any other call, with the same lock

@@ -110,6 +110,7 @@ exact points given -- so --near / --snap need a call with ONE pose op):
   lock REF [REF ...]
   unlock REF [REF ...]       the only way to move a KiCad-locked part
   replicate --from SHEET --to SHEET [--to SHEET] [--anchor REF] [--offset DX DY]
+            [--allow-net-mismatch REF.PAD ...]
             copy one placed instance of a hierarchical sheet onto its
             sibling instances (#1211). Parts are matched by schematic
             symbol; the copy is refused (exit 4) unless every matched pair
@@ -128,6 +129,12 @@ exact points given -- so --near / --snap need a call with ONE pose op):
                            source part with the most pads, e.g. the op-amp
             --offset DX DY place the copy at the source poses + (DX, DY)
                            instead; with one --to, and not with --anchor
+            --allow-net-mismatch REF.PAD
+                           leave ONE pad wired differently per instance BY
+                           DESIGN (an I2C address strap) out of the net
+                           rule; REF on the --from sheet waives it in every
+                           target, on a --to sheet in that one. Repeat per
+                           pad: a refusal names each pad it would take
 """
 
 
@@ -291,6 +298,12 @@ def _verb_parsers(sub=None):
                    metavar=('DX', 'DY'),
                    help='put the copy at the source poses + (DX, DY) '
                         'instead of keeping the anchor in place')
+    q.add_argument('--allow-net-mismatch', dest='allow_net_mismatch',
+                   action='append', default=[], metavar='REF.PAD',
+                   help='leave ONE pad, wired differently per instance by '
+                        'design (an address strap), out of the net rule; '
+                        'REF on the --from sheet (every target) or on one '
+                        '--to sheet (that one). Repeat per pad')
     out['replicate'] = q
     return out
 
@@ -377,7 +390,8 @@ def parse_segments(segments, parsers, error):
                       "part that keeps its place; pass one")
             ops.append({'kind': 'replicate', 'from': a.from_sheet,
                         'to': list(a.to_sheets), 'anchor': a.anchor,
-                        'offset': a.offset})
+                        'offset': a.offset,
+                        'allow_net_mismatch': list(a.allow_net_mismatch)})
     if snap and len(ops) > 1:
         # #1194: a call with several pose ops is ONE arrangement graded at the
         # exact points given, and a snap relocates one part, so `apply_poses`
@@ -589,6 +603,11 @@ def _report(summary):
                      len(t['nets_renamed']), len(t['nets_shared']),
                      ', '.join(t['nets_shared'][:6])
                      + (', ...' if len(t['nets_shared']) > 6 else '')))
+            for w in t.get('nets_waived') or ():
+                print("  waived %s (--allow-net-mismatch %s)%s"
+                      % (w['pads'], w['as_given'],
+                         '' if w['needed'] else
+                         ' -- wired alike after all; the waiver was not needed'))
     print("pad legality: conflicts %s -> %s, holes %s -> %s, coarse outline "
           "%s -> %s" % (summary['pad_conflicts_before'],
                         summary['pad_conflicts_after'],

@@ -646,7 +646,16 @@ interchangeable:
   target net, a target net comes from one source net, and a net on pads of
   both instances (GND, a rail, a mix bus) maps to itself.
 
-The refusal names the offending refs and pads. Each target part takes its
+The refusal names the offending refs and pads, and spells the waiver for
+each: `--allow-net-mismatch REF.PAD`, one pad per flag, leaves a pad wired
+differently BY DESIGN out of the net rule -- it neither breaks the rule nor
+makes a net look shared. REF on the `--from` sheet waives the pad in every
+target; REF on a `--to` sheet waives it there only. glasgow_revC's two
+IO_Buffer instances map 68 for 68 and differ only at their I2C address
+straps; `--allow-net-mismatch U19.2 --allow-net-mismatch U20.6
+--allow-net-mismatch U21.2` makes them correspond. `nets_waived` reports each
+waived pad pair and whether the rule needed it; an unknown ref or pad is
+refused at exit 2. Each target part takes its
 source part's rotation and side (a side change goes through the writer's
 #714 flip), at the source position plus one offset:
 

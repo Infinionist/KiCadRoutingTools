@@ -23,10 +23,14 @@ The arms:
   instance, a footprint that differs, a KiCad-locked target part, an
   unknown or ambiguous sheet, and the usage errors;
 * a locked part that the copy does NOT move is not refused;
-* both sheet-name spellings are read (KiCad 8+ token, KiCad 6/7 property);
+* `--allow-net-mismatch REF.PAD` waives one pad wired differently by
+  design, from either instance, and the refusal spells the flags it needs;
+* both sheet-name spellings are read (KiCad 8+ token, KiCad 6/7 property)
+  into `Footprint.sheet_name` / `sheet_file`;
 * on the tracked glasgow_revC, the two IO_Buffer instances map 68 for 68 by
   symbol, and the net rule names the I2C address straps that are wired
-  differently per instance (a real asymmetry, not a pairing artefact).
+  differently per instance (a real asymmetry, not a pairing artefact);
+  waived, they correspond.
 
 Run: python3 -X utf8 tests/test_1211_place_pose_replicate.py [case ...]
 """
@@ -272,6 +276,66 @@ def test_nets_not_wired_alike_are_refused():
         print('  shared-net and one-to-one breaks refused at 4, pads named')
 
 
+def test_a_pad_wired_differently_by_design_is_waived_per_pad():
+    """`--allow-net-mismatch REF.PAD` (#1211 follow-up): one pad per flag,
+    REF on the source (every target) or on one target (that one)."""
+    with tempfile.TemporaryDirectory() as td:
+        # C2's VCC pad wired to the channel input, and C3's likewise.
+        inp = board(td, 'strap', nets={('C2', '1'): '/S2/IN',
+                                       ('C3', '1'): '/S3/IN'})
+        out = os.path.join(td, 'x.kicad_pcb')
+        # The refusal spells the waiver it would take, by the SOURCE pad.
+        r = pose(inp, out, 'replicate', '--from', 'S1', '--to', 'S2',
+                 '--to', 'S3', refuse='not wired alike', code=4)
+        assert '--allow-net-mismatch C1.1' in r.stderr, r.stderr[-900:]
+        assert summary(r)['suggest_waivers'] == ['C1.1'], summary(r)
+        # A source ref waives the pad in EVERY target.
+        r = pose(inp, out, 'replicate', '--from', 'S1', '--to', 'S2', '--to',
+                 'S3', '--allow-net-mismatch', 'C1.1', accept=True)
+        t2, t3 = summary(r)['replicate'][0]['to']
+        assert t2['nets_waived'] == [{'pads': 'C1.1 VCC -> C2.1 /S2/IN',
+                                      'as_given': 'C1.1', 'needed': True}], t2
+        assert [w['pads'] for w in t3['nets_waived']] == [
+            'C1.1 VCC -> C3.1 /S3/IN'], t3
+        assert 'waived C1.1 VCC -> C2.1 /S2/IN' in r.stdout, r.stdout[-900:]
+        assert near(poses(out)['C3'], (70, 20, 90)), poses(out)['C3']
+        # A TARGET ref waives it in that target only: S3 still breaks.
+        r = pose(inp, out + '2', 'replicate', '--from', 'S1', '--to', 'S2',
+                 '--to', 'S3', '--allow-net-mismatch', 'C2.1',
+                 refuse='not wired alike', code=4)
+        assert [b['pads'] for b in summary(r)['net_breaks']] == [
+            'C1.1 VCC -> C3.1 /S3/IN'], summary(r)['net_breaks']
+        assert not os.path.exists(out + '2')
+        # A waiver the rule did not need is reported, not refused.
+        r = pose(inp, out + '3', 'replicate', '--from', 'S1', '--to', 'S2',
+                 '--allow-net-mismatch', 'C1.1', '--allow-net-mismatch',
+                 'R1.2', accept=True)
+        got = {w['as_given']: w['needed']
+               for w in summary(r)['replicate'][0]['to'][0]['nets_waived']}
+        assert got == {'C1.1': True, 'R1.2': False}, got
+        assert 'the waiver was not needed' in r.stdout
+        # A waived pad does not make a net look SHARED: C2.1 cross-wired to
+        # S1's own input would otherwise force /S1/IN to map to itself.
+        inp2 = board(td, 'cross', nets={('C2', '1'): '/S1/IN'})
+        pose(inp2, out + '4', 'replicate', '--from', 'S1', '--to', 'S2',
+             refuse='a shared net', code=4)
+        pose(inp2, out + '4', 'replicate', '--from', 'S1', '--to', 'S2',
+             '--allow-net-mismatch', 'C1.1', accept=True)
+        # A waiver that names nothing is refused at 2, before any grade.
+        for bad, why in (('C1.9', "C1 has no pad '9'"),
+                         ('C1', 'expected REF.PAD'),
+                         ('C3.1', 'is in neither the --from sheet nor a '
+                                  '--to sheet'),
+                         ('T1.1', 'is in neither the --from sheet nor a '
+                                  '--to sheet')):
+            pose(inp, out + '5', 'replicate', '--from', 'S1', '--to', 'S2',
+                 '--allow-net-mismatch', bad, refuse=why, code=2)
+        assert not os.path.exists(out + '5')
+        print('  the refusal spells --allow-net-mismatch C1.1; a source ref '
+              'waives every target, a target ref one; unneeded waivers '
+              'reported; a waived pad shares no net; bad waivers -> 2')
+
+
 def test_a_missing_part_is_refused():
     with tempfile.TemporaryDirectory() as td:
         inp = board(td, drop=('C2',))
@@ -450,15 +514,37 @@ def test_glasgow_maps_by_symbol_and_names_the_address_straps():
         assert exc.code == 4, exc.code
         pads = sorted(x['pads'].split(' ', 1)[0] for x in exc.extra['net_breaks'])
         assert pads == ['U19.2', 'U20.6', 'U21.2'], pads
+        assert exc.extra['suggest_waivers'] == ['U19.2', 'U20.6', 'U21.2'], (
+            exc.extra['suggest_waivers'])
+        assert ('--allow-net-mismatch U19.2 --allow-net-mismatch U20.6 '
+                '--allow-net-mismatch U21.2') in exc.reason, exc.reason
     else:
         raise AssertionError('glasgow IO_Buffer_A -> B was not refused')
-    print('  68 for 68 by symbol; U19.2 / U20.6 / U21.2 named')
+    # The three waivers the refusal spelled -- by source pad, or the same
+    # straps by their IO_Buffer_B pads -- make the instances correspond.
+    for given in (['U19.2', 'U20.6', 'U21.2'], ['U5.2', 'U13.6', 'U12.2']):
+        waive = replicate.resolve_waivers(pcb, given, a, [b])[b]
+        pairs, nets = replicate.correspond(pcb, a, b, waive=waive)
+        assert len(pairs) == 68, len(pairs)
+        assert sorted(w['as_given'] for w in nets['waived']) == sorted(given)
+        assert all(w['needed'] for w in nets['waived']), nets['waived']
+    # Two of the three is not enough: the third strap still breaks.
+    try:
+        replicate.correspond(pcb, a, b, waive=replicate.resolve_waivers(
+            pcb, ['U19.2', 'U20.6'], a, [b])[b])
+    except PoseRefusal as exc:
+        assert [x['source_pad'] for x in exc.extra['net_breaks']] == ['U21.2']
+    else:
+        raise AssertionError('a third strap passed unwaived')
+    print('  68 for 68 by symbol; U19.2 / U20.6 / U21.2 named and spelled as '
+          '--allow-net-mismatch; waived (from either side) they correspond')
 
 
 TESTS = [
     test_the_copy_lands_at_source_plus_offset,
     test_offset_and_anchor_move_the_copy,
     test_nets_not_wired_alike_are_refused,
+    test_a_pad_wired_differently_by_design_is_waived_per_pad,
     test_a_missing_part_is_refused,
     test_a_different_footprint_is_refused,
     test_a_locked_target_part,
