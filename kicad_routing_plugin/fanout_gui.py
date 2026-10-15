@@ -2387,7 +2387,7 @@ class FanoutTab(wx.Panel):
 
             # #726: a placement names a PCBData key, which for a duplicated
             # reference is `TP4~2`; FindFootprintByReference cannot see it.
-            from gui_utils import live_footprints_by_key
+            from .gui_utils import live_footprints_by_key
             _live_caps = live_footprints_by_key(board)
             # #829: skip a cap that draws the board's own outline. The engine's
             # own cap gate already excludes it, so this should never trigger --

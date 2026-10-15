@@ -1041,7 +1041,7 @@ class PlacementTab(wx.Panel):
         # Resolve by the PCBData key, not by the bare reference (#726): two
         # blocks sharing a reference are `TP4` and `TP4~2`, and
         # FindFootprintByReference would hand both of them the first block.
-        from gui_utils import live_footprints_by_key
+        from .gui_utils import live_footprints_by_key
         live = live_footprints_by_key(board)
         unreachable = []
         self._outline_skipped = []
@@ -1269,7 +1269,7 @@ class PlacementTab(wx.Panel):
         if board is None:
             return 0
         from kicad_parser import mm_to_iu
-        from gui_utils import live_footprints_by_key
+        from .gui_utils import live_footprints_by_key
         _live_labels = live_footprints_by_key(board)
         applied = 0
         for r in result.get("results", []):
