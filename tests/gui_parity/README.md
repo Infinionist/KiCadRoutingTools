@@ -241,6 +241,17 @@ counts as settable are READ from `ai_plan._set_control`'s own `isinstance`
 branches, so a control the executor cannot set (a RadioBox, before it had a
 branch) cannot pass as reached.
 
+Two converter rules it also holds. FILE flags (`--net-clearances`,
+`--fab-overrides`, its `PATH_FLAGS`) must reach the plan as the absolute path
+the command opened them at, since the GUI would resolve a relative one against
+KiCad's own cwd. And a recorded command its tool's own argparse REJECTS ran
+nothing on the CLI, so it must not become a plan step:
+`tests/stress/cli_argv_check.py` asks each tool's real parser (captured in a
+child process), `manifest_to_plan.prune_manifest` prunes as if such a command
+were absent, and `check_rejected_steps` holds that on two synthetic chains and
+on the checked-in fixture itself, whose every line must be one the real CLIs
+accept or its flag checks would silently drop out of the count.
+
 What an AST cannot see is the run itself, which is
 `test_plan_flags_reach_dialog.py` (KiCad python, seconds): for each flag a
 closed gap made plan-reachable, a manifest line carrying it and then the same
