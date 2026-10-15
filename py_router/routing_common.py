@@ -798,6 +798,7 @@ def run_length_matching(
                         _auto_report.get('no_group_token', [])),
                     'not_dram_interface': sorted(
                         _auto_report.get('not_dram_interface', [])),
+                    'variants': _auto_report.get('variants', {}),
                 }
             for auto_group in auto_groups:
                 if len(auto_group) >= 2:

@@ -62,13 +62,16 @@ Each `--length-match-group` flag defines one group; nets matching *any* pattern 
 
 **Groups:**
 
-- **Byte lanes** `byte_lane_<n>`: data `DQ<n>`/`D<n>`/`DATA<n>` in lane `n // 8`. Strobes (`DQS<n>`, `RDQS<n>`, `LDQS`/`UDQS`) and masks (`DM<n>`, `DQM<n>`, `LDM`/`UDM`, `DQMH`/`DQML`, LPDDR4/5 `DMI<n>`) go in their numbered or lower/upper lane. `DMI` (data-mask-inversion) is sampled with its byte's DQ on that byte's strobe, so it is matched with the lane. A `DQ<byte>_<bit>` interface (bit index runs 0-7) is read by byte. A bare `DQS`/`DM` joins only when its interface's data spans exactly one lane (an x8 part). Otherwise it is listed as ungrouped by name.
-- **`command_address`**: `A<n>`, `BA<n>`, `BG<n>`, `BS<n>`, `CA<n>`, `RAS`, `CAS`, `WE`, `CS`, `CKE`, `ODT`, `ACT`, `PAR`, `CMD`, and the clock `CK`/`CLK`. The clock is in this group because the command/address bus is sampled on it and is matched to it.
+- **Byte lanes** `byte_lane_<n>`: data `DQ<n>`/`D<n>`/`DATA<n>` in lane `n // 8`. Strobes (`DQS<n>`, `RDQS<n>`, `LDQS`/`UDQS`) and masks (`DM<n>`, `DQM<n>`, `LDM`/`UDM`, `DQMH`/`DQML`, LPDDR4/5 `DMI<n>`) go in their numbered or lower/upper lane. `DMI` (data-mask-inversion) is sampled with its byte's DQ on that byte's strobe, so it is matched with the lane. A `DQ<byte>_<bit>` interface (bit index runs 0-7) is read by byte. LPDDR5's write clock `WCK<n>` joins lane `n` too: it latches that byte's write data and times its reads, so it is matched with the lane as a strobe is (WCK-to-CK skew is trained, not routed). DDR4/DDR5 check bits `CB<n>` are the ECC lane after the interface's data lanes: lane 8 on a 64-bit DIMM, with `DQS8`, and lane 4 on a 32-bit DDR5 sub-channel, with `DQS4`. A bare `DQS`/`DM`/`WCK` joins only when its interface's data spans exactly one lane (an x8 part). Otherwise it is listed as ungrouped by name.
+- **`command_address`**: `A<n>`, `BA<n>`, `BG<n>`, `BS<n>`, `CA<n>`, `RAS`, `CAS`, `WE`, `CS`, `CKE`, `ODT`, `ACT`, `PAR`, `CMD`, and the clock `CK`/`CLK`. The clock is in this group because the command/address bus is sampled on it and is matched to it. A DDR2 DIMM's chip select `S#0`/`S0#` (JEDEC's `S0#`) is read as `CS0`, and a clock enable spelled `CK_E` as `CKE`.
 
 Accepted spellings include the active-low `n` prefix (`nCAS`), `N`/`B` suffixes (`CSn`, `RASN`), and SDRAM-controller `S`/`SD` prefixes (Allwinner `SDQS0P`/`SA0`, i.MX `SDCLK0_P`, STM32 `SDNCAS`). The prefixes are never accepted on a data line (`SD0` is SD-card data) or on a bare `CK`/`CLK`/`CS` (`SCK`, `SCLK`, `SCS` are SPI).
+
 **One set of groups per interface.** A byte lane is matched to its own strobe, so lanes of different interfaces are never one group. An interface is a prefix, plus a channel where the names carry one. A trailing `_A`/`_B` is a channel tag on a prefix where some signal carries both letters on the board (haasoscope's `DQ0_A`/`DQ0_B`); a lone `_B` stays active-low. Command/address is grouped per prefix. It splits by channel only when every channel that carries command nets also has its own clock. Otherwise the channels share one clock and one group. On haasoscope the `CK_t_A` net drives both channels' CK pins, so `CS0_B` is sampled on it.
 
 The keys stay `byte_lane_<n>` and `command_address` on a board where that is unambiguous. Once two interfaces would share a key, every key names its interface: `byte_lane_0 @ Net-(U1A- channel A`, `command_address @ /LPDDR5/LPDDR5_A.`. The decision is made over the whole board, so a step's keys do not change with its `--nets`. Two prefixes on the two sides of a series resistor (`/GPIO/SDRAM.D0` and `/GPIO/SDRAM_D0_R`) are two interfaces as well, so each side is matched within itself.
+
+**A second net reading as the same signal is the other side of a resistor.** On zynq7020_som, series resistor R53 joins `DDR_A0` (Zynq pin, about 4.5 mm away) to `DDR_A0_T` (DRAM pin, about 11 mm away). Both read as address line 0 under one prefix. A name that extends another by tokens that are no decoration of that signal is such a *variant*: `_T` here, where a single-ended signal takes only an active-low `N`/`B`/`L` or a channel letter, and `t`/`c`/`p` polarity belongs only to a clock or strobe. The variants that share a suffix form an interface of their own (`command_address @ /Zynq_B502_DDR/DDR_*_T`). So the long DRAM-side runs are matched to each other and never to the short Zynq-side stubs. `auto` does not match a line's total length through the resistor.
 
 **What it reports.** When a group forms, its members are printed by name, before any meander. Next come the interface prefixes it accepted (with their channels), then every DRAM-looking net it left out, by name and reason:
 
@@ -76,9 +79,11 @@ The keys stay `byte_lane_<n>` and `command_address` on a board where that is una
 - in the interface but no group token (`RESET`, `ZQ`, `VREF`);
 - the name looks like DRAM but its prefix carries no DRAM-only signals.
 
+It also names each variant and the net it extends.
+
 `JSON_SUMMARY` carries the same membership as `length_match_groups` (one `{name, source, members}` record per group, named groups included, with `patterns`). The exclusions are in `length_match_auto`. The GUI's results carry `length_match_groups`. The #521 `length-matched` protected nets are drawn from these members: those routed this run or measured from earlier-step copper.
 
-A name the rules do not cover (LPDDR5 `WCK`, DDR5 `CB` check bits) is listed as ungrouped, never guessed. Pass explicit `--length-match-group` patterns for it.
+A name the rules do not cover is listed as ungrouped, never guessed. Pass explicit `--length-match-group` patterns for it.
 
 ## The Trombone Meander
 

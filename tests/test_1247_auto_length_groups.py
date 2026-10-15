@@ -29,6 +29,10 @@ Pinned here, on the boards' REAL net names:
                channels, so they share its clock. RESET_n and ZQ0 are left
                out, by name.
 
+plus the names a first pass did not know -- LPDDR5 WCK (its byte's write
+clock, so in that lane), DDR4/5 CB check bits (the ECC lane after the data
+lanes), DDR2 S#0 chip selects, zynq7020_som's DDR_A0_T (the DRAM side of a
+series resistor: a group of its own, never matched against the Zynq side) --
 and, on synthetic results, the two route-step defects: the grouper's input is
 the call's scope (an out-of-scope rip-candidate registration never joins), and
 an `is_existing_route` registration is never reported as routed this run.
@@ -242,6 +246,82 @@ def run():
     check("a lone _B suffix is read as active-low, not as channel B",
           'DDR_CS_B' in c['groups'].get('command_address', [])
           and not c['channels'] and 'byte_lane_0' in c['groups'], str(c['groups']))
+
+    # --- names the first pass did not know (real boards' spellings) ----------
+    print("WCK, CB, S#0, CK_E and series-resistor variants")
+    # lpddr5_testbed: LPDDR5's write clock WCK<n> latches byte n's write data,
+    # so it is matched with that lane, like a strobe.
+    lp5 = ([f'/LPDDR5/LPDDR5_A.DQ{i}' for i in range(16)]
+           + [f'/LPDDR5/LPDDR5_A.{s}{n}_{p}' for s in ('RDQS', 'WCK')
+              for n in (0, 1) for p in 'PN']
+           + ['/LPDDR5/LPDDR5_A.DMI0', '/LPDDR5/LPDDR5_A.DMI1',
+              '/LPDDR5/LPDDR5_A.CA0', '/LPDDR5/LPDDR5_A.CS0',
+              '/LPDDR5/LPDDR5_A.CK_P', '/LPDDR5/LPDDR5_A.CK_N'])
+    c = classify_ddr_nets(lp5)
+    g = grouped(c)
+    check("LPDDR5 WCK<n> joins byte lane n (13 = 8 DQ + RDQS + WCK + DMI)",
+          {'/LPDDR5/LPDDR5_A.WCK0_P', '/LPDDR5/LPDDR5_A.WCK0_N'}
+          <= g.get('byte_lane_0', set()) and len(g.get('byte_lane_0', ())) == 13
+          and '/LPDDR5/LPDDR5_A.WCK1_P' in g.get('byte_lane_1', set()),
+          str({k: len(v) for k, v in g.items()}))
+    # ddr4_rdimm_tester: CB0-7 are the ECC byte after DQ0-63 -- lane 8, with
+    # DQS8.
+    dimm = ([f'DQ{i}' for i in range(64)] + [f'CB{i}' for i in range(8)]
+            + [f'DQS{n}_{p}' for n in range(9) for p in 'PN']
+            + ['A0', 'BA0', 'BG0', 'ACT_n', 'CKE0', 'ODT0', 'CK0_P', 'CK0_N'])
+    c = classify_ddr_nets(dimm)
+    check("DDR4 check bits CB0-7 + DQS8 form byte_lane_8",
+          set(c['groups'].get('byte_lane_8', []))
+          == {f'CB{i}' for i in range(8)} | {'DQS8_P', 'DQS8_N'},
+          str(sorted(c['groups'].get('byte_lane_8', []))))
+    # ddr5_sodimm_tester: a 32-bit sub-channel's CB0-3 are lane 4, with DQS4.
+    sub = ([f'/DDR5 SODIMM/A.DQ{i}' for i in range(32)]
+           + [f'/DDR5 SODIMM/A.CB{i}' for i in range(4)]
+           + [f'/DDR5 SODIMM/A.DQS{n}_{p}' for n in range(5) for p in 'PN']
+           + ['/DDR5 SODIMM/A.CA0', '/DDR5 SODIMM/A.CA1', '/DDR5 SODIMM/A.CS0_n'])
+    c = classify_ddr_nets(sub)
+    check("DDR5 sub-channel check bits CB0-3 + DQS4 form byte_lane_4",
+          set(c['groups'].get('byte_lane_4', []))
+          == {f'/DDR5 SODIMM/A.CB{i}' for i in range(4)}
+          | {'/DDR5 SODIMM/A.DQS4_P', '/DDR5 SODIMM/A.DQS4_N'},
+          str(sorted(c['groups'].get('byte_lane_4', []))))
+    # daisho: a DDR2 SO-DIMM's chip selects, JEDEC's S0#/S1#, spelled S#0.
+    ddr2 = ['/ddr2/A0', '/ddr2/BA0', '/ddr2/CKE0', '/ddr2/ODT0', '/ddr2/DQ0',
+            '/ddr2/DQS0', '/ddr2/DM0', '/ddr2/S#0', '/ddr2/S#1', '/ddr2/S2#',
+            '/ddr2/VREF', '/IO/S#0']
+    c = classify_ddr_nets(ddr2)
+    check("DDR2 S#0 / S0# chip selects join command_address",
+          {'/ddr2/S#0', '/ddr2/S#1', '/ddr2/S2#'}
+          <= set(c['groups'].get('command_address', []))
+          and '/IO/S#0' not in str(c['groups']), str(c['groups']))
+    # zynq7020_som: R53 runs DDR_A0 (Zynq pin, ~4.5 mm) to DDR_A0_T (DRAM
+    # pin, ~11 mm). The _T side is the long run to the DRAM: a group of its
+    # own, never matched against the Zynq-side stubs; CK_E is the clock
+    # ENABLE.
+    pre = '/Zynq_B502_DDR/DDR_'
+    zynq = ([pre + s for s in ('A0', 'A1', 'BA0', 'CK_E', 'ODT', '~{CAS}',
+                               'CK_P', 'CK_N', 'DQ0', 'DQ1', 'DQS0_P',
+                               'DQS0_N', 'DM0')]
+            + [pre + s + '_T' for s in ('A0', 'A1', 'BA0', 'CK_E', 'ODT',
+                                         '~{CAS}')])
+    c = classify_ddr_nets(zynq)
+    g = grouped(c)
+    main = {pre + s for s in ('A0', 'A1', 'BA0', 'CK_E', 'ODT', '~{CAS}',
+                              'CK_P', 'CK_N')}
+    t_side = {pre + s + '_T' for s in ('A0', 'A1', 'BA0', 'CK_E', 'ODT', '~{CAS}')}
+    check("the _T (DRAM-side) nets do not join the Zynq side's command_address",
+          g.get(f'command_address @ {pre}') == main, str(sorted(g)))
+    check("...they form their own group, as the far side of the series resistor",
+          g.get(f'command_address @ {pre}*_T') == t_side
+          and c['variants'].get(pre + 'A0_T') == pre + 'A0',
+          str(sorted(g.get(f'command_address @ {pre}*_T', []))))
+    c = classify_ddr_nets(['/DDR/DQ0', '/DDR/DQ1', '/DDR/DQS0', '/DDR/DQS0_N',
+                           '/DDR/BA0', '/DDR/CS', '/DDR/CS_N', '/DDR/CK',
+                           '/DDR/CK_N'])
+    check("a strobe's or clock's complement, and an active-low suffix, are "
+          "not variants",
+          not c['variants'] and {'/DDR/DQS0', '/DDR/DQS0_N'}
+          <= set(c['groups'].get('byte_lane_0', [])), str(c))
 
     # --- token rules on synthetic names --------------------------------------
     print("token rules")

@@ -2342,10 +2342,23 @@ def find_nets_matching_patterns(all_net_names: List[str], patterns: List[str]) -
 # and never on a bare CK/CLK/CS (`SCK`, `SCLK`, `SCS` are SPI); an active-low
 # `n`/`N` (nCS, SDNWE) or trailing `N`/`B` (CSn, RASN); lane halves `L`/`U`/`H`
 # (LDQS, UDM, DQMH); `RDQS`; LPDDR4/5 `DMI<n>` (the lane's data-mask-
-# inversion, sampled with its DQ); and `DQ<byte>_<bit>` when an interface's bit
-# index runs through all eight values. A bare DQS/DM (no digit, no half) gets
-# a lane only when its interface's data spans exactly one lane (an x8 part);
-# otherwise it is reported ungrouped BY NAME.
+# inversion, sampled with its DQ); LPDDR5 `WCK<n>` (the byte's write clock);
+# DDR4/5 `CB<n>` check bits (the ECC lane after the data lanes); a DDR2 DIMM's
+# `S#0`/`S0#` chip select; a clock enable spelled `CK_E`; and
+# `DQ<byte>_<bit>` when an interface's bit index runs through all eight
+# values. A bare DQS/DM/WCK (no digit, no half) gets a lane only when its
+# interface's data spans exactly one lane (an x8 part); otherwise it is
+# reported ungrouped BY NAME.
+#
+# Two names under one prefix that read as the SAME signal, the second being
+# the first plus tokens that are no decoration of that signal, are two nets
+# (zynq7020_som's DDR_A0 runs from the Zynq to series resistor R53, and
+# DDR_A0_T from R53 to the DRAM). The longer one is a VARIANT: the variants
+# sharing a suffix are an interface of their own (`<prefix>*_T`), exactly as
+# two prefixes on the two sides of a series resistor are (stm32h7_hdmi's
+# SDRAM.D0 / SDRAM_D0_R), so each side is matched within itself and never
+# against the other. A t/c/p polarity decorates only a clock or strobe; a
+# single-ended signal takes only active-low N/B/L and a channel letter.
 
 _DDR_CORE_SPECS = (
     # (kind, role, pattern) -- matched whole (fullmatch), case-insensitive.
@@ -2353,6 +2366,14 @@ _DDR_CORE_SPECS = (
     ('D', 'data', r'(?:D|DATA)(?P<n>\d+)'),
     ('DQS', 'strobe',
      r'(?P<h>[LU])?R?DQS(?P<h2>[LUH])?(?P<n>\d+)?[PNTCB]?(?P<n2>\d+)?'),
+    # LPDDR5 write clock: one differential WCK per byte (WCK0 -> byte 0). The
+    # byte's write data is latched on it and its read data is timed from it,
+    # so it is matched with its lane, as a strobe is; WCK-to-CK is trained.
+    ('WCK', 'strobe', r'WCK(?P<n>\d+)?[PNTC]?(?P<n2>\d+)?'),
+    # DDR4/DDR5 ECC check bits: one more byte lane after the data lanes
+    # (CB0-7 of a 64-bit DIMM are lane 8, of a 32-bit DDR5 sub-channel lane
+    # 4), strobed by that lane's DQS8 / DQS4.
+    ('CB', 'data', r'CB(?P<n>\d+)'),
     ('DM', 'mask', r'(?P<h>[LU])?(?P<dqm>DQM|DM)(?P<h2>[LUH])?(?P<n>\d+)?'),
     # LPDDR4/5 data-mask-inversion: one per byte, sampled with that byte's
     # DQ on its DQS, so it is matched with the lane (DMI0 -> lane 0).
@@ -2382,6 +2403,13 @@ _DDR_SPI_LOOKALIKES = frozenset({'CK', 'CLK', 'CS'})
 _DDR_QUALIFIERS = frozenset({'DQ', 'DQS', 'DM', 'BA', 'BG', 'CA', 'CKE', 'ODT',
                              'ACT', 'RAS/CAS'})
 _DDR_MIN_QUALIFIER_KINDS = 2
+# Trailing tokens that still name the SAME signal (variant test, above):
+# active-low and channel letters on any signal, and the polarity letters on
+# a clock or strobe.
+_DDR_SE_DECORATIONS = frozenset({'N', 'B', 'L', 'A'})
+_DDR_DIFF_DECORATIONS = frozenset({'P', 'N', 'T', 'C', 'B', 'A'})
+# A DDR2 DIMM's chip select, S#0 or S0# (JEDEC's S0#), read as CS0.
+_DDR_S_HASH_RE = re.compile(r'(?<![0-9A-Za-z])[Ss](?:#(\d+)|(\d+)#)(?![0-9A-Za-z])')
 
 
 def _ddr_canonical(name: str) -> str:
@@ -2422,9 +2450,11 @@ def _ddr_read_name(name: str):
     """Read one net name: a dict with its interface `prefix`, signal `kind`,
     `role` (data/strobe/mask/command/clock), the core's number `n`, its lane
     `half` (L/U/H), the digits-only token right after it (`index`), the
-    tokens after it (`tail`) and the DRAM-only `qualifier` kind it
-    contributes -- or None (no signal token)."""
-    canon = _ddr_canonical(name)
+    tokens after it (`tail`), the canonical name it was read from (`canon`)
+    and the DRAM-only `qualifier` kind it contributes -- or None (no signal
+    token)."""
+    canon = _DDR_S_HASH_RE.sub(lambda m: f"CS{m.group(1) or m.group(2)}",
+                               _ddr_canonical(name))
     toks = list(_DDR_TOKEN_RE.finditer(canon))
     for i in range(len(toks) - 1, -1, -1):
         tok = toks[i].group()
@@ -2436,6 +2466,12 @@ def _ddr_read_name(name: str):
         kind, role, m = hit
         gd = m.groupdict()
         nxt = toks[i + 1].group() if i + 1 < len(toks) else ''
+        after = i + 1
+        if tok.upper() == 'CK' and nxt.upper() == 'E':
+            # CK_E is the clock ENABLE with a separator, not the clock
+            kind, role, gd = 'CKE', 'command', {}
+            after = i + 2
+            nxt = toks[after].group() if after < len(toks) else ''
         num = gd.get('n') or gd.get('n2')
         half = (gd.get('h') or gd.get('h2') or '').upper() or None
         if kind in ('RAS', 'CAS'):
@@ -2451,8 +2487,8 @@ def _ddr_read_name(name: str):
         return {'prefix': canon[:toks[i].start()], 'kind': kind, 'role': role,
                 'n': int(num) if num else None, 'half': half,
                 'index': int(nxt) if nxt.isdigit() else None,
-                'tail': [t.group() for t in toks[i + 1:]],
-                'qualifier': qualifier}
+                'tail': [t.group() for t in toks[after:]],
+                'canon': canon, 'qualifier': qualifier}
     return None
 
 
@@ -2474,13 +2510,16 @@ def classify_ddr_nets(net_names: List[str],
                   [channel X]` on a board with more than one interface
       interfaces  {prefix: [qualifier kinds]} for the qualified prefixes that
                   hold at least one of `net_names`
-      channels    {prefix: [channel letters]} for those prefixes whose names
-                  carry a proven `_A`/`_B` channel tag
+      channels    {interface: [channel letters]} for those interfaces whose
+                  names carry a proven `_A`/`_B` channel tag
       lane_undeterminable  data/strobe/mask names whose lane cannot be read
       no_group_token       names under a qualified prefix with no group token
                            (RESET, ZQ, VREF, ...)
       not_dram_interface   names with a group token whose prefix carries no
                            DRAM-only signals (IO_A0, OLED_CS, SD0_CMD, ...)
+      variants             {name: the name it extends} for a second net
+                           reading as the same signal (DDR_A0_T of DDR_A0);
+                           grouped as its own interface `<prefix>*<suffix>`
       other_count          names with no DRAM reading at all
     """
     context = list(context_names) if context_names is not None else list(net_names)
@@ -2506,6 +2545,38 @@ def classify_ddr_nets(net_names: List[str],
                  if len(ks) >= _DDR_MIN_QUALIFIER_KINDS}
     bit_indexed = {p for p, vals in dq_index_values.items() if len(vals) >= 8}
 
+    # Variants: a second name reading as the same signal, extended by a token
+    # that decorates nothing (the block comment above). Judged over the board.
+    by_signal: Dict[tuple, List[str]] = {}
+    for name in context:
+        r = reads.get(name)
+        if r is not None and r['prefix'] in qualified:
+            by_signal.setdefault((r['prefix'], r['kind'], r['n'], r['half'],
+                                  r['index']), []).append(name)
+    variant_of: Dict[str, str] = {}
+    for same in by_signal.values():
+        for x in same:
+            cx = reads[x]['canon']
+            allowed = (_DDR_DIFF_DECORATIONS
+                       if reads[x]['role'] in ('clock', 'strobe')
+                       else _DDR_SE_DECORATIONS)
+            for y in same:
+                cy = reads[y]['canon']
+                if (len(cx) > len(cy) and cx.startswith(cy)
+                        and not cx[len(cy)].isalnum()
+                        and any(t.upper() not in allowed
+                                for t in _DDR_TOKEN_RE.findall(cx[len(cy):]))
+                        and (x not in variant_of
+                             or len(cy) < len(reads[variant_of[x]]['canon']))):
+                    variant_of[x] = y
+    # The interface a name belongs to: its prefix, or for a variant the
+    # prefix plus its suffix, so the variants form their own groups.
+    for r in reads.values():
+        r['iface'] = r['prefix']
+    for x, y in variant_of.items():
+        reads[x]['iface'] = (reads[x]['prefix'] + '*'
+                             + reads[x]['canon'][len(reads[y]['canon']):])
+
     # Channel tags: a trailing `_A`/`_B` is a channel only on a prefix where
     # one signal carries both letters (the block comment above).
     tag_letters: Dict[str, Dict[tuple, set]] = {}
@@ -2515,13 +2586,13 @@ def classify_ddr_nets(net_names: List[str],
             continue
         sig = (r['kind'], r['n'], r['half'],
                tuple(t.upper() for t in r['tail'][:-1]))
-        tag_letters.setdefault(r['prefix'], {}).setdefault(sig, set()).add(
+        tag_letters.setdefault(r['iface'], {}).setdefault(sig, set()).add(
             r['tail'][-1].upper())
     channelled = {p for p, sigs in tag_letters.items()
                   if any(len(v) >= 2 for v in sigs.values())}
 
     def channel_of(r):
-        if r['prefix'] in channelled and r['tail'] \
+        if r['iface'] in channelled and r['tail'] \
                 and r['tail'][-1].upper() in ('A', 'B'):
             return r['tail'][-1].upper()
         return None
@@ -2542,16 +2613,19 @@ def classify_ddr_nets(net_names: List[str],
         if r is None or r['prefix'] not in qualified:
             continue
         ch = channel_of(r)
-        if r['role'] == 'data':
-            data_lanes.setdefault((r['prefix'], ch), set()).add(data_lane(r))
+        if r['role'] == 'data' and r['kind'] != 'CB':
+            data_lanes.setdefault((r['iface'], ch), set()).add(data_lane(r))
         elif r['role'] in ('command', 'clock'):
-            cmd_channels.setdefault(r['prefix'], set()).add(ch)
+            cmd_channels.setdefault(r['iface'], set()).add(ch)
             if r['role'] == 'clock':
-                clock_channels.setdefault(r['prefix'], set()).add(ch)
+                clock_channels.setdefault(r['iface'], set()).add(ch)
     split_command = {p for p, chs in cmd_channels.items()
                      if len(chs) > 1 and chs <= clock_channels.get(p, set())}
 
     def lane_of(r):
+        if r['kind'] == 'CB':          # the ECC lane after the data lanes
+            lanes = data_lanes.get((r['iface'], channel_of(r)))
+            return max(lanes) + 1 + r['n'] // 8 if lanes else None
         if r['role'] == 'data':
             return data_lane(r)
         if r['n'] is not None:
@@ -2560,19 +2634,19 @@ def classify_ddr_nets(net_names: List[str],
             return 0 if r['half'] == 'L' else 1
         if r['index'] is not None:
             return r['index']        # DQS_0 / DM#1 style
-        lanes = data_lanes.get((r['prefix'], channel_of(r)), set())
+        lanes = data_lanes.get((r['iface'], channel_of(r)), set())
         return next(iter(lanes)) if len(lanes) == 1 else None
 
     def unit_of(r):
-        """(group, prefix, channel) for a name under a qualified prefix, or
-        None when its lane cannot be read."""
+        """(group, interface, channel) for a name under a qualified prefix,
+        or None when its lane cannot be read."""
         if r['role'] in ('command', 'clock'):
-            ch = channel_of(r) if r['prefix'] in split_command else None
-            return ('command_address', r['prefix'], ch)
+            ch = channel_of(r) if r['iface'] in split_command else None
+            return ('command_address', r['iface'], ch)
         lane = lane_of(r)
         if lane is None:
             return None
-        return (f'byte_lane_{lane}', r['prefix'], channel_of(r))
+        return (f'byte_lane_{lane}', r['iface'], channel_of(r))
 
     # A key carries its interface once two interfaces on the board would
     # otherwise share it (judged over the board, so a key does not change
@@ -2601,6 +2675,7 @@ def classify_ddr_nets(net_names: List[str],
     lane_undeterminable: List[str] = []
     no_group_token: List[str] = []
     not_dram_interface: List[str] = []
+    variants: Dict[str, str] = {}
     other_count = 0
     for name in net_names:
         r = reads.get(name)
@@ -2615,9 +2690,11 @@ def classify_ddr_nets(net_names: List[str],
             not_dram_interface.append(name)
             continue
         interfaces[r['prefix']] = sorted(kinds[r['prefix']])
-        if r['prefix'] in channelled:
-            channels[r['prefix']] = sorted(
-                set().union(*tag_letters[r['prefix']].values()))
+        if r['iface'] in channelled:
+            channels[r['iface']] = sorted(
+                set().union(*tag_letters[r['iface']].values()))
+        if name in variant_of:
+            variants[name] = variant_of[name]
         unit = unit_of(r)
         if unit is None:
             lane_undeterminable.append(name)
@@ -2627,6 +2704,7 @@ def classify_ddr_nets(net_names: List[str],
             'lane_undeterminable': lane_undeterminable,
             'no_group_token': no_group_token,
             'not_dram_interface': not_dram_interface,
+            'variants': variants,
             'other_count': other_count}
 
 
@@ -2673,6 +2751,12 @@ def auto_group_ddr4_nets(net_names: List[str],
         print(f"    not grouped, name looks DRAM-like but its prefix carries "
               f"no DRAM-only signals ({len(c['not_dram_interface'])}): "
               f"{_names(c['not_dram_interface'])}")
+    if c.get('variants'):
+        print(f"    a second net reading as the same signal (the far side of "
+              f"a series or termination resistor), grouped as its own "
+              f"interface ({len(c['variants'])}): " + ', '.join(
+                  f"{n} (of {c['variants'][n]})"
+                  for n in sorted(c['variants'], key=_ddr_natural_key)))
     if c['other_count']:
         print(f"    not DRAM-named: {c['other_count']} net(s)")
     return list(groups.values())
