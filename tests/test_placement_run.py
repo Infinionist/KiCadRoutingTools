@@ -93,6 +93,52 @@ check("discover_mechanical finds it from the STAGED board",
       == os.path.normcase(os.path.join(wk_mech, "mechanical.json")),
       discover_mechanical(staged_mech))
 
+# EVERY input a CLI tool discovers beside a board reaches the staged board:
+# the stem siblings copy_board.SIBLING_EXTS lists (.kicad_pro, .kicad_prl,
+# .kicad_dru, .design-brief.json -- each read as `<stem><ext>`) and the one
+# DIRECTORY file (mechanical.json). On BOTH of stage_inputs' import paths:
+# the GUI's (placement_gui puts py_router on sys.path, so the real tuple) and
+# the guarded fallback literal (test_711 waives it as a copy) -- the stagings
+# above ran before py_router was on sys.path, so they saw only the fallback.
+# Equal staged sets ARE the fallback-equals-canonical assertion.
+from copy_board import SIBLING_EXTS  # noqa: E402
+from placement.design_brief import discover_brief  # noqa: E402
+full_dir = os.path.join(TMP, "boards_full")
+os.makedirs(full_dir)
+full_board = os.path.join(full_dir, "full.kicad_pcb")
+open(full_board, "w").write("(kicad_pcb (version 20260206))\n")
+for _ext in SIBLING_EXTS:
+    open(os.path.join(full_dir, "full" + _ext), "w").write("{}\n")
+open(os.path.join(full_dir, "mechanical.json"), "w").write('{"anchors": []}\n')
+
+
+def _staged_set(import_ok):
+    saved = sys.modules.get("copy_board", None)
+    if not import_ok:
+        sys.modules["copy_board"] = None       # `from copy_board import` raises
+    try:
+        wk_full = create_workdir(full_board, "place")
+        st = stage_inputs(wk_full, snapshot, full_board)
+    finally:
+        if saved is None:
+            sys.modules.pop("copy_board", None)
+        else:
+            sys.modules["copy_board"] = saved
+    stem = os.path.splitext(st)[0]
+    return st, {e for e in SIBLING_EXTS if os.path.isfile(stem + e)}
+
+
+for _label, _ok in (("the GUI's import path (copy_board.SIBLING_EXTS)", True),
+                    ("the guarded fallback tuple", False)):
+    st, got = _staged_set(_ok)
+    check(f"{_label}: every SIBLING_EXTS sibling staged",
+          got == set(SIBLING_EXTS), f"missing {sorted(set(SIBLING_EXTS) - got)}")
+    check(f"{_label}: discover_brief finds the staged brief",
+          os.path.normcase(discover_brief(st)) == os.path.normcase(
+              os.path.splitext(st)[0] + ".design-brief.json"), discover_brief(st))
+    check(f"{_label}: discover_mechanical finds the staged mechanical.json",
+          bool(discover_mechanical(st)), st)
+
 # ----------------------------------------------- retention + .gitignore (#1057)
 
 runs_root = os.path.join(board_dir, RUNS_DIRNAME)
