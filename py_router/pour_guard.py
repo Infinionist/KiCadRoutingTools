@@ -408,22 +408,6 @@ def install_pour_barriers(config, pcb_data, routed_ids, net_names,
 
 
 # ------------------------------------------------------------------ the audit
-class _Copper:
-    """`base` read through another copper set, with a fill-model cache of
-    its own, so a grade of one copper state never answers from models built
-    for another (plane_fill_model caches its models ON the board object, and
-    a shared board would hand the "after" grade the "before" fill)."""
-
-    def __init__(self, base, segments, vias):
-        self._base = base
-        self.segments = list(segments)
-        self.vias = list(vias)
-        self._plane_fill_models = {}
-
-    def __getattr__(self, name):
-        return getattr(self._base, name)
-
-
 def snapshot_copper(pcb_data):
     """Value copies of the board's tracks and vias, taken before the run
     moves any of them in place, for `audit_pour_cuts`' "before"."""
@@ -433,16 +417,12 @@ def snapshot_copper(pcb_data):
 
 
 def _open_pads(board, net_id) -> int:
-    """Disconnected pads of `net_id` on `board`, by the fill-aware grade
-    check_connected uses, with every zone of the net modelled fresh against
-    the board's own copper."""
+    """Disconnected pads of `net_id` on `board` (a CopperView), by the
+    fill-aware grade check_connected uses: every zone of the net is modelled
+    against the view's own copper, in the view's own cache."""
     from check_connected import (check_net_connectivity,
                                  net_break_within_outlines)
-    from plane_fill_model import ZoneFillModel
     zones = [z for z in (board.zones or []) if z.net_id == net_id and z.polygon]
-    for z in zones:
-        board._plane_fill_models[(net_id, z.layer, id(z))] = ZoneFillModel(
-            board, z)
     r = check_net_connectivity(
         net_id, [s for s in board.segments if s.net_id == net_id],
         [v for v in board.vias if v.net_id == net_id],
@@ -469,8 +449,9 @@ def audit_pour_cuts(before_board, before_copper, after_board, after_copper,
     pads than the input had: its pour was cut where the guard let tracks
     cross. Both states are graded the same way, so the raster model's own
     error cancels."""
-    before = _Copper(before_board, *before_copper)
-    after = _Copper(after_board, *after_copper)
+    from plane_fill_model import CopperView
+    before = CopperView(before_board, *before_copper)
+    after = CopperView(after_board, *after_copper)
     b_ids = {n.name: i for i, n in before.nets.items()}
     a_ids = {n.name: i for i, n in after.nets.items()}
     rows = []

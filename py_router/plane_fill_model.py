@@ -659,6 +659,30 @@ def get_fill_models(pcb_data, net_id):
             out.setdefault(z.layer, []).append(m)
     return out
 
+class CopperView:
+    """`base` read through another copper set, with fill models of its own.
+
+    Models are cached ON the board object (`_CACHE_ATTR`) and built from
+    whatever copper the board carries when a zone is first consulted. So two
+    grades of one board in different copper states, "before" and "after" a
+    run, would share one fill: the first state's. A view carries its own
+    `segments`, `vias` and model cache; everything else (nets, pads, zones,
+    board_info) is the base board's. Its models are not registered for the
+    zone-object lookup (`lookup_zone_model`) either, so grading a view never
+    changes what a later consumer of the real board reads."""
+
+    _isolated_fill = True
+
+    def __init__(self, base, segments, vias):
+        self._base = base
+        self.segments = list(segments)
+        self.vias = list(vias)
+        setattr(self, _CACHE_ATTR, {})
+
+    def __getattr__(self, name):
+        return getattr(self._base, name)
+
+
 def get_zone_model(pcb_data, zone):
     """Cached ZoneFillModel for ONE zone object (see get_fill_models)."""
     cache = getattr(pcb_data, _CACHE_ATTR, None)
@@ -673,9 +697,10 @@ def get_zone_model(pcb_data, zone):
     if m is None:
         m = ZoneFillModel(pcb_data, zone)
         cache[key] = m
-        if len(_MODELS_BY_ZONE_ID) > 64:
-            _MODELS_BY_ZONE_ID.clear()
-        _MODELS_BY_ZONE_ID[id(zone)] = m
+        if not getattr(pcb_data, '_isolated_fill', False):
+            if len(_MODELS_BY_ZONE_ID) > 64:
+                _MODELS_BY_ZONE_ID.clear()
+            _MODELS_BY_ZONE_ID[id(zone)] = m
     return m if m.ok else None
 
 def lookup_zone_model(zone):

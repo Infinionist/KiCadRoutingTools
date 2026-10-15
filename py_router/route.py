@@ -1670,6 +1670,14 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     _orig_via_by_net: Dict[int, list] = {}
     for _v in pcb_data.vias:
         _orig_via_by_net.setdefault(_v.net_id, []).append(_v)
+    # #600, GUI front: the same copper as VALUE copies, for the improvement
+    # gate's "before" grade. The CLI gate re-reads the input file; the GUI's
+    # input is this board, whose track and via objects the run moves in place.
+    _orig_copper600 = None
+    if return_results and final_reconcile:
+        import copy as _copy600
+        _orig_copper600 = ([_copy600.copy(_s) for _s in pcb_data.segments],
+                           [_copy600.copy(_v) for _v in pcb_data.vias])
     # #1069: the input copper as VALUES, so the end-of-run re-grade can tell
     # which nets this run changed (objects move in place; see copper_signature).
     # Outermost run only -- nested sub-runs do not re-grade.
@@ -7673,12 +7681,25 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             if return_results:
                 # The board the GUI applier will produce (_gui_write_model):
                 # a broken net must not grade connected on orphan copper.
+                # Each state is read through its OWN CopperView: a zone's
+                # fill model is cached on the board it is built for, from
+                # the copper that board carries, so grading both states on
+                # pcb_data gave the "before" grade the shipped fill too, and
+                # a pour this run cut read cut on the input as well. The CLI
+                # gate parses two files and never had that problem.
+                from plane_fill_model import CopperView
                 _after_s, _after_v = _gui_write_model(results_data)
+                _b_segs, _b_vias = (_orig_copper600 if _orig_copper600
+                                    else ([s for _l in _orig_seg_by_net.values()
+                                           for s in _l],
+                                          [v for _l in _orig_via_by_net.values()
+                                           for v in _l]))
                 _before_map = net_connectivity_map(
-                    pcb_data, segs_by_net=_orig_seg_by_net,
-                    vias_by_net=_orig_via_by_net)
+                    CopperView(pcb_data, _b_segs, _b_vias))
                 _after_map = net_connectivity_map(
-                    pcb_data, segs_by_net=_after_s, vias_by_net=_after_v)
+                    CopperView(pcb_data,
+                               [s for _l in _after_s.values() for s in _l],
+                               [v for _l in _after_v.values() for v in _l]))
                 _name_of = (lambda nid: (pcb_data.nets[nid].name
                                          if nid in pcb_data.nets
                                          else f"Net {nid}"))
