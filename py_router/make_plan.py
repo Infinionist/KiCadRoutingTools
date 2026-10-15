@@ -153,7 +153,8 @@ def main():
         return 1
 
     print(f"{len(steps)} step(s) written to {out}"
-          + (f" ({skipped} kept-but-non-GUI command(s) skipped)" if skipped else ""))
+          + (f" ({skipped} command(s) skipped: kept but not GUI steps, or "
+             f"rejected by their tool's parser)" if skipped else ""))
     if args.list:
         for i, step in enumerate(steps, 1):
             print("  " + describe(step, i))

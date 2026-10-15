@@ -39,7 +39,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "tests" / "stress"))
 import manifest_to_plan as m2p  # noqa: E402
 from redo_stress_test import (  # noqa: E402
-    parse_manifest, compute_prune_keep, is_check_cmd)
+    parse_manifest, is_check_cmd)
 
 STRESS = Path(os.environ.get("STRESS_DIR", str(Path.home() / "Documents/kicad_stress_test")))
 
@@ -161,7 +161,9 @@ def _plan_pairs(manifest):
     """Replicate manifest_to_plan.main()'s kept-command loop to yield
     (argv, step) for every command that becomes a GUI step."""
     cmds = parse_manifest(manifest)
-    keep, _info = compute_prune_keep(cmds)
+    # The converter's own prune, which leaves out commands their tool's parser
+    # rejects (the CLI ran nothing for them).
+    keep, _rejected = m2p.prune_manifest(cmds)
     steps = []
     pairs = []
     for i, (_cwd, argv) in enumerate(cmds):
@@ -1512,6 +1514,90 @@ def check_group_flags():
     return bad
 
 
+def check_rejected_steps():
+    """A recorded command its tool's own argparse REJECTS ran nothing on the
+    CLI, so it must not become a plan step that runs in the GUI.
+
+    hexberry_fpga recorded `qfn_fanout.py ... --dry-run` (qfn_fanout has no
+    --dry-run: exit 2, no board). The pruner keeps commands by the boards they
+    NAME, not by whether they ran, so a rejected command that is the last to
+    name a board a later step reads was kept and converted -- hexberry's escaped
+    only because it named no output. Self-contained: two synthetic chains.
+      A  the rejected command is that last writer: no fanout step at all.
+      B  it is a rejected RETRY of an accepted command: the plan's fanout is
+         the accepted one (no --width), since that is the board the route
+         step really read.
+    Both must be named, counted, on stderr.
+    """
+    import contextlib
+    import io
+    import shutil
+    import tempfile
+    bad = []
+    qfn = "python3 py_router/qfn_fanout.py b0.kicad_pcb --output b1.kicad_pcb --component U7"
+    route = "python3 py_router/route.py b1.kicad_pcb b2.kicad_pcb --nets '*'"
+    chains = {
+        'A': ([qfn + " --dry-run", route], ['route'], None),
+        'B': ([qfn, qfn + " --width 0.1 --dry-run", route],
+              ['fanout', 'route'], {}),
+    }
+    d = tempfile.mkdtemp()
+    try:
+        for name, (lines, want_actions, want_fanout_params) in chains.items():
+            man = os.path.join(d, f'redo_{name}.sh')
+            with open(man, 'w', encoding='utf-8', newline='\n') as f:
+                f.write('#!/bin/sh\n' + '\n'.join(lines) + '\n')
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                steps, _skipped = m2p.plan_steps_from_manifest(man)
+            actions = [s.get('action') for s in steps]
+            if actions != want_actions:
+                bad.append((f'<chain {name}>',
+                            f"steps {actions}, want {want_actions}: a command "
+                            f"its parser rejects was converted into a runnable "
+                            f"step"))
+            fan = [s for s in steps if s.get('action') == 'fanout']
+            if want_fanout_params is not None and fan and \
+                    (fan[0].get('params') or {}) != want_fanout_params:
+                bad.append((f'<chain {name}>',
+                            f"fanout params {fan[0].get('params')}: the plan "
+                            f"took the REJECTED retry, not the command that "
+                            f"wrote the board the route step read"))
+            text = err.getvalue()
+            if not ('REJECTED' in text and 'unrecognized arguments: --dry-run'
+                    in text):
+                bad.append((f'<chain {name}>',
+                            "the rejected command was not named on stderr"))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    # Where a tool's parser cannot be built (a missing dependency in this
+    # interpreter) its flag list stands in, and must still refuse the unknown
+    # flag while accepting what argparse accepts: an unambiguous prefix, and
+    # the --flag=value spelling.
+    import cli_argv_check as cac
+    if not cac._flag_list_rejection('qfn_fanout.py', ['b0.kicad_pcb',
+                                                      '--dry-run']):
+        bad.append(('<fallback>', "the flag-list fallback accepted qfn_fanout "
+                                  "--dry-run"))
+    _ok = cac._flag_list_rejection('qfn_fanout.py', [
+        'b0.kicad_pcb', '--output', 'b1.kicad_pcb', '--comp', 'U7',
+        '--width=0.1'])
+    if _ok:
+        bad.append(('<fallback>', f"the flag-list fallback refused what "
+                                  f"argparse accepts: {_ok}"))
+    # The checked-in fixture must be a chain the real CLIs ACCEPT: a fixture
+    # line its tool rejects is now (rightly) not converted, and every flag
+    # check it carries would vanish from the count without a failure. Its
+    # bga_fanout line once passed the output positionally, which bga_fanout
+    # refuses (it takes --output): 13 BGA flag checks went that way.
+    _keep, fixture_rejected = m2p.prune_manifest(parse_manifest(FIXTURE))
+    for i, why in sorted(fixture_rejected.items()):
+        bad.append(('<fixture>', f"command {i + 1} is rejected by its own "
+                                 f"tool ({why}); the flag checks it carries "
+                                 f"would silently drop out"))
+    return bad
+
+
 def check_refused_tools():
     """#431: placement tools must be REFUSED loudly, and must not break the chain.
 
@@ -1782,8 +1868,14 @@ def main():
     for f, why in reg_bad:
         print(f"    {f}: {why}")
 
+    rej_bad = check_rejected_steps()
+    print(f"Parser-rejected commands: {'OK' if not rej_bad else 'FAILED'} "
+          f"(never plan steps; the board binds to its real writer; named).")
+    for f, why in rej_bad:
+        print(f"    {f}: {why}")
+
     return 1 if (total_bad or res_bad or cap_bad or own_bad or flag_bad
-                 or grp_bad or ref_bad or reg_bad) else 0
+                 or grp_bad or ref_bad or reg_bad or rej_bad) else 0
 
 
 if __name__ == "__main__":

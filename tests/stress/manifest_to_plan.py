@@ -856,6 +856,36 @@ def cap_optimization_step(argv, cwd=None):
     return step
 
 
+def prune_manifest(cmds):
+    """(keep, rejected) for a parsed manifest: the indices of the commands a
+    plan is built from, and {index: why} for every converted-tool command the
+    tool's OWN argparse rejects (cli_argv_check).
+
+    A rejected command ran nothing and wrote no board, so it is pruned as if it
+    were not in the manifest: a board it names binds to the command that really
+    wrote it last, and the rejected command is never kept. The plain pruner
+    cannot know this -- the manifest records no exit status -- and kept such a
+    command whenever it was the last to NAME a board a later step read; this
+    module then converted it into a plan step that ran, and succeeded, in the
+    GUI (hexberry_fpga's `qfn_fanout.py ... --dry-run` is the recorded case:
+    qfn_fanout has no --dry-run, so the CLI exited 2 with no output).
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from redo_stress_test import compute_prune_keep, is_check_cmd
+    from cli_argv_check import rejection
+    rejected = {}
+    for i, (_cwd, argv) in enumerate(cmds):
+        if is_check_cmd(argv) or '--help' in argv or '-h' in argv:
+            continue
+        why = rejection(argv)
+        if why:
+            rejected[i] = why
+    keep, _info = compute_prune_keep(
+        [(c, ['true']) if i in rejected else (c, a)
+         for i, (c, a) in enumerate(cmds)])
+    return keep - set(rejected), rejected
+
+
 def plan_steps_from_manifest(manifest, keep_files=False):
     """(steps, skipped_count) for a recorded manifest -- the whole conversion.
 
@@ -880,13 +910,13 @@ def plan_steps_from_manifest(manifest, keep_files=False):
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'py_router'))  # #522/py_placer layout
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'py_placer'))  # #522/py_placer layout
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'py_tools'))  # #522/py_placer layout
-    from redo_stress_test import parse_manifest, compute_prune_keep, is_check_cmd
+    from redo_stress_test import parse_manifest, is_check_cmd
 
     cmds = parse_manifest(manifest)
-    keep, _info = compute_prune_keep(cmds)
+    keep, rejected = prune_manifest(cmds)
 
     steps = []
-    skipped = 0
+    skipped = len(rejected)
     refused = []
     noops = []
     for i, (_cwd, argv) in enumerate(cmds):
@@ -933,6 +963,14 @@ def plan_steps_from_manifest(manifest, keep_files=False):
     if not keep_files:
         for s in steps:
             s.pop('_files', None)
+    if rejected:
+        # Loud and counted, like the refusals below: the plan does what the
+        # CLI chain did for these, which is nothing.
+        print(f"WARNING: {len(rejected)} recorded command(s) were REJECTED by "
+              f"their tool's own argument parser -- the CLI ran nothing for "
+              f"them -- and are not plan steps:", file=sys.stderr)
+        for i, why in sorted(rejected.items()):
+            print(f"  - command {i + 1}: {why}", file=sys.stderr)
     if refused:
         # Loud, on stderr, every time -- never a silent drop.
         print(f"WARNING: {len(refused)} command(s) have NO faithful plan "
@@ -986,7 +1024,8 @@ def main():
     with open(out, 'w', encoding='utf-8') as f:
         json.dump({'steps': steps}, f, indent=2)
     print(f"{len(steps)} step(s) written to {out} "
-          f"({skipped} kept-but-non-GUI command(s) skipped)")
+          f"({skipped} command(s) skipped: kept but not GUI steps, or "
+          f"rejected by their tool's parser)")
     print("Load it in the AI tab (Load... next to 'Parsed result') and "
           "press 'Run Selected Steps'.")
     return 0
