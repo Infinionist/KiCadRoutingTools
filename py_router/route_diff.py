@@ -839,6 +839,10 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         if return_results:
             return 0, 0, 0.0, {'results': [], 'all_swap_vias': [], 'exclusion_zone_lines': [], 'boundary_debug_labels': []}
         return 0, 0, 0.0
+    # #1247: what this call was ASKED to route (both halves of every pair),
+    # before the already-connected filter -- the only nets a
+    # `--length-match-group auto` group may hold.
+    _length_match_scope_ids = {nid for _, nid in net_ids}
 
     # Flag target pads at/over the board edge before routing, so an unroutable
     # off-board pad reads as a clear warning rather than a silent search failure
@@ -1508,8 +1512,11 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         state, diff_pair_ids_to_route)
 
     # Apply length matching if configured
+    _length_match_report = {}
     if length_match_groups:
-        run_length_matching(routed_results, length_match_groups, config, pcb_data)
+        run_length_matching(routed_results, length_match_groups, config, pcb_data,
+                            scope_net_ids=_length_match_scope_ids,
+                            report=_length_match_report)
 
     # Apply intra-pair P/N length matching if configured
     intra_pair_reports = []
@@ -1816,6 +1823,12 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         # pairs attempted P->P / N->N in-run (Class 2 - both members owned).
         'single_ended_fallback': se_fallback_summary,
     }
+    # #1247: every length-match group this call formed, by member name, and
+    # what `auto` left out and why (route.py reports the same keys).
+    if 'groups' in _length_match_report:
+        summary['length_match_groups'] = _length_match_report['groups']
+    if 'auto' in _length_match_report:
+        summary['length_match_auto'] = _length_match_report['auto']
     if ac_coupled_summary:
         summary['ac_coupled_xnets'] = ac_coupled_summary
     if impedance_width_clamped:
@@ -1879,6 +1892,10 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
             'pair_reports': pair_reports,
             'casualty_reconcile': casualty_summary,
             'single_ended_fallback': se_fallback_summary,
+            # #1247: same data as JSON_SUMMARY['length_match_groups'] /
+            # ['length_match_auto'] (empty / None without a group).
+            'length_match_groups': summary.get('length_match_groups', []),
+            'length_match_auto': summary.get('length_match_auto'),
         }
     else:
         wrote = write_routed_output(

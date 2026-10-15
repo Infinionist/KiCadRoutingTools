@@ -777,7 +777,12 @@ Look for DDR signal patterns in the net list that may need length matching:
 
 If DDR signals detected:
 - Note that `--length-match-group auto` should be used
-- DQ0-7 + DQS0 form byte lane 0, DQ8-15 + DQS1 form byte lane 1, etc.
+- DQ0-7 + DQS0 (+ DM0) form byte lane 0, DQ8-15 + DQS1 form byte lane 1,
+  etc.; address/command/clock form `command_address`
+- `auto` groups only the step's own `--nets`, by whole name token, and only
+  under a prefix the board proves is DRAM (#1247). Preview it with
+  `classify_ddr_nets` (snippet in the DDR section below). Any DDR net it
+  lists as not grouped needs its own `--length-match-group` patterns
 
 Report to user:
 - List of detected differential pairs (or "none found")
@@ -1883,14 +1888,19 @@ route step's finalize like the main flow. If VCC wasn't fanned out, add
 For DDR memory or other length-matched buses, detect signals that need matching:
 
 ```python
-# Common DDR signal patterns
-ddr_patterns = ['DQ', 'DQS', 'DQM', 'DM', 'CLK', 'CK', 'CAS', 'RAS', 'WE', 'CS', 'ODT', 'CKE']
-ddr_nets = [n.name for n in pcb.nets.values()
-            if n.name and any(p in n.name.upper() for p in ddr_patterns)]
+# What `--length-match-group auto` will form -- the engine's own classifier.
+# Never substring-match: 'WE' is inside 'POWER', 'CK' inside 'JTAG_TCK' (#1247).
+from length_matching import classify_ddr_nets
+names = [n.name for n in pcb.nets.values() if n.name]
+ddr = classify_ddr_nets(names)
+ddr_groups = ddr['groups']           # {'byte_lane_0': [...], 'command_address': [...]}
+left_out = ddr['lane_undeterminable'] + ddr['no_group_token']
 ```
 
 If DDR or length-matched signals detected, add to the plan:
-- `--length-match-group auto` for automatic DDR byte lane grouping
+- `--length-match-group auto` for automatic DDR byte lane grouping. It
+  groups only that step's `--nets`, so put the DDR nets the group needs in
+  the same step. Any DDR net in `left_out` needs explicit patterns
 - `--length-match-tolerance 0.1` for acceptable variance (mm)
 - `--time-matching` if routes span different layers (accounts for dielectric)
 

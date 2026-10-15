@@ -2004,6 +2004,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
 
     # Find net IDs and filter already-routed nets
     net_ids = resolve_net_ids(pcb_data, net_names)
+    # #1247: what this call was ASKED to route, before the already-connected
+    # filter -- the only nets a `--length-match-group auto` group may hold.
+    _length_match_scope_ids = {nid for _, nid in net_ids}
     # Flag target pads that sit at/over the board edge before routing, so an
     # unroutable off-board pad reads as a clear warning rather than a silent
     # exhaustive-search failure (issue #195).
@@ -3106,8 +3109,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     total_iterations += rq_iterations
 
     # Apply length matching if configured
+    _length_match_report = {}
     if length_match_groups and not _ckpt_stop:
-        run_length_matching(routed_results, length_match_groups, config, pcb_data)
+        run_length_matching(routed_results, length_match_groups, config, pcb_data,
+                            scope_net_ids=_length_match_scope_ids,
+                            report=_length_match_report)
 
     # Sync pcb_data with length-matched segments before Phase 3
     # This ensures tap routes see meanders from other nets as obstacles
@@ -4700,6 +4706,13 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # taps below the nominal). Grade/check_drc the board at this floor.
         'min_clearance_used': __import__('clearance_ledger').effective(clearance),
     }
+    # #1247: every length-match group this call formed, by member name, and
+    # what `auto` left out and why -- the membership the meanders and the
+    # #521 protected_nets record were built from.
+    if 'groups' in _length_match_report:
+        summary['length_match_groups'] = _length_match_report['groups']
+    if 'auto' in _length_match_report:
+        summary['length_match_auto'] = _length_match_report['auto']
     # #857/#842/#530: the escalation policy, every feature delivered below its
     # requested size, every fab-tier escalation, and the .kicad_dru rules this
     # tool could not honour -- the block a harness reads instead of grepping.
@@ -5059,6 +5072,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             # #1146: the nets JSON_SUMMARY['keep_away'] lists as left inside
             # a band, one dict per net (empty without a rule).
             'keep_away': keep_away_entries(summary.get('keep_away')),
+            # #1247: same data as JSON_SUMMARY['length_match_groups'] /
+            # ['length_match_auto'] (empty / None without a group).
+            'length_match_groups': summary.get('length_match_groups', []),
+            'length_match_auto': summary.get('length_match_auto'),
         }
     else:
         # Write output file using extracted output_writer module

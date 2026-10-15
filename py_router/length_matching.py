@@ -1717,6 +1717,20 @@ def _apply_meanders_to_net_with_iteration(
         return new_segments, new_segments, bump_count, new_metric
 
 
+def _routed_this_run_names(net_names: List[str], net_results: Dict[str, dict]):
+    """Group members this run actually ROUTED (#766's "routed THIS run").
+
+    Having an in-run result is not enough (#1247): route.py registers every
+    pre-existing net it may rip as an `is_existing_route` result carrying the
+    net's own file copper, and counting those reported nets an earlier step
+    routed as routed this run. A registration that was ripped and re-routed
+    has a fresh result without the flag, and one restored after a failed
+    reroute gets its flagged payload back, so the flag is exact at matching
+    time."""
+    return {n for n in net_names
+            if net_results.get(n) and not net_results[n].get('is_existing_route')}
+
+
 def _seed_group_members_from_board(
     net_names: List[str],
     have_names,
@@ -1736,12 +1750,13 @@ def _seed_group_members_from_board(
     'from_board': True so the meander loop skips them: their copper is already
     written, so "adding length" to them would emit a duplicate copy.
 
-    `in_run_names` are names that DO have an in-run result, just not one this
-    pass can lengthen -- a pair routed by the direct-hybrid escape carries no
-    `route_length`, so it lands here despite having been routed seconds ago
-    (#766). Such a member is seeded the same way but flagged `routed_this_run`,
-    because telling the user to "route the whole group in one step" when they
-    just did is advice that costs them a re-run to disprove.
+    `in_run_names` are names this run ROUTED (`_routed_this_run_names`), just
+    not into a result this pass can lengthen -- a pair routed by the
+    direct-hybrid escape carries no `route_length`, so it lands here despite
+    having been routed seconds ago (#766). Such a member is seeded the same
+    way but flagged `routed_this_run`, because telling the user to "route the
+    whole group in one step" when they just did is advice that costs them a
+    re-run to disprove.
     """
     from net_queries import calculate_route_length
 
@@ -1832,7 +1847,7 @@ def apply_length_matching_to_group(
                   and 'route_length' in net_results[name]}
     board_seeded = _seed_group_members_from_board(
         net_names, have_names, pcb_data,
-        in_run_names={n for n in net_names if net_results.get(n)})
+        in_run_names=_routed_this_run_names(net_names, net_results))
     group_results.update(board_seeded)
 
     if len(group_results) < 2:
@@ -2038,7 +2053,7 @@ def apply_time_matching_to_group(
                   and 'route_length' in net_results[name]}
     board_seeded = _seed_group_members_from_board(
         net_names, have_names, pcb_data,
-        in_run_names={n for n in net_names if net_results.get(n)})
+        in_run_names=_routed_this_run_names(net_names, net_results))
     group_results.update(board_seeded)
 
     if len(group_results) < 2:
@@ -2221,68 +2236,300 @@ def find_nets_matching_patterns(all_net_names: List[str], patterns: List[str]) -
     return matching
 
 
-def auto_group_ddr4_nets(net_names: List[str]) -> List[List[str]]:
+# ---------------------------------------------------------------------------
+# DDR auto-grouping (`--length-match-group auto`), #1247.
+#
+# A name is read as an INTERFACE PREFIX plus one whole SIGNAL TOKEN. The name
+# is split on non-alphanumerics (after KiCad's `~{..}` overbar and `{slash}`
+# escape are removed) and scanned from the RIGHT: a trailing token of at most
+# two characters, or all digits, is a decoration -- polarity (P/N, t/c, +/-),
+# active-low (n, B, L), channel (A/B), a bit index -- and is stepped over; the
+# first token that is not one must itself BE a signal, whole, or the name
+# carries none. So `WE` is never found inside `power`, `CK` never inside
+# `TCK`, `Net-(U1-PadA15)` is not address line 15, and an
+# `unconnected-(...-PadV3)` net is never read at all.
+#
+# A whole token is still not enough: `IO_A0` and `/sheetIO/A0` are Arduino
+# pins, `OLED_CS` is an SPI select, `SD0_CMD` an SD card. The PREFIX (all of
+# the name before the signal token) decides. A prefix is a DRAM interface only
+# when the board's nets under it carry at least two DRAM-only kinds (_DDR_
+# QUALIFIERS: DQ, DQS, a numbered/halved mask, BA, BG, CA, CKE, ODT, ACT, and
+# RAS-or-CAS counted once, so an asynchronous DRAM's bare RAS/CAS pair does
+# not qualify on its own). Two, not one: QSPI flash names its data DQ0-3, USB
+# names D- `DM`, and a lone `LED_ACT` is an activity LED. The generic tokens
+# (A<n>, D<n>, CS, WE, CK/CLK, CMD, ...) join a group only under a qualified
+# prefix. Qualification reads the board's WHOLE net list (`context_names`), so
+# a step that routes only the address nets still recognises their interface.
+#
+# Groups are keyed by lane number across interfaces, as before: haasoscope's
+# LPDDR4 channels A and B share `byte_lane_0`. The clock (CK/CLK) joins
+# `command_address`, because the command/address bus is sampled on it and is
+# matched to it.
+#
+# Accepted spellings seen on real boards: an optional SDRAM-controller prefix
+# `S`/`SD` (Allwinner SDQS0P / SA0 / SBA0, i.MX SDCLK0_P / SDBA0, STM32
+# SDNCAS, Atmel SDA10) -- never on a data line D<n> (`SD0` is SD-card data)
+# and never on a bare CK/CLK/CS (`SCK`, `SCLK`, `SCS` are SPI); an active-low
+# `n`/`N` (nCS, SDNWE) or trailing `N`/`B` (CSn, RASN); lane halves `L`/`U`/`H`
+# (LDQS, UDM, DQMH); `RDQS`; and `DQ<byte>_<bit>` when an interface's bit
+# index runs through all eight values. A bare DQS/DM (no digit, no half) gets
+# a lane only when its interface's data spans exactly one lane (an x8 part);
+# otherwise it is reported ungrouped BY NAME.
+
+_DDR_CORE_SPECS = (
+    # (kind, role, pattern) -- matched whole (fullmatch), case-insensitive.
+    ('DQ', 'data', r'DQ(?P<n>\d+)'),
+    ('D', 'data', r'(?:D|DATA)(?P<n>\d+)'),
+    ('DQS', 'strobe',
+     r'(?P<h>[LU])?R?DQS(?P<h2>[LUH])?(?P<n>\d+)?[PNTCB]?(?P<n2>\d+)?'),
+    ('DM', 'mask', r'(?P<h>[LU])?(?P<dqm>DQM|DM)(?P<h2>[LUH])?(?P<n>\d+)?'),
+    ('BA', 'command', r'BA\d+'),
+    ('BG', 'command', r'BG\d+'),
+    ('BS', 'command', r'BS\d+'),
+    ('CA', 'command', r'CA\d+'),
+    ('A', 'command', r'(?:A|AD|ADDR)\d+'),
+    ('RAS', 'command', r'RAS[NB]?'),
+    ('CAS', 'command', r'CAS[NB]?'),
+    ('WE', 'command', r'WE[NB]?'),
+    ('ACT', 'command', r'ACT[NB]?'),
+    ('CS', 'command', r'CS\d*[NB]?'),
+    ('CKE', 'command', r'CKE\d*'),
+    ('ODT', 'command', r'ODT\d*'),
+    ('PAR', 'command', r'PAR'),
+    ('CMD', 'command', r'CMD'),
+    ('CK', 'clock', r'(?:CK|CLK)\d*[PNTCB]?\d*'),
+)
+_DDR_CORES = tuple((k, r, re.compile(p, re.IGNORECASE))
+                   for k, r, p in _DDR_CORE_SPECS)
+_DDR_TOKEN_RE = re.compile(r'[0-9A-Za-z]+')
+# Bare cores that an `S` prefix turns into an SPI pin name.
+_DDR_SPI_LOOKALIKES = frozenset({'CK', 'CLK', 'CS'})
+# Kinds that only a synchronous-DRAM interface carries (see the block above).
+_DDR_QUALIFIERS = frozenset({'DQ', 'DQS', 'DM', 'BA', 'BG', 'CA', 'CKE', 'ODT',
+                             'ACT', 'RAS/CAS'})
+_DDR_MIN_QUALIFIER_KINDS = 2
+
+
+def _ddr_canonical(name: str) -> str:
+    """The name with KiCad's overbar markup and `{slash}` escape removed, so
+    `/DDR3/~{DDR3_CAS}` and `/DDR3/DDR3_A0` share the prefix `/DDR3/DDR3_`."""
+    s = name.replace('{slash}', '/')
+    for mark in ('~{', '{', '}', '~'):
+        s = s.replace(mark, '')
+    return s
+
+
+def _ddr_signal(token: str):
+    """(kind, role, match) when the WHOLE token names a DRAM signal, else None."""
+    up = token.upper()
+    for pre in ('', 'SD', 'S'):
+        if pre and not up.startswith(pre):
+            continue
+        rest = token[len(pre):]
+        for active_low in (False, True):
+            if active_low and rest[:1] not in ('n', 'N'):
+                continue
+            core = rest[1:] if active_low else rest
+            if not core:
+                continue
+            for kind, role, rx in _DDR_CORES:
+                m = rx.fullmatch(core)
+                if m is None:
+                    continue
+                if pre and kind == 'D':
+                    break      # SD0 is SD-card data, not an S-prefixed D0
+                if pre == 'S' and core.upper() in _DDR_SPI_LOOKALIKES:
+                    break      # SCK / SCLK / SCS are SPI pins
+                return kind, role, m
+    return None
+
+
+def _ddr_read_name(name: str):
+    """Read one net name: a dict with its interface `prefix`, signal `kind`,
+    `role` (data/strobe/mask/command/clock), the core's number `n`, its lane
+    `half` (L/U/H), the digits-only token right after it (`index`) and the
+    DRAM-only `qualifier` kind it contributes -- or None (no signal token)."""
+    canon = _ddr_canonical(name)
+    toks = list(_DDR_TOKEN_RE.finditer(canon))
+    for i in range(len(toks) - 1, -1, -1):
+        tok = toks[i].group()
+        hit = _ddr_signal(tok)
+        if hit is None:
+            if len(tok) <= 2 or tok.isdigit():
+                continue          # a decoration -- keep looking leftwards
+            return None
+        kind, role, m = hit
+        gd = m.groupdict()
+        nxt = toks[i + 1].group() if i + 1 < len(toks) else ''
+        num = gd.get('n') or gd.get('n2')
+        half = (gd.get('h') or gd.get('h2') or '').upper() or None
+        if kind in ('RAS', 'CAS'):
+            qualifier = 'RAS/CAS'
+        elif kind == 'DM':
+            # A bare `DM` is also USB's D-: it joins, but proves nothing.
+            qualifier = ('DM' if (gd['dqm'].upper() == 'DQM' or num or half)
+                         else None)
+        elif kind in _DDR_QUALIFIERS:
+            qualifier = kind
+        else:
+            qualifier = None
+        return {'prefix': canon[:toks[i].start()], 'kind': kind, 'role': role,
+                'n': int(num) if num else None, 'half': half,
+                'index': int(nxt) if nxt.isdigit() else None,
+                'qualifier': qualifier}
+    return None
+
+
+def _ddr_natural_key(s: str):
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', s)]
+
+
+def classify_ddr_nets(net_names: List[str],
+                      context_names: Optional[List[str]] = None) -> dict:
+    """Classify `net_names` for `--length-match-group auto` (#1247).
+
+    `context_names` is the board's whole net list, used only to decide which
+    interface prefixes are DRAM interfaces (default: `net_names` itself).
+    Membership never extends beyond `net_names`.
+
+    Returns a dict:
+      groups      {key: [names, input order]}, keys in first-appearance order
+      interfaces  {prefix: [qualifier kinds]} for the qualified prefixes that
+                  hold at least one of `net_names`
+      lane_undeterminable  data/strobe/mask names whose lane cannot be read
+      no_group_token       names under a qualified prefix with no group token
+                           (RESET, ZQ, DMI, VREF, ...)
+      not_dram_interface   names with a group token whose prefix carries no
+                           DRAM-only signals (IO_A0, OLED_CS, SD0_CMD, ...)
+      other_count          names with no DRAM reading at all
     """
-    Automatically group DDR4 nets by byte lane for length matching.
+    context = list(context_names) if context_names is not None else list(net_names)
+    reads = {}
+    for name in set(context) | set(net_names):
+        r = _ddr_read_name(name)
+        if r is not None:
+            reads[name] = r
 
-    Groups:
-    - DQ0-7 + DQS0/DQS0_N (byte lane 0)
-    - DQ8-15 + DQS1/DQS1_N (byte lane 1)
-    - etc.
-    - CA/CMD/ADDR as separate group
+    # Per interface prefix, over the board: DRAM-only kinds, the bit-index
+    # spread of DQ<n>_<m> names, then the data lanes.
+    kinds: Dict[str, set] = {}
+    dq_index_values: Dict[str, set] = {}
+    for name in context:
+        r = reads.get(name)
+        if r is None:
+            continue
+        if r['qualifier']:
+            kinds.setdefault(r['prefix'], set()).add(r['qualifier'])
+        if r['kind'] == 'DQ' and r['index'] is not None:
+            dq_index_values.setdefault(r['prefix'], set()).add(r['index'])
+    qualified = {p for p, ks in kinds.items()
+                 if len(ks) >= _DDR_MIN_QUALIFIER_KINDS}
+    bit_indexed = {p for p, vals in dq_index_values.items() if len(vals) >= 8}
 
-    Args:
-        net_names: List of net names to group
+    def data_lane(r):
+        if r['kind'] == 'DQ' and r['index'] is not None \
+                and r['prefix'] in bit_indexed:
+            return r['n']            # DQ<byte>_<bit>
+        return r['n'] // 8
 
-    Returns:
-        List of groups, each group is a list of net names
+    data_lanes: Dict[str, set] = {}
+    for name in context:
+        r = reads.get(name)
+        if r is not None and r['role'] == 'data' and r['prefix'] in qualified:
+            data_lanes.setdefault(r['prefix'], set()).add(data_lane(r))
+
+    def lane_of(r):
+        if r['role'] == 'data':
+            return data_lane(r)
+        if r['n'] is not None:
+            return r['n']
+        if r['half']:
+            return 0 if r['half'] == 'L' else 1
+        if r['index'] is not None:
+            return r['index']        # DQS_0 / DM#1 style
+        lanes = data_lanes.get(r['prefix'], set())
+        return next(iter(lanes)) if len(lanes) == 1 else None
+
+    named_prefixes = [p for p in qualified if re.search(r'[0-9A-Za-z]', p)]
+    groups: Dict[str, List[str]] = {}
+    interfaces: Dict[str, List[str]] = {}
+    lane_undeterminable: List[str] = []
+    no_group_token: List[str] = []
+    not_dram_interface: List[str] = []
+    other_count = 0
+    for name in net_names:
+        r = reads.get(name)
+        if r is None:
+            canon = _ddr_canonical(name)
+            if any(canon.startswith(p) for p in named_prefixes):
+                no_group_token.append(name)
+            else:
+                other_count += 1
+            continue
+        if r['prefix'] not in qualified:
+            not_dram_interface.append(name)
+            continue
+        interfaces[r['prefix']] = sorted(kinds[r['prefix']])
+        if r['role'] in ('command', 'clock'):
+            key = 'command_address'
+        else:
+            lane = lane_of(r)
+            if lane is None:
+                lane_undeterminable.append(name)
+                continue
+            key = f'byte_lane_{lane}'
+        groups.setdefault(key, []).append(name)
+    return {'groups': groups, 'interfaces': interfaces,
+            'lane_undeterminable': lane_undeterminable,
+            'no_group_token': no_group_token,
+            'not_dram_interface': not_dram_interface,
+            'other_count': other_count}
+
+
+def auto_group_ddr4_nets(net_names: List[str],
+                         context_names: Optional[List[str]] = None,
+                         report: Optional[dict] = None) -> List[List[str]]:
+    """Group `net_names` into DDR byte lanes and one command/address group for
+    `--length-match-group auto` (rules: the block comment above
+    `_DDR_CORE_SPECS`, #1247).
+
+    Prints every group's MEMBERS by name when it is formed, then every
+    DRAM-looking name it left out and why. `context_names` (the board's whole
+    net list) decides which prefixes are DRAM interfaces; `report`, when given,
+    receives `classify_ddr_nets`'s dict.
+
+    Returns the groups as lists of names, in first-appearance order.
     """
-    groups = {}
-    ungrouped = []
+    c = classify_ddr_nets(net_names, context_names)
+    if report is not None:
+        report.update(c)
+    groups = c['groups']
 
-    for net_name in net_names:
-        # Try to identify DQ nets (e.g., DQ0, DQ15, DQ0_A, etc.)
-        dq_match = re.search(r'DQ(\d+)', net_name, re.IGNORECASE)
-        if dq_match:
-            dq_num = int(dq_match.group(1))
-            byte_lane = dq_num // 8
-            group_key = f"byte_lane_{byte_lane}"
-            if group_key not in groups:
-                groups[group_key] = []
-            groups[group_key].append(net_name)
-            continue
+    def _names(ns):
+        return ', '.join(sorted(ns, key=_ddr_natural_key))
 
-        # Try to identify DQS nets (e.g., DQS0, DQS0_N, DQSP0, DQSN0)
-        dqs_match = re.search(r'DQS[PN]?(\d+)', net_name, re.IGNORECASE)
-        if dqs_match:
-            dqs_num = int(dqs_match.group(1))
-            group_key = f"byte_lane_{dqs_num}"
-            if group_key not in groups:
-                groups[group_key] = []
-            groups[group_key].append(net_name)
-            continue
-
-        # Try to identify CA/CMD/ADDR nets
-        if re.search(r'(CA\d+|CMD|ADDR|A\d+|BA\d+|BG\d+|CK|CS|ODT|CKE|RAS|CAS|WE)', net_name, re.IGNORECASE):
-            group_key = "command_address"
-            if group_key not in groups:
-                groups[group_key] = []
-            groups[group_key].append(net_name)
-            continue
-
-        ungrouped.append(net_name)
-
-    # Convert to list of lists
-    result = list(groups.values())
-
-    # Log grouping
-    print(f"  DDR4 auto-grouping found {len(groups)} groups:")
+    print(f"  DDR auto-grouping: {len(groups)} group(s) from "
+          f"{len(net_names)} net(s) in scope")
+    if c['interfaces']:
+        print("    DRAM interface prefix(es): " + '; '.join(
+            f"'{p}' ({', '.join(ks)})"
+            for p, ks in sorted(c['interfaces'].items())))
     for key, nets in groups.items():
-        print(f"    {key}: {len(nets)} nets")
-    if ungrouped:
-        print(f"    ungrouped: {len(ungrouped)} nets")
-
-    return result
+        print(f"    {key} ({len(nets)}): {_names(nets)}")
+    if c['lane_undeterminable']:
+        print(f"    not grouped, lane not readable from the name "
+              f"({len(c['lane_undeterminable'])}): "
+              f"{_names(c['lane_undeterminable'])}")
+    if c['no_group_token']:
+        print(f"    not grouped, DRAM interface but no group token "
+              f"({len(c['no_group_token'])}): {_names(c['no_group_token'])}")
+    if c['not_dram_interface']:
+        print(f"    not grouped, name looks DRAM-like but its prefix carries "
+              f"no DRAM-only signals ({len(c['not_dram_interface'])}): "
+              f"{_names(c['not_dram_interface'])}")
+    if c['other_count']:
+        print(f"    not DRAM-named: {c['other_count']} net(s)")
+    return list(groups.values())
 
 
 # ============================================================================

@@ -50,13 +50,32 @@ python py_router/route.py board.kicad_pcb --length-match-group auto \
 
 Each `--length-match-group` flag defines one group; nets matching *any* pattern in the flag belong to that group. Patterns support `*` wildcards and `[0-9]` character ranges (`match_net_pattern()`).
 
-### DDR4 Auto-Grouping
+### DDR Auto-Grouping
 
-`--length-match-group auto` calls `auto_group_ddr4_nets()`, which groups by name:
+`--length-match-group auto` calls `auto_group_ddr4_nets()` (classifier: `classify_ddr_nets()`), which groups by name. The same engine call serves the GUI: typing `auto` in the Length-match groups field reaches it through `batch_route`.
 
-- **DQ nets** (`DQ<n>`) are grouped by byte lane: `n // 8` (DQ0–7 → lane 0, DQ8–15 → lane 1, …)
-- **DQS strobes** (`DQS0`, `DQS0_N`, `DQSP0`, `DQSN0`, …) join their byte lane's group
-- **Command/address nets** (`CA*`, `CMD`, `ADDR`, `A<n>`, `BA<n>`, `BG<n>`, `CK`, `CS`, `ODT`, `CKE`, `RAS`, `CAS`, `WE`) form a single command/address group
+**Which nets it sees.** Only the nets this call was asked to route (its `--nets`, before the already-connected filter). A route step also registers pre-existing nets as rip candidates, and those are never grouped (#1247). A named member that an earlier step routed still joins and is measured from the board, as for named groups.
+
+**Whole tokens, not substrings.** The name is split on non-alphanumerics (KiCad's `~{..}` overbar and `{slash}` are removed first) and read from the right. Short trailing tokens are polarity, active-low, channel or bit markers (`+`/`-`, `_P`/`_N`, `_t`/`_c`, `#`, `_n`, `_A`/`_B`), and are skipped. The first longer token must itself be the signal. So `WE` is never found inside `power`, `CK` never inside `JTAG_TCK`, and `Net-(U1-PadA15)` is not address line 15.
+
+**An interface prefix must prove it is DRAM.** Everything before the signal token is the interface prefix (`RAM_`, `/DDR3/DDR3_`, `Net-(U1A-`). A generic token (`A<n>`, `D<n>`, `CS`, `WE`, `CK`/`CLK`, `CMD`) joins only under a prefix whose nets carry at least two DRAM-only kinds on the board. The kinds are DQ, DQS, a numbered or halved mask, BA, BG, CA, CKE, ODT and ACT, with RAS-or-CAS counted once. So `IO_A0`, `/sheetIO/A0`, `OLED_CS` and `SD0_CMD` stay out, and so does a NOR flash that names its data `DQ0`-`DQ15`. The prefix is judged over the whole board, so a step that routes only the address nets still recognises its interface.
+
+**Groups:**
+
+- **Byte lanes** `byte_lane_<n>`: data `DQ<n>`/`D<n>`/`DATA<n>` in lane `n // 8`. Strobes (`DQS<n>`, `RDQS<n>`, `LDQS`/`UDQS`) and masks (`DM<n>`, `DQM<n>`, `LDM`/`UDM`, `DQMH`/`DQML`) go in their numbered or lower/upper lane. A `DQ<byte>_<bit>` interface (bit index runs 0-7) is read by byte. A bare `DQS`/`DM` joins only when its interface's data spans exactly one lane (an x8 part). Otherwise it is listed as ungrouped by name.
+- **`command_address`**: `A<n>`, `BA<n>`, `BG<n>`, `BS<n>`, `CA<n>`, `RAS`, `CAS`, `WE`, `CS`, `CKE`, `ODT`, `ACT`, `PAR`, `CMD`, and the clock `CK`/`CLK`. The clock is in this group because the command/address bus is sampled on it and is matched to it.
+
+Accepted spellings include the active-low `n` prefix (`nCAS`), `N`/`B` suffixes (`CSn`, `RASN`), and SDRAM-controller `S`/`SD` prefixes (Allwinner `SDQS0P`/`SA0`, i.MX `SDCLK0_P`, STM32 `SDNCAS`). The prefixes are never accepted on a data line (`SD0` is SD-card data) or on a bare `CK`/`CLK`/`CS` (`SCK`, `SCLK`, `SCS` are SPI). Lanes are keyed by number across interfaces: LPDDR4 channels A and B share `byte_lane_0`.
+
+**What it reports.** When a group forms, its members are printed by name, before any meander. Next come the interface prefixes it accepted, then every DRAM-looking net it left out, by name and reason:
+
+- lane not readable;
+- in the interface but no group token (`RESET`, `ZQ`, `DMI`, `VREF`);
+- the name looks like DRAM but its prefix carries no DRAM-only signals.
+
+`JSON_SUMMARY` carries the same membership as `length_match_groups` (one `{name, source, members}` record per group, named groups included, with `patterns`). The exclusions are in `length_match_auto`. The GUI's results carry both keys. The #521 `length-matched` protected nets are drawn from these members: those routed this run or measured from earlier-step copper.
+
+A name the rules do not cover (LPDDR5 `WCK`, LPDDR4 `DMI`, DDR5 `CB` check bits) is listed as ungrouped, never guessed. Pass explicit `--length-match-group` patterns for it.
 
 ## The Trombone Meander
 

@@ -247,6 +247,13 @@ def merge_summaries(summaries: List[Dict], aborted: bool = False,
                    'power_widths_run_scope'):
             if _k in first:
                 merged[_k] = first[_k]
+        # The length-match groups (#1247) are the RUN's: pass 1 formed them
+        # over the call's whole scope. A reconciliation sub-run re-forms them
+        # over the few nets it retries, so last-wins would report that slice
+        # (or drop the key) as the run's membership. First wins.
+        for _k in ('length_match_groups', 'length_match_auto'):
+            if _k in first:
+                merged[_k] = first[_k]
 
     # DISTURBED-BUT-UNOWNED NETS ARE STICKY (#622 yw1: SA1 shipped with ZERO
     # copper, SA2/SA6 open, and the merged MIN said failed:2 deficit:0). A
