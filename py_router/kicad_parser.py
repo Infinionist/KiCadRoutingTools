@@ -180,6 +180,12 @@ LEGACY_ARC_FORMATTING = 20210925
 LEGACY_NET_TIES = 20220815
 #: Files before this version wrote overbars as ~TEXT~ rather than ~{TEXT}.
 NEW_OVERBAR_NOTATION = 20210606
+#: Up to this version a footprint property is a bare name/value pair, and
+#: pcbnew's reader takes `(property "Sheetname" ...)` / `(property "Sheet
+#: name" ...)` (and the file pair) as the footprint's SHEET; from the next
+#: version on a property is a field and those names are ordinary user fields
+#: (probed on pcbnew 10.0.0: 20230619 reads them, 20230620 does not).
+SHEET_PROPERTIES_MAX_VERSION = 20230619
 
 #: The first board format with (footprint ...) blocks ("module -> footprint",
 #: KiCad 5.99). An older file -- KiCad 5, KiCad 4 -- writes (module ...) and
@@ -1492,6 +1498,65 @@ def layer_list_tokens(body: str) -> List[str]:
             for quoted, bare in _LAYER_LIST_TOKEN_RE.findall(body)]
 
 
+#: Every copper layer a KiCad layer set can hold, in the order the pcbnew
+#: builder (`build_pcb_data_from_board.get_pad_layers`) lists them.
+ALL_COPPER_LAYER_NAMES = ('F.Cu', 'B.Cu') + tuple('In%d.Cu' % i for i in range(1, 31))
+#: KiCad's layer-SET tokens whose two-sided form the pcbnew builder spells
+#: as a wildcard of its own, and the members it stands for.
+_PAD_LAYER_PAIRS = {'*.Mask': ('F.Mask', 'B.Mask'), '*.Paste': ('F.Paste', 'B.Paste'),
+                    '*.SilkS': ('F.SilkS', 'B.SilkS')}
+_PAD_LAYER_PAIR_OF = {m: w for w, ms in _PAD_LAYER_PAIRS.items() for m in ms}
+#: The layer-set tokens KiCad's reader accepts that the pcbnew builder lists
+#: member by member (pcbnew's `m_layerMasks`, probed on 10.0.0).
+_PAD_LAYER_SETS = {'F&B.Cu': ('F.Cu', 'B.Cu'),
+                   '*In.Cu': ALL_COPPER_LAYER_NAMES[2:],
+                   '*.Adhes': ('F.Adhes', 'B.Adhes'),
+                   '*.Fab': ('F.Fab', 'B.Fab'),
+                   '*.CrtYd': ('F.CrtYd', 'B.CrtYd')}
+
+
+def canonical_pad_layers(tokens: Sequence[str], board_copper: Sequence[str] = (),
+                         plated_through: bool = False) -> List[str]:
+    """A pad's `(layers ...)` tokens as the layer SET pcbnew loads, spelled the
+    way the pcbnew builder lists it, so `Pad.layers` is the same set on both
+    parse paths.
+
+    - The set tokens expand: `F&B.Cu` -> F.Cu + B.Cu, `*In.Cu` -> In1..In30,
+      `*.Adhes` / `*.Fab` / `*.CrtYd` -> their F/B members. `*.Mask`,
+      `*.Paste` and `*.SilkS` stay wildcards, and two explicit members of one
+      of them collapse to it; every copper layer KiCad has collapses to `*.Cu`,
+      and a name `*.Cu` already covers is dropped (glasgow J10 lists `*.Cu`
+      and In3..In30 both).
+    - A PLATED through-hole pad also takes every copper layer of the board
+      (`board_copper`): pcbnew's loader puts a PTH pad on all of them whatever
+      the file lists (probed on 10.0.0: `(layers "B.Cu" "B.Mask")` on a
+      4-layer board loads as F.Cu, In1.Cu, In2.Cu, B.Cu, B.Mask). An NPTH pad
+      keeps what it declares.
+
+    First-appearance order is kept, so a pad that names none of these tokens
+    keeps its list exactly as the file spells it."""
+    names: List[str] = []
+    for tok in tokens:
+        if tok == '*.Cu':
+            names.extend(ALL_COPPER_LAYER_NAMES)
+        else:
+            names.extend(_PAD_LAYER_SETS.get(tok) or _PAD_LAYER_PAIRS.get(tok) or (tok,))
+    if plated_through:
+        names.extend(board_copper)
+    have = set(names)
+    all_copper = have.issuperset(ALL_COPPER_LAYER_NAMES)
+    out: List[str] = []
+    for n in names:
+        if all_copper and n in ALL_COPPER_LAYER_NAMES:
+            n = '*.Cu'
+        elif n in _PAD_LAYER_PAIR_OF and have.issuperset(
+                _PAD_LAYER_PAIRS[_PAD_LAYER_PAIR_OF[n]]):
+            n = _PAD_LAYER_PAIR_OF[n]
+        if n not in out:
+            out.append(n)
+    return out
+
+
 def map_layer_list_tokens(body: str, fn) -> str:
     """BODY with every layer name replaced by ``fn(name)``, each keeping the
     spelling it had: a quoted name stays quoted, a bare one stays bare."""
@@ -1699,20 +1764,32 @@ def _unescape_kicad_string(s: str) -> str:
 #: tokens `(sheetname "...")` / `(sheetfile "...")`, KiCad 6/7 properties
 #: `(property "Sheetname" "...")` / `(property "Sheetfile" "...")`.
 _SHEET_FIELD_RE = {
-    which: re.compile(r'\((?:%s|property\s+"%s")\s+"((?:[^"\\]|\\.)*)"'
-                      % (which.lower(), which))
+    which: re.compile(r'\(%s\s+"((?:[^"\\]|\\.)*)"' % which.lower())
+    for which in ('Sheetname', 'Sheetfile')}
+#: The PROPERTY spellings pcbnew's reader honours: "Sheetname" and KiCad 6's
+#: "Sheet name" (ecp5_mini, rfswitch01), and the same pair for the file.
+_SHEET_PROPERTY_RE = {
+    which: re.compile(r'\(property\s+"(?:%s|%s %s)"\s+"((?:[^"\\]|\\.)*)"'
+                      % (which, which[:5], which[5:].lower()))
     for which in ('Sheetname', 'Sheetfile')}
 
 
-def _footprint_sheet_fields(fp_text: str) -> Tuple[str, str]:
+def _footprint_sheet_fields(fp_text: str, version: int = 0) -> Tuple[str, str]:
     """`(sheet_name, sheet_file)` of one footprint block, as the file spells
     them ('' when absent). Read from the block header -- before the first
-    `(pad ` -- so a pad or a graphic can never lend a block a sheet."""
+    `(pad ` -- so a pad or a graphic can never lend a block a sheet.
+
+    The `(sheetname ...)` token counts at any version; the PROPERTY spellings
+    only up to SHEET_PROPERTIES_MAX_VERSION, where pcbnew stops reading them.
+    `version` 0 (unknown) reads them too."""
     first_pad = fp_text.find('(pad ')
     head = fp_text[:first_pad] if first_pad > 0 else fp_text
+    legacy = not version or version <= SHEET_PROPERTIES_MAX_VERSION
     out = []
     for which in ('Sheetname', 'Sheetfile'):
         m = _SHEET_FIELD_RE[which].search(head)
+        if m is None and legacy:
+            m = _SHEET_PROPERTY_RE[which].search(head)
         out.append(_unescape_kicad_string(m.group(1)) if m else '')
     return out[0], out[1]
 
@@ -3841,15 +3918,22 @@ def duplicate_reference_counts(raw_refs: Sequence[str]) -> Dict[str, int]:
 
 def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
                                 name_to_id: Dict[str, int] = None,
-                                duplicates: Dict[str, int] = None) -> Tuple[Dict[str, Footprint], Dict[int, List[Pad]]]:
+                                duplicates: Dict[str, int] = None,
+                                board_copper: Sequence[str] = None) -> Tuple[Dict[str, Footprint], Dict[int, List[Pad]]]:
     """Extract footprints and their pads with global coordinates.
 
     `duplicates`, when given, is FILLED with `duplicate_reference_counts` --
     an out-param rather than a third return value, because the 2-tuple is a
     documented public signature (`docs/api-kicad-parser.md`).
+
+    `board_copper` is the board's copper layer list, which a plated pad's
+    layer set takes in full (`canonical_pad_layers`); read from the file's
+    layer table when not given.
     """
     footprints = {}
     pads_by_net: Dict[int, List[Pad]] = {}
+    if board_copper is None:
+        board_copper = _layer_table(content)[1]
 
     # Find all footprints - need to handle nested parentheses properly.
     # Named through iter_footprint_blocks so this path and every writer agree
@@ -3995,7 +4079,7 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
         # #1211: the sheet's NAME and FILE, either spelling (see
         # Footprint.sheet_name), read from the header only -- before the
         # first pad -- so a pad or graphic cannot lend a block a sheet.
-        fp_sheet_name, fp_sheet_file = _footprint_sheet_fields(fp_text)
+        fp_sheet_name, fp_sheet_file = _footprint_sheet_fields(fp_text, _file_version)
 
         # Reference-label geometry (#481): parsed from the Reference sub-node's
         # own slice. None for the uuid-keyed reference-less footprints above.
@@ -4113,11 +4197,23 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
             if not custom_resolved:
                 size_x, size_y, rect_rotation = _resolve_pad_rect(size_x, size_y, pad_rotation)
 
-            # Extract layers, quoted (KiCad 7+) or bare (KiCad 6)
+            # Extract layers, quoted (KiCad 7+) or bare (KiCad 6), as the SET
+            # pcbnew loads (canonical_pad_layers): `F&B.Cu` is F.Cu + B.Cu,
+            # and a plated pad is on every copper layer of the board.
             layers_section = re.search(r'\(layers\s+([^)]+)\)', pad_text)
             pad_layers = []
             if layers_section:
-                pad_layers = layer_list_tokens(layers_section.group(1))
+                pad_layers = canonical_pad_layers(
+                    layer_list_tokens(layers_section.group(1)), board_copper,
+                    plated_through=(pad_type == 'thru_hole'))
+            # pcbnew's reader blanks the number of a pad that cannot carry
+            # one -- an NPTH hole, or an SMD/connector pad with no copper (an
+            # aperture) -- whatever the file wrote (PAD::CanHaveNumber;
+            # ovc5_camera_carrier's KiCad 6 mounting holes are pad "1").
+            if pad_type == 'np_thru_hole' or (
+                    pad_type in ('smd', 'connect')
+                    and not any(ln.endswith('.Cu') for ln in pad_layers)):
+                pad_num = ''
 
             # Extract net - try KiCad 9 format first, then KiCad 10
             net_match = re.search(r'\(net\s+(\d+)\s+"%s"\)' % _ESC_STR, pad_text)
@@ -4145,7 +4241,11 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
             # Extract drill size for through-hole pads. Oval/slot drills are
             # (drill oval w h); take max(w, h) so the pad keeps drill>0 (TH)
             # semantics instead of being misread as SMD (issue #106).
-            oval_match = re.search(r'\(drill\s+oval\s+([\d.]+)(?:\s+([\d.]+))?', pad_text)
+            # Numbers in AT_NUM form: KiCad writes a value under 1e-4 with an
+            # exponent, and arty_mpw_tester's Flexypin pads carry
+            # `(drill 1e-06)`, which `[\d.]+` read as a 1 mm hole.
+            oval_match = re.search(r'\(drill\s+oval\s+(%s)(?:\s+(%s))?' % (AT_NUM, AT_NUM),
+                                   pad_text)
             drill_w = drill_h = 0.0
             if oval_match:
                 # (drill oval w) with a single value is legal and means w x w
@@ -4154,7 +4254,7 @@ def extract_footprints_and_pads(content: str, nets: Dict[int, Net],
                 drill_h = float(oval_match.group(2)) if oval_match.group(2) else drill_w
                 drill_size = max(drill_w, drill_h)
             else:
-                drill_match = re.search(r'\(drill\s+([\d.]+)', pad_text)
+                drill_match = re.search(r'\(drill\s+(%s)' % AT_NUM, pad_text)
                 drill_size = float(drill_match.group(1)) if drill_match else 0.0
 
             # Pad copper offset (#324): (drill (offset x y)) displaces the
@@ -6606,7 +6706,8 @@ def parse_kicad_pcb(filepath: str, guide_layer: str = "User.1",
     nets, name_to_id = extract_nets(content, kicad_version)
     _dups: Dict[str, int] = {}
     footprints, pads_by_net = extract_footprints_and_pads(
-        content, nets, name_to_id, duplicates=_dups)
+        content, nets, name_to_id, duplicates=_dups,
+        board_copper=board_info.copper_layers)
     if _dups:
         # ON STDERR, not stdout: 9 shipped call sites across 4 files emit bare
         # JSON on stdout (`route.py`, `converge.py`, `check_reachability.py`,
@@ -7163,6 +7264,21 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
             if lid is not None and layer_set.Contains(lid):
                 layers.append(lname)
 
+        # Any other layer of the set (User.1 ...), by its file token, so the
+        # set is the one the text parser reads (`canonical_pad_layers`).
+        covered = set(layers)
+        for _tok in layers:
+            covered.update(_PAD_LAYER_PAIRS.get(_tok, ()))
+        try:
+            for lid in layer_set.Seq():
+                if lid in copper_id_to_name:
+                    continue
+                lname = get_layer_name(lid)
+                if lname and lname not in covered:
+                    layers.append(lname)
+                    covered.add(lname)
+        except Exception:
+            pass
         return layers
 
     # --- Extract board info ---

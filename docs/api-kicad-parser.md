@@ -116,16 +116,16 @@ section. Used for accurate length/time matching.
 | Field | Type | Meaning |
 |-------|------|---------|
 | `component_ref` | str | Parent footprint reference (`'U9'`) |
-| `pad_number` | str | Pad identifier (`'1'`, `'H2'`; may be empty) |
+| `pad_number` | str | Pad identifier (`'1'`, `'H2'`; may be empty). `''` for a pad that cannot carry a number -- an NPTH hole, or an SMD/connector pad with no copper layer (an aperture) -- whatever the file wrote, as pcbnew's reader blanks it (`PAD::CanHaveNumber`) |
 | `global_x`, `global_y` | float | Absolute board position (footprint rotation applied) |
 | `local_x`, `local_y` | float | Position relative to footprint origin (before rotation) |
 | `size_x`, `size_y` | float | Pad dimensions in board space |
 | `shape` | str | `'circle'`, `'rect'`, `'roundrect'`, `'oval'`, `'trapezoid'`, `'custom'` |
-| `layers` | List[str] | Layers the pad is on (`['*.Cu']` = all copper, for through-hole) |
+| `layers` | List[str] | Layers the pad is on, as the SET pcbnew loads (`canonical_pad_layers`): `'*.Cu'` = every copper layer; `F&B.Cu` reads as `'F.Cu', 'B.Cu'` and `*.Adhes` / `*.Fab` / `*.CrtYd` / `*In.Cu` as their members; `*.Mask` / `*.Paste` / `*.SilkS` stay wildcards (two explicit members collapse to one); a **plated** through-hole pad is on every copper layer of the board whatever the file lists. File order is kept otherwise. Both parse paths give the same set |
 | `net_id` | int | Net ID (0 = unconnected) |
 | `net_name` | str | Net name (`''` if unconnected) |
 | `rotation` | float | Total rotation in degrees (pad + footprint), normalized to [0, 360) |
-| `drill` | float | Drill diameter (0 for SMD, > 0 for through-hole). Oval/slot drills (`(drill oval w h)`) report `max(w, h)` so they keep `> 0` / through-hole semantics. |
+| `drill` | float | Drill diameter (0 for SMD, > 0 for through-hole). Oval/slot drills (`(drill oval w h)`) report `max(w, h)` so they keep `> 0` / through-hole semantics. Read in exponent form too: `(drill 1e-06)` is 1 nm, not 1 mm. |
 | `pinfunction` | str | Pin function from the schematic (`'TX'`, `'~RESET'`) |
 | `pintype` | str | Pin electrical type (`'passive'`, `'input'`, `'power_in'`) |
 | `pad_type` | str | Pad kind: `'smd'`, `'thru_hole'`, `'np_thru_hole'`, `'connect'`. NPTH pads carry **no copper** (their size is just the mask opening, even when `layers` lists `*.Cu`), so copper-clearance checks skip them; only their drill hole matters. |
@@ -210,7 +210,7 @@ declares Type VII (#962, see the writer docs).
 | `clearance` | float | Footprint-level `(clearance …)` override in mm (0 = none). Already **resolved into** each pad's `local_clearance` at parse time — read that field for clearance decisions; this records the raw footprint value (issue #326). |
 | `uuid` | str | The footprint's own `(uuid …)` (KiCad 6: `(tstamp …)`); KiCad's `(group …)` blocks list members by it (#459) |
 | `sheet_path` | str | The schematic `(path "/<sheet uuid>/…/<symbol uuid>")`. The LAST uuid is the symbol, the rest the sheet instance; two instances of one hierarchical sheet carry the SAME symbol uuid under different prefixes, which `place_pose replicate` maps parts by (#1211). A single-uuid path is top level |
-| `sheet_name`, `sheet_file` | str | The schematic sheet's NAME and FILE as the file spells them (#1211): KiCad 8+ header tokens `(sheetname "/CH1/")` / `(sheetfile "strip.kicad_sch")`, or KiCad 6/7's `Sheetname` / `Sheetfile` properties (the value is a path `"/CH1/"` on some boards, a bare name `"IO_Buffer_B"` on others; not normalised). Read from the block header only, escapes undone. `build_pcb_data_from_board` reads `FOOTPRINT.GetSheetname()` / `GetSheetfile()`, which return the same spelling for both forms (KiCad 10.0.0); `compare_pcb_data` diffs all three sheet fields, and `tests/gui_parity/test_1211_sheet_name_parity.py` pins the parity. `''` = the file names none |
+| `sheet_name`, `sheet_file` | str | The schematic sheet's NAME and FILE as the file spells them (#1211): KiCad 8+ header tokens `(sheetname "/CH1/")` / `(sheetfile "strip.kicad_sch")`, or KiCad 6/7's `Sheetname` / `Sheetfile` properties (KiCad 6 dev files spell them `Sheet name` / `Sheet file`; either property counts only up to file version `SHEET_PROPERTIES_MAX_VERSION` (20230619), where pcbnew stops reading it -- in a later file it is an ordinary user field) (the value is a path `"/CH1/"` on some boards, a bare name `"IO_Buffer_B"` on others; not normalised). Read from the block header only, escapes undone. `build_pcb_data_from_board` reads `FOOTPRINT.GetSheetname()` / `GetSheetfile()`, which return the same spelling for both forms (KiCad 10.0.0); `compare_pcb_data` diffs all three sheet fields, and `tests/gui_parity/test_1211_sheet_name_parity.py` pins the parity. `''` = the file names none |
 | `net_tie_groups` | List[List[str]] | Pad-number groups the footprint deliberately shorts (`(net_tie_pad_groups "1, 2")` — Kelvin shunts, net-ties). KiCad's clearance exemption between the grouped pads is **local**: a tied net's copper may contact the partner pad only where the contact lies on its own pad. Query per-net via `pcb.net_tie_exempt_pad_ids(net_id)`. |
 | `owns_edge_cuts` | bool | The footprint draws Edge.Cuts geometry of its own (`fp_line`/`fp_rect`/`fp_arc`/`fp_circle`/`fp_poly`/`fp_curve` on that layer, issue #829). Its `(at x y rot)` therefore transforms part of the board outline. |
 | `owns_board_outline` | bool | ...and that geometry is **the board's own boundary** rather than a relief the part carries, so moving the footprint would resize the board (issue #829). A footprint is *carried* (this stays `False`, and it remains movable) only when its Edge.Cuts segments **close on themselves** — a window, slot or milled relief — **and** that shape lies inside the outline the board draws without it. An open path cannot be a cut-out, so it is always the boundary. crkbd draws 184 per-LED windows as carried geometry, and #628 measured that freezing such a part costs it every legal pose it has. **Movers gate on this field, never on `owns_edge_cuts`.** Computed by `kicad_parser.footprint_outline_owners` (text) and `footprint_outline_owners_from_pcbnew` (live board), which share the one decision function `classify_outline_owners`. |
@@ -460,6 +460,9 @@ KiCad 6 board parses on the CLI the way it loads in KiCad:
 |---|---|---|
 | `(layers *.Cu *.Mask)` — names unquoted | the same names | every layer list (KiCad 6 writes pad lists bare) |
 | a zone on `(layers F&B.Cu)` / `(layers *.Cu)` | one `Zone` per layer: F.Cu + B.Cu / every copper layer | all versions |
+| a pad on `(layers "F&B.Cu" ...)`, `"*.Adhes"`, ..., or a plated pad declared on one side | `Pad.layers` as the set pcbnew loads (`canonical_pad_layers`) | all versions |
+| an NPTH or copper-less pad with a number | `pad_number` `''` | all versions |
+| `(property "Sheet name" ...)` / `(property "Sheetname" ...)` | `Footprint.sheet_name` (and the file pair) | version ≤ `SHEET_PROPERTIES_MAX_VERSION` (20230619) |
 | `(gr_arc (start CENTER) (end ARC-START) (angle SWEEP))` | the three-point arc pcbnew writes | version ≤ `LEGACY_ARC_FORMATTING` (20210925) |
 | a footprint whose `(tags ...)` start with `"net tie"` | one `net_tie_groups` entry of every pad | version ≤ `LEGACY_NET_TIES` (20220815) |
 | `(tstamp ...)` | the item's `uuid` (an 8-hex-digit stamp expanded as KiCad's KIID does) | footprints, tracks, vias, zones |
@@ -472,6 +475,7 @@ file of that version, which KiCad would then fail to load.
 
 ```python
 layer_list_tokens(body: str) -> List[str]          # names in a (layers ...) body, quoted or bare
+canonical_pad_layers(tokens, board_copper=(), plated_through=False) -> List[str]  # a pad's layers as pcbnew loads them
 map_layer_list_tokens(body: str, fn) -> str        # rewrite each name, keeping its spelling
 upgrade_legacy_arcs(content: str, kicad_version=None) -> str
 kiid_from_tstamp(raw: str) -> str

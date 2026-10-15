@@ -2,7 +2,9 @@
 """A foreign pad declared `F&B.Cu` is seen by the sampled pad checks (#1046).
 
 KiCad has two copper layer-set tokens for a pad: `*.Cu` (every copper layer)
-and `F&B.Cu` (front and back only). The parser keeps either as written.
+and `F&B.Cu` (front and back only). The parser now reads `F&B.Cu` as F.Cu +
+B.Cu, the set pcbnew loads (`canonical_pad_layers`), but a Pad built in code
+can still carry the token, so the consumers keep expanding it.
 `_foreign_pad_arrays` kept a pad only if its list held `layer` or `*.Cu`, so an
 `F&B.Cu` pad was on no layer at all: `_pt_foreign_pad_dist` /
 `_seg_foreign_pad_dist` never saw it, and neither did anything built on them --
