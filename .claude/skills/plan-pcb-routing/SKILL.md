@@ -1413,6 +1413,33 @@ python3 -X utf8 awx/route_bus.py board_step1.kicad_pcb board_step1a.kicad_pcb \
   joint's 45. `plain` for a bus to a row part (a QFN), and for one source
   with several ends, `--bus U1:U4+U3:plain:...` (two buses that interleave on
   one face, routed as one).
+- **Every ball of a bus array must leave the step served -- the rule that
+  decides the rest of the chain.** A ball is served when it has an escape
+  (a dog-bone via or stub), is dropped to its plane, or is strapped. `route.py`
+  cannot reach a ball that has none: the pad sits inside the pad field with no
+  stub, no rip or retry authority applies, and the net fails as "boxed in by
+  static obstacles". A fanout run AFTER the bus step cannot repair it either:
+  the bus's lanes and dog-bones already fill the field (on sdi_mipi_conv,
+  fanning U11 out after the bus step left MORE nets open, 43 against 35). So
+  the fanout of a bus's arrays is the bus step's own, planned with the bus (on
+  the zynq, every other ball of U1 was served: 98 escaped, 12 strapped, 5
+  dog-boned alone of 115), and the parts no bus touches are fanned out whole
+  with `bga_fanout.py` before `route.py` (Step 1b), never left for the router.
+  - The step's log says what it served: `joint field of U1: FEASIBLE -- bus
+    a/b, others N escaped + M strapped + K dog-boned alone of T, plane P
+    dropped`. Read it, then check the BOARD it hands on: count each bus
+    array's signal balls that carry no stub, via, plane link or strap. Every
+    ball counted is a net `route.py` will leave open.
+  - `escape` on a shared array does plan the array's other balls with the bus,
+    but on sdi_mipi_conv (DDR3 joint, then SDI escape on U11) the board it
+    handed on still had 25 bare U11 balls; the same two buses both `joint`
+    left none (U11 248 of 248 served, U12 90 of 90). After `escape` or
+    `plain`, make the count above before going on, and fan the bare balls out
+    only if the bus left room.
+  - Both-`joint` is not free: on that board the fanout audit then refused
+    every SDI lane (their balls sit on U11's far side from U15), so the bus
+    laid 2 lanes and `route.py` finished the rest -- 27 nets open against 29
+    with the escape bus and 37 with no bus step (one run each).
 - **Sizes:** the chain's own (Step 4's design rules), with
   `--clearance-ceiling` as everywhere in a chain; `--fanout-track-width` the
   escapes' track under the arrays.
