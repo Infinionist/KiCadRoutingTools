@@ -239,7 +239,7 @@ off-outline grade (`check_drc.footprint_graphic_outline_census`, #962) reads
 |-------|------|---------|
 | `net_id`, `net_name` | int, str | Zone's net |
 | `layer` | str | Layer name |
-| `polygon` | List[Tuple[float, float]] | Outline vertices |
+| `polygon` | List[Tuple[float, float]] | Outline vertices, as pcbnew loads them: a vertex equal on the nm grid to the one before it is dropped, and so is a last vertex repeating the first (pcbnew closes the outline as it parses it, in every file format; a KiCad 5-converted board writes one on every zone) |
 | `uuid` | str | UUID from the file |
 | `priority` | int | `(priority N)`; higher-priority zones win where outlines overlap (0 when absent) |
 | `island_removal_mode` | int | 0 = always remove isolated islands (KiCad default), 1 = never, 2 = below `island_area_min` |

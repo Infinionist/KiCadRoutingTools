@@ -5979,8 +5979,7 @@ def extract_zones(content: str, name_to_id: Dict[str, int] = None) -> List[Zone]
         # vertex (route_planes rewrites can emit these) loads with fewer
         # points than the file text and parser-parity flags a phantom
         # vertex-count mismatch. Mirror pcbnew exactly: consecutive-only,
-        # on the nm grid; collinear runs and a last==first closing vertex
-        # are KEPT (pcbnew keeps both).
+        # on the nm grid; collinear runs are KEPT.
         deduped = []
         prev_key = None
         for pt in polygon:
@@ -5988,6 +5987,14 @@ def extract_zones(content: str, name_to_id: Dict[str, int] = None) -> List[Zone]
             if key != prev_key:
                 deduped.append(pt)
                 prev_key = key
+        # A last vertex repeating the first is DROPPED, once:
+        # parseZONE closes the outline (SHAPE_LINE_CHAIN::SetClosed(true) ->
+        # mergeFirstLastPointIfNeeded) in every file format, KiCad 9 and 10.
+        # KiCad never writes one, but a KiCad 5-converted file does on every
+        # zone (kangyuzhe zynq7020_ad9364, format 20201116: all 76 outlines).
+        if len(deduped) > 1 and \
+                (round(deduped[0][0] * 1e6), round(deduped[0][1] * 1e6)) == prev_key:
+            deduped.pop()
         polygon = deduped
 
         if not polygon:
