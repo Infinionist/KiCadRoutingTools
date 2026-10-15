@@ -883,8 +883,16 @@ class PCBData:
     # steps lowered live in pcbnew's memory (update_live_drc_floors), and a
     # PCBData the GUI built before a step's writeback is still in use after it
     # -- a value captured at build time read the pre-writeback floor there.
-    # None = read the file (parse_kicad_pcb).
+    # None = read the file (parse_kicad_pcb). It also answers
+    # min_hole_clearance, the copper-to-hole floor obstacle_map prices NPTH
+    # holes at (declared_hole_clearance).
     live_rules_provider: object = None
+    # pcbnew's FACTORY value for each live rule whose "not configured" the
+    # live board cannot express, {rule key: mm}: pcbnew loads a project that
+    # does not declare min_hole_clearance -- and every project-less board --
+    # at 0.25 (KiCad 10), where the file declares nothing at all. A constant
+    # of the pcbnew build, so captured at build. Empty on parse_kicad_pcb.
+    live_rule_defaults: Dict[str, float] = field(default_factory=dict)
     # #459: KiCad (group "name" (uuid ...) (members <uuid> ...)) blocks, as
     # {group name: [footprint reference, ...]}. The designer's own statement that
     # these parts belong together, so placement grouping ranks it above any
@@ -8957,21 +8965,54 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
         exact_fill_provider=_live_fill,
         # #1187: the floors the plan lowered live in memory, not in the file
         live_rules_provider=lambda _board=board: _live_design_rules(_board),
+        # #1038: what an unset live rule reads as, so the hole floor can tell
+        # pcbnew's stand-in from a declaration (obstacle_map)
+        live_rule_defaults=_pcbnew_rule_defaults(),
     )
+
+
+_PCBNEW_RULE_DEFAULTS = None
+
+
+def _pcbnew_rule_defaults():
+    """pcbnew's factory values for the live rules whose unset state a loaded
+    board cannot express -- today min_hole_clearance -- in mm
+    (PCBData.live_rule_defaults). {} when they cannot be read, which leaves
+    the hole floor on the file.
+
+    Read from the constant BOARD_DESIGN_SETTINGS initialises the rule from
+    (``DEFAULT_HOLECLEARANCE``, mm, 0.25 on KiCad 10), never off a throwaway
+    ``pcbnew.BOARD()``: constructing and dropping a board in the GUI process
+    made the planes tab's next ZONE_FILLER.Fill segfault (the engine-parity
+    replay, 3 runs of 3)."""
+    global _PCBNEW_RULE_DEFAULTS
+    if _PCBNEW_RULE_DEFAULTS is None:
+        out = {}
+        try:
+            import pcbnew
+            v = getattr(pcbnew, 'DEFAULT_HOLECLEARANCE', None)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                out['min_hole_clearance'] = float(v)
+        except Exception:
+            out = {}
+        _PCBNEW_RULE_DEFAULTS = out
+    return dict(_PCBNEW_RULE_DEFAULTS)
 
 
 def _live_design_rules(board):
     """What PCBData.live_rules_provider answers for a live pcbnew board
-    (#1187): the design-settings rules the connection-width floor reads, in
-    mm, or None when the board has no design settings. A disabled
-    min_connection reads 0, as the file does."""
+    (#1187): the design-settings rules the connection-width floor reads, and
+    the copper-to-hole floor the obstacle map reads (#1038), in mm, or None
+    when the board has no design settings. A disabled min_connection reads 0,
+    as the file does."""
     try:
         bds = board.GetDesignSettings()
     except Exception:
         return None
     out = {}
     for key, attr in (('min_track_width', 'm_TrackMinWidth'),
-                      ('min_connection', 'm_MinConn')):
+                      ('min_connection', 'm_MinConn'),
+                      ('min_hole_clearance', 'm_HoleClearance')):
         v = getattr(bds, attr, None)
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             out[key] = v / 1e6                # divide, never multiply (#493)
@@ -9942,6 +9983,22 @@ def compare_pcb_data(from_board: 'PCBData', from_file: 'PCBData', tolerance: flo
     if bi_b.via_protection_setup != bi_f.via_protection_setup:
         diffs.append(f"Via protection setup: board={bi_b.via_protection_setup} "
                      f"file={bi_f.via_protection_setup}")
+    # The copper-to-hole floor each front prices NPTH holes at (#1038's via
+    # keep-out turns on above 0). The board side reads pcbnew's in-memory
+    # rule, the file side the project; on a board pcbnew just loaded from
+    # that file they must declare the same floor, including pcbnew's factory
+    # stand-in on a project-less board (obstacle_map.declared_hole_clearance).
+    # Compared exactly (a rule value, not a geometry), and never skipped in
+    # silence: a comparison that could not run is reported as one.
+    try:
+        from obstacle_map import declared_hole_clearance
+        _hc_b = declared_hole_clearance(from_board)
+        _hc_f = declared_hole_clearance(from_file)
+        if abs(_hc_b[0] - _hc_f[0]) > 1e-9:
+            diffs.append(f"Copper-to-hole floor: board={_hc_b[0]} ({_hc_b[1] or 'none'}) "
+                         f"file={_hc_f[0]} ({_hc_f[1] or 'none'})")
+    except ImportError as _e:
+        diffs.append(f"Copper-to-hole floor: not compared ({type(_e).__name__}: {_e})")
 
     def _ap_sig(pcb, ap):
         nm = pcb.nets.get(ap.net_id)

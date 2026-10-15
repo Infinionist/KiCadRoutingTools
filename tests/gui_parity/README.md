@@ -489,6 +489,17 @@ skip cleanly without KiCad python). Run any directly:
   `.kicad_pro` on disk still declares the original, and a live
   `min_connection` outranks `min_track_width`. On the pre-fix code it fails 3
   checks (the floor read the stale file, 0.3 where the board said 0.15).
+- `test_live_hole_clearance.py` -- the copper-to-hole floor
+  (`obstacle_map.resolve_hole_clearance`, NPTH track keep-out plus #1038's
+  via keep-out) on a live board is the board's in-memory `m_HoleClearance`,
+  read at call time: an UNSAVED Board Setup edit on `flat_hierarchy` is priced
+  by a PCBData built before it while the file still says 0.25, and
+  compare_pcb_data names the difference; after `pcbnew.SaveBoard` a file
+  parse in the same process reads the saved value; a project-less board loaded
+  at pcbnew's factory 0.25 reads 0.0 on both fronts, and after one GUI step's
+  writeback the GUI reads the floor the CLI's next step reads from its own
+  writeback; an unsaved board (#1238) prices a live edit. On the pre-fix code
+  it fails 7 checks. The wx-free half is `tests/test_1038_hole_floor_fresh.py`.
 - `test_581_fanout_via_in_pad_gui.py` -- the Basic tab's via-in-pad policy
   (#581) reaches BOTH escape engines from the REAL fanout tab, on glasgow's
   U30 (BGA) and U1 (QFN), engines spied: unticked with a 0.15 spin, each
