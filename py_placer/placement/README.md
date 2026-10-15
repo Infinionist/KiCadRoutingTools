@@ -2061,7 +2061,12 @@ re-seating 85/92 while leaving its zone targets unmoved):
   more agree" letter) and runs a per-part revert sweep (`prune_assignment`)
   after acceptance, because the board-wide gate tuple cannot see an
   individual mis-move smuggled inside a hugely-improving set (run 3's J7:
-  31.6 mm from home, worse than its 15.8 mm input).
+  31.6 mm from home, worse than its 15.8 mm input). Candidates are
+  translations at the part's own angle, with one exception (#1242): an
+  edge-less receptacle's seats face out of the edge they sit on
+  (`facing_seats`) -- a seat its strong mating face points away from is
+  dropped and the facing quarter turn there offered as `(x, y, rot)`, which
+  the ILP, the descent and the pair rows read through `cand_pose`.
 - **`render_placement --legality`** (default ON) draws the defects the caption
   used to only count: conflict rings/links, NPTH keepout circles (the real
   keep-out since #761 — it drew the bare drill at `--clearance >= 0.20`,

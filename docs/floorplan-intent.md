@@ -1743,6 +1743,12 @@ keeps its ref and band, drops `edge`, is flagged `suspect`, and its `note`
 says which of the two it measured (#1155).
 Declaring it would bless the very pose the facing conjunct fails. On the 22
 tracked boards and the fa10 designer boards it never fires.
+`place_reconstruct` seats such an edge-less `edge_receptacle` by its edge
+metric, and does not seat it reversed either (#1242): a candidate seat its
+strong face points away from is not offered, and the quarter turn at that
+position that faces out of the edge it then sits on is
+(`reconstruct.facing_seats`). Its input pose is never read as a seat, so a
+part already sitting reversed is not turned where it stands.
 
 Emitted zones are rounded to 3 decimals and clamped inside the envelope,
 which is written at 4 (#1174) -- a zone rounded past its envelope failed

@@ -119,6 +119,9 @@
  "reconstruct.py::edge_metric": {
   "rect": 1
  },
+ "reconstruct.py::facing_seats.seat_edge": {
+  "grade_rect": 1
+ },
  "reconstruct.py::part_extent_mm": {
   "rect": 1
  },

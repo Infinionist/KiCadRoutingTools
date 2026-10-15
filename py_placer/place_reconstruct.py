@@ -325,6 +325,7 @@ Examples:
     # proxy (R1: an edge part's position is not a netlist question; the
     # proxy would anchor them to their possibly-misplaced partners).
     edge_pref = {}
+    edge_entries = {}           # #1242: their entries, for the facing seat
     if intent is not None:
         # edge_claims(): the receptacle filter below already excluded the
         # weak class, but every engine read goes through the one split so a
@@ -340,6 +341,7 @@ Examples:
                     and c.get('class') == 'edge_receptacle'
                     and not state.parts[c['ref']].locked):
                 edge_pref[c['ref']] = edge_bands.get(c['ref'], 2.0)
+                edge_entries[c['ref']] = c
     if edge_pref:
         print("Edge-preference refs (no declared edge; class outranks the "
               "netlist proxy): " + ", ".join(sorted(edge_pref)))
@@ -400,8 +402,12 @@ Examples:
     xmoved_all = []
     if 'assign' in stages and (vectors or proposals):
         for rnd in range(max(1, args.assign_rounds)):
+            # #1242: an edge-less receptacle's seats face out of the edge
+            # they sit on -- a reversed one is not offered, the facing
+            # quarter turn at that position is (`facing_seats`).
             cands, pattern = reconstruct.build_candidates(
-                state, tiers, vectors, proposals, edge_bands=edge_bands)
+                state, tiers, vectors, proposals, edge_bands=edge_bands,
+                facing=edge_entries)
             n_multi = sum(1 for c in cands.values() if len(c) > 1)
             if rnd == 0:
                 print(f"  assign: {n_multi} part(s) with a real candidate set")
@@ -414,8 +420,8 @@ Examples:
                    for r in choice}
             for ref, k in sorted(choice.items()):
                 if k > 0:
-                    x, y = cands[ref][k]
-                    state.apply_move(ref, x, y, state.parts[ref].rot)
+                    state.apply_move(ref, *reconstruct.cand_pose(
+                        state, ref, cands[ref][k]))
             after = reconstruct.measure(state, edge_bands)
             before_round = base
             rmoved = []
@@ -446,6 +452,17 @@ Examples:
                       f"part(s) moved"
                       + (f" ({len(pruned)} pruned back)" if pruned else "")
                       + f"; gate now {reconstruct.format_gate(after)}")
+                for r in sorted(rmoved):
+                    # #1242: a turned candidate is only ever a facing seat.
+                    if len(cands[r][choice[r]]) > 2:
+                        to = state.parts[r].rot
+                        edge = floorplan._nearest_edge(
+                            state.parts[r].grade_rect(), state.board)
+                        print(f"    {r}: turned {old[r][2]:g} -> {to:g}deg, "
+                              f"seated on the {edge} edge at the angle its "
+                              f"mating face points out of it (#1242)")
+                        report.setdefault('edge_turned', {})[r] = {
+                            'from': old[r][2], 'to': to, 'edge': edge}
                 # The accept rule is smaller-OR-EQUAL, so a round can move
                 # parts and change nothing the gate can see. That is not
                 # neutral: displacement is unbounded, and a run was measured
