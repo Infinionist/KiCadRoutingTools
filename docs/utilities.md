@@ -170,7 +170,7 @@ python py_placer/place_pose.py BOARD OUT rotate CON2 180 [--relative]
 python py_placer/place_pose.py BOARD OUT face U1 W USB1
 python py_placer/place_pose.py BOARD OUT lock U1 CON1
 python py_placer/place_pose.py BOARD OUT set U1 129.9 98.3 rotate CON2 180 lock U1
-python py_placer/place_pose.py BOARD OUT replicate --from CH1 --to CH2 --to CH3 [--anchor REF | --offset DX DY] [--allow-net-mismatch REF.PAD ...]
+python py_placer/place_pose.py BOARD OUT replicate --from CH1 --to CH2 --to CH3 [--anchor REF | --offset DX DY] [--allow-net-mismatch REF.PAD ...] [--only REFS | --skip REFS] [--search MM]
 ```
 
 Several verbs in one call describe ONE arrangement: every op is resolved
@@ -268,13 +268,26 @@ refusal names the refs and pads and spells, for each pad, the waiver
 differently per instance BY DESIGN (glasgow_revC's IO_Buffer address
 straps U19.2, U20.6, U21.2). REF on the `--from` sheet waives it in every
 target, on a `--to` sheet in that one; `nets_waived` reports each waived pad
-and whether it was needed. An unknown or ambiguous sheet (a name such
+and whether it was needed. A copy that does not fit has two answers.
+`--only REF[,REF]` / `--skip REF[,REF]` copy part of the channel (a `--from`
+ref names that part in every target, a `--to` ref that one part); the rest
+stay where they are, need no counterpart and are not checked, but a rail on
+a part left out still counts as shared. `--search MM` (pitch
+`--search-step`, default 0.5 mm) tries each target's offset on a lattice
+within MM of the default, nearest first, and keeps the first one the call
+grades no worse; targets are fitted in `--to` order, each judged with the
+later targets left out of the grade (they are about to move), every
+candidate written and re-graded, a move of a locked part skipped. None
+within MM is exit 4, with `replicate.to[].search` saying what was tried
+and why each was refused. An unknown or ambiguous sheet (a name such
 as `CH1`, or a path or a unique start of one of 4+ characters) exits 2 and
 lists the instances.
 The copy is graded as one arrangement like any other call, with the same lock
 rule; `--snap` does not apply. `summary.replicate` reports the mapping, the
 offset and the renamed and shared nets, and each moved member lists its new
-conflict pairs. See `py_placer/placement/README.md`.
+conflict pairs and the off-board / edge-band / keep-out findings it newly
+carries (`ops[].new_conflicts`), which is the list to `--skip` from. See
+`py_placer/placement/README.md`.
 
 Knobs come from the board (`list_nets.board_floor_knobs`) unless given — a
 CLI-supplied `--clearance` loosens the verdict on a tool whose job is to

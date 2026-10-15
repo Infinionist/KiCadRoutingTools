@@ -110,7 +110,8 @@ exact points given -- so --near / --snap need a call with ONE pose op):
   lock REF [REF ...]
   unlock REF [REF ...]       the only way to move a KiCad-locked part
   replicate --from SHEET --to SHEET [--to SHEET] [--anchor REF] [--offset DX DY]
-            [--allow-net-mismatch REF.PAD ...]
+            [--allow-net-mismatch REF.PAD ...] [--only REFS | --skip REFS]
+            [--search MM [--search-step MM]]
             copy one placed instance of a hierarchical sheet onto its
             sibling instances (#1211). Parts are matched by schematic
             symbol; the copy is refused (exit 4) unless every matched pair
@@ -135,6 +136,18 @@ exact points given -- so --near / --snap need a call with ONE pose op):
                            rule; REF on the --from sheet waives it in every
                            target, on a --to sheet in that one. Repeat per
                            pad: a refusal names each pad it would take
+            --only REF[,REF] / --skip REF[,REF]
+                           a PARTIAL copy: only these parts, or all but
+                           these (a --from ref names that part in every
+                           target, a --to ref that one part); the rest stay
+                           where they are and need no counterpart
+            --search MM [--search-step MM]
+                           when the copy as placed is refused, fit each
+                           target at the offset nearest its default, on a
+                           lattice (0.5mm) within MM, that this call grades
+                           no worse; targets are fitted in --to order. Every
+                           candidate is written and re-graded. Exit 4 if
+                           none fits; never moves a locked part
 """
 
 
@@ -304,6 +317,20 @@ def _verb_parsers(sub=None):
                         'design (an address strap), out of the net rule; '
                         'REF on the --from sheet (every target) or on one '
                         '--to sheet (that one). Repeat per pad')
+    q.add_argument('--search', type=float, default=None, metavar='MM',
+                   help='when the copy as placed is refused, try each '
+                        "target's offset on a lattice within MM of it, "
+                        'nearest first, and keep the first one this call '
+                        'grades no worse; exit 4 if none is')
+    q.add_argument('--search-step', dest='search_step', type=float,
+                   default=None, metavar='MM',
+                   help='lattice pitch of --search (default: 0.5mm)')
+    q.add_argument('--only', action='append', default=[], metavar='REF[,REF]',
+                   help='copy only these parts (a --from ref: in every '
+                        'target; a --to ref: that part only); the rest '
+                        'stay where they are')
+    q.add_argument('--skip', action='append', default=[], metavar='REF[,REF]',
+                   help='copy every part but these (same reading as --only)')
     out['replicate'] = q
     return out
 
@@ -388,10 +415,26 @@ def parse_segments(segments, parsers, error):
                 error("`replicate` was given both --offset and --anchor: "
                       "--offset fixes the translation, --anchor chooses the "
                       "part that keeps its place; pass one")
+            only = [r for tok in a.only for r in tok.split(',') if r]
+            skip = [r for tok in a.skip for r in tok.split(',') if r]
+            if only and skip:
+                error("`replicate` was given both --only and --skip; pass "
+                      "one -- the parts to copy, or the parts to leave")
+            if a.search is not None and not a.search > 0:
+                error("`replicate --search` is a radius in mm and must be "
+                      "positive; %g is not" % a.search)
+            if a.search_step is not None and not a.search_step > 0:
+                error("`replicate --search-step` is a lattice pitch in mm and "
+                      "must be positive; %g is not" % a.search_step)
+            if a.search_step is not None and a.search is None:
+                error("`replicate --search-step` sets the pitch of --search, "
+                      "which this call does not ask for")
             ops.append({'kind': 'replicate', 'from': a.from_sheet,
                         'to': list(a.to_sheets), 'anchor': a.anchor,
                         'offset': a.offset,
-                        'allow_net_mismatch': list(a.allow_net_mismatch)})
+                        'allow_net_mismatch': list(a.allow_net_mismatch),
+                        'only': only, 'skip': skip,
+                        'search': a.search, 'search_step': a.search_step})
     if snap and len(ops) > 1:
         # #1194: a call with several pose ops is ONE arrangement graded at the
         # exact points given, and a snap relocates one part, so `apply_poses`
@@ -608,6 +651,16 @@ def _report(summary):
                       % (w['pads'], w['as_given'],
                          '' if w['needed'] else
                          ' -- wired alike after all; the waiver was not needed'))
+            if t.get('left_in_place'):
+                print("  left in place (not copied): %s"
+                      % ', '.join(t['left_in_place']))
+            sr = t.get('search')
+            if sr and sr.get('found'):
+                print("  --search: the copy as asked was refused; kept offset "
+                      "%+.4f, %+.4f mm from it (%.4f mm), the nearest of %d "
+                      "tried that grades no worse"
+                      % (sr['delta'][0], sr['delta'][1], sr['dist_mm'],
+                         sr['tried']))
     print("pad legality: conflicts %s -> %s, holes %s -> %s, coarse outline "
           "%s -> %s" % (summary['pad_conflicts_before'],
                         summary['pad_conflicts_after'],

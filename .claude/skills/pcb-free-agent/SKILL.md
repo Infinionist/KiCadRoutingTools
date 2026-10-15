@@ -188,7 +188,11 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   pads before you waive them. Each target keeps its anchor
   part where it is (default: the part with the most pads). A copy only
   fits where the target has room for the whole channel: a refused copy
-  lists each colliding member under `ops[].new_conflicts`.
+  lists each colliding member under `ops[].new_conflicts`. Then either copy
+  the rest (`--skip` the members it names, which stay where they are, and
+  repeat until the copy is accepted) or let it look nearby (`--search 2`
+  keeps the nearest offset that grades no worse; it never moves a locked
+  part).
 - **On a pile, rank the biggest IC's rotation before you keep a seed.** A
   pile part keeps its input rotation, which is a generator default, and
   `converge.py poses` cannot rank an IC's rotation once its decaps are packed

@@ -49,7 +49,7 @@ needed it.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from placement.arrays import natural_key
 from placement.groups import _sheet_of
@@ -213,7 +213,8 @@ def members(pcb, prefix: str) -> Dict[str, str]:
 
 
 def correspond(pcb, src: str, dst: str, *,
-               waive: Optional[Dict[Tuple[str, str], str]] = None
+               waive: Optional[Dict[Tuple[str, str], str]] = None,
+               keys: Optional[Set[str]] = None
                ) -> Tuple[List[Tuple[str, str]], Dict]:
     """`([(source ref, target ref), ...], nets)`, or a refusal (exit 4).
 
@@ -228,21 +229,33 @@ def correspond(pcb, src: str, dst: str, *,
     -- pads wired differently BY DESIGN (glasgow's I2C address straps), left
     out of the net rule entirely: they neither break it nor make a net look
     shared. Each is reported back with whether the rule needed it
-    (`nets['waived']`). A refusal names the pads it would take, as flags."""
+    (`nets['waived']`). A refusal names the pads it would take, as flags.
+
+    `keys` (`--only` / `--skip`): the symbol keys this copy MOVES; None is
+    every one. The three checks run over those alone -- a part left out
+    needs no counterpart, may differ in footprint, and cannot break the net
+    rule -- but a net is SHARED when any pad of either whole instance
+    carries it (the waived pads aside), so leaving a part out never turns a
+    rail into a channel-local net."""
     waive = waive or {}
     fps = pcb.footprints
     sm, tm = members(pcb, src), members(pcb, dst)
-    only_s = sorted((sm[k] for k in sm.keys() - tm.keys()), key=natural_key)
-    only_t = sorted((tm[k] for k in tm.keys() - sm.keys()), key=natural_key)
+    sel = set(sm) | set(tm) if keys is None else set(keys)
+    only_s = sorted((sm[k] for k in sm.keys() - tm.keys() if k in sel),
+                    key=natural_key)
+    only_t = sorted((tm[k] for k in tm.keys() - sm.keys() if k in sel),
+                    key=natural_key)
     if only_s or only_t:
         raise PoseRefusal(
             'the two sheet instances do not hold the same parts (matched by '
             'schematic symbol): only in /%s: %s; only in /%s: %s. A copy '
-            'needs a counterpart for every part' % (
+            'needs a counterpart for every part it moves (--skip leaves '
+            'named parts out)' % (
                 src, ', '.join(only_s[:NAMED * 2]) or 'none',
                 dst, ', '.join(only_t[:NAMED * 2]) or 'none'),
             only_in_source=only_s, only_in_target=only_t)
-    pairs = sorted(((sm[k], tm[k]) for k in sm), key=lambda p: natural_key(p[0]))
+    pairs = sorted(((sm[k], tm[k]) for k in sm if k in tm and k in sel),
+                   key=lambda p: natural_key(p[0]))
 
     differ = []
     for s, t in pairs:
@@ -274,8 +287,12 @@ def correspond(pcb, src: str, dst: str, *,
             given = waive.get((key_of[s], sp.pad_number))
             (waived_rows if given is not None else rows).append(
                 (s, sp, t, tp, given))
-    s_nets = {sp.net_id for _s, sp, _t, _tp, _g in rows}
-    t_nets = {tp.net_id for _s, _sp, _t, tp, _g in rows}
+
+    def _instance_nets(mem):
+        return {p.net_id for k, ref in mem.items()
+                for p in fps[ref].pads or ()
+                if (k, p.pad_number) not in waive}
+    s_nets, t_nets = _instance_nets(sm), _instance_nets(tm)
     fwd: Dict[int, Tuple[int, str]] = {}
     bwd: Dict[int, Tuple[int, str]] = {}
 
@@ -402,9 +419,39 @@ def resolve_waivers(pcb, tokens: Sequence[str], src: str,
     return out
 
 
+def resolve_selection(pcb, only: Sequence[str], skip: Sequence[str],
+                      src: str, dsts: Sequence[str]
+                      ) -> Dict[str, Optional[Set[str]]]:
+    """`--only` / `--skip` -> `{target prefix: the symbol keys it copies}`,
+    None meaning every one.
+
+    A ref on the SOURCE instance names its symbol in every target; a ref on
+    one TARGET instance names that part only -- so `--skip RV1` leaves every
+    channel's counterpart of RV1 where it is, and `--skip RV9` only CH3's.
+    The two flags are exclusive (exit 2: `--only A --skip B` has two
+    readings), and a ref outside the named sheets is refused at exit 2."""
+    if only and skip:
+        raise PoseRefusal('replicate was given both --only and --skip; pass '
+                          'one (the parts to copy, or the parts to leave)',
+                          code=2)
+    flag, refs = ('--only', only) if only else ('--skip', skip)
+    if not refs:
+        return {d: None for d in dsts}
+    named: Dict[str, Set[str]] = {d: set() for d in dsts}
+    for ref in refs:
+        key, applies = _locate_ref(pcb, ref, src, dsts, flag)
+        for d in applies:
+            named[d].add(key)
+    if flag == '--only':
+        return named
+    sm = set(members(pcb, src))
+    return {d: (sm | set(members(pcb, d))) - named[d] for d in dsts}
+
+
 def plan(pcb, src_token: str, dst_tokens: Sequence[str], *, anchor: Optional[str] = None,
          offset: Optional[Sequence[float]] = None,
-         allow_net_mismatch: Sequence[str] = ()
+         allow_net_mismatch: Sequence[str] = (),
+         only: Sequence[str] = (), skip: Sequence[str] = ()
          ) -> Tuple[List[Dict], Dict]:
     """`(rows, report)` for one `replicate` op.
 
@@ -423,6 +470,12 @@ def plan(pcb, src_token: str, dst_tokens: Sequence[str], *, anchor: Optional[str
 
     `allow_net_mismatch`: `REF.PAD` tokens left out of THE NET RULE
     (`resolve_waivers`, `correspond`).
+
+    `only` / `skip`: a PARTIAL copy (`resolve_selection`) -- the parts left
+    out stay where they are, and the checks run over the parts copied. The
+    default anchor is then the largest source part copied into EVERY target
+    (else present in every target); an explicit `anchor` may be one that is
+    left out, and still fixes the offset.
     """
     inst = sheet_instances(pcb)
     src = resolve_sheet(pcb, src_token, '--from', inst)
@@ -462,21 +515,47 @@ def plan(pcb, src_token: str, dst_tokens: Sequence[str], *, anchor: Optional[str
                 code=2)
 
     waivers = resolve_waivers(pcb, allow_net_mismatch, src, dsts)
+    selected = resolve_selection(pcb, only, skip, src, dsts)
     rows: List[Dict] = []
     targets = []
     src_members = members(pcb, src)
+    dst_members = {d: members(pcb, d) for d in dsts}
     if offset is None and anchor_key is None:
-        anchor_key = min(src_members, key=lambda k: (
+        everywhere = [k for k in src_members
+                      if all(k in dst_members[d] for d in dsts)]
+        copied = [k for k in everywhere
+                  if all(selected[d] is None or k in selected[d]
+                         for d in dsts)]
+        pool = copied or everywhere
+        if not pool:
+            raise PoseRefusal(
+                'no part of /%s has a counterpart in every --to sheet, so no '
+                'anchor can be chosen; give --anchor or --offset' % src,
+                code=4)
+        anchor_key = min(pool, key=lambda k: (
             tuple(-v for v in _anchor_rank(fps[src_members[k]])),
             natural_key(src_members[k])))
     for token, dst in zip(dst_tokens, dsts):
-        pairs, nets = correspond(pcb, src, dst, waive=waivers[dst])
+        pairs, nets = correspond(pcb, src, dst, waive=waivers[dst],
+                                 keys=selected[dst])
+        if not pairs:
+            raise PoseRefusal(
+                '%s leaves nothing to copy into /%s' % (
+                    '--only' if only else '--skip', dst), code=2)
         if offset is not None:
             dx, dy = float(offset[0]), float(offset[1])
             basis = {'kind': 'explicit'}
         else:
+            if (anchor_key not in src_members
+                    or anchor_key not in dst_members[dst]):
+                raise PoseRefusal(
+                    'the anchor (%s) has no counterpart in %s, so it cannot '
+                    'fix where that copy goes; name another --anchor' % (
+                        anchor or src_members.get(anchor_key),
+                        '/' + (src if anchor_key not in src_members
+                               else dst)), code=4)
             s_ref = src_members[anchor_key]
-            t_ref = members(pcb, dst)[anchor_key]
+            t_ref = dst_members[dst][anchor_key]
             dx = float(fps[t_ref].x) - float(fps[s_ref].x)
             dy = float(fps[t_ref].y) - float(fps[s_ref].y)
             basis = {'kind': 'anchor', 'source': s_ref, 'target': t_ref,
@@ -486,7 +565,7 @@ def plan(pcb, src_token: str, dst_tokens: Sequence[str], *, anchor: Optional[str
         for s, t in pairs:
             fs, ft = fps[s], fps[t]
             side_s, side_t = footprint_side(fs), footprint_side(ft)
-            row = {'source': s, 'ref': t,
+            row = {'source': s, 'ref': t, 'target': dst,
                    'x': round(float(fs.x) + dx, 6),
                    'y': round(float(fs.y) + dy, 6),
                    'rot': float(fs.rotation or 0.0) % 360.0,
@@ -506,16 +585,25 @@ def plan(pcb, src_token: str, dst_tokens: Sequence[str], *, anchor: Optional[str
             rows.append(row)
         d = describe(dst, inst[dst])
         d['as_given'] = token
+        copied = {t for _s, t in pairs}
         targets.append({'sheet': d, 'pairs': len(pairs),
                         'moved': moved, 'offset': [round(dx, 6), round(dy, 6)],
                         'offset_basis': basis, 'side_flips': flips,
                         'nets_renamed': nets['renamed'],
                         'nets_shared': nets['shared'],
-                        'nets_waived': nets['waived']})
+                        'nets_waived': nets['waived'],
+                        # The target parts a partial copy leaves where they
+                        # are; [] for a whole copy.
+                        'left_in_place': sorted(
+                            (r for r in dst_members[dst].values()
+                             if r not in copied), key=natural_key)})
     s_desc = describe(src, inst[src])
     s_desc['as_given'] = src_token
     report = {'from': s_desc, 'to': targets,
               'source_refs': sorted(src_members.values(), key=natural_key)}
+    if only or skip:
+        report['selection'] = {'only' if only else 'skip':
+                               list(only or skip)}
     return rows, report
 
 

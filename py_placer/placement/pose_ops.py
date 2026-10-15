@@ -38,12 +38,14 @@ Two rules worth stating because getting either wrong is silent:
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import math
 import shutil
 import stat
 import tempfile
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 #: The cardinal faces, in the order a POSITIVE rotation walks them.
 #:
@@ -127,6 +129,12 @@ LEGAL_UNMEASURED = ('footprint graphic copper vs the edge-clearance floor '
                     "parts sharing an origin whose pads do not intersect "
                     "(check_assembly's coincident_origins)")
 MAGNITUDE_EPS = 1e-6
+
+#: `replicate --search`'s default lattice pitch, mm (#1211). Coarser than
+#: the snap's 0.25: every candidate is a written, re-parsed, re-graded board
+#: (about 0.27 s on the 114-part multichannel_mixer), and a 3 mm radius at
+#: 0.5 is 113 of them per target.
+SEARCH_STEP = 0.5
 
 
 class PoseRefusal(Exception):
@@ -300,8 +308,30 @@ def bearing_face(from_xy, to_xy) -> str:
 # op resolution -- every op is resolved against the INPUT board
 # ---------------------------------------------------------------------------
 
+def _replicate_note(pcb_data, row: Dict) -> Tuple[Dict, Dict]:
+    """`(note, placement)` for one replicate row: the summary's per-part note
+    and the writer's placement (used only when `row['moved']`)."""
+    fp = pcb_data.footprints[row['ref']]
+    rot0 = float(fp.rotation or 0.0) % 360.0
+    note = {'ref': row['ref'], 'kind': 'replicate',
+            'source': row['source'],
+            'from': [round(float(fp.x), 4), round(float(fp.y), 4), rot0],
+            'to': [round(row['x'], 4), round(row['y'], 4), row['rot']],
+            'moved': bool(row['moved'])}
+    place = {'reference': row['ref'], 'new_x': row['x'],
+             'new_y': row['y'], 'new_rotation': row['rot']}
+    if row['flip']:
+        # Only on a side CHANGE: a `new_side` key the writer does not need
+        # would still be a different code path (#714).
+        from placement.legality import footprint_side
+        note['side'] = [footprint_side(fp), row['side']]
+        place['new_side'] = row['side']
+    return note, place
+
+
 def resolve_ops(pcb_data, ops: Sequence[Dict], *, clearance: float,
-                track_width: float, reports: Optional[List[Dict]] = None):
+                track_width: float, reports: Optional[List[Dict]] = None,
+                replicate_rows: Optional[List] = None):
     """Turn caller ops into writer placements + a per-op note.
 
     Every op reads the INPUT board, so a call carrying several of them
@@ -314,7 +344,8 @@ def resolve_ops(pcb_data, ops: Sequence[Dict], *, clearance: float,
     actually moves -- so a KiCad-locked part already at its copied pose is
     not refused for a move nobody made. Sheets are named by
     `Footprint.sheet_name`, which both parse paths fill; `reports` collects
-    each op's mapping for the summary.
+    each op's mapping for the summary, and `replicate_rows` each op's
+    `(op, report, rows)` at full precision, which `--search` shifts.
     """
     placements: List[Dict] = []
     notes: List[Dict] = []
@@ -327,11 +358,14 @@ def resolve_ops(pcb_data, ops: Sequence[Dict], *, clearance: float,
             rows, report = replicate.plan(
                 pcb_data, op['from'], op['to'],
                 anchor=op.get('anchor'), offset=op.get('offset'),
-                allow_net_mismatch=op.get('allow_net_mismatch') or ())
+                allow_net_mismatch=op.get('allow_net_mismatch') or (),
+                only=op.get('only') or (), skip=op.get('skip') or ())
             for r in report['source_refs']:
                 sources.setdefault(r, report['from']['as_given'])
             if reports is not None:
                 reports.append(report)
+            if replicate_rows is not None:
+                replicate_rows.append((op, report, rows))
             for row in rows:
                 ref = row['ref']
                 if ref in seen:
@@ -340,23 +374,7 @@ def resolve_ops(pcb_data, ops: Sequence[Dict], *, clearance: float,
                         "replicate); one call describes one arrangement, so "
                         "a part gets one pose" % (ref, seen[ref]), code=2)
                 seen[ref] = 'replicate'
-                fp = pcb_data.footprints[ref]
-                rot0 = float(fp.rotation or 0.0) % 360.0
-                note = {'ref': ref, 'kind': 'replicate',
-                        'source': row['source'],
-                        'from': [round(float(fp.x), 4), round(float(fp.y), 4),
-                                 rot0],
-                        'to': [round(row['x'], 4), round(row['y'], 4),
-                               row['rot']],
-                        'moved': bool(row['moved'])}
-                place = {'reference': ref, 'new_x': row['x'],
-                         'new_y': row['y'], 'new_rotation': row['rot']}
-                if row['flip']:
-                    # Only on a side CHANGE: a `new_side` key the writer does
-                    # not need would still be a different code path (#714).
-                    from placement.legality import footprint_side
-                    note['side'] = [footprint_side(fp), row['side']]
-                    place['new_side'] = row['side']
+                note, place = _replicate_note(pcb_data, row)
                 notes.append(note)
                 if row['moved']:
                     placements.append(place)
@@ -834,6 +852,142 @@ def snap_candidates(board_path: str, ref: str, *, rot: float, clearance: float,
 
 
 # ---------------------------------------------------------------------------
+# replicate --search: a copy that does not fit where its anchor puts it
+# ---------------------------------------------------------------------------
+
+def search_offsets(radius: float, step: float) -> List[Tuple[float, float, float]]:
+    """`[(dx, dy, dist), ...]`: every point of a square lattice of pitch
+    `step` within the DISTANCE `radius` of the origin, nearest first, ties
+    broken by (dy, dx) so the order is the same on every machine. (0, 0)
+    leads: the copy as asked is always the first candidate."""
+    n = int(math.floor(radius / step + 1e-9))
+    out = []
+    for i in range(-n, n + 1):
+        for j in range(-n, n + 1):
+            dx, dy = round(i * step, 9), round(j * step, 9)
+            dist = math.hypot(dx, dy)
+            if dist <= radius + 1e-9:
+                out.append((round(dist, 9), dy, dx))
+    out.sort()
+    return [(dx, dy, dist) for dist, dy, dx in out]
+
+
+def shift_rows(pcb_data, rows: Sequence[Dict], dx: float, dy: float) -> List[Dict]:
+    """`rows` translated by (dx, dy), each `moved` re-judged against the
+    part's pose on the board (the anchor too: off its default offset it
+    moves like every other member)."""
+    from placement import replicate
+    out = []
+    for row in rows:
+        ft = pcb_data.footprints[row['ref']]
+        r = dict(row, x=round(row['x'] + dx, 6), y=round(row['y'] + dy, 6))
+        if dx == 0.0 and dy == 0.0:
+            r['x'], r['y'] = row['x'], row['y']
+        r['moved'] = (abs(r['x'] - float(ft.x)) > replicate.POSE_EPS
+                      or abs(r['y'] - float(ft.y)) > replicate.POSE_EPS
+                      or replicate._rot_differs(            # noqa: SLF001
+                          r['rot'], float(ft.rotation or 0.0) % 360.0)
+                      or r['flip'])
+        out.append(r)
+    return out
+
+
+def search_replicate(board_path: str, pcb, cand: str, before: Dict,
+                     placements: Sequence[Dict], targets: Sequence[Dict], *,
+                     clearance: float, board_edge_clearance, declared_keepouts,
+                     strict: bool, guarded) -> Tuple[Optional[List[Dict]], List[Dict]]:
+    """`replicate --search MM` (#1211): fit each searched target's copy
+    nearest its default offset. `(placements, census)`; `placements` is None
+    when some target found no accepted offset.
+
+    `targets`: `[{'prefix', 'rows', 'radius', 'step'}]` in call order (each
+    replicate op's --to order). They are fitted ONE AT A TIME: while target k
+    is tried, the targets fitted before it sit where they were fitted, every
+    other op of the call where it asked, and the targets AFTER it are left
+    out of the grade on both sides (their parts are deleted from the parsed
+    input and from each parsed candidate alike): they are about to move, so
+    where they sit on the input board is no obstacle, and where their own
+    copy will land is decided when their turn comes -- against this one. A
+    candidate is accepted by the call's own verdict -- `worsened` empty, and
+    `is_clean` under `strict` -- on a staged, written, re-parsed board,
+    never on a model of one; the first accepted offset in `search_offsets`
+    order (nearest the default, then dy, dx) is kept. The LAST target is
+    graded with nothing left out against the real input, so a search that
+    succeeds hands back the very board the caller's verdict passes. A
+    candidate that would move a guarded part (KiCad-locked or a seated
+    plug, not unlocked in the call) is skipped and counted."""
+    from kicad_parser import parse_kicad_pcb
+    from placement.portfolio import copy_siblings
+    from placement.writer import (OutlineOwnerMove, SideFlipUnsupported,
+                                  write_placed_output)
+    searched = {r['ref'] for t in targets for r in t['rows']}
+    fixed = [p for p in placements if p['reference'] not in searched]
+    chosen: List[Dict] = []
+    census: List[Dict] = []
+
+    def _without(parsed, refs):
+        for r in refs:
+            parsed.footprints.pop(r, None)
+        return parsed
+
+    for k, t in enumerate(targets):
+        later = {r['ref'] for u in targets[k + 1:] for r in u['rows']}
+        if later:
+            with contextlib.redirect_stdout(io.StringIO()):
+                base = grade(_without(parse_kicad_pcb(board_path), later),
+                             board_path, clearance, board_edge_clearance,
+                             declared_keepouts)
+        else:
+            base = before
+        lattice = search_offsets(t['radius'], t['step'])
+        row = {'sheet': '/' + t['prefix'],
+               'name': (t.get('report') or {}).get('sheet', {}).get('name'),
+               'radius_mm': t['radius'],
+               'step_mm': t['step'], 'candidates': len(lattice), 'tried': 0,
+               'skipped_guarded': 0, 'found': False, 'delta': None,
+               'dist_mm': None, 'later_left_out': len(later),
+               'refused_by': {}}
+        census.append(row)
+        found = None
+        for dx, dy, dist in lattice:
+            shifted = shift_rows(pcb, t['rows'], dx, dy)
+            moves = [r for r in shifted if r['moved']]
+            if guarded & {r['ref'] for r in moves}:
+                row['skipped_guarded'] += 1
+                continue
+            row['tried'] += 1
+            trial = fixed + [_replicate_note(pcb, r)[1]
+                             for r in chosen + moves]
+            # The writer and the grade narrate every call; a hundred
+            # candidates of that would bury the one line that matters.
+            with contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    write_placed_output(board_path, cand, trial)
+                except (OutlineOwnerMove, SideFlipUnsupported):
+                    # Off its default offset a member the default left
+                    # alone (the anchor) moves too -- maybe one the writer
+                    # cannot.
+                    row['refused_by']['writer'] = (
+                        row['refused_by'].get('writer', 0) + 1)
+                    continue
+                copy_siblings(board_path, cand)
+                g = grade(_without(parse_kicad_pcb(cand), later), cand,
+                          clearance, board_edge_clearance, declared_keepouts)
+            b = worsened(base, g)
+            if not b and (not strict or is_clean(g)):
+                found = shifted
+                row.update(found=True, delta=[dx, dy], dist_mm=round(dist, 6))
+                break
+            for cat in regrade_refusal(base, g, b, strict):
+                row['refused_by'][cat] = row['refused_by'].get(cat, 0) + 1
+        if found is None:
+            return None, census
+        chosen.extend(r for r in found if r['moved'])
+        t['chosen_rows'] = found
+    return fixed + [_replicate_note(pcb, r)[1] for r in chosen], census
+
+
+# ---------------------------------------------------------------------------
 # locks
 # ---------------------------------------------------------------------------
 
@@ -930,9 +1084,11 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
     pcb = pcb_data if pcb_data is not None else parse_kicad_pcb(board_path)
 
     replicated: List[Dict] = []
+    replicate_rows: List = []
     placements, notes = resolve_ops(pcb, ops, clearance=clearance,
                                     track_width=track_width,
-                                    reports=replicated)
+                                    reports=replicated,
+                                    replicate_rows=replicate_rows)
     check_lock_refs(pcb, lock_refs, unlock_refs)
     # #1098: the intent's keep-outs reach every grade below, so a declared
     # `mating:<ref>` is the region this verb holds a move to.
@@ -1042,6 +1198,78 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                       declared_keepouts)
         bad = worsened(before, after)
         snap_ran = False
+        search_finding = None
+
+        search_targets = [
+            {'prefix': t['sheet']['path'].lstrip('/'),
+             'rows': [r for r in rows
+                      if r['target'] == t['sheet']['path'].lstrip('/')],
+             'radius': float(op['search']),
+             'step': float(op.get('search_step') or SEARCH_STEP),
+             'report': t}
+            for op, report, rows in replicate_rows if op.get('search')
+            for t in report['to']]
+        if search_targets and (bad or (strict and not is_clean(after))):
+            # #1211: the copy as asked does not fit; try each searched
+            # target's offset nearest its default (`search_replicate`).
+            from placement.floorplan import seated_plugs, with_derived_keepouts
+            from placement.parser import extract_locked_refs
+            guarded = ((extract_locked_refs(board_path)
+                        | seated_plugs(with_derived_keepouts(
+                            declared_keepouts, pcb, board_path),
+                            pcb, board_path))
+                       - set(unlock_refs))
+            found, census = search_replicate(
+                board_path, pcb, cand, before, placements, search_targets,
+                clearance=clearance, board_edge_clearance=board_edge_clearance,
+                declared_keepouts=declared_keepouts, strict=strict,
+                guarded=guarded)
+            for t, c in zip(search_targets, census):
+                t['report']['search'] = c
+            for t in search_targets[len(census):]:
+                t['report']['search'] = {'sheet': '/' + t['prefix'],
+                                         'not_tried': 'an earlier target '
+                                                      'found no offset'}
+            if found is not None:
+                placements = found
+                by_ref = {}
+                for t in search_targets:
+                    rep = t['report']
+                    chosen = t['chosen_rows']
+                    rep['offset_default'] = list(rep['offset'])
+                    rep['offset'] = [round(rep['offset'][0]
+                                           + rep['search']['delta'][0], 6),
+                                     round(rep['offset'][1]
+                                           + rep['search']['delta'][1], 6)]
+                    rep['moved'] = sum(1 for r in chosen if r['moved'])
+                    for r in chosen:
+                        by_ref[r['ref']] = _replicate_note(pcb, r)[0]
+                notes[:] = [by_ref.get(n['ref'], n)
+                            if n['kind'] == 'replicate' else n for n in notes]
+                summary['moved'] = [n for n in notes if n['moved']]
+                write_placed_output(board_path, cand, placements)
+                copy_siblings(board_path, cand)
+                cand_pcb = parse_kicad_pcb(cand)
+                after = grade(cand_pcb, cand, clearance, board_edge_clearance,
+                              declared_keepouts)
+                bad = worsened(before, after)
+            else:
+                miss = census[-1]
+                search_finding = (
+                    '--search found no offset within %g mm of %s at which the '
+                    'copy grades no worse (%d of %d lattice offsets tried at a '
+                    '%g mm step, %d skipped for moving a locked part; refused '
+                    'by %s)' % (
+                        miss['radius_mm'], miss['name'] or miss['sheet'],
+                        miss['tried'],
+                        miss['candidates'], miss['step_mm'],
+                        miss['skipped_guarded'],
+                        ', '.join('%s x%d' % kv for kv in sorted(
+                            miss['refused_by'].items(),
+                            key=lambda kv: (-kv[1], kv[0]))) or 'nothing'))
+                # Back to the copy as asked: the refusal below reports THAT.
+                write_placed_output(board_path, cand, placements)
+                copy_siblings(board_path, cand)
 
         if snap and replicated:
             # A replicate is ONE rigid copy: snapping a member would break
@@ -1285,6 +1513,24 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                     for r in p[:2]:
                         fresh.setdefault(r, []).append(
                             '%s %s/%s' % (pk, p[0], p[1]))
+            # ...and the per-PART channels, so a member the copy put past the
+            # outline, into the edge band or a keep-out is named too: those
+            # carry no pair, and a refusal that lists only pairs leaves the
+            # caller unable to say which member to leave out (#1211).
+            for rk in ('oob_pad_copper_refs', 'oob_keepout_copper_refs',
+                       'oob_graphic_copper_refs'):
+                had = {r[0]: r[1] for r in (before.get(rk) or ())}
+                for r in after.get(rk) or ():
+                    if r[1] > had.get(r[0], 0.0) + MAGNITUDE_EPS:
+                        fresh.setdefault(r[0], []).append(
+                            '%s %s' % (rk[:-len('_refs')], r[0]))
+            had = {f['pad_ref']: f.get('shortfall_mm') or 0.0
+                   for f in (before.get('pad_edge') or {}).get('findings') or ()}
+            for f in (after.get('pad_edge') or {}).get('findings') or ():
+                if (f.get('shortfall_mm') or 0.0) > (
+                        had.get(f['pad_ref'], 0.0) + MAGNITUDE_EPS):
+                    fresh.setdefault(f['pad_ref'].partition('.')[0], []).append(
+                        'pad_edge %s' % f['pad_ref'])
             for n in notes:
                 if n['kind'] == 'replicate' and n['moved']:
                     n['new_conflicts'] = sorted(fresh.get(n['ref'], ()))
@@ -1404,6 +1650,8 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                                              or exc)}
             findings.append(_refusal_reason(bad, strict, before, after,
                                             summary))
+            if search_finding:
+                findings.append(search_finding)
             summary['refused'] = '; '.join(findings)
             if not force:
                 # A refusal writes nothing, so the summary must not name a

@@ -674,9 +674,37 @@ sheet file.
 The copy is graded like any other call. A target part that moves while
 KiCad-locked is refused unless the call `unlock`s it, and a locked part
 already at its copied pose is not moved and not refused. Each moved member
-lists the new conflict pairs it is in (`ops[].new_conflicts`), so a refused
-copy says who collides. `--snap` does not apply: a copy is rigid. It is an
+lists the new conflict pairs it is in (`ops[].new_conflicts`), and the
+per-part findings it newly carries -- pad copper past the outline
+(`oob_pad_copper REF`), in the edge band (`pad_edge REF.PAD`), in a keep-out
+or graphic copper off the board -- so a refused copy says which members to
+leave out. `--snap` does not apply: a copy is rigid. It is an
 opt-in verb, and no seeder or quench default reads it.
+
+**A copy that does not fit.** Two answers, both opt-in:
+
+- a PARTIAL copy, `--only REF[,REF]` or `--skip REF[,REF]`. A `--from` ref
+  names that symbol in every target, a `--to` ref names that one target
+  part. The parts left out stay where they are, need no counterpart, may
+  differ in footprint and cannot break the net rule; a net on any pad of
+  either whole instance still counts as shared, so leaving a part out never
+  turns a rail into a channel net. `to[].left_in_place` lists them. The
+  default anchor is then the largest part copied into every target.
+- an offset SEARCH, `--search MM` (`--search-step`, default 0.5 mm). Only
+  when the copy as asked is refused: each target's offset is tried on a
+  lattice within MM of its default, nearest first (ties by dy, then dx), and
+  the first one the call's own verdict accepts is kept -- on a written,
+  re-parsed, re-graded board, never a model. Targets are fitted in `--to`
+  order; while one is fitted, the ones before it sit where they were
+  fitted and the ones after it are left out of the grade on both sides
+  (deleted from the parsed input and candidate alike), since their input
+  poses are about to be vacated. The last target is graded with nothing
+  left out, so the arrangement the search returns is the one the verdict
+  passes. An offset that would move a locked part (the anchor, off its
+  default) is skipped and counted. None found: exit 4, with
+  `to[].search` -- candidates, tried, skipped, and the categories that
+  refused them. On the 114-part multichannel_mixer each candidate costs
+  about 0.27 s.
 
 The engine half is `placement/pose_ops.py`, so the writer, the sibling carry
 (#441), the grade and the snap are shared rather than living in a CLI `main()`

@@ -89,19 +89,23 @@ def _fmt(v):
 
 def board(td, name='b', *, drop=(), locked=(), back=(), nets=None,
           fpname=None, names=None, prop_names=False, bare_text=False,
-          sheet_after_pad=()):
-    """Write the fixture. `nets` overrides pad nets: {(ref, pad#): net};
-    `fpname` overrides footprint names {ref: name}; `back` puts parts on
-    B.Cu; `names` overrides an instance's sheet name {sheet: name};
-    `prop_names` spells the name the KiCad 6/7 way; `bare_text` drops the
-    Reference's `(effects ...)`, which the writer's side flip needs (#714);
+          sheet_after_pad=(), at=None):
+    """Write the fixture. `nets` overrides pad nets: {(ref, pad#): net},
+    and a net name the board does not have is added; `fpname` overrides
+    footprint names {ref: name}; `back` puts parts on B.Cu; `names`
+    overrides an instance's sheet name {sheet: name}; `prop_names` spells
+    the name the KiCad 6/7 way; `bare_text` drops the Reference's
+    `(effects ...)`, which the writer's side flip needs (#714);
     `sheet_after_pad` writes those refs' sheet name and file AFTER their
-    first pad, where no header field lives."""
+    first pad, where no header field lives; `at` overrides poses {ref: (x,
+    y, rot)}."""
     nets = nets or {}
     fpname = fpname or {}
     names = names or {}
+    at = at or {}
     all_nets = ['GND', 'VCC'] + ['/%s/%s' % (s, n) for s in sorted(SHEET)
                                  for n in ('IN', 'OUT')]
+    all_nets += sorted({n for n in nets.values() if n not in all_nets})
     ids = {n: i + 1 for i, n in enumerate(all_nets)}
     out = ['(kicad_pcb (version 20241229) (generator "pcbnew")',
            '  (layers (0 "F.Cu" signal) (31 "B.Cu" signal)'
@@ -113,6 +117,7 @@ def board(td, name='b', *, drop=(), locked=(), back=(), nets=None,
     for ref, (kind, sheet, x, y, rot) in PARTS.items():
         if ref in drop:
             continue
+        x, y, rot = at.get(ref, (x, y, rot))
         fp, pads, pad_nets = KIND[kind]
         fp = fpname.get(ref, fp)
         side = 'B' if ref in back else 'F'
@@ -382,6 +387,155 @@ def test_a_locked_target_part():
               'locked anchor is fine')
 
 
+def test_a_partial_copy_moves_only_the_parts_it_names():
+    """`--only` / `--skip` (#1211 follow-up): a source ref names its symbol
+    in every target, a target ref that one part; the parts left out stay
+    put and are not checked."""
+    with tempfile.TemporaryDirectory() as td:
+        inp = board(td)
+        orig = poses(inp)
+        o1 = os.path.join(td, 'o1.kicad_pcb')
+        r = pose(inp, o1, 'replicate', '--from', 'S1', '--to', 'S2', '--to',
+                 'S3', '--skip', 'R1', accept=True)
+        got = poses(o1)
+        assert near(got['R2'], orig['R2']) and near(got['R3'], orig['R3'])
+        assert near(got['C2'], (40, 20, 90)) and near(got['C3'], (70, 20, 90))
+        t2, t3 = summary(r)['replicate'][0]['to']
+        assert (t2['pairs'], t2['left_in_place'], t3['left_in_place']) == (
+            2, ['R2'], ['R3']), (t2, t3)
+        assert summary(r)['replicate'][0]['selection'] == {'skip': ['R1']}
+        assert 'left in place (not copied): R2' in r.stdout
+        # A TARGET ref leaves that part only; --only is the complement.
+        o2 = os.path.join(td, 'o2.kicad_pcb')
+        pose(inp, o2, 'replicate', '--from', 'S1', '--to', 'S2', '--to',
+             'S3', '--skip', 'R2', accept=True)
+        got = poses(o2)
+        assert near(got['R2'], orig['R2']) and near(got['R3'], (75, 14, 0))
+        o3 = os.path.join(td, 'o3.kicad_pcb')
+        pose(inp, o3, 'replicate', '--from', 'S1', '--to', 'S2', '--to',
+             'S3', '--only', 'U1,C1', accept=True)
+        assert poses(o3) == poses(o1), 'only U1,C1 != skip R1'
+        # A part left out needs no counterpart, may differ in footprint, and
+        # cannot break the net rule.
+        for kw, skip in ((dict(drop=('C2',)), 'C1'),
+                         (dict(fpname={'R2': 't:R0805'}), 'R2'),
+                         (dict(nets={('R2', '1'): '/S2/OUT',
+                                     ('R2', '2'): '/S2/IN'}), 'R1')):
+            b = board(td, 'k%s' % skip, **kw)
+            pose(b, os.path.join(td, 'k.kicad_pcb'), 'replicate', '--from',
+                 'S1', '--to', 'S2', '--skip', skip, accept=True)
+        # ...but a rail on a part left out is still SHARED: U2.1 off VCC onto
+        # a new net, with C2 (the only other VCC pad in S2) left out, does not
+        # turn VCC into a channel net that may be renamed.
+        b = board(td, 'rail', nets={('U2', '1'): '/S2/NEW'})
+        pose(b, os.path.join(td, 'k.kicad_pcb'), 'replicate', '--from', 'S1',
+             '--to', 'S2', '--skip', 'C2', refuse='VCC is on pads of BOTH '
+             'instances', code=4)
+        # A member the copy puts across the outline is NAMED, by part and by
+        # pad: those channels carry no pair, and a refusal listing only
+        # pairs left the caller unable to say which member to leave out.
+        r = pose(inp, o1 + 'x', 'replicate', '--from', 'S1', '--to', 'S2',
+                 '--only', 'R1', '--offset', '30', '26', refuse='WORSE',
+                 code=4)
+        nc = {n['ref']: n.get('new_conflicts') for n in summary(r)['ops']}
+        assert set(nc) == {'R2'}, nc
+        assert 'oob_pad_copper R2' in nc['R2'], nc
+        assert {'pad_edge R2.1', 'pad_edge R2.2'} <= set(nc['R2']), nc
+        # Usage: both flags, a ref outside the named sheets, nothing left.
+        argparse_exit = ('usage:',)
+        pose(inp, o1 + 'x', 'replicate', '--from', 'S1', '--to', 'S2',
+             '--only', 'U1', '--skip', 'R1', refuse='both --only and --skip',
+             code=2, allow=argparse_exit)
+        pose(inp, o1 + 'x', 'replicate', '--from', 'S1', '--to', 'S2',
+             '--skip', 'T1', refuse='--skip T1: T1 is in neither the --from '
+             'sheet nor a --to sheet', code=2)
+        pose(inp, o1 + 'x', 'replicate', '--from', 'S1', '--to', 'S2',
+             '--skip', 'U1,R1,C1', refuse='--skip leaves nothing to copy',
+             code=2)
+        assert not os.path.exists(o1 + 'x')
+        print('  --skip R1 / --skip R2 / --only U1,C1 land as named; a part '
+              'left out is not checked, a rail on one is still shared')
+
+
+def test_search_keeps_the_nearest_offset_that_grades_no_worse():
+    """`--search MM` (#1211 follow-up): the copy as asked stacks R2 on T1;
+    the nearest lattice offset that this call grades no worse is kept."""
+    with tempfile.TemporaryDirectory() as td:
+        # T1 sits exactly where R2's copy lands (S1 + (30, 0) = (45, 14)).
+        inp = board(td, 'blocked', at={'T1': (45.0, 14.0, 0.0)})
+        out = os.path.join(td, 'x.kicad_pcb')
+        pose(inp, out, 'replicate', '--from', 'S1', '--to', 'S2',
+             refuse='WORSE', code=4)
+        r = pose(inp, out, 'replicate', '--from', 'S1', '--to', 'S2',
+                 '--search', '2', accept=True)
+        t = summary(r)['replicate'][0]['to'][0]
+        # Within 1.0 mm only (0, +-1) and (+-1, 0) clear T1's pads; (dy, dx)
+        # order puts (0, -1) first.
+        assert t['search']['found'] and t['search']['delta'] == [0.0, -1.0], t
+        assert t['search']['dist_mm'] == 1.0 and t['search']['tried'] > 1, t
+        assert (t['offset_default'], t['offset']) == ([30.0, 0.0],
+                                                       [30.0, -1.0]), t
+        got = poses(out)
+        for ref, w in {'U2': (45, 19, 0), 'R2': (45, 13, 0),
+                       'C2': (40, 19, 90), 'T1': (45, 14, 0)}.items():
+            assert near(got[ref], w), (ref, got[ref], w)
+        # The anchor moved with the copy, and its note says so.
+        notes = {n['ref']: n for n in summary(r)['ops']}
+        assert notes['U2']['moved'] and notes['U2']['to'][:2] == [45.0, 19.0]
+        assert '--search: the copy as asked was refused' in r.stdout
+        # Too small a radius: refused at 4, the census and reason say so.
+        r = pose(inp, out + '2', 'replicate', '--from', 'S1', '--to', 'S2',
+                 '--search', '0.5', refuse='--search found no offset within '
+                 '0.5 mm of S2', code=4)
+        sr = summary(r)['replicate'][0]['to'][0]['search']
+        assert (sr['found'], sr['candidates'], sr['tried']) == (False, 5, 5), sr
+        assert not os.path.exists(out + '2')
+        # A locked anchor cannot move with the copy: every offset but the
+        # default is skipped, and said so.
+        inp2 = board(td, 'lockedU', at={'T1': (45.0, 14.0, 0.0)},
+                     locked=('U2',))
+        r = pose(inp2, out + '3', 'replicate', '--from', 'S1', '--to', 'S2',
+                 '--search', '1', refuse='skipped for moving a locked part',
+                 code=4)
+        sr = summary(r)['replicate'][0]['to'][0]['search']
+        assert (sr['tried'], sr['skipped_guarded']) == (1, sr['candidates'] - 1)
+        for bad, why in (('0', '--search` is a radius'),
+                         ('-1', '--search` is a radius')):
+            pose(inp, out + '4', 'replicate', '--from', 'S1', '--to', 'S2',
+                 '--search', bad, refuse=why, code=2, allow=('usage:',))
+        pose(inp, out + '4', 'replicate', '--from', 'S1', '--to', 'S2',
+             '--search-step', '0.5', refuse='which this call does not ask '
+             'for', code=2, allow=('usage:',))
+        print('  R2 stacked on T1: --search 2 keeps (0, -1), 1.0 mm; 0.5 mm '
+              'finds none (5 tried); a locked anchor skips every offset')
+
+
+def test_search_fits_targets_in_order_leaving_later_ones_out():
+    """Targets are fitted one at a time, and a later target's INPUT pose is
+    no obstacle to an earlier one: it is about to move."""
+    with tempfile.TemporaryDirectory() as td:
+        # S3's R3 sits (on the input) where S2's copy of R1 lands, and T1
+        # where S3's copy of R1 lands. The copy as asked stacks R3 on T1.
+        inp = board(td, 'order', at={'R3': (45.0, 14.0, 0.0),
+                                     'T1': (75.0, 14.0, 0.0)})
+        out = os.path.join(td, 'x.kicad_pcb')
+        r = pose(inp, out, 'replicate', '--from', 'S1', '--to', 'S2', '--to',
+                 'S3', '--search', '2', accept=True)
+        t2, t3 = summary(r)['replicate'][0]['to']
+        # S2 keeps its default: R3's input pose was left out of its grade.
+        assert t2['search']['delta'] == [0.0, 0.0], t2['search']
+        assert t2['search']['later_left_out'] == 3, t2['search']
+        assert t3['search']['delta'] == [0.0, -1.0], t3['search']
+        assert t3['search']['later_left_out'] == 0, t3['search']
+        got = poses(out)
+        for ref, w in {'R2': (45, 14, 0), 'U2': (45, 20, 0),
+                       'R3': (75, 13, 0), 'U3': (75, 19, 0)}.items():
+            assert near(got[ref], w), (ref, got[ref], w)
+        assert summary(r)['legal'] is True, summary(r)
+        print('  S2 keeps its default though R3 sat there; S3 steps to '
+              '(0, -1) off T1')
+
+
 def test_unknown_and_ambiguous_sheets():
     with tempfile.TemporaryDirectory() as td:
         inp = board(td)
@@ -547,6 +701,9 @@ TESTS = [
     test_a_pad_wired_differently_by_design_is_waived_per_pad,
     test_a_missing_part_is_refused,
     test_a_different_footprint_is_refused,
+    test_a_partial_copy_moves_only_the_parts_it_names,
+    test_search_keeps_the_nearest_offset_that_grades_no_worse,
+    test_search_fits_targets_in_order_leaving_later_ones_out,
     test_a_locked_target_part,
     test_unknown_and_ambiguous_sheets,
     test_usage_errors,
