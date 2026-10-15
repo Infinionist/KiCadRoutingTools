@@ -1305,23 +1305,31 @@ class BGAOptionsPanel(wx.ScrolledWindow):
 class QFNOptionsPanel(wx.ScrolledWindow):
     """QFN fanout options panel (parameters not in Basic tab)."""
 
-    def __init__(self, parent):
+    #: Item 0 of the escape-layer choice: qfn_fanout.py with no --layer.
+    MOUNTED_LAYER = "Mounted layer (default)"
+
+    def __init__(self, parent, copper_layers=None):
         """
         Create QFN options panel.
 
         Args:
             parent: Parent window
+            copper_layers: The board's copper layer names, offered as escape
+                layers after the mounted-layer default (F.Cu/B.Cu if None).
         """
         super().__init__(parent, style=wx.VSCROLL)
         self.SetScrollRate(0, 10)
+        self._copper_layers = list(copper_layers or ['F.Cu', 'B.Cu'])
         self._create_ui()
 
     def _create_ui(self):
         """Create the panel UI."""
         main_sizer = wx.BoxSizer(wx.VERTICAL)
 
-        # Info text - QFN uses component's layer automatically
-        info_text = wx.StaticText(self, label="QFN fanout routes on the component's layer.")
+        # Info text - QFN uses the component's layer unless told otherwise
+        info_text = wx.StaticText(
+            self, label="QFN fanout routes on the component's mounted layer "
+                        "unless another escape layer is chosen.")
         info_text.Wrap(350)
         main_sizer.Add(info_text, 0, wx.ALL, 10)
 
@@ -1331,6 +1339,21 @@ class QFNOptionsPanel(wx.ScrolledWindow):
 
         grid = wx.FlexGridSizer(cols=2, hgap=10, vgap=5)
         grid.AddGrowableCol(1)
+
+        # qfn_fanout.py --layer. Item 0 is its default (the part's mounted
+        # layer); a plan step's `qfn_layer: "B.Cu"` selects that item by
+        # label. Any layer but the mounted one floats the stubs off the SMD
+        # pads (#96), which the run warns about, as the CLI does.
+        grid.Add(wx.StaticText(self, label="Escape layer:"), 0,
+                 wx.ALIGN_CENTER_VERTICAL)
+        self.qfn_layer = wx.Choice(
+            self, choices=[self.MOUNTED_LAYER] + self._copper_layers)
+        self.qfn_layer.SetSelection(0)
+        self.qfn_layer.SetToolTip(
+            "Layer for the escape stubs (CLI qfn_fanout --layer). Default: "
+            "the layer the part is mounted on. Another layer leaves the stubs "
+            "off the part's SMD pads unless that is intended.")
+        grid.Add(self.qfn_layer, 0, wx.EXPAND)
 
         # #381 D7: QFN-specific track width & clearance, defaulting to the CLI's
         # QFN-tuned 0.1/0.1 (qfn_fanout.py --width/--clearance) instead of
@@ -1400,6 +1423,9 @@ class QFNOptionsPanel(wx.ScrolledWindow):
             'extension': self.extension.GetValue(),
             'escape_method': 'underpad' if self.underpad_escape.GetValue() else 'stub',
             'allow_via_in_pad': self.allow_via_in_pad.GetValue(),
+            # None = the part's mounted layer, qfn_fanout.py's omitted --layer.
+            'layer': (self.qfn_layer.GetStringSelection()
+                      if self.qfn_layer.GetSelection() > 0 else None),
         }
 
 
@@ -1495,7 +1521,8 @@ class FanoutTab(wx.Panel):
 
         # Options panels (stacked, show/hide based on type)
         self.bga_options = BGAOptionsPanel(self, on_differential_changed=self._on_bga_differential_changed)
-        self.qfn_options = QFNOptionsPanel(self)
+        self.qfn_options = QFNOptionsPanel(
+            self, copper_layers=self.pcb_data.board_info.copper_layers)
 
         right_sizer.Add(self.bga_options, 1, wx.EXPAND | wx.BOTTOM, 5)
         right_sizer.Add(self.qfn_options, 1, wx.EXPAND | wx.BOTTOM, 5)
@@ -1969,13 +1996,22 @@ class FanoutTab(wx.Panel):
         via_size = shared.get('via_size', defaults.BGA_VIA_SIZE)
         via_drill = shared.get('via_drill', defaults.BGA_VIA_DRILL)
 
-        # Use the component's layer (F.Cu for top, B.Cu for bottom)
-        component_layer = footprint.layer if hasattr(footprint, 'layer') else 'F.Cu'
+        # The panel's escape layer: None = the part's mounted layer (F.Cu for
+        # top, B.Cu for bottom), as qfn_fanout.py resolves an omitted --layer,
+        # through the same function, which also phrases the #96 warning when
+        # the chosen layer is not the mounted one.
+        from qfn_fanout import resolve_escape_layer
+        escape_layer, layer_note, layer_warns = resolve_escape_layer(
+            footprint, config.get('layer'))
+        if layer_warns:
+            print(layer_note)
+            if self.append_log:
+                self.append_log(layer_note.strip())
 
         engine_kw = dict(
             cancel_check=self._make_cancel_check(),
             net_filter=net_patterns,
-            layer=component_layer,
+            layer=escape_layer,
             track_width=track_width,
             extension=extension,
             clearance=clearance,

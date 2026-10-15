@@ -224,6 +224,8 @@ def get_dialog_settings(dialog):
         'fanout_qfn_clearance': dialog.fanout_tab.qfn_options.qfn_clearance.GetValue(),
         'fanout_qfn_underpad': dialog.fanout_tab.qfn_options.underpad_escape.GetValue(),
         'fanout_qfn_allow_via_in_pad': dialog.fanout_tab.qfn_options.allow_via_in_pad.GetValue(),
+        # By NAME: the choice lists the board's own copper layers.
+        'fanout_qfn_layer': dialog.fanout_tab.qfn_options.qfn_layer.GetStringSelection(),
 
         # Planes tab settings
         'planes_net_panel_checked': list(dialog.planes_tab.net_panel.get_selected_nets()),
@@ -733,6 +735,11 @@ def restore_dialog_settings(dialog, settings):
         dialog.fanout_tab.qfn_options.underpad_escape.SetValue(settings['fanout_qfn_underpad'])
     if 'fanout_qfn_allow_via_in_pad' in settings:
         dialog.fanout_tab.qfn_options.allow_via_in_pad.SetValue(settings['fanout_qfn_allow_via_in_pad'])
+    if 'fanout_qfn_layer' in settings:
+        # A layer this board does not have falls back to the mounted layer.
+        _ql = dialog.fanout_tab.qfn_options.qfn_layer
+        _qi = _ql.FindString(str(settings['fanout_qfn_layer']))
+        _ql.SetSelection(_qi if _qi >= 0 else 0)
 
     # Restore planes tab settings
     # (No mode restore since #562: the tab is pour-creation only, so a

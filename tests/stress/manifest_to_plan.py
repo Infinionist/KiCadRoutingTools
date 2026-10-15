@@ -479,7 +479,10 @@ TOOL_FLAG_ALIASES = {
 # BGA/route use, so a plan-replayed QFN fanout keeps its fine-pitch width.
 TOOL_FLAG_PARAMS = {
     'route_diff.py': {'--track-width': 'diff_pair_width'},
-    'qfn_fanout.py': {'--width': 'qfn_track_width', '--clearance': 'qfn_clearance'},
+    # qfn_fanout's --layer: the QFN panel's escape-layer choice (its item 0,
+    # the mounted layer, is the omitted flag), selected by layer name.
+    'qfn_fanout.py': {'--width': 'qfn_track_width', '--clearance': 'qfn_clearance',
+                      '--layer': 'qfn_layer'},
     # bga_fanout's coupled-pair gap is the BGA panel's OWN control, never the
     # diff tab's diff_pair_gap that the global row targets (#493: that one
     # resolves to the net-class gap).

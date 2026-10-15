@@ -836,14 +836,12 @@ BGA_CLI_ONLY = {f: ROUTE_CLI_ONLY[f] for f in ('--enable-used-layers',
 # _set_control learned to set a RadioBox by label and the reset restored it.
 BGA_KNOWN_GAPS = {}
 
-QFN_CLI_ONLY = dict(
-    {f: ROUTE_CLI_ONLY[f] for f in ('--enable-used-layers', '--keep-thermal',
-                                    '--output', '--strict-sizes')},
-    **{'--layer': "overrides the escape layer, default the part's MOUNTED "
-                  "layer -- which is what the QFN panel always routes on "
-                  "(the tab passes component_layer). Any other value floats "
-                  "the stubs off the SMD pads (#96; the CLI warns). 0 of "
-                  "1018 recorded qfn_fanout calls use it"})
+QFN_CLI_ONLY = {f: ROUTE_CLI_ONLY[f] for f in ('--enable-used-layers',
+                                               '--keep-thermal', '--output',
+                                               '--strict-sizes')}
+# (--layer left this list when the QFN panel got its escape-layer choice: item
+# 0 is the part's mounted layer, the CLI's omitted flag, which is all the
+# panel could route on before.)
 
 # The tools whose EVERY flag is held to account: the plan action a recorded
 # command converts to, and the probe -- a command that already names its

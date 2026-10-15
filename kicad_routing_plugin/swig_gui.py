@@ -2707,9 +2707,11 @@ class RoutingDialog(wx.Dialog):
                         _ctl.SetValue(_val)
                     except Exception:
                         pass
-            # Item 0 of each is the CLI default: escape method 'auto', and
-            # bga_fanout's --primary-escape 'horizontal' (the RadioBox).
-            for _name in ('escape_method_choice', 'escape_direction'):
+            # Item 0 of each is the CLI default: escape method 'auto',
+            # bga_fanout's --primary-escape 'horizontal' (the RadioBox), and
+            # qfn_fanout's omitted --layer (the part's mounted layer).
+            for _name in ('escape_method_choice', 'escape_direction',
+                          'qfn_layer'):
                 _ctl = _fctl(_name)
                 if _ctl is not None:
                     try:

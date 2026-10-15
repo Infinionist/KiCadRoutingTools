@@ -67,6 +67,9 @@ def _reexec_into_kicad():
 # keeps every step.
 _PLANES = ('python3 py_router/route_planes.py {src} {dst} --nets GND '
            '--plane-layers B.Cu')
+# splitflap_driver's U2 is mounted on F.Cu (the QFN engine is a spy below, so
+# its package does not matter). Item 0 of the QFN panel's escape-layer choice:
+_QFN_REF, _MOUNTED = 'U2', 'Mounted layer (default)'
 CASES = [
     dict(label='route_diff --diff-pair-centerline-setback',
          cmd='python3 py_router/route_diff.py {src} {dst} "*"',
@@ -95,6 +98,12 @@ CASES = [
          cmd=_PLANES, flag='--skip-existing-zones',
          param=('skip_existing_zones', True), probe='skip_existing_zones',
          want=(True, True), default=(False, False)),
+    dict(label='qfn_fanout --layer',
+         cmd='python3 py_router/qfn_fanout.py {src} --output {dst} '
+             '--component ' + _QFN_REF,
+         flag='--layer B.Cu',
+         param=('qfn_layer', 'B.Cu'), probe='qfn_layer',
+         want=('B.Cu', 'B.Cu'), default=(_MOUNTED, None)),
 ]
 
 
@@ -111,8 +120,11 @@ def _probes(dlg):
                            'voronoi_seed_interval')}
     planes['skip_existing_zones'] = (po.skip_existing_zones.GetValue(),
                                      plane_cfg.get('skip_existing_zones'))
+    qo = dlg.fanout_tab.qfn_options
     return {
         **planes,
+        'qfn_layer': (qo.qfn_layer.GetStringSelection(),
+                      qo.get_config().get('layer')),
         'centerline_setback': (
             round(d.centerline_setback.GetValue(), 6),
             d.get_config().get('diff_pair_centerline_setback')),
@@ -120,6 +132,42 @@ def _probes(dlg):
             bga.escape_direction.GetStringSelection(),
             bga.get_config().get('primary_escape')),
     }
+
+
+def _qfn_engine_layers(dlg, run_until):
+    """{'mounted' | 'B.Cu': (layer the tab hands generate_qfn_fanout, the
+    warning lines it logged)} from the FanoutTab's REAL QFN run, with the
+    engine replaced by a spy that returns no copper and the apply stubbed."""
+    import qfn_fanout
+    tab = dlg.fanout_tab
+    qo = tab.qfn_options
+    fp = dlg.pcb_data.footprints[_QFN_REF]
+    nets = sorted({p.net_name for p in fp.pads if p.net_id and p.net_name})
+    real_engine, real_apply = qfn_fanout.generate_qfn_fanout, tab._apply_fanout_results
+    real_log = tab.append_log
+    out = {}
+    try:
+        for label, item in (('mounted', _MOUNTED), ('B.Cu', 'B.Cu')):
+            seen, logged = {}, []
+
+            def _spy(footprint, pcb, **kw):
+                seen['layer'] = kw.get('layer')
+                return [], [], []
+
+            qfn_fanout.generate_qfn_fanout = _spy
+            tab._apply_fanout_results = lambda *a, **k: None
+            tab.append_log = logged.append
+            qo.qfn_layer.SetSelection(qo.qfn_layer.FindString(item))
+            tab._run_qfn_fanout(fp, nets, qo.get_config())
+            run_until(lambda: not getattr(tab, '_running', False), 120)
+            out[label] = (seen.get('layer'),
+                          [w for w in logged if 'WARNING' in w])
+    finally:
+        qfn_fanout.generate_qfn_fanout = real_engine
+        tab._apply_fanout_results = real_apply
+        tab.append_log = real_log
+        qo.qfn_layer.SetSelection(0)
+    return out
 
 
 def main():
@@ -214,6 +262,7 @@ def main():
                 lambda: seen.append(_probes(dlg)), lambda: False)
             ex.start()
             run_until(lambda: bool(done), 120)
+            qfn_runs = _qfn_engine_layers(dlg, run_until)
         finally:
             dlg.Destroy()
         if len(seen) != len(steps):
@@ -232,6 +281,19 @@ def main():
             check(case['label'] + ' (next step, flag omitted)', off == default,
                   f"(control, engine config) = {off!r}, want the CLI default "
                   f"{default!r}")
+
+        print("\n[3] the QFN tab's own fanout run: the escape layer reaches "
+              "generate_qfn_fanout, with the CLI's #96 warning off the "
+              "mounted layer")
+        mounted = qfn_runs['mounted']
+        b_cu = qfn_runs['B.Cu']
+        check("default choice: the engine gets the part's mounted layer, no "
+              "warning", mounted[0] == 'F.Cu' and not mounted[1],
+              f"layer={mounted[0]!r}, warnings={mounted[1]}")
+        check("B.Cu chosen: the engine gets B.Cu and the log warns",
+              b_cu[0] == 'B.Cu' and any('differs from' in w and 'mounted layer'
+                                        in w for w in b_cu[1]),
+              f"layer={b_cu[0]!r}, warnings={b_cu[1]}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
