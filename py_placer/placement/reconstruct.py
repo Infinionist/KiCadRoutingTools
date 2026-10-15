@@ -1987,7 +1987,11 @@ def _solve_ilp(state, candidates, tiers, move_penalty, notes, pattern,
         if notes is not None:
             notes.append(f'ILP status {res.status} ({res.message}) -- '
                          f'breakout-descent fallback')
-        return _solve_breakout(state, candidates, tiers, notes)
+        # The edge parts keep their EDGE objective in the fallback too: it
+        # was dropped here, so an infeasible board priced them by the
+        # net-anchor proxy the edge metric replaces (R1).
+        return _solve_breakout(state, candidates, tiers, notes,
+                               edge_pref=edge_pref)
     choice: Dict[str, int] = {}
     for ref in refs:
         for k in range(len(candidates[ref])):

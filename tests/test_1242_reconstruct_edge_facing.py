@@ -192,6 +192,49 @@ class TheSeatFacesOut(unittest.TestCase):
         self.assertEqual(only['J2'][ilp['J2']], plus + (270.0,))
         self.assertEqual(only['J2'][descent['J2']], plus + (270.0,))
 
+    def test_2b_an_infeasible_ilp_keeps_the_edge_objective(self):
+        # The ILP's infeasible fallback (the breakout descent) dropped
+        # `edge_pref`, so an edge part there was priced by the net-anchor
+        # proxy instead. Make the proxy prefer J2's interior candidate, force
+        # the ILP infeasible, and the edge metric must still pick the seat.
+        import types
+        import scipy.optimize
+        from pose_score import make_state
+        with tempfile.TemporaryDirectory() as td:
+            dmg, _ip = _damaged(td, 171.45)
+            st = make_state(parse_kicad_pcb(dmg), dmg, clearance=0.25,
+                            board_edge_clearance=0.55)
+            tiers = reconstruct.classify(st)
+            faced, _ = reconstruct.build_candidates(
+                st, tiers, [(10.1558, 0.0)], {}, edge_bands={'J2': 15.15},
+                facing={'J2': ENTRY})
+            only = {r: (c if r == 'J2' else c[:1]) for r, c in faced.items()}
+            minus = (161.2942, 90.1192)
+            self.assertIn(minus, only['J2'])
+
+            def proxy(state, ref, x, y, fixed):
+                return 0.0 if (ref, round(x, 4)) == ('J2', minus[0]) else 50.0
+
+            def infeasible(*a, **k):
+                return types.SimpleNamespace(status=2, x=None,
+                                             message='forced (test)')
+            notes = []
+            # No pair conflicts, so the descent's choice is the objective's
+            # alone (its cost compares conflicts first).
+            with patch.object(reconstruct, '_net_anchor_cost', proxy), \
+                    patch.object(reconstruct, '_pair_conflicts',
+                                 lambda *a, **k: False):
+                blind = reconstruct._solve_breakout(st, only, tiers, None)
+                with patch.object(scipy.optimize, 'milp', infeasible):
+                    got = reconstruct.solve_assignment(
+                        st, only, tiers, notes=notes,
+                        edge_pref={'J2': 15.15})
+        # The control: without the edge objective the proxy wins.
+        self.assertEqual(only['J2'][blind['J2']], minus)
+        self.assertTrue(any('breakout-descent fallback' in n for n in notes),
+                        f"BROKEN TEST: the ILP did not fall back: {notes}")
+        self.assertEqual(only['J2'][got['J2']], SEAT + (270.0,))
+
     def test_3_a_weak_or_absent_face_is_left_as_before(self):
         real = mating.mating_face_local
 
