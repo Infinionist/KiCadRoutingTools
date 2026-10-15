@@ -139,6 +139,12 @@ _JOIN_VAR_RE = re.compile(
 #: Tests that legitimately join the repo root with a VARIABLE inside a
 #: child-process argv. Declared with the reason, and held in both directions.
 _ROOT_JOIN_ARGV_OK = {
+    'stress/cli_argv_check.py':
+        'its `rel` values come from the module-level TOOL_PATHS table, every '
+        'one a directory-qualified literal ("py_router/route.py"), so the join '
+        'is over a relative path and not a bare basename; the child it spawns '
+        'reports a parser it cannot capture, and the caller then falls back '
+        'to the krt_capabilities flag list by name.',
     'test_431_skill_commands.py':
         'its `tool` values come from discovered_tools(), which yields paths '
         'ALREADY qualified by directory ("py_router/route.py") straight out '
