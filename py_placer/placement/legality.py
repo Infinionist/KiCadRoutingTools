@@ -4742,6 +4742,13 @@ def _pad_windows(rects_a, ea, rects_b, reach):
     return wa, wb
 
 
+def _pose_key(pose) -> Tuple[float, float, float]:
+    """A pose as the gate's posed-pad cache keys it (#1127): two poses that
+    round together are posed once, so every exact answer is keyed the same."""
+    return (round(pose[0], 6), round(pose[1], 6),
+            round(pose[2] % 360.0, 6))
+
+
 class LegalityContext:
     """Pad/hole legality for one engine run.
 
@@ -4781,6 +4788,7 @@ class LegalityContext:
         # without the other; the cached baselines make either fixed per run.
         self.pad_exact = bool(STACK_EXACT_CONFIRM)
         self._posed_pads: Dict[Tuple, Optional[List]] = {}
+        self._exact_memo: Dict[Tuple, object] = {}
         # run-19: a PILE seed is not a license. Every conjunct of pads_ok is
         # relative to seed_baseline, and on a pile the seed pair carries huge
         # base.pad with pad_overlap and stack both True -- so ANY smaller
@@ -4990,8 +4998,7 @@ class LegalityContext:
         """`ref`'s COPPER pads, real `Pad` copies at `pose`, in the index
         order `pad_rects` emits (#1127); None when the part carries no
         snapshot. Cached by pose, bounded."""
-        key = (ref, round(pose[0], 6), round(pose[1], 6),
-               round(pose[2] % 360.0, 6))
+        key = (ref,) + _pose_key(pose)
         if key in self._posed_pads:
             return self._posed_pads[key]
         pp = self.parts.get(ref)
@@ -5013,12 +5020,17 @@ class LegalityContext:
         two outer faces -- the shared-face question `_sides_interact` already
         answered for the boxes. True, the box's answer, whenever a pad
         cannot be posed: the gate may falsely reject, never falsely accept."""
+        key = ('stack', a, ai, _pose_key(pose_a), b, bi, _pose_key(pose_b))
+        got = self._exact_memo.get(key)
+        if got is not None:
+            return got
         pa_pads = self._posed_copper(a, pose_a)
         pb_pads = self._posed_copper(b, pose_b)
         if (pa_pads is None or pb_pads is None or ai >= len(pa_pads)
                 or bi >= len(pb_pads)):
             return True
-        return _exact_pad_stack(pa_pads[ai], pb_pads[bi], ['F.Cu', 'B.Cu'])
+        return self._remember(key, _exact_pad_stack(
+            pa_pads[ai], pb_pads[bi], ['F.Cu', 'B.Cu']))
 
     def _pad_confirmed(self, a, ai, pose_a, b, bi, pose_b,
                        eff: float) -> Optional[float]:
@@ -5031,6 +5043,10 @@ class LegalityContext:
         `_stack_confirmed` asks. 0.0 when the outlines clear `eff`. None, the
         box's answer, whenever a pad cannot be posed: the gate may falsely
         reject, never falsely accept."""
+        key = ('pad', a, ai, _pose_key(pose_a), b, bi, _pose_key(pose_b), eff)
+        got = self._exact_memo.get(key)
+        if got is not None:
+            return got
         pa_pads = self._posed_copper(a, pose_a)
         pb_pads = self._posed_copper(b, pose_b)
         if (pa_pads is None or pb_pads is None or ai >= len(pa_pads)
@@ -5040,7 +5056,18 @@ class LegalityContext:
         hit, over, _pt = check_pad_pad_overlap(pa_pads[ai], pb_pads[bi], eff,
                                                ['F.Cu', 'B.Cu'],
                                                clearance_margin=0.0)
-        return float(over) if hit else 0.0
+        return self._remember(key, float(over) if hit else 0.0)
+
+    def _remember(self, key, value):
+        """Memoise one exact pad-pair answer (#1127). The searches ask the
+        same posed pair over and over -- measured on StickHub's quench, 77,370
+        pad and 68,486 stack confirmations over 27,652 and 16,993 distinct
+        pairs -- and the answer is a function of the pair's `_pose_key`s, the
+        key `_posed_copper` poses by. Bounded the same way."""
+        if len(self._exact_memo) > 65536:
+            self._exact_memo.clear()
+        self._exact_memo[key] = value
+        return value
 
     def seed_baseline(self, a: str, b: str) -> PairShortfall:
         # The single choke point every consumer routes through (pads_ok and

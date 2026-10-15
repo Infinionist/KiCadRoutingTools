@@ -23,6 +23,9 @@ Not covered by a row, and why:
   * `_posed_copper`'s length check: on a part whose copper pads align with
     `pad_rects` (every part, by construction) it never fires -- an
     equivalent mutant.
+  * `eff` in the pad memo key: a pad pair's requirement is fixed by the two
+    pads' floors for the whole context, so no run asks one posed pair at two
+    requirements -- an equivalent mutant.
 """
 from __future__ import annotations
 
@@ -72,20 +75,20 @@ ROWS = [
      "                if g < 0.0:",
      (LATER,), 'KILLED'),
     ('posed-key-drops-rotation', 'legality',
-     "               round(pose[2] % 360.0, 6))",
-     "               0)",
+     "            round(pose[2] % 360.0, 6))",
+     "            0)",
      (GRID,), 'KILLED'),
     ('exact-threshold-loose', 'legality',
      "    return bool(hit and over >= eps - 1e-9)",
      "    return bool(hit and over > 0.0)",
      (CONTACT,), 'KILLED'),
     ('confirm-front-layer-only', 'legality',
-     "        return _exact_pad_stack(pa_pads[ai], pb_pads[bi], ['F.Cu', 'B.Cu'])",
-     "        return _exact_pad_stack(pa_pads[ai], pb_pads[bi], ['F.Cu'])",
+     "            pa_pads[ai], pb_pads[bi], ['F.Cu', 'B.Cu']))",
+     "            pa_pads[ai], pb_pads[bi], ['F.Cu']))",
      (REAL,), 'KILLED'),
     ('unposable-pad-accepts', 'legality',
-     "            return True\n        return _exact_pad_stack(",
-     "            return False\n        return _exact_pad_stack(",
+     "            return True\n        return self._remember(key, _exact_pad_stack(",
+     "            return False\n        return self._remember(key, _exact_pad_stack(",
      (MODE,), 'KILLED'),
     ('pad-confirm-never-runs', 'legality',
      "        self.pad_exact = bool(STACK_EXACT_CONFIRM)",
@@ -101,14 +104,22 @@ ROWS = [
      (OUTLINES,), 'KILLED'),
     ('pad-confirm-at-check-drc-default-margin', 'legality',
      "                                               clearance_margin=0.0)\n"
-     "        return float(over) if hit else 0.0",
+     "        return self._remember(key, float(over) if hit else 0.0)",
      "                                               )\n"
-     "        return float(over) if hit else 0.0",
+     "        return self._remember(key, float(over) if hit else 0.0)",
      (OUTLINES,), 'KILLED'),
     ('unposable-pad-charges-nothing', 'legality',
      "            return None\n        from check_drc import check_pad_pad_overlap",
      "            return 0.0\n        from check_drc import check_pad_pad_overlap",
      (PAD_BOX,), 'KILLED'),
+    ('stack-memo-key-drops-poses', 'legality',
+     "        key = ('stack', a, ai, _pose_key(pose_a), b, bi, _pose_key(pose_b))",
+     "        key = ('stack', a, ai, b, bi)",
+     (GRID,), 'KILLED'),
+    ('pad-memo-key-drops-poses', 'legality',
+     "        key = ('pad', a, ai, _pose_key(pose_a), b, bi, _pose_key(pose_b), eff)",
+     "        key = ('pad', a, ai, b, bi, eff)",
+     (PAD_GRID,), 'KILLED'),
     ('perimeter-cache-serves-another-pad', 'drc',
      "    if hit is not None and hit[2] is pad and hit[0] == fp:",
      "    if hit is not None and hit[0] == fp:",
