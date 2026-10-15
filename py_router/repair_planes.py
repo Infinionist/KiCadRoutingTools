@@ -1277,20 +1277,33 @@ def repair_planes(
     # set -- a blocker rip here strips the net for a later generic route.py
     # reconnect, which cannot reproduce matching/coupling/hand-routing. (The
     # tap simply fails over its other candidates.)
+    #
+    # Fail SAFE (#1261 follow-up): this lookup used to sit in a bare
+    # `except Exception: pass`, so a failure here silently left every net --
+    # locked copper included -- a candidate blocker. If protection cannot be
+    # read, say so and rip nothing this run (the tap fails over its other
+    # candidates, as it does for a protected blocker).
+    from protected_nets import protection_map
+    _protection_read = True
     try:
-        from protected_nets import protection_map
         _prot_names = protection_map(pcb_data)
-        if _prot_names:
-            _prot_ids = {nid for nid, n in pcb_data.nets.items()
-                         if n.name in _prot_names}
-            _prot_ids -= plane_net_ids
-            if _prot_ids and rip_blocker_nets:
-                _ex = sorted(pcb_data.nets[i].name for i in _prot_ids)[:4]
-                print(f"  {len(_prot_ids)} PROTECTED net(s) excluded from blocker "
-                      f"rip-up ({', '.join(_ex)}{'...' if len(_prot_ids) > 4 else ''})")
-            plane_net_ids |= _prot_ids
-    except Exception:
-        pass
+    except Exception as e:
+        _protection_read = False
+        _prot_names = {}
+        if rip_blocker_nets:
+            print(f"  WARNING: net protection (#521: protected nets and "
+                  f"KiCad-locked copper) could not be read "
+                  f"({type(e).__name__}: {e}) -- NO blocker will be ripped "
+                  f"this run")
+    if _prot_names:
+        _prot_ids = {nid for nid, n in pcb_data.nets.items()
+                     if n.name in _prot_names}
+        _prot_ids -= plane_net_ids
+        if _prot_ids and rip_blocker_nets:
+            _ex = sorted(pcb_data.nets[i].name for i in _prot_ids)[:4]
+            print(f"  {len(_prot_ids)} PROTECTED net(s) excluded from blocker "
+                  f"rip-up ({', '.join(_ex)}{'...' if len(_prot_ids) > 4 else ''})")
+        plane_net_ids |= _prot_ids
     ripped_net_ids: List[int] = []
     # #517 arm 3 (#524 root cause): nets whose immediate reconnect SUCCEEDED
     # leave ripped_net_ids (they are no longer casualties) -- but their
@@ -1589,7 +1602,8 @@ def repair_planes(
                         corridor_ghosts=corridor_ghosts,
                         plane_tap=True)  # #1179
                     _rips_before = len(ripped_net_ids)
-                    if not result.success and rip_blocker_nets:
+                    if (not result.success and rip_blocker_nets
+                            and _protection_read):
                         if not _allow_rip:
                             # #517 arm 3 phase 1: this pad needs a rip --
                             # defer it so the free-space pads claim first and
