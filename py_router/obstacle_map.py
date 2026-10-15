@@ -1932,9 +1932,11 @@ def _project_stamp(path: str):
     out = []
     # The project, and the board file: the origin record may live on the
     # board itself (tool_records), where a GUI session's survives KiCad's save.
-    for ext in ('.kicad_pro', '.kicad_pcb'):
+    # Not a sibling-copy list (copy_board.SIBLING_EXTS): exactly these two.
+    stem = os.path.splitext(path)[0]
+    for stamped in (stem + '.kicad_pro', stem + '.kicad_pcb'):
         try:
-            st = os.stat(os.path.splitext(path)[0] + ext)
+            st = os.stat(stamped)
             out.append((st.st_mtime_ns, st.st_size, st.st_ino))
         except (OSError, ValueError, TypeError):
             out.append(None)
