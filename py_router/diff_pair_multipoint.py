@@ -905,7 +905,7 @@ def _switch_blocked_terminal_stubs(state, pair: DiffPairNet, terminals):
     tokens, empty when nothing switched. Bare-pad terminals (no stub) are
     left to the relocation path."""
     from stub_layer_switching import (get_stub_info, apply_stub_layer_switch,
-                                      validate_swap)
+                                      validate_swap, revert_stub_layer_switch)
     config = state.config
     pcb_data = state.pcb_data
     obstacles = state.diff_pair_base_obstacles
@@ -942,6 +942,12 @@ def _switch_blocked_terminal_stubs(state, pair: DiffPairNet, terminals):
                                                      config, debug=False)
                 vias_all += vias
                 mods_all += mods
+            # Pad vias must clear every existing hole (same net
+            # included) by hole-to-hole -- same funnel as the optimizer sites.
+            from layer_swap_optimization import _swap_vias_fit_or_shrink
+            if vias_all and not _swap_vias_fit_or_shrink(pcb_data, vias_all, config):
+                revert_stub_layer_switch(pcb_data, mods_all, vias_all)
+                continue
             print(f"  Stub layer switch: {pp.component_ref}:"
                   f"{pp.pad_number}/{nn.pad_number} {stub_layer} -> {dest}")
             switched.append((mods_all, vias_all))
