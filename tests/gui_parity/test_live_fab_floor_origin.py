@@ -19,7 +19,9 @@ tab's apply phase routes print() into its log):
   * FAB FLOOR RELAXED names ORIGINAL -> now and counts real copper under it;
   * a second step, which lowers nothing more, still says the board is under
     its original (the run-14 rule);
-  * a board whose floors the step does not lower gets no banner.
+  * a board whose floors the step does not lower gets no banner;
+  * the fanout tab's step, where update_live_drc_floors is the only writer,
+    records the same origin and prints the same banner.
 
 Needs KiCad python (pcbnew); re-execs into it like its siblings.
 
@@ -164,6 +166,37 @@ def main():
                   'FAB FLOOR RELAXED' not in out3, out3[-400:])
         finally:
             shutil.rmtree(td2, ignore_errors=True)
+
+        print("--- the fanout tab's step: update_live_drc_floors alone")
+        # fanout_gui never calls apply_targets_to_board, so there
+        # update_live_drc_floors is the step's FIRST writer and must seed the
+        # origin before it lowers a floor itself. Every step above calls
+        # apply_targets_to_board first, which seeds, so none of them can see an
+        # update_live_drc_floors that seeds after lowering -- the ad7f24de
+        # shape, which records the lowered value and says nothing.
+        getattr(F, '_LIVE_FAB_ORIGIN', {}).clear()
+        td3 = tempfile.mkdtemp(prefix='livefab_fanout_')
+        try:
+            path3 = _stage(td3, DECLARED)
+            board3 = pcbnew.LoadBoard(path3)
+            pcbnew.GetBoard = lambda: board3
+            from kicad_routing_plugin.gui_utils import update_live_drc_floors
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                update_live_drc_floors(board3, **STEP)
+            out4 = buf.getvalue()
+            bds3 = board3.GetDesignSettings()
+            check("the fanout step really lowered the live via floor",
+                  bds3.m_ViasMinSize / 1e6 < 0.8, f"{bds3.m_ViasMinSize / 1e6}")
+            origin3 = _origin(path3) or {}
+            check("its origin is recorded at the DECLARED floors, not the "
+                  "lowered ones",
+                  origin3.get('min_via_diameter') == 0.8
+                  and origin3.get('min_track_width') == 0.3, f"{origin3}")
+            check("and FAB FLOOR RELAXED names the original via floor and the "
+                  "new one", 'via diameter: 0.8 -> 0.4 mm' in out4, out4[-600:])
+        finally:
+            shutil.rmtree(td3, ignore_errors=True)
     finally:
         shutil.rmtree(td, ignore_errors=True)
 

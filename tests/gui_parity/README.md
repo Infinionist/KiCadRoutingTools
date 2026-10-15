@@ -441,6 +441,10 @@ skip cleanly without KiCad python). Run any directly:
   ORIGINAL fab floors in `kicad_routing_tools.fab_floor_origin` before lowering
   them, and prints FAB FLOOR RELAXED against it with a census of the live
   copper -- the file writers' rule (ad7f24de), which the GUI never followed.
+  It also runs the fanout tab's step, where `update_live_drc_floors` is the
+  ONLY writer: the other steps call `apply_targets_to_board` first, which
+  seeds, so they cannot see an `update_live_drc_floors` that seeds after
+  lowering (it then records the lowered 0.15/0.4 and prints nothing).
 - `test_gnd_vias_gui.py` -- the Planes tab's **Add GND vias** step, run for
   real (nothing mocked) against `route_planes.py --add-gnd-vias` on the same
   files: return vias keep a net-class clearance (#1030), a `.kicad_dru` layer
