@@ -2164,17 +2164,22 @@ def _arm_hit(key, out_path):
     arm wrote copied to `out_path`; None when there is none."""
     if _MEMO is None or key is None or key not in _MEMO['arms']:
         return None
+    from copy_board import copy_siblings
     board, res = _MEMO['arms'][key]
     shutil.copyfile(board, out_path)
+    copy_siblings(board, out_path)          # its .kicad_pro travels too (#441)
     return copy.deepcopy(res)
 
 
 def _arm_store(key, out_path, res):
-    """Keep the board an arm wrote, and its result, under `key`."""
+    """Keep the board an arm wrote, siblings and all, and its result, under
+    `key`."""
     if _MEMO is None or key is None:
         return
+    from copy_board import copy_siblings
     keep = os.path.join(_MEMO['dir'], f"arm{len(_MEMO['arms'])}.kicad_pcb")
     shutil.copyfile(out_path, keep)
+    copy_siblings(out_path, keep)
     _MEMO['arms'][key] = (keep, copy.deepcopy(res))
 
 
