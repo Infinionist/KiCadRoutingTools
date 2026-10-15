@@ -116,6 +116,7 @@ def main():
         print('PASS: near-cardinal exact tilt and unequal-axis circle coverage')
         padstack_arm(Path(scratch))
         custom_size_arm(Path(scratch))
+        custom_copper_arm(Path(scratch))
     assert hashlib.sha256(source.read_bytes()).hexdigest() == original
 
 
@@ -232,6 +233,83 @@ def custom_size_arm(scratch):
     assert by['A'] == (4.572, .4064, 27.0) and by['D'] == (2.0, 1.0, -30.0), by
     assert by['B'][2] == 0.0 and by['npth'] == (0.6, 0.6, 0.0), by
     print(f'PASS: custom-pad size/tilt agree on both parsers and with pcbnew\'s copper: {by}')
+
+
+def custom_copper_arm(scratch):
+    """A custom pad's `polygons` reach exactly as far as pcbnew's copper, on
+    both parsers -- the obstacle map and check_drc read them before the size
+    rect, and before this nothing compared them.
+
+    KiCad strokes a primitive with ROUND caps and joins: the text parser's
+    square caps and mitered corners reached past it (qfhmix01 D3: 0.083 mm
+    on a 0.4 mm arc stroke, laser_backplane_dvi J8.2: 0.022 mm on a stroked
+    poly), its inscribed 32-gon fell 13 um inside a 2.75 mm ring
+    (kirdy_laser_drv H1), and it drew a KiCad 9 rounded-rect primitive with
+    sharp corners (rp2350_fpga_eensy U5: 21 um). Measured both ways at every vertex and edge
+    midpoint: text copper against pcbnew's own polygon (its distance query),
+    pcbnew's vertices against check_drc's reading of the text polygons, to
+    compare_pcb_data's 0.01 mm. The residue that bound admits is two chord
+    errors added: pcbnew's polygon sits up to its 5 um max error inside a
+    curve, and the text ring's inscribed inner edge up to its own sagitta
+    into the hole (8.6 um on the 2.25 mm inner edge here). Before the fix the
+    text copper of the four pads missed by 83, 21, 65 and 13 um."""
+    pads = (
+        # qfhmix01 D3.1: a wide arc stroke on a 1 um anchor, at 315 deg
+        '  (pad "1" smd custom (at 0 0 315) (size 0.001 0.001) (layers "F.Cu") (net 1 "/A")'
+        ' (options (clearance outline) (anchor rect)) (primitives (gr_arc (start 0.404306'
+        ' 0.548105) (mid 0.307348 0.003177) (end 0.402138 -0.542133) (width 0.4)) (gr_poly'
+        ' (pts (xy 0.405 0.75) (xy -0.645 0.75) (xy -0.645 -0.75) (xy 0.405 -0.75))'
+        ' (width 0) (fill yes))))\n'
+        # laser_backplane_dvi J8.2: a stroked poly with sharp corners plus an arc
+        '  (pad "2" smd custom (at 6 0 90) (size 1 1) (layers "F.Cu") (net 1 "/A")'
+        ' (options (clearance outline) (anchor circle)) (primitives (gr_poly (pts'
+        ' (xy -0.55 0.55) (xy -0.55 -2) (xy -0.3 -2) (xy -0.3 -1.4) (xy -0.1 -1)'
+        ' (xy 0.1 -0.552) (xy 0.7 0) (xy 1.6 0.3) (xy 2 0.3) (xy 2 0.55)) (width 0.1)'
+        ' (fill yes)) (gr_arc (start 2 0.3) (mid 0.373654 -0.373654) (end -0.3 -2)'
+        ' (width 0.1))))\n'
+        # a line and a stroked rect at angles no axis-aligned box hides
+        '  (pad "3" smd custom (at 12 0 30) (size 0.3 0.3) (layers "F.Cu") (net 1 "/A")'
+        ' (options (clearance outline) (anchor circle)) (primitives (gr_line (start 0 0)'
+        ' (end 1.5 0.4) (width 0.3)) (gr_rect (start -1 -0.6) (end -0.2 0.6) (width 0.2))))\n'
+        # kirdy_laser_drv H1: a 2.75 mm unfilled ring
+        '  (pad "4" smd custom (at 20 0) (size 0.5 0.5) (layers "F.Cu") (net 1 "/A")'
+        ' (options (clearance outline) (anchor circle)) (primitives (gr_circle'
+        ' (center 0 0) (end 2.5 0) (width 0.5) (fill no))))\n'
+        # rp2350_fpga_eensy U5: a KiCad 9 rounded-rect primitive, here at 30 deg
+        '  (pad "5" smd custom (at 26 0 30) (size 0.3 0.3) (layers "F.Cu") (net 1 "/A")'
+        ' (options (clearance outline) (anchor circle)) (primitives (gr_rect'
+        ' (start 0.05 -0.5) (end 0.3 0.15) (radius 0.05) (width 0) (fill yes))'
+        ' (gr_rect (start -1 -0.5) (end -0.4 0.5) (radius 0.2) (width 0.1) (fill yes))))\n')
+    path, board = _synthetic(scratch, 'custom_copper', (
+        ' (footprint "L:CC" (layer "F.Cu") (at 15 20)\n'
+        '  (property "Reference" "U3" (at 0 -4 0) (layer "F.Cu") (hide yes)'
+        ' (effects (font (size 1 1) (thickness 0.15))))\n' + pads + ' )\n'))
+    from check_drc import _point_to_polys_distance
+    from kicad_parser import compare_pcb_data
+    live = list(next(iter(board.GetFootprints())).Pads())
+    parsed = {'text': parse_kicad_pcb(str(path)), 'pcbnew': build_pcb_data_from_board(board)}
+    worst = {}
+    for i, lp in enumerate(live):
+        native = lp.GetEffectivePolygon(pcbnew.F_Cu)
+        nat_pts = [(pcbnew.ToMM(native.COutline(o).CPoint(k).x),
+                    pcbnew.ToMM(native.COutline(o).CPoint(k).y))
+                   for o in range(native.OutlineCount())
+                   for k in range(native.COutline(o).PointCount())]
+        for label, pcb in parsed.items():
+            polys = pcb.footprints['U3'].pads[i].polygons
+            assert polys, (lp.GetNumber(), label, 'no polygons')
+            samples = [p for r in polys for p in r] + [
+                ((r[k][0] + r[(k + 1) % len(r)][0]) / 2, (r[k][1] + r[(k + 1) % len(r)][1]) / 2)
+                for r in polys for k in range(len(r))]
+            out = max(math.sqrt(native.SquaredDistance(pcbnew.VECTOR2I(
+                pcbnew.FromMM(x), pcbnew.FromMM(y)))) / 1e6 for x, y in samples)
+            short = max(_point_to_polys_distance(x, y, polys) for x, y in nat_pts)
+            worst[(lp.GetNumber(), label)] = (round(out, 4), round(short, 4))
+            assert out < .01 and short < .01, (lp.GetNumber(), label, out, short)
+    diffs = [d for d in compare_pcb_data(parsed['pcbnew'], parsed['text']) if 'polygons' in d]
+    assert not diffs, diffs[:3]
+    print('PASS: custom-pad copper matches pcbnew\'s within its max error, both ways, '
+          f'on both parsers (worst past, worst short): {worst}')
 
 
 if __name__ == '__main__':

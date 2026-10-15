@@ -1079,6 +1079,14 @@ _PTS_ARC_RE = (r'\((?:gr_)?arc\s+\(start\s+(-?[\d.]+)\s+(-?[\d.]+)\)\s+'
                r'\(end\s+(-?[\d.]+)\s+(-?[\d.]+)\)')
 
 
+def _rect_corner_radius(block: str, w: float, h: float) -> float:
+    """A rect primitive's KiCad 9 corner `(radius r)`, clamped (as KiCad
+    clamps it) just under half the shorter side; 0 when absent."""
+    m = re.search(r'\(radius\s+(%s)\)' % r'-?[\d.]+(?:[eE][-+]?\d+)?', block)
+    r = float(m.group(1)) if m else 0.0
+    return max(0.0, min(r, min(abs(w), abs(h)) / 2.0 - 1e-6))
+
+
 def _custom_pad_primitive_points(pad_text: str):
     """Per-primitive (points, half_stroke) tuples from a custom pad's
     (primitives ...) block, in the pad's local frame. Arcs (gr_poly pts arcs
@@ -1120,8 +1128,17 @@ def _custom_pad_primitive_points(pad_text: str):
             sm = re.search(r'\(start\s+(-?[\d.]+)\s+(-?[\d.]+)\)\s+\(end\s+(-?[\d.]+)\s+(-?[\d.]+)\)', block)
             if sm:
                 x1, y1, x2, y2 = map(float, sm.groups())
-                pts += [(x1, y1), (x2, y2)] if m2.group(1) == 'line' else \
-                       [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+                if m2.group(1) == 'line':
+                    pts += [(x1, y1), (x2, y2)]
+                else:
+                    # A rounded corner (KiCad 9 `(radius r)`): the inset
+                    # corners plus r, which is the exact extent.
+                    x1, x2 = min(x1, x2), max(x1, x2)
+                    y1, y2 = min(y1, y2), max(y1, y2)
+                    rr = _rect_corner_radius(block, x2 - x1, y2 - y1)
+                    x1, y1, x2, y2 = x1 + rr, y1 + rr, x2 - rr, y2 - rr
+                    hw += rr
+                    pts += [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
         if pts:
             out.append((pts, hw))
     return out
@@ -1163,6 +1180,98 @@ def _offset_polygon_outward(pts, hw):
         out.append((pts[i][0] + bx * hw / cos_half,
                     pts[i][1] + by * hw / cos_half))
     return out
+
+
+def _round_join_steps(sweep: float, r: float, eps: float = 0.001) -> int:
+    """Chords for an INSCRIBED arc of radius `r` over `sweep` radians with a
+    sagitta of at most `eps` mm (the pad-primitive budget, run-4 B6)."""
+    if r <= eps:
+        return 1
+    step = 2.0 * math.acos(max(-1.0, min(1.0, 1.0 - eps / r)))
+    return max(1, min(64, int(math.ceil(abs(sweep) / step)))) if step > 0 else 64
+
+
+def _offset_polygon_round(pts, hw):
+    """A closed polygon grown by ``hw`` with ROUND joins: its Minkowski sum
+    with a disc, which is the copper KiCad builds for a filled polygon stroked
+    at ``2*hw`` (EDA_SHAPE::TransformShapeToPolygon inflates with
+    ROUND_ALL_CORNERS). A convex vertex gets an inscribed arc between its two
+    edge offsets; a reflex vertex the offsets' intersection, which is exact
+    there. `_offset_polygon_outward`'s miter at a convex corner reached up to
+    4*hw past the real copper (laser_backplane_dvi J8.2: 18 um)."""
+    n = len(pts)
+    if n < 3 or hw <= 0:
+        return pts
+    area2 = sum(pts[i][0] * pts[(i + 1) % n][1] - pts[(i + 1) % n][0] * pts[i][1]
+                for i in range(n))
+    sign = 1.0 if area2 > 0 else -1.0
+    normals = []
+    for i in range(n):
+        dx = pts[(i + 1) % n][0] - pts[i][0]
+        dy = pts[(i + 1) % n][1] - pts[i][1]
+        length = math.hypot(dx, dy)
+        normals.append((sign * dy / length, -sign * dx / length)
+                       if length > 1e-12 else None)
+    out = []
+    for i in range(n):
+        n0, n1 = normals[i - 1], normals[i]
+        if n0 is None or n1 is None:
+            v = n0 or n1
+            out.append((pts[i][0] + v[0] * hw, pts[i][1] + v[1] * hw) if v else pts[i])
+            continue
+        turn = math.atan2(n0[0] * n1[1] - n0[1] * n1[0], n0[0] * n1[0] + n0[1] * n1[1])
+        if turn * sign > 1e-9:          # convex: the disc rounds this corner
+            a0 = math.atan2(n0[1], n0[0])
+            m = _round_join_steps(turn, hw)
+            for k in range(m + 1):
+                a = a0 + turn * k / m
+                out.append((pts[i][0] + hw * math.cos(a), pts[i][1] + hw * math.sin(a)))
+        else:                           # reflex or straight: the offsets meet
+            bx, by = n0[0] + n1[0], n0[1] + n1[1]
+            length = math.hypot(bx, by)
+            if length < 1e-12:
+                out.append((pts[i][0] + n1[0] * hw, pts[i][1] + n1[1] * hw))
+                continue
+            bx, by = bx / length, by / length
+            cos_half = max(0.25, bx * n0[0] + by * n0[1])
+            out.append((pts[i][0] + bx * hw / cos_half, pts[i][1] + by * hw / cos_half))
+    return out
+
+
+def _stroke_band(pts, hw):
+    """A stroked polyline's copper as ONE ring with ROUND caps, as KiCad
+    strokes a line or an arc: both sides offset by ``hw`` (per-vertex
+    averaged normals) and an inscribed half-disc round each end. The square
+    cap this replaced reached ``hw*(sqrt(2)-1)`` past the round one at a
+    corner (cm4_baseboard H101's 0.2 mm arc strokes: 17 um past pcbnew's
+    copper)."""
+    if len(pts) < 2 or hw <= 0:
+        return None
+    normals = []
+    for i in range(len(pts)):
+        acc_x = acc_y = 0.0
+        for j in (i - 1, i):
+            if 0 <= j < len(pts) - 1:
+                dx = pts[j + 1][0] - pts[j][0]
+                dy = pts[j + 1][1] - pts[j][1]
+                L = math.hypot(dx, dy)
+                if L > 1e-12:
+                    acc_x += -dy / L
+                    acc_y += dx / L
+        L = math.hypot(acc_x, acc_y)
+        normals.append((acc_x / L, acc_y / L) if L > 1e-12 else (0.0, 1.0))
+    left = [(p[0] + n[0] * hw, p[1] + n[1] * hw) for p, n in zip(pts, normals)]
+    right = [(p[0] - n[0] * hw, p[1] - n[1] * hw) for p, n in zip(pts, normals)]
+    m = max(2, _round_join_steps(math.pi, hw))
+
+    def cap(c, nx, ny):
+        # From +n through the outward tangent to -n (n is the tangent turned
+        # +90 deg, so decreasing angle passes the tangent first).
+        a0 = math.atan2(ny, nx)
+        return [(c[0] + hw * math.cos(a0 - math.pi * k / m),
+                 c[1] + hw * math.sin(a0 - math.pi * k / m)) for k in range(1, m)]
+    return (left + cap(pts[-1], *normals[-1]) + right[::-1]
+            + cap(pts[0], -normals[0][0], -normals[0][1]))
 
 
 def _custom_anchor_kind(pad_text: str) -> str:
@@ -1309,35 +1418,6 @@ def _custom_pad_global_polygons(pad_text: str, global_x: float, global_y: float,
         m = re.search(r'\(width\s+(-?[\d.]+)\)', block)
         return float(m.group(1)) if m else 0.0
 
-    def _stroke_band(pts, hw):
-        """Polygon for a stroked polyline: offset +-hw using per-vertex averaged
-        normals, ends extended by hw (square cap covers the round cap)."""
-        if len(pts) < 2 or hw <= 0:
-            return None
-        # extend ends along their tangents so the cap is covered
-        (x0, y0), (x1, y1) = pts[0], pts[1]
-        d0 = math.hypot(x1 - x0, y1 - y0) or 1.0
-        pts = [(x0 - (x1 - x0) / d0 * hw, y0 - (y1 - y0) / d0 * hw)] + pts[1:]
-        (xa, ya), (xb, yb) = pts[-2], pts[-1]
-        d1 = math.hypot(xb - xa, yb - ya) or 1.0
-        pts = pts[:-1] + [(xb + (xb - xa) / d1 * hw, yb + (yb - ya) / d1 * hw)]
-        normals = []
-        for i in range(len(pts)):
-            acc_x = acc_y = 0.0
-            for j in (i - 1, i):
-                if 0 <= j < len(pts) - 1:
-                    dx = pts[j + 1][0] - pts[j][0]
-                    dy = pts[j + 1][1] - pts[j][1]
-                    L = math.hypot(dx, dy)
-                    if L > 1e-12:
-                        acc_x += -dy / L
-                        acc_y += dx / L
-            L = math.hypot(acc_x, acc_y)
-            normals.append((acc_x / L, acc_y / L) if L > 1e-12 else (0.0, 0.0))
-        left = [(p[0] + n[0] * hw, p[1] + n[1] * hw) for p, n in zip(pts, normals)]
-        right = [(p[0] - n[0] * hw, p[1] - n[1] * hw) for p, n in zip(pts, normals)]
-        return left + right[::-1]
-
     polys = []
     # Iterate primitives in order; one polygon per primitive, transformed to global.
     for pm2 in re.finditer(r'\(gr_(poly|circle|rect|line|arc)\b', prim):
@@ -1365,13 +1445,14 @@ def _custom_pad_global_polygons(pad_text: str, global_x: float, global_y: float,
             if local:
                 # KiCad strokes the gr_poly OUTLINE with its (width ...) --
                 # for filled and unfilled polys alike -- so copper reaches
-                # width/2 beyond the outline (#418). Offset the outline
-                # outward by that half-stroke. An unfilled poly's interior
-                # is not really copper, but the filled-outline model is kept
-                # (conservative, and exact for clearance to external copper).
+                # width/2 beyond the outline (#418). Grow the outline by that
+                # half-stroke with ROUND corners, as KiCad does. An unfilled
+                # poly's interior is not really copper, but the filled-outline
+                # model is kept (conservative, and exact for clearance to
+                # external copper).
                 hw = _width(block) / 2.0
                 if hw > 0:
-                    local = _offset_polygon_outward(local, hw)
+                    local = _offset_polygon_round(local, hw)
         elif kind == 'circle':
             c = _field(block, 'center', 2)
             e = _field(block, 'end', 2)
@@ -1393,16 +1474,14 @@ def _custom_pad_global_polygons(pad_text: str, global_x: float, global_y: float,
                 filled = not re.search(r'\(fill\s+(?:no|none)\b', block)
                 r_in = 0.0 if filled else max(0.0, r_mid - hw)
                 if R > 0:
-                    # REVERTED to main's fixed inscribed 32-gon. The adaptive
-                    # version (run-4 B6) was more accurate -- ~2.4um radial
-                    # error at r=0.5 vs 1um sagitta -- but it sits in the
-                    # PARSER, so it moved obstacle geometry and DRC grading
-                    # together on every board with circle-primitive custom
-                    # pads, which makes cross-era comparisons on those boards
-                    # unresolvable by re-grading (both sides shift). Restore
-                    # if the accuracy is wanted, but land it as a deliberate,
-                    # measured baseline change rather than a silent one.
-                    N = 32
+                    # An inscribed 32-gon, made finer only where it would sit
+                    # more than pcbnew's own 5 um max error inside the circle
+                    # (R > 1.038 mm): there the two parse paths disagreed by
+                    # up to 13 um (kirdy_laser_drv H1..H8's 2.75 mm rings,
+                    # reterminal_em J6/J7). Every smaller circle keeps its
+                    # 32-gon, so the geometry of most boards does not move
+                    # (run-4 B6's 1 um adaptive version moved all of them).
+                    N = _adaptive_circle_n(R, eps=0.005, lo=32, hi=128)
                     outer = [(c[0] + R * math.cos(2 * math.pi * k / N),
                               c[1] + R * math.sin(2 * math.pi * k / N))
                              for k in range(N)]
@@ -1418,9 +1497,16 @@ def _custom_pad_global_polygons(pad_text: str, global_x: float, global_y: float,
             e = _field(block, 'end', 2)
             if s and e:
                 hw = _width(block) / 2.0
-                x0, x1 = min(s[0], e[0]) - hw, max(s[0], e[0]) + hw
-                y0, y1 = min(s[1], e[1]) - hw, max(s[1], e[1]) + hw
-                local = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+                x0, x1 = min(s[0], e[0]), max(s[0], e[0])
+                y0, y1 = min(s[1], e[1]), max(s[1], e[1])
+                # The stroke rounds the corners, as on a gr_poly, and so does
+                # a KiCad 9 corner `(radius r)` (rp2350_fpga_eensy U5: r 0.05,
+                # drawn sharp it reached 21 um past pcbnew's copper): the rect
+                # inset by r, grown by r plus the half-stroke.
+                rr = _rect_corner_radius(block, x1 - x0, y1 - y0)
+                local = _offset_polygon_round(
+                    [(x0 + rr, y0 + rr), (x1 - rr, y0 + rr), (x1 - rr, y1 - rr),
+                     (x0 + rr, y1 - rr)], hw + rr)
         elif kind == 'arc':
             # 3-point arc stroke: linearize the centerline, offset into a band.
             # chord_eps: pad-primitive arcs get the same 1um chord tolerance
@@ -1440,17 +1526,9 @@ def _custom_pad_global_polygons(pad_text: str, global_x: float, global_y: float,
             e = _field(block, 'end', 2)
             if s and e:
                 hw = _width(block) / 2.0 or 1e-6
-                dx, dy = e[0] - s[0], e[1] - s[1]
-                L = math.hypot(dx, dy)
-                if L > 0:
-                    ux, uy = dx / L, dy / L          # along
-                    px, py = -uy, ux                 # perpendicular
-                    # Capsule approximated by its oriented bounding rectangle:
-                    # extend each end by hw and offset +/- hw perpendicular.
-                    sx, sy = s[0] - ux * hw, s[1] - uy * hw
-                    ex, ey = e[0] + ux * hw, e[1] + uy * hw
-                    local = [(sx + px * hw, sy + py * hw), (ex + px * hw, ey + py * hw),
-                             (ex - px * hw, ey - py * hw), (sx - px * hw, sy - py * hw)]
+                if math.hypot(e[0] - s[0], e[1] - s[1]) > 0:
+                    # The capsule itself, round caps and all.
+                    local = _stroke_band([s, e], hw)
         if local:
             polys.append(to_global(local))
 
@@ -9107,6 +9185,44 @@ def _extract_zones_from_pcbnew(board, to_mm, get_layer_name):
     return zones
 
 
+def _polygon_union_excess(polys_a, polys_b):
+    """How far the copper `polys_a` describes reaches OUTSIDE the copper
+    `polys_b` describes: (distance mm, (x, y)) at the worst sample.
+
+    Each argument is a pad's `polygons`, read the way every consumer reads it
+    -- the UNION of its rings, each ring even-odd. The two parse paths spell
+    one pad differently (pcbnew merges a custom pad into one outline, the text
+    parser keeps one ring per primitive plus the anchor), so the rings cannot
+    be compared one to one; their unions can. Samples are every vertex of
+    `polys_a` and the midpoint of every edge, which sees a protruding cap or
+    corner and a missing primitive (its vertices are outside); a notch cut
+    into the middle of a long edge between two samples is the one shape this
+    can miss."""
+    from check_drc import _point_in_poly as _pip
+    from geometry_utils import point_to_segment_distance as _psd
+    rings_b = [r for r in polys_b if len(r) >= 3]
+    boxes_b = [(min(p[0] for p in r), min(p[1] for p in r),
+                max(p[0] for p in r), max(p[1] for p in r)) for r in rings_b]
+    worst, where = 0.0, None
+    for ring in polys_a:
+        n = len(ring)
+        if n < 2:
+            continue
+        samples = list(ring) + [((ring[i][0] + ring[(i + 1) % n][0]) / 2.0,
+                                 (ring[i][1] + ring[(i + 1) % n][1]) / 2.0)
+                                for i in range(n)]
+        for x, y in samples:
+            if any(bx0 <= x <= bx1 and by0 <= y <= by1 and _pip(x, y, r)
+                   for r, (bx0, by0, bx1, by1) in zip(rings_b, boxes_b)):
+                continue
+            d = min((_psd(x, y, r[i][0], r[i][1], r[(i + 1) % len(r)][0],
+                          r[(i + 1) % len(r)][1])
+                     for r in rings_b for i in range(len(r))), default=float('inf'))
+            if d > worst:
+                worst, where = d, (x, y)
+    return worst, where
+
+
 def _pair_nearest_bounds(items_a, items_b):
     """Pair two equal-length lists of objects carrying `.bounds` by GEOMETRY:
     an exact match on the bounds rounded to 0.1 um first (the common case,
@@ -9343,6 +9459,25 @@ def compare_pcb_data(from_board: 'PCBData', from_file: 'PCBData', tolerance: flo
                 br = getattr(bp, 'rect_rotation', 0.0); fr = getattr(fp, 'rect_rotation', 0.0)
                 if not close(br, fr):
                     diffs.append(f"Pad {ref}:{bp.pad_number} rect_rotation: board={br:.2f} file={fr:.2f}")
+                # A custom pad's real copper (#188): the obstacle map and
+                # check_drc read `polygons` before the size rect, and nothing
+                # compared them. Compared as the UNION each path describes,
+                # both ways (`_polygon_union_excess`), since pcbnew merges the
+                # primitives into one ring and the text parser keeps one per
+                # primitive.
+                bpp = getattr(bp, 'polygons', None) or []
+                fpp = getattr(fp, 'polygons', None) or []
+                if bool(bpp) != bool(fpp):
+                    diffs.append(f"Pad {ref}:{bp.pad_number} polygons: board={len(bpp)} "
+                                 f"ring(s) file={len(fpp)} ring(s)")
+                elif bpp:
+                    for _who, _a, _b in (('board', bpp, fpp), ('file', fpp, bpp)):
+                        _d, _at = _polygon_union_excess(_a, _b)
+                        if _d >= tolerance:
+                            diffs.append(
+                                f"Pad {ref}:{bp.pad_number} polygons: {_who} copper reaches "
+                                f"{_d:.3f} mm past the other path's at "
+                                f"({_at[0]:.3f},{_at[1]:.3f})")
                 # Per-pad local clearance override (fiducial keep-clear rings etc.).
                 # A pcbnew accessor that silently returns 0 would drop a keep-out the
                 # file parse honors - this surfaces that divergence.
