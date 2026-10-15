@@ -5225,7 +5225,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         the shared spec (net_rescue.cap_move_reweld_spec)."""
         from kicad_oracle import oracle_reconnect, oracle_net_ids_by_name
         from kicad_dru import install_layer_clearances
-        _cfg = GridRouteConfig(
+        _cap_cfg = GridRouteConfig(
             clearance=cspec['clearance'], track_width=cspec['track_width'],
             via_size=cspec['via_size'], via_drill=cspec['via_drill'],
             grid_step=cspec['grid_step'], layers=list(cspec['layers']),
@@ -5234,15 +5234,19 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # finalize leg's _ocfg installs them (no board, so no design-rules
         # table either), and the run's resolved class map by NAME -- the
         # oracle re-parses the file.
-        install_layer_clearances(_cfg, dict(cspec['layer_clearances']),
-                                 input_file, None)
+        # cspec['layer_clearances'] is this same map (the spec is built from
+        # this run's config); it is what the GUI applier's fallback re-weld
+        # installs.
+        install_layer_clearances(
+            _cap_cfg, dict(config.layer_clearances or {}),
+            input_file, None)
         _kw = {}
         if gui:
             # its copper comes back on THIS run's net ids (#1133), to merge
             _kw['net_ids_by_name'] = oracle_net_ids_by_name(pcb_data.nets)
         # The cap-move oracle leg; _report_reweld666 records its nets (#984).
         _orc_cap = oracle_reconnect(
-            board_file, names, _cfg,
+            board_file, names, _cap_cfg,
             track_via_clearance=cspec['track_via_clearance'],
             hole_to_hole_clearance=cspec['hole_to_hole_clearance'],
             project_from=input_file,
