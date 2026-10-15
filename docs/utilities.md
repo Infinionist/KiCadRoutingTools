@@ -242,7 +242,12 @@ re-grade compares with, while it sweeps around the aimed point (#1256): built
 from the staged board, the request was its own baseline, and on esp_prog
 (C1 at a 1.5 mm pad clearance, `set C2 140.06 96.23 --rot 90 --snap
 --radius 2`) it ranked 8 poses carrying the very conflict that refused the
-request, all 8 then refused. Neither the snap nor the no-snap suggestion ever
+request, all 8 then refused. The input pose is also the incumbent of the
+ranker's off-board escape branch (`QuenchState.incumbent_at`, #1259): measured
+at an off-board request, that branch admitted every pose merely less off the
+board than the request, and on esp_prog `set R3 146.0 101.5 --snap --radius 4`
+ranked 3 such poses and refused all 9 tries; it now ranks 9 and snaps to the
+7th, 3.89 mm away. Neither the snap nor the no-snap suggestion ever
 returns the request itself (`requested_dropped`). `input_pose_vetoed` is the
 ranker's verdict on the part's input pose: when it vetoes even that, its
 knobs are stricter than the board, and the refusal says so.

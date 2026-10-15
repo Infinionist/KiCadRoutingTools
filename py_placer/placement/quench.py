@@ -1770,6 +1770,16 @@ class QuenchState:
         # ref -> violation of its CURRENT pose; whole-dict invalidated on any
         # move, since a move changes its neighbours' violations too.
         self._inc_violation: Dict[str, float] = {}
+        # #1259: ref -> (x, y, rot), the pose `candidate_valid`'s off-board
+        # escape branch measures as the INCUMBENT -- `_incumbent_violation`
+        # and the #1257 pad-copper conjunct both read it (`_incumbent_pose`).
+        # Empty, the incumbent is the part's current pose, as it is for every
+        # caller but one: place_pose's snap ranker (`pose_ops._ranker_state`)
+        # moves the part to the REQUEST before ranking, and an off-board
+        # request as the incumbent licensed every pose merely less off the
+        # board than it, each one refused by the re-grade against the input.
+        # Not cleared by a move: it is a fact about the caller's baseline.
+        self.incumbent_at: Dict[str, Tuple[float, float, float]] = {}
         # ref -> ids of the milled rings its OWN pads sit inside (#628). Keyed
         # on the SEED pose, so unlike _inc_violation this NEVER invalidates.
         self._owned_rings_cache: Dict[str, frozenset] = {}
@@ -2945,7 +2955,7 @@ class QuenchState:
         # courtyard moves off the board.
         cand_pad = self._pad_copper_past(ref, x, y, rot)
         if cand_pad > EPS_IMPROVE and cand_pad > self._pad_copper_past(
-                ref, part.x, part.y, part.rot) + EPS_IMPROVE:
+                ref, *self._incumbent_pose(ref)) + EPS_IMPROVE:
             if self._why is not None:
                 self._veto('pad_copper_outline')
             return False
@@ -3363,13 +3373,28 @@ class QuenchState:
         full neighbour-and-outline sweep -- cheap by a wide margin. The whole
         cache is cleared on every move (see apply_move), which is what makes
         an incumbent answer safe to hold at all.
+
+        The incumbent is the part's current pose unless the caller pinned it
+        in `incumbent_at` (#1259, `_incumbent_pose`).
         """
         key = (ref, frozenset(exclude) if exclude else None)
         v = self._inc_violation.get(key)
         if v is None:
-            v = self.violation_parts(ref, exclude=exclude)
+            at = self.incumbent_at.get(ref)
+            v = (self.violation_parts(ref, exclude=exclude) if at is None
+                 else self.violation_parts(ref, *at, exclude=exclude))
             self._inc_violation[key] = v
         return v
+
+    def _incumbent_pose(self, ref) -> Tuple[float, float, float]:
+        """#1259: the pose `candidate_valid`'s escape branch measures as the
+        incumbent -- `incumbent_at[ref]` when a caller set it, else the
+        part's current pose."""
+        at = self.incumbent_at.get(ref)
+        if at is not None:
+            return at
+        part = self.parts[ref]
+        return (part.x, part.y, part.rot)
 
     def _pad_copper_past(self, ref, x, y, rot) -> float:
         """#1257: how far `ref`'s pad copper reaches past the outline at the

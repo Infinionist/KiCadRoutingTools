@@ -669,6 +669,13 @@ def _ranker_state(pcb, board_path: str, ref: str, at, *, clearance: float,
     with C1 given a 1.5 mm pad clearance, `set C2 140.06 96.23 --rot 90
     --snap --radius 2`: 8 ranked poses, the request among them at 0.000 mm,
     every one refused by the re-grade.
+
+    The INCUMBENT of `candidate_valid`'s off-board escape branch is pinned
+    to the input pose too (`QuenchState.incumbent_at`, #1259), before the
+    move: measured at the request, an off-board request licensed every pose
+    merely less off the board than it. esp_prog `set R3 146.0 101.5 --snap
+    --radius 4` ranked 3 such poses and the re-grade refused all 9 tries
+    (exit 4); judged from the input pose it ranks 9, and the 7th passes.
     """
     import pose_score
     st = pose_score.make_state(pcb, board_path, clearance=clearance,
@@ -677,6 +684,7 @@ def _ranker_state(pcb, board_path: str, ref: str, at, *, clearance: float,
                                  and hasattr(st, 'parts')) else None
     if part is not None:
         rot = float(at[2]) % 360.0
+        st.incumbent_at[ref] = (part.x, part.y, part.rot)
         # The rotation caches carry the input pose's 90-degree lattice only;
         # a rect asked for a rotation outside it falls back to 0 degrees.
         part.ensure_rotation(rot)
