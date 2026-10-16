@@ -1908,6 +1908,7 @@ def route_oracle_links(pcb_data: PCBData, net_id: int, config: GridRouteConfig,
         if la is None or lb is None:
             print(f"    forced link endpoint layer not in the routing stack "
                   f"({al} / {bl}) -- link unroutable here")
+            uncommit_dropped_result(pcb_data, merged)
             return {'failed': True, 'iterations': 0}
         gax, gay = coord.to_grid(ax, ay)
         gbx, gby = coord.to_grid(bx, by)
@@ -1923,10 +1924,13 @@ def route_oracle_links(pcb_data: PCBData, net_id: int, config: GridRouteConfig,
                 print(f"    ({len(merged['new_segments'])} segment(s) from "
                       f"earlier forced link(s) discarded with this failure; "
                       f"a retry re-routes every link)")
+            # ...and so is their #189 unblock copper, already in pcb_data.
+            uncommit_dropped_result(pcb_data, merged)
             return result if result else {'failed': True, 'iterations': 0}
         if not (result.get('new_segments') or result.get('new_vias')):
             print(f"    forced link claimed success with ZERO copper -- "
                   f"refused (#572 false-weld fingerprint)")
+            uncommit_dropped_result(pcb_data, merged)
             result['failed'] = True
             return result
         if merged is None:
@@ -2370,6 +2374,11 @@ def _route_net_with_obstacles_impl(pcb_data: PCBData, net_id: int, config: GridR
         _why, _ships = _hard_terminal_why(_hard157[0])
         print(f"  {YELLOW}{_why} -- rejecting the route rather than shipping "
               f"{_ships}{RESET}")
+        # The rejected route's #189 unblock copper goes with it: it is already
+        # in pcb_data (#803) and no result will carry it, so the net's next
+        # route landed on it as the pad's own via, which the file never gets
+        # (found reviewing #1273).
+        _uncommit_unblock_copper(pcb_data, unblock_vias, unblock_segments)
         return {
             'failed': True,
             'iterations': total_iterations,
@@ -3284,6 +3293,31 @@ def _uncommit_unblock_copper(pcb_data, vias, segments) -> None:
     pcb_data.vias[:] = [v for v in pcb_data.vias if id(v) not in drop_v]
     pcb_data.segments[:] = [s for s in pcb_data.segments if id(s) not in drop_s]
     pcb_data._copper_epoch = getattr(pcb_data, '_copper_epoch', 0) + 1
+
+
+def uncommit_dropped_result(pcb_data, dropped, kept=None) -> None:
+    """A caller DROPPING a routing result it never committed (a probe, a
+    rejected retry, a result another one replaces) takes back the #189
+    unblock copper the router committed for it ahead of time (#803). Left
+    in pcb_data that copper is never written -- the writer reads results
+    -- yet every later route of the net reads it as the net's own (found
+    reviewing #1273).
+
+    A never-committed result's only copper already in pcb_data is that
+    unblock copper, EXCEPT what it shares with a committed result: a tap
+    result carries its main route as a prefix. So a dropped tap result
+    names the result kept in its place (``kept``), whose copper is spared;
+    a result built fresh by route_net_with_obstacles needs none."""
+    if not dropped:
+        return
+    spare = set()
+    if kept:
+        spare = ({id(v) for v in kept.get('new_vias') or ()}
+                 | {id(s) for s in kept.get('new_segments') or ()})
+    _uncommit_unblock_copper(
+        pcb_data,
+        [v for v in dropped.get('new_vias') or () if id(v) not in spare],
+        [s for s in dropped.get('new_segments') or () if id(s) not in spare])
 
 
 def _route_main_connection(router, obstacles, config, sources, targets, track_margin,
@@ -5414,12 +5448,18 @@ def _route_multipoint_taps_impl(
             # took it to the fab floor and the crossing SHIPPED). Terminal
             # copper overlapping a foreign track/via at any width is a short
             # no neck can fix: fail the edge like an unroutable one so the
-            # rip/retry ladder finds another approach. (A #189 unblock via
-            # already registered for this edge stays in the map -- a
-            # conservative over-block for later edges, never a short.)
+            # rip/retry ladder finds another approach.
             _why, _ships = _hard_terminal_why(_hard_tap[0])
             print(f"      {YELLOW}{_why} -- failing the MST edge rather than "
                   f"shipping {_ships}{RESET}")
+            # The edge's #189 unblock copper (and a pad-via rescue's) goes
+            # with it: it is already in pcb_data (#803) and no result will
+            # carry it. Left there, the orphan fallback below landed on it as
+            # the pad's own via and reported the pad connected while the file
+            # had no via there (found reviewing #1273). Its free-via
+            # registration stays: a later edge that changes layer on that cell
+            # emits its own via, refit-checked (#339).
+            _uncommit_unblock_copper(pcb_data, unblock_vias, unblock_segments)
             edge_key = (min(src_idx, tgt_idx), max(src_idx, tgt_idx))
             failed_edges.add(edge_key)
             blocked_cells = list(blocked_cells) + _via_conflict_extra

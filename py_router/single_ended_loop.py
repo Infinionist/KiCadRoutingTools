@@ -80,7 +80,8 @@ from net_queries import get_chip_pad_positions, calculate_route_length
 from pcb_modification import add_route_to_pcb_data, remove_route_from_pcb_data
 from single_ended_routing import (route_net_with_obstacles,
                                   route_multipoint_main, route_oracle_links,
-                                  deferred_diagnostics, flush_diagnostics)
+                                  deferred_diagnostics, flush_diagnostics,
+                                  uncommit_dropped_result)
 from blocking_analysis import analyze_frontier_blocking, print_blocking_analysis, filter_rippable_blockers, invalidate_obstacle_cache, record_frontier_blocking
 from protected_nets import rip_refusal
 from rip_up_reroute import rip_up_net, restore_net
@@ -1488,6 +1489,9 @@ def route_single_ended_nets(
                                                                              state.net_obstacles_cache[_rid])
                                         _eager_ok.append((_rid, _pr))
                                         continue
+                                    # Probe mode drops the reroute; its #189
+                                    # unblock copper (#803) goes with it.
+                                    uncommit_dropped_result(pcb_data, _pr)
                                     if _p_via_cells is not None:
                                         restore_obstacles_inplace(state.working_obstacles, _rid,
                                                                   state.net_obstacles_cache, _p_via_cells)
