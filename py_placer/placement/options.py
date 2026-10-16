@@ -216,8 +216,9 @@ def grow_board(pcb_data, pcb_file: str, *, clearance: float,
     two whose sum exceeds their usable area (orangecrab_ext_pll 0.92 -> 1.25,
     ulx3s 0.90 -> 1.34).
 
-    `side_overrides` is the plan-check projection of declared
-    ``blocks[].side`` values. A plan is checked before its placement exists,
+    `side_overrides` is the plan-check projection of the declared faces
+    (`floorplan.declared_side_claims`). A plan is checked before its
+    placement exists,
     so its necessary area bound must charge a member to the face the plan
     requires rather than to the generator pile's incidental current layer.
     Ordinary option callers omit it and continue to measure the board as-is.

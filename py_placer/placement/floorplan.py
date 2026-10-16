@@ -8165,30 +8165,66 @@ PLAN_SEED_REFUSES = frozenset({
     'block_glob_literal', 'plan_fixed_pose_conflict'})
 
 
-def _planned_block_sides(intent: Intent,
-                         blocks: Dict[str, List[str]]) -> Dict[str, str]:
-    """Unambiguous member faces declared by ``blocks[].side``.
+def declared_side_claims(intent: Intent, blocks: Dict[str, List[str]]
+                         ) -> Dict[str, List[Tuple[str, str]]]:
+    """Every face the intent declares for a part: `{ref: [(side, source)]}`.
 
-    ``plan_check`` runs before the planned placement exists. The board can be
-    a generator pile with every movable footprint on one face, so its current
-    layers are not evidence for the plan's per-face capacity. Conflicting
-    declarations are deliberately not resolved here: choosing either face
-    would invent a precedence rule, and the ordinary side grade remains the
-    instrument that names that contradiction.
+    The three places a side can be declared -- `blocks[].side` (for the
+    block's RESOLVED members), `edge_connectors[].side` and
+    `fixed_poses[].side` -- read once, so `plan_check`'s per-face pricing
+    and `place_intent_sides.py`, which applies the faces before seeding,
+    cannot disagree about where a part belongs. `None` and `"unknown"`
+    declare nothing. Refs the board lacks are kept: whether to drop them is
+    the caller's question.
     """
-    claimed: Dict[str, str] = {}
-    conflicted = set()
+    claims: Dict[str, List[Tuple[str, str]]] = {}
+
+    def claim(ref, side, source):
+        if side in ('F', 'B') and ref:
+            claims.setdefault(str(ref), []).append((side, source))
+
     for zone in intent.blocks:
-        if zone.side is None:
-            continue
         for ref in blocks.get(zone.name, ()):
-            previous = claimed.get(ref)
-            if previous is not None and previous != zone.side:
-                conflicted.add(ref)
-            else:
-                claimed[ref] = zone.side
-    return {ref: side for ref, side in claimed.items()
-            if ref not in conflicted}
+            claim(ref, zone.side, f"blocks[{zone.name}]")
+    for c in intent.edge_connectors:
+        claim(c.get('ref'), c.get('side'), f"edge_connectors[{c.get('ref')}]")
+    for f in intent.fixed_poses:
+        claim(f.get('ref'), f.get('side'), f"fixed_poses[{f.get('ref')}]")
+    return claims
+
+
+def declared_sides(claims: Dict[str, List[Tuple[str, str]]]
+                   ) -> Tuple[Dict[str, str], Dict[str, List[Tuple[str, str]]]]:
+    """`(sides, conflicts)` from `declared_side_claims`: the one face every
+    claim on a ref agrees on, and the refs whose claims name both faces.
+
+    A conflict is not resolved here: choosing either face would invent a
+    precedence rule. `plan_check` leaves such a part on its board face (the
+    side grade names the contradiction) and `place_intent_sides` refuses."""
+    sides: Dict[str, str] = {}
+    conflicts: Dict[str, List[Tuple[str, str]]] = {}
+    for ref, rows in claims.items():
+        faces = {side for side, _src in rows}
+        if len(faces) == 1:
+            sides[ref] = faces.pop()
+        else:
+            conflicts[ref] = list(rows)
+    return sides, conflicts
+
+
+def _planned_sides(intent: Intent,
+                   blocks: Dict[str, List[str]]) -> Dict[str, str]:
+    """The face each part is PRICED on by `plan_check`: the one its
+    declarations agree on (`declared_side_claims`), else none -- the caller
+    falls back to the board face.
+
+    `plan_check` runs before the planned placement exists. The board can be
+    a generator pile with every movable footprint on one face, so its current
+    layers are not evidence for the plan's per-face capacity; the faces the
+    plan declares are, and `place_intent_sides.py` is what puts the parts on
+    them before seeding.
+    """
+    return declared_sides(declared_side_claims(intent, blocks))[0]
 
 
 def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
@@ -8252,6 +8288,11 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
          `grow_board`'s usable area) exceeds a declared budget; a WARN past
          `options.CROWDED_UTILISATION` or on the one-face basis a declared
          `assembly.sides` implies.
+      Rows 5 and 7 charge each part to the face the intent DECLARES for it
+      (`blocks[].side`, `edge_connectors[].side`, `fixed_poses[].side`, when
+      they agree -- `declared_side_claims`), else to its board face: a pile
+      has every part on F.Cu, and the plan is priced as it will be seeded
+      once `place_intent_sides.py` has applied those faces.
     """
     from . import options as _opts
     ctx, outline, state, blocks, block_problems = _grade_ctx(
@@ -8451,7 +8492,7 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
     # #1174: an edge member whose declared edge the zone leaves open may
     # sit past that side, so the zone need hold none of it.
     _claimed5 = claimed_edges(intent)
-    planned_sides = _planned_block_sides(intent, blocks)
+    planned_sides = _planned_sides(intent, blocks)
     for z in intent.blocks:
         if z.rect is None:
             continue

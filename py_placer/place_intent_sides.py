@@ -3,9 +3,12 @@
 
 ``place_seed`` deliberately has no flip move: its legality search assumes the
 footprint geometry it was given.  This preparatory actor makes that assumption
-explicit.  It resolves every block, edge connector and fixed pose that declares
-``side`` and mirrors only the footprints whose current side differs.  A ref with
-contradictory declarations is refused before anything is written.
+explicit.  It reads every face the intent declares -- ``blocks[].side``,
+``edge_connectors[].side`` and ``fixed_poses[].side``, through
+``floorplan.declared_side_claims``, the one reading ``plan_check`` prices the
+plan on -- and mirrors only the footprints whose current side differs, at
+their pose.  A ref with contradictory declarations is refused before anything
+is written.
 """
 
 #: #937 registry: which door(s) show this tool, and whether it changes the
@@ -19,39 +22,24 @@ import sys
 
 
 def intent_side_targets(intent, pcb, group_sources):
-    """Return ``{ref: side}`` and the declaration sources that produced it.
+    """``(targets, sources, conflicts, problems)`` for the real footprints.
 
-    Missing refs remain the grader's concern.  This actor changes only real
-    footprints, and refuses disagreement instead of choosing whichever claim
-    happened to be visited last.
+    ``targets`` is ``{ref: side}`` for every unambiguous claim, ``sources``
+    the declarations behind each, and ``conflicts`` ``{ref: [(side, source)]}``
+    for a ref two declarations put on different faces -- refused by the
+    caller instead of choosing whichever claim happened to be read last.
+    Refs the board lacks remain the grader's concern.
     """
     from placement import floorplan
 
     blocks, problems = floorplan.resolve_blocks(intent, pcb, group_sources)
-    targets = {}
-    sources = {}
-
-    def claim(ref, side, source):
-        if side not in ('F', 'B') or ref not in pcb.footprints:
-            return
-        old = targets.get(ref)
-        if old is not None and old != side:
-            raise ValueError(
-                f"{ref}: contradictory side declarations: {old} from "
-                f"{sources[ref][0]} and {side} from {source}")
-        targets[ref] = side
-        sources.setdefault(ref, []).append(source)
-
-    for block in intent.blocks:
-        for ref in blocks.get(block.name, ()):
-            claim(ref, block.side, f"blocks[{block.name}]")
-    for entry in intent.edge_connectors:
-        claim(str(entry.get('ref') or ''), entry.get('side'),
-              f"edge_connectors[{entry.get('ref')}]")
-    for entry in intent.fixed_poses:
-        claim(str(entry.get('ref') or ''), entry.get('side'),
-              f"fixed_poses[{entry.get('ref')}]")
-    return targets, sources, problems
+    claims = {ref: rows for ref, rows
+              in floorplan.declared_side_claims(intent, blocks).items()
+              if ref in pcb.footprints}
+    targets, conflicts = floorplan.declared_sides(claims)
+    sources = {ref: [src for _side, src in rows]
+               for ref, rows in claims.items() if ref in targets}
+    return targets, sources, conflicts, problems
 
 
 def side_moves(pcb, targets):
@@ -106,9 +94,16 @@ def main():
               file=sys.stderr)
         return UNPLACED_EXIT
 
+    targets, declaration_sources, conflicts, problems = intent_side_targets(
+        intent, pcb, sources)
+    if conflicts:
+        print("place_intent_sides: contradictory side declarations: "
+              + '; '.join(f"{ref}: " + ', '.join(f"{side} from {src}"
+                                                 for side, src in rows)
+                          for ref, rows in sorted(conflicts.items()))
+              + ". Fix the intent; nothing was written.", file=sys.stderr)
+        return 2
     try:
-        targets, declaration_sources, problems = intent_side_targets(
-            intent, pcb, sources)
         moves = side_moves(pcb, targets)
         write_placed_output(args.input_file, args.output_file, moves)
     except (ValueError, SideFlipUnsupported) as exc:

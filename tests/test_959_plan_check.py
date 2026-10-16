@@ -562,6 +562,40 @@ def test_the_board_area_bound_reads_declared_block_faces():
           "pile's current face")
 
 
+def test_the_board_area_bound_reads_every_declared_face():
+    """The same pile, with no block declaring a face: four parts are put on
+    B.Cu by `edge_connectors[].side` and four by `fixed_poses[].side`.
+    `place_intent_sides` applies all three kinds of claim, so the plan is
+    priced on all three (`declared_side_claims`) -- read from blocks alone,
+    every part stayed on F.Cu (utilisation 1.2168) and the plan was refused.
+    A ref whose claims disagree is priced on its board face."""
+    with tempfile.TemporaryDirectory() as tmp:
+        big = [(dx, dy, 0.9, 0.9) for dx in range(4) for dy in range(4)]
+        parts = [(f'U{i}', 2 + 4 * (i % 4), 2 + 4 * (i // 4) % 8, big)
+                 for i in range(16)]
+        board = _board(tmp, 'declared-faces.kicad_pcb', parts)
+        edges = [{'ref': f'U{i}', 'side': 'B'} for i in range(4)]
+        fixed = [{'ref': f'U{i}', 'x': 2 + 4 * (i - 4), 'y': 6, 'side': 'B',
+                  'basis': 'declared'} for i in range(4, 8)]
+        budget = {'overlap_area': 0, 'oob_count': 0}
+        found, measured = _check(
+            _raw(edge_connectors=edges, fixed_poses=fixed,
+                 legality_budget=budget), board)
+        assert not [v for v in found if v.rule == 'plan_board_overfull'], (
+            found, measured)
+        assert measured['utilisation_per_face_clearance0'] < 0.7, measured
+        # U0 also claimed for F.Cu by a block: priced on its board face, so
+        # nine parts are charged to F.Cu and seven to B.Cu.
+        blocks = [{'name': 'front', 'refs': ['U0'], 'side': 'F'}]
+        _found, measured2 = _check(
+            _raw(blocks=blocks, edge_connectors=edges, fixed_poses=fixed,
+                 legality_budget=budget), board)
+        per_face = measured2['outline_area_per_face_mm2']
+        assert abs(per_face['F'] * 7 - per_face['B'] * 9) < 1e-6, measured2
+    print("  PASS: edge_connectors[].side and fixed_poses[].side move the "
+          "board area bound too; a contradicted ref stays on its board face")
+
+
 def test_the_forced_overlap_is_measured_on_the_declared_faces():
     """SOUNDNESS. Fourteen of the sixteen parts declared on B.Cu force
     212.94 - 200 = 12.94 mm2 of overlap there, inside a 20 mm2 budget, so
@@ -1015,6 +1049,7 @@ TESTS = [
     test_the_edge_bound_reads_pads_not_courtyards,
     test_the_board_area_bound_is_per_face,
     test_the_board_area_bound_reads_declared_block_faces,
+    test_the_board_area_bound_reads_every_declared_face,
     test_the_forced_overlap_is_measured_on_the_declared_faces,
     test_place_seed_refuses_before_writing_and_repair_only_reports,
     test_plan_only_on_a_pile,
