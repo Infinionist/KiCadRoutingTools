@@ -9,7 +9,7 @@ bypassing that loop: cm5-io's +3V3_CM5 (34 pads) routed nothing because its
 longest edge's terminal grazed a foreign via-in-pad by 0.085 mm.
 
 Fixture: net B with three pads in a row, so the MST has two edges and the
-longest (P1-P2) is Phase 1's first pick. Three sections:
+longest (P1-P2) is Phase 1's first pick. Four sections:
 
 1. The terminal-overlap measurement is stubbed to report an overlap on the
    FIRST Phase 1 conversion only (no small board reproduces a physical
@@ -26,6 +26,10 @@ longest (P1-P2) is Phase 1's first pick. Three sections:
    written, while the Phase 3 tap reads it as the net's own: it reached P1 on
    B.Cu through that via and reported every pad connected, and the written
    copper left P1 open.
+4. Unstubbed: under `--escalation off` a full-width terminal into a small pad
+   beside a foreign track is a clearance graze the gate refuses (#842/#1159).
+   Phase 1 now routes the other edge, and the tap gate still refuses P1's
+   terminal, so P1 is reported rather than shipped grazing.
 
     python3 tests/test_multipoint_terminal_graze_defers.py
 """
@@ -229,9 +233,31 @@ def section_no_ghost_copper():
           f"{len(taps.get('failed_pads_info') or [])} failed")
 
 
+def section_unstubbed_escalation_off():
+    section('4. unstubbed: an --escalation off terminal graze defers the edge')
+    pcb, cfg, obs, pad_info = fixture(p1_size=0.3, track_width=0.4,
+                                      segments=[(2, 20.4, 9, 20.4, 0.2, 'F.Cu', 1)])
+    with escalation('off'):
+        res, log = quiet(ser.route_multipoint_main, pcb, 2, cfg, obs, pad_info)
+    check('fixture: the gate refused a terminal graze on Phase 1',
+          'Phase 1 terminal copper' in log and 'forbids necking it' in log)
+    check('Phase 1 still routes a main edge', routed(res))
+    if not routed(res):
+        return
+    edges = [tuple(sorted(e[:2])) for e in res['mst_edges']]
+    check('the main edge avoids P1 and the P1 edge waits for Phase 3',
+          edges[0] == (1, 2) and (0, 1) in edges[1:], str(edges))
+    with escalation('off'):
+        taps, tlog = quiet(ser.route_multipoint_taps, pcb, 2, cfg, obs, res)
+    failed = sorted(p.get('component_ref') for p in (taps or {}).get('failed_pads_info') or [])
+    check('the tap gate still refuses P1: reported, not shipped grazing',
+          failed == ['P1'] and 'forbids necking it' in tlog, str(failed))
+
+
 def main():
     section_fresh_call(section_control_flow())
     section_no_ghost_copper()
+    section_unstubbed_escalation_off()
     if FAILS:
         print(f'\nFAIL: {len(FAILS)} check(s): ' + '; '.join(FAILS))
         return 1
