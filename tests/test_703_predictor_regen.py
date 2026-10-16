@@ -65,6 +65,18 @@ sys.path.insert(0, os.path.join(ROOT, 'tests', 'stress'))
 #:
 #: MEASURED, from the run recorded in the pull request. Never predicted.
 #:
+#: RE-RECORDED 2026-10-16 (fix-unblock-via-gates). `truth.quality` of ONE
+#: row; blocking and the headline unmoved.
+#:   * esp_prog:authored -- /+3.3V's Phase 3 tap needed a #189 via-in-pad
+#:     unblock, and the tap gate then refused that attempt. The discarded
+#:     attempt's via stayed in pcb_data (committed at #803), unwritten, and
+#:     later routes of /+3.3V treated it as their own copper, and cleanup's
+#:     orphan sweep then removed what had been built on it. The
+#:     gate now takes the via back, the retries lay their own, and the
+#:     cleanup sweeps nothing. Connected and DRC-clean both ways.
+#:   esp_prog:authored            vias 36 -> 32, segs 182 -> 188, copper 318.69 -> 311.88
+#:   other rows                   unmoved
+#:
 #: RE-RECORDED 2026-10-16 (#1266). ONE row, and its headline falls.
 #:   * esp_prog:portfolio-1 -- `truth.headline` 2 -> 0. This candidate
 #:     used to land U2's SOT89 tab on Q1's pads (the drc 1, and the broken
@@ -408,7 +420,8 @@ EXPECTED = {
                # 2026-09-16 (#958 fine-pitch tie guard): segs 250 -> 260
                # 2026-10-07 (#1159 at-rule neck): 32/303.46/201 -> 36/318.64/182
                # 2026-10-07 (#1186 T by distance): copper 318.64 -> 318.69
-               'quality': {'vias': 36, 'copper_mm': 318.69, 'segments': 182}},
+               # 2026-10-16 (unblock via taken back): 36/318.69/182 -> 32/311.88/188
+               'quality': {'vias': 32, 'copper_mm': 311.88, 'segments': 188}},
         predictors={
             'crossings': 53, 'hpwl': 253.98092000000003,
             'halo': 127.48707486477095, 'overlap_area': 1.1400451712000104,
