@@ -204,8 +204,11 @@ def get_diff_pair_terminals(pcb_data: PCBData, p_net_id: int, n_net_id: int
     terminal drives a long diagonal connector that grazes the partner pad
     (issue #165). Minimum-TOTAL-cost matching instead yields {A6,B7}+{B6,A7}
     (0.5+0.5), each terminal tight so its connector launches straight out."""
-    p_pads = pcb_data.pads_by_net.get(p_net_id, [])
-    n_pads = pcb_data.pads_by_net.get(n_net_id, [])
+    # #1279: a sense pad joins its net at its branch's join pad only, so it
+    # is never a terminal (connectivity.routable, as for single-ended nets).
+    from connectivity import routable
+    p_pads = routable(pcb_data.pads_by_net.get(p_net_id, []))
+    n_pads = routable(pcb_data.pads_by_net.get(n_net_id, []))
     if not p_pads or not n_pads:
         return []
 
