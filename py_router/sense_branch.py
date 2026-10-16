@@ -183,12 +183,12 @@ def _touch(a, b, join) -> bool:
 
 
 def _touches_join(item, join) -> bool:
-    """True when the item has copper on the join pad."""
+    """True when the item has copper on the join pad -- for a track anywhere
+    along it: a member running across the join pad with both ends outside it
+    is joined to it."""
     kind, it = item
     if kind == 'seg':
-        return _pad_on(join, it.layer) and any(
-            _in_pad(join, x, y, it.width / 2 + _EPS)
-            for x, y in ((it.start_x, it.start_y), (it.end_x, it.end_y)))
+        return _seg_meets_pad(it, join)[0]
     if kind == 'via':
         return _in_pad(join, it.x, it.y, it.size / 2 + _EPS)
     return False

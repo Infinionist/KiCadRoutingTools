@@ -11,6 +11,7 @@ reach, each case built in-test from the fixture's text:
 - a same-net pad the sense trace runs across off-centre is a sense pad, so
   no load is routed through it onto the trace;
 - a round (or roundrect) join pad is its copper, not its bounding box;
+- a member drawn across the join pad with both ends outside it touches it;
 
 Run:
     python3 tests/test_1279_sense_branch_geometry.py
@@ -305,10 +306,24 @@ def test_round_join_pad_is_its_copper():
     assert not hits, f'new copper overlaps the member off the round join pad at {hits[:3]}'
 
 
+def test_member_across_the_join_pad_touches_it():
+    """A member drawn straight across C1.1, (1, 5)-(27, 5) with both ends
+    off the pad, is joined to it (before: refused 'member copper does not
+    touch the join pad C1.1'); the stub past the pad stays foreign copper."""
+    board = _variant(_src().replace('(segment (start 3 5) (end 27 5)',
+                                    '(segment (start 1 5) (end 27 5)'), 'across')
+    _p, b = _branch(board)
+    assert b.protected, b.reason
+    assert [f'{q.component_ref}.{q.pad_number}' for q in b.sense_pads] == ['U1.1']
+    assert [tuple(round(v, 6) for v in xy) for xy in sb._outside_join(b.segments[0], b.join)] \
+        == [(1.0, 5.0, 2.5, 5.0), (3.5, 5.0, 27.0, 5.0)]
+
+
 TESTS = [
     test_x_crossing_is_a_tap,
     test_pad_crossed_off_centre_is_a_sense_pad,
     test_round_join_pad_is_its_copper,
+    test_member_across_the_join_pad_touches_it,
 ]
 
 
