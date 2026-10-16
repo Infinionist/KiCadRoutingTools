@@ -281,7 +281,8 @@ for ref_, fp in ctx.pcb.footprints.items():            # (labelled by the board'
 for s in ctx.base_segments:
     STATIC.append(('seg', {s.layer}, s.net_id, (s.start_x, s.start_y, s.end_x, s.end_y, s.width / 2), 'copper'))
 for v in ctx.base_vias:
-    STATIC.append(('circ', set(RL), v.net_id, (v.x, v.y, v.size / 2), 'via'))
+    # (its radius for a via's bar, and its reach for a lane's: the router's ring, SVIA_RING -- pairs.svia_reach)
+    STATIC.append(('circ', set(RL), v.net_id, (v.x, v.y, v.size / 2, _pairs.svia_reach(cfg, v.x, v.y, v.size)), 'via'))
 # a held pair's END LEGS are laid where they are drawn: copper the singles are fitted round -- and a crossed pair's
 # crossover, its legs and its two barrels (in name order: a set's would follow the hash seed, and this order is the
 # static list's and so the LP's rows')
@@ -349,7 +350,7 @@ def static_near(P, L, own, pair=False):
         if L not in Ls or net in own:
             continue
         if kind == 'circ':
-            cx, cy, r = d
+            cx, cy, r = d[:3]
             v = P - np.array([cx, cy]); dd = np.linalg.norm(v)
             if dd < 1e-9:
                 continue
@@ -406,13 +407,14 @@ def static_seg(p0, p1, L, own, cut=math.inf, pair=False):
         if L not in Ls or net in own:
             continue
         if kind == 'circ':
-            if far(d[0], d[1], d[0], d[1], d[2]):
+            r_ = d[3] if len(d) > 3 else d[2]          # (a via on the board: its reach for a lane, SVIA_RING)
+            if far(d[0], d[1], d[0], d[1], r_):
                 continue
             c = np.array([d[0], d[1]])
             dd, s, _t = seg_seg(p0, p1, c, c)
             P = p0 + (p1 - p0) * s
             v = P - c; nv_ = np.linalg.norm(v)
-            out.append((dd - d[2], s, (c + v / nv_ * d[2]) if nv_ > 1e-9 else None, lab))
+            out.append((dd - r_, s, (c + v / nv_ * r_) if nv_ > 1e-9 else None, lab))
         elif kind == 'seg':
             if far(min(d[0], d[2]), min(d[1], d[3]), max(d[0], d[2]), max(d[1], d[3]), d[4]):
                 continue
@@ -562,12 +564,19 @@ def gather():
                 for cy in range(int(math.floor(lo[1] / CELL)), int(math.floor(hi[1] / CELL)) + 1):
                     segs[(cx, cy)].append((n, i))
 
+    near_memo = {}                  # (the cells a query spans -> its answer: neighbouring segments span the same cells)
+
     def near_segs(P, r):
-        out = set()
-        for cx in range(int(math.floor((P[0] - r) / CELL)), int(math.floor((P[0] + r) / CELL)) + 1):
-            for cy in range(int(math.floor((P[1] - r) / CELL)), int(math.floor((P[1] + r) / CELL)) + 1):
-                out.update(segs.get((cx, cy), ()))
-        return sorted(out)          # the LP's row order: a set's would follow the hash seed
+        key = (int(math.floor((P[0] - r) / CELL)), int(math.floor((P[0] + r) / CELL)),
+               int(math.floor((P[1] - r) / CELL)), int(math.floor((P[1] + r) / CELL)))
+        got = near_memo.get(key)
+        if got is None:
+            out = set()
+            for cx in range(key[0], key[1] + 1):
+                for cy in range(key[2], key[3] + 1):
+                    out.update(segs.get((cx, cy), ()))
+            got = near_memo[key] = sorted(out)          # the LP's row order: a set's would follow the hash seed
+        return got
 
     seen = set()
     # each segment's bounding box and its mitre, once: a pair of segments whose boxes stand further apart than its bar
@@ -1102,10 +1111,11 @@ for n, ln in LANES.items():
 # parts the geometry holds lanes to one side of (whole_geo's islands: every part's pads and holes but the source's and
 # the destination's; a flip of either would change nothing and cost a round)
 _SRC = collections.Counter(ctx.src_ref[n] for n in geo['lanes']).most_common(1)[0][0]
-_DST = awx_settings.req('DEST')
+from flow_frame import dest_refs as _dest_refs  # noqa: E402
+_DSTS = tuple(_dest_refs(awx_settings.req('DEST')))     # (DEST may name several parts: one source, several ends)
 
 
-ISLAND = whole_ctx.part_islands(ctx, skip=(_SRC, _DST))
+ISLAND = whole_ctx.part_islands(ctx, skip=(_SRC, *_DSTS))
 
 
 def island_of(lab):
@@ -1113,7 +1123,7 @@ def island_of(lab):
     for pre in ('pad ', 'hole '):
         if lab.startswith(pre):
             ref, _, num = lab[len(pre):].split(' ')[0].rpartition('.')
-            if ref in (_SRC, _DST) or ref not in ctx.pcb.footprints:
+            if ref in (_SRC, *_DSTS) or ref not in ctx.pcb.footprints:
                 return None
             if geo.get('islands') is not None:        # the islands the geometry held lanes to
                 return geo['islands'].get(f'{ref}.{num}')

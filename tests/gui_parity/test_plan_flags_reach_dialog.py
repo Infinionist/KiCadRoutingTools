@@ -191,9 +191,12 @@ def _probes(dlg):
 
 
 def _sub(value, tmp):
-    """A case value with its {tmp} placeholder filled in."""
+    """A case value with its {tmp} placeholder filled in. A placeholder
+    marks a path, normalised as the converter normalises the one it joins
+    (`os.path.normpath`), so '{tmp}/x' compares on Windows too."""
     if isinstance(value, str):
-        return value.replace('{tmp}', tmp)
+        return (os.path.normpath(value.replace('{tmp}', tmp))
+                if '{tmp}' in value else value)
     if isinstance(value, tuple):
         return tuple(_sub(v, tmp) for v in value)
     return value
