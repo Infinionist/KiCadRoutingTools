@@ -290,6 +290,9 @@ def _validate_single_ended_swap(
 
     if getattr(stub, 'locked', False):
         return False    # #1261: KiCad-locked copper never moves
+    from stub_layer_switching import forbidden_destination
+    if forbidden_destination(config, dest_layer):
+        return False
 
     if exclude_net_ids is None:
         exclude_net_ids = set()
@@ -851,6 +854,13 @@ def apply_diff_pair_layer_swaps(
                         if fan_layer != src_layer:
                             print(f"    Bare-pad target launch layer: {fan_layer} "
                                   f"(most open; src is {src_layer})")
+                # src_layer is the source stub's CURRENT layer, which may be a
+                # forbidden one (a --layers subset run); with no routable
+                # layer ranked, the fan would lay its stubs there.
+                if fan_layer not in config.routable_layers():
+                    print(f"    Bare-pad target swap skipped for {pair_name}: "
+                          f"{fan_layer} is a forbidden layer")
+                    continue
                 # The fan-out drops a through-via on each pad; don't let either
                 # barrel punch through another net's under-pad copper (issue #123).
                 # Check EACH via against the PARTNER pair-net too: a through-via
