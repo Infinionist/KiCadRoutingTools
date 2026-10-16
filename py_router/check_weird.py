@@ -149,14 +149,10 @@ def _via_span(via, copper_layers) -> set:
     (a buried F.Cu-In2.Cu via touches In1.Cu) -- treating the span as the
     two endpoints alone manufactured phantom unsupported-via findings for
     mid-span connections."""
-    if via.layers and not ('F.Cu' in via.layers and 'B.Cu' in via.layers):
-        order = list(copper_layers)
-        idx = [order.index(l) for l in via.layers if l in order]
-        if len(idx) >= 2:
-            lo, hi = min(idx), max(idx)
-            return set(order[lo:hi + 1])
-        return set(via.layers)
-    return set(copper_layers)
+    # The TYPE decides, not the pair: an untyped via is a through via to
+    # KiCad whatever its layers say (found reviewing #1268).
+    from geometry_utils import via_copper_layers
+    return set(via_copper_layers(via, list(copper_layers)))
 
 
 def _check_soft_joints(net_id, name, net_segs, net_vias, net_pads,

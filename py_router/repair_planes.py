@@ -50,6 +50,7 @@ exit_on_error_if_main(__name__)
 from kicad_parser import parse_kicad_pcb, PCBData, Segment, Via, pcb_uses_name_nets, pad_is_plated_through
 from kicad_writer import (generate_segment_sexpr, generate_gr_line_sexpr,
                           generate_via_sexpr, via_net_name)
+from geometry_utils import PARTIAL_VIA_TYPES
 from routing_config import GridRouteConfig
 from plane_io import extract_zones
 from plane_region_connector import (route_disconnected_regions,
@@ -1041,6 +1042,13 @@ def repair_planes(
         routing_layers = pcb_data.board_info.copper_layers
         if not routing_layers:
             routing_layers = ['F.Cu', 'B.Cu']  # Fallback
+    # One cost per routing layer: the nested batch_route sub-runs below append
+    # the unrequested copper layers after these costs, positionally.
+    from routing_config import layer_costs_count_error
+    _lc_err = layer_costs_count_error(routing_layers, layer_costs)
+    if _lc_err:
+        from routing_exceptions import LayerCostsCountError
+        raise LayerCostsCountError(_lc_err)
 
     # Build routing config
     config = GridRouteConfig(
@@ -1449,13 +1457,15 @@ def repair_planes(
                     all_new_vias.append(
                         {'x': _v.x, 'y': _v.y, 'size': _v.size,
                          'drill': _v.drill, 'layers': _v.layers,
-                         'net_id': _v.net_id})
+                         'net_id': _v.net_id,
+                         'via_type': getattr(_v, 'via_type', 'through')})
                     _prov_via(_v.net_id, _v.x, _v.y, 'reconnect')
             for _v in (_rdata.get('all_swap_vias') or []):
                 all_new_vias.append(
                     {'x': _v.x, 'y': _v.y, 'size': _v.size,
                      'drill': _v.drill, 'layers': _v.layers,
-                     'net_id': _v.net_id})
+                     'net_id': _v.net_id,
+                     'via_type': getattr(_v, 'via_type', 'through')})
                 _prov_via(_v.net_id, _v.x, _v.y, 'reconnect')
             for _s in (_rdata.get('all_swap_segments') or []):
                 all_new_segments.append(
@@ -1897,7 +1907,8 @@ def repair_planes(
         for _kv in _kvias:
             _d = {'x': _kv.x, 'y': _kv.y, 'size': _kv.size,
                   'drill': _kv.drill, 'layers': _kv.layers,
-                  'net_id': _pid}
+                  'net_id': _pid,
+                  'via_type': getattr(_kv, 'via_type', 'through')}
             all_new_vias.append(_d)
             _partial_emitted_vias.append(_d)
             _prov_via(_pid, _kv.x, _kv.y, 'partial-restore')
@@ -2067,7 +2078,8 @@ def repair_planes(
                 def _vd(_v):
                     return {'x': _v.x, 'y': _v.y, 'size': _v.size,
                             'drill': _v.drill, 'layers': _v.layers,
-                            'net_id': _v.net_id}
+                            'net_id': _v.net_id,
+                            'via_type': getattr(_v, 'via_type', 'through')}
                 for _r in _rdata.get('results', []):
                     for _s in (_r.get('new_segments') or []):
                         all_new_segments.append(_sd(_s))
@@ -2239,6 +2251,8 @@ def repair_planes(
                                       {'x': _x.x, 'y': _x.y, 'size': _x.size,
                                        'drill': _x.drill, 'layers': _x.layers,
                                        'net_id': _x.net_id,
+                                       'via_type': getattr(_x, 'via_type',
+                                                           'through'),
                                        'tenting_attrs': dict(
                                            getattr(_x, 'tenting_attrs', None)
                                            or {})})
@@ -2740,7 +2754,8 @@ def repair_planes(
                     all_new_vias.extend(
                         {'x': _v.x, 'y': _v.y, 'size': _v.size,
                          'drill': _v.drill, 'layers': _v.layers,
-                         'net_id': _v.net_id}
+                         'net_id': _v.net_id,
+                         'via_type': getattr(_v, 'via_type', 'through')}
                         for _v in (_r.get('new_vias') or []))
                 # Swap channels too (parity audit H1a): the inner route's
                 # stub-layer switches append swap copper to pcb_data; the
@@ -2756,7 +2771,8 @@ def repair_planes(
                 all_new_vias.extend(
                     {'x': _v.x, 'y': _v.y, 'size': _v.size,
                      'drill': _v.drill, 'layers': _v.layers,
-                     'net_id': _v.net_id}
+                     'net_id': _v.net_id,
+                     'via_type': getattr(_v, 'via_type', 'through')}
                     for _v in (_rdata3.get('all_swap_vias') or []))
                 for _ch in ('all_segment_modifications', 'pad_swaps',
                             'single_ended_target_swap_info'):
@@ -3279,7 +3295,8 @@ def repair_planes(
                     all_new_vias.append(
                         {'x': _v.x, 'y': _v.y, 'size': _v.size,
                          'drill': _v.drill, 'layers': _v.layers,
-                         'net_id': _v.net_id})
+                         'net_id': _v.net_id,
+                         'via_type': getattr(_v, 'via_type', 'through')})
 
             def _skey(_s):
                 return (round(_s.start_x, 3), round(_s.start_y, 3),
@@ -3447,13 +3464,17 @@ def _write_output(input_file: str, output_file: str, segments: List[Dict], vias:
                 y=via['y'],
                 size=via['size'],
                 drill=via['drill'],
-                layers=['F.Cu', 'B.Cu'],  # Through-hole vias
+                # A repair via is a through via; a kept or restored
+                # blind/micro via keeps its own span and type word.
+                layers=(via['layers'] if via.get('via_type') in
+                        PARTIAL_VIA_TYPES else ['F.Cu', 'B.Cu']),
                 net_id=via['net_id'],
                 # #749 D: the ONE resolver -- net 0 is absent from every map,
                 # and a numeric ref emitted alongside a spec used to be a via
                 # the parser could not read back at all (#748).
                 net_name=via_net_name(via['net_id'], net_id_to_name),
-                tenting_attrs=via.get('tenting_attrs')
+                tenting_attrs=via.get('tenting_attrs'),
+                via_type=via.get('via_type')
             )
             via_sexprs.append(sexpr)
 
@@ -4008,6 +4029,49 @@ Examples:
         _summary['env_knobs'] = _ek653.active_env_knobs()   # dirty baseline
     except Exception:          # without re-reading logs
         pass
+    # Found reviewing #1282: a --power-nets net's taps and straps are drawn at
+    # the call's width, and the tap router ledgers each one per ATTEMPT (a
+    # `plane tap` row for a tap the oracle then rejected still failed
+    # --strict-sizes). route.py replaces such rows from the copper it ships
+    # (#1033); this standalone CLI now does the same for the copper IT laid:
+    # one `power copper shipped under width` row per power net whose new
+    # copper on the written board is narrower than its width.
+    if (not args.dry_run and args.power_nets and args.power_nets_widths
+            and os.path.isfile(args.output_file)):
+        try:
+            from kicad_parser import parse_kicad_pcb as _pk1282
+            from routing_common import (new_copper_width_shortfall,
+                                        segment_identity)
+            from fab_tiers import replace_track_rows
+            _in1282 = _pk1282(args.input_file)
+            _out1282 = _pk1282(args.output_file)
+            _req1282 = {_nm: max(_w, args.track_width or 0.0)
+                        for _nm, _w in zip(args.power_nets,
+                                           args.power_nets_widths)}
+            _inn1282 = {_n: _nn.name for _n, _nn in _in1282.nets.items()}
+            _outn1282 = {_n: _nn.name for _n, _nn in _out1282.nets.items()}
+            # the ledger keys on the engine's net ids: its parse of the input
+            _ids1282 = {_nm: _n for _n, _nm in _inn1282.items()
+                        if _nm in _req1282}
+            _short1282 = new_copper_width_shortfall(
+                _out1282.segments, lambda _n: _outn1282.get(_n, f"Net {_n}"),
+                {segment_identity(_s, _inn1282[_s.net_id])
+                 for _s in _in1282.segments if _s.net_id in _inn1282},
+                lambda _nm, _ly: _req1282.get(_nm))
+            replace_track_rows(
+                set(_ids1282.values()),
+                [(_ids1282[_nm], _nm, _r['requested_mm'], _r['min_mm'],
+                  _r['under_mm'])
+                 for _nm, _r in _short1282.items() if _nm in _ids1282],
+                'power copper shipped under width')
+        except Exception as _pwe1282:                           # noqa: BLE001
+            print(f"  (power-width disclosure skipped: {_pwe1282})")
+    # #857: what this run delivered below a requested size (route.py's
+    # key), when it delivered anything there.
+    from fab_tiers import narrowed_summary, finish_design_rules
+    _dr857 = narrowed_summary()
+    if _dr857 is not None:
+        _summary['design_rules'] = _dr857
     print('JSON_SUMMARY: ' + json.dumps(_summary, sort_keys=True, default=str),
           flush=True)
 
@@ -4036,8 +4100,9 @@ Examples:
               "connected on the written board. Reconnect them (the chain's "
               "reconnect step) or re-run without --rip-blocker-nets; do not "
               "read this run as clean.")
+        finish_design_rules(args, 4)     # the line only: exit 4 outranks 3
         return 4
-    return 0
+    return finish_design_rules(args, 0)
 
 
 # Naming (#562): this module's engine used to be called route_planes,

@@ -2029,7 +2029,12 @@ class RoutingDialog(wx.Dialog):
                 # control, so the Planes tab honors --layer-costs like the CLI
                 # (route_planes.py) does; empty/invalid -> [] -> engine uses 1.0
                 # (or its F.Cu/inner default). Previously dropped entirely.
-                'layer_costs': self._selected_layer_costs(),
+                # The values AS TYPED plus the layers they may be written for:
+                # the tab places them by name on ITS routing layers (F.Cu +
+                # pour layers + B.Cu), which are not the selected layers
+                # (gui_utils.layer_costs_for_layers).
+                'layer_costs_typed': self._typed_layer_costs(),
+                'layer_costs_selected_layers': self._get_selected_layers(),
                 # Share the route tab's No-BGA-Zones intent so plane rip-up
                 # reroutes match signal routing on BGA boards (issue #88).
                 'no_bga_zones_text': self.no_bga_zones_ctrl.GetValue().strip(),
@@ -3124,21 +3129,20 @@ class RoutingDialog(wx.Dialog):
         Anything else is returned raw so the engine's clear error stands.
         Empty/invalid -> [].
         """
+        from .gui_utils import layer_costs_for_layers
+        selected = self._get_selected_layers()
+        return layer_costs_for_layers(self._typed_layer_costs(), selected,
+                                      selected,
+                                      self.pcb_data.board_info.copper_layers)
+
+    def _typed_layer_costs(self):
+        """The Basic-tab Layer Costs control's values as typed (floats, in the
+        control's own order); [] when empty or not numbers."""
         lc_text = self.layer_costs_ctrl.GetValue().strip()
         try:
-            costs = [float(c) for c in lc_text.split()] if lc_text else []
+            return [float(c) for c in lc_text.split()] if lc_text else []
         except ValueError:
             return []
-        if not costs:
-            return []
-        selected = self._get_selected_layers()
-        if len(costs) == len(selected):
-            return costs
-        copper = self.pcb_data.board_info.copper_layers
-        if len(costs) == len(copper):
-            by_layer = dict(zip(copper, costs))
-            return [by_layer[l] for l in selected if l in by_layer]
-        return costs
 
     def _validate_routing_inputs(self):
         """Validate routing inputs before starting.
@@ -4472,7 +4476,9 @@ class RoutingDialog(wx.Dialog):
         if hasattr(via, 'layers') and len(via.layers) >= 2:
             top_layer = get_layer_id(via.layers[0])
             bot_layer = get_layer_id(via.layers[1])
-            pcb_via.SetLayerPair(top_layer, bot_layer)
+            from .gui_utils import set_via_layers
+            set_via_layers(pcb_via, top_layer, bot_layer,
+                           getattr(via, 'via_type', None))
         # Keep a re-placed via's own tenting/plugging/filling (#489 §8). A via
         # with no spec is left to inherit the board setting, as before.
         from .gui_utils import apply_via_protection

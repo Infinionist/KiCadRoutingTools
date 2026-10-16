@@ -193,9 +193,10 @@ def _net_conn_graph(net_id: int, pcb_data: PCBData, inv_tol: float) -> "_NetConn
         xs.append(s.end_x);   ys.append(s.end_y);   ks.append(k2[0])
 
     def via_layers(v) -> List[str]:
-        if not v.layers or ('F.Cu' in v.layers and 'B.Cu' in v.layers):
-            return all_cu
-        return v.layers
+        # Every layer for a through via whatever its pair; the run between the
+        # ends of a typed blind/micro via (found reviewing #1268).
+        from geometry_utils import via_copper_layers
+        return via_copper_layers(v, all_cu) or all_cu
 
     via_at: Dict[Tuple, set] = {}
     vx, vy, vr, vkeys, vlayers = [], [], [], [], []

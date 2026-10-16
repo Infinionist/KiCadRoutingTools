@@ -4064,7 +4064,8 @@ def nudge_vias_for_unresolved(st, pcb_data, clearance: float,
     via-in-pad). mm-exact validation throughout. Returns
     (via_moves, new_segments) for the writer:
       via_moves    = [(old_x, old_y, via dict {'x','y','size',
-                       'drill','layers','net_id','tenting_attrs'})]
+                       'drill','layers','net_id','tenting_attrs',
+                       'via_type'})]
       new_segments = [segment dicts {'start','end','width','layer','net_id'}]
     """
     via_moves, new_segments = [], []
@@ -5043,7 +5044,10 @@ def nudge_vias_for_unresolved(st, pcb_data, clearance: float,
                                # whatever pcb_data.vias holds, which is the same
                                # reason _via_radius reads its fields defensively.
                                'tenting_attrs': dict(
-                                   getattr(v, 'tenting_attrs', {}) or {})}))
+                                   getattr(v, 'tenting_attrs', {}) or {}),
+                               # ...and its blind/micro type word, which the
+                               # writer and the plugin's twin re-emit too.
+                               'via_type': getattr(v, 'via_type', 'through')}))
             nm = pcb_data.nets[v.net_id].name if v.net_id in pcb_data.nets else v.net_id
             print(f"  via-nudge: moved {nm} via ({old[0]:.3f},{old[1]:.3f}) -> "
                   f"({nx:.3f},{ny:.3f}) to free {ref}; {len(conn_layers)} "

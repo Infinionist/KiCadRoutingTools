@@ -1702,6 +1702,12 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     _orig_via_by_net: Dict[int, list] = {}
     for _v in pcb_data.vias:
         _orig_via_by_net.setdefault(_v.net_id, []).append(_v)
+    # The input copper's geometry, frozen NOW (segments are mutable): what the
+    # wide-net width audit below calls "not this run's copper".
+    from routing_common import segment_identity as _sid1282
+    _orig_seg_keys1282 = {_sid1282(_s, pcb_data.nets[_s.net_id].name)
+                          for _s in pcb_data.segments
+                          if _s.net_id in pcb_data.nets}
     # The same copper as VALUE copies, for the "before" grades that run at the
     # end of the outermost run: the #1069 re-grade (both fronts) and the #600
     # gate's GUI branch (the CLI gate re-reads the input file). The run moves
@@ -1735,6 +1741,14 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     if layers is None:
         layers = DEFAULT_4_LAYER_STACK
     print(f"Using {len(layers)} routing layers: {layers}")
+
+    # One cost per requested layer, or the full-stack append below puts its
+    # FORBIDDEN entries on the wrong layers (routing_config.layer_costs_count_error).
+    from routing_config import layer_costs_count_error
+    _lc_err = layer_costs_count_error(layers, layer_costs)
+    if _lc_err:
+        from routing_exceptions import LayerCostsCountError
+        raise LayerCostsCountError(_lc_err)
 
     # Set default layer costs if not specified
     # 4+ layers: all 1.0 (inner layers available for routing)
@@ -5776,7 +5790,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                          # tented instead of filled+capped+plated.
                          'tenting_attrs': dict(
                              getattr(v, 'tenting_attrs', None) or {}),
-                         'inherit_when_unspecified': True}
+                         'inherit_when_unspecified': True,
+                         # ...and a blind/micro via keeps its type word.
+                         'via_type': getattr(v, 'via_type', 'through')}
                         for _, _, _mv in _lost666 for v in _mv]
                     import tempfile as _tf666, shutil as _sh666
                     _fd666, _tmp666 = _tf666.mkstemp(suffix='.kicad_pcb')
@@ -7470,6 +7486,84 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         except Exception as _pwe:                               # noqa: BLE001
             print(f"  (power-width disclosure skipped: {_pwe})")
 
+    # Found reviewing #1282: a net whose OWN width is wider than the run's
+    # track width -- an impedance width (--impedance, a stored net_impedance
+    # record, coplanar) or a wider net class -- necks through the same ladder
+    # as a power net (_route_main_connection's power_wide / imp_wide), and
+    # the ledger never said so: the ladder records nothing, and the rows other
+    # sites record for such a net (terminal neck, net rescue, plane tap) are
+    # per ATTEMPT, so a tap that never shipped still failed --strict-sizes.
+    # The #1033 rule for these nets too: one row per net, measured on the
+    # board this run ships, per layer -- graded on the copper THIS run laid,
+    # so a fanout stub an earlier step drew at its own width is not this
+    # step's neck. Outermost run only, both fronts (the write model on the
+    # GUI, as for power_widths).
+    if final_reconcile and not _ckpt_stop:
+        try:
+            _pw_ids1282 = set(getattr(config, 'power_net_widths', None) or {})
+            _run1282 = set(sweep_scope_ids)
+            _orig_ids1282 = set(original_segment_ids or ())
+            for _r1282 in (results or []):
+                for _sg1282 in (_r1282.get('new_segments') or []):
+                    if id(_sg1282) not in _orig_ids1282:
+                        _run1282.add(_sg1282.net_id)
+            _kind1282 = {}
+            for _n1282 in _run1282 - _pw_ids1282:
+                if _n1282 not in pcb_data.nets:
+                    continue
+                if max(config.get_net_track_width(_n1282, _l)
+                       for _l in config.layers) <= config.track_width + 1e-9:
+                    continue
+                _kind1282[_n1282] = (
+                    'class-width'
+                    if (_n1282 in (config.net_track_widths or {})
+                        and _n1282 not in (config.net_layer_widths or {}))
+                    else 'impedance')
+            if _kind1282:
+                from routing_common import new_copper_width_shortfall
+                from fab_tiers import (replace_track_rows,
+                                       escalation_summary as _es1282)
+                _ids1282 = {pcb_data.nets[_n].name: _n for _n in _kind1282}
+                _segs1282 = None
+                if return_results:
+                    _as1282, _ = _gui_write_model(results_data)
+                    _segs1282 = [s for _l in _as1282.values() for s in _l]
+                    _names1282 = {_n: _nn.name
+                                  for _n, _nn in pcb_data.nets.items()}
+                elif output_file and os.path.isfile(output_file):
+                    from kicad_parser import parse_kicad_pcb as _pk1282
+                    _b1282 = _pk1282(output_file)
+                    _segs1282 = _b1282.segments
+                    _names1282 = {_n: _nn.name
+                                  for _n, _nn in _b1282.nets.items()}
+                if _segs1282 is not None:
+                    _short1282 = new_copper_width_shortfall(
+                        _segs1282,
+                        lambda _n: _names1282.get(_n, f"Net {_n}"),
+                        _orig_seg_keys1282,
+                        lambda _nm, _ly: (
+                            config.get_net_track_width(_ids1282[_nm], _ly)
+                            if _nm in _ids1282 else None))
+                    for _k1282 in ('impedance', 'class-width'):
+                        _kids = {_n for _n, _k in _kind1282.items()
+                                 if _k == _k1282}
+                        replace_track_rows(
+                            _kids,
+                            [(_ids1282[_nm], _nm, _r['requested_mm'],
+                              _r['min_mm'], _r['under_mm'])
+                             for _nm, _r in _short1282.items()
+                             if _ids1282[_nm] in _kids],
+                            f'{_k1282} copper shipped under width')
+                    _dr1282 = _es1282()
+                    for _sm in list(_SUMMARY_SINK) + [summary]:
+                        if isinstance(_sm.get('design_rules'), dict):
+                            _keep = {k: v for k, v in
+                                     _sm['design_rules'].items()
+                                     if k == 'unsupported_rules'}
+                            _sm['design_rules'] = dict(_dr1282, **_keep)
+        except Exception as _wwe:                               # noqa: BLE001
+            print(f"  (wide-net width disclosure skipped: {_wwe})")
+
     # ---- THE FLOOR THIS RUN SHIPS ------------------------------------------
     # Every summary measured min_clearance_used and design_rules when it was
     # BUILT, and pass 1's predates the plane finalize, whose fine-pitch taps
@@ -8368,7 +8462,8 @@ For differential pair routing, use route_diff.py:
                         help="Per-layer cost multipliers (1.0-1000, default: F.Cu=1.0, others=3.0), "
                              "or any negative value (e.g. -1) = FORBIDDEN: the layer stays an obstacle "
                              "(its copper blocks vias) and through-vias may span it, but NO track copper "
-                             "is placed on it. Order matches --layers. Example (route only F.Cu/B.Cu, "
+                             "is placed on it. One value per --layers entry, in that order (another count is "
+                             "refused). Example (route only F.Cu/B.Cu, "
                              "In1/In2 obstacle-only): --layers F.Cu In1.Cu In2.Cu B.Cu --layer-costs 1.0 -1 -1 3.0")
 
     # Debug options
@@ -9087,10 +9182,10 @@ For differential pair routing, use route_diff.py:
             print(f"  (--write-fill skipped: {_e})")
     # #857: --strict-sizes turns any delivery below a requested size, or any
     # fab-tier escalation, into a non-zero exit so a harness needs no grep.
-    if getattr(args, 'strict_sizes', False):
-        from fab_tiers import escalation_summary, escalation_report_line
-        _es = escalation_summary()
-        if _es['count'] or _es['fab_tier_escalations']:
-            print(f"  --strict-sizes: {escalation_report_line()}")
-            sys.exit(3)
+    # The shared helper every routing CLI ends with; batch_route already
+    # printed the Design rules line, so only the exit is decided here.
+    from fab_tiers import finish_design_rules
+    _rc857 = finish_design_rules(args, 0, print_line=False)
+    if _rc857:
+        sys.exit(_rc857)
 

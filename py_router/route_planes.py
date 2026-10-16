@@ -2029,7 +2029,11 @@ def _neck_plane_segments(all_new_segments, pcb_data, clearance, all_layers,
     """
     import math
     from check_drc import segment_to_rect_distance, _into_pad_frame  # reuse exact DRC geometry
-    vias = [(v.x, v.y, v.size / 2.0, v.net_id, v.layers) for v in pcb_data.vias]
+    # Each via's copper by its TYPE (found reviewing #1268): every layer for a
+    # through via whatever pair it carries, and the run between the ends of a
+    # typed blind/micro via -- its middle layers included.
+    from geometry_utils import via_on_layer
+    vias = [(v.x, v.y, v.size / 2.0, v.net_id, v) for v in pcb_data.vias]
     EPS = 1e-4  # stay just inside the rule
     _nc = net_clearances or {}
 
@@ -2059,10 +2063,10 @@ def _neck_plane_segments(all_new_segments, pcb_data, clearance, all_layers,
         minx, maxx = min(x0, x1), max(x0, x1)
         miny, maxy = min(y0, y1), max(y0, y1)
         # foreign vias
-        for vx, vy, vr, vnid, vlayers in vias:
+        for vx, vy, vr, vnid, vobj in vias:
             if vnid == nid:
                 continue
-            if not (('F.Cu' in vlayers and 'B.Cu' in vlayers) or layer in vlayers):
+            if not via_on_layer(vobj, layer):
                 continue
             _cl = _pair_clearance(nid, vnid)
             margin = half + vr + _cl
@@ -3211,6 +3215,14 @@ def create_plane(
         print(f"Error: Number of nets ({len(net_names)}) must match number of layers ({len(plane_layers)})")
         return _empty_plane_results(return_results)
 
+    # One cost per routing layer, or the full-stack append below puts its
+    # FORBIDDEN entries on the wrong layers (routing_config.layer_costs_count_error).
+    from routing_config import layer_costs_count_error
+    _lc_err = layer_costs_count_error(all_layers, layer_costs)
+    if _lc_err:
+        print(f"ERROR: {_lc_err}")
+        return _empty_plane_results(return_results)
+
     # Board-setup copper-to-edge rule (#338): zone outlines and tap copper must
     # honor the sibling .kicad_pro's min_copper_edge_clearance (engine-side so
     # the GUI planes tab inherits it; see batch_route).
@@ -4326,7 +4338,8 @@ Examples:
     parser.add_argument("--layer-costs", nargs="+", type=float, default=[],
                         help="Per-layer routing cost multipliers (1.0-1000, or any negative value e.g. -1 = "
                              "forbidden: the layer stays an obstacle / via span but gets no routed copper). "
-                             "Order matches --layers. Example: --layer-costs 1.0 -1 -1 3.0")
+                             "One value per --layers entry, in that order (another count is refused). "
+                             "Example: --layer-costs 1.0 -1 -1 3.0")
 
     # #381 D9: accept the plural --no-bga-zones spelling too (route.py uses the
     # plural). Same store_true dest -- additive, old spelling kept.
@@ -4713,6 +4726,7 @@ Examples:
                 'drill': v.drill,
                 'net_id': v.net_id,
                 'layers': v.layers,
+                'via_type': getattr(v, 'via_type', 'through'),
                 'free': getattr(v, 'free', False)
             } for v in gnd_vias]
             # #962: a GND return via this adds in a pad or paste opening
@@ -4891,9 +4905,15 @@ Examples:
         _summary['env_knobs'] = _ek653.active_env_knobs()   # dirty baseline
     except Exception:          # without re-reading logs
         pass
+    # #857: what this run delivered below a requested size (route.py's
+    # key), when it delivered anything there.
+    from fab_tiers import narrowed_summary, finish_design_rules
+    _dr857 = narrowed_summary()
+    if _dr857 is not None:
+        _summary['design_rules'] = _dr857
     print('JSON_SUMMARY: ' + _json.dumps(_summary, sort_keys=True, default=str),
           flush=True)
-    return 1 if _no_output else 0
+    return finish_design_rules(args, 1 if _no_output else 0)
 
 
 if __name__ == "__main__":

@@ -602,7 +602,7 @@ def main():
         segs = [_seg(-3, 0, -0.35, -0.06, layer=seg_layer, width=0.25),
                 _seg(-0.35, 0.06, -3, 0, layer=seg_layer, width=0.25)]
         v = Via(x=0, y=0, size=0.6, drill=0.3, layers=['F.Cu', 'In1.Cu'],
-                net_id=NET)
+                net_id=NET, via_type='blind')   # untyped would be through
         pcb = _pcb(segs, vias=[v], pads=pads)
         pcb.board_info.copper_layers = ['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu']
         return pcb, segs, [v], pads

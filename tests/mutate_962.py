@@ -243,7 +243,7 @@ ROWS = [
      "        if False:",
      (T_VIP,), 'KILLED'),
     ('buried-via-under-paste', 'f',
-     "            if ('F.Cu' if ap.layer.startswith('F.') else 'B.Cu') not in span:\n"
+     "            if not via_on_layer(via, 'F.Cu' if ap.layer.startswith('F.') else 'B.Cu'):\n"
      "                continue",
      "            if False:\n                continue",
      (T_VIP,), 'KILLED'),

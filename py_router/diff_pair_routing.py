@@ -237,13 +237,12 @@ def _endpoint_launch_layer_indices(pcb_data, net_id, x, y, config, tol=None):
             continue
         if abs(via.x - x) > tol or abs(via.y - y) > tol:
             continue
-        vlayers = via.layers or ['F.Cu', 'B.Cu']
-        v_idxs = [cu_index[l] for l in vlayers if l in cu_index]
-        if not v_idxs:
-            continue
-        lo, hi = min(v_idxs), max(v_idxs)
+        # The via's copper by its TYPE (found reviewing #1268): every layer
+        # for a through via whatever its pair, the run between the ends of a
+        # typed blind/micro one.
+        from geometry_utils import via_on_layer
         for lname, ridx in routing_idx.items():
-            if lname in cu_index and lo <= cu_index[lname] <= hi:
+            if lname in cu_index and via_on_layer(via, lname):
                 spanned.add(ridx)
     # PLATED through-hole pads span every copper layer, like a via barrel
     # (NPTH holes have no copper -- #328).
@@ -254,6 +253,22 @@ def _endpoint_launch_layer_indices(pcb_data, net_id, x, y, config, tol=None):
             spanned |= _span_all()
             break
     return spanned
+
+
+def _via_routable_layer_indices(via, layer_names, config):
+    """Indices into `layer_names` of the ROUTABLE layers a via's copper
+    reaches -- where a leg may arrive on it.
+
+    By NAME and by the via's type (found reviewing #1268): this used to take
+    the index range between the via's two stored layers, which is wrong twice
+    over -- a through via spans every layer whatever pair it carries, and a
+    full-stack run's layer_names is not in stack order (`--layers F.Cu B.Cu`
+    on 4 layers is [F.Cu, B.Cu, In1.Cu, In2.Cu], so an F.Cu..B.Cu range never
+    reached In1.Cu). FORBIDDEN layers take no track, so they are left out."""
+    from geometry_utils import via_on_layer
+    ok = set(config.routable_layers())
+    return [i for i, name in enumerate(layer_names)
+            if name in ok and via_on_layer(via, name)]
 
 
 def _pt_seg_dist(px, py, ax, ay, bx, by):
@@ -3967,8 +3982,11 @@ def _route_hybrid_leg(pcb_data, net_id, config, obstacles, layer_names, coord,
     # path lands on that cell must REUSE it -- not stack a second coincident via a
     # hole-to-hole bust. Mirror the multipoint router's reuse set.
     reuse_holes = set(get_same_net_through_hole_positions(pcb_data, net_id, config))
+    from obstacle_map import via_stops_short
     for _v in (getattr(pcb_data, 'vias', None) or []):
-        if _v.net_id == net_id:
+        # A blind/micro via is not an every-layer hole (found reviewing #1268);
+        # _path_to_segments_vias rides it within its span on its own.
+        if _v.net_id == net_id and not via_stops_short(_v, pcb_data):
             reuse_holes.add(coord.to_grid(_v.x, _v.y))
 
     # Register the coupled middle's OWN (this-net) vias as reuse holes, and if the
@@ -3980,12 +3998,12 @@ def _route_hybrid_leg(pcb_data, net_id, config, obstacles, layer_names, coord,
     for _v in mid_vias:
         if _v.net_id != net_id:
             continue
-        reuse_holes.add(coord.to_grid(_v.x, _v.y))
+        if not via_stops_short(_v, pcb_data):
+            reuse_holes.add(coord.to_grid(_v.x, _v.y))
         if math.hypot(_v.x - mid_pt[0], _v.y - mid_pt[1]) <= own_tol:
-            _sp = [layer_names.index(l) for l in _v.layers if l in layer_names]
-            if len(_sp) >= 2 and (max(_sp) - min(_sp)) >= 1:
-                _lo, _hi = min(_sp), max(_sp)
-                mid_target_layers = [l for l in range(nlayers) if _lo <= l <= _hi]
+            _sp = _via_routable_layer_indices(_v, layer_names[:nlayers], config)
+            if len(_sp) >= 2:
+                mid_target_layers = _sp
 
     # The leg endpoint: the terminal's own-net through-via (its access to the middle
     # layer) if one sits at the terminal, else the pad itself.

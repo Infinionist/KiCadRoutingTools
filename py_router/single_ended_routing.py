@@ -25,7 +25,7 @@ from connectivity import (
     get_copper_connected_terminal_groups,
     compute_component_mst_edges,
 )
-from obstacle_map import get_same_net_through_hole_positions
+from obstacle_map import get_same_net_through_hole_positions, same_net_partial_via_spans
 from bresenham_utils import walk_line
 from geometry_utils import simplify_path
 
@@ -1915,6 +1915,7 @@ def route_oracle_links(pcb_data: PCBData, net_id: int, config: GridRouteConfig,
         if la is None or lb is None:
             print(f"    forced link endpoint layer not in the routing stack "
                   f"({al} / {bl}) -- link unroutable here")
+            uncommit_dropped_result(pcb_data, merged)
             return {'failed': True, 'iterations': 0}
         gax, gay = coord.to_grid(ax, ay)
         gbx, gby = coord.to_grid(bx, by)
@@ -1930,10 +1931,13 @@ def route_oracle_links(pcb_data: PCBData, net_id: int, config: GridRouteConfig,
                 print(f"    ({len(merged['new_segments'])} segment(s) from "
                       f"earlier forced link(s) discarded with this failure; "
                       f"a retry re-routes every link)")
+            # ...and so is their #189 unblock copper, already in pcb_data.
+            uncommit_dropped_result(pcb_data, merged)
             return result if result else {'failed': True, 'iterations': 0}
         if not (result.get('new_segments') or result.get('new_vias')):
             print(f"    forced link claimed success with ZERO copper -- "
                   f"refused (#572 false-weld fingerprint)")
+            uncommit_dropped_result(pcb_data, merged)
             result['failed'] = True
             return result
         if merged is None:
@@ -2284,6 +2288,9 @@ def _route_net_with_obstacles_impl(pcb_data: PCBData, net_id: int, config: GridR
 
     # Get through-hole pad positions for this net (layer transitions without via)
     through_hole_positions = get_same_net_through_hole_positions(pcb_data, net_id, config)
+    # ...and the net's blind/micro vias, which carry a layer change only
+    # between layers they span.
+    partial_spans = same_net_partial_via_spans(pcb_data, net_id, config)
 
     # Simplify path by removing collinear intermediate points
     path = simplify_path(path)
@@ -2314,7 +2321,9 @@ def _route_net_with_obstacles_impl(pcb_data: PCBData, net_id: int, config: GridR
         if layer1 != layer2:
             # Check if layer change is at an existing through-hole pad
             # If so, skip creating a via - the pad provides the layer transition
-            if (gx1, gy1) not in through_hole_positions:
+            if ((gx1, gy1) not in through_hole_positions
+                    and not {layer_names[layer1], layer_names[layer2]}
+                    <= partial_spans.get((gx1, gy1), frozenset())):
                 _vsz, _vdr = _emit_via_size(pcb_data, gx1, gy1, config,
                                             net_id=net_id, x=x1, y=y1)
                 via = Via(
@@ -2377,6 +2386,11 @@ def _route_net_with_obstacles_impl(pcb_data: PCBData, net_id: int, config: GridR
         _why, _ships = _hard_terminal_why(_hard157[0])
         print(f"  {YELLOW}{_why} -- rejecting the route rather than shipping "
               f"{_ships}{RESET}")
+        # The rejected route's #189 unblock copper goes with it: it is already
+        # in pcb_data (#803) and no result will carry it, so the net's next
+        # route landed on it as the pad's own via, which the file never gets
+        # (found reviewing #1273).
+        _uncommit_unblock_copper(pcb_data, unblock_vias, unblock_segments)
         return {
             'failed': True,
             'iterations': total_iterations,
@@ -2922,7 +2936,7 @@ def _place_shrunk_via_in_pad_impl(pad_obj, obstacles, config, pcb_data, net_id, 
         return None
     v = tap_res.via
     via = Via(x=v['x'], y=v['y'], size=v['size'], drill=v['drill'],
-              layers=v.get('layers', [layer_names[0], layer_names[-1]]), net_id=net_id)
+              layers=v.get('layers', ['F.Cu', 'B.Cu']), net_id=net_id)
     vgx, vgy = coord.to_grid(v['x'], v['y'])
     # Record this cell's DRC-legal shrunk via size so route conversion emits THAT
     # size (not the full config.via_size) if the path later changes layer here
@@ -3291,6 +3305,31 @@ def _uncommit_unblock_copper(pcb_data, vias, segments) -> None:
     pcb_data.vias[:] = [v for v in pcb_data.vias if id(v) not in drop_v]
     pcb_data.segments[:] = [s for s in pcb_data.segments if id(s) not in drop_s]
     pcb_data._copper_epoch = getattr(pcb_data, '_copper_epoch', 0) + 1
+
+
+def uncommit_dropped_result(pcb_data, dropped, kept=None) -> None:
+    """A caller DROPPING a routing result it never committed (a probe, a
+    rejected retry, a result another one replaces) takes back the #189
+    unblock copper the router committed for it ahead of time (#803). Left
+    in pcb_data that copper is never written -- the writer reads results
+    -- yet every later route of the net reads it as the net's own (found
+    reviewing #1273).
+
+    A never-committed result's only copper already in pcb_data is that
+    unblock copper, EXCEPT what it shares with a committed result: a tap
+    result carries its main route as a prefix. So a dropped tap result
+    names the result kept in its place (``kept``), whose copper is spared;
+    a result built fresh by route_net_with_obstacles needs none."""
+    if not dropped:
+        return
+    spare = set()
+    if kept:
+        spare = ({id(v) for v in kept.get('new_vias') or ()}
+                 | {id(s) for s in kept.get('new_segments') or ()})
+    _uncommit_unblock_copper(
+        pcb_data,
+        [v for v in dropped.get('new_vias') or () if id(v) not in spare],
+        [s for s in dropped.get('new_segments') or () if id(s) not in spare])
 
 
 def _route_main_connection(router, obstacles, config, sources, targets, track_margin,
@@ -4918,8 +4957,9 @@ def _route_multipoint_taps_impl(
     # places vias lets a later edge REUSE a via the main edge already dropped at
     # the same cell, instead of stacking a second coincident one (EPHY_TX_N).
     through_hole_positions = set(get_same_net_through_hole_positions(pcb_data, net_id, config))
+    from obstacle_map import via_stops_short
     for _v in pcb_data.vias:
-        if _v.net_id == net_id:
+        if _v.net_id == net_id and not via_stops_short(_v, pcb_data):
             through_hole_positions.add(coord.to_grid(_v.x, _v.y))
 
     # In-progress vias (this net's main + earlier tap edges) are NOT yet in
@@ -5421,12 +5461,18 @@ def _route_multipoint_taps_impl(
             # took it to the fab floor and the crossing SHIPPED). Terminal
             # copper overlapping a foreign track/via at any width is a short
             # no neck can fix: fail the edge like an unroutable one so the
-            # rip/retry ladder finds another approach. (A #189 unblock via
-            # already registered for this edge stays in the map -- a
-            # conservative over-block for later edges, never a short.)
+            # rip/retry ladder finds another approach.
             _why, _ships = _hard_terminal_why(_hard_tap[0])
             print(f"      {YELLOW}{_why} -- failing the MST edge rather than "
                   f"shipping {_ships}{RESET}")
+            # The edge's #189 unblock copper (and a pad-via rescue's) goes
+            # with it: it is already in pcb_data (#803) and no result will
+            # carry it. Left there, the orphan fallback below landed on it as
+            # the pad's own via and reported the pad connected while the file
+            # had no via there (found reviewing #1273). Its free-via
+            # registration stays: a later edge that changes layer on that cell
+            # emits its own via, refit-checked (#339).
+            _uncommit_unblock_copper(pcb_data, unblock_vias, unblock_segments)
             edge_key = (min(src_idx, tgt_idx), max(src_idx, tgt_idx))
             failed_edges.add(edge_key)
             blocked_cells = list(blocked_cells) + _via_conflict_extra
@@ -5638,7 +5684,8 @@ def _trim_after_fill_via(path, coord, layer_names, pcb_data, net_id):
     return path, None
 
 
-def _reusable_same_net_via(pcb_data, net_id, x, y, new_drill, config):
+def _reusable_same_net_via(pcb_data, net_id, x, y, new_drill, config,
+                           layers=None):
     """An existing same-net via this path can RIDE instead of drilling beside it
     (#671), or None.
 
@@ -5666,10 +5713,15 @@ def _reusable_same_net_via(pcb_data, net_id, x, y, new_drill, config):
     """
     if pcb_data is None or not getattr(pcb_data, 'vias', None):
         return None
+    from geometry_utils import via_on_layer
     h2h = getattr(config, 'hole_to_hole_clearance', 0.25) or 0.25
     best = None
     for v in pcb_data.vias:
         if v.net_id != net_id:
+            continue
+        # `layers`: the two layers this transition joins. A blind/micro
+        # barrel that misses either joins nothing here (found reviewing #1268).
+        if layers and not all(via_on_layer(v, name) for name in layers):
             continue
         d = math.hypot(v.x - x, v.y - y)
         if d >= (new_drill + (v.drill or 0.0)) / 2.0 + h2h:
@@ -5721,6 +5773,10 @@ def _path_to_segments_vias(
 
     path_start = path[0]
     path_end = path[-1]
+    # The net's blind/micro vias carry a layer change only between layers
+    # they span (found reviewing #1268).
+    partial_spans = (same_net_partial_via_spans(pcb_data, net_id, config)
+                     if pcb_data is not None else {})
 
     # Per-point float positions. Route the two TERMINAL segments to the EXACT
     # off-grid endpoint instead of its grid-cell stand-in when that cell grazes a
@@ -5771,6 +5827,9 @@ def _path_to_segments_vias(
             if through_hole_positions and (gx1, gy1) in through_hole_positions:
                 # No via needed - existing through-hole pad connects all layers
                 pass
+            elif {layer_names[layer1], layer_names[layer2]} <= \
+                    partial_spans.get((gx1, gy1), frozenset()):
+                pass    # a blind/micro via of the net spans both layers
             else:
                 vx, vy = coord.to_float(gx1, gy1)  # via stays on the grid cell
                 _vsz, _vdr = _emit_via_size(pcb_data, gx1, gy1, config,
@@ -5780,7 +5839,9 @@ def _path_to_segments_vias(
                 # through_hole_positions skip above -- an existing conductor
                 # already provides this transition.
                 _reuse = _reusable_same_net_via(pcb_data, net_id, vx, vy,
-                                                _vdr, config)
+                                                _vdr, config,
+                                                (layer_names[layer1],
+                                                 layer_names[layer2]))
                 if _reuse is not None:
                     if os.environ.get('KICAD_VIA_REUSE_DEBUG') == '1':
                         print(f"      via reuse (#671): net {net_id} rides the "

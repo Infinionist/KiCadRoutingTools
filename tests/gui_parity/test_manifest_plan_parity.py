@@ -1651,7 +1651,9 @@ _MAINS = {
 #: them, so each is a site of its own.
 _EXITING_HELPERS = ('fab_tier_from_args', 'read_brief_keep_away',
                     'load_net_clearances', 'load_intent_or_exit',
-                    'tether_gate_spec', 'declared_cap_rotations')
+                    'tether_gate_spec', 'declared_cap_rotations',
+                    # the shared end-of-run --strict-sizes exit 3 (#857)
+                    'finish_design_rules')
 
 
 def refusal_sites(tool):

@@ -171,7 +171,8 @@ def rank_poses(pcb_data, board_path: str, ref: str, *, radius: float = 2.0,
                **state_kw) -> List[Dict]:
     """Legal poses for `ref`, cheapest first.
 
-    Returns `[{x, y, rot, cost, delta, dist_mm, legal}]`, sorted by cost. `delta`
+    Returns `[{x, y, rot, cost, delta, dist_mm, legal}]` (plus `escape: True`
+    on a pose only the escape branch admits, below), sorted by cost. `delta`
     is against the part's CURRENT pose, so a negative delta is an improvement
     and a list whose best delta is >= 0 says "leave it alone" -- which is a real
     answer and one a caller should be able to get without paying for a route.
@@ -192,6 +193,16 @@ def rank_poses(pcb_data, board_path: str, ref: str, *, radius: float = 2.0,
     whose rotation its neighbours were packed around reads exactly that way,
     and a one-part move cannot judge such a rotation (`veto_phrase` says it
     in one line).
+
+    `legal` is TRUE only for a pose the ordinary gate admits. For a part
+    whose current pose (or the incumbent a caller pinned, `incumbent_at`) is
+    off the board, `candidate_valid`'s escape branch also admits poses merely
+    LESS off the board, with no overlap, so the part can come home; those
+    are ranked too, but labelled `legal: False, escape: True`, and counted
+    in `diagnostics['escape_admitted']`. They were labelled `legal: True`:
+    with esp_prog's R3 staged at (146.0, 101.5), `converge poses --ref R3
+    --radius 3` returned (146.0, 104.5) at 270 degrees -- both pads past
+    the east edge -- as legal (found reviewing #1277).
     """
     st = state if state is not None else make_state(pcb_data, board_path, **state_kw)
     part = st.parts.get(ref) if hasattr(st, 'parts') else None
@@ -239,11 +250,21 @@ def rank_poses(pcb_data, board_path: str, ref: str, *, radius: float = 2.0,
     dropped_in_place_by = []
     evaluated = 0
     # ONE predicate call per candidate: the #702 refusal tallies count calls.
+    # (The label below asks again, of an ADMITTED pose only, with the escape
+    # branch closed; an admitted pose passed the tallied conjuncts, so the
+    # repeat tallies nothing.)
     _veto = getattr(st, 'candidate_veto', None)
     if _veto is None:       # a duck-typed state without the #1113 labels
         def _veto(r, x, y, rot):
             return None if st.candidate_valid(r, x, y, rot) else (
                 'unattributed', None)
+    # Is the escape branch open for `ref`? Its incumbent does not change
+    # during the sweep (every candidate move is undone), so ask once. A
+    # duck-typed state without the branch's test admits only what it calls
+    # legal, as before.
+    _esc = getattr(st, 'escape_board_term', None)
+    escape_open = _esc is not None and _esc(ref) is not None
+    escape_admitted = 0
     for dx, dy in _offsets(radius, step):
         # THE SWEEP, which `--limit` never bounded: limit truncates the sorted
         # RESULT on the last line of this function, while every candidate here
@@ -272,16 +293,23 @@ def rank_poses(pcb_data, board_path: str, ref: str, *, radius: float = 2.0,
                     dropped_in_place_by.append(
                         {'rot': rot, 'check': _chk, 'blocker': _blk})
                 continue
+            legal = True
+            if escape_open:
+                st.escape_closed.add(ref)
+                try:
+                    legal = bool(st.candidate_valid(ref, x, y, rot))
+                finally:
+                    st.escape_closed.discard(ref)
             st.apply_move(ref, x, y, rot)
             cost = st.total_cost()
             st.apply_move(ref, x0, y0, rot0)          # always restore
             inv = ref_inversions(st, ref, x, y, rot)
-            scored.append({
+            row = {
                 'x': round(x, 4), 'y': round(y, 4), 'rot': rot,
                 'cost': round(cost['total'], 4),
                 'delta': round(cost['total'] - base['total'], 4),
                 'dist_mm': round((dx * dx + dy * dy) ** 0.5, 4),
-                'legal': True,
+                'legal': legal,
                 'components': dict(
                     {k: round(v, 4) for k, v in cost.items() if k != 'total'},
                     inversions=inv),
@@ -289,9 +317,15 @@ def rank_poses(pcb_data, board_path: str, ref: str, *, radius: float = 2.0,
                     {k: round(v - base.get(k, 0), 4)
                      for k, v in cost.items() if k != 'total'},
                     inversions=inv - base_inv),
-            })
+            }
+            if not legal:
+                # Admitted by the escape branch alone: less off the board.
+                row['escape'] = True
+                escape_admitted += 1
+            scored.append(row)
     if diagnostics is not None:
         diagnostics['dropped_total'] = dropped_total
+        diagnostics['escape_admitted'] = escape_admitted
         diagnostics['dropped_in_place'] = dropped_in_place
         diagnostics['dropped_in_place_by'] = dropped_in_place_by
         diagnostics['evaluated_total'] = evaluated

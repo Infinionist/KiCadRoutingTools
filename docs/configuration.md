@@ -137,7 +137,7 @@ vias and clearances *down toward* when it needs to. It is shared by every CLI
 | `--fab-tier` | `auto` | `auto` (the standard floor, escalating to advanced when a fine-pitch fan-out, plane tap or last-resort via cannot fit; warned and counted), `standard` (no extra fab cost, **hard**) or `advanced` (tighter, "more costly", **hard**) |
 | `--fab-overrides` | - | Path to a file overlaying the tier's floors (only the keys it lists) |
 | `--escalation` | `fab` | How far below a **requested** size a failing net may be retried: `fab` (down to the fab tier floor, below the board's own minimums; completion first, every narrowing disclosed), `board` (down to the board's own Board Setup minimums; an unset key falls back to the fab tier floor, except clearance, which falls back to the Default net class's clearance, #1160; with `--no-fix-drc-settings` clearance descents stop at the Default class floored at `min_clearance`, what KiCad grades the unchanged project at, #1262), `off` (never; the net fails and is reported -- except a wide power/impedance net's pad-entry neck of at most 2 mm of path, `routing_defaults.PAD_ENTRY_NECK_MM`) |
-| `--strict-sizes` | off | Exit 3 when any feature was delivered below its requested size or a fab-tier escalation fired. For `--power-nets` track widths this means copper that SHIPS under width (one `design_rules` row per power net, #1033), not every narrower routing attempt |
+| `--strict-sizes` | off | Exit 3 when any feature was delivered below its requested size or a fab-tier escalation fired -- on every routing CLI that takes it (`route.py`, `route_diff.py`, `route_planes.py`, `repair_planes.py`, `bga_fanout.py`, `qfn_fanout.py`); an exit code the run already had for its own reason wins. For a net with its own width -- `--power-nets`, an impedance width, a wider net class -- this means copper that SHIPS under width (one `design_rules` row per net), not every narrower routing attempt: a power net on `route.py` is measured over the whole net (#1033); an impedance- or class-width net, and `repair_planes.py`'s `--power-nets` taps, over the copper the run laid, so a fanout stub an earlier step drew at its own width is not counted |
 
 The tier is a **floor ladder**:
 
@@ -225,7 +225,10 @@ narrowing with net / kind / requested / delivered / site, the fab-tier escalatio
 count, and the `.kicad_dru` rules the tool could not honour), an `escalations`
 count in `JSON_SUMMARY_MIN`, and one end-of-run line (`Design rules [--escalation
 fab, --fab-tier auto]: 7 feature(s) on 3 net(s) delivered below the requested
-size (...)`). `--strict-sizes` makes that line a non-zero exit.
+size (...)`). `--strict-sizes` makes that line a non-zero exit. Every routing CLI
+prints the line and honours the flag; the non-route CLIs add `design_rules` to their
+`JSON_SUMMARY` only when the run narrowed something, and the GUI's diff, planes and
+fanout tabs print the same line in their log.
 
 | Floor (per layer count) | standard | advanced |
 |---|---|---|
@@ -346,7 +349,7 @@ See [Rip-Up and Reroute](rip-up-reroute.md) for how failed routes trigger rip-up
 | `--ordering` / `-o` | mps | Net ordering: `mps`, `inside_out`, or `original` |
 | `--direction` / `-d` | forward | Direction: `forward` or `backward` |
 | `--layers` / `-l` | all copper layers | Routing layers. For `route.py` the default is all of the board's copper layers; `route_diff.py` and `bga_fanout.py` default to `F.Cu B.Cu` |
-| `--layer-costs` | (see below) | Per-layer cost multipliers (1.0-1000). Default: all 1.0 for 4+ layers; F.Cu=1.0, B.Cu=3.0 for 2 layers |
+| `--layer-costs` | (see below) | Per-layer cost multipliers (1.0-1000), one per `--layers` entry (any other count is refused, see [Layer Costs](#layer-costs)). Default: all 1.0 for 4+ layers; F.Cu=1.0, B.Cu=3.0 for 2 layers |
 | `--no-bga-zones [REFS...]` | (auto-detect) | Disable BGA exclusion zones. No args = all. With refs (U1 U3) = only those |
 
 ### Proximity Penalty Options
@@ -830,6 +833,19 @@ The `--layer-costs` parameter controls per-layer routing preferences. Higher cos
 ```bash
 --layers F.Cu B.Cu --layer-costs 1.0 5.0
 ```
+
+**One value per routing layer, in `--layers` order** (for `route.py` with
+`--layers` omitted, one per board copper layer; for `route_planes.py`, one per
+entry of its `--layers`, default `F.Cu` + plane layers + `B.Cu`). The copper
+layers a run does not route on are appended after them as FORBIDDEN
+obstacles, so a list of any other length is refused (`ERROR: --layer-costs
+needs one value per routing layer ...`) rather than shifted onto the wrong
+layers: `--layers F.Cu B.Cu --layer-costs 1.0` on a 4-layer board used to
+forbid the requested `B.Cu` and leave the unrequested `In2.Cu` routable.
+`route.py`, `route_diff.py`, `route_planes.py`, `repair_planes.py` and
+`bga_fanout.py` all refuse it. In the GUI the Layer Costs field takes one
+value per copper layer (its default) or one per selected layer, and each tab
+places them on its own layers by name.
 
 ### Stub Proximity
 

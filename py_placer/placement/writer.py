@@ -1304,7 +1304,9 @@ def write_placed_output(input_file: str, output_file: str,
                     # cannot do this job -- the repo's own idiom for carrying a
                     # spec is `dict(...)`, which would turn any dict-shaped
                     # sentinel back into a plain {}.
-                    inherit_when_unspecified=True))
+                    inherit_when_unspecified=True,
+                    # A nudged blind/micro via keeps its type word.
+                    via_type=v.get('via_type')))
         for nsd in (new_segments or []):
             nm = n2n.get(nsd['net_id']) if n2n else None
             elements.append(generate_segment_sexpr(
