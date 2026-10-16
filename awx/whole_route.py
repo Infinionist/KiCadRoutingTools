@@ -281,12 +281,13 @@ def layer_cut(lane, island, box, layer):
     return c
 
 
-_TRACKS = {}       # (a bench file, its mtime and size) -> (its tracks by layer index, its keep-out areas' boxes)
+_TRACKS = {}       # (a bench file, its mtime and size) -> (its tracks by layer index, its keep-out areas' boxes, shapes)
 
 
 def _tracks_of(bench):
     """(the bench's tracks as (x0, y0, x1, y1, half width, net name) per routing-layer index (route_layers), the
-    bboxes of its keep-out areas as plan_audit.keepout_areas lists them), read once"""
+    bboxes of its keep-out areas as plan_audit.keepout_areas lists them, and their shapes (polygon, holes) as point
+    lists), read once"""
     st_ = os.stat(bench)
     key = (os.path.abspath(bench), st_.st_mtime_ns, st_.st_size)
     if key not in _TRACKS:
@@ -302,8 +303,10 @@ def _tracks_of(bench):
                 nm = pcb.nets[s_.net_id].name.split('/')[-1] if s_.net_id in pcb.nets else ''
                 by[_layer_index(s_.layer)].append((s_.start_x, s_.start_y, s_.end_x, s_.end_y, s_.width / 2, nm))
         import plan_audit as _pa
+        ka_ = _pa.keepout_areas(pcb, lays)
+        rnd = lambda P: [[round(float(x_), 4), round(float(y_), 4)] for x_, y_ in P]
         _TRACKS.clear()
-        _TRACKS[key] = (dict(by), [k_[3] for k_ in _pa.keepout_areas(pcb, lays)])
+        _TRACKS[key] = (dict(by), [k_[3] for k_ in ka_], [(rnd(k_[0]), [rnd(h_) for h_ in k_[1]]) for k_ in ka_])
     return _TRACKS[key]
 
 
@@ -323,7 +326,8 @@ def audit_layer_cuts(audit, geo, bench=None):
     none where they cross it on every layer, which no change answers. And a lane found in a KEEP-OUT rule area whose
     tracks are not allowed on some layers (plan_audit.keepout_areas -- the router stamps it, the plan did not see it:
     sdi_mipi_conv's wound SDI lanes round U15 laid on In2.Cu through the area east of it that keeps In1 and In2 clear,
-    and the snap failed them there every round) is held off its layers across its box"""
+    and the snap failed them there every round) is held off its layers where its laid path meets the area itself (its
+    polygon: own_spans), not the area's box -- the area east of U15 is an L whose box reaches U15's berths"""
     import route_layers
     nl = len(route_layers.layers())
     out, isl, bxs = [], geo.get('islands') or {}, geo.get('island_boxes') or {}
@@ -335,9 +339,12 @@ def audit_layer_cuts(audit, geo, bench=None):
             lane, x, y, r = k.group(1), float(k.group(7)), float(k.group(8)), max(ARRAY_CUT_R, 3 * float(k.group(4)))
             blk = {_layer_index(k.group(2))} | {_layer_index(t_) for t_ in k.group(6).split('+')}
             kb = _tracks_of(bench)[1] if bench else []
-            box = list(kb[int(k.group(5))]) if int(k.group(5)) < len(kb) else [x - r, y - r, x + r, y + r]
+            ki = int(k.group(5))
+            box = list(kb[ki]) if ki < len(kb) else [x - r, y - r, x + r, y + r]
             c = {'lane': lane, 'island': 'keepout K' + k.group(5), 'layer': 0, 'box': box, 'blocked': sorted(blk)} \
                 if nl > 2 and len(blk) < nl else None
+            if c and ki < len(kb):
+                c['poly'], c['holes'] = _tracks_of(bench)[2][ki]
             if c and c not in out:
                 out.append(c)
             continue
@@ -436,7 +443,15 @@ def own_spans(cf, geo, plan=None):
             continue
         x0, y0, x1, y1 = c['box'][:4]
         us = []
-        for p in _dense([list(q) for q in path], R.grid / 2):
+        pts_ = _dense([list(q) for q in path], R.grid / 2)
+        if c.get('poly'):
+            # (a keep-out area: where the path meets its polygon, within a lane's clearance -- not its box)
+            import numpy as _np
+            import plan_audit as _pa
+            dk_ = _pa.keepout_dist(_np.array([p_[-2:] for p_ in pts_], float), _np.array(c['poly'], float),
+                                   [_np.array(h_, float) for h_ in c.get('holes') or []]) if pts_ else []
+            pts_ = [p_ for p_, d_ in zip(pts_, dk_) if d_ <= reach]
+        for p in pts_:
             if x0 - reach <= p[0] <= x1 + reach and y0 - reach <= p[1] <= y1 + reach:
                 # (the laid path's place on the lane's route: its nearest column, the polish having moved it little)
                 d, u = min((math.hypot(r_[1] - p[0], r_[2] - p[1]), r_[0]) for r_ in rows)

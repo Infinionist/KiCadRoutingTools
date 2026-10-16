@@ -1184,6 +1184,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
               f'{sum(1 for s_ in soft_broken if s_[0] == "via")} via), each {W_SOFT / W_V:g} vias when broken')
     # ---- LAYER cuts (the blocked fronts, above): no change of the lane inside the span, and its layer there -- its end's
     # layer flipped by the changes before the span -- the other; soft as the geometry's cuts are, priced W_SOFT broken
+    # (a keep-out area's, W_FIRM)
     for (n_, k_, L_, lo_u, hi_u, lo_c, hi_c, w0, w1) in LAYER_CUTS + CHAN_CUTS:
         cs_l, act_l = chg[n_]
         br_ = m.NewBoolVar('')
@@ -1201,7 +1202,12 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
             run_ = run_at(n_, bef)
             for blk_ in blks_:
                 m.Add(run_ != blk_).OnlyEnforceIf(br_.Not())
-            soft_broken[('layer', n_, str(k_), round(lo_u, 3))] = br_     # (k_ a front's end, or an island's name)
+            # (a KEEP-OUT area's cut FIRM: the router stamps the area exactly, so a lane planned through it is a lane not
+            # laid, dearer than any vias -- soft, sdi_mipi_conv's SDI_D1 on four layers was planned through the area
+            # round U15 every round, its changes off In2.Cu and back dearer than the break, and never laid; firm, the
+            # cut held and the lane was laid)
+            (firm_broken if str(k_).startswith('chan keepout') else soft_broken)[
+                ('layer', n_, str(k_), round(lo_u, 3))] = br_     # (k_ a front's end, or an island's name)
             continue
         par = m.NewBoolVar('')
         m.AddBoolXOr(bef + [par.Not()])                        # par: an odd number of changes before the span

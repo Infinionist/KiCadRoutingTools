@@ -529,6 +529,18 @@ def build_and_solve(sides, prev=None):
         for k in range(v['k0'], v['k1'] + 1):
             var[(f, n, k)] = len(var)
     inv = {j: key for key, j in var.items()}
+    # a PAIR's staircase off its line, per column, as the pass before laid the line (pairs.stair_dev): a single with a
+    # pair either side stands that much further off each -- the two are laid nearer it than their lines by that, and
+    # the lane between them had no path (h616's SDQM2 between SDQS2 and SDQS3). Not a single with another single on
+    # one side: the snap moves it toward that one, as it does every such lane (room held for those too, h616's joint
+    # bus on two layers lost two lanes more); nor a pair beside a pair, laid against the other one's steps
+    STD = {}
+    if prev is not None:
+        for (f, n), v in PIECE.items():
+            if n in prs:
+                ks = [k for k in range(v['k0'], v['k1'] + 1) if (f, n, k) in prev]
+                for k, d_ in zip(ks, _pairs.stair_dev(ctx.cfg, [FR[f]['sp'].xy(k * G, prev[(f, n, k)]) for k in ks])):
+                    STD[(f, n, k)] = d_
 
     def tangents(sl):
         """The slopes to cut sqrt(1 + k^2) at for the mean slope of segments sl [(j1, j0)]: with a previous
@@ -621,8 +633,13 @@ def build_and_solve(sides, prev=None):
                     or (v['o1'] is not None and v['k1'] - k <= v['hold1'] + NTURN))
             for Ly in range(NL):
                 seq = [n for n in od if Ly in lay[n]]
+                # (a single with a pair either side on the layer: its room from their staircases)
+                sand = {seq[i_] for i_ in range(1, len(seq) - 1)
+                        if seq[i_] not in prs and seq[i_ - 1] in prs and seq[i_ + 1] in prs}
                 for a, b in zip(seq, seq[1:]):
-                    sep = P_MIN + hw[a] + hw[b] + (PAIR_TURN_ROOM if turning(a) or turning(b) else 0.0)
+                    st_ = (STD.get((f, a, k), 0.0) if b in sand else 0.0) + \
+                          (STD.get((f, b, k), 0.0) if a in sand else 0.0)
+                    sep = P_MIN + hw[a] + hw[b] + st_ + (PAIR_TURN_ROOM if turning(a) or turning(b) else 0.0)
                     ta, tb = term_o(a), term_o(b)
                     if ta and tb and ta[0] == tb[0]:
                         sep = min(sep, max(0.0, abs(tb[1] - ta[1]) - G / 20))
@@ -656,10 +673,10 @@ def build_and_solve(sides, prev=None):
                                 terms += [(p1, sep * be / (len(sl) * G)), (p0, -sep * be / (len(sl) * G))]
                             le(terms, -sep * al, ('pitch', f, k, a, b, Ly), tangent=True)
                     e = newvar(W_COMF * G)
-                    le([(ja, 1.0), (jb, -1.0), (e, -1.0)], -(P_COMF + hw[a] + hw[b]))
+                    le([(ja, 1.0), (jb, -1.0), (e, -1.0)], -(P_COMF + hw[a] + hw[b] + st_))
                     # ...and steeper below the midpoint to the minimum: the tightest pairs are spread first
                     e = newvar(W_COMF_TIGHT * G)
-                    le([(ja, 1.0), (jb, -1.0), (e, -1.0)], -(P_MID + hw[a] + hw[b]))
+                    le([(ja, 1.0), (jb, -1.0), (e, -1.0)], -(P_MID + hw[a] + hw[b] + st_))
     # vias
     vias = []
     for (f, n), v in PIECE.items():

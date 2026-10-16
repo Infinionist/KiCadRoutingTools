@@ -1333,7 +1333,17 @@ and the snap lays the singles.
   lays every lane).
 - **Keeping to its line:** a slanted line is laid as a staircase on the two
   router headings either side (`pairs.stair_spread`); beyond that and a grid
-  step it pays `W_KEEP` per mm of length per mm.
+  step it pays `W_KEEP` per mm of length per mm. The plan leaves room for the
+  staircase where nothing else can: a single with a pair either side on its
+  layer, which the snap cannot move off either, is held that much further off
+  each pair's line where it runs at a slant (`pairs.stair_dev`: half the
+  smallest staircase along its heading there, no more than half how far a short
+  jog runs across) -- in the geometry, the polish and the audit alike. On
+  h616_lpddr4's escape bus SDQS2 and SDQS3 ran 12 degrees off vertical either
+  side of SDQM2, 0.40 from it as planned and 0.30 as laid, where it needs 0.34:
+  SDQM2 had no path; held off, every lane of the bus is laid. A single with
+  another single on one side is moved toward it by the snap, as every such lane
+  there was; and a pair beside a pair is laid against the other's steps.
 - **End connectors** (`pairs.end_legs`): two legs from its tips to a **pose**
   on the grid, the shortest whose legs clear everything. The pair router
   takes over at the pose with no setback of its own
@@ -1404,7 +1414,12 @@ it; `whole_gate.py` passes it only when it is complete and clean with
 
 **What the router gets** (`PlanLanes` on the whole frame): reservations, via
 sites, bands, layer runs, search windows. A snapped lane's band is its own
-grid line -- half a grid step either side, its end cells and its via cells.
+grid line -- half a grid step either side, its end cells and its via cells. A
+search window's edge is a board edge to the router, so the window stands at
+least a via's half size, the board-edge clearance and two grid steps past the
+lane's points (`connect.connect`): at 0.6 a via at the lane's outermost point
+had no cell (sdi_mipi_conv's SDI_D2 on four layers, its change 1.4 mm short
+of its berth, refused every round).
 
 **The audit** runs every `plan_audit.py` check: pads as KiCad draws them; a
 single's terminal join as the router lays it; each piece's off-grid allowance;
@@ -1619,10 +1634,17 @@ via.
 - **Keep-out rule areas.** The audit measures each lane against the board's
   keep-out areas whose tracks are not allowed on its layer
   (`plan_audit.keepout_areas`, resolved as the router resolves them), and a
-  lane found in one is held off its layers across its box. The router stamps
-  them and the plan did not see them: on sdi_mipi_conv the wound SDI lanes
-  round U15 were planned on In2.Cu through the area east of it that keeps In1
-  and In2 clear, and the snap failed them there every round.
+  lane found in one is held off its layers where its laid path meets the area
+  itself, not the area's box (`whole_route.own_spans`, the cut carrying the
+  area's shape: the area round U15 is an L whose box reaches U15's berths).
+  The router stamps them and the plan did not see them: on sdi_mipi_conv the
+  wound SDI lanes round U15 were planned on In2.Cu through the area east of it
+  that keeps In1 and In2 clear, and the snap failed them there every round.
+  The cut is FIRM (a hundred vias broken, where a layer cut is otherwise
+  soft at three): a lane planned through the area is a lane not laid. Soft,
+  SDI_D1 on four layers kept its run through the area every round, its
+  changes off In2.Cu and back dearer than the break; firm, it held and the
+  lane was laid.
 - **Cuts on the lane's own route.** A cut is written in route u, and a place
   in u is a line across the frame. Where a lane runs steeply across the trunk,
   a few millimetres of it advance u by a fraction of that, so an island's
@@ -1994,9 +2016,14 @@ channels first, and the other escapes leave round it.
   route its teeth today). On sdi_mipi_conv's SDI bus (U11 to U15, `route_bus
   --escape`, all eight of the board's copper layers, two rounds) the first
   round lays all 21 of the bus's nets, connected and DRC-clean on the board,
-  one of them round U11's far face. On four layers, before the fixes above
-  (the bare lanes, the exact via reach, the copper, keep-out and fence
-  reading), it laid 11 of the 16 nets the ladder then held. Left:
+  one of them round U11's far face. On four layers (F.Cu, B.Cu, In2.Cu and
+  In4.Cu, chosen by hand) it lays 19 of the 21. Left:
+  - **Teeth beside an earlier bus on every layer.** On those four layers
+    SDI_D0 and SDI_D1 cannot leave their teeth at U11's corner, where the DDR3
+    bus routed before them runs on all four: ENDS CROWDED in both fanout
+    rounds, the feedback's between them. To try: the ends priced by
+    another net's copper across a tooth's escape on every routing layer, as the
+    side fences price the copper beside the source's faces.
   - **Power pours split.** The plane grade names two of In6.Cu's power pours
     (+1V5, 1V0_Power) split by the SDI lanes under U11, three and two more
     islands for the chain's plane repair to join. To try: a lane's run on a

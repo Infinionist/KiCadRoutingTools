@@ -196,6 +196,53 @@ def _router_terminals(v, ends, g):
     return out
 
 
+def _with_stair(cfg, segs):
+    """a pair's pieces [(p, q, L, a0, a1)] with its staircase off its line (pairs.stair_dev) added to the allowances:
+    its bar to a single, which is laid against the staircase -- each leg's pieces chained, as _pair_legs lays them"""
+    runs = []
+    for s_ in segs:
+        if runs and np.hypot(*(np.asarray(runs[-1][-1][1], float) - np.asarray(s_[0], float))) < 1e-6:
+            runs[-1].append(s_)
+        else:
+            runs.append([s_])
+    out = []
+    for run in runs:
+        d_ = _pairs.stair_dev(cfg, [tuple(map(float, run[0][0]))] + [tuple(map(float, s_[1])) for s_ in run])
+        out.extend((p, q, L, a0 + d_[i], a1 + d_[i + 1]) for i, (p, q, L, a0, a1) in enumerate(run))
+    return out
+
+
+def _sandwiched(P, pairs, L, reach):
+    """per point of P (a single's samples on L, in order along it): a leg of a pair (pieces [(p, q, L, a0, a1)] per
+    pair, `pairs`) within `reach` of it on EACH side of the single's way there"""
+    left, right = np.zeros(len(P), bool), np.zeros(len(P), bool)
+    if len(P) < 2:
+        return left
+    D = np.gradient(P, axis=0)
+    for segs in pairs:
+        S = [(np.asarray(p, float), np.asarray(q, float)) for p, q, L_, _a0, _a1 in segs if L_ == L]
+        if not S:
+            continue
+        A_, B_ = np.array([s_[0] for s_ in S]), np.array([s_[1] for s_ in S])
+        d_ = B_ - A_
+        t = np.clip(((P[:, None, :] - A_[None]) * d_[None]).sum(2) / np.maximum((d_ * d_).sum(1), 1e-12)[None], 0, 1)
+        Q = A_[None] + t[..., None] * d_[None]
+        dist = np.hypot(*(P[:, None, :] - Q).transpose(2, 0, 1))
+        k = dist.argmin(1)
+        r_ = np.arange(len(P))
+        w = Q[r_, k] - P
+        cr = D[:, 0] * w[:, 1] - D[:, 1] * w[:, 0]
+        near = dist[r_, k] <= reach
+        left |= near & (cr > 1e-12)
+        right |= near & (cr < -1e-12)
+    return left & right
+
+
+def _nearest(P, Q):
+    """per point of P, the index of the nearest point of Q"""
+    return np.array([int(np.argmin(np.hypot(Q[:, 0] - x, Q[:, 1] - y))) for x, y in P], int)
+
+
 def _samples_allow(segs, L, step):
     """points every `step` along the pieces [(p, q, L, a0, a1)] on L, each with its allowance there"""
     P, A = [], []
@@ -286,25 +333,48 @@ def check_pitch(ctx, corridors, png=None):
                   else [(p, q, L, *((0.0, 0.0) if (_on_grid(p, q, g) or (tuple(map(float, p)), tuple(map(float, q)), L)
                                                    in exact[nm]) else (g / 2, g / 2))) for (p, q, L) in v])
              for nm, v in V.items()}
+        # (a pair beside a SINGLE with a pair either side -- which the snap cannot move off either -- its staircase off
+        # its line as well: not beside a single it can move, nor beside another pair, laid against its steps)
+        RS = {nm: _with_stair(ctx.cfg, R[nm]) for nm in V if nm in prs_}
+        reach_sw = TW + CL + 2 * g + (_pairs.turn_straight_steps(ctx.cfg) + 1) * g
+        SW = {}
+
+        def sw_of(nm_, L_):
+            """a single's samples on L_ and whether each has a pair's leg within reach on either side"""
+            if (nm_, L_) not in SW:
+                P_ = _samples_allow(R[nm_], L_, g)[0]
+                SW[(nm_, L_)] = (P_, _sandwiched(P_, [R[p_] for p_ in mem if p_ in prs_], L_, reach_sw))
+            return SW[(nm_, L_)]
         NE = {nm: _neck_ends(ctx, c, nm) for nm in mem}
         for i, nm in enumerate(mem):
             for L in ctx.cfg.layers:
                 Pa, Aa = _samples_allow(R[nm], L, g)
                 if not len(Pa):
                     continue
+                As = _samples_allow(RS[nm], L, g)[1] if nm in RS else Aa
                 neck_a = cut * _near_ends(Pa, NE[nm], bd.LANE_MIN)
                 for om in mem[i + 1:]:
                     _m, d, ab = _dist_allow(Pa, R[om], L)
+                    Ax = Aa
+                    if nm in prs_ and om not in prs_:
+                        Po, So = sw_of(om, L)
+                        if len(Po) and So.any():
+                            Ax = np.where(So[_nearest(Pa, Po)], As, Aa)
+                    elif om in RS and nm not in prs_:
+                        fl = sw_of(nm, L)[1]
+                        if fl.any():
+                            _m2, d2, ab2 = _dist_allow(Pa, RS[om], L)
+                            d, ab = np.where(fl, d2, d), np.where(fl, ab2, ab)
                     # (each lane at its own terminal held to the fanout's track: the other's binding point within a
                     # lane pitch of its ends when this point is within that and the distance of them)
                     neck_b = cut * _near_ends(Pa, NE[om], bd.LANE_MIN + d) if len(NE[om]) else 0.0
-                    need = TW + CL + Aa + ab - neck_a - neck_b
+                    need = TW + CL + Ax + ab - neck_a - neck_b
                     # ...short by half a step at most without failing, where the pieces are off the grid: the bar
                     # already charges each such piece half a step as if it landed toward the other, the snap lays them
                     # on the grid and its audit holds the laid pieces to the bar exactly (K35's smooth plan: four pairs
                     # short by a few microns, a whole round spent on them)
-                    bad = d < need - np.minimum(g / 2, Aa + ab) - NUDGE_FRAC * g
-                    if not bad.any() and (d < need - np.minimum(g / 2, Aa + ab) - 1e-6).any():
+                    bad = d < need - np.minimum(g / 2, Ax + ab) - NUDGE_FRAC * g
+                    if not bad.any() and (d < need - np.minimum(g / 2, Ax + ab) - 1e-6).any():
                         n_near += 1
                     if bad.any():
                         k = int(np.argmin(d - need))

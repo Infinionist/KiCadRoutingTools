@@ -20,8 +20,9 @@ On a geometry's islands of its own -- WALL on F alone, BARREL on both layers, FA
    layer, which no change answers;
 5. a KEEP-OUT rule area whose tracks are not allowed on some layers (the router stamps it; the plan did not see it):
    plan_audit.keepout_areas resolves its layers as the router does ('*.Cu' every one), keepout_dist is negative
-   inside it and positive outside, its hole outside; the audit's finding against it holds the lane off its layers
-   across its box, read off the bench.
+   inside it and positive outside, its hole outside; the audit's finding against it holds the lane off its layers,
+   the cut carrying the area's shape read off the bench, and own_spans holds it off them where its laid path meets
+   the AREA (an L), not the area's box.
 """
 import os
 import sys
@@ -159,8 +160,23 @@ def main():
                 fails.append(f'the audit: one finding, on In2.Cu against the area: {fl_}')
             got = wr.audit_layer_cuts(pk_a, GEO, pk)
             if got != [{'lane': 'SYN08', 'island': 'keepout K0', 'layer': 0, 'box': [10.0, 10.0, 20.0, 20.0],
-                        'blocked': [2, 3]}]:
-                fails.append(f'keepout cut: {got}, want SYN08 held off In1 and In2 across the area\'s box')
+                        'blocked': [2, 3], 'poly': [[10.0, 10.0], [20.0, 10.0], [20.0, 20.0], [10.0, 20.0]],
+                        'holes': []}]:
+                fails.append(f'keepout cut: {got}, want SYN08 held off In1 and In2 across the area, its shape with it')
+            # ...held off them where its laid path meets the AREA, not its box: an L whose box the path crosses for
+            # 20 mm and whose shape for 2 (sdi_mipi_conv's area round U15, whose box reaches U15's berths)
+            pl = os.path.join(td, 'ko_l.kicad_pcb')
+            open(pl, 'w').write(open(pk).read().replace(
+                '(xy 10 10) (xy 20 10) (xy 20 20) (xy 10 20)',
+                '(xy 10 10) (xy 30 10) (xy 30 12) (xy 12 12) (xy 12 20) (xy 10 20)'))
+            cl = wr.audit_layer_cuts(pk_a, GEO, pl)
+            geo_ = {'uxy': {'SYN08': [[float(x_), float(x_), 15.0] for x_ in range(0, 41)]},
+                    'lanes': {'SYN08': {'xy': [[0.0, 15.0], [40.0, 15.0]]}}}
+            sp_ = wr.own_spans({'lcuts': cl}, geo_)['lcuts']
+            span = sp_[0].get('span') if len(sp_) == 1 else None
+            if not (span and 9.5 < span[0] < 10.0 and 12.0 < span[1] < 12.5):
+                fails.append(f'keepout span: {span}, want the 2 mm the path runs in the L (u 10..12, a clearance '
+                             f'either side), not the 20 of its box')
         finally:
             os.environ.pop('ROUTE_LAYERS', None)
     for f in fails:
