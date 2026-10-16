@@ -291,12 +291,20 @@ extra_clearance = (track_width + diff_pair_gap) / 2 + track_width / 2
 ```
 
 This accounts for the P/N track offset (half the track-to-track spacing) plus half the track width.
+The map carries this one offset, the call's, for every layer. A layer wider than the
+pair's own width (an `--impedance` outer layer above `--track-width`) runs at its own
+wider pitch (below), so a segment of it that comes inside a neighbour's clearance is
+necked there when it is emitted, the same fab-floored neck the terminal legs get.
 
 ## P/N Path Generation
 
 ### Perpendicular Offsets
 
-P and N paths are created as perpendicular offsets from the simplified centerline:
+P and N paths are created as perpendicular offsets from the simplified centerline.
+The offset is half the P/N centre pitch, `(width + gap) / 2`. With per-layer widths
+(an `--impedance` solve or a stored impedance declaration) it is taken per layer
+from that layer's own width (`layer_pair_spacing`), so a narrower stripline layer
+keeps the declared gap:
 
 ```python
 def create_parallel_path_float(centerline_path, coord, sign, spacing_mm, start_dir, end_dir):
@@ -437,6 +445,11 @@ Main N track ────┘
 The approach/exit positions are calculated to:
 1. Maintain track-via clearance from the inner via
 2. Keep P and N tracks at constant diff pair spacing
+
+With per-layer widths both are per layer: the approach runs at the incoming
+layer's pitch and clears the via at that layer's width, the exit likewise on the
+outgoing layer, and the via offset is large enough for every routable layer's
+tracks to clear the partner via at their own pitch.
 
 ```python
 # Determine which via is "inner" (closer to turn direction)

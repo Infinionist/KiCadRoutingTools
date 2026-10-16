@@ -3476,15 +3476,16 @@ def apply_meanders_to_diff_pair(
         if bump_count == 0:
             continue
 
-        from diff_pair_routing import create_parallel_path_from_float, _float_path_to_geometry, _calculate_parallel_extension, _process_via_positions
+        from diff_pair_routing import create_parallel_path_from_float, _float_path_to_geometry, _calculate_parallel_extension, _process_via_positions, layer_pair_spacing
 
-        # Unified path: always regenerate full P/N paths from modified centerline
+        # Unified path: always regenerate full P/N paths from modified centerline,
+        # at each layer's own pitch (the router's builders do the same).
         p_float_path = create_parallel_path_from_float(
-            new_centerline_float, sign=p_sign, spacing_mm=spacing_mm,
+            new_centerline_float, sign=p_sign, spacing_mm=layer_pair_spacing(config),
             start_dir=start_stub_dir, end_dir=end_stub_dir
         )
         n_float_path = create_parallel_path_from_float(
-            new_centerline_float, sign=n_sign, spacing_mm=spacing_mm,
+            new_centerline_float, sign=n_sign, spacing_mm=layer_pair_spacing(config),
             start_dir=start_stub_dir, end_dir=end_stub_dir
         )
 
