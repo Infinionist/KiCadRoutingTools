@@ -193,9 +193,9 @@ recorded chain), with the farther crystal leg pad centre to pad centre:
 
 | board | crystal leg, before | with claims | human | blocking / vias, one pass, before -> with | group by group, before -> with |
 |---|---|---|---|---|---|
-| ch32v003_usb | 3.0-6.9 mm | 4.0-6.4 mm | 2.7 mm | 1.0 / 55.8 -> 0.2 / 64.4 | 0 / 47.6 -> 0.2 / 56.4 |
-| esp_prog | 7.3-13.5 mm | 3.1-4.9 mm | 5.5 mm | 0 / 35.0 -> 0 / 32.4 | 0 / 37.2 -> 0 / 33.4 |
-| ch32v006_dev | 6.7-12.7 mm | 3.9-9.5 mm | 4.5 mm | 0 / 58.4 -> 0 / 76.8 | 0 / 65.4 -> 0 / 70.2 |
+| ch32v003_usb | 25 | 6 | 0.3 s | 3.5 s | 5.3 s | 10.4 s |
+| esp_prog | 21 | 6 | 0.2 s | 2.4 s | 3.8 s | 4.1 s |
+| ch32v006_dev | 26 | 6 | 4.4 s | 5.4 s | 11.5 s | 14.9 s |
 
 The crystals now sit where a human puts them. The routing cost is mixed:
 fewer vias on esp_prog, more on the other two, inside a seed-to-seed spread
@@ -234,7 +234,7 @@ Measured from the same regions with and without banks, every candidate
 |---|---|---|---|---|
 | ch32v003_usb | 2 LEDs | 0 -> 0 | 60.7 -> 60.5 | 379 -> 384 mm |
 | ch32v006_dev | 2 LEDs | 0 -> 0 | 72.8 -> 70.8 | 684 -> 699 mm |
-| ft2232h_jtag | 5 LEDs | 0 -> 0 | 92.7 -> 81.7 | 953 -> 843 mm |
+| ft2232h_jtag | 41 | 6 | 0.4 s | 7.4 s | 9.5 s | 9.5 s |
 
 ft2232h_jtag's bank was better on all six candidates; the small banks are
 within the seed-to-seed spread. tigard (4 LEDs) and glasgow_revC (two banks
@@ -250,43 +250,45 @@ checking the groups, planning the regions, the candidates through
 
 | board | parts | candidates | region plan | placing | total | before (f6af54ae) |
 |---|---|---|---|---|---|---|
-| soldercad_1 | 10 | 6 | 0.1 s | 2.0 s | 3.3 s | -- |
+| soldercad_1 | 10 | 6 | 0.2 s | 1.8 s | 3.3 s | -- |
 | esp_prog | 21 | 6 | 0.2 s | 2.4 s | 4.0 s | 4.1 s |
 | ch32v003_usb | 25 | 6 | 0.3 s | 3.9 s | 5.7 s | 10.4 s |
 | ch32v006_dev | 26 | 6 | 4.4 s | 5.7 s | 11.9 s | 14.9 s |
 | ft2232h_jtag | 41 | 6 | 0.4 s | 5.7 s | 7.8 s | 9.5 s |
-| tigard | 92 | 6 | 1.2 s | 14.7 s | 19.4 s | 28.8 s |
-| glasgow_revC | 272 | 6 | 0.6 s | 78.0 s | 88.2 s | 114.8 s with 2 |
+| tigard | 92 | 6 | 1.3 s | 13.2 s | 17.9 s | 28.8 s |
+| glasgow_revC | 272 | 6 | 0.7 s | 56.5 s | 66.4 s | 114.8 s with 2 |
 
 `place_candidates.py` places seeds 0-2 of each flow, and seed 0 alone on a
-board of more than 300 movable parts. glasgow_revC's two candidates took 97 s
-before and take 34 s now; its six take 78 s, and its best came from the third
-seed. (Its groups are its schematic sheets, standing in for an agent's.)
+board of more than 300 movable parts. glasgow_revC's six candidates take 57 s
+(two took 97 s at f6af54ae), and its best came from the second seed of the
+group-by-group flow. (Its groups are its schematic sheets, standing in for an
+agent's.)
 
 ### Where the time goes, and how it scales
 
 A candidate seeds every part, then polishes. On glasgow_revC's one-pass seed
-(seed 0) that was 85 s: 68 s of polish and 14 s of seating. It is now 23 s:
-17 s of polish, 3 s of seating, 1 s of parsing, the rest grading and writing.
+(seed 0) that was 85 s: 68 s of polish and 14 s of seating. It is now 16 s:
+10 s of polish, 3 s of seating, 1 s of parsing, the rest grading and writing.
 Each stage, and what it now grows with:
 
 - **The polish** prices about 120 poses per part per pass by the airwires of
   the part's nets. A ground net made every pose cost as much as the board:
   its whole tree rebuilt, every edge tested against every other airwire. Now
-  a pose pays for the few tree edges it changes, crossing pairs are found
-  through a grid, and a big net's tree is built over its Delaunay edges (see
-  "How the quench prices a pose" in `py_placer/placement/README.md`). A
-  pass costs about parts x ground pads x a small constant. One pass from the
-  human placement:
+  a pose pays for the few tree edges it changes, the crossing test and the
+  tree run in Rust (the Python loops' own arithmetic, so the same counts),
+  and a very big net's tree is built over its Delaunay edges (see "How the
+  quench prices a pose" in `py_placer/placement/README.md`). A pass costs
+  about parts x ground pads x a small constant. One pass from the human
+  placement:
 
   | board | parts | ground pads | f6af54ae | now | peak memory now |
   |---|---|---|---|---|---|
-  | glasgow_revC | 272 | 293 | 14.8 s | 4.4 s | 106 MB |
-  | ddr4_rdimm_tester | 691 | 833 | 255 s | 54 s | 680 MB |
-  | stm32h7_hdmi | 835 | 601 | 162 s | 36 s | 419 MB |
-  | thunderscope | 1022 | -- | -- | 26 s | 256 MB |
-  | kintex_410t_devboard | 1020 | 1136 | -- | 91 s | 721 MB |
-  | jetson_agx_thor_bb | 1172 | -- | -- | 80 s | 754 MB |
+  | glasgow_revC | 272 | 293 | 14.8 s | 3.0 s | 98 MB |
+  | ddr4_rdimm_tester | 691 | 833 | 255 s | 42 s | 587 MB |
+  | stm32h7_hdmi | 835 | 601 | 162 s | 27 s | 347 MB |
+  | thunderscope | 1022 | -- | -- | 23 s | 170 MB |
+  | kintex_410t_devboard | 1020 | 1136 | -- | 69 s | 719 MB |
+  | jetson_agx_thor_bb | 1172 | -- | -- | 54 s | 677 MB |
 
   Whole runs, parse and write included: ddr4_rdimm_tester's file is 54 MB
   and kintex's 75 MB, and reading one costs 5-7 s (8-11 s before each

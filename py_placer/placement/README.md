@@ -60,8 +60,9 @@ pose. A bigger board has a bigger ground net and more airwires, so the cost
 of a pose grew with the board, and a pass grew with its square: glasgow's
 polish took 68 s.
 
-But a 1 mm move changes two or three of those 292 edges. Five pieces of
-`quench.py` price a pose by what it changes:
+But a 1 mm move changes two or three of those 292 edges. These pieces of
+`quench.py` price a pose by what it changes, and test it no more than they
+must:
 
 1. **The pose pricer** (`_PosePricer`, `_TreeJoin`), for a part on a net of
    `PRICER_MIN_POINTS` (24) pads or more:
@@ -96,24 +97,28 @@ But a 1 mm move changes two or three of those 292 edges. Five pieces of
    (49 of 234 glasgow poses), which can change a crossing count. Neither
    tree is more correct; graded on seven boards against the full rebuild,
    best candidates were 2 better, 1 worse and 4 identical.
-2. **Grid pairing** (`_box_pairs_grid`). Every crossing count first finds the
-   airwire pairs whose boxes meet. When both sets hold 64 boxes or more and
-   there are 20,000 pairs, that is a uniform grid join (each box listed in
-   the cells it covers, the lists joined on the cell) instead of the full
-   n × m matrix, so it costs what is near rather than what exists. A pose's
-   few edges against the rest of the board stay a matrix, which is cheaper
-   there (5 × 2,200 boxes: 75 µs against 357 µs). It returns the matrix's own pairs in the matrix's order, so
-   every count and weighted sum is bit-identical.
-3. **Sparse Prim** (`_mst_edges_sparse`), for nets of `SPARSE_MST_MIN_POINTS`
-   (500) pads or more: Prim over the Delaunay triangulation's edges instead
-   of every pair, O(n log n) instead of O(n²), and the same tree as
-   `compute_mst_edges`, ties and coincident pads included. Every edge dense
-   Prim can choose is a lightest edge leaving its tree, so it is in some
-   minimum spanning tree, so no third pad is strictly nearer both its ends,
-   so its closed diametral circle is empty, so it is a Delaunay edge; a heap
-   keyed (distance, pad) with dense Prim's strict-less update makes the same
+2. **The crossing kernel** (`grid_router.crossing_pairs`, in
+   `rust_router/src/placement_kernels.rs`). Every crossing count is a pair
+   test: boxes that meet, then the orientation test, never two airwires of
+   one net, never two that share an end. That loop runs in Rust and returns
+   the crossing pairs (and each pair's net weight) in row-major order; numpy
+   does the sums. Its float expressions, tie rules and pair order are the
+   Python loop's own, so every count and weighted sum is bit-identical
+   (`tests/test_quench_pricer.py` compares it with a Python reference on
+   random segments, NaN and shared ends included).
+3. **The tree.** Below `SPARSE_MST_MIN_POINTS` (2,500) pads a net's tree is
+   dense Prim in Rust (`grid_router.mst_prim`): `compute_mst_edges`' own
+   choice at every step (the first of equal keys, a key lowered only by a
+   strictly shorter edge), computed row by row in O(n) memory instead of the
+   n × n matrix. From 2,500 pads it is **sparse Prim** (`_mst_edges_sparse`):
+   Prim over the Delaunay triangulation's edges, O(n log n), and the same
+   tree, ties and coincident pads included. Every edge dense Prim can choose
+   is a lightest edge leaving its tree, so it is in some minimum spanning
+   tree, so no third pad is strictly nearer both its ends, so its closed
+   diametral circle is empty, so it is a Delaunay edge; a heap keyed
+   (distance, pad) with dense Prim's strict-less update makes the same
    choice at every step. Collinear pads, which have no triangulation, fall
-   back to the dense form. 2× faster at 1,200 pads, 6× at 4,000.
+   back to the dense form.
 4. **Cached net arrays** (`airwires_excluding`): the board's other airwires
    are joined from per-net arrays kept until a move rebuilds that net, not
    re-read from every net's list at every visit.
@@ -123,16 +128,31 @@ But a 1 mm move changes two or three of those 292 edges. Five pieces of
    each) has the same tree both ways, so it adds the same to both sides of
    the comparison; it is priced as part of the board instead of being
    rebuilt twice (`_swap_fixed_nets`).
+6. **The candidate gate's slow conjuncts** answer from a bound where the
+   bound decides:
+   - a rule-area keep-out (`RuleAreaKeepouts._near`) asks whether a pad can
+     reach the area at all. The clearance at the centre of the pad's 1 mm
+     cell (`NEAR_CELL_MM`), cached per cell, less the distance to that
+     centre, is a floor on the clearance at the pad (a signed distance moves
+     no faster than its point), so a pad clear of the area by that floor
+     needs no walk of the area's rings;
+   - a decap tether (`_tether_measure`) asks, for an IC moving under its
+     caps, whether some cap on each supply pin's rail is within the limit.
+     `nearest_rail_cap(..., stop_at=limit)` stops at the first that is, and
+     measures every cap only when none is -- the case where the number
+     itself is compared.
+   Both answer exactly as the full measurement does
+   (`tests/test_quench_gate_bounds.py`).
 
 Measured, one pass of `place_optimize --max-displacement 3` from the human
 placement (whole run, parse and write included):
 
 | board | parts | ground pads | f6af54ae | now | peak memory now |
 |---|---|---|---|---|---|
-| glasgow_revC | 272 | 293 | 14.8 s | 4.4 s | 106 MB |
-| ddr4_rdimm_tester | 691 | 833 | 255 s | 54 s | 680 MB |
-| stm32h7_hdmi | 835 | 601 | 162 s | 36 s | 419 MB |
-| kintex_410t_devboard | 1020 | 1136 | -- | 91 s | 721 MB |
+| glasgow_revC | 272 | 293 | 14.8 s | 3.0 s | 98 MB |
+| ddr4_rdimm_tester | 691 | 833 | 255 s | 42 s | 587 MB |
+| stm32h7_hdmi | 835 | 601 | 162 s | 27 s | 347 MB |
+| kintex_410t_devboard | 1020 | 1136 | -- | 69 s | 719 MB |
 
 (The two biggest files, 54 and 75 MB, spend 5-7 s per parse of that.)
 

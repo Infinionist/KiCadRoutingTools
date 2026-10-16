@@ -6,10 +6,12 @@ nets the part touches. Four pieces of `placement/quench.py` make that cost
 grow with what is NEAR a part instead of with the board, and each is held
 here to the computation it replaces:
 
-1. `_box_pairs_grid` -- the (a, b) airwire pairs whose boxes meet, found
-   through a uniform grid -- returns `np.nonzero` of the full box matrix,
-   element for element and in the same order (so weighted sums add the same
-   values in the same order).
+1. The Rust kernels (`grid_router.crossing_pairs`, `grid_router.mst_prim`)
+   answer what the numpy forms they replaced answer, held here to those
+   forms written out: the crossing pairs of the full box matrix and the
+   orientation test, in row-major order, with the same weights (so weighted
+   sums add the same values in the same order), and `compute_mst_edges`'
+   tree, edge for edge, ties included.
 2. `_mst_edges_sparse` -- Prim over the Delaunay triangulation's edges --
    returns `compute_mst_edges`' tree exactly: the same edges, in the same
    order, by the same floats, ties included (full pad grids, coincident
@@ -55,7 +57,9 @@ def check(ok, what):
         print(f"  FAIL {what}")
 
 
-def full_pairs(a, b):
+def ref_pairs(a, b, net_w):
+    """The numpy computation the Rust kernel replaced: the full box matrix,
+    then the orientation test and the exclusions, in row-major order."""
     m = 1e-6
     ax0 = np.minimum(a[:, 0], a[:, 2])[:, None] - m
     ax1 = np.maximum(a[:, 0], a[:, 2])[:, None] + m
@@ -65,16 +69,27 @@ def full_pairs(a, b):
     bx1 = np.maximum(b[:, 0], b[:, 2])[None, :]
     by0 = np.minimum(b[:, 1], b[:, 3])[None, :]
     by1 = np.maximum(b[:, 1], b[:, 3])[None, :]
-    return np.nonzero((ax1 >= bx0) & (ax0 <= bx1) & (ay1 >= by0) & (ay0 <= by1))
+    ii, jj = np.nonzero((ax1 >= bx0) & (ax0 <= bx1) & (ay1 >= by0) & (ay0 <= by1))
+    A, B = a[ii], b[jj]
+    eps = 0.001
 
-
-def grid_pairs(a, b):
-    m = 1e-6
-    return Q._box_pairs_grid(
-        np.minimum(a[:, 0], a[:, 2]) - m, np.minimum(a[:, 1], a[:, 3]) - m,
-        np.maximum(a[:, 0], a[:, 2]) + m, np.maximum(a[:, 1], a[:, 3]) + m,
-        np.minimum(b[:, 0], b[:, 2]), np.minimum(b[:, 1], b[:, 3]),
-        np.maximum(b[:, 0], b[:, 2]), np.maximum(b[:, 1], b[:, 3]))
+    def ccw(ax, ay, bx, by, cx, cy):
+        return (cy - ay) * (bx - ax) > (by - ay) * (cx - ax)
+    a1x, a1y, a2x, a2y = A[:, 0], A[:, 1], A[:, 2], A[:, 3]
+    b1x, b1y, b2x, b2y = B[:, 0], B[:, 1], B[:, 2], B[:, 3]
+    shared = (((np.abs(a1x - b1x) < eps) & (np.abs(a1y - b1y) < eps))
+              | ((np.abs(a1x - b2x) < eps) & (np.abs(a1y - b2y) < eps))
+              | ((np.abs(a2x - b1x) < eps) & (np.abs(a2y - b1y) < eps))
+              | ((np.abs(a2x - b2x) < eps) & (np.abs(a2y - b2y) < eps)))
+    inter = ((ccw(a1x, a1y, b1x, b1y, b2x, b2y) != ccw(a2x, a2y, b1x, b1y, b2x, b2y))
+             & (ccw(a1x, a1y, a2x, a2y, b1x, b1y) != ccw(a1x, a1y, a2x, a2y, b2x, b2y)))
+    hits = inter & (A[:, 4] != B[:, 4]) & ~shared
+    if net_w is None:
+        w = np.ones(int(hits.sum()))
+    else:
+        w = np.maximum(net_w[a[:, 4].astype(np.intp)][ii],
+                       net_w[b[:, 4].astype(np.intp)][jj])[hits]
+    return ii[hits], jj[hits], w
 
 
 def segments(rng, n, long, snap):
@@ -89,8 +104,9 @@ def segments(rng, n, long, snap):
     return a
 
 
-def test_grid_pairs():
+def test_kernels():
     rng = np.random.default_rng(7)
+    weights = np.linspace(1.0, 3.0, 64)
     bad = 0
     for trial in range(120):
         a = segments(rng, int(rng.integers(1, 300)), trial % 3 == 0,
@@ -101,26 +117,31 @@ def test_grid_pairs():
             b[: len(b) // 3] = b[0]                  # many identical boxes
         if trial % 11 == 0:
             a[:, 2], a[:, 3] = a[:, 0], a[:, 1]      # zero-length segments
-        if trial % 13 == 0:
-            b[0, 2] = np.inf                         # back to the matrix
-        f, g = full_pairs(a, b), grid_pairs(a, b)
-        if not (np.array_equal(f[0], g[0]) and np.array_equal(f[1], g[1])):
-            bad += 1
-    check(bad == 0, f"grid pairing differs from the box matrix in {bad}/120 cases")
-    # The crossing counter itself, both branches against each other.
+        for net_w in (None, weights):
+            want = ref_pairs(a, b, net_w)
+            got = Q._cross_pairs(a, b, net_w)
+            same = all(np.array_equal(x, y) for x, y in zip(want, got))
+            same &= float(np.sum(want[2])) == float(np.sum(got[2]))
+            bad += not same
+    check(bad == 0, f"crossing_pairs differs from the numpy form in {bad}/240 cases")
     a = segments(rng, 400, False, 0.5)
     b = segments(rng, 900, True, None)
-    w = np.linspace(1.0, 3.0, 64)
-    big = Q._count_crossings_np(a, b, w)
-    save = Q._GRID_MIN_PAIRS
-    try:
-        Q._GRID_MIN_PAIRS = 1 << 62
-        ref = Q._count_crossings_np(a, b, w)
-    finally:
-        Q._GRID_MIN_PAIRS = save
-    check(big == ref, f"_count_crossings_np grid {big} != matrix {ref}")
-    check(ref[0] > 0, "the crossing check counted nothing (vacuous)")
-    print("  grid pairing: 120 random cases + the crossing counter")
+    n, w = Q._count_crossings_np(a, b, weights)
+    check(n > 0 and n == len(ref_pairs(a, b, weights)[0]),
+          f"the crossing counter counts the kernel's pairs ({n})")
+    bad = 0
+    for trial in range(120):
+        n = int(rng.integers(2, 700))
+        if trial % 3 == 0:
+            pts = [tuple(p) for p in rng.uniform(0, 100, (n, 2))]
+        elif trial % 3 == 1:     # a full 1.27 mm grid: ties everywhere
+            pts = [(float(i % 30) * 1.27, float(i // 30) * 1.27)
+                   for i in rng.permutation(n)]
+        else:                    # snapped to 0.5 mm: coincident pads
+            pts = [tuple(np.round(p / 0.5) * 0.5) for p in rng.uniform(0, 30, (n, 2))]
+        bad += Q._mst_edges(pts) != compute_mst_edges(pts, use_manhattan=False)
+    check(bad == 0, f"mst_prim differs from compute_mst_edges in {bad}/120 sets")
+    print("  Rust kernels: 240 crossing-pair cases, 120 trees")
 
 
 def test_sparse_prim(pcb):
@@ -298,7 +319,7 @@ def test_airwires_excluding(pcb):
 
 def main():
     pcb = parse_kicad_pcb(BOARD)
-    test_grid_pairs()
+    test_kernels()
     test_sparse_prim(pcb)
     test_join_random()
     test_pricer(pcb, weighted=False)

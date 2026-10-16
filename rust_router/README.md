@@ -2,7 +2,7 @@
 
 High-performance A* grid router implemented in Rust with Python bindings via PyO3.
 
-**Current Version: 0.23.0**
+**Current Version: 0.23.2**
 
 > **Release note:** the 0.20.0 per-platform binaries are published as of
 > [v0.20.0](https://github.com/drandyhaas/KiCadRoutingTools/releases/tag/v0.20.0),
@@ -310,6 +310,15 @@ src/
 - **Costs**: ORTHO_COST=1000, DIAG_COST=1414 (sqrt(2) * 1000), DEFAULT_TURN_COST=1000
 
 ## Version History
+
+### 0.23.2 (2026-10-16)
+- **Placement kernels** (`placement_kernels.rs`) for the quench polish in
+  `py_placer/placement/quench.py`, which calls them for every candidate pose:
+  `crossing_pairs(a, b, net_w=None)`, the airwire pairs that cross (box test,
+  orientation test, same-net and shared-endpoint exclusions, in row-major
+  order), and `mst_prim(xs, ys)`, `compute_mst_edges`' Prim tree in O(n)
+  memory. Both are the Python computations they replace, operation for
+  operation, so a placement is unchanged.
 
 ### 0.23.0 (2026-09-26)
 

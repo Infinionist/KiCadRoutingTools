@@ -6439,6 +6439,11 @@ KEEPOUT_COPPER_BASIS = (
     "pad the fill does not actually reach can read pour_served")
 
 
+# `RuleAreaKeepouts._near`'s cache cell: a floor on a point's clearance is
+# read from the clearance at its cell's centre, at most a half-diagonal away.
+NEAR_CELL_MM = 1.0
+
+
 class RuleAreaKeepouts:
     """A board's rule-area keep-outs as a pad-copper legality term (#1031).
 
@@ -6551,6 +6556,8 @@ class RuleAreaKeepouts:
                                          (ko.get('holes') or ())
                                          if len(h) >= 3], cov))
         self._meta: Dict[str, list] = {}
+        # {(area, cell): clearance at the cell's centre}, `_near`'s bound
+        self._cell_clear: Dict[tuple, float] = {}
 
     @classmethod
     def for_board(cls, pcb_data, clearance: float, pcb_file: str = None):
@@ -6631,8 +6638,24 @@ class RuleAreaKeepouts:
             return False
         reach = max(math.hypot(x1 - x0, y1 - y0),
                     self.grid_step * math.sqrt(2.0)) / 2.0
-        return self._clear(self.areas[ai], (x0 + x1) / 2.0,
-                           (y0 + y1) / 2.0) < self.band + reach + 1e-9
+        lim = self.band + reach + 1e-9
+        cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+        # The same Lipschitz bound once more, from a cached point: the
+        # clearance at the centre of the `NEAR_CELL_MM` cell holding this
+        # centre, less the distance to it, is a floor on the clearance here.
+        # A pad of a part far from the area is answered by that floor (one
+        # walk of the area's rings per cell, for every pad and pose that
+        # lands in it); the margin keeps rounding from deciding.
+        g = NEAR_CELL_MM
+        kx, ky = math.floor(cx / g), math.floor(cy / g)
+        qx, qy = (kx + 0.5) * g, (ky + 0.5) * g
+        key = (ai, kx, ky)
+        d0 = self._cell_clear.get(key)
+        if d0 is None:
+            d0 = self._cell_clear[key] = self._clear(self.areas[ai], qx, qy)
+        if d0 - math.hypot(cx - qx, cy - qy) >= lim + 1e-6:
+            return False
+        return self._clear(self.areas[ai], cx, cy) < lim
 
     def landings(self, rect, pad=None, delta: float = 0.0) -> list:
         """The grid CELLS on pad copper `rect` where the router may land a

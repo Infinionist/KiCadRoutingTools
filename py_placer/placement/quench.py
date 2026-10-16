@@ -43,6 +43,10 @@ import numpy as np
 from kicad_parser import IU_PER_MM, PCBData, mm_to_iu
 from paste_apertures import pad_has_copper as _pad_has_copper
 from connectivity import compute_mst_edges
+import sys as _sys
+_sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..',
+                                                 'rust_router')))
+import grid_router  # noqa: E402  the placement kernels: crossing_pairs, mst_prim
 from placement.parser import (courtyard_for_side, extract_courtyard_sides,
                               extract_locked_refs, warn_missing_courtyards)
 from placement.utility import compute_footprint_bbox_local, snap_to_grid
@@ -576,18 +580,25 @@ def _airwires_for_points(points: List[Tuple[float, float]], net_id: int):
 
 
 #: A net with at least this many pads takes its tree from `_mst_edges_sparse`;
-#: a smaller one from `compute_mst_edges`, which is faster there.
-SPARSE_MST_MIN_POINTS = 500
+#: a smaller one from the Rust Prim, which is faster there (Rust Prim against
+#: sparse: 5 ms against 7 ms at 1,200 pads, 48 ms against 26 ms at 4,000).
+SPARSE_MST_MIN_POINTS = 2500
 
 
 def _mst_edges(points):
     """`compute_mst_edges(points)` -- the same edges, in the same order, by
-    the same floats -- in O(n log n) for a big net."""
+    the same floats: the Rust kernel `grid_router.mst_prim` (the same Prim,
+    in O(n) memory), or over the Delaunay edges for a net of
+    `SPARSE_MST_MIN_POINTS` pads or more, where O(n log n) wins."""
     if len(points) >= SPARSE_MST_MIN_POINTS:
         got = _mst_edges_sparse(points)
         if got is not None:
             return got
-    return compute_mst_edges(points, use_manhattan=False)
+    if len(points) < 3:
+        return compute_mst_edges(points, use_manhattan=False)
+    pts = np.asarray(points, dtype=np.float64)
+    return grid_router.mst_prim(np.ascontiguousarray(pts[:, 0]),
+                                np.ascontiguousarray(pts[:, 1]))
 
 
 def _mst_edges_sparse(points):
@@ -713,136 +724,26 @@ def _count_crossings_np(a: np.ndarray, b: np.ndarray,
     """
     if len(a) == 0 or len(b) == 0:
         return 0, 0.0
-    ii, jj, hits = _crossing_hits(a, b)
-    count = int(np.count_nonzero(hits))
+    _ii, _jj, w = _cross_pairs(a, b, net_w)
+    count = len(w)
     if net_w is None:
         return count, float(count)
-    # Column 4 carries the net id as a float; every id that can appear there
-    # is a key of QuenchState.net_airwires, which net_w is sized to cover.
-    wa = net_w[a[:, 4].astype(np.intp)]
-    wb = net_w[b[:, 4].astype(np.intp)]
-    return count, float(np.sum(np.maximum(wa[ii], wb[jj])[hits]))
+    # The weights in row-major pair order, summed by numpy as they always
+    # were, so the total is the same float.
+    return count, float(np.sum(w))
 
 
-def _crossing_hits(a: np.ndarray, b: np.ndarray):
-    """The pairs `_count_crossings_np` counts, as (ii, jj, hits): the
-    row-major (a row, b row) pairs whose boxes meet, and which of them
-    cross. Both sets are non-empty."""
-    m = 1e-6
-    ax0 = np.minimum(a[:, 0], a[:, 2]) - m
-    ax1 = np.maximum(a[:, 0], a[:, 2]) + m
-    ay0 = np.minimum(a[:, 1], a[:, 3]) - m
-    ay1 = np.maximum(a[:, 1], a[:, 3]) + m
-    bx0 = np.minimum(b[:, 0], b[:, 2])
-    bx1 = np.maximum(b[:, 0], b[:, 2])
-    by0 = np.minimum(b[:, 1], b[:, 3])
-    by1 = np.maximum(b[:, 1], b[:, 3])
-    if (min(len(a), len(b)) >= _GRID_MIN_SIDE
-            and len(a) * len(b) >= _GRID_MIN_PAIRS):
-        ii, jj = _box_pairs_grid(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1)
-    else:
-        ii, jj = np.nonzero((ax1[:, None] >= bx0[None, :])
-                            & (ax0[:, None] <= bx1[None, :])
-                            & (ay1[:, None] >= by0[None, :])
-                            & (ay0[:, None] <= by1[None, :]))
-    if len(ii) == 0:
-        return ii, jj, np.zeros(0, dtype=bool)
-    A = a[ii]
-    B = b[jj]
-    eps = 0.001
-    a1x = A[:, 0]; a1y = A[:, 1]; a2x = A[:, 2]; a2y = A[:, 3]
-    b1x = B[:, 0]; b1y = B[:, 1]; b2x = B[:, 2]; b2y = B[:, 3]
-
-    same_net = A[:, 4] == B[:, 4]
-    shared = (
-        ((np.abs(a1x - b1x) < eps) & (np.abs(a1y - b1y) < eps)) |
-        ((np.abs(a1x - b2x) < eps) & (np.abs(a1y - b2y) < eps)) |
-        ((np.abs(a2x - b1x) < eps) & (np.abs(a2y - b1y) < eps)) |
-        ((np.abs(a2x - b2x) < eps) & (np.abs(a2y - b2y) < eps))
-    )
-
-    def ccw(ax, ay, bx, by, cx, cy):
-        return (cy - ay) * (bx - ax) > (by - ay) * (cx - ax)
-
-    inter = (
-        (ccw(a1x, a1y, b1x, b1y, b2x, b2y) != ccw(a2x, a2y, b1x, b1y, b2x, b2y)) &
-        (ccw(a1x, a1y, a2x, a2y, b1x, b1y) != ccw(a1x, a1y, a2x, a2y, b2x, b2y))
-    )
-    return ii, jj, inter & ~same_net & ~shared
-
-
-#: `_crossing_hits` finds the pairs whose boxes meet through `_box_pairs_grid`
-#: when BOTH sets have `_GRID_MIN_SIDE` boxes and there are `_GRID_MIN_PAIRS`
-#: pairs; otherwise the full box matrix costs less. The grid lists every box
-#: of both sets, so a few edges against a whole board (a pose's airwires
-#: against the rest) are a matrix: measured, 5 x 2,200 boxes 75 us by matrix
-#: and 357 us by grid, where 300 x 1,300 is 1.8 ms by matrix and 0.8 ms by
-#: grid.
-_GRID_MIN_PAIRS = 20_000
-_GRID_MIN_SIDE = 64
-
-
-def _box_pairs_grid(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1):
-    """`np.nonzero` of the full box test between box sets a and b -- every
-    (i, j) whose boxes meet, in row-major order -- found through a uniform
-    grid instead of the n x m matrix.
-
-    Each box is listed in every grid cell it covers; two boxes that meet
-    share a point, and that point's cell is listed by both (a cell index is
-    a floor of a monotone expression, so it never falls outside either
-    box's range). Joining the two lists on the cell gives a superset of the
-    meeting pairs, at a cost that grows with the boxes NEAR each other
-    rather than with all of them: the pairs are deduplicated, put in
-    row-major order, and passed through the very comparisons the matrix
-    makes, so the answer is the matrix's, element for element. The cell is
-    about twice the side a box would have if the boxes tiled the area, so a
-    short airwire covers a handful of cells and a cell holds a handful of
-    boxes. A box with a non-finite corner sends the call back to the
-    matrix, which compares it the usual way."""
-    n, k = len(ax0), len(bx0)
-    lo_x = min(float(ax0.min()), float(bx0.min()))
-    lo_y = min(float(ay0.min()), float(by0.min()))
-    hi_x = max(float(ax1.max()), float(bx1.max()))
-    hi_y = max(float(ay1.max()), float(by1.max()))
-    if not all(math.isfinite(v) for v in (lo_x, lo_y, hi_x, hi_y)):
-        return np.nonzero((ax1[:, None] >= bx0[None, :])
-                          & (ax0[:, None] <= bx1[None, :])
-                          & (ay1[:, None] >= by0[None, :])
-                          & (ay0[:, None] <= by1[None, :]))
-    area = max(hi_x - lo_x, 1e-3) * max(hi_y - lo_y, 1e-3)
-    cell = max(2.0 * math.sqrt(area / (n + k)), 0.05)
-    ncol = int((hi_x - lo_x) / cell) + 1
-
-    def listing(x0, y0, x1, y1):
-        cx0 = np.floor((x0 - lo_x) / cell).astype(np.int64)
-        cx1 = np.floor((x1 - lo_x) / cell).astype(np.int64)
-        cy0 = np.floor((y0 - lo_y) / cell).astype(np.int64)
-        cy1 = np.floor((y1 - lo_y) / cell).astype(np.int64)
-        wx = cx1 - cx0 + 1
-        cnt = wx * (cy1 - cy0 + 1)
-        box = np.repeat(np.arange(len(x0), dtype=np.int64), cnt)
-        off = np.arange(int(cnt.sum()), dtype=np.int64) - np.repeat(np.cumsum(cnt) - cnt, cnt)
-        w = wx[box]
-        return (cy0[box] + off // w) * ncol + cx0[box] + off % w, box
-
-    ca, ia = listing(ax0, ay0, ax1, ay1)
-    cb, jb = listing(bx0, by0, bx1, by1)
-    o = np.argsort(cb, kind='stable')
-    cb, jb = cb[o], jb[o]
-    first = np.searchsorted(cb, ca, 'left')
-    cnt = np.searchsorted(cb, ca, 'right') - first
-    tot = int(cnt.sum())
-    if tot == 0:
-        e = np.zeros(0, dtype=np.int64)
-        return e, e
-    ii = np.repeat(ia, cnt)
-    jj = jb[np.repeat(first, cnt) + np.arange(tot, dtype=np.int64)
-            - np.repeat(np.cumsum(cnt) - cnt, cnt)]
-    key = np.unique(ii * k + jj)
-    ii, jj = key // k, key % k
-    meet = ((ax1[ii] >= bx0[jj]) & (ax0[ii] <= bx1[jj])
-            & (ay1[ii] >= by0[jj]) & (ay0[ii] <= by1[jj]))
-    return ii[meet], jj[meet]
+def _cross_pairs(a: np.ndarray, b: np.ndarray, net_w: Optional[np.ndarray] = None):
+    """(ii, jj, w): every (a row, b row) pair of airwires that cross, in
+    row-major order, with each pair's weight max(net_w[net_a], net_w[net_b])
+    (1.0 without `net_w`; column 4 carries the net id, and every id that can
+    appear there is a key of QuenchState.net_airwires, which net_w covers).
+    The Rust kernel `grid_router.crossing_pairs`: the box test, the
+    orientation test and the exclusions above, operation for operation."""
+    return grid_router.crossing_pairs(
+        np.ascontiguousarray(a, dtype=np.float64),
+        np.ascontiguousarray(b, dtype=np.float64),
+        None if net_w is None else np.ascontiguousarray(net_w, dtype=np.float64))
 
 
 def _crossings_by_row(a: np.ndarray, b: np.ndarray,
@@ -852,15 +753,11 @@ def _crossings_by_row(a: np.ndarray, b: np.ndarray,
     n = len(a)
     if n == 0 or len(b) == 0:
         return np.zeros(n, dtype=np.int64), np.zeros(n)
-    ii, jj, hits = _crossing_hits(a, b)
-    hi = ii[hits]
-    count = np.bincount(hi, minlength=n)
+    ii, _jj, w = _cross_pairs(a, b, net_w)
+    count = np.bincount(ii, minlength=n)
     if net_w is None:
         return count, count.astype(float)
-    wa = net_w[a[:, 4].astype(np.intp)]
-    wb = net_w[b[:, 4].astype(np.intp)]
-    return count, np.bincount(hi, weights=np.maximum(wa[ii], wb[jj])[hits],
-                              minlength=n)
+    return count, np.bincount(ii, weights=w, minlength=n)
 
 
 class _CorridorBox(NamedTuple):
@@ -1303,11 +1200,9 @@ class _PosePricer:
         hw = np.zeros(0)
         # Same-net pairs never count, so one big net has nothing to pair.
         if t >= 2 and len(rows) >= 2:
-            ii, jj, hits = _crossing_hits(T, T)
-            hi, hj = ii[hits], jj[hits]
+            hi, hj, pw = _cross_pairs(T, T, net_w)
             if net_w is not None:
-                wv = net_w[T[:, 4].astype(np.intp)]
-                hw = np.maximum(wv[ii], wv[jj])[hits]
+                hw = pw
         self.t = t
         self.x_line = np.bincount(hi, minlength=t) + np.bincount(hj, minlength=t)
         self.x_tot = len(hi)
@@ -3836,8 +3731,7 @@ class QuenchState:
     def _tether_measure(self, t: _TetherTerm, i: Optional[int],
                         override=None, grade_view: bool = False) -> float:
         """`_tether_value`'s body, for term `t`. `i` None: no cache."""
-        from . import floorplan as _fp
-        from . import groups as _groups
+        _fp, _groups = _FP_GROUPS or _load_fp_groups()
         # `override` is one or two refs on every path but a group move, so
         # membership is asked of IT, never by walking a term's (long) rail.
         moving = override or {}
@@ -3894,9 +3788,14 @@ class QuenchState:
         if t.kind == 'pin':
             ic, caps = t.data['ic'], t.data['caps']
             if ic in moving:
+                # The gate asks only whether some cap is within the limit, so
+                # the first one that is answers it (exact past the limit, as
+                # the static path below).
                 pin = self._posed_fp(ic, override).pads[t.data['pad_index']]
                 got = _fp.nearest_rail_cap(
-                    pin, [self._posed_fp(c, override) for c in caps])
+                    pin, (self._posed_fp(c, override) for c in caps),
+                    stop_at=(None if self._exact_tethers or i is None
+                             else t.threshold + legality.EPS))
                 return got[0] if got is not None else 0.0
             live = tuple(sorted(c for c in moving if c in t.data['caps_set']))
             key = (i, live)
@@ -5269,6 +5168,19 @@ def _group_offsets(state, refs, max_disp: float, step: float, lattice: float):
                 continue
             seen.add((sdx, sdy))
             yield sdx, sdy
+
+
+_FP_GROUPS = None
+
+
+def _load_fp_groups():
+    """(floorplan, groups), imported once: the tether gate measures through
+    them on every candidate, and an import statement there is a lookup per
+    call."""
+    global _FP_GROUPS
+    from . import floorplan, groups
+    _FP_GROUPS = (floorplan, groups)
+    return _FP_GROUPS
 
 
 def _candidate_positions(part: _Part, max_disp: float, step: float,

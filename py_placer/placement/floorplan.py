@@ -5584,7 +5584,7 @@ def rule_decap_ungraded(ctx) -> Iterator[Violation]:
             expected={'max_distance_mm': limit})
 
 
-def _pin_gap(pin_pad, cap_fp, net_id: int) -> Optional[float]:
+def _pin_gap(pin_pad, cap_fp, net_id: int, pin_rect=None) -> Optional[float]:
     """Smallest pad-edge gap from a supply pin to a cap's pad ON THAT NET.
 
     The cap's RAIL leg, never its nearest pad: a 0402's ground pad can sit half
@@ -5595,12 +5595,16 @@ def _pin_gap(pin_pad, cap_fp, net_id: int) -> Optional[float]:
     erases the overlap magnitude, and 58 of glasgow_revC's 87 tethers already
     clamp to zero under the existing centroid-to-inflated-bbox metric -- #704's
     median argument is that scar.
+
+    `pin_rect`: `legality.pad_rect(pin_pad)`, for a caller measuring one pin
+    against many caps.
     """
     best = None
+    pr = pin_rect if pin_rect is not None else legality.pad_rect(pin_pad)
     for q in cap_fp.pads:
         if q.net_id != net_id:
             continue
-        g = legality.rect_gap(legality.pad_rect(pin_pad), legality.pad_rect(q))
+        g = legality.rect_gap(pr, legality.pad_rect(q))
         if best is None or g < best:
             best = g
     return best
@@ -5629,15 +5633,27 @@ def decap_pin_caps(spec: Dict, ref: str, ic_side, pad, by_net
     return on_rail, caps
 
 
-def nearest_rail_cap(pin_pad, caps) -> Optional[Tuple[float, str]]:
+def nearest_rail_cap(pin_pad, caps, stop_at=None) -> Optional[Tuple[float, str]]:
     """`(gap, cap ref)` -- the minimum `_pin_gap` from a supply pin over
     `caps`, or None when none carries its net. The number
     `rule_decap_pin_distance` grades, and the one the quench gate reads
-    (#1043), with the caps at whatever poses their footprints hold."""
-    gaps = [(g, c.reference) for g, c in
-            ((_pin_gap(pin_pad, c, pin_pad.net_id), c) for c in caps)
-            if g is not None]
-    return min(gaps) if gaps else None
+    (#1043), with the caps at whatever poses their footprints hold.
+
+    `stop_at`: the first cap within it is returned instead of the nearest --
+    within `stop_at` exactly when the minimum is, and the minimum itself
+    otherwise -- for a caller asking only "is some cap within the limit"."""
+    pr = legality.pad_rect(pin_pad)
+    best = None
+    for c in caps:
+        g = _pin_gap(pin_pad, c, pin_pad.net_id, pr)
+        if g is None:
+            continue
+        got = (g, c.reference)
+        if best is None or got < best:
+            best = got
+        if stop_at is not None and g <= stop_at:
+            return got
+    return best
 
 
 def drawn_body_rect(geom, fp_obj):
