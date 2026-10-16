@@ -31,6 +31,12 @@ in-test):
   Route) keeps the live copper the result left unchanged -- uuid, arc and
   `sense:` group membership included -- replaces only what the run changed,
   and writes no lock token the result file does not carry.
+- `sync_moves_footprint_graphic_copper`: a footprint whose land pattern draws
+  F.Cu copper (#908: a filled tab and a stroke, the SOT89/antenna class) is
+  moved and turned in the live session; after the sync the model's copper
+  graphics equal a fresh build's. The sync used to keep the graphics built
+  when the dialog opened, so the tab stayed where the part had been: a
+  phantom obstacle there and nothing where the copper now is.
 
 Needs pcbnew + wx; re-execs into KiCad's python. Lives in tests/gui_parity/
 because run_all.py collects only tests/test_*.py.
@@ -316,8 +322,52 @@ def placement_apply_keeps_the_group(pcbnew, td):
     check(copper(p) == copper(result), "the live board's copper is the result's copper")
 
 
+#: A part whose land pattern draws F.Cu copper (#908): one pad, so the copper
+#: is modelled (footprint_copper_is_functional), a FILLED tab and a stroke.
+TAB_PART = '''  (footprint "T:TAB" (layer "F.Cu") (at 14 16)
+    (property "Reference" "Q1" (at 0 -2 0) (layer "F.SilkS") (effects (font (size 1 1))))
+    (pad "1" smd rect (at -1.5 0) (size 0.6 0.6) (layers "F.Cu" "F.Paste" "F.Mask") (net 3 "WALL"))
+    (fp_rect (start -0.5 -0.8) (end 1.5 0.8) (stroke (width 0) (type solid)) (fill yes) (layer "F.Cu") (uuid "cccccccc-0000-0000-0000-000000000001"))
+    (fp_line (start -1.5 0) (end -0.5 0) (stroke (width 0.25) (type solid)) (layer "F.Cu") (uuid "cccccccc-0000-0000-0000-000000000002")))
+'''
+
+
+def _graphic_sig(pcb):
+    r = lambda v: None if v is None else round(v, 4)  # noqa: E731
+    return sorted((s.owner_ref, s.layer, s.net_id, s.graphic_kind, bool(s.graphic_filled),
+                   r(s.start_x), r(s.start_y), r(s.end_x), r(s.end_y), r(s.width),
+                   r(s.drawn_width),
+                   tuple(tuple(map(r, p)) for p in (s.graphic_ring or ())),
+                   tuple(map(r, s.graphic_circle or ())))
+                  for s in pcb.segments if s.graphic)
+
+
+def sync_moves_footprint_graphic_copper(pcbnew, td):
+    from kicad_parser import build_pcb_data_from_board, mm_to_iu
+    text = _board_text().replace(SEG_ANCHOR, TAB_PART + SEG_ANCHOR, 1)
+    board = pcbnew.LoadBoard(_stage(td, 'graphics', text))
+    pd = build_pcb_data_from_board(board)              # what the dialog opened with
+    before = _graphic_sig(pd)
+    q1 = [g for g in before if g[0] == 'Q1']
+    check(len(q1) >= 5 and any(g[4] for g in q1),
+          "the fixture's Q1 draws modelled F.Cu copper, a filled tab included",
+          f'{len(q1)} Q1 graphic segment(s)')
+    fp = board.FindFootprintByReference('Q1')
+    fp.SetPosition(pcbnew.VECTOR2I(mm_to_iu(18.0), mm_to_iu(15.5)))
+    fp.SetOrientationDegrees(90)
+    _sync(pcbnew, board, pd)
+    fresh = _graphic_sig(build_pcb_data_from_board(board))
+    check(fresh != before, 'the move changes what a fresh build reads (the arm is not vacuous)')
+    check(_graphic_sig(pd) == fresh,
+          "after the sync the model's copper graphics are a fresh build's: Q1's tab "
+          "moved with Q1, the board-level graphic unchanged",
+          f'sync {[g[:7] for g in _graphic_sig(pd) if g[0] == "Q1"][:2]} '
+          f'fresh {[g[:7] for g in fresh if g[0] == "Q1"][:2]}')
+
+
 ARMS = [sync_matches_a_fresh_build, group_drawn_or_removed_in_session,
-        route_tab_keeps_the_branch, placement_apply_keeps_the_group]
+        route_tab_keeps_the_branch, placement_apply_keeps_the_group,
+        sync_moves_footprint_graphic_copper]
 
 
 def main():
