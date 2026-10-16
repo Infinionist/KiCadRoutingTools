@@ -24,11 +24,18 @@ these cover the OTHER paths that lay copper of the branch's own net:
     within a stub gap of the trace (in memory), and a via legally beside a
     sense pad (route.py, end to end). The region-join board (repair_planes,
     end to end) holds (a), (b) and (c) together: the join crosses at C1.1.
+(d) route_planes names every protected branch a pour it creates covers
+    (KiCad's fill joins same-net copper: the next route step refuses the
+    branch), as a WARNING from the engine -- the Planes tab's log -- and as
+    `poured_over` in JSON_SUMMARY.sense_branches; repair_planes reports the
+    branches, judged on the board it wrote.
 
 Run:
     python3 tests/test_1279_sense_branch_paths.py
 """
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -104,6 +111,12 @@ def _branch(board_or_pcb):
 
 def _vdd(p):
     return next(i for i, n in p.nets.items() if n.name == 'VDD')
+
+
+def _summary(log):
+    m = re.search(r'^JSON_SUMMARY: (\{.*\})$', log, re.M)
+    assert m, 'no JSON_SUMMARY printed'
+    return json.loads(m.group(1))
 
 
 def _connected(board):
@@ -351,6 +364,66 @@ def test_region_join_crosses_only_at_the_join_pad():
     assert not hits, f'new VDD copper on the sense branch off C1.1: {hits}'
     assert _branch(rep).protected, 'the repaired board taps its own branch'
     _connected(rep)
+    # (d) repair_planes reports the branch, judged on the board it wrote.
+    entry = _summary(log)['sense_branches']
+    assert [(e['group'], e['protected'], 'tapped_by_run' in e) for e in entry] == \
+        [('sense:C1.1', True, False)], entry
+
+
+# --- (d) a pour over the branch is warned -------------------------------------
+
+def _board_th_sense_pad():
+    """The fixture with its sense pad U1.1 a THROUGH-HOLE pad: a pour of VDD
+    on ANY layer floods it."""
+    old = ('    (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu" "F.Paste" "F.Mask") '
+           '(net 1 "VDD")))\n  (footprint "T:P" (layer "F.Cu") (at 15 8)')
+    new = ('    (pad "1" thru_hole circle (at 0 0) (size 1.2 1.2) (drill 0.6) '
+           '(layers "*.Cu" "*.Mask") (net 1 "VDD")))\n  (footprint "T:P" (layer "F.Cu") (at 15 8)')
+    t = _src()
+    assert t.count(old) == 1
+    return _variant(t.replace(old, new), 'thpad')
+
+
+def _pour(board, layer):
+    out = os.path.join(_tmpdir(), 'pour.kicad_pcb')
+    log = _run('route_planes.py', [board, out, '--nets', 'VDD', '--plane-layers', layer,
+                                   '--clearance', str(CLEARANCE), '--track-width', '0.3'])
+    evidence(out, 'route_planes.py output')
+    return log
+
+
+def test_pour_over_the_branch_is_warned():
+    """route_planes: a VDD pour on the trace's layer, and one on B.Cu over a
+    through-hole sense pad, each name the branch (WARNING + `poured_over`);
+    the fixture's own B.Cu pour, which touches no sense copper, does not."""
+    for board, layer in ((BOARD, 'F.Cu'), (_board_th_sense_pad(), 'B.Cu')):
+        log = _pour(board, layer)
+        assert (f'WARNING: the VDD pour on {layer} covers sense branch sense:C1.1'
+                in log), log[-3000:]
+        entry = _summary(log)['sense_branches']
+        assert [(e['group'], e.get('poured_over')) for e in entry] == \
+            [('sense:C1.1', [layer])], entry
+    log = _pour(BOARD, 'B.Cu')
+    assert 'covers sense branch' not in log, log[-3000:]
+    entry = _summary(log)['sense_branches']
+    assert [(e['group'], e['protected'], e.get('poured_over')) for e in entry] == \
+        [('sense:C1.1', True, None)], entry
+
+
+def test_pour_warning_on_the_gui_call_shape():
+    """The Planes tab's call (an in-memory PCBData, return_results=True,
+    dry_run): the warning is the engine's, so the tab's log shows it."""
+    import contextlib
+    import io
+    import route_planes as rp
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rp.create_plane(BOARD, '', ['VDD'], ['F.Cu'], clearance=CLEARANCE,
+                        track_width=0.3, dry_run=True, return_results=True,
+                        pcb_data=parse_kicad_pcb(BOARD))
+    assert 'WARNING: the VDD pour on F.Cu covers sense branch sense:C1.1' in buf.getvalue(), \
+        buf.getvalue()[-3000:]
+    assert [e.get('poured_over') for e in rp.consume_sense_branches()] == [['F.Cu']]
 
 
 TESTS = [
@@ -361,6 +434,8 @@ TESTS = [
     test_stub_gap_snap_never_targets_the_branch,
     test_soft_joint_never_bridges_onto_a_sense_pad,
     test_region_join_crosses_only_at_the_join_pad,
+    test_pour_over_the_branch_is_warned,
+    test_pour_warning_on_the_gui_call_shape,
 ]
 
 
