@@ -74,6 +74,18 @@ from kicad_parser import build_pcb_data_from_board
 pcb = build_pcb_data_from_board(pcbnew.GetBoard())
 ```
 
+The live board's tracks, arc pieces and vias are read by ONE extractor,
+`pcbnew_track_copper(board)` -> `([Segment], [Via])` (uuid, KiCad lock, via
+type and protection spec included). A caller that keeps one `PCBData` across
+edits of the live board (the GUI dialog does, step to step) refreshes it with
+`resync_live_copper(pcb, board)` -- the board's tracks and vias through that
+extractor, copper graphics kept, every memo derived from the old copper
+dropped -- and then, once pads and zones are current,
+`resolve_live_sense_branches(pcb, board)`, which re-reads the board's
+`sense:<REF>.<PAD>` groups (#1279). Building copper objects by hand loses
+what the extractor carries: the GUI's re-sync once did, and every step after
+the first ran with no KiCad lock, no uuid and no arc copper.
+
 ## PCBData
 
 The top-level container returned by both entry points.

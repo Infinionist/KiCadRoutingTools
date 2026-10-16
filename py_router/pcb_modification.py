@@ -1459,9 +1459,13 @@ def compute_castellated_landing_retract(pcb, board_edge_clearance: float,
 
     Deliberately skipped: endpoints that coincide with other same-net copper
     endpoints (a joint inside the pad -- moving one side would open the joint),
-    and pads with residual rect tilt (the axis-aligned containment test would
-    lie). Measured against the real Edge.Cuts rings (check_drc's geometry),
-    falling back to the bbox when the board has no usable outline.
+    pads with residual rect tilt (the axis-aligned containment test would
+    lie), and KiCad-locked or `sense:`-held tracks (`_locked`, #521/#1279):
+    the file front strips a moved track and re-emits it under a new uuid,
+    which took a held member out of its group and left the next parse
+    refusing the branch. Measured against the real Edge.Cuts rings
+    (check_drc's geometry), falling back to the bbox when the board has no
+    usable outline.
     """
     from check_drc import board_edge_geometry, _point_to_rings_distance
     pads = [p for fp in pcb.footprints.values() for p in fp.pads
@@ -1500,7 +1504,7 @@ def compute_castellated_landing_retract(pcb, board_edge_clearance: float,
     moves = []
     for s in pcb.segments:
         cands = by_net.get(s.net_id)
-        if not cands:
+        if not cands or _locked(s):
             continue
         for end, (x, y), (ox, oy) in (
                 ('start', (s.start_x, s.start_y), (s.end_x, s.end_y)),
