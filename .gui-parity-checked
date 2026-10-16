@@ -1,3 +1,58 @@
+d5d6e11699de290b2b759751e4c0305722354c07 2026-10-15 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit of 0fd9547d..d5d6e116 (107 commits, 105 non-merge), for the v0.23.1
+release: 61 from main after the last audit (#1261 locked copper, #1262
+escalation board, #1260 pour barriers, #1069 and #600 fill-model regrades,
+#666 rescue layers, the under-pad carve, the CLI startup gate, #1242/#1259/
+#1105 placement, the seat-sweep index) and 44 from bus622-take5 (39 awx-only;
+engine-side only route_diff's diff_cleanup_scope ab34651e and bga_fanout
+layer_balance cab03293; grid_router 0.23.1's pair_search is called by
+awx/whole_snap.py alone). 37 touch py_router/, py_placer/, py_tools/,
+kicad_routing_plugin/ or manifest_to_plan.
+
+METHOD. As before: AST diff of every argparse flag in range; the signatures of
+batch_route, batch_route_diff_pairs, create_plane, generate_bga/qfn_fanout,
+add_gnd_vias_to_existing_board, build_base_obstacle_map, both parse entry
+points, the parser dataclasses and GridRouteConfig; every changed line of the
+routing mains attributed to its function; the GUI diff read. No parser file
+changed in range, so no compare_pcb_data sweep.
+
+IN RANGE, NO GAP: one new flag, compare_seeds --jobs (a placement experiment
+runner, no GUI door). One new engine kwarg, batch_route(pour_barriers=None),
+with GridRouteConfig.pour_barriers: INTERNAL (#1260) -- None from both fronts
+computes the barriers inside batch_route; only its own reconciliation and
+finalize sub-runs pass a list (_FINALIZE_ROUTE_KNOBS). The pour-cut audit grades
+the GUI's write model on return_results and sets results_data['pour_cuts']
+beside the printed line. #1069 _final_regrade and #600's gate grade the
+GUI's write model through CopperView in-commit. #1262: the GUI carries
+default_class_clearance and fix_drc_settings in all three tab configs into
+set_fab_tier_from_config, which calls the CLI's board_policy_floors. #1261 is
+engine-side throughout (cleanup passes, swaps, victim picks, stub layer
+switch, routing_common's skip); the #284 stale-input strip it also guards is
+the CLI's verbatim-copy writer and has no GUI counterpart. route.py and
+route_diff.py: no line of either __main__ changed. repair_planes main(): a
+report-only plane-completion grade (grade_plane_completion, registered
+CLI-ONLY in test_cli_postpass_coverage; the GUI skips repair_planes, #562).
+startup_checks is the CLI's gate; the plugin's is deps_check. Placement
+changes reach the GUI through the CLIs the Placement tab's agent runs.
+
+FIXED: the merge brought awx/dogbone_arrays.py and awx/escape_plan.py, two
+board-writing KRT_TOOL actors that manifest_to_plan neither mapped nor
+refused, so a manifest step converted as an unknown tool and the plan read
+complete (test_manifest_plan_parity's registry check FAILED on f46dffc7, and
+the Modal suite's test_route_flag_plan_coverage{,_controls}). d5d6e116 refuses
+both by name, as the other awx tools are.
+
+GATES RUN (macOS, KiCad 10.0.6): test_manifest_plan_parity on d5d6e116 PASS
+(7864 flag checks over 403 manifests, 0 mismatches; registry 47 tools OK);
+on f46dffc7: test_cli_postpass_coverage PASS (15 registered, 3 CLI-only
+acknowledged), test_settings_roundtrip PASS, test_fanout_rotated_gui 10/10,
+test_fanout_backside_gui 12/12, test_gnd_vias_gui PASS,
+test_gui_engine_parity PARITY (copper sets IDENTICAL, kicad unconnected 0/0,
+drc 0/0), test_engine_kwarg_parity OK, test_cli_defaults_parity OK,
+test_plan_flags_reach_dialog 43/43, test_fix_drc_preference_plan 11/11,
+test_live_drc_floors_gated PASS (13 sites), test_gui_livechain_rp2350 PASS.
+The OPEN item of the 0fd9547d entry (SWIG SetSeverity) is unchanged.
+
 0fd9547d 2026-10-15 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
 Audit of 287d7574..b861d208 (174 commits, 167 non-merge; 134 touching
 py_router/, py_placer/, py_tools/, kicad_routing_plugin/ or manifest_to_plan:

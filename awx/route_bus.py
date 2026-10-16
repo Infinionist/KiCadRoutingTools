@@ -4,24 +4,35 @@
     python3 route_bus.py BOARD.kicad_pcb OUT.kicad_pcb [--src U1 --dest U2] [--k K] [--rounds R] [--inproc]
                          [--clearance C] [--track-width W] [--fanout-track-width W] [--via-size D] [--via-drill D]
                          [--json-out FILE]
+    python3 route_bus.py BOARD.kicad_pcb OUT.kicad_pcb --bus SRC:DEST[:MODE[:LAYERS]] [--bus ...] [...]
     python3 route_bus.py BOARD.kicad_pcb --find
 
 Without --src and --dest, every bus on the board (route_buses): find_buses names each pair of parts sharing
 MIN_BUS_NETS nets or more the whole route admits, and takes those with a ball array at both ends (is_array), the
 larger array the source, the largest bus first; each is routed in turn on the board the one before handed on, and
-OUT is the last. A pair with a row part at one end is named and left to the router, and so is each net on both
-parts the whole route does not admit, with why. --find names them and stops.
+OUT is the last. A pair with a row part at one end (a QFN) is named and left to the router, and so is each net on
+both parts the whole route does not admit, with why. --find names them and stops. --bus names the buses and their
+order instead, each with its own fanout (MODE: joint, escape or plain) and routing layers (LAYERS, ROUTE_LAYERS) --
+a bus to a row part among them (its pads escape straight out of their rows: escape_moves.row_part); an escape bus on
+an array an earlier bus was routed through plans that array whole with it, its ends on the board as it was before
+(route_buses: ESCAPE_JOINT, ESCAPE_JOINT_ENDS). A plain or joint bus from such an array may keep the escapes that
+bus's step laid it there, opted in (SOURCE_SHARED=REF). DEST may name several parts, SRC:U4+U3: ONE SOURCE, SEVERAL
+ENDS, the buses to them one plain bus planned and laid whole -- the whole route's trunk runs to the first, and each
+other's lanes leave it on a branch (whole_frame), crossing the others on the trunk alone.
 
 route_bus() takes a board as the chain hands it on and writes it back with the bus laid, in the board's own frame,
 at the chain's sizes (resolve_rules: the routing CLIs' flags, an omitted one resolved as route.py resolves it):
 
-1. The bus: every net between SRC and DEST the ladder admits (make_bench.pair_nets). Refused: a pair through a
-   termination part between the arrays (the whole route lays no waypoint); a net whose name's last part is another
-   net's too (name_clashes: the whole route names a net by it); and a pair leg whose partner is refused or is no
-   lane between the arrays (half_pairs: a pair is laid whole or not at all). The bus's copper, if any, is stripped:
-   the step lays both ends of every lane.
-2. SRC is fanned out for them (make_bench.fanout_source), the project floor stamped, and the ladder written: the
-   plan's rivers, largest first.
+1. The bus: every net between SRC and DEST the ladder admits (make_bench.pair_nets) -- and, opted in (BUS_PULLED),
+   every one a PULL alone keeps out (pulled_nets: its other pads on two-pad parts to a plane's net), laid as a lane,
+   its pull pads off its net for the step and back on it in OUT, the pull the rest of the chain's to connect.
+   Refused: a pair through a termination part between the arrays (the whole route lays no waypoint); a net whose
+   name's last part is another net's too (name_clashes: the whole route names a net by it); and a pair leg whose
+   partner is refused or is no lane between the arrays (half_pairs: a pair is laid whole or not at all). The bus's
+   copper, if any, is stripped: the step lays both ends of every lane.
+2. SRC is fanned out for them (make_bench.fanout_source) -- opted in (SOURCE_SHARED=REF, REF the source), the
+   escapes an earlier step's plan laid them there kept instead (escape_blocks) --, the project floor stamped, and the
+   ladder written: the plan's rivers, largest first.
 3. The board is turned into the flow frame (flow_frame.py): the quarter turn that points the pair's source-to-
    destination direction along +x, about a point on the 0.1 mm lattice, so the turn is exact both ways.
 4. The whole route (whole_route.chain) on the ladder's first K nets, the whole ladder by default.
@@ -68,15 +79,17 @@ SIZE_ARGS = ('clearance', 'clearance_ceiling', 'track_width', 'fanout_track_widt
              'hole_to_hole_clearance', 'board_edge_clearance')
 
 
-def step_policy(run_rules=None):
+def step_policy(run_rules=None, settings=None):
     """The settings the step's awx modules are imported and run under: the chain's stage policy (whole_route.stage_env
     -- a pair one lane, the ends' judge), the caches off, and the run's rules when given. A module reads its policy
     when it is FIRST imported in a process (awx_settings), and the chain's in-process stages run on the modules the
     step imported before them: imported under the shell's environment, braid read BRAID_PAIRS off, and every stage
-    planned and laid a pair as two single lanes (the zynq's DQS0 and DQS1, the AD9364's fourteen LVDS pairs)"""
+    planned and laid a pair as two single lanes (the zynq's DQS0 and DQS1, the AD9364's fourteen LVDS pairs).
+    `settings`: the step's own, over the environment (route_buses: a bus's ROUTE_LAYERS, a shared array's)"""
     import awx_settings
     import whole_route as wr
     env = dict(os.environ)
+    env.update(settings or {})
     env.update(STEP_SETTINGS)
     wr.stage_env(env)
     if run_rules is not None:
@@ -128,10 +141,11 @@ def resolve_rules(board, clearance=None, clearance_ceiling=None, track_width=Non
 
 
 def route_bus(board, out, src, dest, k=None, rounds=3, inproc=False, log=print, json_out=None, joint_fanout=False,
-              **sizes):
+              escape=False, settings=None, **sizes):
     """Route the bus between `src` and `dest` on `board`, writing `out`, at the chain's sizes (`sizes`: SIZE_ARGS,
     resolve_rules). Returns (exit code, grade line). The run's rules are installed for the step and supplied to
-    every stage (rules.SETTING); the process's own are put back after."""
+    every stage (rules.SETTING); the process's own are put back after. `settings` {name: value}: awx settings for
+    this step alone, over the environment, in the step and in every stage it runs"""
     import rules as _rules
     bad = sorted(set(sizes) - set(SIZE_ARGS))
     if bad:
@@ -140,20 +154,47 @@ def route_bus(board, out, src, dest, k=None, rounds=3, inproc=False, log=print, 
     prev = _rules.active()
     _rules.install(run_rules)
     try:
-        with step_policy(run_rules):
-            return _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out, joint_fanout)
+        with step_policy(run_rules, settings):
+            return _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out, joint_fanout, escape,
+                          settings)
     finally:
         _rules.install(prev)
 
 
+BUS_MODES = ('joint', 'escape', 'plain')
+
+
+def parse_bus(spec):
+    """--bus SRC:DEST[:MODE[:LAYERS]] -> (src, dest, mode or None, layers or None): MODE one of BUS_MODES (joint: the
+    joint fanout, escape: the escape fanout, plain: neither), LAYERS the bus's routing layers (ROUTE_LAYERS, comma
+    separated). A ValueError names what is wrong"""
+    parts = spec.split(':')
+    if len(parts) < 2 or len(parts) > 4 or not parts[0] or not parts[1]:
+        raise ValueError(f'--bus {spec!r}: SRC:DEST[:MODE[:LAYERS]]')
+    mode = parts[2] if len(parts) > 2 and parts[2] else None
+    if mode is not None and mode not in BUS_MODES:
+        raise ValueError(f'--bus {spec!r}: MODE is one of {", ".join(BUS_MODES)}')
+    layers = parts[3] if len(parts) > 3 and parts[3] else None
+    return parts[0], parts[1], mode, layers
+
+
 def route_buses(board, out, buses=None, k=None, rounds=3, inproc=False, log=print, json_out=None,
-                joint_fanout=False, **sizes):
+                joint_fanout=False, escape=False, **sizes):
     """Every bus on `board` routed in turn, each on the board the one before handed on, `out` the last: `buses` as
-    [(src, dest)], else the ones find_buses takes, the largest first. Returns (exit code, grade lines): 0 when every
-    bus was handed on routed, 1 when one or more left as it came (or none was found), 2 on a usage error. The
-    summary (--json-out, default <OUT>.bus/summary.json) holds each bus's own, and the buses found and not taken."""
+    [(src, dest)] or [(src, dest, mode, layers)] (parse_bus: MODE joint, escape or plain, None for `joint_fanout` /
+    `escape`; LAYERS the bus's ROUTE_LAYERS, None for the environment's), else the ones find_buses takes, the largest
+    first. Returns (exit code, grade lines): 0 when every bus was handed on routed, 1 when one or more left as it came
+    (or none was found), 2 on a usage error. The summary (--json-out, default <OUT>.bus/summary.json) holds each bus's
+    own, and the buses found and not taken.
+
+    A SHARED ARRAY: an escape bus on an array an earlier bus was handed on through has that array planned whole with
+    it each round (ESCAPE_JOINT), its ends chosen on the board as it was before the first such earlier bus
+    (ESCAPE_JOINT_ENDS) -- the zynq's U1: the DDR3 bus (joint), then the AD9364's LVDS (escape) round it. A plain or
+    joint bus from such an array may keep the escapes the earlier step's plan laid its balls there, opted in by the
+    environment (SOURCE_SHARED=REF) -- the zynq's USB bus from U1 to its QFN"""
     from kicad_parser import parse_kicad_pcb
     from copy_board import copy_board
+    from flow_frame import dest_refs as _ff_dest_refs
     board, out = os.path.abspath(board), os.path.abspath(out)
     if not out.endswith('.kicad_pcb'):
         out += '.kicad_pcb'
@@ -169,12 +210,26 @@ def route_buses(board, out, buses=None, k=None, rounds=3, inproc=False, log=prin
                 + (f" -- {d['why']}" if d['why'] else ''))
         buses = [(d['src'], d['dest']) for d in found if d['taken']]
     cur, runs = board, []
-    for s, d in buses:
+    inputs, through = [], {}        # (each step's input board; {array: the first step handed on through it})
+    for bus in buses:
+        s, d = bus[0], bus[1]
+        mode = (bus[2] if len(bus) > 2 else None) or ('escape' if escape else 'joint' if joint_fanout else 'plain')
+        settings = {'ROUTE_LAYERS': bus[3]} if len(bus) > 3 and bus[3] else {}
+        parts_ = [s] + _ff_dest_refs(d)                 # (DEST may name several parts: one source, several ends)
+        shared = [r_ for r_ in parts_ if r_ in through]
+        if mode == 'escape' and shared:
+            settings.update(ESCAPE_JOINT=','.join(shared), ESCAPE_JOINT_ENDS=inputs[min(through[r_] for r_ in shared)])
+            log(f'route_bus: {s} -> {d}: {", ".join(shared)} routed through by an earlier bus -- planned whole with this '
+                f'one, its ends on {os.path.basename(settings["ESCAPE_JOINT_ENDS"])}')
         step_out = os.path.join(work, f'{s}-{d}.kicad_pcb')
         step_json = os.path.join(work, f'{s}-{d}.summary.json')
+        inputs.append(cur)
         code, g = route_bus(cur, step_out, s, d, k, rounds, inproc, log, json_out=step_json,
-                            joint_fanout=joint_fanout, **sizes)
-        runs.append(dict(src=s, dest=d, exit=code, grade=g, summary=step_json))
+                            joint_fanout=mode == 'joint', escape=mode == 'escape', settings=settings or None, **sizes)
+        runs.append(dict(src=s, dest=d, mode=mode, settings=settings, exit=code, grade=g, summary=step_json))
+        if code == 0:
+            for r_ in parts_:
+                through.setdefault(r_, len(inputs) - 1)
         if os.path.isfile(step_out):       # (routed, or the board as it came)
             cur = step_out
     with contextlib.redirect_stdout(sys.stderr):
@@ -187,11 +242,12 @@ def route_buses(board, out, buses=None, k=None, rounds=3, inproc=False, log=prin
     return code, [r['grade'] for r in runs]
 
 
-def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=None, joint_fanout=False):
+def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=None, joint_fanout=False, escape=False,
+           settings=None):
     import make_bench as mb
     import flow_frame as ff
     import whole_route as wr
-    from coherent_nets import coherent_nets
+    from coherent_nets import coherent_nets, whole_pairs
     from kicad_parser import parse_kicad_pcb
     from fix_kicad_drc_settings import fix_project_for_output
     import braid as te
@@ -206,16 +262,36 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
     os.makedirs(work, exist_ok=True)
     with contextlib.redirect_stdout(sys.stderr):
         pcb = parse_kicad_pcb(board)
-    for r in (src, dest):
+    # (DEST may name several parts, 'U4+U3': one source, several ends -- the whole route's trunk runs to the first, a
+    # branch off it to each other, whole_frame)
+    dests = ff.dest_refs(dest)
+    for r in [src] + dests:
         if r not in pcb.footprints:
             log(f'route_bus: no footprint {r} on the board')
             return 2, None
+    if len(dests) > 1 and (joint_fanout or escape):
+        log(f'route_bus: {src} -> {dest}: a bus to several parts is a plain bus (its source fanned out, each '
+            f'destination\'s berths laid as planned) -- no joint or escape fanout')
+        return 2, None
     log(f'route_bus: {os.path.basename(board)}, copper layers {pcb.board_info.copper_layers}, {src} -> {dest}')
 
     # 1. the bus, its copper stripped
-    names = mb.pair_nets(pcb, src, dest)
-    log(f'  {len(names)} nets between {src} and {dest}')
-    wps = waypoint_pairs(pcb, names, src, dest)
+    names = sorted({n for d in dests for n in mb.pair_nets(pcb, src, d)})
+    for d in dests:
+        log(f'  {len(mb.pair_nets(pcb, src, d))} nets between {src} and {d}')
+    import awx_settings
+    # BUS_PULLED (opt-in): 1 every bus, or the buses named SRC-DEST, comma separated -- their pulled nets laid as lanes
+    # (pulled_nets), each a place in the bus's order: the zynq's USB and Ethernet buses take theirs (OTG_RESETN; ETH_MDIO,
+    # ETH_RXCTL, ETH_RXD0-3)
+    _bp = (awx_settings.get('BUS_PULLED') or '').strip()
+    pulled = ({k_: v_ for d in dests for k_, v_ in pulled_nets(pcb, src, d, names).items()}
+              if _bp == '1' or f'{src}-{dest}' in _bp.split(',') else {})
+    if pulled:
+        names = sorted(set(names) | set(pulled))
+        log(f'  {len(pulled)} more with a PULL beside their two ends, laid as lanes, the pull left to the rest of the '
+            f'chain: ' + ', '.join(f'{n.split("/")[-1]} ({", ".join(p.component_ref for p in v)})'
+                                   for n, v in sorted(pulled.items())))
+    wps = {leg: part for d in dests for leg, part in waypoint_pairs(pcb, names, src, d).items()}
     refused = {leg: f'passes through {part}, a termination part between the arrays: the whole route lays no waypoint'
                for leg, part in wps.items()}
     if wps:
@@ -236,9 +312,26 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
         names = [n for n in names if n.split('/')[-1] not in halves]
         log('  refused, left to the rest of the chain with their pair: '
             + '; '.join(f'{leg}: {why}' for leg, why in sorted(halves.items())))
-    txt, n_cut = mb.strip_pair_copper(open(board, encoding='utf-8').read(), pcb, names)
+    txt = open(board, encoding='utf-8').read()
+    # SOURCE_SHARED=REF (opt-in): the source an earlier bus was routed through, whose step planned every ball of it
+    # whole -- the bus's escapes there are that plan's, chosen with every other ball's, and stay as its teeth; a
+    # bus-only fanout of a full array (make_bench.fanout_source) sent zynq U1's OTG_DATA6, NXT and STP out of the
+    # south face, into the LVDS bus's lanes, where the plan had them east toward U4. Opted in per bus: that plan chose
+    # the escapes for its own bus, and sends some of another bus's balls away from it (the Ethernet bus's, south)
+    kept = []
+    if not escape and src in (awx_settings.get('SOURCE_SHARED') or '').split(','):
+        kept = escape_blocks(txt, pcb, src, names)
+    txt, n_cut = mb.strip_pair_copper(txt, pcb, names)
+    if kept:
+        end = txt.rstrip().rfind(')')
+        txt = txt[:end].rstrip() + '\n' + ''.join(f'  {b}\n' for b in kept) + txt[end:]
+        log(f'  {src} shared: the bus\'s escapes there as the plan before laid them, kept ({len(kept)} piece(s))')
     if n_cut:
         log(f'  their copper stripped ({n_cut} chars)')
+    # (a pulled net's pull pads off its net for the step -- the net two-ended, as the whole route lays a lane and its
+    # grade counts it -- and back on it in OUT)
+    pull_pads = [p for n, v in sorted(pulled.items()) if n in set(names) for p in v]
+    txt, held = unpull(txt, pull_pads)
     base = os.path.join(work, 'base.kicad_pcb')
     with open(base, 'w', encoding='utf-8') as f:
         f.write(txt)
@@ -253,8 +346,11 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
     # whole-route round, round a via site kept in every other ball of the arrays (joint_escape.reserve_ball_vias);
     # right after, each round, every array's other nets and plane balls are planned and laid jointly round the bus
     # copper just laid (fanout_from_plan.joint_others)
+    joint_fanout = joint_fanout and not escape          # (the escape fanout lays no joint plan: the field is dog-boned)
     others = {r: array_others(pcb, r, names) for r in (src, dest)} if joint_fanout else {src: [], dest: []}
     joint, spec = {}, None
+    escape_env = {}             # (ESCAPE_JOINT: the escape step's joint plan of a shared array -- the --escape block)
+    fanned_e = None             # (ESCAPE_JOINT_ENDS: the bus's own field, fanned in the --escape block)
     if joint_fanout:
         zone_ids = {z.net_id for z in (pcb.zones or []) if z.net_id}
         # (every copper layer: an escape on a plane layer is the plan's to take only where the outer layers have no
@@ -276,18 +372,128 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
     # zynq DDR's, laid, the ends model's 86 vias with six nets over two and two ends blocked in front against the
     # chain's teeth's 70, its solve 264 crossings to the chain's 202; round the chain's teeth the joint plan still
     # serves every other net of U1 and 131 of its 132 plane balls)
-    with contextlib.redirect_stdout(sys.stderr):
-        n_t, n_v, failed = mb.fanout_source(base, fanned, src, names, reserve=spec)
-    with contextlib.redirect_stdout(sys.stderr):
-        fix_project_for_output(fanned, clearance=te.SPEC_CLEARANCE, track_width=sr.FAN_TRACK,
-                               via_diameter=te.VIA_SIZE, via_drill=te.VIA_DRILL, verbose=False)
-    log(f'  {src} fanned out: {n_t} tracks, {n_v} vias' + (f', refused {failed}' if failed else ''))
+    if escape:
+        # THE ESCAPE FANOUT (--escape): no source fanout -- every netted ball of both arrays DOG-BONED the human's way
+        # (dogbone_arrays: each ball's via on a gap point, the ball lines free below the balls' layer; an outer-ring
+        # ball with a clear way out on its own layer left without one, as the human leaves it), the passives
+        # beneath the arrays moved off the vias (the chain's cap step, once, here), and each round's fanout plans the
+        # bus's ends among the escapes that field has and lays them as they are (escape_plan, FANOUT_ESCAPE)
+        import dogbone_arrays as dga
+        import awx_settings
+        only = None             # (dogbone_arrays: every ball of both arrays)
+        # ESCAPE_JOINT=REF[,REF]: a SHARED array -- an earlier step's bus routed through it, other nets and plane balls
+        # of its own -- fanned each round in ONE joint plan with the bus (escape_plan, joint_escape.escape_field): its
+        # unprotected copper (an earlier step's fanout of its other nets and plane drops) off inside its box, and every
+        # unprotected ball dog-boned here as the escape fanout dog-bones an array of its own -- the field the step's
+        # ends choose the bus's teeth on, as on a board of the bus alone; the protected (routed) nets' copper as it stands
+        joint_refs = [r_ for r_ in (awx_settings.get('ESCAPE_JOINT') or '').split(',') if r_ in (src, dest)]
+        if joint_refs:
+            from protected_nets import read_protected_nets, pro_path_for_board
+            prot_ = {n.split('/')[-1] for n in read_protected_nets(pro_path_for_board(board))}
+            with contextlib.redirect_stdout(sys.stderr):
+                bj_ = parse_kicad_pcb(base)
+            byname_ = {n.name.split('/')[-1]: (i, n) for i, n in bj_.nets.items() if n.name}
+            zone_ = {z.net_id for z in (bj_.zones or []) if z.net_id}
+            bus_s_ = {n.split('/')[-1] for n in names}
+            txt_ = open(base, encoding='utf-8').read()
+            only = {}
+            arrays_ = []
+            for r_ in joint_refs:
+                fp_ = bj_.footprints[r_]
+                nets_ = {p_.net_id: p_.net_name for p_ in fp_.pads
+                         if p_.net_id and p_.net_name and p_.net_name.split('/')[-1] not in prot_}
+                xs_, ys_ = [p_.global_x for p_ in fp_.pads], [p_.global_y for p_ in fp_.pads]
+                box_ = (min(xs_) - 1.5, min(ys_) - 1.5, max(xs_) + 1.5, max(ys_) + 1.5)
+                txt_ = mb.strip_window(txt_, sorted({n.split('/')[-1] for n in nets_.values()} & set(byname_)),
+                                       byname_, box_)
+                only[r_] = {n.split('/')[-1] for n in nets_.values()}
+                arrays_.append({'ref': r_, 'bus': list(names),
+                                'others': sorted(n for i, n in nets_.items()
+                                                 if i not in zone_ and n.split('/')[-1] not in bus_s_),
+                                'drops': sorted(n for i, n in nets_.items() if i in zone_)})
+                log(f'  {r_}: joint with the bus each round -- {len(arrays_[-1]["others"])} other net(s) and the plane '
+                    f'balls of {len(arrays_[-1]["drops"])} net(s) planned with it, their fanout here taken off; '
+                    f'{len(prot_ & {n.split("/")[-1] for n in (p_.net_name or "" for p_ in fp_.pads)})} routed net(s) '
+                    f'as they stand')
+            with open(base, 'w', encoding='utf-8') as f_:
+                f_.write(txt_)
+            spec_path = os.path.join(work, 'escape_joint.json')
+            with open(spec_path, 'w', encoding='utf-8') as f_:
+                json.dump({'arrays': arrays_}, f_, indent=1)
+            escape_env = {'ESCAPE_JOINT_SPEC': spec_path}
+        with contextlib.redirect_stdout(sys.stderr):
+            _ok, dstats = dga.dogbone_file(base, fanned, [src, dest], log=log, only=only)
+            fix_project_for_output(fanned, clearance=te.SPEC_CLEARANCE, track_width=sr.FAN_TRACK,
+                                   via_diameter=te.VIA_SIZE, via_drill=te.VIA_DRILL, verbose=False)
+        # (only the passives beneath the bus's own two arrays: another array's are another step's -- joint_escape.
+        # passives_beyond, locked)
+        import joint_escape as je
+        lock_ = je.passives_beyond(fanned, [src, dest])
+        rcn = wr.run([os.path.join('..', 'py_router', 'place_fanout_clearance.py'), fanned, fanned,
+                      '--clearance', str(te.SPEC_CLEARANCE), '--beneath-only'] + (['--lock'] + lock_ if lock_ else []),
+                     dict(os.environ), log_path=os.path.join(work, 'caps.log'), own_process=True)[0]
+        if lock_:
+            log(f'  caps: beneath another array, left where they are: {", ".join(lock_)}')
+        for ln in wr.grep(os.path.join(work, 'caps.log'), r'^(Moved|Stuck|  Unresolved)'):
+            log('  caps: ' + ln.strip()[:200])
+        if rcn != 0:
+            log(f'  caps: the nudge exited {rcn} -- the passives stay where they were')
+        left = {p_ for r_ in (src, dest) for p_ in dstats[r_][2]}
+        failed = sorted({short for n in names for short in [n.split('/')[-1]]
+                         if any(f'{p.component_ref}.{p.pad_number}' in left for p in
+                                pcb.nets[next(i for i, nn in pcb.nets.items() if nn.name == n)].pads)})
+        log(f'  {src} and {dest} dog-boned' + (f', no dog-bone for {failed}' if failed else ''))
+        # ESCAPE_JOINT_ENDS=BOARD (with ESCAPE_JOINT): the board as it was before the shared array's earlier step --
+        # fanned here exactly as this step fans a board of the bus alone (its copper off, both arrays dog-boned whole,
+        # the caps nudged), turned below into the same frame: the field each round's ends are chosen on, so the bus
+        # leaves the shared array by the teeth, and reaches the destination by the berths, the bus alone would take
+        ends_board = awx_settings.get('ESCAPE_JOINT_ENDS') if joint_refs else None
+        fanned_e = None
+        if ends_board:
+            with contextlib.redirect_stdout(sys.stderr):
+                pe_ = parse_kicad_pcb(ends_board)
+            txt_e, _n = mb.strip_pair_copper(open(ends_board, encoding='utf-8').read(), pe_, names)
+            txt_e = unpull(txt_e, pull_pads)[0]
+            base_e = os.path.join(work, 'ends_base.kicad_pcb')
+            with open(base_e, 'w', encoding='utf-8') as f_:
+                f_.write(txt_e)
+            fp.copy_pro(ends_board, base_e)
+            fanned_e = os.path.join(work, 'ends_fanned.kicad_pcb')
+            elog = []
+            with contextlib.redirect_stdout(sys.stderr):
+                dga.dogbone_file(base_e, fanned_e, [src, dest], log=elog.append)
+                fix_project_for_output(fanned_e, clearance=te.SPEC_CLEARANCE, track_width=sr.FAN_TRACK,
+                                       via_diameter=te.VIA_SIZE, via_drill=te.VIA_DRILL, verbose=False)
+            lock_e = je.passives_beyond(fanned_e, [src, dest])
+            wr.run([os.path.join('..', 'py_router', 'place_fanout_clearance.py'), fanned_e, fanned_e,
+                    '--clearance', str(te.SPEC_CLEARANCE), '--beneath-only'] + (['--lock'] + lock_e if lock_e else []),
+                   dict(os.environ), log_path=os.path.join(work, 'caps_ends.log'), own_process=True)
+            with contextlib.redirect_stdout(sys.stderr):
+                mb.write_ladder(fanned_e, names, log=lambda *a: None)
+            log(f'  the bus\'s own field, for the ends: {os.path.basename(ends_board)} fanned as the bus alone -- '
+                + '; '.join(x.strip() for x in elog if x.strip().startswith((f'{src}:', f'{dest}:')))[:300])
+    else:
+        with contextlib.redirect_stdout(sys.stderr):
+            n_t, n_v, failed = mb.fanout_source(base, fanned, src, names, reserve=spec)
+        with contextlib.redirect_stdout(sys.stderr):
+            fix_project_for_output(fanned, clearance=te.SPEC_CLEARANCE, track_width=sr.FAN_TRACK,
+                                   via_diameter=te.VIA_SIZE, via_drill=te.VIA_DRILL, verbose=False)
+        log(f'  {src} fanned out: {n_t} tracks, {n_v} vias' + (f', refused {failed}' if failed else ''))
     with contextlib.redirect_stdout(sys.stderr):
         mb.write_ladder(fanned, names, log=log)
+        if fanned_e:
+            # (ESCAPE_JOINT_ENDS: the bus alone's ladder -- its rivers read on its own field, so the run's nets, their
+            # order and the K cut are the bus alone's: the ends chosen on that field in that order are its ends)
+            import shutil
+            shutil.copyfile(os.path.splitext(fanned_e)[0] + '.ladder.txt', os.path.splitext(fanned)[0] + '.ladder.txt')
+            log(f'  ladder: the bus alone\'s, from {os.path.basename(fanned_e)}')
         ladder = coherent_nets(10 ** 6, fanned)
     K = min(int(k), len(ladder)) if k else len(ladder)
-    nets = ladder[:K]
-    log(f'  the run: K={K} of the ladder\'s {len(ladder)} nets')
+    with contextlib.redirect_stdout(sys.stderr):
+        nets = whole_pairs(ladder, K, fanned)            # (the chain's own cut: coherent_nets(K) cuts no pair)
+    cut = [n for n in ladder[:K] if n not in nets]
+    log(f'  the run: K={K} of the ladder\'s {len(ladder)} nets'
+        + (f' -- {len(nets)} nets: {", ".join(cut)} left out with their pair\'s other leg' if cut else ''))
 
     # 3. the flow frame
     with contextlib.redirect_stdout(sys.stderr):
@@ -298,11 +504,20 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
         log('route_bus: the turn into the flow frame failed: ' + '; '.join(bad[:6]))
         return 2, None
     log(f'  turned into the flow frame: {q} quarter turn(s) about ({ff._fmt(cx)}, {ff._fmt(cy)})')
+    if escape and fanned_e:
+        frame_e = os.path.join(work, 'ends_frame.kicad_pcb')
+        bad = ff.turn_file(fanned_e, frame_e, q, cx, cy)
+        if bad:
+            log('  the bus\'s own field: the turn failed -- the ends chosen on the shared field: ' + '; '.join(bad[:3]))
+        else:
+            escape_env['ESCAPE_ENDS_BASE'] = frame_e
 
     # 4. the whole route
     wr.INPROC = inproc
     rc, grade = wr.chain(K, os.path.join(work, 'run'), rounds, base=frame, dest=dest,
-                         settings={**STEP_SETTINGS, _rules.SETTING: _rules.as_setting(run_rules), **joint})
+                         settings={**(settings or {}), **STEP_SETTINGS, _rules.SETTING: _rules.as_setting(run_rules),
+                                   **joint,
+                                   **({'FANOUT_ESCAPE': '1'} if escape else {}), **escape_env})
     seq = _routed(os.path.join(work, 'run'))
     short = lambda n: n.split('/')[-1]
     for n in names:
@@ -310,10 +525,14 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
             refused.setdefault(short(n), 'no escape at the source fanout')
         elif short(n) not in ladder:
             refused.setdefault(short(n), 'not in the ladder: no free stub end at the source')
+        elif short(n) in cut:
+            refused.setdefault(short(n), f'its pair cut by --k {K}: left out with its other leg')
         elif short(n) not in nets:
             refused.setdefault(short(n), f'beyond --k {K}')
     summary = dict(board=board, out=out, src=src, dest=dest, k=K, rules=_rules_dict(run_rules),
-                   routed=[], refused=dict(refused), grade=None, secs=None, exit=None)
+                   routed=[], refused=dict(refused), grade=None, secs=None, exit=None,
+                   pulled={short(n): sorted(f'{p.component_ref}.{p.pad_number}' for p in v)
+                           for n, v in pulled.items() if n in set(names)})
 
     def finish(code, why, g=None, routed=()):
         # a bus the step does not hand on clean is not handed on at all: OUT is the board as it came
@@ -358,8 +577,9 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
             return finish(1, f'the whole route connected none of the bus (exit {rc})', grade)
     back = [n for n in names if short(n) not in set(nets)]
     if back:
-        put_back(routed_pcb, board, pcb, back)
-        log(f'  put back as they came: {", ".join(sorted(short(n) for n in back))}')
+        left_ = put_back(routed_pcb, board, pcb, back)
+        log(f'  put back as they came: {", ".join(sorted(short(n) for n in back))}'
+            + (f' -- {left_} piece(s) of their earlier copper left out, no longer clear' if left_ else ''))
 
     # 6. the grade: every bus net handed on connected, no violation on a bus net, and the whole board no worse than it
     # came (a board the chain hands on carries its earlier steps' violations; each is graded at its own project's floor)
@@ -394,8 +614,9 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
         for n in sorted(bad):
             refused.setdefault(n, 'failed the grade on the board (open there, or in a violation)')
         nets = [n for n in nets if n not in bad]
-        put_back(routed_pcb, board, pcb, [n for n in names if short(n) in bad])
-        log(f'  failed the grade, put back as they came: {", ".join(sorted(bad))} -- the rest graded again')
+        left_ = put_back(routed_pcb, board, pcb, [n for n in names if short(n) in bad])
+        log(f'  failed the grade, put back as they came: {", ".join(sorted(bad))} -- the rest graded again'
+            + (f' ({left_} piece(s) of their earlier copper left out, no longer clear)' if left_ else ''))
     v, c = wr.grade_counts(routed_pcb, set(nets))
     planes = plane_grade(pcb, board, routed_pcb, log)
     g = (f'BUS {src}->{dest} K={K} {grade.split(" ", 2)[2] if grade else ""} | on the board: vias={v} copper={c}mm '
@@ -416,6 +637,15 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
     from protected_nets import persist_protected_nets, pro_path_for_board, read_protected_nets
     with contextlib.redirect_stdout(sys.stderr):
         copy_board(routed_pcb, out)
+    if held:
+        # (the pull pads back on their nets: the rest of the chain connects each to its lane)
+        with open(out, encoding='utf-8') as f:
+            txt_o = f.read()
+        txt_o, missed = repull(txt_o, held)
+        with open(out, 'w', encoding='utf-8') as f:
+            f.write(txt_o)
+        if missed:
+            return finish(2, f'the pull pads {missed} not found again to put back on their nets', g)
     full = {short(n): n for n in names}
     # (the nets the board came with protected stay so -- an earlier bus's among them)
     persist_protected_nets(pro_path_for_board(out), {**read_protected_nets(pro_path_for_board(board)),
@@ -469,19 +699,75 @@ def array_others(pcb, ref, names):
 
 def put_back(path, board, pcb, back):
     """`path` with the copper of the nets `back` (full names) as `board` has it: the step's taken out, the board's own
-    put back (each block as the board spells it, its uuid with it)"""
+    put back (each block as the board spells it, its uuid with it) -- each only where it stands CLEAR of the copper
+    `path` holds now: the step may have laid the board round it anew (a shared array fanned in one joint plan,
+    ESCAPE_JOINT: an open bus net's earlier escape put back over the joint field's vias was ten violations on zynq U1, and
+    every net the grade then put back met another). A block that would not stand is left out -- the net to the rest of
+    the chain. Returns the blocks left out"""
     import braid as te
     ids = {i for i, n in pcb.nets.items() if n.name in set(back)}
     txt = open(path, encoding='utf-8').read()
     for tok in ('segment', 'via'):
         txt = te.strip_net_items(txt, tok, ids, back)
     src = open(board, encoding='utf-8').read()
-    own = [b for tok in ('segment', 'via') for b in net_blocks(src, tok, ids, back)]
+    own = [(tok, b) for tok in ('segment', 'via') for b in net_blocks(src, tok, ids, back)]
+    left = 0
     if own:
-        end = txt.rstrip().rfind(')')
-        txt = txt[:end].rstrip() + '\n' + ''.join(f'  {b}\n' for b in own) + txt[end:]
+        keep = _clear_blocks(path, txt, own)
+        left = len(own) - len(keep)
+        if keep:
+            end = txt.rstrip().rfind(')')
+            txt = txt[:end].rstrip() + '\n' + ''.join(f'  {b}\n' for b in keep) + txt[end:]
     with open(path, 'w', encoding='utf-8') as f:
         f.write(txt)
+    return left
+
+
+def _clear_blocks(path, txt, blocks):
+    """the `blocks` [(token, text)] -- a net's segments and vias -- that stand clear of every other net's copper on the
+    board `txt` (written beside `path` to be read): a segment on its layer, a via on every copper layer, at the run's
+    clearance (escape_plan.Copper: pads, vias, segments)"""
+    import escape_plan as ep
+    import rules as _rules
+    tmp = path[:-len('.kicad_pcb')] + '.putback.kicad_pcb'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        f.write(txt)
+    with contextlib.redirect_stdout(sys.stderr):
+        now = parse_kicad_pcb_quiet(tmp)
+    os.remove(tmp)
+    clear = _rules.active().clearance
+    by_name = {n.name: i for i, n in now.nets.items() if n.name}
+    num = lambda s, k: [float(x) for x in re.search(r'\(' + k + r' ([-\d.e]+) ([-\d.e]+)', s).groups()]   # noqa: E731
+    cu, keep = {}, []
+    for tok, b in blocks:
+        m_id = re.search(r'\(net (\d+)\)', b)
+        m_nm = re.search(r'\(net "([^"]+)"\)', b)
+        nid = int(m_id.group(1)) if m_id else by_name.get(m_nm.group(1) if m_nm else '', 0)
+        if tok == 'segment':
+            w = float(re.search(r'\(width ([\d.e-]+)\)', b).group(1))
+            L = re.search(r'\(layer "?([^")\s]+)"?\)', b).group(1)
+            a, z = num(b, 'start'), num(b, 'end')
+            checks = [(w, tuple(a), tuple(z), L)]
+        else:
+            s = float(re.search(r'\(size ([\d.e-]+)\)', b).group(1))
+            at = tuple(num(b, 'at'))
+            checks = [(s, at, at, L) for L in now.board_info.copper_layers]
+        ok = True
+        for w, a, z, L in checks:
+            if w not in cu:
+                cu[w] = ep.Copper(now, w, clear)
+            if not cu[w].seg_clear(a, z, L, nid)[0]:
+                ok = False
+                break
+        if ok:
+            keep.append(b)
+    return keep
+
+
+def parse_kicad_pcb_quiet(path):
+    from kicad_parser import parse_kicad_pcb
+    with contextlib.redirect_stderr(io.StringIO()):
+        return parse_kicad_pcb(path)
 
 
 def net_blocks(txt, token, net_ids, net_names=()):
@@ -538,7 +824,8 @@ def is_array(fp):
 def find_buses(pcb, min_nets=MIN_BUS_NETS):
     """Every pair of parts sharing `min_nets` nets or more that the whole route admits (make_bench.pair_nets), the
     largest first: [{src, dest, nets, taken, why, left}]. Taken when both parts are ball arrays (is_array), the
-    larger the source; otherwise named with why not (a row part at one end is the router's). `left`: the nets on both
+    larger the source; otherwise named with why not (a row part at one end is the router's, unless --bus names the
+    bus: escape_moves.row_part). `left`: the nets on both
     parts the whole route does not admit, each with why -- its other parts (fly-by, multi-drop, a pull-down), or more
     than one pad on a part -- the router's."""
     with step_policy():                 # (make_bench imports the chain's modules: under its policy, step_policy)
@@ -567,7 +854,8 @@ def find_buses(pcb, min_nets=MIN_BUS_NETS):
         balls = lambda r: len(pcb.footprints[r].pads)
         src, dest = sorted((a, b), key=lambda r: (-arrays[r], -balls(r), r))
         why = None if arrays[a] and arrays[b] else \
-            f'{dest} is no ball array: the whole route takes an array at both ends, a row part is left to the router'
+            f'{dest} is no ball array: left to the router -- the whole route takes it where --bus names it ' \
+            f'({src}:{dest}:plain)'
         left = {}
         for net in pcb.nets.values():
             refs = {p.component_ref for p in net.pads}
@@ -616,6 +904,106 @@ def half_pairs(pcb, names):
                 parts = sorted({p.component_ref for p in by[mate].pads})
                 out[leg] = f'its pair\'s other leg {mate} is no lane between the arrays (on {", ".join(parts)})'
     return out
+
+
+def escape_blocks(txt, pcb, ref, names, grow=1.5):
+    """The segment and via blocks of the nets `names` (full names) inside `ref`'s box of pads grown `grow` mm, in
+    either net dialect: the escapes an earlier fanout laid them at that array (SOURCE_SHARED)"""
+    fp_ = pcb.footprints[ref]
+    xs, ys = [p.global_x for p in fp_.pads], [p.global_y for p in fp_.pads]
+    box = (min(xs) - grow, min(ys) - grow, max(xs) + grow, max(ys) + grow)
+    inside = lambda x, y: box[0] <= x <= box[2] and box[1] <= y <= box[3]   # noqa: E731
+    ids = {i for i, n in pcb.nets.items() if n.name in set(names)}
+    num = lambda s, k: [float(v) for v in re.search(r'\(' + k + r' ([-\d.e]+) ([-\d.e]+)', s).groups()]  # noqa: E731
+    out = []
+    for b in net_blocks(txt, 'segment', ids, names):
+        if inside(*num(b, 'start')) and inside(*num(b, 'end')):
+            out.append(b)
+    for b in net_blocks(txt, 'via', ids, names):
+        if inside(*num(b, 'at')):
+            out.append(b)
+    return out
+
+
+def pulled_nets(pcb, src, dest, names):
+    """{net name: [its pull pads]} for the nets between `src` and `dest` that a PULL alone keeps out of `names`
+    (make_bench.pair_nets): one pad on each of the two parts, and every other pad a two-pad part's whose other pad is a
+    plane's net (one that owns a zone) -- a pull-up or -down to a rail, a termination to ground: the zynq's Ethernet
+    PHY's strap pins ETH_RXD0-3, ETH_RXCTL and ETH_MDIO (R34-R45), and the USB PHY's OTG_RESETN (R33, C121). A lane
+    between the two parts is the net's run; its pull is a stub off it, the router's"""
+    zone_ids = {z.net_id for z in (pcb.zones or []) if z.net_id}
+    have = set(names)
+    out = {}
+    for net in pcb.nets.values():
+        if not net.name or net.name in have or net.net_id in zone_ids:
+            continue
+        on = collections.Counter(p.component_ref for p in net.pads)
+        rest = [p for p in net.pads if p.component_ref not in (src, dest)]
+        if on.get(src) != 1 or on.get(dest) != 1 or not rest:
+            continue
+        ok = True
+        for p in rest:
+            fp_ = pcb.footprints.get(p.component_ref)
+            others = [q for q in (fp_.pads if fp_ else ()) if q is not p]
+            if fp_ is None or len(fp_.pads) != 2 or others[0].net_id not in zone_ids:
+                ok = False
+                break
+        if ok:
+            out[net.name] = rest
+    return out
+
+
+def _pad_block(fp_text, number, with_net):
+    """(start, end) in `fp_text` of the pad block numbered `number`, the first with a (net ...) token if `with_net`, else
+    the first without one; None when there is none"""
+    from kicad_parser import find_matching_paren
+    i = 0
+    while True:
+        j = fp_text.find(f'(pad "{number}"', i)
+        if j < 0:
+            return None
+        k = find_matching_paren(fp_text, j)
+        if (re.search(r'\(net\s', fp_text[j:k]) is not None) == with_net:
+            return j, k
+        i = k
+
+
+def unpull(txt, pads):
+    """`txt` (a board's text) with each pad of `pads` taken off its net -- its (net ...) token removed -- and the tokens
+    taken: (txt, held), held [(ref, pad number, the token with the white space before it)] for repull"""
+    from kicad_parser import iter_footprint_blocks, find_matching_paren
+    held = []
+    for p in pads:
+        blk = next(((a, b, t) for a, b, t, _r, key in iter_footprint_blocks(txt) if key == p.component_ref), None)
+        span = _pad_block(blk[2], p.pad_number, True) if blk else None
+        if span is None:
+            continue
+        pad = blk[2][span[0]:span[1]]
+        m = re.search(r'\s*\(net\s', pad)
+        e = find_matching_paren(pad, m.end() - len('(net') - 1)
+        tok = pad[m.start():e]
+        at = blk[0] + span[0]
+        txt = txt[:at + m.start()] + txt[at + e:]
+        held.append((p.component_ref, p.pad_number, tok))
+    return txt, held
+
+
+def repull(txt, held):
+    """`txt` with each pad unpull took off its net put back on it: the token after the pad's (layers ...), where KiCad
+    writes it. (txt, the pads not found: [REF.PAD])"""
+    from kicad_parser import iter_footprint_blocks, find_matching_paren
+    missed = []
+    for ref, num, tok in held:
+        blk = next(((a, b, t) for a, b, t, _r, key in iter_footprint_blocks(txt) if key == ref), None)
+        span = _pad_block(blk[2], num, False) if blk else None
+        if span is None:
+            missed.append(f'{ref}.{num}')
+            continue
+        pad = blk[2][span[0]:span[1]]
+        lay = pad.find('(layers')
+        at = blk[0] + span[0] + (find_matching_paren(pad, lay) if lay >= 0 else len(pad) - 1)
+        txt = txt[:at] + tok + txt[at:]
+    return txt, missed
 
 
 def waypoint_pairs(pcb, names, src, dest):
@@ -676,12 +1064,25 @@ def main():
                                   'both, every bus found (find_buses), the largest first')
     ap.add_argument('--dest', help='the destination array')
     ap.add_argument('--find', action='store_true', help='name the buses found, taken or not and why, and stop')
+    ap.add_argument('--bus', action='append', metavar='SRC:DEST[:MODE[:LAYERS]]',
+                    help='a bus to route, in the order given (repeat for each; instead of --src/--dest): MODE joint, '
+                         'escape or plain (default: --joint-fanout / --escape), LAYERS its routing layers '
+                         '(ROUTE_LAYERS, comma separated; default the environment\'s); DEST may be a row part (a QFN), '
+                         'and may name several parts, U4+U3 (one source, several ends: a plain bus, its trunk to the '
+                         'first, a branch off it to each other). An escape bus on an array an earlier bus was routed '
+                         'through plans that array whole with it, its ends on the board as it was before that bus; a '
+                         'plain or joint one may keep the escapes that bus\'s step laid it there (SOURCE_SHARED)')
     ap.add_argument('--k', type=int, help="the ladder's first K nets (default: the whole ladder)")
     ap.add_argument('--rounds', type=int, default=3, help='fanout rounds (default 3)')
     ap.add_argument('--inproc', action='store_true', help='every stage in this process rather than each in its own')
     ap.add_argument('--joint-fanout', action='store_true',
                     help='after each round lays the bus at the two arrays, plan and lay every array\'s other nets '
                          'and plane drops jointly round it, so the chain\'s later fanouts leave the arrays alone')
+    ap.add_argument('--escape', action='store_true',
+                    help='the ESCAPE fanout: no source fanout -- every ball of both arrays dog-boned the human\'s way '
+                         '(dogbone_arrays), the passives beneath moved off the vias, and each round plans the bus\'s '
+                         'ends among the escapes that field has and lays them as they are (escape_plan); '
+                         'overrides --joint-fanout')
     ap.add_argument('--json-out', help='the summary: the nets routed and refused (and why), the rules, the grade '
                                      '(default: <OUT>.bus/summary.json)')
     g = ap.add_argument_group('sizes', 'the chain\'s sizes, as the routing CLIs take them; one omitted is resolved as '
@@ -708,12 +1109,18 @@ def main():
         sys.exit(0)
     if not a.out or (a.src is None) != (a.dest is None):
         ap.error('OUT is needed, and --src and --dest go together')
+    if a.bus and a.src is not None:
+        ap.error('--bus names the buses: no --src/--dest with it')
+    try:
+        buses = [parse_bus(b) for b in a.bus] if a.bus else None
+    except ValueError as e:
+        ap.error(str(e))
     sizes = {n: getattr(a, n) for n in SIZE_ARGS if getattr(a, n) is not None}
     if a.src is None:
-        sys.exit(route_buses(a.board, a.out, None, a.k, a.rounds, a.inproc, json_out=a.json_out,
-                             joint_fanout=a.joint_fanout, **sizes)[0])
+        sys.exit(route_buses(a.board, a.out, buses, a.k, a.rounds, a.inproc, json_out=a.json_out,
+                             joint_fanout=a.joint_fanout, escape=a.escape, **sizes)[0])
     sys.exit(route_bus(a.board, a.out, a.src, a.dest, a.k, a.rounds, a.inproc, json_out=a.json_out,
-                       joint_fanout=a.joint_fanout, **sizes)[0])
+                       joint_fanout=a.joint_fanout, escape=a.escape, **sizes)[0])
 
 
 if __name__ == '__main__':

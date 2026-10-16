@@ -78,6 +78,21 @@ def via_ring(cfg, extra: float = 0.0, size: float = None) -> float:
             + 0.25) * cfg.grid_step
 
 
+def svia_reach(cfg, x: float, y: float, size: float) -> float:
+    """(SVIA_RING) how far a via ON THE BOARD (another net's: a dog-bone, a stitch) reaches for a planned lane,
+    as a disc's radius that the stages' lane bars (half a track and the clearance, and their grid allowance) are
+    added to: the router keeps a track's grid cells off it by its RING about the grid point it rounds to (via_ring,
+    the via's own size), and as far again as it stands off that point. Planned at the copper's bar alone, a lane met
+    the ring in the snap (zynq LVDS K40: EN_AGC 0.408 off VCC_1V8's dog-bone at U1's corner, the geometry, the polish
+    and the audit asking 0.4025, the ring 0.417 -- one free column, closed where its neighbour's share began). Off
+    (SVIA_RING=0), the via's own radius"""
+    if (awx_settings.get('SVIA_RING') or '1') != '1':
+        return size / 2
+    g = cfg.grid_step
+    off = math.hypot(x - round(x / g) * g, y - round(y / g) * g)
+    return max(size / 2, via_ring(cfg, size=size) + off - cfg.track_width / 2 - cfg.clearance)
+
+
 def pad_corner_radius(pad) -> float:
     """A pad's corner radius, as KiCad draws its copper: a circle or an oval a stadium (its half width), a roundrect
     by its ratio of the shorter side (none declared: square-cornered, as the router reads it), a rectangle or a

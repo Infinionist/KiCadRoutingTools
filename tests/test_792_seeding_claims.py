@@ -190,29 +190,31 @@ def test_the_control_arm_is_never_what_changed():
           "every armed board")
 
 
-def test_the_SHIPPING_arm_strands_only_what_the_pin_stage_crowds_out():
+def test_the_SHIPPING_arm_strands_nothing_the_control_seats():
     """What the SHIPPING arm (`decaps.max_distance_mm` declared) leaves
     unseated that the no-decaps control seats, re-derived per board and
-    pinned EXACTLY: rp2350's J2, and nothing else.
+    pinned EXACTLY: nothing.
 
     The put-back falls through to the centroid stage rather than appending
     to `unseated`, so it cannot strand a part; the pin stage CAN, by
     claiming room near the ICs already placed before the parts stage 3
-    seats last (rp2350 claims 15 caps; J2 then no longer fits). History,
-    so the number is not mistaken for news: the first rows file (measured
-    at b9055e1) did not show it; the pre-phase-3 seeder at 754e7f419
-    does. Any other board or part appearing, or J2 going, fails here and
-    is read deliberately."""
+    seats last (rp2350 claims 15 caps). History, so a part appearing here
+    is read against it: the first rows file (measured at b9055e1) showed
+    none; the pre-phase-3 seeder at 754e7f419 stranded rp2350's J2 (a
+    Tag-Connect on B.Cu over U3), and so did every seeder through 5712eea2.
+    Bisected: dea7d31f (#1206, one far-side box per cluster of drilled pads
+    instead of one over them all -- J2's three NPTH holes are such a part,
+    as are U6, U8 and J1) is the first seeder that seats it in every arm.
+    Any board or part appearing here fails and is read deliberately."""
     rows = _armed(_rows())
     stranded = {}
     for r in rows:
         extra = sorted(set(r['on']['unseated']) - set(r['off']['unseated']))
         if extra:
             stranded[r['board']] = extra
-    assert stranded == {'rp2350_fpga_eensy_prePlane': ['J2']}, stranded
-    print(f"  PASS: {len(rows)} board(s); the shipping arm strands only "
-          f"{stranded} beyond the control -- the pin stage's crowding, "
-          f"pinned")
+    assert stranded == {}, stranded
+    print(f"  PASS: {len(rows)} board(s); the shipping arm strands nothing "
+          f"the control seats")
 
 
 def test_the_owner_test_arm_STRANDS_parts_and_that_is_why_it_ships_off():
@@ -225,10 +227,15 @@ def test_the_owner_test_arm_STRANDS_parts_and_that_is_why_it_ships_off():
     L1, and tigard H1 and H3. A stranded part is a worse outcome than every
     gain the flag buys.
 
-    Measured against the shipping arm rather than the no-decaps control
-    (the control differs from both by rp2350's J2 -- see the arm above).
-    The pin geometry is recorded too: the chips arm is worse on glasgow,
-    rp2350 and ulx3s and better nowhere -- no reason to turn it on either.
+    Measured against the shipping arm rather than the no-decaps control.
+
+    The PIN GEOMETRY no longer argues the same way, and is pinned as it
+    stands so the next move is read: the chips arm is worse on glasgow and
+    BETTER on rp2350 and ulx3s. Through 5712eea2 it was worse on all three
+    and better nowhere; bisected, dea7d31f (#1206, one far-side box per
+    cluster of drilled pads) turned rp2350 and ulx3s together. So the
+    geometry is a gain the flag would buy on two boards, and the four
+    stranded parts are the whole reason it stays off.
     """
     rows = _armed(_rows())
     stranded = {}
@@ -248,10 +255,12 @@ def test_the_owner_test_arm_STRANDS_parts_and_that_is_why_it_ships_off():
             worse.append(r['board'])
         elif b < a - 1e-6:
             better.append(r['board'])
-    assert len(worse) >= len(better), (better, worse)
+    assert (sorted(worse), sorted(better)) == (
+        ['glasgow_revC'], ['rp2350_fpga_eensy_prePlane', 'ulx3s']), (
+        better, worse)
     print(f"  PASS: the owner-test arm strands {stranded} the shipping arm "
-          f"seats; pin_gap_sum worse on {worse}, better on {better} -- so "
-          f"`decap_owner_chips` defaults to False")
+          f"seats -- so `decap_owner_chips` defaults to False; pin_gap_sum "
+          f"worse on {worse}, better on {better}")
 
 
 def test_what_DECLARING_the_key_costs_is_recorded_not_gated():
@@ -310,7 +319,7 @@ TESTS = [
     test_one_board_is_RE_MEASURED_live_so_a_stale_file_cannot_pass,
     test_the_rows_cover_the_tracked_corpus_and_say_what_they_skipped,
     test_the_control_arm_is_never_what_changed,
-    test_the_SHIPPING_arm_strands_only_what_the_pin_stage_crowds_out,
+    test_the_SHIPPING_arm_strands_nothing_the_control_seats,
     test_the_owner_test_arm_STRANDS_parts_and_that_is_why_it_ships_off,
     test_what_DECLARING_the_key_costs_is_recorded_not_gated,
     test_the_put_back_actually_fires_somewhere,
