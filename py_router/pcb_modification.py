@@ -7106,9 +7106,18 @@ def merge_close_same_net_vias(all_new_vias, all_new_segments, pcb_data,
     # those positions or each new via matches its own copy at distance 0 and every
     # via gets "merged" away (hackrf: 358 false merges, planes disconnected).
     new_pos = {(round(nv['x'], 4), round(nv['y'], 4)) for nv in all_new_vias}
-    from geometry_utils import via_copper_layers
+    from geometry_utils import via_copper_layers, _copper_order
     _cu_layers = list(getattr(getattr(pcb_data, 'board_info', None),
-                              'copper_layers', None) or ['F.Cu', 'B.Cu'])
+                              'copper_layers', None) or [])
+    if not _cu_layers:
+        # No stack on the board object: span over the layers the vias name
+        # themselves, or an inner layer would drop out of every span and an
+        # empty span would cover anything.
+        _cu_layers = sorted({'F.Cu', 'B.Cu'}
+                            | {ln for v in pcb_data.vias for ln in (v.layers or ())}
+                            | {ln for nv in all_new_vias
+                               for ln in (nv.get('layers') or ())},
+                            key=_copper_order)
     survivors_by_net = {}  # net_id -> [(x, y, drill, span)]
     for v in pcb_data.vias:
         if (round(v.x, 4), round(v.y, 4)) in new_pos:
