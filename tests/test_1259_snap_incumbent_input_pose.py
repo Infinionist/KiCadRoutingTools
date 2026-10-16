@@ -61,6 +61,22 @@ answer for a worse one. The cases:
   ranked (145.9, 101.75); (147.5, 101.5) radius 4 refuses), and the
   on-board input above (no `ranked_on_board` rung; the 7th try).
 
+Found reviewing #1277: `pose_score.rank_poses` labelled every pose it
+ranked `legal: True`, the escape branch's too. With R3 off the board,
+`converge poses --ref R3 --radius 3` called (146.0, 104.5) at 270 degrees
+legal with both pads past the east edge; at step 0.5 the sweep ranks 6
+poses the ordinary gate admits and 108 it does not. Now `legal` is the
+ordinary gate's verdict and those carry `escape: True`:
+
+* off the board, each pose's label agrees with `candidate_valid` with the
+  branch closed, `diagnostics['escape_admitted']` counts them, and at home
+  every pose is legal with no `escape` key (the control);
+* `converge poses` reports the pose as an escape pose, in the JSON and on
+  stderr, and place_pose's no-snap suggestion at (145.4, 103.75) says it is
+  only less off the board; controls: the `--radius 4` suggestion (142.9,
+  104.25) is legal and worded as before, and the snap from (143.4, 101.0)
+  still writes (145.9, 101.75), its pose now marked `escape`.
+
     python3 tests/test_1259_snap_incumbent_input_pose.py
 """
 import contextlib
@@ -387,6 +403,101 @@ def test_1277_controls_unchanged():
           'refuses as before' % sn['to'])
 
 
+def test_rank_poses_labels_escape_poses():
+    """`rank_poses` labelled every pose it ranked `legal: True`, the ones
+    only the escape branch admits included (found reviewing #1277): with R3
+    off the board, `converge poses` called (146.0, 104.5) at 270 degrees --
+    both pads past the east edge -- legal. Now `legal` is the ordinary
+    gate's verdict, and an escape pose carries `escape: True`."""
+    import pose_score
+    from kicad_parser import parse_kicad_pcb
+    board = _off_board()
+    clr, bec = _knobs(board)
+    pcb = _quiet(parse_kicad_pcb, board)
+    # converge's state: no incumbent pinned, R3's current pose off the board.
+    st = _quiet(pose_score.make_state, pcb, board, clearance=clr,
+                board_edge_clearance=bec)
+    assert st.escape_board_term(REF) is not None, 'R3 is off the board'
+    diag = {}
+    poses = pose_score.rank_poses(pcb, board, REF, radius=3.0, step=0.5,
+                                  limit=1000, state=st, diagnostics=diag)
+    legal = [p for p in poses if p['legal']]
+    esc = [p for p in poses if not p['legal']]
+    by = {(p['x'], p['y'], p['rot']): p for p in poses}
+    off = by.get((146.0, 104.5, 270.0))
+    assert off is not None and off['legal'] is False and off.get('escape'), (
+        'a pose with both pads past the edge is labelled legal', off and {
+            k: off[k] for k in ('legal', 'escape') if k in off})
+    assert legal and esc, (len(legal), len(esc))
+    assert diag['escape_admitted'] == len(esc), (diag['escape_admitted'],
+                                                 len(esc))
+    # The label is the ordinary gate's verdict, pose by pose.
+    st.escape_closed.add(REF)
+    wrong = [(p['x'], p['y'], p['rot'], p['legal']) for p in poses
+             if bool(st.candidate_valid(REF, p['x'], p['y'], p['rot']))
+             != p['legal']]
+    st.escape_closed.discard(REF)
+    assert not wrong, ('labels the ordinary gate disagrees with', wrong[:4])
+    assert all(p.get('escape') is True for p in esc), 'escape marks them all'
+    assert not any('escape' in p for p in legal), 'and no legal pose'
+    # Control: from the board's own poses (R3 at home) nothing changes --
+    # every pose legal, no escape key, nothing escape-admitted.
+    esp = evidence(ESP, 'esp_prog')
+    pcb0 = _quiet(parse_kicad_pcb, esp)
+    st0 = _quiet(pose_score.make_state, pcb0, esp, clearance=clr,
+                 board_edge_clearance=bec)
+    d0 = {}
+    p0 = pose_score.rank_poses(pcb0, esp, REF, radius=3.0, step=0.5,
+                               limit=1000, state=st0, diagnostics=d0)
+    assert p0 and all(p['legal'] is True and 'escape' not in p for p in p0)
+    assert d0['escape_admitted'] == 0, d0['escape_admitted']
+    print('  PASS: off the board, %d legal + %d escape poses, each label the '
+          'ordinary gate\'s verdict; at home %d poses, all legal'
+          % (len(legal), len(esc), len(p0)))
+
+
+def test_the_labels_reach_converge_and_the_suggestion():
+    # converge poses: the escape pose is reported as one, and said so.
+    conv = tool('converge.py')
+    r = check([sys.executable, '-X', 'utf8', conv, 'poses', _off_board(),
+               '--ref', REF, '--radius', '3', '--limit', '8'], accept=True)
+    d = json.loads(r.stdout)
+    by = {(p['x'], p['y'], p['rot']): p for p in d['poses']}
+    off = by.get((146.0, 104.5, 270.0))
+    assert off is not None and off['legal'] is False and off.get('escape'), (
+        off and {k: off[k] for k in ('legal', 'escape') if k in off})
+    assert 'only LESS off it' in (d.get('escape_note') or ''), d.keys()
+    assert 'escape: true, legal: false' in r.stderr, r.stderr[-400:]
+    # place_pose's no-snap suggestion at the default sweep (2 mm): only an
+    # escape pose is in reach, and the refusal no longer reads it as legal.
+    r = check(_off_set(143.4, 102.0), refuse='pad_stack_count 0 -> 1',
+              code=4)
+    s = _summary(r)
+    nl = s['nearest_legal']
+    assert (nl['x'], nl['y']) == (145.4, 103.75), nl
+    assert nl['legal'] is False and nl.get('escape') is True, nl
+    assert ("2.658 mm away, only less off the board than the part's input "
+            "pose) -- try it with --snap") in s['refused'], s['refused']
+    # Control: --radius 4 reaches the legal pose, labelled and worded as
+    # before.
+    r = check(_off_set(143.4, 102.0, '--radius', '4'),
+              refuse='pad_stack_count 0 -> 1', code=4)
+    s = _summary(r)
+    nl = s['nearest_legal']
+    assert (nl['x'], nl['y'], nl['legal']) == (142.9, 104.25, True), nl
+    assert 'escape' not in nl and 'only less off' not in s['refused'], nl
+    # Control, the snap: an escape pose the re-grade passes is still written
+    # (the ranked rung decides nothing on the label), and the summary's pose
+    # now says what it is.
+    r = check(_off_set(143.4, 101.0, '--snap', '--radius', '3'), accept=True)
+    s = _summary(r)
+    assert s['snapped']['to'] == [145.9, 101.75, 180.0], s['snapped']
+    assert s['legal'] is False, s['legal']
+    assert s['nearest_legal'].get('escape') is True, s['nearest_legal']
+    print('  PASS: converge and the no-snap suggestion report the escape pose '
+          'as one; the legal suggestion and the snap are unchanged')
+
+
 TESTS = [
     test_the_ranker_pins_the_incumbent_at_the_input_pose,
     test_the_pad_conjunct_reads_the_pinned_incumbent,
@@ -397,6 +508,8 @@ TESTS = [
     test_1277_the_lattice_keeps_the_on_board_answer,
     test_1277_the_suggestion_takes_the_same_order,
     test_1277_controls_unchanged,
+    test_rank_poses_labels_escape_poses,
+    test_the_labels_reach_converge_and_the_suggestion,
 ]
 
 

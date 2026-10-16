@@ -2039,20 +2039,27 @@ def _refusal_reason(bad, strict, before, after, summary) -> str:
         # never advised to a call that already carries it.
         return reason + _snap_census_sentence(sc)
     nl = summary.get('nearest_legal')
+    # A ranked pose the escape branch alone admitted is only LESS off the
+    # board than the part's input pose (`rank_poses` labels it `legal:
+    # False, escape: True`), and the sentence must not read as a legal one.
+    off = (", only less off the board than the part's input pose"
+           if nl and nl.get('escape') else '')
     if nl and not bad:
         # --strict-legal is a WHOLE-BOARD condition, and this candidate is
         # about ONE part: moving there can leave every other conflict in
         # place, so it is offered as a next step and not as a fix.
         reason += (" The pose ranker's nearest candidate for this part is "
-                   "x=%g y=%g rot=%g (%.3f mm away), but --strict-legal is a "
-                   "condition on the WHOLE board, so that pose need not "
+                   "x=%g y=%g rot=%g (%.3f mm away%s), but --strict-legal is "
+                   "a condition on the WHOLE board, so that pose need not "
                    "satisfy it."
-                   % (nl['x'], nl['y'], nl['rot'], nl.get('dist_mm') or 0.0))
+                   % (nl['x'], nl['y'], nl['rot'], nl.get('dist_mm') or 0.0,
+                      off))
     elif nl:
         reason += (" The pose ranker's nearest candidate is x=%g y=%g "
-                   "rot=%g (%.3f mm away) -- try it with --snap, which "
+                   "rot=%g (%.3f mm away%s) -- try it with --snap, which "
                    "re-grades before writing."
-                   % (nl['x'], nl['y'], nl['rot'], nl.get('dist_mm') or 0.0))
+                   % (nl['x'], nl['y'], nl['rot'], nl.get('dist_mm') or 0.0,
+                      off))
     elif summary.get('snap_census', {}).get('dropped_in_place'):
         import pose_score
         reason += (" No legal pose was found nearby, and the census shows the "
