@@ -477,6 +477,10 @@ These options control stub layer switching, which moves stubs to different layer
   layer, so an inner-layer pair can land on the pad via the via instead of fighting
   through the congested surface channel
 - Multiple swap options are tried: src/src, tgt/tgt, src/tgt, tgt/src
+- No switch, relocation or fan-out targets a **forbidden** layer: the copper
+  layers a `--layers` subset run did not request (appended as obstacles at
+  cost -1) or a negative `--layer-costs` entry. A stub whose other end sits on
+  a forbidden layer is not moved there; the net keeps its via
 - For **multi-point nets** (3+ endpoints, #265), all movable stubs are collapsed onto one
   common layer when every endpoint allows it (through-hole and via-in-pad pads reach any
   layer; bare SMD pads fix their copper layers; already-connected pad-to-pad copper never

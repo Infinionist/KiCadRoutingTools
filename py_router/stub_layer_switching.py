@@ -231,6 +231,19 @@ def get_stub_info(pcb_data: PCBData, net_id: int, stub_x: float, stub_y: float,
     return stub
 
 
+def forbidden_destination(config, dest_layer: str) -> bool:
+    """True when `dest_layer` is in config.layers at FORBIDDEN (negative)
+    cost -- an unrequested copper layer a --layers subset run appends as an
+    obstacle. No stub may be moved onto one. Candidate lists draw from
+    config.routable_layers(), but several swaps take their destination from
+    the OTHER endpoint's current layer, which can itself be forbidden; the
+    validators refuse such a destination for every caller."""
+    routable = getattr(config, 'routable_layers', None)
+    if routable is None or dest_layer not in (getattr(config, 'layers', None) or ()):
+        return False
+    return dest_layer not in routable()
+
+
 def needs_pad_via_for_switch(stub: StubInfo) -> bool:
     """
     Check if switching this stub requires a new pad via.
@@ -1190,6 +1203,9 @@ def validate_swap(stub_p: StubInfo, stub_n: StubInfo, dest_layer: str,
         if getattr(stub, 'locked', False):
             return False, "stub carries KiCad-locked copper (#1261)"
 
+    if forbidden_destination(config, dest_layer):
+        return False, f"{dest_layer} is a forbidden layer (negative cost)"
+
     # #581: an active (> 0) same-net pad via clearance forbids pad-centre vias.
     if getattr(config, 'same_net_pad_clearance', -1.0) > 0:
         for stub in (stub_p, stub_n):
@@ -1526,6 +1542,9 @@ def validate_single_swap(stub: StubInfo, dest_layer: str,
     # #1261: a stub whose switch would move KiCad-locked copper is fixed.
     if getattr(stub, 'locked', False):
         return False, "stub carries KiCad-locked copper (#1261)"
+
+    if forbidden_destination(config, dest_layer):
+        return False, f"{dest_layer} is a forbidden layer (negative cost)"
 
     # #581: an active (> 0) same-net pad via clearance forbids the pad-centre
     # via this switch would drill -- decline the swap instead.

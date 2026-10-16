@@ -799,6 +799,17 @@ config.get_layer_costs() -> List[int]            # ×1000 for the Rust router
 config.get_layer_direction_preferences() -> List[int]  # 0=H, 1=V, 255=none
 ```
 
+```python
+config.routable_layers() -> List[str]
+```
+`layers` minus every FORBIDDEN (negative-cost) layer, in order: the layers a
+track may be placed on. A `--layers` subset run appends the board's other
+copper layers at cost -1 (obstacles that vias may span), so relocation, stub
+switching and layer swaps draw their candidate layers from here, never from
+`layers`; a swap whose destination is the other end's current layer is refused
+by the stub validators when that layer is forbidden. A layer `layer_costs`
+does not cover is routable, as `get_layer_costs` treats it.
+
 #### Cost scaling
 
 Cost knobs are calibrated at `REFERENCE_GRID_STEP` (0.1 mm) and rescaled so
