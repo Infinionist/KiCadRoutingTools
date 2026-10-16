@@ -286,6 +286,11 @@ the source part with the most pads, or `--anchor REF` from any named sheet.
 at exit 4, writing nothing, unless the instances are interchangeable: the
 same parts, the same footprints and pads, and nets that correspond one to
 one, with a net on both instances (GND, a rail) mapping to itself. The
+pads are judged against the net map under which the most pad pairs agree,
+chosen over all of them at once (ties go to the pairings met first), so a
+strap names itself rather than the pads wired alike (#1277); a pad that
+breaks the rule under any map (a shared net renamed, a net against no net)
+takes no part in choosing it. The
 refusal names the refs and pads and spells, for each pad, the waiver
 `--allow-net-mismatch REF.PAD`: one pad per flag, for a pad wired
 differently per instance BY DESIGN (glasgow_revC's IO_Buffer address
