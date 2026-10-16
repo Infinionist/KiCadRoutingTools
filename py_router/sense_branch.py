@@ -13,19 +13,26 @@ whose members are the sense tracks/arcs/vias and whose name is the join pad,
     (group "sense:C108.1" (uuid ...) (members "<track uuid>" "<via uuid>" ...))
 
 The sense pads are the pads of the same net that member copper touches, the
-join pad excepted. There is no flag and no side file: both parse paths
+join pad excepted. Contact is KiCad's: copper meets copper where the shapes
+do -- a track crossing another in an X, a track across a pad off-centre, a
+via only on the layers of its span -- and every pad is its real copper (a
+round pad is a circle, not its bounding box). A member uuid that matches no
+item is dropped, as KiCad drops it on load. There is no flag and no side
+file: both parse paths
 (`parse_kicad_pcb`, `build_pcb_data_from_board`) resolve the groups into
 `PCBData.sense_branches`, so every step of a chain and every leg that parses
 the board sees them. Nothing is moved to another net.
 
 The rule, for the branch's own net (every other net already sees the branch as
 foreign copper):
-- obstacles: `build_base_obstacle_map` stamps member copper and sense pads as
-  foreign copper at the net's clearance, minus the cells where new copper would
-  lie on the join pad (`stamp_base_obstacles`), so every map derived from a
-  base -- per-net via rungs included -- carries it;
-- terminal gate: `_neck_terminal_grazes` measures the same copper as foreign
-  except where the terminal lies on the join pad (`terminal_sense_dist`);
+- obstacles: `build_base_obstacle_map` stamps member copper (from where its
+  copper leaves the join pad) and sense pads as foreign copper at the net's
+  clearance, holding to it only the new copper that sticks out of the join
+  pad (`stamp_base_obstacles`, `_still_blocked`; the pad's own cell is always
+  free, so a pad narrower than the track is landed at its centre), so every
+  map derived from a base -- per-net via rungs included -- carries it;
+- terminal gate: `_neck_terminal_grazes` measures the same copper with the
+  same off-pad measure (`terminal_sense_dist`);
 - terminals: the endpoint derivations never offer member copper or a sense pad
   as a place to attach (`connectivity.routable`, net_rescue's join points), so
   the net's other pads route to the join pad;
@@ -42,8 +49,10 @@ missing or has no net, a member is not a track or via on the board, member
 copper is on another net, member copper does not touch the join pad, a sense
 pad or member is not joined to the join pad by member copper yet, other copper
 of the net already touches the branch off the join pad (the input taps it), or
-a pour of the same net covers the branch off the join pad (KiCad's fill floods
-over same-net copper, so the pour already taps it).
+a pour of the same net can fill over the branch off the join pad (KiCad's fill
+floods over same-net copper, so the pour already taps it; the zone's cut-outs
+and copper-pour keep-outs are not fill, so a pour cut around the trace does
+not).
 KiCad DRC cannot see topology, so check the written board in every case.
 """
 from __future__ import annotations
