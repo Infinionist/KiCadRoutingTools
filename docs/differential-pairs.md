@@ -287,7 +287,11 @@ This accounts for the P/N track offset (half the track-to-track spacing) plus ha
 
 ### Perpendicular Offsets
 
-P and N paths are created as perpendicular offsets from the simplified centerline:
+P and N paths are created as perpendicular offsets from the simplified centerline.
+The offset is half the P/N centre pitch, `(width + gap) / 2`. With per-layer widths
+(an `--impedance` solve or a stored impedance declaration) it is taken per layer
+from that layer's own width (`layer_pair_spacing`), so a narrower stripline layer
+keeps the declared gap:
 
 ```python
 def create_parallel_path_float(centerline_path, coord, sign, spacing_mm, start_dir, end_dir):
@@ -428,6 +432,11 @@ Main N track ────┘
 The approach/exit positions are calculated to:
 1. Maintain track-via clearance from the inner via
 2. Keep P and N tracks at constant diff pair spacing
+
+With per-layer widths both are per layer: the approach runs at the incoming
+layer's pitch and clears the via at that layer's width, the exit likewise on the
+outgoing layer, and the via offset is large enough for every routable layer's
+tracks to clear the partner via at their own pitch.
 
 ```python
 # Determine which via is "inner" (closer to turn direction)
