@@ -333,7 +333,8 @@ key-by-key reading.
 
 Before anything is written, the PLAN is checked against itself and the board
 (`floorplan.plan_check`, #959). An area bound no arrangement can meet within
-a declared overlap budget, a part longer than its edge, or a real reference
+a declared overlap budget, a part longer than its edge, two exact fixed poses
+whose side-aware courtyard/pad/hole geometry conflicts, or a real reference
 used as a glob that lands a part in two disjoint zones refuses at **exit 5**
 with nothing written and `JSON_SUMMARY.refused: 'plan_check'`
 (`floorplan.PLAN_SEED_REFUSES`). Every other plan finding is printed as

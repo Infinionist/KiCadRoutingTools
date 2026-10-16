@@ -76,6 +76,10 @@ REFUSED_TOOLS = {
         '(`replicate`, #1211); the plan format has no placement step, and a '
         'pose is a decision rather than a replayable parameter set. Run it on '
         'the CLI and start the plan from its output'),
+    'place_intent_sides.py': (
+        'mirrors parts onto the faces a floorplan intent declares (#1280); '
+        'the plan format has no placement step. Run it BEFORE the plan and '
+        'start the plan from its output'),
     'render_placement.py': (
         'renders a PNG; it changes no board and has nothing to replay'),
     'beautify_labels.py': (

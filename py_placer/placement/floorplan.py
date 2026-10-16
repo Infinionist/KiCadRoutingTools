@@ -4775,8 +4775,9 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
                 rule='edge_connector_side', severity=WARN, ref=ref,
                 message=(f"{ref} is on {part.side}.Cu, but the declared "
                          f"viewing face puts it on {c['side']}.Cu -- advisory:"
-                         f" nothing in the placement stack moves a part "
-                         f"between faces"),
+                         f" no placement search moves a part between faces; "
+                         f"place_intent_sides.py applies the declared face "
+                         f"before seeding"),
                 measured={'side': part.side}, expected={'side': c['side']})
         amount = ctx.gate.rect_outside_amount(part.rect)
         lim = c.get('overhang_mm') or {}
@@ -6801,6 +6802,9 @@ _NON_RULE_SEVERITIES = frozenset({
     'plan_fixed_outside_zone', 'plan_zone_overfull', 'plan_zone_crowded',
     'plan_edge_overfull', 'plan_edge_crowded', 'plan_board_overfull',
     'plan_board_crowded',
+    # #1054: two exact declarations that stage 0's own courtyard/pad/hole
+    # geometry says cannot both be seated.
+    'plan_fixed_pose_conflict',
     # Row 8: two FILE-locked parts overlapping. A WARN per pair; an ERROR
     # only when their overlap alone exceeds a DECLARED overlap budget.
     'plan_fixed_overlap', 'plan_fixed_overlap_budget',
@@ -8148,7 +8152,11 @@ def glob_escape(ref: str) -> str:
 
 #: The `plan_check` findings `place_seed` REFUSES on (#959): the area
 #: bounds and the literal glob -- plans the seeder has no per-member answer
-#: for. The older plan contradictions keep their pre-#959 contract there:
+#: for -- and `plan_fixed_pose_conflict` (#1280), whose answer IS stage 0's:
+#: the same pairwise predicate (`seeder.fixed_pose_pair_conflicts`), the
+#: same two refs and reason, so refusing it here loses nothing the seeder
+#: would have said and saves the seed it would have spent first. The older
+#: plan contradictions keep their pre-#959 contract there:
 #: a zone a keep-out covers (#701/#799) and a zone a stranger's EXCLUSIVE
 #: zone swallows (#797) are seeded, and the seeder names the member it could
 #: not seat with a measured verdict (`keepout_blocks`,
@@ -8159,7 +8167,69 @@ def glob_escape(ref: str) -> str:
 #: place_seed and REFUSED by P1, which gates every plan ERROR.
 PLAN_SEED_REFUSES = frozenset({
     'plan_zone_overfull', 'plan_edge_overfull', 'plan_board_overfull',
-    'block_glob_literal'})
+    'block_glob_literal', 'plan_fixed_pose_conflict'})
+
+
+def declared_side_claims(intent: Intent, blocks: Dict[str, List[str]]
+                         ) -> Dict[str, List[Tuple[str, str]]]:
+    """Every face the intent declares for a part: `{ref: [(side, source)]}`.
+
+    The three places a side can be declared -- `blocks[].side` (for the
+    block's RESOLVED members), `edge_connectors[].side` and
+    `fixed_poses[].side` -- read once, so `plan_check`'s per-face pricing
+    and `place_intent_sides.py`, which applies the faces before seeding,
+    cannot disagree about where a part belongs. `None` and `"unknown"`
+    declare nothing. Refs the board lacks are kept: whether to drop them is
+    the caller's question.
+    """
+    claims: Dict[str, List[Tuple[str, str]]] = {}
+
+    def claim(ref, side, source):
+        if side in ('F', 'B') and ref:
+            claims.setdefault(str(ref), []).append((side, source))
+
+    for zone in intent.blocks:
+        for ref in blocks.get(zone.name, ()):
+            claim(ref, zone.side, f"blocks[{zone.name}]")
+    for c in intent.edge_connectors:
+        claim(c.get('ref'), c.get('side'), f"edge_connectors[{c.get('ref')}]")
+    for f in intent.fixed_poses:
+        claim(f.get('ref'), f.get('side'), f"fixed_poses[{f.get('ref')}]")
+    return claims
+
+
+def declared_sides(claims: Dict[str, List[Tuple[str, str]]]
+                   ) -> Tuple[Dict[str, str], Dict[str, List[Tuple[str, str]]]]:
+    """`(sides, conflicts)` from `declared_side_claims`: the one face every
+    claim on a ref agrees on, and the refs whose claims name both faces.
+
+    A conflict is not resolved here: choosing either face would invent a
+    precedence rule. `plan_check` leaves such a part on its board face (the
+    side grade names the contradiction) and `place_intent_sides` refuses."""
+    sides: Dict[str, str] = {}
+    conflicts: Dict[str, List[Tuple[str, str]]] = {}
+    for ref, rows in claims.items():
+        faces = {side for side, _src in rows}
+        if len(faces) == 1:
+            sides[ref] = faces.pop()
+        else:
+            conflicts[ref] = list(rows)
+    return sides, conflicts
+
+
+def _planned_sides(intent: Intent,
+                   blocks: Dict[str, List[str]]) -> Dict[str, str]:
+    """The face each part is PRICED on by `plan_check`: the one its
+    declarations agree on (`declared_side_claims`), else none -- the caller
+    falls back to the board face.
+
+    `plan_check` runs before the planned placement exists. The board can be
+    a generator pile with every movable footprint on one face, so its current
+    layers are not evidence for the plan's per-face capacity; the faces the
+    plan declares are, and `place_intent_sides.py` is what puts the parts on
+    them before seeding.
+    """
+    return declared_sides(declared_side_claims(intent, blocks))[0]
 
 
 def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
@@ -8187,6 +8257,8 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
          and must_lock are seated), so this is a fact about the plan.
          Also (#1054, WARN unless set) a `fixed_poses[]` entry whose DECLARED
          pose is outside its own block's zone: stage 0 seats it exactly.
+      4c. `plan_fixed_pose_conflict` (ERROR): two declared exact poses whose
+          courtyards, pads or holes conflict under stage 0's own geometry.
       8. `plan_fixed_overlap` (WARN, per pair) / `plan_fixed_overlap_budget`
          (ERROR): two FILE-locked parts whose courtyards overlap on a shared
          face overlap in every placement. The grade counts courtyard overlap
@@ -8221,6 +8293,11 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
          `grow_board`'s usable area) exceeds a declared budget; a WARN past
          `options.CROWDED_UTILISATION` or on the one-face basis a declared
          `assembly.sides` implies.
+      Rows 5 and 7 charge each part to the face the intent DECLARES for it
+      (`blocks[].side`, `edge_connectors[].side`, `fixed_poses[].side`, when
+      they agree -- `declared_side_claims`), else to its board face: a pile
+      has every part on F.Cu, and the plan is priced as it will be seeded
+      once `place_intent_sides.py` has applied those faces.
     """
     from . import options as _opts
     ctx, outline, state, blocks, block_problems = _grade_ctx(
@@ -8309,6 +8386,30 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                               'pose': [float(f['x']), float(f['y']), rot]},
                     expected={'zone': list(z.rect), 'tolerance_mm': tol}))
 
+    # 4c. Exact declarations are one simultaneous batch in stage 0. Compare
+    # them pairwise now with that stage's own side-aware courtyard/pad/hole
+    # predicate, so an impossible pair is refused before a board is written.
+    # This is deliberately not folded into row 8: these refs need not be
+    # locked in the input file, and no overlap budget can license a pair the
+    # exact-pose seater itself refuses.
+    from .seeder import fixed_pose_pair_conflicts
+    fixed_pose_conflicts = fixed_pose_pair_conflicts(
+        state, intent.fixed_poses,
+        waived=frozenset(frozenset(p_)
+                         for p_ in intent.courtyard_waiver_pairs()))
+    for conflict in fixed_pose_conflicts:
+        a_, b_ = conflict['pair']
+        out.append(Violation(
+            rule='plan_fixed_pose_conflict',
+            severity=intent.severity_of('plan_fixed_pose_conflict'),
+            ref=a_,
+            message=(f"fixed poses {a_} and {b_} cannot both be seated: "
+                     f"{conflict['reason']}. Stage 0 judges exact anchors as "
+                     f"one batch and would refuse both; move one pose"),
+            measured=conflict,
+            expected={'conflicts': []}))
+    measured['fixed_pose_conflicts'] = fixed_pose_conflicts
+
     # 8. two FILE-locked parts overlapping -- in every placement there is.
     # #1162: on the reading the budget is graded in (check_assembly's drawn
     # outlines), from the grade's own exact pairs restricted to locked ones.
@@ -8396,6 +8497,7 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
     # #1174: an edge member whose declared edge the zone leaves open may
     # sit past that side, so the zone need hold none of it.
     _claimed5 = claimed_edges(intent)
+    planned_sides = _planned_sides(intent, blocks)
     for z in intent.blocks:
         if z.rect is None:
             continue
@@ -8435,12 +8537,13 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                 # sit wholly past the open side, so charging its outline
                 # ERRORed an intent the grade passes (phase-1 verifier).
                 continue
-            per_face[part.side] = per_face.get(part.side, 0.0) + w * h
-            per_face_c[part.side] = per_face_c.get(part.side, 0.0) + (
+            planned_side = planned_sides.get(r, part.side)
+            per_face[planned_side] = per_face.get(planned_side, 0.0) + w * h
+            per_face_c[planned_side] = per_face_c.get(planned_side, 0.0) + (
                 (w + clr_used) * (h + clr_used))
             if r in _outline:
-                per_face_x[part.side] = (per_face_x.get(part.side, 0.0)
-                                         + _outline[r][1])
+                per_face_x[planned_side] = (
+                    per_face_x.get(planned_side, 0.0) + _outline[r][1])
             t0 = (part.tht_by_rot or {}).get(0.0)
             if t0 is not None:
                 # The drilled-pad rect's part INSIDE the courtyard: only the
@@ -8452,7 +8555,7 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                 # the far side: the union box charged ulx3s GPDI1's two shell
                 # posts and the gap between them, and called its own shipped
                 # arrangement (0.0 mm2 under the grade) a forced overlap.
-                far = 'B' if part.side == 'F' else 'F'
+                far = 'B' if planned_side == 'F' else 'F'
                 per_face[far] = per_face.get(far, 0.0) + (
                     legality.far_overlap_area(t0, b0))
                 # The budget measures the far side on these same cluster
@@ -8589,7 +8692,8 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
     # 7. interior utilisation
     try:
         g0 = _opts.grow_board(pcb_data, pcb_file, clearance=0.0,
-                              board_edge_clearance=0.0, assembly_sides=None)
+                              board_edge_clearance=0.0, assembly_sides=None,
+                              side_overrides=planned_sides)
     except Exception as exc:                                # noqa: BLE001
         g0 = {'error': f"{type(exc).__name__}: {exc}"}
     m0 = g0.get('measured') or {}
@@ -8609,8 +8713,13 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
     # every graded outline the budget sees, per face, against the usable
     # area. Never more than the rect sum, so a weaker bound -- never an
     # unsound one.
+    # On the declared faces, as `g0` charges them: read off the pile, every
+    # outline lands on F.Cu and the forced overlap is overstated -- an ERROR
+    # for a plan whose declared busiest face is within the budget.
     _faces_x: Dict[str, float] = {'F': 0.0, 'B': 0.0}
-    for _side, _a in _budget_outline_areas(ctx, list(state.parts)).values():
+    for _r, (_side, _a) in _budget_outline_areas(
+            ctx, list(state.parts)).items():
+        _side = planned_sides.get(_r, _side)
         _faces_x[_side] = _faces_x.get(_side, 0.0) + _a
     excess0_x = (max(_faces_x.values())
                  - (m0.get('usable_area_mm2') or 0.0))
@@ -8653,7 +8762,8 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
         try:
             g1 = _opts.grow_board(pcb_data, pcb_file, clearance=0.0,
                                   board_edge_clearance=0.0,
-                                  assembly_sides=sides)
+                                  assembly_sides=sides,
+                                  side_overrides=planned_sides)
         except Exception:                                   # noqa: BLE001
             g1 = {}
         util1 = (g1.get('measured') or {}).get('utilisation')

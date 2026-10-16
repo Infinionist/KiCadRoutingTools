@@ -176,8 +176,9 @@ findings raised outside the rule loop: `intent_zone_outside_envelope`, `intent_z
 `mechanical_drift` (#959, raised only when a `mechanical.json` is read, and
 settable to `error` only -- `warn` is refused, since the pose is a recorded
 fact),
-the eleven `plan_check` findings (#959: `plan_zone_exclusive_unsatisfiable`,
-`block_glob_literal`, `plan_fixed_outside_zone`, `plan_zone_overfull`,
+the twelve `plan_check` findings (#959: `plan_zone_exclusive_unsatisfiable`,
+`block_glob_literal`, `plan_fixed_outside_zone`, `plan_fixed_pose_conflict`,
+`plan_zone_overfull`,
 `plan_zone_crowded`, `plan_edge_overfull`, `plan_edge_crowded`,
 `plan_board_overfull`, `plan_board_crowded`, `plan_fixed_overlap`,
 `plan_fixed_overlap_budget`), `edge_connector_side` (#959, settable to `warn`
@@ -1435,8 +1436,25 @@ plan. The WARN is the same quantity with a margin.
 | `plan_fixed_outside_zone` | a FILE-locked member is already outside its zone; or (WARN) a `fixed_poses[]` entry's declared pose is outside its own block's zone | |
 | `plan_zone_overfull` / `_crowded` | per face, the members' areas exceed the zone by more than the declared `legality_budget.overlap_area`. Fitting area A into zone Z forces at least A - Z of courtyard overlap; the ERROR sums the members' graded OUTLINES and far-side clusters (the geometry the budget is measured on, #1162), the WARN their rects. `measured.zones[]` carries both (`members_outline_area_mm2`, `members_area_mm2`) | the WARN applies without a budget, on a project that waives courtyard overlap, or past a crowding margin |
 | `plan_edge_overfull` / `_crowded` | one edge-claimed part's pad extent, at its best 90-degree turn, is longer than its edge | summed extents are a WARN, because flanges overhang corners |
-| `plan_board_overfull` / `_crowded` | the parts' graded outlines, per face, force more overlap against `options.grow_board`'s usable area (clearance 0) than the budget allows, with `oob_count` declared 0; `measured.outline_area_per_face_mm2`, and the rect reading as `forced_overlap_rect_mm2` | |
+| `plan_board_overfull` / `_crowded` | the parts' graded outlines, per face (the face the intent declares for a part, below), force more overlap against `options.grow_board`'s usable area (clearance 0) than the budget allows, with `oob_count` declared 0; `measured.outline_area_per_face_mm2`, and the rect reading as `forced_overlap_rect_mm2` | |
 | `plan_fixed_overlap_budget` / `plan_fixed_overlap` | the FILE-locked pairs alone exceed the overlap budget | each such pair is a WARN |
+| `plan_fixed_pose_conflict` | two `fixed_poses[]` entries whose declared poses conflict under stage 0's own courtyard, pad and hole check (`seeder.fixed_pose_pair_conflicts`; a #1060 courtyard waiver is honoured; an entry whose declared side differs from the board is left to stage 0's own refusal). Refused by `place_seed` before anything is written | |
+
+**The face a part is priced on** by the zone and board rows is the one the
+intent DECLARES for it -- `blocks[].side`, `edge_connectors[].side`,
+`fixed_poses[].side`, when they agree (`floorplan.declared_side_claims`) --
+else the face it is on in the board. A pile has every part on F.Cu; the plan
+is priced as it will be seeded once those faces are applied, which
+`place_seed` does not do (it has no flip move):
+
+```
+python3 -X utf8 py_placer/place_intent_sides.py <board> <out> --intent <plan.json>
+```
+
+mirrors every part whose declared face differs, at its pose (#714's flip),
+and carries the board's siblings. It refuses, writing nothing, a ref two
+declarations put on different faces and a KiCad-locked part the intent puts
+on the other face (exit 2), and a board carrying copper (exit 3).
 
 A plan ERROR is only as strong as the rules it stands for. With
 `zone_containment`, `zone_exclusive`, `legality` or `edge_connector` demoted to
@@ -1449,10 +1467,12 @@ Nothing bounds its overlap, so no area bound is sound.
 **Callers.**
 - `check_floorplan --plan-only` reports every plan ERROR (the retired placement
   driver's P1 stage refused on them).
-- `place_seed` refuses the four findings the seeder has no per-member answer for
-  (`floorplan.PLAN_SEED_REFUSES`: the zone, edge and board area bounds and
-  `block_glob_literal`) with **exit 5**, writing nothing. It prints the rest and
-  seeds, because the seeder names the member it could not seat.
+- `place_seed` refuses the five findings the seeder has no finer answer for
+  (`floorplan.PLAN_SEED_REFUSES`: the zone, edge and board area bounds,
+  `block_glob_literal`, and `plan_fixed_pose_conflict`, which IS stage 0's own
+  pairwise verdict, given before the seed rather than after it) with
+  **exit 5**, writing nothing. It prints the rest and seeds, because the
+  seeder names the member it could not seat.
 - `compare_seeds` stops at the first exit 5, since the plan is the same for
   every seed.
 - `place_pose --intent` refuses, at exit 4, a single pose that leaves a moved
