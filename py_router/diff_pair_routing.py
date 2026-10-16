@@ -2673,6 +2673,7 @@ def _connector_grazes_foreign_copper(new_segments, pcb_data, p_net_id, n_net_id,
     or None.
     """
     from check_drc import check_pad_segment_overlap, check_via_segment_overlap
+    from geometry_utils import via_on_layer
 
     own = (p_net_id, n_net_id)
     pair_segs = [s for s in new_segments if s.net_id in own]
@@ -2728,6 +2729,8 @@ def _connector_grazes_foreign_copper(new_segments, pcb_data, p_net_id, n_net_id,
         for via in vias:
             if via.net_id == seg.net_id:
                 continue  # the connector legitimately lands on its own-net via
+            if not via_on_layer(via, seg.layer):
+                continue  # a blind/micro via has no copper on this layer
             vclr = _obs_clr(via.net_id, seg.layer)
             vm = vclr + seg.width / 2 + via.size / 2
             if (via.x < sxmin - vm or via.x > sxmax + vm or

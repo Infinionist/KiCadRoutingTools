@@ -574,6 +574,13 @@ skip cleanly without KiCad python). Run any directly:
   logged in GREEN; and `reset_params_to_defaults` must NOT untick it (the plan
   executor calls that before every step, so a reset there would abandon the
   run's movie halfway) while an explicit reset-all does.
+- `test_via_type_parse_parity.py` -- a via's copper span (#1268). The text
+  parse, the pcbnew parse and the Route tab's live re-sync
+  (`_sync_pcb_data_from_board`) are each held, layer by layer, to pcbnew's
+  own `PCB_VIA.IsOnLayer` on a board of through, blind, buried and micro vias
+  and on the same board with every type word stripped -- which KiCad loads as
+  through vias, and which is the shape this repo's writer emits. A span read
+  off the layer pair fails the stripped board on the text side only.
 - `diag_fullchain_carry_rp2350.py` -- **DELETED 2026-07-26.** Was a full
   GUI-carry reproduction (ONE board + ONE shared pcb_data across all 10 plan
   steps, graded per stage vs the CLI) built to localize where the carry

@@ -73,9 +73,9 @@ The DRC checker validates:
 
 1. **Track-to-track clearance** - Segments on the same layer maintain minimum clearance
 2. **Track-to-pad clearance** - Tracks maintain clearance from pads on other nets
-3. **Via-to-track clearance** - Vias maintain clearance from tracks on other nets
+3. **Via-to-track clearance** - Vias maintain clearance from tracks on other nets. A via KiCad types blind, buried or micro is graded only on the copper layers between its end layers, here, in check 5 and inside a filled copper graphic (#1268); a via with no type word is a through via whatever its `(layers ...)` pair, as KiCad loads it
 4. **Via-to-via clearance** - Vias maintain clearance from each other
-5. **Pad-to-via clearance** - Vias maintain clearance from pads on other nets
+5. **Pad-to-via clearance** - Vias maintain clearance from pads on other nets (an SMD pad off a blind/micro via's span is not graded against it)
 6. **Pad-to-pad clearance** - Pads of different nets on a shared copper layer maintain clearance (catches overlaps/shorts, e.g. a placement step nudging a part onto a foreign pad). Pads of the *same* footprint are skipped — a component's own fine-pitch pin gaps are fixed library geometry, not a pipeline-introduced defect.
 7. **Copper-to-hole clearance** - Tracks maintain clearance from NPTH (no-copper) drill holes of other nets — a real fab short the via-drill hole check misses (e.g. a track across a mounting hole)
 8. **Hole-to-hole clearance** - Drill holes (via drills and through-hole pad drills) maintain edge-to-edge clearance, even on the same net (manufacturing constraint)
