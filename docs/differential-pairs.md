@@ -282,6 +282,10 @@ extra_clearance = (track_width + diff_pair_gap) / 2 + track_width / 2
 ```
 
 This accounts for the P/N track offset (half the track-to-track spacing) plus half the track width.
+The map carries this one offset, the call's, for every layer. A layer wider than the
+pair's own width (an `--impedance` outer layer above `--track-width`) runs at its own
+wider pitch (below), so a segment of it that comes inside a neighbour's clearance is
+necked there when it is emitted, the same fab-floored neck the terminal legs get.
 
 ## P/N Path Generation
 

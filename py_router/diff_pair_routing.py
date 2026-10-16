@@ -1654,6 +1654,17 @@ def _float_path_to_geometry(float_path, net_id, original_start, original_end, si
             term_pts.append((original_end[0], original_end[1]))
         _neck_terminal_grazes(segs, term_pts, pcb_data, net_id, config)
 
+        # A layer wider than the call's track width runs at its own wider
+        # pitch (layer_pair_spacing), while the centreline obstacle map
+        # reserves one half-pitch, the call's, on every layer: the outer track
+        # there can reach (layer width - track width) / 2 into a neighbour's
+        # clearance. Neck such a segment where it does, the same way.
+        wide = [s for s in segs if s.width > config.track_width + 1e-9]
+        if wide and getattr(config, 'layer_widths', None):
+            _neck_terminal_grazes(
+                wide, [p for s in wide for p in ((s.start_x, s.start_y), (s.end_x, s.end_y))],
+                pcb_data, net_id, config)
+
     return segs, vias, connector_lines
 
 
