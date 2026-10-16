@@ -430,6 +430,22 @@ def test_tapped_by_run_is_disclosed():
         'tapped_by_run', ''), entry
 
 
+def test_diff_pair_terminals_skip_sense_pads():
+    """A multipoint diff pair's terminals never include a sense pad: treat
+    VDD as the P leg and give each VDD pad an N mate 0.5 mm below it. U1.1
+    (the sense pad) used to be paired like any other pad."""
+    from dataclasses import replace
+    from diff_pair_multipoint import get_diff_pair_terminals
+    p = parse_kicad_pcb(BOARD)
+    mates = [replace(q, net_id=99, net_name='VDD_N', global_y=q.global_y + 0.5, sense='')
+             for q in p.pads_by_net[1]]
+    p.pads_by_net[99] = mates
+    pairs = sorted(f'{a.component_ref}.{a.pad_number}' for a, _b in
+                   get_diff_pair_terminals(p, 1, 99))
+    assert 'U1.1' not in pairs, f'a sense pad is a diff-pair terminal: {pairs}'
+    assert pairs == ['C1.1', 'U2.1', 'U3.1'], pairs
+
+
 # --- (f): the GUI call shape -------------------------------------------------
 
 def test_gui_path_routes_to_the_join():
@@ -468,6 +484,7 @@ TESTS = [
     test_hold_is_not_a_lock,
     test_force_reroute_names_the_group,
     test_tapped_by_run_is_disclosed,
+    test_diff_pair_terminals_skip_sense_pads,
     test_gui_path_routes_to_the_join,
 ]
 
