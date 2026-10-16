@@ -4,6 +4,11 @@ F.Cu->In1.Cu GND microvia under a segment on In2.Cu or B.Cu is no overlap (it
 vetoed every In2 diff-pair candidate under a GND pad on cm5-io), a through via
 is an overlap on every layer.
 
+The TYPE word makes a via blind, not its layer pair. KiCad loads an untyped
+`(via ... (layers "F.Cu" "In1.Cu"))` as a through via -- kicad-cli flags a B.Cu
+track beside it -- and this repo's writer emits that shape, so check_drc must
+grade it on every layer too.
+
     python3 tests/test_via_segment_span.py
 """
 import os
@@ -19,14 +24,16 @@ def seg(layer):
 
 
 def main():
-    micro = SimpleNamespace(x=1.0, y=0.1, size=0.25, layers=["F.Cu", "In1.Cu"])
-    through = SimpleNamespace(x=1.0, y=0.1, size=0.25, layers=["F.Cu", "B.Cu"])
+    micro = SimpleNamespace(x=1.0, y=0.1, size=0.25, layers=["F.Cu", "In1.Cu"], via_type="micro")
+    through = SimpleNamespace(x=1.0, y=0.1, size=0.25, layers=["F.Cu", "B.Cu"], via_type="through")
+    untyped = SimpleNamespace(x=1.0, y=0.1, size=0.25, layers=["F.Cu", "In1.Cu"], via_type="through")
     assert check_via_segment_overlap(micro, seg("F.Cu"), 0.1)[0]
     assert check_via_segment_overlap(micro, seg("In1.Cu"), 0.1)[0]
     assert not check_via_segment_overlap(micro, seg("In2.Cu"), 0.1)[0]
     assert not check_via_segment_overlap(micro, seg("B.Cu"), 0.1)[0]
     for layer in ("F.Cu", "In2.Cu", "B.Cu"):
         assert check_via_segment_overlap(through, seg(layer), 0.1)[0], layer
+        assert check_via_segment_overlap(untyped, seg(layer), 0.1)[0], f"untyped {layer}"
     print("PASS")
 
 

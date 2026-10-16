@@ -468,6 +468,10 @@ def overlap_thickness(geom) -> float:
     return best
 
 
+# KiCad via types whose copper covers only part of the stack (Via.via_type).
+PARTIAL_VIA_TYPES = frozenset(('blind', 'buried', 'micro'))
+
+
 def _copper_order(name: str) -> int:
     """Stack position of a copper layer: F.Cu 0, InN.Cu N, B.Cu last."""
     if name == "F.Cu":
@@ -479,9 +483,16 @@ def _copper_order(name: str) -> int:
 
 
 def via_on_layer(via, layer_name: str) -> bool:
-    """True when the via's copper is on `layer_name`: a through via (or one with
-    unknown layers) is on every copper layer, a blind/buried/micro via only on the
-    layers between its two end layers in stack order."""
+    """True when the via has copper on `layer_name`.
+
+    Only a via KiCad types blind, buried or micro (`Via.via_type`) covers part
+    of the stack: the layers between its two end layers in stack order. Any
+    other via is a through via, on every copper layer whatever its layer pair
+    says -- KiCad loads an untyped `(via ... (layers "F.Cu" "In1.Cu"))` as a
+    through via, and this repo's writer emits exactly that. A layer name that
+    is not F.Cu / InN.Cu / B.Cu counts as on (the conservative answer)."""
+    if getattr(via, "via_type", "through") not in PARTIAL_VIA_TYPES:
+        return True
     layers = getattr(via, "layers", None)
     if not layers or len(layers) < 2:
         return True
@@ -495,17 +506,18 @@ def via_on_layer(via, layer_name: str) -> bool:
 def via_span_layer_indices(via, routing_layers, num_layers: int):
     """Routing-layer indices a via's copper occupies.
 
-    A through via (F.Cu..B.Cu), or a via whose layers are unknown, occupies every
-    routing layer. A blind/buried/micro via occupies only the layers between its
-    two end layers in stack order: an F.Cu->In1.Cu microvia leaves In2..B.Cu free
-    for tracks (via-in-pad GND microvias freed nothing while every via was
-    rasterized on all layers).
+    A through via occupies every routing layer. A blind/buried/micro via
+    occupies only the layers between its two end layers in stack order: an
+    F.Cu->In1.Cu microvia leaves In2..B.Cu free for tracks (via-in-pad GND
+    microvias freed nothing while every via was rasterized on all layers).
+    Layers are matched by NAME through `via_on_layer`, never by index: a
+    full-stack run's config.layers is not in stack order (`--layers F.Cu
+    In2.Cu B.Cu` appends In1/In3/In4 after B.Cu). Without a name for every map
+    layer the answer is every layer, so a board whose vias are all through
+    vias rasterizes exactly as before.
     """
-    layers = getattr(via, "layers", None)
-    if not routing_layers or not layers or len(layers) < 2:
-        return range(num_layers)
-    a, b = sorted((_copper_order(layers[0]), _copper_order(layers[-1])))
-    if a < 0 or (a == 0 and b == 10_000):
+    if (getattr(via, "via_type", "through") not in PARTIAL_VIA_TYPES
+            or not routing_layers or len(routing_layers) < num_layers):
         return range(num_layers)
     return [i for i, name in enumerate(list(routing_layers)[:num_layers])
-            if a <= _copper_order(name) <= b]
+            if via_on_layer(via, name)]

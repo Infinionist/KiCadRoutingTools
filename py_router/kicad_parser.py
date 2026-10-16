@@ -524,6 +524,15 @@ class Via:
     # matters most for via-in-pad, where IPC-4761 Type VII filled+capped+plated
     # is what keeps solder out of the barrel.
     tenting_attrs: Dict[str, str] = field(default_factory=dict)
+    # KiCad's via type: 'through', 'blind', 'buried' or 'micro', from the
+    # block's type word (text) or GetViaType() (pcbnew). It, not `layers`,
+    # says whether the via has copper on only part of the stack: KiCad loads
+    # a via block with NO type word as a THROUGH via whatever its `(layers ...)`
+    # says, and this repo's writer emits no type word -- so a via it writes is
+    # through even when its layer pair is not F.Cu/B.Cu (zynq7020_som's
+    # back-side BGA fanout writes `(layers "B.Cu" "In6.Cu")` GND vias).
+    # See geometry_utils.via_on_layer.
+    via_type: str = "through"
 
 
     def __post_init__(self):
@@ -4944,6 +4953,20 @@ _VIA_PREFIX_RE = re.compile(
 _VIA_NET_RE = re.compile(r'\(net\s+(?:"((?:[^"\\]|\\.)*)"|(\d+))\)')
 _VIA_UUID_RE = re.compile(r'\(uuid\s+"([^"]+)"\)')
 _VIA_FREE_RE = re.compile(r'\(free\s+yes\)')
+# KiCad's via type is a bare word of the via block (`(via micro (at ...`,
+# `(via buried ...`); a block with none is a THROUGH via. KiCad 9 writes
+# `blind` for its BLIND_BURIED type; KiCad 10 also writes `buried`.
+_VIA_TYPE_WORDS = ('blind', 'buried', 'micro')
+
+
+def _via_type_from_block(block: str) -> str:
+    """'blind' / 'buried' / 'micro' from a via block's bare words, else
+    'through'. KiCad reads the type from that word alone, never from
+    `(layers ...)`."""
+    if not any(w in block for w in _VIA_TYPE_WORDS):
+        return 'through'
+    return next((w for w in _sexpr_children(block)[1] if w in _VIA_TYPE_WORDS),
+                'through')
 
 
 def extract_vias(content: str, name_to_id: Dict[str, int] = None) -> List[Via]:
@@ -5029,6 +5052,7 @@ def extract_vias(content: str, name_to_id: Dict[str, int] = None) -> List[Via]:
             # linear pre-scan) and it could only reach vias that HAD a uuid.
             free=bool(_VIA_FREE_RE.search(block)),
             locked=_track_locked(block),
+            via_type=_via_type_from_block(block),
         )
         # Protection spec per via (#489 §8): tenting/covering/plugging/capping/
         # filling were parsed by NOBODY, so a re-placed via lost whatever the
@@ -7570,6 +7594,33 @@ def pcbnew_copper_layer_names() -> Dict[int, str]:
     return names
 
 
+def pcbnew_via_type(via) -> str:
+    """A pcbnew PCB_VIA's type in Via.via_type's spelling, for parity with
+    the text parser's `_via_type_from_block`. KiCad 9 has one BLIND_BURIED
+    type (written `blind`); KiCad 10 splits it into BLIND and BURIED. A wrapper
+    that cannot answer falls back to the layer pair, which pcbnew normalises to
+    F.Cu/B.Cu for every through via."""
+    import pcbnew
+    try:
+        vt = via.GetViaType()
+        for attr, name in (('VIATYPE_THROUGH', 'through'),
+                           ('VIATYPE_MICROVIA', 'micro'),
+                           ('VIATYPE_BURIED', 'buried'),
+                           ('VIATYPE_BLIND', 'blind'),
+                           ('VIATYPE_BLIND_BURIED', 'blind')):
+            const = getattr(pcbnew, attr, None)
+            if const is not None and vt == const:
+                return name
+    except Exception:                                            # noqa: BLE001
+        pass
+    try:
+        if {via.TopLayer(), via.BottomLayer()} == {pcbnew.F_Cu, pcbnew.B_Cu}:
+            return 'through'
+        return 'blind'
+    except Exception:                                            # noqa: BLE001
+        return 'through'
+
+
 def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                               keepout_layer: str = "User.2") -> PCBData:
     """Build PCBData directly from a pcbnew board object (no file I/O).
@@ -8532,6 +8583,7 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                 tenting_attrs=pcbnew_via_protection_attrs(
                     track, _via_text_specs(track)),
                 locked=bool(track.IsLocked()),
+                via_type=pcbnew_via_type(track),
             )
             vias.append(v)
 

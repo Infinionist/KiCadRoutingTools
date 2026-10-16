@@ -320,7 +320,7 @@ class RoutingDialog(wx.Dialog):
 
         try:
             import pcbnew
-            from kicad_parser import Segment, Via
+            from kicad_parser import Segment, Via, pcbnew_via_type
 
             board = pcbnew.GetBoard()
             if board is None:
@@ -365,6 +365,9 @@ class RoutingDialog(wx.Dialog):
                         drill=pcbnew.ToMM(via.GetDrill()),
                         layers=[get_layer_name(top_layer), get_layer_name(bot_layer)],
                         net_id=via.GetNetCode(),
+                        # #1268: the span a blind/buried/micro via blocks
+                        # comes from its type, as on both parse paths.
+                        via_type=pcbnew_via_type(via),
                     )
                     new_vias.append(v)
 

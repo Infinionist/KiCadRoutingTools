@@ -649,12 +649,12 @@ def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
         polarity to `_seg_grazes`, so it reads like the `stub_ok` it is
         and-ed into.
 
-        Deliberately LAYER-BLIND, matching every grader around it:
-        `check_drc.check_via_segment_overlap` ignores `via.layers` ("vias go
-        through ALL copper layers") and `obstacle_map._add_via_obstacle`
-        stamps every via on every layer. Filtering a blind/buried via out
-        here would emit copper this repo's own DRC flags, and would make a
-        fanned-net via behave differently from an identical non-fanned one.
+        Deliberately LAYER-BLIND for vias. `check_drc.check_via_segment_overlap`
+        and `obstacle_map._add_via_obstacle` treat a via KiCad types blind,
+        buried or micro as copper on its span only (#1268) and every other via
+        as through, so this check is a superset of both: it can refuse a stub
+        a typed blind via would not have touched, never pass one the grader
+        flags.
 
         Called BEFORE `via_clears`, not after, and that ordering is
         load-bearing rather than cosmetic: `via_clears` scans, per candidate,
