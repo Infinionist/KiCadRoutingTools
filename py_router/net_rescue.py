@@ -29,7 +29,11 @@ Design constraints (#331/#371 review):
     compute limits (grid, window margin, cell budget, max attempts) are
     the RESCUE_* constants in routing_defaults. Gap LENGTH is deliberately
     unbounded (#516): the cell budget is what bounds compute — a longer
-    gap gets a coarser grid, not a bigger search.
+    gap gets a coarser grid, not a bigger search. A WIDE net's rung is
+    bounded the same way (RESCUE_MAX_MARGIN_CELLS, _bound_rung_margin): its
+    width rides the search as a track margin whose cost grows with its
+    square, so a rung whose margin is too wide gets a coarser grid -- never
+    coarser than the run's own.
   - Always on, no flags: lives inside batch_route so the CLI and the GUI
     plugin share it (CLAUDE.md parity rule). Set KICAD_NET_RESCUE=0 to
     disable for A/B debugging.
@@ -606,7 +610,33 @@ def _rescue_rungs(config, fine_grid, pcb_data, net_id):
                                     power_net_widths=power_widths,
                                     via_size=v_dia, via_drill=v_drill,
                                     max_iterations=max_iters))
-    return rungs
+    return [_bound_rung_margin(r, net_id, config.grid_step) for r in rungs]
+
+
+def _bound_rung_margin(cfg, net_id, run_grid):
+    """Coarsen ONE rung's grid until the rescued net's A* track margin fits
+    RESCUE_MAX_MARGIN_CELLS, never past the run's own grid.
+
+    A rung routes a wide (power / impedance) net as a track MARGIN over the
+    width its map is stamped at, and the router's swept-capsule test scans
+    (2*ceil(r)+1)^2 cells per neighbour for a margin of r cells. The margin
+    scales with 1/grid, so the fine rescue grid made a wide net's rescue
+    hundreds of times slower than its main route (found reviewing #1282:
+    splitflap +12V at 2.5 mm over a 0.3 mm stamp is a 63-cell margin at
+    0.025 mm -- 149k steps in 340 s; the same gap stamped at 2.5 mm, margin
+    0: 40k steps in 0.3 s -- so a run under --escalation off went 8 hours
+    without finishing). A rung under the bound is returned unchanged, so
+    every narrow net, and a 1 mm rail over the 0.127 mm floor (25 cells,
+    watchy VBUS's default-policy rescue), rescues exactly as before; a
+    coarser rung's window is smaller in cells, so the cell budget
+    _choose_grid enforced still holds."""
+    g = cfg.grid_step
+    while (max(cfg.track_margins_for_net(net_id), default=0.0)
+           > defaults.RESCUE_MAX_MARGIN_CELLS + 1e-9
+           and g * 2 <= run_grid + 1e-9):
+        g *= 2
+        cfg = replace(cfg, grid_step=g)
+    return cfg
 
 
 def _fence_window(obstacles, window, cfg):
