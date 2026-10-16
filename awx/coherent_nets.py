@@ -102,7 +102,28 @@ def coherent_nets(K, board=BENCH):
         print(f'  coherent_nets: asked K={K}, {len(ok)} net(s) qualify on '
               f'{os.path.basename(board)} -- this is a {len(ok)}-net problem',
               file=sys.stderr)
-    return ok[:K]
+    return whole_pairs(ok, K, board)
+
+
+def whole_pairs(ok, K, board=''):
+    """The first K of `ok` with no differential pair CUT: a leg whose
+    partner qualifies but falls beyond K is left out with it, so the
+    prefix is a little shorter than K rather than a problem with a pair
+    run as one leg alone (the zynq LVDS bus's escape ladder at K=40 took
+    TX_D3_P, TX_D4_P and TX_D5_P without their N legs). Said on stderr."""
+    import pairs as _pairs
+    mate = {}
+    for p_, n_ in _pairs.pair_names(ok, admit_all=True).values():
+        mate[p_], mate[n_] = n_, p_
+    head = ok[:K]
+    have = set(head)
+    cut = [n for n in head if n in mate and mate[n] not in have]
+    if cut:
+        print(f'  coherent_nets: K={K} on {os.path.basename(board)} would '
+              f'cut pair(s) {", ".join(f"{n}/{mate[n]}" for n in cut)} -- '
+              f'their leg(s) left out: a {len(head) - len(cut)}-net problem',
+              file=sys.stderr)
+    return [n for n in head if n not in cut]
 
 
 if __name__ == '__main__':

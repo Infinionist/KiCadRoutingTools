@@ -202,7 +202,12 @@ stacks** (#1064): two parts' pad copper overlapping on a shared side, ANY
 net, measured by check_assembly's own `legality.pad_intersection_pairs`
 (`pad_stack_count`, `pad_stack_area` summed over every stacked pad pair, and
 `pad_stack_pairs` as a
-set, so a new stack is refused when the totals tie). The pad-conflict grade
+set, so a new stack is refused when the totals tie) — plus **pads on another
+part's footprint graphic copper** (#1266: a drawn SOT-89 tab, an antenna,
+its filled interior included; `graphic_pad_conflicts` short of clearance on
+a net the copper is not, `graphic_pad_stack_count` touching on any net but a
+net tie's own, `graphic_pad_shortfall`, and their `_pairs`, measured by
+`check_drc.footprint_graphic_pad_census`). The pad-conflict grade
 skips same-net pads, so esp_prog's C4 put on Y1's same-net pad (0.0412 mm²)
 used to exit 0 here and read NOT BUILDABLE in check_assembly — and **never for
 damage the board already had**:

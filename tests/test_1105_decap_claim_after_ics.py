@@ -22,7 +22,9 @@ inside stage 3, after the queue's last owner IC. What each case pins:
 * a cap whose only owner is not U-prefixed is still never claimed (control:
   `decap_owner_chips=True` claims it).
 * the stage OFF is the pre-#1105 seeder (tests/fixtures/1105/
-  seed_off_baseline.json, recorded at 4aa33a88 with `--record`).
+  seed_off_baseline.json, recorded at 4aa33a88 with `--record`; its
+  esp_prog, watchy and pile runs re-recorded at ed157dfc for #1266, whose
+  pad gate keeps parts off a footprint's drawn copper).
 * the emitter's line and its `seeder_forecast` say which caps 2.5 claims,
   which only 3.5 can claim (on by default here, because the board is a
   pile), and which no stage can claim; the forecast agrees with what the
