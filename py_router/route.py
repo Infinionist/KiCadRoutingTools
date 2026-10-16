@@ -1732,6 +1732,14 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         layers = DEFAULT_4_LAYER_STACK
     print(f"Using {len(layers)} routing layers: {layers}")
 
+    # One cost per requested layer, or the full-stack append below puts its
+    # FORBIDDEN entries on the wrong layers (routing_config.layer_costs_count_error).
+    from routing_config import layer_costs_count_error
+    _lc_err = layer_costs_count_error(layers, layer_costs)
+    if _lc_err:
+        from routing_exceptions import LayerCostsCountError
+        raise LayerCostsCountError(_lc_err)
+
     # Set default layer costs if not specified
     # 4+ layers: all 1.0 (inner layers available for routing)
     # 2 layers: F.Cu=1.0, B.Cu=3.0 (prefer top layer)
@@ -8354,7 +8362,8 @@ For differential pair routing, use route_diff.py:
                         help="Per-layer cost multipliers (1.0-1000, default: F.Cu=1.0, others=3.0), "
                              "or any negative value (e.g. -1) = FORBIDDEN: the layer stays an obstacle "
                              "(its copper blocks vias) and through-vias may span it, but NO track copper "
-                             "is placed on it. Order matches --layers. Example (route only F.Cu/B.Cu, "
+                             "is placed on it. One value per --layers entry, in that order (another count is "
+                             "refused). Example (route only F.Cu/B.Cu, "
                              "In1/In2 obstacle-only): --layers F.Cu In1.Cu In2.Cu B.Cu --layer-costs 1.0 -1 -1 3.0")
 
     # Debug options

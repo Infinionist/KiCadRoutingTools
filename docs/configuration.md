@@ -346,7 +346,7 @@ See [Rip-Up and Reroute](rip-up-reroute.md) for how failed routes trigger rip-up
 | `--ordering` / `-o` | mps | Net ordering: `mps`, `inside_out`, or `original` |
 | `--direction` / `-d` | forward | Direction: `forward` or `backward` |
 | `--layers` / `-l` | all copper layers | Routing layers. For `route.py` the default is all of the board's copper layers; `route_diff.py` and `bga_fanout.py` default to `F.Cu B.Cu` |
-| `--layer-costs` | (see below) | Per-layer cost multipliers (1.0-1000). Default: all 1.0 for 4+ layers; F.Cu=1.0, B.Cu=3.0 for 2 layers |
+| `--layer-costs` | (see below) | Per-layer cost multipliers (1.0-1000), one per `--layers` entry (any other count is refused, see [Layer Costs](#layer-costs)). Default: all 1.0 for 4+ layers; F.Cu=1.0, B.Cu=3.0 for 2 layers |
 | `--no-bga-zones [REFS...]` | (auto-detect) | Disable BGA exclusion zones. No args = all. With refs (U1 U3) = only those |
 
 ### Proximity Penalty Options
@@ -775,6 +775,19 @@ The `--layer-costs` parameter controls per-layer routing preferences. Higher cos
 ```bash
 --layers F.Cu B.Cu --layer-costs 1.0 5.0
 ```
+
+**One value per routing layer, in `--layers` order** (for `route.py` with
+`--layers` omitted, one per board copper layer; for `route_planes.py`, one per
+entry of its `--layers`, default `F.Cu` + plane layers + `B.Cu`). The copper
+layers a run does not route on are appended after them as FORBIDDEN
+obstacles, so a list of any other length is refused (`ERROR: --layer-costs
+needs one value per routing layer ...`) rather than shifted onto the wrong
+layers: `--layers F.Cu B.Cu --layer-costs 1.0` on a 4-layer board used to
+forbid the requested `B.Cu` and leave the unrequested `In2.Cu` routable.
+`route.py`, `route_diff.py`, `route_planes.py`, `repair_planes.py` and
+`bga_fanout.py` all refuse it. In the GUI the Layer Costs field takes one
+value per copper layer (its default) or one per selected layer, and each tab
+places them on its own layers by name.
 
 ### Stub Proximity
 
