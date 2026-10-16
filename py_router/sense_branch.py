@@ -78,6 +78,31 @@ def _pad_on(pad, layer: str) -> bool:
     return layer in pad.layers or '*.Cu' in pad.layers
 
 
+def _pad_reach(pad) -> float:
+    """Radius about the pad's centre that holds all its copper (a custom pad's
+    polygons may reach past its anchor `size`) -- a prefilter only."""
+    r = math.hypot(pad.size_x, pad.size_y) / 2
+    for poly in getattr(pad, 'polygons', None) or ():
+        for x, y in poly:
+            r = max(r, math.hypot(x - pad.global_x, y - pad.global_y))
+    return r
+
+
+def _seg_meets_pad(seg, pad, grow: float = _EPS):
+    """(touches, point): whether the track's copper reaches the pad's REAL
+    copper (custom polygons, round corners and tilt held, within `grow`) on
+    the track's layer, anywhere along it -- a track through a pad touches it
+    with both ends outside -- and the point on the track nearest the pad."""
+    if not _pad_on(pad, seg.layer) or _dist_seg(
+            pad.global_x, pad.global_y, seg.start_x, seg.start_y, seg.end_x,
+            seg.end_y) > _pad_reach(pad) + seg.width / 2 + grow:
+        return False, None
+    from check_drc import check_pad_segment_overlap
+    hit, _overlap, pt = check_pad_segment_overlap(pad, seg, grow, [seg.layer],
+                                                  clearance_margin=0.0)
+    return hit, pt
+
+
 def _touch(a, b, join) -> bool:
     """Copper contact between two items of one net anywhere off the join pad.
     Items are ('pad', Pad) | ('seg', Segment) | ('via', Via)."""
@@ -107,13 +132,11 @@ def _touch(a, b, join) -> bool:
         return off(ib.x, ib.y) and _dist_seg(ib.x, ib.y, ia.start_x, ia.start_y, ia.end_x,
                                               ia.end_y) <= ib.size / 2 + ia.width / 2 + _EPS
     if ka == 'seg' and kb == 'pad':
-        if not _pad_on(ib, ia.layer):
-            return False
-        if any(off(x, y) and _in_pad(ib, x, y, ia.width / 2 + _EPS)
-               for x, y in ((ia.start_x, ia.start_y), (ia.end_x, ia.end_y))):
-            return True
-        return off(ib.global_x, ib.global_y) and _dist_seg(
-            ib.global_x, ib.global_y, ia.start_x, ia.start_y, ia.end_x, ia.end_y) <= ia.width / 2 + _EPS
+        # Anywhere along the track, not only at its ends or the pad's centre:
+        # a sense trace running across a same-net pad off-centre is joined to
+        # it (KiCad's connectivity collides the shapes).
+        hit, pt = _seg_meets_pad(ia, ib)
+        return hit and off(*pt)
     if ka == 'via' and kb == 'pad':
         return off(ia.x, ia.y) and _in_pad(ib, ia.x, ia.y, ia.size / 2 + _EPS)
     return False

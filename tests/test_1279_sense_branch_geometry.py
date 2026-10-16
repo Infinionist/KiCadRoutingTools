@@ -8,12 +8,16 @@ reach, each case built in-test from the fixture's text:
 
 - a load track crossing the sense trace in an X is a tap (KiCad's
   connectivity joins crossing copper, not only endpoints);
+- a same-net pad the sense trace runs across off-centre is a sense pad, so
+  no load is routed through it onto the trace;
 
 Run:
     python3 tests/test_1279_sense_branch_geometry.py
 """
 import os
+import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import traceback
@@ -25,7 +29,10 @@ sys.path.insert(0, os.path.join(ROOT, 'py_router'))
 
 import sense_branch as sb  # noqa: E402
 from kicad_parser import parse_kicad_pcb, Segment  # noqa: E402
-from run_utils import evidence  # noqa: E402
+from run_utils import evidence, tool  # noqa: E402
+
+#: A handful of route.py runs on a 30 x 20 mm board, ~5 s each here.
+RUN_ALL_TIMEOUT = 900
 
 BOARD = os.path.join(TESTS_DIR, 'fixtures', 'sense_branch', 'sense_star.kicad_pcb')
 PRO = BOARD[:-len('.kicad_pcb')] + '.kicad_pro'
@@ -77,6 +84,43 @@ def _branch(board):
     return p, p.sense_branches[0]
 
 
+def _run(script, args, timeout=600):
+    r = subprocess.run([sys.executable, tool(script)] + args, cwd=ROOT,
+                       capture_output=True, text=True, timeout=timeout)
+    assert r.returncode == 0, f'{script} exit {r.returncode}:\n' + r.stdout[-3000:] + r.stderr[-3000:]
+    return r.stdout
+
+
+def _route(board, extra=()):
+    """route.py VDD to a FRESH output path; (output board, console)."""
+    out = os.path.join(_tmpdir(), 'out.kicad_pcb')
+    log = _run('route.py', [board, out, '--nets', 'VDD', '--layers', 'F.Cu', 'B.Cu',
+                            '--track-width', '0.3', '--clearance', '0.2'] + list(extra))
+    evidence(out, 'route.py output')
+    return out, log
+
+
+def _tapped(board):
+    """Pads of VDD reached from the member trace without crossing C1.1
+    (the test_1279_sense_branches grader, on sense_branch._touch)."""
+    p = parse_kicad_pcb(board)
+    join = next(q for q in p.footprints['C1'].pads if q.pad_number == '1')
+    items = ([('seg', s) for s in p.segments if s.net_id == join.net_id]
+             + [('via', v) for v in p.vias if v.net_id == join.net_id]
+             + [('pad', q) for q in p.pads_by_net[join.net_id] if q is not join])
+    seen = {i for i, (k, it) in enumerate(items) if k == 'seg' and it.uuid == MEMBER}
+    assert seen, 'member trace missing'
+    todo = list(seen)
+    while todo:
+        i = todo.pop()
+        for j, other in enumerate(items):
+            if j not in seen and sb._touch(items[i], other, join):
+                seen.add(j)
+                todo.append(j)
+    return sorted(f'{it.component_ref}.{it.pad_number}' for i, (k, it) in enumerate(items)
+                  if i in seen and k == 'pad')
+
+
 def _seg(x1, y1, x2, y2, width=0.2, layer='F.Cu'):
     return Segment(start_x=x1, start_y=y1, end_x=x2, end_y=y2, width=width,
                    layer=layer, net_id=1)
@@ -101,8 +145,30 @@ def test_x_crossing_is_a_tap():
     assert not sb._touch(('seg', _seg(3.2, 4, 3.2, 6)), ('seg', member), join)
 
 
+def test_pad_crossed_off_centre_is_a_sense_pad():
+    """VDD pad U5.1 (2 x 2 mm at (10, 5.4)) with the sense trace running
+    through it 0.4 mm off its centre, neither trace end on it: KiCad joins it
+    to the trace (pcbnew 10.0.3), so it is a sense pad and never a place to
+    attach a load. Before, it stayed a routable pad and the route ran C1.1 ->
+    U5.1 -> U2.1, loading the trace from C1 to U5. (0.4 mm, not more: past
+    0.6 mm check_connected's #479 through-pad credit no longer joins U5.1 to
+    the trace although KiCad does, and the run reports the pad open.)"""
+    board = _variant(_src().replace(
+        ANCHOR, _footprint('U5', 10, 5.4, '(pad "1" smd rect (at 0 0) (size 2 2) '
+                                          '(layers "F.Cu" "F.Paste" "F.Mask") (net 1 "VDD"))')
+        + ANCHOR), 'thru')
+    _p, b = _branch(board)
+    assert b.protected, b.reason
+    pads = sorted(f'{q.component_ref}.{q.pad_number}' for q in b.sense_pads)
+    assert pads == ['U1.1', 'U5.1'], f'sense pads {pads}: U5.1 on the trace is not one'
+    out, log = _route(board)
+    assert re.search(r'"multipoint_pads_connected": 5, "multipoint_pads_total": 5', log), log[-2000:]
+    assert _tapped(out) == ['U1.1', 'U5.1'], f'a load reached the sense copper off C1.1: {_tapped(out)}'
+
+
 TESTS = [
     test_x_crossing_is_a_tap,
+    test_pad_crossed_off_centre_is_a_sense_pad,
 ]
 
 
