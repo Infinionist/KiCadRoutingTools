@@ -118,6 +118,39 @@ def _pad_on(pad, layer: str) -> bool:
     return layer in pad.layers or '*.Cu' in pad.layers
 
 
+def _via_pad_layers(via, pad) -> list:
+    """The copper layers `via` and `pad` share: a blind, buried or micro via
+    has copper on its span only (geometry_utils.via_on_layer), so it meets an
+    SMD pad on another layer nowhere."""
+    from geometry_utils import via_on_layer
+    if '*.Cu' in pad.layers:
+        return [L for L in (getattr(via, 'layers', None) or ()) if L.endswith('.Cu')] or ['F.Cu']
+    return [L for L in pad.layers if L.endswith('.Cu') and via_on_layer(via, L)]
+
+
+def _vias_share_layer(a, b) -> bool:
+    """Two vias' spans overlap: one has an end layer the other covers."""
+    from geometry_utils import via_on_layer
+    ends = [L for L in list(getattr(a, 'layers', None) or ()) + list(getattr(b, 'layers', None) or ())
+            if L.endswith('.Cu')]
+    return not ends or any(via_on_layer(a, L) and via_on_layer(b, L) for L in ends)
+
+
+def _via_meets_pad(via, pad, grow: float = _EPS) -> bool:
+    """The via's barrel reaches the pad's real copper on a layer both carry
+    (connectivity.endpoint_reaches_pad, check_connected's via-in-pad rule)."""
+    from connectivity import endpoint_reaches_pad
+    layers = _via_pad_layers(via, pad)
+    return bool(layers) and bool(endpoint_reaches_pad(via.x, via.y, via.size / 2 + grow,
+                                                      layers, pad))
+
+
+def _via_on_join(via, join) -> bool:
+    """The via's centre is on the join pad's copper on a layer both carry --
+    a via there is the join itself, not member copper off it."""
+    return bool(_via_pad_layers(via, join)) and _in_pad(join, via.x, via.y, 0.0)
+
+
 def _pad_reach(pad) -> float:
     """Radius about the pad's centre that holds all its copper (a custom pad's
     polygons may reach past its anchor `size`) -- a prefilter only."""
@@ -166,11 +199,15 @@ def _touch(a, b, join) -> bool:
         from check_drc import segments_cross
         crossed, pt = segments_cross(ia, ib)
         return bool(crossed) and off(*pt)
+    # A via has copper on its span only: a blind F.Cu-In1.Cu via never meets
+    # B.Cu copper above or below it.
     if ka == 'via' and kb == 'via':
-        return off(ia.x, ia.y) and math.hypot(ia.x - ib.x, ia.y - ib.y) <= (ia.size + ib.size) / 2
+        return (off(ia.x, ia.y) and _vias_share_layer(ia, ib)
+                and math.hypot(ia.x - ib.x, ia.y - ib.y) <= (ia.size + ib.size) / 2)
     if ka == 'seg' and kb == 'via':
-        return off(ib.x, ib.y) and _dist_seg(ib.x, ib.y, ia.start_x, ia.start_y, ia.end_x,
-                                              ia.end_y) <= ib.size / 2 + ia.width / 2 + _EPS
+        from geometry_utils import via_on_layer
+        return off(ib.x, ib.y) and via_on_layer(ib, ia.layer) and _dist_seg(
+            ib.x, ib.y, ia.start_x, ia.start_y, ia.end_x, ia.end_y) <= ib.size / 2 + ia.width / 2 + _EPS
     if ka == 'seg' and kb == 'pad':
         # Anywhere along the track, not only at its ends or the pad's centre:
         # a sense trace running across a same-net pad off-centre is joined to
@@ -178,7 +215,7 @@ def _touch(a, b, join) -> bool:
         hit, pt = _seg_meets_pad(ia, ib)
         return hit and off(*pt)
     if ka == 'via' and kb == 'pad':
-        return off(ia.x, ia.y) and _in_pad(ib, ia.x, ia.y, ia.size / 2 + _EPS)
+        return off(ia.x, ia.y) and _via_meets_pad(ia, ib)
     return False
 
 
@@ -190,7 +227,7 @@ def _touches_join(item, join) -> bool:
     if kind == 'seg':
         return _seg_meets_pad(it, join)[0]
     if kind == 'via':
-        return _in_pad(join, it.x, it.y, it.size / 2 + _EPS)
+        return _via_meets_pad(it, join)
     return False
 
 
@@ -711,7 +748,7 @@ def sense_obstacle_rows(b: SenseBranch, config, coord, layer_map, clearance: flo
                 continue
             _add_segment_obstacle(col, _Piece(xy, s), coord, li, exp, vblk)
     for v in b.vias:
-        if _in_pad(join, v.x, v.y, 0.0):
+        if _via_on_join(v, join):
             continue                    # a via on the join pad is the join
         vs = v.size if v.size > 0 else config.via_size
         full = _via_track_expansion_per_layer(vs, config, coord, clearance, extra_clearance)
@@ -720,8 +757,10 @@ def sense_obstacle_rows(b: SenseBranch, config, coord, layer_map, clearance: flo
                for n in names]
         vv = max(1.0, (vs / 2 + config.via_size / 2
                        + config.stack_clearance(clearance)) * coord.inv_step)
+        # On the layers of its span only, as build_base_obstacle_map stamps
+        # every other via (a blind via leaves the layers below it free).
         _add_via_obstacle(col, v, coord, len(names), vte, vv,
-                          diagonal_margin=defaults.DIAGONAL_MARGIN)
+                          diagonal_margin=defaults.DIAGONAL_MARGIN, routing_layers=names)
     for p in b.sense_pads:
         _add_pad_obstacle(col, p, coord, layer_map, config, extra_clearance,
                           clearance_override=clearance)
@@ -794,12 +833,14 @@ def join_for_point(pcb_data, net_id: int, x: float, y: float, layer: str):
     on a protected branch of `net_id` off its join pad (member copper or a
     sense pad), else None. KiCad's ratsnest knows nothing of the rule, so a
     link it reports can end on the sense trace (#572 forced oracle links)."""
+    from geometry_utils import via_on_layer
     for b in protected_branches(pcb_data, net_id):
         if _in_pad(b.join, x, y, _EPS):
             return None
         on = (any(s.layer == layer and _dist_seg(x, y, s.start_x, s.start_y, s.end_x, s.end_y)
                   <= s.width / 2.0 + _EPS for s in b.segments)
-              or any(math.hypot(x - v.x, y - v.y) <= v.size / 2.0 + _EPS for v in b.vias)
+              or any(via_on_layer(v, layer) and math.hypot(x - v.x, y - v.y) <= v.size / 2.0 + _EPS
+                     for v in b.vias)
               or any(_pad_on(p, layer) and _in_pad(p, x, y, _EPS) for p in b.sense_pads))
         if on:
             return b.join
@@ -816,6 +857,7 @@ def terminal_sense_dist(pcb_data, net_id: int, x1: float, y1: float, x2: float, 
     branches = protected_branches(pcb_data, net_id)
     if not branches:
         return 1e9
+    from geometry_utils import via_on_layer
     n = max(2, int(math.hypot(x2 - x1, y2 - y1) / 0.02) + 1)
     t = np.linspace(0.0, 1.0, n + 1)
     sx, sy = x1 + (x2 - x1) * t, y1 + (y2 - y1) * t
@@ -840,7 +882,7 @@ def terminal_sense_dist(pcb_data, net_id: int, x1: float, y1: float, x2: float, 
                 d = np.hypot(px - (ax + tt * ex), py - (ay + tt * ey)) - s.width / 2.0
                 best = min(best, float(d.min()))
         for v in b.vias:
-            if _in_pad(join, v.x, v.y, 0.0):
+            if _via_on_join(v, join) or not via_on_layer(v, layer):
                 continue
             best = min(best, float((np.hypot(px - v.x, py - v.y) - v.size / 2.0).min()))
         for p in b.sense_pads:

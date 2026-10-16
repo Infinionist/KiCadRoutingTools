@@ -12,6 +12,8 @@ reach, each case built in-test from the fixture's text:
   no load is routed through it onto the trace;
 - a round (or roundrect) join pad is its copper, not its bounding box;
 - a member drawn across the join pad with both ends outside it touches it;
+- a blind member via has copper on its span only: it neither touches nor
+  blocks copper on the layers it does not reach;
 
 Run:
     python3 tests/test_1279_sense_branch_geometry.py
@@ -319,11 +321,58 @@ def test_member_across_the_join_pad_touches_it():
         == [(1.0, 5.0, 2.5, 5.0), (3.5, 5.0, 27.0, 5.0)]
 
 
+FOUR_LAYERS = ('(layers (0 "F.Cu" signal) (4 "In1.Cu" signal) (6 "In2.Cu" signal) '
+               '(2 "B.Cu" signal)')
+BLIND = '11111111-0000-0000-0000-0000000000a1'
+
+
+def _blind(text, extra=''):
+    """The fixture on four copper layers with a blind F.Cu-In1.Cu member via
+    at (15, 5) on the sense trace, plus `extra` board items."""
+    assert text.count('(layers (0 "F.Cu" signal) (2 "B.Cu" signal)') == 1
+    via = (f'  (via blind (at 15 5) (size 0.6) (drill 0.3) (layers "F.Cu" "In1.Cu") '
+           f'(net 1) (uuid "{BLIND}"))\n')
+    return (text.replace('(layers (0 "F.Cu" signal) (2 "B.Cu" signal)', FOUR_LAYERS)
+            .replace(ANCHOR, via + extra + ANCHOR)
+            .replace(f'(members "{MEMBER}")', f'(members "{MEMBER}" "{BLIND}")'))
+
+
+def test_blind_member_via_is_on_its_span_only():
+    """A blind F.Cu-In1.Cu member via at (15, 5) has no copper on In2.Cu or
+    B.Cu. A B.Cu VDD track passing under it is not a tap (before: refused,
+    'input copper already taps it (track (15, 3)-(15, 7) on B.Cu)'; pcbnew
+    10.0.3 joins the track to nothing); the stamp leaves In2.Cu and B.Cu free
+    (before: 553 cells on each); the terminal gate and the oracle-link
+    retarget see nothing there; it does not touch a B.Cu pad above it."""
+    from routing_config import GridRouteConfig, GridCoord
+    _p, b = _branch(_variant(_blind(_src(), _track(15, 3, 15, 7, '66666666-0000-0000-0000-000000000001',
+                                                   layer='B.Cu')), 'blind_tap'))
+    assert b.protected, b.reason
+    p, b = _branch(_variant(_blind(_src()), 'blind'))
+    assert b.protected and len(b.vias) == 1, b.reason
+    layers = ['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu']
+    cfg = GridRouteConfig(track_width=0.3, clearance=0.2, via_size=0.6, grid_step=0.05,
+                          layers=layers)
+    cells, _vias = sb.sense_obstacle_rows(b, cfg, GridCoord(0.05),
+                                          {n: i for i, n in enumerate(layers)}, 0.2)
+    per_layer = {n: int((cells[:, 2] == i).sum()) for i, n in enumerate(layers)}
+    assert per_layer['In1.Cu'] > 0 and per_layer['In2.Cu'] == per_layer['B.Cu'] == 0, per_layer
+    assert sb.terminal_sense_dist(p, 1, 14.0, 5.0, 16.0, 5.0, 'B.Cu', 0.15) == 1e9
+    assert sb.join_for_point(p, 1, 15.0, 5.0, 'B.Cu') is None
+    via = b.vias[0]
+    pad_b = next(q for q in p.footprints['U1'].pads)
+    pad_b = type(pad_b)(**{**pad_b.__dict__, 'global_x': 15.0, 'global_y': 5.0, 'layers': ['B.Cu']})
+    assert not sb._touch(('via', via), ('pad', pad_b), b.join)
+    assert sb._touch(('via', via), ('pad', type(pad_b)(**{**pad_b.__dict__, 'layers': ['F.Cu']})),
+                     b.join)
+
+
 TESTS = [
     test_x_crossing_is_a_tap,
     test_pad_crossed_off_centre_is_a_sense_pad,
     test_round_join_pad_is_its_copper,
     test_member_across_the_join_pad_touches_it,
+    test_blind_member_via_is_on_its_span_only,
 ]
 
 
