@@ -11,7 +11,11 @@ the branch resolves as stated:
 - hole: a VDD pour over the board on F.Cu with a CUT-OUT around the sense
   trace -- both paths keep the cut-out (Zone.holes; pcbnew loads every later
   `(polygon ...)` of a zone as a hole of its outline) and protect the branch;
-- padedge: a VDD pour over a strip of the sense pad U1.1 -- both refuse it.
+- padedge: a VDD pour over a strip of the sense pad U1.1 -- both refuse it;
+- dangling: the group lists a uuid no item has -- KiCad drops it on load and
+  the text path drops it too, so both protect the branch on its one track;
+- graphic: the group lists the outline's gr_rect -- an item KiCad keeps in
+  the group, not copper -- and both refuse the branch.
 
 Exits 77 (SKIP) only when KiCad's bundled python cannot be found.
 
@@ -35,6 +39,8 @@ from kicad_exact_fill import find_kicad_python  # noqa: E402
 import test_1279_sense_branch_geometry as geo  # noqa: E402
 
 RUN_ALL_TIMEOUT = 300
+#: The board outline's gr_rect in the fixture.
+GRAPHIC = '22222222-0000-0000-0000-000000000001'
 SKIP_EXIT = 77
 
 #: Runs in KiCad's python: one JSON line per board.
@@ -65,6 +71,10 @@ def _variants(d):
         'hole': src.replace(geo.ANCHOR, geo._zone([geo.BOARD_RING, geo.SLOT]) + geo.ANCHOR),
         'padedge': src.replace(geo.ANCHOR, geo._zone(
             [[(14, 5.3), (29.5, 5.3), (29.5, 10), (14, 10)]]) + geo.ANCHOR),
+        'dangling': src.replace(f'(members "{geo.MEMBER}")',
+                                f'(members "{geo.MEMBER}" "{geo.DANGLING}")'),
+        'graphic': src.replace(f'(members "{geo.MEMBER}")',
+                               f'(members "{geo.MEMBER}" "{GRAPHIC}")'),
     }
     paths = {}
     for name, text in texts.items():
@@ -115,7 +125,13 @@ def main():
            hole['pcbnew'][0][3] == '', hole['pcbnew'][0])
         ck('padedge: a pour over a strip of U1.1 refuses the branch on both paths',
            'pours over sense pad U1.1' in padedge['pcbnew'][0][3], padedge['pcbnew'][0])
-        total = len(rows) * 2 + 3
+        dangling, graphic = rows['dangling'], rows['graphic']
+        ck('dangling: protected on its one track on both paths (KiCad drops the uuid)',
+           dangling['pcbnew'][0][2] == [geo.MEMBER] and dangling['pcbnew'][0][3] == '',
+           dangling['pcbnew'][0])
+        ck('graphic: a non-copper member refuses the branch on both paths',
+           'are not tracks or vias on the board' in graphic['pcbnew'][0][3], graphic['pcbnew'][0])
+        total = len(rows) * 2 + 5
         print(f'{total - len(fails)}/{total} checks passed')
         return 1 if fails else 0
     finally:

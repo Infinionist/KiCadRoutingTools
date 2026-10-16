@@ -22,6 +22,11 @@ reach, each case built in-test from the fixture's text:
 - a same-net pour taps the branch where KiCad can fill: not inside the zone's
   cut-out or a pour keep-out around the trace, but over a strip of a sense
   pad whose centre it misses;
+- a member uuid matching no item is dropped, as KiCad drops it on load, and
+  named in the branch's warnings.
+
+tests/test_1279_sense_branch_geometry_pcbnew.py holds the parse paths to the
+same answers under KiCad's python.
 
 Run:
     python3 tests/test_1279_sense_branch_geometry.py
@@ -530,6 +535,27 @@ def test_pour_taps_only_where_it_can_fill():
     assert not b.protected and 'pours over its F.Cu track' in (b.reason or ''), b.reason
 
 
+DANGLING = '99999999-0000-0000-0000-000000000009'
+
+
+def test_dangling_member_is_ignored_as_kicad_does():
+    """The group lists the member track and a uuid no item on the board has.
+    KiCad leaves the latter out of the group on load (pcbnew 9.0.6 and 10.0.3:
+    GetItems() lists the track only), so the text path does too: the branch
+    is protected on its one track, with a warning naming the uuid -- before,
+    the text path refused it ('are not tracks or vias on the board') while
+    the pcbnew path protected it."""
+    p, b = _branch(_variant(_src().replace(
+        f'(members "{MEMBER}")', f'(members "{MEMBER}" "{DANGLING}")'), 'dangling'))
+    assert b.protected, b.reason
+    assert b.member_uuids == [MEMBER] and b.dangling_uuids == [DANGLING], \
+        (b.member_uuids, getattr(b, 'dangling_uuids', None))
+    entry = b.summary(p)
+    assert entry['protected'] and DANGLING in ' '.join(entry.get('warnings', ())), entry
+    raw = sb.sense_groups_from_text(_src())
+    assert raw == [('sense:C1.1', '33333333-0000-0000-0000-000000000001', [MEMBER])], raw
+
+
 TESTS = [
     test_x_crossing_is_a_tap,
     test_pad_crossed_off_centre_is_a_sense_pad,
@@ -539,6 +565,7 @@ TESTS = [
     test_join_pad_narrower_than_the_track_is_landable,
     test_oblique_member_is_held_from_where_its_copper_leaves,
     test_pour_taps_only_where_it_can_fill,
+    test_dangling_member_is_ignored_as_kicad_does,
 ]
 
 

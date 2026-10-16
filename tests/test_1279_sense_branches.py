@@ -285,7 +285,10 @@ def test_refusals_name_their_reason():
     cases = [
         (_with_group(name='sense:C1'), 'does not name the join pad'),
         (_with_group(name='sense:C9.1'), 'join pad C9.1 is not on the board'),
-        (_with_group(members=[MEMBER, '99999999-0000-0000-0000-000000000009']),
+        # The board outline's gr_rect: an item KiCad keeps in the group, but not
+        # copper. (A uuid matching NO item is dropped on load, by KiCad and by
+        # sense_groups_from_text alike -- test_1279_sense_branch_geometry.)
+        (_with_group(members=[MEMBER, '22222222-0000-0000-0000-000000000001']),
          'are not tracks or vias on the board'),
         (_with_group(name='sense:U2.1'), 'does not touch the join pad U2.1'),
         (_with_group().replace(

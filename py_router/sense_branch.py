@@ -362,12 +362,16 @@ class SenseBranch:
 
     `segments` / `vias` are the member copper, `sense_pads` the pads of the
     same net that member copper touches (the join pad excepted), `join` the
-    join Pad. `reason` is None for a protected branch, else why it is not."""
+    join Pad. `reason` is None for a protected branch, else why it is not.
+    `dangling_uuids` are member uuids the file lists that match no item on
+    the board: KiCad drops them on load, so they are not members (`warnings`
+    names them)."""
 
     def __init__(self, name: str, group_uuid: str, member_uuids: List[str]):
         self.name = name
         self.group_uuid = group_uuid
         self.member_uuids = sorted(member_uuids)
+        self.dangling_uuids = sorted(getattr(member_uuids, 'dangling', None) or ())
         self.join_key: Optional[Tuple[str, str]] = None
         self.join = None
         self.net_id = 0
@@ -383,6 +387,17 @@ class SenseBranch:
     def join_label(self) -> str:
         return f"{self.join_key[0]}.{self.join_key[1]}" if self.join_key else '?'
 
+    @property
+    def warnings(self) -> List[str]:
+        """What the declaration says that the board does not hold."""
+        if not self.dangling_uuids:
+            return []
+        n = len(self.dangling_uuids)
+        return [f"member uuid(s) {', '.join(self.dangling_uuids[:4])}"
+                f"{' ...' if n > 4 else ''} match no item on the board; KiCad drops "
+                f"{'it' if n == 1 else 'them'} from the group on load, so "
+                f"{'it is' if n == 1 else 'they are'} ignored"]
+
     def summary(self, pcb_data=None) -> dict:
         """The JSON_SUMMARY.sense_branches entry."""
         net = ''
@@ -395,6 +410,8 @@ class SenseBranch:
                                     for p in self.sense_pads)}
         if self.reason is not None:
             out['reason'] = self.reason
+        if self.warnings:
+            out['warnings'] = self.warnings
         return out
 
 
@@ -408,21 +425,38 @@ def branch_signature(b: SenseBranch) -> tuple:
 _UUID_RE = r'"?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"?'
 
 
+class _Members(list):
+    """A group's member uuids that match an item, carrying the ones that do
+    not as `dangling` (SenseBranch.dangling_uuids)."""
+    dangling: List[str] = []
+
+
 def sense_groups_from_text(content: str) -> List[Tuple[str, str, List[str]]]:
     """[(group name, group uuid, [member uuid, ...])] for every
     `(group "sense:..." ...)` block of a board file. The group's own
-    `(uuid ...)` is its identity, not a member (read `(members ...)` only)."""
+    `(uuid ...)` is its identity, not a member (read `(members ...)` only).
+
+    A member uuid that matches no item's `(uuid ...)` / `(tstamp ...)` /
+    `(id ...)` anywhere in the file is left out, as KiCad leaves it out of the
+    group on load (pcbnew 9.0.6 and 10.0.3: GetItems() omits it), so both
+    parse paths see the same members; it rides on the list as `dangling`."""
     import re
     from kicad_parser import find_matching_paren
     out = []
     if GROUP_PREFIX not in content:
         return out
+    known = None
     for m in re.finditer(r'\(group\s+"(' + re.escape(GROUP_PREFIX) + r'[^"]*)"', content):
         block = content[m.start():find_matching_paren(content, m.start())]
         u = re.search(r'\((?:uuid|id)\s+' + _UUID_RE, block)
         mem = re.search(r'\(members\b', block)
-        members = (re.findall(_UUID_RE, block[mem.start():find_matching_paren(block, mem.start())])
-                   if mem else [])
+        found = (re.findall(_UUID_RE, block[mem.start():find_matching_paren(block, mem.start())])
+                 if mem else [])
+        if found and known is None:
+            known = {k.lower() for k in re.findall(
+                r'\((?:uuid|tstamp|id)\s+' + _UUID_RE + r'\s*\)', content)}
+        members = _Members(x for x in found if x.lower() in known)
+        members.dangling = [x for x in found if x.lower() not in known]
         out.append((m.group(1), u.group(1) if u else '', members))
     return out
 
