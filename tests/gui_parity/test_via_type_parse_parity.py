@@ -9,11 +9,11 @@ reads from `GetViaType()`. This gate holds both against pcbnew's own answer,
 
   * TYPED -- through, blind, buried and micro vias as pcbnew saves them;
   * UNTYPED -- the same file with every type word stripped, which is what this
-    repo's writer emits for a via whose layer pair is not F.Cu/B.Cu. KiCad
-    loads every one of those as a THROUGH via. The text parse still carries
-    the partial layer pair (asserted, so the arm is not vacuous), so a span
-    read off the pair would put the text path a layer short of KiCad here
-    while the pcbnew path (which normalises the pair to F.Cu/B.Cu) agreed.
+    repo's writer emitted for a via whose layer pair is not F.Cu/B.Cu. KiCad
+    loads every one of those as a THROUGH via and snaps its pair to
+    F.Cu/B.Cu; both parse paths must report the same type AND the same pair.
+    (The stripped file keeps its four partial pairs, asserted, so the arm is
+    not vacuous.)
 
 A third arm, RE-CREATE, puts each via of the typed board back on a fresh board
 the way the plugin does (gui_utils.set_via_layers) and holds the result to the
@@ -144,6 +144,13 @@ def _grade(pcbnew, label, path, expect_partial_pairs):
     l_types = sorted((round(v.x, 3), v.via_type) for v in live.vias)
     check(t_types == l_types, '%s: both parse paths read the same via_type' % label,
           '%s vs %s' % (t_types, l_types))
+    # ...and the same layer PAIR: pcbnew snaps an untyped via's pair to
+    # F.Cu/B.Cu, and so does the text parser, so a consumer reading the pair
+    # sees KiCad's via on either path.
+    t_pairs = sorted((round(v.x, 3), tuple(sorted(v.layers))) for v in text.vias)
+    l_pairs = sorted((round(v.x, 3), tuple(sorted(v.layers))) for v in live.vias)
+    check(t_pairs == l_pairs, '%s: both parse paths read the same layer pairs' % label,
+          '%s vs %s' % (t_pairs, l_pairs))
 
     # The GUI re-reads the live board's vias before every route step
     # (RoutingDialog._sync_pcb_data_from_board) with its own Via(...) call,
@@ -248,11 +255,16 @@ def main():
         stripped = re.sub(r'\(via\s+(?:blind|buried|micro)(?=\s)', '(via', txt)
         check(stripped != txt and not re.search(r'\(via\s+(?:blind|buried|micro)\s', stripped),
               'the untyped fixture has no type word left')
+        _pairs = re.findall(r'\(layers "([^"]+)" "([^"]+)"\)', stripped)
+        check(sum(1 for a, b in _pairs if {a, b} != {'F.Cu', 'B.Cu'}) == 4,
+              'the untyped fixture still writes 4 partial layer pairs')
         untyped = os.path.join(td, 'untyped.kicad_pcb')
         with open(untyped, 'w', encoding='utf-8') as f:
             f.write(stripped)
         _grade(pcbnew, 'TYPED', typed, expect_partial_pairs=4)
-        _grade(pcbnew, 'UNTYPED', untyped, expect_partial_pairs=4)
+        # The file carries 4 partial pairs (asserted above by the strip); the
+        # text parse snaps every one to F.Cu/B.Cu, as pcbnew does.
+        _grade(pcbnew, 'UNTYPED', untyped, expect_partial_pairs=0)
         _recreate(pcbnew, td, typed)
 
     print('\n%d failure(s)' % len(FAILURES))

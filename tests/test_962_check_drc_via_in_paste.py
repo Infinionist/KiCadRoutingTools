@@ -110,9 +110,13 @@ def board(work, name, vias, setup='', extra='', a=1,
     return p
 
 
-def via(x, y, net='/A', spec='', uid='v', layers='"F.Cu" "B.Cu"'):
-    return (' (via (at %s %s) (size 0.4) (drill 0.2) (layers %s) %s'
-            '<<NET:%s>> (uuid "%s"))' % (x, y, layers, spec, net, uid))
+def via(x, y, net='/A', spec='', uid='v', layers='"F.Cu" "B.Cu"', vtype=''):
+    # `vtype` is KiCad's type word: a via without one is a THROUGH via
+    # whatever its layers say (found reviewing #1268). `blind` is the word
+    # both KiCad 9 (BLIND_BURIED) and KiCad 10 load for an inner pair.
+    return (' (via %s(at %s %s) (size 0.4) (drill 0.2) (layers %s) %s'
+            '<<NET:%s>> (uuid "%s"))' % (vtype + ' ' if vtype else '', x, y,
+                                         layers, spec, net, uid))
 
 
 def drc(path, **kw):
@@ -282,11 +286,18 @@ def main():
               '(the run lost the protection)', len(vip(rows)) == 1
               and not vip(rows, 'inherited-via-in-paste'), str(rows))
         # a via only counts under F.Paste when its barrel reaches F.Cu
-        rows = drc(board(work, 'buried', [via(10, 10, layers='"In1.Cu" "In2.Cu"')]))
+        rows = drc(board(work, 'buried', [via(10, 10, layers='"In1.Cu" "In2.Cu"',
+                                              vtype='blind')]))
         check('5. a BURIED In1-In2 via under the F.Paste opening is not a hit',
               not vip(rows) and not vip(rows, 'protected-via-in-paste'), str(vip(rows)))
-        rows = drc(board(work, 'blind', [via(10, 10, layers='"F.Cu" "In1.Cu"')]))
+        rows = drc(board(work, 'blind', [via(10, 10, layers='"F.Cu" "In1.Cu"',
+                                             vtype='blind')]))
         check('5. ...a BLIND F.Cu-In1 one is (its barrel opens under the paste)',
+              len(vip(rows)) == 1, str(vip(rows)))
+        # ...and the same In1-In2 pair with NO type word is a through via to
+        # KiCad, so it does open under the paste.
+        rows = drc(board(work, 'untyped', [via(10, 10, layers='"In1.Cu" "In2.Cu"')]))
+        check('5. ...an UNTYPED In1/In2 via is through, so it is a hit',
               len(vip(rows)) == 1, str(vip(rows)))
 
         # 6 -- kicad_drc_compare: a labelled channel, off the copper match
