@@ -282,9 +282,11 @@ def route_diff_pairs(
                 state.config = config
                 state.diff_pair_extra_clearance = diff_pair_extra_clearance
                 state.diff_pair_base_obstacles = diff_pair_base_obstacles
-            # The deferred branch below reads this reason back; one left by an
-            # earlier attempt on this pair (the bare-pad retry pass) must not
-            # leak into this one.
+            # The deferred branch below reads this reason back, so one left by
+            # an earlier attempt must not outlive it. A guard: no caller routes
+            # a deferred pair twice on one state today (the bare-pad retry
+            # pass skips a pair already left to single-ended, and the #246
+            # re-queue only takes a pair whose copper was ripped).
             _diag = state.pair_diagnostics.get(pair_name, {})
             if _diag.get('reason') == 'coupled-route-failed':
                 del _diag['reason']
