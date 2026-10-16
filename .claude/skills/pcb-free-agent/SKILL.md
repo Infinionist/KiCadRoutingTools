@@ -51,6 +51,10 @@ serves those nets from the fill.
 
 ## 2. Before the first command
 
+- **Read `references/part-roles.md` before you judge what a part is.** A
+  prefix, a footprint name or pins named IN/OUT mislead: an RF amplifier
+  reads as a regulator, a crystal's load cap as a decap. It also records
+  where humans put each functional group.
 - **Declared facts win.** If the board has a sibling
   `<board>.design-brief.json` or `mechanical.json`, compile the intent from it:
   `python3 -X utf8 py_tools/check_floorplan.py <board> --emit-intent <intent.json>`.

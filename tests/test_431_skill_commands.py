@@ -120,6 +120,9 @@ SOURCES = [
     # them (#549: a block moved out of SKILL.md must not go flag-unchecked).
     '.claude/skills/pcb-free-agent/SKILL.md',
     '.claude/skills/pcb-free-agent/references/verifier.md',
+    # What a part IS, read before grouping parts: any flag a future entry
+    # cites is held to the real parser like the rest.
+    '.claude/skills/pcb-free-agent/references/part-roles.md',
     'docs/floorplan-intent.md',
     'docs/placement-optimization.md',
     'docs/claude-skills.md',
