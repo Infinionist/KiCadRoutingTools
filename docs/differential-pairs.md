@@ -302,9 +302,9 @@ necked there when it is emitted, the same fab-floored neck the terminal legs get
 
 P and N paths are created as perpendicular offsets from the simplified centerline.
 The offset is half the P/N centre pitch, `(width + gap) / 2`. With per-layer widths
-(an `--impedance` solve or a stored impedance declaration) it is taken per layer
-from that layer's own width (`layer_pair_spacing`), so a narrower stripline layer
-keeps the declared gap:
+(an `--impedance` solve, a stored impedance declaration, or a layer-scoped
+`.kicad_dru` width rule) it is taken per layer from that layer's own width
+(`layer_pair_spacing`), so a narrower stripline layer keeps the declared gap:
 
 ```python
 def create_parallel_path_float(centerline_path, coord, sign, spacing_mm, start_dir, end_dir):
@@ -322,6 +322,19 @@ def create_parallel_path_float(centerline_path, coord, sign, spacing_mm, start_d
         perp_y = dx * sign * spacing_mm * corner_scale
         result.append((x + perp_x, y + perp_y, layer))
 ```
+
+A layer-scoped `.kicad_dru` rule such as
+`(rule "strip" (layer "In2.Cu") (constraint track_width (opt 0.154mm)))` sets the
+pair width on that layer when neither `--track-width` nor `--impedance` is given
+(the GUI: the width override unchecked) and no stored impedance is reapplied, as
+`route.py` does for single-ended nets. Each member is resolved as KiCad resolves a
+coupled-pair track: its net class's `diff_pair_width`, then the rules that match it
+on that layer, clamped into their min/max and the fab floor. A layer no rule scopes
+therefore keeps the class pair width, not the class's single-ended track width. The
+run prints `Design-rule layer widths: ...`. The engine draws one width per layer per
+call, so when the targeted pairs resolve different widths on a layer (pairs in
+different classes, a rule scoped to some of them) the rules are not applied and the
+run prints a NOTE naming the layer; route each group of pairs in its own call.
 
 ### Corner Handling (Miters)
 

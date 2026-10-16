@@ -710,6 +710,52 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                   f"impedance spec(s){' (plus unspecified nets)' if _uncovered else ''} "
                   f"-- cannot reapply call-level; pass --impedance explicitly")
 
+    # Layer-scoped .kicad_dru track_width rules (route.py's #530 twin): with no
+    # --impedance and no --track-width, a rule such as `(layer "In2.Cu") ...
+    # (constraint track_width (opt 0.154mm))` sets that layer's width, which is
+    # how a stripline layer carries a narrower pair than the outer microstrip.
+    # Members resolve as coupled-pair members, so a layer no rule scopes keeps
+    # the class diff_pair_width the pair routes at anyway (KiCad's inDiffPair
+    # implicit rule), not the class's single-ended track_width. The diff
+    # engine bakes one width per layer per call (#156), so the widths apply
+    # only when every member resolves the same width on each layer; when they
+    # do not, the run says which layers disagree.
+    # Members come from pair detection, which expands the patterns the
+    # caller passed; resolve_net_ids above matches exact names only.
+    if impedance is None and not layer_widths and net_names and diff_pair_width_from_class:
+        try:
+            from design_rules import DesignRules as _DR
+            from list_nets import fab_floors as _ff
+            _cu_all = list(getattr(pcb_data.board_info, 'copper_layers', None) or layers)
+            _dr = _DR.from_project(pcb_data, input_file, fab_floor=_ff(len(_cu_all)),
+                                   copper_layers=_cu_all)
+            _by_layer = {l: set() for l in layers}
+            _scoped = False     # a layer-scoped rule sizes some member somewhere
+            for _pn, _pr in find_differential_pairs(pcb_data, net_names).items():
+                for nid in (_pr.p_net_id, _pr.n_net_id):
+                    _base = _dr.draw_size('track_width', nid, default=track_width,
+                                          diff_pair=_pn)
+                    for l in layers:
+                        _w = _dr.draw_size('track_width', nid, l, default=track_width,
+                                           diff_pair=_pn)
+                        _by_layer[l].add(round(_w, 6))
+                        _scoped = _scoped or abs(_w - _base) > 1e-9
+            _split = {l: sorted(v) for l, v in _by_layer.items() if len(v) > 1}
+            if _scoped and _split:
+                print("  NOTE: layer-scoped track_width rule(s) NOT applied: the "
+                      "targeted pairs resolve different widths on "
+                      + ", ".join(f"{l} ({'/'.join(f'{w:g}' for w in ws)}mm)"
+                                  for l, ws in _split.items())
+                      + " and the diff engine draws one width per layer per call "
+                        "(#156), so they route at their net-class width. Route each "
+                        "group of pairs in its own call to apply the rules.")
+            elif _scoped:
+                layer_widths = {l: next(iter(v)) for l, v in _by_layer.items()}
+                print("  Design-rule layer widths: " + ", ".join(
+                    f"{l}={w:g}mm" for l, w in layer_widths.items()))
+        except Exception as _dre:                          # noqa: BLE001
+            print(f"  Warning: design-rule layer widths unavailable ({_dre}).")
+
     # Auto-detect BGA exclusion zones if not specified
     _sel_ids = [nid for _nm, nid in _targets]
     bga_exclusion_zones = setup_bga_exclusion_zones(
