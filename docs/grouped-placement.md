@@ -242,14 +242,15 @@ Each stage, and what it now grows with:
   | board | parts | ground pads | f6af54ae | now | peak memory now |
   |---|---|---|---|---|---|
   | glasgow_revC | 272 | 293 | 14.8 s | 4.4 s | 106 MB |
-  | ddr4_rdimm_tester | 691 | 833 | 255 s | 58 s | 705 MB |
-  | stm32h7_hdmi | 835 | 601 | 162 s | 38 s | 551 MB |
+  | ddr4_rdimm_tester | 691 | 833 | 255 s | 54 s | 680 MB |
+  | stm32h7_hdmi | 835 | 601 | 162 s | 36 s | 419 MB |
   | thunderscope | 1022 | -- | -- | 26 s | 256 MB |
-  | kintex_410t_devboard | 1020 | 1136 | -- | 97 s | 939 MB |
+  | kintex_410t_devboard | 1020 | 1136 | -- | 91 s | 721 MB |
   | jetson_agx_thor_bb | 1172 | -- | -- | 80 s | 754 MB |
 
   Whole runs, parse and write included: ddr4_rdimm_tester's file is 54 MB
-  and kintex's 75 MB, and reading one costs 8-11 s. Measured with
+  and kintex's 75 MB, and reading one costs 5-7 s (8-11 s before each
+  footprint's blocks and shapes were found once per parse). Measured with
   `place_optimize --max-passes 1 --max-displacement 3`; peak memory is
   `/usr/bin/time`'s maximum resident set.
 - **Seating** walks candidate poses nearest-first and keeps the first legal

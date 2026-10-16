@@ -130,11 +130,11 @@ placement (whole run, parse and write included):
 | board | parts | ground pads | f6af54ae | now | peak memory now |
 |---|---|---|---|---|---|
 | glasgow_revC | 272 | 293 | 14.8 s | 4.4 s | 106 MB |
-| ddr4_rdimm_tester | 691 | 833 | 255 s | 58 s | 705 MB |
-| stm32h7_hdmi | 835 | 601 | 162 s | 38 s | 551 MB |
-| kintex_410t_devboard | 1020 | 1136 | -- | 97 s | 939 MB |
+| ddr4_rdimm_tester | 691 | 833 | 255 s | 54 s | 680 MB |
+| stm32h7_hdmi | 835 | 601 | 162 s | 36 s | 419 MB |
+| kintex_410t_devboard | 1020 | 1136 | -- | 91 s | 721 MB |
 
-(The two biggest files, 54 and 75 MB, spend 8-11 s per parse of that.)
+(The two biggest files, 54 and 75 MB, spend 5-7 s per parse of that.)
 
 What still grows with the ground net: the fixed tree is built once per visit
 (O(m log m) at most), and a pose's join reads every fixed pad's distance once

@@ -8,6 +8,13 @@ and a masked copy -- 216 MB for ddr4_rdimm_tester's 54 MB file, twice that
 with `maxsize=2` -- so `parse_kicad_pcb` releases them as it returns, and so
 does the writer's own block scan (`kicad_writer._functional_footprint_spans`).
 
+Within one parse the work is SHARED (`kicad_parser._PARSE_MEMO`): the
+footprint block ends, the masked copy's blocks (they are the original's), and
+each footprint's shape spans, found once for every extractor that walks them.
+A parse with the memo must equal one without it, field for field, on boards
+whose custom pads carry `(primitives ...)` (the masked copy differs there),
+and the memo must be gone when the parse returns.
+
 `place_seed.read_written` is the other side of the same cost: a seed reads
 its own output back up to nine times, and it now parses once per VERSION of
 the file. It must hand back the same object while the file is unchanged and
@@ -72,6 +79,48 @@ def main():
     text = K.read_board_text(BOARD)
     kicad_writer._functional_footprint_spans(text)
     check(held() == [0, 0, 0], f"none after the writer's block scan {held()}")
+
+    check(K._PARSE_MEMO is None, "the per-parse memo is gone after the parse")
+    import hashlib
+    def fields(pcb):
+        return {k: hashlib.sha1(repr(v).encode()).hexdigest()
+                for k, v in sorted(vars(pcb).items())
+                if not (callable(v) and not isinstance(v, (list, dict)))}
+    shared = {}
+    for name in ('orangecrab_ext_pll.kicad_pcb', 'rp2350_fpga_eensy_prePlane.kicad_pcb',
+                 'tigard.kicad_pcb', 'glasgow_revC.kicad_pcb'):
+        path = os.path.join(ROOT, 'kicad_files', name)
+        with_memo = fields(K.parse_kicad_pcb(path))
+        real = K._memo_for
+        K._memo_for = lambda content: None
+        try:
+            without = fields(K.parse_kicad_pcb(path))
+        finally:
+            K._memo_for = real
+        differ = sorted(k for k in with_memo if with_memo[k] != without.get(k))
+        check(not differ, f"{name}: the shared parse equals the unshared one "
+                          f"(differ: {differ})")
+        counts = []
+        for share in (True, False):
+            hits = [0]
+            real_spans = K._footprint_shape_spans
+            def counting(fp_text, tags=K._FP_SHAPE_TAGS):
+                hits[0] += 1
+                return real_spans(fp_text, tags)
+            K._footprint_shape_spans = counting
+            if not share:
+                K._memo_for = lambda content: None
+            try:
+                K.parse_kicad_pcb(path)
+            finally:
+                K._footprint_shape_spans = real_spans
+                K._memo_for = real
+            counts.append(hits[0])
+        shared[name] = tuple(counts)
+        check(counts[0] < counts[1], f"{name}: footprint shapes are scanned "
+                                     f"once per parse ({counts[0]} scans "
+                                     f"shared, {counts[1]} unshared)")
+    print(f"  footprint shape scans per parse (shared, unshared): {shared}")
 
     from place_seed import read_written
     with tempfile.TemporaryDirectory() as tmp:

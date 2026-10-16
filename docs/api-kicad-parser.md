@@ -54,6 +54,14 @@ Parse a `.kicad_pcb` file and return a fully populated [`PCBData`](#pcbdata).
   (`release_text_caches()`, which a caller scanning board text itself can
   call too). Kept, they held the text and a masked copy: 216 MB after
   parsing a 54 MB board.
+- Finds each footprint block, and each footprint's shapes, once. Several
+  extractors walk the same blocks (the board bounds, the outline owners,
+  the footprints, the graphic copper, the paste openings), some over the text
+  with pad primitives masked out -- which has the same blocks, since a mask
+  is a balanced token of the same length. While a parse runs it keeps each
+  block's end, and each footprint's shape offsets, in `_PARSE_MEMO`, for its
+  own texts only; the memo is gone when the parse returns. A 54 MB board
+  parsed in 8.1 s and parses in 5.3 s, to the same `PCBData`.
 
 ### `build_pcb_data_from_board`
 

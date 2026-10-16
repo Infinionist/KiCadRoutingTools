@@ -8,6 +8,7 @@ from __future__ import annotations
 KRT_TOOL = {'scope': [], 'kind': 'instrument'}
 
 import functools
+from array import array
 import os
 import re
 import math
@@ -2503,6 +2504,42 @@ _GR_CIRCLE_PATTERN = (r'\(gr_circle\s+\(center\s+([\d.-]+)\s+([\d.-]+)\)\s+'
                       + r'\(layer\s+"Edge\.Cuts"\)')
 
 
+#: Work one `parse_kicad_pcb` shares between its extractors, set only while a
+#: parse runs (so a long-lived caller -- the GUI, the writer -- never
+#: accumulates it) and emptied as the parse returns:
+#:   * `live`: {id: text} of the parse's own texts (the board text and its
+#:     `_mask_pad_primitives` copy), the only texts the entries below are kept
+#:     for -- an id is reused only after its object is freed, and these stay
+#:     alive for the whole parse;
+#:   * `masked_from`: {id(masked copy): board text};
+#:   * `ends`: {(id(text), open index): `find_matching_paren`'s answer};
+#:   * `shapes`: {(id(text), block start, tags): each fp shape's (tag, start,
+#:     end) inside that footprint block}.
+#: On a 54 MB board (ddr4_rdimm_tester) the footprint blocks were scanned
+#: three times and every footprint's shapes twice: 4.8 s of an 8.5 s parse.
+_PARSE_MEMO: Optional[dict] = None
+
+
+def _memo_for(content: str) -> Optional[dict]:
+    memo = _PARSE_MEMO
+    if memo is not None and memo['live'].get(id(content)) is content:
+        return memo
+    return None
+
+
+def _block_end(content: str, start: int) -> int:
+    """`find_matching_paren(content, start)`, answered once per parse for the
+    parse's own texts: every footprint-block scan opens the same blocks."""
+    memo = _memo_for(content)
+    if memo is None:
+        return find_matching_paren(content, start)
+    key = (id(content), start)
+    end = memo['ends'].get(key)
+    if end is None:
+        end = memo['ends'][key] = find_matching_paren(content, start)
+    return end
+
+
 @functools.lru_cache(maxsize=2)
 def _mask_pad_primitives(content: str) -> str:
     """Blank out pad ``(primitives ...)`` blocks before board-level graphic scans.
@@ -2541,7 +2578,12 @@ def _mask_pad_primitives(content: str) -> str:
     if not out:
         return content
     out.append(content[pos:])
-    return ''.join(out)
+    masked = ''.join(out)
+    memo = _memo_for(content)
+    if memo is not None:
+        memo['live'][id(masked)] = masked
+        memo['masked_from'][id(masked)] = content
+    return masked
 
 
 @functools.lru_cache(maxsize=2)
@@ -2570,6 +2612,12 @@ def _footprint_blocks_by_key(content: str):
         hash(content)
     except TypeError:              # not a str: cannot be memoised
         return _footprint_blocks_by_key_uncached(content)
+    # A masked copy has the original's blocks: masking replaces each pad's
+    # `(primitives ...)` with a balanced token of the same length, inside the
+    # pad, so no footprint's start, end or reference moves.
+    memo = _memo_for(content)
+    if memo is not None:
+        content = memo['masked_from'].get(id(content), content)
     # Deliberately NOT a try/except around the cached call: that would also
     # catch a TypeError raised INSIDE the scan, re-run the whole whole-file
     # walk, and hide the real bug behind a slow success.
@@ -2589,7 +2637,7 @@ def _footprint_blocks_by_key_uncached(content: str):
     """
     spans, raws = [], []
     for m in re.finditer(r'\(footprint\s+"', content):
-        end = find_matching_paren(content, m.start())
+        end = _block_end(content, m.start())
         spans.append((m.start(), end))
         raws.append(footprint_raw_reference(content[m.start():end]))
     return [(a, b, k) for (a, b), k in
@@ -2623,6 +2671,12 @@ def iter_footprint_shapes(fp_text: str, tags=_FP_SHAPE_TAGS):
     a synthetic 45-degree part) -- a false obstacle AND missing copper at
     once. Do not widen this to "any shape inside a footprint block".
     """
+    for tag, i, j in _footprint_shape_spans(fp_text, tags):
+        yield tag, fp_text[i:j]
+
+
+def _footprint_shape_spans(fp_text: str, tags=_FP_SHAPE_TAGS):
+    """`iter_footprint_shapes`' shapes as `(tag, start, end)` in `fp_text`."""
     for tag in tags:
         needle = '(' + tag
         pos = 0
@@ -2635,8 +2689,30 @@ def iter_footprint_shapes(fp_text: str, tags=_FP_SHAPE_TAGS):
                 pos = i + len(needle)      # token boundary: '(fp_linex'
                 continue
             j = find_matching_paren(fp_text, i)
-            yield tag, fp_text[i:j]
+            yield tag, i, j
             pos = j
+
+
+def _footprint_shapes(content: str, start: int, fp_text: str,
+                      tags=_FP_SHAPE_TAGS):
+    """`iter_footprint_shapes(fp_text, tags)` for the footprint block that
+    starts at `start` in `content` (`fp_text` is its text). During a parse,
+    for the parse's own texts, the shapes are found once and kept as offsets
+    (`_PARSE_MEMO`): the segment and paste-graphic extractors walk the same
+    blocks."""
+    memo = _memo_for(content)
+    if memo is None:
+        yield from iter_footprint_shapes(fp_text, tags)
+        return
+    key = (id(content), start, tags)
+    spans = memo['shapes'].get(key)
+    if spans is None:
+        flat = array('l')
+        for tag, i, j in _footprint_shape_spans(fp_text, tags):
+            flat.extend((tags.index(tag), i, j))
+        spans = memo['shapes'][key] = flat
+    for k in range(0, len(spans), 3):
+        yield tags[spans[k]], fp_text[spans[k + 1]:spans[k + 2]]
 
 
 def footprint_pose(fp_text: str):
@@ -4194,7 +4270,7 @@ def iter_footprint_blocks(content: str):
         start = m.start()
         if start < reach:
             continue
-        end = find_matching_paren(content, start)
+        end = _block_end(content, start)
         reach = end
         text = content[start:end]
         spans.append((start, end, text))
@@ -5603,7 +5679,7 @@ def extract_paste_graphics(content: str) -> List[dict]:
 
         def tf(x, y, _ox=fx, _oy=fy, _or=frot):
             return local_to_global(_ox, _oy, _or, x, y)
-        for tag, blk in iter_footprint_shapes(fp_text):
+        for tag, blk in _footprint_shapes(masked, _fstart, fp_text):
             if 'Paste' in blk:      # most shapes are silk/fab: skip the regexes
                 out.extend(_paste_shape_record(tag, blk, _fkey, tf))
     # Board-level gr_* on a paste layer (rare; owner '').
@@ -6177,7 +6253,7 @@ def extract_segments(content: str, name_to_id: Dict[str, int] = None) -> List[Se
                 return local_to_global(_ox, _oy, _or, _x, _y)
 
             _mark_from = len(segments)
-            for tag, blk in iter_footprint_shapes(fp_text):
+            for tag, blk in _footprint_shapes(_gcontent, _fstart, fp_text):
                 layers, w, nid, uuid = _blk_fields(blk)
                 if not layers:
                     continue
@@ -7020,9 +7096,15 @@ def parse_kicad_pcb(filepath: str, guide_layer: str = "User.1",
     Returns:
         PCBData object containing all parsed data
     """
+    global _PARSE_MEMO
+    outer = _PARSE_MEMO is None
+    if outer:
+        _PARSE_MEMO = {'live': {}, 'masked_from': {}, 'ends': {}, 'shapes': {}}
     try:
         return _parse_kicad_pcb(filepath, guide_layer, keepout_layer)
     finally:
+        if outer:
+            _PARSE_MEMO = None
         release_text_caches()
 
 
@@ -7041,6 +7123,8 @@ def _parse_kicad_pcb(filepath: str, guide_layer: str,
     # A file from before 6.0's arc format: rewrite its center/angle arcs as
     # start/mid/end on this ANALYSIS copy, the form every reader below matches.
     content = strip_bare_shape_locks(upgrade_legacy_arcs(content, kicad_version))
+    if _PARSE_MEMO is not None:
+        _PARSE_MEMO['live'][id(content)] = content
 
     # Extract components in order
     board_info = extract_layers(content)
