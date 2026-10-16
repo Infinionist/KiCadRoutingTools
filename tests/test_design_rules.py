@@ -329,6 +329,21 @@ class Precedence(unittest.TestCase):
         self.assertEqual(_rules().draw_size('track_width', 1, default=0.3), 0.3)
         self.assertIsNone(_rules().draw_size('track_width', 1))
 
+    def test_draw_size_of_a_diff_pair_member_starts_at_the_class_pair_width(self):
+        # KiCad's "netclass (diff pair)" implicit rule: a coupled-pair member's
+        # track opt is the class diff_pair_width; custom rules still override
+        # it per field, and a layer rule's min clamps it.
+        cls = {'Default': {'track_width': 0.3, 'diff_pair_width': 0.2}}
+        dru = ('(version 1)(rule "f" (layer "F.Cu") (constraint track_width (opt 0.15mm)))'
+               '(rule "b" (layer "B.Cu") (constraint track_width (min 0.25mm)))')
+        dr = _rules(classes=cls, dru=dru)
+        self.assertEqual(dr.draw_size('track_width', 1), 0.3)
+        self.assertEqual(dr.draw_size('track_width', 1, diff_pair='DP'), 0.2)
+        self.assertEqual(dr.draw_size('track_width', 1, 'F.Cu', diff_pair='DP'), 0.15)
+        self.assertEqual(dr.draw_size('track_width', 1, 'B.Cu', diff_pair='DP'), 0.25)
+        no_dpw = _rules(classes={'Default': {'track_width': 0.3}})
+        self.assertEqual(no_dpw.draw_size('track_width', 1, diff_pair='DP'), 0.3)
+
 
 class Loader(unittest.TestCase):
     def test_from_project_reads_minimums_classes_patterns_and_dru(self):

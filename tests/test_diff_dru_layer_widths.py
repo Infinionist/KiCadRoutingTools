@@ -16,7 +16,10 @@ Fixture: cap_chain's two pairs (DPA_*, DPB_*, coupled on F.Cu), Default class
     follows the layer width, not the 0.25 class width's 0.50);
   - without the rule: no widths line, every leg at 0.25 mm;
   - both outputs: check_drc clean at the routed 0.25 mm clearance, and every
-    pair net connected.
+    pair net connected;
+  - a class whose single-ended track_width (0.3) is not its diff_pair_width
+    (0.25), F.Cu priced up so the pairs run on B.Cu: the layer no rule scopes
+    keeps the 0.25 pair width (KiCad's inDiffPair implicit rule), not 0.3.
 
     python3 tests/test_diff_dru_layer_widths.py
 """
@@ -39,6 +42,8 @@ RULE = '(version 1)\n(rule "f_narrow" (layer "F.Cu") (constraint track_width (op
 PRO = {"net_settings": {"classes": [{
     "name": "Default", "clearance": 0.25, "track_width": 0.25, "diff_pair_gap": 0.25,
     "diff_pair_width": 0.25, "via_diameter": 0.6, "via_drill": 0.3}]}}
+# Default's single-ended track_width differs from its diff_pair_width.
+PRO_TW = {"net_settings": {"classes": [dict(PRO["net_settings"]["classes"][0], track_width=0.3)]}}
 FAILS = []
 
 
@@ -59,12 +64,12 @@ def _seg_dist(a, b):
                pt((b.start_x, b.start_y), a), pt((b.end_x, b.end_y), a))
 
 
-def _route(td, dru):
+def _route(td, dru, label=None, pro=None, layer_costs=None):
     import route_diff
     from kicad_parser import parse_kicad_pcb
     from check_drc import run_drc
     from check_connected import run_connectivity_check
-    sub = os.path.join(td, 'rule' if dru else 'plain')
+    sub = os.path.join(td, label or ('rule' if dru else 'plain'))
     os.makedirs(sub)
     dst = os.path.join(sub, 'cc.kicad_pcb')
     shutil.copy(os.path.join(ROOT, 'kicad_files', 'cap_chain.kicad_pcb'), dst)
@@ -73,13 +78,13 @@ def _route(td, dru):
             with open(os.path.join(sub, stem + '.kicad_dru'), 'w', encoding='utf-8') as fh:
                 fh.write(RULE)
         with open(os.path.join(sub, stem + '.kicad_pro'), 'w', encoding='utf-8') as fh:
-            json.dump(PRO, fh)
+            json.dump(pro or PRO, fh)
     out = os.path.join(sub, 'o.kicad_pcb')
     log = io.StringIO()
     with contextlib.redirect_stdout(log):
         route_diff.batch_route_diff_pairs(evidence(dst), out, ['DPA_*', 'DPB_*'],
                                           diff_pair_width_from_class=True,
-                                          layers=['F.Cu', 'B.Cu'])
+                                          layers=['F.Cu', 'B.Cu'], layer_costs=layer_costs)
     pcb = parse_kicad_pcb(evidence(out))
     with contextlib.redirect_stdout(io.StringIO()):
         drc = run_drc(out, clearance=0.25, quiet=True, print_summary=False,
@@ -123,6 +128,19 @@ def main():
         check('plain: no leg below the 0.25 class width', w0 and min(w0) >= 0.2495, str(w0))
         check('plain: DRC clean at 0.25', list(drc0) == [], str(drc0)[:200])
         check('plain: every pair net connected', list(conn0) == [], str(conn0)[:200])
+
+        # F.Cu priced up so the coupled run drops to B.Cu, the layer no rule scopes
+        log1, pcb1, drc1, conn1 = _route(td, dru=True, label='class_tw', pro=PRO_TW,
+                                         layer_costs=[20, 1])
+        check('class track_width 0.3: the unscoped layer keeps the 0.25 pair width',
+              'Design-rule layer widths: F.Cu=0.15mm, B.Cu=0.25mm' in log1,
+              next((l.strip() for l in log1.splitlines() if 'layer widths' in l), ''))
+        w1 = sorted({round(s.width, 4) for s in pcb1.segments if s.layer == 'B.Cu'})
+        check('class track_width 0.3: the B.Cu run is drawn at 0.25, not 0.3',
+              w1 and max(w1) <= 0.2501, str(w1))
+        check('class track_width 0.3: DRC clean at 0.25', list(drc1) == [], str(drc1)[:200])
+        check('class track_width 0.3: every pair net connected', list(conn1) == [],
+              str(conn1)[:200])
     if FAILS:
         print(f'\nFAIL: {len(FAILS)} check(s): ' + '; '.join(FAILS))
         return 1
