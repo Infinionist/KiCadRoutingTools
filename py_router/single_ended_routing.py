@@ -2915,7 +2915,7 @@ def _place_shrunk_via_in_pad_impl(pad_obj, obstacles, config, pcb_data, net_id, 
         return None
     v = tap_res.via
     via = Via(x=v['x'], y=v['y'], size=v['size'], drill=v['drill'],
-              layers=v.get('layers', [layer_names[0], layer_names[-1]]), net_id=net_id)
+              layers=v.get('layers', ['F.Cu', 'B.Cu']), net_id=net_id)
     vgx, vgy = coord.to_grid(v['x'], v['y'])
     # Record this cell's DRC-legal shrunk via size so route conversion emits THAT
     # size (not the full config.via_size) if the path later changes layer here
