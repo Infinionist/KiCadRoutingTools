@@ -225,10 +225,12 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   the same function (#1064) -- and a pad on another part's drawn copper
   (a SOT-89 tab, an antenna, #1266) the same way -- so `legal` and `no_worse` see it and
   `--near` looks for a pose off it. A snap re-grades at most
-  `--snap-tries` ranked poses, then as many nearer lattice ones, so it
+  `--snap-tries` ranked poses, then as many nearer lattice ones (for a
+  part starting OFF the board, first as many ranked on it,
+  `ranked_on_board`, #1277), so it
   can refuse with a no-worse pose still in reach: when place_pose's snap
-  census shows `candidates_tried` short of its `ranked` + `lattice`
-  counts, raise `--snap-tries` / `--radius` before reading it as "stuck".
+  census shows `untried` poses, raise `--snap-tries` / `--radius` before
+  reading it as "stuck".
   Courtyards, bodies and coincident origins are
   still `check_assembly`'s alone: after every pose change, run it and
   read `buildable`, not `blocking`.
