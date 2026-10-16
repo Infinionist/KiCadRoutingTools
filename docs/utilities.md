@@ -264,7 +264,11 @@ pose on two rungs is re-graded once, and when `ranked_on_board` answers, a
 nearer lattice pose must grade no worse than that answer too, or the lattice
 would trade it for pad copper still past the outline. The census counts the
 rung as `ranked_on_board` (null from an input on the board), and the no-snap
-suggestion takes the same order. Neither the snap nor the no-snap suggestion ever
+suggestion takes the same order. A ranked pose that only the escape branch
+admits (less off the board than the input, not on it) is labelled `legal:
+false, escape: true` wherever it is reported (`nearest_legal`, `converge.py
+poses`), and the no-snap suggestion says so in words; `pose_score.rank_poses`
+used to label it `legal: true`. Neither the snap nor the no-snap suggestion ever
 returns the request itself (`requested_dropped`). `input_pose_vetoed` is the
 ranker's verdict on the part's input pose: when it vetoes even that, its
 knobs are stricter than the board, and the refusal says so.
