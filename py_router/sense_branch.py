@@ -90,10 +90,17 @@ def _touch(a, b, join) -> bool:
         if ia.layer != ib.layer:
             return False
         reach = ia.width / 2 + ib.width / 2 + _EPS
-        return (any(off(x, y) and _dist_seg(x, y, ib.start_x, ib.start_y, ib.end_x, ib.end_y) <= reach
-                    for x, y in ((ia.start_x, ia.start_y), (ia.end_x, ia.end_y)))
+        if (any(off(x, y) and _dist_seg(x, y, ib.start_x, ib.start_y, ib.end_x, ib.end_y) <= reach
+                for x, y in ((ia.start_x, ia.start_y), (ia.end_x, ia.end_y)))
                 or any(off(x, y) and _dist_seg(x, y, ia.start_x, ia.start_y, ia.end_x, ia.end_y) <= reach
-                       for x, y in ((ib.start_x, ib.start_y), (ib.end_x, ib.end_y))))
+                       for x, y in ((ib.start_x, ib.start_y), (ib.end_x, ib.end_y)))):
+            return True
+        # Two tracks crossing in an X have no end near the other, and KiCad
+        # joins them all the same (its connectivity collides the shapes):
+        # the contact is the crossing point, judged on or off the join pad.
+        from check_drc import segments_cross
+        crossed, pt = segments_cross(ia, ib)
+        return bool(crossed) and off(*pt)
     if ka == 'via' and kb == 'via':
         return off(ia.x, ia.y) and math.hypot(ia.x - ib.x, ia.y - ib.y) <= (ia.size + ib.size) / 2
     if ka == 'seg' and kb == 'via':
