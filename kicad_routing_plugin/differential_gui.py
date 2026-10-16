@@ -1140,6 +1140,10 @@ class DifferentialTab(wx.Panel):
                 cancel_check=check_cancel,
                 progress_callback=on_progress,
             )
+            # #857: the Design rules line route_diff.py's main prints (the
+            # exit code is the CLI's alone).
+            from fab_tiers import finish_design_rules
+            finish_design_rules(None, 0)
 
             self._routing_result = {
                 'successful': successful,

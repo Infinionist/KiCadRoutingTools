@@ -4829,9 +4829,15 @@ Examples:
         _summary['env_knobs'] = _ek653.active_env_knobs()   # dirty baseline
     except Exception:          # without re-reading logs
         pass
+    # #857: what this run delivered below a requested size (route.py's
+    # key), when it delivered anything there.
+    from fab_tiers import narrowed_summary, finish_design_rules
+    _dr857 = narrowed_summary()
+    if _dr857 is not None:
+        _summary['design_rules'] = _dr857
     print('JSON_SUMMARY: ' + _json.dumps(_summary, sort_keys=True, default=str),
           flush=True)
-    return 1 if _no_output else 0
+    return finish_design_rules(args, 1 if _no_output else 0)
 
 
 if __name__ == "__main__":

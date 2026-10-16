@@ -137,7 +137,7 @@ vias and clearances *down toward* when it needs to. It is shared by every CLI
 | `--fab-tier` | `auto` | `auto` (the standard floor, escalating to advanced when a fine-pitch fan-out, plane tap or last-resort via cannot fit; warned and counted), `standard` (no extra fab cost, **hard**) or `advanced` (tighter, "more costly", **hard**) |
 | `--fab-overrides` | - | Path to a file overlaying the tier's floors (only the keys it lists) |
 | `--escalation` | `fab` | How far below a **requested** size a failing net may be retried: `fab` (down to the fab tier floor, below the board's own minimums; completion first, every narrowing disclosed), `board` (down to the board's own Board Setup minimums; an unset key falls back to the fab tier floor, except clearance, which falls back to the Default net class's clearance, #1160; with `--no-fix-drc-settings` clearance descents stop at the Default class floored at `min_clearance`, what KiCad grades the unchanged project at, #1262), `off` (never; the net fails and is reported -- except a wide power/impedance net's pad-entry neck of at most 2 mm of path, `routing_defaults.PAD_ENTRY_NECK_MM`) |
-| `--strict-sizes` | off | Exit 3 when any feature was delivered below its requested size or a fab-tier escalation fired. For `--power-nets` track widths this means copper that SHIPS under width (one `design_rules` row per power net, #1033), not every narrower routing attempt |
+| `--strict-sizes` | off | Exit 3 when any feature was delivered below its requested size or a fab-tier escalation fired -- on every routing CLI that takes it (`route.py`, `route_diff.py`, `route_planes.py`, `repair_planes.py`, `bga_fanout.py`, `qfn_fanout.py`); an exit code the run already had for its own reason wins. For a net with its own width -- `--power-nets`, an impedance width, a wider net class -- this means copper that SHIPS under width (one `design_rules` row per net), not every narrower routing attempt: a power net on `route.py` is measured over the whole net (#1033); an impedance- or class-width net, and `repair_planes.py`'s `--power-nets` taps, over the copper the run laid, so a fanout stub an earlier step drew at its own width is not counted |
 
 The tier is a **floor ladder**:
 
@@ -225,7 +225,10 @@ narrowing with net / kind / requested / delivered / site, the fab-tier escalatio
 count, and the `.kicad_dru` rules the tool could not honour), an `escalations`
 count in `JSON_SUMMARY_MIN`, and one end-of-run line (`Design rules [--escalation
 fab, --fab-tier auto]: 7 feature(s) on 3 net(s) delivered below the requested
-size (...)`). `--strict-sizes` makes that line a non-zero exit.
+size (...)`). `--strict-sizes` makes that line a non-zero exit. Every routing CLI
+prints the line and honours the flag; the non-route CLIs add `design_rules` to their
+`JSON_SUMMARY` only when the run narrowed something, and the GUI's diff, planes and
+fanout tabs print the same line in their log.
 
 | Floor (per layer count) | standard | advanced |
 |---|---|---|

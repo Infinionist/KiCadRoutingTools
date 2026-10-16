@@ -1636,6 +1636,10 @@ class FanoutTab(wx.Panel):
                         footprint, self.pcb_data, **kwargs)
                     vias_to_remove = None
                     skipped = list(qfn_fanout.LAST_CANCEL_SKIPPED)
+                # #857: the Design rules line bga_fanout.py / qfn_fanout.py
+                # print (the exit code is the CLI's alone).
+                from fab_tiers import finish_design_rules
+                finish_design_rules(None, 0)
                 self._operation_result = {
                     'tracks': tracks, 'vias': vias, 'failed': failed,
                     'vias_to_remove': vias_to_remove, 'skipped': skipped}

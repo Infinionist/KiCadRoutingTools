@@ -115,6 +115,12 @@ REGISTRY = {
     # they are written with. bga_fanout's and qfn_fanout's mains and the fanout
     # tab's apply all decide with it before their writeback.
     'fanout_fix_kwargs': ['_apply_fanout_results'],
+    # #857: the end-of-run `Design rules [...]` line (and, CLI-only, the
+    # --strict-sizes exit 3). route.py's line comes from inside batch_route on
+    # both fronts; route_diff / route_planes / the fanouts print it from their
+    # mains, and their GUI tabs call the same helper after the engine
+    # (differential_gui, planes_gui, fanout_gui), so the log says the same.
+    'finish_design_rules': ['finish_design_rules'],
 }
 # NOTE (deliberately NOT registered): move_copper_graphics_to_silkscreen runs
 # inside the shared plane WRITER (plane_io), not a main() -- so this gate, which
@@ -220,6 +226,13 @@ KNOWN_CLI_ONLY = {
     'grade_plane_completion': 'repair_planes.py: grades the plane nets on the '
                               'written board for JSON_SUMMARY (report-only, '
                               'no board mutation)',
+    # Found reviewing #1282: repair_planes' main replaces its per-attempt
+    # --power-nets `plane tap` ledger rows with the copper it ships. No GUI
+    # front runs repair_planes' main; the route tab's in-run finalize is
+    # graded by route.py's engine-side pass, on both fronts.
+    'replace_track_rows': 'repair_planes.py: --power-nets ledger rows from '
+                          'the copper it ships (report-only, no board '
+                          'mutation)',
 }
 
 

@@ -864,6 +864,10 @@ class PlanesTab(wx.Panel):
 
         try:
             self._run_create_planes(config)
+            # #857: the Design rules line route_planes.py's main prints (the
+            # exit code is the CLI's alone).
+            from fab_tiers import finish_design_rules
+            finish_design_rules(None, 0)
 
         except Exception as e:
             import traceback
