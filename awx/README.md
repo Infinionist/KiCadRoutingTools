@@ -454,7 +454,10 @@ human escapes a ball grid array:
   balls) are then free on every other layer, and the gap line through the
   array's middle, between the rows dog-boned up and the rows dog-boned down,
   is a **street** with no via on it. The passives beneath the arrays are
-  moved off the vias once (the chain's cap nudge). An outer-ring ball whose
+  moved off the vias once (the chain's cap nudge); a passive counts by its
+  copper pads, so one whose paste openings are drawn as pads is still a
+  two-pad part that moves (sdi_mipi_conv's C105 under U11 had held two SDI
+  balls' via sites). An outer-ring ball whose
   straight run out of the field on its own layer is clear is left without a
   via (a pair's two balls alike; `DOGBONE_EDGE_FREE=0` dog-bones every ball),
   as the human leaves 42 of U1's 55 outer balls: it leaves on the surface, and
@@ -462,6 +465,14 @@ human escapes a ball grid array:
   the zynq LVDS bus's two-round chains (`--rounds 2`, `LOOP_ROUNDS=2`) at
   K32, K40 and K47 it ended with 0, 0 and 2 nets open against 2, 0 and 2 with
   every ball dog-boned, and 2 to 5 vias fewer.
+- **A lane bare at both arrays** (`braid.bare_lane`: no track of its net, its
+  pads on two parts) -- its balls outer balls at both, left without a via, or
+  one ball with no gap for its dog-bone -- has no stub end to read, and the
+  ladder takes it all the same (`make_bench.write_ladder` and `coherent_nets`
+  with `bare_ok`, which the escape fanout sets): the fanout lays both its ends
+  from the pads. The ladder had dropped such a net for want of a stub, so a bus
+  of outer balls alone routed nothing, and sdi_mipi_conv's SDI bus ran 16 of
+  its 21 nets.
 - **Escapes instead of teeth** (`escape_plan.py`): each round's fanout lists
   every way a lane can leave its ball's via -- half a pitch onto a ball line
   beside it, a sidestep to a line up to two pitches over, or a pitch onto a
@@ -736,7 +747,13 @@ router keeps a track off a via (`rules.fan_via_reach`: its via-to-track
 clearance for a fanout track rounded up to whole grid cells, and a quarter
 cell). An F exit stacked over a B one is allowed, and the engine checks
 a stub against other nets' tracks on the stub's own layer only, so it lays
-what the model allows.
+what the model allows. The escape fanout lays its escapes exactly as listed,
+so on its states the ends model holds another lane's run off a via by the
+rule itself (`rules.fan_via_clear`: the via's radius, the run's half width and
+the clearance). At 0.45 mm vias, 0.12 escapes and 0.1 clearance the grid ring
+is 0.406, past the 0.4 a dog-bone stands off the next ball line, so every
+dog-bone met every neighbouring line's run on every layer: sdi_mipi_conv's SDI
+bus had no plan of its teeth with no conflict, on four layers or on eight.
 
 **The estimate.** The route's layer changes are estimated from the ends alone:
 the end-layer changes, a least-weight cover of the crossings between lanes on
@@ -893,12 +910,36 @@ banned.
 - two moves the fanout cannot lay together;
 - a tooth move through another run net's laid tooth;
 - a pair's legs apart;
-- a tooth on the source's far face.
+- a tooth on the source's far face still inside the array (a ball's via
+  whose lane has not left the field): the frame has no way round the source
+  from there.
+
+**A tooth on the source's far face** (the face turned away from the
+destination) is priced `FAR_TOOTH`, past any via count, yet no refusal, so
+a lane takes it only when it has no other way out of the source. Its ride
+round the source is priced as any lane's (`around_box`), and the far face
+is cut between its teeth at the gap that crosses the fewest lanes
+(`whole_frame.src_cut`); the cut rides the sidecar (`src_cut`) as the
+destination's does. A pinout can leave a bus no other way: sdi_mipi_conv's
+SDI bus sits in the columns of U11 beside its far face, and four of its
+lanes had no tooth escape on any other face.
+
+**A fenced side of the source.** Another net's copper across the band a
+lane rides round a side of the source -- a bus an earlier step routed:
+its tracks across the line 1.5 mm outside the side face, its vias beside
+that line (`side_fences`, read on the shared field where the ends are chosen
+on the bus's own, `fence_pcb`) -- costs that lane `FENCE_VIAS`, two vias, a
+change under the fence and one back: a far-face lane round that side of the
+cut, a tooth on that side face where the fence stands between its exit and
+the near corner. The far face's cut counts the fence's crossings as it counts
+the lanes'. On sdi_mipi_conv the DDR3 bus leaves U11's south face on four of
+its eight layers; the north side is free.
 
 **Never offered** -- which halves each pass:
 
 - a berth on the destination's far face from a ball in the array's other half;
-- a tooth on a source side face from a ball in the other half.
+- a tooth on a source side face, or on its far face, from a ball in the
+  other half.
 
 **Far dog-bones.** A dog-bone whose via stands past its ball's diagonal cells
 goes to the engine with its stub as a walked `path`, the one way the engine
@@ -950,8 +991,23 @@ net was read as starting there and left out of the frame, open every round).
 
 A pair whose stub stands across the trunk -- a tooth on the source's side
 face -- starts at the end of its end run and the run its turn onto the trunk
-takes, as a ring pair lands. A tooth on the source's far face has no way
-round the source here, and is refused (the fanout is told, below).
+takes, as a ring pair lands.
+
+A tooth on the source's **far face** -- the face its escape leaves by
+(`tooth_face`), not the face it stands nearest, so an exit past the north
+face beside the far corner is a north-face tooth -- goes round the source
+on a **lead-in** (`lead_ins`). The trunk cannot carry a lane along the far
+face: its columns stand across the spine, and that stretch runs along
+them. So the lane leaves its tooth straight out of the face, runs along it
+and round the corner on a 45-degree chamfer, and starts beside the side
+face, where the trunk takes it as it takes a side face's lanes. Which
+corner is decided by the far face's cut: the teeth north of it go round
+the north, outside every lane of the north face, first in the launch order
+(`perim_s`); those south of it round the south, last. On each side the
+tooth nearest the corner is innermost, and the lanes nest a lane's room
+apart, a pitch out of the far face's teeth and the side face's. A far-face
+tooth still inside the array has no way round from there, and is refused
+(`FarFace`; the fanout is told, below).
 
 #### The solve (`whole_solve.py`)
 
@@ -1130,7 +1186,18 @@ solve as **cuts**.
   a change the solve's grid rounds a part of a step past a stub's end stands
   at it. A via is kept off a part by the part's own extent on the via's
   column, as a lane is, not by the part's box in the frame -- a part past a
-  ring's end projects onto the whole ring.
+  ring's end projects onto the whole ring. A change AT a terminal -- a
+  surface tooth's via at its stub's end, a surface berth's -- has a column of
+  no length, so the terminal's own layer is drawn a grid step long there: the
+  line had never taken it, and the lane reached its berth on the other layer
+  with no via (sdi_mipi_conv's PCLK, its berth on F.Cu: the route refused it).
+- **Other nets' vias in the field** the lanes cross -- the arrays' boxes and
+  `FIELD_MARGIN` (5 mm) round them -- are islands on every layer, at the
+  router's ring about each (`pairs.svia_reach`), as the stubs' vias beside the
+  boxes are: a bus an earlier step routed drops its lanes there
+  (sdi_mipi_conv's DDR3 bus south of U11, where the SDI lanes pass on the plane
+  layers: one lane 0.007 short of such a via round after round, a finding no
+  cut answers).
 - **Islands:** one split per island and layer, in the lane order, pinned by
   the lanes' own ends. An island is a part, or parts no lane can surely pass
   between (`whole_ctx.part_islands`). A two-pad part whose pads stand a lane
@@ -1408,7 +1475,7 @@ The channels:
 - **Over two:** the nets an unproved plan leaves over two vias, each priced
   over by at least that much.
 - **A refused fanout** (`--refused`): a pair the laid fanout split, and a
-  tooth on the source's far face, avoided.
+  tooth on the source's far face still inside the array, avoided.
 - **By name** (`--name`): a round that leaves nets open names them, whatever
   its audits found, each at the end where it fails -- where the round's
   findings name it, else the array nearer its ball cut off from its copper,
@@ -1526,6 +1593,19 @@ via.
   against an array's own pad is held off that layer round the place
   (`ARRAY_CUT_R`): the lanes beside it pushed it there, and another layer has
   room. A drilled ball stands on every layer, so it is no island's cut.
+- **Another net's tracks** -- a bus an earlier step routed -- are cut so too: a
+  lane found against one is held off every layer the bench's other tracks
+  cross that place on, the finding's own among them, and none where they cross
+  it on every layer. Held off the one layer, a lane moved a round found the
+  next one blocked: sdi_mipi_conv's DDR3 bus runs along U11's south face on
+  four of its eight layers, and the loop had stopped there, ENDS CROWDED.
+- **Keep-out rule areas.** The audit measures each lane against the board's
+  keep-out areas whose tracks are not allowed on its layer
+  (`plan_audit.keepout_areas`, resolved as the router resolves them), and a
+  lane found in one is held off its layers across its box. The router stamps
+  them and the plan did not see them: on sdi_mipi_conv the wound SDI lanes
+  round U15 were planned on In2.Cu through the area east of it that keeps In1
+  and In2 clear, and the snap failed them there every round.
 - **Cuts on the lane's own route.** A cut is written in route u, and a place
   in u is a line across the frame. Where a lane runs steeply across the trunk,
   a few millimetres of it advance u by a fraction of that, so an island's
@@ -1741,7 +1821,7 @@ With nothing supplied, as on the benches:
 | `coherent_nets.py`, `k_ladder_coherent.txt` | the coherent K-ladder |
 | `flow_frame.py`, `pose_gate.sh`, `make_bench.py`, `rotate_board.py`, `mirror_board.py` | the canonical frame, the poses, articles from any board |
 | `human_at_k.py`, `census_vs_human.py`, `cmp_copper.py` | the human's count at a K, per-net comparisons, copper diffs |
-| `joint_floor.py`, `synth_bus.py`, `synth_ladder.py` | the via floor over a board's own paths; the synthetic channel with a known optimum (on two to six layers: `truth_layers`; with lanes free to go round the destination either way: `truth_wind`, with `--ring-e` berths on its far face, `--pattern rotate`, and `--closed` arrays no lane can pass under) |
+| `joint_floor.py`, `synth_bus.py`, `synth_ladder.py` | the via floor over a board's own paths; the synthetic channel with a known optimum (on two to six layers: `truth_layers`; with lanes free to go round the destination either way: `truth_wind`, with `--ring-e` berths on its far face (a block `--e-depth` columns deep), `--pattern rotate`, and `--closed` arrays no lane can pass under) |
 
 ### What this adds to `py_router`
 
@@ -1893,29 +1973,34 @@ channels first, and the other escapes leave round it.
 
 ### Next, the whole route (`whole_*.py`)
 
-- **A tooth on the source's far face.** Today no lane may leave the source
-  by the face turned away from the destination: `whole_frame.build` refuses
-  it by name (`FarFace`), the ends model's source menus leave such moves out
-  and refuse one laid there, and the fanout audit refuses the board. But a
-  pinout can put a bus's balls on that side. On sdi_mipi_conv (the corpus)
-  the SDI bus's balls sit on U11's side away from U15. The human leaves them
-  by U11's far and south faces and runs round U11, some of them over the
-  top of the board. The escape fanout sent the bus through U11's interior
-  instead, two lanes still on its far face, and the round was refused. To
-  try: the destination's rings, mirrored at the source.
-  - **Source rings:** a north and a south ring round the source, from its
-    far face to the trunk's start (`braid.ring_spine` on the source's hull).
-    The far face is cut between them at the widest gap of its teeth, as the
-    destination's far face is cut between its berths.
-  - **The orders:** the teeth unrolled at that cut, not at the middle of
-    the far face (`perim_s`).
-  - **Joining the trunk:** a source ring's lanes join it at a start stepped
-    out of the source's hull, as a destination ring's lanes leave it at Hk.
-    Their crossings stay on the trunk, as a ring's do.
-  - **Downstream:** the solve and the geometry handle a source ring as they
-    handle a destination ring. The ends model prices it and searches its
-    cut, as WINDING does at the destination. The menus and the audit allow
-    far-face teeth.
+- **The source's far face, further** (the lead-ins of [the frame](#the-frame-whole_framepy)
+  route its teeth today). On sdi_mipi_conv's SDI bus (U11 to U15, `route_bus
+  --escape`, all eight of the board's copper layers, two rounds) the first
+  round lays all 21 of the bus's nets, connected and DRC-clean on the board,
+  one of them round U11's far face. On four layers, before the fixes above
+  (the bare lanes, the exact via reach, the copper, keep-out and fence
+  reading), it laid 11 of the 16 nets the ladder then held. Left:
+  - **Power pours split.** The plane grade names two of In6.Cu's power pours
+    (+1V5, 1V0_Power) split by the SDI lanes under U11, three and two more
+    islands for the chain's plane repair to join. To try: a lane's run on a
+    plane layer priced by the islands it would cut from its pour.
+  - **Lanes the escape step leaves out** (`clear_lanes`: their runs on one
+    layer within the rule of a kept lane's) stand on their bare dog-bones,
+    which the audit refuses, and the refusal names nothing the feedback can
+    price, so the rounds end there. To try: name the kept lane each one
+    clashed with, a pair of ends not to choose together, for the next round.
+  - **The lead-in sees no copper,** and neither does a side face's tooth's
+    straight run along the face to its start: each is laid as the frame draws
+    it, and other parts or other nets' copper standing there are the audit's
+    to find (the SDI bus's south-face teeth ran along U11's south face among
+    the DDR3 bus's vias). To try: the destination's rings mirrored at the
+    source (`braid.ring_spine` on the source's hull), so the geometry places
+    those lanes as it places a ring's.
+  - **Winding at the source.** A lane may leave a side face and go round the
+    far face to the other side, as a destination's wound lanes do: the
+    generated `wind_rot16_g3` routed source and destination swapped lays 14
+    vias on three layers and 4 on four, where routed forward the winding cut
+    lays 2.
 
 - **The zynq's LVDS bus (U1 to U5) on four layers.** With `route_bus
   --escape` (see [the bus step](#the-bus-step-on-a-real-board)) the whole

@@ -11,7 +11,8 @@ CHOSEN together, then laid together:
 1. Every signal ball of the array gets its menu of escapes (escape_moves.enumerate_moves: surface along an adjacent
    gap, dog-bone, via-in-pad; face, exit gap, layer, kind), priced against the board's static copper the way the
    whole route prices its own (braid.build_obstacles). A bus ball's layers are the routing layers and it never leaves
-   by the array's far face (the one facing away from the other array); another net's layers are the board's signal
+   by the array's far face (the one facing away from the other array) -- unless the bus's own ends HELD its tooth
+   there, where it had no other way out (whole_ends.FAR_TOOTH); another net's layers are the board's signal
    layers -- never an inner plane layer the run does not route on. On more routing layers than two a via move's run
    is planned on no one layer (RUN): K runs may share a lane, an exit cluster or a crossing, and each chosen run is
    given its layer after the solve (colour_runs).
@@ -772,8 +773,8 @@ def build_menus(pcb, ref, bus, others, other_layers, far=None, drops=(), climb=C
     esc_copper = esc_faces = None
     if escape_to:
         # (`escape_to`, the other array's ref: the bus's menus are the ESCAPE FIELD's -- escape_field_moves --
-        # its faces escape_plan.plan_state's at a source: toward the other array, or one on the ball's own half, never
-        # the far face)
+        # its faces escape_plan.plan_state's at a source: toward the other array, or one on the ball's own half -- the
+        # far face only for a ball whose tooth is HELD there, the bus's own ends' choice: whole_ends.FAR_TOOTH)
         import escape_plan as ep
         esc_copper = ep.Copper(pcb, sz['tw'], sz['cl'])
         o_ = pcb.footprints[escape_to]
@@ -783,11 +784,11 @@ def build_menus(pcb, ref, bus, others, other_layers, far=None, drops=(), climb=C
         far_ = min(ep.DIRS, key=lambda d: ep.DIRS[d][0] * ox_ + ep.DIRS[d][1] * oy_)
         mid_ = ((grid.bbox[0] + grid.bbox[2]) / 2, (grid.bbox[1] + grid.bbox[3]) / 2)
 
-        def esc_faces(p):
+        def esc_faces(p, far_ok=False):
             def half(d):
                 ax = 0 if ep.DIRS[d][0] else 1
                 return ((p.global_x, p.global_y)[ax] - mid_[ax]) * ep.DIRS[d][ax] >= -1e-6
-            return [d for d in ep.DIRS if d != far_ and (d == toward_ or half(d))]
+            return [d for d in ep.DIRS if (d != far_ or far_ok) and (d == toward_ or half(d))]
     for p in foot.pads:
         nm = short_name(p.net_name or '')
         if not p.net_id or (nm not in bus_s and nm not in oth_s and nm not in drop_s):
@@ -818,9 +819,12 @@ def build_menus(pcb, ref, bus, others, other_layers, far=None, drops=(), climb=C
         # In2 tooth, which the plan never saw and the engine refused, the ball left bare -- zynq U1's TX_FRAME_P on
         # three layers)
         esc = bool(escape_to) and nm in bus_s
+        # (a bus tooth the bus's own ends HELD on the far face -- chosen there only by a lane with no other way out,
+        # whole_ends.FAR_TOOTH -- keeps its far-face moves; any other bus ball never leaves by that face)
+        far_held = bool(hold) and nm in bus_s and nm in hold and hold[nm]['direction'] in (far, far_ if esc else None)
         if esc:
             moves = escape_field_moves(
-                p, grid, home, lays, esc_faces(p), esc_copper,
+                p, grid, home, lays, esc_faces(p, far_ok=far_held), esc_copper,
                 lambda q, r, _n=p.net_id: _via_clear(pcb, obs, _n, q, r or sz['vr'], sz),
                 lambda a, b, _n=p.net_id, _h=home: obs(_n, _h).seg_clear(a, b), sz['inpad'](p)[0], bool(runs))
         else:
@@ -871,7 +875,7 @@ def build_menus(pcb, ref, bus, others, other_layers, far=None, drops=(), climb=C
                 moves = at_
             else:
                 unheld.append(key)
-        if nm in bus_s and far:
+        if nm in bus_s and far and not far_held:
             moves = [m for m in moves if m.direction != far]
         if nm in bus_s and vias_only:
             # (ESCAPE_VIAS at this array: the bus's escapes through a via -- a dog-bone, a via in its pad -- whose lane

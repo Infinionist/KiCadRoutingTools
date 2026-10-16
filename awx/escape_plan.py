@@ -318,7 +318,9 @@ def plan_state(pcb, names, sref, dref, banned=frozenset(), log=print, hold_teeth
             continue
         launch[nm] = (sp.global_x, sp.global_y)
         for pad, grid, menus, faces in (
-                (sp, sgrid, smenu, [d for d in DIRS if d != far_s and (d == toward_d or half(sp, sgrid, d))]),
+                # (the source's far face too, from a ball in its half beside it: the whole route takes such a lane
+                # round the source, and the ends model prices it past any via count -- whole_ends.FAR_TOOTH)
+                (sp, sgrid, smenu, [d for d in DIRS if d == toward_d or half(sp, sgrid, d)]),
                 (dp, dgrid, dmenu, [d for d in DIRS if d != far_d or half(dp, dgrid, d)])):
             site = own_via(pcb, pad, nid, grid)
             if site is None:
@@ -523,6 +525,9 @@ def sidecar(out, st, names, teeth, berths, cut, read=None):
         plan['berth_sig'][nm] = sr.move_sig(b)
     if cut is not None:
         plan['dest_cut'] = list(cut) if isinstance(cut, (list, tuple)) else cut
+    scut = ((read or {}).get('parts') or {}).get('scut')
+    if scut is not None:
+        plan['src_cut'] = float(scut)       # (the source's far face's cut: a far-face tooth's side round it)
     with open(out[:-len('.kicad_pcb')] + '.plan.json', 'w', encoding='utf-8') as f:
         json.dump(plan, f, indent=1)
     return plan
@@ -562,6 +567,9 @@ def run(out_path, K, base, log=print):
             pcb_ = pcb if board_ == base else parse_kicad_pcb(board_)
         st_ = plan_state(pcb_, names, sref, dref, log=log)
         st_['base'] = board_             # (the board the ends are laid on: whole_ends.solve_check reads its floors)
+        # (the bus's routed neighbours stand on the shared field, not on the bus's own: the tracks a far-face lane
+        # crosses round each side of the source read there -- whole_ends.side_fences)
+        st_['fence_pcb'] = pcb
         fixed_ = incremental_fixed(st_, names)
         if fixed_:
             log(f'  incremental: {len(fixed_)} berth(s) held as laid')

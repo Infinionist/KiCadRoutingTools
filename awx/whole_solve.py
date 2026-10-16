@@ -402,6 +402,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         except Exception:
             FRONT = {}
     LAYER_CUTS = []
+    FAR = set(getattr(Fr, 'far', ()))      # (a far-face lane's tooth: its route starts round the source's corner)
     for n, ends_ in sorted(FRONT.items()):
         if n not in M or n in prs:
             continue
@@ -410,7 +411,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         # it, and nowhere between it and the far side of the copper, a via's half width more than a track's)
         for k_, sp_ in sorted(ends_.items()):
             k_, vm_ = int(k_), (VIA - TRK) / 2
-            if k_ == 1 and n in bname or len(sp_) != 4:
+            if k_ == 1 and n in bname or k_ == 0 and n in FAR or len(sp_) != 4:
                 continue
             v0_, v1_, d0_, d1_ = sp_
             if k_ == 1:
@@ -534,7 +535,8 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
     # (its neighbours a ball pitch across along the face) and no built-in via cut -- at a via's cost, as any change. So
     # the lanes leave the source's surface escapes for whichever layer the plan gives them where the gap between the
     # arrays has no room for their changes (the zynq's U1 to U5)
-    TVIA = {n for n in M if not via_end(n, 0)} if NL > 2 else set()     # (the bench's own: VIA_ENDS holds no tooth)
+    # (not a far-face lane: its route starts at the end of its lead-in round the source's corner, not at its tooth)
+    TVIA = {n for n in M if not via_end(n, 0) and n not in FAR} if NL > 2 else set()   # (the bench's own: VIA_ENDS holds no tooth)
     VIN0_ROOM = dict(VIN0)
     for n in TVIA:
         if n not in prs:

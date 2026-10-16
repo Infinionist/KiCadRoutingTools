@@ -738,6 +738,56 @@ def check_dives(ctx, corridors, show_all=False):
     return fail
 
 
+def keepout_areas(pcb, layers):
+    """the board's KEEP-OUT rule areas with tracks not allowed, on the routing layers `layers`: [(polygon, holes, the
+    layers it keeps tracks off, its bbox)] -- resolved as the router's obstacle map resolves them (obstacle_map.
+    add_rule_area_keepout_obstacles: '*.Cu' every layer, 'F&B.Cu' the outer two, none listed every layer)"""
+    out = []
+    for ko in getattr(pcb.board_info, 'keepouts', None) or []:
+        poly = ko.get('polygon') or []
+        if ko.get('tracks_allowed', True) or len(poly) < 3:
+            continue
+        kl = ko.get('layers') or set()
+        lays = set()
+        for ln in kl:
+            if ln in layers:
+                lays.add(ln)
+            elif ln == '*.Cu':
+                lays.update(layers)
+            elif ln in ('F&B.Cu', 'F&B'):
+                lays.update(L for L in ('F.Cu', 'B.Cu') if L in layers)
+        if not kl:
+            lays = set(layers)
+        if lays:
+            P_ = np.array(poly, float)
+            out.append((P_, [np.array(h, float) for h in ko.get('holes') or [] if len(h) >= 3], lays,
+                        (float(P_[:, 0].min()), float(P_[:, 1].min()), float(P_[:, 0].max()), float(P_[:, 1].max()))))
+    return out
+
+
+def _inside(P, poly):
+    """even-odd: the points P inside the closed polygon poly"""
+    ins = np.zeros(len(P), bool)
+    x, y = P[:, 0], P[:, 1]
+    for (ax, ay), (bx, by) in zip(poly, np.roll(poly, -1, axis=0)):
+        if ay == by:
+            continue
+        cross = ((ay > y) != (by > y)) & (x < (bx - ax) * (y - ay) / (by - ay) + ax)
+        ins ^= cross
+    return ins
+
+
+def keepout_dist(P, poly, holes=()):
+    """each point's signed distance to a keep-out area (its polygon less its holes): negative inside"""
+    rings = [poly] + list(holes)
+    segs = [(np.array(a), np.array(b), 0) for r in rings for a, b in zip(r, np.roll(r, -1, axis=0))]
+    d = _dist_to_segs(P, segs, 0)
+    ins = _inside(P, poly)
+    for h in holes:
+        ins &= ~_inside(P, h)
+    return np.where(ins, -d, d)
+
+
 def check_static(ctx, corridors, only=None):
     """Each lane's reservation (virtual_of) against the static copper of OTHER
     nets on its layer -- pads (a drilled pad on both layers, an unplated hole by
@@ -765,6 +815,7 @@ def check_static(ctx, corridors, only=None):
                 if Ls:
                     pads.append((fp.reference, pd, Ls, 'pad'))
     name = lambda i: (ctx.pcb.nets[i].name.split('/')[-1] if i in ctx.pcb.nets else str(i))
+    kos = keepout_areas(ctx.pcb, ctx.cfg.layers)
     hits, near_ = {}, set()
     for c in corridors:
         for nm in c.members:
@@ -814,6 +865,11 @@ def check_static(ctx, corridors, only=None):
                         continue
                     cand.append((np.hypot(P[:, 0] - v.x, P[:, 1] - v.y) - _pairs.svia_reach(cfg, v.x, v.y, v.size),
                                  f'via {name(v.net_id)}'))
+                # (a KEEP-OUT rule area whose tracks are not allowed on L: the samples' signed distance to it, inside
+                # negative -- the router stamps it as it stamps copper, and refuses a lane in it)
+                for k_, (poly_, holes_, lays_, bb_) in enumerate(kos):
+                    if L in lays_ and bb_[0] <= x1 and x0 <= bb_[2] and bb_[1] <= y1 and y0 <= bb_[3]:
+                        cand.append((keepout_dist(P, poly_, holes_), f'keepout K{k_} ' + '+'.join(sorted(lays_))))
                 for d, what in cand:
                     k = int(np.argmin(d - NEED))
                     if NEED[k] - NUDGE_FRAC * g <= d[k] < NEED[k] - 1e-6:

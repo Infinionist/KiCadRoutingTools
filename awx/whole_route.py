@@ -260,6 +260,14 @@ def _layer_index(tag):
     return route_layers.index(tag)
 
 
+def _seg_pt(p, a, b):
+    """point p's distance from the segment a-b"""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    l2 = dx * dx + dy * dy
+    t = 0.0 if l2 < 1e-18 else max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2))
+    return math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy)
+
+
 def layer_cut(lane, island, box, layer):
     """the loop's LAYER cut: `lane` held off the island's layers across `island` (its box, whole_geo's island_boxes;
     `blocked` the island's layers, `layer` -- on two -- the one the lane is held on) -- none where the island stands on
@@ -273,27 +281,83 @@ def layer_cut(lane, island, box, layer):
     return c
 
 
-def audit_layer_cuts(audit, geo):
+_TRACKS = {}       # (a bench file, its mtime and size) -> (its tracks by layer index, its keep-out areas' boxes)
+
+
+def _tracks_of(bench):
+    """(the bench's tracks as (x0, y0, x1, y1, half width, net name) per routing-layer index (route_layers), the
+    bboxes of its keep-out areas as plan_audit.keepout_areas lists them), read once"""
+    st_ = os.stat(bench)
+    key = (os.path.abspath(bench), st_.st_mtime_ns, st_.st_size)
+    if key not in _TRACKS:
+        import route_layers
+        sys.path.insert(0, os.path.join(HERE, '..', 'py_router'))
+        from kicad_parser import parse_kicad_pcb
+        with contextlib.redirect_stdout(io.StringIO()):
+            pcb = parse_kicad_pcb(bench)
+        lays = list(route_layers.layers())
+        by = collections.defaultdict(list)
+        for s_ in pcb.segments:
+            if s_.layer in lays and not getattr(s_, 'graphic', False):
+                nm = pcb.nets[s_.net_id].name.split('/')[-1] if s_.net_id in pcb.nets else ''
+                by[_layer_index(s_.layer)].append((s_.start_x, s_.start_y, s_.end_x, s_.end_y, s_.width / 2, nm))
+        import plan_audit as _pa
+        _TRACKS.clear()
+        _TRACKS[key] = (dict(by), [k_[3] for k_ in _pa.keepout_areas(pcb, lays)])
+    return _TRACKS[key]
+
+
+def audit_layer_cuts(audit, geo, bench=None):
     """the LAYER cuts an audit's STATIC findings give: a lane found against a pad of an island (a geometry's 'islands',
     'REF.PAD' -> island) on one layer, the layer it was found on -- and, on more routing layers than two, a lane found
     against an ARRAY's own pad (no island), off the layer it was found on round that place (ARRAY_CUT_R): it was pushed
     into the pad by the lanes beside it on its layer -- a ring's lanes crowding the channel beside the destination
     (synth wind_rot16_g3_vias: nine lanes up a 2 mm channel on one layer, the innermost into the destination's corner
     ball every round) -- and on another layer it has room. A drilled ball stands on every layer, so this is no island's
-    cut, which no change answers"""
+    cut, which no change answers. The same, on more than two, for a lane found against another net's TRACK (copper: a
+    bus an earlier step routed, on its layer alone -- sdi_mipi_conv's SDI_D0 from its surface tooth round U11's corner
+    into the DDR3 bus's F.Cu fan, a finding at the teeth the loop had stopped on, ENDS CROWDED, both rounds): on another
+    layer the lane passes under it, its tooth's change right at the tooth (whole_solve's TVIA). With the `bench` the
+    lane is held off EVERY routing layer another net's tracks cross that place on, as an island's cut holds it off the
+    island's layers -- that bus routed on four of the eight there, one layer a round found the next one blocked -- and
+    none where they cross it on every layer, which no change answers. And a lane found in a KEEP-OUT rule area whose
+    tracks are not allowed on some layers (plan_audit.keepout_areas -- the router stamps it, the plan did not see it:
+    sdi_mipi_conv's wound SDI lanes round U15 laid on In2.Cu through the area east of it that keeps In1 and In2 clear,
+    and the snap failed them there every round) is held off its layers across its box"""
     import route_layers
     nl = len(route_layers.layers())
     out, isl, bxs = [], geo.get('islands') or {}, geo.get('island_boxes') or {}
     for ln in lines_of(audit):
-        m = re.match(r'STATIC (\S+)\s+([FB]|In\d+\.Cu) ([-+]?[\d.]+)/([\d.]+) (?:pad|hole) (\S+) ', ln)
+        k = re.match(r'STATIC (\S+)\s+([FB]|In\d+\.Cu) ([-+]?[\d.]+)/([\d.]+) keepout K(\d+) (\S+) at '
+                     r'\(([-\d.]+),\s*([-\d.]+)\)', ln)
+        if k:
+            # (a KEEP-OUT area's layers: the lane held off them across its box -- the bench's, else round the place)
+            lane, x, y, r = k.group(1), float(k.group(7)), float(k.group(8)), max(ARRAY_CUT_R, 3 * float(k.group(4)))
+            blk = {_layer_index(k.group(2))} | {_layer_index(t_) for t_ in k.group(6).split('+')}
+            kb = _tracks_of(bench)[1] if bench else []
+            box = list(kb[int(k.group(5))]) if int(k.group(5)) < len(kb) else [x - r, y - r, x + r, y + r]
+            c = {'lane': lane, 'island': 'keepout K' + k.group(5), 'layer': 0, 'box': box, 'blocked': sorted(blk)} \
+                if nl > 2 and len(blk) < nl else None
+            if c and c not in out:
+                out.append(c)
+            continue
+        m = re.match(r'STATIC (\S+)\s+([FB]|In\d+\.Cu) ([-+]?[\d.]+)/([\d.]+) (pad|hole|copper) (\S+) ', ln)
         if not m:
             continue
-        lane, L, bar, pad = m.group(1), _layer_index(m.group(2)), float(m.group(4)), m.group(5)
+        lane, L, bar, kind, pad = m.group(1), _layer_index(m.group(2)), float(m.group(4)), m.group(5), m.group(6)
         if pad in isl:
             c = layer_cut(lane, isl[pad], bxs.get(isl[pad]), L)
         elif nl > 2 and (at := re.search(r' at \(([-\d.]+),\s*([-\d.]+)\)', ln)):
             x, y, r = float(at.group(1)), float(at.group(2)), max(ARRAY_CUT_R, 3 * bar)
-            c = {'lane': lane, 'island': pad, 'layer': 0, 'box': [x - r, y - r, x + r, y + r], 'blocked': [L]}
+            blk = {L}
+            if kind == 'copper' and bench:
+                # (every layer another net's track crosses the place on: its distance from the place within the box)
+                for Lk, segs in _tracks_of(bench)[0].items():
+                    if any(nm_ != lane and _seg_pt((x, y), (x0_, y0_), (x1_, y1_)) < r + hw_
+                           for x0_, y0_, x1_, y1_, hw_, nm_ in segs):
+                        blk.add(Lk)
+            c = {'lane': lane, 'island': pad, 'layer': 0, 'box': [x - r, y - r, x + r, y + r], 'blocked': sorted(blk)} \
+                if len(blk) < nl else None
         else:
             c = None
         if c and c not in out:
@@ -597,7 +661,8 @@ def loop(solve, out, rounds, env, log):
             # answer to such an island, and it stands whatever flip names the lane and island
             import route_layers
             nl_ = len(route_layers.layers())
-            lcuts = [c for c in audit_layer_cuts(O(f'p{i}.audit'), gj) if nl_ > 2 or (c['lane'], c['island']) not in new]
+            lcuts = [c for c in audit_layer_cuts(O(f'p{i}.audit'), gj, env.get('BENCH'))
+                     if nl_ > 2 or (c['lane'], c['island']) not in new]
             lcuts += [c for c in gj.get('lcuts', []) + pj.get('lcuts', []) if c not in lcuts]
             if lcuts:
                 log(f"  layer cuts: {', '.join(c_['lane'] + ' under ' + c_['island'] for c_ in lcuts)}")

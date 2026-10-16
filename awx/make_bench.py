@@ -335,23 +335,28 @@ def pairs_whole(rivers):
     return [r for r in out if r]
 
 
-def write_ladder(board, names, log=print):
-    """`<board stem>.ladder.txt`: the plan's rivers, largest first."""
+def write_ladder(board, names, log=print, bare_ok=False):
+    """`<board stem>.ladder.txt`: the plan's rivers, largest first -- and, with `bare_ok` (the escape fanout's field),
+    each net bare at both arrays (braid.bare_lane) a singleton after them: no stub for the rivers' taut paths to read"""
     with contextlib.redirect_stdout(sys.stderr):
         pcb = parse_kicad_pcb(board)
     bn = {n.name.split('/')[-1]: (i, n) for i, n in pcb.nets.items()}
     short = [n.split('/')[-1] for n in names]
-    ok = []
+    ok, bare = [], []
     for n in short:
         try:
             te.endpoints(pcb, [n], bn)
             ok.append(n)
         except AssertionError as e:
+            if bare_ok and n in bn and te.bare_lane(pcb, n, bn):
+                bare.append(n)
+                continue
             log(f'  {n}: no free stub at the source -- not in the ladder ({e})')
-    st = fp.plan_state(pcb, ok, set())
+    st = fp.plan_state(pcb, ok, set()) if ok else {'buses': []}
     buses = sorted((list(b) for b in st['buses']), key=len, reverse=True)
     placed = {n for b in buses for n in b}
-    single = [n for n in ok if n not in placed]
+    single = [n for n in ok if n not in placed] + bare
+    ok += bare
     rivers = pairs_whole(buses + [[n] for n in single])
     buses, single = [r for r in rivers if len(r) > 1], [r[0] for r in rivers if len(r) == 1]
     out = os.path.splitext(board)[0] + '.ladder.txt'

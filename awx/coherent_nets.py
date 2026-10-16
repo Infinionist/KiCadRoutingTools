@@ -67,10 +67,16 @@ def admissible(pcb, net):
     return len(ends) == 2 and len({p.component_ref for p in ends}) == 2
 
 
-def coherent_nets(K, board=BENCH):
+def coherent_nets(K, board=BENCH, bare_ok=None):
     """The first K routable nets of the coherent ladder: two-pad nets
     between two components that are fanned out on `board` (a free
-    stub end exists at the source)."""
+    stub end exists at the source) -- or, with `bare_ok` (default: the
+    escape fanout, FANOUT_ESCAPE), bare at both (braid.bare_lane: the
+    escape fanout lays both of its ends from the pads)."""
+    if bare_ok is None:
+        sys.path.insert(0, HERE)
+        import awx_settings
+        bare_ok = awx_settings.get('FANOUT_ESCAPE') == '1'
     flat = [n for r in _rivers(board) for n in r]
     sys.path.insert(0, os.path.join(HERE, '..', 'py_router'))
     sys.path.insert(0, HERE)
@@ -92,7 +98,8 @@ def coherent_nets(K, board=BENCH):
             te.endpoints(pcb, [n], bn)
             ok.append(n)
         except AssertionError:
-            pass
+            if bare_ok and te.bare_lane(pcb, n, bn):
+                ok.append(n)
     # A SHORT COUNT IS A DIFFERENT PROBLEM, and it was silent: "K51" is
     # 48 nets here, so the human's 81 (48 nets) and 85 (51) are both
     # right and both were in circulation for one label. Pointing --board

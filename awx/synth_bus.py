@@ -1959,8 +1959,12 @@ def build(a):
         # FAR-FACE lanes (--ring-e): the destination's far column, bottom to top -- round the perimeter after the
         # south face, so the planted order stays one cycle round the destination; reached round its north side
         # or its south, which the truth leaves to each lane (truth_wind)
-        e0 = 1 + (rows - 2 - nE) // 2
-        dst_slots += [(r, dcols - 1) for r in range(e0 + nE - 1, e0 - 1, -1)]
+        # (--e-depth D: a BLOCK of the D far columns, row by row from the bottom and the far column first in each --
+        # the balls beside the far face whose only way out is that face, as sdi_mipi_conv's SDI bus on U11)
+        eD = max(1, getattr(a, 'e_depth', 1) or 1)
+        nr = -(-nE // eD)
+        e0 = 1 + (rows - 2 - nr) // 2
+        dst_slots += [(r, dcols - 1 - d) for r in range(e0 + nr - 1, e0 - 1, -1) for d in range(eD)][:nE]
     else:
         dst_slots = face_slots(K, dcols, east=False)
     names = [f'SYN{i:02d}' for i in range(K)]
@@ -2117,6 +2121,7 @@ def build(a):
         'dst_rot': a.dst_rot, 'caps': a.caps,
         'ring_n': nN, 'ring_s': nS, 'dst_cols': dcols, 'dst_dy': dy, 'parts': hcaps,
         **({'ring_e': nE, 'shift': getattr(a, 'shift', 1), 'wind': wind} if wind else {}),
+        **({'e_depth': a.e_depth} if (getattr(a, 'e_depth', 1) or 1) > 1 else {}),
         **({'closed': True} if getattr(a, 'closed', False) else {}),
         'w_align': getattr(a, 'w_align', 'centre'),
         'crossings': len(edges),
@@ -2200,6 +2205,10 @@ def main(argv=None):
                     help='that many lanes end on the destination\'s FAR face (its side away from the source), '
                          'after the south face round it -- each reached round its north side or its south, which '
                          'the truth leaves to the lane (truth_wind; the sidecar\'s "wind")')
+    ap.add_argument('--e-depth', type=int, default=1,
+                    help='with --ring-e: the far-face lanes a block of this many far columns deep (row by row, the '
+                         'far column first) -- balls beside the far face that leave by it, under the truth\'s '
+                         'model (which reads each at its row on the far face) no longer exact')
     ap.add_argument('--dst-cols', type=int, default=None,
                     help='the destination\'s columns (default --cols): its north and south faces hold this minus 2')
     ap.add_argument('--w-align', default='centre', choices=('centre', 'north', 'south'),

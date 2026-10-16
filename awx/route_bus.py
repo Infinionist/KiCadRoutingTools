@@ -469,7 +469,7 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
                     '--clearance', str(te.SPEC_CLEARANCE), '--beneath-only'] + (['--lock'] + lock_e if lock_e else []),
                    dict(os.environ), log_path=os.path.join(work, 'caps_ends.log'), own_process=True)
             with contextlib.redirect_stdout(sys.stderr):
-                mb.write_ladder(fanned_e, names, log=lambda *a: None)
+                mb.write_ladder(fanned_e, names, log=lambda *a: None, bare_ok=True)
             log(f'  the bus\'s own field, for the ends: {os.path.basename(ends_board)} fanned as the bus alone -- '
                 + '; '.join(x.strip() for x in elog if x.strip().startswith((f'{src}:', f'{dest}:')))[:300])
     else:
@@ -480,14 +480,16 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
                                    via_diameter=te.VIA_SIZE, via_drill=te.VIA_DRILL, verbose=False)
         log(f'  {src} fanned out: {n_t} tracks, {n_v} vias' + (f', refused {failed}' if failed else ''))
     with contextlib.redirect_stdout(sys.stderr):
-        mb.write_ladder(fanned, names, log=log)
+        # (a net bare at both arrays -- outer balls left to leave on their own layer -- is a lane the escape fanout lays
+        # from its pads: braid.bare_lane)
+        mb.write_ladder(fanned, names, log=log, bare_ok=escape)
         if fanned_e:
             # (ESCAPE_JOINT_ENDS: the bus alone's ladder -- its rivers read on its own field, so the run's nets, their
             # order and the K cut are the bus alone's: the ends chosen on that field in that order are its ends)
             import shutil
             shutil.copyfile(os.path.splitext(fanned_e)[0] + '.ladder.txt', os.path.splitext(fanned)[0] + '.ladder.txt')
             log(f'  ladder: the bus alone\'s, from {os.path.basename(fanned_e)}')
-        ladder = coherent_nets(10 ** 6, fanned)
+        ladder = coherent_nets(10 ** 6, fanned, bare_ok=escape)
     K = min(int(k), len(ladder)) if k else len(ladder)
     with contextlib.redirect_stdout(sys.stderr):
         nets = whole_pairs(ladder, K, fanned)            # (the chain's own cut: coherent_nets(K) cuts no pair)

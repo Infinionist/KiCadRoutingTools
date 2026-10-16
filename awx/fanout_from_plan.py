@@ -360,8 +360,10 @@ def plan_state(pcb, names, banned=frozenset()):
     sref = max(refs, key=refs.get)
     sgrid = em.grid_of(pcb.footprints[sref])
     smenu = {}
-    # PLAN_JUDGE=ends: no tooth move to the source's FAR face (the one facing away from the destination) -- the whole
-    # route has no way round the source (whole_frame), so such a move is no candidate
+    # PLAN_JUDGE=ends: a tooth move to the source's FAR face (the one facing away from the destination) only from a ball
+    # in the array's half beside it, as a side face's (side_half, below) -- the whole route takes such a lane round the
+    # source on a lead-in (whole_frame), and the ends model prices it past any via count (whole_ends.FAR_TOOTH), so it
+    # is chosen only by a lane with no other way out
     far_dir = None
     if PLAN_JUDGE == 'ends':
         # (every destination's pads, where DEST names several: the source's far face faces away from them all)
@@ -390,7 +392,7 @@ def plan_state(pcb, names, banned=frozenset()):
         # stubs (own_only)
         smenu[nm] = [m for m in dedupe_climbs(menu(p, sgrid, byname[nm][0], own_only=(PLAN_JUDGE != 'ends'),
                                                    climb=SRC_CLIMB))
-                     if (nm, sr.move_sig(m)) not in banned and m.direction != far_dir
+                     if (nm, sr.move_sig(m)) not in banned
                      and (nm, 'class', sr.move_class(m)) not in banned
                      and (far_dir is None or m.direction == near_dir or side_half(p, m.direction))]
         _plegs = getattr(plan_state, '_pair_legs', None) or {}
@@ -1403,6 +1405,8 @@ def explain_plan(choice, st, names, out_path=None, board=None, achieved=None):
                 c_ = pe_['cut']
                 # (a far-face cut its y, as it always was; one off the far face -- winding -- its face and coordinate)
                 plan['dest_cut'] = [c_[0], float(c_[1])] if isinstance(c_, (list, tuple)) else float(c_)
+            if pe_.get('scut') is not None:
+                plan['src_cut'] = float(pe_['scut'])       # (the source's far face's: a far-face tooth's side round it)
         with open(side, 'w', encoding='utf-8') as f:
             json.dump(plan, f, indent=1, sort_keys=True)
         print(f'  plan written to {os.path.basename(side)}')

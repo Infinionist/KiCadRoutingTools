@@ -16,7 +16,11 @@ decisions (the braid's corridors, branches, launch offsets or planned paths) ent
              stepped back along the trunk until it clears that hull by two lane pitches -- and running round the way
              the lanes' paths sweep
   orders     the two the solve inverts, both north to south: the teeth round the source's pad box (unrolled at a cut
-             on its far face) and the berths round the destination's (unrolled at the far-face cut)
+             on its far face, src_cut: the gap between its teeth that crosses the fewest lanes) and the berths round
+             the destination's (unrolled at the far-face cut)
+  lead-ins   a tooth on the source's far face (the face its escape leaves by, tooth_face) goes round the source's
+             corner on its side of that cut: straight out of the face, along it and round the corner, nested in its
+             side's launch order, to a START beside the side face, where the trunk takes it as a side face's lane
   reference  each lane's taut path in the trunk frame: the side of each island it passes, until the geometry flips it
   branches   (DEST naming several parts, 'U4+U3': one source, several ends) the trunk runs to the first; each other
              part's lanes are a class of their own, a BRANCH, stacked outside the first's ring on its side and leaving
@@ -24,7 +28,8 @@ decisions (the braid's corridors, branches, launch offsets or planned paths) ent
              order round it. The final order is the parts' ranks across the trunk (dest_ranks), each part's lanes in
              their order round it -- so a branch's lanes cross the others on the trunk alone, as a ring's do
 
-A tooth on the source's far face has no way round the source in this frame, and is refused by name."""
+A far-face tooth still INSIDE the source's array (a ball's via, its lane not yet out of the field) has no way round
+the source, and is refused by name."""
 import collections
 import math
 
@@ -48,9 +53,9 @@ class PairSplit(SystemExit):
 
 
 class FarFace(SystemExit):
-    """build's stop on a bench with a lane's tooth on the source's far face (the whole frame has no way round the
-    source) -- carrying `lanes`, for a caller that repairs rather than stops (fanout_from_plan's audit: the next round
-    frees those teeth)"""
+    """build's stop on a bench with a lane's tooth on the source's far face still inside the array (no lead-in round
+    the source from there) -- carrying `lanes`, for a caller that repairs rather than stops (fanout_from_plan's audit:
+    the next round frees those teeth)"""
 
     def __init__(self, lanes, msg):
         super().__init__(msg)
@@ -212,12 +217,13 @@ def cut_sig(pts, DB, cut):
     return tuple(sorted(range(len(pts)), key=lambda i: (perim_c(pts[i], DB, cut), i)))
 
 
-def perim_s(p, SB):
-    """where p lies round the source's box SB, unrolled from the middle of its far (west) face -- no tooth stands
-    there: north first"""
+def perim_s(p, SB, scut=None):
+    """where p lies round the source's box SB, unrolled from the far (west) face's cut `scut` (a y on it; None its
+    middle): north first -- a tooth on the far face north of the cut goes round the north, south of it round the
+    south"""
     sx0, sy0, sx1, sy1 = SB
     sW, sH = sx1 - sx0, sy1 - sy0
-    scut = (sy0 + sy1) / 2
+    scut = (sy0 + sy1) / 2 if scut is None else float(scut)
     x, y = p
     sd = face(p, SB)
     if sd == 'W' and y <= scut:
@@ -229,6 +235,63 @@ def perim_s(p, SB):
     if sd == 'S':
         return (scut - sy0) + sW + sH + (sx1 - x)
     return (scut - sy0) + 2 * sW + sH + (sy1 - y)
+
+
+def tooth_face(p, SB, d=None):
+    """the face of the source's box SB a tooth at p leaves by: the one its escape `d` points out of, where the escape
+    runs along an axis -- else the face nearest it. Read by nearness alone, an exit past the north face beside the far
+    corner, or a ball's via whose escape runs north, was a far-face tooth"""
+    if d is not None:
+        dx, dy = float(d[0]), float(d[1])
+        L = math.hypot(dx, dy)
+        if L > 1e-9 and max(abs(dx), abs(dy)) > 0.9 * L:
+            return ('E' if dx > 0 else 'W') if abs(dx) > abs(dy) else ('S' if dy > 0 else 'N')
+    return face(p, SB)
+
+
+def src_cut(ys, lo, hi, rank=None):
+    """the cut on the source's far face (`ys` its teeth's y, the face from lo to hi): the middle of the gap that splits
+    them with the fewest crossings -- `rank(cut)` the crossings a cut makes (None: the widest gap, cut's) -- the widest
+    such gap on a tie. A far-face tooth north of the cut goes round the north (perim_s), outside every lane of the
+    north face, so the cut decides which lanes it crosses: in the middle of the face, two far teeth whose berths both
+    lie north were split, and the southern one crossed the whole bus"""
+    pts = [lo] + sorted(ys) + [hi]
+    gaps = [(pts[i + 1] - pts[i], (pts[i] + pts[i + 1]) / 2) for i in range(len(pts) - 1)]
+    if rank is None:
+        return max(gaps)[1]
+    return min(gaps, key=lambda g: (rank(g[1]), -g[0], g[1]))[1]
+
+
+def lead_ins(F, far, scut, width, SB):
+    """{lane: [points]}: each far-face lane's LEAD-IN, from its tooth round the source's corner to its START on the
+    north or south face (F.start). The trunk frame cannot carry a lane along the far face -- its columns stand across
+    the spine, and that stretch runs along them -- so the lane leaves its tooth straight out of the face, runs along it
+    and round its corner on a 45-degree chamfer, and starts beside the side face, where the trunk takes it as it takes a
+    side face's lanes. The lanes of a side nest in the order they launch (perim_s from the cut): the tooth nearest the
+    corner innermost, a lane's room apart, every lane's run a pitch out of the far face's teeth and the side face's"""
+    out = {}
+    xf = min([SB[0]] + [F.tooth[n][0] for n in far])                 # the far face's teeth's line
+    rest = [F.tooth[m][1] for m in F.M if m not in far]
+    for side in ('N', 'S'):
+        mem = [n for n in far if (F.tooth[n][1] <= scut) == (side == 'N')]
+        # (innermost first: nearest the corner it rounds)
+        mem.sort(key=lambda n: F.tooth[n][1] if side == 'N' else -F.tooth[n][1])
+        sg = -1.0 if side == 'N' else 1.0                              # (y toward the side, out of the box)
+        # (the side face's teeth's line: the box's, or past it where a side face's stub stands further out)
+        yf = min([SB[1]] + rest) if side == 'N' else max([SB[3]] + rest)
+        at, d0 = bd.LANE_MIN, None
+        for n in mem:
+            d = at + (width(n) - bd.LANE_MIN) / 2
+            d0 = d if d0 is None else d0
+            # (concentric 45-degree chamfers a lane's room apart: two chamfer lines x +- y = const stand (2 (d - d0) -
+            # (c - c0)) / sqrt 2 apart, so c grows by (2 - sqrt 2) per mm of d)
+            c = 2 * bd.LANE_MIN + (2 - math.sqrt(2)) * (d - d0)
+            x_, y_ = xf - d, yf + sg * d
+            t = tuple(map(float, F.tooth[n]))
+            y_turn = y_ - sg * c
+            out[n] = [t, (x_, t[1])] + ([(x_, y_turn)] if sg * (t[1] - y_turn) < 0 else []) + [(x_ + c, y_)]
+            at += width(n)
+    return out
 
 
 def dest_ranks(pcb, sref, dests):
@@ -302,12 +365,22 @@ def build(ctx, dest, _trunk=frozenset()):
     for b_ in dests[1:]:
         F.DBs[b_], F.bcut[b_] = dest_box_cut(pcb, b_, [F.bend[n] for n in F.M if F.dest_of[n] == b_])
     F.branch = {'B:' + b_: b_ for b_ in dests[1:]}         # each branch's class: its part
-    # ---- the source side: a tooth on the far (west) face would have to go round the source
+    # ---- the source side: the face each tooth leaves by (its escape's: tooth_face). A tooth on the far (west) face
+    # goes round the source on a LEAD-IN to a start beside the side face of its side of the far face's cut (lead_ins,
+    # below); one standing inside the array (a ball's via whose lane has not left it) has no way round, and is refused
+    td_ = getattr(ctx, 'tooth_dir', None) or {}
     tf = {n: face(F.tooth[n], SB) for n in F.M}
+    for n in F.M:
+        # (its escape's face decides only where the far face is in question: the other faces as they always read)
+        f_ = tooth_face(F.tooth[n], SB, td_.get(n))
+        if 'W' in (f_, tf[n]):
+            tf[n] = f_
     far = sorted(n for n in F.M if tf[n] == 'W')
-    if far:
-        raise FarFace(far, f'whole route: {", ".join(far)} launch from the source\'s far face -- the whole frame has no '
-                         f'way round the source')
+    _sraw = box_of(pcb, src)
+    far_in = [n for n in far if F.tooth[n][0] >= _sraw[0] - 1e-6]
+    if far_in:
+        raise FarFace(far_in, f'whole route: {", ".join(far_in)} launch from the source\'s far face inside the array '
+                              f'-- no way round the source from there')
     # ---- the trunk: straight, from the source's pad box through the destination's
     ca = np.array([(SB[0] + SB[2]) / 2, (SB[1] + SB[3]) / 2])
     cb = np.array([(DB[0] + DB[2]) / 2, (DB[1] + DB[3]) / 2])
@@ -337,23 +410,60 @@ def build(ctx, dest, _trunk=frozenset()):
         if F.dest_of[n] != dest:
             F.cls[n] = 'B:' + F.dest_of[n]                  # (a branch's lane: its branch, whole)
     near = [n for n in PM if n not in F.cls]
+    perim_dst = lambda p: perim_c(p, DB, dcut)
+
+    def perim_berth(n_, p):
+        """where berth point p of lane n_ lies round its destination's box, unrolled at that box's cut (a branch's
+        round its own part)"""
+        b_ = F.dest_of[n_]
+        return perim_dst(p) if b_ == dest else perim_c(p, F.DBs[b_], F.bcut[b_])
+    F.P = {n: perim_berth(n, F.bend[n]) for n in F.M}
+    # (north to south: the destinations' ranks across the trunk, each one's lanes in their order round it)
+    F.final = sorted(F.M, key=lambda n: (F.rank[F.dest_of[n]], F.P[n]))
+    # the source's far face's CUT (src_cut): the ends model's (the plan sidecar's, as the destination's), else the gap
+    # between its teeth that makes the fewest crossings with the berths' order
+    fi_ = {n: i for i, n in enumerate(F.final)}
+
+    def _xings(c_):
+        k_ = sorted(F.M, key=lambda n: (perim_s(F.tooth[n], SB, c_), F.M.index(n)))
+        return sum(1 for i, a in enumerate(k_) for b in k_[i + 1:] if fi_[a] > fi_[b])
+    scut = getattr(ctx, 'src_cut', None)
+    if scut is None:
+        scut = src_cut([F.tooth[n][1] for n in far], SB[1], SB[3], rank=_xings if far else None)
+    F.scut = float(scut)
+    F.far = far
+    for n in far:
+        tf[n] = 'N' if F.tooth[n][1] <= F.scut else 'S'            # (the side face it goes round to)
+    _prs0 = getattr(ctx, 'pairs', None) or {}
+    import pairs as _pairs0
+    F.lead = lead_ins(F, far, F.scut, lambda n: bd.LANE_MIN + (_pairs0.pitch(bd.TRACK) if n in _prs0 else 0.0), SB)
     # the REFERENCE paths (the geometry picks each column's free interval nearest one): a lane's taut path, except
     # where it runs INSIDE a pad box -- a taut string has no width and threads gaps between balls no track fits --
     # where it takes the box's edge on the lane's own side (a ring's at the destination, its tooth's face's at the
     # source) a ring margin out: SA0 was bounded south of the destination's corner, its handoff north of it
     for n in F.M:
         side = {}
-        if tf[n] in ('N', 'S'):
+        path_n = ctx.paths[n]
+        if n in F.lead:
+            # (a far-face lane: from the end of its lead-in along its side face, at its own offset, to past the near
+            # face's corner, and on from where its taut path is past it -- the taut path itself may round the source
+            # the other way, and a lane started beside the north face was drawn back down the far face to it)
+            st_ = F.lead[n][-1]
+            cx_ = SB[2] + bd.LPITCH
+            s_c = float(F.spine.project_pt((cx_, st_[1]))[0])
+            path_n = [tuple(st_), (cx_, st_[1])] + [p for p in _dense(ctx.paths[n], bd.LPITCH / 2)
+                                                   if float(F.spine.project_pt(p)[0]) > s_c + bd.LPITCH]
+        elif tf[n] in ('N', 'S'):
             side['src'] = tf[n]
         if n in F.cls:
             # (a branch's lane passes the trunk's destination on its branch's side)
             side['dst'] = F.cls[n] if n in PM else branch_side(F.rank[F.dest_of[n]])
-        if not side:
+        if not side and n not in F.lead:
             continue
         pts = []
         # densified first: a taut string's straight between two corners runs through a box too (K28 SCKE0 from its
         # south-face tooth straight to a corner past the source's east face), and only its points can be moved
-        for (x, y) in _dense(ctx.paths[n], bd.LPITCH / 2):
+        for (x, y) in _dense(path_n, bd.LPITCH / 2):
             for key_, b_ in (('src', SB), ('dst', DB)):
                 if key_ in side and b_[0] < x < b_[2] and b_[1] < y < b_[3]:
                     y = b_[1] - bd.LPITCH if side[key_] == 'N' else b_[3] + bd.LPITCH
@@ -363,8 +473,7 @@ def build(ctx, dest, _trunk=frozenset()):
     F.H0 = (min(F.se[n][0] for n in near) if near else float(F.spine.project_pt((x0, (y0 + y1) / 2))[0]))
     W_, H_ = x1 - x0, y1 - y0
     sW, sH = SB[2] - SB[0], SB[3] - SB[1]
-    perim_dst = lambda p: perim_c(p, DB, dcut)
-    perim_src = lambda p: perim_s(p, SB)
+    perim_src = lambda p: perim_s(p, SB, F.scut)
     # a PAIR is one lane here: its two tips must stand together at both ends, no other lane's end between them ON
     # THE PAIR'S LAYER there (a lane ending on the other layer runs under the pair's end legs: K41's SCKE1 berths on
     # B.Cu at the midpoint of SCK's F.Cu berth tips, as a human stacks them)
@@ -388,11 +497,6 @@ def build(ctx, dest, _trunk=frozenset()):
         return True
     # every lane with an end between a pair's two tips, whatever its layer there: a solve that chooses ends' layers
     # (whole_solve's via ends, on more routing layers than two) keeps each off the pair's
-    def perim_berth(n_, p):
-        """where berth point p of lane n_ lies round its destination's box, unrolled at that box's cut (a branch's
-        round its own part)"""
-        b_ = F.dest_of[n_]
-        return perim_dst(p) if b_ == dest else perim_c(p, F.DBs[b_], F.bcut[b_])
     F.tip_between = {}
     for k_ in (0, 1):
         lay_ = ctx.tooth_layer if k_ == 0 else ctx.dest_layer
@@ -418,7 +522,6 @@ def build(ctx, dest, _trunk=frozenset()):
                 splits.append((n, ('tooth', 'berth')[k_], inside))
     if split:
         raise PairSplit(splits, f'whole route: pair(s) split by other lanes -- {"; ".join(split)} -- a pair is one lane')
-    F.P = {n: perim_berth(n, F.bend[n]) for n in F.M}
     # each lane's LANDING: where its lane meets its berth -- the berth itself, or for a pair on a ring's face (its stub
     # across the ring) the end of the straight run it takes out of its berth (pairs.end_run: its end connector onto
     # the pose and the router's probe past it), which the lane then runs straight into the berth -- and past that the
@@ -459,10 +562,11 @@ def build(ctx, dest, _trunk=frozenset()):
             m = _pairs.mid(tips[0], tips[1])
             r = _pairs.end_run(ctx.cfg, tips, e) + (_pairs.turn_straight_steps(ctx.cfg) + 1) * ctx.cfg.grid_step
             F.start[n] = (float(m[0] + e[0] / el * r), float(m[1] + e[1] / el * r))
+    # ...and a far-face lane's: the end of its LEAD-IN round the source's corner (lead_ins, above), drawn as it is
+    for n, pts_ in F.lead.items():
+        F.start[n] = tuple(map(float, pts_[-1]))
     F.st = {n: tuple(map(float, F.spine.project_pt(F.start[n]))) for n in F.M}
     F.launch = sorted(F.M, key=lambda n: perim_src(F.tooth[n]))
-    # (north to south: the destinations' ranks across the trunk, each one's lanes in their order round it)
-    F.final = sorted(F.M, key=lambda n: (F.rank[F.dest_of[n]], F.P[n]))
     # ---- the rings
     dpads = [(p.global_x, p.global_y) for p in pcb.footprints[dest].pads]
     cen = (sum(p[0] for p in dpads) / len(dpads), sum(p[1] for p in dpads) / len(dpads))

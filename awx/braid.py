@@ -1172,6 +1172,16 @@ def _offset_side(run, h):
         i = back[0]
         del pts[i + 1 if i + 1 < len(pts) - 1 else i]
 
+def bare_lane(pcb, nm, byname):
+    """a net with no track at all (a via in its pad at most) and pads on two parts: on the ESCAPE fanout's field
+    (dogbone_arrays) a net whose balls are both outer balls left to leave on their own layer, or one whose ball found
+    no gap for its dog-bone -- no stub end to read, and the escape fanout lays both of its ends from the pads
+    (escape_plan.plan_state reads a lane by its pads; sdi_mipi_conv's SDI bus lost five of its 21 nets to the ladder,
+    D0, D2 and D7 outer balls at both arrays)"""
+    nid, net = byname[nm]
+    return not any(s.net_id == nid for s in pcb.segments) and len({p.component_ref for p in net.pads}) >= 2
+
+
 def endpoints(pcb, names, byname, dest_ref=None):
     """Where each net's corridor must start and finish.
 
@@ -6794,6 +6804,10 @@ def setup(board, names, dest, log, plan=None, pairs=False):
             ctx.dest_cut = (f_, v_)
         else:
             ctx.dest_cut = (2.0 * CY - float(dc_)) if chi < 0 else float(dc_)
+    # ...and the source's far-face cut (whole_frame.src_cut: which side a far-face tooth goes round), mirrored the same
+    ctx.src_cut = None
+    if plan and plan.get('src_cut') is not None:
+        ctx.src_cut = (2.0 * CY - float(plan['src_cut'])) if chi < 0 else float(plan['src_cut'])
     if ctx.pages_first and EXACT_PAGES_ENV != '0':
         # a PAGES-FIRST plan (fanout_from_plan PLAN_PAGES): its two chains
         # were chosen to cover every lane, so the schedule pages it exactly

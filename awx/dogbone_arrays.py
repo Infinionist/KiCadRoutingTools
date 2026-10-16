@@ -40,8 +40,11 @@ def _pad_dist(x, y, p):
 
 def beneath(pcb, fp, refs):
     """a movable passive BENEATH one of the arrays: an unlocked two-pad C/R/L/FB part on the arrays' other face, its
-    centre inside an array's pad box -- the cap step moves it off the vias"""
-    if fp.reference in refs or len(fp.pads) != 2 or getattr(fp, 'locked', False):
+    centre inside an array's pad box -- the cap step moves it off the vias. Two COPPER pads: a footprint's paste-only
+    pads (its paste apertures drawn as pads) are no pads of the part's (sdi_mipi_conv's C105 under U11, two pads and
+    two paste openings, held where it stood: no dog-bone for the SDI bus's D16 and PCLK balls beside it)"""
+    if fp.reference in refs or getattr(fp, 'locked', False) or \
+            sum(1 for p in fp.pads if any(L.endswith('.Cu') for L in p.layers)) != 2:
         return False
     if fp.reference.rstrip('0123456789').upper() not in ('C', 'R', 'L', 'FB', 'RX', 'CX'):
         return False
