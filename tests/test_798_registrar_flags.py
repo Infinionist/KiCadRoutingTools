@@ -151,7 +151,9 @@ def t_a_script_still_does_NOT_inherit_another_CLIs_flags():
     cannot inherit its vocabulary however the resolution changes.
     """
     caps = k.capabilities()
-    for token in ('route_planes.py:--net-clearances',
+    # route_planes.py has taken --net-clearances since #1272, so the
+    # route.py-only example is --keep-away.
+    for token in ('route_planes.py:--keep-away',
                   'route_planes.py:--track-width-floor',
                   'repair_planes.py:--net-clearances',
                   'route_diff.py:--track-width-floor'):

@@ -258,7 +258,7 @@ POST_PARSE = {
     'route_diff.py': (_keep_away, _fab_overrides_missing, _output_twice,
                       _net_clearances_unreadable),
     'route_planes.py': (_fab_overrides_missing, _output_twice,
-                        _planes_count_mismatch),
+                        _planes_count_mismatch, _net_clearances_unreadable),
     'repair_planes.py': (_fab_overrides_missing, _output_twice,
                          _repair_count_mismatch),
     'route_disconnected_planes.py': (_fab_overrides_missing, _output_twice,
@@ -325,6 +325,7 @@ REFUSAL_SITES = {
         'call:fab_tier_from_args': ('file', '_fab_overrides_missing'),
         'both a positional output and --output we': ('argv', '_output_twice'),
         'number of net arguments (': ('argv', '_planes_count_mismatch'),
+        'call:load_net_clearances': ('file', '_net_clearances_unreadable'),
     },
     'repair_planes.py': {
         'call:fab_tier_from_args': ('file', '_fab_overrides_missing'),

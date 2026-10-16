@@ -133,7 +133,9 @@ def test_a_script_does_NOT_inherit_another_CLIs_flags():
     caps = k.capabilities()
 
     # These four are argparse errors on the real CLI -- verified by --help.
-    for token in ('route_planes.py:--net-clearances',
+    # route_planes.py has taken --net-clearances since #1272, so the
+    # route.py-only example is --keep-away.
+    for token in ('route_planes.py:--keep-away',
                   'route_planes.py:--track-width-floor',
                   'repair_planes.py:--net-clearances',
                   'route_diff.py:--track-width-floor'):
@@ -148,6 +150,7 @@ def test_a_script_does_NOT_inherit_another_CLIs_flags():
                   'repair_planes.py:--fab-overrides',
                   'route.py:--net-clearances',
                   'route_diff.py:--net-clearances',
+                  'route_planes.py:--net-clearances',
                   'qfn_fanout.py:--escape-method'):
         assert k.missing(caps, [token]) == [], \
             f'{token} DOES exist on that CLI and must not be reported missing'

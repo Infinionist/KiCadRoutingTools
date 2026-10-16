@@ -3434,11 +3434,14 @@ def create_plane(
         except Exception as _e:
             print(f"  Warning: could not auto-read netclass clearances ({_e}).")
             net_clearances = None
-    # #439: --clearance was the CEILING -> cap every class at min(class, ceiling).
-    # When not clamping (--clearance omitted), honor the classes in full.
-    if net_clearances and clamp_netclasses and clearance_ceiling is not None:
-        net_clearances = {nid: min(c, clearance_ceiling)
-                          for nid, c in net_clearances.items()}
+        # #439: --clearance was the CEILING -> cap every class at min(class,
+        # ceiling). When not clamping (--clearance omitted), honor the classes
+        # in full. Only the auto-read map is capped: a map the caller passes
+        # (the --net-clearances file, or the GUI's own class map, already
+        # capped there) is used as given, as batch_route does.
+        if net_clearances and clamp_netclasses and clearance_ceiling is not None:
+            net_clearances = {nid: min(c, clearance_ceiling)
+                              for nid, c in net_clearances.items()}
     if net_clearances:
         config.net_clearances = dict(net_clearances)
     # Publish the SAME map to the fill model (#483 item 5): KiCad refills a
@@ -4196,6 +4199,12 @@ Examples:
     parser.add_argument("--via-drill", type=float, default=None, help="Via drill size in mm (default: the board Default net-class via drill, else 0.3)")
     parser.add_argument("--track-width", type=float, default=None, help="Track width for via-to-pad connections in mm (default: the board Default net-class width, else 0.3)")
     parser.add_argument("--clearance", type=float, default=None, help="Copper clearance of the DEFAULT net class for this run, in mm; other classes are honoured at their own clearance (pairwise max). When OMITTED, the board's Default class, else 0.25. --clearance-ceiling caps every class (the old #439 behaviour) and the writeback clamps.")
+    parser.add_argument("--net-clearances", metavar="JSON", default=None,
+                        help="JSON file mapping net NAME -> clearance mm (the file route.py and "
+                             "route_diff.py take): replaces the auto-read netclass map for plane "
+                             "taps, the pour's fill model and GND return vias, used as given -- "
+                             "never capped by --clearance-ceiling. A net it does not name routes "
+                             "at the run's clearance.")
 
     # Zone options
     parser.add_argument("--zone-clearance", type=float, default=None, help="Zone (pour) clearance from other copper in mm. Default: follow --clearance, auto-stepping down to the fab floor if the pour cannot thread the densest BGA via lattice")
@@ -4449,6 +4458,18 @@ Examples:
     _out_before = (os.path.getmtime(args.output_file)
                    if args.output_file and os.path.isfile(args.output_file) else None)
 
+    # --net-clearances FILE: the explicit map replaces the auto-read netclass
+    # map, used as given (route.py / route_diff.py main, the same loader).
+    _explicit_nc = _nc_by_name = None
+    if args.net_clearances:
+        from kicad_parser import parse_kicad_pcb as _parse_for_nc
+        from list_nets import load_net_clearances, net_clearance_map_by_name
+        _nc_by_name = load_net_clearances(args.net_clearances)
+        _nc_nets = _parse_for_nc(args.input_file).nets
+        _explicit_nc = net_clearance_map_by_name(_nc_nets, _nc_by_name)
+        print(f"Loaded per-net clearances for {len(_explicit_nc)}/{len(_nc_nets)} nets "
+              f"from {args.net_clearances}")
+
     # The engine's cooperative `cancel_check` / `progress_callback` are the
     # GUI's (the planes tab's Cancel button); the CLI passes neither. There is
     # deliberately no wall-clock budget -- no result this tool produces may
@@ -4492,6 +4513,7 @@ Examples:
         no_bga_zone=args.no_bga_zone,
         clamp_netclasses=args._clamp_netclasses,
         clearance_ceiling=args._clearance_ceiling,
+        net_clearances=_explicit_nc,
     )
 
     _wrote_output = bool(args.output_file) and os.path.isfile(args.output_file) and (
@@ -4556,10 +4578,15 @@ Examples:
         # Cross-class clearance (#434/#439), resolved exactly as create_plane
         # does: a return via must clear each foreign net at max(base, its class)
         # -- without the map an HV net's 0.8mm class was priced at the base 0.2.
-        from list_nets import net_clearance_map_by_id
-        gnd_net_clearances = net_clearance_map_by_id(
-            args.input_file, {nid: n.name for nid, n in pcb_data.nets.items()})
-        if gnd_net_clearances and args._clamp_netclasses:
+        # An explicit --net-clearances map is used as given, like create_plane.
+        # Resolved by name against the OUTPUT board this block parsed.
+        from list_nets import net_clearance_map_by_id, net_clearance_map_by_name
+        gnd_net_clearances = (net_clearance_map_by_name(pcb_data.nets, _nc_by_name)
+                              if _nc_by_name is not None else
+                              net_clearance_map_by_id(
+                                  args.input_file,
+                                  {nid: n.name for nid, n in pcb_data.nets.items()}))
+        if _nc_by_name is None and gnd_net_clearances and args._clamp_netclasses:
             gnd_net_clearances = {nid: min(c, args._clearance_ceiling)
                                   for nid, c in gnd_net_clearances.items()}
 

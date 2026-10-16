@@ -70,6 +70,7 @@ When specifying multiple nets, each net is paired with its corresponding plane l
 | `--via-drill` | 0.3 | Via drill size in mm |
 | `--track-width` | 0.3 | Track width for via-to-pad connections in mm |
 | `--clearance` | 0.25 | Clearance from other copper in mm |
+| `--net-clearances` | - | JSON file mapping net name -> clearance in mm (the file `route.py` / `route_diff.py` take). It REPLACES the per-net map auto-read from the board's net classes for plane taps, the pour's fill model and `--add-gnd-vias` return vias, used as given (not capped by `--clearance-ceiling`); a net it does not name routes at the run's clearance. GUI: the Advanced tab's **Net Clearances File** |
 
 ### Zone Options
 
