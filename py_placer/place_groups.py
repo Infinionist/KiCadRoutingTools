@@ -138,6 +138,35 @@ def trim_intent(intent: dict, present: set) -> dict:
     return out
 
 
+def later_zone_keepouts(intent: dict, future: set, step: set, present: set,
+                        fixed=()) -> list:
+    """`keepouts[]` rows reserving each later group's zone for that group:
+    one per block whose parts are all still to come, on the block's face, so
+    this step's parts cannot take it. Every part already on the board is in
+    `allow`: the reservation binds this step's parts, not a connector the
+    region was planned around, nor a `fixed` part (a fixed pose is seated
+    where it is declared, and plan_regions' corner holes lie in zones).
+
+    Without it a step's part that found no pose in its own zone was seated in
+    the nearest free space, which is often a later group's zone, and that
+    group then found its zone full: on ch32v006_dev Q1 (step 3) took the
+    strip the ui step's LED row needed, and on glasgow_revC the IO_Banks step
+    found no room for four of its parts."""
+    rows = []
+    allow = sorted((present - step) | (set(fixed) & step))
+    for b in intent.get('blocks') or []:
+        refs = set(b.get('refs') or ())
+        if not b.get('zone') or not refs or not refs <= future:
+            continue
+        side = b.get('side')
+        rows.append({'name': f"reserved:{b['name']}", 'rect': list(b['zone']),
+                     'sides': [side] if side in ('F', 'B') else ['F', 'B'],
+                     'allow': allow,
+                     'note': f"zone of block {b['name']!r}, placed in a later step",
+                     'context': {'planned_by': 'place_groups.py'}})
+    return rows
+
+
 def run_place_seed(step_in, step_out, intent_path, seed, owners, extra, log):
     """One group's step. `owners` go to `--decap-owners`: the decap pin
     stages seat a cap only at this group's ICs, never at a chip of a group
@@ -300,13 +329,44 @@ def main(argv=None):
             step_intent = os.path.join(workdir, f"step_{tag}.intent.json")
             write_step_board(cur, step_in, future, placed_refs)
             si = trim_intent(intent, present)
-            with open(step_intent, 'w', encoding='utf-8') as f:
-                json.dump(si, f, indent=1)
+            # a row an earlier step formed is locked in place: not this step's
+            if si.get('arrays'):
+                si['arrays'] = [r for r in si['arrays']
+                                if set(r.get('members') or ()) & set(refs)]
             owners = [r for g in doc['groups'] if g['name'] == name
                       for r in g['refs'] if r in view.parts]
-            rc, summ = run_place_seed(step_in, step_out, step_intent, a.seed,
-                                      owners, a.seed_arg,
-                                      os.path.join(workdir, f"step_{tag}.log"))
+            # The later groups' zones are reserved (`later_zone_keepouts`).
+            # When that strands one of this step's parts, the step runs again
+            # without, and the run that strands fewer is kept.
+            reserved = later_zone_keepouts(intent, future, set(refs), present,
+                                           fixed)
+            tries = [('', reserved)] + ([('.unreserved', [])] if reserved else [])
+            best, stranded = None, None
+            for suffix, keep in tries:
+                sj = copy.deepcopy(si)
+                if keep:
+                    sj['keepouts'] = list(sj.get('keepouts') or []) + keep
+                out_k = os.path.join(workdir, f"step_{tag}{suffix}.kicad_pcb")
+                intent_k = os.path.join(workdir, f"step_{tag}{suffix}.intent.json")
+                with open(intent_k, 'w', encoding='utf-8') as f:
+                    json.dump(sj, f, indent=1)
+                rc_k, summ_k = run_place_seed(step_in, out_k, intent_k, a.seed,
+                                              owners, a.seed_arg,
+                                              os.path.join(workdir, f"step_{tag}{suffix}.log"))
+                lost = [r for r in (summ_k.get('unseated_refs') or []) if r in refs]
+                if stranded is None:
+                    stranded = lost
+                if os.path.isfile(out_k) and (best is None or len(lost) < len(best[3])):
+                    best = (out_k, rc_k, summ_k, lost, suffix)
+                if not lost:
+                    break
+            if best is None:
+                best = (step_out, rc_k, summ_k, lost, '')
+            step_out, rc, summ, _lost, used = best
+            if used:
+                print(f"  {name}: with the later groups' zones reserved, "
+                      f"{', '.join(stranded)} found no pose; kept the step "
+                      f"placed without the reservation")
             if not os.path.isfile(step_out):
                 print(f"place_groups: step {k} ({name}) wrote no board "
                       f"(place_seed exit {rc}; see {workdir})", file=sys.stderr)

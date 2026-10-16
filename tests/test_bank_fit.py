@@ -13,10 +13,14 @@ out rather than written as a row nothing can seat. This holds:
   more; [] when nothing fits;
 * on glasgow_revC piled, its connectors and SW1 locked where the human put
   them and its schematic sheets as the groups (the benchmark of
-  docs/grouped-placement.md): the IO_Banks bank, which the J3/J4 courtyards
-  leave no 16.5 mm strip for, is written as two rows side by side and the
-  main bank stays whole; the seed forms all three rows, the four mounting
-  holes are seated at their corner poses, and the board is buildable.
+  docs/grouped-placement.md): each sheet's front-face region is sized for
+  its front-face parts, IO_Banks' a 48 mm strip beside J4/J5 that holds its
+  16.5 mm row whole, so both banks are written whole; the seed forms both
+  rows, the four mounting holes are seated at their corner poses, and the
+  board is buildable;
+* in IO_Banks' zone as it was planned when the back-face parts shared the
+  front-face region -- the strip the J3/J4 courtyards cut -- the bank is laid
+  as two rows side by side (3+2 channels).
 
     python3 tests/test_bank_fit.py
 """
@@ -108,13 +112,12 @@ def glasgow(tmp):
     need(regions, r, 'plan_regions')
     doc = json.load(open(regions))
     rows = {a['name']: a['members'] for a in doc.get('arrays') or []}
-    check(sorted(rows) == ['leds:io_banks:D6', 'leds:io_banks:D9', 'leds:main:D1']
+    check(sorted(rows) == ['leds:io_banks:D6', 'leds:main:D1']
           and len(rows['leds:main:D1']) == 10
-          and rows['leds:io_banks:D6'] + rows['leds:io_banks:D9']
+          and rows['leds:io_banks:D6']
           == ['D6', 'R11', 'D7', 'R20', 'D8', 'R21', 'D9', 'R22', 'D10', 'R23'],
-          f"IO_Banks as two rows (3+2 channels), main whole ({sorted(rows)})")
-    check('its region holds it only as 2 rows side by side' in r.stdout,
-          "plan_regions says the bank was split")
+          f"IO_Banks and main each one whole row ({sorted(rows)})")
+    cut_zone(fixed, doc)
     holes = {f['ref']: f for f in doc.get('fixed_poses') or []}
     check(sorted(holes) == ['MK1', 'MK2', 'MK3', 'MK4'],
           f"the four mounting holes get corner poses ({sorted(holes)})")
@@ -127,7 +130,7 @@ def glasgow(tmp):
                  if ln.startswith('JSON_SUMMARY: ')), {})
     check(sorted(summ.get('arrays_formed') or {}) == sorted(rows)
           and not summ.get('array_unseated'),
-          f"the seed forms all three rows (formed {sorted(summ.get('arrays_formed') or {})}, "
+          f"the seed forms every row (formed {sorted(summ.get('arrays_formed') or {})}, "
           f"unseated {sorted(summ.get('array_unseated') or {})})")
     got = parse_kicad_pcb(placed)
     at = [h for h, f in holes.items()
@@ -138,6 +141,36 @@ def glasgow(tmp):
     verdict = next((ln.split('VERDICT:', 1)[1].strip() for ln in a.stdout.splitlines()
                     if 'VERDICT:' in ln), '')
     check(verdict.startswith('buildable'), f"check_assembly: {verdict!r}")
+
+
+#: IO_Banks' zone when its group's back-face parts were planned into its
+#: front-face region: a 6.9 mm wide strip whose length J3 and J4 cut.
+CUT_ZONE = [82.802, 94.55, 89.702, 119.5]
+
+
+def cut_zone(fixed, doc):
+    """The planned intent with IO_Banks' zone set to `CUT_ZONE`: its bank
+    is laid as two rows side by side."""
+    import copy
+    from plan_regions import fit_banks, indicator_banks
+    intent = copy.deepcopy(doc)
+    intent.pop('arrays', None)
+    for b in intent['blocks']:
+        if b['name'] == 'io_banks':
+            b['zone'] = list(CUT_ZONE)
+    pcb = parse_kicad_pcb(fixed)
+    holes = list(doc.get('fixed_poses') or [])
+    banks, _dropped = indicator_banks(pcb, intent)
+    rows, notes = fit_banks(pcb, fixed, intent, banks, holes)
+    got = {a['name']: a['members'] for a in rows}
+    check(sorted(got) == ['leds:io_banks:D6', 'leds:io_banks:D9', 'leds:main:D1']
+          and got['leds:io_banks:D6'] + got['leds:io_banks:D9']
+          == ['D6', 'R11', 'D7', 'R20', 'D8', 'R21', 'D9', 'R22', 'D10', 'R23']
+          and len(got['leds:io_banks:D6']) == 6,
+          f"in the zone J3/J4 cut, IO_Banks as two rows (3+2 channels) "
+          f"({sorted(got)})")
+    check(any('its region holds it only as 2 rows side by side' in n for n in notes),
+          f"and fit_banks says the bank was split ({notes})")
 
 
 def main():

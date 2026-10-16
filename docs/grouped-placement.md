@@ -91,8 +91,51 @@ The cost:
 - **hard checks**: a region must hold its largest part at some quarter turn,
   and its parts' area, in its free cells.
 
+**Both faces.** Each face is planned on its own, so a region lies on one
+face. A group's parts on the other face -- a chip's decaps under it, a
+header's resistors behind it -- need room there too:
+- a group that declares its `side` is one region on that face, holding every
+  part: the declaration says the parts belong there, and
+  `place_intent_sides.py` mirrors them onto it before the seed;
+- otherwise the group's main face is the one its parts' courtyards cover more
+  of, and its parts on the other face are a second region there,
+  `<group>@B` (or `@F`), pulled toward the main region with 3 links per part
+  (`regions.MINOR_PULL`). The main regions are planned first, then both
+  faces again with the pull, until no main region moves by a millimetre
+  (three passes at most);
+- every block declares the face its parts are on, so `place_intent_sides`
+  finds nothing to mirror.
+
+The face used to be the one most of the group's parts were on. ulx3s's core
+has its two large chips, U1 and U2, on the front and 43 decaps on the back,
+so its region went to the back, the front was planned with no room for the
+chips, and U2 was seated 26 mm off the board.
+
+Measured with this, the locked-body seat (a locked part without a courtyard
+is an obstacle by its fab body, see "Body model" in
+`py_placer/placement/README.md`) and a pile's seed licensing nothing (its
+`_seed_licensed`), against 095b51f1, six candidates per board from the same
+staged inputs (`place_candidates.py`):
+
+| board | buildable | floorplan errors | kept candidate: crossings, HPWL |
+|---|---|---|---|
+| ulx3s (a stand-in agent grouping) | 0 -> 5 of 6 | 47-68 -> 30-36 | none buildable -> 6193, 10028 mm |
+| glasgow_revC (schematic sheets) | 6 -> 5 of 6 | 100-107 -> 9-15 | 4387, 6247 mm -> 3782, 5867 mm |
+| tigard | 6 of 6 | 12-15 -> 12-14 | 1075, 2151 mm -> 908, 2041 mm |
+| ch32v003_usb | 6 of 6 | 0-3 | 61, 328 mm -> 57, 323 mm |
+| ch32v006_dev | 6 of 6 | 2-7 -> 1-7 | 103, 584 mm -> 105, 587 mm (errors 2 -> 1) |
+
+esp_prog, ft2232h_jtag and soldercad_1 place identically. On ulx3s the
+locked ESP32 module was the other blocker: its fab body reaches 4 mm past
+its pads, and the seed had spaced it by its pad box. glasgow_revC's errors
+were its back-face parts in front-face blocks. Its one unbuildable candidate
+(one pass, seed 0) leaves the 6.3 mm electrolytic C87 unseated: its region
+is now sized for the front-face parts alone, and the decap stage seats C87
+after the region has filled.
+
 Each region is written to the intent as a `blocks[]` entry: `zone`, `side`,
-`tolerance_mm` (0.5) and a `context.grouped_placement` record. Neighbouring
+`tolerance_mm` (0.5) and a `context.grouped_placement` record (a second
+region's names the group it belongs to, `second_region_of`). Neighbouring
 zones are 0.6 mm apart (`--gutter`). `check_floorplan --plan-only` grades the
 plan before any part moves, and `--png` draws it.
 
@@ -110,8 +153,19 @@ order. Each step runs on a **step board** built from the board so far:
   nor connectivity partners, and no pile pulls a seat off the board;
 - the groups already placed are **locked**, on the step board only.
 
-The intent is trimmed to the parts the step board has, and each step names
-its own group as the decap owners (`place_seed --decap-owners`):
+The intent is trimmed to the parts the step board has, less any LED row an
+earlier step formed. **The later groups' zones are reserved**: the step's
+intent carries a keep-out over each one, on its face, binding only the
+step's own parts. Without it, a part with no pose in its own zone took the
+nearest free space, often a later group's zone, and that group then found
+its zone full: on ch32v006_dev, Q1 took the strip the ui step's LED row
+needed, and on glasgow_revC the IO_Banks step found no room for four of its
+parts, so the polish pulled its row apart. A step whose reservation leaves
+one of its parts unseated runs again without it, and the run that leaves
+fewer is kept.
+
+Each step names its own group as the decap owners
+(`place_seed --decap-owners`):
 - **The decap pin stages claim a cap only at the group's own chips.**
   Otherwise a cap on a shared rail is claimed at whichever chip of an earlier
   group carries it. Measured on esp_prog: the step for the LDO's group had
@@ -223,11 +277,13 @@ belongs in a row. `plan_regions.py` writes each bank of them as one intent
   order and balanced, two or more per row (`group_rows.split_bank`); a bank
   no split fits is left out, with a note. Without this, such a row was
   declared, never seated -- every member seated alone after the search ran
-  out -- and graded as an `array_formation` error. On glasgow_revC the
-  connectors J3 and J4 cut into the IO_Banks region and leave no strip the
-  16.5 mm row needs, so it is two rows of three and two LEDs, and all three
-  of the board's rows now form; tigard's 2.45 mm UI strip holds no row of
-  its bank at all. The free space is the seeder's own (a locked part's
+  out -- and graded as an `array_formation` error. While glasgow_revC's
+  back-face parts shared their sheet's region (before "Both faces" above),
+  the connectors J3 and J4 cut the IO_Banks region and left no strip the
+  16.5 mm row needs, so the bank was laid as two rows of three and two LEDs
+  (the routed table below measured that); its front-face region now holds
+  the row whole. tigard's 2.45 mm UI strip holds no row of its bank at all.
+  The free space is the seeder's own (a locked part's
   courtyard on its face, its drilled pads' boxes on the other, no
   container), on a 0.05 mm grid: a row can fill its zone to within 0.2 mm.
 - **the seeder searches the whole zone** for a zoned row: only anchors inside
@@ -272,7 +328,10 @@ in its own zone and was left in the ui zone, so the bank found no strip. On
 glasgow_revC, the IO_Banks row seated, but its zone held no legal pose for
 four of the group's other parts; five row members were still illegal after
 the polish's first pass, so the polish moved them one by one. Those two
-candidates are in the means above.
+candidates are in the means above. Both are what the reserved zones of the
+group-by-group flow ("Placing into the regions") now prevent: from the same
+regions, ch32v006_dev's row forms, as do the rows of all three glasgow_revC
+group-by-group seeds.
 
 ## Mounting holes
 
@@ -379,7 +438,9 @@ Each stage, and what it now grows with:
   anneals for a fixed 20,000 evaluations above that, so it is bounded:
   ch32v006_dev's six groups are its slowest (283,680 floorplans in 4.4 s;
   each split is laid out once per box, and each group's own cost terms once
-  per cell rectangle).
+  per cell rectangle). A board whose groups have parts on both faces plans
+  each face up to three times ("Both faces"): tigard 1.4 -> 2.3 s, and
+  ulx3s 2.3 -> 15.4 s, whose front face holds six regions.
 - **Group by group** runs `place_seed` once per group on the whole board so
   far, so it pays a whole-board setup per group (parse, the plan check, the
   seeder's and the polish's states, the grade): about 2.4 s at 264 parts,

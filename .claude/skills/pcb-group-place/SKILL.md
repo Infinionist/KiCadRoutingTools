@@ -118,6 +118,11 @@ Write `wk/<run>/groups.json` -- the format is in `py_placer/placement/grouping.p
   channels of one group on one rail out as one row, LED and resistor
   alternating. Keep each LED and its resistor in the same group: a resistor
   in another group keeps its LED out of the bank. `--no-arrays` writes none.
+- **Faces:** sort parts by what they do, not by face. A group with parts on
+  both faces gets a region on each (`<group>@B` beside its main one, the
+  decaps under their chip). Give a group a `side` only to move all its parts
+  to that face, then mirror them before seeding:
+  `python3 -X utf8 py_placer/place_intent_sides.py <in> <out> --intent <regions_intent.json>`.
 - **Hints:** `edge` (`N`/`S`/`E`/`W`) for a group that belongs on a board side
   (a group holding an edge connector needs none: the connector anchors it);
   `near` / `apart` name other groups. Use `apart` for a switching converter

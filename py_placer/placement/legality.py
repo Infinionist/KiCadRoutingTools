@@ -4946,7 +4946,7 @@ class LegalityContext:
         # the common case -- leaves every pair exactly as it was.
         self.graphics: Dict[str, PartGraphics] = dict(graphics or {})
         self._graphic_floors: Dict[str, PadFloor] = {}
-        self._graphic_licence: Dict[str, bool] = {}
+        self._seed_licence: Dict[str, bool] = {}
         # #1031: board rule-area keep-outs (RuleAreaKeepouts), or None. The
         # search may not deepen any part's pads into a band beyond its SEED
         # reach -- see keepout_ok.
@@ -5023,13 +5023,17 @@ class LegalityContext:
                              sf.hole, sf.stack or s1 or s2,
                              gpad=p1 + p2, gstack=bool(s1 or s2))
 
-    def _graphic_licensed(self, ref: str) -> bool:
-        """May `ref`'s SEED pose license graphic-copper contact (#1266)? Only
-        when the seed is ON the board. A pile is no licence (run-19's rule,
-        `_degenerate_refs`), and a pile need not be one point:
-        make_unplaced's row at 0.82 mm pitch put esp_prog U2's 4.7 mm tab over
-        twelve neighbours, and the seeder then seated Y1 on it, licensed."""
-        v = self._graphic_licence.get(ref)
+    def _seed_licensed(self, ref: str) -> bool:
+        """May `ref`'s SEED pose license what it shows -- a pad pair's
+        shortfall or stack (`seed_baseline`), graphic-copper contact (#1266),
+        a keep-out band depth (`keepout_ok`)? Only when the seed is ON the
+        board. A pile is no licence (run-19's rule, `_degenerate_refs`), and a
+        pile need not be one point: make_unplaced's row at 0.82 mm pitch put
+        esp_prog U2's 4.7 mm tab over twelve neighbours, and the seeder then
+        seated Y1 on it, licensed; and on ulx3s's pile R30 and U10 staged
+        with their pads stacked, so the seeder seated them stacked again
+        (same net, 0.25 mm short), which check_assembly blocks."""
+        v = self._seed_licence.get(ref)
         if v is None:
             if ref in self._degenerate_refs:
                 v = False
@@ -5038,7 +5042,7 @@ class LegalityContext:
             else:
                 sx, sy = self.seed_of(ref)[:2]
                 v = _on_board(self.gate, sx, sy)
-            self._graphic_licence[ref] = v
+            self._seed_licence[ref] = v
         return v
 
     def _graphic_floor(self, layer: str) -> PadFloor:
@@ -5360,7 +5364,7 @@ class LegalityContext:
         # The single choke point every consumer routes through (pads_ok and
         # swap_pads_ok): a part from a degenerate seed bucket gets the ZERO
         # baseline, which is exactly the semantics a pile deserves.
-        if a in self._degenerate_refs or b in self._degenerate_refs:
+        if not (self._seed_licensed(a) and self._seed_licensed(b)):
             return ZERO_SHORTFALL
         key = (a, b) if a <= b else (b, a)
         base = self._baselines.get(key)
@@ -5368,12 +5372,6 @@ class LegalityContext:
             base = self.pair_shortfall(key[0], key[1],
                                        pose_a=self.seed_of(key[0]),
                                        pose_b=self.seed_of(key[1]))
-            # #1266: graphic-copper contact is licensed by a seed ON the
-            # board only (`_graphic_licensed`).
-            if (base.gpad > EPS or base.gstack) and not (
-                    self._graphic_licensed(key[0])
-                    and self._graphic_licensed(key[1])):
-                base = base._replace(gpad=0.0, gstack=False)
             self._baselines[key] = base
         return base
 
@@ -5447,8 +5445,8 @@ class LegalityContext:
         base = self._keepout_seed.get(ref)
         if base is None:
             # a pile seed is not a license (run-19), same as seed_baseline
-            base = (0.0 if ref in self._degenerate_refs
-                    else self.keepout_amount(ref, *self.seed_of(ref)))
+            base = (self.keepout_amount(ref, *self.seed_of(ref))
+                    if self._seed_licensed(ref) else 0.0)
             self._keepout_seed[ref] = base
         return cur <= base + EPS
 

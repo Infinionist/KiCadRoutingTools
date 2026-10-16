@@ -72,6 +72,13 @@ CLUSTER_DENSITY = 0.6
 W_ASPECT = 2.0       # per unit of aspect ratio beyond ASPECT_FREE
 ASPECT_FREE = 4.0
 INFEASIBLE = 1e6
+#: A group's parts on its other face are planned as a second region there,
+#: pulled toward the group's main region by this many links per part.
+MINOR_PULL = 3.0
+#: Plan passes when a group has a second region: the main regions alone,
+#: then both faces with the second regions pulled onto them, repeated while
+#: a main region moves.
+FACE_PASSES = 3
 
 
 class Group:
@@ -86,6 +93,25 @@ class Group:
         self.need_area = need_area  # sum of member occupancy areas (hard floor)
         self.dims = dims            # (short, long) of its largest member
         self.edge, self.near, self.apart = edge, near, apart
+
+
+def _face_parts(g, mov, area, side_of):
+    """`(main face, {face: refs})` for one group's movable parts.
+
+    A group that DECLARES its `side` is one region on that face, every member
+    in it: the declaration says the parts belong there, and
+    `place_intent_sides.py` mirrors them onto it before the seed. Otherwise
+    the main face is the one its parts' courtyards cover more of -- by area,
+    not by count: ulx3s's core is two BGA-size chips on F and 43 decaps on B,
+    and counted, its region went to B with no room for the chips on F -- and
+    the parts on the other face are a second region of their own."""
+    declared = g.get('side')
+    if declared in ('F', 'B'):
+        return declared, {declared: list(mov)}
+    faces = {'F': [r for r in mov if side_of(r) == 'F'],
+             'B': [r for r in mov if side_of(r) == 'B']}
+    main = max(('F', 'B'), key=lambda s: (sum(area[r] for r in faces[s]), s == 'F'))
+    return main, {s: refs for s, refs in faces.items() if refs}
 
 
 def _outline(pcb, pcb_file):
@@ -671,31 +697,44 @@ def plan(pcb, pcb_file: str, doc: Dict, *, grid: float = 0.25,
     occ, blocking, placed = _occupancies(pcb, pcb_file, view, placed, cache)
     warnings: List[str] = []
 
-    # per-group inputs
+    # per-group inputs. A group's region lies on ONE face. Its parts on the
+    # other face (a BGA's decaps under it, a header's resistors behind it)
+    # need room there too, which that face's floorplan would otherwise give
+    # to its own groups: they are planned as a second region on that face,
+    # `<group>@<face>`, pulled onto the main one (see `_face_parts`).
     groups: Dict[str, Group] = {}
+    pulls: Dict[str, str] = {}          # second region -> its group's main
+    owner: Dict[str, str] = {}          # region -> its group
     for g in doc['groups']:
         refs = [r for r in g['refs'] if r in view.parts]
         mov = [r for r in refs if r not in view.locked and r not in placed]
         fix = [r for r in refs if r in view.locked]
         if not mov:
             continue
-        areas, dims = [], []
-        for r in mov:
-            rect, _ = _occupancy(pcb, pcb_file, r, cache)
-            w, h = rect[2] - rect[0], rect[3] - rect[1]
-            areas.append(w * h)
-            dims.append((min(w, h), max(w, h)))
-        side = g.get('side') or max(('F', 'B'), key=lambda s: sum(
-            1 for r in mov if footprint_side(pcb.footprints[r]) == s))
-        need = sum(areas)
-        members = set(refs)
-        internal = sum(n for r in mov for o, n in view.signal_partners(r).items()
-                       if o in members) // 2
-        groups[g['name']] = Group(
-            g['name'], side, mov, fix, need / max(0.05, util), need,
-            max(dims, key=lambda d: (d[0] * d[1], d)), g.get('edge'),
-            list(g.get('near') or ()), list(g.get('apart') or ()),
-            internal_links=max(internal, len(mov) - 1))
+        rects = {r: _occupancy(pcb, pcb_file, r, cache)[0] for r in mov}
+        area = {r: (q[2] - q[0]) * (q[3] - q[1]) for r, q in rects.items()}
+        main, parts = _face_parts(g, mov, area,
+                                  lambda r: footprint_side(pcb.footprints[r]))
+        for side, sub in parts.items():
+            name = g['name'] if side == main else f"{g['name']}@{side}"
+            members = set(sub) | (set(fix) if side == main else set())
+            internal = sum(n for r in sub for o, n in view.signal_partners(r).items()
+                           if o in members) // 2
+            dims = [(min(q[2] - q[0], q[3] - q[1]), max(q[2] - q[0], q[3] - q[1]))
+                    for q in (rects[r] for r in sub)]
+            need = sum(area[r] for r in sub)
+            main_side = side == main
+            groups[name] = Group(
+                name, side, sub, fix if main_side else [],
+                need / max(0.05, util), need,
+                max(dims, key=lambda d: (d[0] * d[1], d)),
+                g.get('edge') if main_side else None,
+                list(g.get('near') or ()) if main_side else [],
+                list(g.get('apart') or ()) if main_side else [],
+                internal_links=max(internal, len(sub) - 1))
+            owner[name] = g['name']
+            if not main_side:
+                pulls[name] = g['name']
 
     links = link_matrix(doc, view)
     # pad-level terminals: a group's signal links to FIXED parts
@@ -720,33 +759,35 @@ def plan(pcb, pcb_file: str, doc: Dict, *, grid: float = 0.25,
         terminals[n] = [(v[0], v[1], v[2] * (OWN_FIXED_WEIGHT if f in g.fixed else 1.0))
                         for (f, _nid), v in sorted(rows.items())]
 
-    zones: Dict[str, Dict] = {}
-    faces: Dict[str, Dict] = {}
-    for side in ('F', 'B'):
-        names = [n for n, g in groups.items() if g.side == side]
-        if not names:
-            continue
-        fg = _free_grid(poly, edge_clearance,
-                        _face_obstacles(pcb, occ, blocking, side), grid)
-        bounds = (fg.x0, fg.y0, fg.x0 + fg.nx * grid, fg.y0 + fg.ny * grid)
+    grids: Dict[str, Tuple] = {}
+
+    def _face(side, names, terms):
+        """`(faces row, {name: zone row}, warnings)` for one face's plan."""
+        if side not in grids:
+            fg = _free_grid(poly, edge_clearance,
+                            _face_obstacles(pcb, occ, blocking, side), grid)
+            grids[side] = (fg, (fg.x0, fg.y0, fg.x0 + fg.nx * grid, fg.y0 + fg.ny * grid))
+        fg, bounds = grids[side]
         fixed_rects = {r: (occ[r][0] if footprint_side(pcb.footprints[r]) == side else occ[r][1])
                        for r in fixed}
         side_links = {k: v for k, v in links.items() if k[0] in names and k[1] in names}
         pl = Planner({n: groups[n] for n in names}, fg, bounds, side_links,
-                     terminals, fixed_rects, gutter)
+                     terms, fixed_rects, gutter)
         free_total = fg.cells(0, 0, fg.ny, fg.nx) * grid * grid
         need_total = sum(groups[n].need_area for n in names)
+        warns = []
         if need_total > free_total:
-            warnings.append(f"face {side}: the groups' parts need {need_total:.0f} mm2 "
-                            f"and only {free_total:.0f} mm2 is free -- no plan can hold them")
+            warns.append(f"face {side}: the groups' parts need {need_total:.0f} mm2 "
+                         f"and only {free_total:.0f} mm2 is free -- no plan can hold them")
         tree, cost, info, n_eval = pl.search(names, seed=seed, iters=iters)
-        faces[side] = {'tree': tree, 'cost': round(cost, 3), 'evaluated': n_eval,
-                       'free_mm2': round(free_total, 1), 'need_mm2': round(need_total, 1),
-                       'utilisation': round(need_total / max(1e-9, free_total), 3),
-                       'terms': {k: round(v, 2) for k, v in info['terms'].items()}}
+        face = {'tree': tree, 'cost': round(cost, 3), 'evaluated': n_eval,
+                'free_mm2': round(free_total, 1), 'need_mm2': round(need_total, 1),
+                'utilisation': round(need_total / max(1e-9, free_total), 3),
+                'terms': {k: round(v, 2) for k, v in info['terms'].items()}}
         if info['terms']['infeasible'] >= INFEASIBLE:
-            warnings.append(f"face {side}: the best plan is still infeasible (a region "
-                            f"cannot hold its largest part, or its parts' area)")
+            warns.append(f"face {side}: the best plan is still infeasible (a region "
+                         f"cannot hold its largest part, or its parts' area)")
+        zs = {}
         for n in names:
             r = info['rect'][n]
             # gutters: pull each INTERNAL side in by half a gutter; a side on
@@ -757,11 +798,43 @@ def plan(pcb, pcb_file: str, doc: Dict, *, grid: float = 0.25,
             y0 += h if y0 > bounds[1] + 1e-6 else 0.0
             x1 -= h if x1 < bounds[2] - 1e-6 else 0.0
             y1 -= h if y1 < bounds[3] - 1e-6 else 0.0
-            zones[n] = {'zone': [round(v, 3) for v in (x0, y0, x1, y1)],
-                        'side': side, 'free_mm2': round(info['free_mm2'][n], 1),
-                        'need_mm2': round(groups[n].need_area, 1),
-                        'centroid': [round(v, 3) for v in info['centroid'][n]],
-                        'refs': groups[n].movable, 'fixed': groups[n].fixed}
+            zs[n] = {'zone': [round(v, 3) for v in (x0, y0, x1, y1)],
+                     'side': side, 'free_mm2': round(info['free_mm2'][n], 1),
+                     'need_mm2': round(groups[n].need_area, 1),
+                     'centroid': [round(v, 3) for v in info['centroid'][n]],
+                     'refs': groups[n].movable, 'fixed': groups[n].fixed,
+                     'group': owner[n]}
+        return face, zs, warns
+
+    def _plan(names_of):
+        faces, zones, warns = {}, {}, []
+        for side in ('F', 'B'):
+            names = names_of(side)
+            if names:
+                faces[side], zs, w = _face(side, names, terms_now)
+                zones.update(zs)
+                warns += w
+        return faces, zones, warns
+
+    # Pass 1: the main regions alone. Then, while a group has a second
+    # region, both faces again with each second region pulled to where its
+    # main one was last planned -- MINOR_PULL per part, at its centroid --
+    # until no main region moves by a millimetre (FACE_PASSES at most).
+    terms_now = terminals
+    faces, zones, warnings_ = _plan(
+        lambda s: [n for n, g in groups.items() if g.side == s and n not in pulls])
+    for _ in range(FACE_PASSES - 1 if pulls else 0):
+        terms_now = dict(terminals)
+        for n, m in pulls.items():
+            cx, cy = zones[m]['centroid']
+            terms_now[n] = list(terminals[n]) + [(cx, cy, MINOR_PULL * len(groups[n].movable))]
+        before = {m: zones[m]['centroid'] for m in set(pulls.values())}
+        faces, zones, warnings_ = _plan(
+            lambda s: [n for n, g in groups.items() if g.side == s])
+        if all(abs(zones[m]['centroid'][0] - c[0]) + abs(zones[m]['centroid'][1] - c[1])
+               < 1.0 for m, c in before.items()):
+            break
+    warnings += warnings_
     return {'zones': zones, 'faces': faces, 'warnings': warnings,
             'params': {'grid': grid, 'util': util, 'gutter': gutter,
                        'edge_clearance': edge_clearance, 'seed': seed}}

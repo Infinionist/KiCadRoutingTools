@@ -793,7 +793,13 @@ python py_placer/place_groups.py fixed.kicad_pcb by_group.kicad_pcb \
   - slicing floorplans whose cuts split FREE area in proportion to demand,
     every one evaluated up to 6 groups and annealed beyond;
   - a cost of wiring, cluster spread, anchoring and the hints, with hard
-    checks that a region holds its largest part and its parts' area.
+    checks that a region holds its largest part and its parts' area;
+  - a region per face a group has parts on (`_face_parts`): the main one
+    on the face its parts cover more of (or the group's declared `side`,
+    then one region holding every part), and its other-face parts as a
+    second region, `<group>@B`, pulled to the main one (`MINOR_PULL` links
+    per part) over up to `FACE_PASSES` plans, so every block's parts are on
+    its block's face.
 
   It writes the zones as intent `blocks[]` and exempts from the decap rule the
   caps the groups file places away from the IC the rule would claim them for.
@@ -817,7 +823,10 @@ python py_placer/place_groups.py fixed.kicad_pcb by_group.kicad_pcb \
   group on a step board:
   - the groups not yet placed are deleted, and the placed ones are locked on
     the step board only;
-  - the intent is trimmed to the parts present;
+  - the intent is trimmed to the parts present, less a row an earlier step
+    formed, and each later group's zone is a keep-out on its face for this
+    step's parts (`later_zone_keepouts`); a step that leaves one of its parts
+    unseated so runs again without, and the run leaving fewer is kept;
   - a part with a fixed pose is seated in the FIRST step, whatever its group
     (and even pad-less, as an NPTH hole is), so no group takes its pose;
   - a cap is claimed only at its own group's IC, and one the pin stage
@@ -1010,8 +1019,14 @@ which is not the directional, at-least-three-board result CLAUDE.md asks of
 a default. The measurement tools stay with it. `tests/1127_stack_ab_prereg.json`
 pre-registered the look, which also asked whether box mode's seed baseline
 LICENSES a real stack (a box-only near-touch at the seed recorded as a
-stack); no committed input carries such a licence, and a pile has none by
-`_degenerate_refs`, so no licence fix was built.
+stack); no committed input carries such a licence, and a pile has none:
+a seed licenses nothing unless it is ON the board and out of a
+`_degenerate_refs` bucket (`_seed_licensed`, for the pad pairs, the
+graphic copper and the keep-out bands alike). A pile used to license what
+its staging rows overlapped -- run-19 caught only parts stacked at one
+point -- and on ulx3s's pile R30 and U10, staged with their pads stacked,
+were seeded stacked again (same net, 0.25 mm short), which check_assembly
+blocks.
 `tests/measure_1127_licence_census.py` counts, on an OFF run inside the
 engine call, every `pads_ok` decision the switch (both conjuncts) or a
 licence fix would take differently; it does not observe
@@ -1915,6 +1930,17 @@ silk may not answer that question. Measured: the markings reach
 0.00466 of their pad box (all 204 on the fa10 designer boards), the least
 real bodies 0.0537 (KiCad's stock library) and 0.3114 on the tracked corpus
 (orangecrab J4), which loses none. A pad-less part keeps its fab body.
+
+**A LOCKED part without a courtyard is an obstacle by its fab body.** The
+seed and the polish space a courtyard-less part by its pad box -- the body
+as their currency for every part (#1182) was A/B'd and rejected -- while
+check_assembly grades each moved neighbour against its body. For a part
+nothing moves, the body is the board's: `quench.locked_body_locals` gives
+each locked part whose occupancy comes from a `.Fab` body (no silk outline,
+no marking, no container) that occupancy as its seat rect. On ulx3s the
+ESP32 module U9, locked, draws a fab body 4 mm past its pads at the antenna
+end, and six parts seated there had made every grouped candidate NOT
+BUILDABLE.
 
 **A silk-sourced body never GATES**, structurally rather than by a census
 coming out clean. On the shipped esp_prog, U2's OLIMEX SOT89 draws four corner

@@ -2576,14 +2576,14 @@
   "mark": "improve",
   "off": {
    "body_advisory": 0,
-   "body_blocking": 1,
+   "body_blocking": 0,
    "courtyard_blocking": 0,
    "courtyard_blocking_area": 0,
-   "crossings": 101,
+   "crossings": 109,
    "edge_facing_pads": 0,
    "health_block_displacement_max_mm": null,
    "health_bus_foreign_crossings": null,
-   "hpwl": 1015.65,
+   "hpwl": 1165.16,
    "intent_errors": 3,
    "intent_errors_by_rule": {
     "edge_connector": 3
@@ -2597,21 +2597,21 @@
   },
   "on": {
    "body_advisory": 0,
-   "body_blocking": 1,
+   "body_blocking": 0,
    "courtyard_blocking": 0,
    "courtyard_blocking_area": 0,
-   "crossings": 77,
+   "crossings": 66,
    "edge_facing_pads": 0,
    "health_block_displacement_max_mm": null,
    "health_bus_foreign_crossings": null,
-   "hpwl": 991.3,
+   "hpwl": 981.68,
    "intent_errors": 2,
    "intent_errors_by_rule": {
     "edge_connector": 2
    },
    "intent_errors_enforced": 0,
    "intent_errors_other": 2,
-   "inversions": 9,
+   "inversions": 12,
    "oob_keepout_copper_amount": 0.0,
    "oob_keepout_copper_count": 0,
    "unseated": 0

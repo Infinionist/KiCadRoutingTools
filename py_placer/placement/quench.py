@@ -1556,6 +1556,31 @@ class _NearWatched:
             dirty.add(self.ref)
 
 
+def locked_body_locals(pcb_data, pcb_file
+                       ) -> Dict[str, Tuple[float, float, float, float]]:
+    """`{ref: occupancy_local}` for each part whose drawn body stands in for a
+    missing courtyard: a FAB body (`placement.body`), united with the pads,
+    on a part that is no container (`legality._container_kind`).
+
+    `QuenchState` gives it to a LOCKED part without a courtyard. Such a part
+    is otherwise spaced on its pad box, while check_assembly grades every
+    moved neighbour against its body: on ulx3s the ESP32 module U9 (locked,
+    no courtyard) has a fab body 4 mm past its pads at the antenna end, and
+    six parts seated there made every grouped candidate NOT BUILDABLE. A
+    MOVABLE part keeps its pad box -- the body model as a seat currency for
+    every part (#1182) was A/B'd and rejected -- and a silk outline or a
+    pin-1 marking is no body (#896, #1201), nor is a container's outline,
+    which other parts sit inside by design."""
+    from placement import body as _body
+    out = {}
+    for ref, g in _body.board_bodies(pcb_data, pcb_file).items():
+        if (g.source == _body.SOURCE_FAB and g.occupancy_local is not None
+                and not legality._container_kind(pcb_data, ref, g.occupancy_local,
+                                                 g.source, False)):
+            out[ref] = tuple(g.occupancy_local)
+    return out
+
+
 class _Part(_NearWatched):
     __slots__ = ('ref', 'pads_local', 'pin_count', 'bounds_by_rot',
                  'seed_x', 'seed_y', 'x', 'y', 'rot', 'locked',
@@ -1992,6 +2017,7 @@ class QuenchState:
             locked_refs |= extra_locked_refs
         ignore = ignore_net_ids or set()
 
+        locked_bodies: Optional[Dict[str, Tuple[float, float, float, float]]] = None
         self.parts: Dict[str, _Part] = {}
         #: #1152: {ref: LOCK_*} for every part entered locked -- see LOCK_FILE.
         self.lock_reasons: Dict[str, str] = {}
@@ -2041,11 +2067,19 @@ class QuenchState:
                       or (move_refs is not None and ref not in move_refs))
             if owns_outline:
                 outline_locked.append(ref)
+            body_local = body_locals.get(ref)
             if ref not in courtyards:
                 no_courtyard.append(ref)
+                # A LOCKED part without a courtyard is an obstacle by the
+                # body check_assembly grades it on (`locked_body_locals`),
+                # not by its pad box: nothing moves it, so its body is the
+                # board's, and a part seated on it is a blocking pair.
+                if locked and body_local is None:
+                    if locked_bodies is None:
+                        locked_bodies = locked_body_locals(pcb_data, pcb_file)
+                    body_local = locked_bodies.get(ref)
             self.parts[ref] = _Part(ref, fp, courtyards, locked,
-                                    halo_base, halo_coef,
-                                    body_locals.get(ref))
+                                    halo_base, halo_coef, body_local)
             if locked:
                 self.lock_reasons[ref] = (
                     LOCK_FILE if ref in file_locked else

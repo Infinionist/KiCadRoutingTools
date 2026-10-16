@@ -16,7 +16,11 @@ the hints, and refuses a region that cannot hold its parts
 
 It writes an INTENT: the input intent (or an empty one) with one `blocks[]`
 entry per group that has movable parts -- `zone`, `side`, `tolerance_mm` and a
-`context.grouped_placement` record of what the zone was chosen on. It also
+`context.grouped_placement` record of what the zone was chosen on -- and,
+for a group with parts on both faces that declares no `side`, a second
+block `<group>@B` (or `@F`) of its parts on its other face, planned beside
+its main region (`regions._face_parts`), so every block's parts are on its
+block's face. It also
 adds to `decaps.exempt` every cap the groups file places away from the IC
 the decap rule would claim it for (a crystal's load cap, an RC filter; see
 `check_groups.py`), so the seed places it with its group.
@@ -89,24 +93,30 @@ def build_intent(base, doc, plan, conflicts, tolerance, claims=(), exempt=(),
     planned = set(plan['zones'])
     unzoned = set(followers) | {f['ref'] for f in fixed}
     blocks = [b for b in (out.get('blocks') or []) if b.get('name') not in planned]
-    roles = {g['name']: g for g in doc['groups']}
-    for name in [g['name'] for g in doc['groups'] if g['name'] in planned]:
-        z = plan['zones'][name]
-        g = roles[name]
-        refs = [r for r in z['refs'] if r not in unzoned]
-        if not refs:
-            continue
-        blocks.append({
-            'name': name,
-            'refs': refs,
-            'zone': z['zone'],
-            'side': z['side'],
-            'tolerance_mm': tolerance,
-            'context': {'grouped_placement': {
-                'role': g.get('role'), 'why': g.get('why'),
-                'fixed_members': z['fixed'], 'free_mm2': z['free_mm2'],
-                'need_mm2': z['need_mm2'], 'planned_by': 'plan_regions.py'}},
-        })
+    # A group's main region, then its second region on the other face
+    # (`<group>@<face>`, regions.plan), each a block of the parts on its face.
+    for g in doc['groups']:
+        names = sorted((n for n, z in plan['zones'].items()
+                        if z.get('group', n) == g['name']),
+                       key=lambda n: (n != g['name'], n))
+        for name in names:
+            z = plan['zones'][name]
+            refs = [r for r in z['refs'] if r not in unzoned]
+            if not refs:
+                continue
+            ctx = {'role': g.get('role'), 'why': g.get('why'),
+                   'fixed_members': z['fixed'], 'free_mm2': z['free_mm2'],
+                   'need_mm2': z['need_mm2'], 'planned_by': 'plan_regions.py'}
+            if name != g['name']:
+                ctx['second_region_of'] = g['name']
+            blocks.append({
+                'name': name,
+                'refs': refs,
+                'zone': z['zone'],
+                'side': z['side'],
+                'tolerance_mm': tolerance,
+                'context': {'grouped_placement': ctx},
+            })
     out['blocks'] = blocks
     if claims:
         out['proximity'] = list(out.get('proximity') or []) + [dict(c) for c in claims]
