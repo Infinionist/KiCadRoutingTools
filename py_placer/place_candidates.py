@@ -45,6 +45,21 @@ from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FLOWS = ('one', 'loop')
+#: `--seeds auto`: three seeds of each flow up to this many movable parts,
+#: one above it. A candidate's time grows faster than the part count, and
+#: on four performance cores more candidates than cores mostly wait: a
+#: 272-part board (glasgow_revC) takes 96 s for one seed of each flow and
+#: 172 s for two, against 30 s for three seeds on a 92-part one (tigard).
+AUTO_SEEDS_MAX_PARTS = 150
+
+
+def auto_seeds(board):
+    """`--seeds auto` for `board`: (seeds, movable part count)."""
+    from kicad_parser import parse_kicad_pcb
+    from placement.grouping import BoardView
+    view = BoardView(parse_kicad_pcb(board))
+    movable = len(set(view.parts) - set(view.locked))
+    return ('0,1,2' if movable <= AUTO_SEEDS_MAX_PARTS else '0'), movable
 
 
 def _summary(stdout):
@@ -128,8 +143,10 @@ def main(argv=None):
     ap.add_argument('--groups', required=True, help='the groups JSON file')
     ap.add_argument('--intent', required=True,
                     help="the intent with one zone per group (plan_regions.py's output)")
-    ap.add_argument('--seeds', default='0,1,2',
-                    help='comma-separated seeds, each placed by every flow (default: %(default)s)')
+    ap.add_argument('--seeds', default='auto',
+                    help="comma-separated seeds, each placed by every flow; 'auto' (the "
+                         "default) is 0,1,2 up to %d movable parts and 0 above"
+                         % AUTO_SEEDS_MAX_PARTS)
     ap.add_argument('--flows', default='one,loop',
                     help="comma-separated flows: 'one' (place_seed --intent, one pass) and "
                          "'loop' (place_groups.py, group by group) (default: %(default)s)")
@@ -138,6 +155,9 @@ def main(argv=None):
     ap.add_argument('--workdir', help='where the candidates go (default: <output>.candidates/)')
     ap.add_argument('--json', dest='json_out', help='write the ranking here')
     a = ap.parse_args(argv)
+    if a.seeds == 'auto' and os.path.isfile(a.board):
+        a.seeds, movable = auto_seeds(a.board)
+        print(f"  seeds auto: {a.seeds} ({movable} movable part(s))")
     try:
         seeds = [int(s) for s in a.seeds.split(',') if s.strip() != '']
     except ValueError:

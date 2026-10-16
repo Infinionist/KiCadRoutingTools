@@ -185,6 +185,12 @@
  "seeder.py::_overlap_at": {
   "rect": 2
  },
+ "seeder.py::_overlap_rejector": {
+  "rect": 1
+ },
+ "seeder.py::_overlap_rejector.refuse": {
+  "rects": 1
+ },
  "seeder.py::_packed_starts": {
   "grade_rect": 1
  },
@@ -211,6 +217,9 @@
  "seeder.py::_seated_violations": {
   "rect": 1,
   "rects": 1
+ },
+ "seeder.py::_try_place._first_fit": {
+  "grade_rect": 1
  },
  "seeder.py::_window_step": {
   "grade_rect": 1

@@ -592,16 +592,39 @@ def _count_crossings_np(a: np.ndarray, b: np.ndarray,
     net_w is a net-id-indexed weight lookup (QuenchState._net_w). With net_w
     None the two are equal and `weighted` is exactly float(count), so
     unweighted callers get bit-identical costs.
+
+    Only a pair whose bounding boxes meet can cross: a crossing, or a
+    touching endpoint, puts a point of both segments in both boxes. So the
+    orientation tests run on those pairs alone, taken in the row-major order
+    the full matrix would list them in, so the weighted sum adds the same
+    values in the same order. On a big board most pairs are far apart
+    (glasgow_revC: 97 of a seed's 243 s were this function over the full
+    matrix). The box margin is far above float error. The one pair this
+    counts differently is two COLLINEAR segments that do not touch: their
+    orientation products are rounding noise, which the full matrix could
+    read as a crossing, and their boxes do not meet.
     """
     if len(a) == 0 or len(b) == 0:
         return 0, 0.0
+    m = 1e-6
+    ax0 = np.minimum(a[:, 0], a[:, 2])[:, None] - m
+    ax1 = np.maximum(a[:, 0], a[:, 2])[:, None] + m
+    ay0 = np.minimum(a[:, 1], a[:, 3])[:, None] - m
+    ay1 = np.maximum(a[:, 1], a[:, 3])[:, None] + m
+    bx0 = np.minimum(b[:, 0], b[:, 2])[None, :]
+    bx1 = np.maximum(b[:, 0], b[:, 2])[None, :]
+    by0 = np.minimum(b[:, 1], b[:, 3])[None, :]
+    by1 = np.maximum(b[:, 1], b[:, 3])[None, :]
+    ii, jj = np.nonzero((ax1 >= bx0) & (ax0 <= bx1) & (ay1 >= by0) & (ay0 <= by1))
+    if len(ii) == 0:
+        return 0, 0.0
+    A = a[ii]
+    B = b[jj]
     eps = 0.001
-    a1x = a[:, 0][:, None]; a1y = a[:, 1][:, None]
-    a2x = a[:, 2][:, None]; a2y = a[:, 3][:, None]
-    b1x = b[:, 0][None, :]; b1y = b[:, 1][None, :]
-    b2x = b[:, 2][None, :]; b2y = b[:, 3][None, :]
+    a1x = A[:, 0]; a1y = A[:, 1]; a2x = A[:, 2]; a2y = A[:, 3]
+    b1x = B[:, 0]; b1y = B[:, 1]; b2x = B[:, 2]; b2y = B[:, 3]
 
-    same_net = a[:, 4][:, None] == b[:, 4][None, :]
+    same_net = A[:, 4] == B[:, 4]
     shared = (
         ((np.abs(a1x - b1x) < eps) & (np.abs(a1y - b1y) < eps)) |
         ((np.abs(a1x - b2x) < eps) & (np.abs(a1y - b2y) < eps)) |
@@ -624,7 +647,7 @@ def _count_crossings_np(a: np.ndarray, b: np.ndarray,
     # is a key of QuenchState.net_airwires, which net_w is sized to cover.
     wa = net_w[a[:, 4].astype(np.intp)]
     wb = net_w[b[:, 4].astype(np.intp)]
-    return count, float(np.sum(np.maximum(wa[:, None], wb[None, :])[hits]))
+    return count, float(np.sum(np.maximum(wa[ii], wb[jj])[hits]))
 
 
 class _CorridorBox(NamedTuple):

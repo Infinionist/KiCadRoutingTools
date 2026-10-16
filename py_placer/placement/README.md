@@ -653,7 +653,8 @@ python py_placer/place_groups.py fixed.kicad_pcb by_group.kicad_pcb \
   fail the run. `--final-polish MM` adds a bounded `place_optimize` pass, kept
   only when not worse. The output carries the input's own locks and no others.
 - **`place_candidates.py`** places the board both ways over several seeds
-  (default seeds 0-2 of each flow), four candidates at a time (`--jobs`),
+  (default `--seeds auto`: seeds 0-2 of each flow, seed 0 alone above
+  `AUTO_SEEDS_MAX_PARTS` = 150 movable parts), four candidates at a time (`--jobs`),
   grades each one as `place_groups.py` grades its own, ranks them by
   buildable, floorplan errors, crossings and HPWL, and copies the best to the
   output; every candidate stays in `<output>.candidates/` with its log.

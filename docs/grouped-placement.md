@@ -204,18 +204,37 @@ of about 15 vias.
 ## Time
 
 Every tool step `/pcb-group-place` runs, excluding the agent's own time, on
-one laptop: reading the board, emitting the intent, checking the groups,
-planning the regions, six candidates through `place_candidates.py` (seeds
-0-2 of each flow, four at a time), the render and `check_assembly`:
+one laptop (an M3 MacBook Air): reading the board, emitting the intent,
+checking the groups, planning the regions, the candidates through
+`place_candidates.py` (four at a time), the render and `check_assembly`:
 
-| board | parts | region plan | candidates | total |
-|---|---|---|---|---|
-| esp_prog | 21 | 0.2 s | 2.8 s | 4.3 s |
-| ch32v003_usb | 25 | 0.3 s | 11.5 s | 13.4 s |
-| ch32v006_dev | 26 | 4.3 s | 15.3 s | 22.6 s |
+| board | parts | candidates | region plan | placing | total |
+|---|---|---|---|---|---|
+| esp_prog | 21 | 6 | 0.2 s | 2.6 s | 4.1 s |
+| ch32v003_usb | 25 | 6 | 0.3 s | 8.6 s | 10.4 s |
+| ch32v006_dev | 26 | 6 | 4.4 s | 8.3 s | 14.9 s |
+| ft2232h_jtag | 41 | 6 | 0.4 s | 7.3 s | 9.5 s |
+| tigard | 92 | 6 | 1.2 s | 23.7 s | 28.8 s |
+| glasgow_revC | 272 | 2 | 0.6 s | 97.3 s | 114.8 s |
+
+`place_candidates.py` places seeds 0-2 of each flow, and seed 0 alone on a
+board of more than 150 movable parts: a candidate's time grows faster than
+the part count, and two seeds of each flow took glasgow_revC 172 s. (Its
+groups are its schematic sheets, standing in for an agent's.)
+
+Most of a seat search is refusing poses. Three shortcuts skip work whose
+answer is already known (both flows, seed 0: poses identical to before on the
+first five boards above):
+- a grid of the cells wholly inside the parts already seated refuses a pose
+  that overlaps one of them, before the full legality test;
+- a zone-held search walks only the ring offsets the zone can admit;
+- the quench counts airwire crossings only for pairs whose boxes meet (which
+  also drops a false crossing the full count could report between two
+  collinear segments that do not touch), and builds each spanning tree from
+  one distance matrix.
 
 ch32v006_dev's six groups make 283,680 floorplans, which the region search
-evaluates in 4.3 s: it lays each split out once per box and each group's own
+evaluates in 4.4 s: it lays each split out once per box and each group's own
 cost terms once per cell rectangle, rather than once per floorplan.
 
 ## Where humans put each group

@@ -177,8 +177,10 @@ python3 -X utf8 py_placer/place_candidates.py wk/<run>/fixed.kicad_pcb wk/<run>/
     --groups wk/<run>/groups.json --intent wk/<run>/regions_intent.json --json wk/<run>/candidates.json
 ```
 
-It places seeds 0, 1 and 2 of each flow (`--seeds`, `--flows`), grades every
-candidate the same way, and keeps the best by:
+It places seeds 0, 1 and 2 of each flow, or seed 0 alone on a board of more
+than 150 movable parts, where each candidate takes far longer (`--seeds auto`,
+the default; `--flows`). It grades every candidate the same way and keeps the
+best by:
 1. buildable;
 2. then floorplan errors;
 3. then airwire crossings;

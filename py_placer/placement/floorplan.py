@@ -7672,6 +7672,36 @@ def _ctx_overlap_exact(ctx):
     return ctx._overlap_exact
 
 
+def _ctx_overlap_pairs_among(ctx, among):
+    """`_ctx_overlap_exact(ctx)[2]` restricted to pairs whose two parts are
+    both in `among`, measured over those parts alone: a pair's overlap does not
+    depend on any other part. The full census is read when it is already
+    cached. plan_check asks this of the LOCKED parts, where the full census
+    measured every pair of a pile (glasgow_revC: 34,716 pairs, 4.7 s)."""
+    among = set(among)
+    if ctx._overlap_exact is not None:
+        return [p_ for p_ in ctx._overlap_exact[2]
+                if p_[0] in among and p_[1] in among]
+    st = ctx.state
+    if getattr(st, 'courtyards_ignored', False):
+        return []
+    census = _ctx_census(ctx)
+    cont = set(getattr(st, 'container_refs', ()) or ())
+    refs = [r for r in ctx.parts if r not in cont and r in among]
+    if hasattr(st, 'pose'):
+        poses = {r: tuple(st.pose(r)) for r in refs}
+    else:
+        poses = {r: (st.parts[r].x, st.parts[r].y, st.parts[r].rot)
+                 for r in refs if r in st.parts}
+    gps = ctx.parts
+
+    def rect_of(r):
+        g = gps[r]
+        return (g.sides, g.side, g.rect, g.tht_rect)
+    return legality.courtyard_overlap_pairs(
+        census, refs, poses, rect_of=rect_of)[2]
+
+
 class _PosedState:
     """What `_Ctx` reads off a `QuenchState`, answered for the board a seat
     search is ASKING about rather than one it has written: the search state's
@@ -8315,7 +8345,7 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
     fixed_refs = sorted(r for r in ctx.parts if r in ctx.locked)
     _fixed = set(fixed_refs)
     fixed_pairs = []
-    for a_, b_, _rc, area in sorted(_ctx_overlap_exact(ctx)[2],
+    for a_, b_, _rc, area in sorted(_ctx_overlap_pairs_among(ctx, _fixed),
                                     key=lambda p_: (p_[0], p_[1])):
         if a_ in _fixed and b_ in _fixed:
             if area > legality.EPS:
@@ -9621,15 +9651,6 @@ def emit_intent(pcb_data, pcb_file: str, *,
     # censuses and lose the auto-budget too -- the legality rule then
     # ABSTAINS (not-derivable) on them, which is honest degradation; their
     # independent coverage is check_assembly's moved-vs-baseline gate.
-    try:
-        from placement.legality import grade_body_overlap
-        _g_overlap = grade_body_overlap(
-            pcb_data, state.clearance, pcb_file=pcb_file)
-        _body_blocking = _g_overlap['blocking']
-        _courtyard_blocking = _g_overlap.get('courtyard_blocking', 0)
-    except Exception:
-        _body_blocking = 0
-        _courtyard_blocking = 0
     _suspects = any('SUSPECT' in (c.get('note') or '') for c in conns)
     _budget = {}
     _withheld = {}
@@ -9638,7 +9659,27 @@ def emit_intent(pcb_data, pcb_file: str, *,
         _cy_ignored = _cso(pcb_file)[0] == 'ignore'
     except Exception:                                        # noqa: BLE001
         _cy_ignored = False
-    if _cy_ignored:
+    # A pile's overlap is staging, as its off-board count is (#1103), so no
+    # budget is read off it; and its body grade, which would only withhold the
+    # budget again, is not paid for (glasgow_revC: 9 of a 14 s emit).
+    _pile_overlap = _pile and not _cy_ignored
+    _body_blocking = 0
+    _courtyard_blocking = 0
+    if not _pile_overlap:
+        try:
+            from placement.legality import grade_body_overlap
+            _g_overlap = grade_body_overlap(
+                pcb_data, state.clearance, pcb_file=pcb_file)
+            _body_blocking = _g_overlap['blocking']
+            _courtyard_blocking = _g_overlap.get('courtyard_blocking', 0)
+        except Exception:
+            _body_blocking = 0
+            _courtyard_blocking = 0
+    if _pile_overlap:
+        _withheld['overlap_area'] = (
+            'the board is a pile: its overlap is staging, not a baseline '
+            '(#1103)')
+    elif _cy_ignored:
         # #1101 review: the budget is a courtyard OVERLAP AREA, and the
         # project waives courtyard overlap -- the seeder packs courtyards
         # there, so a budget read off this board would fail its own seed.

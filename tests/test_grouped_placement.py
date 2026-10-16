@@ -38,7 +38,9 @@ and the seeder's `decap_owner_scope`.
      clock group; and in both flows the seeder seats Y1 beside those pins
      and each cap beside Y1, every claim met.
  11. place_candidates places both flows, keeps the best by the skill's order
-     (buildable, floorplan errors, crossings, HPWL) and copies exactly it.
+     (buildable, floorplan errors, crossings, HPWL) and copies exactly it;
+     `--seeds auto` places three seeds of each flow on a small board, one
+     above AUTO_SEEDS_MAX_PARTS movable parts.
 """
 import json
 import os
@@ -315,6 +317,17 @@ def test_candidates(tmp, fixed, gpath, intent):
        all((round(a.footprints[k].x, 4), round(a.footprints[k].y, 4), a.footprints[k].rotation)
            == (round(b.footprints[k].x, 4), round(b.footprints[k].y, 4), b.footprints[k].rotation)
            for k in a.footprints))
+    seeds, movable = place_candidates.auto_seeds(fixed)
+    ok("--seeds auto places three seeds of each flow on a small board",
+       seeds == '0,1,2' and 0 < movable <= place_candidates.AUTO_SEEDS_MAX_PARTS,
+       (seeds, movable))
+    cap = place_candidates.AUTO_SEEDS_MAX_PARTS
+    try:
+        place_candidates.AUTO_SEEDS_MAX_PARTS = movable - 1
+        ok("and one seed above AUTO_SEEDS_MAX_PARTS movable parts",
+           place_candidates.auto_seeds(fixed)[0] == '0')
+    finally:
+        place_candidates.AUTO_SEEDS_MAX_PARTS = cap
     ok("an unbuildable candidate ranks after any buildable one",
        place_candidates.rank_key({'flow': 'one', 'seed': 0, 'buildable': False,
                                   'floorplan_errors': 0, 'crossings': 0, 'hpwl': 0.0})

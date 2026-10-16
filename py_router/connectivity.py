@@ -1898,31 +1898,36 @@ def compute_mst_edges(points: List[Tuple[float, float]], use_manhattan: bool = F
     nearest = np.zeros(n, dtype=np.intp)
     edges = []
 
-    def _dist_from(idx):
-        dx = xs - xs[idx]
-        dy = ys - ys[idx]
-        if use_manhattan:
-            return np.abs(dx) + np.abs(dy)
-        return np.sqrt(dx * dx + dy * dy)
+    # Every row of the distance matrix at once, by the same arithmetic the
+    # per-node form used (`xs - xs[idx]` and so on, element by element), so
+    # each distance is the same float; it is computed once per tree instead
+    # of once per node added.
+    dx = xs[None, :] - xs[:, None]
+    dy = ys[None, :] - ys[:, None]
+    if use_manhattan:
+        dist = np.abs(dx) + np.abs(dy)
+    else:
+        dist = np.sqrt(dx * dx + dy * dy)
 
-    # Start with node 0.
+    # Start with node 0. `min_dist` holds +inf for every node in the tree,
+    # so its argmin is the argmin over the nodes outside it.
     in_tree[0] = True
-    min_dist = _dist_from(0)
+    min_dist = dist[0].copy()
     min_dist[0] = np.inf  # node 0 is in the tree
 
     for _ in range(n - 1):
-        # Find the non-tree node closest to the tree (in-tree nodes masked out).
-        masked = np.where(in_tree, np.inf, min_dist)
-        best_j = int(np.argmin(masked))
-        best_dist = float(masked[best_j])
+        # Find the non-tree node closest to the tree.
+        best_j = int(np.argmin(min_dist))
+        best_dist = float(min_dist[best_j])
         if not np.isfinite(best_dist):
             break
 
         in_tree[best_j] = True
+        min_dist[best_j] = np.inf
         edges.append((int(nearest[best_j]), best_j, best_dist))
 
         # Pull every remaining node toward the freshly added node where closer.
-        d = _dist_from(best_j)
+        d = dist[best_j]
         update = (~in_tree) & (d < min_dist)
         min_dist[update] = d[update]
         nearest[update] = best_j

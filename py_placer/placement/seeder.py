@@ -661,6 +661,9 @@ def count_legal_poses(state, ref: str, tx: float, ty: float,
             del state.exclusive_for[ref]
     try:
         n = 0
+        # `_try_place`'s overlap grid: it refuses only poses `pose_ok`
+        # refuses, so the count is unchanged.
+        overlaps = _overlap_rejector(state, ref, exclude)
         for dx, dy in offsets:
             if max_disp is not None and math.hypot(dx, dy) > max_disp + 1e-9:
                 continue
@@ -669,6 +672,8 @@ def count_legal_poses(state, ref: str, tx: float, ty: float,
                 # Zone first: it is four float compares, where `pose_ok` ends
                 # in `candidate_valid`. Measured 19x faster on a small zone.
                 if not in_zone(x, y, rot):
+                    continue
+                if overlaps is not None and overlaps(x, y, rot):
                     continue
                 if pose_ok(state, ref, x, y, rot, exclude):
                     n += 1
@@ -1672,15 +1677,7 @@ def seat_candidate_bands(state, tx: float, ty: float, *,
     that order; the row seat (`_seat_block`) walks the SAME bands in its own
     order, so the offsets are shared and only the order differs."""
     out = []
-    xfine = max(0.05, getattr(state, 'grid_step', 0.1) or 0.1)
-    for name, radius, step in (('ring', SEARCH_RADIUS_MM, SEARCH_STEP_MM),
-                               ('fine', SEARCH_FINE_RADIUS_MM,
-                                SEARCH_FINE_STEP_MM),
-                               ('xfine', SEARCH_XFINE_RADIUS_MM, xfine)):
-        if max_disp is not None and max_disp < step - 1e-9:
-            # run-7 A3: a ring whose step exceeds the cap can contribute
-            # nothing but used to burn a full sweep
-            continue
+    for name, radius, step in _band_specs(state, max_disp):
 
         def _ring(radius=radius, step=step):
             for dx, dy in _ring_offsets(radius, step):
@@ -1692,6 +1689,55 @@ def seat_candidate_bands(state, tx: float, ty: float, *,
     if sweep and max_disp is None:
         out.append(('sweep', lambda: _sweep_positions(state, tx, ty)))
     return out
+
+
+def _band_specs(state, max_disp: Optional[float] = None):
+    """`[(name, radius, step)]` of the rings `seat_candidate_bands` walks,
+    in order: 1.0mm, FINE, XFINE (the grid step)."""
+    xfine = max(0.05, getattr(state, 'grid_step', 0.1) or 0.1)
+    out = []
+    for name, radius, step in (('ring', SEARCH_RADIUS_MM, SEARCH_STEP_MM),
+                               ('fine', SEARCH_FINE_RADIUS_MM,
+                                SEARCH_FINE_STEP_MM),
+                               ('xfine', SEARCH_XFINE_RADIUS_MM, xfine)):
+        if max_disp is not None and max_disp < step - 1e-9:
+            # run-7 A3: a ring whose step exceeds the cap can contribute
+            # nothing but used to burn a full sweep
+            continue
+        out.append((name, radius, step))
+    return out
+
+
+_RING_NP_CACHE: Dict[Tuple[float, float], Any] = {}
+
+
+def seat_candidates_in_box(state, tx: float, ty: float, box, *,
+                           max_disp: Optional[float] = None):
+    """`seat_candidates(..., sweep=False)` less the positions that cannot lie
+    in `box` (x0, y0, x1, y1): the same positions in the same order otherwise.
+    A zone-held search walks the three rings -- some 27,000 offsets -- for a
+    zone that holds a few hundred of them; this drops the rest with one array
+    compare per ring. The box is widened by a micron over the 3dp rounding,
+    so it only drops what the caller's own zone test would refuse."""
+    import numpy as np
+    eps = 1e-3
+    for _name, radius, step in _band_specs(state, max_disp):
+        offs = _ring_offsets(radius, step)
+        if not offs:
+            continue
+        key = (float(radius), float(step))
+        arr = _RING_NP_CACHE.get(key)
+        if arr is None:
+            arr = _RING_NP_CACHE[key] = np.asarray(offs, dtype=float).reshape(-1, 2)
+        px = tx + arr[:, 0]
+        py = ty + arr[:, 1]
+        keep = np.flatnonzero((px >= box[0] - eps) & (px <= box[2] + eps)
+                              & (py >= box[1] - eps) & (py <= box[3] + eps))
+        for k in keep.tolist():
+            dx, dy = offs[k]
+            if max_disp is not None and math.hypot(dx, dy) > max_disp + 1e-9:
+                continue
+            yield round(tx + dx, 3), round(ty + dy, 3)
 
 
 def _sweep_positions(state, tx: float, ty: float):
@@ -1708,6 +1754,71 @@ def _sweep_positions(state, tx: float, ty: float):
     grid.sort()
     for _, x, y in grid:
         yield x, y
+
+
+#: Cell size of `_overlap_rejector`'s grid, mm.
+OVERLAP_CELL_MM = 0.25
+
+
+def _overlap_rejector(state, ref: str, exclude):
+    """A constant-time test that refuses a pose `pose_ok` would refuse for
+    OVERLAPPING a seated part, or None where it cannot say.
+
+    A seat search tries thousands of poses, and on a dense board almost every
+    one fails `candidate_valid`'s neighbour loop because it lands on a part
+    already seated (ch32v006_dev's io_banks step: 920,000 poses for 41
+    searches). This grid marks the cells that lie wholly inside the
+    occupancy rect of every part the loop would test against -- not `ref`,
+    not in `exclude`, not a container, no drilled pads, same side -- so a
+    pose whose own rect wholly covers a marked cell overlaps that part by
+    positive area, which the loop refuses at any clearance. A pose it does
+    not refuse goes to `pose_ok` as before, so the search keeps exactly the
+    pose it always found. None where the loop asks another question: a
+    waived courtyard, a restricted neighbour list, a drilled or container
+    part being seated."""
+    if (getattr(state, 'courtyards_ignored', False)
+            or getattr(state, '_neighbors', None) is not None):
+        return None
+    part = state.parts[ref]
+    if part.has_tht or ref in getattr(state, 'container_refs', ()):
+        return None
+    import numpy as np
+    excl = exclude or ()
+    conts = getattr(state, 'container_refs', ())
+    eps = 1e-6
+    rects = [o.rect() for r, o in state.parts.items()
+             if r != ref and r not in excl and r not in conts
+             and not o.has_tht and o.side == part.side]
+    if not rects:
+        return None
+    g = OVERLAP_CELL_MM
+    bx0, by0, bx1, by1 = state.board
+    ox = min([bx0] + [r[0] for r in rects]) - g
+    oy = min([by0] + [r[1] for r in rects]) - g
+    nx = int(math.ceil((max([bx1] + [r[2] for r in rects]) - ox) / g)) + 2
+    ny = int(math.ceil((max([by1] + [r[3] for r in rects]) - oy) / g)) + 2
+    grid = np.zeros((ny, nx), dtype=np.int32)
+    for r in rects:
+        j0 = int(math.ceil((r[0] + eps - ox) / g))
+        j1 = int(math.floor((r[2] - eps - ox) / g))
+        i0 = int(math.ceil((r[1] + eps - oy) / g))
+        i1 = int(math.floor((r[3] - eps - oy) / g))
+        if j1 > j0 and i1 > i0:
+            grid[i0:i1, j0:j1] = 1
+    ps = np.zeros((ny + 1, nx + 1), dtype=np.int64)
+    ps[1:, 1:] = grid.cumsum(0).cumsum(1)
+    ps = ps.tolist()
+
+    def refuse(x, y, rot):
+        R = part.rects(x, y, rot)[0]
+        j0 = max(0, int(math.ceil((R[0] + eps - ox) / g)))
+        j1 = min(nx, int(math.floor((R[2] - eps - ox) / g)))
+        i0 = max(0, int(math.ceil((R[1] + eps - oy) / g)))
+        i1 = min(ny, int(math.floor((R[3] - eps - oy) / g)))
+        if j1 <= j0 or i1 <= i0:
+            return False
+        return (ps[i1][j1] - ps[i0][j1] - ps[i1][j0] + ps[i0][j0]) > 0
+    return refuse
 
 
 #: How near a proximity follower's declared pads must sit to their partner's
@@ -1777,8 +1888,11 @@ def _try_place(state, ref: str, tx: float, ty: float, exclude: Set[str],
     that would make a decap finding worse instead of stopping at it. None
     (every other caller) is the search as it was."""
     part = state.parts[ref]
+    _overlaps = _overlap_rejector(state, ref, exclude)
 
     def _ok(x, y, rot):
+        if _overlaps is not None and _overlaps(x, y, rot):
+            return False
         return pose_ok(state, ref, x, y, rot, exclude)
 
     _in_zone, anchor_zone = zone_gate(part, constraint, tol)
@@ -1844,8 +1958,24 @@ def _try_place(state, ref: str, tx: float, ty: float, exclude: Set[str],
                     # outside the OFF path, and splitflap's default seed went from
                     # 0 to 6 unseated parts. `_in_zone` is trivially true on the
                     # sweep, which is only reached with no constraint.
-                    for x, y in seat_candidates(state, tx, ty, max_disp=max_disp,
-                                                sweep=constraint is None):
+                    if constraint is None:
+                        cands = seat_candidates(state, tx, ty, max_disp=max_disp,
+                                                sweep=True)
+                    else:
+                        # Only the positions `_in_zone` can admit: where the
+                        # part's origin may sit for the zone to hold it at
+                        # this angle (anchor zones: the anchor point itself).
+                        # An inverted box admits nothing, as `_in_zone` would.
+                        if anchor_zone:
+                            z0, z1, z2, z3 = constraint
+                            box = (z0 - tol, z1 - tol, z2 + tol, z3 + tol)
+                        else:
+                            from placement import floorplan as _fp
+                            box = _fp.zone_origin_box(
+                                constraint, part.grade_rect(0.0, 0.0, rot), tol)
+                        cands = seat_candidates_in_box(state, tx, ty, box,
+                                                       max_disp=max_disp)
+                    for x, y in cands:
                         if not _in_zone(x, y, rot):
                             continue
                         if accept is not None and not accept(x, y, rot):
