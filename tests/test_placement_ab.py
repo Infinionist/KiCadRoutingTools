@@ -895,7 +895,12 @@ ROWS += [
         # rows stopped taking the pin tier early (hosts only, e1f325789):
         # splitflap now IMPROVES (crossings 556 -> 452, hpwl 3094 -> 2816),
         # the other three still regress -- still rejected, 3 of 4.
-        'expect': ('improve' if b == 'splitflap_driver.kicad_pcb'
+        # Re-measured after a zone's members bigger than a whole row are
+        # seated before the row (a row of small parts had taken the strip a
+        # big part needed): glasgow improves too, coldfire's crossings fall
+        # but its block displacement grows -- still rejected, 2 of 4.
+        'expect': ('improve' if b in ('splitflap_driver.kicad_pcb',
+                                      'glasgow_revC.kicad_pcb')
                    else 'regress'),
         'rejected': True,
         'why': ('MECHANISM: the ON arm seeds each suggested row as one '

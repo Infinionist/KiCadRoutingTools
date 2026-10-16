@@ -780,7 +780,10 @@ python py_placer/place_groups.py fixed.kicad_pcb by_group.kicad_pcb \
   at its IC's oscillator pins, each load cap at the crystal. Those parts are
   left out of every zone, and the seeder's followers stage seats each one
   right after its partner, turning the IC when its oscillator pins face no
-  room. The board is never modified.
+  room. It writes each indicator bank -- LEDs, each with its own series
+  resistor, on one rail in one group's region -- as one `arrays[]` row that
+  alternates LED and resistor (`placement/group_rows.py`; `--no-arrays`
+  writes none). The board is never modified.
 - **`place_groups.py`** runs `place_seed --decap-owners <the group>` once per
   group on a step board:
   - the groups not yet placed are deleted, and the placed ones are locked on

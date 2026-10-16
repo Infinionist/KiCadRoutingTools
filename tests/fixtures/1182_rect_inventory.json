@@ -239,6 +239,9 @@
  "seeder.py::seed_from_intent": {
   "rect": 1
  },
+ "seeder.py::seed_from_intent._footprint_area": {
+  "bounds_by_rot": 1
+ },
  "seeder.py::zone_gate._in": {
   "grade_rect": 1
  }

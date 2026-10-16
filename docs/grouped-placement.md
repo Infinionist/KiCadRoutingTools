@@ -201,6 +201,46 @@ The crystals now sit where a human puts them. The routing cost is mixed:
 fewer vias on esp_prog, more on the other two, inside a seed-to-seed spread
 of about 15 vias.
 
+## Indicator banks
+
+An LED and its series resistor belong side by side, and a row of indicators
+belongs in a row. `plan_regions.py` writes each bank of them as one intent
+`arrays[]` row (`placement/group_rows.py`; `--no-arrays` writes none):
+
+- **a channel** is an LED and the one resistor it shares a net with that no
+  other pad is on;
+- **a bank** is two or more channels in one group's region, with one LED
+  footprint, that share one outer net (the rail) while each has a signal of
+  its own. A region holding banks on two rails gets two rows;
+- **the row alternates LED and resistor**, in the LEDs' order, so each
+  resistor stands beside its own LED (`allow_mixed`, order `declared`). The
+  seeder seats the row whole and chooses its axis and angle; the polish moves
+  it as one piece.
+
+Rows of like VALUE are not taken. The array detector
+(`check_floorplan --suggest-arrays`) groups parts by footprint and value, and
+like value is not like function: ft2232h_jtag's `U4:1k` row is a reset
+pull-up and four LED resistors, and a decoupling cap belongs at its own pin.
+
+A zone's row is seated before the zone's other members, since it needs a
+contiguous strip -- except a member at least as big as the whole row, which
+is seated first. Otherwise a row of 0603s could take the strip a switch
+needed: ch32v003_usb's SW1 was left off the board under its LED bank.
+
+Measured from the same regions with and without banks, every candidate
+(three seeds of each flow) routed by the board's recorded chain:
+
+| board | bank | blocking, without -> with | vias (mean) | copper (mean) |
+|---|---|---|---|---|
+| ch32v003_usb | 2 LEDs | 0 -> 0 | 60.7 -> 60.5 | 379 -> 384 mm |
+| ch32v006_dev | 2 LEDs | 0 -> 0 | 72.8 -> 70.8 | 684 -> 699 mm |
+| ft2232h_jtag | 5 LEDs | 0 -> 0 | 92.7 -> 81.7 | 953 -> 843 mm |
+
+ft2232h_jtag's bank was better on all six candidates; the small banks are
+within the seed-to-seed spread. tigard (4 LEDs) and glasgow_revC (two banks
+of 5) were graded but not routed: a few crossings either way on tigard, and
+19% fewer crossings, one more floorplan error, on glasgow_revC.
+
 ## Time
 
 Every tool step `/pcb-group-place` runs, excluding the agent's own time, on

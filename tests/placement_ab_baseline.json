@@ -1,7 +1,7 @@
 {
  "arrays-auto-glasgow_revC": {
   "board": "glasgow_revC.kicad_pcb",
-  "mark": "regress",
+  "mark": "improve",
   "off": {
    "body_advisory": 3,
    "body_blocking": 0,
@@ -25,22 +25,22 @@
    "unseated": 0
   },
   "on": {
-   "body_advisory": 3,
+   "body_advisory": 2,
    "body_blocking": 0,
    "courtyard_blocking": 7,
    "courtyard_blocking_area": 12.0745,
-   "crossings": 3613,
+   "crossings": 3506,
    "edge_facing_pads": 10,
-   "health_block_displacement_max_mm": 16.0257,
+   "health_block_displacement_max_mm": 15.6707,
    "health_bus_foreign_crossings": null,
-   "hpwl": 4901.15,
+   "hpwl": 4941.28,
    "intent_errors": 1,
    "intent_errors_by_rule": {
     "edge_connector": 1
    },
    "intent_errors_enforced": 0,
    "intent_errors_other": 1,
-   "inversions": 1693,
+   "inversions": 1707,
    "oob_keepout_copper_amount": 0.0,
    "oob_keepout_copper_count": 0,
    "unseated": 0
@@ -76,19 +76,18 @@
    "body_blocking": 1,
    "courtyard_blocking": 0,
    "courtyard_blocking_area": 0,
-   "crossings": 5528,
+   "crossings": 2796,
    "edge_facing_pads": 0,
-   "health_block_displacement_max_mm": 19.0327,
+   "health_block_displacement_max_mm": 33.0771,
    "health_bus_foreign_crossings": null,
-   "hpwl": 13455.69,
-   "intent_errors": 2,
+   "hpwl": 8090.19,
+   "intent_errors": 1,
    "intent_errors_by_rule": {
-    "legality": 1,
-    "zone_containment": 1
+    "legality": 1
    },
-   "intent_errors_enforced": 1,
+   "intent_errors_enforced": 0,
    "intent_errors_other": 1,
-   "inversions": 1343,
+   "inversions": 1360,
    "oob_keepout_copper_amount": 0.0,
    "oob_keepout_copper_count": 0,
    "unseated": 0
@@ -163,23 +162,23 @@
    "unseated": 2
   },
   "on": {
-   "body_advisory": 16,
+   "body_advisory": 25,
    "body_blocking": 0,
-   "courtyard_blocking": 7,
-   "courtyard_blocking_area": 66.9712,
-   "crossings": 4770,
-   "edge_facing_pads": 3,
-   "health_block_displacement_max_mm": 18.6488,
+   "courtyard_blocking": 11,
+   "courtyard_blocking_area": 62.9089,
+   "crossings": 4615,
+   "edge_facing_pads": 1,
+   "health_block_displacement_max_mm": 17.7135,
    "health_bus_foreign_crossings": null,
-   "hpwl": 9200.86,
+   "hpwl": 9195.14,
    "intent_errors": 3,
    "intent_errors_by_rule": {
-    "edge_connector": 2,
-    "zone_containment": 1
+    "array_formation": 1,
+    "edge_connector": 2
    },
-   "intent_errors_enforced": 1,
-   "intent_errors_other": 2,
-   "inversions": 1012,
+   "intent_errors_enforced": 0,
+   "intent_errors_other": 3,
+   "inversions": 1056,
    "oob_keepout_copper_amount": 0.0,
    "oob_keepout_copper_count": 0,
    "unseated": 2

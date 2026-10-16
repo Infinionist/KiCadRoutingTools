@@ -109,6 +109,11 @@ Write `wk/<run>/groups.json` -- the format is in `py_placer/placement/grouping.p
   the oscillator pins stay in the clock group and get its region.
   `check_groups.py` names each crystal it finds; one it does not name (no
   pin functions, an oscillator, a ceramic resonator) needs your judgement.
+- **Indicator banks take care of themselves.** An LED and the resistor that
+  shares a net with it alone are a channel; `plan_regions.py` lays the
+  channels of one group on one rail out as one row, LED and resistor
+  alternating. Keep each LED and its resistor in the same group: a resistor
+  in another group keeps its LED out of the bank. `--no-arrays` writes none.
 - **Hints:** `edge` (`N`/`S`/`E`/`W`) for a group that belongs on a board side
   (a group holding an edge connector needs none: the connector anchors it);
   `near` / `apart` name other groups. Use `apart` for a switching converter

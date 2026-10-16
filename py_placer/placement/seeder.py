@@ -7473,8 +7473,17 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # hundred microns wide around where the spec pins the part), so it gets
     # the exact center; multi-member zones jitter each target so different
     # seeds pack differently.
+    def _footprint_area(ref):
+        b = state.parts[ref].bounds_by_rot[0.0]
+        return (b[2] - b[0]) * (b[3] - b[1])
+
     for name in sorted(zones_by_name):
         z = zones_by_name[name]
+        members = [r for r in _order(blocks.get(name, ()))
+                   if r not in decap_scope and r not in array_zoned_members
+                   and r not in followers]
+        rows_here = [spec for spec in array_try
+                     if getattr(array_zone.get(spec['name']), 'name', None) == name]
         # #1051: a row zoned HERE is seated before the zone's other members
         # -- a row needs a contiguous strip, and the radial pack fills the
         # zone around it (measured on glasgow: RN5+RN6 seated into a packed
@@ -7482,45 +7491,57 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         # empty one first). It aims at `_seat_array`'s target (its members'
         # placed partners, else the served pins, else the board centre),
         # clamped into the zone.
-        for spec in array_try:
-            if getattr(array_zone.get(spec['name']), 'name', None) == name:
-                _seat_array(state, pcb_data, intent, spec, z, placed,
-                            unplaced, center, _rot_ladder, array_pose_cap,
-                            arrays_formed, array_unseated, notes)
-        members = [r for r in _order(blocks.get(name, ()))
-                   if r not in decap_scope and r not in array_zoned_members
-                   and r not in followers]
-        if not members:
-            continue
+        #
+        # Except a member at least as big as a whole row: it is seated
+        # BEFORE the row, which then finds its strip around it. Seated after,
+        # a switch could find the strip it needed taken by a row of 0603s
+        # and be left off the board (ch32v003_usb's SW1 under an indicator
+        # bank). A zone with no row, or no such member, packs as it did.
+        big = []
+        if rows_here and members:
+            row_area = max(sum(_footprint_area(m) for m in
+                               (spec.get('present') or spec['members'])
+                               if m in state.parts)
+                           for spec in rows_here)
+            big = [r for r in members if _footprint_area(r) >= row_area]
         cx = (z.rect[0] + z.rect[2]) / 2.0
         cy = (z.rect[1] + z.rect[3]) / 2.0
         tol = intent.zone_tolerance(z)
-        for ref in members:
-            jx, jy = (0.0, 0.0) if len(members) == 1 else _jitter()
-            rot_before = state.parts[ref].rot
-            zinfo: Dict = {}
-            clr = _try_place(state, ref, cx + jx, cy + jy, unplaced - {ref},
-                             rotations=_rot_ladder(ref),
-                             constraint=z.rect, tol=tol, info=zinfo)
-            if clr is not None:
-                placed.add(ref)
-                unplaced.discard(ref)
-                _orient_for_followers(ref, cx + jx, cy + jy, z.rect, tol)
-                if zinfo.get('anchor_zone'):
-                    notes.append(f"{ref}: zone {name!r} smaller than the "
-                                 f"courtyard -- seated by anchor point")
-                if state.parts[ref].rot != rot_before:
-                    notes.append(f"{ref}: rotated {rot_before:g} -> "
-                                 f"{state.parts[ref].rot:g} "
-                                 + _rot_why(ref))
-                if clr < state.clearance:
-                    notes.append(f"{ref}: placed at reduced courtyard "
-                                 f"clearance {clr:g} (none at "
-                                 f"{state.clearance:g})")
-            else:
-                unseated.append(ref)
-                unseated_ctx[ref] = (cx + jx, cy + jy, z.rect, tol)
-                notes.append(f"{ref}: no legal pose inside zone {name!r}")
+
+        def _pack(refs):
+            for ref in refs:
+                jx, jy = (0.0, 0.0) if len(members) == 1 else _jitter()
+                rot_before = state.parts[ref].rot
+                zinfo: Dict = {}
+                clr = _try_place(state, ref, cx + jx, cy + jy, unplaced - {ref},
+                                 rotations=_rot_ladder(ref),
+                                 constraint=z.rect, tol=tol, info=zinfo)
+                if clr is not None:
+                    placed.add(ref)
+                    unplaced.discard(ref)
+                    _orient_for_followers(ref, cx + jx, cy + jy, z.rect, tol)
+                    if zinfo.get('anchor_zone'):
+                        notes.append(f"{ref}: zone {name!r} smaller than the "
+                                     f"courtyard -- seated by anchor point")
+                    if state.parts[ref].rot != rot_before:
+                        notes.append(f"{ref}: rotated {rot_before:g} -> "
+                                     f"{state.parts[ref].rot:g} "
+                                     + _rot_why(ref))
+                    if clr < state.clearance:
+                        notes.append(f"{ref}: placed at reduced courtyard "
+                                     f"clearance {clr:g} (none at "
+                                     f"{state.clearance:g})")
+                else:
+                    unseated.append(ref)
+                    unseated_ctx[ref] = (cx + jx, cy + jy, z.rect, tol)
+                    notes.append(f"{ref}: no legal pose inside zone {name!r}")
+
+        _pack(big)
+        for spec in rows_here:
+            _seat_array(state, pcb_data, intent, spec, z, placed,
+                        unplaced, center, _rot_ladder, array_pose_cap,
+                        arrays_formed, array_unseated, notes)
+        _pack([r for r in members if r not in big])
 
     # ---- the connectivity-centroid seat, shared by 2.4 and 3 --------------
     # ONE body, so stage 2.4 seats an IC exactly as stage 3 would have, only

@@ -369,7 +369,9 @@ three engines act on them. **The seeder** tries to seat each row whole (stage 2.
 `seeder._seat_array` -> `_seat_block`): the served part's pin order, ONE
 rotation the seeder chooses for `"shared"`/`"unknown"`, a pitch and an axis,
 searched over a capped pose count (`ARRAY_SEAT_POSE_CAP`), never a clock. A
-zoned row is seated into its zone in stage 2; any other row in stage 2.4,
+zoned row is seated into its zone in stage 2, before the zone's other
+members but after any member at least as big as the whole row (a switch
+next to a row of 0603s gets its strip first); any other row in stage 2.4,
 right after the part it serves (only the served parts and the rows are seated
 there, each row at its members' rank in stage 3's order). A row
 that cannot be seated whole is reported in `array_unseated` and its members

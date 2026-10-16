@@ -103,6 +103,52 @@ def build_intent(base, doc, plan, conflicts, tolerance, claims=(), exempt=(),
     return out
 
 
+def indicator_banks(pcb, intent, followers=()):
+    """`(rows, dropped)`: the board's indicator banks -- LEDs, each with its
+    own series resistor, on one rail, inside one group's region -- as intent
+    `arrays[]` rows that alternate LED and resistor
+    (`placement/group_rows.led_rows`). The seeder seats each row whole, in
+    its zone, at one pitch and angle, and the polish moves it as one piece
+    (docs/floorplan-intent.md, "Arrays"). A channel whose LED or resistor
+    another claim already places -- a proximity claim's follower, an edge
+    connector, a fixed pose, a `must_lock` match, an array member -- leaves
+    the bank, and a bank of fewer than two channels is dropped; each drop is
+    reported."""
+    import fnmatch
+    from placement import group_rows
+    zone_of = {}
+    for b in intent.get('blocks') or []:
+        if b.get('zone') is not None:
+            for r in b.get('refs') or ():
+                zone_of.setdefault(r, b['name'])
+    claimed = {m: 'an array member' for r in intent.get('arrays') or []
+               for m in r.get('members') or []}
+    claimed.update({str(c.get('ref')): 'an edge connector'
+                    for c in intent.get('edge_connectors') or []})
+    claimed.update({str(f.get('ref')): 'a fixed pose'
+                    for f in intent.get('fixed_poses') or []})
+    claimed.update({f: "a proximity claim's follower" for f in followers})
+    pats = [str(p) for p in intent.get('must_lock') or []]
+    rows, dropped = [], []
+    for r in group_rows.led_rows(pcb, zone_of):
+        pairs = [r['members'][i:i + 2] for i in range(0, len(r['members']), 2)]
+        why = {}
+        for pair in pairs:
+            for m in pair:
+                w = claimed.get(m) or ('must_lock' if any(
+                    fnmatch.fnmatchcase(m, p) for p in pats) else None)
+                if w:
+                    why[m] = w
+        keep = [pr for pr in pairs if not any(m in why for m in pr)]
+        if why:
+            dropped.append({'name': r['name'], 'members': dict(sorted(why.items())),
+                            'row_dropped': len(keep) < 2})
+        if len(keep) < 2:
+            continue
+        rows.append(dict(r, members=[m for pr in keep for m in pr]))
+    return rows, dropped
+
+
 def render_png(pcb, pcb_file, plan, path):
     """Outline, fixed parts and the planned regions, labelled. For LOOKING."""
     from PIL import Image, ImageDraw, ImageFont
@@ -167,6 +213,10 @@ def main(argv=None):
     ap.add_argument('--seed', type=int, default=0,
                     help='annealing seed when there are more groups than are '
                          'searched exhaustively (default: %(default)s)')
+    ap.add_argument('--no-arrays', action='store_true',
+                    help="write no indicator banks: rows that alternate each "
+                         "LED with its own series resistor, for LEDs on one "
+                         "rail in one group's region (placement/group_rows.py)")
     ap.add_argument('--no-crystals', action='store_true',
                     help="write no crystal claims (placement/crystals.py): each "
                          "crystal at its IC's oscillator pins and each load cap "
@@ -200,6 +250,12 @@ def main(argv=None):
     intent = build_intent(base, doc, plan, conflicts, a.tolerance,
                           claims=new_claims, exempt=load_caps,
                           followers=followers)
+    banks, banks_dropped = [], []
+    if not a.no_arrays:
+        banks, banks_dropped = indicator_banks(pcb, intent, followers)
+        if banks:
+            intent['arrays'] = list(intent.get('arrays') or []) + banks
+            intent['min_reader'] = max(int(intent.get('min_reader') or 0), 7)
     with open(a.out, 'w', encoding='utf-8') as f:
         json.dump(intent, f, indent=2)
     if a.png:
@@ -229,6 +285,11 @@ def main(argv=None):
     if load_caps and intent.get('decaps'):
         print(f"  decaps.exempt += {', '.join(load_caps)} (crystal load caps: "
               f"their proximity claims govern them)")
+    for r in banks:
+        print(f"  indicator bank {r['name']}: {', '.join(r['members'])}")
+    for d in banks_dropped:
+        print(f"  indicator bank {d['name']}: left out {d['members']}"
+              + (' -- bank dropped' if d.get('row_dropped') else ''))
     for w in plan['warnings']:
         print(f"  WARN  {w}")
     infeasible = [s for s, f_ in plan['faces'].items()
@@ -236,7 +297,8 @@ def main(argv=None):
     summary = {'zones': {n: z['zone'] for n, z in plan['zones'].items()},
                'infeasible_faces': infeasible,
                'decap_exempt': [c['cap'] for c in conflicts], 'out': a.out,
-               'crystal_claims': len(new_claims), 'followers': followers}
+               'crystal_claims': len(new_claims), 'followers': followers,
+               'indicator_banks': [r['name'] for r in banks]}
     print('JSON_SUMMARY: ' + json.dumps(summary, sort_keys=True))
     return 4 if infeasible else 0
 
