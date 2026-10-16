@@ -3512,6 +3512,11 @@ class PairShortfall(NamedTuple):
     #                      two different parts' copper in the same space is an
     #                      assembly impossibility regardless of net (run-6:
     #                      the C14-on-R14 class the same-net skip is blind to)
+    # #1266: the part of `pad` / `stack` that is pads against the other part's
+    # footprint GRAPHIC copper, kept apart so the gate can refuse it on its
+    # own licence (`seed_baseline`: an off-board seed is none).
+    gpad: float = 0.0
+    gstack: bool = False
 
 
 ZERO_SHORTFALL = PairShortfall(0.0, False, 0.0, False)
@@ -4438,6 +4443,104 @@ def build_part_pads(footprints: Dict[str, object],
     return out
 
 
+class PartGraphics:
+    """One part's footprint GRAPHIC copper (#1266): a drawn SOT-89 tab, an
+    antenna -- check_drc's `GraphicPiece`s, posed the way `PartPads` poses
+    pads (offsets from the seed position, turned by the DELTA rotation), so
+    the gate can ask where the copper is at a candidate pose.
+
+    Pad-to-pad legality never saw this copper: esp_prog C3 parked on U2's tab
+    was legal to the seeder and to place_pose. The measurement is
+    check_drc's `pad_graphic_piece_overlap`, here against the gate's pad
+    BOXES (which may falsely reject, never falsely accept).
+    """
+
+    __slots__ = ('ref', 'seed', 'pieces', '_cache', '_ext_cache')
+
+    def __init__(self, ref, fp, pieces):
+        self.ref = ref
+        self.seed = (fp.x, fp.y, (fp.rotation or 0.0) % 360)
+        self.pieces = list(pieces)
+        self._cache: Dict[Tuple, list] = {}
+        self._ext_cache: Dict[float, Optional[Tuple]] = {}
+
+    def at(self, x: float, y: float, rot: float) -> list:
+        """The pieces at a pose (cached by pose, bounded)."""
+        sx, sy, sr = self.seed
+        key = _pose_key((x, y, rot))
+        if key == _pose_key(self.seed):
+            return self.pieces
+        got = self._cache.get(key)
+        if got is None:
+            rad = math.radians(-(((rot or 0.0) - sr) % 360))
+            c, s = math.cos(rad), math.sin(rad)
+
+            def move(gx, gy):
+                ox, oy = gx - sx, gy - sy
+                return x + ox * c - oy * s, y + ox * s + oy * c
+            got = [p.posed(move) for p in self.pieces]
+            if len(self._cache) > 512:
+                self._cache.clear()
+            self._cache[key] = got
+        return got
+
+    def extent_local(self, rot: float):
+        """Bbox over the copper at a rotation, relative to the part's
+        position (`PartPads.extent_local`'s frame). None with no copper."""
+        key = round(((rot or 0.0) - self.seed[2]) % 360, 3)
+        if key not in self._ext_cache:
+            boxes = [p.bbox for p in self.at(0.0, 0.0, rot) if p.bbox]
+            self._ext_cache[key] = (
+                (min(b[0] for b in boxes), min(b[1] for b in boxes),
+                 max(b[2] for b in boxes), max(b[3] for b in boxes))
+                if boxes else None)
+        return self._ext_cache[key]
+
+    def extent(self, x: float, y: float, rot: float):
+        e = self.extent_local(rot)
+        if e is None:
+            return None
+        return (x + e[0], y + e[1], x + e[2], y + e[3])
+
+
+def build_part_graphics(pcb_data, refs=None) -> Dict[str, 'PartGraphics']:
+    """`PartGraphics` for every footprint (in `refs`, when given) that draws
+    graphic copper (#1266). Empty on a board with none, which is every board
+    but a handful -- and the gate's graphic term then costs one dict test."""
+    from check_drc import footprint_graphic_pieces
+    pieces, _unmeasured = footprint_graphic_pieces(pcb_data)
+    fps = getattr(pcb_data, 'footprints', None) or {}
+    by_owner: Dict[str, list] = {}
+    for p in pieces:
+        if refs is None or p.owner_ref in refs:
+            by_owner.setdefault(p.owner_ref, []).append(p)
+    return {ref: PartGraphics(ref, fps[ref], ps)
+            for ref, ps in by_owner.items() if ref in fps}
+
+
+class _BoxPad:
+    """A pad BOX as check_drc's pad-to-segment test reads a pad (#1266):
+    the gate's currency, an axis-aligned rect on the box's side."""
+    __slots__ = ('global_x', 'global_y', 'size_x', 'size_y', 'layers')
+    shape = 'rect'
+    rect_rotation = 0.0
+    polygons = None
+    roundrect_rratio = 0.0
+
+    def __init__(self, x0, y0, x1, y1, pside):
+        self.global_x, self.global_y = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+        self.size_x, self.size_y = x1 - x0, y1 - y0
+        self.layers = (['F.Cu'] if pside == 'F' else ['B.Cu'] if pside == 'B'
+                       else ['*.Cu'])
+
+
+_GATE_LAYERS = ['F.Cu', 'B.Cu']
+
+
+def _piece_side(layer: str):
+    return 'F' if layer == 'F.Cu' else 'B' if layer == 'B.Cu' else None
+
+
 class CopperGeometry(NamedTuple):
     """One part's copper, as both lane ledgers charge it (#841)."""
     ref: str
@@ -4766,10 +4869,17 @@ class LegalityContext:
 
     def __init__(self, part_pads: Dict[str, PartPads],
                  gate: Optional[BoardOutlineGate], clearance: float,
-                 pose_of, seed_of, model=None, keepouts=None):
+                 pose_of, seed_of, model=None, keepouts=None,
+                 graphics=None):
         self.parts = part_pads
         self.gate = gate
         self.clearance = clearance
+        # #1266: each part's footprint GRAPHIC copper (`build_part_graphics`),
+        # charged against the OTHER part's pads in `pair_shortfall`. Empty --
+        # the common case -- leaves every pair exactly as it was.
+        self.graphics: Dict[str, PartGraphics] = dict(graphics or {})
+        self._graphic_floors: Dict[str, PadFloor] = {}
+        self._graphic_licence: Dict[str, bool] = {}
         # #1031: board rule-area keep-outs (RuleAreaKeepouts), or None. The
         # search may not deepen any part's pads into a band beyond its SEED
         # reach -- see keepout_ok.
@@ -4821,6 +4931,110 @@ class LegalityContext:
     # -- pair measurement ------------------------------------------------------
     def pair_shortfall(self, a: str, b: str, pose_a=None,
                        pose_b=None) -> PairShortfall:
+        """Pad/hole interference between two parts at their poses -- and
+        (#1266) each part's pads against the OTHER part's footprint graphic
+        copper, folded into the same fields: a clearance shortfall into
+        `pad` (skipped for a pad of the one net the copper's owner gives
+        it), a different-net contact into `pad_overlap`, and any contact
+        into `stack`. So every consumer -- pads_ok and its seed baseline,
+        the quench's energy, the seeder's census -- sees the copper the way
+        it sees a pad, and the result is unchanged (the same object) for a
+        pair whose parts draw none."""
+        sf = self._pads_pair_shortfall(a, b, pose_a, pose_b)
+        gr = self.graphics
+        if not gr or (a not in gr and b not in gr):
+            return sf
+        if a not in self.parts or b not in self.parts:
+            return sf
+        pose_a = pose_a if pose_a is not None else self.pose_of(a)
+        pose_b = pose_b if pose_b is not None else self.pose_of(b)
+        p1, o1, s1 = self._graphic_pair(a, pose_a, b, pose_b)
+        p2, o2, s2 = self._graphic_pair(b, pose_b, a, pose_a)
+        if p1 + p2 <= EPS and not (s1 or s2):
+            return sf
+        return PairShortfall(sf.pad + p1 + p2, sf.pad_overlap or o1 or o2,
+                             sf.hole, sf.stack or s1 or s2,
+                             gpad=p1 + p2, gstack=bool(s1 or s2))
+
+    def _graphic_licensed(self, ref: str) -> bool:
+        """May `ref`'s SEED pose license graphic-copper contact (#1266)? Only
+        when the seed is ON the board. A pile is no licence (run-19's rule,
+        `_degenerate_refs`), and a pile need not be one point:
+        make_unplaced's row at 0.82 mm pitch put esp_prog U2's 4.7 mm tab over
+        twelve neighbours, and the seeder then seated Y1 on it, licensed."""
+        v = self._graphic_licence.get(ref)
+        if v is None:
+            if ref in self._degenerate_refs:
+                v = False
+            elif self.gate is None:
+                v = True
+            else:
+                sx, sy = self.seed_of(ref)[:2]
+                v = _on_board(self.gate, sx, sy)
+            self._graphic_licence[ref] = v
+        return v
+
+    def _graphic_floor(self, layer: str) -> PadFloor:
+        """The requirement inputs of net-less copper on `layer`, for
+        `PadClearanceModel.pair`: check_drc prices a pad against a graphic
+        segment as against net 0."""
+        f = self._graphic_floors.get(layer)
+        if f is None:
+            m = self._floors
+            f = self._graphic_floors[layer] = PadFloor(
+                float(m.net_floor.get(0, 0.0)), 0.0,
+                frozenset((layer,)) if m.layer_rules else None)
+        return f
+
+    def _graphic_pair(self, pad_ref: str, pad_pose, owner: str,
+                      owner_pose) -> Tuple[float, bool, bool]:
+        """`pad_ref`'s pad BOXES against `owner`'s graphic copper (#1266):
+        `(shortfall_mm, different-net contact, any contact)`, the shortfall
+        summed over pads (each at its worst piece), as the pad channel sums
+        over pad pairs."""
+        gr = self.graphics.get(owner)
+        pp = self.parts.get(pad_ref)
+        if gr is None or pp is None:
+            return 0.0, False, False
+        model = self._floors
+        reach = (self.clearance if model is None
+                 else max(self.clearance, model.base, pp.max_floor))
+        ge = gr.extent(*owner_pose)
+        pe = pp.extent(*pad_pose)
+        if ge is None or pe is None or rect_gap(ge, pe) >= reach - EPS:
+            return 0.0, False, False
+        from check_drc import (pad_graphic_piece_overlap,
+                               graphic_contact_is_stack)
+        pieces = gr.at(*owner_pose)
+        floors = pp.pad_floors if model is not None else None
+        short = 0.0
+        overlap = stack = False
+        for ai, (a0, a1, a2, a3, na, sa) in enumerate(
+                pp.pad_rects(*pad_pose)):
+            box = (a0, a1, a2, a3)
+            worst = 0.0
+            for pc in pieces:
+                ps = _piece_side(pc.layer)
+                if sa is not None and ps is not None and sa != ps:
+                    continue
+                eff = (self.clearance if floors is None
+                       else model.pair(floors[ai], self._graphic_floor(pc.layer)))
+                if rect_gap(box, pc.bbox) >= eff - EPS:
+                    continue
+                sf, contact, _inside = pad_graphic_piece_overlap(
+                    _BoxPad(a0, a1, a2, a3, sa), pc, eff, _GATE_LAYERS)
+                same = na > 0 and na in pc.nets
+                if not same and sf > worst:
+                    worst = sf
+                if graphic_contact_is_stack(pc, na, contact):
+                    stack = True
+                if contact and not same:
+                    overlap = True
+            short += worst
+        return short, overlap, stack
+
+    def _pads_pair_shortfall(self, a: str, b: str, pose_a=None,
+                             pose_b=None) -> PairShortfall:
         pa = self.parts.get(a)
         pb = self.parts.get(b)
         if pa is None or pb is None:
@@ -5087,6 +5301,12 @@ class LegalityContext:
             base = self.pair_shortfall(key[0], key[1],
                                        pose_a=self.seed_of(key[0]),
                                        pose_b=self.seed_of(key[1]))
+            # #1266: graphic-copper contact is licensed by a seed ON the
+            # board only (`_graphic_licensed`).
+            if (base.gpad > EPS or base.gstack) and not (
+                    self._graphic_licensed(key[0])
+                    and self._graphic_licensed(key[1])):
+                base = base._replace(gpad=0.0, gstack=False)
             self._baselines[key] = base
         return base
 
@@ -5123,7 +5343,12 @@ class LegalityContext:
                     # in the same space) is never admitted -- the same-net
                     # C14-on-R14 class the short conjunct above cannot see
                     else 'stack' if cur.stack and not base.stack
-                    else 'hole' if cur.hole > base.hole + EPS else None)
+                    else 'hole' if cur.hole > base.hole + EPS
+                    # #1266: pads on the other part's graphic copper, on
+                    # their own licence (an off-board seed is none)
+                    else 'graphic' if (cur.gpad > base.gpad + EPS
+                                       or (cur.gstack and not base.gstack))
+                    else None)
             if kind is not None:
                 if why is not None and 'check' not in why:
                     why.update(check='pads', blocker=nb, kind=kind)
@@ -6179,6 +6404,9 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
                     pads_by_ref.get(ref, ()), pad_gate), 4)
     # the resolved per-pad edge requirement (#986 moved it onto the context)
     graphic = _graphic_copper_channel(pcb_data, edge_ctx.required)
+    # #1266: pads against ANOTHER part's footprint graphic copper.
+    graphic.update(_graphic_pad_channel(pcb_data, clearance, model,
+                                        routing_layers))
     # #1098: parts inside a PCB-edge plug's mating region, on either face.
     # `declared_keepouts` is the intent's `keepouts`: a declared
     # `mating:<ref>` replaces the derived region here as it does in the
@@ -6344,6 +6572,51 @@ def _graphic_copper_channel(pcb_data, edge_required: float) -> Dict[str, object]
                                           for u in census['unmeasured']],
         'oob_graphic_copper_basis': census['basis'],
         'graphic_edge_shortfall_refs': sorted([k, round(v, 4)] for k, v in short.items()),
+    }
+
+
+def _graphic_pad_channel(pcb_data, clearance: float, model,
+                         routing_layers) -> Dict[str, object]:
+    """Pads against ANOTHER part's footprint graphic copper, as placement
+    keys (#1266). check_drc's `footprint_graphic_pad_census`, each pad
+    priced at check_drc's own requirement against net-less copper.
+
+    - `graphic_pad_conflicts/_pairs/_shortfall`: part pairs `[pad part,
+      copper owner]` whose pads fall short of clearance from the copper on a
+      net it is not (the pad channel's SHORT semantics), and the summed mm.
+    - `graphic_pad_stack_count/_pairs`: pairs whose pad copper TOUCHES the
+      copper, any net but a net tie's own (`graphic_contact_is_stack`) --
+      two parts' copper in one place, which check_assembly gates on.
+    - `graphic_pad_rows` names each pad (`inside_filled` when it lies wholly
+      inside a filled shape, the case no stroke test sees), and
+      `graphic_pad_unmeasured` the copper that could not be posed.
+    """
+    from check_drc import footprint_graphic_pad_census
+    clearance_of = None
+    if model is not None:
+        def clearance_of(pad, layer):
+            g = PadFloor(float(model.net_floor.get(0, 0.0)), 0.0,
+                         frozenset((layer,)) if model.layer_rules else None)
+            return model.pair(model.pad_floor(pad), g)
+    census = footprint_graphic_pad_census(pcb_data, clearance,
+                                          routing_layers or None, clearance_of)
+    conflicts: Dict[Tuple[str, str], float] = {}
+    stacks = set()
+    for r in census['rows']:
+        k = (r['ref'], r['owner_ref'])
+        if r['shortfall_mm'] > EPS:
+            conflicts[k] = conflicts.get(k, 0.0) + r['shortfall_mm']
+        if r['stack']:
+            stacks.add(k)
+    return {
+        'graphic_pad_conflicts': len(conflicts),
+        'graphic_pad_shortfall': round(sum(conflicts.values()), 4),
+        'graphic_pad_conflict_pairs': sorted([a, b] for a, b in conflicts),
+        'graphic_pad_stack_count': len(stacks),
+        'graphic_pad_stack_pairs': sorted([a, b] for a, b in stacks),
+        'graphic_pad_rows': census['rows'],
+        'graphic_pad_unmeasured': census['unmeasured'],
+        'graphic_pad_basis': census['basis'],
     }
 
 

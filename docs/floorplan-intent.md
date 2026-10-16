@@ -2040,7 +2040,8 @@ otherwise, and on a pile it runs the within-limit variant, which undoes a
 seat that lands past the limit as the grade measures it: on seven piles
 seeded from a `--decaps-from` intent that variant lowered intent errors on
 every one and pulled stranded held caps back inside the radius, at a cost
-in wire length or crossings on three, and the maintainer accepted that
+in wire length or crossings on three (four since #1266 keeps parts off
+footprint graphic copper: watchy's crossings), and the maintainer accepted that
 trade for a pile (the `decap-pile-within-limit-*` rows of
 `tests/test_placement_ab.py`, pre-registered in
 `tests/1105_pile_ab_prereg_v2.json`). On placed boards the `decap-*` rows
