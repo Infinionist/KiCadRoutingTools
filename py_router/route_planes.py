@@ -564,17 +564,15 @@ def _bound_tap_neck(segments, net_id, pad_layer, config):
     if not segments or net_w <= config.track_width + 1e-9:
         return segments
     from fab_tiers import may_narrow, note_narrowing
-    from single_ended_routing import PAD_ENTRY_NECK_MM
-    name = None
+    allowance = defaults.PAD_ENTRY_NECK_MM
     length = sum(math.hypot(s['end'][0] - s['start'][0], s['end'][1] - s['start'][1])
                  for s in segments)
-    if not may_narrow() and length > PAD_ENTRY_NECK_MM + 1e-9:
+    if not may_narrow() and length > allowance + 1e-9:
         print(f"    {YELLOW}plane tap for net {net_id} refused: {length:.2f}mm at "
-              f"{config.track_width:g}mm exceeds the {PAD_ENTRY_NECK_MM}mm pad-entry "
+              f"{config.track_width:g}mm exceeds the {allowance:g}mm pad-entry "
               f"allowance for a {net_w:g}mm net (--escalation off){RESET}")
         return None
-    note_narrowing(net_id, 'track_width', net_w, config.track_width, 'plane tap',
-                   net_name=name)
+    note_narrowing(net_id, 'track_width', net_w, config.track_width, 'plane tap')
     return segments
 
 

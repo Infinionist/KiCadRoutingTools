@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from operator import attrgetter
 from typing import Dict, List, Optional, Set, Tuple
 from terminal_colors import YELLOW, GREEN, RESET
+from routing_defaults import PAD_ENTRY_NECK_MM
 
 from dataclasses import replace
 from kicad_parser import PCBData, Segment, Via, pad_is_plated_through
@@ -2541,8 +2542,9 @@ SHORT_POWER_EDGE_MM = 10.0
 # A wide net entering a pad narrower than its class cannot keep its width for
 # the last stretch: a 2 mm rail meets a 0.2 mm connector pin. Under
 # ``--escalation off`` only that pad-entry stretch may neck; a rail that needs
-# to be narrow for longer fails and is reported instead.
-PAD_ENTRY_NECK_MM = 2.0
+# to be narrow for longer fails and is reported instead. The bound,
+# PAD_ENTRY_NECK_MM, lives in routing_defaults (imported at the top), shared
+# with the tap router (route_planes._bound_tap_neck).
 
 
 def _path_length_mm(path, grid_step):
@@ -3318,7 +3320,7 @@ def _route_main_connection(router, obstacles, config, sources, targets, track_ma
                 # fails honestly at the requested width.
                 print(f"{print_prefix}{YELLOW}Neck-down at {w:.4f}mm rejected: path "
                       f"{_path_length_mm(r[0], config.grid_step):.1f}mm exceeds the "
-                      f"{PAD_ENTRY_NECK_MM}mm pad-entry allowance{RESET}")
+                      f"{PAD_ENTRY_NECK_MM:g}mm pad-entry allowance{RESET}")
                 continue
             if r[0] is not None:
                 print(f"{print_prefix}{YELLOW}Wide {'power' if power_wide else 'impedance'} route blocked - routed short edge at "

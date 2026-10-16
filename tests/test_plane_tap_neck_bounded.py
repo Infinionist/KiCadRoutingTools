@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 import fab_tiers  # noqa: E402
 from routing_config import GridRouteConfig  # noqa: E402
 from route_planes import _bound_tap_neck  # noqa: E402
-from single_ended_routing import PAD_ENTRY_NECK_MM  # noqa: E402
+from routing_defaults import PAD_ENTRY_NECK_MM  # noqa: E402
 
 
 def _cfg(power=None):
