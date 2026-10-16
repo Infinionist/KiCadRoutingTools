@@ -78,6 +78,9 @@ LEGALITY_KEYS = ('pad_conflicts', 'hole_conflicts', 'oob_pad_count',
                  'oob_keepout_copper_count',
                  'oob_graphic_copper_count',
                  'mating_keepout_count',
+                 # #1266: pads against ANOTHER part's graphic copper -- short
+                 # of clearance on a net it is not, and touching on any net.
+                 'graphic_pad_conflicts', 'graphic_pad_stack_count',
                  'pad_stack_count')
 
 #: The MAGNITUDES, and they are not a nicety: a count arm alone accepts a
@@ -96,13 +99,16 @@ LEGALITY_KEYS = ('pad_conflicts', 'hole_conflicts', 'oob_pad_count',
 #: skips same-net pads before it measures, so esp_prog's C4 on Y1 (one net)
 #: was no pair at all and this verb wrote a board check_assembly calls NOT
 #: BUILDABLE. The pairs are measured by check_assembly's own function.
+#: #1266: a `[pad part, copper owner]` pair against footprint graphic copper.
 PAIR_KEYS = ('pad_conflict_pairs', 'hole_conflict_pairs',
+             'graphic_pad_conflict_pairs', 'graphic_pad_stack_pairs',
              'pad_stack_pairs')
 
 MAGNITUDE_KEYS = ('pad_shortfall', 'oob_pad_amount', 'pad_edge_shortfall',
                   'oob_keepout_copper_amount',
                   'oob_graphic_copper_amount',
                   'mating_keepout_amount',
+                  'graphic_pad_shortfall',
                   'pad_stack_area')
 
 #: What `legal` does and does NOT cover, published with every summary (#962
@@ -112,6 +118,10 @@ LEGAL_SCOPE = ('pad-pad clearance', 'hole-hole clearance', 'pad copper vs the '
                'footprint graphic copper vs the outline',
                'pad copper vs a board rule-area keep-out band (#1031)',
                "part bodies vs a PCB-edge plug's mating region (#1098)",
+               "pad copper vs ANOTHER part's footprint graphic copper (a drawn "
+               "SOT-89 tab, an antenna), its filled interior included: short "
+               "of clearance on a net it is not, or touching on any net "
+               "(#1266)",
                "two parts' pad copper overlapping on a shared side, ANY net "
                "-- a pad stack, check_assembly's pad_intersection (#1064)")
 LEGAL_UNMEASURED = ('footprint graphic copper vs the edge-clearance floor '
@@ -565,6 +575,8 @@ def new_pairs(before: Dict, after: Dict, pair_key: str) -> List[str]:
 #: candidate is reported by WHO it hit, not only by which tally moved (#1209).
 PAIR_OF = {'pad_conflicts': 'pad_conflict_pairs',
            'hole_conflicts': 'hole_conflict_pairs',
+           'graphic_pad_conflicts': 'graphic_pad_conflict_pairs',
+           'graphic_pad_stack_count': 'graphic_pad_stack_pairs',
            'pad_stack_count': 'pad_stack_pairs'}
 
 
@@ -644,6 +656,11 @@ def _legality_row(before: Dict, after: Dict) -> Dict:
     # #1064: which parts' pads are stacked, and what measured them.
     row['pad_stack_pairs_after'] = after.get('pad_stack_pairs')
     row['pad_stack_basis'] = after.get('pad_stack_basis')
+    # #1266: which pads sit on (or near) another part's graphic copper.
+    for key in ('graphic_pad_conflict_pairs', 'graphic_pad_stack_pairs',
+                'graphic_pad_rows', 'graphic_pad_unmeasured'):
+        row[key + '_after'] = after.get(key)
+    row['graphic_pad_basis'] = after.get('graphic_pad_basis')
     return row
 
 
