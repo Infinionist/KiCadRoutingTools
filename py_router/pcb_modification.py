@@ -7106,12 +7106,18 @@ def merge_close_same_net_vias(all_new_vias, all_new_segments, pcb_data,
     # those positions or each new via matches its own copy at distance 0 and every
     # via gets "merged" away (hackrf: 358 false merges, planes disconnected).
     new_pos = {(round(nv['x'], 4), round(nv['y'], 4)) for nv in all_new_vias}
+    from geometry_utils import via_copper_layers
+    _cu_layers = list(getattr(getattr(pcb_data, 'board_info', None),
+                              'copper_layers', None) or ['F.Cu', 'B.Cu'])
     survivors_by_net = {}  # net_id -> [(x, y, drill, span)]
     for v in pcb_data.vias:
         if (round(v.x, 4), round(v.y, 4)) in new_pos:
             continue
+        # The survivor's copper by its TYPE, not its stored pair (found
+        # reviewing #1268): a through via covers every layer, a typed
+        # blind/micro via the run between its ends.
         survivors_by_net.setdefault(v.net_id, []).append(
-            (v.x, v.y, v.drill, _span(v.layers)))
+            (v.x, v.y, v.drill, _span(via_copper_layers(v, _cu_layers))))
     # #479 reuse-audit gap 3: plated THT PAD barrels are reuse targets too --
     # they span every copper layer, and a new via within hole-to-hole of one
     # is the U12.10 class (KiCad's hole_to_hole is net-independent, so the
@@ -7134,7 +7140,7 @@ def merge_close_same_net_vias(all_new_vias, all_new_segments, pcb_data,
         nid = nv['net_id']
         nx, ny = nv['x'], nv['y']
         ndrill = nv.get('drill', 0.0)
-        nspan = _span(nv.get('layers'))
+        nspan = _span(via_copper_layers(nv, _cu_layers))
         survivor = None
         blocked = False
         for (sx, sy, sdrill, sspan) in survivors_by_net.get(nid, []):

@@ -1084,10 +1084,15 @@ def calculate_stub_via_barrel_length(stub_vias: List, stub_layer: str, pcb_data)
         if pad_layer and pad_layer != stub_layer:
             # Calculate barrel from stub layer to pad layer
             total += pcb_data.get_via_barrel_length(stub_layer, pad_layer)
-        elif stub_layer in via.layers:
-            # No pad found or same layer - use via's other layer
-            other_layer = via.layers[1] if via.layers[0] == stub_layer else via.layers[0]
-            total += pcb_data.get_via_barrel_length(stub_layer, other_layer)
+        else:
+            # No pad found or same layer - use the via's other END, read by
+            # its type: a through via's ends are F.Cu/B.Cu whatever pair it
+            # carries (found reviewing #1268).
+            from geometry_utils import via_end_layers
+            ends = via_end_layers(via)
+            if stub_layer in ends:
+                other_layer = ends[1] if ends[0] == stub_layer else ends[0]
+                total += pcb_data.get_via_barrel_length(stub_layer, other_layer)
 
     return total
 
