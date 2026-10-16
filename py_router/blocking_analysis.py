@@ -661,10 +661,14 @@ def mincut_probe_order(pcb_data, config, working_obstacles, net_id,
         return [], True
     clone.set_layer_proximity_batch(np.array(soft_rows, dtype=np.int32))
 
-    from single_ended_routing import route_net_with_obstacles
+    from single_ended_routing import (route_net_with_obstacles,
+                                      uncommit_dropped_result)
     probe_cfg = _replace(config, max_rip_up_count=0) \
         if hasattr(config, 'max_rip_up_count') else config
     result = route_net_with_obstacles(pcb_data, net_id, probe_cfg, clone)
+    # Only the path is read; the probe commits nothing, so neither may the
+    # #189 unblock copper it committed to the LIVE pcb_data (#803).
+    uncommit_dropped_result(pcb_data, result)
     if not result or result.get('failed') or not result.get('path'):
         return [], False
 

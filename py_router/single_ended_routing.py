@@ -1908,6 +1908,7 @@ def route_oracle_links(pcb_data: PCBData, net_id: int, config: GridRouteConfig,
         if la is None or lb is None:
             print(f"    forced link endpoint layer not in the routing stack "
                   f"({al} / {bl}) -- link unroutable here")
+            uncommit_dropped_result(pcb_data, merged)
             return {'failed': True, 'iterations': 0}
         gax, gay = coord.to_grid(ax, ay)
         gbx, gby = coord.to_grid(bx, by)
@@ -1923,10 +1924,13 @@ def route_oracle_links(pcb_data: PCBData, net_id: int, config: GridRouteConfig,
                 print(f"    ({len(merged['new_segments'])} segment(s) from "
                       f"earlier forced link(s) discarded with this failure; "
                       f"a retry re-routes every link)")
+            # ...and so is their #189 unblock copper, already in pcb_data.
+            uncommit_dropped_result(pcb_data, merged)
             return result if result else {'failed': True, 'iterations': 0}
         if not (result.get('new_segments') or result.get('new_vias')):
             print(f"    forced link claimed success with ZERO copper -- "
                   f"refused (#572 false-weld fingerprint)")
+            uncommit_dropped_result(pcb_data, merged)
             result['failed'] = True
             return result
         if merged is None:
@@ -3289,6 +3293,31 @@ def _uncommit_unblock_copper(pcb_data, vias, segments) -> None:
     pcb_data.vias[:] = [v for v in pcb_data.vias if id(v) not in drop_v]
     pcb_data.segments[:] = [s for s in pcb_data.segments if id(s) not in drop_s]
     pcb_data._copper_epoch = getattr(pcb_data, '_copper_epoch', 0) + 1
+
+
+def uncommit_dropped_result(pcb_data, dropped, kept=None) -> None:
+    """A caller DROPPING a routing result it never committed (a probe, a
+    rejected retry, a result another one replaces) takes back the #189
+    unblock copper the router committed for it ahead of time (#803). Left
+    in pcb_data that copper is never written -- the writer reads results
+    -- yet every later route of the net reads it as the net's own (found
+    reviewing #1273).
+
+    A never-committed result's only copper already in pcb_data is that
+    unblock copper, EXCEPT what it shares with a committed result: a tap
+    result carries its main route as a prefix. So a dropped tap result
+    names the result kept in its place (``kept``), whose copper is spared;
+    a result built fresh by route_net_with_obstacles needs none."""
+    if not dropped:
+        return
+    spare = set()
+    if kept:
+        spare = ({id(v) for v in kept.get('new_vias') or ()}
+                 | {id(s) for s in kept.get('new_segments') or ()})
+    _uncommit_unblock_copper(
+        pcb_data,
+        [v for v in dropped.get('new_vias') or () if id(v) not in spare],
+        [s for s in dropped.get('new_segments') or () if id(s) not in spare])
 
 
 def _route_main_connection(router, obstacles, config, sources, targets, track_margin,

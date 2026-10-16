@@ -86,7 +86,8 @@ def plan_bus_corridors(pcb_data, config, bus_groups: List[BusGroup],
     whose every probe rung fails are in neither (callers fall back to
     neighbor attraction)."""
     # Deferred import: single_ended_routing must not import this module.
-    from single_ended_routing import route_net_with_obstacles
+    from single_ended_routing import (route_net_with_obstacles,
+                                      uncommit_dropped_result)
     from net_queries import calculate_route_length
 
     corridors: Dict[str, List[Tuple[int, int, int]]] = {}
@@ -128,6 +129,9 @@ def plan_bus_corridors(pcb_data, config, bus_groups: List[BusGroup],
             result = route_net_with_obstacles(
                 pcb_data, rep, cfg_k, probe_map,
                 reverse_direction=(g.clique_endpoint == "target"))
+            # A corridor probe commits nothing, so neither may the #189
+            # unblock copper it committed to the live pcb_data (#803).
+            uncommit_dropped_result(pcb_data, result)
             if not result or result.get('failed') or not result.get('path'):
                 if verbose:
                     print(f"  {g.name}: rung {k} (+{k * room_mm:.2f}mm "
