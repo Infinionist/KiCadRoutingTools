@@ -3333,9 +3333,20 @@ def wide_route_clear(route_points, width, pcb_data, net_id, config,
     # (cached per board path inside the helper). Raise-only, so a board that
     # declares nothing keeps this predicate's decisions bit-identical.
     _hole_clr = resolve_hole_clearance(pcb_data, config)
+    # #1279: the net's own protected sense branches are foreign copper off
+    # their join pad. The map stamps them (build_base_obstacles), but a width
+    # upgrade anchored on an exemption-cleared seed, or one widened past the
+    # join pad's cut-out, can still bulge into them -- so measure them here
+    # with the Phase-1 terminal gate's own measure (terminal_sense_dist).
+    from sense_branch import protected_branches, terminal_sense_dist
+    _sense_live = bool(protected_branches(pcb_data, net_id))
 
     for (x1, y1, x2, y2, layer) in legs:
         bb = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+        if _sense_live and terminal_sense_dist(
+                pcb_data, net_id, x1, y1, x2, y2, layer, half) < half + \
+                config.layer_clearance(layer, config.obstacle_clearance(net_id)) - EPS:
+            return False
         clr_max = _clr_max_by_layer.get(layer)
         if clr_max is None:
             clr_max = _max_layer_clearance(layer)

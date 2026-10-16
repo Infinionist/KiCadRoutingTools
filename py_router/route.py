@@ -1161,18 +1161,6 @@ def _late_orphan_sweep659(pcb_data, output_file, return_results, results_data,
 
 
 
-def _sense_link_end(pcb_data, net_id, end):
-    """A #572 oracle link end, moved to the join pad when it lies on one of
-    the net's protected sense branches (#1279, sense_branch.join_for_point)."""
-    from sense_branch import join_for_point
-    join = join_for_point(pcb_data, net_id, end[0], end[1], end[2])
-    if join is None:
-        return end
-    layer = end[2] if (end[2] in join.layers or '*.Cu' in join.layers) else next(
-        (l for l in join.layers if l.endswith('.Cu')), end[2])
-    return (join.global_x, join.global_y, layer) + tuple(end[3:])
-
-
 def batch_route(input_file: str, output_file: str, net_names: List[str],
                 layers: List[str] = None,
                 # #530: cap every auto-read net class at this clearance (the
@@ -3168,8 +3156,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             if _onid is not None and len(_oa) >= 4 and len(_ob) >= 4:
                 # #1279: a link end on a protected sense branch lands on its
                 # join pad instead (KiCad's ratsnest does not know the rule).
-                _oa, _ob = (_sense_link_end(pcb_data, _onid, _oa),
-                            _sense_link_end(pcb_data, _onid, _ob))
+                from sense_branch import join_link_end as _jle572
+                _oa, _ob = (_jle572(pcb_data, _onid, _oa),
+                            _jle572(pcb_data, _onid, _ob))
                 if abs(_oa[0] - _ob[0]) < 1e-6 \
                         and abs(_oa[1] - _ob[1]) < 1e-6:
                     _degen572 += 1

@@ -12,7 +12,13 @@ these cover the OTHER paths that lay copper of the branch's own net:
     oracle links and the guaranteed join route on -- leaves the routed net's
     copper out, so the branch is stamped back in as foreign copper with the
     join pad cut out.
-
+(b) kicad_oracle: a link end on the branch off its join pad moves to the
+    join pad (sense_branch.join_link_end, shared with route.py's #572
+    links), an end's cluster expansion never offers member copper, and the
+    width upgrades (wide_route_clear) and the direct sliver weld -- foreign
+    copper only, by geometry -- measure the branch too. End to end: a load
+    whose only way out is onto the sense pad, left to the route step's
+    in-run plane finalize oracle.
 Run:
     python3 tests/test_1279_sense_branch_paths.py
 """
@@ -94,6 +100,39 @@ def _vdd(p):
     return next(i for i, n in p.nets.items() if n.name == 'VDD')
 
 
+def _hits(src, out):
+    """New VDD copper of `out` within CLEARANCE of `src`'s protected branch
+    off the join pad (sense_branch.terminal_sense_dist against the INPUT's
+    branch: a tapped output re-parses as refused and measures nothing).
+    Also asserts the member trace survived."""
+    pin = parse_kicad_pcb(src)
+    b = _branch(pin)
+    assert b.protected, b.reason
+    pout = parse_kicad_pcb(out)
+    assert any(s.uuid == MEMBER for s in pout.segments), 'the member trace is gone'
+    net, vdd_out = b.net_id, _vdd(pout)
+    old = {s.uuid for s in pin.segments} | {v.uuid for v in pin.vias}
+    hits = []
+    for s in pout.segments:
+        if s.net_id != vdd_out or s.uuid in old:
+            continue
+        half = s.width / 2.0
+        gap = sb.terminal_sense_dist(pin, net, s.start_x, s.start_y, s.end_x, s.end_y,
+                                     s.layer, half) - half
+        if gap < CLEARANCE - 0.01:
+            hits.append(f'track ({s.start_x:g}, {s.start_y:g})-({s.end_x:g}, {s.end_y:g}) '
+                        f'{s.layer} w={s.width:g} gap {gap:.3f}')
+    for v in pout.vias:
+        if v.net_id != vdd_out or v.uuid in old:
+            continue
+        half = v.size / 2.0
+        gap = min(sb.terminal_sense_dist(pin, net, v.x, v.y, v.x, v.y, layer, half)
+                  for layer in pin.board_info.copper_layers) - half
+        if gap < CLEARANCE - 0.01:
+            hits.append(f'via ({v.x:g}, {v.y:g}) gap {gap:.3f}')
+    return hits
+
+
 # --- (a) the plane connector's base map --------------------------------------
 
 def test_plane_base_map_stamps_the_branch():
@@ -130,8 +169,89 @@ def test_plane_base_map_stamps_the_branch():
     assert (3.0, 5.0) in pts and (27.0, 5.0) not in pts, pts
 
 
+# --- (b) the width upgrades and the sliver weld --------------------------------
+
+def test_widening_checks_measure_the_branch():
+    """wide_route_clear (every region-join / oracle width upgrade and the
+    oracle's emitted-copper gate) and the oracle's direct sliver weld check
+    foreign copper by geometry; the branch is foreign to its own net there."""
+    from plane_region_connector import wide_route_clear
+    from kicad_oracle import _direct_sliver_weld
+    from routing_config import GridRouteConfig
+    p = parse_kicad_pcb(BOARD)
+    vdd = _vdd(p)
+    cfg = GridRouteConfig(clearance=CLEARANCE, track_width=0.3, via_size=0.6,
+                          via_drill=0.3, grid_step=0.1, layers=['F.Cu', 'B.Cu'])
+    leg = lambda *xyxy: [(xyxy[0], xyxy[1], 'F.Cu'), (xyxy[2], xyxy[3], 'F.Cu')]  # noqa: E731
+    assert not wide_route_clear(leg(15, 3, 15, 7), 0.3, p, vdd, cfg), 'a leg across the trace'
+    assert not wide_route_clear(leg(15, 3, 15, 4.6), 0.3, p, vdd, cfg), 'a leg 0.05 mm off it'
+    assert wide_route_clear(leg(15, 3, 15, 4.5), 0.3, p, vdd, cfg), 'a leg at clearance refused'
+    assert wide_route_clear(leg(3, 2, 3, 5), 0.3, p, vdd, cfg), 'a leg onto the join pad refused'
+    assert not wide_route_clear(leg(3, 2, 3, 5), 1.2, p, vdd, cfg), \
+        'a 1.2 mm leg onto C1.1 reaches past the pad onto the trace'
+    assert _direct_sliver_weld(p, vdd, 15, 4.7, 15, 5.3, 'F.Cu', cfg) is None, \
+        'a sliver weld across the trace'
+    assert _direct_sliver_weld(p, vdd, 15, 6.7, 15, 7.3, 'F.Cu', cfg) is not None, \
+        'a sliver weld clear of the branch refused'
+
+
+def test_oracle_link_ends_never_on_the_branch():
+    """An oracle link end on the trace or on U1.1 lands on C1.1, and an end
+    expanded to its copper cluster never offers member copper."""
+    from kicad_oracle import _net_track_components, _cluster_points
+    p = parse_kicad_pcb(BOARD)
+    vdd = _vdd(p)
+    for end in ((15.0, 5.0, 'F.Cu', 'track'), (27.0, 5.0, 'F.Cu', 'pad'),
+                (27.0, 5.0, None, 'pad')):
+        assert sb.join_link_end(p, vdd, end) == (3.0, 5.0, 'F.Cu', end[3]), end
+    off = (15.0, 8.0, 'F.Cu', 'pad')
+    assert sb.join_link_end(p, vdd, off) == off
+    comps = _net_track_components(p, vdd)
+    pts, _root = _cluster_points(p, vdd, 3.0, 5.0, 'F.Cu', comps)
+    assert all(sb.join_for_point(p, vdd, q[0], q[1], q[2] if len(q) > 2 else None) is None
+               for q in pts), f'the cluster of C1.1 offers sense copper: {pts}'
+
+
+def _board_oracle():
+    """Load U2.1 moves to (27, 6.7), inside a locked GND fence (F.Cu, plus a
+    B.Cu slab under it) that also holds the sense pad U1.1: the only way out
+    of the fence for U2.1 is onto U1.1. The routers refuse that, so U2.1 is
+    left for the plane finalize's oracle, whose links used to land there."""
+    t = _src().replace('(at 15 8)\n    (property "Reference" "U2"',
+                       '(at 27 6.7)\n    (property "Reference" "U2"')
+    fence = ''.join(_seg(*xyw, 'F.Cu' if i < 5 else 'B.Cu', 2,
+                         f'aaaaaaaa-0000-0000-0000-{i:012d}')
+                    for i, xyw in enumerate([(25.9, 5.4, 25.9, 7.8, 0.2), (25.9, 7.8, 28.1, 7.8, 0.2),
+                                             (28.1, 7.8, 28.1, 4.0, 0.2), (28.1, 4.0, 25.9, 4.0, 0.2),
+                                             (25.9, 4.0, 25.9, 4.6, 0.2), (27.0, 4.9, 27.0, 6.9, 3.0)]))
+    return _variant(_with_gnd(t, fence), 'oracle')
+
+
+def test_plane_finalize_oracle_leaves_the_branch_alone():
+    """route_planes (B.Cu VDD pour) then route.py: the in-run plane
+    finalize's oracle leg (#562) routes the links KiCad's fill reports
+    missing; none may land on U1.1 or the trace. U2.1 stays open."""
+    src = _board_oracle()
+    d = _tmpdir()
+    pour, out = os.path.join(d, 'pour.kicad_pcb'), os.path.join(d, 'out.kicad_pcb')
+    _run('route_planes.py', [src, pour, '--nets', 'VDD', '--plane-layers', 'B.Cu',
+                             '--clearance', str(CLEARANCE), '--track-width', '0.3'])
+    evidence(pour, 'route_planes.py output')
+    log = _run('route.py', [pour, out, '--nets', 'VDD', '--layers', 'F.Cu', 'B.Cu',
+                            '--track-width', '0.3', '--clearance-ceiling', str(CLEARANCE)])
+    evidence(out, 'route.py output')
+    assert 'KiCad-oracle recheck round 1' in log, \
+        'the oracle had no link to route; the case proves nothing\n' + log[-3000:]
+    hits = _hits(src, out)
+    assert not hits, f'new VDD copper on the sense branch off C1.1: {hits}'
+    assert _branch(out).protected, 'the routed board taps its own branch'
+
+
 TESTS = [
     test_plane_base_map_stamps_the_branch,
+    test_widening_checks_measure_the_branch,
+    test_oracle_link_ends_never_on_the_branch,
+    test_plane_finalize_oracle_leaves_the_branch_alone,
 ]
 
 
