@@ -459,7 +459,10 @@ skip cleanly without KiCad python). Run any directly:
   rule (#498), every copper layer (not the plane step's outer+pour set), and
   the fab copper-to-edge floor; GUI and CLI place identical vias. On the
   pre-2026-09-24 code it fails 9 checks, CLI included (its rules lookup read
-  the output's not-yet-copied `.kicad_dru`).
+  the output's not-yet-copied `.kicad_dru`). Its `file` arm (#1272) sets the
+  Net Clearances File / `--net-clearances`: the file replaces the class map
+  as given on both fronts (2 checks fail before #1272: the tab ignored the
+  file, route_planes.py refused the flag).
 - `test_skip_existing_zones_gui.py` -- the Planes tab's **Skip existing
   zones** box against `route_planes.py` with and without
   `--skip-existing-zones`, on the real tab (create + apply on a live board):
