@@ -435,6 +435,40 @@ Notes:
 - Tested by `tests/test_keepout.py` — flag-off regression, single-net detour, multi-net avoidance,
   and a real bundled board (`kicad_files/lvds_converter_dualclk.kicad_pcb`).
 
+### Kelvin Sense Branches (board-declared, no option)
+
+A Kelvin sense trace (a regulator's VOS/feedback divider, a shunt's sense
+pair) is on the same net as the load current it measures, so the router would
+otherwise connect the net's loads to it anywhere: connected, DRC-clean and
+electrically wrong. Declare it in the board with a KiCad **group** named
+`sense:<REF>.<PAD>`, where `REF.PAD` is the join (star) pad, holding the sense
+tracks, arcs and vias:
+
+```
+(group "sense:C108.1" (uuid ...) (members "<track uuid>" "<via uuid>" ...))
+```
+
+In KiCad: select the sense copper, Group it, and name the group. The sense pads
+are the pads of the same net that member copper touches, the join pad excepted.
+There is no CLI flag and no GUI control: the board file is the declaration, so
+every step of a chain, both front-ends and every leg that parses the board read
+it (`sense_branch.py`). For the branch's own net the member copper and the
+sense pads are foreign copper, at the net's clearance, everywhere except on the
+join pad; the endpoint derivations never offer them as a place to attach, plane
+pad taps skip the sense pads, and the member copper is kept immutable (treated
+as locked in memory, which also makes that net never-rippable for the run; no
+lock token is written). Net ids are never changed.
+
+Each branch is printed and reported in `JSON_SUMMARY.sense_branches`
+(`route.py` and `route_diff.py`). A branch is reported and left unprotected,
+with the reason, when the group name is not `sense:REF.PAD`, the join pad is
+missing or has no net, a member is not a track or via on the board, member
+copper is on another net, member copper does not touch the join pad, a sense
+pad or member is not joined to the join pad by member copper yet, other copper
+of the net already touches the branch off the join pad, or a pour of the same
+net covers it off the join pad (the fill already taps it). KiCad's DRC cannot
+see topology, so check the written board.
+
 ### Differential Pair Options (route_diff.py only)
 
 These options are only available in `route_diff.py`. All nets passed to route_diff.py are treated as differential pairs.
