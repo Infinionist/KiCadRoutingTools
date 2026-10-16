@@ -1279,7 +1279,8 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         if (diff_pair_width_from_class or diff_pair_gap_from_class or net_clearances
                 or _gap_rules_bind):
             try:
-                from list_nets import read_design_rules, resolve_net_class, fab_floors
+                from list_nets import (read_design_rules, resolve_net_class, fab_floors,
+                                       class_diff_pair_geometry)
                 _rules = read_design_rules(input_file) if input_file else {}
                 _classes = (_rules.get('classes') or {}) if _rules else {}
                 _fab = fab_floors(len(getattr(pcb_data.board_info, 'copper_layers', None) or []) or 4)
@@ -1289,12 +1290,16 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                 _classes, _rules, _wfloor, _gfloor = {}, {}, 0.0, 0.0
             for _pn, _pair in diff_pair_ids_to_route:
                 _c = _classes.get(resolve_net_class(_pair.p_net_name, _rules), {}) if _classes else {}
+                # A 0 (or absent) class pair width / gap is unset: it inherits
+                # Default's, else the class track width / clearance -- read as
+                # a width, a stored 0 put every pair at the fab floor.
+                _cw, _cg = (class_diff_pair_geometry(_c, _classes.get('Default'))
+                            if _classes else (None, None))
                 # --impedance derives width per layer, so a netclass width must
                 # not override it (#610: from_class now purely means "the flag
                 # was omitted", the impedance guard lives here).
-                _w = (_c.get('diff_pair_width')
-                      if diff_pair_width_from_class and impedance is None else None)
-                _g = _c.get('diff_pair_gap') if diff_pair_gap_from_class else None
+                _w = _cw if diff_pair_width_from_class and impedance is None else None
+                _g = _cg if diff_pair_gap_from_class else None
                 _ew = max(_w if _w is not None else config.track_width, _wfloor)
                 _eg = max(_g if _g is not None else config.diff_pair_gap, _gfloor)
                 # #441 again: a class gap REPLACES the call's floored one, so
@@ -2486,11 +2491,28 @@ Examples:
     # board's OWN Default net-class diff_pair_width (else routing_defaults), so a
     # bare diff route uses the board's own differential geometry -- parity with the
     # GUI diff tab's per-control override. (May still be overridden by --impedance.)
+    # A Default diff_pair_width / diff_pair_gap of 0 is unset, as is an absent
+    # one: list_nets.class_diff_pair_geometry, which the GUI tab resolves
+    # through too, falls back to the class track width / clearance.
+    from list_nets import read_design_rules, class_diff_pair_geometry, positive_mm
+    _dflt_cls = {}
+    if args.track_width is None or args.diff_pair_gap is None:
+        try:
+            _dflt_cls = (read_design_rules(args.input_file).get('classes') or {}).get('Default') or {}
+        except Exception:                                      # noqa: BLE001
+            _dflt_cls = {}
+    _dflt_w, _dflt_g = class_diff_pair_geometry(_dflt_cls)
+
+    def _dp_source(key, value):
+        if value is None:
+            return 'the fallback'
+        if positive_mm(_dflt_cls.get(key)) is not None:
+            return f"the board Default net-class {key.replace('_', '-')}"
+        return (f"the board Default net-class {'track width' if key == 'diff_pair_width' else 'clearance'} "
+                f"(its {key.replace('_', '-')} is unset)")
     if args.track_width is None:
-        _v = board_default_netclass_param(args.input_file, 'diff_pair_width')
-        args.track_width = _v if _v is not None else defaults.DIFF_PAIR_WIDTH
-        print(f"--track-width not given; using "
-              f"{'the board Default net-class diff-pair-width' if _v is not None else 'the fallback'} "
+        args.track_width = _dflt_w if _dflt_w is not None else defaults.DIFF_PAIR_WIDTH
+        print(f"--track-width not given; using {_dp_source('diff_pair_width', _dflt_w)} "
               f"{args.track_width}mm.")
     # via_size / via_drill: when omitted, default to the board's OWN Default
     # net-class value (else the routing_defaults constant).
@@ -2505,11 +2527,9 @@ Examples:
     # --diff-pair-gap: when omitted, default to the board's OWN Default net-class
     # diff_pair_gap (else the routing_defaults constant).
     if args.diff_pair_gap is None:
-        _g = board_default_netclass_param(args.input_file, 'diff_pair_gap')
         _gap_fallback = getattr(defaults, 'DIFF_PAIR_GAP', 0.101)
-        args.diff_pair_gap = _g if _g is not None else _gap_fallback
-        print(f"--diff-pair-gap not given; using "
-              f"{'the board Default net-class diff-pair-gap' if _g is not None else 'the fallback'} "
+        args.diff_pair_gap = _dflt_g if _dflt_g is not None else _gap_fallback
+        print(f"--diff-pair-gap not given; using {_dp_source('diff_pair_gap', _dflt_g)} "
               f"{args.diff_pair_gap}mm.")
     # --clearance given -> pure ceiling on EVERY class (Default included): base =
     # min(Default class, ceiling), non-Default capped at the ceiling. Omitted -> no

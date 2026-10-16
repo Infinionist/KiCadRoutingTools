@@ -1586,30 +1586,33 @@ class DifferentialTab(wx.Panel):
 
     def _effective_diff_pair_width(self):
         """Diff-pair leg width to route with. CHECKED: the entered value.
-        UNCHECKED: the board Default net-class ``diff_pair_width`` (control value
-        fallback when the board has none). Floored at the parent's 'track_width'
-        fab floor when the parent dialog is reachable."""
+        UNCHECKED: the board Default net-class ``diff_pair_width``, resolved as
+        route_diff.py resolves it (list_nets.class_diff_pair_geometry: a 0 is
+        unset and falls back to the class track width), else the control value.
+        Floored at the parent's 'track_width' fab floor when the parent dialog
+        is reachable."""
         if self.diff_pair_width_check.GetValue():
             val = self.diff_pair_width.GetValue()
         else:
             from .swig_gui import _get_netclass_parameters
-            nc = _get_netclass_parameters('Default') or {}
-            board_val = nc.get('diff_pair_width')
-            val = board_val if board_val else self.diff_pair_width.GetValue()
+            from list_nets import class_diff_pair_geometry
+            board_val = class_diff_pair_geometry(_get_netclass_parameters('Default') or {})[0]
+            val = board_val if board_val is not None else self.diff_pair_width.GetValue()
         return self._fab_floor_via_parent('track_width', val)
 
     def _effective_diff_pair_gap(self):
         """Diff-pair gap to route with. CHECKED: the entered value. UNCHECKED:
-        the board Default net-class ``diff_pair_gap`` (control value fallback when
-        the board has none). Floored at the parent's 'clearance' fab floor when the
-        parent dialog is reachable."""
+        the board Default net-class ``diff_pair_gap``, resolved as route_diff.py
+        resolves it (a 0 is unset and falls back to the class clearance), else
+        the control value. Floored at the parent's 'clearance' fab floor when
+        the parent dialog is reachable."""
         if self.diff_pair_gap_check.GetValue():
             val = self.diff_pair_gap.GetValue()
         else:
             from .swig_gui import _get_netclass_parameters
-            nc = _get_netclass_parameters('Default') or {}
-            board_val = nc.get('diff_pair_gap')
-            val = board_val if board_val else self.diff_pair_gap.GetValue()
+            from list_nets import class_diff_pair_geometry
+            board_val = class_diff_pair_geometry(_get_netclass_parameters('Default') or {})[1]
+            val = board_val if board_val is not None else self.diff_pair_gap.GetValue()
         return self._fab_floor_via_parent('clearance', val)
 
     def get_selected_pairs(self):

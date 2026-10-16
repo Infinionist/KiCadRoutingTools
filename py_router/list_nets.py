@@ -265,6 +265,47 @@ def board_default_netclass_param(pcb_path, key, design_rules=None):
         return None
 
 
+def positive_mm(v):
+    """``v`` as mm when it is a positive number, else None (unset)."""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    return v if v > 0 else None
+
+
+def class_diff_pair_geometry(cls, default=None):
+    """``(width, gap)`` a coupled pair of net class ``cls`` is drawn at, from
+    its class fields (mm), each None when nothing declares one. ``default`` is
+    the board's Default class, whose value a class that leaves a field unset
+    inherits (KiCad's aggregate net class).
+
+    A ``diff_pair_width`` / ``diff_pair_gap`` of 0 is UNSET, the same as an
+    absent one. Projects do store 0 (routed_output, usb_fm_radio). KiCad 7
+    then makes no diff-pair rule (``if( nc->GetDiffPairWidth() )`` in
+    drc_engine.cpp); KiCad 10 reads it as set to 0 and its router draws
+    ``max(board minimum, 0)``. Nobody means a 0 mm pair, and read as a width
+    it routed every pair at the fab floor (found reviewing #1276).
+
+    An unset width falls back to the class ``track_width``: with no diff-pair
+    rule, KiCad's netclass track-width rule sizes the pair. An unset gap falls
+    back to the class ``clearance``, which KiCad grades P against N at when no
+    pair gap is declared. The routing CLI, the GUI's Differential tab and
+    route_diff's per-pair class geometry (#435) all resolve through this."""
+    chain = [c for c in (cls, default) if c]
+
+    def first(key):
+        for c in chain:
+            v = positive_mm(c.get(key))
+            if v is not None:
+                return v
+        return None
+    width = first('diff_pair_width')
+    gap = first('diff_pair_gap')
+    return (width if width is not None else first('track_width'),
+            gap if gap is not None else first('clearance'))
+
+
 def board_default_netclass_clearance(pcb_path, design_rules=None):
     """The board's Default net-class **clearance** (mm), or ``None``. Thin wrapper
     over :func:`board_default_netclass_param` kept for existing callers."""
@@ -816,9 +857,11 @@ def print_design_rules(pcb_path):
               "impedance nets wide); thinner completes more nets and routes faster.")
 
     if 'diff_pair_gap' in d or 'diff_pair_width' in d:
+        # resolved the way route_diff.py resolves them: a 0 is unset
+        dp_w, dp_g = class_diff_pair_geometry(d)
         dp = []
-        if 'diff_pair_width' in d: dp.append(f"--track-width {d['diff_pair_width']}")
-        if 'diff_pair_gap' in d:   dp.append(f"--diff-pair-gap {d['diff_pair_gap']}")
+        if 'diff_pair_width' in d and dp_w is not None: dp.append(f"--track-width {dp_w}")
+        if 'diff_pair_gap' in d and dp_g is not None:   dp.append(f"--diff-pair-gap {dp_g}")
         print("SUGGESTED route_diff.py flags (Default class):\n  " + " ".join(dp))
 
     # Verification: DRC/connectivity at the manufacturability floor -- the rule
