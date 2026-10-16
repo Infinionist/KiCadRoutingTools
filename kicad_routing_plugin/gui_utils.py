@@ -160,6 +160,42 @@ def ui_thread_status(status_text, progress_bar, message):
         _IN_UI_STATUS = False
 
 
+def layer_costs_for_layers(costs, layers, selected_layers, copper_layers):
+    """The Basic tab's Layer Costs values as one cost per entry of `layers`.
+
+    The control is read the way it is written: one value per SELECTED routing
+    layer, else one per board copper layer (its default, its tooltip's order
+    and an AI plan's order). Either way the values are placed on `layers` BY
+    NAME -- the engines price them positionally, and a plane step routes on
+    F.Cu + its pour layers + B.Cu, not on the selected layers. Returns [] when
+    the control is empty. A count that matches neither list is returned as
+    typed: the engine reads it positionally against `layers`, and refuses it
+    when it is not one value per layer (routing_config.layer_costs_count_error).
+    Raises ValueError, naming the layers, when the values are for the selected
+    layers and `layers` holds one that is not selected (found reviewing #1269:
+    the Planes tab handed create_plane the selected layers' costs against its
+    own layer list, so a 4-layer board's default costs priced the wrong
+    layers and left the unrequested inner layer routable)."""
+    costs = list(costs or [])
+    if not costs:
+        return []
+    by_name = None
+    for names in (selected_layers, copper_layers):
+        if names and len(costs) == len(names):
+            by_name = dict(zip(names, costs))
+            break
+    if by_name is None:
+        return costs
+    missing = [l for l in layers if l not in by_name]
+    if missing:
+        raise ValueError(
+            f"Layer Costs gives {len(costs)} value(s), one per selected layer "
+            f"({' '.join(selected_layers)}), but this step also routes on "
+            f"{' '.join(missing)}: give one value per copper layer "
+            f"({' '.join(copper_layers)}) instead")
+    return [by_name[l] for l in layers]
+
+
 from contextlib import contextmanager
 
 

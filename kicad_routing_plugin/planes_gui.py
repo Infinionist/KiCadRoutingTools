@@ -951,6 +951,16 @@ class PlanesTab(wx.Panel):
         _seen = set()
         all_layers = [l for l in (['F.Cu'] + _plane_layers_in_order + ['B.Cu'])
                       if not (l in _seen or _seen.add(l))]
+        # The Basic-tab layer costs, one per entry of all_layers BY NAME. They
+        # were handed over aligned to the SELECTED layers, which create_plane
+        # read positionally against all_layers -- on a 4-layer board the
+        # default costs priced the wrong layers and the full-stack append's
+        # FORBIDDEN entry for the unrequested inner layer fell off the end.
+        from .gui_utils import layer_costs_for_layers
+        plane_layer_costs = layer_costs_for_layers(
+            config.get('layer_costs_typed'), all_layers,
+            config.get('layer_costs_selected_layers') or [],
+            list(self.pcb_data.board_info.copper_layers or []))
 
         total_vias = 0
         total_traces = 0
@@ -1069,7 +1079,7 @@ class PlanesTab(wx.Panel):
                                                 defaults.RIPUP_BLOCKER_SELECT),
                 # #381 D6: per-layer cost bias from the shared Basic-tab control
                 # (route_planes.py passes --layer-costs); None -> engine default.
-                layer_costs=config.get('layer_costs') or None,
+                layer_costs=plane_layer_costs or None,
                 # #381 D6: plane knobs the CLI threads, supplied by the
                 # create panel's controls of the same names (each starting at
                 # route_planes.py's argparse default).
