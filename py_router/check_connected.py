@@ -1281,9 +1281,14 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
         # validator logic only on the inside ones -- mask byte-identical).
         points_in_zone = []   # legacy blob (no model verdict)
         points_by_comp = {}   # fill component id -> [pid]
-        _mask = points_in_polygon_mask([p[0] for p in points_on_layer],
-                                       [p[1] for p in points_on_layer],
-                                       zone.polygon)
+        _pxs = [p[0] for p in points_on_layer]
+        _pys = [p[1] for p in points_on_layer]
+        _mask = points_in_polygon_mask(_pxs, _pys, zone.polygon)
+        # A zone's cut-outs (Zone.holes) are not pour: copper in one is not
+        # on the zone, whatever its outline says (KiCad never fills a hole).
+        for _hole in (getattr(zone, 'holes', None) or ()):
+            if _mask.any():
+                _mask &= ~points_in_polygon_mask(_pxs, _pys, _hole)
         for _in_poly, (x, y, layer, pid, size) in zip(_mask, points_on_layer):
             if _in_poly:
                 # Removal gates pass a fill validator (#outline-over-credit,

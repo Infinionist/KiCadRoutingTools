@@ -11,11 +11,17 @@ graded a board open that KiCad grades connected, or the reverse:
   terminal selector (connectivity._pad_on_group) asks the same question.
   Every case below carries the verdict pcbnew 9.0.6 and 10.0.3 gave (two
   pads, one track anchored on P2, P1 connected iff the ratsnest is empty);
-  test_kicad_cross_check re-asks pcbnew when KiCad's python is installed.
+  test_kicad_cross_check re-asks pcbnew when KiCad's python is installed;
+- a zone's cut-outs (Zone.holes): the zone credit and the plane fill model
+  read the outline alone, so a same-net pad inside a pour's cut-out graded
+  connected by the pour. KiCad never fills a hole (pcbnew 10.0.3 leaves the
+  pad unconnected); the bga_fanout frame transforms carry the holes too.
 
 Run:
     python3 tests/test_checker_kicad_parity.py
 """
+import contextlib
+import io
 import math
 import os
 import shutil
@@ -177,10 +183,114 @@ def test_kicad_cross_check():
     assert not wrong, '; '.join(wrong)
 
 
+#: A VDD pour over the board on F.Cu; P1 (10, 10) and P2 (20, 10) are VDD
+#: pads with no track between them, so only the pour can join them.
+POUR = ('  (zone (net 1) (net_name "VDD") (layer "F.Cu") (uuid "55555555-0000-0000-0000-000000000001") '
+        '(hatch edge 0.5)\n    (connect_pads yes (clearance 0.2)) (min_thickness 0.2) '
+        '(filled_areas_thickness no)\n    (fill yes (thermal_gap 0.3) (thermal_bridge_width 0.3))\n'
+        '    (polygon (pts (xy 1 1) (xy 29 1) (xy 29 29) (xy 1 29)))\n{hole}  )\n')
+#: A cut-out of the pour around P1.
+HOLE = '    (polygon (pts (xy 8.5 8.5) (xy 11.5 8.5) (xy 11.5 11.5) (xy 8.5 11.5)))\n'
+
+
+def _pour_board(d, name, hole, p1_at='10 10'):
+    path = os.path.join(d, name + '.kicad_pcb')
+    p1 = _fp('P1', 10, 10, _pad(1, 1)).replace('(at 10 10)', f'(at {p1_at})', 1)
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        # The stub on P2 makes VDD a routed net, which the grader checks.
+        f.write(HEAD + p1 + _fp('P2', 20, 10, _pad(1, 1))
+                + '  (segment (start 20 10) (end 20 12) (width 0.3) (layer "F.Cu") (net 1) '
+                  '(uuid "11111111-0000-0000-0000-000000000002"))\n'
+                + POUR.format(hole=HOLE if hole else '') + TAIL)
+    return path
+
+
+def test_zone_hole_is_not_pour():
+    """With the cut-out, P1 is not on the pour: the zone credit (fill model
+    and legacy outline blob alike), the fill model's own query and the board
+    grader all leave the net open. Without it the pour joins P1 and P2."""
+    from check_connected import run_connectivity_check
+    from plane_fill_model import get_zone_model
+    d = _tmpdir()
+    for hole in (False, True):
+        path = _pour_board(d, f'pour_hole{hole}', hole)
+        p = parse_kicad_pcb(path)
+        z = p.zones[0]
+        assert len(z.holes) == int(hole), z.holes
+        pads = p.pads_by_net[1]
+        modelled = check_net_connectivity(1, [], [], pads, p.zones, pcb_data=p)['connected']
+        blob = check_net_connectivity(1, [], [], pads, p.zones)['connected']
+        filled = get_zone_model(p, z).query_component(10.0, 10.0, size=0.0)
+        # The copper grading itself: the KiCad-refill cross-check (#654) runs
+        # only where KiCad is installed, and would hide a grading gap there.
+        os.environ['KICAD_NO_GRADE_RECONCILE'] = '1'
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                graded = not run_connectivity_check(path, quiet=True)
+        finally:
+            os.environ.pop('KICAD_NO_GRADE_RECONCILE', None)
+        want = not hole
+        assert (modelled, blob, graded) == (want, want, want), \
+            f'hole={hole}: fill-model credit {modelled}, outline credit {blob}, grader {graded}'
+        assert (filled is not None and filled > 0) == want, f'hole={hole}: fill at P1 {filled}'
+
+
+def test_frame_transforms_carry_the_holes():
+    """bga_fanout turns a copy of the board into a part's frame and maps
+    results back: the cut-out turns with the outline (before, the holes
+    stayed where they were while the outline moved, so the hole-aware fill
+    model would cut the turned pour in the wrong place)."""
+    from bga_fanout.flip_frame import to_front_frame
+    from bga_fanout.rotate_frame import to_axis_aligned_frame
+    p = parse_kicad_pcb(_pour_board(_tmpdir(), 'turn', True, p1_at='10 10 30'))
+    hole = p.zones[0].holes[0]
+    for name, (turned, back) in (('flip', to_front_frame(p, 'P1')),
+                                 ('rotate', to_axis_aligned_frame(p, 'P1'))):
+        th = turned.zones[0].holes[0]
+        assert th != hole, f'{name}: the hole did not move with the board'
+        err = max(math.hypot(bx - x, by - y)
+                  for (x, y), (bx, by) in zip(hole, (back(x, y) for x, y in th)))
+        assert err < 1e-6, f'{name}: the turned hole maps back {err:.3g} mm off'
+
+
+#: Runs in KiCad's python: fill, then P1 connected iff the ratsnest is empty.
+FILL_PROBE = r'''
+import os, sys
+import pcbnew
+for path in sys.argv[1:]:
+    b = pcbnew.LoadBoard(path)
+    pcbnew.ZONE_FILLER(b).Fill(b.Zones())
+    b.BuildConnectivity()
+    n = b.GetConnectivity().GetUnconnectedCount(False)
+    print('RESULT', os.path.basename(path)[:-len('.kicad_pcb')], n == 0)
+'''
+
+
+def test_zone_hole_kicad_cross_check():
+    """pcbnew fills the pour and agrees: joined without the cut-out, P1 left
+    unconnected with it (SKIP without KiCad's python)."""
+    from kicad_exact_fill import find_kicad_python
+    kpy = find_kicad_python()
+    if kpy is None:
+        print("    SKIP: KiCad's bundled python not found")
+        return
+    d = _tmpdir()
+    paths = [_pour_board(d, f'pour_hole{h}', h) for h in (False, True)]
+    r = subprocess.run([kpy, '-c', FILL_PROBE] + paths, capture_output=True, text=True,
+                       timeout=240)
+    got = dict(line.split()[1:] for line in r.stdout.splitlines() if line.startswith('RESULT '))
+    assert r.returncode == 0 and len(got) == 2, \
+        f'BROKEN: the pcbnew probe ran {sorted(got)} (exit {r.returncode}): {r.stderr[-2000:]}'
+    assert got == {'pour_holeFalse': 'True', 'pour_holeTrue': 'False'}, got
+
+
 TESTS = [
     test_track_through_pad_is_kicads_answer,
     test_terminal_selector_agrees,
     test_kicad_cross_check,
+    test_zone_hole_is_not_pour,
+    test_frame_transforms_carry_the_holes,
+    test_zone_hole_kicad_cross_check,
 ]
 
 
