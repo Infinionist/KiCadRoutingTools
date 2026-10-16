@@ -734,6 +734,19 @@ def _report(summary):
              summary.get('pad_stack_count_after')))
     for a, b, area, side in (summary.get('pad_stack_pairs_after') or [])[:5]:
         print("  %s/%s %.4fmm2 side %s" % (a, b, area, side or '-'))
+    # #1266: a pad on another part's footprint graphic copper (a SOT-89 tab).
+    print("pads on another part's graphic copper (touching, any net): "
+          "%s -> %s; short of clearance: %s -> %s"
+          % (summary.get('graphic_pad_stack_count_before'),
+             summary.get('graphic_pad_stack_count_after'),
+             summary.get('graphic_pad_conflicts_before'),
+             summary.get('graphic_pad_conflicts_after')))
+    for r in (summary.get('graphic_pad_rows_after') or [])[:5]:
+        print("  %s on %s's copper: %s%s" % (
+            r['pad_ref'], r['owner_ref'],
+            'touching' if r['contact']
+            else 'clearance %.4fmm short' % r['shortfall_mm'],
+            ', wholly inside the filled shape' if r['inside_filled'] else ''))
     if summary['knobs']['clearance']['source'] == 'cli':
         # A refusing tool whose threshold is a flag has to say when the
         # threshold came from the caller: measured on esp_prog (no netclass),
