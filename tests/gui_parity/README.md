@@ -585,6 +585,14 @@ skip cleanly without KiCad python). Run any directly:
   and on the same board with every type word stripped -- which KiCad loads as
   through vias, and which is the shape this repo's writer emits. A span read
   off the layer pair fails the stripped board on the text side only.
+- `test_1279_sense_branch_live.py` -- the live board keeps a `sense:` branch
+  (#1279). After the Route tab's re-sync the tracks, arc pieces and vias carry
+  what a fresh `build_pcb_data_from_board` reads (one shared extractor), copper
+  graphics survive, the branches and the protection map (memo included) match
+  a fresh build, a group drawn or removed in the session counts at the next
+  sync, and a Route-tab run with the branch's net rippable never strips the
+  sense track. Before the shared extractor the re-sync carried no uuid, no
+  KiCad lock and no arcs: 9 checks fail there.
 - `diag_fullchain_carry_rp2350.py` -- **DELETED 2026-07-26.** Was a full
   GUI-carry reproduction (ONE board + ONE shared pcb_data across all 10 plan
   steps, graded per stage vs the CLI) built to localize where the carry

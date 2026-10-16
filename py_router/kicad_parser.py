@@ -7650,42 +7650,16 @@ def pcbnew_via_type(via) -> str:
         return 'through'
 
 
-def build_pcb_data_from_board(board, guide_layer: str = "User.1",
-                              keepout_layer: str = "User.2") -> PCBData:
-    """Build PCBData directly from a pcbnew board object (no file I/O).
 
-    This is much faster than parse_kicad_pcb() since it reads from pcbnew's
-    in-memory data structures rather than parsing the file from disk.
+def pcbnew_layer_maps(board):
+    """(copper_id_to_name, id_to_name, get_layer_name) for a live pcbnew board.
 
-    Args:
-        board: A pcbnew.BOARD object (from pcbnew.GetBoard())
-
-    Returns:
-        PCBData object containing all routing-relevant data
-    """
+    copper_id_to_name: COPPER ONLY -- the copper-layer enumeration and the pad
+    '*.Cu' wildcard collapse iterate this; mixing non-copper tokens in broke
+    both. id_to_name adds the non-copper tokens for get_layer_name. Shared by
+    build_pcb_data_from_board and pcbnew_track_copper (#1279), so a track's
+    layer is named the same way wherever the live board is read."""
     import pcbnew
-
-    def to_mm(val):
-        return pcbnew.ToMM(val)
-
-    # #751: whether the live objects can be asked for their protection spec is
-    # a property of the WRAPPER, so it is decided once, on the first via (a
-    # real PCB_VIA is needed to catch the opaque-getter half of the failure).
-    # [] = not resolved yet; {} = the accessors work and no fallback is needed.
-    _text_specs_memo = []
-
-    def _via_text_specs(via):
-        if not _text_specs_memo:
-            _text_specs_memo.append(
-                {} if pcbnew_protection_accessors_usable(via)
-                else via_protection_attrs_from_board_file(board))
-        return _text_specs_memo[0]
-
-    # --- Build layer mappings ---
-    # copper_id_to_name: COPPER ONLY -- the copper-layer enumeration and the
-    # pad '*.Cu' wildcard collapse iterate this; mixing non-copper tokens in
-    # broke both. id_to_name (below) adds the non-copper tokens for
-    # get_layer_name.
     copper_id_to_name = pcbnew_copper_layer_names()
     id_to_name = dict(copper_id_to_name)
 
@@ -7721,6 +7695,138 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
             token = None
         return token if isinstance(token, str) and token \
             else board.GetLayerName(layer_id)
+
+    return copper_id_to_name, id_to_name, get_layer_name
+
+
+def pcbnew_track_copper(board, to_mm=None, get_layer_name=None):
+    """([Segment], [Via]) for a live pcbnew board's tracks, arcs and vias --
+    the ONE reader of live track copper (#1279).
+
+    build_pcb_data_from_board builds its copper with it, and the GUI's
+    pre-route re-sync (resync_live_copper) replaces a dialog's copper with it,
+    so every field the parse paths agree on -- uuid (what a `sense:` group's
+    members resolve against), the KiCad lock (#521), arc pieces chorded like
+    the text parser's, via type (#1268) and protection spec (#489) -- reaches
+    the router whichever way the board was read. The re-sync used to build its
+    own Segment/Via with a subset of the fields and no arcs at all, so a GUI
+    route after the first sync saw no lock, no uuid and no arc copper.
+    """
+    import pcbnew
+    if to_mm is None:
+        to_mm = pcbnew.ToMM
+    if get_layer_name is None:
+        get_layer_name = pcbnew_layer_maps(board)[2]
+
+    # #751: whether the live objects can be asked for their protection spec is
+    # a property of the WRAPPER, so it is decided once, on the first via (a
+    # real PCB_VIA is needed to catch the opaque-getter half of the failure).
+    # [] = not resolved yet; {} = the accessors work and no fallback is needed.
+    _text_specs_memo = []
+
+    def _via_text_specs(via):
+        if not _text_specs_memo:
+            _text_specs_memo.append(
+                {} if pcbnew_protection_accessors_usable(via)
+                else via_protection_attrs_from_board_file(board))
+        return _text_specs_memo[0]
+
+    segments = []
+    vias = []
+    for track in board.GetTracks():
+        track_class = track.GetClass()
+        if track_class == "PCB_TRACK":
+            seg = Segment(
+                start_x=to_mm(track.GetStart().x),
+                start_y=to_mm(track.GetStart().y),
+                end_x=to_mm(track.GetEnd().x),
+                end_y=to_mm(track.GetEnd().y),
+                width=to_mm(track.GetWidth()),
+                layer=get_layer_name(track.GetLayer()),
+                net_id=track.GetNetCode(),
+                uuid=_item_uuid(track),
+                locked=bool(track.IsLocked()),
+            )
+            segments.append(seg)
+        elif track_class == "PCB_ARC":
+            # Arc tracks: linearize with the same helper (and the same three
+            # defining points) the text parser uses, so GUI and CLI see the
+            # identical copper graph. Skipping them left the GUI's obstacle /
+            # connectivity model blind to arc-routed copper (thunderscope:
+            # 19,520 file-only segments in validate-board).
+            try:
+                s = (to_mm(track.GetStart().x), to_mm(track.GetStart().y))
+                a_mid = (to_mm(track.GetMid().x), to_mm(track.GetMid().y))
+                e = (to_mm(track.GetEnd().x), to_mm(track.GetEnd().y))
+            except Exception:
+                continue
+            for p0, p1 in _arc_to_segments(s, a_mid, e):
+                segments.append(Segment(
+                    start_x=p0[0], start_y=p0[1], end_x=p1[0], end_y=p1[1],
+                    width=to_mm(track.GetWidth()),
+                    layer=get_layer_name(track.GetLayer()),
+                    net_id=track.GetNetCode(),
+                    uuid=_item_uuid(track),
+                    locked=bool(track.IsLocked()),
+                ))
+        elif track_class == "PCB_VIA":
+            # GetFrontWidth() FIRST (#605). KiCad 9/10 padstack vias can
+            # refuse layerless GetWidth() with 'result with an error set'
+            # (seen on vias ADDED in-session by the plugin, then re-synced),
+            # and on KiCad 10 a bare PCB_VIA::GetWidth() trips a wxASSERT
+            # ("GetWidth called without a layer argument") for EVERY via. The
+            # assert does NOT raise, so asking GetWidth() first printed one
+            # stderr line per via and then fell through to the same answer:
+            # 34 of the 99 sets-21-27 boards logged 70-90 lines of it, in the
+            # same stream as warnings that matter. GetFrontWidth() is the
+            # stable outer-annulus accessor; GetWidth stays as the fallback
+            # for builds that lack it.
+            try:
+                _vw = track.GetFrontWidth()
+            except Exception:
+                _vw = track.GetWidth()
+            v = Via(
+                x=to_mm(track.GetPosition().x),
+                y=to_mm(track.GetPosition().y),
+                size=to_mm(_vw),
+                drill=to_mm(track.GetDrill()),
+                layers=[get_layer_name(track.TopLayer()), get_layer_name(track.BottomLayer())],
+                net_id=track.GetNetCode(),
+                # Parity with the text parser's protection spec (#489 s8) --
+                # via the #751 resolver, so a pcbnew whose SWIG wrapper omits
+                # the protection enums reads the spec from the board's FILE
+                # instead of reporting {} for every via and silently dropping
+                # the GUI half of the round trip.
+                tenting_attrs=pcbnew_via_protection_attrs(
+                    track, _via_text_specs(track)),
+                uuid=_item_uuid(track),
+                locked=bool(track.IsLocked()),
+                via_type=pcbnew_via_type(track),
+            )
+            vias.append(v)
+    return segments, vias
+
+
+def build_pcb_data_from_board(board, guide_layer: str = "User.1",
+                              keepout_layer: str = "User.2") -> PCBData:
+    """Build PCBData directly from a pcbnew board object (no file I/O).
+
+    This is much faster than parse_kicad_pcb() since it reads from pcbnew's
+    in-memory data structures rather than parsing the file from disk.
+
+    Args:
+        board: A pcbnew.BOARD object (from pcbnew.GetBoard())
+
+    Returns:
+        PCBData object containing all routing-relevant data
+    """
+    import pcbnew
+
+    def to_mm(val):
+        return pcbnew.ToMM(val)
+
+    # --- Build layer mappings ---
+    copper_id_to_name, id_to_name, get_layer_name = pcbnew_layer_maps(board)
 
     # --- Pad shape mapping ---
     pad_shape_map = {}
@@ -8545,79 +8651,9 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
               f"moved (#829)")
 
     # --- Extract segments and vias (single pass over tracks) ---
-    segments = []
-    vias = []
-    for track in board.GetTracks():
-        track_class = track.GetClass()
-        if track_class == "PCB_TRACK":
-            seg = Segment(
-                start_x=to_mm(track.GetStart().x),
-                start_y=to_mm(track.GetStart().y),
-                end_x=to_mm(track.GetEnd().x),
-                end_y=to_mm(track.GetEnd().y),
-                width=to_mm(track.GetWidth()),
-                layer=get_layer_name(track.GetLayer()),
-                net_id=track.GetNetCode(),
-                uuid=_item_uuid(track),
-                locked=bool(track.IsLocked()),
-            )
-            segments.append(seg)
-        elif track_class == "PCB_ARC":
-            # Arc tracks: linearize with the same helper (and the same three
-            # defining points) the text parser uses, so GUI and CLI see the
-            # identical copper graph. Skipping them left the GUI's obstacle /
-            # connectivity model blind to arc-routed copper (thunderscope:
-            # 19,520 file-only segments in validate-board).
-            try:
-                s = (to_mm(track.GetStart().x), to_mm(track.GetStart().y))
-                a_mid = (to_mm(track.GetMid().x), to_mm(track.GetMid().y))
-                e = (to_mm(track.GetEnd().x), to_mm(track.GetEnd().y))
-            except Exception:
-                continue
-            for p0, p1 in _arc_to_segments(s, a_mid, e):
-                segments.append(Segment(
-                    start_x=p0[0], start_y=p0[1], end_x=p1[0], end_y=p1[1],
-                    width=to_mm(track.GetWidth()),
-                    layer=get_layer_name(track.GetLayer()),
-                    net_id=track.GetNetCode(),
-                    uuid=_item_uuid(track),
-                    locked=bool(track.IsLocked()),
-                ))
-        elif track_class == "PCB_VIA":
-            # GetFrontWidth() FIRST (#605). KiCad 9/10 padstack vias can
-            # refuse layerless GetWidth() with 'result with an error set'
-            # (seen on vias ADDED in-session by the plugin, then re-synced),
-            # and on KiCad 10 a bare PCB_VIA::GetWidth() trips a wxASSERT
-            # ("GetWidth called without a layer argument") for EVERY via. The
-            # assert does NOT raise, so asking GetWidth() first printed one
-            # stderr line per via and then fell through to the same answer:
-            # 34 of the 99 sets-21-27 boards logged 70-90 lines of it, in the
-            # same stream as warnings that matter. GetFrontWidth() is the
-            # stable outer-annulus accessor; GetWidth stays as the fallback
-            # for builds that lack it.
-            try:
-                _vw = track.GetFrontWidth()
-            except Exception:
-                _vw = track.GetWidth()
-            v = Via(
-                x=to_mm(track.GetPosition().x),
-                y=to_mm(track.GetPosition().y),
-                size=to_mm(_vw),
-                drill=to_mm(track.GetDrill()),
-                layers=[get_layer_name(track.TopLayer()), get_layer_name(track.BottomLayer())],
-                net_id=track.GetNetCode(),
-                # Parity with the text parser's protection spec (#489 s8) --
-                # via the #751 resolver, so a pcbnew whose SWIG wrapper omits
-                # the protection enums reads the spec from the board's FILE
-                # instead of reporting {} for every via and silently dropping
-                # the GUI half of the round trip.
-                tenting_attrs=pcbnew_via_protection_attrs(
-                    track, _via_text_specs(track)),
-                uuid=_item_uuid(track),
-                locked=bool(track.IsLocked()),
-                via_type=pcbnew_via_type(track),
-            )
-            vias.append(v)
+    # The one extractor (#1279): the GUI's pre-route re-sync reads the live
+    # board's tracks through the same function, so the two never disagree.
+    segments, vias = pcbnew_track_copper(board, to_mm, get_layer_name)
 
     # --- Extract zones ---
     zones = _extract_zones_from_pcbnew(board, to_mm, get_layer_name)
@@ -9103,6 +9139,71 @@ def _item_uuid(item) -> str:
         return str(item.m_Uuid.AsString())
     except Exception:
         return ""
+
+
+#: Per-PCBData memos derived from the copper that a re-sync must drop (#1279).
+#: Most self-invalidate on the copper lists' identity, but not all:
+#: `_protection_map_memo` is not keyed at all (KiCad locks and `sense:` holds
+#: decide it), and `_foreign_via_arr_cache` is keyed on the via count and the
+#: TAIL via only, so a via moved in the editor kept its old position. Dropped
+#: like plane_pad_tap's rescue window drops its parent's (#665); each is
+#: rebuilt on first use.
+LIVE_COPPER_MEMOS = (
+    '_protection_map_memo', '_locked_net_ids_memo',
+    '_foreign_seg_arr_cache', '_foreign_seg_arr_trust',
+    '_foreign_via_arr_cache', '_gopn_cache', '_net_graph_cache',
+    '_pourable_anchor_cache', '_tap_spatial_index_cache', '_attach_pts_memo',
+    '_blockid_geom_memo', '_via_place_fail_memo')
+
+
+def resync_live_copper(pcb_data, board) -> None:
+    """Replace `pcb_data`'s tracks and vias with the live board's (#1279).
+
+    The GUI keeps ONE PCBData across steps and re-reads the copper before each
+    (RoutingDialog._sync_pcb_data_from_board), because tracks a step adds live
+    only in pcbnew until the user saves. The copper comes from
+    pcbnew_track_copper -- the extractor build_pcb_data_from_board uses -- so
+    it carries what a fresh build carries: uuids, KiCad locks, arc pieces, via
+    types and protection specs. Copper GRAPHICS (#337/#908, `graphic=True`)
+    are not tracks and are kept as built, after the tracks as a fresh build
+    orders them; the re-sync used to drop them with the old track list.
+    Every memo derived from the old copper is dropped. Call
+    resolve_live_sense_branches afterwards, once pads and zones are current.
+    """
+    segments, vias = pcbnew_track_copper(board)
+    pcb_data.segments = segments + [s for s in pcb_data.segments
+                                    if getattr(s, 'graphic', False)]
+    pcb_data.vias = vias
+    # The same PCBData object lives across routing runs; work cached against
+    # its old copper (rescue maps, escape memos) must not answer for the board
+    # the user has edited since.
+    from pcb_modification import bump_copper_epoch
+    bump_copper_epoch(pcb_data)
+    # #980: the input-copper mark names the objects just replaced; the next
+    # engine run marks the board it is handed.
+    from rip_up_reroute import forget_input_copper
+    forget_input_copper(pcb_data)
+    for attr in LIVE_COPPER_MEMOS:
+        vars(pcb_data).pop(attr, None)
+
+
+def resolve_live_sense_branches(pcb_data, board) -> None:
+    """Re-resolve `pcb_data.sense_branches` from the live board's `sense:`
+    groups (#1279), the way build_pcb_data_from_board resolves them.
+
+    A group drawn, edited or removed in the session counts at the next step,
+    and the branches hold the CURRENT track objects (resync_live_copper
+    replaced the ones they were resolved against). Pads persist across a
+    re-sync, so their `sense` tags from the last resolution are cleared first;
+    the protection memo is dropped because holds decide it."""
+    from sense_branch import sense_groups_from_board, resolve_sense_branches
+    for pads in pcb_data.pads_by_net.values():
+        for pad in pads:
+            if getattr(pad, 'sense', ''):
+                pad.sense = ''
+    pcb_data.sense_branches = resolve_sense_branches(
+        pcb_data, sense_groups_from_board(board))
+    vars(pcb_data).pop('_protection_map_memo', None)
 
 
 def _global_to_local(fp_x, fp_y, fp_rotation_deg, global_x, global_y):
