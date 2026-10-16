@@ -7,8 +7,13 @@ explicit.  It reads every face the intent declares -- ``blocks[].side``,
 ``edge_connectors[].side`` and ``fixed_poses[].side``, through
 ``floorplan.declared_side_claims``, the one reading ``plan_check`` prices the
 plan on -- and mirrors only the footprints whose current side differs, at
-their pose.  A ref with contradictory declarations is refused before anything
-is written.
+their pose, through the #714 writer flip.
+
+Refused with nothing written, and a ``JSON_SUMMARY`` naming the refusal:
+
+* exit 2 -- one ref declared on both faces, or a KiCad-LOCKED part declared on
+  the face it is not on (a lock is a decision; no placement tool lifts one);
+* exit 3 -- the board carries copper, which a flip would strand.
 """
 
 #: #937 registry: which door(s) show this tool, and whether it changes the
@@ -19,6 +24,9 @@ import _path  # noqa: F401  (py_placer -> py_router/py_tools on sys.path)
 import argparse
 import json
 import sys
+
+#: A contradiction in the intent, or a lock the declaration would lift.
+REFUSED_EXIT = 2
 
 
 def intent_side_targets(intent, pcb, group_sources):
@@ -61,10 +69,21 @@ def side_moves(pcb, targets):
     return moves
 
 
+def _refuse(reason, message, code, **extra):
+    """Print the refusal and a JSON_SUMMARY, so a caller scraping the summary
+    can tell a refusal from a kill. Nothing has been written."""
+    print(f"place_intent_sides: {message}", file=sys.stderr)
+    print('JSON_SUMMARY: ' + json.dumps(
+        dict({'refused': reason, 'exit_code': code, 'written': False},
+             **extra), sort_keys=True))
+    return code
+
+
 def main():
     from kicad_parser import parse_kicad_pcb
     from placement import floorplan
     from placement.groups import GroupError, parse_sources
+    from placement.parser import extract_locked_refs
     from placement.placement_state import UNPLACED_EXIT, assess_placement
     from placement.portfolio import copy_siblings
     from placement.writer import SideFlipUnsupported, write_placed_output
@@ -85,30 +104,57 @@ def main():
     except (GroupError, OSError, ValueError) as exc:
         parser.error(str(exc))
 
+    # Self-record like the other board writers (place_seed, place_pose), so a
+    # replayed redo manifest flips the parts instead of seeding them unflipped.
+    try:
+        from redo_record import record_invocation
+        record_invocation()
+    except Exception:                                       # noqa: BLE001
+        pass
+
     pcb = parse_kicad_pcb(args.input_file)
     state = assess_placement(pcb, args.input_file)
     if state.has_copper:
-        print(f"place_intent_sides: this board carries {state.segments} "
-              f"segment(s) and {state.vias} via(s); flipping footprints would "
-              "strand routed copper. Apply sides before routing.",
-              file=sys.stderr)
-        return UNPLACED_EXIT
+        return _refuse(
+            'has_copper',
+            f"this board carries {state.copper_carried}; flipping footprints "
+            f"would strand routed copper. Apply sides before routing.",
+            UNPLACED_EXIT)
 
     targets, declaration_sources, conflicts, problems = intent_side_targets(
         intent, pcb, sources)
     if conflicts:
-        print("place_intent_sides: contradictory side declarations: "
-              + '; '.join(f"{ref}: " + ', '.join(f"{side} from {src}"
-                                                 for side, src in rows)
-                          for ref, rows in sorted(conflicts.items()))
-              + ". Fix the intent; nothing was written.", file=sys.stderr)
-        return 2
+        return _refuse(
+            'contradictory_sides',
+            "contradictory side declarations: " + '; '.join(
+                f"{ref}: " + ', '.join(f"{side} from {src}"
+                                       for side, src in rows)
+                for ref, rows in sorted(conflicts.items()))
+            + ". Fix the intent; nothing was written.",
+            REFUSED_EXIT,
+            conflicts={ref: [list(r) for r in rows]
+                       for ref, rows in sorted(conflicts.items())})
+    moves = side_moves(pcb, targets)
+    # A KiCad lock is a decision someone recorded in the file, and no
+    # placement tool lifts one: place_pose refuses to move a locked part, and
+    # stage 0 refuses a fixed pose the lock contradicts. A locked part already
+    # on its declared face is not moved, so it is not refused.
+    locked = sorted({m['reference'] for m in moves}
+                    & extract_locked_refs(args.input_file))
+    if locked:
+        return _refuse(
+            'locked',
+            f"{', '.join(locked)} {'is' if len(locked) == 1 else 'are'} "
+            f"locked in the board (KiCad `(locked yes)`) on the face the "
+            f"intent does not declare, and a lock is a decision, not a "
+            f"preference. Unlock deliberately (place_pose.py IN OUT unlock "
+            f"{' '.join(locked)}) or fix the declaration; nothing was "
+            f"written.",
+            REFUSED_EXIT, locked=locked)
     try:
-        moves = side_moves(pcb, targets)
         write_placed_output(args.input_file, args.output_file, moves)
     except (ValueError, SideFlipUnsupported) as exc:
-        print(f"place_intent_sides: {exc}", file=sys.stderr)
-        return 2
+        return _refuse('flip_unsupported', str(exc), REFUSED_EXIT)
     copy_siblings(args.input_file, args.output_file)
 
     summary = {
