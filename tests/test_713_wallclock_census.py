@@ -161,6 +161,10 @@ REGISTRY = {
         'that, one forbidding a MAX_/LIMIT/BUDGET/TIMEOUT constant and one '
         'forbidding any predicting identifier.'),
 
+    'py_placer/place_candidates.py': (
+        'reporting',
+        'per-candidate and whole-run wall seconds, printed and written to the '
+        'ranking and JSON_SUMMARY; the ranking reads no clock.'),
     'py_placer/place_groups.py': (
         'reporting',
         'per-step and whole-run wall seconds, printed and written to the '

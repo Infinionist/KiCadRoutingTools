@@ -14,7 +14,7 @@ The judgement and the geometry are split:
 |---|---|---|
 | which parts belong together, and hints about where (an edge, a neighbour, a group to keep apart) | an agent, reading pin functions and datasheets | `groups.json`, checked by `py_tools/check_groups.py` |
 | one region per group | computed | `py_placer/plan_regions.py` writes them as intent zones |
-| the parts, each inside its group's region: in one pass, or group by group | computed | `place_seed --intent`, or `py_placer/place_groups.py` |
+| the parts, each inside its group's region: in one pass, or group by group | computed | `place_seed --intent`, or `py_placer/place_groups.py`; `py_placer/place_candidates.py` runs both over several seeds at once and keeps the best |
 
 The `/pcb-group-place` skill (`.claude/skills/pcb-group-place/SKILL.md`) runs
 the three in order and has the agent look at each result.
@@ -200,6 +200,23 @@ recorded chain), with the farther crystal leg pad centre to pad centre:
 The crystals now sit where a human puts them. The routing cost is mixed:
 fewer vias on esp_prog, more on the other two, inside a seed-to-seed spread
 of about 15 vias.
+
+## Time
+
+Every tool step `/pcb-group-place` runs, excluding the agent's own time, on
+one laptop: reading the board, emitting the intent, checking the groups,
+planning the regions, six candidates through `place_candidates.py` (seeds
+0-2 of each flow, four at a time), the render and `check_assembly`:
+
+| board | parts | region plan | candidates | total |
+|---|---|---|---|---|
+| esp_prog | 21 | 0.2 s | 2.8 s | 4.3 s |
+| ch32v003_usb | 25 | 0.3 s | 11.5 s | 13.4 s |
+| ch32v006_dev | 26 | 4.3 s | 15.3 s | 22.6 s |
+
+ch32v006_dev's six groups make 283,680 floorplans, which the region search
+evaluates in 4.3 s: it lays each split out once per box and each group's own
+cost terms once per cell rectangle, rather than once per floorplan.
 
 ## Where humans put each group
 

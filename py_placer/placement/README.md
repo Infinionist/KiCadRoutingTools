@@ -652,6 +652,11 @@ python py_placer/place_groups.py fixed.kicad_pcb by_group.kicad_pcb \
   locked in the input is listed apart (`floorplan_errors_pinned`) and does not
   fail the run. `--final-polish MM` adds a bounded `place_optimize` pass, kept
   only when not worse. The output carries the input's own locks and no others.
+- **`place_candidates.py`** places the board both ways over several seeds
+  (default seeds 0-2 of each flow), four candidates at a time (`--jobs`),
+  grades each one as `place_groups.py` grades its own, ranks them by
+  buildable, floorplan errors, crossings and HPWL, and copies the best to the
+  output; every candidate stays in `<output>.candidates/` with its log.
 
 ## place_pose.py — the sanctioned pose setter (issue #892)
 

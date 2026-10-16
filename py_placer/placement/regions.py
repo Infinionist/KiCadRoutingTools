@@ -311,6 +311,98 @@ class Planner:
                          self._fit(g.dims[1], g.dims[0])]
                      for n, g in groups.items()}
         self.gut_cells = int(math.ceil(gutter / 2.0 / fg.g))
+        # An exhaustive search lays out every tree, and the same split of
+        # the same box, and the same group in the same cells, recur across
+        # thousands of them (ch32v006_dev: 283,680 trees, 15 s before these).
+        # Both memos return what the plain computation would.
+        self._cut_memo: Dict = {}
+        self._leaf_memo: Dict = {}
+
+    def _cut_box(self, op, left, rest, box):
+        """The two boxes `layout` gives `left` and `rest` under `op` in `box`,
+        memoised on (op, left, box): the cut depends on the leaf SETS, not on
+        how either side is subdivided."""
+        key = (op, left, box)
+        got = self._cut_memo.get(key)
+        if got is not None:
+            return got
+        fg, demand = self.fg, self.demand
+        i0, j0, i1, j1 = box
+        dl = sum(demand[g] for g in left)
+        dr = sum(demand[g] for g in rest)
+        frac = dl / max(1e-9, dl + dr)
+        total = fg.cells(i0, j0, i1, j1)
+        if op == 'H':
+            lo, hi = i0 + 1, i1 - 1
+            if hi < lo:
+                k = (i0 + i1) // 2
+            else:
+                k = _cut(lambda m: fg.cells(i0, j0, m, j1), lo, hi, frac * total)
+            got = ((i0, j0, k, j1), (k, j0, i1, j1))
+        else:
+            lo, hi = j0 + 1, j1 - 1
+            if hi < lo:
+                k = (j0 + j1) // 2
+            else:
+                k = _cut(lambda m: fg.cells(i0, j0, i1, m), lo, hi, frac * total)
+            got = ((i0, j0, i1, k), (i0, k, i1, j1))
+        self._cut_memo[key] = got
+        return got
+
+    def _enum(self, items, box, parent_op=None, right=False):
+        """`enumerate_trees(items, parent_op, right)`, in the same order, each
+        tree with its cells ((group, cells), ...) laid out in `box`."""
+        if len(items) == 1:
+            yield items[0], ((items[0], box),)
+            return
+        for op in ('H', 'V'):
+            if right and op == parent_op:
+                continue
+            for left in _subsets(items):
+                rest = tuple(i for i in items if i not in left)
+                a, b = self._cut_box(op, left, rest, box)
+                for tl, cl in self._enum(left, a, op, False):
+                    for tr, cr in self._enum(rest, b, op, True):
+                        yield (op, tl, tr), cl + cr
+
+    def _leaf(self, n, c):
+        """One group's own terms in cells `c`, memoised: (rect, centroid,
+        free mm2, and each term's contributions in the order `evaluate`
+        adds them)."""
+        key = (n, c)
+        got = self._leaf_memo.get(key)
+        if got is not None:
+            return got
+        fg, g = self.fg, self.groups[n]
+        rect = fg.rect_mm(*c)
+        cen = fg.centroid(*c)
+        free = fg.cells(*c) * fg.g * fg.g
+        x0, y0, x1, y1 = rect
+        w, h = x1 - x0 - self.gutter, y1 - y0 - self.gutter
+        short, long_ = max(1e-6, min(w, h)), max(w, h)
+        inf_fit = None
+        if not self._fits_in(n, c):
+            inf_fit = INFEASIBLE + max(0.0, g.dims[0] - short) \
+                + max(0.0, g.dims[1] - long_)
+        blob = g.need_area / CLUSTER_DENSITY
+        a = min(short, math.sqrt(blob))
+        spread = W_SPREAD * g.internal_links * (a + blob / a) / 3.0
+        inf_free = (INFEASIBLE + (g.need_area - free)
+                    if free + 1e-6 < g.need_area else None)
+        asp = long_ / max(1e-6, short)
+        aspect = W_ASPECT * (asp - ASPECT_FREE) if asp > ASPECT_FREE else None
+        anchor = [W_ANCHOR * _gap(rect, fr)
+                  for fr in (self.fixed_rects.get(f) for f in g.fixed) if fr is not None]
+        edge = None
+        if g.edge:
+            bx0, by0, bx1, by1 = self.bounds
+            d = {'N': y0 - by0, 'S': by1 - y1, 'W': x0 - bx0, 'E': bx1 - x1}[g.edge]
+            edge = W_EDGE * max(0.0, d)
+        wire = [w_ * (abs(cen[0] - tx) + abs(cen[1] - ty))
+                for (tx, ty, w_) in self.terminals.get(n, ())]
+        got = (rect, cen, free, inf_fit, spread, inf_free, aspect, anchor, edge, wire)
+        self._leaf_memo[key] = got
+        return got
 
     def _fit(self, h_mm, w_mm):
         fg = self.fg
@@ -340,42 +432,38 @@ class Planner:
                 return True
         return False
 
-    def evaluate(self, tree) -> Tuple[float, Dict]:
-        cells = layout(tree, self.fg, self.demand)
-        fg = self.fg
-        rect = {n: fg.rect_mm(*c) for n, c in cells.items()}
-        cen = {n: fg.centroid(*c) for n, c in cells.items()}
-        free = {n: fg.cells(*c) * fg.g * fg.g for n, c in cells.items()}
+    def evaluate(self, tree, cells=None) -> Tuple[float, Dict]:
+        """(cost, info) of `tree`, laid out by `layout` unless `cells` (the
+        exhaustive search's own layout of it) are given."""
+        if cells is None:
+            cells = layout(tree, self.fg, self.demand)
+        leaf = {n: self._leaf(n, c) for n, c in cells.items()}
+        rect = {n: v[0] for n, v in leaf.items()}
+        cen = {n: v[1] for n, v in leaf.items()}
+        free = {n: v[2] for n, v in leaf.items()}
         cost = 0.0
         terms = {'wire': 0.0, 'spread': 0.0, 'anchor': 0.0, 'edge': 0.0,
                  'near': 0.0, 'apart': 0.0, 'aspect': 0.0, 'infeasible': 0.0}
-        for n, g in self.groups.items():
-            x0, y0, x1, y1 = rect[n]
-            w, h = x1 - x0 - self.gutter, y1 - y0 - self.gutter
-            short, long_ = max(1e-6, min(w, h)), max(w, h)
-            if not self._fits_in(n, cells[n]):
-                terms['infeasible'] += INFEASIBLE + max(0.0, g.dims[0] - short) \
-                    + max(0.0, g.dims[1] - long_)
+        for n in self.groups:
             # the group's cluster: a square blob when the region is wide
             # enough, else a strip `short` wide -- intra-group wire length
-            # grows with its span (mean Manhattan distance ~ (a + b) / 3)
-            blob = g.need_area / CLUSTER_DENSITY
-            a = min(short, math.sqrt(blob))
-            terms['spread'] += W_SPREAD * g.internal_links * (a + blob / a) / 3.0
-            if free[n] + 1e-6 < g.need_area:
-                terms['infeasible'] += INFEASIBLE + (g.need_area - free[n])
-            asp = long_ / max(1e-6, short)
-            if asp > ASPECT_FREE:
-                terms['aspect'] += W_ASPECT * (asp - ASPECT_FREE)
-            for fr in (self.fixed_rects.get(f) for f in g.fixed):
-                if fr is not None:
-                    terms['anchor'] += W_ANCHOR * _gap(rect[n], fr)
-            if g.edge:
-                bx0, by0, bx1, by1 = self.bounds
-                d = {'N': y0 - by0, 'S': by1 - y1, 'W': x0 - bx0, 'E': bx1 - x1}[g.edge]
-                terms['edge'] += W_EDGE * max(0.0, d)
-            for (tx, ty, w_) in self.terminals.get(n, ()):
-                terms['wire'] += w_ * (abs(cen[n][0] - tx) + abs(cen[n][1] - ty))
+            # grows with its span (mean Manhattan distance ~ (a + b) / 3);
+            # see `_leaf`, which computes each term once per cells.
+            (_r, _c, _f, inf_fit, spread, inf_free, aspect, anchor, edge,
+             wire) = leaf[n]
+            if inf_fit is not None:
+                terms['infeasible'] += inf_fit
+            terms['spread'] += spread
+            if inf_free is not None:
+                terms['infeasible'] += inf_free
+            if aspect is not None:
+                terms['aspect'] += aspect
+            for v in anchor:
+                terms['anchor'] += v
+            if edge is not None:
+                terms['edge'] += edge
+            for v in wire:
+                terms['wire'] += v
         for (a, b), w_ in self.links.items():
             if a in cen and b in cen:
                 terms['wire'] += w_ * (abs(cen[a][0] - cen[b][0]) + abs(cen[a][1] - cen[b][1]))
@@ -401,13 +489,16 @@ class Planner:
         best = None
         n_eval = 0
         if len(names) <= EXHAUSTIVE_MAX:
-            for t in enumerate_trees(names):
-                c, _ = self.evaluate(t)
+            fg = self.fg
+            for t, cl in self._enum(tuple(names), (0, 0, fg.ny, fg.nx)):
+                cells = dict(cl)
+                c, _ = self.evaluate(t, cells)
                 n_eval += 1
                 if best is None or c < best[1] - 1e-9:
-                    best = (t, c)
-        else:
-            best, n_eval = self._anneal(names, seed, iters or 20000)
+                    best = (t, c, cells)
+            c, info = self.evaluate(best[0], best[2])
+            return best[0], c, info, n_eval
+        best, n_eval = self._anneal(names, seed, iters or 20000)
         c, info = self.evaluate(best[0])
         return best[0], c, info, n_eval
 

@@ -62,6 +62,11 @@ REFUSED_TOOLS = {
         'seeds a placement one functional group at a time into the regions '
         'of an intent (place_seed per group); the plan format has no placement '
         'step. Run it BEFORE the plan and start the plan from its output'),
+    'place_candidates.py': (
+        'places a grouped board several ways at once (place_seed and '
+        'place_groups over seeds) and keeps the best; the plan format has no '
+        'placement step, and keeping a candidate is a decision. Run it BEFORE '
+        'the plan and start the plan from its output'),
     'place_reconstruct.py': (
         'reconstructs a damaged placement; the plan format has no placement '
         'step. Run it BEFORE the plan and start the plan from its output'),

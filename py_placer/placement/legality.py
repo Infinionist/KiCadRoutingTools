@@ -915,6 +915,71 @@ class BoardOutlineGate:
             bool(cutouts) or len(rings) > 1 or not ring_is_rect(rings[0]))
         self._near: Dict[object, list] = {}
         self._edges = None
+        self._safe = None     # `_rect_safe`'s grid, built on first use
+
+    #: The cell size of `_rect_safe`'s grid, mm.
+    SAFE_CELL_MM = 0.25
+
+    def _build_safe(self):
+        """A grid of cells that lie wholly inside an outer ring, outside
+        every cutout, and more than `margin` from every ring edge (outer,
+        cutout and milled alike), with its prefix sum. A rect covering only
+        such cells has every corner on the board, no edge within the margin
+        of any ring edge and no ring inside it, so both exact tests answer
+        it with their bbox term alone (`rect_blocked` False). Conservative by
+        construction; when it cannot be built, nothing is answered by it."""
+        self._safe = False
+        try:
+            import numpy as np
+            import shapely
+            from shapely.geometry import LineString, Polygon
+            from shapely.ops import unary_union
+        except ImportError:
+            return
+        if not self.outer or self.bounds is None:
+            return
+        outers = [self.outer] if isinstance(self.outer[0], tuple) else self.outer
+        eps = 1e-3
+        try:
+            region = unary_union([Polygon(o) for o in outers if len(o) >= 3])
+            if self.cutouts:
+                region = region.difference(unary_union(
+                    [Polygon(c) for c in self.cutouts if len(c) >= 3]))
+            bands = [LineString([(a, b), (c, d)]).buffer(self.margin + eps)
+                     for (a, b, c, d) in self.edges() if (a, b) != (c, d)]
+            if bands:
+                region = region.difference(unary_union(bands))
+            g = self.SAFE_CELL_MM
+            inner = region.buffer(-(g * math.sqrt(0.5) + eps))
+        except Exception:
+            return
+        bx0, by0, bx1, by1 = self.bounds
+        nx = max(1, int(math.ceil((bx1 - bx0) / g)))
+        ny = max(1, int(math.ceil((by1 - by0) / g)))
+        xs = bx0 + (np.arange(nx) + 0.5) * g
+        ys = by0 + (np.arange(ny) + 0.5) * g
+        X, Y = np.meshgrid(xs, ys)
+        ok = shapely.contains_xy(inner, X, Y).astype(np.int64)
+        ps = np.zeros((ny + 1, nx + 1), dtype=np.int64)
+        ps[1:, 1:] = ok.cumsum(0).cumsum(1)
+        self._safe = (bx0, by0, g, nx, ny, ps)
+
+    def _rect_safe(self, rect) -> bool:
+        """True when `rect` covers only cells of `_build_safe`'s grid, so
+        the exact tests would find nothing past the bbox term."""
+        if self._safe is None:
+            self._build_safe()
+        if not self._safe:
+            return False
+        ox, oy, g, nx, ny, ps = self._safe
+        j0 = int((rect[0] - ox) // g)
+        j1 = int((rect[2] - ox) // g)
+        i0 = int((rect[1] - oy) // g)
+        i1 = int((rect[3] - oy) // g)
+        if j0 < 0 or i0 < 0 or j1 >= nx or i1 >= ny:
+            return False
+        n = (ps[i1 + 1, j1 + 1] - ps[i0, j1 + 1] - ps[i1 + 1, j0] + ps[i0, j0])
+        return n == (i1 - i0 + 1) * (j1 - j0 + 1)
 
     def edges(self):
         """Every ring edge as (x1, y1, x2, y2), built once."""
@@ -1112,6 +1177,8 @@ class BoardOutlineGate:
         part, and `rings_enclosing` only ever returns MILLED ids, so the outer
         outline and the genuine cutouts can never be exempted by this path.
         """
+        if self._rect_safe(rect):
+            return False
         from check_drc import _point_on_board, _seg_seg_dist_coords
         x0, y0, x1, y1 = rect
         for (px, py) in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)):
@@ -1203,7 +1270,7 @@ class BoardOutlineGate:
         or the two stop agreeing on legality (see the swallow probe below).
         """
         amt = self.bbox_outside_amount(rect)
-        if not (self.active and exact):
+        if not (self.active and exact) or self._rect_safe(rect):
             return amt
         from check_drc import _point_on_board, _point_to_rings_distance, \
             _seg_seg_dist_coords

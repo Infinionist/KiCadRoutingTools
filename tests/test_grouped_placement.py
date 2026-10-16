@@ -37,6 +37,8 @@ and the seeder's `decap_owner_scope`.
      them in the CH340's group (place_groups' steps) and drops the emptied
      clock group; and in both flows the seeder seats Y1 beside those pins
      and each cap beside Y1, every claim met.
+ 11. place_candidates places both flows, keeps the best by the skill's order
+     (buildable, floorplan errors, crossings, HPWL) and copies exactly it.
 """
 import json
 import os
@@ -283,6 +285,41 @@ def test_end_to_end(tmp):
         _check_crystal("one pass", one, doc)
     _check_crystal("the loop", outs[0], doc)
     test_pinned_errors(outs[0], intent)
+    test_candidates(tmp, fixed, gpath, intent)
+
+
+def test_candidates(tmp, fixed, gpath, intent):
+    """place_candidates places both flows, keeps the best by the skill's
+    order, and copies exactly that candidate to the output."""
+    sys.path.insert(0, os.path.join(ROOT, 'py_placer'))
+    import place_candidates
+    out = os.path.join(tmp, 'best.kicad_pcb')
+    rank = os.path.join(tmp, 'rank.json')
+    r = subprocess.run(PY + [os.path.join(ROOT, 'py_placer/place_candidates.py'), fixed, out,
+                             '--groups', gpath, '--intent', intent, '--seeds', '0',
+                             '--jobs', '2', '--json', rank], capture_output=True, text=True)
+    ok("place_candidates writes the best board and a ranking (exit 0 or 4)",
+       r.returncode in (0, 4) and os.path.isfile(out) and os.path.isfile(rank),
+       r.stdout[-800:] + r.stderr[-800:])
+    if not os.path.isfile(rank):
+        return
+    rep = json.load(open(rank))
+    rows = [c for c in rep['candidates'] if 'error' not in c]
+    ok("both flows were placed and graded",
+       sorted(c['flow'] for c in rows) == ['loop', 'one'], rep['candidates'])
+    want = min(rows, key=place_candidates.rank_key)
+    ok("the kept candidate is the best by buildable, errors, crossings, HPWL",
+       (rep['best']['flow'], rep['best']['seed']) == (want['flow'], want['seed']), rep['best'])
+    a, b = parse_kicad_pcb(out), parse_kicad_pcb(rep['best']['board'])
+    ok("the output is that candidate",
+       all((round(a.footprints[k].x, 4), round(a.footprints[k].y, 4), a.footprints[k].rotation)
+           == (round(b.footprints[k].x, 4), round(b.footprints[k].y, 4), b.footprints[k].rotation)
+           for k in a.footprints))
+    ok("an unbuildable candidate ranks after any buildable one",
+       place_candidates.rank_key({'flow': 'one', 'seed': 0, 'buildable': False,
+                                  'floorplan_errors': 0, 'crossings': 0, 'hpwl': 0.0})
+       > place_candidates.rank_key({'flow': 'loop', 'seed': 9, 'buildable': True,
+                                    'floorplan_errors': 9, 'crossings': 999, 'hpwl': 999.0}))
 
 
 def _check_crystal(label, board, doc):

@@ -165,48 +165,42 @@ python3 -X utf8 py_tools/check_floorplan.py wk/<run>/fixed.kicad_pcb --intent wk
 
 ## 5. Place into the regions
 
-Two flows fill the same regions. Run both, two or three `--seed` values each.
-
-**One pass:** every group at once, each part held to its group's zone.
-
-```bash
-python3 -X utf8 py_placer/place_seed.py wk/<run>/fixed.kicad_pcb wk/<run>/one_s0.kicad_pcb \
-    --intent wk/<run>/regions_intent.json --seed 0
-```
-
-**Group by group:** each group is seeded into its region in order. The groups
-not yet placed are deleted from the step board, so they neither block nor
-pull, and a cap is claimed only at its own group's IC.
+Two flows fill the same regions: **one pass** (`place_seed --intent`, every
+group at once, each part held to its group's zone) and **group by group**
+(`py_placer/place_groups.py`: each group seeded into its region in order, the
+groups not yet placed deleted from the step board, a cap claimed only at its
+own group's IC). Neither wins on every board, so place both, several seeds
+each, and keep the best. One command does it, four candidates at a time:
 
 ```bash
-python3 -X utf8 py_placer/place_groups.py wk/<run>/fixed.kicad_pcb wk/<run>/grp_s0.kicad_pcb \
-    --groups wk/<run>/groups.json --intent wk/<run>/regions_intent.json --seed 0 --json wk/<run>/grp_s0.json
+python3 -X utf8 py_placer/place_candidates.py wk/<run>/fixed.kicad_pcb wk/<run>/placed.kicad_pcb \
+    --groups wk/<run>/groups.json --intent wk/<run>/regions_intent.json --json wk/<run>/candidates.json
 ```
 
-It prints one line per group, then the whole board's grade.
-`--final-polish 1` adds one bounded whole-board polish, kept only when it
-improves crossings without losing anything else.
-
-Exit 4 from either means the board was written, but the grade found
-something. Read the lines:
-- **UNSEATED parts:** give the group more room, or check its region.
-- **floorplan errors:** decap limits are the usual ones. An error on a part
-  locked in the input is listed apart (`pinned`) and is the board's or the
-  intent's to settle, not the placement's.
-- **NOT buildable.**
-
-Keep the best candidate by:
+It places seeds 0, 1 and 2 of each flow (`--seeds`, `--flows`), grades every
+candidate the same way, and keeps the best by:
 1. buildable;
 2. then floorplan errors;
 3. then airwire crossings;
 4. then HPWL.
 
+It prints one line per candidate and copies the best to the output; every
+candidate stays in `wk/<run>/placed.candidates/` with its log. Exit 4 means
+the kept board was written, but its grade found something. Read the lines:
+- **UNSEATED parts** (in the candidate's log): give the group more room, or
+  check its region.
+- **floorplan errors:** decap limits are the usual ones. An error on a part
+  locked in the input is listed apart (`pinned`) and is the board's or the
+  intent's to settle, not the placement's.
+- **NOT buildable.**
+
 When routing the candidates is affordable, route the best of each flow and
 keep the one that routes better. Section "Measured basis" ranks by routed
-result, and there the two flows split.
-
-Copy the one you keep to `wk/<run>/placed.kicad_pcb` with
-`python3 -X utf8 py_router/copy_board.py <kept> wk/<run>/placed.kicad_pcb`.
+result, and there the two flows split. A single flow or seed is
+`py_placer/place_seed.py ... --intent wk/<run>/regions_intent.json --seed N`
+or `py_placer/place_groups.py ... --groups ... --intent ... --seed N`
+(`--final-polish 1` adds one bounded whole-board polish, kept only when it
+improves crossings without losing anything else).
 
 Render and look:
 

@@ -146,7 +146,7 @@ The placement-and-routing entry point. It gives the agent a goal per mode, the r
 Placement by function, the way a designer lays a board out:
 - **Grouping.** The agent sorts the parts into functional groups (power entry and conditioning, the core and its clock, each interface, the user interface), reading pin functions and datasheets, and records why. `py_tools/check_groups.py` checks the result.
 - **Regions.** `py_placer/plan_regions.py` computes one region per group from the board's wiring and the agent's hints.
-- **Placement.** `place_seed --intent` fills the regions in one pass, and `py_placer/place_groups.py` seeds the groups one at a time, leaving the groups not yet placed out of each step entirely. The skill runs both and keeps the better.
+- **Placement.** `place_seed --intent` fills the regions in one pass, and `py_placer/place_groups.py` seeds the groups one at a time, leaving the groups not yet placed out of each step entirely. `py_placer/place_candidates.py` runs both over several seeds at once and keeps the best.
 
 It places only; `/pcb-free-agent` routes and verifies the result, and lists it as one of its levers. See [Grouped placement](grouped-placement.md).
 
