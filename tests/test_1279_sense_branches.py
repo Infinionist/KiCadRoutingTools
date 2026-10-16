@@ -99,6 +99,50 @@ def test_isolate_refuses_tapped_or_unjoined_branches():
     assert sb.isolate(p, [BRANCH]) == {}
 
 
+def _board_with_loose_sense_pad():
+    """sense_star plus U4.1 (VDD) at (27, 15), on no copper yet."""
+    with open(BOARD, encoding='utf-8') as f:
+        src = f.read()
+    u4 = ('  (footprint "T:P" (layer "F.Cu") (at 27 15)\n'
+          '    (property "Reference" "U4" (at 0 -2 0) (layer "F.SilkS") '
+          '(effects (font (size 1 1))))\n'
+          '    (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu" "F.Paste" '
+          '"F.Mask") (net 1 "VDD")))\n')
+    anchor = '  (segment (start 3 5)'
+    assert src.count(anchor) == 1, 'fixture edit missed'
+    d = _tmpdir()
+    path = os.path.join(d, 'loose.kicad_pcb')
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(src.replace(anchor, u4 + anchor))
+    shutil.copy(BOARD[:-len('.kicad_pcb')] + '.kicad_pro',
+                os.path.join(d, 'loose.kicad_pro'))
+    return path
+
+
+def test_unjoined_sense_pad_is_refused_not_dropped():
+    """A declared sense pad the branch copper does not join yet must not be
+    taken off the net: nothing would route it, and the run's grade, which no
+    longer sees it, called the net complete while the board shipped it open
+    (route.py exit 0, failed/open empty, check_connected: not connected)."""
+    board = _board_with_loose_sense_pad()
+    p = parse_kicad_pcb(board)
+    vdd = next(i for i, n in p.nets.items() if n.name == 'VDD')
+    loose = {**BRANCH, 'sense': [('U1', '1'), ('U4', '1')]}
+    assert sb.isolate(p, [loose]) == {}, 'a branch with an unjoined sense pad was protected'
+    assert 'U4' in {q.component_ref for q in p.pads_by_net[vdd]}
+
+    out = os.path.join(_tmpdir(), 'out.kicad_pcb')
+    path = _sense_file([{'name': 'vos', 'sense': ['U1.1', 'U4.1'], 'join': 'C1.1'}])
+    r = subprocess.run([sys.executable, 'py_router/route.py', board, out, '--nets', 'VDD']
+                       + GEOM + ['--sense-branches', path],
+                       cwd=ROOT, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-2000:]
+    assert 'U4.1 not joined' in r.stdout, r.stdout[-2000:]
+    c = subprocess.run([sys.executable, 'py_router/check_connected.py', out, '--nets', 'VDD'],
+                       cwd=ROOT, capture_output=True, text=True)
+    assert 'ALL NETS FULLY CONNECTED' in c.stdout + c.stderr, c.stdout[-2000:]
+
+
 def test_rotated_join_pad_is_read_in_board_space():
     """A 90-degree join pad (0.6 x 2.0 in its own frame, 2.0 wide along board
     x) with the sense trace starting off-centre ON it: the contact is on the
@@ -191,6 +235,7 @@ TESTS = [
     test_isolate_moves_sense_copper_to_a_private_net,
     test_isolate_refuses_tapped_or_unjoined_branches,
     test_rotated_join_pad_is_read_in_board_space,
+    test_unjoined_sense_pad_is_refused_not_dropped,
     test_loader_rejects_bad_pad_keys,
     test_restore_undoes_isolate,
     test_router_keeps_loads_off_the_sense_trace,

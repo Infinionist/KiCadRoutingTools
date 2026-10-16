@@ -24,10 +24,11 @@ those items: the writer emits only NEW copper, which belongs to the real net, an
 
 A branch is left unprotected, with a printed reason, when its pads are missing or
 off-net, when its sense copper does not reach the join pad yet (nothing to
-protect -- route the branch first), or when the input already taps it (another
-pad of the net is in the sense component). KiCad DRC cannot see topology, so
-check the
-written board in every case.
+protect -- route the branch first), when one of its sense pads is not joined
+to the join pad by that copper yet (protecting it would take the pad off the
+net for the run, unrouted and unseen by the run's own grade), or when the
+input already taps it (another pad of the net is in the sense component).
+KiCad DRC cannot see topology, so check the written board in every case.
 
 `restore()` undoes the isolation; `batch_route` / `batch_route_diff_pairs` are
 wrapped with `restoring` so a PCBData the caller owns (the GUI keeps one across
@@ -145,6 +146,20 @@ def _touches_join(item, join) -> bool:
     return False
 
 
+def _joined_to(items, join) -> Set[int]:
+    """Indices of `items` (a sense component) that copper joins to the join
+    pad: the items touching it, and everything they reach off the pad."""
+    seen: Set[int] = {i for i, it in enumerate(items) if _touches_join(it, join)}
+    queue = list(seen)
+    while queue:
+        i = queue.pop()
+        for j, other in enumerate(items):
+            if j not in seen and _touch(items[i], other, join):
+                seen.add(j)
+                queue.append(j)
+    return seen
+
+
 def sense_component(pcb_data, branch: dict):
     """The copper reachable from the branch's sense pads without crossing its join
     pad. Returns (join_pad, sense_pads, items, reason): `items` the component as
@@ -195,10 +210,21 @@ def isolate(pcb_data, branches: Optional[List[dict]]) -> Dict[str, int]:
         if why is None:
             extra = sorted(f"{it.component_ref}.{it.pad_number}" for k, it in items
                            if k == 'pad' and it not in sense)
+            joined = _joined_to(items, join)
+            loose = sorted(f"{it.component_ref}.{it.pad_number}"
+                           for i, (k, it) in enumerate(items)
+                           if k == 'pad' and i not in joined)
             if extra:
                 why = f"input copper already taps it ({', '.join(extra)})"
-            elif not any(_touches_join(it, join) for it in items):
+            elif not joined:
                 why = "its sense copper does not reach the join pad yet -- nothing to protect"
+            elif loose:
+                # Protecting it would take these pads off the net for the
+                # run: nothing would route them, and the run's own grade
+                # (which no longer sees them) would call the net complete.
+                why = (f"sense pad(s) {', '.join(loose)} not joined to "
+                       f"{join.component_ref}.{join.pad_number} by copper yet -- "
+                       f"route the branch first")
         if why is not None:
             print(f"  {b['name']}: NOT protected -- {why}")
             continue
