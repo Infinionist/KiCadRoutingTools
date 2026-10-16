@@ -39,6 +39,7 @@ import contextlib
 import json
 import math
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -533,6 +534,34 @@ def sidecar(out, st, names, teeth, berths, cut, read=None):
     return plan
 
 
+def lock_parts(src, dst, refs, unlock=False):
+    """`src` written to `dst` with the footprints `refs` LOCKED (`unlock`: their lock taken off again) -- the cap step
+    and the engine's foreign pads hold a locked part where it stands (placement.fanout_clearance.movable_cap_refs,
+    bga_fanout.geometry.immovable_foreign_pads); the refs found"""
+    from kicad_parser import iter_footprint_blocks
+    txt = open(src, encoding='utf-8').read()
+    out, at, got = [], 0, []
+    for start, end, fp_text, _raw, key in iter_footprint_blocks(txt):
+        if key not in refs:
+            continue
+        got.append(key)
+        head = re.match(r'\(footprint\s+"(?:[^"\\]|\\.)*"', fp_text)
+        if unlock:
+            new = re.sub(r'\s*\(locked yes\)', '', fp_text, count=1)
+        elif re.search(r'^\(footprint\s+"(?:[^"\\]|\\.)*"\s*\(locked', fp_text):
+            continue
+        else:
+            new = fp_text[:head.end()] + ' (locked yes)' + fp_text[head.end():]
+        out.append(txt[at:start] + new)
+        at = end
+    with open(dst, 'w', encoding='utf-8') as f:
+        f.write(''.join(out) + txt[at:])
+    if dst != src:
+        import fanout_from_plan as fp_
+        fp_.copy_pro(src, dst)
+    return got
+
+
 def run(out_path, K, base, log=print):
     import whole_ends
     from coherent_nets import coherent_nets
@@ -561,6 +590,7 @@ def run(out_path, K, base, log=print):
     # this step fans and turns its own -- the bus's OWN field, the one the escape fanout of the bus alone chooses its
     # ends on. The ends chosen there are the bus-alone's teeth and berths; the shared array is then planned round them)
     ends_base = awx_settings.get('ESCAPE_ENDS_BASE') if arr_ is not None else None
+    base0 = base                    # (the shared base, before a joint field is laid on it)
 
     def choose_on(board_):
         with contextlib.redirect_stdout(sys.stderr):
@@ -583,10 +613,11 @@ def run(out_path, K, base, log=print):
         log(f'  the ends on the bus\'s own field: no plan -- chosen again on {os.path.basename(base)}')
         st, berths, teeth, read, cut = choose_on(base)
 
-    def joint_try(st_, teeth_, berths_, with_site):
+    def joint_try(st_, teeth_, berths_, with_site, board_=None):
         """the shared array planned whole round the ends' teeth (with their dog-bone sites, or anywhere the ball's
-        escape reaches the same tooth); (st, teeth, berths) on that field, the nets the field does not leave as chosen,
-        the field"""
+        escape reaches the same tooth) on `board_` (default the base); (st, teeth, berths) on that field, the nets the
+        field does not leave as chosen, the field"""
+        tried[0] = (st_, teeth_, berths_, with_site)
         import joint_escape as je
         import source_realize as sr
         # (each tooth held -- with its site: the dog-bone the field gave the ball, or none -- the bus's own copper on
@@ -594,7 +625,7 @@ def run(out_path, K, base, log=print):
         hold_ = {nm: dict({'tooth': tuple(m.exit_pt), 'direction': m.direction, 'layer': m.layer, 'kind': m.kind},
                           **({'site': tuple(m.site) if m.site is not None else None} if with_site else {}))
                  for nm, m in teeth_.items()}
-        if st_['base'] != base:
+        if st_['base'] != base0:
             # (ends chosen on the bus's own field: each via end's run is the solve's to move onto another layer --
             # whole_solve's VBAN, relayer.clashes -- wherever no other copper stands within the rule of it. The layers
             # it is free on THERE are held free of the shared array's other copper too, so the solve has every layer
@@ -626,7 +657,7 @@ def run(out_path, K, base, log=print):
         others_ = list(arr_['others']) + [n for n in arr_.get('bus', ()) if n.split('/')[-1] not in run_s]
         # (the passives movable to the plan, as the engine lays it -- planned as fixed, the engine refused 23 of zynq
         # U1's planned drops the plan held clear; they are nudged off the round's copper once it is laid, below)
-        rep_ = je.escape_field(base, field_, sref, dref, list(names), others_, arr_['drops'], hold_, log=log,
+        rep_ = je.escape_field(board_ or base0, field_, sref, dref, list(names), others_, arr_['drops'], hold_, log=log,
                                passives_fixed=False)
         log(f'  joint field of {sref}{"" if with_site else " (teeth held, sites free)"}: {rep_.get("status")} -- bus '
             f'{rep_.get("bus_escaped")}/{rep_.get("bus_balls")}, others {rep_.get("others_escaped")} escaped + '
@@ -659,6 +690,7 @@ def run(out_path, K, base, log=print):
                 miss_ += [pn_, nn_]
         st2['base'] = field_
         return st2, teeth2, berths2, sorted(set(miss_)), field_
+    tried = [None]                  # (the last joint_try's ends: a field laid again round the parts it could not move)
     if arr_ is not None and teeth:
         # (the ends' first choice, on the field they were chosen on, beside the round's: OUT.first.plan.json)
         sidecar(out_path[:-len('.kicad_pcb')] + '.first.kicad_pcb', st, [n for n in names if n in st['launch']],
@@ -687,32 +719,61 @@ def run(out_path, K, base, log=print):
             log(f'  joint field of {sref}: the ends laid as chosen -- {len(teeth2)} teeth from the joint plan\'s '
                 f'sites, {len(berths2)} berths as they were')
             st, base, teeth, berths, joint_laid = st2, field, teeth2, berths2, True
-    missing = [nm for nm in st['launch'] if nm not in berths or nm not in teeth]
-    if missing:
-        log(f'  no escape chosen for {missing}')
-    moves = [(nm, teeth[nm]) for nm in st['launch'] if nm in teeth] + \
-            [(nm, berths[nm]) for nm in st['launch'] if nm in berths]
-    # (no two lanes' runs laid on one layer within the rule: a lane whose runs meet a kept one's is left out)
-    moves, left = clear_lanes(moves, byname, lanes_of(st['launch']), _rules.active())
-    if left:
-        log(f'  left out of the round, their runs on one layer within the rule of another lane\'s: '
-            f'{[ "+".join(lg) for lg in left]}')
-        for lg in left:
-            for nm in lg:
-                teeth.pop(nm, None)
-                berths.pop(nm, None)
-    ok, faults = lay(base, out_path, moves, byname, log=log)
-    if ok and joint_laid:
-        # (the joint field's vias planned with the passives movable: the cap nudge moves those beneath the array off
-        # the round's copper, as the chain's cap step does after a fanout -- place_fanout_clearance --beneath-only)
-        import subprocess
-        import joint_escape as je_
-        lock_ = je_.passives_beyond(out_path, [sref, dref])
-        rc_ = subprocess.run([sys.executable, os.path.join(HERE, '..', 'py_router', 'place_fanout_clearance.py'),
-                              out_path, out_path, '--clearance', str(_rules.active().clearance), '--beneath-only']
-                             + (['--lock'] + lock_ if lock_ else []), capture_output=True, text=True)
-        moved_ = [ln.strip() for ln in rc_.stdout.splitlines() if ln.startswith(('Moved', 'Stuck', '  Unresolved'))]
-        log(f'  joint field caps: exit {rc_.returncode}' + (f' -- {"; ".join(moved_)[:300]}' if moved_ else ''))
+    def lay_round(st_, base_, teeth_, berths_):
+        """the chosen ends laid on `base_` (clear_lanes first), and on a joint field the cap nudge after: (ok, faults,
+        moves, the parts the nudge could not move off the round's copper)"""
+        missing = [nm for nm in st_['launch'] if nm not in berths_ or nm not in teeth_]
+        if missing:
+            log(f'  no escape chosen for {missing}')
+        moves_ = [(nm, teeth_[nm]) for nm in st_['launch'] if nm in teeth_] + \
+            [(nm, berths_[nm]) for nm in st_['launch'] if nm in berths_]
+        # (no two lanes' runs laid on one layer within the rule: a lane whose runs meet a kept one's is left out)
+        moves_, left = clear_lanes(moves_, byname, lanes_of(st_['launch']), _rules.active())
+        if left:
+            log(f'  left out of the round, their runs on one layer within the rule of another lane\'s: '
+                f'{[ "+".join(lg) for lg in left]}')
+            for lg in left:
+                for nm in lg:
+                    teeth_.pop(nm, None)
+                    berths_.pop(nm, None)
+        ok_, faults_ = lay(base_, out_path, moves_, byname, log=log)
+        stuck_ = []
+        if ok_ and joint_laid:
+            # (the joint field's vias planned with the passives movable: the cap nudge moves those beneath the array
+            # off the round's copper, as the chain's cap step does after a fanout -- place_fanout_clearance
+            # --beneath-only)
+            import subprocess
+            import joint_escape as je_
+            lock_ = je_.passives_beyond(out_path, [sref, dref])
+            rc_ = subprocess.run([sys.executable, os.path.join(HERE, '..', 'py_router', 'place_fanout_clearance.py'),
+                                  out_path, out_path, '--clearance', str(_rules.active().clearance), '--beneath-only']
+                                 + (['--lock'] + lock_ if lock_ else []), capture_output=True, text=True)
+            moved_ = [ln.strip() for ln in rc_.stdout.splitlines() if ln.startswith(('Moved', 'Stuck', '  Unresolved'))]
+            log(f'  joint field caps: exit {rc_.returncode}' + (f' -- {"; ".join(moved_)[:300]}' if moved_ else ''))
+            stuck_ = sorted({r_ for ln in moved_ if ln.startswith('Unresolved')
+                             for r_ in re.split(r'[,\s]+', ln.split(':', 1)[1]) if r_})
+        return ok_, faults_, moves_, stuck_
+    ok, faults, moves, stuck = lay_round(st, base, teeth, berths)
+    if ok and joint_laid and stuck and tried[0] is not None:
+        # A PART THE NUDGE COULD NOT MOVE off the joint field's copper (at its displacement cap) stands on another
+        # net's via the field planned there as if it would move: the field is planned again with that part LOCKED, so
+        # its copper goes round the part, and the round laid again (sdi_mipi_conv on four layers: C118's GND pad on a
+        # DDR3 address via beneath U11 -- a board violation the bus step then refused the whole bus for)
+        lk_ = out_path[:-len('.kicad_pcb')] + '.locked_base.kicad_pcb'
+        got_lk = lock_parts(base0, lk_, set(stuck))
+        log(f'  joint field of {sref}: {", ".join(stuck)} not moved off its copper -- planned again with '
+            f'{", ".join(got_lk)} held where they stand')
+        got = joint_try(*tried[0], board_=lk_)
+        if not got[3]:
+            st2, teeth2, berths2, _m, field = got
+            st, base, teeth, berths = st2, field, teeth2, berths2
+            ok, faults, moves, stuck = lay_round(st, base, teeth, berths)
+            if ok:
+                lock_parts(out_path, out_path, set(got_lk), unlock=True)     # (the board's own lock flags kept)
+        else:
+            # (the round as first laid stands: its copper is the board's to grade, the bus step's to put back)
+            log(f'  joint field of {sref}: round the held parts the bus\'s ends are not left for {got[3]} -- the '
+                f'round as first laid')
     sidecar(out_path, st, [n for n in names if n in st['launch']], teeth, berths, cut, read)
     by_face = collections.Counter((m.direction, m.layer) for _n, m in moves)
     log(f'  ends by face and layer: {dict(sorted(by_face.items()))}; sidesteps '

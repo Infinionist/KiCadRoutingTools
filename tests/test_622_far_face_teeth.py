@@ -16,13 +16,17 @@ pins, on a 10 x 10 source box (y down: north is y = 0):
 3. the cut is the gap between the far-face teeth that crosses the fewest lanes, the widest on a tie: two far-face
    teeth whose berths both lie north are both sent round the north, where the middle of the face split them;
 4. the lead-ins nest: on each side the tooth nearest the corner innermost, every lane a lane's room apart along the
-   far face and along the side face, each ending outside the box beside its side face;
+   far face and along the side face, each ending outside the box beside its side face -- and they go round copper in
+   their way (a part's pad beside the far face, on a lead-in's layer: out past it, its bar clear; on another layer it
+   is passed over);
 5. END TO END (about 15 s): synth_bus's wind_sorted_e2 routed REVERSED -- its two far-face lanes now at the SOURCE --
    on three routing layers lays every lane, connected and DRC-clean, in one round. Its bench must carry far-face teeth
    (a tooth escaping away from the destination), or it exercises nothing (BROKEN TEST);
 6. END TO END, the ESCAPE fanout (about 20 s): the same bus through route_bus --escape, as sdi_mipi_conv's SDI bus is
    routed -- both arrays dog-boned whole, every bus ball an outer ball left bare at both (braid.bare_lane: the ladder
-   had held none of them) -- lays every lane, connected and DRC-clean, in one round, its far-face teeth among them.
+   had held none of them) -- lays every lane, connected and DRC-clean, in one round, its far-face teeth among them;
+7. END TO END, a cap beside the far face where the lead-ins run (synth_bus --part c0402@de: on the side they go round):
+   every lane laid, connected and DRC-clean, in one round (a lead-in laid through it had left a lane open).
 """
 import json
 import math
@@ -109,6 +113,16 @@ def chamfer_gap(p, q):
 check(abs(chamfer_gap(L['a'], L['b']) - bd.LANE_MIN) < 1e-6,
       f'the corner chamfers concentric, a lane apart: {chamfer_gap(L["a"], L["b"]):.4f}')
 check(all(L[n][0] == F.tooth[n] for n in far), 'each lead-in starts at its tooth')
+# ...round copper in their way: a pad beside the far face where the north lead-ins run along it
+bar_ = bd.CLEAR + bd.TRACK / 2 + wf.HALF_G
+pad_ = (xb - 0.15, 0.5, xb + 0.15, 1.2)             # (on b's run along the far face, between its tooth and the corner)
+Lp = wf.lead_ins(F, far, 6.0, lambda n: bd.LANE_MIN, SB, obst=[(pad_, {'F.Cu'})], layer=lambda n: 'F.Cu')
+gap_ = min(wf._seg_box(p, q, pad_) for n in ('a', 'b') for p, q in zip(Lp[n][1:], Lp[n][2:]))
+check(gap_ >= bar_ - 1e-9 and Lp['b'][1][0] < pad_[0], f'a pad on the lead-ins\' run: they pass outside it, '
+      f'{gap_:.3f} off it (bar {bar_:.3f}), b at x {Lp["b"][1][0]:.3f}')
+check(abs((Lp['a'][1][0] - Lp['b'][1][0]) - bd.LANE_MIN) < 1e-9, '...still nested a lane apart')
+Lo = wf.lead_ins(F, far, 6.0, lambda n: bd.LANE_MIN, SB, obst=[(pad_, {'B.Cu'})], layer=lambda n: 'F.Cu')
+check(Lo == L, 'a pad on another layer: passed over, the lead-ins as without it')
 
 
 # 5. end to end
@@ -210,8 +224,45 @@ def end_to_end_escape():
               f'(6) the escape fanout lays every lane, connected and DRC-clean on the board: {w}')
 
 
+def end_to_end_cap():
+    try:
+        import ortools  # noqa: F401
+    except ImportError as exc:
+        print(f'SKIP (7): needs ortools ({exc})')
+        return
+    import synth_bus as sb
+    e = dict(os.environ, ROUTE_LAYERS=','.join(sb.layer_names(3)))
+    with tempfile.TemporaryDirectory() as td:
+        raw, out = os.path.join(td, 'raw.kicad_pcb'), os.path.join(td, 'out.kicad_pcb')
+        r = subprocess.run([sys.executable, 'synth_bus.py', raw, '--k', '12', '--copper', '4', '--dst-cols', '8',
+                            '--closed', '--ring-n', '3', '--ring-s', '3', '--ring-e', '2', '--part',
+                            'c0402@de:1.0:2.4:F:v'], cwd=AWX, capture_output=True, text=True, timeout=600, env=e)
+        if r.returncode != 0:
+            raise SystemExit(f'BROKEN TEST: synth_bus failed:\n{r.stdout[-1500:]}{r.stderr[-1500:]}')
+        r = subprocess.run([sys.executable, 'route_bus.py', raw, out, '--src', 'SD1', '--dest', 'SU1', '--escape',
+                            '--rounds', '1', '--inproc', '--clearance', '0.1', '--track-width', '0.127',
+                            '--fanout-track-width', '0.1', '--via-size', '0.25', '--via-drill', '0.15'], cwd=AWX,
+                           capture_output=True, text=True, timeout=1800, env=e)
+        side = os.path.join(td, 'out.bus', 'run', 'r1', 'fo.plan.json')
+        if not os.path.isfile(side):
+            raise SystemExit(f'BROKEN TEST: the round laid no fanout:\n{r.stdout[-2500:]}{r.stderr[-1500:]}')
+        plan = json.load(open(side))
+        far_ = [n for n, d in plan.get('tooth_dir', {}).items() if tuple(d) in ((-1, 0), (-1.0, 0.0))]
+        cut_ = plan.get('src_cut')
+        # (the cap must stand on the side the far-face lanes go round, or it tests nothing: the turned frame puts the
+        # board's south at the frame's north, so a far tooth north of the cut in the frame goes round the cap's side)
+        if not far_ or cut_ is None:
+            raise SystemExit(f'BROKEN TEST: no far-face teeth or no cut: {far_} {cut_}')
+        bus = [ln for ln in r.stdout.splitlines() if ln.startswith('BUS ')]
+        w = dict(re.findall(r'(\w+)=(\S+)', bus[-1].split('|')[-1])) if bus else {}
+        print(f'  cap: far-face teeth {far_}; {bus[-1] if bus else "no BUS line"}')
+        check(bus and 'lanes=12/12' in bus[-1] and w.get('connected') == '1' and w.get('drc') == '1',
+              f'(7) a cap where the lead-ins run: every lane laid, connected and DRC-clean on the board: {w}')
+
+
 end_to_end()
 end_to_end_escape()
+end_to_end_cap()
 print('=' * 60)
 print(f'{len(fails)} FAILED' if fails else 'ALL PASS')
 sys.exit(1 if fails else 0)

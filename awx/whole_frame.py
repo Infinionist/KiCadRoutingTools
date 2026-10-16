@@ -262,35 +262,120 @@ def src_cut(ys, lo, hi, rank=None):
     return min(gaps, key=lambda g: (rank(g[1]), -g[0], g[1]))[1]
 
 
-def lead_ins(F, far, scut, width, SB):
+HALF_G = 0.0125      # half the router's grid step: a lead-in's bar off the grid, as the audit's static bar adds it
+
+
+def _seg_box(a, b, box):
+    """the least distance between the segment a-b and the axis-aligned box (x0, y0, x1, y1): 0 where they meet"""
+    x0, y0, x1, y1 = box
+    inside = lambda p: x0 <= p[0] <= x1 and y0 <= p[1] <= y1
+    if inside(a) or inside(b):
+        return 0.0
+    edges = [((x0, y0), (x1, y0)), ((x1, y0), (x1, y1)), ((x1, y1), (x0, y1)), ((x0, y1), (x0, y0))]
+
+    def pt_seg(p, q, r):
+        dx, dy = r[0] - q[0], r[1] - q[1]
+        l2 = dx * dx + dy * dy
+        t = 0.0 if l2 < 1e-18 else max(0.0, min(1.0, ((p[0] - q[0]) * dx + (p[1] - q[1]) * dy) / l2))
+        return math.hypot(p[0] - q[0] - t * dx, p[1] - q[1] - t * dy)
+
+    def cross(p, q, r, s_):
+        o = lambda u, v, w: (v[0] - u[0]) * (w[1] - u[1]) - (v[1] - u[1]) * (w[0] - u[0])
+        return o(p, q, r) * o(p, q, s_) < 0 and o(r, s_, p) * o(r, s_, q) < 0
+    if any(cross(a, b, e0, e1) for e0, e1 in edges):
+        return 0.0
+    return min([pt_seg(a, e0, e1) for e0, e1 in edges] + [pt_seg(b, e0, e1) for e0, e1 in edges]
+               + [pt_seg(c_, a, b) for c_ in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))])
+
+
+def lead_obstacles(ctx, src, dest, SB, run_ids):
+    """the copper a LEAD-IN may meet outside the source's box: other parts' pads, other nets' vias and tracks -- [(box
+    (x0, y0, x1, y1), its layers: None for every layer)] (lead_ins goes round it)"""
+    out = []
+    for ref_, fp_ in ctx.pcb.footprints.items():
+        if ref_ in (src, dest):
+            continue
+        for p_ in fp_.pads:
+            Ls = [L for L in p_.layers if L.endswith('.Cu')]
+            if not Ls and not (p_.drill or 0) > 0:
+                continue
+            hx, hy = (p_.size_x or 0.0) / 2, (p_.size_y or 0.0) / 2
+            if p_.pad_type == 'np_thru_hole':
+                hx = hy = (p_.drill or 0.0) / 2
+            allL = (p_.drill or 0) > 0 or '*.Cu' in p_.layers
+            out.append(((p_.global_x - hx, p_.global_y - hy, p_.global_x + hx, p_.global_y + hy),
+                        None if allL else set(Ls)))
+    for v_ in getattr(ctx, 'base_vias', None) or ctx.pcb.vias:
+        if v_.net_id not in run_ids:
+            r_ = v_.size / 2
+            out.append(((v_.x - r_, v_.y - r_, v_.x + r_, v_.y + r_), None))
+    for s_ in getattr(ctx, 'base_segments', None) or ctx.pcb.segments:
+        if s_.net_id not in run_ids and not getattr(s_, 'graphic', False):
+            w_ = s_.width / 2
+            out.append(((min(s_.start_x, s_.end_x) - w_, min(s_.start_y, s_.end_y) - w_,
+                         max(s_.start_x, s_.end_x) + w_, max(s_.start_y, s_.end_y) + w_), {s_.layer}))
+    # (inside the source's box: the array's own field, which the lead-ins leave by the far face's teeth)
+    return [(b_, L_) for b_, L_ in out if not (b_[0] >= SB[0] and b_[2] <= SB[2] and b_[1] >= SB[1] and b_[3] <= SB[3])]
+
+
+def lead_ins(F, far, scut, width, SB, obst=(), layer=None):
     """{lane: [points]}: each far-face lane's LEAD-IN, from its tooth round the source's corner to its START on the
     north or south face (F.start). The trunk frame cannot carry a lane along the far face -- its columns stand across
     the spine, and that stretch runs along them -- so the lane leaves its tooth straight out of the face, runs along it
     and round its corner on a 45-degree chamfer, and starts beside the side face, where the trunk takes it as it takes a
     side face's lanes. The lanes of a side nest in the order they launch (perim_s from the cut): the tooth nearest the
-    corner innermost, a lane's room apart, every lane's run a pitch out of the far face's teeth and the side face's"""
+    corner innermost, a lane's room apart, every lane's run a pitch out of the far face's teeth and the side face's --
+    and OUTSIDE the copper standing in their way (`obst`, lead_obstacles: a part's pad, another net's via or track on a
+    lead-in's layer, `layer(n)`), as the destination's rings go round the parts hugging it: its run along the face and
+    its chamfer and start are moved out past it (the straight out of the tooth is the ends model's to price, its front)"""
     out = {}
-    xf = min([SB[0]] + [F.tooth[n][0] for n in far])                 # the far face's teeth's line
+    xf0 = min([SB[0]] + [F.tooth[n][0] for n in far])                 # the far face's teeth's line
     rest = [F.tooth[m][1] for m in F.M if m not in far]
+    bar = bd.CLEAR + bd.TRACK / 2
     for side in ('N', 'S'):
         mem = [n for n in far if (F.tooth[n][1] <= scut) == (side == 'N')]
+        if not mem:
+            continue
         # (innermost first: nearest the corner it rounds)
         mem.sort(key=lambda n: F.tooth[n][1] if side == 'N' else -F.tooth[n][1])
         sg = -1.0 if side == 'N' else 1.0                              # (y toward the side, out of the box)
         # (the side face's teeth's line: the box's, or past it where a side face's stub stands further out)
+        xf = xf0
         yf = min([SB[1]] + rest) if side == 'N' else max([SB[3]] + rest)
-        at, d0 = bd.LANE_MIN, None
-        for n in mem:
-            d = at + (width(n) - bd.LANE_MIN) / 2
-            d0 = d if d0 is None else d0
-            # (concentric 45-degree chamfers a lane's room apart: two chamfer lines x +- y = const stand (2 (d - d0) -
-            # (c - c0)) / sqrt 2 apart, so c grows by (2 - sqrt 2) per mm of d)
-            c = 2 * bd.LANE_MIN + (2 - math.sqrt(2)) * (d - d0)
-            x_, y_ = xf - d, yf + sg * d
-            t = tuple(map(float, F.tooth[n]))
-            y_turn = y_ - sg * c
-            out[n] = [t, (x_, t[1])] + ([(x_, y_turn)] if sg * (t[1] - y_turn) < 0 else []) + [(x_ + c, y_)]
-            at += width(n)
+        lays = {layer(n) for n in mem} if layer else None
+        boxes = [b_ for b_, L_ in obst if L_ is None or lays is None or L_ & lays]
+        for _pass in range(12):
+            side_out, at, d0 = {}, bd.LANE_MIN, None
+            for n in mem:
+                d = at + (width(n) - bd.LANE_MIN) / 2
+                d0 = d if d0 is None else d0
+                # (concentric 45-degree chamfers a lane's room apart: two chamfer lines x +- y = const stand (2 (d -
+                # d0) - (c - c0)) / sqrt 2 apart, so c grows by (2 - sqrt 2) per mm of d)
+                c = 2 * bd.LANE_MIN + (2 - math.sqrt(2)) * (d - d0)
+                x_, y_ = xf - d, yf + sg * d
+                t = tuple(map(float, F.tooth[n]))
+                y_turn = y_ - sg * c
+                side_out[n] = (d, [t, (x_, t[1])] + ([(x_, y_turn)] if sg * (t[1] - y_turn) < 0 else [])
+                               + [(x_ + c, y_)])
+                at += width(n)
+            moved = False
+            for n, (d, pts) in side_out.items():
+                for k_, (a, b) in enumerate(zip(pts[1:], pts[2:])):
+                    need = bar + (width(n) - bd.LANE_MIN) / 2 + HALF_G     # (the audit's bar, off the grid)
+                    hit = next((b_ for b_ in boxes if _seg_box(a, b, b_) < need), None)
+                    if hit is None:
+                        continue
+                    if k_ == 0 and abs(a[0] - b[0]) < 1e-9:
+                        xf_ = min(xf, hit[0] - need + d)          # (the run along the far face: out past it)
+                        moved, xf = moved or xf_ < xf - 1e-6, xf_
+                    else:
+                        yf_ = (min(yf, hit[1] - need + d) if side == 'N'
+                               else max(yf, hit[3] + need - d))           # (the chamfer and start: out past it)
+                        moved, yf = moved or abs(yf_ - yf) > 1e-6, yf_
+                    break
+            if not moved:
+                break
+        out.update({n: pts for n, (d, pts) in side_out.items()})
     return out
 
 
@@ -436,7 +521,11 @@ def build(ctx, dest, _trunk=frozenset()):
         tf[n] = 'N' if F.tooth[n][1] <= F.scut else 'S'            # (the side face it goes round to)
     _prs0 = getattr(ctx, 'pairs', None) or {}
     import pairs as _pairs0
-    F.lead = lead_ins(F, far, F.scut, lambda n: bd.LANE_MIN + (_pairs0.pitch(bd.TRACK) if n in _prs0 else 0.0), SB)
+    _run_ids = {ctx.byname[n][0] for n in F.M} | {ctx.byname[g][0] for n in F.M for g in _prs0.get(n, ())
+                                                  if g in ctx.byname}
+    F.lead = lead_ins(F, far, F.scut, lambda n: bd.LANE_MIN + (_pairs0.pitch(bd.TRACK) if n in _prs0 else 0.0), SB,
+                      obst=lead_obstacles(ctx, src, dest, SB, _run_ids) if far else (),
+                      layer=lambda n: ctx.tooth_layer.get(n))
     # the REFERENCE paths (the geometry picks each column's free interval nearest one): a lane's taut path, except
     # where it runs INSIDE a pad box -- a taut string has no width and threads gaps between balls no track fits --
     # where it takes the box's edge on the lane's own side (a ring's at the destination, its tooth's face's at the

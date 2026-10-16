@@ -278,9 +278,16 @@ It hands on what it laid connected, never nothing for the sake of a few nets:
 a net the whole route left open, and a bus net the grade finds open on the
 board or named in a violation of the bus's (or of the board's, when the board
 came out worse), goes back as it came -- its own copper, if it had any -- and
-the rest are graded again, up to three times. The nets put back are named in
-the summary's `refused`, for the rest of the chain to route. Only a failure
-no bus net is named in refuses the whole bus.
+the rest are graded again. Another net's copper the step laid -- a shared
+array's other nets, fanned with the bus -- in such a violation goes back
+first (`changed_nets`; never a plane's net, whose drops the step lays by the
+dozen), as the bus is what the step is for (summary `others_put_back`). The
+nets put back are named in the summary's `refused`, for the rest of the chain
+to route. The bus is handed on whenever its own nets come out connected and
+clean; a violation the board still has more of than it came with, on no bus
+net, is named (`board_violations_added`), never a reason to throw the bus
+away: sdi_mipi_conv's SDI bus on four layers, 14 nets laid clean, had been
+refused whole for one cap pad on a via of the joint field's.
 
 A board with inner copper layers is taken as it is. The lanes run on F.Cu
 and B.Cu, and the inner layers' copper meets the through vias only. The nets
@@ -556,7 +563,12 @@ other net's copper off each run on every layer the run is free on in the bus's
 own field, so the solve keeps all the layer changes it has there. A round
 whose ends the joint plan cannot keep falls back to ends chosen on the shared
 array, dog-boned. Each step's cap nudge moves only the passives beneath its
-own two arrays: the DDR step leaves U5's, the LVDS step U2's.
+own two arrays: the DDR step leaves U5's, the LVDS step U2's. The joint plan
+lays its vias as if those passives will move; one the nudge cannot move off
+them (at its displacement cap) is locked where it stands, the field planned
+again round it and the round laid again, the lock taken off after
+(`escape_plan.lock_parts`). On sdi_mipi_conv on four layers the nudge had
+left C118's GND pad on a DDR3 address via of the field's.
 
 `route_bus --bus` sets this up itself for an escape bus on an array an earlier
 bus was handed on through. A step run on its own takes it as settings:
@@ -1005,9 +1017,14 @@ corner is decided by the far face's cut: the teeth north of it go round
 the north, outside every lane of the north face, first in the launch order
 (`perim_s`); those south of it round the south, last. On each side the
 tooth nearest the corner is innermost, and the lanes nest a lane's room
-apart, a pitch out of the far face's teeth and the side face's. A far-face
-tooth still inside the array has no way round from there, and is refused
-(`FarFace`; the fanout is told, below).
+apart, a pitch out of the far face's teeth and the side face's -- and
+outside the copper in their way (`lead_obstacles`: another part's pad,
+another net's via or track, on a lead-in's layer), as the destination's rings
+go round the parts hugging it: the run along the far face, or the chamfer
+and the start, moved out past it by its bar. Laid through a cap beside the
+far face, a lead-in was found against it every round, and the lane stayed
+open. A far-face tooth still inside the array has no way round from there,
+and is refused (`FarFace`; the fanout is told, below).
 
 #### The solve (`whole_solve.py`)
 
@@ -1778,7 +1795,7 @@ With nothing supplied, as on the benches:
 
 | | |
 |---|---|
-| `route_bus.py` | the bus step: a board as the chain hands it on, its bus routed in the board's own frame, graded on the board (`BUS ..`); the buses found on a board (`tests/test_622_find_buses.py`); a board's buses in turn, each its own fanout and layers, a later escape bus planning a shared array whole (`--bus`: `tests/test_622_route_buses_shared.py`) and, opt-in, a later plain or joint one keeping its escapes there (`SOURCE_SHARED`); a net a pull alone keeps out laid as a lane, opt-in (`BUS_PULLED`: `tests/test_622_route_bus_pulled.py`); one source and several ends as one whole route, `--bus SRC:U4+U3` (the frame's branches, `whole_frame.dest_ranks`: `tests/test_622_two_end.py`) |
+| `route_bus.py` | the bus step: a board as the chain hands it on, its bus routed in the board's own frame, graded on the board (`BUS ..`), handed on whenever its own nets come out clean, another net's copper it laid put back first (`tests/test_622_bus_handed_on.py`); the buses found on a board (`tests/test_622_find_buses.py`); a board's buses in turn, each its own fanout and layers, a later escape bus planning a shared array whole (`--bus`: `tests/test_622_route_buses_shared.py`) and, opt-in, a later plain or joint one keeping its escapes there (`SOURCE_SHARED`); a net a pull alone keeps out laid as a lane, opt-in (`BUS_PULLED`: `tests/test_622_route_bus_pulled.py`); one source and several ends as one whole route, `--bus SRC:U4+U3` (the frame's branches, `whole_frame.dest_ranks`: `tests/test_622_two_end.py`) |
 | `escape_plan.py`, `dogbone_arrays.py` | the escape fanout (`route_bus --escape`): both arrays dog-boned, and each round's ends chosen among the escapes that field has (ball lines, sidesteps, streets) and laid as they are (`tests/test_622_escape_plan.py`) |
 | `joint_escape.py`, `conflict_groups.py` | the joint fanout (`route_bus --joint-fanout`): an array's other balls planned together in one CP-SAT solve and laid by the under-pad engine's joint escape (a drop at a finer rung's via: `tests/test_622_drop_fine_via.py`; nothing in a laid pair's pocket: `test_622_pair_teeth.py`); the escapes' conflicts as cliques and bicliques (`tests/test_622_conflict_groups.py`); a shared array planned whole round an escape bus's teeth (`route_bus --escape`, `ESCAPE_JOINT`: `escape_field`) |
 | `whole_route.py`, `modal_whole.py` | one rung end to end -- fanout, solve, loop, route, checks, feedback rounds -- graded in one line (`WHOLE K=..`); the loop's layer cuts from the audit and the snap (`tests/test_622_layer_cuts.py`); the ladder in the cloud, one container per rung |
@@ -1985,17 +2002,14 @@ channels first, and the other escapes leave round it.
     islands for the chain's plane repair to join. To try: a lane's run on a
     plane layer priced by the islands it would cut from its pour.
   - **Lanes the escape step leaves out** (`clear_lanes`: their runs on one
-    layer within the rule of a kept lane's) stand on their bare dog-bones,
-    which the audit refuses, and the refusal names nothing the feedback can
-    price, so the rounds end there. To try: name the kept lane each one
-    clashed with, a pair of ends not to choose together, for the next round.
-  - **The lead-in sees no copper,** and neither does a side face's tooth's
-    straight run along the face to its start: each is laid as the frame draws
-    it, and other parts or other nets' copper standing there are the audit's
-    to find (the SDI bus's south-face teeth ran along U11's south face among
-    the DDR3 bus's vias). To try: the destination's rings mirrored at the
-    source (`braid.ring_spine` on the source's hull), so the geometry places
-    those lanes as it places a ring's.
+    layer within the rule of a kept lane's) are named by nothing the feedback
+    can price, so a refusal over them ends the rounds. To try: name the kept
+    lane each one clashed with, a pair of ends not to choose together, for the
+    next round.
+  - **The lead-in's own geometry.** It goes round the copper in its way but is
+    laid as the frame draws it, fixed. To try: the destination's rings mirrored
+    at the source (`braid.ring_spine` on the source's hull), so the geometry
+    places those lanes as it places a ring's.
   - **Winding at the source.** A lane may leave a side face and go round the
     far face to the other side, as a destination's wound lanes do: the
     generated `wind_rot16_g3` routed source and destination swapped lays 14

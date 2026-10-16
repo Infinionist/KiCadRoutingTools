@@ -65,6 +65,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -593,10 +594,15 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
         m = re.search(r'FOUND (\d+) DRC VIOLATIONS', txt)
         return 0 if 'NO DRC VIOLATIONS' in txt else (int(m.group(1)) if m else None)
     d_in = drc(board, 'input')
-    # ...and NEVER ALL OR NOTHING: a bus net that fails it on the board -- open there, or named in a violation of the
-    # bus's (or of the board's, when the board came out worse) -- goes back as it came and the rest are graded again;
-    # the step refuses the whole bus only for a failure no bus net is named in
-    for _ in range(3):
+    # ...and NEVER ALL OR NOTHING: a violation the step made on another net's copper it laid -- a shared array's other
+    # nets, fanned with the bus (ESCAPE_JOINT, the joint fanout), a passive the cap nudge could not move off one of its
+    # vias -- puts THAT net back as it came; a bus net that fails it on the board -- open there, or named in a violation
+    # of the bus's (or of the board's, when the board came out worse) -- goes back as it came; the rest are graded again.
+    # The bus is handed on whenever its own nets come out connected and clean: sdi_mipi_conv's SDI bus, laid 14 nets
+    # clean, was refused whole for one GND cap pad on a DDR3 address via the joint field had laid under it
+    zone_nets = {short(pcb.nets[z.net_id].name) for z in (pcb.zones or []) if z.net_id in pcb.nets}
+    put_others = set()
+    for _ in range(6):
         pats = [f'*{n}' for n in nets]
         cc = wr.run([checker('check_connected.py'), routed_pcb, '--nets'] + pats, dict(os.environ),
                     log_path=os.path.join(work, 'conn.log'), own_process=True)[0]
@@ -604,9 +610,23 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
         # (joint: the step laid the arrays' whole fanout and moved the passives off it each round -- the chain's cap
         # nudge, whole_route -- whose own pad-to-via hits the nudge could not clear are the board's to report; the
         # bus's nets are held clean)
-        ok_drc = d_bus == 0 and None not in (d_out, d_in) and (joint_fanout or d_out <= d_in)
+        worse = None in (d_out, d_in) or d_out > d_in
+        ok_drc = d_bus == 0 and not worse
         if cc == 0 and ok_drc:
             break
+        # (another net's copper the step laid, in a violation of the bus's or one the board did not come with: back
+        # first -- the bus is what the step is for. Never a plane's net, whose drops the joint field laid by the dozen)
+        named = drc_nets(os.path.join(work, 'drc_bus.log')) if d_bus else set()
+        if worse and d_out is not None:
+            named |= drc_nets(os.path.join(work, 'drc_board.log'))
+        others_ = changed_nets(board, routed_pcb, named - set(nets) - zone_nets - put_others)
+        if others_:
+            put_others |= others_
+            left_ = put_back(routed_pcb, board, pcb, sorted(others_full(pcb, others_)))
+            log(f'  another net\'s copper the step laid in a violation, put back as it came: {", ".join(sorted(others_))}'
+                + (f' ({left_} piece(s) of its earlier copper left out, no longer clear)' if left_ else '')
+                + ' -- the bus graded again')
+            continue
         bad = set(nets) & (open_nets(os.path.join(work, 'conn.log'))
                            | drc_nets(os.path.join(work, 'drc_bus.log'))
                            | (drc_nets(os.path.join(work, 'drc_board.log'))
@@ -619,6 +639,8 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
         left_ = put_back(routed_pcb, board, pcb, [n for n in names if short(n) in bad])
         log(f'  failed the grade, put back as they came: {", ".join(sorted(bad))} -- the rest graded again'
             + (f' ({left_} piece(s) of their earlier copper left out, no longer clear)' if left_ else ''))
+    if put_others:
+        summary['others_put_back'] = sorted(put_others)
     v, c = wr.grade_counts(routed_pcb, set(nets))
     planes = plane_grade(pcb, board, routed_pcb, log)
     g = (f'BUS {src}->{dest} K={K} {grade.split(" ", 2)[2] if grade else ""} | on the board: vias={v} copper={c}mm '
@@ -630,8 +652,14 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
         summary['planes'] = planes
     if joint_fanout:
         summary['joint_fanout'] = {r: sorted(others[r]) for r in others}
-    if cc != 0 or not ok_drc:
+    if cc != 0 or d_bus != 0 or None in (d_out, d_in):
         return finish(1, 'the routed bus is not connected and clean on the board', g)
+    if d_out > d_in:
+        # (the bus itself connected and clean: handed on, the board's added violations -- none on a bus net, none on
+        # copper of the step's it could put back -- named for the rest of the chain, never the bus thrown away for them)
+        summary['board_violations_added'] = d_out - d_in
+        log(f'  handed on with {d_out - d_in} violation(s) more on the board than it came with, on no bus net: '
+            f'{os.path.join(work, "drc_board.log")}')
 
     # 7. handed on: OUT, its routed nets protected in its project (#521) -- route.py's rip candidacy and the plane
     # finalize leave them alone
@@ -697,6 +725,45 @@ def array_others(pcb, ref, names):
     bus = {short_name(n) for n in names}
     return sorted({p.net_name for p in pcb.footprints[ref].pads
                    if p.net_id and p.net_name and p.net_id not in zone_ids and short_name(p.net_name) not in bus})
+
+
+def changed_nets(board, routed, names):
+    """the nets of `names` (short) whose tracks or vias on `routed` are not the ones `board` has: copper the step laid"""
+    if not names:
+        return set()
+    src, now = open(board, encoding='utf-8').read(), open(routed, encoding='utf-8').read()
+
+    def items(txt):
+        out = collections.defaultdict(set)
+        pcb_ = parse_kicad_pcb_quiet_text(txt)
+        nm = {i: short_name(n.name) for i, n in pcb_.nets.items()}
+        for s_ in pcb_.segments:
+            if not getattr(s_, 'graphic', False) and nm.get(s_.net_id) in names:
+                a_, b_ = sorted([(round(s_.start_x, 3), round(s_.start_y, 3)), (round(s_.end_x, 3), round(s_.end_y, 3))])
+                out[nm[s_.net_id]].add(('s', a_, b_, s_.layer, round(s_.width, 3)))
+        for v_ in pcb_.vias:
+            if nm.get(v_.net_id) in names:
+                out[nm[v_.net_id]].add(('v', round(v_.x, 3), round(v_.y, 3), round(v_.size, 3)))
+        return out
+    a, b = items(src), items(now)
+    return {n for n in names if a.get(n, set()) != b.get(n, set())}
+
+
+def others_full(pcb, shorts):
+    """the full names of the nets `shorts` (short names)"""
+    return {n.name for n in pcb.nets.values() if n.name and short_name(n.name) in set(shorts)}
+
+
+def parse_kicad_pcb_quiet_text(txt):
+    """a board's text parsed (written to a temporary file, read, removed)"""
+    fd, tmp = tempfile.mkstemp(suffix='.kicad_pcb')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(txt)
+        with contextlib.redirect_stdout(io.StringIO()):
+            return parse_kicad_pcb_quiet(tmp)
+    finally:
+        os.remove(tmp)
 
 
 def put_back(path, board, pcb, back):

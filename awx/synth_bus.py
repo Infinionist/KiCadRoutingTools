@@ -1835,8 +1835,8 @@ def parse_part(spec):
         u_, v_ = float(u_), float(v_)
     except ValueError:
         raise SystemExit(f'--part {spec!r}: want KIND@ANCHOR:U:V[:F|B][:h|v][:nN][:pP][:dD][:rR]')
-    if kind not in PART_KINDS or anchor not in ('sw', 'nw', 'dw', 'ds', 'dn', 'sf', 'ch'):
-        raise SystemExit(f'--part {spec!r}: KIND one of {sorted(PART_KINDS)}, ANCHOR sw|nw|dw|ds|dn|sf|ch')
+    if kind not in PART_KINDS or anchor not in ('sw', 'nw', 'dw', 'ds', 'dn', 'sf', 'ch', 'de'):
+        raise SystemExit(f'--part {spec!r}: KIND one of {sorted(PART_KINDS)}, ANCHOR sw|nw|dw|ds|dn|sf|ch|de')
     n_, p_ = PART_DEFAULTS.get(kind, (1, 0.0))
     out = {'kind': kind, 'anchor': anchor, 'u': u_, 'v': v_, 'layer': 'F', 'orient': 'h', 'n': n_, 'pitch': p_,
            'd': 3.2, 'rot': 0.0}
@@ -2040,7 +2040,8 @@ def build(a):
     # south); `ds` / `dn` the south / north face's west end (U east along the
     # face, V out from it); `sf` the source's facing column's middle (U east,
     # into the channel, V south); `ch` the channel (U east of the source's
-    # facing column, V south of the bus's middle)
+    # facing column, V south of the bus's middle); `de` the destination's far
+    # face's middle (U east of its far column, V south)
     hcaps = []
     xw, yn, ys = sx + dx - wdst / 2, sy + dy - h / 2, sy + dy + h / 2
     xs = sx + wsrc / 2
@@ -2050,7 +2051,7 @@ def build(a):
         u_, v_ = q['u'], q['v']
         cx_, cy_ = {'sw': (xw - u_, ys + v_), 'nw': (xw - u_, yn - v_), 'dw': (xw - u_, sy + dy + v_),
                     'ds': (xw + u_, ys + v_), 'dn': (xw + u_, yn - v_), 'sf': (xs + u_, sy + v_),
-                    'ch': (xs + u_, sy + v_)}[q['anchor']]
+                    'ch': (xs + u_, sy + v_), 'de': (xw + wdst + u_, sy + dy + v_)}[q['anchor']]
         ref_ = {'npth': 'H', 'pth': 'J', 'vias': 'TP'}.get(q['kind'], 'CH') + str(j + 1)
         txt.append(PART_KINDS[q['kind']](ref_, cx_, cy_, q['layer'], q['orient'], q['n'], q['pitch'], q['d'],
                                          f'part{j}', q['rot']))
@@ -2223,8 +2224,8 @@ def main(argv=None):
                     help='KIND@ANCHOR:U:V[:F|B][:h|v][:nN][:pP][:dD][:rR] -- a foreign part: KIND c0402, c0603, row '
                          '(N 0402s, pitch P), sot23, pth (an N-pin header, 2.54), vias (N via-sized barrels, 1.0), '
                          'npth (a hole of diameter D, 3.2); ANCHOR sw / nw (the destination\'s corner), dw (its '
-                         'facing column), ds / dn (its south / north face), sf (the source\'s facing column), ch (the '
-                         'channel) -- see build(); turned R degrees as KiCad turns a footprint. Repeatable')
+                         'facing column), ds / dn (its south / north face), de (its far face), sf (the source\'s facing '
+                         'column), ch (the channel) -- see build(); turned R degrees as KiCad turns a footprint. Repeatable')
     ap.add_argument('--copper', type=int, default=2, choices=(2, 4, 6),
                     help='copper layers: 2 (F.Cu, B.Cu), 4 (In1.Cu and In2.Cu between them) or 6 (In1.Cu .. In4.Cu)')
     ap.add_argument('--pairs', type=int, default=0,
