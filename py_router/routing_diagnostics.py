@@ -540,16 +540,21 @@ def preexisting_blocker_hint(blocked_cells, config, pcb_data, net_id,
                 # #1261: only a non-'locked' reason has the exact-name
                 # override; KiCad-locked copper has none, so offering it
                 # sends the reader to a flag that will be refused.
+                from protected_nets import never_lifts, is_sense_reason, SENSE_HINT
                 _plock = [n for n in _pnames if _pmap[n] == 'locked']
-                _ovr = [n for n in _pnames if _pmap[n] != 'locked']
+                _psense = [n for n in _pnames if is_sense_reason(_pmap[n])]
+                _ovr = [n for n in _pnames if not never_lifts(_pmap[n])]
                 _fix = "reorder so this net routes BEFORE them"
                 if _ovr:
                     _fix += (", or override deliberately by naming "
-                             + ("a non-locked one" if _plock else "the net")
+                             + ("a non-locked one" if (_plock or _psense)
+                                else "the net")
                              + " EXACTLY (no glob) in --rip-existing-nets")
                 if _plock:
                     _fix += ("; KiCad-locked copper has no override -- "
                              "unlock it in the board")
+                if _psense:
+                    _fix += "; " + SENSE_HINT
                 prot_txt = (f"\nHint: the box also includes PROTECTED "
                             f"net(s) {_pq} within 3mm of the failing "
                             f"endpoint(s). The router will NEVER rip these "
@@ -591,14 +596,20 @@ def preexisting_blocker_hint(blocked_cells, config, pcb_data, net_id,
                                getattr(pcb_data, 'source_path', None)) or {}
     except Exception:
         _prot = {}
+    from protected_nets import is_sense_reason, SENSE_HINT
     locked_out = [n for n in outside if _prot.get(n) == 'locked']
-    outside = [n for n in outside if n not in set(locked_out)]
+    sense_out = [n for n in outside if is_sense_reason(_prot.get(n))]
+    outside = [n for n in outside if n not in set(locked_out) | set(sense_out)]
     lock_txt = ""
     if locked_out:
         lock_txt = (f" {len(locked_out)} blocking net(s) "
                     f"({' '.join(repr(n) for n in locked_out)}) carry "
                     f"KiCad-locked copper, which no flag can rip (#521): "
                     f"unlock it in the board, or plan around it.")
+    if sense_out:
+        lock_txt += (f" {len(sense_out)} blocking net(s) ("
+                     + ' '.join(f"{n!r} ({_prot[n]})" for n in sense_out)
+                     + f") carry {SENSE_HINT}, or plan around it.")
     prot_out = [n for n in outside if n in _prot]
     prot_out_txt = ""
     if prot_out:

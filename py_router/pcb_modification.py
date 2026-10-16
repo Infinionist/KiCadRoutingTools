@@ -10,7 +10,7 @@ import math
 import os
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
-from kicad_parser import PCBData, Segment, Via
+from kicad_parser import PCBData, Segment, Via, is_immutable_copper
 from routing_utils import pos_key, POSITION_DECIMALS, into_pad_frame_point
 from geometry_utils import point_to_segment_distance
 
@@ -20,12 +20,13 @@ _PRUNE_CONN_VERIFY = os.environ.get('PRUNE_CONN_VERIFY')
 
 
 def _locked(item) -> bool:
-    """KiCad `(locked yes)` copper (#521). Every subtractive or rewriting
+    """KiCad `(locked yes)` copper (#521), or copper a `sense:` group holds
+    (#1279, kicad_parser.is_immutable_copper). Every subtractive or rewriting
     cleanup pass treats it exactly as it treats input copper under
     keep_input_copper -- it anchors the models but is never removed, split,
     moved or re-bent -- whether or not keep_input_copper is set (#1261).
-    This run never creates locked copper, so a locked item is input copper."""
-    return bool(getattr(item, 'locked', False))
+    This run never creates such copper, so a locked item is input copper."""
+    return is_immutable_copper(item)
 
 
 def _point_anchored(x: float, y: float, layer: str, via_pts, pad_pts,
@@ -1735,7 +1736,7 @@ def _prune_sub_cell_slivers(net_id, prunable, vias, pads, zones, eps,
     def _short(s):
         return (math.hypot(s.end_x - s.start_x, s.end_y - s.start_y) < eps
                 and not getattr(s, 'graphic', False)
-                and not getattr(s, 'locked', False))
+                and not _locked(s))
 
     def _grade(segs):
         r = check_net_connectivity(net_id, anchor + list(segs), vias, pads,
@@ -2150,7 +2151,7 @@ def trim_net_stub_debris(pcb_data: PCBData, net_id: int, result, config,
     _new_seg_ids = {id(s) for s in (result.get('new_segments') or [])}
     _new_via_ids = {id(v) for v in (result.get('new_vias') or [])}
     anchor = [s for s in net_segs
-              if getattr(s, 'graphic', False) or getattr(s, 'locked', False)
+              if getattr(s, 'graphic', False) or _locked(s)
               or (_keep_input and id(s) not in _new_seg_ids)]
     prunable = [s for s in net_segs if id(s) not in {id(a) for a in anchor}]
     if vias_only:
@@ -2166,7 +2167,7 @@ def trim_net_stub_debris(pcb_data: PCBData, net_id: int, result, config,
         kept, removed = _restore_soft_joint_bridges(list(kept) + anchor, removed,
                                                     net_vias, pads)
         removed = [s for s in removed if not getattr(s, 'graphic', False)
-                   and not getattr(s, 'locked', False)]
+                   and not _locked(s)]
     kept_all = [s for s in net_segs
                 if id(s) not in {id(x) for x in removed}]
 
@@ -2174,7 +2175,7 @@ def trim_net_stub_debris(pcb_data: PCBData, net_id: int, result, config,
     copper_layers = pcb_data.board_info.copper_layers or ['F.Cu', 'B.Cu']
     via_candidates = [
         v for v in net_vias
-        if not getattr(v, 'locked', False)
+        if not _locked(v)
         and not (_keep_input and id(v) not in _new_via_ids)
         and len(_via_support_layers(v, kept_all, pads, zones,
                                     copper_layers)) <= 1]
@@ -2318,7 +2319,7 @@ class StrictRemovalModel:
         ro = set(readonly_ids or ())
         self.candidates = [i for i, s in enumerate(self.segs)
                            if not getattr(s, 'graphic', False)
-                           and not getattr(s, 'locked', False)
+                           and not _locked(s)
                            and id(s) not in ro]
         self._cand_set = set(self.candidates)
         if not self.candidates or len(self.pads) < 2:
@@ -2352,7 +2353,7 @@ class StrictRemovalModel:
         # --- via grading: check_weird.via_support_parts, the checker's model --
         dropp = set(droppable_via_ids or ())
         self._droppable = {j for j, v in enumerate(self.vias)
-                           if id(v) in dropp and not getattr(v, 'locked', False)}
+                           if id(v) in dropp and not _locked(v)}
         self._via_span = []
         self._via_fixed = []
         self._via_by_layer = []
@@ -2795,7 +2796,7 @@ def sweep_dangling_via_branches(board, net_ids, protected_ids=frozenset(),
                 _soft_joint_pairs(segs, vias, pads))
 
     def keep_out(item):
-        return getattr(item, 'locked', False) or id(item) in protected_ids
+        return _locked(item) or id(item) in protected_ids
 
     def chain_from(v, s0, layer, segs, vias, pads, zones):
         """The segments a dangling via's one layer carries away, or None."""
@@ -5932,7 +5933,7 @@ def merge_collinear_segments(results, pcb_data: PCBData, scope_net_ids=None,
 
         candidates = [s for s in net_segs
                       if not getattr(s, 'graphic', False)
-                      and not getattr(s, 'locked', False)
+                      and not _locked(s)
                       and (not keep_input_copper or id(s) in routed_seg_result)
                       and math.hypot(s.end_x - s.start_x, s.end_y - s.start_y) > 1e-9]
         if len(candidates) < 2:
