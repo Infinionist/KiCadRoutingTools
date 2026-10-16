@@ -252,10 +252,18 @@ def _board_oracle():
     return _variant(_with_gnd(t, fence), 'oracle')
 
 
+class _Skip(Exception):
+    """A test whose precondition this machine lacks: reported, not failed."""
+
+
 def test_plane_finalize_oracle_leaves_the_branch_alone():
     """route_planes (B.Cu VDD pour) then route.py: the in-run plane
     finalize's oracle leg (#562) routes the links KiCad's fill reports
-    missing; none may land on U1.1 or the trace. U2.1 stays open."""
+    missing; none may land on U1.1 or the trace. U2.1 stays open. The
+    oracle is kicad-cli, so without it this case cannot run."""
+    from kicad_oracle import find_kicad_cli
+    if find_kicad_cli(warn=False) is None:
+        raise _Skip('kicad-cli not found: the oracle leg cannot run')
     src = _board_oracle()
     d = _tmpdir()
     pour, out = os.path.join(d, 'pour.kicad_pcb'), os.path.join(d, 'out.kicad_pcb')
@@ -442,12 +450,15 @@ TESTS = [
 def main():
     evidence(BOARD, 'the sense_star fixture')
     evidence(PRO, "the sense_star fixture's .kicad_pro")
-    failed = []
+    failed, skipped = [], []
     try:
         for t in TESTS:
             try:
                 t()
                 print(f'  PASS  {t.__name__}')
+            except _Skip as e:
+                skipped.append(t.__name__)
+                print(f'  SKIP  {t.__name__}: {e}')
             except Exception:  # noqa: BLE001
                 failed.append(t.__name__)
                 print(f'  FAIL  {t.__name__}')
@@ -455,7 +466,8 @@ def main():
     finally:
         for d in _TMP:
             shutil.rmtree(d, ignore_errors=True)
-    print(f'{len(TESTS) - len(failed)}/{len(TESTS)} passed')
+    print(f'{len(TESTS) - len(failed) - len(skipped)}/{len(TESTS)} passed'
+          + (f', {len(skipped)} skipped (asserted nothing)' if skipped else ''))
     return 1 if failed else 0
 
 
