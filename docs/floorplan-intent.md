@@ -411,6 +411,16 @@ A ref in `fixed_poses` and also in `edge_connectors` or `must_lock` is refused
 by name -- two placements for one part. `fixed:` is a reserved block-name prefix,
 like `mech:`.
 
+A `mechanical` entry sitting AT its declared pose, on its declared face, whose
+courtyard the census counts off the outline while every pad and its footprint
+graphic copper (#962) are on the board at zero margin, leaves
+`legality_budget`'s `oob_count` and `oob_amount` the way a declared edge
+connector inside its overhang band does (#961). `oob_count_exempt` counts
+both kinds; a `legality` finding's `measured` carries the reduced amount
+beside `oob_amount_raw`. Off its pose, on the other face, or with pad or
+graphic copper past the outline, it stays counted. A `declared` entry is never
+exempt.
+
 The seeder's **stage 0** runs before every other stage and seats each entry
 at EXACTLY its pose -- a check, never a search. Courtyards are judged the way
 KiCad's DRC judges them: an overlap is illegal, courtyards that abut (gap 0)

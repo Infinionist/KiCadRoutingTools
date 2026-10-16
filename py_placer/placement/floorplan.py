@@ -3370,6 +3370,11 @@ class _Ctx:
         self._bodies = None
         self._bodies_error = ''
         self._oob_exempt = None
+        #: `{ref: census amount}` of every exempt part, in the census's own
+        #: currency, so `rule_legality` can take them out of `oob_amount`.
+        self._oob_exempt_census: Dict[str, float] = {}
+        #: `_graphic_copper_off_board`'s answer, computed on first use.
+        self._graphic_off = None
         #: #961. One row per declared edge connector on the board, passing
         #: ones included: the number its `overhang_mm` band was graded on,
         #: the currency of that number, the drawn-body measurements and the
@@ -3440,8 +3445,72 @@ class _Ctx:
                 if (amt > legality.EPS and copper_ok
                         and lo - legality.EPS <= band <= hi + legality.EPS):
                     out[ref] = float(band)
+                    self._oob_exempt_census[ref] = float(amt)
+            out.update(self._mechanical_pose_exempt())
             self._oob_exempt = out
         return self._oob_exempt
+
+    def _mechanical_pose_exempt(self) -> Dict[str, float]:
+        """`{ref: census amount}` for `fixed_poses[]` entries of basis
+        `mechanical` that the census counts off the outline while every pad
+        of theirs is on the board at ZERO margin.
+
+        A mechanical datum (a module's mating connector) cannot move, so its
+        courtyard entering the edge-clearance band is a fact of the mating
+        part, not a placement a budget can refuse -- counted, it made
+        `oob_count: 0` unsatisfiable by any seed. Only at the declared pose:
+        a part moved off its datum is a placement again and stays counted
+        (the fixed-pose anchor names the move), and so does one on the other
+        face than the entry declares, which is not the part the datum
+        describes (stage 0 refuses to seat it there). Copper past the
+        outline is never licensed: pads (their extent box, at zero margin)
+        and, since a drawn tab is copper too (#962), the footprint's graphic
+        copper, read off the census `grade_pad_legality` publishes."""
+        from . import reconcile as _rc
+        from .legality import footprint_side
+        out: Dict[str, float] = {}
+        for f in self.intent.fixed_poses:
+            ref = str(f['ref'])
+            part = self.parts.get(ref)
+            fp = (self.pcb.footprints or {}).get(ref)
+            if f.get('basis') != 'mechanical' or part is None or fp is None:
+                continue
+            if not _rc.same_pose(_rc.fixed_pose_tuple(f),
+                                 (fp.x, fp.y, (fp.rotation or 0.0) % 360.0)):
+                continue
+            if (f.get('side') in ('F', 'B')
+                    and footprint_side(fp) != f['side']):
+                continue
+            amt = self.gate.rect_outside_amount(
+                part.rect, skip_rings=self.state._owned_rings(ref))  # noqa: SLF001
+            if amt <= legality.EPS:
+                continue
+            pads = legality.build_part_pads({ref: fp}, 0.0, None).get(ref)
+            ext = (pads.extent(fp.x, fp.y, fp.rotation or 0.0)
+                   if pads is not None else None)
+            if ext is None or self.zero_gate().rect_outside_amount(
+                    ext) > legality.EPS:
+                continue
+            if ref in self._graphic_copper_off_board():
+                continue
+            out[ref] = float(amt)
+            self._oob_exempt_census[ref] = float(amt)
+        return out
+
+    def _graphic_copper_off_board(self) -> frozenset:
+        """Refs whose footprint GRAPHIC copper reaches past the outline, or
+        whose graphic copper the census could not measure -- a zero reading
+        certifies nothing for them. #962's one measurement
+        (`legality._graphic_copper_channel`, check_drc's census), so this
+        and `grade_pad_legality`'s `oob_graphic_copper_refs` cannot disagree.
+        Computed once per grade, and only when a datum reaches the question."""
+        if self._graphic_off is None:
+            ch = legality._graphic_copper_channel(self.pcb, 0.0)  # noqa: SLF001
+            self._graphic_off = frozenset(
+                [str(r) for r, _amt in ch['oob_graphic_copper_refs']]
+                + [str(u[0]) for u in ch['oob_graphic_copper_unmeasured']
+                   if u and u[0]])
+        return self._graphic_off
 
     def zero_gate(self):
         """The outline at ZERO margin -- "is this copper ON the board", which
@@ -5976,11 +6045,14 @@ def rule_legality(ctx) -> Iterator[Violation]:
     # count stays in `ctx.legality['oob_count']` -- it is the optimizer's own
     # number and `test_legality_numbers_are_the_optimizers_own` pins it --
     # and the exemption is published beside it as `oob_count_exempt`.
-    # `oob_amount` is NOT reduced: an author who budgets millimetres of
-    # overhang is budgeting the connectors too, and no run has asked for
-    # the split; say so here rather than guess.
+    # Mechanical fixed poses at their datum join them (`oob_exempt`).
+    # `oob_amount` is reduced by the same parts' census amounts, the raw
+    # total published as `oob_amount_raw`: each exempt overhang is already
+    # bounded by its own band or datum, and left in, the six edge
+    # connectors of one run made `oob_amount: 0` unsatisfiable.
     exempt = ctx.oob_exempt()
     ctx.legality['oob_count_exempt'] = len(exempt)
+    census = {r: ctx._oob_exempt_census[r] for r in exempt}  # noqa: SLF001
     for key, label in (('overlap_area', 'courtyard overlap area (mm2)'),
                        ('oob_count', 'parts leaving the board outline'),
                        ('oob_amount', 'total off-board overhang (mm)')):
@@ -6032,7 +6104,14 @@ def rule_legality(ctx) -> Iterator[Violation]:
             measured = {key: int(got), 'oob_count_raw': int(raw),
                         'exempt': sorted(exempt)}
             note = (f" ({len(exempt)} declared edge connector(s) within "
-                    f"their overhang band exempt: {', '.join(sorted(exempt))})")
+                    f"their overhang band or mechanical datum(s) at their "
+                    f"pose exempt: {', '.join(sorted(exempt))})")
+        if key == 'oob_amount' and census:
+            raw = float(got)
+            got = max(0.0, raw - math.fsum(census.values()))
+            measured = {key: round(got, 4), 'oob_amount_raw': round(raw, 4),
+                        'exempt': sorted(census)}
+            note = f" ({len(census)} exempt part(s) excluded)"
         if got > lim + legality.EPS:
             yield Violation(
                 rule='legality', severity=ctx.sev('legality'),
