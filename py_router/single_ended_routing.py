@@ -4182,19 +4182,26 @@ def route_multipoint_main(
     # A main edge whose terminal copper overlapped foreign copper on an earlier
     # pass goes to the back, not away: Phase 1 tries the next edge first and
     # Phase 3 still routes this one as a tap.
+    _selected_front = mst_edges[0] if mst_edges else None
     if _deferred_main_edges:
         mst_edges = ([e for e in mst_edges if (e[0], e[1]) not in _deferred_main_edges]
                      + [e for e in mst_edges if (e[0], e[1]) in _deferred_main_edges])
     # Net-story note: how the main edge was chosen (longest-first default,
-    # corridor-span re-realization/promotion, or dense-first reorder).
+    # corridor-span re-realization/promotion, dense-first reorder, or the
+    # terminal gate deferring the edge that would have gone first).
     if mst_edges and _edges_before and mst_edges[0] != _edges_before[0]:
-        _sel_note = {'mode': ('corridor-span' if attraction_path
+        _sel_note = {'mode': ('terminal-gate-deferred'
+                              if mst_edges[0] != _selected_front
+                              else 'corridor-span' if attraction_path
                               else 'dense-first'),
                      'main_edge': list(mst_edges[0][:2]),
                      'displaced_longest': list(_edges_before[0][:2])}
     else:
         _sel_note = {'mode': 'longest-first',
                      'main_edge': list(mst_edges[0][:2]) if mst_edges else None}
+    if _deferred_main_edges:
+        _sel_note['deferred_by_terminal_gate'] = sorted(
+            list(e) for e in _deferred_main_edges)
 
     # Distribute guide-corridor waypoints across the MST edges: each waypoint
     # steers the edge it's nearest to, so the net follows the drawn line across
@@ -4294,8 +4301,13 @@ def route_multipoint_main(
     routed_edge_pos = None
     for attempt in range(max_main_attempts):
         idx_a, idx_b, edge_len = mst_edges[attempt]
-        label = ("routing longest MST edge" if attempt == 0
-                 else f"retrying with next MST edge ({attempt + 1}/{max_main_attempts})")
+        if attempt:
+            label = f"retrying with next MST edge ({attempt + 1}/{max_main_attempts})"
+        elif _deferred_main_edges:
+            label = (f"routing the next MST edge ({len(_deferred_main_edges)} "
+                     f"deferred by the terminal gate)")
+        else:
+            label = "routing longest MST edge"
         print(f"  Multi-point net Phase 1: {label} (pads {idx_a} and {idx_b}, length={edge_len:.2f}mm)")
 
         # Build source/target for this pad pair
@@ -4573,6 +4585,8 @@ def route_multipoint_main(
         _edge = (mst_edges[0][0], mst_edges[0][1])
         _deferred = _deferred_main_edges | {_edge}
         if _edge not in _deferred_main_edges and len(_deferred) < min(len(mst_edges), 8):
+            print(f"  Deferring MST edge (pads {_edge[0]},{_edge[1]}) to Phase 3; "
+                  f"Phase 1 tries the next edge")
             retry = route_multipoint_main(
                 pcb_data, net_id, config, obstacles, pad_info,
                 attraction_path=attraction_path, state=state,

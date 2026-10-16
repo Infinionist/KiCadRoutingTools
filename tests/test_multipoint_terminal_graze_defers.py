@@ -166,6 +166,11 @@ def section_control_flow():
     check('the shipped main edge is not the deferred longest edge',
           deferred is not None and edges[0] != deferred, f'{edges}, deferred {deferred}')
     check('the deferred edge is kept for Phase 3', deferred in edges[1:], str(edges))
+    note = res.get('edge_selection_note') or {}
+    check('the net story names the terminal gate, not a selector, as the reason',
+          note.get('mode') == 'terminal-gate-deferred'
+          and note.get('deferred_by_terminal_gate') == [list(res['mst_edges'][-1][:2])]
+          and 'Deferring MST edge' in log, str(note))
     with escalation('fab'):
         taps, _ = quiet(ser.route_multipoint_taps, pcb, 2, cfg, obs, res)
     taps = taps or {}
