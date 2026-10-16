@@ -599,25 +599,33 @@ def stamp_base_obstacles(obstacles, pcb_data, config, nets_to_route, coord, laye
 
 
 def stamp_plane_obstacles(obstacles, pcb_data, config, net_id: int, layers,
-                          tracks: bool) -> None:
+                          tracks: bool, vias: Optional[bool] = None,
+                          extra_clearance: float = 0.0) -> None:
     """The plane path's half (plane_obstacle_builder): the via-placement map
     (`tracks` False) and the single-layer tap-routing map (`tracks` True,
     `layers` its one layer) built for `net_id` leave that net's copper out,
-    so its protected branches are stamped in here, join pad cut out."""
+    so its protected branches are stamped in here, join pad cut out.
+
+    `vias` defaults to `not tracks`: each of those two maps takes one half.
+    plane_region_connector.build_base_obstacles routes AND places vias on one
+    map over every routing layer, so it takes both, with its grid cushion as
+    `extra_clearance` -- the cushion it adds to every foreign item."""
     from routing_config import GridCoord
     branches = protected_branches(pcb_data, net_id)
     if not branches:
         return
+    stamp_vias = (not tracks) if vias is None else vias
     coord = GridCoord(config.grid_step)
     layer_map = {name: i for i, name in enumerate(layers)}
     clearance = (config.obstacle_clearance(net_id)
                  if hasattr(config, 'obstacle_clearance') else config.clearance)
     for b in branches:
-        cells, vias = sense_obstacle_rows(b, config, coord, layer_map, clearance)
+        cells, vrows = sense_obstacle_rows(b, config, coord, layer_map, clearance,
+                                           extra_clearance)
         if tracks and len(cells):
             obstacles.add_blocked_cells_batch(cells)
-        if not tracks and len(vias):
-            obstacles.add_blocked_vias_batch(vias)
+        if stamp_vias and len(vrows):
+            obstacles.add_blocked_vias_batch(vrows)
 
 
 def join_for_point(pcb_data, net_id: int, x: float, y: float, layer: str):

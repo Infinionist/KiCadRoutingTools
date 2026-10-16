@@ -77,7 +77,9 @@ def _collect_anchor_points(
 
     # Add vias of our net that touch any zone layer
     for via in pcb_data.vias:
-        if via.net_id != net_id:
+        # #1279: a protected sense branch joins its net at its join pad only,
+        # so its member vias and sense pads never anchor a region.
+        if via.net_id != net_id or getattr(via, 'sense', ''):
             continue
         touches_zone = any(via_connects_layer(via.layers, zl) for zl in zone_layers)
         if not touches_zone:
@@ -91,6 +93,8 @@ def _collect_anchor_points(
 
     # Add pads of our net on any zone layer
     for pad in pcb_data.pads_by_net.get(net_id, []):
+        if getattr(pad, 'sense', ''):
+            continue    # #1279 (see the vias above)
         touches_zone = '*.Cu' in pad.layers or any(zl in pad.layers for zl in zone_layers)
         if not touches_zone:
             continue
@@ -128,11 +132,15 @@ def _collect_cross_layer_points(
 
     cross_layer_points: List[Tuple[float, float, Set[str]]] = []
 
+    # #1279: a protected sense branch's member vias and sense pads never carry
+    # the plane from one layer to another (they join the net at the join pad).
     for via in pcb_data.vias:
-        if via.net_id == net_id:
+        if via.net_id == net_id and not getattr(via, 'sense', ''):
             cross_layer_points.append((via.x, via.y, get_via_connected_layers(via.layers)))
 
     for pad in pcb_data.pads_by_net.get(net_id, []):
+        if getattr(pad, 'sense', ''):
+            continue
         if '*.Cu' in pad.layers:  # Through-hole pad
             cross_layer_points.append((pad.global_x, pad.global_y, set(routing_layers)))
 
@@ -3694,6 +3702,15 @@ def build_base_obstacles(
     # keep-out rule areas (#25), on the plane routing layers.
     add_user_keepout_obstacles(obstacles, pcb_data, config, coord, num_layers)
     add_rule_area_keepout_obstacles(obstacles, pcb_data, config, layers=routing_layers)
+
+    # #1279: the excluded nets' own copper is free to this map, so a protected
+    # Kelvin sense branch of one of them is stamped back in as foreign copper
+    # (tracks and vias, join pad cut out): a region join, an oracle link or
+    # the guaranteed join reaches that branch only at its join pad.
+    from sense_branch import stamp_plane_obstacles
+    for _nid in sorted(exclude_net_ids):
+        stamp_plane_obstacles(obstacles, pcb_data, config, _nid, routing_layers,
+                              tracks=True, vias=True, extra_clearance=cushion)
 
     return obstacles, layer_map
 
