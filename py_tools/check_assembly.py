@@ -253,6 +253,7 @@ def main():
 
     new_advisory = None
     moved_refs = None
+    base_pile = False
     if args.baseline:
         try:
             base_pcb = parse_kicad_pcb(args.baseline)
@@ -267,10 +268,21 @@ def main():
             print(f"baseline {args.baseline} has no footprints: pass the "
                   f"board this one was derived from", file=sys.stderr)
             return 2
-        gb = grade_body_overlap(base_pcb, clearance, intent_waivers=waivers,
-                                pcb_file=args.baseline,
-                                courtyard_severity=_cy_sev_arg)
-        base_keys = {(q.a, q.b, q.kind) for q in gb['pairs']}
+        # A PILE's overlaps are staging, not decisions (#1103, as emit_intent
+        # reads no overlap budget off one): no pair on the placed board is
+        # excused by having overlapped there, so every advisory pair is new,
+        # and the pile's own body grade -- 96% of this check on a 272-part
+        # pile (glasgow_revC: 8.9 s of 9.3) -- is not paid for. The courtyard
+        # gate's currency (`moved_refs`) is read off the pile as before.
+        from placement.placement_state import assess_placement
+        base_pile = assess_placement(base_pcb, args.baseline).pile
+        if base_pile:
+            base_keys = set()
+        else:
+            gb = grade_body_overlap(base_pcb, clearance, intent_waivers=waivers,
+                                    pcb_file=args.baseline,
+                                    courtyard_severity=_cy_sev_arg)
+            base_keys = {(q.a, q.b, q.kind) for q in gb['pairs']}
         new_advisory = [q for q in g['advisory_pairs']
                         if (q.a, q.b, q.kind) not in base_keys]
         # Refs whose POSE differs from the baseline: the courtyard gate's
@@ -299,6 +311,9 @@ def main():
           f"  courtyard_blocking {g['courtyard_blocking']}"
           + (f"  new-vs-baseline {len(new_advisory)}"
              if new_advisory is not None else ""))
+    if base_pile:
+        print(f"  baseline {args.baseline} is a pile: its overlaps are staging, "
+              f"not a baseline (#1103), so every advisory pair counts as new")
     _cb_keys = {(q.a, q.b) for q in g['courtyard_blocking_pairs']}
     _body_src = g.get('body_sources') or {}
     for q in g['pairs']:
@@ -1024,6 +1039,7 @@ def main():
         }
         if new_advisory is not None:
             doc['baseline'] = args.baseline
+            doc['baseline_pile'] = base_pile
             doc['new_advisory_pairs'] = [q._asdict() for q in new_advisory]
         with open(args.json, 'w', encoding='utf-8') as f:
             json.dump(doc, f, indent=1, sort_keys=True)

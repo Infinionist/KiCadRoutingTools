@@ -46,11 +46,11 @@ from concurrent.futures import ThreadPoolExecutor
 HERE = os.path.dirname(os.path.abspath(__file__))
 FLOWS = ('one', 'loop')
 #: `--seeds auto`: three seeds of each flow up to this many movable parts,
-#: one above it. A candidate's time grows faster than the part count, and
-#: on four performance cores more candidates than cores mostly wait: a
-#: 272-part board (glasgow_revC) takes 96 s for one seed of each flow and
-#: 172 s for two, against 30 s for three seeds on a 92-part one (tigard).
-AUTO_SEEDS_MAX_PARTS = 150
+#: one above it. Six candidates on four performance cores run in two
+#: rounds: a 272-part board (glasgow_revC) takes 34 s for one seed of each
+#: flow and 74 s for three, and its best candidate came from the third
+#: seed (floorplan errors 126 -> 118).
+AUTO_SEEDS_MAX_PARTS = 300
 
 
 def auto_seeds(board):

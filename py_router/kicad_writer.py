@@ -194,11 +194,13 @@ def _functional_footprint_spans(content: str):
         return []
     from kicad_parser import (_footprint_blocks_by_key, footprint_pad_count,
                               footprint_copper_is_functional)
+    from kicad_parser import release_text_caches
     spans = []
     for start, end, _key in _footprint_blocks_by_key(content):
         if footprint_copper_is_functional(
                 footprint_pad_count(content[start:end])):
             spans.append((start, end))
+    release_text_caches()
     return spans
 
 

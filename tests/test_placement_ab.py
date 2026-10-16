@@ -324,7 +324,7 @@ ROWS = [
         'quench_on': {'intent_gate': ROW_INTENT},
         'signal': 'intent_errors_enforced',
         'guard': ('crossings', 'hpwl', 'intent_errors_other'),
-        'expect': 'improve',
+        'expect': 'regress',
         'why': ('MECHANISM: the CHEAP row (61 parts), and the corpus-scale '
                 'test of the monotone FREEZE. This board SEEDS with a '
                 'containment error, and the ON arm holds that count instead '
@@ -342,7 +342,14 @@ ROWS = [
                 'The mark flipped because the OFF arm DEGRADED, 2 -> 3: a '
                 'different candidate set lets the ungated search walk out one '
                 'more part. The signal reaching 0 would still mean the gate '
-                'had started repairing; it is at 1.'),
+                'had started repairing; it is at 1.'
+                " UPDATED for the pose pricer: the mark moved improve -> "
+                "regress on the crossings GUARD alone: the signal and the "
+                "hpwl guard read as the baseline recorded them, but the "
+                "polish now breaks ties among equally short trees "
+                "in Kruskal's order rather than Prim's, so the ON arm "
+                "takes another walk and ends a few crossings either side "
+                "of the OFF arm."),
     },
     {
         'name': 'intent-exclusive-coldfire',
@@ -461,9 +468,9 @@ ROWS = [
         'quench_on': {'body_model': True},
         'signal': 'body_advisory',
         'guard': ('body_blocking', 'crossings', 'hpwl'),
-        'expect': 'improve',
+        'expect': 'neutral',
         'rejected': True,
-        'why': ('MECHANISM: the board candidate_valid names as the one where nearly every part starts in violation, so it is the most sensitive to a seat box that only grows -- and the one board where the trade goes the OTHER way, signal and both guards together. Kept because it DISAGREES with the other three, and deleting the dissenting row is how a finding becomes folklore.'),
+        'why': ('MECHANISM: the board candidate_valid names as the one where nearly every part starts in violation, so it is the most sensitive to a seat box that only grows -- and the one board where the trade went the OTHER way, signal and both guards together. Since the polish prices a pose by the tree edges it changes (_PosePricer, whose ties among equally short trees differ from a full rebuild), both arms make the same moves here: the body model reaches only the five courtyard-less parts, and none of them moves. Kept because it DISAGREED with the other three, and deleting the dissenting row is how a finding becomes folklore.'),
     },
     # --- #1182: the SEED engine on check_assembly's occupancy -------------
     # REJECTED as a default, rows kept: `place_seed --body-model` seats the

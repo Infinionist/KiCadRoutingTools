@@ -41,6 +41,111 @@ Key options:
 
 > **The declared design brief reaches these CLIs THROUGH `--intent`, not through a flag of their own (#711).** `<board>.design-brief.json` is read by `check_floorplan.py` (and reported by `board_brief.py`); `check_floorplan --emit-intent` COMPILES it into `edge_connectors` / `keepouts`, and the placement CLIs then consume that intent. One artifact, one flag: a second channel into the same engine is exactly the divergence this module's `cli_gates` exists to prevent. `--brief` / `--no-brief` therefore exist on `check_floorplan.py` and `board_brief.py` only. See [docs/design-brief.md](../../docs/design-brief.md). One brief key has a second reader by design: `keep_away` (#1253) compiles into the intent's `keep_away[]`, which `check_floorplan` grades on the pads (WARN by default), and the ROUTING engines read the same key off the brief to price it on the tracks. No placement search reads it (`floorplan.GRADE_ONLY_RULES`).
 
+### How the quench prices a pose, and why it scales
+
+A pass visits every movable part. Per visit, the quench tries each candidate
+pose within `--max-displacement` at each rotation (about 120 on a 1 mm grid at
+3 mm), keeps the ones `candidate_valid` admits (10-17%), and prices each by
+the airwires of the nets the part touches plus its geometry terms (halo,
+edge, alignment). A net's airwires are its pads' minimum spanning tree. The
+price is their length (`--length-weight`), their crossings with every other
+airwire on the board, and their crossings with each other (`--crossing-penalty`
+each).
+
+**The cost that did not scale was the big nets.** Take a capacitor with one
+pad on GND, on glasgow_revC, whose GND has 293 pads. Priced the direct way,
+every pose rebuilt GND's tree (Prim, 293² distances) and tested its 292 edges
+against the board's other ~1,000 airwires: about 250,000 pair tests, 2.4 ms a
+pose. A bigger board has a bigger ground net and more airwires, so the cost
+of a pose grew with the board, and a pass grew with its square: glasgow's
+polish took 68 s.
+
+But a 1 mm move changes two or three of those 292 edges. Five pieces of
+`quench.py` price a pose by what it changes:
+
+1. **The pose pricer** (`_PosePricer`, `_TreeJoin`), for a part on a net of
+   `PRICER_MIN_POINTS` (24) pads or more:
+   - Once per visit, it builds the tree of the net's OTHER pads (the fixed
+     tree) and prices each fixed edge once: its crossings with the board's
+     other airwires, which do not move during the visit, and with the other
+     nets' fixed edges.
+   - Per pose, it joins the part's pads to the fixed tree. A shortest tree of
+     the whole net lies inside "fixed tree + edges from the moved pads" (any
+     edge between two fixed pads that the fixed tree leaves out is the
+     longest edge of a cycle among fixed pads, at every pose), so Kruskal
+     over those edges alone finds it. A pad edge that is the strictly
+     longest side of a triangle with a fixed edge is in no shortest tree and
+     is dropped before the sort.
+   - One moved pad (a passive's ground pin, the usual case) is joined without
+     a loop over the tree, on the fixed tree's Kruskal reconstruction tree: a
+     fixed edge drops out exactly when the pad reaches both of its sides by
+     edges shorter than it, and a pad edge comes in exactly when no earlier
+     pad edge reached the component its far end was in when Kruskal got to it.
+     Both are range queries (below), O(c log m) for c candidate edges. Above
+     `JOIN_ONE_MAX_CANDIDATES` (48) candidates -- a pad far outside the net,
+     which sees much of its hull -- and for several moved pads, the Kruskal
+     loop runs instead; the two give the same tree.
+   - The price is then the fixed totals, minus the dropped edges' shares,
+     plus the added edges' own counts (the only edges tested against the
+     board).
+
+   The counts are the full rebuild's own integers, and `tests/test_quench_pricer.py`
+   holds the pricer to a recount of its trees and to Prim's length. One
+   thing differs from the full rebuild: where pads sit on a regular grid,
+   several trees are equally short, and Kruskal may pick another than Prim
+   (49 of 234 glasgow poses), which can change a crossing count. Neither
+   tree is more correct; graded on seven boards against the full rebuild,
+   best candidates were 2 better, 1 worse and 4 identical.
+2. **Grid pairing** (`_box_pairs_grid`). Every crossing count first finds the
+   airwire pairs whose boxes meet. When both sets hold 64 boxes or more and
+   there are 20,000 pairs, that is a uniform grid join (each box listed in
+   the cells it covers, the lists joined on the cell) instead of the full
+   n × m matrix, so it costs what is near rather than what exists. A pose's
+   few edges against the rest of the board stay a matrix, which is cheaper
+   there (5 × 2,200 boxes: 75 µs against 357 µs). It returns the matrix's own pairs in the matrix's order, so
+   every count and weighted sum is bit-identical.
+3. **Sparse Prim** (`_mst_edges_sparse`), for nets of `SPARSE_MST_MIN_POINTS`
+   (500) pads or more: Prim over the Delaunay triangulation's edges instead
+   of every pair, O(n log n) instead of O(n²), and the same tree as
+   `compute_mst_edges`, ties and coincident pads included. Every edge dense
+   Prim can choose is a lightest edge leaving its tree, so it is in some
+   minimum spanning tree, so no third pad is strictly nearer both its ends,
+   so its closed diametral circle is empty, so it is a Delaunay edge; a heap
+   keyed (distance, pad) with dense Prim's strict-less update makes the same
+   choice at every step. Collinear pads, which have no triangulation, fall
+   back to the dense form. 2× faster at 1,200 pads, 6× at 4,000.
+4. **Cached net arrays** (`airwires_excluding`): the board's other airwires
+   are joined from per-net arrays kept until a move rebuilds that net, not
+   re-read from every net's list at every visit.
+5. **The swap phase** compares two identical parts with their poses exchanged
+   against the poses as they are. A net whose pads on the two parts land
+   exactly where the other's were (two decaps on one ground, the same pad on
+   each) has the same tree both ways, so it adds the same to both sides of
+   the comparison; it is priced as part of the board instead of being
+   rebuilt twice (`_swap_fixed_nets`).
+
+Measured, one pass of `place_optimize --max-displacement 3` from the human
+placement (whole run, parse and write included):
+
+| board | parts | ground pads | f6af54ae | now | peak memory now |
+|---|---|---|---|---|---|
+| glasgow_revC | 272 | 293 | 14.8 s | 4.4 s | 106 MB |
+| ddr4_rdimm_tester | 691 | 833 | 255 s | 58 s | 705 MB |
+| stm32h7_hdmi | 835 | 601 | 162 s | 38 s | 551 MB |
+| kintex_410t_devboard | 1020 | 1136 | -- | 97 s | 939 MB |
+
+(The two biggest files, 54 and 75 MB, spend 8-11 s per parse of that.)
+
+What still grows with the ground net: the fixed tree is built once per visit
+(O(m log m) at most), and a pose's join reads every fixed pad's distance once
+(O(m) in numpy). The join itself is O(c log m) in the pad's c candidate
+edges: the lowest common ancestor of two leaves of the reconstruction tree
+is the split of largest index between them (nodes are made in Kruskal's
+order, so an ancestor outnumbers its descendants), and a leaf's component at
+length d is the run of leaves whose splits weigh at most d, both read off
+sparse tables. So a pass costs about parts × ground pads × a small constant,
+not parts² × ground pads.
+
 ## place_route_loop.py — router-in-the-loop repair
 
 Routes the board with the real router, reads the failure diagnostics
@@ -374,6 +479,43 @@ declared ladder as declared) -- and stage
 including the later stages' seat of a part that attempt leaves to them
 (coldfire's pile, UARTCAN203). The facing grade reports every one.
 
+### How a seat search refuses poses
+
+`_try_place` seats a part at the FIRST legal pose in a fixed order: three
+rings of offsets around its target (1 mm out to `SEARCH_RADIUS_MM`, then a
+fine and a grid-step ring, about 27,000 offsets in all), then, when nothing
+holds the part to a zone, a 2 mm sweep of the whole board nearest-first.
+Each ring is walked at every angle of the part's ladder, and the whole search
+at each rung of the clearance ladder (full, half, a 0.02 mm floor), then at
+the diagonals as a fallback. A part that fits stops early. A part with no
+seat anywhere walks all of it, and the eviction census (`count_legal_poses`)
+walks its zone again once per neighbour it lifts: glasgow_revC's MK2, a
+3.5 mm mounting hole with no room on the board, cost 18 s of a 22 s seed.
+
+Most of those poses fail for a reason that is cheap to see for many at once,
+so before the full `pose_ok` the search drops, 512 positions at a time in
+numpy (`_pose_prefilter`):
+
+- a pose whose grade rect overshoots the usable bbox. `rect_outside_amount`,
+  `pose_ok`'s outline test, starts from exactly that overshoot and only adds
+  to it;
+- a pose that overlaps a seated part (`_overlap_rejector`). A grid of 0.25 mm
+  cells marks the cells wholly inside every rect the neighbour loop tests the
+  part's courtyard against on its own side: a same-side part's courtyard,
+  and a far-side drilled part's hole boxes. A pose whose rect wholly covers a
+  marked cell overlaps that rect by positive area, where `rect_gap` is
+  negative, so the loop refuses it at any clearance. A drilled part being
+  seated is read on its own side the same way, so the grid serves it too
+  (it used to skip drilled parts, which is why MK2 paid in full).
+
+Both refuse only what `pose_ok` refuses, and the survivors keep their order,
+so the search seats exactly the pose it found before, and a census count up
+to `CENSUS_CAP` is the same in any order. `tests/test_seed_prefilter.py`
+asks `pose_ok` about 30,000 refused poses on two boards, drilled parts
+included. Measured on glasgow_revC's one-pass seed: the seat searches went
+from 20.9 s to 2.2 s (MK2's from 7.1 s to 0.2 s), with all 272 poses
+identical.
+
 ### The eviction rung (`--evict-depth`, #630, #699)
 
 A part with no legal pose is not necessarily a part with no **room**. Run 19
@@ -654,7 +796,7 @@ python py_placer/place_groups.py fixed.kicad_pcb by_group.kicad_pcb \
   only when not worse. The output carries the input's own locks and no others.
 - **`place_candidates.py`** places the board both ways over several seeds
   (default `--seeds auto`: seeds 0-2 of each flow, seed 0 alone above
-  `AUTO_SEEDS_MAX_PARTS` = 150 movable parts), four candidates at a time (`--jobs`),
+  `AUTO_SEEDS_MAX_PARTS` = 300 movable parts), four candidates at a time (`--jobs`),
   grades each one as `place_groups.py` grades its own, ranks them by
   buildable, floorplan errors, crossings and HPWL, and copies the best to the
   output; every candidate stays in `<output>.candidates/` with its log.

@@ -178,8 +178,8 @@ python3 -X utf8 py_placer/place_candidates.py wk/<run>/fixed.kicad_pcb wk/<run>/
 ```
 
 It places seeds 0, 1 and 2 of each flow, or seed 0 alone on a board of more
-than 150 movable parts, where each candidate takes far longer (`--seeds auto`,
-the default; `--flows`). It grades every candidate the same way and keeps the
+than 300 movable parts (`--seeds auto`, the default; `--flows`): a 272-part
+board takes about 75 s for all six. It grades every candidate the same way and keeps the
 best by:
 1. buildable;
 2. then floorplan errors;

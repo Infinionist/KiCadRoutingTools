@@ -661,19 +661,17 @@ def count_legal_poses(state, ref: str, tx: float, ty: float,
             del state.exclusive_for[ref]
     try:
         n = 0
-        # `_try_place`'s overlap grid: it refuses only poses `pose_ok`
-        # refuses, so the count is unchanged.
-        overlaps = _overlap_rejector(state, ref, exclude)
-        for dx, dy in offsets:
-            if max_disp is not None and math.hypot(dx, dy) > max_disp + 1e-9:
-                continue
-            x, y = round(tx + dx, 3), round(ty + dy, 3)
-            for rot in rots:
+        # `_try_place`'s prefilter: it refuses only poses `pose_ok` refuses,
+        # and a count up to `cap` is the same in any order, so the sweep goes
+        # angle by angle over the positions the prefilter leaves.
+        pre = _pose_prefilter(state, ref, exclude)
+        pts = [(round(tx + dx, 3), round(ty + dy, 3)) for dx, dy in offsets
+               if max_disp is None or math.hypot(dx, dy) <= max_disp + 1e-9]
+        for rot in rots:
+            for x, y in _unrefused(pre, pts, rot):
                 # Zone first: it is four float compares, where `pose_ok` ends
                 # in `candidate_valid`. Measured 19x faster on a small zone.
                 if not in_zone(x, y, rot):
-                    continue
-                if overlaps is not None and overlaps(x, y, rot):
                     continue
                 if pose_ok(state, ref, x, y, rot, exclude):
                     n += 1
@@ -1767,28 +1765,40 @@ def _overlap_rejector(state, ref: str, exclude):
     A seat search tries thousands of poses, and on a dense board almost every
     one fails `candidate_valid`'s neighbour loop because it lands on a part
     already seated (ch32v006_dev's io_banks step: 920,000 poses for 41
-    searches). This grid marks the cells that lie wholly inside the
-    occupancy rect of every part the loop would test against -- not `ref`,
-    not in `exclude`, not a container, no drilled pads, same side -- so a
-    pose whose own rect wholly covers a marked cell overlaps that part by
-    positive area, which the loop refuses at any clearance. A pose it does
-    not refuse goes to `pose_ok` as before, so the search keeps exactly the
-    pose it always found. None where the loop asks another question: a
-    waived courtyard, a restricted neighbour list, a drilled or container
-    part being seated."""
+    searches). This grid marks the cells that lie wholly inside a rect the
+    loop tests the part's own courtyard against on the part's side -- every
+    part but `ref`, those in `exclude` and the containers: a same-side
+    part's courtyard, and a far-side part's drilled-pad boxes (the side it
+    reaches through, `legality.rect_on`). A pose whose own rect wholly covers
+    a marked cell overlaps that rect by positive area, and `rect_gap` is
+    negative there, so the loop refuses it at any clearance -- a drilled part
+    being seated included, whose own side the pair test reads the same way.
+    A pose it does not refuse goes to `pose_ok` as before, so the search keeps
+    exactly the pose it always found. None where the loop asks another
+    question: a waived courtyard, a restricted neighbour list, a container
+    part being seated.
+
+    `refuse.batch(xs, ys, rot)` answers for many positions at once, by the
+    same arithmetic."""
     if (getattr(state, 'courtyards_ignored', False)
             or getattr(state, '_neighbors', None) is not None):
         return None
     part = state.parts[ref]
-    if part.has_tht or ref in getattr(state, 'container_refs', ()):
+    conts = getattr(state, 'container_refs', ())
+    if ref in conts:
         return None
     import numpy as np
+    from placement.legality import far_boxes
     excl = exclude or ()
-    conts = getattr(state, 'container_refs', ())
     eps = 1e-6
-    rects = [o.rect() for r, o in state.parts.items()
-             if r != ref and r not in excl and r not in conts
-             and not o.has_tht and o.side == part.side]
+    rects = []
+    for r, o in state.parts.items():
+        if r == ref or r in excl or r in conts:
+            continue
+        if o.side == part.side:
+            rects.append(o.rect())
+        elif o.has_tht:
+            rects.extend(far_boxes(o.tht_rect()))
     if not rects:
         return None
     g = OVERLAP_CELL_MM
@@ -1805,9 +1815,9 @@ def _overlap_rejector(state, ref: str, exclude):
         i1 = int(math.floor((r[3] - eps - oy) / g))
         if j1 > j0 and i1 > i0:
             grid[i0:i1, j0:j1] = 1
-    ps = np.zeros((ny + 1, nx + 1), dtype=np.int64)
-    ps[1:, 1:] = grid.cumsum(0).cumsum(1)
-    ps = ps.tolist()
+    psa = np.zeros((ny + 1, nx + 1), dtype=np.int64)
+    psa[1:, 1:] = grid.cumsum(0).cumsum(1)
+    ps = psa.tolist()
 
     def refuse(x, y, rot):
         R = part.rects(x, y, rot)[0]
@@ -1818,7 +1828,74 @@ def _overlap_rejector(state, ref: str, exclude):
         if j1 <= j0 or i1 <= i0:
             return False
         return (ps[i1][j1] - ps[i0][j1] - ps[i1][j0] + ps[i0][j0]) > 0
+
+    def batch(xs, ys, rot):
+        b = part.bounds_by_rot.get(rot % 360)
+        if b is None:
+            b = part.bounds_by_rot[0.0]
+        j0 = np.maximum(0, np.ceil((xs + b[0] + eps - ox) / g).astype(np.int64))
+        j1 = np.minimum(nx, np.floor((xs + b[2] - eps - ox) / g).astype(np.int64))
+        i0 = np.maximum(0, np.ceil((ys + b[1] + eps - oy) / g).astype(np.int64))
+        i1 = np.minimum(ny, np.floor((ys + b[3] - eps - oy) / g).astype(np.int64))
+        live = (j1 > j0) & (i1 > i0)
+        j0c, j1c = np.clip(j0, 0, nx), np.clip(j1, 0, nx)
+        i0c, i1c = np.clip(i0, 0, ny), np.clip(i1, 0, ny)
+        s = psa[i1c, j1c] - psa[i0c, j1c] - psa[i1c, j0c] + psa[i0c, j0c]
+        return live & (s > 0)
+    refuse.batch = batch
     return refuse
+
+
+def _pose_prefilter(state, ref: str, exclude):
+    """`refused(xs, ys, rot)`: a bool array over positions, True where
+    `pose_ok` would refuse the pose -- its grade rect overshoots the usable
+    bbox (the first term of `rect_outside_amount`, which only adds to it), or
+    it overlaps a seated part (`_overlap_rejector`). Never True where
+    `pose_ok` would seat, so a search may drop those positions unasked, in
+    any number at once, and keep exactly the pose it always found."""
+    import numpy as np
+    part = state.parts[ref]
+    over = _overlap_rejector(state, ref, exclude)
+    eg = getattr(state, 'edge_gate', None)
+    u = getattr(eg, 'usable', None) if eg is not None else None
+
+    def refused(xs, ys, rot):
+        out = np.zeros(len(xs), dtype=bool)
+        if u is not None:
+            b = part.grade_by_rot.get(rot % 360)
+            if b is None:
+                b = part.grade_by_rot[0.0]
+            amt = (np.maximum(0.0, u[0] - (xs + b[0]))
+                   + np.maximum(0.0, u[1] - (ys + b[1]))
+                   + np.maximum(0.0, (xs + b[2]) - u[2])
+                   + np.maximum(0.0, (ys + b[3]) - u[3]))
+            out |= amt > 1e-9
+        if over is not None:
+            out |= over.batch(xs, ys, rot)
+        return out
+    return refused
+
+
+#: Positions `_try_place` and `count_legal_poses` hand `_pose_prefilter` at
+#: once: enough to amortise the array work, few enough that a search which
+#: fits early pays for little more than it looks at.
+PREFILTER_CHUNK = 512
+
+
+def _unrefused(prefilter, positions, rot):
+    """`positions` [(x, y)] in their order, less those `prefilter` refuses
+    at `rot`, taken PREFILTER_CHUNK at a time from any iterable."""
+    import numpy as np
+    it = iter(positions)
+    while True:
+        chunk = list(itertools.islice(it, PREFILTER_CHUNK))
+        if not chunk:
+            return
+        arr = np.asarray(chunk, dtype=float)
+        bad = prefilter(arr[:, 0], arr[:, 1], rot).tolist()
+        for pos, b in zip(chunk, bad):
+            if not b:
+                yield pos
 
 
 #: How near a proximity follower's declared pads must sit to their partner's
@@ -1888,12 +1965,10 @@ def _try_place(state, ref: str, tx: float, ty: float, exclude: Set[str],
     that would make a decap finding worse instead of stopping at it. None
     (every other caller) is the search as it was."""
     part = state.parts[ref]
-    _overlaps = _overlap_rejector(state, ref, exclude)
-
-    def _ok(x, y, rot):
-        if _overlaps is not None and _overlaps(x, y, rot):
-            return False
-        return pose_ok(state, ref, x, y, rot, exclude)
+    # Drops, a chunk at a time, the positions `pose_ok` refuses for the
+    # outline's box or an overlap -- on a part with no seat anywhere (a
+    # mounting hole on a full board), nearly all of them.
+    _pre = _pose_prefilter(state, ref, exclude)
 
     _in_zone, anchor_zone = zone_gate(part, constraint, tol)
     if anchor_zone and info is not None:
@@ -1975,12 +2050,12 @@ def _try_place(state, ref: str, tx: float, ty: float, exclude: Set[str],
                                 constraint, part.grade_rect(0.0, 0.0, rot), tol)
                         cands = seat_candidates_in_box(state, tx, ty, box,
                                                        max_disp=max_disp)
-                    for x, y in cands:
+                    for x, y in _unrefused(_pre, cands, rot):
                         if not _in_zone(x, y, rot):
                             continue
                         if accept is not None and not accept(x, y, rot):
                             continue
-                        if _ok(x, y, rot):
+                        if pose_ok(state, ref, x, y, rot, exclude):
                             return x, y
                     return None
 

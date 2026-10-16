@@ -174,6 +174,30 @@ import sys
 PLAN_REFUSED_EXIT = 5
 
 
+#: `read_written`'s one entry: ((path, inode, mtime, ctime, size), PCBData).
+_WRITTEN: list = [None]
+
+
+def read_written(path):
+    """`parse_kicad_pcb(path)` for a board this run wrote, parsed once per
+    version of the file. A seed reads its own output back up to nine times
+    (grade, repair, pinned split, pad and body grades, the summary), and a
+    parse grows with the file: 0.2 s on glasgow_revC, 8 s on a 54 MB board.
+    The key is the file's identity and timestamps, so any rewrite -- in
+    place or by `os.replace` -- reads afresh. Callers READ the board; one
+    that would change it parses its own copy."""
+    from kicad_parser import parse_kicad_pcb
+    st = os.stat(path)
+    key = (os.path.realpath(path), st.st_ino, st.st_mtime_ns, st.st_ctime_ns,
+           st.st_size)
+    hit = _WRITTEN[0]
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    pcb = parse_kicad_pcb(path)
+    _WRITTEN[0] = (key, pcb)
+    return pcb
+
+
 def _split_pinned(graded, output_file, intent):
     """(own, pinned): the grade errors the seed is answerable for, and the
     ones that sit on a part it was told not to move -- `(locked yes)` in the
@@ -182,7 +206,7 @@ def _split_pinned(graded, output_file, intent):
     """
     import fnmatch
     from kicad_parser import parse_kicad_pcb
-    locked = {r for r, f in parse_kicad_pcb(output_file).footprints.items()
+    locked = {r for r, f in read_written(output_file).footprints.items()
               if getattr(f, 'locked', False)}
     pats = tuple(getattr(intent, 'must_lock', ()) or ())
 
@@ -1516,7 +1540,7 @@ Examples:
             copy_siblings(cur, args.output_file)
             print(f"Delivered {args.output_file}")
             from placement.legality import grade_pad_legality
-            pcb_out = parse_kicad_pcb(args.output_file)
+            pcb_out = read_written(args.output_file)
             pads_after = grade_pad_legality(pcb_out, args.clearance,
                                             edge_margin=args.board_edge_clearance,
                                             pcb_file=args.output_file)
@@ -1866,7 +1890,7 @@ Examples:
 
     # ---- self-check: the seed must grade clean against its own intent ------
     def _grade():
-        pcb_out = parse_kicad_pcb(args.output_file)
+        pcb_out = read_written(args.output_file)
         return floorplan.grade(intent, pcb_out, args.output_file,
                                group_sources=sources,
                                clearance=args.clearance,
@@ -1907,7 +1931,7 @@ Examples:
                              if v.rule in _repairable and v.ref})
             if broke:
                 import pose_score
-                pcb_cur = parse_kicad_pcb(args.output_file)
+                pcb_cur = read_written(args.output_file)
                 blocks2, _p = floorplan.resolve_blocks(intent, pcb_cur,
                                                        sources)
                 # #1117: the declared angles, from the same blocks the zones
@@ -2125,7 +2149,7 @@ Examples:
                 # polish left them out. The polish's figures are kept.
                 import fnmatch
                 from pose_score import make_state
-                _now = parse_kicad_pcb(args.output_file)
+                _now = read_written(args.output_file)
                 for _r in _staged:
                     _now.footprints.pop(_r, None)
                 _ign = {nid for nid, n in _now.nets.items()
@@ -2177,7 +2201,7 @@ Examples:
                                   # #1241: every input pair, the baseline a
                                   # later move's pair is judged against.
                                   worst_n=0)
-    _pads_out = grade_pad_legality(parse_kicad_pcb(args.output_file),
+    _pads_out = grade_pad_legality(read_written(args.output_file),
                                    args.clearance,
                                    edge_margin=args.board_edge_clearance,
                                    pcb_file=args.output_file,
@@ -2204,7 +2228,7 @@ Examples:
     # (`split_pad_pairs`' `late`, the band's own test below), as the
     # off-board channel charges an out-of-scope move.
     _late = set()
-    for _r, _fo in parse_kicad_pcb(args.output_file).footprints.items():
+    for _r, _fo in read_written(args.output_file).footprints.items():
         _fi = pcb.footprints.get(_r)
         if (_r not in _seeded and _fi is not None and pose_moved(
                 (_fi.x, _fi.y, _fi.rotation or 0.0),
@@ -2291,7 +2315,7 @@ Examples:
     # run (`place_seed X X`) has overwritten it, and would read every part as
     # unmoved and every lock this run stamped as the input's.
     _in_fps = pcb.footprints
-    _out_fps = parse_kicad_pcb(args.output_file).footprints
+    _out_fps = read_written(args.output_file).footprints
     _overrun = _pads_out.get('oob_pad_copper_overrun_mm') or {}
     _overrun_in = _pads_in.get('oob_pad_copper_overrun_mm') or {}
 
@@ -2367,7 +2391,7 @@ Examples:
                  and (seed_refs is None or r in seed_refs)}
     _body_mine = _stage1 | (_in_scope - set(result['unseated']))
     _cont_out, _cy_out = body_gate_pairs(
-        parse_kicad_pcb(args.output_file), args.output_file, args.clearance,
+        read_written(args.output_file), args.output_file, args.clearance,
         intent)
     _body_in = []
 
@@ -2530,7 +2554,7 @@ Examples:
                'output': args.output_file}
     summary['pad_edge_before'] = _pads_in['pad_edge']
     summary['pad_edge_after'] = _pads_out['pad_edge']
-    _written = parse_kicad_pcb(args.output_file).footprints
+    _written = read_written(args.output_file).footprints
     summary['edge_floor_fallback'] = seeder.floor_records_at_poses(
         summary['edge_floor_fallback'],
         {r: (f.x, f.y, f.rotation) for r, f in _written.items()})

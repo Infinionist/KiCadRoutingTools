@@ -1042,6 +1042,13 @@ def write_placed_output(input_file: str, output_file: str,
     # property value (an MPN like "TCR2EF115,LM(CT") cannot run past a block and
     # swallow the next footprint -- issue #113. A naive depth counter here would
     # place the WRONG footprint, or silently place none.
+    #
+    # The rewritten board is assembled ONCE, from pieces collected back to
+    # front: splicing each block into the whole string copied the board once
+    # per moved part, which on a 54 MB board (ddr4_rdimm_tester) was 3 s of a
+    # 300-part write and grows as parts x file size.
+    pieces: List[str] = []
+    tail = len(content)
     for start, end, fp_text, _raw_ref, key in reversed(
             list(iter_footprint_blocks(content))):
         placement = placement_by_ref.get(key)
@@ -1183,8 +1190,13 @@ def write_placed_output(input_file: str, output_file: str,
             new_fp_text = _set_text_angles(new_fp_text, float(new_text_angle),
                                            key)
 
-        content = content[:start] + new_fp_text + content[end:]
+        pieces.append(content[end:tail])
+        pieces.append(new_fp_text)
+        tail = start
         modified_count += 1
+    if pieces:
+        pieces.append(content[:tail])
+        content = ''.join(reversed(pieces))
 
     # Via-nudge rewrites (#313): remove each moved via from the input text and
     # append it at its new position, plus the new connector segments back to

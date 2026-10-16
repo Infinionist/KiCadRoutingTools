@@ -169,7 +169,8 @@ def grade(board: str, intent_path: str, baseline: str) -> dict:
     from placement import floorplan
     from placement.groups import parse_sources
     from render_placement import PlacementModel
-    pcb = parse_kicad_pcb(board)
+    from place_seed import read_written
+    pcb = read_written(board)
     intent = floorplan.load_intent(intent_path)
     # Blocks resolve as place_seed resolves them (its --group-by default), so
     # an emitted intent's `sheet:` block is found on a hierarchical board.

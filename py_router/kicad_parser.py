@@ -6992,6 +6992,21 @@ def extract_keepouts(content: str) -> List[dict]:
     return keepouts
 
 
+def release_text_caches() -> None:
+    """Drop the text-keyed memos (`_mask_pad_primitives`,
+    `_footprint_blocks_by_key`, `_footprint_edge_points_by_ref`).
+
+    They exist so ONE parse asks each whole-file question once, and they are
+    keyed on the board's whole text: kept past the parse they hold that text
+    and a masked copy of it, 216 MB for a 54 MB board (ddr4_rdimm_tester,
+    whose one non-ASCII character makes the text two bytes a character), and
+    with `maxsize=2` twice that. `parse_kicad_pcb` calls this as it returns;
+    a writer that scans a board's text calls it when done."""
+    _mask_pad_primitives.cache_clear()
+    _footprint_blocks_by_key_cached.cache_clear()
+    _footprint_edge_points_by_ref_cached.cache_clear()
+
+
 def parse_kicad_pcb(filepath: str, guide_layer: str = "User.1",
                     keepout_layer: str = "User.2") -> PCBData:
     """
@@ -7005,6 +7020,14 @@ def parse_kicad_pcb(filepath: str, guide_layer: str = "User.1",
     Returns:
         PCBData object containing all parsed data
     """
+    try:
+        return _parse_kicad_pcb(filepath, guide_layer, keepout_layer)
+    finally:
+        release_text_caches()
+
+
+def _parse_kicad_pcb(filepath: str, guide_layer: str,
+                     keepout_layer: str) -> PCBData:
     content = read_board_text(filepath)
 
     kicad_version = detect_kicad_version(content)

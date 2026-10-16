@@ -570,9 +570,116 @@ def _airwires_for_points(points: List[Tuple[float, float]], net_id: int):
     if len(points) == 2:
         (x1, y1), (x2, y2) = points
         return [(x1, y1, x2, y2, net_id)]
-    edges = compute_mst_edges(points, use_manhattan=False)
+    edges = _mst_edges(points)
     return [(points[i][0], points[i][1], points[j][0], points[j][1], net_id)
             for i, j, _ in edges]
+
+
+#: A net with at least this many pads takes its tree from `_mst_edges_sparse`;
+#: a smaller one from `compute_mst_edges`, which is faster there.
+SPARSE_MST_MIN_POINTS = 500
+
+
+def _mst_edges(points):
+    """`compute_mst_edges(points)` -- the same edges, in the same order, by
+    the same floats -- in O(n log n) for a big net."""
+    if len(points) >= SPARSE_MST_MIN_POINTS:
+        got = _mst_edges_sparse(points)
+        if got is not None:
+            return got
+    return compute_mst_edges(points, use_manhattan=False)
+
+
+def _mst_edges_sparse(points):
+    """Prim's tree of `points` exactly as `compute_mst_edges` builds it, run
+    over the Delaunay triangulation's edges instead of every pair; None when
+    the triangulation cannot be had (fewer than three distinct points, all of
+    them on a line, a point qhull set aside), and the caller falls back.
+
+    Why the sparse graph gives the SAME tree, ties included. Dense Prim adds,
+    at every step, a lightest edge leaving the tree (the lowest-numbered
+    vertex among equal keys, joined to the earliest tree vertex at that
+    distance). Every lightest edge leaving a tree is in some minimum spanning
+    tree; every edge of a minimum spanning tree is a relative-neighbourhood
+    edge (no third point is strictly nearer both ends, or the tree would trade
+    it for a shorter one); and every such edge has an empty CLOSED diametral
+    circle (a point on or in it sees the edge at 90 degrees or more, so it is
+    strictly nearer both ends), which puts it in every Delaunay triangulation.
+    So every edge dense Prim could choose, and every tie it breaks, is among
+    the Delaunay edges, and a heap keyed (distance, vertex) with the same
+    strict-less key update makes the same choice at every step. Distances are
+    `sqrt(dx*dx + dy*dy)`, the dense matrix's own expression, so they are the
+    same floats. Coincident pads share one triangulation vertex, and every
+    copy takes that vertex's neighbours and each other."""
+    import heapq
+    n = len(points)
+    pts = np.asarray(points, dtype=np.float64)
+    if not np.isfinite(pts).all():
+        return None
+    uniq, first, rep = np.unique(pts, axis=0, return_index=True,
+                                 return_inverse=True)
+    rep = rep.reshape(-1)
+    if len(uniq) < 3:
+        return None
+    try:
+        from scipy.spatial import Delaunay
+        tri = Delaunay(uniq)
+    except Exception:                                         # noqa: BLE001
+        return None
+    if len(getattr(tri, 'coplanar', ())):
+        return None
+    sx = tri.simplices
+    ue = np.concatenate([sx[:, [0, 1]], sx[:, [1, 2]], sx[:, [0, 2]]])
+    ue = np.unique(np.sort(ue, axis=1), axis=0)
+    # Unique-vertex edges back onto the original points, plus each set of
+    # coincident copies with one another.
+    members: Dict[int, List[int]] = {}
+    for i, r in enumerate(rep.tolist()):
+        members.setdefault(r, []).append(i)
+    ea, eb = [], []
+    for u, v in ue.tolist():
+        for i in members[u]:
+            for j in members[v]:
+                ea.append(i)
+                eb.append(j)
+    for grp in members.values():
+        for x in range(len(grp)):
+            for y in range(x + 1, len(grp)):
+                ea.append(grp[x])
+                eb.append(grp[y])
+    ea = np.array(ea, dtype=np.intp)
+    eb = np.array(eb, dtype=np.intp)
+    xs, ys = pts[:, 0], pts[:, 1]
+    dx = xs[eb] - xs[ea]
+    dy = ys[eb] - ys[ea]
+    w = np.sqrt(dx * dx + dy * dy).tolist()
+    adj: List[List[Tuple[float, int]]] = [[] for _ in range(n)]
+    for a_, b_, d in zip(ea.tolist(), eb.tolist(), w):
+        adj[a_].append((d, b_))
+        adj[b_].append((d, a_))
+    inf = float('inf')
+    key = [inf] * n
+    near = [0] * n
+    done = [False] * n
+    done[0] = True
+    heap = []
+    for d, v in adj[0]:
+        if d < key[v]:
+            key[v] = d
+            heapq.heappush(heap, (d, v))
+    edges = []
+    while heap:
+        d, v = heapq.heappop(heap)
+        if done[v] or d != key[v]:
+            continue
+        done[v] = True
+        edges.append((near[v], v, d))
+        for dv, u in adj[v]:
+            if not done[u] and dv < key[u]:
+                key[u] = dv
+                near[u] = v
+                heapq.heappush(heap, (dv, u))
+    return edges if len(edges) == n - 1 else None
 
 
 def _aw_array(airwires) -> np.ndarray:
@@ -606,18 +713,40 @@ def _count_crossings_np(a: np.ndarray, b: np.ndarray,
     """
     if len(a) == 0 or len(b) == 0:
         return 0, 0.0
+    ii, jj, hits = _crossing_hits(a, b)
+    count = int(np.count_nonzero(hits))
+    if net_w is None:
+        return count, float(count)
+    # Column 4 carries the net id as a float; every id that can appear there
+    # is a key of QuenchState.net_airwires, which net_w is sized to cover.
+    wa = net_w[a[:, 4].astype(np.intp)]
+    wb = net_w[b[:, 4].astype(np.intp)]
+    return count, float(np.sum(np.maximum(wa[ii], wb[jj])[hits]))
+
+
+def _crossing_hits(a: np.ndarray, b: np.ndarray):
+    """The pairs `_count_crossings_np` counts, as (ii, jj, hits): the
+    row-major (a row, b row) pairs whose boxes meet, and which of them
+    cross. Both sets are non-empty."""
     m = 1e-6
-    ax0 = np.minimum(a[:, 0], a[:, 2])[:, None] - m
-    ax1 = np.maximum(a[:, 0], a[:, 2])[:, None] + m
-    ay0 = np.minimum(a[:, 1], a[:, 3])[:, None] - m
-    ay1 = np.maximum(a[:, 1], a[:, 3])[:, None] + m
-    bx0 = np.minimum(b[:, 0], b[:, 2])[None, :]
-    bx1 = np.maximum(b[:, 0], b[:, 2])[None, :]
-    by0 = np.minimum(b[:, 1], b[:, 3])[None, :]
-    by1 = np.maximum(b[:, 1], b[:, 3])[None, :]
-    ii, jj = np.nonzero((ax1 >= bx0) & (ax0 <= bx1) & (ay1 >= by0) & (ay0 <= by1))
+    ax0 = np.minimum(a[:, 0], a[:, 2]) - m
+    ax1 = np.maximum(a[:, 0], a[:, 2]) + m
+    ay0 = np.minimum(a[:, 1], a[:, 3]) - m
+    ay1 = np.maximum(a[:, 1], a[:, 3]) + m
+    bx0 = np.minimum(b[:, 0], b[:, 2])
+    bx1 = np.maximum(b[:, 0], b[:, 2])
+    by0 = np.minimum(b[:, 1], b[:, 3])
+    by1 = np.maximum(b[:, 1], b[:, 3])
+    if (min(len(a), len(b)) >= _GRID_MIN_SIDE
+            and len(a) * len(b) >= _GRID_MIN_PAIRS):
+        ii, jj = _box_pairs_grid(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1)
+    else:
+        ii, jj = np.nonzero((ax1[:, None] >= bx0[None, :])
+                            & (ax0[:, None] <= bx1[None, :])
+                            & (ay1[:, None] >= by0[None, :])
+                            & (ay0[:, None] <= by1[None, :]))
     if len(ii) == 0:
-        return 0, 0.0
+        return ii, jj, np.zeros(0, dtype=bool)
     A = a[ii]
     B = b[jj]
     eps = 0.001
@@ -639,15 +768,99 @@ def _count_crossings_np(a: np.ndarray, b: np.ndarray,
         (ccw(a1x, a1y, b1x, b1y, b2x, b2y) != ccw(a2x, a2y, b1x, b1y, b2x, b2y)) &
         (ccw(a1x, a1y, a2x, a2y, b1x, b1y) != ccw(a1x, a1y, a2x, a2y, b2x, b2y))
     )
-    hits = inter & ~same_net & ~shared
-    count = int(np.count_nonzero(hits))
+    return ii, jj, inter & ~same_net & ~shared
+
+
+#: `_crossing_hits` finds the pairs whose boxes meet through `_box_pairs_grid`
+#: when BOTH sets have `_GRID_MIN_SIDE` boxes and there are `_GRID_MIN_PAIRS`
+#: pairs; otherwise the full box matrix costs less. The grid lists every box
+#: of both sets, so a few edges against a whole board (a pose's airwires
+#: against the rest) are a matrix: measured, 5 x 2,200 boxes 75 us by matrix
+#: and 357 us by grid, where 300 x 1,300 is 1.8 ms by matrix and 0.8 ms by
+#: grid.
+_GRID_MIN_PAIRS = 20_000
+_GRID_MIN_SIDE = 64
+
+
+def _box_pairs_grid(ax0, ay0, ax1, ay1, bx0, by0, bx1, by1):
+    """`np.nonzero` of the full box test between box sets a and b -- every
+    (i, j) whose boxes meet, in row-major order -- found through a uniform
+    grid instead of the n x m matrix.
+
+    Each box is listed in every grid cell it covers; two boxes that meet
+    share a point, and that point's cell is listed by both (a cell index is
+    a floor of a monotone expression, so it never falls outside either
+    box's range). Joining the two lists on the cell gives a superset of the
+    meeting pairs, at a cost that grows with the boxes NEAR each other
+    rather than with all of them: the pairs are deduplicated, put in
+    row-major order, and passed through the very comparisons the matrix
+    makes, so the answer is the matrix's, element for element. The cell is
+    about twice the side a box would have if the boxes tiled the area, so a
+    short airwire covers a handful of cells and a cell holds a handful of
+    boxes. A box with a non-finite corner sends the call back to the
+    matrix, which compares it the usual way."""
+    n, k = len(ax0), len(bx0)
+    lo_x = min(float(ax0.min()), float(bx0.min()))
+    lo_y = min(float(ay0.min()), float(by0.min()))
+    hi_x = max(float(ax1.max()), float(bx1.max()))
+    hi_y = max(float(ay1.max()), float(by1.max()))
+    if not all(math.isfinite(v) for v in (lo_x, lo_y, hi_x, hi_y)):
+        return np.nonzero((ax1[:, None] >= bx0[None, :])
+                          & (ax0[:, None] <= bx1[None, :])
+                          & (ay1[:, None] >= by0[None, :])
+                          & (ay0[:, None] <= by1[None, :]))
+    area = max(hi_x - lo_x, 1e-3) * max(hi_y - lo_y, 1e-3)
+    cell = max(2.0 * math.sqrt(area / (n + k)), 0.05)
+    ncol = int((hi_x - lo_x) / cell) + 1
+
+    def listing(x0, y0, x1, y1):
+        cx0 = np.floor((x0 - lo_x) / cell).astype(np.int64)
+        cx1 = np.floor((x1 - lo_x) / cell).astype(np.int64)
+        cy0 = np.floor((y0 - lo_y) / cell).astype(np.int64)
+        cy1 = np.floor((y1 - lo_y) / cell).astype(np.int64)
+        wx = cx1 - cx0 + 1
+        cnt = wx * (cy1 - cy0 + 1)
+        box = np.repeat(np.arange(len(x0), dtype=np.int64), cnt)
+        off = np.arange(int(cnt.sum()), dtype=np.int64) - np.repeat(np.cumsum(cnt) - cnt, cnt)
+        w = wx[box]
+        return (cy0[box] + off // w) * ncol + cx0[box] + off % w, box
+
+    ca, ia = listing(ax0, ay0, ax1, ay1)
+    cb, jb = listing(bx0, by0, bx1, by1)
+    o = np.argsort(cb, kind='stable')
+    cb, jb = cb[o], jb[o]
+    first = np.searchsorted(cb, ca, 'left')
+    cnt = np.searchsorted(cb, ca, 'right') - first
+    tot = int(cnt.sum())
+    if tot == 0:
+        e = np.zeros(0, dtype=np.int64)
+        return e, e
+    ii = np.repeat(ia, cnt)
+    jj = jb[np.repeat(first, cnt) + np.arange(tot, dtype=np.int64)
+            - np.repeat(np.cumsum(cnt) - cnt, cnt)]
+    key = np.unique(ii * k + jj)
+    ii, jj = key // k, key % k
+    meet = ((ax1[ii] >= bx0[jj]) & (ax0[ii] <= bx1[jj])
+            & (ay1[ii] >= by0[jj]) & (ay0[ii] <= by1[jj]))
+    return ii[meet], jj[meet]
+
+
+def _crossings_by_row(a: np.ndarray, b: np.ndarray,
+                      net_w: Optional[np.ndarray] = None):
+    """`_count_crossings_np(a, b)` split by the rows of `a`: two arrays,
+    each row's crossing count and its weighted sum."""
+    n = len(a)
+    if n == 0 or len(b) == 0:
+        return np.zeros(n, dtype=np.int64), np.zeros(n)
+    ii, jj, hits = _crossing_hits(a, b)
+    hi = ii[hits]
+    count = np.bincount(hi, minlength=n)
     if net_w is None:
-        return count, float(count)
-    # Column 4 carries the net id as a float; every id that can appear there
-    # is a key of QuenchState.net_airwires, which net_w is sized to cover.
+        return count, count.astype(float)
     wa = net_w[a[:, 4].astype(np.intp)]
     wb = net_w[b[:, 4].astype(np.intp)]
-    return count, float(np.sum(np.maximum(wa[ii], wb[jj])[hits]))
+    return count, np.bincount(hi, weights=np.maximum(wa[ii], wb[jj])[hits],
+                              minlength=n)
 
 
 class _CorridorBox(NamedTuple):
@@ -690,10 +903,28 @@ def _corridor_cut_np(a: np.ndarray, boxes) -> float:
     """
     if len(a) == 0 or not boxes:
         return 0.0
+    total = 0.0
+    for live, chord in _corridor_chords(a, boxes):
+        total += float(np.sum(chord))
+    return total
+
+
+def _corridor_cut_rows(a: np.ndarray, boxes) -> np.ndarray:
+    """`_corridor_cut_np(a, boxes)` split by the rows of `a`."""
+    out = np.zeros(len(a))
+    if len(a) == 0 or not boxes:
+        return out
+    for live, chord in _corridor_chords(a, boxes):
+        out[live] += chord
+    return out
+
+
+def _corridor_chords(a: np.ndarray, boxes):
+    """Per corridor that `a` reaches: (the rows' mask, each row's chord
+    inside it), as `_corridor_cut_np` sums them."""
     x1, y1, x2, y2 = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
     nets = a[:, 4].astype(np.intp)
     seg_len = np.hypot(x2 - x1, y2 - y1)
-    total = 0.0
     for box in boxes:
         live = ~box.skip[np.clip(nets, 0, len(box.skip) - 1)]
         # A net id beyond the lookup was never in net_airwires, so it cannot be
@@ -724,8 +955,7 @@ def _corridor_cut_np(a: np.ndarray, boxes) -> float:
             t0 = np.where(enter, np.maximum(t0, r), t0)
             t1 = np.where((~par) & (p > 0.0), np.minimum(t1, r), t1)
         frac = np.where(alive, np.maximum(t1 - t0, 0.0), 0.0)
-        total += float(np.sum(frac * seg_len[live]))
-    return total
+        yield live, frac * seg_len[live]
 
 
 def _count_crossings_within(a: np.ndarray,
@@ -746,6 +976,432 @@ def _count_crossings_within(a: np.ndarray,
     # unordered pair contributes twice with the same weight; dividing by 2.0
     # is exact in binary floating point.
     return half, weighted / 2.0
+
+
+#: A net with at least this many pads is priced by `_PosePricer`, which joins
+#: a pose's pads to the tree of the net's other pads instead of rebuilding the
+#: whole tree. A smaller net is rebuilt at every pose: that costs less than
+#: the pricer's setup.
+PRICER_MIN_POINTS = 24
+
+
+def _sparse_table(a, op, pad):
+    """A sparse table of `a` for range queries by `op` (np.maximum or
+    np.minimum): row j holds `op` over the windows of length 2**j starting
+    at each index, padded with `pad` past the last full window."""
+    a = np.asarray(a)
+    n = len(a)
+    levels = max(1, int(n).bit_length())
+    t = np.full((levels, max(n, 1)), pad, dtype=a.dtype)
+    t[0, :n] = a
+    for j in range(1, levels):
+        h = 1 << (j - 1)
+        w = n - (1 << j) + 1
+        if w <= 0:
+            break
+        t[j, :w] = op(t[j - 1, :w], t[j - 1, h:h + w])
+    return t
+
+
+def _range_query(t, lo, hi, op):
+    """`op` over a[lo:hi + 1] per (lo, hi) pair, from `_sparse_table(a, op,
+    ...)`; every range non-empty."""
+    lo = np.asarray(lo, dtype=np.int64)
+    hi = np.asarray(hi, dtype=np.int64)
+    j = np.frexp((hi - lo + 1).astype(np.float64))[1] - 1   # floor(log2)
+    return op(t[j, lo], t[j, hi - (1 << j) + 1])
+
+
+#: `_TreeJoin._join_one` compares every pair of a pose's candidate pad
+#: edges, so above this many candidates (a pad far outside the net's pads,
+#: which sees much of its hull) the Kruskal loop, which gives the same tree,
+#: costs less.
+JOIN_ONE_MAX_CANDIDATES = 48
+
+
+class _TreeJoin:
+    """One net's minimum spanning tree with one part's pads still to place.
+
+    Built once per visit of that part: `F` are the net's OTHER pads and
+    `rows` their own tree (`compute_mst_edges`). A minimum tree of the whole
+    net at any pose of the part lies inside that tree plus the edges from
+    the part's pads (an edge between two fixed pads that the fixed tree
+    leaves out is the longest edge of a cycle among fixed pads, at every
+    pose). So `join` runs Kruskal over those edges alone: the fixed tree's
+    edges in their order, then the pads' edges, sorted stably by length.
+    It answers which fixed edges the tree drops and which pad edges it adds.
+
+    Before the sort, a pad edge that is the strictly longest side of a
+    triangle with a fixed tree edge is dropped: it is in no minimum tree,
+    Kruskal would reject it, and rejecting it changes no other decision.
+
+    One moved pad (a passive's ground pin, the usual case) is joined with no
+    loop over the tree. On the fixed tree's Kruskal reconstruction tree, a
+    fixed edge is dropped exactly when the pad reaches both of its sides by
+    pad edges shorter than it, and a pad edge is added exactly when no
+    earlier pad edge reached the component its far end was in when Kruskal
+    came to it -- both answered by range queries over the leaf order
+    (`_build_reconstruction`), O(c log m) for c candidates. Several moved
+    pads, or more than `JOIN_ONE_MAX_CANDIDATES`, go through the Kruskal
+    loop itself.
+
+    The result is a minimum spanning tree of the net, the same length as
+    `compute_mst_edges`' tree; among trees of equal length it may pick
+    another (Prim and Kruskal break ties differently).
+    """
+
+    def __init__(self, fixed, net_id: int, k: int):
+        self.net = float(net_id)
+        self.k = k
+        F = np.asarray(fixed, dtype=np.float64).reshape(-1, 2)
+        self.F = F
+        m = self.m = len(F)
+        edges = _mst_edges([tuple(p) for p in fixed]) if m >= 2 else []
+        self.ta = np.array([e[0] for e in edges], dtype=np.intp)
+        self.tb = np.array([e[1] for e in edges], dtype=np.intp)
+        self.tw = np.array([e[2] for e in edges], dtype=np.float64)
+        #: False when the fixed pads did not make one tree (a non-finite
+        #: coordinate stops `compute_mst_edges` early): the pricer then
+        #: rebuilds this net at every pose instead.
+        self.ok = m >= 1 and len(edges) == m - 1
+        if not self.ok:
+            return
+        n = len(edges)
+        self.rows = np.column_stack(
+            [F[self.ta, 0], F[self.ta, 1], F[self.tb, 0], F[self.tb, 1],
+             np.full(n, self.net)]) if n else np.zeros((0, 5))
+        if m >= 2:
+            # Each fixed pad's tree neighbours, for the triangle test.
+            ends = np.concatenate([self.ta, self.tb])
+            o = np.argsort(ends, kind='stable')
+            self._adj_far = np.concatenate([self.tb, self.ta])[o]
+            self._adj_w = np.concatenate([self.tw, self.tw])[o]
+            self._adj_start = np.searchsorted(ends[o], np.arange(m))
+        if k == 1 and m >= 2:
+            self._build_reconstruction()
+
+    def _build_reconstruction(self):
+        """The fixed tree's Kruskal reconstruction tree: one internal node per
+        fixed edge, in Kruskal's order, over the components that edge joins.
+        Kept as each pad's leaf position and each edge's leaf interval
+        (lo..hi, its first side ending at mid)."""
+        m = self.m
+        ta, tb = self.ta.tolist(), self.tb.tolist()
+        uf = list(range(m))
+        top = list(range(m))
+        left: List[int] = []
+        right: List[int] = []
+        edge: List[int] = []
+        for t in np.argsort(self.tw, kind='stable').tolist():
+            a = ta[t]
+            while uf[a] != a:
+                uf[a] = uf[uf[a]]
+                a = uf[a]
+            b = tb[t]
+            while uf[b] != b:
+                uf[b] = uf[uf[b]]
+                b = uf[b]
+            left.append(top[a])
+            right.append(top[b])
+            edge.append(t)
+            uf[a] = b
+            top[b] = m + len(edge) - 1
+        n = len(edge)
+        pos = [0] * m
+        lo, mid, hi = [0] * n, [0] * n, [0] * n
+        count = 0
+        stack = [(m + n - 1, 0)]
+        while stack:
+            node, phase = stack.pop()
+            if node < m:
+                pos[node] = count
+                count += 1
+                continue
+            i = node - m
+            if phase == 0:
+                lo[i] = count
+                stack += [(node, 2), (right[i], 0), (node, 1), (left[i], 0)]
+            elif phase == 1:
+                mid[i] = count - 1
+            else:
+                hi[i] = count - 1
+        self._pos = np.array(pos, dtype=np.intp)
+        self._lo = np.array(lo, dtype=np.intp)
+        self._mid = np.array(mid, dtype=np.intp)
+        self._hi = np.array(hi, dtype=np.intp)
+        self._kedge = np.array(edge, dtype=np.intp)
+        self._kw = self.tw[self._kedge]
+        # Between leaf positions k and k+1 sits one SPLIT: the node whose
+        # first side ends at k, which is the lowest common ancestor of the
+        # two leaves. Nodes were made in Kruskal's order, so an ancestor's
+        # index exceeds its descendants', and the lowest common ancestor of
+        # leaves a < b is the split of LARGEST index between them; the
+        # component a leaf is in when Kruskal reaches length d is the run of
+        # leaves around it whose splits all weigh at most d. Both are range
+        # maxima, answered from sparse tables in O(log m).
+        at = np.empty(max(m - 1, 0), dtype=np.int64)
+        at[self._mid] = np.arange(n, dtype=np.int64)
+        self._split_node = _sparse_table(at, np.maximum, -1)
+        self._split_w = _sparse_table(self._kw[at], np.maximum, np.inf)
+
+    def join(self, moved):
+        """The tree with the part's pads at `moved` [(x, y)]: (indices of
+        the fixed edges it drops, rows of the edges it adds)."""
+        m = self.m
+        q = np.asarray(moved, dtype=np.float64).reshape(-1, 2)
+        dx = self.F[None, :, 0] - q[:, 0, None]
+        dy = self.F[None, :, 1] - q[:, 1, None]
+        D = np.sqrt(dx * dx + dy * dy)
+        if m >= 2:
+            thr = np.minimum.reduceat(
+                np.maximum(self._adj_w[None, :], D[:, self._adj_far]),
+                self._adj_start, axis=1)
+            keep = D <= thr
+        else:
+            keep = np.ones(D.shape, dtype=bool)
+        if (self.k == 1 and m >= 2
+                and int(keep[0].sum()) <= JOIN_ONE_MAX_CANDIDATES):
+            return self._join_one(q[0], D[0], keep[0])
+        return self._join_kruskal(q, D, keep)
+
+    def _join_one(self, p, d, keep):
+        cand = np.nonzero(keep)[0]
+        dc = d[cand]
+        pc = self._pos[cand]
+        dropped = np.zeros(0, dtype=np.intp)
+        added = [int(cand[np.lexsort((cand, dc))[0]])] if len(cand) else []
+        if len(cand) >= 2:
+            # The candidates in leaf order: every fixed edge with candidates
+            # on both of its sides is the lowest common ancestor of two
+            # NEIGHBOURS in that order, so those c - 1 nodes are all a pose
+            # can drop, and one is dropped when the pad reaches both of its
+            # sides by edges shorter than it.
+            o = np.argsort(pc, kind='stable')
+            P, Dp = pc[o], dc[o]
+            u = np.unique(_range_query(self._split_node, P[:-1], P[1:] - 1,
+                                       np.maximum))
+            a0 = np.searchsorted(P, self._lo[u], 'left')
+            a1 = np.searchsorted(P, self._mid[u], 'right')
+            b1 = np.searchsorted(P, self._hi[u], 'right')
+            dmin = _sparse_table(Dp, np.minimum, np.inf)
+            reach = np.maximum(_range_query(dmin, a0, a1 - 1, np.minimum),
+                               _range_query(dmin, a1, b1 - 1, np.minimum))
+            dropped = self._kedge[u[reach < self._kw[u]]]
+            # A pad edge is added unless an EARLIER one (in Kruskal's order:
+            # length, then pad) reached the component its far end is in when
+            # Kruskal comes to it -- unless the heaviest split between the two
+            # far ends weighs at most its length (fixed edges sort first among
+            # equals).
+            k = np.lexsort((cand, dc))
+            Pk, Dk = pc[k], dc[k]
+            i, j = np.triu_indices(len(k), 1)
+            lo_ = np.minimum(Pk[i], Pk[j])
+            hi_ = np.maximum(Pk[i], Pk[j]) - 1
+            joined = _range_query(self._split_w, lo_, hi_, np.maximum) <= Dk[j]
+            refused = np.zeros(len(k), dtype=bool)
+            refused[j[joined]] = True
+            added = cand[k[~refused]].tolist()
+        px, py = float(p[0]), float(p[1])
+        F = self.F
+        return dropped, [(float(F[v, 0]), float(F[v, 1]), px, py, self.net)
+                         for v in added]
+
+    def _join_kruskal(self, q, D, keep):
+        m, k = self.m, self.k
+        ea, eb, ew = [self.ta], [self.tb], [self.tw]
+        for s in range(k):
+            v = np.nonzero(keep[s])[0]
+            ea.append(v)
+            eb.append(np.full(len(v), m + s, dtype=np.intp))
+            ew.append(D[s, v])
+        for s1 in range(k):
+            for s2 in range(s1 + 1, k):
+                ddx = q[s2, 0] - q[s1, 0]
+                ddy = q[s2, 1] - q[s1, 1]
+                ea.append(np.array([m + s1], dtype=np.intp))
+                eb.append(np.array([m + s2], dtype=np.intp))
+                ew.append(np.array([math.sqrt(ddx * ddx + ddy * ddy)]))
+        al = np.concatenate(ea).tolist()
+        bl = np.concatenate(eb).tolist()
+        order = np.argsort(np.concatenate(ew), kind='stable').tolist()
+        nf = len(self.ta)
+        uf = list(range(m + k))
+        need = m + k - 1
+        kept = np.zeros(nf, dtype=bool)
+        added = []
+        for t in order:
+            a = al[t]
+            while uf[a] != a:
+                uf[a] = uf[uf[a]]
+                a = uf[a]
+            b = bl[t]
+            while uf[b] != b:
+                uf[b] = uf[uf[b]]
+                b = uf[b]
+            if a == b:
+                continue
+            uf[a] = b
+            if t < nf:
+                kept[t] = True
+            else:
+                added.append(t)
+            need -= 1
+            if need == 0:
+                break
+
+        def pt(i):
+            return ((float(self.F[i, 0]), float(self.F[i, 1])) if i < m
+                    else (float(q[i - m, 0]), float(q[i - m, 1])))
+        rows = []
+        for t in added:
+            (x1, y1), (x2, y2) = pt(al[t]), pt(bl[t])
+            rows.append((x1, y1, x2, y2, self.net))
+        return np.nonzero(~kept)[0], rows
+
+
+class _PosePricer:
+    """`QuenchState.nets_cost` of one part's nets, at the poses of one visit.
+
+    The full rebuild prices every tree edge of every net the part touches
+    at every pose, against every other airwire on the board. On a ground
+    net that is hundreds of edges, nearly all of which the pose does not
+    move: glasgow_revC's GND has 293 pads, so each pose of a capacitor
+    re-tested about 250,000 airwire pairs. Here each big net's fixed tree
+    (`_TreeJoin`) is priced ONCE per visit -- each edge's crossings with the
+    other airwires, which do not move during the visit, and with the other
+    nets' fixed edges -- and a pose pays only for the edges it drops and
+    adds. Counts are the full rebuild's own integers, edge for edge; sums of
+    lengths and weights may differ in the last bit.
+    """
+
+    def __init__(self, state, ref, nets, other_aw, joins):
+        self.state = state
+        self.ref = ref
+        self.part = state.parts[ref]
+        self.nets = nets
+        self.O = other_aw
+        self.joins = joins
+        self.offs: Dict[int, int] = {}
+        rows = []
+        off = 0
+        for n in nets:
+            j = joins.get(n)
+            if j is not None:
+                self.offs[n] = off
+                rows.append(j.rows)
+                off += len(j.rows)
+        T = self.T = np.vstack(rows) if rows else np.zeros((0, 5))
+        net_w = state._net_w
+        self.c_n, self.c_w = _crossings_by_row(T, other_aw, net_w)
+        self.c_n_tot = int(self.c_n.sum())
+        self.c_w_tot = float(self.c_w.sum())
+        # The fixed edges' crossings among themselves, as ordered pairs (the
+        # full rebuild counts both orders and halves): per edge, its share of
+        # the total, and the pairs themselves for the few a pose drops.
+        t = len(T)
+        hi = hj = np.zeros(0, dtype=np.int64)
+        hw = np.zeros(0)
+        # Same-net pairs never count, so one big net has nothing to pair.
+        if t >= 2 and len(rows) >= 2:
+            ii, jj, hits = _crossing_hits(T, T)
+            hi, hj = ii[hits], jj[hits]
+            if net_w is not None:
+                wv = net_w[T[:, 4].astype(np.intp)]
+                hw = np.maximum(wv[ii], wv[jj])[hits]
+        self.t = t
+        self.x_line = np.bincount(hi, minlength=t) + np.bincount(hj, minlength=t)
+        self.x_tot = len(hi)
+        self.x_pair = dict.fromkeys((hi * t + hj).tolist(), 1.0)
+        if net_w is not None:
+            self.x_pair = dict(zip((hi * t + hj).tolist(), hw.tolist()))
+            self.w_line = (np.bincount(hi, weights=hw, minlength=t)
+                           + np.bincount(hj, weights=hw, minlength=t))
+            self.w_tot = float(hw.sum())
+        lengths = np.hypot(T[:, 2] - T[:, 0], T[:, 3] - T[:, 1])
+        if state.net_weights:
+            lengths = lengths * np.array(
+                [state.net_weights.get(int(n), 1.0) for n in T[:, 4]])
+        self.lenw = lengths
+        self.lenw_tot = float(lengths.sum())
+        self.corr = (_corridor_cut_rows(T, state._corridor_boxes)
+                     if state._corridor_boxes else None)
+        self.corr_tot = float(self.corr.sum()) if self.corr is not None else 0.0
+
+    @classmethod
+    def for_part(cls, state, ref, involved, other_aw):
+        """A pricer for `ref`'s visit, or None when none of its nets has
+        `PRICER_MIN_POINTS` pads (the full rebuild is cheaper then)."""
+        part = state.parts[ref]
+        nets = list(involved)
+        own = part.pad_globals()
+        joins = {}
+        for n in nets:
+            k = sum(1 for _, _, nn in own if nn == n)
+            fixed = []
+            for r in state.net_refs[n]:
+                if r != ref:
+                    fixed.extend((gx, gy) for gx, gy, nn
+                                 in state.parts[r].pad_globals() if nn == n)
+            if k and fixed and len(fixed) + k >= PRICER_MIN_POINTS:
+                j = _TreeJoin(fixed, n, k)
+                if j.ok:
+                    joins[n] = j
+        return cls(state, ref, nets, other_aw, joins) if joins else None
+
+    def tree_rows(self, x, y, rot):
+        """Every airwire of the part's nets at a pose, as an (n, 5) array,
+        with the indices of the fixed edges the pose drops: (rows, D, R)
+        where D are the rows the pose adds and R the dropped indices."""
+        st = self.state
+        pads = self.part.pad_globals(x, y, rot)
+        new = []
+        drop = []
+        for n in self.nets:
+            j = self.joins.get(n)
+            if j is None:
+                new.extend(st._build_net_airwires(
+                    n, override_ref=self.ref, override_pads=pads))
+            else:
+                d, r = j.join([(gx, gy) for gx, gy, nn in pads if nn == n])
+                if len(d):
+                    drop.append(d + self.offs[n])
+                new.extend(r)
+        D = _aw_array(new)
+        R = np.concatenate(drop) if drop else np.zeros(0, dtype=np.intp)
+        return D, R
+
+    def net_cost(self, x, y, rot) -> float:
+        st = self.state
+        D, R = self.tree_rows(x, y, rot)
+        keep = np.ones(len(self.T), dtype=bool)
+        keep[R] = False
+        K = self.T[keep]
+        net_w = st._net_w
+        length = self.lenw_tot - float(self.lenw[R].sum()) + st._weighted_length(D)
+        n_o, w_o = _count_crossings_np(D, self.O, net_w)
+        kd = _count_crossings_np(K, D, net_w)
+        dk = _count_crossings_np(D, K, net_w)
+        dd = _count_crossings_np(D, D, net_w)
+        # Pairs among the dropped edges were taken off twice above.
+        rl = R.tolist()
+        t = self.t
+        back = [self.x_pair[a * t + b] for a in rl for b in rl
+                if a * t + b in self.x_pair]
+        within = (self.x_tot - int(self.x_line[R].sum()) + len(back)
+                  + kd[0] + dk[0] + dd[0])
+        if net_w is None:
+            w_out = float(self.c_n_tot - int(self.c_n[R].sum()) + n_o)
+            w_in = float(within // 2)
+        else:
+            w_out = self.c_w_tot - float(self.c_w[R].sum()) + w_o
+            w_in = (self.w_tot - float(self.w_line[R].sum()) + sum(back)
+                    + kd[1] + dk[1] + dd[1]) / 2.0
+        cost = st.length_weight * length + st.crossing_penalty * (w_out + w_in)
+        if self.corr is not None:
+            cost += st.corridor_weight * (
+                self.corr_tot - float(self.corr[R].sum())
+                + _corridor_cut_np(D, st._corridor_boxes))
+        return cost
 
 
 #: #1152: WHY a part entered a `QuenchState` locked, as the phrase a refusal
@@ -2129,11 +2785,20 @@ class QuenchState:
             net_id)
 
     def airwires_excluding(self, nets: Set[int]) -> np.ndarray:
-        aws = []
+        """Every airwire of the nets not in `nets`, as one array, in
+        `net_airwires` order. Each net's array is kept until its list is
+        replaced (a move rebuilds the list), so a visit joins arrays rather
+        than re-reading every airwire on the board."""
+        cache = self.__dict__.setdefault('_aw_arr', {})
+        parts = []
         for net_id, lst in self.net_airwires.items():
-            if net_id not in nets:
-                aws.extend(lst)
-        return _aw_array(aws)
+            if net_id in nets or not lst:
+                continue
+            hit = cache.get(net_id)
+            if hit is None or hit[0] is not lst:
+                hit = cache[net_id] = (lst, _aw_array(lst))
+            parts.append(hit[1])
+        return np.concatenate(parts) if parts else np.zeros((0, 5))
 
     # ----- cost terms ------------------------------------------------------
 
@@ -4257,6 +4922,28 @@ class TetherGateView:
         self._tgap.clear()
 
 
+def _swap_fixed_nets(pa, pb, nets) -> Set[int]:
+    """The nets in `nets` whose pads on `pa` and `pb` sit, after the two
+    exchange poses, exactly where the pads of the other part on that net
+    sat: the same point set before and after the swap. Such a net's tree is
+    a minimum tree at both poses, so the swap phase prices it as part of
+    the board -- its length and its crossings with the rest are the same on
+    both sides of `cur - swapped`, and its crossings with the nets that DO
+    change are counted against it as against any fixed airwire. Positions
+    are compared exactly; they are snapped to the nanometre
+    (`_Part.pad_globals`), so a library footprint's two instances agree to
+    the bit."""
+    before = pa.pad_globals() + pb.pad_globals()
+    after = (pa.pad_globals(pb.x, pb.y, pb.rot)
+             + pb.pad_globals(pa.x, pa.y, pa.rot))
+    out = set()
+    for n in nets:
+        if (sorted((x, y) for x, y, nn in before if nn == n)
+                == sorted((x, y) for x, y, nn in after if nn == n)):
+            out.add(n)
+    return out
+
+
 def merge_groups(groups: Dict[str, List[str]], rigid: Dict[str, List[str]],
                  clusters: Dict[str, List[str]], movable_set: Set[str],
                  parts: Dict[str, '_Part']):
@@ -5069,13 +5756,19 @@ def quench(pcb_data: PCBData, pcb_file: str,
             part = state.parts[ref]
             involved = set(part.nets)
             other_aw = state.airwires_excluding(involved)
+            # A part on a big net (a ground pin) is priced by the tree edges
+            # each pose changes, not by rebuilding the net (`_PosePricer`).
+            pricer = _PosePricer.for_part(state, ref, involved, other_aw)
 
             def eval_at(x, y, rot):
-                subset = {n: state._build_net_airwires(
-                    n, override_ref=ref,
-                    override_pads=part.pad_globals(x, y, rot))
-                    for n in involved}
-                net_cost, _ = state.nets_cost(subset, other_aw)
+                if pricer is not None:
+                    net_cost = pricer.net_cost(x, y, rot)
+                else:
+                    subset = {n: state._build_net_airwires(
+                        n, override_ref=ref,
+                        override_pads=part.pad_globals(x, y, rot))
+                        for n in involved}
+                    net_cost, _ = state.nets_cost(subset, other_aw)
                 geo_cost = state.part_geometry_cost(ref, x, y, rot)
                 return net_cost + geo_cost
 
@@ -5182,6 +5875,12 @@ def quench(pcb_data: PCBData, pcb_file: str,
                         for p_dst, inherited in ((pa, pb.rot % 360), (pb, pa.rot % 360)):
                             p_dst.ensure_rotation(inherited)
                         involved = set(pa.nets) | set(pb.nets)
+                        # A net whose pads on the two parts trade places
+                        # exactly keeps its tree, so it adds the same to both
+                        # sides of the comparison below: it is priced as part
+                        # of the board, not rebuilt twice (two decaps swapped
+                        # on one ground net no longer rebuild the ground).
+                        involved -= _swap_fixed_nets(pa, pb, involved)
                         other_aw = state.airwires_excluding(involved)
 
                         def eval_pair(ax, ay, arot, bx, by, brot):

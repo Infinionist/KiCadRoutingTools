@@ -188,6 +188,9 @@
  "seeder.py::_overlap_rejector": {
   "rect": 1
  },
+ "seeder.py::_overlap_rejector.batch": {
+  "bounds_by_rot": 2
+ },
  "seeder.py::_overlap_rejector.refuse": {
   "rects": 1
  },
@@ -196,6 +199,9 @@
  },
  "seeder.py::_pad_copper_overhang": {
   "grade_by_rot": 1
+ },
+ "seeder.py::_pose_prefilter.refused": {
+  "grade_by_rot": 2
  },
  "seeder.py::_row_extent": {
   "rect": 1
