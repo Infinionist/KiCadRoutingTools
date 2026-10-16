@@ -604,7 +604,11 @@ skip cleanly without KiCad python). Run any directly:
   KiCad lock and no arcs: 9 checks fail there. Its Apply arm holds the
   Placement tab's Place + Route Apply to keeping the copper the run left
   unchanged (uuid, arc, group membership) and writing no lock token the result
-  file does not carry; the wholesale remove-and-recreate failed 6 checks.
+  file does not carry; the wholesale remove-and-recreate failed 6 checks. Its
+  last arm moves and turns a part whose land pattern draws F.Cu copper (#908)
+  in the live session: after the sync the model's copper graphics must equal
+  a fresh build's. A sync that kept the graphics built at dialog open left the
+  tab where the part had been.
 - `diag_fullchain_carry_rp2350.py` -- **DELETED 2026-07-26.** Was a full
   GUI-carry reproduction (ONE board + ONE shared pcb_data across all 10 plan
   steps, graded per stage vs the CLI) built to localize where the carry
