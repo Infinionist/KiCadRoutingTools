@@ -556,6 +556,33 @@ def test_dangling_member_is_ignored_as_kicad_does():
     assert raw == [('sense:C1.1', '33333333-0000-0000-0000-000000000001', [MEMBER])], raw
 
 
+def test_pad_signed_distance_is_the_pad_copper():
+    """sense_branch._pad_sd -- the signed distance every rule test above reads
+    -- in closed form for a rect, roundrect, circle or oval pad equals the
+    polygon walk over the same shape (check_drc._pad_copper_core) to 1e-12,
+    inside and out, tilted or not; and outside it equals
+    check_drc.point_to_pad_distance."""
+    import numpy as np
+    from check_drc import _pad_copper_core, point_to_pad_distance
+    from kicad_parser import Pad
+    rng = np.random.default_rng(1279)
+    for shape, sx, sy, tilt, ratio in (('rect', 2.4, 0.6, 30.0, 0.0), ('rect', 1.0, 1.0, 0.0, 0.0),
+                                       ('circle', 2.0, 2.0, 0.0, 0.0),
+                                       ('oval', 2.5, 1.0, -20.0, 0.0),
+                                       ('roundrect', 2.0, 1.2, 15.0, 0.25)):
+        pad = Pad(component_ref='C1', pad_number='1', global_x=3.0, global_y=5.0, local_x=0.0,
+                  local_y=0.0, size_x=sx, size_y=sy, shape=shape, layers=['F.Cu'], net_id=1,
+                  net_name='VDD', rect_rotation=tilt, roundrect_rratio=ratio)
+        xs, ys = 3.0 + rng.uniform(-2, 2, 2000), 5.0 + rng.uniform(-2, 2, 2000)
+        closed = sb._pad_sd(pad, xs, ys)
+        polys, radius = _pad_copper_core(pad)
+        walked = sb._pad_sd(Pad(**{**pad.__dict__, 'polygons': polys}), xs, ys) - radius
+        assert np.abs(closed - walked).max() < 1e-12, (shape, float(np.abs(closed - walked).max()))
+        out = closed > 1e-9
+        ref = np.array([point_to_pad_distance(x, y, pad) for x, y in zip(xs[out], ys[out])])
+        assert np.abs(closed[out] - ref).max() < 1e-12, shape
+
+
 TESTS = [
     test_x_crossing_is_a_tap,
     test_pad_crossed_off_centre_is_a_sense_pad,
@@ -566,6 +593,7 @@ TESTS = [
     test_oblique_member_is_held_from_where_its_copper_leaves,
     test_pour_taps_only_where_it_can_fill,
     test_dangling_member_is_ignored_as_kicad_does,
+    test_pad_signed_distance_is_the_pad_copper,
 ]
 
 

@@ -78,6 +78,26 @@ def _pad_sd(pad, xs, ys):
     from check_connected import points_in_polygon_mask
     xs = np.atleast_1d(np.asarray(xs, dtype=np.float64))
     ys = np.atleast_1d(np.asarray(ys, dtype=np.float64))
+    if not getattr(pad, 'polygons', None):
+        # Closed form for a rect / roundrect / circle / oval pad: the rounded
+        # box (inner half-extents grown by the corner radius) in the pad's
+        # frame -- the same shape as walking its core polygon, far cheaper.
+        hx, hy = pad.size_x / 2.0, pad.size_y / 2.0
+        if pad.shape in ('circle', 'oval'):
+            r = min(hx, hy)
+        elif pad.shape == 'roundrect':
+            r = getattr(pad, 'roundrect_rratio', 0.0) * min(pad.size_x, pad.size_y)
+        else:
+            r = 0.0
+        r = min(r, hx, hy)
+        dx, dy = xs - pad.global_x, ys - pad.global_y
+        rr = getattr(pad, 'rect_rotation', 0.0) or 0.0
+        if rr:
+            c, s = math.cos(math.radians(rr)), math.sin(math.radians(rr))
+            dx, dy = dx * c + dy * s, -dx * s + dy * c
+        qx, qy = np.abs(dx) - (hx - r), np.abs(dy) - (hy - r)
+        return (np.hypot(np.maximum(qx, 0.0), np.maximum(qy, 0.0))
+                + np.minimum(np.maximum(qx, qy), 0.0) - r)
     polys, radius = _pad_copper_core(pad)
     best = np.full(xs.shape, np.inf)
     for poly in polys:
