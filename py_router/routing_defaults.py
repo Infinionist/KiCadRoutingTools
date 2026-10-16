@@ -328,6 +328,10 @@ RESCUE_CLEARANCE_STEPS = 4        # clearance rungs from nominal down to the fab
 RESCUE_WINDOW_MARGIN = 4.0        # mm of window past the gap bbox on every side
 RESCUE_MIN_WINDOW_HALF = 6.0      # mm - minimum window half-size (detour room)
 RESCUE_MAX_WINDOW_CELLS = 4_000_000  # per-layer cell budget; grid coarsens to fit
+RESCUE_MAX_MARGIN_CELLS = 30      # a rung whose wide-net A* track margin exceeds
+                                  # this many cells runs on a coarser grid (never
+                                  # past the run's own): the swept-capsule test
+                                  # costs (2r+1)^2 cells per neighbour
 RESCUE_MAX_EDGES_PER_NET = 8      # max gap-closing attempts per rescued net
 RESCUE_MAX_ITERATIONS = 1_000_000  # per-rung A* backstop. Deliberately generous:
                                    # hopeless rungs exhaust the small fenced window
