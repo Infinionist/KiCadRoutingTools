@@ -5476,7 +5476,9 @@ DIAGONAL_ROTATIONS_DEFAULT = False
 #: `stage_unaided` piles seeded from a `--decaps-from` intent), where it
 #: lowered intent errors on every pile and pulled stranded held caps back
 #: inside the decap radius, at a cost in wire length or crossings on three
-#: piles. The A/B rule's zero-tolerance guards cannot accept that trade; the
+#: piles (four since #1266 keeps parts off footprint graphic copper:
+#: watchy's crossings). The A/B rule's zero-tolerance guards cannot accept
+#: that trade; the
 #: maintainer did (#1105, 2026-10-15), and the `decap-pile-within-limit-*`
 #: rows in tests/test_placement_ab.py pin it. A PLACED board keeps the stage
 #: off: the corpus `decap-*` rows, which re-seed as-placed boards, rejected
@@ -7130,13 +7132,14 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         #
         # "Zero losses" is true of pin SOURCES and false of the outcome,
         # and the first draft of this comment said the former while
-        # meaning the latter. Measured on the rows this PR commits, the
+        # meaning the latter. Measured on tests/792_seeding_rows.jsonl, the
         # widened arm STRANDS four parts across three boards that the
-        # control seats (orangecrab U4, rp2350 L1, tigard H1 and H3) and
-        # worsens `pin_gap_sum` on glasgow (346.63 -> 404.80) and rp2350
-        # (86.99 -> 91.30). Coverage is not seating. That is why the flag
-        # is OFF, and `test_792_seeding_claims.py` asserts the stranding
-        # so it cannot be flipped on without confronting it.
+        # control seats (orangecrab U4, rp2350 L1, tigard H1 and H3).
+        # Coverage is not seating. That is why the flag is OFF, and
+        # `test_792_seeding_claims.py` asserts the stranding so it cannot
+        # be flipped on without confronting it. Its pin geometry is no
+        # longer an argument against it: worse on glasgow, better on rp2350
+        # and ulx3s since #1206 (pinned there too).
         #
         # Behind a flag until the A/B rows run, following `evict_depth`'s
         # precedent: it changes where parts go, and this file's own rule is

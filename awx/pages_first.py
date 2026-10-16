@@ -195,7 +195,8 @@ def current_tooth(st, nm) -> Optional[Move]:
     read off the copper (source_realize.measure_tooth). None for a net
     without a source pad on the source array or without copper there."""
     p = st['src_pad'].get(nm)
-    if p is None or p.component_ref != st['sref']:
+    if p is None or p.component_ref != st['sref'] or st.get('escape'):
+        # (an ESCAPE state, escape_plan: no tooth is laid on its dog-boned base -- the ball's dog-bone is no tooth)
         return None
     g = sr.measure_tooth(st['pcb'], nm, p, st['byname'])
     # (any routing layer: on three, a tooth laid on In2.Cu read as no tooth at all -- 17 of the zynq LVDS bus's
