@@ -648,7 +648,7 @@ _EXIT_TOL = 0.16    # half a fine-pitch gap
 _STACK_PITCH = _rules.active().track + _rules.active().clearance + _rules.HUG_OVER   # two lanes' centres side by side
 
 
-_VIA_REACH = 0.30   # via radius + clearance + half a track, rounded up
+_VIA_REACH = _rules.fan_via_reach(_rules.active())   # a via's reach for another net's escape run (rules.py)
 
 
 def _site_in_lane(dm: Move, key, a, b) -> bool:
