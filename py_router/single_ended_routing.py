@@ -1004,6 +1004,12 @@ def _neck_terminal_grazes(segments, term_pts, pcb_data, net_id, config, floor=No
                                       base_clearance=own_l, net_clearances=nc),
                 _seg_foreign_seg_dist(pcb_data, net_id, s.start_x, s.start_y, s.end_x, s.end_y, s.layer,
                                       net_clearances=nc, base_clearance=own_l))
+        # #1279: the net's own protected sense copper is foreign here too,
+        # except where the terminal lies on the branch's join pad.
+        from sense_branch import terminal_sense_dist
+        _sense_d = terminal_sense_dist(pcb_data, net_id, s.start_x, s.start_y,
+                                       s.end_x, s.end_y, s.layer, s.width / 2.0)
+        d = min(d, _sense_d)
         # #1159: a graze is an edge gap BELOW the rule. Copper exactly at the
         # rule is legal (the writer emits 1 nm coordinates, so 1 nm is the
         # only tolerance the test needs); the 1e-4 margin belongs to the neck
@@ -1014,8 +1020,9 @@ def _neck_terminal_grazes(segments, term_pts, pcb_data, net_id, config, floor=No
             # Hard test BEFORE necking, on the RAW track/via distance: a
             # centreline within floor/2 of a foreign copper EDGE overlaps it
             # at any emittable width -- a physical short, not a graze.
-            d_raw = _seg_foreign_seg_dist(pcb_data, net_id, s.start_x,
-                                          s.start_y, s.end_x, s.end_y, s.layer)
+            d_raw = min(_seg_foreign_seg_dist(pcb_data, net_id, s.start_x,
+                                              s.start_y, s.end_x, s.end_y, s.layer),
+                        _sense_d)
             if d_raw < floor / 2.0 - 1e-6:
                 hard.append((s, d_raw, None))
                 continue

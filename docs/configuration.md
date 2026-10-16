@@ -468,6 +468,61 @@ Notes:
 - Tested by `tests/test_keepout.py` — flag-off regression, single-net detour, multi-net avoidance,
   and a real bundled board (`kicad_files/lvds_converter_dualclk.kicad_pcb`).
 
+### Kelvin Sense Branches (board-declared, no option)
+
+A Kelvin sense trace (a regulator's VOS/feedback divider, a shunt's sense
+pair) is on the same net as the load current it measures, so the router would
+otherwise connect the net's loads to it anywhere: connected, DRC-clean and
+electrically wrong. Declare it in the board with a KiCad **group** named
+`sense:<REF>.<PAD>`, where `REF.PAD` is the join (star) pad, holding the sense
+tracks, arcs and vias:
+
+```
+(group "sense:C108.1" (uuid ...) (members "<track uuid>" "<via uuid>" ...))
+```
+
+In KiCad: select the sense copper, Group it, and name the group. The sense pads
+are the pads of the same net that member copper touches, the join pad excepted
+-- touching the way KiCad's connectivity does: a track across a pad off-centre
+touches it, so do two tracks crossing in an X, and a blind or buried via touches
+only on the layers it spans. Pads are their real copper (a round pad is a
+circle). A member uuid that matches no item is ignored, as KiCad drops it on
+load, and named in the entry's `warnings`.
+There is no CLI flag and no GUI control: the board file is the declaration, so
+every step of a chain, both front-ends and every leg that parses the board read
+it (`sense_branch.py`). For the branch's own net the member copper and the
+sense pads are foreign copper, at the net's clearance, everywhere except on the
+join pad: only new copper sticking out of the join pad is held to the
+clearance, so a join pad no wider than the track (an 0402 cap under a power
+track) is landed at its centre without narrowing anything; the endpoint derivations never offer them as a place to attach, plane
+pad taps skip the sense pads, and the member copper is held immutable
+(`held_by`): no pass moves, rewrites or removes it, even when the branch is
+refused. The hold is not a KiCad lock and is never written to the board. The
+net's routes of this run stay rippable like any other net's; only a whole-net
+strip of the net's PRE-EXISTING copper (`--rip-existing-nets`,
+`--force-reroute`, plane-repair blocker rips, undo) is refused, with the
+protection reason `sense:<REF>.<PAD>` and no exact-name override -- ungroup or
+rename the group to release it. Net ids are never changed.
+
+Each branch is printed and reported in `JSON_SUMMARY.sense_branches`
+(`route.py` and `route_diff.py`), as the input resolved it; a branch the input
+protected and the routed copper no longer does also carries `tapped_by_run`,
+with a printed WARNING. A branch is reported and left unprotected,
+with the reason, when the group name is not `sense:REF.PAD`, the join pad is
+missing or has no net, a member is not a track or via on the board, member
+copper is on another net, member copper does not touch the join pad, a sense
+pad or member is not joined to the join pad by member copper yet, other copper
+of the net already touches the branch off the join pad, or a pour of the same
+net can fill over it off the join pad (the fill already taps it). A pour's
+cut-outs and copper-pour keep-out rule areas are not fill: a pour cut around
+the sense trace leaves the branch protected. KiCad's DRC cannot
+see topology, so check the written board.
+
+`route_planes.py` and the Planes tab print a WARNING naming each protected
+branch a pour they create covers, and `route_planes.py` records the layers as
+`poured_over` in its `JSON_SUMMARY.sense_branches`; `repair_planes.py` reports
+the branches judged on the board it wrote.
+
 ### Differential Pair Options (route_diff.py only)
 
 These options are only available in `route_diff.py`. All nets passed to route_diff.py are treated as differential pairs.

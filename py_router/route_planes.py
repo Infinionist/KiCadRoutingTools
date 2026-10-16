@@ -3068,6 +3068,55 @@ def consume_pad_tally() -> dict:
     return out
 
 
+#: JSON_SUMMARY.sense_branches of the last create_plane() in this process
+#: (#1279): route.py's entries (sense_branch.summary_entries) plus
+#: `poured_over`, the layers on which a pour THIS run created covers the
+#: branch. Taken by main() like the pad tally.
+_LAST_SENSE_BRANCHES: list = []
+
+
+def consume_sense_branches() -> list:
+    """Take (and clear) the last pour's sense-branch entries."""
+    global _LAST_SENSE_BRANCHES
+    out, _LAST_SENSE_BRANCHES = list(_LAST_SENSE_BRANCHES), []
+    return out
+
+
+def _sense_branches_poured_over(pcb_data, zone_data) -> Dict[str, List[str]]:
+    """{branch name: [layer, ...]} for every protected sense branch (#1279)
+    that a pour of this run (`zone_data`, create_plane's zone dicts) covers,
+    printing a WARNING per pour. KiCad's fill floods over same-net copper, so
+    such a pour joins the sense copper to the plane off the join pad -- the
+    tap the branch exists to forbid, and the next route step refuses the
+    branch for it. Judged by sense_branch's own zone test (`_zone_tap`, the
+    one that refusal uses), one new pour at a time. Warned, never refused
+    or carved."""
+    import copy
+    from kicad_parser import Zone
+    from sense_branch import protected_branches, _zone_tap
+    out: Dict[str, List[str]] = {}
+    for b in protected_branches(pcb_data):
+        items = ([('seg', s) for s in b.segments] + [('via', v) for v in b.vias]
+                 + [('pad', p) for p in b.sense_pads])
+        for zd in zone_data:
+            if zd.get('keepout') or zd.get('net_id') != b.net_id:
+                continue
+            if zd['layer'] in out.get(b.name, []):
+                continue
+            view = copy.copy(pcb_data)
+            view.zones = [Zone(net_id=b.net_id, net_name=zd.get('net_name', ''),
+                               layer=zd['layer'], polygon=list(zd['polygon_points']))]
+            why = _zone_tap(view, items, b.join)
+            if why is None:
+                continue
+            out.setdefault(b.name, []).append(zd['layer'])
+            print(f"WARNING: the {zd.get('net_name', '')} pour on {zd['layer']} covers "
+                  f"sense branch {b.name} -- KiCad's fill joins the sense copper to "
+                  f"the plane; keep the plane off that layer or cut the pour around "
+                  f"the branch\n    ({why})")
+    return out
+
+
 def create_plane(
     input_file: str,
     output_file: str,
@@ -3205,6 +3254,11 @@ def create_plane(
     # run ADDS are stamped; see fab_notes.via_protection_stamps)
     from fab_notes import via_snapshot as _via_snapshot962
     _input_vias962 = _via_snapshot962(pcb_data.vias, pcb_data)  # #1171: + sites
+    # #1279: the board's `sense:<REF>.<PAD>` groups -- protected, or why not
+    # (engine-side, so the Planes tab's log shows it too).
+    _LAST_SENSE_BRANCHES.clear()
+    from sense_branch import report as _sense_report
+    _sense_report(pcb_data)
 
     # --plane-layers takes BARE copper layer names positionally matched to
     # --nets, but the natural thing to type (and what the routing skill's R1
@@ -4074,6 +4128,17 @@ def create_plane(
         except Exception as _e:  # noqa: BLE001 -- keepouts are additive; never fail the run
             print(f"  (NPTH-slot keepouts skipped: {_e})")
 
+    # #1279: a pour this run created over a protected sense branch taps it
+    # (KiCad's fill floods same-net copper): name it here, before the
+    # write/return split, so the CLI and the Planes tab both say so.
+    if getattr(pcb_data, 'sense_branches', None):
+        from sense_branch import summary_entries as _sense_entries
+        _poured = _sense_branches_poured_over(pcb_data, all_zone_data)
+        _LAST_SENSE_BRANCHES[:] = _sense_entries(pcb_data)
+        for _e in _LAST_SENSE_BRANCHES:
+            if _poured.get(_e['group']):
+                _e['poured_over'] = _poured[_e['group']]
+
     geo_results: Dict[int, Dict] = {}
     if dry_run:
         print("\nDry run - no output file written")
@@ -4815,6 +4880,12 @@ Examples:
                 for _n, _r in sorted(_res.items())]
     except Exception:
         pass
+
+    # #1279: every declared sense branch, protected or why not, and the
+    # layers a new pour covers it on (`poured_over`).
+    _sense = consume_sense_branches()
+    if _sense:
+        _summary['sense_branches'] = _sense
 
     # The run either finished or raised; there is no partial shape to report
     # (the CLI has no cancel source). `complete`/`status` are kept because

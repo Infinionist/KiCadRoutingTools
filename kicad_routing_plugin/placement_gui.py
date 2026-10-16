@@ -994,12 +994,14 @@ class PlacementTab(wx.Panel):
                 f"in the result board are left alone here; edit part and "
                 f"outline together in KiCad if one really must move (#829).")
         if with_copper:
-            lines.append("Place + Route additionally REPLACES ALL tracks and "
-                         "vias on the live board with the run's routing. "
-                         "Arc tracks come back as short straight segments "
-                         "(the parser linearizes arcs) and blind/buried vias "
-                         "as through vias - if the input board carried "
-                         "either, open the result board file instead.")
+            lines.append("Place + Route additionally makes the live board's "
+                         "tracks and vias the run's routing: copper the run "
+                         "kept unchanged stays as it is (groups included), "
+                         "the rest is replaced. Replaced arc tracks come "
+                         "back as short straight segments (the parser "
+                         "linearizes arcs) and blind/buried vias as through "
+                         "vias - if the run changed either, open the result "
+                         "board file instead.")
         lines.append("The live board may have changed since the run started - "
                      "this diff is against its state right now. Continue?")
         if wx.MessageBox("\n\n".join(lines), "Apply Placement Result",
@@ -1034,7 +1036,8 @@ class PlacementTab(wx.Panel):
             msg += (f", {len(to_lock)} lock(s) set and {len(to_unlock)} "
                     f"cleared")
         if with_copper:
-            msg += f", {tracks_added} track(s), {vias_added} via(s) (replaced)"
+            msg += (f", {tracks_added} track(s), {vias_added} via(s) added "
+                    f"(unchanged copper kept)")
         msg += ". Use Edit -> Undo in pcbnew to revert."
         self.set_status(msg)
         self.append_log("Placement apply: " + msg + "\n")
@@ -1139,13 +1142,26 @@ class PlacementTab(wx.Panel):
         fp.SetOrientationDegrees(parsed.rotation or 0)
 
     def _apply_copper(self, board, result_pcb, pcbnew):
-        """Replace ALL live tracks/vias with the result board's copper.
+        """Make the live board's tracks and vias the result board's copper.
 
-        Wholesale replacement is correct here: the place+route loop's
-        contract is that placement invalidates all prior copper. RemoveNative,
-        never Remove (see the SWIG-registry warning in swig_gui).
+        The result board is the authority: the place+route loop's contract is
+        that placement invalidates prior copper, so live copper the result
+        does not carry is removed and copper it adds is created. A live
+        track, arc or via the result carries UNCHANGED -- same geometry,
+        layer, width and net, and for a via the same size, drill, layer pair
+        and type -- is KEPT rather than removed and recreated (#1279).
+        Recreating gave every item a new uuid, which took it out of any KiCad
+        group: a `sense:<REF>.<PAD>` group lost its members, KiCad dropped
+        the emptied group on save, and the Kelvin branch it declared was no
+        longer protected; an unchanged arc also came back as chords. A kept
+        via takes the result's protection spec. A created item takes its
+        KiCad lock from the result's `locked`, which is the file's own
+        `(locked ...)` token (#521) -- a sense hold is `held_by`, never a lock,
+        so Apply never writes one. RemoveNative, never Remove (see the
+        SWIG-registry warning in swig_gui). Returns (tracks_added,
+        vias_added).
         """
-        from kicad_parser import mm_to_iu
+        from kicad_parser import mm_to_iu, pcbnew_track_copper
         from .swig_gui import _build_layer_mappings
         from .gui_utils import apply_via_protection, set_via_layers
         name_to_id, _ = _build_layer_mappings()
@@ -1159,16 +1175,69 @@ class PlacementTab(wx.Panel):
                     return live.GetNetCode()
             return net_id
 
-        for track in list(board.GetTracks()):
-            board.RemoveNative(track)
-        tracks_added = vias_added = 0
+        def result_net_name(net_id):
+            net = result_pcb.nets.get(net_id)
+            return net.name if net is not None else ''
+
+        # Keys compare in internal units, the resolution both boards hold.
+        def seg_key(s, net_name):
+            a = (mm_to_iu(s.start_x), mm_to_iu(s.start_y))
+            b = (mm_to_iu(s.end_x), mm_to_iu(s.end_y))
+            return (min(a, b), max(a, b), mm_to_iu(s.width), s.layer, net_name)
+
+        def via_key(v, net_name):
+            return (mm_to_iu(v.x), mm_to_iu(v.y), mm_to_iu(v.size),
+                    mm_to_iu(v.drill), tuple(v.layers or ()),
+                    getattr(v, 'via_type', 'through'), net_name)
+
+        # The result's copper, by key. Copper GRAPHICS parse into segments too
+        # (#337 board gr_*, #908 footprint fp_*): they are drawings, not
+        # tracks. The live board keeps its own (a footprint's travel with its
+        # pose), and as a PCB_TRACK each would be a net-0 track over its own
+        # pads.
+        want_segs, want_vias = {}, {}
         for seg in result_pcb.segments:
-            # Copper GRAPHICS parse into segments too (#337 board gr_*, #908
-            # footprint fp_*): they are drawings, not tracks. The live board
-            # keeps its own (a footprint's travel with its pose), and as a
-            # PCB_TRACK each would be a net-0 track over its own pads.
             if getattr(seg, "graphic", False):
                 continue
+            want_segs.setdefault(seg_key(seg, result_net_name(seg.net_id)),
+                                 []).append(seg)
+        for via in result_pcb.vias:
+            want_vias.setdefault(via_key(via, result_net_name(via.net_id)),
+                                 []).append(via)
+
+        # The live copper through the extractor every live read uses, so an
+        # arc's pieces are chorded exactly as the result's parse chords them;
+        # `owners` maps each piece back to its one live item.
+        owners = {}
+        live_segs, live_vias = pcbnew_track_copper(board, owners=owners)
+        items = {}
+        for s in live_segs:
+            it = owners[id(s)]
+            items.setdefault(id(it), (it, 'seg', []))[2].append(
+                seg_key(s, it.GetNetname()))
+        for v in live_vias:
+            it = owners[id(v)]
+            items[id(it)] = (it, 'via', [via_key(v, it.GetNetname())])
+
+        kept = []
+        for it, kind, keys in items.values():
+            pool = want_segs if kind == 'seg' else want_vias
+            need = {}
+            for k in keys:
+                need[k] = need.get(k, 0) + 1
+            if all(len(pool.get(k, ())) >= n for k, n in need.items()):
+                taken = [pool[k].pop() for k in keys]
+                kept.append((it, kind, taken))
+            else:
+                board.RemoveNative(it)
+        for it, kind, taken in kept:
+            if kind == 'via':
+                # Keep the result's tenting/plugging spec (#489 §8); an empty
+                # spec leaves the via inheriting the board's, as it was.
+                apply_via_protection(it, getattr(taken[0], "tenting_attrs", None))
+
+        tracks_added = vias_added = 0
+        for seg in (s for segs in want_segs.values() for s in segs):
             track = pcbnew.PCB_TRACK(board)
             # mm_to_iu, never FromMM(round(...)) (#493 item 5 / #362).
             track.SetStart(pcbnew.VECTOR2I(mm_to_iu(seg.start_x),
@@ -1183,7 +1252,7 @@ class PlacementTab(wx.Panel):
             track.SetLocked(bool(getattr(seg, "locked", False)))
             board.Add(track)
             tracks_added += 1
-        for via in result_pcb.vias:
+        for via in (v for vias in want_vias.values() for v in vias):
             pcb_via = pcbnew.PCB_VIA(board)
             pcb_via.SetPosition(pcbnew.VECTOR2I(mm_to_iu(via.x), mm_to_iu(via.y)))
             pcb_via.SetWidth(mm_to_iu(via.size))
@@ -1198,6 +1267,9 @@ class PlacementTab(wx.Panel):
             apply_via_protection(pcb_via, getattr(via, "tenting_attrs", None))
             board.Add(pcb_via)
             vias_added += 1
+        print(f"Placement apply: {len(kept)} unchanged track(s)/via(s) kept, "
+              f"{len(items) - len(kept)} removed, {tracks_added} track(s) and "
+              f"{vias_added} via(s) added")
         return tracks_added, vias_added
 
     # ------------------------------------------------------ beautify labels

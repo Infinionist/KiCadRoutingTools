@@ -760,6 +760,7 @@ def unreported_input_strips(orig_seg_by_net, orig_via_by_net, scope_net_ids,
     re-emit clause lets a result reproduce an original's span, so that span is
     still on the board even when the original object is not in `board_*`.
     """
+    from kicad_parser import is_immutable_copper  # #1279
     present_s = {_seg_ledger_sig(x) for x in board_segments
                  if not getattr(x, 'graphic', False)}
     present_v = {_via_ledger_sig(x) for x in board_vias}
@@ -771,12 +772,12 @@ def unreported_input_strips(orig_seg_by_net, orig_via_by_net, scope_net_ids,
             for x in orig_seg_by_net.get(nid, ())
             if id(x) not in known_seg_ids
             and not getattr(x, 'graphic', False)
-            and not getattr(x, 'locked', False)
+            and not is_immutable_copper(x)
             and _seg_ledger_sig(x) not in present_s]
     vias = [x for nid in (scope_net_ids or ())
             for x in orig_via_by_net.get(nid, ())
             if id(x) not in known_via_ids
-            and not getattr(x, 'locked', False)
+            and not is_immutable_copper(x)
             and _via_ledger_sig(x) not in present_v]
     return segs, vias
 

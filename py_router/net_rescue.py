@@ -349,14 +349,18 @@ def _net_component_info(pcb_data, net_id):
         else:
             cid = next_unique
             next_unique -= 1
-        comp_points.setdefault(cid, []).append((pad.global_x, pad.global_y))
+        # #1279: a sense pad is never a join point (its branch joins the
+        # net at the join pad only); it still counts toward its component.
+        pts = comp_points.setdefault(cid, [])
+        if not pad.sense:
+            pts.append((pad.global_x, pad.global_y))
         comp_pads.setdefault(cid, []).append(pad)
     # Segment endpoints of PAD-bearing components are join points too (the
     # gap usually ends at a stub tip, not at the far pad - bitaxe RST_N's
     # remaining gap was 0.25mm off the pad while the trunk crossed the board).
     for si, seg in enumerate(net_segments):
         cid = uf.find(2 * si)  # segment i's endpoints are point ids 2i/2i+1
-        if cid in comp_pads:
+        if cid in comp_pads and not seg.sense:
             comp_points[cid].append((seg.start_x, seg.start_y))
             comp_points[cid].append((seg.end_x, seg.end_y))
     # #545 F11: the components' VIAS are join points too (graph-authoritative
@@ -373,7 +377,8 @@ def _net_component_info(pcb_data, net_id):
                 _v = net_vias[vidx]
             except (IndexError, TypeError):
                 continue
-            comp_points[cid].append((_v.x, _v.y))
+            if not _v.sense:
+                comp_points[cid].append((_v.x, _v.y))
     return len(comp_pads), comp_points, comp_pads
 
 

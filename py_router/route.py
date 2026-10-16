@@ -144,6 +144,7 @@ def _compute_stale_input_copper(orig_by_net, scope_ids, final_copper,
     ignore width, drill and size, so a re-emitted twin would have replaced the
     pinned item with an unlocked copy that can differ in exactly those.
     """
+    from kicad_parser import is_immutable_copper
     final = {}
     if final_ids is None:
         for c in final_copper:
@@ -156,7 +157,7 @@ def _compute_stale_input_copper(orig_by_net, scope_ids, final_copper,
         nfinal = final.get(nid, ())
         nemit = emit.get(nid, ())
         for c in orig_by_net.get(nid, []):
-            if getattr(c, 'locked', False):
+            if is_immutable_copper(c):    # KiCad-locked or sense-held (#1279)
                 continue
             on_board = (id(c) in final_ids) if final_ids is not None \
                 else (full_sig(c) in nfinal)
@@ -1514,6 +1515,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                                    keepout_layer=keepout_layer)
     else:
         print("Using provided PCB data...")
+    # #1279: the board's `sense:<REF>.<PAD>` groups -- protected, or why not.
+    from sense_branch import report as _sense_report
+    _sense_report(pcb_data)
     if final_reconcile:
         from rip_up_reroute import reset_run_ledgers
         reset_run_ledgers(pcb_data)
@@ -3165,6 +3169,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 continue
             _onid = _name_to_id572.get(_onm)
             if _onid is not None and len(_oa) >= 4 and len(_ob) >= 4:
+                # #1279: a link end on a protected sense branch lands on its
+                # join pad instead (KiCad's ratsnest does not know the rule).
+                from sense_branch import join_link_end as _jle572
+                _oa, _ob = (_jle572(pcb_data, _onid, _oa),
+                            _jle572(pcb_data, _onid, _ob))
                 if abs(_oa[0] - _ob[0]) < 1e-6 \
                         and abs(_oa[1] - _ob[1]) < 1e-6:
                     _degen572 += 1
@@ -5551,6 +5560,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                                                     'min_clearance_used',
                                                     'keep_away')
                                         if k in summary]
+    # #1279: every declared sense branch, protected or why not.
+    from sense_branch import summary_entries as _sense_entries
+    _sense = _sense_entries(pcb_data)
+    if _sense:
+        summary['sense_branches'] = _sense
     try:                       # #653: env knobs into the machine-readable
         import env_knobs as _ek653   # summary, so a harness can detect a
         summary['env_knobs'] = _ek653.active_env_knobs()   # dirty baseline
@@ -8850,6 +8864,10 @@ For differential pair routing, use route_diff.py:
         if _rep['locked_skipped']:
             print(f"  REFUSED (KiCad-locked, no override by design, #521): "
                   f"{', '.join(_rep['locked_skipped'][:8])}")
+        if _rep.get('held_skipped'):
+            print(f"  REFUSED (copper held by a `sense:` group, #1279; "
+                  f"ungroup or rename the group to release it): "
+                  f"{', '.join(_rep['held_skipped'][:8])}")
         if _rep['protected_overridden']:
             print(f"  protected nets removed by exact-name targeting: "
                   f"{', '.join(_rep['protected_overridden'][:8])}")

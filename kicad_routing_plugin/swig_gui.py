@@ -45,17 +45,6 @@ except ImportError:  # pragma: no cover - stale checkout
     _STARTUP_FAILURES = (SystemExit,)
 
 
-def _via_width(via):
-    """KiCad 9/10 padstack vias can refuse layerless GetWidth() ('result
-    with an error set', seen on vias ADDED in-session then re-synced);
-    GetFrontWidth() is the stable outer-annulus accessor and is asked FIRST
-    (#605) -- a bare PCB_VIA::GetWidth() also trips a non-raising wxASSERT
-    on KiCad 10, one stderr line per via, before returning the same answer."""
-    try:
-        return via.GetFrontWidth()
-    except Exception:
-        return via.GetWidth()
-
 from .fanout_gui import NetSelectionPanel
 from .gui_utils import StdoutRedirector, board_minima_from_live
 from .settings_persistence import get_dialog_settings, restore_dialog_settings
@@ -310,18 +299,26 @@ class RoutingDialog(wx.Dialog):
         event.Skip()
 
     def _sync_pcb_data_from_board(self):
-        """Sync pcb_data.segments and pcb_data.vias from pcbnew's in-memory board.
+        """Sync pcb_data's copper, zones, footprints and `sense:` branches
+        from pcbnew's in-memory board.
 
         This is necessary because pcb_data is parsed from the file on disk,
         but tracks added during previous routing sessions only exist in pcbnew's
         memory until the file is saved.
+
+        The tracks and vias are read by the extractor build_pcb_data_from_board
+        uses (kicad_parser.resync_live_copper, #1279), so a step after the
+        first sees what a fresh build sees -- KiCad locks (#521), uuids, arc
+        pieces, via types -- and the `sense:` groups are re-resolved against
+        that copper once pads and zones are current.
         """
         # Clear connectivity cache since board state is changing
         self._connectivity_cache = {}
 
         try:
             import pcbnew
-            from kicad_parser import Segment, Via, pcbnew_via_type
+            from kicad_parser import (pcbnew_layer_maps, resync_live_copper,
+                                      resolve_live_sense_branches)
 
             board = pcbnew.GetBoard()
             if board is None:
@@ -331,68 +328,18 @@ class RoutingDialog(wx.Dialog):
             return
 
         try:
-            # Get layer mappings
-            _, id_to_name = _build_layer_mappings()
-
-            def get_layer_name(layer_id):
-                return id_to_name.get(layer_id, 'F.Cu')
-
-            # Collect all segments from board
-            new_segments = []
-            for track in board.GetTracks():
-                if track.GetClass() == "PCB_TRACK":
-                    seg = Segment(
-                        start_x=pcbnew.ToMM(track.GetStart().x),
-                        start_y=pcbnew.ToMM(track.GetStart().y),
-                        end_x=pcbnew.ToMM(track.GetEnd().x),
-                        end_y=pcbnew.ToMM(track.GetEnd().y),
-                        width=pcbnew.ToMM(track.GetWidth()),
-                        layer=get_layer_name(track.GetLayer()),
-                        net_id=track.GetNetCode(),
-                    )
-                    new_segments.append(seg)
-
-            # Collect all vias from board
-            new_vias = []
-            for track in board.GetTracks():
-                if track.GetClass() == "PCB_VIA":
-                    via = track
-                    top_layer = via.TopLayer()
-                    bot_layer = via.BottomLayer()
-                    v = Via(
-                        x=pcbnew.ToMM(via.GetPosition().x),
-                        y=pcbnew.ToMM(via.GetPosition().y),
-                        size=pcbnew.ToMM(_via_width(via)),
-                        drill=pcbnew.ToMM(via.GetDrill()),
-                        layers=[get_layer_name(top_layer), get_layer_name(bot_layer)],
-                        net_id=via.GetNetCode(),
-                        # #1268: the span a blind/buried/micro via blocks
-                        # comes from its type, as on both parse paths.
-                        via_type=pcbnew_via_type(via),
-                    )
-                    new_vias.append(v)
-
             # Replace pcb_data segments and vias with what's in pcbnew
-            self.pcb_data.segments = new_segments
-            self.pcb_data.vias = new_vias
-            # The same PCBData object lives across routing runs; work cached
-            # against its old copper (rescue maps, escape memos) must not
-            # answer for the board the user has edited since.
-            from pcb_modification import bump_copper_epoch
-            bump_copper_epoch(self.pcb_data)
-            # #980: the input-copper mark names the objects just replaced;
-            # the next engine run marks the board it is handed.
-            from rip_up_reroute import forget_input_copper
-            forget_input_copper(self.pcb_data)
+            resync_live_copper(self.pcb_data, board)
 
             # Also sync zones - the connectivity check uses pcb_data.zones to
             # determine which nets are connected via copper pours. Without
             # this, a freshly-created plane is invisible to "hide connected"
-            # until the GUI reopens.
+            # until the GUI reopens. Layers are named as a fresh build names
+            # them (#1279).
             try:
                 from kicad_parser import _extract_zones_from_pcbnew
                 self.pcb_data.zones = _extract_zones_from_pcbnew(
-                    board, pcbnew.ToMM, get_layer_name)
+                    board, pcbnew.ToMM, pcbnew_layer_maps(board)[2])
             except Exception as e:
                 print(f"Warning: Error syncing zones from board: {e}")
 
@@ -404,6 +351,17 @@ class RoutingDialog(wx.Dialog):
                 sync_footprint_positions_from_board(board, self.pcb_data)
             except Exception as e:
                 print(f"Warning: Error syncing footprint positions from board: {e}")
+
+            # #1279: the board's `sense:` groups, against the copper, pads and
+            # zones just read -- a group drawn or edited in this session
+            # counts at the next step.
+            try:
+                resolve_live_sense_branches(self.pcb_data, board)
+            except Exception as e:
+                print(f"Warning: Error resolving sense: groups from board "
+                      f"({type(e).__name__}: {e}); sense branches (#1279) are "
+                      f"not protected this step")
+                self.pcb_data.sense_branches = []
         except Exception as e:
             print(f"Warning: Error syncing tracks from board: {e}")
 

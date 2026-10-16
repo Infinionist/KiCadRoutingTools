@@ -825,19 +825,16 @@ def run_phase3_tap_routing(
         # failing re-route, rip again and restore, twice per call, zero gain
         # (test-board run 5: QSPI_SS churned until every call was made
         # single-net just to starve this path of siblings).
-        from protected_nets import cached_protection_map, rip_override_names
+        from protected_nets import in_run_rip_reason
         _seam_done = getattr(state, '_seam_reask_done', None)
         if _seam_done is None:
             _seam_done = set()
             state._seam_reask_done = _seam_done
         _net_nm = (pcb_data.nets[net_id].name
                    if net_id in pcb_data.nets else None)
-        _prot = cached_protection_map(pcb_data)
         if net_id in _seam_done:
             pass
-        elif (_net_nm and _net_nm in _prot
-                and (_prot[_net_nm] == 'locked'
-                     or _net_nm not in rip_override_names(pcb_data))):
+        elif in_run_rip_reason(pcb_data, _net_nm):
             print(f"  (seam re-ask skipped: {_net_nm} is protected)")
         else:
             _seam_done.add(net_id)

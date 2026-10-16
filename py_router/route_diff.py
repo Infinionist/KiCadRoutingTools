@@ -464,6 +464,9 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         pcb_data = parse_kicad_pcb(input_file, keepout_layer=keepout_layer)
     else:
         print("Using provided PCB data...")
+    # #1279: the board's `sense:<REF>.<PAD>` groups -- protected, or why not.
+    from sense_branch import report as _sense_report
+    _sense_report(pcb_data)
     from rip_up_reroute import reset_run_ledgers, mark_input_copper
     reset_run_ledgers(pcb_data)
     mark_input_copper(pcb_data)  # #980
@@ -1965,6 +1968,11 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     _ka = disclose_keep_away(pcb_data, config)
     if _ka is not None:
         summary['keep_away'] = _ka
+    # #1279: every declared sense branch, protected or why not.
+    from sense_branch import summary_entries as _sense_entries
+    _sense = _sense_entries(pcb_data)
+    if _sense:
+        summary['sense_branches'] = _sense
     # Net-filtered keep-outs: bound-net copper inside a region on the routed
     # board (absent when the run has none; route.py reports the same key).
     from net_keepouts import audit as _nk_audit, format_audit as _nk_format
