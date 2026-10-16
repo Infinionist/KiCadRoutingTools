@@ -26,8 +26,11 @@ A branch is left unprotected, with a printed reason, when its pads are missing o
 off-net, when its sense copper does not reach the join pad yet (nothing to
 protect -- route the branch first), when one of its sense pads is not joined
 to the join pad by that copper yet (protecting it would take the pad off the
-net for the run, unrouted and unseen by the run's own grade), or when the
-input already taps it (another pad of the net is in the sense component).
+net for the run, unrouted and unseen by the run's own grade), when a pour of
+the same net covers its copper off the join pad (KiCad's fill floods over
+same-net copper, so the pour already taps it whatever the router does), or
+when the input already taps it (another pad of the net is in the sense
+component).
 KiCad DRC cannot see topology, so check the written board in every case.
 
 `restore()` undoes the isolation; `batch_route` / `batch_route_diff_pairs` are
@@ -146,6 +149,64 @@ def _touches_join(item, join) -> bool:
     return False
 
 
+def _point_in_poly(x: float, y: float, poly) -> bool:
+    """Ray-casting point-in-polygon."""
+    inside, j = False, len(poly) - 1
+    for i in range(len(poly)):
+        (xi, yi), (xj, yj) = poly[i], poly[j]
+        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+def _zone_tap(pcb_data, items, join) -> Optional[str]:
+    """Why a pour of the branch's own net already taps its sense copper, or
+    None. A zone floods over same-net copper, so sense copper inside (or
+    touching) a same-net pour outline on its layer is joined to that pour --
+    and through it to every load the pour feeds -- in the board KiCad fills,
+    whatever the router keeps off it. The outline is the conservative proxy
+    for the fill; contact on the join pad itself is the join, not a tap."""
+    from kicad_parser import pour_zones
+    from connectivity import via_copper_layers
+    net = join.net_id
+    zones = [z for z in pour_zones(getattr(pcb_data, 'zones', None))
+             if z.net_id == net and len(z.polygon or ()) >= 3]
+    if not zones:
+        return None
+    copper = list(getattr(pcb_data.board_info, 'copper_layers', None) or ())
+    for z in zones:
+        poly = z.polygon
+        edges = list(zip(poly, poly[1:] + poly[:1]))
+        for kind, it in items:
+            if kind == 'seg':
+                if it.layer != z.layer:
+                    continue
+                n = max(1, int(math.ceil(math.hypot(it.end_x - it.start_x,
+                                                    it.end_y - it.start_y) / 0.1)))
+                pts = [(it.start_x + (it.end_x - it.start_x) * k / n,
+                        it.start_y + (it.end_y - it.start_y) * k / n) for k in range(n + 1)]
+                r, what = it.width / 2, f"its {it.layer} track"
+            elif kind == 'via':
+                if z.layer not in via_copper_layers(it, copper):
+                    continue
+                pts, r, what = [(it.x, it.y)], it.size / 2, "its via"
+            else:
+                if not _pad_on(it, z.layer):
+                    continue
+                pts, r = [(it.global_x, it.global_y)], 0.0
+                what = f"sense pad {it.component_ref}.{it.pad_number}"
+            for x, y in pts:
+                if _in_pad(join, x, y, r + _EPS):
+                    continue
+                if _point_in_poly(x, y, poly) or any(
+                        _dist_seg(x, y, a[0], a[1], b[0], b[1]) <= r + _EPS for a, b in edges):
+                    return (f"a {z.net_name or net} zone on {z.layer} pours over {what} "
+                            f"at ({x:.2f}, {y:.2f}) -- its fill already joins the sense "
+                            f"copper to the net")
+    return None
+
+
 def _joined_to(items, join) -> Set[int]:
     """Indices of `items` (a sense component) that copper joins to the join
     pad: the items touching it, and everything they reach off the pad."""
@@ -225,6 +286,8 @@ def isolate(pcb_data, branches: Optional[List[dict]]) -> Dict[str, int]:
                 why = (f"sense pad(s) {', '.join(loose)} not joined to "
                        f"{join.component_ref}.{join.pad_number} by copper yet -- "
                        f"route the branch first")
+            else:
+                why = _zone_tap(pcb_data, items, join)
         if why is not None:
             print(f"  {b['name']}: NOT protected -- {why}")
             continue

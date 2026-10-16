@@ -143,6 +143,29 @@ def test_unjoined_sense_pad_is_refused_not_dropped():
     assert 'ALL NETS FULLY CONNECTED' in c.stdout + c.stderr, c.stdout[-2000:]
 
 
+def _with_vdd_zone(layer, x0, y0, x1, y1):
+    """sense_star parsed, plus a VDD pour outline on `layer`."""
+    from kicad_parser import Zone
+    p = parse_kicad_pcb(BOARD)
+    vdd = next(i for i, n in p.nets.items() if n.name == 'VDD')
+    p.zones = list(p.zones or []) + [Zone(
+        net_id=vdd, net_name='VDD', layer=layer,
+        polygon=[(x0, y0), (x1, y0), (x1, y1), (x0, y1)])]
+    return p
+
+
+def test_same_net_pour_over_the_sense_copper_is_refused():
+    """A VDD pour whose outline covers the sense trace already joins it to
+    every load the pour feeds once KiCad fills it -- the router keeping
+    tracks off it protects nothing. Refused, with the reason; a pour on
+    another layer, or one that only covers the join pad (the join itself),
+    leaves the branch protectable."""
+    p = _with_vdd_zone('F.Cu', 10, 3, 14, 7)
+    assert sb.isolate(p, [BRANCH]) == {}, 'a branch under a same-net pour was protected'
+    assert sb.isolate(_with_vdd_zone('B.Cu', 10, 3, 14, 7), [BRANCH]) != {}
+    assert sb.isolate(_with_vdd_zone('F.Cu', 1, 3, 3.4, 7), [BRANCH]) != {}
+
+
 def test_rotated_join_pad_is_read_in_board_space():
     """A 90-degree join pad (0.6 x 2.0 in its own frame, 2.0 wide along board
     x) with the sense trace starting off-centre ON it: the contact is on the
@@ -236,6 +259,7 @@ TESTS = [
     test_isolate_refuses_tapped_or_unjoined_branches,
     test_rotated_join_pad_is_read_in_board_space,
     test_unjoined_sense_pad_is_refused_not_dropped,
+    test_same_net_pour_over_the_sense_copper_is_refused,
     test_loader_rejects_bad_pad_keys,
     test_restore_undoes_isolate,
     test_router_keeps_loads_off_the_sense_trace,
