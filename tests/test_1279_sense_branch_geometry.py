@@ -23,7 +23,9 @@ reach, each case built in-test from the fixture's text:
   cut-out or a pour keep-out around the trace, but over a strip of a sense
   pad whose centre it misses;
 - a member uuid matching no item is dropped, as KiCad drops it on load, and
-  named in the branch's warnings.
+  named in the branch's warnings;
+- a contact is judged where the copper meets, not at a track's end: a 1 mm
+  track landing on a 0.8 mm join pad and meeting the member on it is the join.
 
 tests/test_1279_sense_branch_geometry_pcbnew.py holds the parse paths to the
 same answers under KiCad's python.
@@ -220,9 +222,10 @@ def _free_cells_on_member(board, track_width=0.3, clearance=0.2):
     return bad
 
 
-def _off_join_contacts(board):
+def _off_join_contacts(board, slack=0.01):
     """Points where the routed board's non-member VDD tracks overlap member
-    copper OFF the join pad's real copper (raster 0.01 mm)."""
+    copper OFF the join pad's real copper by more than `slack` (raster
+    0.01 mm)."""
     import numpy as np
     p, b = _branch(board)
     mem = set(b.member_uuids)
@@ -240,7 +243,7 @@ def _off_join_contacts(board):
         t = np.clip(((xs - s.start_x) * ex + (ys - s.start_y) * ey) / l2, 0.0, 1.0) if l2 else 0.0
         on = np.hypot(xs - s.start_x - t * ex, ys - s.start_y - t * ey) <= r
         xs, ys = xs[on], ys[on]
-        hit = _in_member(b, xs, ys) & (_off_pad(b.join, xs, ys) > 0.01)
+        hit = _in_member(b, xs, ys) & (_off_pad(b.join, xs, ys) > slack)
         out += [(round(float(x), 2), round(float(y), 2)) for x, y in zip(xs[hit], ys[hit])]
     return out
 
@@ -583,6 +586,34 @@ def test_pad_signed_distance_is_the_pad_copper():
         assert np.abs(closed[out] - ref).max() < 1e-12, shape
 
 
+def test_contact_is_judged_where_the_copper_meets():
+    """C1.1 is 0.8 x 0.95 mm at (3.02, 5) and VDD routes at 1.0 mm. The route
+    lands with a track ending at (3.1, 5.5), 0.025 mm past the pad's edge,
+    whose copper meets the member at x = 3.1 -- ON the pad. _touch judged the
+    contact at the track's END, so the grader and the run's own
+    tapped_by_run called it a tap (before: _tapped U1.1, U2.1, U3.1 and a
+    WARNING). It is judged where the copper meets, with the overhang a 1 mm
+    track centred on a 0.8 mm pad must make (0.1 mm) counting as on the pad;
+    a track meeting the member 0.5 mm past the pad is still a tap."""
+    text = (_src().replace('(at 3 5)\n', '(at 3.02 5)\n')
+            .replace('(segment (start 3 5)', '(segment (start 3.02 5)'))
+    board = _variant(_with_join_pad(text, JOIN_PAD.replace('(size 1 1)', '(size 0.8 0.95)')),
+                     'p0603')
+    p, b = _branch(board)
+    assert b.protected, b.reason
+    member = b.segments[0]
+    assert not sb._touch(('seg', _seg(3.0, 5.4, 3.1, 5.5, width=1.0)), ('seg', member), b.join)
+    assert sb._touch(('seg', _seg(3.9, 5.5, 3.9, 6.5, width=1.0)), ('seg', member), b.join)
+    out, log = _route(board, ['--track-width', '1.0'])
+    summary = json.loads(re.search(r'^JSON_SUMMARY: (\{.*\})$', log, re.M).group(1))
+    entry = summary['sense_branches'][0]
+    assert entry['protected'] and 'tapped_by_run' not in entry, entry
+    assert not (summary.get('design_rules') or {}).get('narrowed'), summary['design_rules']
+    assert _tapped(out) == ['U1.1'], f'a load reached the sense copper off C1.1: {_tapped(out)}'
+    hits = _off_join_contacts(out, slack=0.1 + 0.01)
+    assert not hits, f'new copper overlaps the member more than 0.1 mm off the pad at {hits[:3]}'
+
+
 TESTS = [
     test_x_crossing_is_a_tap,
     test_pad_crossed_off_centre_is_a_sense_pad,
@@ -594,6 +625,7 @@ TESTS = [
     test_pour_taps_only_where_it_can_fill,
     test_dangling_member_is_ignored_as_kicad_does,
     test_pad_signed_distance_is_the_pad_copper,
+    test_contact_is_judged_where_the_copper_meets,
 ]
 
 

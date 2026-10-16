@@ -205,46 +205,87 @@ def _seg_meets_pad(seg, pad, grow: float = _EPS):
     return hit, pt
 
 
+#: Sampling step (mm) along a track when locating where it meets other copper.
+_CONTACT_STEP = 0.02
+
+
+def _seg_seg_contacts(a, b):
+    """(xs, ys): where track `a`'s copper meets track `b`'s, sampled every
+    _CONTACT_STEP along `a` -- for each sample within reach of `b`'s axis, the
+    point between the two centrelines at `a`'s share of the two half-widths,
+    which lies in their overlap. An end landing on `b`, a T and an X crossing
+    all give their contact this way; an end alone does not say WHERE two
+    tracks meet."""
+    ra, rb = a.width / 2.0, b.width / 2.0
+    ex, ey = a.end_x - a.start_x, a.end_y - a.start_y
+    n = max(2, int(math.hypot(ex, ey) / _CONTACT_STEP) + 2)
+    t = np.linspace(0.0, 1.0, n)
+    xs, ys = a.start_x + ex * t, a.start_y + ey * t
+    fx, fy = b.end_x - b.start_x, b.end_y - b.start_y
+    l2 = fx * fx + fy * fy
+    u = (np.clip(((xs - b.start_x) * fx + (ys - b.start_y) * fy) / l2, 0.0, 1.0)
+         if l2 > 0 else np.zeros_like(xs))
+    px, py = b.start_x + u * fx, b.start_y + u * fy
+    hit = np.hypot(px - xs, py - ys) <= ra + rb + _EPS
+    k = ra / (ra + rb) if ra + rb > 0 else 0.5
+    return xs[hit] + (px[hit] - xs[hit]) * k, ys[hit] + (py[hit] - ys[hit]) * k
+
+
 def _touch(a, b, join) -> bool:
-    """Copper contact between two items of one net anywhere off the join pad.
+    """Copper contact between two items of one net anywhere off the join pad,
+    judged WHERE the copper meets: off the pad's real copper by more than
+    copper of the items' width centred on a pad narrower than it must
+    overhang (_overhang_allowance; the contact slack otherwise). Judging an
+    end instead flagged a 1 mm track that ends 0.025 mm past a 0.8 mm join pad
+    and meets the member on the pad as a tap (and the run as tapped_by_run).
     Items are ('pad', Pad) | ('seg', Segment) | ('via', Via)."""
-    off = lambda x, y: not _in_pad(join, x, y, _EPS)  # noqa: E731
     order = {'seg': 0, 'via': 1, 'pad': 2}
     if order[a[0]] > order[b[0]]:
         a, b = b, a
     (ka, ia), (kb, ib) = a, b
+
+    def off(x, y, half):
+        return not _in_pad(join, x, y, _overhang_allowance(join, half))
+
     if ka == 'seg' and kb == 'seg':
         if ia.layer != ib.layer:
             return False
         reach = ia.width / 2 + ib.width / 2 + _EPS
-        if (any(off(x, y) and _dist_seg(x, y, ib.start_x, ib.start_y, ib.end_x, ib.end_y) <= reach
-                for x, y in ((ia.start_x, ia.start_y), (ia.end_x, ia.end_y)))
-                or any(off(x, y) and _dist_seg(x, y, ia.start_x, ia.start_y, ia.end_x, ia.end_y) <= reach
-                       for x, y in ((ib.start_x, ib.start_y), (ib.end_x, ib.end_y)))):
-            return True
+        if (min(ia.start_x, ia.end_x) > max(ib.start_x, ib.end_x) + reach
+                or max(ia.start_x, ia.end_x) < min(ib.start_x, ib.end_x) - reach
+                or min(ia.start_y, ia.end_y) > max(ib.start_y, ib.end_y) + reach
+                or max(ia.start_y, ia.end_y) < min(ib.start_y, ib.end_y) - reach):
+            return False
         # Two tracks crossing in an X have no end near the other, and KiCad
-        # joins them all the same (its connectivity collides the shapes):
-        # the contact is the crossing point, judged on or off the join pad.
-        from check_drc import segments_cross
-        crossed, pt = segments_cross(ia, ib)
-        return bool(crossed) and off(*pt)
+        # joins them all the same (its connectivity collides the shapes).
+        half = max(ia.width, ib.width) / 2
+        return any(off(x, y, half) for x, y in zip(*_seg_seg_contacts(ia, ib)))
     # A via has copper on its span only: a blind F.Cu-In1.Cu via never meets
     # B.Cu copper above or below it.
     if ka == 'via' and kb == 'via':
-        return (off(ia.x, ia.y) and _vias_share_layer(ia, ib)
-                and math.hypot(ia.x - ib.x, ia.y - ib.y) <= (ia.size + ib.size) / 2)
+        ra, rb = ia.size / 2, ib.size / 2
+        d = math.hypot(ia.x - ib.x, ia.y - ib.y)
+        k = ra / (ra + rb) if ra + rb > 0 else 0.5
+        return (_vias_share_layer(ia, ib) and d <= ra + rb
+                and off(ia.x + (ib.x - ia.x) * k, ia.y + (ib.y - ia.y) * k, max(ra, rb)))
     if ka == 'seg' and kb == 'via':
-        from geometry_utils import via_on_layer
-        return off(ib.x, ib.y) and via_on_layer(ib, ia.layer) and _dist_seg(
-            ib.x, ib.y, ia.start_x, ia.start_y, ia.end_x, ia.end_y) <= ib.size / 2 + ia.width / 2 + _EPS
+        from geometry_utils import closest_point_on_segment, via_on_layer
+        if not via_on_layer(ib, ia.layer):
+            return False
+        px, py = closest_point_on_segment(ib.x, ib.y, ia.start_x, ia.start_y, ia.end_x, ia.end_y)
+        rv, rs = ib.size / 2, ia.width / 2
+        if math.hypot(px - ib.x, py - ib.y) > rv + rs + _EPS:
+            return False
+        k = rv / (rv + rs) if rv + rs > 0 else 0.5
+        return off(ib.x + (px - ib.x) * k, ib.y + (py - ib.y) * k, max(rv, rs))
     if ka == 'seg' and kb == 'pad':
         # Anywhere along the track, not only at its ends or the pad's centre:
         # a sense trace running across a same-net pad off-centre is joined to
         # it (KiCad's connectivity collides the shapes).
         hit, pt = _seg_meets_pad(ia, ib)
-        return hit and off(*pt)
+        return hit and off(*pt, ia.width / 2)
     if ka == 'via' and kb == 'pad':
-        return off(ia.x, ia.y) and _via_meets_pad(ia, ib)
+        return off(ia.x, ia.y, ia.size / 2) and _via_meets_pad(ia, ib)
     return False
 
 
