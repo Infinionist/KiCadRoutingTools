@@ -532,6 +532,9 @@ class Via:
     # #1279: the protected sense branch (KiCad group `sense:<REF>.<PAD>`) this
     # via is a member of, '' otherwise (see Pad.sense).
     sense: str = ""
+    # #1279: the `sense:` group that holds this via immutable, '' otherwise
+    # (see Segment.held_by).
+    held_by: str = ""
     # KiCad's via type: 'through', 'blind', 'buried' or 'micro', from the
     # block's type word (text) or GetViaType() (pcbnew). It, not `layers`,
     # says whether the via has copper on only part of the stack: KiCad loads
@@ -621,6 +624,19 @@ class Segment:
     # #1279: the protected sense branch (KiCad group `sense:<REF>.<PAD>`) this
     # track is a member of, '' otherwise (see Pad.sense).
     sense: str = ""
+    # #1279: the `sense:` group that holds this track immutable, '' otherwise.
+    # Set on a group's member copper whenever it resolves on the join pad's
+    # net, protected or refused, so no pass moves, rewrites or removes the
+    # declared sense copper. It is not `locked`: nothing writes it to the file,
+    # and it does not make the net never-rippable (only the net's pre-existing
+    # copper is spared from whole-net strips, protected_nets.protection_map).
+    held_by: str = ""
+
+
+def is_immutable_copper(item) -> bool:
+    """True for a track or via no pass may move, rewrite or remove: KiCad-
+    locked copper (#1261) or copper a `sense:` group holds (#1279)."""
+    return bool(getattr(item, 'locked', False) or getattr(item, 'held_by', ''))
 
 
 @dataclass

@@ -485,12 +485,19 @@ every step of a chain, both front-ends and every leg that parses the board read
 it (`sense_branch.py`). For the branch's own net the member copper and the
 sense pads are foreign copper, at the net's clearance, everywhere except on the
 join pad; the endpoint derivations never offer them as a place to attach, plane
-pad taps skip the sense pads, and the member copper is kept immutable (treated
-as locked in memory, which also makes that net never-rippable for the run; no
-lock token is written). Net ids are never changed.
+pad taps skip the sense pads, and the member copper is held immutable
+(`held_by`): no pass moves, rewrites or removes it, even when the branch is
+refused. The hold is not a KiCad lock and is never written to the board. The
+net's routes of this run stay rippable like any other net's; only a whole-net
+strip of the net's PRE-EXISTING copper (`--rip-existing-nets`,
+`--force-reroute`, plane-repair blocker rips, undo) is refused, with the
+protection reason `sense:<REF>.<PAD>` and no exact-name override -- ungroup or
+rename the group to release it. Net ids are never changed.
 
 Each branch is printed and reported in `JSON_SUMMARY.sense_branches`
-(`route.py` and `route_diff.py`). A branch is reported and left unprotected,
+(`route.py` and `route_diff.py`), as the input resolved it; a branch the input
+protected and the routed copper no longer does also carries `tapped_by_run`,
+with a printed WARNING. A branch is reported and left unprotected,
 with the reason, when the group name is not `sense:REF.PAD`, the join pad is
 missing or has no net, a member is not a track or via on the board, member
 copper is on another net, member copper does not touch the join pad, a sense
