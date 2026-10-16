@@ -286,7 +286,7 @@ layers only.
 | `board_outline` | List[Tuple[float, float]] | Outline polygon for non-rectangular boards (empty if rectangular) |
 | `board_cutouts` | List[List[Tuple]] | Interior cutout polygons |
 | `stackup` | List[StackupLayer] | Physical stackup, top to bottom (empty if the board has none) |
-| `keepouts` | List[dict] | KiCad keepout rule areas (board-level AND footprint-owned): `{'polygon': [...], 'holes': [...], 'layers': set, 'tracks_allowed': bool, 'vias_allowed': bool, 'copper_pour_allowed': bool, 'in_footprint': bool}` |
+| `keepouts` | List[dict] | KiCad keepout rule areas (board-level AND footprint-owned): `{'polygon': [...], 'holes': [...], 'layers': set, 'tracks_allowed': bool, 'vias_allowed': bool, 'copper_pour_allowed': bool, 'in_footprint': bool, 'name': str}` (`name` is the area's `(name ...)`, `''` without one: a `.kicad_dru` area predicate names it) |
 | `pad_to_paste_clearance`, `pad_to_paste_clearance_ratio` | float | The board-level paste margin and ratio from `(setup ...)`, the last term of a pad's paste-margin resolution (#962) |
 | `via_protection_setup` | Dict[str, str] | The board's via protection policy, `{token: inner}` for all five tokens (`tenting`, `covering`, `plugging`, `capping`, `filling`), canonicalised from KiCad 10's per-token form and the legacy `(tenting front back)` form; a token the board does not declare takes KiCad's factory value (#962) |
 

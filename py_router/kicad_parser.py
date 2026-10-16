@@ -826,7 +826,7 @@ class BoardInfo:
     # inside the panel frame -- dropping it outright let the router lay copper
     # straight across the milled gap between the two keyboard halves (85 items).
     board_edge_contours: List[List[Tuple[float, float]]] = field(default_factory=list)
-    keepouts: List[dict] = field(default_factory=list)  # Keep-out rule areas: {polygon, layers:set, tracks_allowed, vias_allowed, copper_pour_allowed}
+    keepouts: List[dict] = field(default_factory=list)  # Keep-out rule areas: {polygon, layers:set, tracks_allowed, vias_allowed, copper_pour_allowed, name}
     # Smallest copper clearance any routing step actually used on this board this
     # run -- e.g. a fine-pitch tap that escalated below the nominal --clearance.
     # None until a step records one. Routers fold this into the .kicad_pro DRC
@@ -6945,7 +6945,10 @@ def extract_keepouts(content: str) -> List[dict]:
     — e.g. an antenna-flange RF clearance. Returns a list of dicts:
         {polygon: [(x,y),...], layers: set(layer_names),
          tracks_allowed: bool, vias_allowed: bool, copper_pour_allowed: bool,
-         in_footprint: bool}
+         in_footprint: bool, name: str}
+    `name` is the area's `(name ...)` ('' when it has none): a .kicad_dru
+    condition names the area it restricts (`A.intersectsArea('corridor')`),
+    and an area that allows everything can still be one (net_keepouts).
     """
     keepouts = []
     for zc, in_footprint in _iter_zone_blocks(content):
@@ -7009,10 +7012,14 @@ def extract_keepouts(content: str) -> List[dict]:
             search = p_end + 1
         if not polys:
             continue
+        # The zone's own (name "..."): the first one in the block -- no
+        # sub-clause of a zone carries a (name ...) of its own.
+        nm = re.search(r'\(name\s+"((?:[^"\\]|\\.)*)"\s*\)', zc)
         keepouts.append({'polygon': polys[0], 'holes': polys[1:], 'layers': layers,
                          'tracks_allowed': tracks_allowed, 'vias_allowed': vias_allowed,
                          'copper_pour_allowed': copper_pour_allowed,
-                         'in_footprint': in_footprint})
+                         'in_footprint': in_footprint,
+                         'name': nm.group(1).replace('\\"', '"') if nm else ''})
     return keepouts
 
 

@@ -194,6 +194,31 @@ the pad-entry stretch a wide rail cannot keep into a narrow pin. A longer neck
 fails the edge. A power net's under-width copper is recorded like any other
 narrowing (below), so `--strict-sizes` still sees it.
 
+**Net-filtered keep-outs.** A KiCad rule area has no net dimension, so a
+region only some nets may cross is a NAMED rule area plus a `.kicad_dru` rule
+whose condition names it, e.g.
+`(rule "corridor" (constraint disallow track via) (condition "A.intersectsArea('corridor') && A.NetName != 'GND'"))`.
+Every routing step reads such rules from the board's own `.kicad_dru` (no flag,
+no GUI control: as for the per-layer rules, the rules file is the single source
+of truth) and keeps each net the rule binds out of the area while that net
+routes; the nets it exempts route through. The bound nets are the rule's own
+condition evaluated per net (net name, net class, item type, layer), separately
+for tracks (`track`) and vias (`via`, `through_via`); a diff pair is bound when
+either member is, and its members' copper, not just its centreline, is kept out.
+`insideArea`, `intersectsArea` and `enclosedByArea` are read (the last as
+`intersectsArea`, which keeps out more than KiCad requires). The console says
+`.kicad_dru rule 'corridor': honoured as a net-filtered keep-out: N of M net(s)
+kept out of 'corridor' (tracks, vias)`. A rule the tool cannot model completely
+-- one with another constraint beside `disallow`, one that forbids an item
+outside every named area (`!A.intersectsArea(...)`), one that combines areas
+other than as a union (`a && b`), or one naming no area the board has -- stays
+`NOT honoured` and is listed in `design_rules.unsupported_rules`; nothing of it
+is applied. The run ends with an audit of the board it ships: bound-net copper
+inside a region (from a path that does not stamp the region, such as the plane
+finalize's taps and joins, or already in the input) is printed and reported as
+`net_keepouts` in `JSON_SUMMARY` / `--json-out` and the GUI's results (`[]` =
+clean; absent when the board has no such rule).
+
 **Disclosure.** Every descent is recorded and reported three ways: the
 `JSON_SUMMARY` block `design_rules` (policy, tier, the board floors read, every
 narrowing with net / kind / requested / delivered / site, the fab-tier escalation

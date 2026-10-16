@@ -1104,10 +1104,17 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     # #498: per-layer .kicad_dru clearance rules, installed engine-side so the
     # GUI inherits them with no wiring (see kicad_dru.install_layer_clearances).
     from kicad_dru import install_layer_clearances, install_track_clearances
-    install_layer_clearances(config, layer_clearances, input_file, pcb_data)
+    install_layer_clearances(config, layer_clearances, input_file, pcb_data,
+                             net_keepouts=True)
     # Track-scoped .kicad_dru rules (#735; raise-only on seg-vs-seg stamps).
     install_track_clearances(config, track_clearances, input_file, pcb_data,
                              routed_net_ids=[nid for _, nid in net_ids])
+    # Net-filtered keep-outs: the .kicad_dru `disallow` rules on a named rule
+    # area, derived with config.rules (net_keepouts.derive_area_keepouts) and
+    # stamped per pair while a bound member routes. Set on every run: the
+    # GUI's Differential tab hands each run the same PCBData.
+    from net_keepouts import attach as _nk_attach
+    _nk_attach(pcb_data, getattr(getattr(config, 'rules', None), 'net_keepouts', None))
 
     # Upfront layer swap optimization: analyze all diff pairs and apply beneficial swaps
     # BEFORE MPS ordering, so ordering sees correct segment layers
@@ -1945,6 +1952,14 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     _ka = disclose_keep_away(pcb_data, config)
     if _ka is not None:
         summary['keep_away'] = _ka
+    # Net-filtered keep-outs: bound-net copper inside a region on the routed
+    # board (absent when the run has none; route.py reports the same key).
+    from net_keepouts import audit as _nk_audit, format_audit as _nk_format
+    _nk_found = _nk_audit(pcb_data, pcb_data.segments, pcb_data.vias)
+    if _nk_found is not None:
+        summary['net_keepouts'] = _nk_found
+        print(f"{RED}{_nk_format(_nk_found, 'the routed board')}{RESET}"
+              if _nk_found else _nk_format(_nk_found, 'the routed board'))
     try:                       # #653: env knobs into the machine-readable
         import env_knobs as _ek653   # summary, so a harness can detect a
         summary['env_knobs'] = _ek653.active_env_knobs()   # dirty baseline
@@ -1979,6 +1994,9 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
             # #1146: the nets JSON_SUMMARY['keep_away'] lists as left inside
             # a band, one dict per net (empty without a rule).
             'keep_away': keep_away_entries(summary.get('keep_away')),
+            # Net-filtered keep-outs: JSON_SUMMARY['net_keepouts'] (None
+            # without a keep-out, [] when the copper is clean).
+            'net_keepouts': summary.get('net_keepouts'),
             # successful/failed only count pairs that were coupled-routed or
             # outright failed -- pairs deferred to the single-ended pass
             # (electrically short, or coupled route failed), and pairs

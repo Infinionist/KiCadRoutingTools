@@ -20,6 +20,7 @@ from connectivity import (
 from obstacle_map import check_line_clearance
 from geometry_utils import simplify_path, segments_intersect_tuple
 from net_queries import resolve_gnd_net_id, resolve_return_net_id
+from net_keepouts import stamping as _nk_stamping
 # Note: Layer switching is now done upfront in route.py, not during routing
 
 # Import Rust router
@@ -2850,6 +2851,11 @@ def _pad_obstacle_segments(pad, layer_names):
                     width=a[4], layer=L, net_id=pad.net_id) for L in cu]
 
 
+# Net-filtered keep-outs: the hybrid's coupled middle is laid for BOTH members,
+# so a region binding either is stamped into its map at the centreline
+# geometry, as for the standard route (its legs stamp their own net, above).
+@_nk_stamping(lambda a: (a['diff_pair'].p_net_id, a['diff_pair'].n_net_id),
+              lambda a: (a['obstacles'],), centerline=True)
 def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_names,
                                  leg_obstacles=None, endpoints=None, terminal_pads=None):
     """Hybrid coupled middle (last resort): route a clean parallel P/N pair
@@ -3880,6 +3886,9 @@ def _terminal_island_taps(term_xy, own_segs, own_vias, coord, layer_names):
     return get_all_segment_tap_points(isl_s, coord, layer_names, vias=isl_v)
 
 
+# Net-filtered keep-outs (net_keepouts.py): a hybrid leg is ONE net's track,
+# laid on its own map, so the regions binding that net are stamped into it.
+@_nk_stamping(lambda a: (a['net_id'],), lambda a: (a['obstacles'],))
 def _route_hybrid_leg(pcb_data, net_id, config, obstacles, layer_names, coord,
                       mid_pt, term, partner_segs, partner_vias, pair_vias,
                       partner_pads=None, mid_vias=None,
@@ -4288,6 +4297,31 @@ def seam_reask_chain_leg(pcb_data, pair, config, leg_obstacles, layer_names,
 
 
 def route_diff_pair_with_obstacles(pcb_data: PCBData, diff_pair: DiffPairNet,
+                                    config: GridRouteConfig,
+                                    obstacles: GridObstacleMap,
+                                    *args, **kwargs) -> Optional[dict]:
+    """Route a differential pair; see `_route_diff_pair_with_obstacles_impl`.
+
+    Net-filtered keep-outs binding EITHER member are stamped for the
+    duration of the route (the pair is laid as one centreline, so a region
+    forbidden to one member is forbidden to the pair) and removed afterwards
+    -- into the pair map at the centreline geometry (centerline_config), and
+    into `base_obstacles`, the map the terminal connectors are checked
+    against (_try_route_direction), at the plain one: a connector is one
+    member's track."""
+    if not getattr(pcb_data, '_net_keepouts', None):
+        return _route_diff_pair_with_obstacles_impl(pcb_data, diff_pair, config, obstacles,
+                                                    *args, **kwargs)
+    from net_keepouts import stamp as _nk_stamp, centerline_config
+    pair = (diff_pair.p_net_id, diff_pair.n_net_id)
+    base = args[0] if args else kwargs.get('base_obstacles')
+    with _nk_stamp(obstacles, pcb_data, pair, centerline_config(config)), \
+            _nk_stamp(None if base is obstacles else base, pcb_data, pair, config):
+        return _route_diff_pair_with_obstacles_impl(pcb_data, diff_pair, config, obstacles,
+                                                    *args, **kwargs)
+
+
+def _route_diff_pair_with_obstacles_impl(pcb_data: PCBData, diff_pair: DiffPairNet,
                                     config: GridRouteConfig,
                                     obstacles: GridObstacleMap,
                                     base_obstacles: GridObstacleMap = None,
