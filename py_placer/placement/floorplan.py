@@ -232,13 +232,16 @@ _BLOCK_KEYS = {'name', 'group', 'refs', 'zone', 'side', 'exclusive',
 _ARRAY_KEYS = {'name', 'members', 'serves', 'order', 'rotation', 'pitch_mm',
                'axis', 'allow_mixed', 'why', 'note', 'source', 'context'}
 #: #1054. An exact pose a part is to be seated at. `basis` says whose fact it
-#: is: `declared` (the design brief) or `mechanical` (mechanical.json).
-#: `rot`/`side` may be `"unknown"`; absent means nobody said.
+#: is: `declared` (the design brief), `mechanical` (mechanical.json), or
+#: `derived_default` -- nobody's: a pose a planner chose because nothing
+#: declared one (`plan_regions.py`'s mounting holes at the board corners,
+#: `placement/mount_holes.py`). `rot`/`side` may be `"unknown"`; absent
+#: means nobody said.
 #: `accept_courtyard_overlap` (#1060): the refs whose COURTYARD this pose may
 #: overlap -- a named waiver, carrying its `why`, of courtyard overlap only.
 _FIXED_POSE_KEYS = {'ref', 'x', 'y', 'rot', 'side', 'basis', 'why',
                     'context', 'accept_courtyard_overlap'}
-_FIXED_POSE_BASES = ('declared', 'mechanical')
+_FIXED_POSE_BASES = ('declared', 'mechanical', 'derived_default')
 #: #837. The board-level assembly policy: which faces the fab will populate.
 #: `blocks[].side` is a claim about ONE subsystem; this is a claim about the
 #: whole board, and it is the thing `options.grow_board` needed and could not

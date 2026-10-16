@@ -33,6 +33,18 @@ parts it seats; a block left empty is dropped. The load caps go into
 into their partner's group before planning was measured and REPLANS the
 board: on ch32v003_usb the ui group lost its south-edge strip and routed
 vias went 48 -> 70.
+It writes the INDICATOR BANKS (`placement/group_rows.py`): each LED with
+its own series resistor, the LEDs of one rail in one group's region, as one
+`arrays[]` row alternating LED and resistor -- split into the fewest rows
+side by side when one row does not fit its zone's free space at the
+seeder's pitch, and left out when no split fits (`--no-arrays` writes none).
+
+It also places the MOUNTING HOLES nobody locked, on a pile with four holes
+(`placement/mount_holes.py`): each at the legal pose nearest a free board
+corner, written as a `fixed_poses[]` row of basis `derived_default`, which
+the seeder seats and locks before any group. Such a hole is zoned in no
+block, and the tool says it was not locked (`--no-mount-holes` writes none).
+
 Then grade the plan before any part moves:
 
     python3 py_tools/check_floorplan.py board.kicad_pcb --intent regions_intent.json --plan-only
@@ -63,10 +75,11 @@ DEFAULT_TOLERANCE_MM = 0.5
 
 
 def build_intent(base, doc, plan, conflicts, tolerance, claims=(), exempt=(),
-                 followers=()):
+                 followers=(), fixed=()):
     """`base` with the planned zones as blocks, the conflicting caps and
-    `exempt` exempt from the decap rule, and `claims` appended to
-    `proximity[]`. `followers` (claim subjects) are left out of every block,
+    `exempt` exempt from the decap rule, `claims` appended to `proximity[]`
+    and `fixed` (`fixed_poses[]` rows) to `fixed_poses[]`. `followers`
+    (claim subjects) and the fixed rows' refs are left out of every block,
     and a block they empty is dropped."""
     if base:
         out = copy.deepcopy(base)
@@ -74,12 +87,13 @@ def build_intent(base, doc, plan, conflicts, tolerance, claims=(), exempt=(),
         from placement.floorplan import KIND, SCHEMA_VERSION
         out = {'schema': SCHEMA_VERSION, 'kind': KIND, 'units': 'mm'}
     planned = set(plan['zones'])
+    unzoned = set(followers) | {f['ref'] for f in fixed}
     blocks = [b for b in (out.get('blocks') or []) if b.get('name') not in planned]
     roles = {g['name']: g for g in doc['groups']}
     for name in [g['name'] for g in doc['groups'] if g['name'] in planned]:
         z = plan['zones'][name]
         g = roles[name]
-        refs = [r for r in z['refs'] if r not in set(followers)]
+        refs = [r for r in z['refs'] if r not in unzoned]
         if not refs:
             continue
         blocks.append({
@@ -96,11 +110,120 @@ def build_intent(base, doc, plan, conflicts, tolerance, claims=(), exempt=(),
     out['blocks'] = blocks
     if claims:
         out['proximity'] = list(out.get('proximity') or []) + [dict(c) for c in claims]
+    if fixed:
+        out['fixed_poses'] = list(out.get('fixed_poses') or []) + [dict(f) for f in fixed]
+        # fixed_poses[] is a schema-7 key
+        out['min_reader'] = max(int(out.get('min_reader') or 0), 7)
     exempt_caps = sorted({c['cap'] for c in conflicts} | set(exempt))
     if exempt_caps and out.get('decaps'):
         ex = list(out['decaps'].get('exempt') or [])
         out['decaps']['exempt'] = ex + [c for c in exempt_caps if c not in ex]
     return out
+
+
+def mount_hole_rows(pcb, board, intent_path, base):
+    """`(rows, notes)`: a `fixed_poses[]` row of basis `derived_default` for
+    each mounting hole `placement/mount_holes.py` seats at a board corner,
+    and its notes. A hole the input intent already places -- a fixed pose,
+    an edge connector, a `must_lock` match -- is not this default's; the
+    input intent binds the corner search as it binds the seat."""
+    import fnmatch
+    from placement.mount_holes import corner_hole_poses
+    base = base or {}
+    claimed = {str(f.get('ref')) for f in base.get('fixed_poses') or []}
+    claimed |= {str(c.get('ref')) for c in base.get('edge_connectors') or []}
+    pats = [str(p) for p in base.get('must_lock') or []]
+    claimed |= {r for r in pcb.footprints
+                if any(fnmatch.fnmatchcase(r, p) for p in pats)}
+    loaded = None
+    if intent_path:
+        from placement import floorplan
+        loaded = floorplan.load_intent(intent_path)
+    poses, notes = corner_hole_poses(pcb, board, claimed=claimed, intent=loaded)
+    rows = [{'ref': p['ref'], 'x': p['x'], 'y': p['y'], 'rot': p['rot'],
+             'basis': 'derived_default',
+             'why': ("mounting hole nobody placed: the legal pose nearest a "
+                     "free board corner, where humans put a four-hole "
+                     "board's holes (placement/mount_holes.py)"),
+             'context': {'planned_by': 'plan_regions.py',
+                         'corner': p['corner']}} for p in poses]
+    return rows, notes
+
+
+#: The grid `fit_banks` asks a row's fit on (mm).
+FIT_GRID_MM = 0.05
+
+
+def fit_banks(pcb, board, intent, banks, holes):
+    """`(rows, notes)`: each bank laid in its region by
+    `group_rows.split_bank` -- whole when a row of it fits the free space of
+    its zone (plus tolerance), else as the fewest rows that fit side by side,
+    else left out. Free space is the SEEDER's, which is what has to seat the
+    row (`regions.FitChecker` over the obstacles `seeder._overlap_rejector`
+    reads: a locked part's courtyard on its own face, its drilled-pad boxes
+    on the other, the mounting holes at their poses, no container); a row's
+    size is the seeder's too (`seeder.row_block`: the auto pitch, at 0 or 90
+    degrees, along either axis), the rows `clearance` apart."""
+    from list_nets import board_floor_knobs
+    import pose_score
+    from placement.group_rows import split_bank
+    from placement.legality import far_boxes
+    from placement.regions import FitChecker
+    from placement.seeder import _materialise_rotation, row_block
+    clearance, edge, _ = board_floor_knobs(board)
+    state = pose_score.make_state(pcb, board, clearance=clearance,
+                                  board_edge_clearance=edge, grid_step=0.1)
+    seated = {h['ref'] for h in holes}
+    for h in holes:
+        if h['ref'] in state.parts:
+            state.apply_move(h['ref'], h['x'], h['y'], h['rot'])
+    obstacles = {'F': [], 'B': []}
+    for ref, p in state.parts.items():
+        if not (p.locked or ref in seated) or ref in state.container_refs:
+            continue
+        for side in ('F', 'B'):
+            if p.side == side:
+                obstacles[side].append(p.rect())
+            elif p.has_tht:
+                obstacles[side].extend(far_boxes(p.tht_rect()))
+    # A finer grid than the plan's: a row can fill its zone (plus tolerance)
+    # to within 0.2 mm (ch32v006_dev's), and the plan's 0.25 mm cells lose
+    # up to one cell at each end of the window.
+    checker = FitChecker(pcb, board, grid=FIT_GRID_MM, edge_clearance=edge,
+                         obstacles=obstacles)
+    block_of = {r: b for b in intent.get('blocks') or [] if b.get('zone')
+                for r in b.get('refs') or []}
+    out, notes = [], []
+    for row in banks:
+        b = block_of.get(row['members'][0])
+        if b is None:
+            out.append(row)
+            continue
+        z, tol = b['zone'], float(b.get('tolerance_mm') or 0.0)
+        rect = (z[0] - tol, z[1] - tol, z[2] + tol, z[3] + tol)
+        side = b.get('side') or 'F'
+        for m in row['members']:
+            for rot in (0.0, 90.0):
+                _materialise_rotation(state.parts[m], rot)
+
+        def fits(rows, rect=rect, side=side):
+            for rot in (0.0, 90.0):
+                for axis in ('x', 'y'):
+                    dims = [row_block(state, r, rot, axis) for r in rows]
+                    width = (sum(d[1] for d in dims)
+                             + (len(rows) - 1) * state.clearance)
+                    if checker.fits(rect, side, max(d[0] for d in dims), width):
+                        return True
+            return False
+        got = split_bank(row, fits)
+        if not got:
+            notes.append(f"indicator bank {row['name']}: no row of it fits "
+                         f"its region -- left out")
+        elif len(got) > 1:
+            notes.append(f"indicator bank {row['name']}: its region holds it "
+                         f"only as {len(got)} rows side by side")
+        out.extend(got)
+    return out, notes
 
 
 def indicator_banks(pcb, intent, followers=()):
@@ -217,6 +340,11 @@ def main(argv=None):
                     help="write no indicator banks: rows that alternate each "
                          "LED with its own series resistor, for LEDs on one "
                          "rail in one group's region (placement/group_rows.py)")
+    ap.add_argument('--no-mount-holes', action='store_true',
+                    help="write no default poses for unlocked mounting holes "
+                         "(placement/mount_holes.py: on a pile with four holes, "
+                         "each unlocked one at the legal pose nearest a free "
+                         "board corner)")
     ap.add_argument('--no-crystals', action='store_true',
                     help="write no crystal claims (placement/crystals.py): each "
                          "crystal at its IC's oscillator pins and each load cap "
@@ -243,16 +371,22 @@ def main(argv=None):
     followers = sorted(follower_roots(claims + new_claims))
     load_caps = [r['ref'] for r in new_claims
                  if (r.get('context') or {}).get('role') == 'crystal load cap']
+    holes, hole_notes = [], []
+    if not a.no_mount_holes:
+        holes, hole_notes = mount_hole_rows(pcb, a.board, a.intent, base)
     plan = regions.plan(pcb, a.board, doc, grid=a.grid, util=a.util,
-                        gutter=a.gutter, edge_clearance=edge, seed=a.seed)
+                        gutter=a.gutter, edge_clearance=edge, seed=a.seed,
+                        placed={h['ref']: (h['x'], h['y'], h['rot']) for h in holes})
     conflicts = [c for c in decap_conflicts(doc, BoardView(pcb))
                  if c['cap'] not in set(followers)]
     intent = build_intent(base, doc, plan, conflicts, a.tolerance,
                           claims=new_claims, exempt=load_caps,
-                          followers=followers)
-    banks, banks_dropped = [], []
+                          followers=followers, fixed=holes)
+    banks, banks_dropped, bank_notes = [], [], []
     if not a.no_arrays:
         banks, banks_dropped = indicator_banks(pcb, intent, followers)
+        if banks:
+            banks, bank_notes = fit_banks(pcb, a.board, intent, banks, holes)
         if banks:
             intent['arrays'] = list(intent.get('arrays') or []) + banks
             intent['min_reader'] = max(int(intent.get('min_reader') or 0), 7)
@@ -287,9 +421,25 @@ def main(argv=None):
               f"their proximity claims govern them)")
     for r in banks:
         print(f"  indicator bank {r['name']}: {', '.join(r['members'])}")
+    for line in bank_notes:
+        print(f"  {line}")
     for d in banks_dropped:
         print(f"  indicator bank {d['name']}: left out {d['members']}"
               + (' -- bank dropped' if d.get('row_dropped') else ''))
+    if holes:
+        print(f"  WARN  mounting hole(s) {', '.join(h['ref'] for h in holes)} "
+              f"not locked: a hole's pose is a mechanical decision. Seated by "
+              f"default at the board corners (fixed_poses, basis "
+              f"derived_default): "
+              + '; '.join(f"{h['ref']} {h['context']['corner']} "
+                          f"({h['x']:g}, {h['y']:g})" for h in holes)
+              + ". Where the enclosure puts them elsewhere, lock them there "
+                "and plan again:")
+        print("        python3 -X utf8 py_placer/place_pose.py BOARD OUT "
+              + ' '.join(f"set {h['ref']} X Y" for h in holes)
+              + ' lock ' + ' '.join(h['ref'] for h in holes))
+    for line in hole_notes:
+        print(f"  WARN  {line}")
     for w in plan['warnings']:
         print(f"  WARN  {w}")
     infeasible = [s for s, f_ in plan['faces'].items()
@@ -298,7 +448,8 @@ def main(argv=None):
                'infeasible_faces': infeasible,
                'decap_exempt': [c['cap'] for c in conflicts], 'out': a.out,
                'crystal_claims': len(new_claims), 'followers': followers,
-               'indicator_banks': [r['name'] for r in banks]}
+               'indicator_banks': [r['name'] for r in banks],
+               'mount_holes_at_corners': [h['ref'] for h in holes]}
     print('JSON_SUMMARY: ' + json.dumps(summary, sort_keys=True))
     return 4 if infeasible else 0
 

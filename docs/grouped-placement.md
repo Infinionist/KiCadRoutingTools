@@ -193,9 +193,9 @@ recorded chain), with the farther crystal leg pad centre to pad centre:
 
 | board | crystal leg, before | with claims | human | blocking / vias, one pass, before -> with | group by group, before -> with |
 |---|---|---|---|---|---|
-| ch32v003_usb | 25 | 6 | 0.3 s | 3.5 s | 5.3 s | 10.4 s |
-| esp_prog | 21 | 6 | 0.2 s | 2.4 s | 3.8 s | 4.1 s |
-| ch32v006_dev | 26 | 6 | 4.4 s | 5.4 s | 11.5 s | 14.9 s |
+| ch32v003_usb | 3.0-6.9 mm | 4.0-6.4 mm | 2.7 mm | 1.0 / 55.8 -> 0.2 / 64.4 | 0 / 47.6 -> 0.2 / 56.4 |
+| esp_prog | 7.3-13.5 mm | 3.1-4.9 mm | 5.5 mm | 0 / 35.0 -> 0 / 32.4 | 0 / 37.2 -> 0 / 33.4 |
+| ch32v006_dev | 6.7-12.7 mm | 3.9-9.5 mm | 4.5 mm | 0 / 58.4 -> 0 / 76.8 | 0 / 65.4 -> 0 / 70.2 |
 
 The crystals now sit where a human puts them. The routing cost is mixed:
 fewer vias on esp_prog, more on the other two, inside a seed-to-seed spread
@@ -215,7 +215,27 @@ belongs in a row. `plan_regions.py` writes each bank of them as one intent
 - **the row alternates LED and resistor**, in the LEDs' order, so each
   resistor stands beside its own LED (`allow_mixed`, order `declared`). The
   seeder seats the row whole and chooses its axis and angle; the polish moves
-  it as one piece.
+  it as one piece;
+- **the row must fit its region** (`plan_regions.fit_banks`): at the seeder's
+  own pitch, in the free space the plan planned on (its grid, the locked
+  parts and the mounting holes taken out). A bank that does not fit is
+  written as the fewest rows that do, side by side, its channels split in
+  order and balanced, two or more per row (`group_rows.split_bank`); a bank
+  no split fits is left out, with a note. Without this, such a row was
+  declared, never seated -- every member seated alone after the search ran
+  out -- and graded as an `array_formation` error. On glasgow_revC the
+  connectors J3 and J4 cut into the IO_Banks region and leave no strip the
+  16.5 mm row needs, so it is two rows of three and two LEDs, and all three
+  of the board's rows now form; tigard's 2.45 mm UI strip holds no row of
+  its bank at all. The free space is the seeder's own (a locked part's
+  courtyard on its face, its drilled pads' boxes on the other, no
+  container), on a 0.05 mm grid: a row can fill its zone to within 0.2 mm.
+- **the seeder searches the whole zone** for a zoned row: only anchors inside
+  the zone (plus tolerance), and the zone swept after the 1 mm ring, where
+  an unzoned row sweeps the board. The rings reach 30 mm from the row's
+  target, and before this a row whose only strip lay further along a long
+  zone was never found: ch32v006_dev's bank ran out of poses, and now
+  forms.
 
 Rows of like VALUE are not taken. The array detector
 (`check_floorplan --suggest-arrays`) groups parts by footprint and value, and
@@ -234,12 +254,52 @@ Measured from the same regions with and without banks, every candidate
 |---|---|---|---|---|
 | ch32v003_usb | 2 LEDs | 0 -> 0 | 60.7 -> 60.5 | 379 -> 384 mm |
 | ch32v006_dev | 2 LEDs | 0 -> 0 | 72.8 -> 70.8 | 684 -> 699 mm |
-| ft2232h_jtag | 41 | 6 | 0.4 s | 7.4 s | 9.5 s | 9.5 s |
+| ft2232h_jtag | 5 LEDs | 0 -> 0 | 92.7 -> 81.7 | 953 -> 843 mm |
 
-ft2232h_jtag's bank was better on all six candidates; the small banks are
-within the seed-to-seed spread. tigard (4 LEDs) and glasgow_revC (two banks
-of 5) were graded but not routed: a few crossings either way on tigard, and
-19% fewer crossings, one more floorplan error, on glasgow_revC.
+ft2232h_jtag's bank was better on all six candidates; ch32v003_usb's is
+within the seed-to-seed spread. ch32v006_dev's bank never formed as a row
+in that measurement (its members were seated one by one), so its row
+measured the spread too.
+
+## Mounting holes
+
+A mounting hole's position is a mechanical decision, so `/pcb-group-place`
+locks every hole before it plans. When a hole is left unlocked on a pile,
+its input pose means nothing, and the seeder used to place it like any other
+part: inside its group's region, often in the middle of the board, or off the
+board when the region had filled.
+
+Humans have one strong habit here. On the human-placed boards of stress sets
+1-30 (`tests/stress/placement_survey.py report`), all four holes sit within
+8 mm of a corner on 86 of the 125 boards with exactly four holes. On boards
+with one to three holes, or five or more, no hole count reaches 30%. So
+`plan_regions.py` acts only on a pile with exactly four holes
+(`placement/mount_holes.py`):
+
+- each unlocked hole gets a free corner (one no locked hole already holds)
+  and the legal pose nearest it, found by the seeder's own seat search. A
+  pose outside the corner's quarter of the board is refused;
+- the pose is written as a `fixed_poses[]` row of basis `derived_default`, so
+  the seeder seats and locks the hole before any group. The group-by-group
+  flow seats it in its first step;
+- the regions are planned around the holes, and no hole is zoned in a block;
+- a WARN line names the holes, with the `place_pose` command to lock them
+  where the enclosure really needs them. `--no-mount-holes` writes none.
+
+On glasgow_revC (groups by schematic sheet), from the same regions with and
+without the holes, six candidates each:
+
+| | holes unhandled | holes at the corners |
+|---|---|---|
+| one-pass candidates buildable | 0 of 3 | 3 of 3 |
+| group-by-group candidates buildable | 3 of 3 | 3 of 3 |
+| floorplan errors, one-pass / group-by-group | 107-114 / 120-128 | 105-107 / 100-107 |
+| kept candidate: errors, crossings, HPWL | 120, 4303, 6470 mm | 100, 4503, 6276 mm |
+
+Before, all four holes ended up in the board's interior. Now each stands
+6-16 mm in from its corner, beside the locked connectors that fill the
+corners there. The human put them 4 mm in, where their 10 mm hole courtyards
+overlap the connectors' courtyards.
 
 ## Time
 
@@ -251,10 +311,10 @@ checking the groups, planning the regions, the candidates through
 | board | parts | candidates | region plan | placing | total | before (f6af54ae) |
 |---|---|---|---|---|---|---|
 | soldercad_1 | 10 | 6 | 0.2 s | 1.8 s | 3.3 s | -- |
-| esp_prog | 21 | 6 | 0.2 s | 2.4 s | 4.0 s | 4.1 s |
-| ch32v003_usb | 25 | 6 | 0.3 s | 3.9 s | 5.7 s | 10.4 s |
-| ch32v006_dev | 26 | 6 | 4.4 s | 5.7 s | 11.9 s | 14.9 s |
-| ft2232h_jtag | 41 | 6 | 0.4 s | 5.7 s | 7.8 s | 9.5 s |
+| esp_prog | 21 | 6 | 0.2 s | 2.4 s | 3.8 s | 4.1 s |
+| ch32v003_usb | 25 | 6 | 0.3 s | 3.5 s | 5.3 s | 10.4 s |
+| ch32v006_dev | 26 | 6 | 4.4 s | 5.4 s | 11.5 s | 14.9 s |
+| ft2232h_jtag | 41 | 6 | 0.4 s | 7.4 s | 9.5 s | 9.5 s |
 | tigard | 92 | 6 | 1.3 s | 13.2 s | 17.9 s | 28.8 s |
 | glasgow_revC | 272 | 6 | 0.7 s | 56.5 s | 66.4 s | 114.8 s with 2 |
 

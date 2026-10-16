@@ -151,7 +151,7 @@ source, suspect, suspect_reason
 | `keep_away[]` | `rule` (ONE rule in route.py's `--keep-away` syntax, `AGGRESSOR:VICTIM:GAP`), `note`, `context`, and the compiler-written `source` (#1253; see "`keep_away[]`" below; needs `min_reader` 10) |
 | `replicate[]` | `from` (a sheet instance: its name or path, as `place_pose replicate --from` takes it), `to` (a list of them), `anchor`, `allow_net_mismatch` (`REF.PAD` entries), `only` or `skip` (refs; not both), `search_mm`, `tolerance_mm`, `why`, `note`, `context`, `source` (#1211; see "`replicate[]`" below; needs `min_reader` 11) |
 | `arrays[]` | `name`, `members` (an ORDERED list of literal refs, at least two), `serves` (a ref, or `"unknown"`), `order` (`"pin"`, `"declared"` or `"unknown"`), `rotation` (degrees, `"shared"` or `"unknown"`), `pitch_mm` (`"auto"` or mm), `axis` (`"auto"`, `"x"` or `"y"`), `allow_mixed`, `why`, `note`, `context`, and the compiler-written `source` (#1051; see "Arrays" below; needs `min_reader` 7) |
-| `fixed_poses[]` | `ref`, `x`, `y`, `rot` (degrees or `"unknown"`), `side` (`"F"`, `"B"` or `"unknown"`), `basis` (`"declared"` or `"mechanical"`), `why`, `context`, `accept_courtyard_overlap` (a list of literal refs, #1060) (#1054; see "Fixed poses" below; needs `min_reader` 7) |
+| `fixed_poses[]` | `ref`, `x`, `y`, `rot` (degrees or `"unknown"`), `side` (`"F"`, `"B"` or `"unknown"`), `basis` (`"declared"`, `"mechanical"` or `"derived_default"`), `why`, `context`, `accept_courtyard_overlap` (a list of literal refs, #1060) (#1054; see "Fixed poses" below; needs `min_reader` 7) |
 | `legality_budget` | `overlap_area`, `oob_count`, `oob_amount` (`oob_area` refused — see below) |
 | `health` | `bus_corridors`, `classes`, `block_displacement_mm`, `ignore_net_ids`, `max_fanout`, `zoned_blocks`, `affinity_exempt_nets`, `affinity_exempt_net_ids`, `plane_layers` |
 | `health.bus_corridors[]` | `name`, `nets`, `width_mm` |
@@ -368,7 +368,10 @@ and every `rigid: true` block), and
 three engines act on them. **The seeder** tries to seat each row whole (stage 2.45,
 `seeder._seat_array` -> `_seat_block`): the served part's pin order, ONE
 rotation the seeder chooses for `"shared"`/`"unknown"`, a pitch and an axis,
-searched over a capped pose count (`ARRAY_SEAT_POSE_CAP`), never a clock. A
+searched over a capped pose count (`ARRAY_SEAT_POSE_CAP`), never a clock --
+for a zoned row only anchors inside the zone (plus tolerance), which is
+swept where an unzoned row sweeps the board, so the search reaches the
+whole zone and spends nothing outside it. A
 zoned row is seated into its zone in stage 2, before the zone's other
 members but after any member at least as big as the whole row (a switch
 next to a row of 0603s gets its strip first); any other row in stage 2.4,
@@ -399,7 +402,11 @@ A `fixed_poses[]` entry is an exact pose a part is to be placed at, with
 `fixed[].pose`) or `mechanical` (`mechanical.json`, compiled by
 `check_floorplan --emit-intent` for each ref the grade anchors, unless another
 claim of the same intent already places it -- that skip is recorded in
-`context.mechanical.fixed_skipped`). Every entry is GRADED, whatever its
+`context.mechanical.fixed_skipped`), or `derived_default` -- nobody's fact: a
+pose a planner chose because nothing declared one. `plan_regions.py` writes
+one for each mounting hole a pile leaves unlocked when the board has four,
+at the legal pose nearest a free board corner (`placement/mount_holes.py`
+says why corners and why four). Every entry is GRADED, whatever its
 source: the grade compiles an anchor block `fixed:<ref>` from it with the same
 `reconcile.anchor_blocks` geometry a `mechanical.json` pose uses, and reports a
 part outside it as `zone_containment`. A ref the mechanical file itself

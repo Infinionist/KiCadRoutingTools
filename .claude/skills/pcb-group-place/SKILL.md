@@ -63,7 +63,11 @@ lock it in the same call (`... lock REF ...`). Take the pose from a design
 brief or `mechanical.json` when the board has one, from the user when they
 state it, and from the input board only when it is a believable layout (not a
 pile). Everything locked is an obstacle the region plan works around, and a
-fixed part in a group anchors that group's region.
+fixed part in a group anchors that group's region. A mounting hole left
+unlocked is named by `plan_regions.py` in a WARN line; on a pile with four
+holes it puts each at the legal pose nearest a free board corner, where
+humans put them, which is a default, not the enclosure's answer -- lock the
+holes where the enclosure needs them and plan again.
 
 Then emit the intent the seed is graded against:
 

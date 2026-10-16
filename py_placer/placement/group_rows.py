@@ -18,6 +18,9 @@ nets here:
   (`led_rows`, an `arrays[]` row with `allow_mixed`).
 
 Pose-blind, like the detector: it reads pads and nets, never a position.
+Whether a bank's row FITS its region is a geometric question for the
+caller, which `split_bank` asks through a callback: a bank too long for its
+region becomes two or more rows side by side, never a row that cannot seat.
 """
 from __future__ import annotations
 
@@ -121,6 +124,38 @@ def led_rows(pcb, zone_of: Dict[str, str]) -> List[dict]:
                          'why': (f"{len(bank)} LEDs, each beside its own series "
                                  f"resistor, on one rail: an indicator bank")})
     return rows
+
+
+def split_bank(row: dict, fits) -> List[dict]:
+    """`row` (a bank from `led_rows`) as the fewest rows that fit, or [].
+
+    `fits(rows)` -- `rows` a list of member lists -- says whether those rows,
+    laid side by side, fit where the bank goes. A whole bank that fits is
+    returned as it is. Otherwise its channels are split, in order and never
+    apart, into 2, 3, ... rows balanced to within one channel, each of two
+    channels or more (one LED is not a bank); the first split that fits is
+    returned, each row named after its first LED. None fits: []."""
+    members = list(row['members'])
+    pairs = [members[i:i + 2] for i in range(0, len(members), 2)]
+    n = len(pairs)
+    for k in range(1, n // 2 + 1):
+        sizes = [n // k + (1 if i < n % k else 0) for i in range(k)]
+        chunks, i = [], 0
+        for size in sizes:
+            chunks.append([m for p in pairs[i:i + size] for m in p])
+            i += size
+        if not fits(chunks):
+            continue
+        if k == 1:
+            return [row]
+        stem = row['name'].rsplit(':', 1)[0]
+        return [dict(row, name=f"{stem}:{c[0]}", members=c,
+                     why=(f"{len(c) // 2} LEDs, each beside its own series "
+                          f"resistor, on one rail: row {j + 1} of {k} of an "
+                          f"indicator bank its region holds only as {k} "
+                          f"rows side by side"))
+                for j, c in enumerate(chunks)]
+    return []
 
 
 def _natural(ref: str):

@@ -572,25 +572,110 @@ def _swap_leaves(t, a, b):
 # the entry point
 # ---------------------------------------------------------------------------
 
+def _occupancies(pcb, pcb_file, view, placed, cache):
+    """`(occ, blocking, placed)`: `_occupancy` of every locked part and of
+    each `placed` part at its pose (a drilled one blocking its footprint on
+    both faces); the refs that block, locked first; and `placed` less the
+    refs the board does not have or already locks."""
+    fixed = sorted(view.locked)
+    occ = {r: _occupancy(pcb, pcb_file, r, cache) for r in fixed}
+    placed = {r: pose for r, pose in (placed or {}).items()
+              if r in pcb.footprints and r not in view.locked}
+    if placed:
+        from placement import legality
+        for r, pose in placed.items():
+            rect = legality.occupancy_rect_at(pcb, r, tuple(pose),
+                                              pcb_file=pcb_file, cache=cache)
+            if rect is None:
+                continue
+            drilled = any((getattr(p, 'drill', 0) or 0) > 0
+                          and getattr(p, 'pad_type', '') != 'np_thru_hole'
+                          for p in pcb.footprints[r].pads)
+            occ[r] = (rect, rect if drilled else None)
+    return occ, fixed + sorted(r for r in placed if r in occ), placed
+
+
+def _face_obstacles(pcb, occ, blocking, side):
+    """The rects the blocking parts take on face `side`: a part's own rect on
+    its own face, its drilled pads' rect on the other."""
+    out = []
+    for r in blocking:
+        own, tht = occ[r]
+        out.append(own if footprint_side(pcb.footprints[r]) == side else tht)
+    return [o for o in out if o]
+
+
+class FitChecker:
+    """Does a block fit in a rectangle of a face's free space -- the inset
+    outline minus `obstacles` ({'F': [rect], 'B': [rect]}), by default the
+    plan's own (the locked parts and the `placed` poses)? Built once per
+    board; `fits` is a prefix-sum window test."""
+
+    def __init__(self, pcb, pcb_file, *, grid: float = 0.25,
+                 edge_clearance: float = 0.3, placed=None, obstacles=None):
+        self.pcb, self.grid = pcb, grid
+        poly = _outline(pcb, pcb_file)
+        if obstacles is None:
+            cache: Dict = {}
+            occ, blocking, _ = _occupancies(pcb, pcb_file, BoardView(pcb),
+                                            placed, cache)
+            obstacles = {side: _face_obstacles(pcb, occ, blocking, side)
+                         for side in ('F', 'B')}
+        self.grids = {} if poly is None else {
+            side: _free_grid(poly, edge_clearance, obstacles.get(side, ()), grid)
+            for side in ('F', 'B')}
+
+    def fits(self, rect, side: str, w: float, h: float) -> bool:
+        """True when a `w` x `h` block, either way round, of free cells lies
+        wholly inside `rect` on face `side`."""
+        fg = self.grids.get(side)
+        if fg is None:
+            return False
+        g = self.grid
+        j0 = max(0, int(math.ceil((rect[0] - fg.x0) / g - 1e-9)))
+        i0 = max(0, int(math.ceil((rect[1] - fg.y0) / g - 1e-9)))
+        j1 = min(fg.nx, int(math.floor((rect[2] - fg.x0) / g + 1e-9)))
+        i1 = min(fg.ny, int(math.floor((rect[3] - fg.y0) / g + 1e-9)))
+        S = fg.S
+        for bw, bh in ((w, h), (h, w)):
+            ww = int(math.ceil(bw / g - 1e-9))
+            hh = int(math.ceil(bh / g - 1e-9))
+            if i1 - i0 < hh or j1 - j0 < ww:
+                continue
+            I = np.arange(i0, i1 - hh + 1)[:, None]
+            J = np.arange(j0, j1 - ww + 1)[None, :]
+            tot = S[I + hh, J + ww] - S[I, J + ww] - S[I + hh, J] + S[I, J]
+            if (tot >= ww * hh - 1e-9).any():
+                return True
+        return False
+
+
 def plan(pcb, pcb_file: str, doc: Dict, *, grid: float = 0.25,
          util: float = 0.55, gutter: float = 0.6, edge_clearance: float = 0.3,
-         seed: int = 0, iters: Optional[int] = None) -> Dict:
+         seed: int = 0, iters: Optional[int] = None,
+         placed: Optional[Dict[str, Tuple[float, float, float]]] = None) -> Dict:
     """Plan one region per group with movable parts. Returns
-    {'zones': {group: {...}}, 'faces': {...}, 'warnings': [...]}."""
+    {'zones': {group: {...}}, 'faces': {...}, 'warnings': [...]}.
+
+    `placed` ({ref: (x, y, rot)}) names parts a fixed pose will seat there
+    before any group (plan_regions' mounting holes at the board corners):
+    each is an obstacle at that pose, like a locked part, and is no group's
+    to place or to anchor to. A drilled one blocks its footprint on the far
+    face as well (a hole's standoff and screw)."""
     view = BoardView(pcb)
     poly = _outline(pcb, pcb_file)
     if poly is None:
         raise ValueError("the board has no outline to plan regions in")
     cache: Dict = {}
     fixed = sorted(view.locked)
-    occ = {r: _occupancy(pcb, pcb_file, r, cache) for r in fixed}
+    occ, blocking, placed = _occupancies(pcb, pcb_file, view, placed, cache)
     warnings: List[str] = []
 
     # per-group inputs
     groups: Dict[str, Group] = {}
     for g in doc['groups']:
         refs = [r for r in g['refs'] if r in view.parts]
-        mov = [r for r in refs if r not in view.locked]
+        mov = [r for r in refs if r not in view.locked and r not in placed]
         fix = [r for r in refs if r in view.locked]
         if not mov:
             continue
@@ -641,11 +726,8 @@ def plan(pcb, pcb_file: str, doc: Dict, *, grid: float = 0.25,
         names = [n for n, g in groups.items() if g.side == side]
         if not names:
             continue
-        obstacles = []
-        for r in fixed:
-            own, tht = occ[r]
-            obstacles.append(own if footprint_side(pcb.footprints[r]) == side else tht)
-        fg = _free_grid(poly, edge_clearance, [o for o in obstacles if o], grid)
+        fg = _free_grid(poly, edge_clearance,
+                        _face_obstacles(pcb, occ, blocking, side), grid)
         bounds = (fg.x0, fg.y0, fg.x0 + fg.nx * grid, fg.y0 + fg.ny * grid)
         fixed_rects = {r: (occ[r][0] if footprint_side(pcb.footprints[r]) == side else occ[r][1])
                        for r in fixed}

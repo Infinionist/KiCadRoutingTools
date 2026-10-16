@@ -260,6 +260,21 @@ def main(argv=None):
         return 2
     movable = {g['name']: [r for r in g['refs'] if r in view.parts and r not in view.locked]
                for g in doc['groups']}
+    # A part with a fixed pose is seated at it exactly, by the seeder's stage
+    # 0, whatever its group -- so in the FIRST step, before any group can
+    # take the pose (plan_regions' mounting holes at the board corners). A
+    # pad-less part (an NPTH hole) is in no group's parts at all, and would
+    # otherwise never be written back from any step.
+    fixed = {str(f.get('ref')) for f in intent.get('fixed_poses') or []}
+    fixed = {r for r in fixed if r in pcb.footprints
+             and not getattr(pcb.footprints[r], 'locked', False)}
+    if fixed and order:
+        for n in movable:
+            movable[n] = [r for r in movable[n] if r not in fixed]
+        first = next((n for n in order if movable.get(n)), order[0])
+        movable[first] = movable[first] + sorted(fixed)
+        print(f"  {', '.join(sorted(fixed))}: a fixed pose, seated in the "
+              f"first step ({first!r})")
     order = [n for n in order if movable.get(n)]
     workdir = a.workdir or (os.path.splitext(a.output)[0] + '.steps')
     os.makedirs(workdir, exist_ok=True)

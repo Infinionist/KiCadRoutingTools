@@ -377,7 +377,7 @@ parts, and parts outside `seed_refs`, count as placed before stage 0):
 | 1.5 | `must_lock` parts, at their current pose where it is legal |
 | 2 | zoned blocks, packed radially from the zone centre; a declared array whose members all sit in one zoned block is seated into it whole (stage 2.45) |
 | 2.4 | declared non-zoned arrays: each row's served part, then the row (stage 2.45), each row at its members' rank. A row member is never seated alone here. The order is disclosed in the seeder's `early_order` |
-| 2.45 | one declared array as ONE row (`_seat_array` -> `_seat_block`, #1051): the served part's pin order, one rotation, one pitch, a capped pose count (`ARRAY_SEAT_POSE_CAP`). A row not seated whole goes to `array_unseated` and its members are seated one by one |
+| 2.45 | one declared array as ONE row (`_seat_array` -> `_seat_block`, #1051): the served part's pin order, one rotation, one pitch, a capped pose count (`ARRAY_SEAT_POSE_CAP`); a zoned row walks only anchors in its zone (plus tolerance) and sweeps the zone after the 1 mm ring, so a long zone is reached end to end. A row not seated whole goes to `array_unseated` and its members are seated one by one |
 | 2.5 / 2.6 | the decap-governed caps, one per supply pin; what the pin stage declines is put back into its zone. `decap_stage` says what it claimed, and why when nothing -- on an unzoned seed, that no owner IC is seated before the stage (#1053) |
 | 3 | everything else, at the nearest legal pose to its connectivity centroid |
 | 3.5 | on by default when the INPUT board is a pile (`PlacementState.pile`), off otherwise (#1105; `--decap-claim-after-ics` / `--no-decap-claim-after-ics` force it): inside stage 3, at the first scoped cap after the queue's last owner IC, the pin claim again over the owner ICs stage 3 seated (never one 2.5 served). The pile default runs the within-limit variant, undoing a seat that lands past `decaps.max_distance_mm` as the grade measures it (`DECAP_PILE_WITHIN_LIMIT`); the explicit flag runs after-ics on any input, keeping every seat it finds (`DECAP_LATE_WITHIN_LIMIT`, off). It draws no RNG, so every part seated before it -- every IC -- is seated as without it; a cap it declines keeps its own turn. Stage 3's target jitter is drawn for every queue entry before the claim or the `after_queue` reorder, so the parts seated after it are aimed exactly as without it too. `decap_stage.late` says what it did, `late.armed_by` why it ran (`pile`, `not a pile`, or `set` by the flag) and `late.variant` which variant ran. The pile default is the maintainer's call on the `decap-pile-within-limit-*` A/B rows (tests/1105_pile_ab_prereg_v2.json): it pulls decaps in on every pile, at a cost in wire length or crossings on some, which the A/B's zero-tolerance guards alone would not accept. On placed boards the `decap-*` rows rejected every variant |
@@ -803,12 +803,22 @@ python py_placer/place_groups.py fixed.kicad_pcb by_group.kicad_pcb \
   room. It writes each indicator bank -- LEDs, each with its own series
   resistor, on one rail in one group's region -- as one `arrays[]` row that
   alternates LED and resistor (`placement/group_rows.py`; `--no-arrays`
-  writes none). The board is never modified.
+  writes none) -- as the fewest rows side by side when one row does not fit
+  the free space of its zone at the seeder's pitch (`fit_banks`,
+  `regions.FitChecker`, `seeder.row_block`), and not at all when no split
+  fits. On a pile with four mounting holes it gives each hole nobody
+  locked the legal pose nearest a free board corner
+  (`placement/mount_holes.py`), as a `fixed_poses[]` row of basis
+  `derived_default`; the regions are planned around those poses, the hole is
+  zoned in no block, and the tool says the hole was not locked
+  (`--no-mount-holes` writes none). The board is never modified.
 - **`place_groups.py`** runs `place_seed --decap-owners <the group>` once per
   group on a step board:
   - the groups not yet placed are deleted, and the placed ones are locked on
     the step board only;
   - the intent is trimmed to the parts present;
+  - a part with a fixed pose is seated in the FIRST step, whatever its group
+    (and even pad-less, as an NPTH hole is), so no group takes its pose;
   - a cap is claimed only at its own group's IC, and one the pin stage
     declines is put back at that IC's supply pin, clamped into the zone.
 
@@ -1832,6 +1842,7 @@ is followed by a settle beat, so the moves only play once the camera has arrived
 | `options.py` | When a board cannot hold its parts, say so WITH THE NUMBER and the options |
 | `provenance.py` | Was every pose in this board produced by a registered engine lever? |
 | `lock_advisor.py` | Which parts should not be moved, and why (#431). Advice only |
+| `mount_holes.py` | A default pose for the mounting holes a pile leaves unlocked: on a board with exactly four holes (the human corpus puts all four within 8 mm of a corner on 86 of 125 such boards, `tests/stress/placement_survey.py`), each at the legal pose nearest a free corner, by the seeder's own seat search. `plan_regions.py` writes them as `fixed_poses[]` of basis `derived_default` |
 | `placement_state.py` | Board-state gates: unplaced, and already-routed (#431) |
 | `cli_gates.py` | argparse shared by both placement CLIs so they cannot drift |
 | `../render_placement.py` | Headless PNG stills of placement status (#431) |

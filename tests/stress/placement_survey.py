@@ -513,11 +513,15 @@ def survey(path, stress_dir=DEFAULT_STRESS):
 
     conn_rows = [{'ref': r, 'edge_mm': round(edge_d(r), 2), 'edge_n': round(edge_n(r), 3),
                   'edge_nm': round(edge_nm(r), 3), 'pads': npads(r)} for r in sorted(conns)]
-    holes = []
+    holes, holes_mm = [], []
     for r, fp in pcb.footprints.items():
         try:
             if classify_part(fp, r).name == 'mount_hole':
                 holes.append(round(min(math.dist((fp.x, fp.y), c) for c in corners) / diag, 3))
+                # the larger axis offset from its nearest corner, in mm: "within
+                # 8 mm of a corner" on both axes (placement/mount_holes.py)
+                holes_mm.append(round(min(max(abs(fp.x - c[0]), abs(fp.y - c[1]))
+                                          for c in corners), 2))
         except Exception:
             pass
 
@@ -549,6 +553,7 @@ def survey(path, stress_dir=DEFAULT_STRESS):
                          for r in allparts],
         'cond': rows_cond, 'crystals': crystals, 'esd': esd, 'leds': leds,
         'buttons': buttons, 'conns': conn_rows, 'holes_corner_n': holes,
+        'holes_corner_mm': holes_mm,
         'decap_d_pin': [d['d_pin'] for d in decaps],
         'decap_same_side': sum(1 for d in decaps if d['same_side']),
         'decap_n': len(decaps),
@@ -751,6 +756,14 @@ def report(rows, out=print):
     ho = [h for r in rows for h in r['holes_corner_n']]
     out(f"\n=== MOUNTING HOLES {len(ho)}: distance to nearest outline corner / diag {q(ho, 3)}; "
         f"<= 0.1 diag {frac(ho, lambda x: x <= .1)}")
+    by_count = {}
+    for r in rows:
+        hm = r.get('holes_corner_mm') or []
+        if hm:
+            by_count.setdefault(len(hm), []).append(all(h <= 8 for h in hm))
+    out("   boards whose holes ALL sit within 8 mm of a corner (both axes), by hole count: "
+        + '; '.join(f"{n}: {sum(v)}/{len(v)}" for n, v in sorted(by_count.items())
+                    if n <= 8))
 
     out(f"\n=== HABITS: rot multiple of 90 {q([r['rot90_frac'] for r in rows], 3)}; boards 100% "
         f"{frac([r['rot90_frac'] for r in rows], lambda x: x >= .999)}")

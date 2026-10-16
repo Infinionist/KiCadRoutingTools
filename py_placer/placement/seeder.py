@@ -1738,6 +1738,22 @@ def seat_candidates_in_box(state, tx: float, ty: float, box, *,
             yield round(tx + dx, 3), round(ty + dy, 3)
 
 
+def _box_sweep(box, tx: float, ty: float, step: float):
+    """Every `step` grid point of `box` (x0, y0, x1, y1), nearest the target
+    first: a zoned row's sweep (`_seat_block`)."""
+    nx = max(0, int((box[2] - box[0]) / step))
+    ny = max(0, int((box[3] - box[1]) / step))
+    grid = []
+    for i in range(nx + 1):
+        for j in range(ny + 1):
+            x = round(box[0] + i * step, 3)
+            y = round(box[1] + j * step, 3)
+            grid.append(((x - tx) ** 2 + (y - ty) ** 2, x, y))
+    grid.sort()
+    for _, x, y in grid:
+        yield x, y
+
+
 def _sweep_positions(state, tx: float, ty: float):
     """The whole-board sweep at FALLBACK_STEP_MM, nearest the target first."""
     u = state.usable
@@ -4778,6 +4794,24 @@ def _row_offsets(state, members: Sequence[str], rot: float, axis: str,
     return out
 
 
+def row_pitch(ext: float, clearance: float) -> float:
+    """`pitch_mm: "auto"`: the largest courtyard extent along the row plus
+    the full clearance plus `ROW_PITCH_MARGIN_MM`, rounded up to 0.01mm."""
+    return math.ceil((ext + clearance + ROW_PITCH_MARGIN_MM) * 100.0
+                     - 1e-6) / 100.0
+
+
+def row_block(state, members: Sequence[str], rot: float, axis: str
+              ) -> Tuple[float, float]:
+    """`(length, width)` of the courtyards of a row `_seat_block` seats at
+    `rot` along `axis` with the auto pitch: the members' courtyard centres
+    a pitch apart, the widest member across."""
+    ext = _row_extent(state, members, rot, axis)
+    across = _row_extent(state, members, rot, 'y' if axis == 'x' else 'x')
+    return ((len(members) - 1) * row_pitch(ext, state.clearance) + ext,
+            across)
+
+
 def _row_extent(state, members: Sequence[str], rot: float, axis: str) -> float:
     """The largest member courtyard extent ALONG the row at `rot`."""
     ext = 0.0
@@ -4839,9 +4873,8 @@ def _seat_block(state, members: Sequence[str], rot_options: Sequence[float],
         for rot in rot_options:
             for axis in axes:
                 ext = _row_extent(state, members, rot, axis)
-                pitch = (math.ceil((ext + full + ROW_PITCH_MARGIN_MM)
-                                   * 100.0 - 1e-6) / 100.0
-                         if pitch_spec == 'auto' else float(pitch_spec))
+                pitch = (row_pitch(ext, full) if pitch_spec == 'auto'
+                         else float(pitch_spec))
                 if pitch - ext < clr + 1e-6:
                     why = (f"pitch {pitch:g}mm is below the courtyard "
                            f"extent {ext:.3f}mm + clearance {clr:g} along "
@@ -4856,8 +4889,26 @@ def _seat_block(state, members: Sequence[str], rot_options: Sequence[float],
                             _row_offsets(state, order, rot, axis, pitch)))
         return got
 
-    bands = dict(seat_candidate_bands(state, target[0], target[1],
-                                      sweep=constraint is None))
+    if constraint is None:
+        bands = dict(seat_candidate_bands(state, target[0], target[1]))
+    else:
+        # A zoned row's centre is the mean of its members' courtyard centres
+        # (`_row_offsets`), so it lies in the zone, widened by the tolerance,
+        # whenever every member does: an anchor outside that box cannot seat,
+        # and is dropped without spending the cap. And the ZONE is swept
+        # where an unzoned row sweeps the board -- the rings reach 30 mm from
+        # the target, and a zone can run past that (ulx3s's 93 mm UI strip
+        # held its LED row only at the far end, which no ring reached).
+        box = (constraint[0] - tol - 1e-3, constraint[1] - tol - 1e-3,
+               constraint[2] + tol + 1e-3, constraint[3] + tol + 1e-3)
+
+        def _in_box(band):
+            return lambda: (p for p in band() if box[0] <= p[0] <= box[2]
+                            and box[1] <= p[1] <= box[3])
+        bands = {name: _in_box(band) for name, band in seat_candidate_bands(
+            state, target[0], target[1], sweep=False)}
+        bands['sweep'] = lambda: _box_sweep(box, target[0], target[1],
+                                            SEARCH_STEP_MM)
     try:
         for clr in seat_clearances(full):
             _set_seat_clearance(state, clr)
