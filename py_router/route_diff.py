@@ -469,9 +469,10 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     reset_run_ledgers(pcb_data)
     mark_input_copper(pcb_data)  # #980
     # Net-filtered keep-outs, stamped per pair while a bound member routes.
-    if net_keepouts:
-        from net_keepouts import load_net_keepouts, attach as _nk_attach
-        _nk_attach(pcb_data, load_net_keepouts(net_keepouts))
+    # Always (re)set: the GUI's Differential tab hands every run the same
+    # PCBData, so an emptied field must clear the last run's regions.
+    from net_keepouts import load_net_keepouts, attach as _nk_attach
+    _nk_attach(pcb_data, load_net_keepouts(net_keepouts) if net_keepouts else None)
     # #962: the input's vias as values, for the ship-time Type VII stamp
     from fab_notes import via_snapshot as _via_snapshot962
     _input_vias962 = _via_snapshot962(pcb_data.vias, pcb_data)  # #1171: + sites
@@ -2419,6 +2420,15 @@ Examples:
     _kae = keep_away_knob_error(args.keep_away_free, args.keep_away_cost)
     if _kae:
         parser.error(_kae)
+    # A bad --net-keepouts file is a usage error, refused before the board is
+    # parsed (the engine, which loads it, would otherwise stop mid-run with a
+    # traceback). The GUI refuses it through the same loader.
+    if args.net_keepouts:
+        from net_keepouts import load_net_keepouts
+        try:
+            load_net_keepouts(args.net_keepouts)
+        except ValueError as _nke:
+            parser.error(f"--net-keepouts: {_nke}")
     # --track-width IS the diff-pair LEG WIDTH here: when omitted, default to the
     # board's OWN Default net-class diff_pair_width (else routing_defaults), so a
     # bare diff route uses the board's own differential geometry -- parity with the

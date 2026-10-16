@@ -118,6 +118,63 @@ def test_loader_refuses_bad_entries():
         _write_keepouts([_keepout(D8_BOX, exempt=["GND"])])), "unknown key")
     assert _raises(lambda: nk.load_net_keepouts(
         _write_keepouts([_keepout([[0, 0], [1, 1]])])), "polygon")
+    # A vertex that is not a number is a polygon error, not a TypeError the
+    # GUI's refusal (which catches ValueError) would let through.
+    assert _raises(lambda: nk.load_net_keepouts(
+        _write_keepouts([_keepout([[0, 0], [1, "a"], [2, None]])])), "polygon")
+    # bool("false") is True: a quoted flag would read as its opposite.
+    assert _raises(lambda: nk.load_net_keepouts(
+        _write_keepouts([_keepout(D8_BOX, tracks="false")])), "true or false")
+    missing = os.path.join(tempfile.mkdtemp(prefix="nko_"), "missing.json")
+    assert _raises(lambda: nk.load_net_keepouts(missing), "cannot read")
+    fd, bad_json = tempfile.mkstemp(suffix=".json", prefix="nko_")
+    with os.fdopen(fd, "w") as f:
+        f.write("[{")
+    assert _raises(lambda: nk.load_net_keepouts(bad_json), "not valid JSON")
+
+
+def test_attach_none_clears_a_previous_run():
+    """The GUI hands every run the same PCBData: a run with the field emptied
+    must not keep stamping the previous run's regions."""
+    pcb = parse_kicad_pcb(BOARD)
+    d8 = next(i for i, n in pcb.nets.items() if n.name == "Net-(D8-A)")
+    cfg = GridRouteConfig()
+    cfg.layers = ["F.Cu", "B.Cu"]
+    nk.attach(pcb, [nk._validate(_keepout(D8_BOX), 0, "t")])
+    m = _Map()
+    with nk.stamp(m, pcb, (d8,), cfg):
+        assert m.cells, "control: the attached region stamps"
+    nk.attach(pcb, None)
+    with nk.stamp(m, pcb, (d8,), cfg):
+        assert not m.cells and not m.vias, "a cleared run must stamp nothing"
+
+
+def test_window_cells_do_not_leak_to_the_whole_board():
+    """A rescue window is a shallow copy sharing the whole board's cell cache;
+    its clipped raster must not be served to a whole-board route."""
+    from plane_pad_tap import make_local_window
+    pcb = parse_kicad_pcb(BOARD)
+    cfg = GridRouteConfig()
+    cfg.layers = ["F.Cu", "B.Cu"]
+    nk.attach(pcb, [nk._validate(_keepout(D8_BOX), 0, "t")])
+    # A window over the box's left edge only, computed FIRST.
+    window = make_local_window(pcb, 150.6, 77.45, 0.6)
+    assert window.__dict__.get('_net_keepout_cells') is pcb._net_keepout_cells, (
+        "precondition: the window shares the board's cache dict")
+    w_cells, _ = nk._cells_for(window, (0,), cfg)
+    b_cells, _ = nk._cells_for(pcb, (0,), cfg)
+    assert 0 < len(w_cells) < len(b_cells), (len(w_cells), len(b_cells))
+
+
+def test_cli_refuses_a_bad_file_before_routing():
+    from run_utils import check
+    bad = _write_keepouts([_keepout(D8_BOX, layer=["F.Cu"])])
+    out = os.path.join(tempfile.mkdtemp(prefix="nko_"), "out.kicad_pcb")
+    for tool in ("route.py", "route_diff.py"):
+        check([sys.executable, f"py_router/{tool}", BOARD, out,
+               "--nets", "Net-(D8-A)", "--net-keepouts", bad],
+              refuse="--net-keepouts: ", code=2)
+    assert not os.path.exists(out), "a refused run must write nothing"
 
 
 class _Map:
@@ -202,6 +259,9 @@ def test_route_respects_net_filter():
 TESTS = [
     test_binds_applies_and_exempt,
     test_loader_refuses_bad_entries,
+    test_attach_none_clears_a_previous_run,
+    test_window_cells_do_not_leak_to_the_whole_board,
+    test_cli_refuses_a_bad_file_before_routing,
     test_stamp_balances_and_skips_exempt_net,
     test_stamp_reaches_every_via_rung_at_its_own_via,
     test_route_respects_net_filter,

@@ -1783,6 +1783,10 @@ _POST_PARSE_WITNESSES = (
      'unknown group source'),
     ('_net_clearances_unreadable', 'route_diff.py a.kicad_pcb b.kicad_pcb '
      '--net-clearances {tmp}/missing.json', '--net-clearances'),
+    ('_net_keepouts_unreadable', 'route.py a.kicad_pcb b.kicad_pcb --nets X '
+     '--net-keepouts {tmp}/missing.json', '--net-keepouts'),
+    ('_net_keepouts_unreadable', 'route_diff.py a.kicad_pcb b.kicad_pcb '
+     '--net-keepouts ko.json', None, 'gone'),
     ('_planes_count_mismatch', 'route_planes.py a.kicad_pcb b.kicad_pcb '
      '--nets GND VCC --plane-layers In1.Cu', 'number of net arguments (2)'),
     ('_planes_count_mismatch', 'route_planes.py a.kicad_pcb b.kicad_pcb '

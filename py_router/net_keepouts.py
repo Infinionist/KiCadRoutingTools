@@ -40,6 +40,7 @@ from __future__ import annotations
 import contextlib
 import fnmatch
 import json
+import math
 from types import SimpleNamespace
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -49,22 +50,37 @@ import numpy as np
 #: handoff file cannot read as an honoured constraint.
 _KEYS = {'name', 'polygon', 'layers', 'tracks', 'vias', 'appliesToNets', 'exemptNets'}
 
+#: Layer tokens add_rule_area_keepout_obstacles expands (#369 A5).
+_COMPOSITE_LAYERS = {'*.Cu', 'F&B.Cu', 'F&B'}
+
 
 def load_net_keepouts(path: str) -> List[dict]:
     """Read and validate a `--net-keepouts` JSON file. Raises ValueError naming
-    the offending entry and what a valid one looks like."""
-    with open(path, 'r', encoding='utf-8') as f:
-        doc = json.load(f)
+    the file, the offending entry and what a valid one looks like -- an
+    unreadable or non-JSON file included, so a caller catches one type."""
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            doc = json.load(f)
+    except OSError as e:
+        raise ValueError(f"{path}: cannot read ({e.strerror or e})") from e
+    except ValueError as e:                      # json.JSONDecodeError
+        raise ValueError(f"{path}: not valid JSON ({e})") from e
     if not isinstance(doc, list):
-        raise ValueError(f"--net-keepouts {path}: expected a JSON array of keep-outs, "
+        raise ValueError(f"{path}: expected a JSON array of keep-outs, "
                          f"got {type(doc).__name__}")
     return [_validate(entry, i, path) for i, entry in enumerate(doc)]
+
+
+def _is_mm(v) -> bool:
+    """A finite JSON number (a bool is not one)."""
+    return (isinstance(v, (int, float)) and not isinstance(v, bool)
+            and math.isfinite(v))
 
 
 def _validate(entry, i: int, path: str) -> dict:
     """One keep-out entry, checked and normalised to the extract_keepouts dict
     shape plus its net filter."""
-    where = f"--net-keepouts {path} entry {i}"
+    where = f"{path} entry {i}"
     if not isinstance(entry, dict):
         raise ValueError(f"{where}: expected an object, got {type(entry).__name__}")
     unknown = sorted(set(entry) - _KEYS)
@@ -73,7 +89,8 @@ def _validate(entry, i: int, path: str) -> dict:
                          f"allowed: {', '.join(sorted(_KEYS))}")
     poly = entry.get('polygon')
     if (not isinstance(poly, list) or len(poly) < 3
-            or not all(isinstance(p, list) and len(p) == 2 for p in poly)):
+            or not all(isinstance(p, list) and len(p) == 2 and all(map(_is_mm, p))
+                       for p in poly)):
         raise ValueError(f"{where}: polygon must be >= 3 [x, y] vertices in mm")
     layers = entry.get('layers')
     if not isinstance(layers, list) or not layers or not all(isinstance(l, str) for l in layers):
@@ -83,8 +100,14 @@ def _validate(entry, i: int, path: str) -> dict:
     for key, val in (('appliesToNets', applies), ('exemptNets', exempt)):
         if not isinstance(val, list) or not all(isinstance(v, str) and v for v in val):
             raise ValueError(f"{where}: {key} must be a list of net-name globs")
-    tracks = bool(entry.get('tracks', True))
-    vias = bool(entry.get('vias', True))
+    # true/false only: bool("false") is True, so a quoted value would read as
+    # the opposite of what it says.
+    for key in ('tracks', 'vias'):
+        if key in entry and not isinstance(entry[key], bool):
+            raise ValueError(f"{where}: {key} must be true or false, "
+                             f"got {entry[key]!r}")
+    tracks = entry.get('tracks', True)
+    vias = entry.get('vias', True)
     return {
         'name': str(entry.get('name') or f'net_keepout_{i}'),
         'polygon': [(float(x), float(y)) for x, y in poly],
@@ -107,18 +130,31 @@ def binds(ko: dict, net_name: str) -> bool:
 
 def attach(pcb_data, keepouts: Optional[List[dict]]) -> None:
     """Record the run's net-filtered keep-outs on `pcb_data` and say which nets
-    each binds. No keep-outs leaves pcb_data untouched."""
+    each binds. No keep-outs CLEARS any a previous run attached: the GUI hands
+    every run the same long-lived PCBData, so a field emptied between two runs
+    must not leave the first run's regions stamping the second."""
     if not keepouts:
+        pcb_data.__dict__.pop('_net_keepouts', None)
+        pcb_data.__dict__.pop('_net_keepout_cells', None)
         return
     pcb_data._net_keepouts = list(keepouts)
     pcb_data._net_keepout_cells = {}
     names = {nid: n.name for nid, n in pcb_data.nets.items() if nid and n.name}
+    copper = set(getattr(pcb_data.board_info, 'copper_layers', None) or ())
     print(f"Net-filtered keep-outs: {len(keepouts)} region(s)")
     for ko in keepouts:
         exempt = sorted(n for n in names.values() if not binds(ko, n))
         shown = ', '.join(exempt[:8]) + (', ...' if len(exempt) > 8 else '')
         print(f"  {ko['name']}: {len(names) - len(exempt)} net(s) kept out, "
               f"{len(exempt)} exempt ({shown or 'none'})")
+        # A misspelt layer resolves to nothing in the keep-out rasteriser,
+        # which then blocks no track cell at all: say so rather than run as
+        # if the region were honoured on it.
+        unknown = sorted(l for l in ko['layers']
+                         if l not in copper and l not in _COMPOSITE_LAYERS)
+        if copper and unknown:
+            print(f"  WARNING: {ko['name']}: layer(s) {', '.join(unknown)} are not "
+                  f"copper layers of this board; the region blocks no track there")
 
 
 class _Recorder:
@@ -159,9 +195,16 @@ def _stamper(pcb_data, idx: Tuple[int, ...]):
 
 def _cells_for(pcb_data, idx: Tuple[int, ...], config) -> Tuple[np.ndarray, np.ndarray]:
     """(track cells (N, 3), via cells (M, 2)) keep-outs `idx` stamp at the
-    run's geometry. Cached per (binding set, geometry) on pcb_data."""
+    run's geometry. Cached per (binding set, geometry, clip) on pcb_data.
+
+    The clip (board_bounds) is part of the key because the rasteriser clips
+    to it and a rescue window (plane_pad_tap.make_local_window) is a SHALLOW
+    copy that shares this cache dict with the whole board: keyed on geometry
+    alone, a window's clipped cells would be handed to a whole-board route
+    at the same geometry, which would then see only part of the region."""
     key = (idx, config.grid_step, config.track_width, config.clearance,
-           config.via_size, config.via_drill, tuple(config.layers))
+           config.via_size, config.via_drill, tuple(config.layers),
+           getattr(pcb_data.board_info, 'board_bounds', None))
     cache: Dict = pcb_data.__dict__.setdefault('_net_keepout_cells', {})
     if key not in cache:
         rec = _Recorder()

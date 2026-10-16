@@ -1527,10 +1527,13 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         from rip_up_reroute import mark_input_copper
         mark_input_copper(pcb_data)
 
-    # Net-filtered keep-outs, stamped per net while a bound net routes.
-    if net_keepouts:
+    # Net-filtered keep-outs, stamped per net while a bound net routes. The
+    # outermost run always (re)sets them -- the GUI hands every run the same
+    # PCBData, so an emptied field must clear the last run's regions -- and a
+    # nested sub-run handed no file keeps its parent's.
+    if net_keepouts or final_reconcile:
         from net_keepouts import load_net_keepouts, attach as _nk_attach
-        _nk_attach(pcb_data, load_net_keepouts(net_keepouts))
+        _nk_attach(pcb_data, load_net_keepouts(net_keepouts) if net_keepouts else None)
 
     # KICAD_DUP_TRAP=1: report the call site that re-appends the SAME copper
     # object to pcb_data. Inert otherwise. Armed here so it covers the whole
@@ -8547,6 +8550,15 @@ For differential pair routing, use route_diff.py:
     _kae = keep_away_knob_error(args.keep_away_free, args.keep_away_cost)
     if _kae:
         parser.error(_kae)
+    # A bad --net-keepouts file is a usage error, refused before the board is
+    # parsed (the engine, which loads it, would otherwise stop mid-run with a
+    # traceback). The GUI refuses it through the same loader.
+    if args.net_keepouts:
+        from net_keepouts import load_net_keepouts
+        try:
+            load_net_keepouts(args.net_keepouts)
+        except ValueError as _nke:
+            parser.error(f"--net-keepouts: {_nke}")
 
     if args.force_reroute and not all_patterns and not component_patterns:
         parser.error("--force-reroute requires an explicit net scope "
