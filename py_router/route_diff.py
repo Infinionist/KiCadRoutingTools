@@ -782,6 +782,10 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     # track_margin channel to ride instead. Margin helpers computed against
     # this reserve are then 0 for impedance-width legs, i.e. today's behaviour.
     config_kwargs['reserve_layer_widths'] = True
+    # --no-stub-layer-swap reaches config.stub_layer_swap here too: the
+    # multipoint terminal stub switch, and the boxed-stub switch a rip-up
+    # reroute of a multi-point net can reach, read it, not enable_layer_switch.
+    config_kwargs['stub_layer_swap'] = enable_layer_switch
     # #581: an active (> 0) same-net pad via clearance keeps every placed via
     # off same-net SMD pads. Explicit --same-net-pad-clearance wins (> 0
     # activates; 0 / -1 explicitly off); unset auto-reads the record an
