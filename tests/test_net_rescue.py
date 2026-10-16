@@ -231,8 +231,22 @@ def test_rescued_power_net_keeps_its_width_where_it_fits():
     """#1033: a rescued POWER net is laid at its requested width where that
     fits and narrower only where it must -- the main router's own neck-down,
     not the whole gap at the floor width."""
+    import contextlib
+    import io
     import math
-    pcb, segs = _rescue_pinch()
+    import re
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        pcb, segs = _rescue_pinch()
+    log = buf.getvalue()
+    sys.stdout.write(log)
+    # #1283: the `rescued a gap:` line names the widths the gap's copper was
+    # emitted at -- this gap's 0.4 rail AND its pinch neck -- not the rung's
+    # signal width, which it used to print (`track 0.127`) for this very gap.
+    m = re.search(r'rescued a gap.*?track (\S+) \(', log)
+    assert m, "no `rescued a gap:` line in the rescue log"
+    logged = {float(w) for w in m.group(1).split('/')}
+    assert max(logged) == 0.4 and min(logged) < 0.2, m.group(0)
     wide = [s for s in segs if abs(s.width - 0.4) < 1e-9]
     wide_len = sum(math.hypot(s.end_x - s.start_x, s.end_y - s.start_y)
                    for s in wide)
