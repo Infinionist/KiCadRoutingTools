@@ -345,6 +345,8 @@ def identify_target_pads(
     off_board = make_off_board_test(pcb_data.board_info)
 
     for pad in pads:
+        if pad.sense:
+            continue    # #1279: a sense pad joins its net at the join pad only
         if off_board is not None and off_board(pad.global_x, pad.global_y):
             target_pads.append({
                 'pad': pad,

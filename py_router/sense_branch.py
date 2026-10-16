@@ -826,6 +826,23 @@ def stamp_plane_obstacles(obstacles, pcb_data, config, net_id: int, layers,
             obstacles.add_blocked_vias_batch(vias)
 
 
+def join_for_point(pcb_data, net_id: int, x: float, y: float, layer: str):
+    """The join pad to use instead of (x, y) on `layer`, when that point lies
+    on a protected branch of `net_id` off its join pad (member copper or a
+    sense pad), else None. KiCad's ratsnest knows nothing of the rule, so a
+    link it reports can end on the sense trace (#572 forced oracle links)."""
+    for b in protected_branches(pcb_data, net_id):
+        if _in_pad(b.join, x, y, _EPS):
+            return None
+        on = (any(s.layer == layer and _dist_seg(x, y, s.start_x, s.start_y, s.end_x, s.end_y)
+                  <= s.width / 2.0 + _EPS for s in b.segments)
+              or any(math.hypot(x - v.x, y - v.y) <= v.size / 2.0 + _EPS for v in b.vias)
+              or any(_pad_on(p, layer) and _in_pad(p, x, y, _EPS) for p in b.sense_pads))
+        if on:
+            return b.join
+    return None
+
+
 def terminal_sense_dist(pcb_data, net_id: int, x1: float, y1: float, x2: float, y2: float,
                         layer: str, half_width: float) -> float:
     """The terminal-overlap gate's half of the rule: the smallest distance

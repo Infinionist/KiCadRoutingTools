@@ -1507,6 +1507,8 @@ def find_unconnected_plane_pads(
         if off_board is not None and off_board(pad.global_x, pad.global_y):
             skipped_off_board += 1
             continue
+        if pad.sense:
+            continue    # #1279: a sense pad joins its net at the join pad only
         if pad_is_plated_through(pad):
             continue
         if '*.Cu' in pad.layers or any(zl in pad.layers for zl in zone_layers):
