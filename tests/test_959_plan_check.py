@@ -811,6 +811,84 @@ def test_plan_only_refuses_conflicting_exact_anchors():
           "reach the seeder")
 
 
+#: Two 2-pad parts, each on its own pair of nets, whose courtyard (3.0 x 1.2)
+#: encloses its pads (0.8 x 0.8 at x = +-0.9). `%(side)s` puts a part on a face.
+PAIR_BOARD = '''(kicad_pcb
+ (version 20241229)
+ (net 0 "") (net 1 "/A") (net 2 "/B") (net 3 "/C") (net 4 "/D")
+ (layers (0 "F.Cu" signal) (31 "B.Cu" signal))
+ (gr_rect (start 0 0) (end 30 20) (layer "Edge.Cuts") (uuid "e1"))
+%s)
+'''
+PAIR_FP = ('''  (footprint "t:R" (layer "%(side)s.Cu") (uuid "fp-%(r)s") (at %(x)s 5)
+   (property "Reference" "%(r)s" (at 0 0 0))
+   (fp_rect (start -1.5 -0.6) (end 1.5 0.6) (layer "%(side)s.CrtYd") (uuid "c-%(r)s"))
+   (pad "1" smd rect (at -0.9 0) (size 0.8 0.8) (layers "%(side)s.Cu") (net %(a)s "/%(na)s") (uuid "%(r)s1"))
+   (pad "2" smd rect (at 0.9 0) (size 0.8 0.8) (layers "%(side)s.Cu") (net %(b)s "/%(nb)s") (uuid "%(r)s2"))
+  )
+''')
+
+
+def _pair_board(tmp, side2='F'):
+    parts = (PAIR_FP % dict(r='R1', x=25, a=1, na='A', b=2, nb='B', side='F')
+             + PAIR_FP % dict(r='R2', x=5, a=3, na='C', b=4, nb='D',
+                              side=side2))
+    path = os.path.join(tmp, f'pair_{side2}.kicad_pcb')
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write(PAIR_BOARD % parts)
+    return path
+
+
+def _pair_conflicts(board, x2, waive=False):
+    """`plan_fixed_pose_conflict` findings for R1 declared at (10, 10) and R2
+    at (x2, 10), R1's entry waiving R2's courtyard when `waive`."""
+    r1 = {'ref': 'R1', 'x': 10.0, 'y': 10.0, 'rot': 0, 'basis': 'declared'}
+    if waive:
+        r1.update(accept_courtyard_overlap=['R2'],
+                  why='the two parts share a keep-out by design')
+    it = fp.intent_from_dict(_raw(fixed_poses=[
+        r1, {'ref': 'R2', 'x': x2, 'y': 10.0, 'rot': 0,
+             'basis': 'declared'}]), '')
+    found, _measured = fp.plan_check(
+        it, parse_kicad_pcb(board), board, group_sources=(),
+        clearance=0.2, board_edge_clearance=0.1)
+    return [v for v in found if v.rule == 'plan_fixed_pose_conflict']
+
+
+def test_plan_check_refuses_a_pair_of_contradictory_fixed_poses():
+    """Preflight must compare exact anchors with the same geometry stage 0
+    uses. Two same-face declarations at one pose are impossible and refuse
+    before seeding; two SMD parts on opposite faces may share that pose."""
+    with tempfile.TemporaryDirectory() as tmp:
+        clashes = _pair_conflicts(_pair_board(tmp), 10.0)
+        assert len(clashes) == 1 and clashes[0].severity == fp.ERROR, clashes
+        assert clashes[0].measured['pair'] == ['R1', 'R2'], clashes[0]
+        assert 'R1' in clashes[0].message and 'R2' in clashes[0].message
+        assert not _pair_conflicts(_pair_board(tmp, side2='B'), 10.0)
+    print("  PASS: plan_check refuses one same-face fixed-pose clash and "
+          "permits the same SMD pose across opposite faces")
+
+
+def test_a_courtyard_waiver_licenses_the_courtyards_only():
+    """Stage 0's #1060 waiver, honoured the way stage 0 honours it. R2 at
+    x = 12.9 overlaps R1's courtyard by 0.1 x 1.2 mm while their pads keep
+    0.3 mm: refused, and licensed by `accept_courtyard_overlap`. At x = 11.5
+    the pads short, which no courtyard waiver licenses."""
+    with tempfile.TemporaryDirectory() as tmp:
+        board = _pair_board(tmp)
+        bare = _pair_conflicts(board, 12.9)
+        assert len(bare) == 1, bare
+        assert 'courtyard overlaps R2' in bare[0].measured['reason'], bare
+        assert 'pad' not in bare[0].measured['reason'], bare
+        assert not _pair_conflicts(board, 12.9, waive=True)
+        shorted = _pair_conflicts(board, 11.5, waive=True)
+        assert len(shorted) == 1, shorted
+        assert "pads short R2's" in shorted[0].measured['reason'], shorted
+        assert 'courtyard' not in shorted[0].measured['reason'], shorted
+    print("  PASS: the waiver licenses a courtyard-only clash; shorted pads "
+          "are refused under it")
+
+
 def test_plan_check_refuses_no_emitted_corpus_intent():
     """The control: every tracked board's own emitted intent is a plan the
     board satisfies, so plan_check must refuse none of them. (The half that
@@ -1055,6 +1133,8 @@ TESTS = [
     test_plan_only_on_a_pile,
     test_plan_only_on_a_true_pile_and_its_exit_4,
     test_plan_only_refuses_conflicting_exact_anchors,
+    test_plan_check_refuses_a_pair_of_contradictory_fixed_poses,
+    test_a_courtyard_waiver_licenses_the_courtyards_only,
     test_plan_check_refuses_no_emitted_corpus_intent,
 ]
 
