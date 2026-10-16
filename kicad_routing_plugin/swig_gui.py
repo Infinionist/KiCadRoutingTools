@@ -2079,6 +2079,9 @@ class RoutingDialog(wx.Dialog):
                 'clamp_netclasses': self._ceiling_on(),
                 'fab_tier': self.fab_tier.GetString(self.fab_tier.GetSelection()),
                 'fab_overrides_path': self.fab_overrides_path.GetValue().strip(),
+                # route_planes.py --net-clearances: the Advanced tab's Net
+                # Clearances File reaches the plane taps and GND vias too.
+                'net_clearances_path': self.net_clearances_path.GetValue().strip(),
                 'escalation': self._escalation_policy(),
                 'board_floors': self._board_floor_dict(),
                 # #1262: what KiCad grades a Default net at when the DRC

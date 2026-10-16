@@ -633,10 +633,11 @@ assert config.obstacle_clearance(some_default_net) == 0.15  # not in the map -> 
 - The map is **auto-read** from the sibling `.kicad_pro` netclasses by `route.py` /
   `route_diff.py` / the fanout and plane CLIs (and inside `batch_route` for any other
   caller). Only non-Default classes appear, so an all-Default board yields `{}`.
-  Supply `--net-clearances <json>` (net name → mm) to override. The GUI derives the
+  Supply `--net-clearances <json>` (net name → mm) to override (`route.py`,
+  `route_diff.py`, `route_planes.py`). The GUI derives the
   same map from the live board, and the Advanced tab's **Net Clearances File** is
-  `--net-clearances` there: the Route and Differential tabs then use the file's map
-  instead, read through the same `list_nets.load_net_clearances`.
+  `--net-clearances` there: the Route, Differential and Planes tabs then use the
+  file's map instead, read through the same `list_nets.load_net_clearances`.
 - **`--clearance` is a ceiling on the map (#439).** When `--clearance` is GIVEN, each
   auto-read class is capped at it (`net_clearances[nid] = min(class, clearance)`) before
   it is installed — a class *tighter* than `--clearance` survives; a *looser* one is
