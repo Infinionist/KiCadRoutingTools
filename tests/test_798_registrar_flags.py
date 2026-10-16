@@ -41,11 +41,13 @@ import krt_capabilities as k                                # noqa: E402
 RUN_ALL_TIMEOUT = 300
 
 #: A long option as argparse RENDERS it: at the start of an option line, on its
-#: own or after a short alias. Scraping every `--token` out of the help TEXT
+#: own or after a short alias -- `-o, --output OUTPUT` on Python 3.13+, but
+#: `-o OUTPUT, --output OUTPUT` before it, which repeats the metavar after the
+#: alias. Scraping every `--token` out of the help TEXT
 #: instead picks up prose ("Use --group-by to choose...") and words broken
 #: across a wrap, which manufactures phantom flags like `--net-` and makes the
 #: comparison meaningless in the direction that matters.
-_OPT = re.compile(r'^\s{0,10}(?:-\w,\s*)?(--[A-Za-z0-9][A-Za-z0-9-]*)', re.M)
+_OPT = re.compile(r'^\s{0,10}(?:-\w(?: [A-Z][A-Z0-9_]*)?,\s*)?(--[A-Za-z0-9][A-Za-z0-9-]*)', re.M)
 
 
 def _real_flags(script):
@@ -149,7 +151,9 @@ def t_a_script_still_does_NOT_inherit_another_CLIs_flags():
     cannot inherit its vocabulary however the resolution changes.
     """
     caps = k.capabilities()
-    for token in ('route_planes.py:--net-clearances',
+    # route_planes.py has taken --net-clearances since #1272, so the
+    # route.py-only example is --keep-away.
+    for token in ('route_planes.py:--keep-away',
                   'route_planes.py:--track-width-floor',
                   'repair_planes.py:--net-clearances',
                   'route_diff.py:--track-width-floor'):

@@ -60,12 +60,15 @@ WHAT IS PINNED HERE, and what each check is FOR:
    `test_qfn_underpad.py`'s own 18/22/20 pin): any future change to the escape
    ladder fails them and forces a re-measurement rather than silent drift.
 
-7. LAYER SCOPE, as a decision pin. The via half is layer-BLIND because
-   `check_drc.check_via_segment_overlap` grades a via against segments on every
-   copper layer regardless of `via.layers`; the segment half is layer-FILTERED
-   because segments really are single-layer. It filters on `footprint.layer`
-   (where the stub lands, #195) and NOT on `layer`, and the two are not
-   interchangeable: on U2 they find 25 and 17 pairs and the sets are disjoint.
+7. LAYER SCOPE, as a decision pin. The via half is layer-BLIND, a superset of
+   `check_drc.check_via_segment_overlap`, which grades a via KiCad types
+   blind/buried/micro on its span only (#1268) and every other via -- an
+   untyped one whatever its layer pair -- on every copper layer. A blind half
+   can refuse a stub the grader would pass, never the reverse. The segment
+   half is layer-FILTERED because segments really are single-layer. It
+   filters on `footprint.layer` (where the stub lands, #195) and NOT on
+   `layer`, and the two are not interchangeable: on U2 they find 25 and 17
+   pairs and the sets are disjoint.
 
 8. THE PAD HALF'S FOUR EXCLUSIONS. NPTH (no copper), the `*.Cu` / `F&B.Cu`
    wildcards, per-pad `local_clearance`, and net ties. Each is check_drc's own
@@ -458,16 +461,20 @@ def test_measured_boards():
 def test_layer_scope_decision():
     print("\n7. layer scope: blind for vias, filtered for segments")
     from check_drc import check_via_segment_overlap
+    untyped = Via(x=10.0, y=10.0, size=VS, drill=VD,
+                  layers=["In1.Cu", "In2.Cu"], net_id=1)
     buried = Via(x=10.0, y=10.0, size=VS, drill=VD,
-                 layers=["In1.Cu", "In2.Cu"], net_id=1)
+                 layers=["In1.Cu", "In2.Cu"], net_id=1, via_type="buried")
     seg = Segment(start_x=9.0, start_y=10.0, end_x=11.0, end_y=10.0,
                   width=TW, layer="F.Cu", net_id=2)
-    hit, _ = check_via_segment_overlap(buried, seg, CL)
-    check("check_drc grades a via against segments on EVERY copper layer "
-          "regardless of via.layers, so a layer-FILTERED via backstop would "
-          "ship copper this repo's own grader flags -- the via half is "
-          "deliberately layer-blind, and this fails the day that changes",
-          hit is True)
+    check("check_drc grades an UNTYPED via against segments on EVERY copper "
+          "layer whatever its layer pair (KiCad loads it as a through via)",
+          check_via_segment_overlap(untyped, seg, CL)[0] is True)
+    check("check_drc grades a TYPED buried via only on its span (#1268), so "
+          "the layer-blind via half is a superset of the grader -- it can "
+          "refuse a stub, never pass one check_drc flags; this fails the day "
+          "that changes",
+          check_via_segment_overlap(buried, seg, CL)[0] is False)
     # And the segment half's filter is on the STUB's layer, not the escape
     # layer. Every board in the sweep runs escape layer == footprint.layer, so
     # the distinction is INVISIBLE there -- mutate_619 found that swapping

@@ -67,19 +67,21 @@ def _collect_anchor_points(
     anchor_grid_points: List[Tuple[int, int]] = []
     seen_anchors: Set[Tuple[float, float]] = set()
 
-    def via_connects_layer(via_layers: List[str], layer: str) -> bool:
-        """Check if a via connects to a given layer."""
-        if layer in via_layers:
-            return True
-        if 'F.Cu' in via_layers and 'B.Cu' in via_layers:
-            return layer in routing_layers
-        return False
+    def via_connects_layer(via, layer: str) -> bool:
+        """Check if a via connects to a given layer -- by its TYPE (found
+        reviewing #1268): a through via on every routing layer whatever pair
+        it carries, a typed blind/micro via on the run between its ends."""
+        from geometry_utils import via_on_layer
+        return via_on_layer(via, layer) and (
+            layer in routing_layers or layer in (via.layers or ()))
 
     # Add vias of our net that touch any zone layer
     for via in pcb_data.vias:
-        if via.net_id != net_id:
+        # #1279: a protected sense branch joins its net at its join pad only,
+        # so its member vias and sense pads never anchor a region.
+        if via.net_id != net_id or getattr(via, 'sense', ''):
             continue
-        touches_zone = any(via_connects_layer(via.layers, zl) for zl in zone_layers)
+        touches_zone = any(via_connects_layer(via, zl) for zl in zone_layers)
         if not touches_zone:
             continue
         if min_x <= via.x <= max_x and min_y <= via.y <= max_y:
@@ -91,6 +93,8 @@ def _collect_anchor_points(
 
     # Add pads of our net on any zone layer
     for pad in pcb_data.pads_by_net.get(net_id, []):
+        if getattr(pad, 'sense', ''):
+            continue    # #1279 (see the vias above)
         touches_zone = '*.Cu' in pad.layers or any(zl in pad.layers for zl in zone_layers)
         if not touches_zone:
             continue
@@ -120,19 +124,25 @@ def _collect_cross_layer_points(
     Returns:
         List of (x, y, connected_layers) tuples
     """
-    def get_via_connected_layers(via_layers: List[str]) -> Set[str]:
-        """Get all layers a via connects to."""
-        if 'F.Cu' in via_layers and 'B.Cu' in via_layers:
-            return set(routing_layers)
-        return set(via_layers)
+    def get_via_connected_layers(via) -> Set[str]:
+        """Get all layers a via connects to -- by its TYPE (found reviewing
+        #1268): every routing layer for a through via whatever pair it carries,
+        the run between the ends of a typed blind/micro via (not just its two
+        ends)."""
+        from geometry_utils import via_copper_layers
+        return set(via_copper_layers(via, routing_layers))
 
     cross_layer_points: List[Tuple[float, float, Set[str]]] = []
 
+    # #1279: a protected sense branch's member vias and sense pads never carry
+    # the plane from one layer to another (they join the net at the join pad).
     for via in pcb_data.vias:
-        if via.net_id == net_id:
-            cross_layer_points.append((via.x, via.y, get_via_connected_layers(via.layers)))
+        if via.net_id == net_id and not getattr(via, 'sense', ''):
+            cross_layer_points.append((via.x, via.y, get_via_connected_layers(via)))
 
     for pad in pcb_data.pads_by_net.get(net_id, []):
+        if getattr(pad, 'sense', ''):
+            continue
         if '*.Cu' in pad.layers:  # Through-hole pad
             cross_layer_points.append((pad.global_x, pad.global_y, set(routing_layers)))
 
@@ -1002,13 +1012,6 @@ def find_disconnected_zone_regions(
 
     # Collect cross-layer connection points using helper function
     cross_layer_points = _collect_cross_layer_points(net_id, pcb_data, routing_layers)
-
-    # Helper function for via layer connections (still needed for loop below)
-    def get_via_connected_layers(via_layers: List[str]) -> Set[str]:
-        """Get all layers a via connects to."""
-        if 'F.Cu' in via_layers and 'B.Cu' in via_layers:
-            return set(routing_layers)
-        return set(via_layers)
 
     # Build map from grid position to cross-layer point index
     grid_to_crosslayer: Dict[Tuple[int, int], List[int]] = {}
@@ -3325,9 +3328,20 @@ def wide_route_clear(route_points, width, pcb_data, net_id, config,
     # (cached per board path inside the helper). Raise-only, so a board that
     # declares nothing keeps this predicate's decisions bit-identical.
     _hole_clr = resolve_hole_clearance(pcb_data, config)
+    # #1279: the net's own protected sense branches are foreign copper off
+    # their join pad. The map stamps them (build_base_obstacles), but a width
+    # upgrade anchored on an exemption-cleared seed, or one widened past the
+    # join pad's cut-out, can still bulge into them -- so measure them here
+    # with the Phase-1 terminal gate's own measure (terminal_sense_dist).
+    from sense_branch import protected_branches, terminal_sense_dist
+    _sense_live = bool(protected_branches(pcb_data, net_id))
 
     for (x1, y1, x2, y2, layer) in legs:
         bb = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+        if _sense_live and terminal_sense_dist(
+                pcb_data, net_id, x1, y1, x2, y2, layer, half) < half + \
+                config.layer_clearance(layer, config.obstacle_clearance(net_id)) - EPS:
+            return False
         clr_max = _clr_max_by_layer.get(layer)
         if clr_max is None:
             clr_max = _max_layer_clearance(layer)
@@ -3694,6 +3708,15 @@ def build_base_obstacles(
     # keep-out rule areas (#25), on the plane routing layers.
     add_user_keepout_obstacles(obstacles, pcb_data, config, coord, num_layers)
     add_rule_area_keepout_obstacles(obstacles, pcb_data, config, layers=routing_layers)
+
+    # #1279: the excluded nets' own copper is free to this map, so a protected
+    # Kelvin sense branch of one of them is stamped back in as foreign copper
+    # (tracks and vias, join pad cut out): a region join, an oracle link or
+    # the guaranteed join reaches that branch only at its join pad.
+    from sense_branch import stamp_plane_obstacles
+    for _nid in sorted(exclude_net_ids):
+        stamp_plane_obstacles(obstacles, pcb_data, config, _nid, routing_layers,
+                              tracks=True, vias=True, extra_clearance=cushion)
 
     return obstacles, layer_map
 

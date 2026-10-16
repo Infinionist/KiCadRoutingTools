@@ -52,6 +52,7 @@ _PACK_OFFSET = 1 << 20  # grid coords stay well within +/-2^20 at any allowed gr
 # whole-map KICAD_OBSTACLE_AUDIT diff can only total. Raw (non-cache) list ops
 # on the working map are accounted separately by get_stats() deltas per site.
 import itertools as _it
+from geometry_utils import via_span_layer_indices
 _UID = _it.count(1)
 _LEDGER_ENV = os.environ.get("KICAD_OBSTACLE_LEDGER") == "1"
 _LEDGER = None
@@ -840,7 +841,8 @@ def precompute_net_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
                                    + config.stack_clearance(obs_clearance)) * coord.inv_step)
         _collect_via_obstacles(via, coord, num_layers, via_track_list,
                                 via_via_radius, diagonal_margin,
-                                blocked_cells_set, blocked_vias_set)
+                                blocked_cells_set, blocked_vias_set,
+                                routing_layers=config.layers)
         # #441: net-INDEPENDENT drill hole-to-hole keepout, stamped into the via
         # map IN ADDITION to the copper via-via disc above (which is copper-only:
         # vs/2 + via_size/2 + clearance). A future ROUTE via must also clear this
@@ -1000,7 +1002,8 @@ def _collect_via_obstacles(via, coord: GridCoord, num_layers: int,
                             via_track_expansion_grid, via_via_expansion_grid: int,
                             diagonal_margin: float,
                             blocked_cells: List["np.ndarray"],
-                            blocked_vias: List["np.ndarray"]):
+                            blocked_vias: List["np.ndarray"],
+                            routing_layers=None):
     """Collect via obstacle cells into sets (no obstacle map modification).
 
     Args:
@@ -1025,16 +1028,17 @@ def _collect_via_obstacles(via, coord: GridCoord, num_layers: int,
         rows[:, 2] = layer_idx
         blocked_cells.append(rows)
 
+    span = via_span_layer_indices(via, routing_layers, num_layers)
     # Support per-layer expansion for impedance-controlled routing
     if isinstance(via_track_expansion_grid, list):
-        for layer_idx in range(num_layers):
+        for layer_idx in span:
             layer_expansion = via_track_expansion_grid[layer_idx]
             radius = layer_expansion + diagonal_margin + off_cells
             add_layer_cells(circle_offsets(int(math.ceil(radius)), radius ** 2), layer_idx)
     else:
         radius = via_track_expansion_grid + diagonal_margin + off_cells
         offs = circle_offsets(int(math.ceil(radius)), radius ** 2)
-        for layer_idx in range(num_layers):
+        for layer_idx in span:
             add_layer_cells(offs, layer_idx)
 
     via_radius = via_via_expansion_grid + off_cells

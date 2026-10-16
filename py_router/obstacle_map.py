@@ -26,6 +26,7 @@ import os
 import time
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'rust_router')))
 import rust_alloc  # noqa: E402,F401  # issue #419: set MIMALLOC_PURGE_DELAY before grid_router loads
+from geometry_utils import via_span_layer_indices
 
 try:
     from grid_router import GridObstacleMap
@@ -461,7 +462,7 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
         # the base map holds the excluded nets' (GND/P3.3V) fanout vias, and without
         # the diagonal margin a 45deg track grazes them a sub-cell under clearance.
         _add_via_obstacle(obstacles, via, coord, num_layers, via_track_expansion_grid,
-                          via_via_expansion_grid, diagonal_margin=defaults.DIAGONAL_MARGIN)
+                          via_via_expansion_grid, diagonal_margin=defaults.DIAGONAL_MARGIN, routing_layers=config.layers)
 
     # Add pads as obstacles (excluding nets we'll route - their pads added per-net)
     # Priced per obstacle: max(routing-side clearance, the pad net's own class clearance)
@@ -490,6 +491,12 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
     # 1,593 batch entries for 1,136 pads, per base build, 629 builds/route).
     _flush_cell_sink(obstacles, _pad_cell_sink)
     _flush_via_sink(obstacles, _pad_via_sink)
+
+    # #1279: a protected Kelvin sense branch of a net this map is built to
+    # route is foreign copper to that net too, except on its join pad.
+    from sense_branch import stamp_base_obstacles
+    stamp_base_obstacles(obstacles, pcb_data, config, nets_to_route_set, coord,
+                         layer_map, _obstacle_clearance, extra_clearance)
 
     # Intersect each tied net's corridor with the recorded tie-copper stamps:
     # the per-net lift arrays are EXACT subsets of what the base build added
@@ -558,12 +565,17 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
     add_board_edge_obstacles(obstacles, pcb_data, config, extra_clearance,
                              progress=_report)
 
-    # Add user-drawn User-layer keepout polygons (issue #27) - block all copper layers
+    # Add user-drawn User-layer keepout polygons (issue #27) - block all copper layers.
+    # Both keep-out passes take the map's extra clearance like every other
+    # obstacle here: on a diff-pair CENTRELINE map (extra = the member offset)
+    # the members, not just the centreline, must stay out (found reviewing #1278).
     _report("keepouts", 0, 0, force=True)
-    add_user_keepout_obstacles(obstacles, pcb_data, config, coord, num_layers)
+    add_user_keepout_obstacles(obstacles, pcb_data, config, coord, num_layers,
+                               extra_clearance)
 
     # Block KiCad native keep-out rule areas (zone (keepout ...)), per-layer (PR #25)
-    add_rule_area_keepout_obstacles(obstacles, pcb_data, config)
+    add_rule_area_keepout_obstacles(obstacles, pcb_data, config,
+                                    extra_clearance=extra_clearance)
 
     # Pour islands of out-of-scope nets that this run could only cut (#1260)
     add_pour_barrier_obstacles(obstacles, pcb_data, config, extra_clearance,
@@ -1010,13 +1022,19 @@ def _polygon_grid_cells(points_mm, coord: GridCoord):
 
 
 def add_user_keepout_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
-                               config: GridRouteConfig, coord: GridCoord, num_layers: int):
+                               config: GridRouteConfig, coord: GridCoord, num_layers: int,
+                               extra_clearance: float = 0.0):
     """Block all grid cells inside user-drawn keepout polygons on every copper layer.
 
     Keepout zones (issue #27) are hard blocks: routed tracks cannot enter them. The
     block applies to every net routed in the run. Because cells are blocked
     unconditionally, a zone drawn over a routed net's pad can make that net
     unroutable -- zones are meant for open board area, not over pads.
+
+    ``extra_clearance`` (a diff-pair centreline map: the member offset) also
+    blocks the cells within that distance of the polygon, so each member's
+    centreline stays out as a single track's does. 0 leaves the cell set
+    exactly the polygon's interior.
     """
     if not config.keepout_enabled or not pcb_data.keepout_zones:
         return
@@ -1024,6 +1042,13 @@ def add_user_keepout_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
     all_cells = set()
     for zone in pcb_data.keepout_zones:
         all_cells |= _polygon_grid_cells(zone.points, coord)
+        if extra_clearance > 0:
+            gx_lo, gy_lo, nx, _ny, inside, edge_dist = _rasterize_polygon_box(
+                zone.points, coord, extra_clearance + coord.grid_step)
+            if inside is not None:
+                band_x, band_y = _box_masked_cells(
+                    gx_lo, gy_lo, nx, edge_dist < extra_clearance - GRID_TIE_EPS)
+                all_cells |= set(zip(band_x.tolist(), band_y.tolist()))
 
     if not all_cells:
         return
@@ -1117,7 +1142,8 @@ def point_to_polygon_edge_distance(x: float, y: float, polygon: List[Tuple[float
 
 def add_rule_area_keepout_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
                                     config: GridRouteConfig,
-                                    layers: Optional[List[str]] = None):
+                                    layers: Optional[List[str]] = None,
+                                    extra_clearance: float = 0.0):
     """Block tracks/vias inside KiCad keep-out rule areas.
 
     Each keepout (parsed from `(zone ... (keepout ...))`) blocks track cells on its
@@ -1128,6 +1154,11 @@ def add_rule_area_keepout_obstacles(obstacles: GridObstacleMap, pcb_data: PCBDat
     Cells whose centre is inside the polygon are blocked, as are cells just outside
     whose track/via copper (half-width plus clearance) would intrude past the keep-out
     boundary, so the copper itself stays out of the region rather than just the centre.
+
+    ``extra_clearance`` widens both bands, as it does every other obstacle: on a
+    diff-pair CENTRELINE map it is the member offset, without which a member's
+    copper reached into the area (lvds_converter_dualclk /CLK+: KiCad
+    items_not_allowed; found reviewing #1278).
     """
     keepouts = getattr(pcb_data.board_info, 'keepouts', None)
     if not keepouts:
@@ -1136,8 +1167,8 @@ def add_rule_area_keepout_obstacles(obstacles: GridObstacleMap, pcb_data: PCBDat
     coord = GridCoord(config.grid_step)
     layer_list = layers if layers is not None else config.layers
     layer_map = build_layer_map(layer_list)
-    track_clear = config.clearance + config.track_width / 2
-    via_clear = config.clearance + config.via_size / 2
+    track_clear = config.clearance + config.track_width / 2 + extra_clearance
+    via_clear = config.clearance + config.via_size / 2 + extra_clearance
     # Restrict rasterization to the map's extent: on a local-window build a
     # whole-board ring keep-out would otherwise rasterize the entire board per
     # call (the dominant cost of repair_planes and the via-in-pad
@@ -2754,7 +2785,7 @@ def add_net_vias_as_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
         # a diagonal cell-offset too close (e.g. (3,2) cells = 0.36mm when 0.39mm is
         # required) -- a real cross-net via-via DRC violation the router never saw.
         via_via_expansion_grid = max(1.0, via_via_mm * coord.inv_step)
-        _add_via_obstacle(obstacles, via, coord, num_layers, via_track_expansion_grid, via_via_expansion_grid, diagonal_margin)
+        _add_via_obstacle(obstacles, via, coord, num_layers, via_track_expansion_grid, via_via_expansion_grid, diagonal_margin, routing_layers=config.layers)
         # #441: net-independent drill hole-to-hole disc (add-only: every caller of
         # this fn stamps a fresh/clone map that is discarded, never rip-removed).
         _h2h = _via_h2h_cells(via, config, coord)
@@ -3073,7 +3104,7 @@ def add_vias_list_as_obstacles(obstacles: GridObstacleMap, vias: list,
         # a diagonal cell-offset too close (e.g. (3,2) cells = 0.36mm when 0.39mm is
         # required) -- a real cross-net via-via DRC violation the router never saw.
         via_via_expansion_grid = max(1.0, via_via_mm * coord.inv_step)
-        _add_via_obstacle(obstacles, via, coord, num_layers, via_track_expansion_grid, via_via_expansion_grid, diagonal_margin)
+        _add_via_obstacle(obstacles, via, coord, num_layers, via_track_expansion_grid, via_via_expansion_grid, diagonal_margin, routing_layers=config.layers)
         # #441: net-independent drill hole-to-hole disc, MIRRORED in
         # remove_vias_list_from_obstacles so rip-up stays ref-count balanced.
         _h2h = _via_h2h_cells(via, config, coord)
@@ -3295,7 +3326,7 @@ def remove_vias_list_from_obstacles(obstacles: GridObstacleMap, vias: list,
         # (libm pow -- radius*radius rounds 1 ULP apart on rare values and
         # would flip borderline cells); integer ex*ex+ey*ey against that
         # scalar is an exact comparison, so the cell multiset is identical.
-        for layer_idx in range(num_layers):
+        for layer_idx in via_span_layer_indices(via, config.layers, num_layers):
             radius = via_track_expansion_grid[layer_idx] + diagonal_margin + off_cells
             effective_track_block_sq = radius ** 2
             track_block_range = int(math.ceil(radius))
@@ -3793,11 +3824,45 @@ def get_same_net_through_hole_positions(pcb_data: PCBData, net_id: int,
     # Existing same-net vias are reusable holes too (see free-via reuse). Without
     # this, only the multipoint tap path augmented the set, so the Phase-1 main edge
     # and single-ended routes dropped a duplicate via onto an existing via-in-pad.
+    # NOT a blind/micro via whose copper stops short of the stack: a layer
+    # change there joins only the layers it spans (same_net_partial_via_spans).
     for via in pcb_data.vias:
-        if via.net_id == net_id:
+        if via.net_id == net_id and not via_stops_short(via, pcb_data):
             positions.add(coord.to_grid(via.x, via.y))
 
     return positions
+
+
+def via_stops_short(via, pcb_data) -> bool:
+    """Is this a via KiCad types blind/buried/micro whose copper misses at
+    least one of the board's copper layers? Such a via is NOT a reusable hole
+    for an arbitrary layer change (found reviewing #1268): the router rode an
+    F.Cu->In1.Cu microvia to B.Cu at zero cost and emitted no via."""
+    from geometry_utils import PARTIAL_VIA_TYPES, via_copper_layers
+    if getattr(via, 'via_type', 'through') not in PARTIAL_VIA_TYPES:
+        return False
+    cu = list(getattr(getattr(pcb_data, 'board_info', None), 'copper_layers',
+                      None) or ['F.Cu', 'B.Cu'])
+    return len(via_copper_layers(via, cu)) < len(cu)
+
+
+def same_net_partial_via_spans(pcb_data, net_id: int,
+                               config: GridRouteConfig) -> Dict[Tuple[int, int], frozenset]:
+    """{(gx, gy): copper layer names} for this net's vias that stop short of
+    the stack (`via_stops_short`). A layer change at such a cell rides the via
+    only between two layers of its span; any other layer change there needs a
+    via of its own. Stacked partial vias at one cell pool their spans."""
+    from geometry_utils import via_copper_layers
+    coord = GridCoord(config.grid_step)
+    cu = list(getattr(getattr(pcb_data, 'board_info', None), 'copper_layers',
+                      None) or ['F.Cu', 'B.Cu'])
+    spans: Dict[Tuple[int, int], frozenset] = {}
+    for via in pcb_data.vias:
+        if via.net_id == net_id and via_stops_short(via, pcb_data):
+            cell = coord.to_grid(via.x, via.y)
+            spans[cell] = spans.get(cell, frozenset()) | frozenset(
+                via_copper_layers(via, cu))
+    return spans
 
 
 def _batch_cells_one_layer(obstacles, cells_xy: "np.ndarray", layer_idx: int,
@@ -3913,7 +3978,8 @@ def _add_via_obstacle(obstacles: GridObstacleMap, via, coord: GridCoord,
                       num_layers: int, via_track_expansion_grid, via_via_expansion_grid: int,
                       diagonal_margin: float = 0.0,
                       blocked_cells: List[Set[Tuple[int, int]]] = None,
-                      blocked_vias: Set[Tuple[int, int]] = None):
+                      blocked_vias: Set[Tuple[int, int]] = None,
+                      routing_layers=None):
     """Add a via as obstacle to the map.
 
     Args:
@@ -3937,13 +4003,14 @@ def _add_via_obstacle(obstacles: GridObstacleMap, via, coord: GridCoord,
     off_cells = math.hypot(via.x - gx * coord.grid_step,
                            via.y - gy * coord.grid_step) / coord.grid_step
 
+    span = via_span_layer_indices(via, routing_layers, num_layers)
     # Batched rasterization (issue #35) - emits the same cell multiset as the
     # per-cell loops it replaces (each layer gets the full circle pattern).
     if isinstance(obstacles, _RungViaSink):
         pass   # #1226 rung re-run: via cells only (track cells do not depend on the via)
     elif isinstance(via_track_expansion_grid, list):
         # Per-layer blocking (impedance-controlled routing)
-        for layer_idx in range(num_layers):
+        for layer_idx in span:
             layer_expansion = via_track_expansion_grid[layer_idx]
             radius = layer_expansion + diagonal_margin + off_cells
             effective_track_block_sq = radius ** 2
@@ -3957,7 +4024,7 @@ def _add_via_obstacle(obstacles: GridObstacleMap, via, coord: GridCoord,
         track_block_range = int(math.ceil(radius))
         offs = circle_offsets(track_block_range, effective_track_block_sq)
         cells = center + offs
-        for layer_idx in range(num_layers):
+        for layer_idx in span:
             _batch_cells_one_layer(obstacles, cells, layer_idx, blocked_cells)
 
     # Block cells for via placement (also grown by the sub-grid offset).

@@ -29,7 +29,9 @@ a moved member left under another part's body (see TEST POINT COVERED,
 #1250; armed by --baseline like the courtyard gate) OR a body inside the
 body-to-edge band the --intent DECLARES (`assembly.body_edge_mm`; see
 BODY-TO-EDGE BAND, #1255 -- undeclared, it reports against JLCPCB's 2.5 mm
-and never gates).
+and never gates) OR a pad touching another part's footprint graphic copper
+with a member moved vs --baseline (see PAD ON ANOTHER PART'S COPPER, #1266;
+armed by --baseline like the courtyard gate).
 """
 
 #: #937 registry: which door(s) show this tool, and whether it changes
@@ -819,12 +821,58 @@ def main():
             print(f"    {other} over {frame} {_kind} pin(s) "
                   f"{', '.join(x or f'(unnumbered {_kind})' for x in q.pins)}"
                   f"  {q.area_mm2}mm2  side {q.side}")
+    # #1266, the ELEVENTH: a part's pad copper touching ANOTHER part's
+    # footprint graphic copper (esp_prog C3 placed on U2's SOT-89 tab, one pad
+    # across its edge and one wholly inside it, graded `buildable`). Two
+    # parts' copper in one place, any net but a net tie's own (`stack`);
+    # measured by check_drc's `footprint_graphic_pad_census`, which place_pose
+    # and the seeder's gate also read. The courtyard gate's currency: a pair
+    # GATES when a member MOVED vs --baseline, and without one it is
+    # REPORT-ONLY, because healthy human boards ship such contacts by design
+    # -- measured over the stress manifests, 3 boards: ZYNQ_Ruler som's JP2
+    # on antenna AE2's feed copper, DIN_41612_Backplane's Kelvin ties on
+    # R3/R21 (a net tie's own net, never a stack), OpenWeatherStation's
+    # abutting ties NT1-NT4.
+    graphic_contacts = [r for r in (leg.get('graphic_pad_rows') or [])
+                        if r['contact']]
+    graphic_stack_pairs = sorted({(r['ref'], r['owner_ref'])
+                                  for r in graphic_contacts if r['stack']})
+    graphic_gating = ([p for p in graphic_stack_pairs
+                       if p[0] in moved_refs or p[1] in moved_refs]
+                      if moved_refs is not None else [])
+    if graphic_contacts:
+        _gate = set(graphic_gating)
+        print(f"  PAD ON ANOTHER PART'S COPPER ({len(graphic_stack_pairs)} "
+              f"part pair(s), "
+              + (f"{len(graphic_gating)} GATE (a member moved vs the "
+                 f"baseline)" if moved_refs is not None
+                 else "REPORT-ONLY: pass --baseline <the board the run "
+                      "started from> to gate")
+              + "): a pad touches another part's footprint graphic copper "
+                "(a drawn tab, an antenna)"
+              + (" -- NOT BUILDABLE" if graphic_gating else ''))
+        for r in graphic_contacts:
+            p = (r['ref'], r['owner_ref'])
+            _why = ("  [a net tie's own net: what the tie is for, never "
+                    "gates]" if not r['stack']
+                    else "  baseline's own (no member moved)"
+                    if moved_refs is not None and p not in _gate else '')
+            print(f"    {r['pad_ref']} ({r['net'] or 'no net'}) on "
+                  f"{r['owner_ref']}'s copper, {r['layer']}"
+                  + (", wholly inside the filled shape"
+                     if r['inside_filled'] else '') + _why)
+    _gp_un = leg.get('graphic_pad_unmeasured') or []
+    if _gp_un:
+        print("    footprint copper NOT measured against other parts' pads: "
+              + ', '.join(f"{u['owner_ref']} ({u['kind']})"
+                          for u in _gp_un[:6]))
     # #1250, the NINTH: a test point a move left under another part's body
     # (`tp_gating`, above). #1255, the TENTH: a body inside the body-to-edge
     # band the intent DECLARES (`edge_band_gating`, empty when undeclared).
     not_buildable = bool(g['blocking'] or locked_contact or stack_groups
                          or g['containment_blocking']
                          or courtyard_gating or off_outline_pads or mating
+                         or graphic_gating
                          or pin_hits or tp_gating or edge_band_gating)
     verdict = 'NOT BUILDABLE' if not_buildable else 'buildable (blocking 0)'
     print(f"  VERDICT: {verdict}")
@@ -981,6 +1029,19 @@ def main():
             'oob_graphic_copper_unmeasured': leg.get('oob_graphic_copper_unmeasured') or [],
             'oob_graphic_copper_basis': leg.get('oob_graphic_copper_basis'),
             'graphic_edge_shortfall_refs': leg.get('graphic_edge_shortfall_refs') or [],
+            # #1266: pads touching another part's graphic copper -- a
+            # conjunct. `_stack_pairs` are the `[pad part, copper owner]`
+            # contacts that count, `_gating_pairs` the subset with a member
+            # MOVED vs --baseline: None (not []) without one, as
+            # `courtyard_blocking_gating` is.
+            'graphic_pad_gating': (len(graphic_gating)
+                                   if moved_refs is not None else None),
+            'graphic_pad_contacts': graphic_contacts,
+            'graphic_pad_stack_pairs': [list(p) for p in graphic_stack_pairs],
+            'graphic_pad_gating_pairs': ([list(p) for p in graphic_gating]
+                                         if moved_refs is not None else None),
+            'graphic_pad_unmeasured': _gp_un,
+            'graphic_pad_basis': leg.get('graphic_pad_basis'),
             # #1031: pads in a board rule-area keep-out band -- the same
             # non-gating contract as the two off-outline channels.
             'oob_keepout_copper_count': leg.get('oob_keepout_copper_count', 0),

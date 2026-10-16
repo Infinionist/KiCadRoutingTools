@@ -1651,7 +1651,9 @@ _MAINS = {
 #: them, so each is a site of its own.
 _EXITING_HELPERS = ('fab_tier_from_args', 'read_brief_keep_away',
                     'load_net_clearances', 'load_intent_or_exit',
-                    'tether_gate_spec', 'declared_cap_rotations')
+                    'tether_gate_spec', 'declared_cap_rotations',
+                    # the shared end-of-run --strict-sizes exit 3 (#857)
+                    'finish_design_rules')
 
 
 def refusal_sites(tool):
@@ -1857,7 +1859,7 @@ def check_refused_tools():
     for tool in ('place_optimize.py', 'place_route_loop.py',
                  'place_seed.py', 'place_reconstruct.py', 'place_portfolio.py',
                  'place_pose.py', 'render_placement.py', 'beautify_labels.py',
-                 'add_rule_area.py'):
+                 'add_rule_area.py', 'place_intent_sides.py'):
         if tool not in m2p.REFUSED_TOOLS:
             bad.append((tool, "dropped from REFUSED_TOOLS -- a board tool with "
                               "no plan step that converts silently breaks the "

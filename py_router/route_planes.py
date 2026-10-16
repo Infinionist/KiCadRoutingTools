@@ -20,6 +20,7 @@ from __future__ import annotations
 KRT_TOOL = {'scope': ['routing', 'combined'], 'kind': 'actor'}
 
 import env_knobs
+import math
 import re
 import sys
 import os
@@ -68,7 +69,7 @@ from plane_zone_geometry import (
     sample_route_for_voronoi
 )
 from plane_pad_tap import clamp_tap_via_to_edge
-from terminal_colors import GREEN, RED, RESET
+from terminal_colors import GREEN, RED, YELLOW, RESET
 
 # Import Rust router (startup_checks ensures it's available and up-to-date)
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'rust_router')))
@@ -546,6 +547,32 @@ def _path_to_segments(path, via_pos, pad, pad_layer, net_id, config, coord):
                 'net_id': net_id
             })
 
+    return _bound_tap_neck(segments, net_id, pad_layer, config)
+
+
+def _bound_tap_neck(segments, net_id, pad_layer, config):
+    """A plane tap is drawn at the board default width, so for a power net it
+    is a NECK. That is a pad entry only while it is short: cm5-io's +5V
+    (2 mm class) shipped 47 taps at 0.09 mm, one 7.25 mm long, under
+    ``--escalation off``. Record every necked tap in the fab ledger, and under
+    ``off`` refuse one longer than the pad-entry allowance (the caller reports
+    the pad unconnected instead of shipping a thread as a rail)."""
+    try:
+        net_w = config.get_net_track_width(net_id, pad_layer)
+    except Exception:                                          # noqa: BLE001
+        return segments
+    if not segments or net_w <= config.track_width + 1e-9:
+        return segments
+    from fab_tiers import may_narrow, note_narrowing
+    allowance = defaults.PAD_ENTRY_NECK_MM
+    length = sum(math.hypot(s['end'][0] - s['start'][0], s['end'][1] - s['start'][1])
+                 for s in segments)
+    if not may_narrow() and length > allowance + 1e-9:
+        print(f"    {YELLOW}plane tap for net {net_id} refused: {length:.2f}mm at "
+              f"{config.track_width:g}mm exceeds the {allowance:g}mm pad-entry "
+              f"allowance for a {net_w:g}mm net (--escalation off){RESET}")
+        return None
+    note_narrowing(net_id, 'track_width', net_w, config.track_width, 'plane tap')
     return segments
 
 
@@ -667,6 +694,10 @@ def route_via_to_pad(
 
     # Convert path to segments
     segments = _path_to_segments(path, via_pos, pad, pad_layer, net_id, config, coord)
+    if segments is None:
+        if return_blocked_cells:
+            return RouteResult(segments=None, blocked_cells=[], success=False)
+        return None
 
     if return_blocked_cells:
         return RouteResult(segments=segments, blocked_cells=[], success=True)
@@ -774,6 +805,10 @@ def route_multi_source_to_pad(
         print(f"[multi-source {len(source_cells)} cand, {iterations}it]", end=" ")
 
     segments = _path_to_segments(path, via_pos, pad, pad_layer, net_id, config, coord)
+    if segments is None:
+        if return_blocked_cells:
+            return RouteResult(segments=None, blocked_cells=[], success=False), None
+        return None, None
     if return_blocked_cells:
         return RouteResult(segments=segments, blocked_cells=[], success=True), via_pos
     return segments, via_pos
@@ -1994,7 +2029,11 @@ def _neck_plane_segments(all_new_segments, pcb_data, clearance, all_layers,
     """
     import math
     from check_drc import segment_to_rect_distance, _into_pad_frame  # reuse exact DRC geometry
-    vias = [(v.x, v.y, v.size / 2.0, v.net_id, v.layers) for v in pcb_data.vias]
+    # Each via's copper by its TYPE (found reviewing #1268): every layer for a
+    # through via whatever pair it carries, and the run between the ends of a
+    # typed blind/micro via -- its middle layers included.
+    from geometry_utils import via_on_layer
+    vias = [(v.x, v.y, v.size / 2.0, v.net_id, v) for v in pcb_data.vias]
     EPS = 1e-4  # stay just inside the rule
     _nc = net_clearances or {}
 
@@ -2024,10 +2063,10 @@ def _neck_plane_segments(all_new_segments, pcb_data, clearance, all_layers,
         minx, maxx = min(x0, x1), max(x0, x1)
         miny, maxy = min(y0, y1), max(y0, y1)
         # foreign vias
-        for vx, vy, vr, vnid, vlayers in vias:
+        for vx, vy, vr, vnid, vobj in vias:
             if vnid == nid:
                 continue
-            if not (('F.Cu' in vlayers and 'B.Cu' in vlayers) or layer in vlayers):
+            if not via_on_layer(vobj, layer):
                 continue
             _cl = _pair_clearance(nid, vnid)
             margin = half + vr + _cl
@@ -3029,6 +3068,55 @@ def consume_pad_tally() -> dict:
     return out
 
 
+#: JSON_SUMMARY.sense_branches of the last create_plane() in this process
+#: (#1279): route.py's entries (sense_branch.summary_entries) plus
+#: `poured_over`, the layers on which a pour THIS run created covers the
+#: branch. Taken by main() like the pad tally.
+_LAST_SENSE_BRANCHES: list = []
+
+
+def consume_sense_branches() -> list:
+    """Take (and clear) the last pour's sense-branch entries."""
+    global _LAST_SENSE_BRANCHES
+    out, _LAST_SENSE_BRANCHES = list(_LAST_SENSE_BRANCHES), []
+    return out
+
+
+def _sense_branches_poured_over(pcb_data, zone_data) -> Dict[str, List[str]]:
+    """{branch name: [layer, ...]} for every protected sense branch (#1279)
+    that a pour of this run (`zone_data`, create_plane's zone dicts) covers,
+    printing a WARNING per pour. KiCad's fill floods over same-net copper, so
+    such a pour joins the sense copper to the plane off the join pad -- the
+    tap the branch exists to forbid, and the next route step refuses the
+    branch for it. Judged by sense_branch's own zone test (`_zone_tap`, the
+    one that refusal uses), one new pour at a time. Warned, never refused
+    or carved."""
+    import copy
+    from kicad_parser import Zone
+    from sense_branch import protected_branches, _zone_tap
+    out: Dict[str, List[str]] = {}
+    for b in protected_branches(pcb_data):
+        items = ([('seg', s) for s in b.segments] + [('via', v) for v in b.vias]
+                 + [('pad', p) for p in b.sense_pads])
+        for zd in zone_data:
+            if zd.get('keepout') or zd.get('net_id') != b.net_id:
+                continue
+            if zd['layer'] in out.get(b.name, []):
+                continue
+            view = copy.copy(pcb_data)
+            view.zones = [Zone(net_id=b.net_id, net_name=zd.get('net_name', ''),
+                               layer=zd['layer'], polygon=list(zd['polygon_points']))]
+            why = _zone_tap(view, items, b.join)
+            if why is None:
+                continue
+            out.setdefault(b.name, []).append(zd['layer'])
+            print(f"WARNING: the {zd.get('net_name', '')} pour on {zd['layer']} covers "
+                  f"sense branch {b.name} -- KiCad's fill joins the sense copper to "
+                  f"the plane; keep the plane off that layer or cut the pour around "
+                  f"the branch\n    ({why})")
+    return out
+
+
 def create_plane(
     input_file: str,
     output_file: str,
@@ -3127,6 +3215,14 @@ def create_plane(
         print(f"Error: Number of nets ({len(net_names)}) must match number of layers ({len(plane_layers)})")
         return _empty_plane_results(return_results)
 
+    # One cost per routing layer, or the full-stack append below puts its
+    # FORBIDDEN entries on the wrong layers (routing_config.layer_costs_count_error).
+    from routing_config import layer_costs_count_error
+    _lc_err = layer_costs_count_error(all_layers, layer_costs)
+    if _lc_err:
+        print(f"ERROR: {_lc_err}")
+        return _empty_plane_results(return_results)
+
     # Board-setup copper-to-edge rule (#338): zone outlines and tap copper must
     # honor the sibling .kicad_pro's min_copper_edge_clearance (engine-side so
     # the GUI planes tab inherits it; see batch_route).
@@ -3158,6 +3254,11 @@ def create_plane(
     # run ADDS are stamped; see fab_notes.via_protection_stamps)
     from fab_notes import via_snapshot as _via_snapshot962
     _input_vias962 = _via_snapshot962(pcb_data.vias, pcb_data)  # #1171: + sites
+    # #1279: the board's `sense:<REF>.<PAD>` groups -- protected, or why not
+    # (engine-side, so the Planes tab's log shows it too).
+    _LAST_SENSE_BRANCHES.clear()
+    from sense_branch import report as _sense_report
+    _sense_report(pcb_data)
 
     # --plane-layers takes BARE copper layer names positionally matched to
     # --nets, but the natural thing to type (and what the routing skill's R1
@@ -3434,11 +3535,14 @@ def create_plane(
         except Exception as _e:
             print(f"  Warning: could not auto-read netclass clearances ({_e}).")
             net_clearances = None
-    # #439: --clearance was the CEILING -> cap every class at min(class, ceiling).
-    # When not clamping (--clearance omitted), honor the classes in full.
-    if net_clearances and clamp_netclasses and clearance_ceiling is not None:
-        net_clearances = {nid: min(c, clearance_ceiling)
-                          for nid, c in net_clearances.items()}
+        # #439: --clearance was the CEILING -> cap every class at min(class,
+        # ceiling). When not clamping (--clearance omitted), honor the classes
+        # in full. Only the auto-read map is capped: a map the caller passes
+        # (the --net-clearances file, or the GUI's own class map, already
+        # capped there) is used as given, as batch_route does.
+        if net_clearances and clamp_netclasses and clearance_ceiling is not None:
+            net_clearances = {nid: min(c, clearance_ceiling)
+                              for nid, c in net_clearances.items()}
     if net_clearances:
         config.net_clearances = dict(net_clearances)
     # Publish the SAME map to the fill model (#483 item 5): KiCad refills a
@@ -4024,6 +4128,17 @@ def create_plane(
         except Exception as _e:  # noqa: BLE001 -- keepouts are additive; never fail the run
             print(f"  (NPTH-slot keepouts skipped: {_e})")
 
+    # #1279: a pour this run created over a protected sense branch taps it
+    # (KiCad's fill floods same-net copper): name it here, before the
+    # write/return split, so the CLI and the Planes tab both say so.
+    if getattr(pcb_data, 'sense_branches', None):
+        from sense_branch import summary_entries as _sense_entries
+        _poured = _sense_branches_poured_over(pcb_data, all_zone_data)
+        _LAST_SENSE_BRANCHES[:] = _sense_entries(pcb_data)
+        for _e in _LAST_SENSE_BRANCHES:
+            if _poured.get(_e['group']):
+                _e['poured_over'] = _poured[_e['group']]
+
     geo_results: Dict[int, Dict] = {}
     if dry_run:
         print("\nDry run - no output file written")
@@ -4196,6 +4311,12 @@ Examples:
     parser.add_argument("--via-drill", type=float, default=None, help="Via drill size in mm (default: the board Default net-class via drill, else 0.3)")
     parser.add_argument("--track-width", type=float, default=None, help="Track width for via-to-pad connections in mm (default: the board Default net-class width, else 0.3)")
     parser.add_argument("--clearance", type=float, default=None, help="Copper clearance of the DEFAULT net class for this run, in mm; other classes are honoured at their own clearance (pairwise max). When OMITTED, the board's Default class, else 0.25. --clearance-ceiling caps every class (the old #439 behaviour) and the writeback clamps.")
+    parser.add_argument("--net-clearances", metavar="JSON", default=None,
+                        help="JSON file mapping net NAME -> clearance mm (the file route.py and "
+                             "route_diff.py take): replaces the auto-read netclass map for plane "
+                             "taps, the pour's fill model and GND return vias, used as given -- "
+                             "never capped by --clearance-ceiling. A net it does not name routes "
+                             "at the run's clearance.")
 
     # Zone options
     parser.add_argument("--zone-clearance", type=float, default=None, help="Zone (pour) clearance from other copper in mm. Default: follow --clearance, auto-stepping down to the fab floor if the pour cannot thread the densest BGA via lattice")
@@ -4217,7 +4338,8 @@ Examples:
     parser.add_argument("--layer-costs", nargs="+", type=float, default=[],
                         help="Per-layer routing cost multipliers (1.0-1000, or any negative value e.g. -1 = "
                              "forbidden: the layer stays an obstacle / via span but gets no routed copper). "
-                             "Order matches --layers. Example: --layer-costs 1.0 -1 -1 3.0")
+                             "One value per --layers entry, in that order (another count is refused). "
+                             "Example: --layer-costs 1.0 -1 -1 3.0")
 
     # #381 D9: accept the plural --no-bga-zones spelling too (route.py uses the
     # plural). Same store_true dest -- additive, old spelling kept.
@@ -4449,6 +4571,18 @@ Examples:
     _out_before = (os.path.getmtime(args.output_file)
                    if args.output_file and os.path.isfile(args.output_file) else None)
 
+    # --net-clearances FILE: the explicit map replaces the auto-read netclass
+    # map, used as given (route.py / route_diff.py main, the same loader).
+    _explicit_nc = _nc_by_name = None
+    if args.net_clearances:
+        from kicad_parser import parse_kicad_pcb as _parse_for_nc
+        from list_nets import load_net_clearances, net_clearance_map_by_name
+        _nc_by_name = load_net_clearances(args.net_clearances)
+        _nc_nets = _parse_for_nc(args.input_file).nets
+        _explicit_nc = net_clearance_map_by_name(_nc_nets, _nc_by_name)
+        print(f"Loaded per-net clearances for {len(_explicit_nc)}/{len(_nc_nets)} nets "
+              f"from {args.net_clearances}")
+
     # The engine's cooperative `cancel_check` / `progress_callback` are the
     # GUI's (the planes tab's Cancel button); the CLI passes neither. There is
     # deliberately no wall-clock budget -- no result this tool produces may
@@ -4492,6 +4626,7 @@ Examples:
         no_bga_zone=args.no_bga_zone,
         clamp_netclasses=args._clamp_netclasses,
         clearance_ceiling=args._clearance_ceiling,
+        net_clearances=_explicit_nc,
     )
 
     _wrote_output = bool(args.output_file) and os.path.isfile(args.output_file) and (
@@ -4556,10 +4691,15 @@ Examples:
         # Cross-class clearance (#434/#439), resolved exactly as create_plane
         # does: a return via must clear each foreign net at max(base, its class)
         # -- without the map an HV net's 0.8mm class was priced at the base 0.2.
-        from list_nets import net_clearance_map_by_id
-        gnd_net_clearances = net_clearance_map_by_id(
-            args.input_file, {nid: n.name for nid, n in pcb_data.nets.items()})
-        if gnd_net_clearances and args._clamp_netclasses:
+        # An explicit --net-clearances map is used as given, like create_plane.
+        # Resolved by name against the OUTPUT board this block parsed.
+        from list_nets import net_clearance_map_by_id, net_clearance_map_by_name
+        gnd_net_clearances = (net_clearance_map_by_name(pcb_data.nets, _nc_by_name)
+                              if _nc_by_name is not None else
+                              net_clearance_map_by_id(
+                                  args.input_file,
+                                  {nid: n.name for nid, n in pcb_data.nets.items()}))
+        if _nc_by_name is None and gnd_net_clearances and args._clamp_netclasses:
             gnd_net_clearances = {nid: min(c, args._clearance_ceiling)
                                   for nid, c in gnd_net_clearances.items()}
 
@@ -4586,6 +4726,7 @@ Examples:
                 'drill': v.drill,
                 'net_id': v.net_id,
                 'layers': v.layers,
+                'via_type': getattr(v, 'via_type', 'through'),
                 'free': getattr(v, 'free', False)
             } for v in gnd_vias]
             # #962: a GND return via this adds in a pad or paste opening
@@ -4740,6 +4881,12 @@ Examples:
     except Exception:
         pass
 
+    # #1279: every declared sense branch, protected or why not, and the
+    # layers a new pour covers it on (`poured_over`).
+    _sense = consume_sense_branches()
+    if _sense:
+        _summary['sense_branches'] = _sense
+
     # The run either finished or raised; there is no partial shape to report
     # (the CLI has no cancel source). `complete`/`status` are kept because
     # consumers read them -- see route_summary's sticky-incompleteness merge.
@@ -4758,9 +4905,15 @@ Examples:
         _summary['env_knobs'] = _ek653.active_env_knobs()   # dirty baseline
     except Exception:          # without re-reading logs
         pass
+    # #857: what this run delivered below a requested size (route.py's
+    # key), when it delivered anything there.
+    from fab_tiers import narrowed_summary, finish_design_rules
+    _dr857 = narrowed_summary()
+    if _dr857 is not None:
+        _summary['design_rules'] = _dr857
     print('JSON_SUMMARY: ' + _json.dumps(_summary, sort_keys=True, default=str),
           flush=True)
-    return 1 if _no_output else 0
+    return finish_design_rules(args, 1 if _no_output else 0)
 
 
 if __name__ == "__main__":

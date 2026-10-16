@@ -9,6 +9,7 @@ from typing import List, Dict, Tuple, Optional
 
 from kicad_parser import Pad, is_kicad_10, _unescape_kicad_string
 from routing_utils import pos_key, POSITION_DECIMALS
+from geometry_utils import PARTIAL_VIA_TYPES
 
 
 def _escape_net_name(name: Optional[str]) -> Optional[str]:
@@ -552,7 +553,8 @@ def prevailing_via_protection_in_text(content: str) -> Optional[dict]:
 def generate_via_sexpr(x: float, y: float, size: float, drill: float,
                        layers: List[str], net_id: int, free: bool = False,
                        net_name: str = None, tenting_attrs: dict = None,
-                       inherit_when_unspecified: bool = False) -> str:
+                       inherit_when_unspecified: bool = False,
+                       via_type: str = None) -> str:
     """Generate KiCad S-expression for a via.
 
     Args:
@@ -567,14 +569,23 @@ def generate_via_sexpr(x: float, y: float, size: float, drill: float,
             board's `(setup (tenting ...))` keeps inheriting it rather than
             gaining an explicit token it never had (#741). See
             via_protection_sexpr.
+        via_type: The via's own Via.via_type. 'blind' / 'buried' / 'micro'
+            writes KiCad's type word; anything else writes none, which KiCad
+            loads as a THROUGH via whatever `layers` says. Pass it for any via
+            that already existed: without the word a re-emitted microvia ships
+            as a through via (found reviewing #1268). A via the tool adds is a
+            through via and passes None. The word is written verbatim, so a
+            `buried` (KiCad 10's word, which KiCad 9 refuses to load) only ever
+            goes back into the KiCad 10 file it was read from.
     """
     layers_str = '" "'.join(layers)
+    type_word = f' {via_type}' if via_type in PARTIAL_VIA_TYPES else ''
     free_str = "\n\t\t(free yes)" if free else ""
     net_str = f'(net "{_escape_net_name(net_name)}")' if net_name is not None else f'(net {net_id})'
     # KiCad 10 adds structured tenting/covering/plugging fields after layers
     tenting_str = via_protection_sexpr(tenting_attrs, net_name,
                                       inherit_when_unspecified)
-    return f'''	(via
+    return f'''	(via{type_word}
 		(at {x:.6f} {y:.6f})
 		(size {size})
 		(drill {drill})
@@ -1233,6 +1244,8 @@ def add_tracks_and_vias_to_pcb(input_path: str, output_path: str,
                 net_name=via_net_name(via['net_id'], net_id_to_name),
                 tenting_attrs=attrs,
                 inherit_when_unspecified=existing,
+                # A re-emitted blind/micro via keeps its type word.
+                via_type=via.get('via_type'),
             )
             elements.append(v)
 

@@ -414,14 +414,18 @@ def _net_track_components(pcb_data, net_id):
 
 def _component_points(segs, vias, comp_of_seg, comp_of_via, root,
                       max_pts: int = 40):
-    """Sample (x, y, layer) / (x, y) points across one component."""
+    """Sample (x, y, layer) / (x, y) points across one component.
+
+    Never on a protected sense branch's member copper (#1279): the branch
+    is part of the component (it carries the connectivity), but a link that
+    attaches to it off the join pad taps the sense trace."""
     pts = []
     for i, s in enumerate(segs):
-        if comp_of_seg[i] == root:
+        if comp_of_seg[i] == root and not getattr(s, 'sense', ''):
             pts.append((s.start_x, s.start_y, s.layer))
             pts.append((s.end_x, s.end_y, s.layer))
     for j, v in enumerate(vias):
-        if comp_of_via[j] == root:
+        if comp_of_via[j] == root and not getattr(v, 'sense', ''):
             pts.append((v.x, v.y))  # via: all layers
     if len(pts) > max_pts:
         stride = len(pts) // max_pts + 1
@@ -508,9 +512,12 @@ def _pad_cluster_rung(pcb_data, net_id, x, y, layer, comps, tol):
                 return comp_of_via[j], []
 
     # Bare pad group (no tracked copper): its centers stand in for its
-    # copper extent -- still better than the single reported nib.
+    # copper extent -- still better than the single reported nib. A sense
+    # pad is never one of them (#1279, as in _component_points).
     pts = []
     for p in group:
+        if getattr(p, 'sense', ''):
+            continue
         if p.drill > 0 or '*.Cu' in p.layers:
             pts.append((p.global_x, p.global_y))  # spans all layers
         else:
@@ -1052,6 +1059,8 @@ def _largest_track_component_points(pcb_data, net_id, max_pts: int = 40):
     comp_len = defaultdict(float)
     comp_segs = defaultdict(list)
     for i, s in enumerate(segs):
+        if getattr(s, 'sense', ''):
+            continue  # #1279: sense copper connects, it is never a target
         root = uf.find(2 * i)
         comp_len[root] += math.hypot(s.end_x - s.start_x, s.end_y - s.start_y)
         comp_segs[root].append(s)
@@ -1613,6 +1622,12 @@ def _direct_sliver_weld(pcb_data, net_id, ax, ay, bx, by, layer, config,
             for px, py in pts:
                 if _pt_pad_dist(px, py, pad) < need:
                     return None
+    # #1279: the net's own protected sense branch is foreign copper off its
+    # join pad; a weld never lands on or crosses it.
+    from sense_branch import terminal_sense_dist
+    if terminal_sense_dist(pcb_data, net_id, x1, y1, x2, y2, layer, w / 2.0) \
+            < reach + config.layer_clearance(layer, config.obstacle_clearance(net_id)):
+        return None
     return Segment(start_x=x1, start_y=y1, end_x=x2, end_y=y2,
                    width=w, layer=layer, net_id=net_id)
 
@@ -1850,6 +1865,7 @@ def oracle_reconnect(board_file: str, net_names, config,
     from kicad_writer import generate_segment_sexpr, generate_via_sexpr
     from plane_region_connector import (build_base_obstacles,
                                         route_plane_connection_wide)
+    from sense_branch import join_link_end
 
     # CALL-SCOPED timeout memo (#713 item 3). One set per oracle_reconnect,
     # shared by every kicad_unconnected this call makes -- the union demand
@@ -2253,6 +2269,12 @@ def oracle_reconnect(board_file: str, net_names, config,
                                                  bl_, config.clearance,
                                                  cache=_snap_cache)
                     B = (bx_, by_, bl_, bk_)
+            if nid is not None:
+                # #1279: an end on a protected sense branch off its join pad
+                # lands on the join pad (KiCad's ratsnest and the exact
+                # source's nearest approach do not know the rule).
+                A, B = (join_link_end(pcb_data, nid, A),
+                        join_link_end(pcb_data, nid, B))
             _snapped.append((net_name, A, B))
         del _snap_cache
         ours = sorted(_snapped,
@@ -2538,9 +2560,10 @@ def oracle_reconnect(board_file: str, net_names, config,
                     for _v in _e2vias:
                         new_sexprs.append(generate_via_sexpr(
                             _v.x, _v.y, _v.size, _v.drill,
-                            [routing_layers[0], routing_layers[-1]], net_id,
+                            ['F.Cu', 'B.Cu'], net_id,
                             net_name=net_name if v10 else None,
-                            tenting_attrs=_new_via_attrs))
+                            tenting_attrs=_new_via_attrs,
+                            via_type=_v.via_type))
                         pcb_data.vias.append(_v)
                         emitted_vias.append(_v)
                     print(f"    {net_name}: exact-fill strap OK (escalated: "
@@ -2609,7 +2632,8 @@ def oracle_reconnect(board_file: str, net_names, config,
             if bkind == 'main':
                 tgt = _largest_track_component_points(pcb_data, net_id)
                 if not tgt:
-                    for p in pcb_data.pads_by_net.get(net_id, []):
+                    from connectivity import routable as _routable1279
+                    for p in _routable1279(pcb_data.pads_by_net.get(net_id, [])):
                         cu = [l for l in p.layers if l.endswith('.Cu')]
                         if p.drill > 0 or '*.Cu' in p.layers:
                             tgt.append((p.global_x, p.global_y, routing_layers[0]))
@@ -2969,8 +2993,7 @@ def oracle_reconnect(board_file: str, net_names, config,
                                 'new_vias': [_Via649(
                                     x=_vx, y=_vy, size=config.via_size,
                                     drill=config.via_drill,
-                                    layers=[routing_layers[0],
-                                            routing_layers[-1]],
+                                    layers=['F.Cu', 'B.Cu'],
                                     net_id=net_id)]}
                         _esc_cfg = config
                         print(f"    {net_name}: stitching via placed at "
@@ -3023,9 +3046,10 @@ def oracle_reconnect(board_file: str, net_names, config,
                     for _v in _evias:
                         new_sexprs.append(generate_via_sexpr(
                             _v.x, _v.y, _v.size, _v.drill,
-                            [routing_layers[0], routing_layers[-1]], net_id,
+                            ['F.Cu', 'B.Cu'], net_id,
                             net_name=net_name if v10 else None,
-                            tenting_attrs=_new_via_attrs))
+                            tenting_attrs=_new_via_attrs,
+                            via_type=_v.via_type))
                         pcb_data.vias.append(_v)
                         emitted_vias.append(_v)
                     print(f"    {net_name}: ({ax:.2f},{ay:.2f})"
@@ -3266,9 +3290,10 @@ def oracle_reconnect(board_file: str, net_names, config,
             for vx, vy in via_positions:
                 new_sexprs.append(generate_via_sexpr(
                     vx, vy, used_via_size, used_via_drill,
-                    [routing_layers[0], routing_layers[-1]], net_id,
+                    ['F.Cu', 'B.Cu'], net_id,
                     net_name=net_name if v10 else None,
-                    tenting_attrs=_new_via_attrs))
+                    tenting_attrs=_new_via_attrs,
+                    via_type=None))   # a via the oracle adds: through
             if via_positions and used_via_size < config.via_size - 1e-9:
                 # #1170: a smaller via is a descent, disclosed in
                 # design_rules like every other site's.
@@ -3291,7 +3316,7 @@ def oracle_reconnect(board_file: str, net_names, config,
             for vx, vy in via_positions:
                 _vobj = _Via(x=vx, y=vy, size=used_via_size,
                              drill=used_via_drill,
-                             layers=[routing_layers[0], routing_layers[-1]],
+                             layers=['F.Cu', 'B.Cu'],
                              net_id=net_id)
                 pcb_data.vias.append(_vobj)
                 emitted_vias.append(_vobj)

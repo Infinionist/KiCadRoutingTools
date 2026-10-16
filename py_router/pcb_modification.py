@@ -10,7 +10,7 @@ import math
 import os
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
-from kicad_parser import PCBData, Segment, Via
+from kicad_parser import PCBData, Segment, Via, is_immutable_copper
 from routing_utils import pos_key, POSITION_DECIMALS, into_pad_frame_point
 from geometry_utils import point_to_segment_distance
 
@@ -20,12 +20,13 @@ _PRUNE_CONN_VERIFY = os.environ.get('PRUNE_CONN_VERIFY')
 
 
 def _locked(item) -> bool:
-    """KiCad `(locked yes)` copper (#521). Every subtractive or rewriting
+    """KiCad `(locked yes)` copper (#521), or copper a `sense:` group holds
+    (#1279, kicad_parser.is_immutable_copper). Every subtractive or rewriting
     cleanup pass treats it exactly as it treats input copper under
     keep_input_copper -- it anchors the models but is never removed, split,
     moved or re-bent -- whether or not keep_input_copper is set (#1261).
-    This run never creates locked copper, so a locked item is input copper."""
-    return bool(getattr(item, 'locked', False))
+    This run never creates such copper, so a locked item is input copper."""
+    return is_immutable_copper(item)
 
 
 def _point_anchored(x: float, y: float, layer: str, via_pts, pad_pts,
@@ -544,6 +545,17 @@ def _own_net_npth_hole_dist(pcb_data, net_id, x1, y1, x2, y2) -> float:
     return best
 
 
+def _sense_copper(item) -> bool:
+    """#1279: copper the bridging passes (close_soft_joints, snap_stub_gaps)
+    never join by geometry -- a protected Kelvin sense branch's member copper
+    and sense pads (`sense`), and the member copper of any `sense:` group the
+    board holds (`held_by`). Same-net copper is invisible to their clearance
+    gates, so a via parked legally at clearance beside a sense pad, or a
+    dead end at clearance from the sense trace, read as a soft joint and was
+    bridged onto it: load current on the sense copper, off the join pad."""
+    return bool(getattr(item, 'sense', '') or getattr(item, 'held_by', ''))
+
+
 def close_soft_joints(results, pcb_data: PCBData, scope_net_ids, config,
                       clearance: float = None) -> int:
     """Bridge same-net SOFT JOINTS with a TINY coincident segment (#soft-joint).
@@ -636,6 +648,8 @@ def close_soft_joints(results, pcb_data: PCBData, scope_net_ids, config,
     for s in pcb_data.segments:
         if scope_net_ids is not None and s.net_id not in scope_net_ids:
             continue
+        if _sense_copper(s):
+            continue  # #1279: never a bridge end
         for (x, y) in ((s.start_x, s.start_y), (s.end_x, s.end_y)):
             if ep_count[(s.net_id, s.layer, rk(x, y))] != 1:
                 continue
@@ -702,15 +716,19 @@ def close_soft_joints(results, pcb_data: PCBData, scope_net_ids, config,
     # Some plane-flow callers pass a minimal namespace config with no
     # track_width (only clearance); fall back to the stock default.
     _vp_tw = getattr(config, 'track_width', 0) or 0.127
-    for vp_net, vlist in via_by_net.items():
+    for vp_net, vobjs in vias_by_net.items():
         if scope_net_ids is not None and vp_net not in scope_net_ids:
             continue
+        # #1279: neither end of the stub may be sense copper.
         vp_pads = [p for p in pcb_data.pads_by_net.get(vp_net, [])
-                   if not getattr(p, 'drill', 0) and p.size_x and p.size_y]
+                   if not getattr(p, 'drill', 0) and p.size_x and p.size_y
+                   and not _sense_copper(p)]
         if not vp_pads:
             continue
         vp_segs = [s for s in pcb_data.segments
                    if s.net_id == vp_net and not getattr(s, 'graphic', False)]
+        vlist = [(v.x, v.y, (getattr(v, "size", 0) or 0) / 2.0)
+                 for v in vobjs if not _sense_copper(v)]
         for vx, vy, vr in vlist:
             if vr <= 0:
                 continue
@@ -768,8 +786,8 @@ def close_soft_joints(results, pcb_data: PCBData, scope_net_ids, config,
     for s in list(pcb_data.segments):
         if scope_net_ids is not None and s.net_id not in scope_net_ids:
             continue
-        if getattr(s, 'graphic', False):
-            continue
+        if getattr(s, 'graphic', False) or _sense_copper(s):
+            continue  # art (#337); sense member copper (#1279)
         w = s.width
         r = w / 2.0
         if r < e416 - 1e-9:
@@ -786,8 +804,8 @@ def close_soft_joints(results, pcb_data: PCBData, scope_net_ids, config,
                 if getattr(pad, 'shape', None) not in ('rect', 'roundrect',
                                                        'oval', 'circle'):
                     continue  # custom-polygon pads have no closed-form web
-                if not pad.size_x or not pad.size_y:
-                    continue
+                if not pad.size_x or not pad.size_y or _sense_copper(pad):
+                    continue  # (a sense pad is never firmed onto, #1279)
                 if not (s.layer in pad.layers or any('*' in L for L in pad.layers)):
                     continue
                 if point_to_pad_distance(ex, ey, pad) < r - 1e-6:
@@ -1135,15 +1153,18 @@ def snap_stub_gaps(results, pcb_data: PCBData, scope_net_ids, config,
                 deg[(s.start_x, s.start_y)] = deg.get((s.start_x, s.start_y), 0) + 1
                 deg[(s.end_x, s.end_y)] = deg.get((s.end_x, s.end_y), 0) + 1
             for s in segs:
+                if _sense_copper(s):
+                    continue  # #1279: sense member copper is never extended
                 for (px, py) in ((s.start_x, s.start_y), (s.end_x, s.end_y)):
                     if deg[(px, py)] != 1:
                         continue
                     w = s.width
                     limit = max_gap_factor * w
                     best = None  # (gap, target_point)
-                    # nearest same-net trace on this layer (a real T-junction)
+                    # nearest same-net trace on this layer (a real T-junction);
+                    # never sense copper (#1279, _sense_copper)
                     for o in segs:
-                        if o is s:
+                        if o is s or _sense_copper(o):
                             continue
                         dx, dy = o.end_x - o.start_x, o.end_y - o.start_y
                         L2 = dx * dx + dy * dy
@@ -1156,6 +1177,8 @@ def snap_stub_gaps(results, pcb_data: PCBData, scope_net_ids, config,
                             best = (g, (fx, fy))
                     # nearest same-net pad on this layer (land on its copper)
                     for pad in net_pads:
+                        if _sense_copper(pad):
+                            continue
                         if not (lyr in pad.layers or any('*' in L for L in pad.layers)):
                             continue
                         # A 'custom'-shaped pad's size is only a bounding box;
@@ -1181,7 +1204,7 @@ def snap_stub_gaps(results, pcb_data: PCBData, scope_net_ids, config,
                     for v in net_vias:
                         dc = math.hypot(px - v.x, py - v.y)
                         r = getattr(v, 'size', 0.0) / 2
-                        if dc < 1e-9:
+                        if dc < 1e-9 or _sense_copper(v):
                             continue
                         ux, uy = (v.x - px) / dc, (v.y - py) / dc
                         tp = (px + ux * max(0.0, dc - 0.9 * r), py + uy * max(0.0, dc - 0.9 * r))
@@ -1458,9 +1481,13 @@ def compute_castellated_landing_retract(pcb, board_edge_clearance: float,
 
     Deliberately skipped: endpoints that coincide with other same-net copper
     endpoints (a joint inside the pad -- moving one side would open the joint),
-    and pads with residual rect tilt (the axis-aligned containment test would
-    lie). Measured against the real Edge.Cuts rings (check_drc's geometry),
-    falling back to the bbox when the board has no usable outline.
+    pads with residual rect tilt (the axis-aligned containment test would
+    lie), and KiCad-locked or `sense:`-held tracks (`_locked`, #521/#1279):
+    the file front strips a moved track and re-emits it under a new uuid,
+    which took a held member out of its group and left the next parse
+    refusing the branch. Measured against the real Edge.Cuts rings
+    (check_drc's geometry), falling back to the bbox when the board has no
+    usable outline.
     """
     from check_drc import board_edge_geometry, _point_to_rings_distance
     pads = [p for fp in pcb.footprints.values() for p in fp.pads
@@ -1499,7 +1526,7 @@ def compute_castellated_landing_retract(pcb, board_edge_clearance: float,
     moves = []
     for s in pcb.segments:
         cands = by_net.get(s.net_id)
-        if not cands:
+        if not cands or _locked(s):
             continue
         for end, (x, y), (ox, oy) in (
                 ('start', (s.start_x, s.start_y), (s.end_x, s.end_y)),
@@ -1735,7 +1762,7 @@ def _prune_sub_cell_slivers(net_id, prunable, vias, pads, zones, eps,
     def _short(s):
         return (math.hypot(s.end_x - s.start_x, s.end_y - s.start_y) < eps
                 and not getattr(s, 'graphic', False)
-                and not getattr(s, 'locked', False))
+                and not _locked(s))
 
     def _grade(segs):
         r = check_net_connectivity(net_id, anchor + list(segs), vias, pads,
@@ -2150,7 +2177,7 @@ def trim_net_stub_debris(pcb_data: PCBData, net_id: int, result, config,
     _new_seg_ids = {id(s) for s in (result.get('new_segments') or [])}
     _new_via_ids = {id(v) for v in (result.get('new_vias') or [])}
     anchor = [s for s in net_segs
-              if getattr(s, 'graphic', False) or getattr(s, 'locked', False)
+              if getattr(s, 'graphic', False) or _locked(s)
               or (_keep_input and id(s) not in _new_seg_ids)]
     prunable = [s for s in net_segs if id(s) not in {id(a) for a in anchor}]
     if vias_only:
@@ -2166,7 +2193,7 @@ def trim_net_stub_debris(pcb_data: PCBData, net_id: int, result, config,
         kept, removed = _restore_soft_joint_bridges(list(kept) + anchor, removed,
                                                     net_vias, pads)
         removed = [s for s in removed if not getattr(s, 'graphic', False)
-                   and not getattr(s, 'locked', False)]
+                   and not _locked(s)]
     kept_all = [s for s in net_segs
                 if id(s) not in {id(x) for x in removed}]
 
@@ -2174,7 +2201,7 @@ def trim_net_stub_debris(pcb_data: PCBData, net_id: int, result, config,
     copper_layers = pcb_data.board_info.copper_layers or ['F.Cu', 'B.Cu']
     via_candidates = [
         v for v in net_vias
-        if not getattr(v, 'locked', False)
+        if not _locked(v)
         and not (_keep_input and id(v) not in _new_via_ids)
         and len(_via_support_layers(v, kept_all, pads, zones,
                                     copper_layers)) <= 1]
@@ -2318,7 +2345,7 @@ class StrictRemovalModel:
         ro = set(readonly_ids or ())
         self.candidates = [i for i, s in enumerate(self.segs)
                            if not getattr(s, 'graphic', False)
-                           and not getattr(s, 'locked', False)
+                           and not _locked(s)
                            and id(s) not in ro]
         self._cand_set = set(self.candidates)
         if not self.candidates or len(self.pads) < 2:
@@ -2352,7 +2379,7 @@ class StrictRemovalModel:
         # --- via grading: check_weird.via_support_parts, the checker's model --
         dropp = set(droppable_via_ids or ())
         self._droppable = {j for j, v in enumerate(self.vias)
-                           if id(v) in dropp and not getattr(v, 'locked', False)}
+                           if id(v) in dropp and not _locked(v)}
         self._via_span = []
         self._via_fixed = []
         self._via_by_layer = []
@@ -2795,7 +2822,7 @@ def sweep_dangling_via_branches(board, net_ids, protected_ids=frozenset(),
                 _soft_joint_pairs(segs, vias, pads))
 
     def keep_out(item):
-        return getattr(item, 'locked', False) or id(item) in protected_ids
+        return _locked(item) or id(item) in protected_ids
 
     def chain_from(v, s0, layer, segs, vias, pads, zones):
         """The segments a dangling via's one layer carries away, or None."""
@@ -5113,7 +5140,17 @@ def smooth_octolinear_chains(results, pcb_data: PCBData, scope_net_ids=None,
         _kys = [p[1] for r in _rings for p in r]
         _kls = _ko.get('layers') or set()
         _keepout_areas.append((_rings, (min(_kxs), min(_kys), max(_kxs), max(_kys)),
-                               set(_kls) if _kls else None))
+                               set(_kls) if _kls else None, None))
+    # Net-filtered keep-outs (net_keepouts.py) bind only some nets; the route
+    # detoured around them for those nets, so a shortcut must not undo it.
+    for _ko in (getattr(pcb_data, '_net_keepouts', None) or []):
+        if _ko.get('tracks_allowed', True):
+            continue
+        _poly = _ko['polygon']
+        _keepout_areas.append(([_poly] + [h for h in (_ko.get('holes') or []) if len(h) >= 3],
+                               (min(p[0] for p in _poly), min(p[1] for p in _poly),
+                                max(p[0] for p in _poly), max(p[1] for p in _poly)),
+                               set(_ko.get('layers') or ()) or None, _ko))
     if getattr(config, 'keepout_enabled', False):
         for _kz in (getattr(pcb_data, 'keepout_zones', None) or []):
             if len(_kz.points) >= 3:
@@ -5121,7 +5158,7 @@ def smooth_octolinear_chains(results, pcb_data: PCBData, scope_net_ids=None,
                 _kys = [p[1] for p in _kz.points]
                 _keepout_areas.append(([list(_kz.points)],
                                        (min(_kxs), min(_kys), max(_kxs), max(_kys)),
-                                       None))
+                                       None, None))
 
     def _ko_on_layer(kls, layer):
         if kls is None:
@@ -5129,13 +5166,17 @@ def smooth_octolinear_chains(results, pcb_data: PCBData, scope_net_ids=None,
         return (layer in kls or '*.Cu' in kls
                 or (layer in ('F.Cu', 'B.Cu') and bool({'F&B.Cu', 'F&B'} & kls)))
 
-    def keepout_clears(x1, y1, x2, y2, layer, w):
+    def keepout_clears(x1, y1, x2, y2, layer, w, net_id=None):
         if not _keepout_areas:
             return True
         from obstacle_map import point_in_polygon, point_to_polygon_edge_distance
+        from net_keepouts import binds as _nk_binds
         margin = clearance + w / 2.0
-        for rings, (kx0, ky0, kx1, ky1), kls in _keepout_areas:
+        _nname = getattr(pcb_data.nets.get(net_id), 'name', '') if net_id is not None else ''
+        for rings, (kx0, ky0, kx1, ky1), kls, nko in _keepout_areas:
             if not _ko_on_layer(kls, layer):
+                continue
+            if nko is not None and not (_nname and _nk_binds(nko, _nname)):
                 continue
             if (max(x1, x2) < kx0 - margin or min(x1, x2) > kx1 + margin or
                     max(y1, y2) < ky0 - margin or min(y1, y2) > ky1 + margin):
@@ -5173,7 +5214,7 @@ def smooth_octolinear_chains(results, pcb_data: PCBData, scope_net_ids=None,
         ok = (d >= eff + w / 2.0 - 1e-4 and
               hd >= npth_clr + w / 2.0 - 1e-4 and
               edge_clears(x1, y1, x2, y2, w) and
-              keepout_clears(x1, y1, x2, y2, layer, w))
+              keepout_clears(x1, y1, x2, y2, layer, w, net_id))
         if _665trace and ok:
             # #665 forensics: re-check the pad distance with a FRESH pad
             # array (cache detached); a disagreement = a stale/poisoned
@@ -5918,7 +5959,7 @@ def merge_collinear_segments(results, pcb_data: PCBData, scope_net_ids=None,
 
         candidates = [s for s in net_segs
                       if not getattr(s, 'graphic', False)
-                      and not getattr(s, 'locked', False)
+                      and not _locked(s)
                       and (not keep_input_copper or id(s) in routed_seg_result)
                       and math.hypot(s.end_x - s.start_x, s.end_y - s.start_y) > 1e-9]
         if len(candidates) < 2:
@@ -7092,12 +7133,27 @@ def merge_close_same_net_vias(all_new_vias, all_new_segments, pcb_data,
     # those positions or each new via matches its own copy at distance 0 and every
     # via gets "merged" away (hackrf: 358 false merges, planes disconnected).
     new_pos = {(round(nv['x'], 4), round(nv['y'], 4)) for nv in all_new_vias}
+    from geometry_utils import via_copper_layers, _copper_order
+    _cu_layers = list(getattr(getattr(pcb_data, 'board_info', None),
+                              'copper_layers', None) or [])
+    if not _cu_layers:
+        # No stack on the board object: span over the layers the vias name
+        # themselves, or an inner layer would drop out of every span and an
+        # empty span would cover anything.
+        _cu_layers = sorted({'F.Cu', 'B.Cu'}
+                            | {ln for v in pcb_data.vias for ln in (v.layers or ())}
+                            | {ln for nv in all_new_vias
+                               for ln in (nv.get('layers') or ())},
+                            key=_copper_order)
     survivors_by_net = {}  # net_id -> [(x, y, drill, span)]
     for v in pcb_data.vias:
         if (round(v.x, 4), round(v.y, 4)) in new_pos:
             continue
+        # The survivor's copper by its TYPE, not its stored pair (found
+        # reviewing #1268): a through via covers every layer, a typed
+        # blind/micro via the run between its ends.
         survivors_by_net.setdefault(v.net_id, []).append(
-            (v.x, v.y, v.drill, _span(v.layers)))
+            (v.x, v.y, v.drill, _span(via_copper_layers(v, _cu_layers))))
     # #479 reuse-audit gap 3: plated THT PAD barrels are reuse targets too --
     # they span every copper layer, and a new via within hole-to-hole of one
     # is the U12.10 class (KiCad's hole_to_hole is net-independent, so the
@@ -7120,7 +7176,7 @@ def merge_close_same_net_vias(all_new_vias, all_new_segments, pcb_data,
         nid = nv['net_id']
         nx, ny = nv['x'], nv['y']
         ndrill = nv.get('drill', 0.0)
-        nspan = _span(nv.get('layers'))
+        nspan = _span(via_copper_layers(nv, _cu_layers))
         survivor = None
         blocked = False
         for (sx, sy, sdrill, sspan) in survivors_by_net.get(nid, []):

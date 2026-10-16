@@ -531,6 +531,96 @@ def test_the_board_area_bound_is_per_face():
           "none, and both print the utilisation")
 
 
+def test_the_board_area_bound_reads_declared_block_faces():
+    """A plan check grades the arrangement the plan declares, not the input
+    pile's incidental footprint layers.
+
+    This is the pre-seed check: generators commonly emit every movable part on
+    F.Cu, while ``blocks[].side`` partitions the intended placement over both
+    faces. Charging that pile to F.Cu rejects a plan whose declared placement
+    fits comfortably.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        big = [(dx, dy, 0.9, 0.9) for dx in range(4) for dy in range(4)]
+        parts = [(f'U{i}', 2 + 4 * (i % 4), 2 + 4 * (i // 4) % 8, big)
+                 for i in range(16)]
+        board = _board(tmp, 'declared-sides.kicad_pcb', parts)
+        blocks = [
+            {'name': 'front', 'refs': [f'U{i}' for i in range(8)],
+             'side': 'F'},
+            {'name': 'back', 'refs': [f'U{i}' for i in range(8, 16)],
+             'side': 'B'},
+        ]
+        found, measured = _check(
+            _raw(blocks=blocks,
+                 legality_budget={'overlap_area': 0, 'oob_count': 0}),
+            board)
+        assert not [v for v in found if v.rule == 'plan_board_overfull'], (
+            found, measured)
+        assert measured['utilisation_per_face_clearance0'] < 0.7, measured
+    print("  PASS: plan-board area follows blocks[].side, not the input "
+          "pile's current face")
+
+
+def test_the_board_area_bound_reads_every_declared_face():
+    """The same pile, with no block declaring a face: four parts are put on
+    B.Cu by `edge_connectors[].side` and four by `fixed_poses[].side`.
+    `place_intent_sides` applies all three kinds of claim, so the plan is
+    priced on all three (`declared_side_claims`) -- read from blocks alone,
+    every part stayed on F.Cu (utilisation 1.2168) and the plan was refused.
+    A ref whose claims disagree is priced on its board face."""
+    with tempfile.TemporaryDirectory() as tmp:
+        big = [(dx, dy, 0.9, 0.9) for dx in range(4) for dy in range(4)]
+        parts = [(f'U{i}', 2 + 4 * (i % 4), 2 + 4 * (i // 4) % 8, big)
+                 for i in range(16)]
+        board = _board(tmp, 'declared-faces.kicad_pcb', parts)
+        edges = [{'ref': f'U{i}', 'side': 'B'} for i in range(4)]
+        fixed = [{'ref': f'U{i}', 'x': 2 + 4 * (i - 4), 'y': 6, 'side': 'B',
+                  'basis': 'declared'} for i in range(4, 8)]
+        budget = {'overlap_area': 0, 'oob_count': 0}
+        found, measured = _check(
+            _raw(edge_connectors=edges, fixed_poses=fixed,
+                 legality_budget=budget), board)
+        assert not [v for v in found if v.rule == 'plan_board_overfull'], (
+            found, measured)
+        assert measured['utilisation_per_face_clearance0'] < 0.7, measured
+        # U0 also claimed for F.Cu by a block: priced on its board face, so
+        # nine parts are charged to F.Cu and seven to B.Cu.
+        blocks = [{'name': 'front', 'refs': ['U0'], 'side': 'F'}]
+        _found, measured2 = _check(
+            _raw(blocks=blocks, edge_connectors=edges, fixed_poses=fixed,
+                 legality_budget=budget), board)
+        per_face = measured2['outline_area_per_face_mm2']
+        assert abs(per_face['F'] * 7 - per_face['B'] * 9) < 1e-6, measured2
+    print("  PASS: edge_connectors[].side and fixed_poses[].side move the "
+          "board area bound too; a contradicted ref stays on its board face")
+
+
+def test_the_forced_overlap_is_measured_on_the_declared_faces():
+    """SOUNDNESS. Fourteen of the sixteen parts declared on B.Cu force
+    212.94 - 200 = 12.94 mm2 of overlap there, inside a 20 mm2 budget, so
+    the plan is satisfiable. The ERROR's own measurement -- the graded
+    outlines per face -- once read the pile's faces: all sixteen on F.Cu,
+    43.36 mm2 forced, and an ERROR (place_seed exit 5) on this plan."""
+    with tempfile.TemporaryDirectory() as tmp:
+        big = [(dx, dy, 0.9, 0.9) for dx in range(4) for dy in range(4)]
+        parts = [(f'U{i}', 2 + 4 * (i % 4), 2 + 4 * (i // 4) % 8, big)
+                 for i in range(16)]
+        board = _board(tmp, 'declared-busy-back.kicad_pcb', parts)
+        blocks = [{'name': 'back', 'refs': [f'U{i}' for i in range(14)],
+                   'side': 'B'}]
+        found, measured = _check(
+            _raw(blocks=blocks,
+                 legality_budget={'overlap_area': 20, 'oob_count': 0}),
+            board)
+        assert not [v for v in found if v.rule == 'plan_board_overfull'], (
+            found, measured)
+        assert measured['outline_area_per_face_mm2'] == {
+            'B': 212.94, 'F': 30.42}, measured
+    print("  PASS: 12.94 mm2 forced on the declared back face, inside the "
+          "20 mm2 budget, is not an ERROR")
+
+
 def test_place_seed_refuses_before_writing_and_repair_only_reports():
     with tempfile.TemporaryDirectory() as tmp:
         b = _board(tmp, 'o.kicad_pcb', [('U1', 3, 3, PAD), ('U2', 6, 3, PAD)])
@@ -588,7 +678,8 @@ def test_place_seed_refuses_before_writing_and_repair_only_reports():
     # so the seeder can name the member it could not seat (#701's contract).
     assert fp.PLAN_SEED_REFUSES == {
         'plan_zone_overfull', 'plan_edge_overfull', 'plan_board_overfull',
-        'block_glob_literal'}, fp.PLAN_SEED_REFUSES
+        'block_glob_literal',
+        'plan_fixed_pose_conflict'}, fp.PLAN_SEED_REFUSES
     with tempfile.TemporaryDirectory() as tmp:
         b = _board(tmp, 'k.kicad_pcb', [('U1', 3, 3, PAD)])
         plan = os.path.join(tmp, 'p.json')
@@ -691,6 +782,111 @@ def test_plan_only_on_a_true_pile_and_its_exit_4():
         assert s['plan_errors'] >= 1, s
     print("  PASS: a true pile grades exit 3 but plans exit 0; an "
           "unsatisfiable plan is --plan-only exit 4")
+
+
+def test_plan_only_refuses_conflicting_exact_anchors():
+    """Two movable parts are harmless at their input poses, but their exact
+    declarations put different-net pads on top of one another. The CLI must
+    catch the future contradiction, not merely grade the current board."""
+    with tempfile.TemporaryDirectory() as tmp:
+        board = _board(tmp, 'fixed-clash.kicad_pcb',
+                       [('U1', 3, 3, PAD), ('U2', 7, 3, PAD)])
+        plan = os.path.join(tmp, 'fixed-clash.json')
+        fixed = [
+            {'ref': ref, 'x': 5, 'y': 5, 'rot': 0,
+             'basis': 'declared'} for ref in ('U1', 'U2')]
+        with open(plan, 'w', encoding='utf-8') as fh:
+            json.dump(_raw(fixed_poses=fixed), fh)
+        r = run_utils.check(
+            [sys.executable, '-X', 'utf8',
+             run_utils.tool('check_floorplan.py'), board, '--intent', plan,
+             '--plan-only', '--no-brief', '--no-mechanical'],
+            refuse='plan_fixed_pose_conflict', code=4)
+        line = [x for x in r.stdout.splitlines()
+                if x.startswith('JSON_SUMMARY:')][-1]
+        summary = json.loads(line.split('JSON_SUMMARY: ', 1)[1])
+        assert summary['plan_findings_by_rule'][
+            'plan_fixed_pose_conflict'] == 1, summary
+    print("  PASS: --plan-only exits 4 before two conflicting exact anchors "
+          "reach the seeder")
+
+
+#: Two 2-pad parts, each on its own pair of nets, whose courtyard (3.0 x 1.2)
+#: encloses its pads (0.8 x 0.8 at x = +-0.9). `%(side)s` puts a part on a face.
+PAIR_BOARD = '''(kicad_pcb
+ (version 20241229)
+ (net 0 "") (net 1 "/A") (net 2 "/B") (net 3 "/C") (net 4 "/D")
+ (layers (0 "F.Cu" signal) (31 "B.Cu" signal))
+ (gr_rect (start 0 0) (end 30 20) (layer "Edge.Cuts") (uuid "e1"))
+%s)
+'''
+PAIR_FP = ('''  (footprint "t:R" (layer "%(side)s.Cu") (uuid "fp-%(r)s") (at %(x)s 5)
+   (property "Reference" "%(r)s" (at 0 0 0))
+   (fp_rect (start -1.5 -0.6) (end 1.5 0.6) (layer "%(side)s.CrtYd") (uuid "c-%(r)s"))
+   (pad "1" smd rect (at -0.9 0) (size 0.8 0.8) (layers "%(side)s.Cu") (net %(a)s "/%(na)s") (uuid "%(r)s1"))
+   (pad "2" smd rect (at 0.9 0) (size 0.8 0.8) (layers "%(side)s.Cu") (net %(b)s "/%(nb)s") (uuid "%(r)s2"))
+  )
+''')
+
+
+def _pair_board(tmp, side2='F'):
+    parts = (PAIR_FP % dict(r='R1', x=25, a=1, na='A', b=2, nb='B', side='F')
+             + PAIR_FP % dict(r='R2', x=5, a=3, na='C', b=4, nb='D',
+                              side=side2))
+    path = os.path.join(tmp, f'pair_{side2}.kicad_pcb')
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write(PAIR_BOARD % parts)
+    return path
+
+
+def _pair_conflicts(board, x2, waive=False):
+    """`plan_fixed_pose_conflict` findings for R1 declared at (10, 10) and R2
+    at (x2, 10), R1's entry waiving R2's courtyard when `waive`."""
+    r1 = {'ref': 'R1', 'x': 10.0, 'y': 10.0, 'rot': 0, 'basis': 'declared'}
+    if waive:
+        r1.update(accept_courtyard_overlap=['R2'],
+                  why='the two parts share a keep-out by design')
+    it = fp.intent_from_dict(_raw(fixed_poses=[
+        r1, {'ref': 'R2', 'x': x2, 'y': 10.0, 'rot': 0,
+             'basis': 'declared'}]), '')
+    found, _measured = fp.plan_check(
+        it, parse_kicad_pcb(board), board, group_sources=(),
+        clearance=0.2, board_edge_clearance=0.1)
+    return [v for v in found if v.rule == 'plan_fixed_pose_conflict']
+
+
+def test_plan_check_refuses_a_pair_of_contradictory_fixed_poses():
+    """Preflight must compare exact anchors with the same geometry stage 0
+    uses. Two same-face declarations at one pose are impossible and refuse
+    before seeding; two SMD parts on opposite faces may share that pose."""
+    with tempfile.TemporaryDirectory() as tmp:
+        clashes = _pair_conflicts(_pair_board(tmp), 10.0)
+        assert len(clashes) == 1 and clashes[0].severity == fp.ERROR, clashes
+        assert clashes[0].measured['pair'] == ['R1', 'R2'], clashes[0]
+        assert 'R1' in clashes[0].message and 'R2' in clashes[0].message
+        assert not _pair_conflicts(_pair_board(tmp, side2='B'), 10.0)
+    print("  PASS: plan_check refuses one same-face fixed-pose clash and "
+          "permits the same SMD pose across opposite faces")
+
+
+def test_a_courtyard_waiver_licenses_the_courtyards_only():
+    """Stage 0's #1060 waiver, honoured the way stage 0 honours it. R2 at
+    x = 12.9 overlaps R1's courtyard by 0.1 x 1.2 mm while their pads keep
+    0.3 mm: refused, and licensed by `accept_courtyard_overlap`. At x = 11.5
+    the pads short, which no courtyard waiver licenses."""
+    with tempfile.TemporaryDirectory() as tmp:
+        board = _pair_board(tmp)
+        bare = _pair_conflicts(board, 12.9)
+        assert len(bare) == 1, bare
+        assert 'courtyard overlaps R2' in bare[0].measured['reason'], bare
+        assert 'pad' not in bare[0].measured['reason'], bare
+        assert not _pair_conflicts(board, 12.9, waive=True)
+        shorted = _pair_conflicts(board, 11.5, waive=True)
+        assert len(shorted) == 1, shorted
+        assert "pads short R2's" in shorted[0].measured['reason'], shorted
+        assert 'courtyard' not in shorted[0].measured['reason'], shorted
+    print("  PASS: the waiver licenses a courtyard-only clash; shorted pads "
+          "are refused under it")
 
 
 def test_plan_check_refuses_no_emitted_corpus_intent():
@@ -930,9 +1126,15 @@ TESTS = [
     test_the_area_bound_is_sound_for_the_grade,
     test_the_edge_bound_reads_pads_not_courtyards,
     test_the_board_area_bound_is_per_face,
+    test_the_board_area_bound_reads_declared_block_faces,
+    test_the_board_area_bound_reads_every_declared_face,
+    test_the_forced_overlap_is_measured_on_the_declared_faces,
     test_place_seed_refuses_before_writing_and_repair_only_reports,
     test_plan_only_on_a_pile,
     test_plan_only_on_a_true_pile_and_its_exit_4,
+    test_plan_only_refuses_conflicting_exact_anchors,
+    test_plan_check_refuses_a_pair_of_contradictory_fixed_poses,
+    test_a_courtyard_waiver_licenses_the_courtyards_only,
     test_plan_check_refuses_no_emitted_corpus_intent,
 ]
 

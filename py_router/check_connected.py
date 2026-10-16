@@ -100,7 +100,7 @@ def matches_any_pattern(name: str, patterns: List[str]) -> bool:
     return False
 
 
-from geometry_utils import UnionFind, segment_to_segment_distance
+from geometry_utils import UnionFind, segment_to_segment_distance, segments_intersect
 
 
 def points_match(x1: float, y1: float, x2: float, y2: float, tolerance: float = 0.02) -> bool:
@@ -1184,13 +1184,11 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
     via_point_ids = {}      # via_idx -> every point id of the via (one per layer)
     via_copper_layers = {}  # via_idx -> set of copper layers the via spans
     for via_idx, via in enumerate(vias):
-        if via.layers:
-            if 'F.Cu' in via.layers and 'B.Cu' in via.layers:
-                via_layers = all_copper_layers
-            else:
-                via_layers = via.layers
-        else:
-            via_layers = all_copper_layers
+        # A through via joins every layer whatever pair it carries; a typed
+        # blind/micro via the run between its ends -- not just its two ends
+        # (found reviewing #1268).
+        from geometry_utils import via_copper_layers as _via_cu
+        via_layers = _via_cu(via, all_copper_layers) or all_copper_layers
 
         via_size = getattr(via, 'size', 0.6)  # Default via size if not available
         via_ids = []
@@ -1593,6 +1591,30 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
             if point_on_segment(px, py, seg.start_x, seg.start_y, seg.end_x, seg.end_y, seg_tolerance):
                 # Connect this point to the segment (via one of its endpoints)
                 _union(pid, seg_start_id)
+
+    # Two same-layer tracks whose centrelines CROSS mid-span overlap in
+    # copper, and KiCad connects them, but neither endpoint lies on the other
+    # track, so the T-junction rule above misses an X crossing (a load track
+    # crossing a Kelvin sense trace graded as two islands, #1279 review).
+    # Two straight tracks that do not cross are closest at an endpoint of one
+    # of them, which that rule already credits, so a proper crossing is the
+    # one case left. A crossing point lies in a cell both tracks index, so
+    # pairs sharing a cell suffice; a cell whose tracks already share one
+    # component costs one find() per track.
+    for _cell_items in seg_index.grid.values():
+        if len(_cell_items) < 2:
+            continue
+        _roots = [uf.find(_sid) for _s, _sid in _cell_items]
+        if len(set(_roots)) < 2:
+            continue
+        for _i in range(len(_cell_items) - 1):
+            _sa, _ida = _cell_items[_i]
+            for _sb, _idb in _cell_items[_i + 1:]:
+                if uf.find(_ida) == uf.find(_idb):
+                    continue
+                if segments_intersect(_sa.start_x, _sa.start_y, _sa.end_x, _sa.end_y,
+                                      _sb.start_x, _sb.start_y, _sb.end_x, _sb.end_y):
+                    _union(_ida, _idb)
 
     # Optional reusable graph for exclusion re-evaluation (see _union note).
     # pad_index_repr maps each input pad's INDEX to a representative point id,

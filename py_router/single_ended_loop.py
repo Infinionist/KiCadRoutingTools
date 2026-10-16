@@ -80,7 +80,8 @@ from net_queries import get_chip_pad_positions, calculate_route_length
 from pcb_modification import add_route_to_pcb_data, remove_route_from_pcb_data
 from single_ended_routing import (route_net_with_obstacles,
                                   route_multipoint_main, route_oracle_links,
-                                  deferred_diagnostics, flush_diagnostics)
+                                  deferred_diagnostics, flush_diagnostics,
+                                  uncommit_dropped_result)
 from blocking_analysis import analyze_frontier_blocking, print_blocking_analysis, filter_rippable_blockers, invalidate_obstacle_cache, record_frontier_blocking
 from protected_nets import rip_refusal
 from rip_up_reroute import rip_up_net, restore_net
@@ -391,6 +392,13 @@ def _stub_swap_rescue(pcb_data, net_id, config, state, results,
                 continue
             new_vias, seg_mods = apply_stub_layer_switch(
                 pcb_data, stub, dest, config, debug=False)
+            # The pad via must clear every existing hole (same net included)
+            # by hole-to-hole -- the same funnel as the optimizer sites.
+            from layer_swap_optimization import _swap_vias_fit_or_shrink
+            if new_vias and not _swap_vias_fit_or_shrink(pcb_data, new_vias, config):
+                revert_stub_layer_switch(pcb_data, seg_mods, new_vias)
+                _restore_rips(rips)
+                continue
             result = _route_on_prepared_map(pcb_data, net_id, config, state,
                                             routed_net_ids,
                                             track_proximity_cache, layer_map)
@@ -1056,11 +1064,14 @@ def route_single_ended_nets(
                                 # Validator-proved blocker that is PRE-EXISTING
                                 # copper: surface the rip-existing hint NOW
                                 # instead of only after the ladder exhausts --
-                                # unless it is KiCad-locked, which no flag
-                                # authorizes (#1261).
-                                from protected_nets import cached_protection_map
-                                if cached_protection_map(pcb_data).get(_bn) == 'locked':
-                                    _protected_blame.append(f"{_bn!r} (locked)")
+                                # unless it is KiCad-locked or held by a
+                                # `sense:` group, which no flag authorizes
+                                # (#1261, #1279).
+                                from protected_nets import (cached_protection_map,
+                                                            never_lifts)
+                                _bwhy = cached_protection_map(pcb_data).get(_bn)
+                                if never_lifts(_bwhy):
+                                    _protected_blame.append(f"{_bn!r} ({_bwhy})")
                                 else:
                                     _unrippable_blame.append(_bn)
                                 continue
@@ -1481,6 +1492,9 @@ def route_single_ended_nets(
                                                                              state.net_obstacles_cache[_rid])
                                         _eager_ok.append((_rid, _pr))
                                         continue
+                                    # Probe mode drops the reroute; its #189
+                                    # unblock copper (#803) goes with it.
+                                    uncommit_dropped_result(pcb_data, _pr)
                                     if _p_via_cells is not None:
                                         restore_obstacles_inplace(state.working_obstacles, _rid,
                                                                   state.net_obstacles_cache, _p_via_cells)

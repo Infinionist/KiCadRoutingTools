@@ -85,6 +85,10 @@ REFUSED_TOOLS = {
         '(`replicate`, #1211); the plan format has no placement step, and a '
         'pose is a decision rather than a replayable parameter set. Run it on '
         'the CLI and start the plan from its output'),
+    'place_intent_sides.py': (
+        'mirrors parts onto the faces a floorplan intent declares (#1280); '
+        'the plan format has no placement step. Run it BEFORE the plan and '
+        'start the plan from its output'),
     'render_placement.py': (
         'renders a PNG; it changes no board and has nothing to replay'),
     'beautify_labels.py': (
@@ -133,6 +137,15 @@ REFUSED_TOOLS = {
         'plans and lays one awx escape for every signal ball of an array; the '
         'plan\'s fanout step is bga_fanout / qfn_fanout, not this. Run it on '
         'the CLI and start the plan from its output'),
+    'dogbone_arrays.py': (
+        'dog-bones every netted ball of an awx bus\'s two arrays, the base of '
+        'route_bus --escape; the plan\'s fanout step is bga_fanout / '
+        'qfn_fanout, not this. Run it on the CLI and start the plan from its '
+        'output'),
+    'escape_plan.py': (
+        'plans and lays an awx escape fanout on a dog-boned array pair, a '
+        'stage of route_bus --escape; the plan format has no bus step. Run it '
+        'on the CLI and start the plan from its output'),
     'braid.py': (
         'emits the awx braid for a fanned-out bus; the plan format has no bus '
         'step. Run it on the CLI and start the plan from its output'),

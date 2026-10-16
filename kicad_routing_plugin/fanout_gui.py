@@ -1636,6 +1636,10 @@ class FanoutTab(wx.Panel):
                         footprint, self.pcb_data, **kwargs)
                     vias_to_remove = None
                     skipped = list(qfn_fanout.LAST_CANCEL_SKIPPED)
+                # #857: the Design rules line bga_fanout.py / qfn_fanout.py
+                # print (the exit code is the CLI's alone).
+                from fab_tiers import finish_design_rules
+                finish_design_rules(None, 0)
                 self._operation_result = {
                     'tracks': tracks, 'vias': vias, 'failed': failed,
                     'vias_to_remove': vias_to_remove, 'skipped': skipped}
@@ -2147,10 +2151,10 @@ class FanoutTab(wx.Panel):
             via.SetDrill(mm_to_iu(via_dict['drill']))
             via.SetNetCode(via_dict['net_id'])
             if 'layers' in via_dict and len(via_dict['layers']) >= 2:
-                via.SetLayerPair(
-                    get_layer_id(via_dict['layers'][0]),
-                    get_layer_id(via_dict['layers'][1])
-                )
+                from .gui_utils import set_via_layers
+                set_via_layers(via, get_layer_id(via_dict['layers'][0]),
+                               get_layer_id(via_dict['layers'][1]),
+                               via_dict.get('via_type'))
             # Keep a re-placed via's own tenting/plugging/filling (#489 §8).
             from .gui_utils import apply_via_protection
             apply_via_protection(via, via_dict.get('tenting_attrs'))
@@ -2533,6 +2537,8 @@ class FanoutTab(wx.Panel):
                 # of the round trip does not currently carry a spec at all.
                 # #751.
                 moved_attrs = vd.get('tenting_attrs')
+                # The moved via's type: the dict's, else the live via's own.
+                moved_type = vd.get('via_type')
                 for track in list(board.GetTracks()):
                     if track.GetClass() != 'PCB_VIA':
                         continue
@@ -2557,6 +2563,9 @@ class FanoutTab(wx.Panel):
                                     via_protection_attrs_from_board_file(board))
                             except Exception:
                                 moved_attrs = None
+                        if moved_type is None:
+                            from kicad_parser import pcbnew_via_type
+                            moved_type = pcbnew_via_type(track)
                         board.RemoveNative(track)
                         break
                 nv = pcbnew.PCB_VIA(board)
@@ -2566,8 +2575,9 @@ class FanoutTab(wx.Panel):
                 nv.SetDrill(mm_to_iu(vd['drill']))
                 nv.SetNetCode(vd['net_id'])
                 if len(vd.get('layers', [])) >= 2:
-                    nv.SetLayerPair(_layer_id(vd['layers'][0]),
-                                    _layer_id(vd['layers'][1]))
+                    from .gui_utils import set_via_layers
+                    set_via_layers(nv, _layer_id(vd['layers'][0]),
+                                   _layer_id(vd['layers'][1]), moved_type)
                 from .gui_utils import apply_via_protection
                 apply_via_protection(nv, moved_attrs)
                 board.Add(nv)

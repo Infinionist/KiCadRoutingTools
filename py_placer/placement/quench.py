@@ -2284,7 +2284,11 @@ class QuenchState:
                 # inside) on a board that declares none with tracks
                 # forbidden.
                 keepouts=legality.RuleAreaKeepouts.for_board(
-                    pcb_data, clearance, pcb_file))
+                    pcb_data, clearance, pcb_file),
+                # #1266: footprint graphic copper (a SOT-89 tab), charged
+                # against other parts' pads; empty on most boards.
+                graphics=legality.build_part_graphics(
+                    pcb_data, refs=set(part_pads)))
 
         # net -> refs touching it, as a SORTED LIST, not a set (#457).
         #
@@ -2354,6 +2358,12 @@ class QuenchState:
         # board than it, each one refused by the re-grade against the input.
         # Not cleared by a move: it is a fact about the caller's baseline.
         self.incumbent_at: Dict[str, Tuple[float, float, float]] = {}
+        # #1277: refs whose escape branch a caller has CLOSED, so
+        # `candidate_valid` admits for them only what the ordinary gate
+        # admits. Empty for every caller but one: the snap ranker
+        # (`pose_ops._rank`), which ranks a part whose input pose is off the
+        # board once with the branch closed, ahead of the licensed ranking.
+        self.escape_closed: Set[str] = set()
         # ref -> ids of the milled rings its OWN pads sit inside (#628). Keyed
         # on the SEED pose, so unlike _inc_violation this NEVER invalidates.
         self._owned_rings_cache: Dict[str, frozenset] = {}
@@ -3510,10 +3520,10 @@ class QuenchState:
         # candidate of this part until something moves. Without the cache this
         # branch runs a full neighbour sweep per rejected candidate, which on a
         # dense board is most of them.
-        cur_board, cur_overlap = self._incumbent_violation(ref,
-                                                           exclude=exclude)
-        if cur_overlap > EPS_IMPROVE or cur_board <= EPS_IMPROVE:
-            # Overlapping, or already legal: original rule, legal poses only.
+        cur_board = self.escape_board_term(ref, exclude=exclude)
+        if cur_board is None:
+            # Overlapping, already legal, or closed by the caller (#1277):
+            # original rule, legal poses only.
             return False
         cand_board, cand_overlap = self.violation_parts(
             ref, x, y, rot, exclude=exclude, limit=cur_board)
@@ -3941,6 +3951,10 @@ class QuenchState:
             return False
         if cur.pad_overlap and not base.pad_overlap:
             return False
+        # #1266: pads on the other part's graphic copper, on their own licence
+        if cur.gpad > base.gpad + EPS_IMPROVE or (cur.gstack
+                                                  and not base.gstack):
+            return False
         return cur.hole <= base.hole + EPS_IMPROVE
 
     def _incumbent_violation(self, ref, exclude=None):
@@ -3972,6 +3986,24 @@ class QuenchState:
                  else self.violation_parts(ref, *at, exclude=exclude))
             self._inc_violation[key] = v
         return v
+
+    def escape_board_term(self, ref, exclude=None) -> Optional[float]:
+        """The incumbent's board term when `candidate_valid`'s off-board
+        escape branch is OPEN for `ref`, else None (#1277).
+
+        Open means the incumbent (`_incumbent_pose`) is off the board without
+        overlapping anything, and no caller has closed the branch
+        (`escape_closed`). Only then can the branch admit a pose the ordinary
+        gate refuses: a pose with a smaller board term than this value. It is
+        the branch's own test, so a caller asking "is my part's input pose
+        off the board" gets the answer the ranking will act on."""
+        if ref in self.escape_closed:
+            return None
+        cur_board, cur_overlap = self._incumbent_violation(ref,
+                                                           exclude=exclude)
+        if cur_overlap > EPS_IMPROVE or cur_board <= EPS_IMPROVE:
+            return None
+        return cur_board
 
     def _incumbent_pose(self, ref) -> Tuple[float, float, float]:
         """#1259: the pose `candidate_valid`'s escape branch measures as the
@@ -4703,11 +4735,18 @@ class QuenchState:
             pp = self.legality_ctx.parts.get(ref)
             if pp is None:
                 return []
+            # #1266: and the part's footprint graphic copper, which
+            # `pair_shortfall` charges and which can reach past every pad
+            # (esp_prog U2's tab runs 4 mm beyond its pins).
+            gr = self.legality_ctx.graphics.get(ref)
             out = []
             for r in rots:
                 e = pp.extent_local(r)
                 if e is not None:
                     out.append(e)
+                g = gr.extent_local(r) if gr is not None else None
+                if g is not None:
+                    out.append(g)
             return out
 
         geom = {}
@@ -4724,6 +4763,11 @@ class QuenchState:
                     if pe is not None:
                         box = (min(box[0], pe[0]), min(box[1], pe[1]),
                                max(box[2], pe[2]), max(box[3], pe[3]))
+                    gr = self.legality_ctx.graphics.get(ref)   # #1266
+                    ge = gr.extent(p.x, p.y, p.rot) if gr is not None else None
+                    if ge is not None:
+                        box = (min(box[0], ge[0]), min(box[1], ge[1]),
+                               max(box[2], ge[2]), max(box[3], ge[3]))
                 geom[ref] = (box, 0.0)
             else:
                 boxes = [p.bounds_by_rot[r] if r in p.bounds_by_rot

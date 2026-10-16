@@ -214,6 +214,15 @@ setback   = centerline_setback (if set) else 4 × (track_width + diff_pair_gap)/
 - A **multi-point** pair defers short legs individually; if *every* leg is
   short the whole pair is left for single-ended.
 
+Being short is not the only way a pair is left whole for single-ended: a
+multi-point pair whose coupled chain cannot be routed at all is deferred as
+the fallback (#165), and so is a 2-terminal pair whose coupled route failed.
+Each such pair is listed in `single_ended_diff_pairs` with `pair_reports[]`
+`outcome: "deferred"`, and its `failure_reason` says which: `electrically-short`,
+`coupled-route-failed` (the multi-point fallback), or the 2-terminal pair's
+own failure code. The end-of-run `Single-ended:` line and the GUI's completion
+dialog count the deferred pairs by that reason.
+
 **Why the 3 mm absolute floor.** The geometric term alone (`5 × setback =
 10 × (width+gap)` in the auto case) drops to only ~2 mm at tight pitch, which
 is *below* the length at which coupling matters electrically. Below ~λ/10 at
@@ -282,12 +291,20 @@ extra_clearance = (track_width + diff_pair_gap) / 2 + track_width / 2
 ```
 
 This accounts for the P/N track offset (half the track-to-track spacing) plus half the track width.
+The map carries this one offset, the call's, for every layer. A layer wider than the
+pair's own width (an `--impedance` outer layer above `--track-width`) runs at its own
+wider pitch (below), so a segment of it that comes inside a neighbour's clearance is
+necked there when it is emitted, the same fab-floored neck the terminal legs get.
 
 ## P/N Path Generation
 
 ### Perpendicular Offsets
 
-P and N paths are created as perpendicular offsets from the simplified centerline:
+P and N paths are created as perpendicular offsets from the simplified centerline.
+The offset is half the P/N centre pitch, `(width + gap) / 2`. With per-layer widths
+(an `--impedance` solve, a stored impedance declaration, or a layer-scoped
+`.kicad_dru` width rule) it is taken per layer from that layer's own width
+(`layer_pair_spacing`), so a narrower stripline layer keeps the declared gap:
 
 ```python
 def create_parallel_path_float(centerline_path, coord, sign, spacing_mm, start_dir, end_dir):
@@ -305,6 +322,19 @@ def create_parallel_path_float(centerline_path, coord, sign, spacing_mm, start_d
         perp_y = dx * sign * spacing_mm * corner_scale
         result.append((x + perp_x, y + perp_y, layer))
 ```
+
+A layer-scoped `.kicad_dru` rule such as
+`(rule "strip" (layer "In2.Cu") (constraint track_width (opt 0.154mm)))` sets the
+pair width on that layer when neither `--track-width` nor `--impedance` is given
+(the GUI: the width override unchecked) and no stored impedance is reapplied, as
+`route.py` does for single-ended nets. Each member is resolved as KiCad resolves a
+coupled-pair track: its net class's `diff_pair_width`, then the rules that match it
+on that layer, clamped into their min/max and the fab floor. A layer no rule scopes
+therefore keeps the class pair width, not the class's single-ended track width. The
+run prints `Design-rule layer widths: ...`. The engine draws one width per layer per
+call, so when the targeted pairs resolve different widths on a layer (pairs in
+different classes, a rule scoped to some of them) the rules are not applied and the
+run prints a NOTE naming the layer; route each group of pairs in its own call.
 
 ### Corner Handling (Miters)
 
@@ -428,6 +458,11 @@ Main N track ────┘
 The approach/exit positions are calculated to:
 1. Maintain track-via clearance from the inner via
 2. Keep P and N tracks at constant diff pair spacing
+
+With per-layer widths both are per layer: the approach runs at the incoming
+layer's pitch and clears the via at that layer's width, the exit likewise on the
+outgoing layer, and the via offset is large enough for every routable layer's
+tracks to clear the partner via at their own pitch.
 
 ```python
 # Determine which via is "inner" (closer to turn direction)
@@ -600,7 +635,7 @@ This helps visualize the routing structure without affecting the actual routed c
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--diff-pair-gap` | 0.101 | Gap between P and N traces (mm). Raised, never lowered, to the clearance (#441), the pair's net class (#530) and any `.kicad_dru` clearance rule that binds the pair on a layer it routes on (#1145): KiCad grades P against N as two nets |
+| `--diff-pair-gap` | board class, else 0.101 | Gap between P and N traces (mm). Omitted (the GUI: override unchecked), each pair takes its net class's `diff_pair_gap` and the call the Default class's; a class that leaves it unset inherits Default's, and a 0 is unset, falling back to the class clearance (the same rule makes an omitted `--track-width` the class `diff_pair_width`, else the class track width). Raised, never lowered, to the clearance (#441), the pair's net class (#530) and any `.kicad_dru` clearance rule that binds the pair on a layer it routes on (#1145): KiCad grades P against N as two nets |
 | `--diff-pair-centerline-setback` | 2x P-N dist | Distance in front of stubs to start centerline (mm) |
 | `--min-turning-radius` | 0.2 | Minimum turning radius for pose-based routing (mm) |
 | `--max-turn-angle` | 180 | Max cumulative turn angle (degrees) to prevent U-turns |

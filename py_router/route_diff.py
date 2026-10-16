@@ -225,6 +225,35 @@ def protection_candidates(routed_results, pcb_data, pairs=None):
     return out
 
 
+def diff_cleanup_scope(pairs, routed_results, single_ended_nets, member_connected):
+    """The net ids route_diff's post-route cleanup (dead-end sweep and the rest)
+    may touch: the members of every pair routed in this run, except copper a
+    later single-ended pass still needs. A pair whose copper is single-ended
+    FALLBACK copper, or a multipoint pair whose far terminals were PEELED for
+    the single-ended follow-up (`single_ended_nets`, the run's
+    state.diff_pair_single_ended_nets), is swept only when BOTH members ended
+    fully connected (`member_connected(net_id)`) -- a 'partial' member's
+    remaining stubs are load-bearing for the downstream pass, exactly like a
+    deferred pair's. h616_lpddr4's /DRAM/SCK (U1, two U2 ball pairs, R4, C7):
+    its coupled U1->R4 leg ends on R4's B.Cu pads through the stub-swap vias
+    the writer adds later, so at the sweep it dangled, all 30 of its segments
+    were trimmed, and the pair went to route.py bare."""
+    scope = set()
+    for _pn, pair in pairs:
+        rr_p = routed_results.get(pair.p_net_id)
+        rr_n = routed_results.get(pair.n_net_id)
+        if rr_p is None or rr_n is None:
+            continue
+        if (rr_p.get('se_member_fallback') or rr_n.get('se_member_fallback')
+                or pair.p_net_id in single_ended_nets
+                or pair.n_net_id in single_ended_nets):
+            if not (member_connected(pair.p_net_id) and member_connected(pair.n_net_id)):
+                continue
+        scope.add(pair.p_net_id)
+        scope.add(pair.n_net_id)
+    return scope
+
+
 def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[str],
                 layers: List[str] = None,
                 # #530: cap every auto-read net class at this clearance (the
@@ -435,6 +464,9 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         pcb_data = parse_kicad_pcb(input_file, keepout_layer=keepout_layer)
     else:
         print("Using provided PCB data...")
+    # #1279: the board's `sense:<REF>.<PAD>` groups -- protected, or why not.
+    from sense_branch import report as _sense_report
+    _sense_report(pcb_data)
     from rip_up_reroute import reset_run_ledgers, mark_input_copper
     reset_run_ledgers(pcb_data)
     mark_input_copper(pcb_data)  # #980
@@ -480,6 +512,14 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     if layers is None:
         layers = ['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu']  # Default 4-layer signal stack
     print(f"Using {len(layers)} routing layers: {layers}")
+
+    # One cost per requested layer, or the full-stack append below puts its
+    # FORBIDDEN entries on the wrong layers (routing_config.layer_costs_count_error).
+    from routing_config import layer_costs_count_error
+    _lc_err = layer_costs_count_error(layers, layer_costs)
+    if _lc_err:
+        from routing_exceptions import LayerCostsCountError
+        raise LayerCostsCountError(_lc_err)
 
     # Per-layer cost multipliers bias which layer(s) coupled diff pairs prefer
     # (issue #193). Default is 1.0x on every layer so behavior is unchanged unless
@@ -681,6 +721,52 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                   f"impedance spec(s){' (plus unspecified nets)' if _uncovered else ''} "
                   f"-- cannot reapply call-level; pass --impedance explicitly")
 
+    # Layer-scoped .kicad_dru track_width rules (route.py's #530 twin): with no
+    # --impedance and no --track-width, a rule such as `(layer "In2.Cu") ...
+    # (constraint track_width (opt 0.154mm))` sets that layer's width, which is
+    # how a stripline layer carries a narrower pair than the outer microstrip.
+    # Members resolve as coupled-pair members, so a layer no rule scopes keeps
+    # the class diff_pair_width the pair routes at anyway (KiCad's inDiffPair
+    # implicit rule), not the class's single-ended track_width. The diff
+    # engine bakes one width per layer per call (#156), so the widths apply
+    # only when every member resolves the same width on each layer; when they
+    # do not, the run says which layers disagree.
+    # Members come from pair detection, which expands the patterns the
+    # caller passed; resolve_net_ids above matches exact names only.
+    if impedance is None and not layer_widths and net_names and diff_pair_width_from_class:
+        try:
+            from design_rules import DesignRules as _DR
+            from list_nets import fab_floors as _ff
+            _cu_all = list(getattr(pcb_data.board_info, 'copper_layers', None) or layers)
+            _dr = _DR.from_project(pcb_data, input_file, fab_floor=_ff(len(_cu_all)),
+                                   copper_layers=_cu_all)
+            _by_layer = {l: set() for l in layers}
+            _scoped = False     # a layer-scoped rule sizes some member somewhere
+            for _pn, _pr in find_differential_pairs(pcb_data, net_names).items():
+                for nid in (_pr.p_net_id, _pr.n_net_id):
+                    _base = _dr.draw_size('track_width', nid, default=track_width,
+                                          diff_pair=_pn)
+                    for l in layers:
+                        _w = _dr.draw_size('track_width', nid, l, default=track_width,
+                                           diff_pair=_pn)
+                        _by_layer[l].add(round(_w, 6))
+                        _scoped = _scoped or abs(_w - _base) > 1e-9
+            _split = {l: sorted(v) for l, v in _by_layer.items() if len(v) > 1}
+            if _scoped and _split:
+                print("  NOTE: layer-scoped track_width rule(s) NOT applied: the "
+                      "targeted pairs resolve different widths on "
+                      + ", ".join(f"{l} ({'/'.join(f'{w:g}' for w in ws)}mm)"
+                                  for l, ws in _split.items())
+                      + " and the diff engine draws one width per layer per call "
+                        "(#156), so they route at their net-class width. Route each "
+                        "group of pairs in its own call to apply the rules.")
+            elif _scoped:
+                layer_widths = {l: next(iter(v)) for l, v in _by_layer.items()}
+                print("  Design-rule layer widths: " + ", ".join(
+                    f"{l}={w:g}mm" for l, w in layer_widths.items()))
+        except Exception as _dre:                          # noqa: BLE001
+            print(f"  Warning: design-rule layer widths unavailable ({_dre}).")
+
     # Auto-detect BGA exclusion zones if not specified
     _sel_ids = [nid for _nm, nid in _targets]
     bga_exclusion_zones = setup_bga_exclusion_zones(
@@ -753,6 +839,10 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     # track_margin channel to ride instead. Margin helpers computed against
     # this reserve are then 0 for impedance-width legs, i.e. today's behaviour.
     config_kwargs['reserve_layer_widths'] = True
+    # --no-stub-layer-swap reaches config.stub_layer_swap here too: the
+    # multipoint terminal stub switch, and the boxed-stub switch a rip-up
+    # reroute of a multi-point net can reach, read it, not enable_layer_switch.
+    config_kwargs['stub_layer_swap'] = enable_layer_switch
     # #581: an active (> 0) same-net pad via clearance keeps every placed via
     # off same-net SMD pads. Explicit --same-net-pad-clearance wins (> 0
     # activates; 0 / -1 explicitly off); unset auto-reads the record an
@@ -1025,10 +1115,17 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     # #498: per-layer .kicad_dru clearance rules, installed engine-side so the
     # GUI inherits them with no wiring (see kicad_dru.install_layer_clearances).
     from kicad_dru import install_layer_clearances, install_track_clearances
-    install_layer_clearances(config, layer_clearances, input_file, pcb_data)
+    install_layer_clearances(config, layer_clearances, input_file, pcb_data,
+                             net_keepouts=True)
     # Track-scoped .kicad_dru rules (#735; raise-only on seg-vs-seg stamps).
     install_track_clearances(config, track_clearances, input_file, pcb_data,
                              routed_net_ids=[nid for _, nid in net_ids])
+    # Net-filtered keep-outs: the .kicad_dru `disallow` rules on a named rule
+    # area, derived with config.rules (net_keepouts.derive_area_keepouts) and
+    # stamped per pair while a bound member routes. Set on every run: the
+    # GUI's Differential tab hands each run the same PCBData.
+    from net_keepouts import attach as _nk_attach
+    _nk_attach(pcb_data, getattr(getattr(config, 'rules', None), 'net_keepouts', None))
 
     # Upfront layer swap optimization: analyze all diff pairs and apply beneficial swaps
     # BEFORE MPS ordering, so ordering sees correct segment layers
@@ -1193,7 +1290,8 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         if (diff_pair_width_from_class or diff_pair_gap_from_class or net_clearances
                 or _gap_rules_bind):
             try:
-                from list_nets import read_design_rules, resolve_net_class, fab_floors
+                from list_nets import (read_design_rules, resolve_net_class, fab_floors,
+                                       class_diff_pair_geometry)
                 _rules = read_design_rules(input_file) if input_file else {}
                 _classes = (_rules.get('classes') or {}) if _rules else {}
                 _fab = fab_floors(len(getattr(pcb_data.board_info, 'copper_layers', None) or []) or 4)
@@ -1203,12 +1301,16 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                 _classes, _rules, _wfloor, _gfloor = {}, {}, 0.0, 0.0
             for _pn, _pair in diff_pair_ids_to_route:
                 _c = _classes.get(resolve_net_class(_pair.p_net_name, _rules), {}) if _classes else {}
+                # A 0 (or absent) class pair width / gap is unset: it inherits
+                # Default's, else the class track width / clearance -- read as
+                # a width, a stored 0 put every pair at the fab floor.
+                _cw, _cg = (class_diff_pair_geometry(_c, _classes.get('Default'))
+                            if _classes else (None, None))
                 # --impedance derives width per layer, so a netclass width must
                 # not override it (#610: from_class now purely means "the flag
                 # was omitted", the impedance guard lives here).
-                _w = (_c.get('diff_pair_width')
-                      if diff_pair_width_from_class and impedance is None else None)
-                _g = _c.get('diff_pair_gap') if diff_pair_gap_from_class else None
+                _w = _cw if diff_pair_width_from_class and impedance is None else None
+                _g = _cg if diff_pair_gap_from_class else None
                 _ew = max(_w if _w is not None else config.track_width, _wfloor)
                 _eg = max(_g if _g is not None else config.diff_pair_gap, _gfloor)
                 # #441 again: a class gap REPLACES the call's floored one, so
@@ -1519,7 +1621,7 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     # still-broken with the restored copper as obstacles. Engine-side, so the
     # GUI inherits it. No-op when no casualties occurred.
     from diff_pair_custody import (run_casualty_reconcile, audit_pair_members,
-                                   build_pair_reports,
+                                   build_pair_reports, deferred_reasons_text,
                                    run_single_ended_member_fallback)
     casualty_summary = run_casualty_reconcile(
         state, progress_callback=progress_callback, cancel_check=cancel_check)
@@ -1642,23 +1744,10 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     # ONLY fully-routed pairs: a failed / single-ended-deferred pair's fanout stubs
     # have free ends by design (the single-ended follow-up connects them), so a
     # dead-end sweep there would strip copper the next pass needs.
-    dp_scope = set()
     from diff_pair_custody import _member_connected as _dpc_member_connected
-    for _pn, _pair in diff_pair_ids_to_route:
-        _rr_p = routed_results.get(_pair.p_net_id)
-        _rr_n = routed_results.get(_pair.n_net_id)
-        if _rr_p is None or _rr_n is None:
-            continue
-        if (_rr_p.get('se_member_fallback') or _rr_n.get('se_member_fallback')):
-            # Single-ended-fallback copper: sweep it only when BOTH members
-            # ended fully connected -- a 'partial' member's remaining stubs
-            # are load-bearing for the downstream pass, exactly like a
-            # deferred pair's.
-            if not (_dpc_member_connected(pcb_data, _pair.p_net_id)
-                    and _dpc_member_connected(pcb_data, _pair.n_net_id)):
-                continue
-        dp_scope.add(_pair.p_net_id)
-        dp_scope.add(_pair.n_net_id)
+    dp_scope = diff_cleanup_scope(
+        diff_pair_ids_to_route, routed_results, state.diff_pair_single_ended_nets,
+        lambda nid: _dpc_member_connected(pcb_data, nid))
     _dp_cleanup = run_post_route_cleanup(
         results, pcb_data, dp_scope, config,
         label='Diff-pair ', snap=False, phantom=False, neck=False,
@@ -1725,8 +1814,9 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                 routed_diff_pairs.append(pair_name)
         elif (pair.p_net_id in state.diff_pair_single_ended_nets
               or pair.n_net_id in state.diff_pair_single_ended_nets):
-            # Intentionally left for single-ended routing (electrically short, or
-            # fully peeled) - not a coupled route, but not a failure either.
+            # Intentionally left for single-ended routing (electrically short,
+            # coupled route failed and deferred as the fallback, or fully
+            # peeled) - not a coupled route, but not a failure either.
             single_ended_diff_pairs.append(pair_name)
         else:
             failed_diff_pairs.append(pair_name)
@@ -1787,8 +1877,9 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         swap_pairs = summarize_target_swaps(target_swaps)
         print(f"  Target swaps:  {len(swap_pairs)}")
     if single_ended_diff_pairs:
-        print(f"  Single-ended:  {len(single_ended_diff_pairs)} (electrically short - "
-              f"deferred to single-ended routing)")
+        print(f"  Single-ended:  {len(single_ended_diff_pairs)} (deferred to "
+              f"single-ended routing: "
+              f"{deferred_reasons_text(pair_reports, single_ended_diff_pairs)})")
         # ...and say how those members ACTUALLY came out. The headline above
         # reads `Diff pairs: 0/2 routed` on a step where every member net got
         # copper and connected, so a log tail -- which is what a grep, a CI
@@ -1877,11 +1968,30 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     _ka = disclose_keep_away(pcb_data, config)
     if _ka is not None:
         summary['keep_away'] = _ka
+    # #1279: every declared sense branch, protected or why not.
+    from sense_branch import summary_entries as _sense_entries
+    _sense = _sense_entries(pcb_data)
+    if _sense:
+        summary['sense_branches'] = _sense
+    # Net-filtered keep-outs: bound-net copper inside a region on the routed
+    # board (absent when the run has none; route.py reports the same key).
+    from net_keepouts import audit as _nk_audit, format_audit as _nk_format
+    _nk_found = _nk_audit(pcb_data, pcb_data.segments, pcb_data.vias)
+    if _nk_found is not None:
+        summary['net_keepouts'] = _nk_found
+        print(f"{RED}{_nk_format(_nk_found, 'the routed board')}{RESET}"
+              if _nk_found else _nk_format(_nk_found, 'the routed board'))
     try:                       # #653: env knobs into the machine-readable
         import env_knobs as _ek653   # summary, so a harness can detect a
         summary['env_knobs'] = _ek653.active_env_knobs()   # dirty baseline
     except Exception:          # without re-reading logs
         pass
+    # #857: what this run delivered below a requested size (route.py's
+    # key), when it delivered anything there.
+    from fab_tiers import narrowed_summary
+    _dr857 = narrowed_summary()
+    if _dr857 is not None:
+        summary['design_rules'] = _dr857
     print(f"JSON_SUMMARY: {json.dumps(summary)}")
 
     # Write output file or return results for direct application
@@ -1911,10 +2021,13 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
             # #1146: the nets JSON_SUMMARY['keep_away'] lists as left inside
             # a band, one dict per net (empty without a rule).
             'keep_away': keep_away_entries(summary.get('keep_away')),
+            # Net-filtered keep-outs: JSON_SUMMARY['net_keepouts'] (None
+            # without a keep-out, [] when the copper is clean).
+            'net_keepouts': summary.get('net_keepouts'),
             # successful/failed only count pairs that were coupled-routed or
-            # outright failed -- electrically-short pairs deferred to the
-            # single-ended pass, and pairs skipped for self-overlapping fanout,
-            # land in neither bucket. Without these the GUI's "0 routed, 0
+            # outright failed -- pairs deferred to the single-ended pass
+            # (electrically short, or coupled route failed), and pairs
+            # skipped for self-overlapping fanout, land in neither bucket. Without these the GUI's "0 routed, 0
             # failed" result looks like nothing happened.
             'single_ended_diff_pairs': single_ended_diff_pairs,
             'skipped_bad_fanout': sorted(skipped_bad_fanout),
@@ -1949,8 +2062,9 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
             vias_to_remove=cleanup_input_strip_vias or None
         )
         # When no coupled copper was written -- every pair was deferred to
-        # single-ended (electrically short), OR a pair could not be routed at all
-        # (terminal/launch escape exhausted, issue #167) -- still pass the board
+        # single-ended (electrically short or coupled route failed), OR a pair
+        # could not be routed at all (terminal/launch escape exhausted, issue
+        # #167) -- still pass the board
         # through unchanged so the pipeline never loses its output file. The
         # unrouted nets are picked up by the downstream single-ended route.py pass
         # (the chains route '*' from the diff step's output); without this the
@@ -2123,7 +2237,7 @@ Examples:
                              "forbidden: the layer is an obstacle / via span but carries no routed copper), one per --layers "
                              "entry, to bias which layer(s) coupled diff pairs prefer (e.g. '1 1 1 3' "
                              "to discourage the 4th layer). Default: 1.0 on every layer "
-                             "(behavior unchanged). Matches route.py / route_planes.")
+                             "(behavior unchanged). Another count is refused. Matches route.py / route_planes.")
 
     # Track and via geometry
     parser.add_argument("--track-width", type=float, default=None,
@@ -2399,11 +2513,28 @@ Examples:
     # board's OWN Default net-class diff_pair_width (else routing_defaults), so a
     # bare diff route uses the board's own differential geometry -- parity with the
     # GUI diff tab's per-control override. (May still be overridden by --impedance.)
+    # A Default diff_pair_width / diff_pair_gap of 0 is unset, as is an absent
+    # one: list_nets.class_diff_pair_geometry, which the GUI tab resolves
+    # through too, falls back to the class track width / clearance.
+    from list_nets import read_design_rules, class_diff_pair_geometry, positive_mm
+    _dflt_cls = {}
+    if args.track_width is None or args.diff_pair_gap is None:
+        try:
+            _dflt_cls = (read_design_rules(args.input_file).get('classes') or {}).get('Default') or {}
+        except Exception:                                      # noqa: BLE001
+            _dflt_cls = {}
+    _dflt_w, _dflt_g = class_diff_pair_geometry(_dflt_cls)
+
+    def _dp_source(key, value):
+        if value is None:
+            return 'the fallback'
+        if positive_mm(_dflt_cls.get(key)) is not None:
+            return f"the board Default net-class {key.replace('_', '-')}"
+        return (f"the board Default net-class {'track width' if key == 'diff_pair_width' else 'clearance'} "
+                f"(its {key.replace('_', '-')} is unset)")
     if args.track_width is None:
-        _v = board_default_netclass_param(args.input_file, 'diff_pair_width')
-        args.track_width = _v if _v is not None else defaults.DIFF_PAIR_WIDTH
-        print(f"--track-width not given; using "
-              f"{'the board Default net-class diff-pair-width' if _v is not None else 'the fallback'} "
+        args.track_width = _dflt_w if _dflt_w is not None else defaults.DIFF_PAIR_WIDTH
+        print(f"--track-width not given; using {_dp_source('diff_pair_width', _dflt_w)} "
               f"{args.track_width}mm.")
     # via_size / via_drill: when omitted, default to the board's OWN Default
     # net-class value (else the routing_defaults constant).
@@ -2418,11 +2549,9 @@ Examples:
     # --diff-pair-gap: when omitted, default to the board's OWN Default net-class
     # diff_pair_gap (else the routing_defaults constant).
     if args.diff_pair_gap is None:
-        _g = board_default_netclass_param(args.input_file, 'diff_pair_gap')
         _gap_fallback = getattr(defaults, 'DIFF_PAIR_GAP', 0.101)
-        args.diff_pair_gap = _g if _g is not None else _gap_fallback
-        print(f"--diff-pair-gap not given; using "
-              f"{'the board Default net-class diff-pair-gap' if _g is not None else 'the fallback'} "
+        args.diff_pair_gap = _dflt_g if _dflt_g is not None else _gap_fallback
+        print(f"--diff-pair-gap not given; using {_dp_source('diff_pair_gap', _dflt_g)} "
               f"{args.diff_pair_gap}mm.")
     # --clearance given -> pure ceiling on EVERY class (Default included): base =
     # min(Default class, ceiling), non-Default capped at the ceiling. Omitted -> no
@@ -2707,3 +2836,11 @@ Examples:
               "so nothing was routed. Exiting non-zero so a chained caller "
               "does not read this as success.", file=sys.stderr)
         sys.exit(2)
+
+    # #857: the Design rules line and --strict-sizes exit 3, shared with
+    # every routing CLI (found reviewing #1282: route_diff accepted the flag
+    # and never acted on it).
+    from fab_tiers import finish_design_rules
+    _rc857 = finish_design_rules(args, 0)
+    if _rc857:
+        sys.exit(_rc857)

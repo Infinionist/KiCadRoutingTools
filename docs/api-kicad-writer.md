@@ -147,6 +147,22 @@ print(generate_segment_sexpr((100.0, 100.0), (105.0, 100.0),
                              0.25, 'F.Cu', 42))
 ```
 
+### Via type (`via_type`)
+
+`generate_via_sexpr(..., via_type=...)` takes the via's own `Via.via_type`.
+`'blind'`, `'buried'` or `'micro'` writes KiCad's type word (`(via micro ...`);
+anything else writes none. KiCad loads a via with no type word as a THROUGH via
+whatever its `(layers ...)` says, so every site that puts an EXISTING via back
+-- a restore, a re-placed or kept via, route.py's #666 re-emit, the placement
+via-nudge -- passes the type it read, and a via the tool adds passes `None`
+(it is a through via). Via dicts that copy an existing via's `layers` carry a
+`'via_type'` key for the same reason. The word is written as read, so KiCad
+10's `buried` (which KiCad 9 refuses to load) only goes back into the KiCad 10
+file it came from. On the plugin side `gui_utils.set_via_layers` does the same
+for a `PCB_VIA`, setting the type BEFORE the layer pair: pcbnew snaps a through
+via's pair to F.Cu/B.Cu as it is set. `tests/test_749_via_protection_emit_sites.py`
+holds every emit and copy site to this.
+
 ### Via protection (`tenting_attrs`)
 
 `tenting_attrs` is a via's own protection spec -- `Via.tenting_attrs`, the

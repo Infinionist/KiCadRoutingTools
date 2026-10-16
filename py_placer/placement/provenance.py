@@ -57,6 +57,10 @@ LEVER_REGISTRY = (
     # Grouped placement: copies each group's seeded poses from its step board
     # onto the board (the step boards are place_seed's, recorded as such).
     'place_groups.py',
+    # #1280: applies the intent's declared faces before seeding -- a side
+    # flip at the pose is a pose write, so outside this list it raised
+    # `UnaidedViolation` in any unaided work dir.
+    'place_intent_sides.py',
     # The ROUTER is a deliberate pose author: #666's scoped cap move calls
     # `write_placed_output` to relocate a cap off a rescue via. Absent from
     # this list it raised `UnaidedViolation` inside the funnel, route.py's

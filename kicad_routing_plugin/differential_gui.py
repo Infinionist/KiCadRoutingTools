@@ -1140,6 +1140,10 @@ class DifferentialTab(wx.Panel):
                 cancel_check=check_cancel,
                 progress_callback=on_progress,
             )
+            # #857: the Design rules line route_diff.py's main prints (the
+            # exit code is the CLI's alone).
+            from fab_tiers import finish_design_rules
+            finish_design_rules(None, 0)
 
             self._routing_result = {
                 'successful': successful,
@@ -1232,8 +1236,14 @@ class DifferentialTab(wx.Panel):
         msg += f"Routed: {successful}\n"
         msg += f"Failed: {failed}\n"
         if single_ended_pairs:
+            # The CLI summary's wording: a deferred pair is electrically
+            # short, or its coupled route failed (#165, and a 2-terminal
+            # pair's fallback defer), which is not the same thing.
+            from diff_pair_custody import deferred_reasons_text
+            _why = deferred_reasons_text(results_data.get('pair_reports'),
+                                         single_ended_pairs)
             msg += (f"Deferred to single-ended: {len(single_ended_pairs)} "
-                    f"(electrically short - route these single-ended next)\n")
+                    f"({_why} - route these single-ended next)\n")
         if skipped_bad_fanout:
             msg += (f"Skipped: {len(skipped_bad_fanout)} "
                     f"(fanout stubs self-overlap - fix the fanout first)\n")
@@ -1509,7 +1519,9 @@ class DifferentialTab(wx.Panel):
         if hasattr(via, 'layers') and len(via.layers) >= 2:
             top_layer = get_layer_id(via.layers[0])
             bot_layer = get_layer_id(via.layers[1])
-            pcb_via.SetLayerPair(top_layer, bot_layer)
+            from .gui_utils import set_via_layers
+            set_via_layers(pcb_via, top_layer, bot_layer,
+                           getattr(via, 'via_type', None))
         # Keep a re-placed via's own tenting/plugging/filling (#489 §8).
         from .gui_utils import apply_via_protection
         apply_via_protection(pcb_via, getattr(via, 'tenting_attrs', None))
@@ -1580,30 +1592,33 @@ class DifferentialTab(wx.Panel):
 
     def _effective_diff_pair_width(self):
         """Diff-pair leg width to route with. CHECKED: the entered value.
-        UNCHECKED: the board Default net-class ``diff_pair_width`` (control value
-        fallback when the board has none). Floored at the parent's 'track_width'
-        fab floor when the parent dialog is reachable."""
+        UNCHECKED: the board Default net-class ``diff_pair_width``, resolved as
+        route_diff.py resolves it (list_nets.class_diff_pair_geometry: a 0 is
+        unset and falls back to the class track width), else the control value.
+        Floored at the parent's 'track_width' fab floor when the parent dialog
+        is reachable."""
         if self.diff_pair_width_check.GetValue():
             val = self.diff_pair_width.GetValue()
         else:
             from .swig_gui import _get_netclass_parameters
-            nc = _get_netclass_parameters('Default') or {}
-            board_val = nc.get('diff_pair_width')
-            val = board_val if board_val else self.diff_pair_width.GetValue()
+            from list_nets import class_diff_pair_geometry
+            board_val = class_diff_pair_geometry(_get_netclass_parameters('Default') or {})[0]
+            val = board_val if board_val is not None else self.diff_pair_width.GetValue()
         return self._fab_floor_via_parent('track_width', val)
 
     def _effective_diff_pair_gap(self):
         """Diff-pair gap to route with. CHECKED: the entered value. UNCHECKED:
-        the board Default net-class ``diff_pair_gap`` (control value fallback when
-        the board has none). Floored at the parent's 'clearance' fab floor when the
-        parent dialog is reachable."""
+        the board Default net-class ``diff_pair_gap``, resolved as route_diff.py
+        resolves it (a 0 is unset and falls back to the class clearance), else
+        the control value. Floored at the parent's 'clearance' fab floor when
+        the parent dialog is reachable."""
         if self.diff_pair_gap_check.GetValue():
             val = self.diff_pair_gap.GetValue()
         else:
             from .swig_gui import _get_netclass_parameters
-            nc = _get_netclass_parameters('Default') or {}
-            board_val = nc.get('diff_pair_gap')
-            val = board_val if board_val else self.diff_pair_gap.GetValue()
+            from list_nets import class_diff_pair_geometry
+            board_val = class_diff_pair_geometry(_get_netclass_parameters('Default') or {})[1]
+            val = board_val if board_val is not None else self.diff_pair_gap.GetValue()
         return self._fab_floor_via_parent('clearance', val)
 
     def get_selected_pairs(self):

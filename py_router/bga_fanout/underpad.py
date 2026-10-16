@@ -55,6 +55,14 @@ from bga_fanout.geometry import clamp_via_to_pad
 from list_nets import fab_floors, fab_floor_ladder, fab_floor_min, warn_fab_escalation
 from routing_defaults import HOLE_TO_HOLE_CLEARANCE
 
+#: Every via this engine drills is a THROUGH via: the writer gives it no type
+#: word, so KiCad loads it as one whatever its `(layers ...)` pair says. The
+#: pair used to be `[layers[0], layers[-1]]`, the escape list's two ends, which
+#: the back-side flip frame and a full-stack run's layer order leave on an
+#: inner layer -- `(layers "B.Cu" "In6.Cu")` on zynq7020_som -- a pair anything
+#: reading it as the span took for a blind via (found reviewing #1268).
+THROUGH_VIA_LAYERS = ('F.Cu', 'B.Cu')
+
 
 def _custom_polys(pad):
     """The pad's REAL polygon copper (board mm) if it is a custom-shape pad,
@@ -1934,7 +1942,7 @@ def generate_underpad_escape(footprint: Footprint,
             occ.block_all(vx, vy, vkeep)
             vias_to_add.append({'x': vx, 'y': vy, 'size': v_size,
                                 'drill': v_drill,
-                                'layers': [layers[0], layers[-1]], 'net_id': net_id})
+                                'layers': list(THROUGH_VIA_LAYERS), 'net_id': net_id})
             nvia += 1
 
     # Differential pairs (issue #182): collect the pairs we can try to escape
@@ -2091,7 +2099,7 @@ def generate_underpad_escape(footprint: Footprint,
                                'net_id': pad.net_id})
         occ.block_all(vx, vy, vkeep)
         vias_to_add.append({'x': vx, 'y': vy, 'size': v_size, 'drill': v_drill,
-                            'layers': [layers[0], layers[-1]],
+                            'layers': list(THROUGH_VIA_LAYERS),
                             'net_id': pad.net_id})
         nvia += 1
 
@@ -2651,7 +2659,7 @@ def generate_underpad_escape(footprint: Footprint,
                                        'layer': layers[top_idx], 'net_id': p.net_id})
                     _vs, _vd = _dv or (via_size, via_drill)
                     vias_to_add.append({'x': _site[0], 'y': _site[1], 'size': _vs, 'drill': _vd,
-                                        'layers': [layers[0], layers[-1]], 'net_id': p.net_id})
+                                        'layers': list(THROUGH_VIA_LAYERS), 'net_id': p.net_id})
                     if _dv:
                         from fab_tiers import note_narrowing
                         note_narrowing(p.net_id, 'via_diameter', via_size, _vs, 'planned plane drop')
@@ -2670,7 +2678,7 @@ def generate_underpad_escape(footprint: Footprint,
                     occ.block_all(gx, gy, ckeep)
                     exact_vias.append((gx, gy, cs / 2.0, cd / 2.0, p.net_id))
                     vias_to_add.append({'x': gx, 'y': gy, 'size': cs, 'drill': cd,
-                                        'layers': [layers[0], layers[-1]], 'net_id': p.net_id})
+                                        'layers': list(THROUGH_VIA_LAYERS), 'net_id': p.net_id})
                     _nd['in_pad'] += 1
                     _drop_laid.add(id(p))
                     continue
@@ -2869,7 +2877,7 @@ def generate_underpad_escape(footprint: Footprint,
         occ.block_all(vx, vy, via_keep)
         vias_to_add.append({'x': vx, 'y': vy, 'size': via_size,
                             'drill': via_drill,
-                            'layers': [layers[0], layers[-1]],
+                            'layers': list(THROUGH_VIA_LAYERS),
                             'net_id': p.net_id})
         nvia += 1
         n_db_esc += 1
@@ -3878,7 +3886,7 @@ def generate_underpad_escape(footprint: Footprint,
                                    'net_id': p.net_id})
                 vias_to_add.append({'x': vx, 'y': vy, 'size': via_size,
                                     'drill': via_drill,
-                                    'layers': [layers[0], layers[-1]],
+                                    'layers': list(THROUGH_VIA_LAYERS),
                                     'net_id': p.net_id})
                 _net_vias.setdefault(p.net_id, []).append((vx, vy, via_size / 2.0))
                 n_gap += 1
@@ -3906,7 +3914,7 @@ def generate_underpad_escape(footprint: Footprint,
             occ.block_all(gx, gy, ckeep)
             exact_vias.append((gx, gy, cs / 2.0, cd / 2.0, p.net_id))
             vias_to_add.append({'x': gx, 'y': gy, 'size': cs, 'drill': cd,
-                                'layers': [layers[0], layers[-1]],
+                                'layers': list(THROUGH_VIA_LAYERS),
                                 'net_id': p.net_id})
             _net_vias.setdefault(p.net_id, []).append((gx, gy, cs / 2.0))
             n_ctr += 1

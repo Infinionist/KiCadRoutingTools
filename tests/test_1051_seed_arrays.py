@@ -36,7 +36,8 @@ What each case pins, and why:
   the header takes the midpoint).
 * an intent declaring none of `decaps.max_distance_mm`, `arrays`,
   `fixed_poses` seeds IDENTICALLY to the pre-phase-3 seeder
-  (tests/fixtures/1051/seed_unarmed_baseline.json, recorded at 754e7f419).
+  (tests/fixtures/1051/seed_unarmed_baseline.json, recorded at 754e7f419,
+  re-recorded for #1266 -- the fixture's `_about` says why).
 
     python3 tests/test_1051_seed_arrays.py
 """

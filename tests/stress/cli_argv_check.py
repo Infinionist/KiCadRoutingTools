@@ -258,7 +258,7 @@ POST_PARSE = {
     'route_diff.py': (_keep_away, _fab_overrides_missing, _output_twice,
                       _net_clearances_unreadable),
     'route_planes.py': (_fab_overrides_missing, _output_twice,
-                        _planes_count_mismatch),
+                        _planes_count_mismatch, _net_clearances_unreadable),
     'repair_planes.py': (_fab_overrides_missing, _output_twice,
                          _repair_count_mismatch),
     'route_disconnected_planes.py': (_fab_overrides_missing, _output_twice,
@@ -304,8 +304,9 @@ REFUSAL_SITES = {
         'if not resolve_net_ids(pcb_data, net_names)':
             ('board', "the board's net names"),
         'if _scope_defaulted': ('never a step', 'under --undo, which is refused'),
-        "if _es['count'] or _es['fab_tier_escalations']":
+        'call:finish_design_rules':
             ('after the run', '--strict-sizes: exit 3 after routing'),
+        'if _rc857': ('after the run', '--strict-sizes: exit 3 after routing'),
         'call:load_net_clearances': ('file', '_net_clearances_unreadable'),
     },
     'route_diff.py': {
@@ -320,11 +321,15 @@ REFUSAL_SITES = {
         'if not net_names': ('board', "which nets the patterns match"),
         'call:load_net_clearances': ('file', '_net_clearances_unreadable'),
         'if _NO_PAIRS_MATCHED': ('board', "set by the engine: no pair matched"),
+        'call:finish_design_rules': ('after the run', '--strict-sizes: exit 3 after routing'),
+        'if _rc857': ('after the run', '--strict-sizes: exit 3 after routing'),
     },
     'route_planes.py': {
         'call:fab_tier_from_args': ('file', '_fab_overrides_missing'),
         'both a positional output and --output we': ('argv', '_output_twice'),
         'number of net arguments (': ('argv', '_planes_count_mismatch'),
+        'call:load_net_clearances': ('file', '_net_clearances_unreadable'),
+        'call:finish_design_rules': ('after the run', '--strict-sizes: exit 3 after routing'),
     },
     'repair_planes.py': {
         'call:fab_tier_from_args': ('file', '_fab_overrides_missing'),
@@ -334,6 +339,7 @@ REFUSAL_SITES = {
         'if not zone_pairs': ('board', "zones auto-detected from the board"),
         'if LAST_RIPPED_STILL_OPEN':
             ('after the run', 'rip casualties ship open: exit 4'),
+        'call:finish_design_rules': ('after the run', '--strict-sizes: exit 3 after routing'),
     },
     'bga_fanout.py': {
         'call:fab_tier_from_args': ('file', '_fab_overrides_missing'),
@@ -342,6 +348,7 @@ REFUSAL_SITES = {
             ('board', "the board's footprint references"),
         'if _stagger_why and (not env_knobs.ALLOW_STAGGERED_BGA)':
             ('board', "the part's pad lattice (#500)"),
+        'call:finish_design_rules': ('after the run', '--strict-sizes: exit 3 after routing'),
     },
     'qfn_fanout.py': {
         'call:fab_tier_from_args': ('file', '_fab_overrides_missing'),
@@ -349,6 +356,7 @@ REFUSAL_SITES = {
         'if args.component not in pcb_data.footprints':
             ('board', "the board's footprint references"),
         'if _single': ('board', "the part's pads (#1195: not a QFN/QFP)"),
+        'call:finish_design_rules': ('after the run', '--strict-sizes: exit 3 after routing'),
     },
     'place_fanout_clearance.py': {
         '--clearance must be a finite number, got':

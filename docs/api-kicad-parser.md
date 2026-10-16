@@ -89,6 +89,18 @@ from kicad_parser import build_pcb_data_from_board
 pcb = build_pcb_data_from_board(pcbnew.GetBoard())
 ```
 
+The live board's tracks, arc pieces and vias are read by ONE extractor,
+`pcbnew_track_copper(board)` -> `([Segment], [Via])` (uuid, KiCad lock, via
+type and protection spec included). A caller that keeps one `PCBData` across
+edits of the live board (the GUI dialog does, step to step) refreshes it with
+`resync_live_copper(pcb, board)` -- the board's tracks and vias through that
+extractor, copper graphics kept, every memo derived from the old copper
+dropped -- and then, once pads and zones are current,
+`resolve_live_sense_branches(pcb, board)`, which re-reads the board's
+`sense:<REF>.<PAD>` groups (#1279). Building copper objects by hand loses
+what the extractor carries: the GUI's re-sync once did, and every step after
+the first ran with no KiCad lock, no uuid and no arc copper.
+
 ## PCBData
 
 The top-level container returned by both entry points.
@@ -114,6 +126,7 @@ The top-level container returned by both entry points.
 | `live_records_provider` | `Optional[Callable]` | Zero-arg callable returning the LIVE board's `kicad_routing_tools` records (fab-floor origin, protected nets, impedance specs, pour promises, ...): the newer of its project's copy and the copy on the board itself (`tool_records.live_namespace`), read when called. The GUI keeps the records on the board because KiCad's own project save drops what was written into the `.kicad_pro` after load. `None` (file-parsed boards) = the files: the newer of the project's copy and the `.kicad_pcb`'s (`tool_records.effective_namespace`). Read by the `protected_nets` readers and the hole floor's origin |
 | `paste_apertures` | `List[PasteAperture]` | Every solder-paste OPENING (#962), from `paste_apertures.build_paste_apertures`. Sources: `pad` (a pad on a paste layer, grown by its resolved paste margin -- pad, then footprint, then board setup, per axis, ratio and margin independently, clamped at -size/2 except for a custom pad, which KiCad does not clamp), `paste_only_pad` (a pad on a paste layer with no copper, e.g. windowpanes) and `graphic` (a paste-layer shape, e.g. esp_prog U2's F.Paste tab). Which nets an opening concerns is `paste_apertures.aperture_nets` (the per-net lists `apertures_by_net` / `apertures_for_net` are memoised): a pad opening its pad's net, a graphic or paste-only one the nets of the owner's copper it overlaps. Both parse paths feed the one builder |
 | `graphic_copper_unmeasured` | `List[dict]` | Footprint copper the parser does NOT model, per owner (`{owner_ref, kind, reason}`, kind `logo` / `curve` / `text`), so the off-outline grade can say what it did not measure (#962) |
+| `sense_branches` | `List[SenseBranch]` | One entry per KiCad group named `sense:<REF>.<PAD>` (#1279, `sense_branch.py`): a protected Kelvin sense branch whose join pad is `REF.PAD`, its member copper resolved by uuid, its sense pads, and the `reason` it is refused when it cannot be protected. Both parse paths resolve it the same way (`board.Groups()` on the live board) and `compare_pcb_data` diffs it. Separate from `groups` |
 
 ### `PCBData.get_via_barrel_length`
 
@@ -153,6 +166,7 @@ section. Used for accurate length/time matching.
 | `unconnected_layer_mode` | str | KiCad's unconnected-layer mode, from `(remove_unused_layers …)` + `(keep_end_layers …)`: `'keep_all'`, `'remove_all'` or `'remove_except_start_end'`. On a layer the mode removes, KiCad flashes a through-hole pad only when copper reaches its **hole**, so a track ending in the annulus short of the drill is not connected there. Set by both parse paths; `connectivity.pad_unflashed_layers(pad, layers)` names those layers. |
 | `die_length` | float | KiCad's **pad-to-die** length in mm, `(die_length …)` / `PAD.GetPadToDieLength()`: the bond wire or package trace inside the part. KiCad adds it to the net's length in its tuners (start and end pads) and its length/skew DRC (every pad). `0.0` = none declared. Set by both parse paths (#1248); `net_queries.net_match_length` and every length-matching pass add it. |
 | `die_delay` | float | The time twin in **ps**, `(die_delay …)` / `PAD.GetPadToDieDelay()` (KiCad 10; `0.0` on KiCad 9). Time matching adds it; a `die_length` is never converted into a delay, as in KiCad 10. Set by both parse paths (#1248). |
+| `sense` | str | The `sense:<REF>.<PAD>` group this pad is a SENSE pad of (#1279): a pad of the branch's net that its member copper touches, the join pad excepted. Set only on a protected branch; the router never attaches new copper to it. `''` otherwise |
 
 Pad dimensions are resolved into board space using the pad's **absolute** angle
 (the KiCad `(at … angle)` already includes the footprint rotation; applying the
@@ -182,7 +196,7 @@ and is centred on the copper, not the hole, when the pad has a copper offset.
 | `width` | float | Track width |
 | `layer` | str | Layer name |
 | `net_id` | int | Net ID |
-| `uuid` | str | UUID from the file (`''` for newly created segments and for uuid-less file items — KiCad treats the token as optional, PR #534) |
+| `uuid` | str | UUID from the file, or the live item's `m_Uuid` on the pcbnew path (#1279) (`''` for newly created segments and for uuid-less file items — KiCad treats the token as optional, PR #534) |
 | `start_x_str`, … | str | Original coordinate strings, kept for exact file matching |
 | `graphic` | bool | This copper came from a **graphic**, not a track (issue #337, extended to footprint shapes by #908). It is real copper for obstacles and DRC, and it is immutable: cleanup passes must never prune it and writers cannot strip it, because there is no `(segment …)` block to match. It never conducts — connectivity gives a graphic no credit, so KiCad will keep calling such a net unconnected (#513 item 6). |
 | `locked` | bool | KiCad `(locked yes)`: the user pinned this copper. Its net is never rip-eligible (#521, no override) -- before the run and in every in-run rip ladder, rescue and blame (`protected_nets.rip_refusal`, #1261); locked copper was already an obstacle (#150). No layer switch moves it (`stub_layer_switching.get_stub_info` answers None for a stub whose switch would), no cleanup pass removes, trims or re-bends it, and a net whose copper is all locked and whose pads grade connected is not routed (#1261). Both parse paths set it. The text parser reads the token anywhere in the block, as KiCad does -- `(locked yes)`, `(locked)` or the bare `(segment locked ...` word (#1158) -- and reads every track block by its own tokens, so a hand-written block in any field order is modelled, and one it still cannot model is reported on stderr rather than dropped. |
@@ -192,6 +206,8 @@ and is centred on the copper, not the hole, when the pad has a copper offset.
 | `graphic_circle` | Optional[Tuple] | For a circle, its TRUE `(cx, cy, r)`: the outline is a 16-gon whose chord midpoints sit 1.9% of r inside the curve, so a reach measured on the chords under-reads |
 | `graphic_filled` | bool | A closed graphic (poly/rect/circle) whose interior is copper, by KiCad's loader rules (a `(fill ...)` token; without one a poly is filled and a rect or circle only at stroke 0). The segments model only the outline; the off-outline grade reads this to look inside |
 | `graphic_ring` | Optional[Tuple] | For a FILLED closed graphic, its outline vertices as one tuple shared by every segment of the shape; `None` otherwise (#1181). The obstacle map stamps the interior it encloses and check_drc grades copper inside it (`check_drc.filled_graphic_shapes`). Both parse paths set it |
+| `sense` | str | The protected `sense:<REF>.<PAD>` group this track is a member of (#1279), `''` otherwise. Drives the routing rule: for its own net the copper is foreign except on the join pad, and never a place to attach |
+| `held_by` | str | The `sense:` group holding this track immutable (#1279), `''` otherwise: set whenever the group's members resolve on the join pad's net, protected or refused. `kicad_parser.is_immutable_copper(item)` (`locked or held_by`) is what the move/rewrite/remove guards read. Not a KiCad lock: never written, and the net's routes of the run stay rippable; only a whole-net strip of the net's pre-existing copper is refused (`protected_nets.protection_map` reason `sense:<REF>.<PAD>`) |
 
 ### `Via`
 
@@ -200,9 +216,11 @@ and is centred on the copper, not the hole, when the pad has a copper offset.
 | `x`, `y` | float | Position |
 | `size` | float | Outer (pad) diameter |
 | `drill` | float | Hole diameter |
-| `layers` | List[str] | Layer span, e.g. `['F.Cu', 'B.Cu']` |
+| `layers` | List[str] | The two end layers, e.g. `['F.Cu', 'B.Cu']`. A through via reads `['F.Cu', 'B.Cu']` on both paths whatever its `(layers ...)` says: KiCad loads a via with no type word as THROUGH and snaps its pair, pcbnew's `TopLayer()`/`BottomLayer()` report that, and the text parser does the same. A typed via keeps its file pair. Whether the via covers only part of the stack is `via_type`, never this pair |
+| `via_type` | str | `'through'`, `'blind'`, `'buried'` or `'micro'`: the block's type word (text) or `GetViaType()` (pcbnew). KiCad loads a via with no type word as THROUGH whatever its `(layers ...)` says, and this repo's writer emits no type word, so only a typed via has copper on part of the stack, the layers between its end layers (`geometry_utils.via_on_layer` / `via_span_layer_indices`, which the obstacle maps and check_drc read, #1268). A `Via` constructed without one is `'through'` |
 | `net_id` | int | Net ID, as pcbnew's connectivity pass leaves it on load: a non-free via with no same-net track or pad on it that sits in the zone FILL of exactly one net (on a layer it spans), with no track or pad of another net on it, takes that net whatever the file wrote (`propagate_via_cluster_nets`; antmicro lpddr4_test_board's stitching vias). A via joined to netted copper only by a track is not re-netted here |
-| `uuid` | str | UUID from the file |
+| `uuid` | str | UUID from the file, or the live item's `m_Uuid` on the pcbnew path (#1279) |
+| `sense`, `held_by` | str | As on `Segment` (#1279) |
 | `free` | bool | `(free yes)` flag — KiCad won't reassign the net from overlapping copper |
 | `tenting_attrs` | Dict[str, str] | Protection spec as `{token: raw inner s-expr}` for `tenting`/`covering`/`plugging`/`capping`/`filling`, e.g. `{'covering': '(front no) (back no)', 'capping': 'no'}`. `{}` = the board specified nothing (KiCad inherits its board default). Read by **both** parse paths (text and `build_pcb_data_from_board`) in the same normalized form. What a via is actually FABRICATED with is resolved token by token against `BoardInfo.via_protection_setup` by `fab_notes.effective_via_protection` (#962) |
 
@@ -257,7 +275,10 @@ modelled). The segments are the **perimeter**; a filled shape's interior is
 its `graphic_ring` (#1181), which the obstacle map stamps for every foreign net
 and check_drc grades containment in -- the same for board-level graphics. The
 off-outline grade (`check_drc.footprint_graphic_outline_census`, #962) reads
-`Segment.graphic_filled` to look inside a filled shape.
+`Segment.graphic_filled` to look inside a filled shape, and another part's
+PADS on the copper (`check_drc.footprint_graphic_pad_census`, #1266) are
+measured the same way -- strokes, then the interior -- for check_drc, the
+placement gate and check_assembly.
 
 ### `Zone`
 
@@ -272,6 +293,7 @@ off-outline grade (`check_drc.footprint_graphic_outline_census`, #962) reads
 | `island_area_min` | float | mm² floor for mode 2 (0.0 when absent) |
 | `in_footprint` | bool | Zone is owned by a footprint (nested in its `(footprint ...)` block); points are still board coordinates. Plane creation neither replaces nor aborts on these |
 | `teardrop` | bool | KiCad's `(attr (teardrop ...))` (pcbnew `IsTeardropArea()`): a generated teardrop area where a track meets a pad or via. Routing output, so `assess_placement`'s `has_copper` counts it (#1164) |
+| `holes` | List[List[Tuple[float, float]]] | The outline's cut-outs: KiCad's file holds ONE outline per zone and every later `(polygon ...)` block of it is a hole in that outline (pcbnew loads it so, `Outline().HoleCount(0)`). The fill never enters one. Read the same way as `polygon`, by both parse paths; `[]` without cut-outs (#1279) |
 
 A teardrop is still COPPER: the obstacle map, DRC and connectivity read it
 through `pcb.zones` like any zone. It is never a POUR: a consumer deciding
@@ -297,7 +319,7 @@ layers only.
 | `board_outline` | List[Tuple[float, float]] | Outline polygon for non-rectangular boards (empty if rectangular) |
 | `board_cutouts` | List[List[Tuple]] | Interior cutout polygons |
 | `stackup` | List[StackupLayer] | Physical stackup, top to bottom (empty if the board has none) |
-| `keepouts` | List[dict] | KiCad keepout rule areas (board-level AND footprint-owned): `{'polygon': [...], 'holes': [...], 'layers': set, 'tracks_allowed': bool, 'vias_allowed': bool, 'copper_pour_allowed': bool, 'in_footprint': bool}` |
+| `keepouts` | List[dict] | KiCad keepout rule areas (board-level AND footprint-owned): `{'polygon': [...], 'holes': [...], 'layers': set, 'tracks_allowed': bool, 'vias_allowed': bool, 'copper_pour_allowed': bool, 'in_footprint': bool, 'name': str}` (`name` is the area's `(name ...)`, `''` without one: a `.kicad_dru` area predicate names it) |
 | `pad_to_paste_clearance`, `pad_to_paste_clearance_ratio` | float | The board-level paste margin and ratio from `(setup ...)`, the last term of a pad's paste-margin resolution (#962) |
 | `via_protection_setup` | Dict[str, str] | The board's via protection policy, `{token: inner}` for all five tokens (`tenting`, `covering`, `plugging`, `capping`, `filling`), canonicalised from KiCad 10's per-token form and the legacy `(tenting front back)` form; a token the board does not declare takes KiCad's factory value (#962) |
 
@@ -588,8 +610,8 @@ is the same net on both paths), zones, board outline/cutouts, keepout zones,
 guide paths, and the paste openings (paired within one signature by nearest
 bounds, `_pair_nearest_bounds`, never by a sort of float coordinates).
 Zones are compared per (net, layer) as a multiset of the teardrop
-flag, the outline's vertices on the nm grid, the priority and the
-island-removal semantics, so a pour and the teardrops that share its net and
+flag, the outline's and its cut-outs' vertices on the nm grid, the priority
+and the island-removal semantics, so a pour and the teardrops that share its net and
 layer cannot be paired with the wrong partner; a disagreement on the flag is
 named as a `teardrop count` line (#1164, pinned by
 `tests/gui_parity/test_1164_teardrop_parity.py`). Both fronts hold the

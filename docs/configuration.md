@@ -136,8 +136,8 @@ vias and clearances *down toward* when it needs to. It is shared by every CLI
 |--------|---------|-------------|
 | `--fab-tier` | `auto` | `auto` (the standard floor, escalating to advanced when a fine-pitch fan-out, plane tap or last-resort via cannot fit; warned and counted), `standard` (no extra fab cost, **hard**) or `advanced` (tighter, "more costly", **hard**) |
 | `--fab-overrides` | - | Path to a file overlaying the tier's floors (only the keys it lists) |
-| `--escalation` | `fab` | How far below a **requested** size a failing net may be retried: `fab` (down to the fab tier floor, below the board's own minimums; completion first, every narrowing disclosed), `board` (down to the board's own Board Setup minimums; an unset key falls back to the fab tier floor, except clearance, which falls back to the Default net class's clearance, #1160; with `--no-fix-drc-settings` clearance descents stop at the Default class floored at `min_clearance`, what KiCad grades the unchanged project at, #1262), `off` (never; the net fails and is reported) |
-| `--strict-sizes` | off | Exit 3 when any feature was delivered below its requested size or a fab-tier escalation fired. For `--power-nets` track widths this means copper that SHIPS under width (one `design_rules` row per power net, #1033), not every narrower routing attempt |
+| `--escalation` | `fab` | How far below a **requested** size a failing net may be retried: `fab` (down to the fab tier floor, below the board's own minimums; completion first, every narrowing disclosed), `board` (down to the board's own Board Setup minimums; an unset key falls back to the fab tier floor, except clearance, which falls back to the Default net class's clearance, #1160; with `--no-fix-drc-settings` clearance descents stop at the Default class floored at `min_clearance`, what KiCad grades the unchanged project at, #1262), `off` (never; the net fails and is reported -- except a wide power/impedance net's pad-entry neck of at most 2 mm of path, `routing_defaults.PAD_ENTRY_NECK_MM`) |
+| `--strict-sizes` | off | Exit 3 when any feature was delivered below its requested size or a fab-tier escalation fired -- on every routing CLI that takes it (`route.py`, `route_diff.py`, `route_planes.py`, `repair_planes.py`, `bga_fanout.py`, `qfn_fanout.py`); an exit code the run already had for its own reason wins. For a net with its own width -- `--power-nets`, an impedance width, a wider net class -- this means copper that SHIPS under width (one `design_rules` row per net), not every narrower routing attempt: a power net on `route.py` is measured over the whole net (#1033); an impedance- or class-width net, and `repair_planes.py`'s `--power-nets` taps, over the copper the run laid, so a fanout stub an earlier step drew at its own width is not counted |
 
 The tier is a **floor ladder**:
 
@@ -187,7 +187,37 @@ minimum (the stock 0.5 mm via on a project nobody edited, routed with
 console, and descents for that key bound at the fab floor instead. An explicit
 request is never pinned up to a board minimum, only to the fab floor. Under
 `off` nothing is narrowed and a net that cannot complete at the requested
-geometry fails and is reported.
+geometry fails and is reported, with one bounded exception: a wide (power or
+impedance) net may neck below its width for at most 2 mm of routed path
+(`routing_defaults.PAD_ENTRY_NECK_MM`) on one edge or one via-to-pad tap --
+the pad-entry stretch a wide rail cannot keep into a narrow pin. A longer neck
+fails the edge. A power net's under-width copper is recorded like any other
+narrowing (below), so `--strict-sizes` still sees it.
+
+**Net-filtered keep-outs.** A KiCad rule area has no net dimension, so a
+region only some nets may cross is a NAMED rule area plus a `.kicad_dru` rule
+whose condition names it, e.g.
+`(rule "corridor" (constraint disallow track via) (condition "A.intersectsArea('corridor') && A.NetName != 'GND'"))`.
+Every routing step reads such rules from the board's own `.kicad_dru` (no flag,
+no GUI control: as for the per-layer rules, the rules file is the single source
+of truth) and keeps each net the rule binds out of the area while that net
+routes; the nets it exempts route through. The bound nets are the rule's own
+condition evaluated per net (net name, net class, item type, layer), separately
+for tracks (`track`) and vias (`via`, `through_via`); a diff pair is bound when
+either member is, and its members' copper, not just its centreline, is kept out.
+`insideArea`, `intersectsArea` and `enclosedByArea` are read (the last as
+`intersectsArea`, which keeps out more than KiCad requires). The console says
+`.kicad_dru rule 'corridor': honoured as a net-filtered keep-out: N of M net(s)
+kept out of 'corridor' (tracks, vias)`. A rule the tool cannot model completely
+-- one with another constraint beside `disallow`, one that forbids an item
+outside every named area (`!A.intersectsArea(...)`), one that combines areas
+other than as a union (`a && b`), or one naming no area the board has -- stays
+`NOT honoured` and is listed in `design_rules.unsupported_rules`; nothing of it
+is applied. The run ends with an audit of the board it ships: bound-net copper
+inside a region (from a path that does not stamp the region, such as the plane
+finalize's taps and joins, or already in the input) is printed and reported as
+`net_keepouts` in `JSON_SUMMARY` / `--json-out` and the GUI's results (`[]` =
+clean; absent when the board has no such rule).
 
 **Disclosure.** Every descent is recorded and reported three ways: the
 `JSON_SUMMARY` block `design_rules` (policy, tier, the board floors read, every
@@ -195,7 +225,10 @@ narrowing with net / kind / requested / delivered / site, the fab-tier escalatio
 count, and the `.kicad_dru` rules the tool could not honour), an `escalations`
 count in `JSON_SUMMARY_MIN`, and one end-of-run line (`Design rules [--escalation
 fab, --fab-tier auto]: 7 feature(s) on 3 net(s) delivered below the requested
-size (...)`). `--strict-sizes` makes that line a non-zero exit.
+size (...)`). `--strict-sizes` makes that line a non-zero exit. Every routing CLI
+prints the line and honours the flag; the non-route CLIs add `design_rules` to their
+`JSON_SUMMARY` only when the run narrowed something, and the GUI's diff, planes and
+fanout tabs print the same line in their log.
 
 | Floor (per layer count) | standard | advanced |
 |---|---|---|
@@ -316,7 +349,7 @@ See [Rip-Up and Reroute](rip-up-reroute.md) for how failed routes trigger rip-up
 | `--ordering` / `-o` | mps | Net ordering: `mps`, `inside_out`, or `original` |
 | `--direction` / `-d` | forward | Direction: `forward` or `backward` |
 | `--layers` / `-l` | all copper layers | Routing layers. For `route.py` the default is all of the board's copper layers; `route_diff.py` and `bga_fanout.py` default to `F.Cu B.Cu` |
-| `--layer-costs` | (see below) | Per-layer cost multipliers (1.0-1000). Default: all 1.0 for 4+ layers; F.Cu=1.0, B.Cu=3.0 for 2 layers |
+| `--layer-costs` | (see below) | Per-layer cost multipliers (1.0-1000), one per `--layers` entry (any other count is refused, see [Layer Costs](#layer-costs)). Default: all 1.0 for 4+ layers; F.Cu=1.0, B.Cu=3.0 for 2 layers |
 | `--no-bga-zones [REFS...]` | (auto-detect) | Disable BGA exclusion zones. No args = all. With refs (U1 U3) = only those |
 
 ### Proximity Penalty Options
@@ -435,6 +468,61 @@ Notes:
 - Tested by `tests/test_keepout.py` — flag-off regression, single-net detour, multi-net avoidance,
   and a real bundled board (`kicad_files/lvds_converter_dualclk.kicad_pcb`).
 
+### Kelvin Sense Branches (board-declared, no option)
+
+A Kelvin sense trace (a regulator's VOS/feedback divider, a shunt's sense
+pair) is on the same net as the load current it measures, so the router would
+otherwise connect the net's loads to it anywhere: connected, DRC-clean and
+electrically wrong. Declare it in the board with a KiCad **group** named
+`sense:<REF>.<PAD>`, where `REF.PAD` is the join (star) pad, holding the sense
+tracks, arcs and vias:
+
+```
+(group "sense:C108.1" (uuid ...) (members "<track uuid>" "<via uuid>" ...))
+```
+
+In KiCad: select the sense copper, Group it, and name the group. The sense pads
+are the pads of the same net that member copper touches, the join pad excepted
+-- touching the way KiCad's connectivity does: a track across a pad off-centre
+touches it, so do two tracks crossing in an X, and a blind or buried via touches
+only on the layers it spans. Pads are their real copper (a round pad is a
+circle). A member uuid that matches no item is ignored, as KiCad drops it on
+load, and named in the entry's `warnings`.
+There is no CLI flag and no GUI control: the board file is the declaration, so
+every step of a chain, both front-ends and every leg that parses the board read
+it (`sense_branch.py`). For the branch's own net the member copper and the
+sense pads are foreign copper, at the net's clearance, everywhere except on the
+join pad: only new copper sticking out of the join pad is held to the
+clearance, so a join pad no wider than the track (an 0402 cap under a power
+track) is landed at its centre without narrowing anything; the endpoint derivations never offer them as a place to attach, plane
+pad taps skip the sense pads, and the member copper is held immutable
+(`held_by`): no pass moves, rewrites or removes it, even when the branch is
+refused. The hold is not a KiCad lock and is never written to the board. The
+net's routes of this run stay rippable like any other net's; only a whole-net
+strip of the net's PRE-EXISTING copper (`--rip-existing-nets`,
+`--force-reroute`, plane-repair blocker rips, undo) is refused, with the
+protection reason `sense:<REF>.<PAD>` and no exact-name override -- ungroup or
+rename the group to release it. Net ids are never changed.
+
+Each branch is printed and reported in `JSON_SUMMARY.sense_branches`
+(`route.py` and `route_diff.py`), as the input resolved it; a branch the input
+protected and the routed copper no longer does also carries `tapped_by_run`,
+with a printed WARNING. A branch is reported and left unprotected,
+with the reason, when the group name is not `sense:REF.PAD`, the join pad is
+missing or has no net, a member is not a track or via on the board, member
+copper is on another net, member copper does not touch the join pad, a sense
+pad or member is not joined to the join pad by member copper yet, other copper
+of the net already touches the branch off the join pad, or a pour of the same
+net can fill over it off the join pad (the fill already taps it). A pour's
+cut-outs and copper-pour keep-out rule areas are not fill: a pour cut around
+the sense trace leaves the branch protected. KiCad's DRC cannot
+see topology, so check the written board.
+
+`route_planes.py` and the Planes tab print a WARNING naming each protected
+branch a pour they create covers, and `route_planes.py` records the layers as
+`poured_over` in its `JSON_SUMMARY.sense_branches`; `repair_planes.py` reports
+the branches judged on the board it wrote.
+
 ### Differential Pair Options (route_diff.py only)
 
 These options are only available in `route_diff.py`. All nets passed to route_diff.py are treated as differential pairs.
@@ -462,7 +550,7 @@ These options control stub layer switching, which moves stubs to different layer
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--no-stub-layer-swap` | false | Disable stub layer switching (enabled by default) |
+| `--no-stub-layer-swap` | false | Disable stub layer switching (enabled by default): the upfront pass and every rescue that moves a stub (route.py's stub-swap rescue and boxed-stub switches, route_diff.py's multipoint terminal switch). The GUI's "Stub layer swaps" checkbox is the same setting |
 | `--can-swap-to-top-layer` | false | Allow swapping stubs to F.Cu (off by default for diff pairs due to clearance) |
 
 **How it works:**
@@ -477,6 +565,10 @@ These options control stub layer switching, which moves stubs to different layer
   layer, so an inner-layer pair can land on the pad via the via instead of fighting
   through the congested surface channel
 - Multiple swap options are tried: src/src, tgt/tgt, src/tgt, tgt/src
+- No switch, relocation or fan-out targets a **forbidden** layer: the copper
+  layers a `--layers` subset run did not request (appended as obstacles at
+  cost -1) or a negative `--layer-costs` entry. A stub whose other end sits on
+  a forbidden layer is not moved there; the net keeps its via
 - For **multi-point nets** (3+ endpoints, #265), all movable stubs are collapsed onto one
   common layer when every endpoint allows it (through-hole and via-in-pad pads reach any
   layer; bare SMD pads fix their copper layers; already-connected pad-to-pad copper never
@@ -485,7 +577,10 @@ These options control stub layer switching, which moves stubs to different layer
 - The **pad via sizes itself to fit**: a switch leaving the pad's layer drops a
   through-via at the pad, at the run's nominal via size when it clears the
   surrounding copper, else the first smaller via from the fab-tier ladder that
-  does (with the standard fab-escalation warning). A nominal 0.5mm via never
+  does (with the standard fab-escalation warning). Every switch that keeps the
+  via also checks its drill against every existing hole by the hole-to-hole
+  floor, the net's own vias included, shrinking it further when that helps and
+  reverting the switch when nothing fits. A nominal 0.5mm via never
   fits a 0.65mm-pitch ball field boxed by neighboring fanout vias; the 0.3/0.25
   rungs do — so a stub walled in on its own layer can still switch to an open
   layer and escape. Applies everywhere the switch machinery is used: the
@@ -738,6 +833,19 @@ The `--layer-costs` parameter controls per-layer routing preferences. Higher cos
 ```bash
 --layers F.Cu B.Cu --layer-costs 1.0 5.0
 ```
+
+**One value per routing layer, in `--layers` order** (for `route.py` with
+`--layers` omitted, one per board copper layer; for `route_planes.py`, one per
+entry of its `--layers`, default `F.Cu` + plane layers + `B.Cu`). The copper
+layers a run does not route on are appended after them as FORBIDDEN
+obstacles, so a list of any other length is refused (`ERROR: --layer-costs
+needs one value per routing layer ...`) rather than shifted onto the wrong
+layers: `--layers F.Cu B.Cu --layer-costs 1.0` on a 4-layer board used to
+forbid the requested `B.Cu` and leave the unrequested `In2.Cu` routable.
+`route.py`, `route_diff.py`, `route_planes.py`, `repair_planes.py` and
+`bga_fanout.py` all refuse it. In the GUI the Layer Costs field takes one
+value per copper layer (its default) or one per selected layer, and each tab
+places them on its own layers by name.
 
 ### Stub Proximity
 

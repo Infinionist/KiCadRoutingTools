@@ -468,6 +468,10 @@ ROWS = [
         'quench_on': {'body_model': True},
         'signal': 'body_advisory',
         'guard': ('body_blocking', 'crossings', 'hpwl'),
+        # #1266 turned it to `regress` on the full-rebuild polish: with AE1's
+        # antenna copper in the pad gate, the two quenches seated the parts
+        # around it differently. Under the pose pricer both arms make the same
+        # moves again (see `why`), antenna gate included, so it is neutral.
         'expect': 'neutral',
         'rejected': True,
         'why': ('MECHANISM: the board candidate_valid names as the one where nearly every part starts in violation, so it is the most sensitive to a seat box that only grows -- and the one board where the trade went the OTHER way, signal and both guards together. Since the polish prices a pose by the tree edges it changes (_PosePricer, whose ties among equally short trees differ from a full rebuild), both arms make the same moves here: the body model reaches only the five courtyard-less parts, and none of them moves. Kept because it DISAGREED with the other three, and deleting the dissenting row is how a finding becomes folklore.'),
@@ -826,9 +830,13 @@ with open(PILE_PREREG_V2, encoding='utf-8') as _fh:
 # rows are pinned at their measured marks -- a change in either direction
 # is caught. The numbers are in the baseline.
 #: board -> the measured mark of a `decap-pile-within-limit-*` row.
+#: #1266 turned watchy to `regress`: once neither arm may seat a part on
+#: AE1's antenna copper, the claim still lowers its signal (8 -> 7) but
+#: raises the crossings guard (203 -> 206), so it is the FOURTH pile where
+#: the adopted trade costs a guard.
 _PILE_DECAP_MARKS = {
     'esp_prog': 'improve', 'splitflap_driver': 'regress',
-    'tigard': 'regress', 'watchy': 'improve', 'glasgow_revC': 'improve',
+    'tigard': 'regress', 'watchy': 'regress', 'glasgow_revC': 'improve',
     'ulx3s': 'improve', 'orangecrab_ext_pll': 'regress',
 }
 ROWS += [
@@ -937,8 +945,11 @@ ROWS += [
         # severity. Measured (#1051 Phase 6): the signal falls on three
         # boards and holds on tigard (nothing to hold there); the one
         # regress mark is a GUARD (ulx3s crossings), not the signal.
+        # #1266 moved watchy to neutral: once the gate sees AE1's antenna
+        # copper, the OFF quench seats the caps around it differently and
+        # breaks no tether, so the ON gate has nothing left to hold there.
         'expect': {'splitflap_driver.kicad_pcb': 'improve',
-                   'watchy.kicad_pcb': 'improve',
+                   'watchy.kicad_pcb': 'neutral',
                    'tigard.kicad_pcb': 'neutral',
                    'ulx3s.kicad_pcb': 'regress'}[b],
         'why': ('MECHANISM: the auto limit is the board\'s own worst '
@@ -1087,9 +1098,12 @@ ROWS += [
         # a passive out of the only room, and the moved passive lengthens
         # its nets: those rows regress on the hpwl guard, not their signal.
         # `derive_decaps='strict'` measured identically on all five, so those
-        # rows were not kept.
-        'expect': {'watchy.kicad_pcb': 'regress',
-                   'esp_prog.kicad_pcb': 'regress',
+        # rows were not kept. #1266 turned esp_prog and watchy to `improve`
+        # (enforced errors 3 -> 1 and 4 -> 0, no guard worse): with the
+        # parts kept off U2's tab and AE1's antenna, the rung's seats no
+        # longer cost a guard there -- 3 of 5, still short of N-1.
+        'expect': {'watchy.kicad_pcb': 'improve',
+                   'esp_prog.kicad_pcb': 'improve',
                    'glasgow_revC.kicad_pcb': 'regress',
                    'tigard.kicad_pcb': 'improve'}.get(b, 'neutral'),
         'rejected': True,

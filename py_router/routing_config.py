@@ -71,6 +71,28 @@ def _snap_to_lattice_reach(margin: float, e: float) -> float:
     return need * (1.0 + 1e-12)
 
 
+def layer_costs_count_error(layers, layer_costs) -> Optional[str]:
+    """The refusal for a layer-cost list that is not one value per routing
+    layer, or None when it is (or when no costs were given at all).
+
+    The costs are positional: entry i prices layers[i]. Every engine that
+    takes them then APPENDS the board's unrequested copper layers at
+    FORBIDDEN cost after them, so a list one short shifted each appended -1
+    onto the wrong layer: `--layers F.Cu B.Cu --layer-costs 1.0` on a
+    4-layer board forbade the requested B.Cu and left In2.Cu routable at
+    1.0x (found reviewing #1269). A longer list priced unrequested layers
+    instead of forbidding them. Which layer a short list leaves out, or what
+    a long list's extra values were meant for, cannot be known, so the
+    count is refused rather than guessed -- as bga_fanout refuses it."""
+    if not layer_costs or len(layer_costs) == len(layers or ()):
+        return None
+    shown = ' '.join(f"{float(c):g}" for c in layer_costs)
+    return (f"--layer-costs needs one value per routing layer, in --layers "
+            f"order: {len(layers or ())} layer(s) "
+            f"({' '.join(layers or ()) or 'none'}), got {len(layer_costs)} "
+            f"value(s) ({shown})")
+
+
 @dataclass
 class DiffPairNet:
     """Represents a differential pair with P and N nets (tracks net IDs)."""
@@ -804,6 +826,14 @@ class GridRouteConfig:
         clearance. Never smaller than `clearance` (netclasses only widen)."""
         nc = self.net_clearances.get(net_id, 0.0) if self.net_clearances else 0.0
         return nc if nc > self.clearance else self.clearance
+
+    def routable_layers(self) -> List[str]:
+        """Layers a track may be placed on: config.layers minus the FORBIDDEN ones
+        (negative cost, e.g. the unrequested copper layers appended as obstacles).
+        Candidate lists for relocation, stub switching and layer swaps must come
+        from here -- a GND reference plane is in config.layers but takes no track."""
+        costs = self.layer_costs or []
+        return [l for i, l in enumerate(self.layers) if not (i < len(costs) and costs[i] < 0)]
 
     def get_layer_costs(self) -> List[int]:
         """Get layer cost multipliers for the Rust router.
