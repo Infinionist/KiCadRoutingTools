@@ -19,6 +19,12 @@ these cover the OTHER paths that lay copper of the branch's own net:
     copper only, by geometry -- measure the branch too. End to end: a load
     whose only way out is onto the sense pad, left to the route step's
     in-run plane finalize oracle.
+(c) the bridging passes (close_soft_joints, snap_stub_gaps) join same-net
+    copper by geometry and never use the branch as a bridge end: a dead end
+    within a stub gap of the trace (in memory), and a via legally beside a
+    sense pad (route.py, end to end). The region-join board (repair_planes,
+    end to end) holds (a), (b) and (c) together: the join crosses at C1.1.
+
 Run:
     python3 tests/test_1279_sense_branch_paths.py
 """
@@ -98,6 +104,12 @@ def _branch(board_or_pcb):
 
 def _vdd(p):
     return next(i for i, n in p.nets.items() if n.name == 'VDD')
+
+
+def _connected(board):
+    r = subprocess.run([sys.executable, tool('check_connected.py'), board, '--nets', 'VDD'],
+                       cwd=ROOT, capture_output=True, text=True)
+    assert 'ALL NETS FULLY CONNECTED' in r.stdout, r.stdout[-2000:] + r.stderr[-1000:]
 
 
 def _hits(src, out):
@@ -247,11 +259,108 @@ def test_plane_finalize_oracle_leaves_the_branch_alone():
     assert _branch(out).protected, 'the routed board taps its own branch'
 
 
+# --- (c) the geometry bridging passes -----------------------------------------
+
+def test_stub_gap_snap_never_targets_the_branch():
+    """snap_stub_gaps extends a dead end to the nearest same-net copper
+    within 1.5x its width. Measured in the plane cleanup (repair_planes on
+    the region-join board below, before the width upgrade measured the
+    branch): a 0.8 mm strap whose via end sat 0.9 mm from the trace's
+    centreline was snapped onto the trace. The same geometry, in memory."""
+    from kicad_parser import Segment, Via
+    from pcb_modification import snap_stub_gaps
+    from routing_config import GridRouteConfig
+    p = parse_kicad_pcb(BOARD)
+    vdd = _vdd(p)
+    strap = Segment(start_x=7.9, start_y=4.1, end_x=3.2, end_y=4.1, width=0.8,
+                    layer='F.Cu', net_id=vdd)
+    p.segments.append(strap)
+    p.vias.append(Via(x=7.9, y=4.1, size=0.6, drill=0.3, layers=['F.Cu', 'B.Cu'],
+                      net_id=vdd))
+    cfg = GridRouteConfig(clearance=CLEARANCE, track_width=0.3, via_size=0.6,
+                          via_drill=0.3, grid_step=0.1, layers=['F.Cu', 'B.Cu'])
+    results = []
+    snap_stub_gaps(results, p, {vdd}, cfg)
+    new = [s for r in results for s in r.get('new_segments', [])]
+    taps = [s for s in new
+            if sb.terminal_sense_dist(p, vdd, s.start_x, s.start_y, s.end_x, s.end_y,
+                                      s.layer, s.width / 2.0) < s.width / 2.0]
+    assert not taps, f'a stub-gap connector onto the sense branch: '         f'{[(s.start_x, s.start_y, s.end_x, s.end_y) for s in taps]}'
+
+
+def _board_soft_joint():
+    """Load U2 is a B.Cu pad at (27, 5.6), just below the sense pad U1.1,
+    inside a locked GND B.Cu ring: the VDD via that serves it lands 0.2 mm
+    off U1.1's edge -- legal, and inside close_soft_joints' via->pad graze
+    band (barrel edge within a track width of a same-net SMD pad)."""
+    t = _src().replace(
+        '(footprint "T:P" (layer "F.Cu") (at 15 8)\n'
+        '    (property "Reference" "U2" (at 0 -2 0) (layer "F.SilkS") (effects (font (size 1 1))))\n'
+        '    (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu" "F.Paste" "F.Mask") (net 1 "VDD")))',
+        '(footprint "T:P" (layer "B.Cu") (at 27 5.6)\n'
+        '    (property "Reference" "U2" (at 0 -2 0) (layer "F.SilkS") (effects (font (size 1 1))))\n'
+        '    (pad "1" smd rect (at 0 0) (size 1 1) (layers "B.Cu" "B.Paste" "B.Mask") (net 1 "VDD")))')
+    t = t.replace('(layers (0 "F.Cu" signal) (2 "B.Cu" signal)',
+                  '(layers (0 "F.Cu" signal) (2 "B.Cu" signal) (14 "B.Paste" user) (3 "B.Mask" user)')
+    ring = ''.join(_seg(*xy, 0.2, 'B.Cu', 2, f'cccccccc-0000-0000-0000-{i:012d}')
+                   for i, xy in enumerate([(25.8, 6.7, 28.2, 6.7), (25.8, 4.8, 25.8, 6.7),
+                                           (28.2, 4.8, 28.2, 6.7), (25.8, 4.8, 28.2, 4.8)]))
+    return _variant(_with_gnd(t, ring), 'softjoint')
+
+
+def test_soft_joint_never_bridges_onto_a_sense_pad():
+    """route.py: the via beside U1.1 is legal; the cleanup's via->pad graze
+    bridge used to stub it onto U1.1 (and the late collapse then dropped the
+    now-redundant sense trace)."""
+    src = _board_soft_joint()
+    out = os.path.join(_tmpdir(), 'out.kicad_pcb')
+    _run('route.py', [src, out, '--nets', 'VDD', '--layers', 'F.Cu', 'B.Cu',
+                      '--track-width', '0.3', '--clearance', str(CLEARANCE)])
+    evidence(out, 'route.py output')
+    hits = _hits(src, out)
+    assert not hits, f'new VDD copper on the sense branch off C1.1: {hits}'
+
+
+def _board_region_join():
+    """A locked GND B.Cu wall right under the sense trace splits a B.Cu VDD
+    pour into a top and a bottom island; locked GND F.Cu stubs close both
+    ends, so a region join must cross y=5 on F.Cu -- legally only over C1.1.
+    U3 moves to the top island so both islands carry a load."""
+    t = _src().replace('(at 20 8)\n    (property "Reference" "U3"',
+                       '(at 20 2)\n    (property "Reference" "U3"')
+    wall = (_seg(0.5, 5, 29.5, 5, 0.2, 'B.Cu', 2, 'dddddddd-0000-0000-0000-000000000001')
+            + _seg(0.6, 5, 2.0, 5, 0.2, 'F.Cu', 2, 'dddddddd-0000-0000-0000-000000000002')
+            + _seg(28.0, 5, 29.4, 5, 0.2, 'F.Cu', 2, 'dddddddd-0000-0000-0000-000000000003'))
+    return _variant(_with_gnd(t, wall), 'regionjoin')
+
+
+def test_region_join_crosses_only_at_the_join_pad():
+    """route_planes then repair_planes: the region join (its map stamps the
+    branch, (a)) and the plane cleanup's stub-gap snap after it."""
+    src = _board_region_join()
+    d = _tmpdir()
+    pour, rep = os.path.join(d, 'pour.kicad_pcb'), os.path.join(d, 'repair.kicad_pcb')
+    _run('route_planes.py', [src, pour, '--nets', 'VDD', '--plane-layers', 'B.Cu',
+                             '--clearance', str(CLEARANCE), '--track-width', '0.3'])
+    evidence(pour, 'route_planes.py output')
+    log = _run('repair_planes.py', [pour, rep, '--nets', 'VDD', '--plane-layers', 'B.Cu',
+                                    '--clearance', str(CLEARANCE), '--track-width', '0.3'])
+    evidence(rep, 'repair_planes.py output')
+    assert 'Joining 2 regions' in log, 'no region join ran; the case proves nothing\n' + log[-2000:]
+    hits = _hits(src, rep)
+    assert not hits, f'new VDD copper on the sense branch off C1.1: {hits}'
+    assert _branch(rep).protected, 'the repaired board taps its own branch'
+    _connected(rep)
+
+
 TESTS = [
     test_plane_base_map_stamps_the_branch,
     test_widening_checks_measure_the_branch,
     test_oracle_link_ends_never_on_the_branch,
     test_plane_finalize_oracle_leaves_the_branch_alone,
+    test_stub_gap_snap_never_targets_the_branch,
+    test_soft_joint_never_bridges_onto_a_sense_pad,
+    test_region_join_crosses_only_at_the_join_pad,
 ]
 
 
