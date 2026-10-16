@@ -3982,8 +3982,11 @@ def _route_hybrid_leg(pcb_data, net_id, config, obstacles, layer_names, coord,
     # path lands on that cell must REUSE it -- not stack a second coincident via a
     # hole-to-hole bust. Mirror the multipoint router's reuse set.
     reuse_holes = set(get_same_net_through_hole_positions(pcb_data, net_id, config))
+    from obstacle_map import via_stops_short
     for _v in (getattr(pcb_data, 'vias', None) or []):
-        if _v.net_id == net_id:
+        # A blind/micro via is not an every-layer hole (found reviewing #1268);
+        # _path_to_segments_vias rides it within its span on its own.
+        if _v.net_id == net_id and not via_stops_short(_v, pcb_data):
             reuse_holes.add(coord.to_grid(_v.x, _v.y))
 
     # Register the coupled middle's OWN (this-net) vias as reuse holes, and if the
@@ -3995,7 +3998,8 @@ def _route_hybrid_leg(pcb_data, net_id, config, obstacles, layer_names, coord,
     for _v in mid_vias:
         if _v.net_id != net_id:
             continue
-        reuse_holes.add(coord.to_grid(_v.x, _v.y))
+        if not via_stops_short(_v, pcb_data):
+            reuse_holes.add(coord.to_grid(_v.x, _v.y))
         if math.hypot(_v.x - mid_pt[0], _v.y - mid_pt[1]) <= own_tol:
             _sp = _via_routable_layer_indices(_v, layer_names[:nlayers], config)
             if len(_sp) >= 2:

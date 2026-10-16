@@ -16,7 +16,7 @@ import numpy as np
 from kicad_parser import PCBData, Segment, Via, Pad, Zone
 from routing_config import GridRouteConfig, GridCoord
 from routing_utils import pos_key, segment_length, POSITION_DECIMALS, build_layer_map
-from geometry_utils import UnionFind
+from geometry_utils import UnionFind, via_on_layer
 from routing_constants import BGA_DEFAULT_EDGE_TOLERANCE, BGA_EDGE_DETECTION_TOLERANCE
 
 
@@ -1446,6 +1446,8 @@ def _get_net_endpoints_ordered(pcb_data: PCBData, net_id: int, config: GridRoute
                     for _via in _vlist:
                         gx, gy = coord.to_grid(_via.x, _via.y)
                         for _vlayer in config.layers:
+                            if not via_on_layer(_via, _vlayer):
+                                continue    # a blind/micro via: its span only
                             layer_idx = layer_map.get(_vlayer)
                             if layer_idx is not None:
                                 _side.append((gx, gy, layer_idx, _via.x, _via.y))
@@ -1535,8 +1537,11 @@ def _get_net_endpoints_ordered(pcb_data: PCBData, net_id: int, config: GridRoute
                     # the tip is on an unmapped layer) or it lands on the target pad.
                     if (use_stub_free_ends and sources and not near_unconnected):
                         continue
-                    # Add via as endpoint on ALL routing layers (vias are through-hole)
+                    # Add via as endpoint on every routing layer it reaches: all
+                    # of them for a through via, its span for a blind/micro one.
                     for layer in config.layers:
+                        if not via_on_layer(via, layer):
+                            continue
                         layer_idx = layer_map.get(layer)
                         if layer_idx is not None:
                             if near_unconnected:
@@ -1566,6 +1571,8 @@ def _get_net_endpoints_ordered(pcb_data: PCBData, net_id: int, config: GridRoute
             for v in svias:
                 vgx, vgy = coord.to_grid(v.x, v.y)
                 for _layer in config.layers:
+                    if not via_on_layer(v, _layer):
+                        continue    # a blind/micro via: its span only
                     layer_idx = layer_map.get(_layer)
                     if layer_idx is not None:
                         side.append((vgx, vgy, layer_idx, v.x, v.y))
