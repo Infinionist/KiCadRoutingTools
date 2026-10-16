@@ -57,14 +57,51 @@ import numpy as np
 _EPS = 0.01
 
 def _in_pad(pad, x: float, y: float, grow: float) -> bool:
-    """True when (x, y) lies on the pad rectangle grown by `grow` mm.
+    """True when (x, y) lies on the pad's REAL copper grown by `grow` mm
+    (`grow` >= 0): check_drc.point_to_pad_distance, which holds custom
+    polygons, round corners and the residual tilt `rect_rotation`. The pad
+    rectangle was wrong for a round, oval or roundrect pad, whose bounding-box
+    corners are not copper: a member ending 0.24 mm off a round join pad's
+    copper read as joined to it, and the cut-out let new copper land on
+    member copper beyond the circle."""
+    from check_drc import point_to_pad_distance
+    return point_to_pad_distance(x, y, pad) <= grow
 
-    `size_x`/`size_y` are BOARD-resolved (a 90-degree pad's are already
-    swapped), so only the residual tilt `rect_rotation` may turn the point --
-    the shared routing_utils test. Rotating by the absolute `pad.rotation`
-    turned a 90-degree join pad's rectangle back across itself."""
-    from routing_utils import point_in_pad_rect
-    return point_in_pad_rect(x, y, pad, grow)
+
+def _pad_sd(pad, xs, ys):
+    """Signed distance (mm) from each point to the pad's real copper:
+    negative inside (minus the depth), positive outside. The vectorised,
+    signed twin of check_drc.point_to_pad_distance, on the same shape
+    (check_drc._pad_copper_core: the pad is its inner polygon grown by its
+    corner radius -- a point for a circle, a segment for an oval)."""
+    from check_drc import _pad_copper_core
+    from check_connected import points_in_polygon_mask
+    xs = np.atleast_1d(np.asarray(xs, dtype=np.float64))
+    ys = np.atleast_1d(np.asarray(ys, dtype=np.float64))
+    polys, radius = _pad_copper_core(pad)
+    best = np.full(xs.shape, np.inf)
+    for poly in polys:
+        if not poly:
+            continue
+        P = np.asarray(poly, dtype=np.float64)
+        Q = np.roll(P, -1, axis=0)
+        x1, y1 = P[:, 0][None, :], P[:, 1][None, :]
+        dx, dy = (Q[:, 0] - P[:, 0])[None, :], (Q[:, 1] - P[:, 1])[None, :]
+        l2 = dx * dx + dy * dy
+        with np.errstate(divide='ignore', invalid='ignore'):
+            t = np.clip(((xs[:, None] - x1) * dx + (ys[:, None] - y1) * dy) / l2, 0.0, 1.0)
+        t = np.where(l2 < 1e-18, 0.0, t)
+        d = np.sqrt(((xs[:, None] - (x1 + t * dx)) ** 2
+                     + (ys[:, None] - (y1 + t * dy)) ** 2).min(axis=1))
+        inside = points_in_polygon_mask(xs, ys, poly) if len(P) >= 3 else False
+        best = np.minimum(best, np.where(inside, -d, d))
+    return best - radius
+
+
+def _inradius(pad) -> float:
+    """How deep the pad's centre lies in its copper (min(size)/2 for a rect,
+    circle, oval or roundrect pad; the anchor's depth for a custom one)."""
+    return max(0.0, -float(_pad_sd(pad, [pad.global_x], [pad.global_y])[0]))
 
 
 def _dist_seg(px, py, ax, ay, bx, by) -> float:
@@ -502,41 +539,108 @@ def summary_entries(pcb_data) -> List[dict]:
 
 def _join_shrink(join, half: float) -> float:
     """How far inside the join pad's edge copper of half-width `half` must be
-    centred to lie on the pad -- never more than the pad's own half-extent,
-    so even a pad narrower than the track keeps its centre landable."""
-    return min(half, min(join.size_x, join.size_y) / 2.0)
+    centred to lie on the pad -- never more than the pad's own depth, so
+    even a pad narrower than the track keeps its centre landable."""
+    return min(half, _inradius(join))
+
+
+def _is_plain_rect(pad) -> bool:
+    """A pad whose copper is exactly its (tilted) size_x x size_y rectangle."""
+    if getattr(pad, 'polygons', None):
+        return False
+    if pad.shape in ('circle', 'oval'):
+        return False
+    return not (pad.shape == 'roundrect' and getattr(pad, 'roundrect_rratio', 0.0) > 0)
+
+
+#: Sampling step (mm) along a track when its on-pad span is not closed-form.
+_CLIP_STEP = 0.005
+
+
+def _on_pad_spans(seg, pad, depth: float = 0.0) -> list:
+    """[(t0, t1), ...] of `seg`'s centreline lying `depth` mm or deeper inside
+    the pad's real copper (t along start -> end). A plain rectangle clips in
+    closed form (Liang-Barsky in the pad frame); a round, oval, roundrect or
+    custom pad is sampled every _CLIP_STEP along the part of the track near
+    the pad and each crossing bisected on _pad_sd."""
+    if _is_plain_rect(pad):
+        from routing_utils import _to_pad_frame
+        ax, ay = _to_pad_frame(seg.start_x, seg.start_y, pad)
+        bx, by = _to_pad_frame(seg.end_x, seg.end_y, pad)
+        hx, hy = pad.size_x / 2.0 - depth, pad.size_y / 2.0 - depth
+        if hx < 0 or hy < 0:
+            return []
+        t0, t1 = 0.0, 1.0
+        dx, dy = bx - ax, by - ay
+        for p, q in ((-dx, ax + hx), (dx, hx - ax), (-dy, ay + hy), (dy, hy - ay)):
+            if abs(p) < 1e-12:
+                if q < 0:
+                    return []               # parallel and outside: no overlap
+                continue
+            r = q / p
+            if p < 0:
+                t0 = max(t0, r)
+            else:
+                t1 = min(t1, r)
+        return [(t0, t1)] if t0 < t1 else []
+    ex, ey = seg.end_x - seg.start_x, seg.end_y - seg.start_y
+    length = math.hypot(ex, ey)
+
+    def inside(t):
+        t = np.atleast_1d(t)
+        return _pad_sd(pad, seg.start_x + ex * t, seg.start_y + ey * t) <= -depth
+
+    if length < 1e-9:
+        return [(0.0, 1.0)] if inside(0.0)[0] else []
+    # Only the stretch within the pad's reach of its centre can be on it.
+    tc = ((pad.global_x - seg.start_x) * ex + (pad.global_y - seg.start_y) * ey) / length ** 2
+    half = (_pad_reach(pad) + _CLIP_STEP) / length
+    lo, hi = max(0.0, tc - half), min(1.0, tc + half)
+    if lo >= hi:
+        return []
+    t = np.linspace(lo, hi, max(2, int(math.ceil((hi - lo) * length / _CLIP_STEP)) + 1))
+    on = inside(t)
+    spans, start = [], None
+
+    def edge(a, b):                         # a and b straddle the boundary
+        ia = bool(inside(a)[0])
+        for _ in range(40):
+            m = (a + b) / 2.0
+            if bool(inside(m)[0]) == ia:
+                a = m
+            else:
+                b = m
+        return (a + b) / 2.0
+
+    for k in range(len(t)):
+        if on[k] and start is None:
+            start = t[k] if k == 0 else edge(t[k - 1], t[k])
+        if not on[k] and start is not None:
+            spans.append((start, edge(t[k - 1], t[k])))
+            start = None
+    if start is not None:
+        spans.append((start, float(t[-1])))
+    return [(float(a), float(b)) for a, b in spans if b > a]
 
 
 def _outside_join(seg, join) -> list:
-    """The parts of `seg` (a member track) off the join pad rectangle, as
-    (x1, y1, x2, y2) tuples. Member copper ON the pad is the pad."""
-    from routing_utils import _to_pad_frame
-    if not _pad_on(join, seg.layer):
-        return [(seg.start_x, seg.start_y, seg.end_x, seg.end_y)]
-    ax, ay = _to_pad_frame(seg.start_x, seg.start_y, join)
-    bx, by = _to_pad_frame(seg.end_x, seg.end_y, join)
-    hx, hy = join.size_x / 2.0, join.size_y / 2.0
-    t0, t1 = 0.0, 1.0
-    dx, dy = bx - ax, by - ay
-    for p, q in ((-dx, ax + hx), (dx, hx - ax), (-dy, ay + hy), (dy, hy - ay)):
-        if abs(p) < 1e-12:
-            if q < 0:
-                t0, t1 = 1.0, 0.0          # parallel and outside: no overlap
-            continue
-        r = q / p
-        if p < 0:
-            t0 = max(t0, r)
-        else:
-            t1 = min(t1, r)
+    """The parts of `seg` (a member track) off the join pad's real copper,
+    as (x1, y1, x2, y2) tuples. Member copper ON the pad is the pad."""
     full = (seg.start_x, seg.start_y, seg.end_x, seg.end_y)
-    if t0 >= t1:
+    if not _pad_on(join, seg.layer):
+        return [full]
+    spans = _on_pad_spans(seg, join)
+    if not spans:
         return [full]                       # never crosses the pad
     ex, ey = seg.end_x - seg.start_x, seg.end_y - seg.start_y
-    out = []
-    if t0 > 1e-9:
-        out.append((seg.start_x, seg.start_y, seg.start_x + ex * t0, seg.start_y + ey * t0))
-    if t1 < 1.0 - 1e-9:
-        out.append((seg.start_x + ex * t1, seg.start_y + ey * t1, seg.end_x, seg.end_y))
+    out, t = [], 0.0
+    for t0, t1 in spans:
+        if t0 > t + 1e-9:
+            out.append((seg.start_x + ex * t, seg.start_y + ey * t,
+                        seg.start_x + ex * t0, seg.start_y + ey * t0))
+        t = max(t, t1)
+    if t < 1.0 - 1e-9:
+        out.append((seg.start_x + ex * t, seg.start_y + ey * t, seg.end_x, seg.end_y))
     return out
 
 
@@ -574,14 +678,10 @@ class _Collector:
 
 
 def _off_join_mask(join, xs, ys, shrink: float):
-    """Boolean mask of board points NOT on the join pad shrunk by `shrink`."""
-    dx, dy = xs - join.global_x, ys - join.global_y
-    rr = getattr(join, 'rect_rotation', 0.0) or 0.0
-    if rr:
-        c, s = math.cos(math.radians(rr)), math.sin(math.radians(rr))
-        dx, dy = dx * c + dy * s, -dx * s + dy * c
-    return ~((np.abs(dx) <= join.size_x / 2.0 - shrink)
-             & (np.abs(dy) <= join.size_y / 2.0 - shrink))
+    """Boolean mask of board points NOT on the join pad's real copper shrunk
+    by `shrink` (a round pad's shrunk copper is a smaller circle, not its
+    bounding box)."""
+    return _pad_sd(join, xs, ys) > -shrink
 
 
 def sense_obstacle_rows(b: SenseBranch, config, coord, layer_map, clearance: float,
@@ -743,9 +843,7 @@ def terminal_sense_dist(pcb_data, net_id: int, x1: float, y1: float, x2: float, 
             if _in_pad(join, v.x, v.y, 0.0):
                 continue
             best = min(best, float((np.hypot(px - v.x, py - v.y) - v.size / 2.0).min()))
-        from routing_utils import point_to_pad_rect_dist
         for p in b.sense_pads:
-            if _pad_on(p, layer):
-                best = min(best, min(point_to_pad_rect_dist(x, y, p)
-                                     for x, y in zip(px.tolist(), py.tolist())))
+            if _pad_on(p, layer):           # the pad's real copper, not its box
+                best = min(best, float(np.maximum(_pad_sd(p, px, py), 0.0).min()))
     return best

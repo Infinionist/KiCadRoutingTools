@@ -10,6 +10,7 @@ reach, each case built in-test from the fixture's text:
   connectivity joins crossing copper, not only endpoints);
 - a same-net pad the sense trace runs across off-centre is a sense pad, so
   no load is routed through it onto the trace;
+- a round (or roundrect) join pad is its copper, not its bounding box;
 
 Run:
     python3 tests/test_1279_sense_branch_geometry.py
@@ -121,6 +122,111 @@ def _tapped(board):
                   if i in seen and k == 'pad')
 
 
+#: C1.1, the fixture's join pad: the FIRST pad block in the file.
+JOIN_PAD = '(pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu" "F.Paste" "F.Mask") (net 1 "VDD"))'
+MEMBER_LINE = ('  (segment (start 3 5) (end 27 5) (width 0.2) (layer "F.Cu") (net 1) '
+               f'(uuid "{MEMBER}"))\n')
+MEMBER2 = '11111111-0000-0000-0000-000000000002'
+
+
+def _with_join_pad(text, pad):
+    """`text` with C1.1 replaced by the `(pad ...)` s-expression `pad`."""
+    i = text.index(JOIN_PAD)
+    assert text.index('"C1"') < i < text.index('"U1"'), 'C1.1 is no longer the first pad'
+    return text[:i] + pad + text[i + len(JOIN_PAD):]
+
+
+def _diagonal(text):
+    """The member leaving C1 (3, 5) at 45 degrees: (3, 5)-(4.5, 3.5)-(27, 3.5),
+    with U1 moved to (27, 3.5) and both tracks in the group."""
+    assert text.count(MEMBER_LINE) == 1, 'fixture member track moved'
+    return (text.replace(MEMBER_LINE, MEMBER_LINE.replace('(end 27 5)', '(end 4.5 3.5)')
+                         + _track(4.5, 3.5, 27, 3.5, MEMBER2, width=0.2))
+            .replace('(at 27 5)\n', '(at 27 3.5)\n')
+            .replace(f'(members "{MEMBER}")', f'(members "{MEMBER}" "{MEMBER2}")'))
+
+
+def _disc(x, y, r, n=24):
+    """Sample points of a copper disc: its centre and three rings."""
+    import numpy as np
+    a = np.linspace(0.0, 2 * np.pi, n, endpoint=False)
+    rr = np.repeat([r / 3, 2 * r / 3, r], n)
+    return (np.concatenate([[x], x + rr * np.tile(np.cos(a), 3)]),
+            np.concatenate([[y], y + rr * np.tile(np.sin(a), 3)]))
+
+
+def _in_member(b, xs, ys, layer='F.Cu'):
+    """Mask of points lying in the branch's member TRACK copper on `layer`."""
+    import numpy as np
+    hit = np.zeros(len(xs), dtype=bool)
+    for s in b.segments:
+        if s.layer != layer:
+            continue
+        ex, ey = s.end_x - s.start_x, s.end_y - s.start_y
+        l2 = ex * ex + ey * ey
+        t = np.clip(((xs - s.start_x) * ex + (ys - s.start_y) * ey) / l2, 0.0, 1.0) if l2 else 0.0
+        hit |= np.hypot(xs - s.start_x - t * ex, ys - s.start_y - t * ey) <= s.width / 2 - 1e-6
+    return hit
+
+
+def _off_pad(pad, xs, ys):
+    """Distance from each point to the pad's real copper (0 on it): the
+    checker's own measure (check_drc.point_to_pad_distance), not the code
+    under test."""
+    import numpy as np
+    from check_drc import point_to_pad_distance
+    return np.array([point_to_pad_distance(float(x), float(y), pad) for x, y in zip(xs, ys)])
+
+
+def _free_cells_on_member(board, track_width=0.3, clearance=0.2):
+    """Cells near the join pad the branch's stamp leaves free for VDD where a
+    `track_width` track would put copper OFF the join pad's real copper onto
+    member copper off it -- a tap the obstacle map allows."""
+    from routing_config import GridRouteConfig, GridCoord
+    _p, b = _branch(board)
+    assert b.protected, b.reason
+    cfg = GridRouteConfig(track_width=track_width, clearance=clearance, via_size=0.6,
+                          grid_step=0.05, layers=['F.Cu', 'B.Cu'])
+    coord = GridCoord(cfg.grid_step)
+    cells, _vias = sb.sense_obstacle_rows(b, cfg, coord, {'F.Cu': 0, 'B.Cu': 1}, clearance)
+    blocked = {(int(x), int(y)) for x, y, l in cells if l == 0}
+    j, bad = b.join, []
+    c = coord.to_grid(j.global_x, j.global_y)
+    for gx in range(c[0] - 40, c[0] + 41):
+        for gy in range(c[1] - 40, c[1] + 41):
+            if (gx, gy) in blocked:
+                continue
+            xs, ys = _disc(gx * cfg.grid_step, gy * cfg.grid_step, track_width / 2)
+            if (_in_member(b, xs, ys) & (_off_pad(j, xs, ys) > 1e-6)).any():
+                bad.append((round(gx * cfg.grid_step, 3), round(gy * cfg.grid_step, 3)))
+    return bad
+
+
+def _off_join_contacts(board):
+    """Points where the routed board's non-member VDD tracks overlap member
+    copper OFF the join pad's real copper (raster 0.01 mm)."""
+    import numpy as np
+    p, b = _branch(board)
+    mem = set(b.member_uuids)
+    out = []
+    for s in p.segments:
+        if s.net_id != b.net_id or s.uuid in mem or s.layer != 'F.Cu':
+            continue
+        r = s.width / 2
+        gx, gy = np.meshgrid(
+            np.arange(min(s.start_x, s.end_x) - r, max(s.start_x, s.end_x) + r + 0.01, 0.01),
+            np.arange(min(s.start_y, s.end_y) - r, max(s.start_y, s.end_y) + r + 0.01, 0.01))
+        xs, ys = gx.ravel(), gy.ravel()
+        ex, ey = s.end_x - s.start_x, s.end_y - s.start_y
+        l2 = ex * ex + ey * ey
+        t = np.clip(((xs - s.start_x) * ex + (ys - s.start_y) * ey) / l2, 0.0, 1.0) if l2 else 0.0
+        on = np.hypot(xs - s.start_x - t * ex, ys - s.start_y - t * ey) <= r
+        xs, ys = xs[on], ys[on]
+        hit = _in_member(b, xs, ys) & (_off_pad(b.join, xs, ys) > 0.01)
+        out += [(round(float(x), 2), round(float(y), 2)) for x, y in zip(xs[hit], ys[hit])]
+    return out
+
+
 def _seg(x1, y1, x2, y2, width=0.2, layer='F.Cu'):
     return Segment(start_x=x1, start_y=y1, end_x=x2, end_y=y2, width=width,
                    layer=layer, net_id=1)
@@ -166,9 +272,43 @@ def test_pad_crossed_off_centre_is_a_sense_pad():
     assert _tapped(out) == ['U1.1', 'U5.1'], f'a load reached the sense copper off C1.1: {_tapped(out)}'
 
 
+ROUND = '(pad "1" smd circle (at 0 0) (size 2 2) (layers "F.Cu" "F.Paste" "F.Mask") (net 1 "VDD"))'
+ROUNDRECT = ('(pad "1" smd roundrect (at 0 0) (size 2 2) (roundrect_rratio 0.25) '
+             '(layers "F.Cu" "F.Paste" "F.Mask") (net 1 "VDD"))')
+
+
+def test_round_join_pad_is_its_copper():
+    """A 2 mm ROUND join pad is a circle, not its bounding box.
+
+    - A member starting at (3.95, 4.05) -- inside the box, 0.24 mm off the
+      circle's copper -- does not touch the join pad (KiCad: the member joins
+      U1.1 only). Before, it read as joined and protected, `routable` hid the
+      branch, and the routed net shipped open.
+    - With the member leaving the pad at 45 degrees, no cell the stamp leaves
+      free lets a 0.3 mm VDD track put copper off the circle onto member copper
+      (before: 41 such cells for the circle, 9 for a 0.25 roundrect), and a
+      load routed in from the upper right lands on the pad, not on the trace
+      beyond it (before: contact at (3.73, 4.13), 0.14 mm off the copper)."""
+    gap = _with_join_pad(_src(), ROUND).replace('(segment (start 3 5) (end 27 5)',
+                                               '(segment (start 3.95 4.05) (end 27 5)')
+    _p, b = _branch(_variant(gap, 'gap'))
+    assert not b.protected and 'does not touch the join pad C1.1' in (b.reason or ''), b.reason
+    for name, pad in (('round', ROUND), ('roundrect', ROUNDRECT)):
+        bad = _free_cells_on_member(_variant(_diagonal(_with_join_pad(_src(), pad)), name))
+        assert not bad, f'{name}: {len(bad)} free cells put copper on the member off the pad: {bad[:4]}'
+    board = _variant(_diagonal(_with_join_pad(_src(), ROUND)).replace(
+        '(footprint "T:P" (layer "F.Cu") (at 15 8)', '(footprint "T:P" (layer "F.Cu") (at 5.5 1)'),
+        'round_route')
+    out, log = _route(board)
+    assert re.search(r'"multipoint_pads_connected": 4, "multipoint_pads_total": 4', log), log[-2000:]
+    hits = _off_join_contacts(out)
+    assert not hits, f'new copper overlaps the member off the round join pad at {hits[:3]}'
+
+
 TESTS = [
     test_x_crossing_is_a_tap,
     test_pad_crossed_off_centre_is_a_sense_pad,
+    test_round_join_pad_is_its_copper,
 ]
 
 
