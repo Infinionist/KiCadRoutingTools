@@ -638,16 +638,18 @@ assert config.obstacle_clearance(some_default_net) == 0.15  # not in the map -> 
   same map from the live board, and the Advanced tab's **Net Clearances File** is
   `--net-clearances` there: the Route, Differential and Planes tabs then use the
   file's map instead, read through the same `list_nets.load_net_clearances`.
-- **`--clearance` is a ceiling on the map (#439).** When `--clearance` is GIVEN, each
-  auto-read class is capped at it (`net_clearances[nid] = min(class, clearance)`) before
-  it is installed — a class *tighter* than `--clearance` survives; a *looser* one is
-  capped, because stock net classes are largely aspirational (real boards, and even the
-  human-routed references, route below them). The output `.kicad_pro` writeback then
-  clamps each non-Default class to that same routed floor, so KiCad grades exactly what
-  was routed. When `--clearance` is OMITTED there is no ceiling: each net routes at its
-  own class and the writeback preserves the classes (base = the board's Default class).
-  An explicit `--net-clearances` map is used as given (not capped). In the GUI, checking
-  the **Min Clearance** override box is the "`--clearance` given" signal.
+- **`--clearance-ceiling` is a ceiling on the map (#439; its own flag since #530).** When
+  `--clearance-ceiling` is GIVEN, each auto-read class is capped at it
+  (`net_clearances[nid] = min(class, ceiling)`) before it is installed — a class
+  *tighter* than the ceiling survives; a *looser* one is capped, because stock net
+  classes are largely aspirational (real boards, and even the human-routed references,
+  route below them). The output `.kicad_pro` writeback then clamps every class down to
+  that same routed floor, so KiCad grades exactly what was routed. When it is OMITTED
+  there is no ceiling: each net routes at its own class and the writeback preserves the
+  classes; `--clearance` then sets only the Default class for the run (#530). An
+  explicit `--net-clearances` map is used as given (not capped). In the GUI, the
+  **Clearance ceiling** checkbox (with the **Min Clearance** override) is the
+  "`--clearance-ceiling` given" signal.
 
 #### Pair clearance for admit/refuse verdicts (#1136)
 
