@@ -252,7 +252,19 @@ ranker's off-board escape branch (`QuenchState.incumbent_at`, #1259): measured
 at an off-board request, that branch admitted every pose merely less off the
 board than the request, and on esp_prog `set R3 146.0 101.5 --snap --radius 4`
 ranked 3 such poses and refused all 9 tries; it now ranks 9 and snaps to the
-7th, 3.89 mm away. Neither the snap nor the no-snap suggestion ever
+7th, 3.89 mm away. When the part's INPUT pose is off the board, that branch
+is open, and the poses merely less off the board than the input can fill the
+ranking's cheapest places: with R3 staged at (146.0, 101.5), `set R3 143.4
+102.0 --rot 180 --snap --radius 4` wrote (142.9, 104.75), `legal: false`,
+while a legal pose 0.49 mm nearer the request was never ranked. So the
+ranking with that branch closed goes first, as its own rung
+(`ranked_on_board`, its own `--snap-tries`), ahead of the `ranked` rung,
+which is unchanged; the snap now writes (142.9, 104.25), legal (#1277). A
+pose on two rungs is re-graded once, and when `ranked_on_board` answers, a
+nearer lattice pose must grade no worse than that answer too, or the lattice
+would trade it for pad copper still past the outline. The census counts the
+rung as `ranked_on_board` (null from an input on the board), and the no-snap
+suggestion takes the same order. Neither the snap nor the no-snap suggestion ever
 returns the request itself (`requested_dropped`). `input_pose_vetoed` is the
 ranker's verdict on the part's input pose: when it vetoes even that, its
 knobs are stricter than the board, and the refusal says so.
@@ -274,6 +286,11 @@ the source part with the most pads, or `--anchor REF` from any named sheet.
 at exit 4, writing nothing, unless the instances are interchangeable: the
 same parts, the same footprints and pads, and nets that correspond one to
 one, with a net on both instances (GND, a rail) mapping to itself. The
+pads are judged against the net map under which the most pad pairs agree,
+chosen over all of them at once (ties go to the pairings met first), so a
+strap names itself rather than the pads wired alike (#1277); a pad that
+breaks the rule under any map (a shared net renamed, a net against no net)
+takes no part in choosing it. The
 refusal names the refs and pads and spells, for each pad, the waiver
 `--allow-net-mismatch REF.PAD`: one pad per flag, for a pad wired
 differently per instance BY DESIGN (glasgow_revC's IO_Buffer address
