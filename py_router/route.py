@@ -2017,6 +2017,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             pcb_data._keep_away_state = {}
     config_kwargs['neckdown_length'] = neckdown_length
     config_kwargs['neckdown_taper_length'] = neckdown_taper_length
+    # --no-stub-layer-swap reached only the up-front stub pass; the in-loop and
+    # reconciliation STUB-SWAP RESCUE read config.stub_layer_swap and kept moving
+    # input stubs (a 0.8 mm stub swapped onto F.Cu shorted a fine-pitch pad).
+    config_kwargs['stub_layer_swap'] = enable_layer_switch
     if direction_order is not None:
         config_kwargs['direction_order'] = direction_order
     if layer_widths:

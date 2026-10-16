@@ -913,6 +913,8 @@ def _switch_blocked_terminal_stubs(state, pair: DiffPairNet, terminals):
     pcb_data = state.pcb_data
     obstacles = state.diff_pair_base_obstacles
     switched = []
+    if not getattr(config, 'stub_layer_swap', True):
+        return switched     # --no-stub-layer-swap: input stubs stay put
     for term in terminals:
         pp, nn = term
         cx, cy = _terminal_center(term)

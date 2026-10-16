@@ -462,7 +462,7 @@ These options control stub layer switching, which moves stubs to different layer
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--no-stub-layer-swap` | false | Disable stub layer switching (enabled by default) |
+| `--no-stub-layer-swap` | false | Disable stub layer switching (enabled by default): the upfront pass and every rescue that moves a stub (route.py's stub-swap rescue and boxed-stub switches, route_diff.py's multipoint terminal switch). The GUI's "Stub layer swaps" checkbox is the same setting |
 | `--can-swap-to-top-layer` | false | Allow swapping stubs to F.Cu (off by default for diff pairs due to clearance) |
 
 **How it works:**
