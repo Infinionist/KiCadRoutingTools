@@ -3216,6 +3216,21 @@ def _route_with_via_unblock(router, obstacles, config, sources, targets, track_m
     return res2 + (used, used_stub_segs)
 
 
+def _uncommit_unblock_copper(pcb_data, vias, segments) -> None:
+    """Take back the unblock copper _route_with_via_unblock committed to
+    pcb_data (#803) for a route its caller then DISCARDS. By identity only:
+    a plan probe committed nothing, and a look-alike is not this route's."""
+    on_v = {id(v) for v in pcb_data.vias}
+    on_s = {id(s) for s in pcb_data.segments}
+    drop_v = {id(v) for v in vias or () if id(v) in on_v}
+    drop_s = {id(s) for s in segments or () if id(s) in on_s}
+    if not drop_v and not drop_s:
+        return
+    pcb_data.vias[:] = [v for v in pcb_data.vias if id(v) not in drop_v]
+    pcb_data.segments[:] = [s for s in pcb_data.segments if id(s) not in drop_s]
+    pcb_data._copper_epoch = getattr(pcb_data, '_copper_epoch', 0) + 1
+
+
 def _route_main_connection(router, obstacles, config, sources, targets, track_margin,
                            pcb_data, net_id, print_prefix="",
                            direction_labels=("forward", "backward"), single_direction=False,
@@ -4544,6 +4559,12 @@ def route_multipoint_main(
         _why, _ships = _hard_terminal_why(_hard_p1[0])
         print(f"  {YELLOW}Phase 1 {_why} -- failing the edge rather than "
               f"shipping {_ships}{RESET}")
+        # The discarded attempt's #189 unblock copper goes with it: it was
+        # COMMITTED to pcb_data already (#803) and no result carries it now,
+        # so left there it is never written, yet the retry below reads it as
+        # the net's own copper.
+        _uncommit_unblock_copper(pcb_data, main_unblock_vias,
+                                 main_unblock_segments)
         # #101 holds here too: one overlapping terminal must not abandon the
         # whole net. Defer this edge (keyed as mst_edges holds it, not by the
         # possibly-reversed idx_a/idx_b) and rerun Phase 1 on the next one,
