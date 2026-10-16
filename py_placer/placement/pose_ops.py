@@ -2087,7 +2087,7 @@ def _snap_census_sentence(sc: Dict) -> str:
                             ', +%d more' % more if more > 0 else '')
 
     # #1277: the on-board rung exists only from an input pose off the board.
-    on_board = ('%d ranked on the board, ' % sc['ranked_on_board']
+    on_board = ('%d ranked on the board + ' % sc['ranked_on_board']
                 if sc.get('ranked_on_board') is not None else '')
     if tried:
         out = (" --snap re-graded %d candidate(s) within %g mm (of %s%d ranked "
