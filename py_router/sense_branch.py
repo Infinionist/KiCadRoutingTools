@@ -29,9 +29,12 @@ foreign copper):
 - terminals: the endpoint derivations never offer member copper or a sense pad
   as a place to attach (`connectivity.routable`, net_rescue's join points), so
   the net's other pads route to the join pad;
-- immutability: member copper is marked locked IN MEMORY, so every rip, prune,
-  smoothing and layer-switch pass leaves it alone (#1261) -- which also makes
-  the net itself never-rippable for the run. No lock token is written.
+- immutability: member copper carries `held_by` (kicad_parser.
+  is_immutable_copper), so no rip, prune, smoothing, layer-switch or move
+  pass rewrites or removes it, even when the branch is refused. It is not a
+  KiCad lock and is never written: the net's routes of this run stay
+  rippable, and only whole-net strips of its pre-existing copper refuse it
+  (protected_nets.protection_map, reason `sense:<REF>.<PAD>`).
 
 A branch is reported and left unprotected (JSON_SUMMARY.sense_branches carries
 the reason) when the group name is not `sense:REF.PAD`, the join pad is
@@ -341,8 +344,10 @@ def _item_label(kind: str, it) -> str:
     return f"pad {it.component_ref}.{it.pad_number}"
 
 
-def _resolve_one(pcb_data, b: SenseBranch, seg_by_uuid, via_by_uuid) -> Optional[str]:
-    """Fill `b` from the board; return why it cannot be protected, or None."""
+def _resolve_one(pcb_data, b: SenseBranch, seg_by_uuid, via_by_uuid,
+                 copper: str = "input copper") -> Optional[str]:
+    """Fill `b` from the board; return why it cannot be protected, or None.
+    `copper` names the net's other copper in a tap refusal."""
     ref, dot, num = b.name[len(GROUP_PREFIX):].rpartition('.')
     if not dot or not ref or not num:
         return (f"group name {b.name!r} does not name the join pad as "
@@ -395,9 +400,19 @@ def _resolve_one(pcb_data, b: SenseBranch, seg_by_uuid, via_by_uuid) -> Optional
                  if v.net_id == join.net_id and id(v) not in ids])
     taps = [_item_label(*o) for o in others if any(_touch(o, it, join) for it in allitems)]
     if taps:
-        return (f"input copper already taps it ({', '.join(taps[:3])}"
+        return (f"{copper} already taps it ({', '.join(taps[:3])}"
                 f"{' ...' if len(taps) > 3 else ''})")
     return _zone_tap(pcb_data, allitems, join)
+
+
+def _copper_by_uuid(pcb_data):
+    """({uuid: [Segment, ...]}, {uuid: Via}) over the board's tracks and
+    vias (an arc is several Segments under one uuid; graphics excluded)."""
+    seg_by_uuid: Dict[str, list] = {}
+    for s in pcb_data.segments:
+        if s.uuid and not getattr(s, 'graphic', False):
+            seg_by_uuid.setdefault(s.uuid, []).append(s)
+    return seg_by_uuid, {v.uuid: v for v in pcb_data.vias if v.uuid}
 
 
 def resolve_sense_branches(pcb_data, raw) -> List[SenseBranch]:
@@ -408,25 +423,26 @@ def resolve_sense_branches(pcb_data, raw) -> List[SenseBranch]:
     out: List[SenseBranch] = []
     if not raw:
         return out
-    seg_by_uuid: Dict[str, list] = {}
-    for s in pcb_data.segments:
-        if s.uuid and not getattr(s, 'graphic', False):
-            seg_by_uuid.setdefault(s.uuid, []).append(s)
-    via_by_uuid = {v.uuid: v for v in pcb_data.vias if v.uuid}
+    seg_by_uuid, via_by_uuid = _copper_by_uuid(pcb_data)
     for name, guuid, members in raw:
         b = SenseBranch(name, guuid, members)
         b.reason = _resolve_one(pcb_data, b, seg_by_uuid, via_by_uuid)
         out.append(b)
     for b in out:
-        if not b.protected:
-            continue
-        for it in b.segments + b.vias + b.sense_pads:
-            it.sense = b.name
-        # Immutable for the run, IN MEMORY only (the file is never given a
-        # lock token): every rip, prune, smoothing and layer-switch pass
-        # already leaves KiCad-locked copper alone (#1261).
-        for it in b.segments + b.vias:
-            it.locked = True
+        # The declared copper is held immutable whenever it resolves on the
+        # join pad's net, protected or refused: a refused branch is routed
+        # like undeclared copper, but no pass may rewrite or remove it -- a
+        # tapped branch used to lose its in-memory lock and the late collapse
+        # deleted the sense trace as redundant input copper. `held_by`, not
+        # `locked`: nothing writes it to the board, and only the net's
+        # pre-existing copper is spared from whole-net strips.
+        if b.join is not None and b.net_id:
+            for it in b.segments + b.vias:
+                if it.net_id == b.net_id:
+                    it.held_by = b.name
+        if b.protected:
+            for it in b.segments + b.vias + b.sense_pads:
+                it.sense = b.name
     return out
 
 
@@ -451,9 +467,32 @@ def report(pcb_data) -> None:
             print(f"  {b.name}: NOT protected -- {b.reason}")
 
 
+def shipped_reason(pcb_data, b: SenseBranch) -> Optional[str]:
+    """Why branch `b`, protected at the start of the run, no longer resolves
+    as protected against the board's copper NOW (the run tapped it, or a
+    member is gone), or None. Resolves a fresh copy: nothing is tagged."""
+    fresh = SenseBranch(b.name, b.group_uuid, b.member_uuids)
+    seg_by_uuid, via_by_uuid = _copper_by_uuid(pcb_data)
+    return _resolve_one(pcb_data, fresh, seg_by_uuid, via_by_uuid,
+                        copper="this run's copper")
+
+
 def summary_entries(pcb_data) -> List[dict]:
-    """JSON_SUMMARY.sense_branches: one entry per declared branch."""
-    return [b.summary(pcb_data) for b in (getattr(pcb_data, 'sense_branches', None) or [])]
+    """JSON_SUMMARY.sense_branches: one entry per declared branch, as the
+    input resolved it, plus `tapped_by_run` (with a printed WARNING) for a
+    branch the input protected and the routed copper no longer does -- the
+    run's verdict on the board it ships, not the input's."""
+    out = []
+    for b in (getattr(pcb_data, 'sense_branches', None) or []):
+        entry = b.summary(pcb_data)
+        if b.protected:
+            why = shipped_reason(pcb_data, b)
+            if why:
+                entry['tapped_by_run'] = why
+                print(f"  WARNING: sense branch {b.name} was protected at the "
+                      f"start of this run but the routed copper breaks it: {why}")
+        out.append(entry)
+    return out
 
 
 # ---------------------------------------------------------------------------
