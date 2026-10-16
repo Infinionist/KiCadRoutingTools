@@ -38,7 +38,8 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Optional, Set, Tuple
 
-from kicad_parser import PCBData, Segment, find_components_by_type
+from kicad_parser import (PCBData, Segment, find_components_by_type,
+                          is_immutable_copper)
 import routing_defaults as defaults
 from bga_fanout.grid import analyze_bga_grid
 from placement.parser import extract_courtyard_bboxes, extract_locked_refs
@@ -4857,6 +4858,17 @@ def nudge_vias_for_unresolved(st, pcb_data, clearance: float,
                     offenders.append(v)
                     break
         for v in offenders:
+            # A KiCad-locked via (#521) or one a `sense:` group holds (#1279)
+            # is never nudged: the writer deletes a moved via and re-emits it
+            # under a new uuid, which takes it out of its group, and a lock
+            # says the user pinned it where it is. The cap stays unresolved
+            # and is reported, as when no clear spot exists.
+            if is_immutable_copper(v):
+                why = ('KiCad-locked' if getattr(v, 'locked', False)
+                       else f"held by {getattr(v, 'held_by', '')}")
+                print(f"  via-nudge: {ref}'s offending via at "
+                      f"({v.x:.2f}, {v.y:.2f}) is {why} -- not moved")
+                continue
             # Layers needing a connector back to the stub start: every layer
             # with same-net copper terminating at the old via position, plus
             # the copper layer of a same-net pad the via sits inside
