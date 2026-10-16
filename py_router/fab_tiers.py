@@ -24,7 +24,15 @@ The **escalation policy** (``--escalation``, one shared control in the GUI) is
 orthogonal to the tier and bounds every descent site in the engine:
 
   - ``off``    sizes and clearances are exact. A net that cannot complete at
-               them fails and is reported; nothing is narrowed or shrunk.
+               them fails and is reported; nothing is narrowed or shrunk,
+               with one bounded exception: a wide (power / impedance) net may
+               neck below its width for at most
+               ``routing_defaults.PAD_ENTRY_NECK_MM`` (2 mm) of routed path
+               on one edge or one via-to-pad tap -- the pad-entry stretch a
+               wide rail cannot keep into a narrow pin. A longer neck fails
+               the edge. A power net's under-width copper is in the ledger
+               (route.py's ``power copper shipped under width`` row), so
+               ``--strict-sizes`` still sees it.
   - ``board``  a failing net may be retried narrower / with a smaller
                via / tighter clearance, down to the BOARD'S OWN declared floors
                (Board Setup ``rules.min_*``). A key the board leaves unset
@@ -955,7 +963,9 @@ def add_fab_tier_args(parser, *, include_escalation=True):
             '--escalation', choices=list(ESCALATION_POLICIES), default=_esc_dflt,
             help=f"How far below a REQUESTED size a failing net may be retried "
                  f"(default {DEFAULT_ESCALATION}). 'off': never -- sizes and clearances are exact, "
-                 "a net that cannot complete at them fails and is reported. 'board': "
+                 "a net that cannot complete at them fails and is reported (a wide "
+                 "power/impedance net may still neck for at most "
+                 f"{defaults.PAD_ENTRY_NECK_MM:g} mm of path at a pad entry). 'board': "
                  "down to the board's own declared floors (Board Setup rules.min_*; "
                  "an unset key falls back to the fab tier floor, an unset "
                  "min_clearance to the Default class). That is what KiCad's DRC "

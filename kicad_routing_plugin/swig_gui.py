@@ -677,7 +677,9 @@ class RoutingDialog(wx.Dialog):
         self.escalation.SetToolTip(
             "How far below a requested size a failing net may be retried. off: never "
             "-- sizes and clearances are exact, a net that cannot complete at them "
-            "fails and is reported. board: down to the board's own declared floors "
+            "fails and is reported (a wide power/impedance net may still neck for at "
+            f"most {defaults.PAD_ENTRY_NECK_MM:g} mm of path at a pad entry). board: "
+            "down to the board's own declared floors "
             "(Board Setup > Constraints; an unset key falls back to the fab tier "
             "floor, an unset minimum clearance to the Default class). That is what "
             "KiCad's DRC accepts once 'Fix DRC settings after routing' lowers the "
