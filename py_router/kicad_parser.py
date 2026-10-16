@@ -456,6 +456,11 @@ class Pad:
     # BOTH parse paths. Consumers: net_queries.pad_to_die_length/_delay.
     die_length: float = 0.0
     die_delay: float = 0.0
+    # #1279: the name of the protected Kelvin sense branch (a KiCad group
+    # named `sense:<REF>.<PAD>`) this pad is a SENSE pad of, '' otherwise.
+    # Set by sense_branch.resolve_sense_branches on both parse paths; the
+    # router may never attach new copper to it.
+    sense: str = ""
 
 
 _VIA_BIRTH_WATCH = None
@@ -524,6 +529,9 @@ class Via:
     # matters most for via-in-pad, where IPC-4761 Type VII filled+capped+plated
     # is what keeps solder out of the barrel.
     tenting_attrs: Dict[str, str] = field(default_factory=dict)
+    # #1279: the protected sense branch (KiCad group `sense:<REF>.<PAD>`) this
+    # via is a member of, '' otherwise (see Pad.sense).
+    sense: str = ""
 
 
     def __post_init__(self):
@@ -601,6 +609,9 @@ class Segment:
     # check_drc graded the short clean. The obstacle map stamps this interior
     # and check_drc grades containment in it.
     graphic_ring: Optional[Tuple[Tuple[float, float], ...]] = None
+    # #1279: the protected sense branch (KiCad group `sense:<REF>.<PAD>`) this
+    # track is a member of, '' otherwise (see Pad.sense).
+    sense: str = ""
 
 
 @dataclass
@@ -932,6 +943,12 @@ class PCBData:
     #: copper, which the writer relocates to silk, #146) or 'curve' (bezier).
     #: Filled by both parse paths.
     graphic_copper_unmeasured: List[dict] = field(default_factory=list)
+    #: #1279: protected Kelvin sense branches, one per KiCad group named
+    #: `sense:<REF>.<PAD>` (sense_branch.SenseBranch). Separate from `groups`,
+    #: which holds footprint members only (#459). Resolved against the parsed
+    #: tracks and vias by uuid on BOTH parse paths; a branch that cannot be
+    #: protected carries its `reason`.
+    sense_branches: list = field(default_factory=list)
 
     def net_tie_exempt_pad_ids(self, net_id: int):
         """id()s of pads whose keep-out copper of `net_id` may IGNORE.
@@ -7084,7 +7101,7 @@ def parse_kicad_pcb(filepath: str, guide_layer: str = "User.1",
         footprints, board_info, extract_paste_graphics(content))
     graphic_copper_unmeasured = extract_unmodelled_footprint_copper(content)
 
-    return PCBData(
+    pcb = PCBData(
         board_info=board_info,
         nets=nets,
         footprints=footprints,
@@ -7103,6 +7120,11 @@ def parse_kicad_pcb(filepath: str, guide_layer: str = "User.1",
         paste_apertures=paste_apertures,
         graphic_copper_unmeasured=graphic_copper_unmeasured,
     )
+    # #1279: KiCad groups named `sense:<REF>.<PAD>` declare protected Kelvin
+    # sense branches; resolved against the copper parsed above.
+    from sense_branch import sense_groups_from_text, resolve_sense_branches
+    pcb.sense_branches = resolve_sense_branches(pcb, sense_groups_from_text(content))
+    return pcb
 
 
 def propagate_via_cluster_nets(content: str, vias, segments, footprints, zones,
@@ -8478,6 +8500,7 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                 width=to_mm(track.GetWidth()),
                 layer=get_layer_name(track.GetLayer()),
                 net_id=track.GetNetCode(),
+                uuid=_item_uuid(track),
                 locked=bool(track.IsLocked()),
             )
             segments.append(seg)
@@ -8499,6 +8522,7 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                     width=to_mm(track.GetWidth()),
                     layer=get_layer_name(track.GetLayer()),
                     net_id=track.GetNetCode(),
+                    uuid=_item_uuid(track),
                     locked=bool(track.IsLocked()),
                 ))
         elif track_class == "PCB_VIA":
@@ -8531,6 +8555,7 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                 # the GUI half of the round trip.
                 tenting_attrs=pcbnew_via_protection_attrs(
                     track, _via_text_specs(track)),
+                uuid=_item_uuid(track),
                 locked=bool(track.IsLocked()),
             )
             vias.append(v)
@@ -8940,7 +8965,7 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
         _pcbnew_paste_graphics(board, _live_fps, _live_keys, get_layer_name, to_mm))
     _unmeasured_cu = _pcbnew_unmodelled_copper(_live_fps, _live_keys, get_layer_name)
 
-    return PCBData(
+    pcb = PCBData(
         board_info=board_info,
         nets=nets,
         footprints=footprints,
@@ -8976,6 +9001,12 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
         # The board's records, as the session holds them (tool_records)
         live_records_provider=lambda _board=board: _live_records(_board),
     )
+    # #1279 parity with parse_kicad_pcb: the LIVE board's `sense:<REF>.<PAD>`
+    # groups (a group drawn in this session counts before it is saved),
+    # resolved by the same function against the same uuids.
+    from sense_branch import sense_groups_from_board, resolve_sense_branches
+    pcb.sense_branches = resolve_sense_branches(pcb, sense_groups_from_board(board))
+    return pcb
 
 
 def _live_records(board):
@@ -9003,6 +9034,16 @@ def _live_design_rules(board):
     except Exception:
         return None
     return out or None
+
+
+def _item_uuid(item) -> str:
+    """A pcbnew item's uuid as the file spells it, '' when it cannot be read --
+    the text parser's `(uuid ...)` for the same track or via (#1279 resolves
+    `sense:` group members by it on both paths)."""
+    try:
+        return str(item.m_Uuid.AsString())
+    except Exception:
+        return ""
 
 
 def _global_to_local(fp_x, fp_y, fp_rotation_deg, global_x, global_y):
@@ -10041,6 +10082,14 @@ def compare_pcb_data(from_board: 'PCBData', from_file: 'PCBData', tolerance: flo
     if _ub != _uf:
         diffs.append(f"Unmeasured graphic copper: only board={sorted((_ub - _uf).elements())[:6]} "
                      f"only file={sorted((_uf - _ub).elements())[:6]}")
+
+    # #1279: the protected sense branches -- what each front would keep new
+    # copper off, and why a branch it declines is declined.
+    from sense_branch import branch_signature
+    _sb = sorted(branch_signature(b) for b in (from_board.sense_branches or []))
+    _sf = sorted(branch_signature(b) for b in (from_file.sense_branches or []))
+    if _sb != _sf:
+        diffs.append(f"Sense branches: board={_sb} file={_sf}")
 
     return diffs
 

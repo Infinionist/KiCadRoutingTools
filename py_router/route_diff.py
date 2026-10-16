@@ -468,6 +468,9 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         pcb_data = parse_kicad_pcb(input_file, keepout_layer=keepout_layer)
     else:
         print("Using provided PCB data...")
+    # #1279: the board's `sense:<REF>.<PAD>` groups -- protected, or why not.
+    from sense_branch import report as _sense_report
+    _sense_report(pcb_data)
     # Protected Kelvin sense copper becomes its own net for the run
     # (sense_branch.py), before anything records the input copper.
     if sense_branches:
@@ -1902,6 +1905,11 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     _ka = disclose_keep_away(pcb_data, config)
     if _ka is not None:
         summary['keep_away'] = _ka
+    # #1279: every declared sense branch, protected or why not.
+    from sense_branch import summary_entries as _sense_entries
+    _sense = _sense_entries(pcb_data)
+    if _sense:
+        summary['sense_branches'] = _sense
     try:                       # #653: env knobs into the machine-readable
         import env_knobs as _ek653   # summary, so a harness can detect a
         summary['env_knobs'] = _ek653.active_env_knobs()   # dirty baseline

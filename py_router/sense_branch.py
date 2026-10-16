@@ -398,3 +398,228 @@ def restoring(engine):
             if outer:
                 restore(pcb)
     return run
+
+
+# ---------------------------------------------------------------------------
+# The declaration: a KiCad group named `sense:<REF>.<PAD>`.
+# ---------------------------------------------------------------------------
+
+#: A group whose name starts with this declares a protected sense branch; the
+#: rest of the name is the JOIN (star) pad, `REF.PAD`.
+GROUP_PREFIX = 'sense:'
+
+
+class SenseBranch:
+    """One `sense:<REF>.<PAD>` group, resolved against a parsed board.
+
+    `segments` / `vias` are the member copper, `sense_pads` the pads of the
+    same net that member copper touches (the join pad excepted), `join` the
+    join Pad. `reason` is None for a protected branch, else why it is not."""
+
+    def __init__(self, name: str, group_uuid: str, member_uuids: List[str]):
+        self.name = name
+        self.group_uuid = group_uuid
+        self.member_uuids = sorted(member_uuids)
+        self.join_key: Optional[Tuple[str, str]] = None
+        self.join = None
+        self.net_id = 0
+        self.segments: list = []
+        self.vias: list = []
+        self.sense_pads: list = []
+        self.reason: Optional[str] = None
+
+    @property
+    def protected(self) -> bool:
+        return self.reason is None
+
+    def join_label(self) -> str:
+        return f"{self.join_key[0]}.{self.join_key[1]}" if self.join_key else '?'
+
+    def summary(self, pcb_data=None) -> dict:
+        """The JSON_SUMMARY.sense_branches entry."""
+        net = ''
+        if pcb_data is not None and self.net_id in getattr(pcb_data, 'nets', {}):
+            net = pcb_data.nets[self.net_id].name
+        out = {'group': self.name, 'join': self.join_label(), 'net': net,
+               'protected': self.protected,
+               'segments': len(self.segments), 'vias': len(self.vias),
+               'sense_pads': sorted(f"{p.component_ref}.{p.pad_number}"
+                                    for p in self.sense_pads)}
+        if self.reason is not None:
+            out['reason'] = self.reason
+        return out
+
+
+def branch_signature(b: SenseBranch) -> tuple:
+    """Order-free identity of a resolved branch, for comparing parse paths."""
+    return (b.name, b.join_label(), tuple(b.member_uuids), b.reason or '',
+            tuple(sorted(f"{p.component_ref}.{p.pad_number}" for p in b.sense_pads)),
+            len(b.segments), len(b.vias))
+
+
+_UUID_RE = r'"?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"?'
+
+
+def sense_groups_from_text(content: str) -> List[Tuple[str, str, List[str]]]:
+    """[(group name, group uuid, [member uuid, ...])] for every
+    `(group "sense:..." ...)` block of a board file. The group's own
+    `(uuid ...)` is its identity, not a member (read `(members ...)` only)."""
+    import re
+    from kicad_parser import find_matching_paren
+    out = []
+    if GROUP_PREFIX not in content:
+        return out
+    for m in re.finditer(r'\(group\s+"(' + re.escape(GROUP_PREFIX) + r'[^"]*)"', content):
+        block = content[m.start():find_matching_paren(content, m.start())]
+        u = re.search(r'\((?:uuid|id)\s+' + _UUID_RE, block)
+        mem = re.search(r'\(members\b', block)
+        members = (re.findall(_UUID_RE, block[mem.start():find_matching_paren(block, mem.start())])
+                   if mem else [])
+        out.append((m.group(1), u.group(1) if u else '', members))
+    return out
+
+
+def sense_groups_from_board(board) -> List[Tuple[str, str, List[str]]]:
+    """`sense_groups_from_text` for a live pcbnew BOARD (board.Groups())."""
+    out = []
+    try:
+        groups = list(board.Groups())
+    except Exception as e:  # noqa: BLE001 -- say so rather than protect nothing silently
+        print(f"  WARNING: could not read the board's groups from pcbnew "
+              f"({type(e).__name__}: {e}); sense branches (#1279) are not protected")
+        return out
+    for g in groups:
+        name = str(g.GetName())
+        if not name.startswith(GROUP_PREFIX):
+            continue
+        members = []
+        for it in g.GetItems():
+            try:
+                members.append(str(it.m_Uuid.AsString()))
+            except Exception:  # noqa: BLE001
+                members.append('?')
+        try:
+            guuid = str(g.m_Uuid.AsString())
+        except Exception:  # noqa: BLE001
+            guuid = ''
+        out.append((name, guuid, members))
+    return out
+
+
+def _item_label(kind: str, it) -> str:
+    if kind == 'seg':
+        return (f"track ({it.start_x:g}, {it.start_y:g})-({it.end_x:g}, {it.end_y:g}) "
+                f"on {it.layer}")
+    if kind == 'via':
+        return f"via at ({it.x:g}, {it.y:g})"
+    return f"pad {it.component_ref}.{it.pad_number}"
+
+
+def _resolve_one(pcb_data, b: SenseBranch, seg_by_uuid, via_by_uuid) -> Optional[str]:
+    """Fill `b` from the board; return why it cannot be protected, or None."""
+    ref, dot, num = b.name[len(GROUP_PREFIX):].rpartition('.')
+    if not dot or not ref or not num:
+        return (f"group name {b.name!r} does not name the join pad as "
+                f"{GROUP_PREFIX}REF.PAD")
+    b.join_key = (ref, num)
+    fp = pcb_data.footprints.get(ref)
+    join = next((p for p in (fp.pads if fp is not None else ()) if p.pad_number == num), None)
+    if join is None:
+        return f"join pad {ref}.{num} is not on the board"
+    b.join = join
+    if not join.net_id:
+        return f"join pad {ref}.{num} has no net"
+    b.net_id = join.net_id
+    if not b.member_uuids:
+        return "the group has no member tracks or vias"
+    unknown = []
+    for u in b.member_uuids:
+        segs, via = seg_by_uuid.get(u), via_by_uuid.get(u)
+        if segs:
+            b.segments.extend(segs)
+        elif via is not None:
+            b.vias.append(via)
+        else:
+            unknown.append(u)
+    if unknown:
+        return (f"member(s) {', '.join(unknown[:4])}{' ...' if len(unknown) > 4 else ''} "
+                f"are not tracks or vias on the board")
+    items = [('seg', s) for s in b.segments] + [('via', v) for v in b.vias]
+    off = sorted({it.net_id for _k, it in items if it.net_id != join.net_id})
+    if off:
+        names = [pcb_data.nets[n].name if n in pcb_data.nets else str(n) for n in off]
+        return f"member copper is on {', '.join(names)}, not the join pad's net"
+    # Sense pads: every pad of the net the member copper touches off the join.
+    b.sense_pads = [p for p in pcb_data.pads_by_net.get(join.net_id, ())
+                    if p is not join and any(_touch(it, ('pad', p), join) for it in items)]
+    allitems = items + [('pad', p) for p in b.sense_pads]
+    joined = _joined_to(allitems, join)
+    if not joined:
+        return f"member copper does not touch the join pad {ref}.{num}"
+    loose = [_item_label(*allitems[i]) for i in range(len(allitems)) if i not in joined]
+    if loose:
+        return (f"{', '.join(loose[:3])}{' ...' if len(loose) > 3 else ''} not joined to "
+                f"{ref}.{num} by member copper -- route the branch first")
+    # Input already taps it: other copper of the net touching the branch off
+    # the join pad would carry load current onto the sense copper.
+    ids = {id(it) for _k, it in allitems}
+    others = ([('seg', s) for s in pcb_data.segments
+               if s.net_id == join.net_id and id(s) not in ids]
+              + [('via', v) for v in pcb_data.vias
+                 if v.net_id == join.net_id and id(v) not in ids])
+    taps = [_item_label(*o) for o in others if any(_touch(o, it, join) for it in allitems)]
+    if taps:
+        return (f"input copper already taps it ({', '.join(taps[:3])}"
+                f"{' ...' if len(taps) > 3 else ''})")
+    return _zone_tap(pcb_data, allitems, join)
+
+
+def resolve_sense_branches(pcb_data, raw) -> List[SenseBranch]:
+    """Resolve `sense_groups_from_*` output against a parsed board. Called by
+    BOTH parse paths, so every step of a chain and every leg that parses the
+    file sees the same branches. A protected branch's member copper and sense
+    pads are tagged `sense = <group name>`."""
+    out: List[SenseBranch] = []
+    if not raw:
+        return out
+    seg_by_uuid: Dict[str, list] = {}
+    for s in pcb_data.segments:
+        if s.uuid and not getattr(s, 'graphic', False):
+            seg_by_uuid.setdefault(s.uuid, []).append(s)
+    via_by_uuid = {v.uuid: v for v in pcb_data.vias if v.uuid}
+    for name, guuid, members in raw:
+        b = SenseBranch(name, guuid, members)
+        b.reason = _resolve_one(pcb_data, b, seg_by_uuid, via_by_uuid)
+        out.append(b)
+    for b in out:
+        if not b.protected:
+            continue
+        for it in b.segments + b.vias + b.sense_pads:
+            it.sense = b.name
+    return out
+
+
+def protected_branches(pcb_data, net_id: Optional[int] = None) -> List[SenseBranch]:
+    """The board's protected branches (of `net_id` when given)."""
+    return [b for b in (getattr(pcb_data, 'sense_branches', None) or ())
+            if b.protected and (net_id is None or b.net_id == net_id)]
+
+
+def report(pcb_data) -> None:
+    """Print one line per declared branch: protected, or why not."""
+    branches = getattr(pcb_data, 'sense_branches', None) or []
+    if not branches:
+        return
+    print(f"Sense branches (#1279): {len(branches)} declared by `{GROUP_PREFIX}` group(s)")
+    for b in branches:
+        if b.protected:
+            pads = ', '.join(sorted(f"{p.component_ref}.{p.pad_number}" for p in b.sense_pads))
+            print(f"  {b.name}: protected {len(b.segments)} track(s), {len(b.vias)} via(s), "
+                  f"sense pad(s) {pads or 'none'}; new copper joins only at {b.join_label()}")
+        else:
+            print(f"  {b.name}: NOT protected -- {b.reason}")
+
+
+def summary_entries(pcb_data) -> List[dict]:
+    """JSON_SUMMARY.sense_branches: one entry per declared branch."""
+    return [b.summary(pcb_data) for b in (getattr(pcb_data, 'sense_branches', None) or [])]
