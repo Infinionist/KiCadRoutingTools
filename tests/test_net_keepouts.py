@@ -16,15 +16,13 @@ Invariants:
      region; Net-(D9-A) (exempt) still cuts straight through its box.
 
 Run:
-    python3 -m pytest tests/test_535_net_keepouts.py
+    python3 tests/test_net_keepouts.py
 """
 import json
 import os
 import subprocess
 import sys
 import tempfile
-
-import pytest
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS_DIR)
@@ -41,6 +39,10 @@ GEOM = ["--track-width", "0.5", "--clearance", "0.4",
         "--via-size", "0.6", "--via-drill", "0.5", "--layers", "F.Cu", "B.Cu"]
 
 
+class Skip(Exception):
+    """A test whose precondition this environment cannot meet."""
+
+
 def box(x1, y1, x2, y2):
     return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
 
@@ -50,7 +52,7 @@ D9_BOX = box(150.6, 86.6, 152.3, 88.7)
 
 
 def _write_keepouts(entries):
-    fd, path = tempfile.mkstemp(suffix=".json", prefix="nk535_")
+    fd, path = tempfile.mkstemp(suffix=".json", prefix="nko_")
     with os.fdopen(fd, "w") as f:
         json.dump(entries, f)
     return path
@@ -61,8 +63,17 @@ def _keepout(polygon, **kw):
             "layers": ["F.Cu", "B.Cu"], "tracks": True, "vias": True, **kw}
 
 
+def _raises(fn, needle):
+    """True when fn() raises ValueError whose message contains `needle`."""
+    try:
+        fn()
+    except ValueError as e:
+        return needle in str(e)
+    return False
+
+
 def _route(nets, keepouts_path=None):
-    fd, out = tempfile.mkstemp(suffix=".kicad_pcb", prefix="nk535_out_")
+    fd, out = tempfile.mkstemp(suffix=".kicad_pcb", prefix="nko_out_")
     os.close(fd)
     cmd = [sys.executable, "py_router/route.py", BOARD, out] + GEOM + ["--nets"] + nets
     if keepouts_path:
@@ -103,10 +114,10 @@ def test_binds_applies_and_exempt():
 
 
 def test_loader_refuses_bad_entries():
-    with pytest.raises(ValueError, match="unknown key"):
-        nk.load_net_keepouts(_write_keepouts([_keepout(D8_BOX, exempt=["GND"])]))
-    with pytest.raises(ValueError, match="polygon"):
-        nk.load_net_keepouts(_write_keepouts([_keepout([[0, 0], [1, 1]])]))
+    assert _raises(lambda: nk.load_net_keepouts(
+        _write_keepouts([_keepout(D8_BOX, exempt=["GND"])])), "unknown key")
+    assert _raises(lambda: nk.load_net_keepouts(
+        _write_keepouts([_keepout([[0, 0], [1, 1]])])), "polygon")
 
 
 class _Map:
@@ -149,7 +160,6 @@ def test_stamp_reaches_every_via_rung_at_its_own_via():
     at ITS via (a cell 0.55 mm off the edge is clear of a 0.6 via's band and
     inside a 0.9 via's) -- and every rung is back as it was afterwards."""
     from obstacle_map import build_base_obstacle_map
-    from routing_config import GridCoord
     pcb = parse_kicad_pcb(BOARD)
     d8 = next(i for i, n in pcb.nets.items() if n.name == "Net-(D8-A)")
     cfg = GridRouteConfig(layers=["F.Cu", "B.Cu"], track_width=0.25, clearance=0.2,
@@ -158,7 +168,7 @@ def test_stamp_reaches_every_via_rung_at_its_own_via():
     work = build_base_obstacle_map(pcb, cfg, [d8]).clone_fresh()
     n = work.rung_count()
     if n < 3:
-        pytest.skip(f"map carries {n} rung(s); needs the small and a per-net rung")
+        raise Skip(f"map carries {n} rung(s); needs the small and a per-net rung")
     snap = lambda: [sorted(work.blocked_via_cells_at_rung(r)) for r in range(n)]
     before = snap()
     nk.attach(pcb, [nk._validate(_keepout(D8_BOX), 0, "t")])
@@ -172,7 +182,6 @@ def test_stamp_reaches_every_via_rung_at_its_own_via():
     assert snap() == before, "stamp must leave every rung as it found it"
 
 
-@pytest.mark.integration
 def test_route_respects_net_filter():
     nets = ["Net-(D8-A)", "Net-(D9-A)"]
     ctrl, _ = _route(nets)
@@ -188,3 +197,33 @@ def test_route_respects_net_filter():
     assert d8_has and _connected(out, ["Net-(D8-A)"])
     assert d8_in == 0, f"bound net entered the keep-out ({d8_in} cells)"
     assert d9_in > 0, "exempt net must still route through its region"
+
+
+TESTS = [
+    test_binds_applies_and_exempt,
+    test_loader_refuses_bad_entries,
+    test_stamp_balances_and_skips_exempt_net,
+    test_stamp_reaches_every_via_rung_at_its_own_via,
+    test_route_respects_net_filter,
+]
+
+
+def main():
+    failed = 0
+    for t in TESTS:
+        try:
+            t()
+        except Skip as e:
+            print(f"  SKIP: {t.__name__}: {e}")
+            continue
+        except AssertionError as e:
+            failed += 1
+            print(f"  FAIL: {t.__name__}: {e}")
+            continue
+        print(f"  PASS: {t.__name__}")
+    print(f"{len(TESTS) - failed}/{len(TESTS)} passed")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
