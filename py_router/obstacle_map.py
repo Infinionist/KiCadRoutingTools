@@ -26,6 +26,7 @@ import os
 import time
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'rust_router')))
 import rust_alloc  # noqa: E402,F401  # issue #419: set MIMALLOC_PURGE_DELAY before grid_router loads
+from geometry_utils import via_span_layer_indices
 
 try:
     from grid_router import GridObstacleMap
@@ -461,7 +462,7 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
         # the base map holds the excluded nets' (GND/P3.3V) fanout vias, and without
         # the diagonal margin a 45deg track grazes them a sub-cell under clearance.
         _add_via_obstacle(obstacles, via, coord, num_layers, via_track_expansion_grid,
-                          via_via_expansion_grid, diagonal_margin=defaults.DIAGONAL_MARGIN)
+                          via_via_expansion_grid, diagonal_margin=defaults.DIAGONAL_MARGIN, routing_layers=config.layers)
 
     # Add pads as obstacles (excluding nets we'll route - their pads added per-net)
     # Priced per obstacle: max(routing-side clearance, the pad net's own class clearance)
@@ -2754,7 +2755,7 @@ def add_net_vias_as_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
         # a diagonal cell-offset too close (e.g. (3,2) cells = 0.36mm when 0.39mm is
         # required) -- a real cross-net via-via DRC violation the router never saw.
         via_via_expansion_grid = max(1.0, via_via_mm * coord.inv_step)
-        _add_via_obstacle(obstacles, via, coord, num_layers, via_track_expansion_grid, via_via_expansion_grid, diagonal_margin)
+        _add_via_obstacle(obstacles, via, coord, num_layers, via_track_expansion_grid, via_via_expansion_grid, diagonal_margin, routing_layers=config.layers)
         # #441: net-independent drill hole-to-hole disc (add-only: every caller of
         # this fn stamps a fresh/clone map that is discarded, never rip-removed).
         _h2h = _via_h2h_cells(via, config, coord)
@@ -3073,7 +3074,7 @@ def add_vias_list_as_obstacles(obstacles: GridObstacleMap, vias: list,
         # a diagonal cell-offset too close (e.g. (3,2) cells = 0.36mm when 0.39mm is
         # required) -- a real cross-net via-via DRC violation the router never saw.
         via_via_expansion_grid = max(1.0, via_via_mm * coord.inv_step)
-        _add_via_obstacle(obstacles, via, coord, num_layers, via_track_expansion_grid, via_via_expansion_grid, diagonal_margin)
+        _add_via_obstacle(obstacles, via, coord, num_layers, via_track_expansion_grid, via_via_expansion_grid, diagonal_margin, routing_layers=config.layers)
         # #441: net-independent drill hole-to-hole disc, MIRRORED in
         # remove_vias_list_from_obstacles so rip-up stays ref-count balanced.
         _h2h = _via_h2h_cells(via, config, coord)
@@ -3295,7 +3296,7 @@ def remove_vias_list_from_obstacles(obstacles: GridObstacleMap, vias: list,
         # (libm pow -- radius*radius rounds 1 ULP apart on rare values and
         # would flip borderline cells); integer ex*ex+ey*ey against that
         # scalar is an exact comparison, so the cell multiset is identical.
-        for layer_idx in range(num_layers):
+        for layer_idx in via_span_layer_indices(via, config.layers, num_layers):
             radius = via_track_expansion_grid[layer_idx] + diagonal_margin + off_cells
             effective_track_block_sq = radius ** 2
             track_block_range = int(math.ceil(radius))
@@ -3913,7 +3914,8 @@ def _add_via_obstacle(obstacles: GridObstacleMap, via, coord: GridCoord,
                       num_layers: int, via_track_expansion_grid, via_via_expansion_grid: int,
                       diagonal_margin: float = 0.0,
                       blocked_cells: List[Set[Tuple[int, int]]] = None,
-                      blocked_vias: Set[Tuple[int, int]] = None):
+                      blocked_vias: Set[Tuple[int, int]] = None,
+                      routing_layers=None):
     """Add a via as obstacle to the map.
 
     Args:
@@ -3937,13 +3939,14 @@ def _add_via_obstacle(obstacles: GridObstacleMap, via, coord: GridCoord,
     off_cells = math.hypot(via.x - gx * coord.grid_step,
                            via.y - gy * coord.grid_step) / coord.grid_step
 
+    span = via_span_layer_indices(via, routing_layers, num_layers)
     # Batched rasterization (issue #35) - emits the same cell multiset as the
     # per-cell loops it replaces (each layer gets the full circle pattern).
     if isinstance(obstacles, _RungViaSink):
         pass   # #1226 rung re-run: via cells only (track cells do not depend on the via)
     elif isinstance(via_track_expansion_grid, list):
         # Per-layer blocking (impedance-controlled routing)
-        for layer_idx in range(num_layers):
+        for layer_idx in span:
             layer_expansion = via_track_expansion_grid[layer_idx]
             radius = layer_expansion + diagonal_margin + off_cells
             effective_track_block_sq = radius ** 2
@@ -3957,7 +3960,7 @@ def _add_via_obstacle(obstacles: GridObstacleMap, via, coord: GridCoord,
         track_block_range = int(math.ceil(radius))
         offs = circle_offsets(track_block_range, effective_track_block_sq)
         cells = center + offs
-        for layer_idx in range(num_layers):
+        for layer_idx in span:
             _batch_cells_one_layer(obstacles, cells, layer_idx, blocked_cells)
 
     # Block cells for via placement (also grown by the sub-grid offset).

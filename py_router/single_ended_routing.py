@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from operator import attrgetter
 from typing import Dict, List, Optional, Set, Tuple
 from terminal_colors import YELLOW, GREEN, RESET
+from routing_defaults import PAD_ENTRY_NECK_MM
 
 from dataclasses import replace
 from kicad_parser import PCBData, Segment, Via, pad_is_plated_through
@@ -2550,6 +2551,48 @@ def assign_waypoints_to_mst_edges(waypoints, pad_grid, mst_edges):
 SHORT_POWER_EDGE_MM = 10.0
 
 
+# A wide net entering a pad narrower than its class cannot keep its width for
+# the last stretch: a 2 mm rail meets a 0.2 mm connector pin. Under
+# ``--escalation off`` only that pad-entry stretch may neck; a rail that needs
+# to be narrow for longer fails and is reported instead. The bound,
+# PAD_ENTRY_NECK_MM, lives in routing_defaults (imported at the top), shared
+# with the tap router (route_planes._bound_tap_neck).
+
+
+def _path_length_mm(path, grid_step):
+    """Copper length of an A* cell path in mm (layer changes add nothing)."""
+    total = 0.0
+    for a, b in zip(path, path[1:]):
+        total += math.hypot(a[0] - b[0], a[1] - b[1]) * grid_step
+    return total
+
+
+def _neck_path_ok(path, grid_step):
+    """Under ``--escalation off`` a necked edge may only be a pad-entry stretch:
+    its routed LENGTH must stay within PAD_ENTRY_NECK_MM, not just the span
+    between its endpoints (a short span can be routed as a long detour)."""
+    from fab_tiers import may_narrow
+    if may_narrow():
+        return True
+    return _path_length_mm(path, grid_step) <= PAD_ENTRY_NECK_MM + 1e-9
+
+
+def _neckdown_allowed(config, span_mm=None):
+    """May a wide (power or impedance) net's failed full-width edge retry
+    narrower? The config knob is the caller's choice. ``--escalation off``
+    (fab_tiers.may_narrow) confines necking to a pad-entry stretch of at most
+    PAD_ENTRY_NECK_MM (``span_mm`` is the edge's source->target span; None
+    means unknown, i.e. a trunk) -- this ladder was the one descent site that
+    never asked, and cm5-io shipped 95 of 115 mm of a 1 mm rail at 0.15 mm
+    under a policy that promised exact sizes."""
+    from fab_tiers import may_narrow
+    if not config.power_tap_neckdown:
+        return False
+    if may_narrow():
+        return True
+    return span_mm is not None and span_mm <= PAD_ENTRY_NECK_MM + 1e-9
+
+
 def _impedance_neckdown_allowed():
     """#156 follow-up: may an impedance-width net neck down to the NOMINAL
     track width when its full-width route fails? Completion-first default:
@@ -3228,6 +3271,21 @@ def _route_with_via_unblock(router, obstacles, config, sources, targets, track_m
     return res2 + (used, used_stub_segs)
 
 
+def _uncommit_unblock_copper(pcb_data, vias, segments) -> None:
+    """Take back the unblock copper _route_with_via_unblock committed to
+    pcb_data (#803) for a route its caller then DISCARDS. By identity only:
+    a plan probe committed nothing, and a look-alike is not this route's."""
+    on_v = {id(v) for v in pcb_data.vias}
+    on_s = {id(s) for s in pcb_data.segments}
+    drop_v = {id(v) for v in vias or () if id(v) in on_v}
+    drop_s = {id(s) for s in segments or () if id(s) in on_s}
+    if not drop_v and not drop_s:
+        return
+    pcb_data.vias[:] = [v for v in pcb_data.vias if id(v) not in drop_v]
+    pcb_data.segments[:] = [s for s in pcb_data.segments if id(s) not in drop_s]
+    pcb_data._copper_epoch = getattr(pcb_data, '_copper_epoch', 0) + 1
+
+
 def _route_main_connection(router, obstacles, config, sources, targets, track_margin,
                            pcb_data, net_id, print_prefix="",
                            direction_labels=("forward", "backward"), single_direction=False,
@@ -3266,11 +3324,14 @@ def _route_main_connection(router, obstacles, config, sources, targets, track_ma
     power_wide = net_w > layer_w + 1e-9
     imp_wide = (not power_wide and net_w > config.track_width + 1e-9
                 and _impedance_neckdown_allowed())
-    if result[0] is not None or not (power_wide or imp_wide) or not config.power_tap_neckdown:
+    if result[0] is not None or not (power_wide or imp_wide):
+        return result + (False, None)
+    span_mm = _edge_span_mm(sources, targets, config.grid_step)
+    if not _neckdown_allowed(config, span_mm):
         return result + (False, None)
     neck_floor = layer_w if power_wide else config.track_width
 
-    if _edge_span_mm(sources, targets, config.grid_step) <= SHORT_POWER_EDGE_MM:
+    if span_mm <= SHORT_POWER_EDGE_MM:
         # Short edge: step the width down, widest-that-fits wins; segments use it.
         total_iters = result[1]
         for w in _power_width_ladder(net_w, neck_floor):
@@ -3279,6 +3340,15 @@ def _route_main_connection(router, obstacles, config, sources, targets, track_ma
                 router, obstacles, config, sources, targets, tm,
                 pcb_data, net_id, print_prefix, direction_labels, single_direction, waypoints)
             total_iters += r[1]
+            if r[0] is not None and not _neck_path_ok(r[0], config.grid_step):
+                # A 2 mm span routed as a 12 mm detour is a narrow trunk, not a
+                # pad entry (cm5-io USBH1_VBUS 0.2 mm x 12.1 mm, USB30_DN half
+                # width on In2 under --escalation off). Refuse it; the edge
+                # fails honestly at the requested width.
+                print(f"{print_prefix}{YELLOW}Neck-down at {w:.4f}mm rejected: path "
+                      f"{_path_length_mm(r[0], config.grid_step):.1f}mm exceeds the "
+                      f"{PAD_ENTRY_NECK_MM:g}mm pad-entry allowance{RESET}")
+                continue
             if r[0] is not None:
                 print(f"{print_prefix}{YELLOW}Wide {'power' if power_wide else 'impedance'} route blocked - routed short edge at "
                       f"{w:.4f}mm (down from {net_w:.4f}){RESET}")
@@ -3994,7 +4064,8 @@ def _route_multipoint_main_impl(
     pad_info: List[Tuple],
     attraction_path: Optional[List[Tuple[int, int, int]]] = None,
     state=None,
-    _stub_switch_round: bool = False
+    _stub_switch_round: bool = False,
+    _deferred_main_edges: frozenset = frozenset(),
 ) -> Optional[dict]:
     """
     Route only the main (longest MST segment) connection of a multi-point net.
@@ -4187,16 +4258,29 @@ def _route_multipoint_main_impl(
     mst_edges = _select_multipoint_main_edge(pcb_data, pad_info,
                                              pad_components, mst_edges,
                                              attraction_path)
+    # A main edge whose terminal copper overlapped foreign copper on an earlier
+    # pass goes to the back, not away: Phase 1 tries the next edge first and
+    # Phase 3 still routes this one as a tap.
+    _selected_front = mst_edges[0] if mst_edges else None
+    if _deferred_main_edges:
+        mst_edges = ([e for e in mst_edges if (e[0], e[1]) not in _deferred_main_edges]
+                     + [e for e in mst_edges if (e[0], e[1]) in _deferred_main_edges])
     # Net-story note: how the main edge was chosen (longest-first default,
-    # corridor-span re-realization/promotion, or dense-first reorder).
+    # corridor-span re-realization/promotion, dense-first reorder, or the
+    # terminal gate deferring the edge that would have gone first).
     if mst_edges and _edges_before and mst_edges[0] != _edges_before[0]:
-        _sel_note = {'mode': ('corridor-span' if attraction_path
+        _sel_note = {'mode': ('terminal-gate-deferred'
+                              if mst_edges[0] != _selected_front
+                              else 'corridor-span' if attraction_path
                               else 'dense-first'),
                      'main_edge': list(mst_edges[0][:2]),
                      'displaced_longest': list(_edges_before[0][:2])}
     else:
         _sel_note = {'mode': 'longest-first',
                      'main_edge': list(mst_edges[0][:2]) if mst_edges else None}
+    if _deferred_main_edges:
+        _sel_note['deferred_by_terminal_gate'] = sorted(
+            list(e) for e in _deferred_main_edges)
 
     # Distribute guide-corridor waypoints across the MST edges: each waypoint
     # steers the edge it's nearest to, so the net follows the drawn line across
@@ -4296,8 +4380,13 @@ def _route_multipoint_main_impl(
     routed_edge_pos = None
     for attempt in range(max_main_attempts):
         idx_a, idx_b, edge_len = mst_edges[attempt]
-        label = ("routing longest MST edge" if attempt == 0
-                 else f"retrying with next MST edge ({attempt + 1}/{max_main_attempts})")
+        if attempt:
+            label = f"retrying with next MST edge ({attempt + 1}/{max_main_attempts})"
+        elif _deferred_main_edges:
+            label = (f"routing the next MST edge ({len(_deferred_main_edges)} "
+                     f"deferred by the terminal gate)")
+        else:
+            label = "routing longest MST edge"
         print(f"  Multi-point net Phase 1: {label} (pads {idx_a} and {idx_b}, length={edge_len:.2f}mm)")
 
         # Build source/target for this pad pair
@@ -4561,6 +4650,30 @@ def _route_multipoint_main_impl(
         _why, _ships = _hard_terminal_why(_hard_p1[0])
         print(f"  {YELLOW}Phase 1 {_why} -- failing the edge rather than "
               f"shipping {_ships}{RESET}")
+        # The discarded attempt's #189 unblock copper goes with it: it was
+        # COMMITTED to pcb_data already (#803) and no result carries it now,
+        # so left there it is never written, yet the retry below reads it as
+        # the net's own copper.
+        _uncommit_unblock_copper(pcb_data, main_unblock_vias,
+                                 main_unblock_segments)
+        # #101 holds here too: one overlapping terminal must not abandon the
+        # whole net. Defer this edge (keyed as mst_edges holds it, not by the
+        # possibly-reversed idx_a/idx_b) and rerun Phase 1 on the next one,
+        # under the edge loop's own cap. An already-deferred edge means every
+        # other candidate failed first: nothing is left to try.
+        _edge = (mst_edges[0][0], mst_edges[0][1])
+        _deferred = _deferred_main_edges | {_edge}
+        if _edge not in _deferred_main_edges and len(_deferred) < min(len(mst_edges), 8):
+            print(f"  Deferring MST edge (pads {_edge[0]},{_edge[1]}) to Phase 3; "
+                  f"Phase 1 tries the next edge")
+            retry = route_multipoint_main(
+                pcb_data, net_id, config, obstacles, pad_info,
+                attraction_path=attraction_path, state=state,
+                _stub_switch_round=_stub_switch_round,
+                _deferred_main_edges=frozenset(_deferred))
+            if retry is not None:
+                retry['iterations'] = retry.get('iterations', 0) + total_iterations
+            return retry
         return {'failed': True, 'iterations': total_iterations}
     # Fab-floor via dropped inside a boxed main-edge pad to unblock it (#189);
     # a #535 off-pad escape ships its pad->via stub alongside.

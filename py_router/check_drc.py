@@ -21,6 +21,7 @@ from geometry_utils import (
     closest_point_on_segment,
     segment_to_segment_closest_points,
     segment_to_segment_distance as _seg_seg_dist_coords,
+    via_on_layer,
 )
 from net_queries import expand_pad_layers
 
@@ -416,9 +417,11 @@ def check_via_segment_overlap(via: Via, seg: Segment, clearance: float, clearanc
     Args:
         clearance_margin: Fraction of clearance to use as tolerance (default 0.05 = 5%).
     """
-    # Standard through-hole vias go through ALL copper layers, not just the ones listed
-    # Only skip non-copper layers
+    # A through via is on ALL copper layers; a blind/buried/micro via only on the
+    # layers between its end layers (an F.Cu->In1.Cu microvia is not on In2..B.Cu).
     if not seg.layer.endswith('.Cu'):
+        return False, 0.0
+    if not via_on_layer(via, seg.layer):
         return False, 0.0
 
     required_dist = via.size / 2 + seg.width / 2 + clearance
@@ -2038,8 +2041,11 @@ def check_pad_via_overlap(pad: Pad, via: Via, clearance: float,
     # Expand pad layers (handles *.Cu wildcards)
     expanded_layers = _expand_cu(pad.layers, routing_layers)
 
-    # Vias are through-hole, so they conflict with pads on any copper layer
-    if not any(layer.endswith('.Cu') for layer in expanded_layers):
+    # A through via conflicts with a pad on any copper layer; a via KiCad
+    # types blind/buried/micro only with a pad on its span (#1268): an SMD pad
+    # on B.Cu over an F.Cu->In1.Cu microvia is no conflict.
+    if not any(layer.endswith('.Cu') and via_on_layer(via, layer)
+               for layer in expanded_layers):
         return False, 0.0
 
     # Distance from via center to pad edge. Handles custom comb/finger polygons
@@ -3983,6 +3989,8 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                     _v = pcb_data.vias[int(_i)]
                     if _v.net_id == _sh.net_id and _sh.net_id:
                         continue
+                    if not via_on_layer(_v, _sh.layer):
+                        continue    # #1268: a blind/micro via off this layer
                     if not (_shape_ok or matching_net_ids is None
                             or _v.net_id in matching_net_ids):
                         continue

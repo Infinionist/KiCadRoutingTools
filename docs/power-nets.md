@@ -51,6 +51,12 @@ Disable the feature with `--no-power-tap-neckdown` (CLI) or the "Power route nec
 checkbox under the Power Widths field in the plugin. The narrowed sections are short pad
 escapes, so the current-carrying impact matches a hand-routed neck-down.
 
+Under `--escalation off` (the GUI's Escalation `off`) the neck-down is bounded to the pad
+entry: a failed wide edge retries narrower only when its pads are at most 2 mm apart and
+the narrow route is at most 2 mm long (`routing_defaults.PAD_ENTRY_NECK_MM`), and a
+via-to-pad tap drawn narrower than the net's width is refused past the same length. A
+longer edge fails at the power width and is reported instead of shipping as a thin trunk.
+
 ## AI-Powered Power Net Analysis
 
 Use the `/analyze-power-nets` Claude Code skill for AI-powered datasheet lookup and component analysis. This is the recommended approach as it catches mislabeled power pins and provides current-based track width recommendations.

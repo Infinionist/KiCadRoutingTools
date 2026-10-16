@@ -370,6 +370,13 @@ A---+  (longest edge A-C)          A~~~+~~~C                   A~~~+~~~C
   dense package (see [Bus Routing](bus-routing.md), "Multi-Point Bus
   Members"). Which edge goes first matters because the deferred edges wait
   for Phase 3, after every other net's main route.
+- If that edge cannot route, Phase 1 tries the next one (up to 8 edges,
+  #101), so one boxed pad does not fail the net. An edge that routes but
+  whose terminal copper the terminal gate refuses — it would overlap a
+  foreign track/via, or under `--escalation off` sits inside a clearance
+  only a narrower terminal could clear — is deferred the same way: it goes
+  to the back of the list and Phase 3 routes it as a tap, under the same
+  gate. The net story records `mode: terminal-gate-deferred`.
 - Bus members' main edges route with corridor/neighbor attraction, like
   point-to-point members
 - Track pending multi-point nets in `state.pending_multipoint_nets`

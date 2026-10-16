@@ -1857,7 +1857,7 @@ def check_refused_tools():
     for tool in ('place_optimize.py', 'place_route_loop.py',
                  'place_seed.py', 'place_reconstruct.py', 'place_portfolio.py',
                  'place_pose.py', 'render_placement.py', 'beautify_labels.py',
-                 'add_rule_area.py'):
+                 'add_rule_area.py', 'place_intent_sides.py'):
         if tool not in m2p.REFUSED_TOOLS:
             bad.append((tool, "dropped from REFUSED_TOOLS -- a board tool with "
                               "no plan step that converts silently breaks the "

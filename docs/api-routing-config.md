@@ -602,7 +602,7 @@ on the corpus.
 | `layer_clearances` | `{}` | `{layer_name: mm}` — per-layer clearance from the board's `.kicad_dru` custom rules (#498). **Replacement** semantics, mirroring KiCad's precedence: on a ruled layer the value replaces the net/class-resolved pair clearance for every pair there (it may tighten *or* relax); unruled layers keep the normal resolution. Auto-read engine-side from the sibling `.kicad_dru` by **every routing step** — `batch_route`/`batch_route_diff_pairs`, plane create/repair, BGA/QFN fanout, oracle sub-routes (`kicad_dru.install_layer_clearances`, fab-floor pinned; path discovery via `PCBData.source_path` where the engine signature has no `input_file`) — there is deliberately **no CLI flag and no GUI control**; the rules file is the single source of truth and `check_drc`/staged kicad-cli grade from the same file. Resolve via `layer_clearance(layer, fallback)`; stack-spanning pairs (via barrels) use `stack_clearance(fallback)` = max over the rules and the fallback. Empty map = byte-identical to no rules |
 | `board_copper_layers` | `[]` | The BOARD's copper layer list the `layer_clearances` map was expanded over, recorded by `kicad_dru.install_layer_clearances`. `pad_pair_clearance` resolves a `*.Cu` pad's shared layers over it, as `check_drc` does (a pad on an unrouted, unruled inner layer keeps its class value); `layers` stands in when it is empty |
 | `track_clearances` | `{}` | `{net_id: mm}` — the track-to-track channel (#735): the effective per-obstacle map computed from the board's `.kicad_dru` TRACK-scoped rules (`A.NetClass=='X' && B.NetClass!='X' && A.Type=='track' && B.Type=='track'`) over THIS call's routed set. Applied by `track_obstacle_clearance(net_id, resolved)` — **raise-only** over the fully-resolved pair value, seg-vs-seg obstacle expansion only (pads/vias exempt), per-layer like every segment stamp. Auto-read engine-side (`kicad_dru.install_track_clearances`, same no-flag convention as `layer_clearances`); an explicit dict (tests/GUI) wins and stops the auto-read. Empty map short-circuits to byte-identical behavior. The PLACEMENT side reads the same rules pair-EXACTLY rather than through this map (`kicad_dru.track_pair_clearance`, the resolver `check_drc` and `placement/fanout_clearance`'s connector gate both call since #735); `kicad_dru.board_track_rules(pcb_data)` is the quiet reader for an engine that has no `GridRouteConfig` |
-| `rules` | `None` | The board's design rules resolved in **KiCad's own order** (`design_rules.DesignRules`), which the three maps above are being migrated onto (#530). Installed engine-side by `kicad_dru.install_layer_clearances` for both fronts, from the sibling `.kicad_pro` + `.kicad_dru` (`DesignRules.from_project`) or the live board (`from_pcbnew`) — same no-flag convention as `layer_clearances`. Carries `board_min` (the board's `min_*` constraints), `classes`, per-net `memberships`, the parsed custom `rules`, and the active `fab_floor`. `floor(kind, net_id, layer, type=)` is the smallest value DRC accepts for a kind on that net/layer (fab floor applied, `None` when nothing declares one) and backs `config.size_floors(...)`; `draw_size(...)` is the size to DRAW (explicit CLI value, else resolved class/rule `opt`, clamped into `[min, max]`). **`None` means "no rules declared" and every consumer must treat it as such** — a board with neither sibling still builds a table rather than inventing a Default class. The #498/#530 clearance caps reach `rules.min_clearance` ONLY (#900): the net classes keep the clearance the board was routed to. `rules.net_keepouts` holds the net-filtered keep-outs its `disallow` rules on named rule areas define (`net_keepouts.derive_area_keepouts`, run by `install_design_rules`; each honoured rule's `honoured` says what, and `unsupported()` stops listing it), which the engines attach to the board and stamp per bound net |
+| `rules` | `None` | The board's design rules resolved in **KiCad's own order** (`design_rules.DesignRules`), which the three maps above are being migrated onto (#530). Installed engine-side by `kicad_dru.install_layer_clearances` for both fronts, from the sibling `.kicad_pro` + `.kicad_dru` (`DesignRules.from_project`) or the live board (`from_pcbnew`) — same no-flag convention as `layer_clearances`. Carries `board_min` (the board's `min_*` constraints), `classes`, per-net `memberships`, the parsed custom `rules`, and the active `fab_floor`. `floor(kind, net_id, layer, type=)` is the smallest value DRC accepts for a kind on that net/layer (fab floor applied, `None` when nothing declares one) and backs `config.size_floors(...)`; `draw_size(...)` is the size to DRAW (explicit CLI value, else resolved class/rule `opt`, clamped into `[min, max]`; `diff_pair=<pair name>` resolves a coupled-pair member, whose class track width is the class `diff_pair_width`, as KiCad's `inDiffPair` implicit rule has it). **`None` means "no rules declared" and every consumer must treat it as such** — a board with neither sibling still builds a table rather than inventing a Default class. The #498/#530 clearance caps reach `rules.min_clearance` ONLY (#900): the net classes keep the clearance the board was routed to. `rules.net_keepouts` holds the net-filtered keep-outs its `disallow` rules on named rule areas define (`net_keepouts.derive_area_keepouts`, run by `install_design_rules`; each honoured rule's `honoured` says what, and `unsupported()` stops listing it), which the engines attach to the board and stamp per bound net |
 
 #### Cross-class clearance (KiCad `max(classA, classB)`)
 
@@ -633,20 +633,23 @@ assert config.obstacle_clearance(some_default_net) == 0.15  # not in the map -> 
 - The map is **auto-read** from the sibling `.kicad_pro` netclasses by `route.py` /
   `route_diff.py` / the fanout and plane CLIs (and inside `batch_route` for any other
   caller). Only non-Default classes appear, so an all-Default board yields `{}`.
-  Supply `--net-clearances <json>` (net name → mm) to override. The GUI derives the
+  Supply `--net-clearances <json>` (net name → mm) to override (`route.py`,
+  `route_diff.py`, `route_planes.py`). The GUI derives the
   same map from the live board, and the Advanced tab's **Net Clearances File** is
-  `--net-clearances` there: the Route and Differential tabs then use the file's map
-  instead, read through the same `list_nets.load_net_clearances`.
-- **`--clearance` is a ceiling on the map (#439).** When `--clearance` is GIVEN, each
-  auto-read class is capped at it (`net_clearances[nid] = min(class, clearance)`) before
-  it is installed — a class *tighter* than `--clearance` survives; a *looser* one is
-  capped, because stock net classes are largely aspirational (real boards, and even the
-  human-routed references, route below them). The output `.kicad_pro` writeback then
-  clamps each non-Default class to that same routed floor, so KiCad grades exactly what
-  was routed. When `--clearance` is OMITTED there is no ceiling: each net routes at its
-  own class and the writeback preserves the classes (base = the board's Default class).
-  An explicit `--net-clearances` map is used as given (not capped). In the GUI, checking
-  the **Min Clearance** override box is the "`--clearance` given" signal.
+  `--net-clearances` there: the Route, Differential and Planes tabs then use the
+  file's map instead, read through the same `list_nets.load_net_clearances`.
+- **`--clearance-ceiling` is a ceiling on the map (#439; its own flag since #530).** When
+  `--clearance-ceiling` is GIVEN, each auto-read class is capped at it
+  (`net_clearances[nid] = min(class, ceiling)`) before it is installed — a class
+  *tighter* than the ceiling survives; a *looser* one is capped, because stock net
+  classes are largely aspirational (real boards, and even the human-routed references,
+  route below them). The output `.kicad_pro` writeback then clamps every class down to
+  that same routed floor, so KiCad grades exactly what was routed. When it is OMITTED
+  there is no ceiling: each net routes at its own class and the writeback preserves the
+  classes; `--clearance` then sets only the Default class for the run (#530). An
+  explicit `--net-clearances` map is used as given (not capped). In the GUI, the
+  **Clearance ceiling** checkbox (with the **Min Clearance** override) is the
+  "`--clearance-ceiling` given" signal.
 
 #### Pair clearance for admit/refuse verdicts (#1136)
 
@@ -798,6 +801,17 @@ swept-capsule `segment_blocked` covers diagonals precisely). Passed to
 config.get_layer_costs() -> List[int]            # ×1000 for the Rust router
 config.get_layer_direction_preferences() -> List[int]  # 0=H, 1=V, 255=none
 ```
+
+```python
+config.routable_layers() -> List[str]
+```
+`layers` minus every FORBIDDEN (negative-cost) layer, in order: the layers a
+track may be placed on. A `--layers` subset run appends the board's other
+copper layers at cost -1 (obstacles that vias may span), so relocation, stub
+switching and layer swaps draw their candidate layers from here, never from
+`layers`; a swap whose destination is the other end's current layer is refused
+by the stub validators when that layer is forbidden. A layer `layer_costs`
+does not cover is routable, as `get_layer_costs` treats it.
 
 #### Cost scaling
 

@@ -809,6 +809,14 @@ class PlanesTab(wx.Panel):
 
         config = self._build_mode_config()
         config['assignments'] = assignments
+        # A Net Clearances File route_planes.py would fail to read is refused
+        # before the run, as on the Route and Differential tabs.
+        from .swig_gui import net_clearances_file_error
+        _ncl_err = net_clearances_file_error(config.get('net_clearances_path'))
+        if _ncl_err:
+            wx.MessageBox(_ncl_err, "Invalid Net Clearances File",
+                          wx.OK | wx.ICON_WARNING)
+            return
 
         # Disable UI
         self.action_btn.Disable()
@@ -1020,6 +1028,14 @@ class PlanesTab(wx.Panel):
         except Exception as e:
             print(f"Warning: Could not get net class clearances: {e}")
             _plane_net_clearances = None
+        # route_planes.py --net-clearances FILE (the Advanced tab's Net
+        # Clearances File): it replaces the class-derived map, as given, for
+        # the plane taps and the GND vias alike.
+        from .swig_gui import explicit_net_clearances
+        _explicit = explicit_net_clearances(config.get('net_clearances_path'),
+                                            self.pcb_data)
+        if _explicit is not None:
+            _plane_net_clearances = _explicit
 
         failed_pads = 0
         try:

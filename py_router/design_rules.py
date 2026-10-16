@@ -1003,6 +1003,13 @@ class DesignRules:
                 source = 'netclass ' + '/'.join(names)
         elif kind in NETCLASS_OPT_KEYS:
             v = self.class_value(a.net_id, NETCLASS_OPT_KEYS[kind])
+            # KiCad's "netclass (diff pair)" implicit rule, conditioned on
+            # A.inDiffPair('*'): a coupled-pair member's track is drawn at the
+            # class diff_pair_width, and custom rules below still override it.
+            if kind == 'track_width' and a.diff_pair:
+                dv = self.class_value(a.net_id, 'diff_pair_width')
+                if dv is not None:
+                    v = dv
             if v is not None:
                 cur['opt'] = v
                 source = f'netclass {self.effective_class(a.net_id)}'
@@ -1088,14 +1095,17 @@ class DesignRules:
         return self.resolve(kind, a, b, layer).min
 
     def draw_size(self, kind: str, net_id: int, layer: Optional[str] = None,
-                  default: Optional[float] = None, type: Optional[str] = None) -> Optional[float]:
+                  default: Optional[float] = None, type: Optional[str] = None,
+                  diff_pair: Optional[str] = None) -> Optional[float]:
         """The size to DRAW: explicit CLI value (PNS 'custom size'), else the
         resolved ``opt`` (rule opt over the aggregate class value, PNS 'use
-        netclass values'), else ``default``; then clamped into [min, max]."""
+        netclass values'), else ``default``; then clamped into [min, max].
+        ``diff_pair`` (the pair's name) marks the net a coupled-pair member,
+        whose class track width is the class ``diff_pair_width``."""
         kind = canonical_kind(kind)
         if type is None:
             type = 'via' if kind in ('via_diameter', 'hole_size') else 'track'
-        a = self.item_for_net(net_id, type, layer)
+        a = self.item_for_net(net_id, type, layer, diff_pair=diff_pair)
         c = self.resolve(kind, a, None, layer)
         v = self.cli.get(kind)
         if v is None:
