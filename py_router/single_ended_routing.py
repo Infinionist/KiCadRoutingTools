@@ -2370,6 +2370,11 @@ def _route_net_with_obstacles_impl(pcb_data: PCBData, net_id: int, config: GridR
         _why, _ships = _hard_terminal_why(_hard157[0])
         print(f"  {YELLOW}{_why} -- rejecting the route rather than shipping "
               f"{_ships}{RESET}")
+        # The rejected route's #189 unblock copper goes with it: it is already
+        # in pcb_data (#803) and no result will carry it, so the net's next
+        # route landed on it as the pad's own via, which the file never gets
+        # (found reviewing #1273).
+        _uncommit_unblock_copper(pcb_data, unblock_vias, unblock_segments)
         return {
             'failed': True,
             'iterations': total_iterations,
@@ -5414,12 +5419,18 @@ def _route_multipoint_taps_impl(
             # took it to the fab floor and the crossing SHIPPED). Terminal
             # copper overlapping a foreign track/via at any width is a short
             # no neck can fix: fail the edge like an unroutable one so the
-            # rip/retry ladder finds another approach. (A #189 unblock via
-            # already registered for this edge stays in the map -- a
-            # conservative over-block for later edges, never a short.)
+            # rip/retry ladder finds another approach.
             _why, _ships = _hard_terminal_why(_hard_tap[0])
             print(f"      {YELLOW}{_why} -- failing the MST edge rather than "
                   f"shipping {_ships}{RESET}")
+            # The edge's #189 unblock copper (and a pad-via rescue's) goes
+            # with it: it is already in pcb_data (#803) and no result will
+            # carry it. Left there, the orphan fallback below landed on it as
+            # the pad's own via and reported the pad connected while the file
+            # had no via there (found reviewing #1273). Its free-via
+            # registration stays: a later edge that changes layer on that cell
+            # emits its own via, refit-checked (#339).
+            _uncommit_unblock_copper(pcb_data, unblock_vias, unblock_segments)
             edge_key = (min(src_idx, tgt_idx), max(src_idx, tgt_idx))
             failed_edges.add(edge_key)
             blocked_cells = list(blocked_cells) + _via_conflict_extra
