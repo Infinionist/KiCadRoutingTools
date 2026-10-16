@@ -3,7 +3,7 @@
 unguarded -- each test here exists because a named mutant survived every
 test the PR had written, and each names the row it kills.
 
-24 tests.
+25 tests.
 
 Kept apart from the phase files so each case is a FAST, single-purpose
 killer (synthetic boards and direct calls wherever the mechanism allows),
@@ -358,18 +358,20 @@ SIBLING_BOARD = '''(kicad_pcb
  (gr_rect (start 0 0) (end 30 20) (layer "Edge.Cuts") (uuid "e1"))
 %s)
 '''
-SIBLING_FP = ('''  (footprint "t:R" (layer "F.Cu") (uuid "fp-%(r)s") (at %(x)s 10)
+SIBLING_FP = ('''  (footprint "t:R" (layer "%(side)s.Cu") (uuid "fp-%(r)s") (at %(x)s 10)
    (property "Reference" "%(r)s" (at 0 0 0))
-   (fp_rect (start -0.2 -0.2) (end 0.2 0.2) (layer "F.CrtYd") (uuid "c-%(r)s"))
-   (pad "1" smd rect (at -0.9 0) (size 0.8 0.8) (layers "F.Cu") (net %(a)s "/%(na)s") (uuid "%(r)s1"))
-   (pad "2" smd rect (at 0.9 0) (size 0.8 0.8) (layers "F.Cu") (net %(b)s "/%(nb)s") (uuid "%(r)s2"))
+   (fp_rect (start -0.2 -0.2) (end 0.2 0.2) (layer "%(side)s.CrtYd") (uuid "c-%(r)s"))
+   (pad "1" smd rect (at -0.9 0) (size 0.8 0.8) (layers "%(side)s.Cu") (net %(a)s "/%(na)s") (uuid "%(r)s1"))
+   (pad "2" smd rect (at 0.9 0) (size 0.8 0.8) (layers "%(side)s.Cu") (net %(b)s "/%(nb)s") (uuid "%(r)s2"))
   )
 ''')
 
 
-def _sibling_board(td, x1=25, x2=5):
-    parts = (SIBLING_FP % dict(r='R1', x=x1, a=1, na='A', b=2, nb='B')
-             + SIBLING_FP % dict(r='R2', x=x2, a=3, na='C', b=4, nb='D'))
+def _sibling_board(td, x1=25, x2=5, side2='F'):
+    parts = (SIBLING_FP % dict(r='R1', x=x1, a=1, na='A', b=2, nb='B',
+                               side='F')
+             + SIBLING_FP % dict(r='R2', x=x2, a=3, na='C', b=4, nb='D',
+                                 side=side2))
     return _write_board(td, SIBLING_BOARD % parts)
 
 
@@ -532,6 +534,40 @@ def test_declared_poses_whose_courtyards_clear_but_pads_collide_are_refused():
     assert 'courtyard' not in ref['R1']['reason'], ref['R1']
     assert ref['R1']['conflicts_with_declared'] == ['R2'], ref['R1']
     print(f"  PASS: {ref['R1']['reason']}")
+
+
+def test_plan_check_refuses_a_pair_of_contradictory_fixed_poses():
+    """Preflight must compare exact anchors with the same geometry stage 0
+    uses. Two same-face declarations at one pose are impossible and refuse
+    before seeding; two SMD parts on opposite faces may share that pose."""
+    def _intent():
+        return fp.intent_from_dict({
+            'schema': 1, 'kind': fp.KIND, 'units': 'mm',
+            'fixed_poses': [
+                {'ref': 'R1', 'x': 10.0, 'y': 10.0, 'rot': 0,
+                 'basis': 'declared'},
+                {'ref': 'R2', 'x': 10.0, 'y': 10.0, 'rot': 0,
+                 'basis': 'declared'}]})
+
+    with tempfile.TemporaryDirectory() as td:
+        same = _sibling_board(td)
+        found, _measured = fp.plan_check(
+            _intent(), parse_kicad_pcb(same), same, group_sources=(),
+            clearance=0.2, board_edge_clearance=0.1)
+        clashes = [v for v in found
+                   if v.rule == 'plan_fixed_pose_conflict']
+        assert len(clashes) == 1 and clashes[0].severity == fp.ERROR, found
+        assert clashes[0].measured['pair'] == ['R1', 'R2'], clashes[0]
+        assert 'R1' in clashes[0].message and 'R2' in clashes[0].message
+
+        opposite = _sibling_board(td, side2='B')
+        found, _measured = fp.plan_check(
+            _intent(), parse_kicad_pcb(opposite), opposite, group_sources=(),
+            clearance=0.2, board_edge_clearance=0.1)
+        assert not [v for v in found
+                    if v.rule == 'plan_fixed_pose_conflict'], found
+    print("  PASS: plan_check refuses one same-face fixed-pose clash and "
+          "permits the same SMD pose across opposite faces")
 
 
 #: A 9 x 4mm board whose big part X1 fits only where the fixed-pose R1 sits.
@@ -914,6 +950,7 @@ TESTS = [
     test_a_refused_row_is_put_back_where_it_was,
     test_a_row_the_intent_check_refuses_or_with_a_placed_member_is_not_seated,
     test_declared_poses_whose_courtyards_clear_but_pads_collide_are_refused,
+    test_plan_check_refuses_a_pair_of_contradictory_fixed_poses,
     test_a_seated_fixed_pose_is_frozen_to_the_eviction_rung,
     test_a_copperless_fixed_pose_past_the_outline_is_refused,
     test_a_member_a_block_move_can_clear_is_not_released,

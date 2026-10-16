@@ -619,7 +619,8 @@ def test_place_seed_refuses_before_writing_and_repair_only_reports():
     # so the seeder can name the member it could not seat (#701's contract).
     assert fp.PLAN_SEED_REFUSES == {
         'plan_zone_overfull', 'plan_edge_overfull', 'plan_board_overfull',
-        'block_glob_literal'}, fp.PLAN_SEED_REFUSES
+        'block_glob_literal',
+        'plan_fixed_pose_conflict'}, fp.PLAN_SEED_REFUSES
     with tempfile.TemporaryDirectory() as tmp:
         b = _board(tmp, 'k.kicad_pcb', [('U1', 3, 3, PAD)])
         plan = os.path.join(tmp, 'p.json')
@@ -722,6 +723,33 @@ def test_plan_only_on_a_true_pile_and_its_exit_4():
         assert s['plan_errors'] >= 1, s
     print("  PASS: a true pile grades exit 3 but plans exit 0; an "
           "unsatisfiable plan is --plan-only exit 4")
+
+
+def test_plan_only_refuses_conflicting_exact_anchors():
+    """Two movable parts are harmless at their input poses, but their exact
+    declarations put different-net pads on top of one another. The CLI must
+    catch the future contradiction, not merely grade the current board."""
+    with tempfile.TemporaryDirectory() as tmp:
+        board = _board(tmp, 'fixed-clash.kicad_pcb',
+                       [('U1', 3, 3, PAD), ('U2', 7, 3, PAD)])
+        plan = os.path.join(tmp, 'fixed-clash.json')
+        fixed = [
+            {'ref': ref, 'x': 5, 'y': 5, 'rot': 0,
+             'basis': 'declared'} for ref in ('U1', 'U2')]
+        with open(plan, 'w', encoding='utf-8') as fh:
+            json.dump(_raw(fixed_poses=fixed), fh)
+        r = run_utils.check(
+            [sys.executable, '-X', 'utf8',
+             run_utils.tool('check_floorplan.py'), board, '--intent', plan,
+             '--plan-only', '--no-brief', '--no-mechanical'],
+            refuse='plan_fixed_pose_conflict', code=4)
+        line = [x for x in r.stdout.splitlines()
+                if x.startswith('JSON_SUMMARY:')][-1]
+        summary = json.loads(line.split('JSON_SUMMARY: ', 1)[1])
+        assert summary['plan_findings_by_rule'][
+            'plan_fixed_pose_conflict'] == 1, summary
+    print("  PASS: --plan-only exits 4 before two conflicting exact anchors "
+          "reach the seeder")
 
 
 def test_plan_check_refuses_no_emitted_corpus_intent():
@@ -965,6 +993,7 @@ TESTS = [
     test_place_seed_refuses_before_writing_and_repair_only_reports,
     test_plan_only_on_a_pile,
     test_plan_only_on_a_true_pile_and_its_exit_4,
+    test_plan_only_refuses_conflicting_exact_anchors,
     test_plan_check_refuses_no_emitted_corpus_intent,
 ]
 

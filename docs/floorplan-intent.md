@@ -176,8 +176,9 @@ findings raised outside the rule loop: `intent_zone_outside_envelope`, `intent_z
 `mechanical_drift` (#959, raised only when a `mechanical.json` is read, and
 settable to `error` only -- `warn` is refused, since the pose is a recorded
 fact),
-the eleven `plan_check` findings (#959: `plan_zone_exclusive_unsatisfiable`,
-`block_glob_literal`, `plan_fixed_outside_zone`, `plan_zone_overfull`,
+the twelve `plan_check` findings (#959: `plan_zone_exclusive_unsatisfiable`,
+`block_glob_literal`, `plan_fixed_outside_zone`, `plan_fixed_pose_conflict`,
+`plan_zone_overfull`,
 `plan_zone_crowded`, `plan_edge_overfull`, `plan_edge_crowded`,
 `plan_board_overfull`, `plan_board_crowded`, `plan_fixed_overlap`,
 `plan_fixed_overlap_budget`), `edge_connector_side` (#959, settable to `warn`
@@ -1437,6 +1438,7 @@ plan. The WARN is the same quantity with a margin.
 | `plan_edge_overfull` / `_crowded` | one edge-claimed part's pad extent, at its best 90-degree turn, is longer than its edge | summed extents are a WARN, because flanges overhang corners |
 | `plan_board_overfull` / `_crowded` | the parts' graded outlines, per face, force more overlap against `options.grow_board`'s usable area (clearance 0) than the budget allows, with `oob_count` declared 0; `measured.outline_area_per_face_mm2`, and the rect reading as `forced_overlap_rect_mm2` | |
 | `plan_fixed_overlap_budget` / `plan_fixed_overlap` | the FILE-locked pairs alone exceed the overlap budget | each such pair is a WARN |
+| `plan_fixed_pose_conflict` | two `fixed_poses[]` entries whose declared poses conflict under stage 0's own courtyard, pad and hole check (`seeder.fixed_pose_pair_conflicts`; a #1060 courtyard waiver is honoured; an entry whose declared side differs from the board is left to stage 0's own refusal). Refused by `place_seed` before anything is written | |
 
 A plan ERROR is only as strong as the rules it stands for. With
 `zone_containment`, `zone_exclusive`, `legality` or `edge_connector` demoted to

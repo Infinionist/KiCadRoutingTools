@@ -6801,6 +6801,9 @@ _NON_RULE_SEVERITIES = frozenset({
     'plan_fixed_outside_zone', 'plan_zone_overfull', 'plan_zone_crowded',
     'plan_edge_overfull', 'plan_edge_crowded', 'plan_board_overfull',
     'plan_board_crowded',
+    # #1054: two exact declarations that stage 0's own courtyard/pad/hole
+    # geometry says cannot both be seated.
+    'plan_fixed_pose_conflict',
     # Row 8: two FILE-locked parts overlapping. A WARN per pair; an ERROR
     # only when their overlap alone exceeds a DECLARED overlap budget.
     'plan_fixed_overlap', 'plan_fixed_overlap_budget',
@@ -8159,7 +8162,7 @@ def glob_escape(ref: str) -> str:
 #: place_seed and REFUSED by P1, which gates every plan ERROR.
 PLAN_SEED_REFUSES = frozenset({
     'plan_zone_overfull', 'plan_edge_overfull', 'plan_board_overfull',
-    'block_glob_literal'})
+    'block_glob_literal', 'plan_fixed_pose_conflict'})
 
 
 def _planned_block_sides(intent: Intent,
@@ -8213,6 +8216,8 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
          and must_lock are seated), so this is a fact about the plan.
          Also (#1054, WARN unless set) a `fixed_poses[]` entry whose DECLARED
          pose is outside its own block's zone: stage 0 seats it exactly.
+      4c. `plan_fixed_pose_conflict` (ERROR): two declared exact poses whose
+          courtyards, pads or holes conflict under stage 0's own geometry.
       8. `plan_fixed_overlap` (WARN, per pair) / `plan_fixed_overlap_budget`
          (ERROR): two FILE-locked parts whose courtyards overlap on a shared
          face overlap in every placement. The grade counts courtyard overlap
@@ -8334,6 +8339,30 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                     measured={'escape_mm': round(esc, 4),
                               'pose': [float(f['x']), float(f['y']), rot]},
                     expected={'zone': list(z.rect), 'tolerance_mm': tol}))
+
+    # 4c. Exact declarations are one simultaneous batch in stage 0. Compare
+    # them pairwise now with that stage's own side-aware courtyard/pad/hole
+    # predicate, so an impossible pair is refused before a board is written.
+    # This is deliberately not folded into row 8: these refs need not be
+    # locked in the input file, and no overlap budget can license a pair the
+    # exact-pose seater itself refuses.
+    from .seeder import fixed_pose_pair_conflicts
+    fixed_pose_conflicts = fixed_pose_pair_conflicts(
+        state, intent.fixed_poses,
+        waived=frozenset(frozenset(p_)
+                         for p_ in intent.courtyard_waiver_pairs()))
+    for conflict in fixed_pose_conflicts:
+        a_, b_ = conflict['pair']
+        out.append(Violation(
+            rule='plan_fixed_pose_conflict',
+            severity=intent.severity_of('plan_fixed_pose_conflict'),
+            ref=a_,
+            message=(f"fixed poses {a_} and {b_} cannot both be seated: "
+                     f"{conflict['reason']}. Stage 0 judges exact anchors as "
+                     f"one batch and would refuse both; move one pose"),
+            measured=conflict,
+            expected={'conflicts': []}))
+    measured['fixed_pose_conflicts'] = fixed_pose_conflicts
 
     # 8. two FILE-locked parts overlapping -- in every placement there is.
     # #1162: on the reading the budget is graded in (check_assembly's drawn
