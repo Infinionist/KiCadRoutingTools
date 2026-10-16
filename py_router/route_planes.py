@@ -4202,9 +4202,9 @@ Examples:
     parser.add_argument("--net-clearances", metavar="JSON", default=None,
                         help="JSON file mapping net NAME -> clearance mm (the file route.py and "
                              "route_diff.py take): replaces the auto-read netclass map for plane "
-                             "taps, blocker reroutes and GND return vias, used as given -- never "
-                             "capped by --clearance-ceiling. A net it does not name routes at the "
-                             "run's clearance.")
+                             "taps, the pour's fill model and GND return vias, used as given -- "
+                             "never capped by --clearance-ceiling. A net it does not name routes "
+                             "at the run's clearance.")
 
     # Zone options
     parser.add_argument("--zone-clearance", type=float, default=None, help="Zone (pour) clearance from other copper in mm. Default: follow --clearance, auto-stepping down to the fab floor if the pour cannot thread the densest BGA via lattice")

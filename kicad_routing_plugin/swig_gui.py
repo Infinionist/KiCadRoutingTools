@@ -117,9 +117,10 @@ def _nm_to_mm(nm):
 
 
 def net_clearances_file_error(path):
-    """Why the Net Clearances File (route.py / route_diff.py --net-clearances)
-    cannot be used, or None when it is empty or loads -- through the loader
-    the CLI mains call, so a file the CLI would fail on is refused here too."""
+    """Why the Net Clearances File (route.py / route_diff.py / route_planes.py
+    --net-clearances) cannot be used, or None when it is empty or loads --
+    through the loader the CLI mains call, so a file the CLI would fail on is
+    refused here too."""
     path = (path or '').strip()
     if not path:
         return None
@@ -1156,10 +1157,10 @@ class RoutingDialog(wx.Dialog):
                     "one side route against each other at the normal clearance. The "
                     "log reports per net the length left inside a band. Empty = off.")
                 grid.Add(self.keep_away, 0, wx.EXPAND)
-                # route.py / route_diff.py --net-clearances FILE, named after
-                # the plan param: an explicit per-net clearance map that
-                # replaces the one the Route and Differential tabs build from
-                # the board's net classes.
+                # route.py / route_diff.py / route_planes.py --net-clearances
+                # FILE, named after the plan param: an explicit per-net
+                # clearance map that replaces the one the Route, Differential
+                # and Planes tabs build from the board's net classes.
                 grid.Add(wx.StaticText(parent, label="Net Clearances File:"), 0,
                          wx.ALIGN_CENTER_VERTICAL)
                 ncl_sizer = wx.BoxSizer(wx.HORIZONTAL)
@@ -1168,9 +1169,10 @@ class RoutingDialog(wx.Dialog):
                 self.net_clearances_path.SetToolTip(
                     "Optional JSON file mapping net name -> clearance in mm, "
                     "e.g. {\"/USB_D+\": 0.12, \"/USB_D-\": 0.12} (route.py / "
-                    "route_diff.py --net-clearances). When set it REPLACES the "
-                    "per-net clearances the Route and Differential tabs read "
-                    "from the board's net classes, used as given (no class, no "
+                    "route_diff.py / route_planes.py --net-clearances). When "
+                    "set it REPLACES the per-net clearances the Route, "
+                    "Differential and Planes tabs read from the board's net "
+                    "classes, used as given (no class, no "
                     "ceiling); a net it does not name routes at the run's "
                     "clearance. Empty = from the net classes.")
                 ncl_sizer.Add(self.net_clearances_path, 1, wx.EXPAND | wx.RIGHT, 4)

@@ -266,8 +266,9 @@ step without it go through `manifest_to_plan`'s CLI and the REAL PlanExecutor
 on the headless dialog, each action replaced by a probe. The flagged step's
 control AND the tab config its engine reads must hold the recorded value; the
 next step must be back at the CLI default. It also drives the QFN tab's real
-fanout run (engine spied) for `--layer` and both routing workers for
-`--net-clearances`, so the value is shown reaching the engine call.
+fanout run (engine spied) for `--layer` and the Route, Differential and
+Planes workers for `--net-clearances`, so the value is shown reaching the
+engine call.
 
 The same blindness applies one level up, to whole TOOLS: an unknown tool only
 bumps the converter's `skipped` count, so a converted plan reads complete

@@ -4,8 +4,9 @@ Before: a pipeline handing every step the same per-net clearance file had
 route.py and route_diff.py open it, while route_planes.py exited 2 with
 "unrecognized arguments: --net-clearances" -- the plane step of a chain never
 ran. The file's map is used AS GIVEN (no net class, no ceiling), as the two
-routing mains use it: it reaches create_plane's plane taps / blocker reroutes,
-and create_plane caps only the map it auto-reads itself.
+routing mains use it: it reaches create_plane's plane taps and fill model,
+and create_plane caps only the map it auto-reads itself. (The --add-gnd-vias
+pass is held to the file by test_gnd_vias_net_class_clearance.py.)
 """
 import contextlib
 import io

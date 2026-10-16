@@ -583,9 +583,10 @@ def net_clearance_map_by_id(pcb_path, nets, design_rules=None):
 def load_net_clearances(path):
     """{net name: clearance mm} from a ``--net-clearances`` JSON file.
 
-    route.py / route_diff.py take the file as an explicit override of the
-    class-derived map above, and the Route and Differential tabs read the same
-    file through this function (their "Net Clearances File" field), so both
+    route.py / route_diff.py / route_planes.py take the file as an explicit
+    override of the class-derived map above, and the Route, Differential and
+    Planes tabs read the same file through this function (their "Net
+    Clearances File" field), so both
     fronts accept and refuse exactly the same files. Raises OSError when the
     file cannot be read and ValueError when it is not a JSON object of numbers.
     """

@@ -458,9 +458,9 @@ def main():
               _min_coupled(gui_auto) == cli_auto,
               f"setback {gui_auto!r} -> {_min_coupled(gui_auto)} mm")
 
-        print("\n[5] the Net Clearances File reaches the engines: the Route and "
-              "Differential workers hand them the file's map, as route.py / "
-              "route_diff.py --net-clearances do")
+        print("\n[5] the Net Clearances File reaches the engines: the Route, "
+              "Differential and Planes workers hand them the file's map, as "
+              "route.py / route_diff.py / route_planes.py --net-clearances do")
         from kicad_parser import parse_kicad_pcb as _parse
         from list_nets import load_net_clearances, net_clearance_map_by_name
         _cli = _parse(board_path)
