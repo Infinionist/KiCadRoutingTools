@@ -219,13 +219,48 @@ def test_restore_undoes_isolate():
     p = parse_kicad_pcb(BOARD)
     vdd = next(i for i, n in p.nets.items() if n.name == 'VDD')
     nets_before = sorted(p.nets)
+    # Pad ORDER reaches routing decisions and the GUI routes its next step on
+    # the same PCBData, so restore puts the pads back where they were.
+    order_before = ([id(q) for q in p.pads_by_net[vdd]], [id(q) for q in p.nets[vdd].pads])
     pid = sb.isolate(p, [BRANCH])['vos']
     assert sb.isolate(p, [BRANCH]) == {}, 'a nested call must keep the outer isolation'
     sb.restore(p)
     assert sorted(p.nets) == nets_before and pid not in p.pads_by_net
     assert all(s.net_id == vdd and not s.locked for s in p.segments)
     assert sorted(q.component_ref for q in p.pads_by_net[vdd]) == ['C1', 'U1', 'U2', 'U3']
+    assert ([id(q) for q in p.pads_by_net[vdd]], [id(q) for q in p.nets[vdd].pads]) \
+        == order_before, "restore reordered the net's pads"
     assert not p._net_alias
+
+
+def test_private_id_clears_every_id_the_board_uses():
+    """`pads_by_net` can carry a pad-only net the net table lacks; the private
+    id must not land on it (the sense pad would join that bucket, and restore
+    would then drop the bucket with the other net's pads in it)."""
+    p = parse_kicad_pcb(BOARD)
+    taken = max(p.nets) + 1
+    ghost = p.pads_by_net[next(iter(p.pads_by_net))][0]
+    p.pads_by_net[taken] = [ghost]
+    pid = sb.isolate(p, [BRANCH])['vos']
+    assert pid != taken and p.pads_by_net[taken] == [ghost], (pid, taken)
+    sb.restore(p)
+    assert p.pads_by_net.get(taken) == [ghost], "restore dropped another net's bucket"
+
+
+def test_loader_refuses_unknown_keys_and_duplicate_names():
+    """`force` was accepted (and printed in the docstring example) but read by
+    nothing; a key that does nothing is refused like any other unknown key.
+    Two branches under one name would share a private net name."""
+    for doc, why in (([{'name': 'x', 'sense': ['U1.1'], 'join': 'C1.1',
+                        'force': ['U2.1']}], 'expected an object with keys'),
+                     ([{'name': 'x', 'sense': ['U1.1'], 'join': 'C1.1'},
+                       {'name': 'x', 'sense': ['U2.1'], 'join': 'C1.1'}], 'used twice')):
+        try:
+            sb.load_sense_branches(_sense_file(doc))
+        except ValueError as e:
+            assert why in str(e), str(e)
+        else:
+            raise AssertionError(f'accepted: {doc}')
 
 
 def test_gui_path_routes_to_join_and_hands_pcb_data_back():
@@ -261,7 +296,9 @@ TESTS = [
     test_unjoined_sense_pad_is_refused_not_dropped,
     test_same_net_pour_over_the_sense_copper_is_refused,
     test_loader_rejects_bad_pad_keys,
+    test_loader_refuses_unknown_keys_and_duplicate_names,
     test_restore_undoes_isolate,
+    test_private_id_clears_every_id_the_board_uses,
     test_router_keeps_loads_off_the_sense_trace,
     test_gui_path_routes_to_join_and_hands_pcb_data_back,
 ]

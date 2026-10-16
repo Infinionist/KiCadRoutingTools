@@ -9,8 +9,7 @@ DRC-clean, wrong.
 
 `--sense-branches FILE` names each branch by pads:
 
-    [{"name": "buck-vos", "sense": ["U12.5", "R110.1"], "join": "C108.1",
-      "force": ["U13.3"]}]
+    [{"name": "buck-vos", "sense": ["U12.5", "R110.1"], "join": "C108.1"}]
 
 `isolate()` runs right after the board is parsed. For each branch it finds the
 copper reachable from the sense pads WITHOUT passing through the join pad (the
@@ -46,7 +45,7 @@ from typing import Dict, List, Optional, Set, Tuple
 #: Contact slack in mm.
 _EPS = 0.01
 
-_KEYS = {'name', 'sense', 'join', 'force'}
+_KEYS = {'name', 'sense', 'join'}
 
 
 def load_sense_branches(path: str) -> List[dict]:
@@ -55,7 +54,7 @@ def load_sense_branches(path: str) -> List[dict]:
         doc = json.load(f)
     if not isinstance(doc, list):
         raise ValueError(f"--sense-branches {path}: expected a JSON array of branches")
-    out = []
+    out, names = [], set()
     for i, b in enumerate(doc):
         where = f"--sense-branches {path} entry {i}"
         if not isinstance(b, dict) or set(b) - _KEYS:
@@ -63,10 +62,15 @@ def load_sense_branches(path: str) -> List[dict]:
         sense, join = b.get('sense'), b.get('join')
         if not isinstance(sense, list) or not sense or not isinstance(join, str):
             raise ValueError(f"{where}: needs sense [\"REF.PAD\", ...] and join \"REF.PAD\"")
-        out.append({'name': str(b.get('name') or f'sense_{i}'),
-                     'sense': [_pad_key(s, where) for s in sense],
-                     'join': _pad_key(join, where),
-                     'force': [_pad_key(s, where) for s in b.get('force') or []]})
+        name = str(b.get('name') or f'sense_{i}')
+        if name in names:
+            # The name keys the private net (`<net>~sense:<name>`) and the
+            # report; two branches under one name would share both.
+            raise ValueError(f"{where}: branch name {name!r} is used twice")
+        names.add(name)
+        out.append({'name': name,
+                    'sense': [_pad_key(s, where) for s in sense],
+                    'join': _pad_key(join, where)})
     return out
 
 
@@ -252,6 +256,18 @@ def sense_component(pcb_data, branch: dict):
     return join, sense, [items[i] for i in sorted(seen)], None
 
 
+def _free_net_id(pcb_data) -> int:
+    """An id no item of the board uses. `pads_by_net` can hold a pad-only net
+    absent from `pcb_data.nets`, and copper can carry an id the net table
+    lacks; `max(pcb_data.nets) + 1` could land on either, merging the sense
+    pads into that net's bucket (and `restore` would then drop the bucket)."""
+    used = set(pcb_data.nets) | set(getattr(pcb_data, 'pads_by_net', None) or ())
+    for attr in ('segments', 'vias', 'zones'):
+        used.update(getattr(o, 'net_id', 0) or 0
+                    for o in getattr(pcb_data, attr, None) or ())
+    return max(used, default=0) + 1
+
+
 def isolate(pcb_data, branches: Optional[List[dict]]) -> Dict[str, int]:
     """Move every protectable branch's sense copper onto a private net id.
     Returns {branch name: private net id} for the branches protected.
@@ -292,20 +308,27 @@ def isolate(pcb_data, branches: Optional[List[dict]]) -> Dict[str, int]:
             print(f"  {b['name']}: NOT protected -- {why}")
             continue
         net = join.net_id
-        pid = max(pcb_data.nets) + 1
-        name = f"{pcb_data.nets[net].name}~sense:{b['name']}"
+        real = pcb_data.nets.get(net)
+        pid = _free_net_id(pcb_data)
+        name = f"{real.name if real is not None else join.net_name}~sense:{b['name']}"
         moved = Net(net_id=pid, name=name)
         pcb_data.nets[pid] = moved
+        # The real net's pad ORDER, so `restore` puts the pads back where
+        # they were: pad order reaches routing decisions, and the GUI routes
+        # its next step on this same PCBData.
+        order = (list(pcb_data.pads_by_net.get(net, ())),
+                 list(real.pads) if real is not None else [])
         record.append((pid, net, [(kind, it, getattr(it, 'locked', False),
-                                   getattr(it, 'net_name', None)) for kind, it in items]))
+                                   getattr(it, 'net_name', None)) for kind, it in items],
+                       order))
         for kind, it in items:
             it.net_id = pid
             if kind == 'pad':
                 it.net_name = name
                 pcb_data.pads_by_net[net].remove(it)
                 pcb_data.pads_by_net.setdefault(pid, []).append(it)
-                if it in pcb_data.nets[net].pads:
-                    pcb_data.nets[net].pads.remove(it)
+                if real is not None and it in real.pads:
+                    real.pads.remove(it)
                 moved.pads.append(it)
             else:
                 it.locked = True
@@ -327,7 +350,7 @@ def restore(pcb_data) -> None:
     record = getattr(pcb_data, '_sense_isolation', None)
     if record is None:
         return
-    for pid, net, items in reversed(record):
+    for pid, net, items, (order_pbn, order_net) in reversed(record):
         real = pcb_data.nets.get(net)
         for kind, it, locked, net_name in items:
             it.net_id = net
@@ -341,10 +364,22 @@ def restore(pcb_data) -> None:
                     real.pads.append(it)
             else:
                 it.locked = locked
+        _reorder(pcb_data.pads_by_net.get(net), order_pbn)
+        if real is not None:
+            _reorder(real.pads, order_net)
         pcb_data.pads_by_net.pop(pid, None)
         pcb_data.nets.pop(pid, None)
         (getattr(pcb_data, '_net_alias', None) or {}).pop(pid, None)
     pcb_data._sense_isolation = None
+
+
+def _reorder(lst, order) -> None:
+    """Sort `lst` in place into `order` (by identity); items `order` does not
+    hold keep their relative place after it."""
+    if lst is None:
+        return
+    rank = {id(p): i for i, p in enumerate(order)}
+    lst.sort(key=lambda p: rank.get(id(p), len(rank)))
 
 
 def restoring(engine):
