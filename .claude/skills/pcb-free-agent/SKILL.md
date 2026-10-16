@@ -222,7 +222,8 @@ Read `--help` before assuming a flag does not exist. Two runs declared
 - **`place_pose` refuses a pad stack, but "legal" is still not
   "buildable".** Two parts' pad copper overlapping, any net, is
   `check_assembly`'s `pad_intersection`; `place_pose` measures it with
-  the same function (#1064), so `legal` and `no_worse` see it and
+  the same function (#1064) -- and a pad on another part's drawn copper
+  (a SOT-89 tab, an antenna, #1266) the same way -- so `legal` and `no_worse` see it and
   `--near` looks for a pose off it. A snap re-grades at most
   `--snap-tries` ranked poses, then as many nearer lattice ones, so it
   can refuse with a no-worse pose still in reach: when place_pose's snap

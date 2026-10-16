@@ -5476,7 +5476,9 @@ DIAGONAL_ROTATIONS_DEFAULT = False
 #: `stage_unaided` piles seeded from a `--decaps-from` intent), where it
 #: lowered intent errors on every pile and pulled stranded held caps back
 #: inside the decap radius, at a cost in wire length or crossings on three
-#: piles. The A/B rule's zero-tolerance guards cannot accept that trade; the
+#: piles (four since #1266 keeps parts off footprint graphic copper:
+#: watchy's crossings). The A/B rule's zero-tolerance guards cannot accept
+#: that trade; the
 #: maintainer did (#1105, 2026-10-15), and the `decap-pile-within-limit-*`
 #: rows in tests/test_placement_ab.py pin it. A PLACED board keeps the stage
 #: off: the corpus `decap-*` rows, which re-seed as-placed boards, rejected

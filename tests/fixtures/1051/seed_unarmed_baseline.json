@@ -1,31 +1,31 @@
 {
- "_about": "seed_from_intent placements on an emit_intent intent that declares no decaps.max_distance_mm, no arrays and no fixed_poses, recorded with the seeder at 754e7f419 (before #1051 phase 3). group_sources=(kicad, sheet), clearance=0.2, rng=random.Random(str(seed)). tests/test_1051_seed_arrays.py asserts the current seeder reproduces it exactly; re-record ONLY for a deliberate seeder change, and say so in that commit.",
+ "_about": "seed_from_intent placements on an emit_intent intent that declares no decaps.max_distance_mm, no arrays and no fixed_poses, recorded with the seeder at 754e7f419 (before #1051 phase 3); every run re-recorded for #1266, whose pad gate keeps parts off esp_prog U2's drawn tab and watchy AE1's antenna copper. group_sources=(kicad, sheet), clearance=0.2, rng=random.Random(str(seed)). tests/test_1051_seed_arrays.py asserts the current seeder reproduces it exactly; re-record ONLY for a deliberate seeder change, and say so in that commit.",
  "recorded_at": "754e7f419",
  "runs": {
   "esp_prog:0": {
    "lock_refs": [],
    "placements": {
     "C1": [
-     120.937,
-     98.751,
+     125.048,
+     92.973,
      90.0,
      null
     ],
     "C2": [
-     125.731,
-     102.228,
+     120.606,
+     102.815,
      270.0,
      null
     ],
     "C3": [
-     124.004,
-     92.083,
+     122.651,
+     92.74,
      180.0,
      null
     ],
     "C4": [
-     122.063,
-     100.133,
+     120.484,
+     92.812,
      90.0,
      null
     ],
@@ -48,20 +48,20 @@
      null
     ],
     "Q2": [
-     121.738,
-     94.709,
+     119.738,
+     99.709,
      180.0,
      null
     ],
     "R1": [
-     121.975,
-     97.463,
+     125.308,
+     96.129,
      270.0,
      null
     ],
     "R2": [
-     120.778,
-     101.412,
+     122.112,
+     99.079,
      90.0,
      null
     ],
@@ -84,8 +84,8 @@
      null
     ],
     "Ref*~2": [
-     119.22,
-     103.436,
+     118.22,
+     96.436,
      0.0,
      null
     ],
@@ -96,8 +96,8 @@
      null
     ],
     "U2": [
-     126.34,
-     94.905,
+     122.34,
+     95.905,
      270.0,
      null
     ],
@@ -120,26 +120,26 @@
    "lock_refs": [],
    "placements": {
     "C1": [
-     122.125,
-     102.08,
+     141.811,
+     103.46,
      90.0,
      null
     ],
     "C2": [
-     134.326,
-     94.708,
+     132.076,
+     103.458,
      270.0,
      null
     ],
     "C3": [
-     136.646,
-     95.603,
+     135.441,
+     95.035,
      180.0,
      null
     ],
     "C4": [
-     130.908,
-     103.912,
+     140.384,
+     94.6,
      90.0,
      null
     ],
@@ -168,37 +168,37 @@
      null
     ],
     "R1": [
-     121.463,
-     93.299,
+     122.463,
+     99.299,
      270.0,
      null
     ],
     "R2": [
-     121.562,
-     95.201,
+     122.562,
+     97.201,
      90.0,
      null
     ],
     "R3": [
-     136.572,
-     94.311,
+     138.572,
+     95.311,
      180.0,
      null
     ],
     "R4": [
-     139.173,
-     95.841,
+     144.173,
+     98.841,
      180.0,
      null
     ],
     "Ref*": [
-     119.526,
-     98.503,
+     121.526,
+     102.503,
      0.0,
      null
     ],
     "Ref*~2": [
-     128.768,
+     129.768,
      104.297,
      0.0,
      null
@@ -210,8 +210,8 @@
      null
     ],
     "U2": [
-     123.655,
-     98.241,
+     145.655,
+     96.241,
      270.0,
      null
     ],
@@ -235,13 +235,13 @@
    "placements": {
     "AE1": [
      84.438,
-     89.4,
+     78.4,
      0.0,
      null
     ],
     "C1": [
-     82.518,
-     107.3,
+     97.518,
+     93.3,
      90.0,
      null
     ],
@@ -300,8 +300,8 @@
      null
     ],
     "C19": [
-     97.586,
-     91.523,
+     95.586,
+     83.523,
      90.0,
      null
     ],
@@ -438,8 +438,8 @@
      null
     ],
     "J1": [
-     96.657,
-     81.093,
+     97.657,
+     85.093,
      90.0,
      null
     ],
@@ -456,8 +456,8 @@
      null
     ],
     "L1": [
-     96.325,
-     88.773,
+     95.325,
+     86.023,
      270.0,
      null
     ],
@@ -510,8 +510,8 @@
      null
     ],
     "R12": [
-     95.262,
-     86.386,
+     96.262,
+     90.386,
      0.0,
      null
     ],
@@ -642,20 +642,20 @@
      null
     ],
     "TP2": [
-     97.578,
-     86.556,
+     98.578,
+     90.556,
      0.0,
      null
     ],
     "TP3": [
-     89.198,
-     77.145,
+     94.198,
+     78.145,
      0.0,
      null
     ],
     "TP4": [
-     99.992,
-     87.424,
+     78.992,
+     107.424,
      0.0,
      null
     ],
@@ -666,14 +666,14 @@
      null
     ],
     "TP5": [
-     78.243,
-     107.385,
+     94.243,
+     80.385,
      0.0,
      null
     ],
     "TP5~2": [
      99.798,
-     92.234,
+     93.234,
      0.0,
      null
     ],
@@ -745,7 +745,7 @@
    "placements": {
     "AE1": [
      84.18,
-     95.305,
+     109.305,
      0.0,
      null
     ],
@@ -763,7 +763,7 @@
     ],
     "C11": [
      78.208,
-     105.977,
+     108.977,
      0.0,
      null
     ],
@@ -829,7 +829,7 @@
     ],
     "C21": [
      89.599,
-     106.291,
+     109.291,
      0.0,
      null
     ],
@@ -876,8 +876,8 @@
      null
     ],
     "C29": [
-     92.347,
-     106.974,
+     92.847,
+     106.474,
      270.0,
      null
     ],
@@ -930,8 +930,8 @@
      null
     ],
     "D3": [
-     96.417,
-     106.037,
+     99.417,
+     101.037,
      90.0,
      null
     ],
@@ -1032,13 +1032,13 @@
      null
     ],
     "R14": [
-     71.7,
+     71.5,
      78.158,
      270.0,
      null
     ],
     "R15": [
-     87.305,
+     95.305,
      105.201,
      90.0,
      null
@@ -1050,8 +1050,8 @@
      null
     ],
     "R17": [
-     93.607,
-     104.608,
+     85.607,
+     107.608,
      270.0,
      null
     ],
@@ -1062,7 +1062,7 @@
      null
     ],
     "R19": [
-     93.63,
+     78.63,
      106.683,
      270.0,
      null
@@ -1116,8 +1116,8 @@
      null
     ],
     "R9": [
-     85.905,
-     107.038,
+     76.905,
+     106.038,
      0.0,
      null
     ],
@@ -1153,7 +1153,7 @@
     ],
     "TP2": [
      99.475,
-     83.429,
+     94.429,
      0.0,
      null
     ],
@@ -1164,14 +1164,14 @@
      null
     ],
     "TP4": [
-     98.777,
-     102.928,
+     99.777,
+     88.928,
      0.0,
      null
     ],
     "TP4~2": [
      98.964,
-     99.937,
+     83.937,
      0.0,
      null
     ],
