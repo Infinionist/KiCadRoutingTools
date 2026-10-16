@@ -4775,8 +4775,9 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
                 rule='edge_connector_side', severity=WARN, ref=ref,
                 message=(f"{ref} is on {part.side}.Cu, but the declared "
                          f"viewing face puts it on {c['side']}.Cu -- advisory:"
-                         f" nothing in the placement stack moves a part "
-                         f"between faces"),
+                         f" no placement search moves a part between faces; "
+                         f"place_intent_sides.py applies the declared face "
+                         f"before seeding"),
                 measured={'side': part.side}, expected={'side': c['side']})
         amount = ctx.gate.rect_outside_amount(part.rect)
         lim = c.get('overhang_mm') or {}
@@ -8151,7 +8152,11 @@ def glob_escape(ref: str) -> str:
 
 #: The `plan_check` findings `place_seed` REFUSES on (#959): the area
 #: bounds and the literal glob -- plans the seeder has no per-member answer
-#: for. The older plan contradictions keep their pre-#959 contract there:
+#: for -- and `plan_fixed_pose_conflict` (#1280), whose answer IS stage 0's:
+#: the same pairwise predicate (`seeder.fixed_pose_pair_conflicts`), the
+#: same two refs and reason, so refusing it here loses nothing the seeder
+#: would have said and saves the seed it would have spent first. The older
+#: plan contradictions keep their pre-#959 contract there:
 #: a zone a keep-out covers (#701/#799) and a zone a stranger's EXCLUSIVE
 #: zone swallows (#797) are seeded, and the seeder names the member it could
 #: not seat with a measured verdict (`keepout_blocks`,

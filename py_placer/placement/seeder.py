@@ -5356,7 +5356,8 @@ def _fixed_pose_prep(state, pcb_data, f: Dict, placed: Set[str],
             f"declared side {side_decl}, and the part is on {side_now}: the "
             f"seeder has no flip move, so it cannot seat it there"))
         notes.append(f"fixed pose {ref}: REFUSED -- {refused[ref]['reason']}"
-                     f"; flip the part on the board first")
+                     f"; flip the part on the board first "
+                     f"(place_intent_sides.py applies every declared face)")
         return None
     if ref in placed:
         # Authoritative already: locked in the FILE (or by another cause the
