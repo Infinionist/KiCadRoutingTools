@@ -99,6 +99,24 @@ class MechanicalDatum(unittest.TestCase):
         self.assertEqual(r.legality.get('oob_count_exempt'), 0)
         self.assertEqual(len(_legality(r)), 2)
 
+    def test_an_in_band_edge_connector_leaves_the_amount_too(self):
+        """#961's exemption now reaches `oob_amount` as well as
+        `oob_count`: J1 declared on the west edge with a 0..1 mm band is
+        counted 0.15 mm by the census and exempt, so `{oob_amount: 0}` holds.
+        Left in, an in-band connector made that budget unsatisfiable."""
+        path = self.board()
+        intent = floorplan.intent_from_dict({
+            'schema': floorplan.SCHEMA_VERSION, 'kind': floorplan.KIND,
+            'units': 'mm', 'edge_connectors': [
+                {'ref': 'J1', 'edge': 'west',
+                 'overhang_mm': {'min': 0, 'max': 1}}],
+            'legality_budget': dict(BUDGET)})
+        r = floorplan.grade(intent, parse_kicad_pcb(str(path)), str(path),
+                            clearance=.25, board_edge_clearance=.25)
+        self.assertEqual(r.legality.get('oob_count_exempt'), 1)
+        self.assertGreater(r.legality.get('oob_amount'), 0.1)
+        self.assertFalse(_legality(r))
+
     def test_amount_publishes_the_raw_total(self):
         r = self.grade(self.board(), basis='declared')
         amount = [v for v in _legality(r) if 'oob_amount' in v.measured]
