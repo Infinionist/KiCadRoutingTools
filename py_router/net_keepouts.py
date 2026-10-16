@@ -258,3 +258,50 @@ def stamp(obstacles, pcb_data, net_ids: Iterable[int], config):
         if rungs:
             _stamp_rungs_at_own_via(obstacles, config, _stamper(pcb_data, idx),
                                     remove=True)
+
+
+def centerline_config(config):
+    """The geometry a diff-pair CENTRELINE map is stamped at. The members run
+    (track_width + diff_pair_gap) / 2 either side of the centreline, so the
+    band a region keeps the centreline out of grows by that offset -- the
+    extra clearance route_diff builds every other obstacle of that map with.
+    Stamped at the plain run geometry, a member could come up to
+    (track_width + diff_pair_gap) / 2 - clearance INTO the region
+    (lvds_converter_dualclk /CLK+: its copper over the edge by 0.5 um)."""
+    from dataclasses import replace
+    extra = (config.track_width + config.diff_pair_gap) / 2
+    return replace(config, clearance=config.clearance + extra)
+
+
+def stamping(net_ids_of, maps_of, centerline: bool = False):
+    """Decorator for a route function that reaches the A* on its own maps:
+    for the duration of each call, stamp the keep-outs binding
+    ``net_ids_of(args)`` into every distinct map ``maps_of(args)`` names
+    (``args`` = the call's bound arguments by parameter name; the function
+    takes ``pcb_data`` and ``config``), at the centreline geometry
+    (`centerline_config`) when the function lays a diff pair's centreline.
+    Inert, beyond one getattr, on a board with no net-filtered keep-out.
+
+    The body is called through ``__wrapped__`` at call time, so a test can
+    swap in a probe and see what the A* would see."""
+    def deco(fn):
+        import functools
+        import inspect
+        sig = inspect.signature(fn)
+
+        @functools.wraps(fn)
+        def run(*args, **kwargs):
+            pcb_data = args[0] if args else kwargs.get('pcb_data')
+            if not getattr(pcb_data, '_net_keepouts', None):
+                return run.__wrapped__(*args, **kwargs)
+            a = sig.bind(*args, **kwargs).arguments
+            nets, seen = tuple(net_ids_of(a)), []
+            cfg = centerline_config(a['config']) if centerline else a['config']
+            with contextlib.ExitStack() as stack:
+                for m in maps_of(a):
+                    if m is not None and not any(m is s for s in seen):
+                        seen.append(m)
+                        stack.enter_context(stamp(m, pcb_data, nets, cfg))
+                return run.__wrapped__(*args, **kwargs)
+        return run
+    return deco

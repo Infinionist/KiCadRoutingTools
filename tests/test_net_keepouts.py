@@ -211,6 +211,56 @@ def test_stamp_balances_and_skips_exempt_net():
         assert not m.cells and not m.vias, "exempt net: nothing stamped"
 
 
+def test_diff_pair_paths_stamp_their_maps():
+    """The diff-pair A* paths outside the standard pair route see the region
+    too: the terminal connectors' base map, the hybrid's coupled middle (a
+    pair: bound if either member is) and its single-net legs (bound by their
+    own net). Each body is replaced by a probe that reads the maps it was
+    handed; every map is clean again afterwards."""
+    from types import SimpleNamespace
+    import diff_pair_routing as dpr
+    pcb = parse_kicad_pcb(BOARD)
+    nk.attach(pcb, [nk._validate(_keepout(D8_BOX, exemptNets=["Net-(D9-A)"]), 0, "t")])
+    d8 = next(i for i, n in pcb.nets.items() if n.name == "Net-(D8-A)")
+    d9 = next(i for i, n in pcb.nets.items() if n.name == "Net-(D9-A)")
+    cfg = GridRouteConfig()
+    cfg.layers = ["F.Cu", "B.Cu"]
+    seen = {}
+
+    def probe(tag, *maps):
+        def body(*a, **k):
+            seen[tag] = tuple(bool(m.cells) for m in maps)
+        return body
+
+    leg_args = (None,) * 7    # layer_names .. pair_vias: the probe reads none
+    work, base = _Map(), _Map()
+    real = (dpr._route_hybrid_leg.__wrapped__,
+            dpr._route_direct_coupled_middle.__wrapped__,
+            dpr._route_diff_pair_with_obstacles_impl)
+    try:
+        dpr._route_hybrid_leg.__wrapped__ = probe('leg', work)
+        dpr._route_hybrid_leg(pcb, d8, cfg, work, *leg_args)
+        assert seen.pop('leg') == (True,), "a bound net's leg map is stamped"
+        dpr._route_hybrid_leg(pcb, d9, cfg, work, *leg_args)
+        assert seen.pop('leg') == (False,), "an exempt net's leg is not"
+
+        mixed = SimpleNamespace(p_net_id=d9, n_net_id=d8)
+        dpr._route_direct_coupled_middle.__wrapped__ = probe('mid', work)
+        dpr._route_direct_coupled_middle(pcb, mixed, cfg, work, None)
+        assert seen.pop('mid') == (True,), "pair bound through one member"
+
+        dpr._route_diff_pair_with_obstacles_impl = probe('pair', work, base)
+        dpr.route_diff_pair_with_obstacles(pcb, mixed, cfg, work, base, None)
+        assert seen.pop('pair') == (True, True), (
+            "the pair map and the connectors' base map are both stamped")
+    finally:
+        (dpr._route_hybrid_leg.__wrapped__,
+         dpr._route_direct_coupled_middle.__wrapped__,
+         dpr._route_diff_pair_with_obstacles_impl) = real
+    assert not (work.cells or work.vias or base.cells or base.vias), (
+        "every stamp is removed on exit")
+
+
 def test_stamp_reaches_every_via_rung_at_its_own_via():
     """On a real map with a #568 small rung and a #530 per-net rung, the region
     blocks vias on every rung while the bound net routes -- the per-net rung
@@ -256,6 +306,54 @@ def test_route_respects_net_filter():
     assert d9_in > 0, "exempt net must still route through its region"
 
 
+def _copper_gap(board, net_name, poly):
+    """Smallest distance (mm) from `net_name`'s track copper to polygon
+    `poly`'s outline; negative when the copper overlaps the polygon. An
+    independent measure: plain segment geometry, no grid, no router code."""
+    from geometry_utils import segment_to_segment_distance
+    from obstacle_map import point_in_polygon
+    pcb = parse_kicad_pcb(board)
+    nid = next(i for i, n in pcb.nets.items() if n.name == net_name)
+    ring = [tuple(v) for v in poly]
+    edges = list(zip(ring, ring[1:] + ring[:1]))
+    gap = float('inf')
+    for s in pcb.segments:
+        if s.net_id != nid:
+            continue
+        if (point_in_polygon(s.start_x, s.start_y, ring)
+                or point_in_polygon(s.end_x, s.end_y, ring)):
+            return -1.0
+        d = min(segment_to_segment_distance(s.start_x, s.start_y, s.end_x, s.end_y,
+                                            a[0], a[1], b[0], b[1]) for a, b in edges)
+        gap = min(gap, d - s.width / 2)
+    return gap
+
+
+def test_route_diff_member_copper_stays_out():
+    """route_diff, a region binding ONE member of /CLK: the pair detours as a
+    pair, and neither member's COPPER touches the region. Stamped at the
+    plain run geometry the centreline kept its band while /CLK+, (w+gap)/2
+    to the side, ended with its copper 0.5 um over the region's edge."""
+    board = os.path.join(ROOT, "kicad_files", "lvds_converter_dualclk.kicad_pcb")
+    region = box(86.5, 58.0, 88.5, 60.2)
+    path = _write_keepouts([_keepout(region, name="mid", appliesToNets=["/CLK+"])])
+    env = dict(os.environ, MSYS2_ARG_CONV_EXCL='*')
+    gaps = {}
+    td = tempfile.mkdtemp(prefix="nko_")
+    for arm, extra in (("off", []), ("on", ["--net-keepouts", path])):
+        out = os.path.join(td, f"{arm}.kicad_pcb")
+        r = subprocess.run([sys.executable, "-X", "utf8", "py_router/route_diff.py",
+                            board, out, "--nets", "/CLK+", "/CLK-"] + extra,
+                           cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", env=env, timeout=900)
+        assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-2000:]
+        summary = json.loads(r.stdout.split("JSON_SUMMARY: ", 1)[1].splitlines()[0])
+        assert summary["routed_diff_pairs"] == ["/CLK"], (arm, summary["routed_diff_pairs"])
+        gaps[arm] = [_copper_gap(out, n, region) for n in ("/CLK+", "/CLK-")]
+    assert min(gaps["off"]) < 0, f"control: the pair must cross the region {gaps}"
+    assert min(gaps["on"]) > 0.05, f"a member's copper reached the region {gaps}"
+
+
 TESTS = [
     test_binds_applies_and_exempt,
     test_loader_refuses_bad_entries,
@@ -263,8 +361,10 @@ TESTS = [
     test_window_cells_do_not_leak_to_the_whole_board,
     test_cli_refuses_a_bad_file_before_routing,
     test_stamp_balances_and_skips_exempt_net,
+    test_diff_pair_paths_stamp_their_maps,
     test_stamp_reaches_every_via_rung_at_its_own_via,
     test_route_respects_net_filter,
+    test_route_diff_member_copper_stays_out,
 ]
 
 
@@ -279,6 +379,10 @@ def main():
         except AssertionError as e:
             failed += 1
             print(f"  FAIL: {t.__name__}: {e}")
+            continue
+        except Exception as e:                       # noqa: BLE001
+            failed += 1
+            print(f"  ERROR: {t.__name__}: {type(e).__name__}: {e}")
             continue
         print(f"  PASS: {t.__name__}")
     print(f"{len(TESTS) - failed}/{len(TESTS)} passed")
