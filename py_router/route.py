@@ -144,6 +144,7 @@ def _compute_stale_input_copper(orig_by_net, scope_ids, final_copper,
     ignore width, drill and size, so a re-emitted twin would have replaced the
     pinned item with an unlocked copy that can differ in exactly those.
     """
+    from kicad_parser import is_immutable_copper
     final = {}
     if final_ids is None:
         for c in final_copper:
@@ -156,7 +157,7 @@ def _compute_stale_input_copper(orig_by_net, scope_ids, final_copper,
         nfinal = final.get(nid, ())
         nemit = emit.get(nid, ())
         for c in orig_by_net.get(nid, []):
-            if getattr(c, 'locked', False):
+            if is_immutable_copper(c):    # KiCad-locked or sense-held (#1279)
                 continue
             on_board = (id(c) in final_ids) if final_ids is not None \
                 else (full_sig(c) in nfinal)
@@ -8768,6 +8769,10 @@ For differential pair routing, use route_diff.py:
         if _rep['locked_skipped']:
             print(f"  REFUSED (KiCad-locked, no override by design, #521): "
                   f"{', '.join(_rep['locked_skipped'][:8])}")
+        if _rep.get('held_skipped'):
+            print(f"  REFUSED (copper held by a `sense:` group, #1279; "
+                  f"ungroup or rename the group to release it): "
+                  f"{', '.join(_rep['held_skipped'][:8])}")
         if _rep['protected_overridden']:
             print(f"  protected nets removed by exact-name targeting: "
                   f"{', '.join(_rep['protected_overridden'][:8])}")

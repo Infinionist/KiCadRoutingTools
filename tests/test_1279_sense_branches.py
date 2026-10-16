@@ -25,7 +25,11 @@ Invariants:
 (e) every refusal names its reason, and route.py discloses it in
     JSON_SUMMARY.sense_branches.
 (f) the GUI call shape (an in-memory PCBData, return_results=True) keeps the
-    same rule and leaves every net id as it was. Parse-path parity with
+    same rule and leaves every net id as it was.
+(g) the member copper is HELD (`held_by`), never KiCad-locked: the run's own
+    routes stay rippable, a whole-net strip of pre-existing copper is refused
+    naming the group, a refused branch keeps its copper, and a branch the run
+    taps is disclosed (`tapped_by_run`). Parse-path parity with
     pcbnew is tests/test_1279_sense_branches_pcbnew.py.
 
 Run:
@@ -177,7 +181,9 @@ def test_parse_resolves_the_group():
     assert b.protected, b.reason
     assert (b.join_label(), len(b.segments), len(b.vias)) == ('C1.1', 1, 0)
     assert [f'{q.component_ref}.{q.pad_number}' for q in b.sense_pads] == ['U1.1']
-    assert b.segments[0].locked and b.segments[0].sense == 'sense:C1.1'
+    seg = b.segments[0]
+    assert seg.sense == 'sense:C1.1' and seg.held_by == 'sense:C1.1', (seg.sense, seg.held_by)
+    assert not seg.locked, 'the hold is not a KiCad lock'
     assert parse_kicad_pcb(_control()).sense_branches == []
 
 
@@ -258,6 +264,10 @@ def _refused(text):
     tagged = [x for x in p.segments + p.vias if x.sense or x.locked]
     tagged += [q for qs in p.pads_by_net.values() for q in qs if q.sense]
     assert not tagged, f'a refused branch still tagged copper: {tagged}'
+    # Its resolved member copper on the join pad's net is still HELD: a
+    # refused branch routes like undeclared copper, but nothing deletes it.
+    held = {x.uuid for x in p.segments + p.vias if x.held_by}
+    assert held <= {s.uuid for s in b.segments + b.vias}, held
     return b.reason
 
 
@@ -323,12 +333,35 @@ def test_route_discloses_a_refused_branch():
         '  (segment (start 3 5)',
         '  (segment (start 15 5) (end 15 8) (width 0.3) (layer "F.Cu") (net 1) '
         '(uuid "44444444-0000-0000-0000-000000000001"))\n  (segment (start 3 5)'), 'tapped')
-    _out, log = _route(tapped)
+    out, log = _route(tapped)
     assert 'sense:C1.1: NOT protected -- input copper already taps it' in log, log[-2000:]
+    # The refused branch's member is held: the late strict collapse used to
+    # delete it as redundant input copper once the branch was tapped.
+    with open(out, encoding='utf-8') as f:
+        assert _member_block(_src()) in f.read(), 'a refused branch lost its sense trace'
     entry = _summary(log)['sense_branches']
     assert entry == [{'group': 'sense:C1.1', 'join': 'C1.1', 'net': 'VDD', 'protected': False,
                       'segments': 1, 'vias': 0, 'sense_pads': ['U1.1'],
                       'reason': 'input copper already taps it (track (15, 5)-(15, 8) on F.Cu)'}], entry
+
+
+def test_refused_branch_keeps_its_copper():
+    """A tapped (refused) branch is routed like undeclared copper, but its
+    member copper is held: the input's VDD loop C1.1 -> (3, 6.5) -> (27, 6.5)
+    -> U1.1 makes the sense trace redundant, and the end-of-run strict
+    collapse (#1063) used to delete it."""
+    loop = ('  (segment (start 3 5) (end 3 6.5) (width 0.3) (layer "F.Cu") (net 1) '
+            '(uuid "77777777-0000-0000-0000-000000000001"))\n'
+            '  (segment (start 3 6.5) (end 27 6.5) (width 0.3) (layer "F.Cu") (net 1) '
+            '(uuid "77777777-0000-0000-0000-000000000002"))\n'
+            '  (segment (start 27 6.5) (end 27 5) (width 0.3) (layer "F.Cu") (net 1) '
+            '(uuid "77777777-0000-0000-0000-000000000003"))\n')
+    board = _variant(_src().replace('  (segment (start 3 5) (end 27 5)',
+                                    loop + '  (segment (start 3 5) (end 27 5)'), 'loop')
+    out, log = _route(board)
+    assert 'sense:C1.1: NOT protected -- input copper already taps it' in log, log[-2000:]
+    with open(out, encoding='utf-8') as f:
+        assert _member_block(_src()) in f.read(), 'the refused branch lost its sense trace'
 
 
 def test_rule_helpers():
@@ -348,6 +381,48 @@ def test_rule_helpers():
     assert sb.join_for_point(p, 1, 27.0, 5.0, 'F.Cu') is b.join
     assert sb.join_for_point(p, 1, 15.0, 8.0, 'F.Cu') is None
     assert sb.join_for_point(p, 1, 3.0, 5.0, 'F.Cu') is None
+
+
+# --- (g): the hold is not a lock -------------------------------------------
+
+def test_hold_is_not_a_lock():
+    """The members are held (no pass may rewrite or remove them), not
+    KiCad-locked: the run's own routes of the net stay rippable in-run, a
+    whole-net strip of its pre-existing copper is refused naming the group,
+    and nothing reports it as KiCad-locked."""
+    import protected_nets as pn
+    from kicad_parser import is_immutable_copper
+    p = parse_kicad_pcb(BOARD)
+    seg = _branch(p).segments[0]
+    assert is_immutable_copper(seg) and not seg.locked
+    assert pn.protection_map(p).get('VDD') == 'sense:C1.1', pn.protection_map(p)
+    assert pn.in_run_rip_reason(p, 'VDD') is None, "in-run rips of the run's routes refused"
+    pn.clear_skipped()
+    assert pn.filter_rippable_names(['VDD'], pn.protection_map(p), ['VDD'],
+                                    context='t1279') == [], 'an exact name lifted the hold'
+    assert pn.PROTECTED_SKIPPED.get('t1279') == {'VDD': 'sense:C1.1'}, pn.PROTECTED_SKIPPED
+    pn.clear_skipped()
+
+
+def test_force_reroute_names_the_group():
+    _, (out, _log) = _main_runs()
+    log = _run('route.py', [out, os.path.join(_tmpdir(), 'fr.kicad_pcb'), '--nets', 'VDD',
+                            '--force-reroute'] + GEOM)
+    assert 'excluded from --force-reroute (sense:C1.1: VDD)' in log, log[-2000:]
+    assert 'KiCad-locked' not in log, 'a sense hold reported as a KiCad lock'
+
+
+def test_tapped_by_run_is_disclosed():
+    """JSON_SUMMARY reports the board the run ships: a branch protected at
+    the start that the run's copper taps carries `tapped_by_run`."""
+    from kicad_parser import Segment
+    p = parse_kicad_pcb(BOARD)
+    assert 'tapped_by_run' not in sb.summary_entries(p)[0]
+    p.segments.append(Segment(start_x=15, start_y=5, end_x=15, end_y=8, width=0.3,
+                              layer='F.Cu', net_id=1))
+    entry = sb.summary_entries(p)[0]
+    assert entry['protected'] and "this run's copper already taps it" in entry.get(
+        'tapped_by_run', ''), entry
 
 
 # --- (f): the GUI call shape -------------------------------------------------
@@ -383,7 +458,11 @@ TESTS = [
     test_no_clearance_descent,
     test_no_net_id_is_rewritten,
     test_route_discloses_a_refused_branch,
+    test_refused_branch_keeps_its_copper,
     test_plane_chain_keeps_the_branch,
+    test_hold_is_not_a_lock,
+    test_force_reroute_names_the_group,
+    test_tapped_by_run_is_disclosed,
     test_gui_path_routes_to_the_join,
 ]
 

@@ -1063,11 +1063,14 @@ def route_single_ended_nets(
                                 # Validator-proved blocker that is PRE-EXISTING
                                 # copper: surface the rip-existing hint NOW
                                 # instead of only after the ladder exhausts --
-                                # unless it is KiCad-locked, which no flag
-                                # authorizes (#1261).
-                                from protected_nets import cached_protection_map
-                                if cached_protection_map(pcb_data).get(_bn) == 'locked':
-                                    _protected_blame.append(f"{_bn!r} (locked)")
+                                # unless it is KiCad-locked or held by a
+                                # `sense:` group, which no flag authorizes
+                                # (#1261, #1279).
+                                from protected_nets import (cached_protection_map,
+                                                            never_lifts)
+                                _bwhy = cached_protection_map(pcb_data).get(_bn)
+                                if never_lifts(_bwhy):
+                                    _protected_blame.append(f"{_bn!r} ({_bwhy})")
                                 else:
                                     _unrippable_blame.append(_bn)
                                 continue

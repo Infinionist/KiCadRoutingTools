@@ -987,6 +987,12 @@ pcb = parse_kicad_pcb('path/to/file.kicad_pcb')
 - `segment.net_id` - Net ID
 - `segment.locked` - KiCad `(locked yes)`: user-pinned copper; its net is never
   rip-eligible (#521), no override
+- `segment.held_by` - the `sense:<REF>.<PAD>` KiCad group holding this copper
+  immutable (#1279, a declared Kelvin sense branch). A pass that moves,
+  rewrites or removes existing copper must test
+  `kicad_parser.is_immutable_copper(item)` (locked OR held), never `locked`
+  alone; the hold is never written as `(locked yes)` and does not make the
+  net's routes of the run unrippable
 
 ### Via Attributes
 
