@@ -662,12 +662,17 @@ def _on_pad_spans(seg, pad, depth: float = 0.0) -> list:
 
 
 def _outside_join(seg, join) -> list:
-    """The parts of `seg` (a member track) off the join pad's real copper,
-    as (x1, y1, x2, y2) tuples. Member copper ON the pad is the pad."""
+    """The parts of `seg` (a member track) whose COPPER reaches off the join
+    pad's real copper, as (x1, y1, x2, y2) centreline tuples. Member copper
+    ON the pad is the pad. Clipped where the track's whole width -- not just
+    its centreline -- is on the pad: a member leaving a tilted pad obliquely
+    carries copper past the pad edge before its centreline crosses it, and a
+    centreline clip left that copper out of the rule (a 30-degree join pad
+    shipped new copper 0.108 mm from it at a 0.2 mm clearance)."""
     full = (seg.start_x, seg.start_y, seg.end_x, seg.end_y)
     if not _pad_on(join, seg.layer):
         return [full]
-    spans = _on_pad_spans(seg, join)
+    spans = _on_pad_spans(seg, join, seg.width / 2.0)
     if not spans:
         return [full]                       # never crosses the pad
     ex, ey = seg.end_x - seg.start_x, seg.end_y - seg.start_y

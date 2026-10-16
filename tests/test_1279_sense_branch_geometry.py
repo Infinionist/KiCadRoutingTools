@@ -17,6 +17,8 @@ reach, each case built in-test from the fixture's text:
 - a join pad no wider than the track (an 0402 cap pad under a 0.5 mm power
   track, off the routing grid) is still landable: the run routes at its
   clearance, narrows nothing and writes no lower clearance to the project;
+- a member leaving a tilted join pad obliquely is held to the rule from where
+  its COPPER leaves the pad, not its centreline;
 
 Run:
     python3 tests/test_1279_sense_branch_geometry.py
@@ -235,6 +237,37 @@ def _off_join_contacts(board):
     return out
 
 
+def _off_join_gap_routed(board):
+    """The smallest gap (raster 0.01 mm) between the routed board's
+    non-member VDD tracks and the member tracks, both measured only where
+    they are OFF the join pad's real copper (more than 0.01 mm)."""
+    import numpy as np
+
+    def raster(segs):
+        pts = []
+        for s in segs:
+            r = s.width / 2
+            gx, gy = np.meshgrid(
+                np.arange(min(s.start_x, s.end_x) - r, max(s.start_x, s.end_x) + r + 0.01, 0.01),
+                np.arange(min(s.start_y, s.end_y) - r, max(s.start_y, s.end_y) + r + 0.01, 0.01))
+            xs, ys = gx.ravel(), gy.ravel()
+            ex, ey = s.end_x - s.start_x, s.end_y - s.start_y
+            l2 = ex * ex + ey * ey
+            t = np.clip(((xs - s.start_x) * ex + (ys - s.start_y) * ey) / l2, 0.0, 1.0) if l2 else 0.0
+            on = np.hypot(xs - s.start_x - t * ex, ys - s.start_y - t * ey) <= r
+            pts.append(np.column_stack([xs[on], ys[on]]))
+        pts = np.concatenate(pts)
+        return pts[_off_pad(b.join, pts[:, 0], pts[:, 1]) > 0.01]
+
+    p, b = _branch(board)
+    mem = set(b.member_uuids)
+    m = raster([s for s in b.segments if s.layer == 'F.Cu'])
+    n = raster([s for s in p.segments if s.net_id == b.net_id and s.uuid not in mem
+                and s.layer == 'F.Cu'])
+    from scipy.spatial import cKDTree
+    return float(cKDTree(m).query(n)[0].min()) if len(m) and len(n) else float('inf')
+
+
 def _seg(x1, y1, x2, y2, width=0.2, layer='F.Cu'):
     return Segment(start_x=x1, start_y=y1, end_x=x2, end_y=y2, width=width,
                    layer=layer, net_id=1)
@@ -323,7 +356,7 @@ def test_member_across_the_join_pad_touches_it():
     assert b.protected, b.reason
     assert [f'{q.component_ref}.{q.pad_number}' for q in b.sense_pads] == ['U1.1']
     assert [tuple(round(v, 6) for v in xy) for xy in sb._outside_join(b.segments[0], b.join)] \
-        == [(1.0, 5.0, 2.5, 5.0), (3.5, 5.0, 27.0, 5.0)]
+        == [(1.0, 5.0, 2.6, 5.0), (3.4, 5.0, 27.0, 5.0)]
 
 
 FOUR_LAYERS = ('(layers (0 "F.Cu" signal) (4 "In1.Cu" signal) (6 "In2.Cu" signal) '
@@ -412,6 +445,39 @@ def test_join_pad_narrower_than_the_track_is_landable():
     assert not hits, f'new copper overlaps the member off the join pad at {hits[:3]}'
 
 
+def test_oblique_member_is_held_from_where_its_copper_leaves():
+    """C1.1 is a 2.4 x 0.6 mm pad turned 30 degrees; the member leaves it
+    horizontally, so its lower edge crosses the pad edge ~0.2 mm before its
+    centreline does. Clipped at the centreline, that copper was outside the
+    rule and the load route ran 0.108 mm from it (0.156 before the off-pad
+    measure) at a 0.2 mm clearance. Every off-pad point of the member is
+    within its half-width of a stamped piece, and the routed gap holds."""
+    import numpy as np
+    text = _src().replace('(footprint "T:P" (layer "F.Cu") (at 3 5)\n',
+                          '(footprint "T:P" (layer "F.Cu") (at 3 5 30)\n')
+    board = _variant(_with_join_pad(text, JOIN_PAD.replace('(at 0 0) (size 1 1)',
+                                                           '(at 0 0 30) (size 2.4 0.6)')), 'r30')
+    _p, b = _branch(board)
+    assert b.protected and abs(b.join.rect_rotation) == 30.0, (b.reason, b.join.rect_rotation)
+    m = b.segments[0]
+    xs, ys = np.meshgrid(np.arange(2.0, 5.0, 0.005), np.arange(4.85, 5.15, 0.005))
+    xs, ys = xs.ravel(), ys.ravel()
+    on = _in_member(b, xs, ys) & (_off_pad(b.join, xs, ys) > 1e-9)
+    pieces = sb._outside_join(m, b.join)
+    d = np.full(on.sum(), np.inf)
+    for ax, ay, bx, by in pieces:
+        ex, ey = bx - ax, by - ay
+        t = np.clip(((xs[on] - ax) * ex + (ys[on] - ay) * ey) / (ex * ex + ey * ey), 0.0, 1.0)
+        d = np.minimum(d, np.hypot(xs[on] - ax - t * ex, ys[on] - ay - t * ey))
+    assert (d <= m.width / 2 + 1e-6).all(), \
+        f'{int((d > m.width / 2 + 1e-6).sum())} off-pad member points outside the stamped pieces {pieces}'
+    out, log = _route(board)
+    assert re.search(r'"multipoint_pads_connected": 4, "multipoint_pads_total": 4', log), log[-2000:]
+    assert '"narrowed": []' in log, 'the run narrowed copper'
+    gap = _off_join_gap_routed(out)
+    assert gap >= 0.2 - 0.015, f'new copper off the pad {gap:.3f} mm from member copper off it'
+
+
 TESTS = [
     test_x_crossing_is_a_tap,
     test_pad_crossed_off_centre_is_a_sense_pad,
@@ -419,6 +485,7 @@ TESTS = [
     test_member_across_the_join_pad_touches_it,
     test_blind_member_via_is_on_its_span_only,
     test_join_pad_narrower_than_the_track_is_landable,
+    test_oblique_member_is_held_from_where_its_copper_leaves,
 ]
 
 

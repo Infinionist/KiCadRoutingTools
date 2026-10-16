@@ -369,7 +369,9 @@ def test_rule_helpers():
     copper on the pad is the join; copper off it is measured."""
     p = parse_kicad_pcb(BOARD)
     b = _branch(p)
-    assert sb._outside_join(b.segments[0], b.join) == [(3.5, 5.0, 27.0, 5.0)]
+    # The member's copper leaves C1.1 where its whole 0.2 mm width stops being
+    # on the pad: centreline x = 3.5 - 0.1 (sense_branch_geometry, the clip).
+    assert sb._outside_join(b.segments[0], b.join) == [(3.4, 5.0, 27.0, 5.0)]
     # A terminal ending on C1.1's centre from above: on the pad, not a tap.
     assert sb.terminal_sense_dist(p, 1, 3.0, 3.0, 3.0, 5.0, 'F.Cu', 0.15) > 0.3
     # The same terminal ending 1.5 mm along the trace: it sits on the trace.
