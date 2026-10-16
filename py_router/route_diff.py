@@ -1552,7 +1552,7 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     # still-broken with the restored copper as obstacles. Engine-side, so the
     # GUI inherits it. No-op when no casualties occurred.
     from diff_pair_custody import (run_casualty_reconcile, audit_pair_members,
-                                   build_pair_reports,
+                                   build_pair_reports, deferred_reasons_text,
                                    run_single_ended_member_fallback)
     casualty_summary = run_casualty_reconcile(
         state, progress_callback=progress_callback, cancel_check=cancel_check)
@@ -1745,8 +1745,9 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                 routed_diff_pairs.append(pair_name)
         elif (pair.p_net_id in state.diff_pair_single_ended_nets
               or pair.n_net_id in state.diff_pair_single_ended_nets):
-            # Intentionally left for single-ended routing (electrically short, or
-            # fully peeled) - not a coupled route, but not a failure either.
+            # Intentionally left for single-ended routing (electrically short,
+            # coupled route failed and deferred as the fallback, or fully
+            # peeled) - not a coupled route, but not a failure either.
             single_ended_diff_pairs.append(pair_name)
         else:
             failed_diff_pairs.append(pair_name)
@@ -1807,8 +1808,9 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         swap_pairs = summarize_target_swaps(target_swaps)
         print(f"  Target swaps:  {len(swap_pairs)}")
     if single_ended_diff_pairs:
-        print(f"  Single-ended:  {len(single_ended_diff_pairs)} (electrically short - "
-              f"deferred to single-ended routing)")
+        print(f"  Single-ended:  {len(single_ended_diff_pairs)} (deferred to "
+              f"single-ended routing: "
+              f"{deferred_reasons_text(pair_reports, single_ended_diff_pairs)})")
         # ...and say how those members ACTUALLY came out. The headline above
         # reads `Diff pairs: 0/2 routed` on a step where every member net got
         # copper and connected, so a log tail -- which is what a grep, a CI
@@ -1932,9 +1934,9 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
             # a band, one dict per net (empty without a rule).
             'keep_away': keep_away_entries(summary.get('keep_away')),
             # successful/failed only count pairs that were coupled-routed or
-            # outright failed -- electrically-short pairs deferred to the
-            # single-ended pass, and pairs skipped for self-overlapping fanout,
-            # land in neither bucket. Without these the GUI's "0 routed, 0
+            # outright failed -- pairs deferred to the single-ended pass
+            # (electrically short, or coupled route failed), and pairs
+            # skipped for self-overlapping fanout, land in neither bucket. Without these the GUI's "0 routed, 0
             # failed" result looks like nothing happened.
             'single_ended_diff_pairs': single_ended_diff_pairs,
             'skipped_bad_fanout': sorted(skipped_bad_fanout),
@@ -1969,8 +1971,9 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
             vias_to_remove=cleanup_input_strip_vias or None
         )
         # When no coupled copper was written -- every pair was deferred to
-        # single-ended (electrically short), OR a pair could not be routed at all
-        # (terminal/launch escape exhausted, issue #167) -- still pass the board
+        # single-ended (electrically short or coupled route failed), OR a pair
+        # could not be routed at all (terminal/launch escape exhausted, issue
+        # #167) -- still pass the board
         # through unchanged so the pipeline never loses its output file. The
         # unrouted nets are picked up by the downstream single-ended route.py pass
         # (the chains route '*' from the diff step's output); without this the

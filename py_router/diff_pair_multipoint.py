@@ -898,6 +898,12 @@ def route_multipoint_diff_pair(state, pair: DiffPairNet, pair_name: str,
     # peeled). Issue #165.
     print(f"  Coupled routing failed and relocation unavailable - deferring the "
           f"whole pair to single-ended")
+    # The return signal is shared with the all-electrically-short case; the
+    # reason is not. A pair whose coupled legs failed must not be reported as
+    # electrically short.
+    from diff_pair_custody import record_pair_diag
+    record_pair_diag(state, pair_name, outcome='deferred',
+                     reason='coupled-route-failed', stage='multipoint')
     return [], None, list(terminals)
 
 
