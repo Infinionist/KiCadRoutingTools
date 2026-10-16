@@ -391,6 +391,13 @@ def _stub_swap_rescue(pcb_data, net_id, config, state, results,
                 continue
             new_vias, seg_mods = apply_stub_layer_switch(
                 pcb_data, stub, dest, config, debug=False)
+            # The pad via must clear every existing hole (same net included)
+            # by hole-to-hole -- the same funnel as the optimizer sites.
+            from layer_swap_optimization import _swap_vias_fit_or_shrink
+            if new_vias and not _swap_vias_fit_or_shrink(pcb_data, new_vias, config):
+                revert_stub_layer_switch(pcb_data, seg_mods, new_vias)
+                _restore_rips(rips)
+                continue
             result = _route_on_prepared_map(pcb_data, net_id, config, state,
                                             routed_net_ids,
                                             track_proximity_cache, layer_map)

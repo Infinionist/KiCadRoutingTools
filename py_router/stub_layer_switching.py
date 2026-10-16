@@ -931,6 +931,13 @@ def switch_boxed_stub_near(pcb_data: PCBData, net_id: int,
             continue
         new_vias, seg_mods = apply_stub_layer_switch(pcb_data, stub, dest,
                                                      config, debug=False)
+        # The pad via is a new hole -- run the same via-fit funnel
+        # (body clearance + hole-to-hole vs EVERY hole, same net included) as
+        # every layer_swap_optimization apply site, else revert.
+        from layer_swap_optimization import _swap_vias_fit_or_shrink
+        if new_vias and not _swap_vias_fit_or_shrink(pcb_data, new_vias, config):
+            revert_stub_layer_switch(pcb_data, seg_mods, new_vias)
+            continue
         nname = pcb_data.nets[net_id].name if net_id in pcb_data.nets else str(net_id)
         print(f"  Stub layer switch: {nname} stub at ({sx:.2f},{sy:.2f}) "
               f"{slayer} -> {dest}")

@@ -489,7 +489,10 @@ These options control stub layer switching, which moves stubs to different layer
 - The **pad via sizes itself to fit**: a switch leaving the pad's layer drops a
   through-via at the pad, at the run's nominal via size when it clears the
   surrounding copper, else the first smaller via from the fab-tier ladder that
-  does (with the standard fab-escalation warning). A nominal 0.5mm via never
+  does (with the standard fab-escalation warning). Every switch that keeps the
+  via also checks its drill against every existing hole by the hole-to-hole
+  floor, the net's own vias included, shrinking it further when that helps and
+  reverting the switch when nothing fits. A nominal 0.5mm via never
   fits a 0.65mm-pitch ball field boxed by neighboring fanout vias; the 0.3/0.25
   rungs do — so a stub walled in on its own layer can still switch to an open
   layer and escape. Applies everywhere the switch machinery is used: the
