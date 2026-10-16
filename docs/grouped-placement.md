@@ -253,13 +253,26 @@ Measured from the same regions with and without banks, every candidate
 | board | bank | blocking, without -> with | vias (mean) | copper (mean) |
 |---|---|---|---|---|
 | ch32v003_usb | 2 LEDs | 0 -> 0 | 60.7 -> 60.5 | 379 -> 384 mm |
-| ch32v006_dev | 2 LEDs | 0 -> 0 | 72.8 -> 70.8 | 684 -> 699 mm |
+| ch32v006_dev | 2 LEDs | 0 -> 0 | 71.5 -> 67.7 | 671 -> 677 mm |
 | ft2232h_jtag | 5 LEDs | 0 -> 0 | 92.7 -> 81.7 | 953 -> 843 mm |
+| glasgow_revC | 5 LEDs, and 5 as rows of 3 and 2 | 56.3 -> 50.8 | 1315 -> 1274 | 10668 -> 10231 mm |
 
 ft2232h_jtag's bank was better on all six candidates; ch32v003_usb's is
-within the seed-to-seed spread. ch32v006_dev's bank never formed as a row
-in that measurement (its members were seated one by one), so its row
-measured the spread too.
+within the seed-to-seed spread. ch32v006_dev's bank used fewer vias on five
+of the six; its copper is within the spread. glasgow_revC (groups by
+schematic sheet, mounting holes at the corners) had less blocking on all six,
+by 1 to 17. Little of that is the banks' own nets: the broken nets that
+touch a bank part number 22 with banks and 27 without, of 247 and 258. The
+rest is the placement around the rows, and glasgow_revC's spread from seed
+to seed (44 to 76) is wider than the gain.
+
+A row did not survive in two group-by-group candidates, both because an
+earlier part filled the row's zone. On ch32v006_dev, Q1 found no legal pose
+in its own zone and was left in the ui zone, so the bank found no strip. On
+glasgow_revC, the IO_Banks row seated, but its zone held no legal pose for
+four of the group's other parts; five row members were still illegal after
+the polish's first pass, so the polish moved them one by one. Those two
+candidates are in the means above.
 
 ## Mounting holes
 
