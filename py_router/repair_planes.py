@@ -3979,6 +3979,43 @@ Examples:
         _summary['env_knobs'] = _ek653.active_env_knobs()   # dirty baseline
     except Exception:          # without re-reading logs
         pass
+    # Found reviewing #1282: a --power-nets net's taps and straps are drawn at
+    # the call's width, and the tap router ledgers each one per ATTEMPT (a
+    # `plane tap` row for a tap the oracle then rejected still failed
+    # --strict-sizes). route.py replaces such rows from the copper it ships
+    # (#1033); this standalone CLI now does the same for the copper IT laid:
+    # one `power copper shipped under width` row per power net whose new
+    # copper on the written board is narrower than its width.
+    if (not args.dry_run and args.power_nets and args.power_nets_widths
+            and os.path.isfile(args.output_file)):
+        try:
+            from kicad_parser import parse_kicad_pcb as _pk1282
+            from routing_common import (new_copper_width_shortfall,
+                                        segment_identity)
+            from fab_tiers import replace_track_rows
+            _in1282 = _pk1282(args.input_file)
+            _out1282 = _pk1282(args.output_file)
+            _req1282 = {_nm: max(_w, args.track_width or 0.0)
+                        for _nm, _w in zip(args.power_nets,
+                                           args.power_nets_widths)}
+            _inn1282 = {_n: _nn.name for _n, _nn in _in1282.nets.items()}
+            _outn1282 = {_n: _nn.name for _n, _nn in _out1282.nets.items()}
+            # the ledger keys on the engine's net ids: its parse of the input
+            _ids1282 = {_nm: _n for _n, _nm in _inn1282.items()
+                        if _nm in _req1282}
+            _short1282 = new_copper_width_shortfall(
+                _out1282.segments, lambda _n: _outn1282.get(_n, f"Net {_n}"),
+                {segment_identity(_s, _inn1282[_s.net_id])
+                 for _s in _in1282.segments if _s.net_id in _inn1282},
+                lambda _nm, _ly: _req1282.get(_nm))
+            replace_track_rows(
+                set(_ids1282.values()),
+                [(_ids1282[_nm], _nm, _r['requested_mm'], _r['min_mm'],
+                  _r['under_mm'])
+                 for _nm, _r in _short1282.items() if _nm in _ids1282],
+                'power copper shipped under width')
+        except Exception as _pwe1282:                           # noqa: BLE001
+            print(f"  (power-width disclosure skipped: {_pwe1282})")
     # #857: what this run delivered below a requested size (route.py's
     # key), when it delivered anything there.
     from fab_tiers import narrowed_summary, finish_design_rules

@@ -226,6 +226,13 @@ KNOWN_CLI_ONLY = {
     'grade_plane_completion': 'repair_planes.py: grades the plane nets on the '
                               'written board for JSON_SUMMARY (report-only, '
                               'no board mutation)',
+    # Found reviewing #1282: repair_planes' main replaces its per-attempt
+    # --power-nets `plane tap` ledger rows with the copper it ships. No GUI
+    # front runs repair_planes' main; the route tab's in-run finalize is
+    # graded by route.py's engine-side pass, on both fronts.
+    'replace_track_rows': 'repair_planes.py: --power-nets ledger rows from '
+                          'the copper it ships (report-only, no board '
+                          'mutation)',
 }
 
 

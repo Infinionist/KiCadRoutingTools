@@ -758,7 +758,19 @@ def replace_power_track_rows(power_net_ids, shipped):
     from the same measurement as JSON_SUMMARY power_widths. ``shipped`` is
     [(net_id, net_name, requested, min_delivered, under_mm), ...]. Other
     kinds (vias, clearance) and other nets are untouched."""
-    ids = set(power_net_ids or ())
+    replace_track_rows(power_net_ids, shipped,
+                       'power copper shipped under width')
+
+
+def replace_track_rows(net_ids, shipped, site):
+    """:func:`replace_power_track_rows` for any set of nets: drop every
+    ``track_width`` row of ``net_ids`` (recorded per routing ATTEMPT) and add
+    one row, labelled ``site``, per net in ``shipped`` that ships copper under
+    its requested width. Found reviewing #1282: an impedance- or class-width
+    net necks through the same ladder as a power net, and its rows were per
+    attempt (a `plane tap` row for a tap that never shipped still failed
+    --strict-sizes) or absent altogether (the neck-down ladder records none)."""
+    ids = set(net_ids or ())
     _LEDGER['narrowed'] = [r for r in _LEDGER['narrowed']
                            if not (r.get('kind') == 'track_width'
                                    and r.get('net') in ids)]
@@ -769,7 +781,7 @@ def replace_power_track_rows(power_net_ids, shipped):
             'net': int(nid), 'net_name': name, 'kind': 'track_width',
             'requested': round(float(req), 4),
             'delivered': round(float(dlv), 4),
-            'site': 'power copper shipped under width',
+            'site': site,
             'count': 1, 'length_mm': round(float(under), 2),
         })
 
