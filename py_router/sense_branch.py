@@ -75,12 +75,14 @@ def _pad_key(s, where: str) -> Tuple[str, str]:
 
 
 def _in_pad(pad, x: float, y: float, grow: float) -> bool:
-    """True when (x, y) lies on the pad rectangle grown by `grow` mm."""
-    t = -math.radians(getattr(pad, 'rotation', 0.0) or 0.0)
-    dx, dy = x - pad.global_x, y - pad.global_y
-    lx = dx * math.cos(t) - dy * math.sin(t)
-    ly = dx * math.sin(t) + dy * math.cos(t)
-    return abs(lx) <= pad.size_x / 2 + grow and abs(ly) <= pad.size_y / 2 + grow
+    """True when (x, y) lies on the pad rectangle grown by `grow` mm.
+
+    `size_x`/`size_y` are BOARD-resolved (a 90-degree pad's are already
+    swapped), so only the residual tilt `rect_rotation` may turn the point --
+    the shared routing_utils test. Rotating by the absolute `pad.rotation`
+    turned a 90-degree join pad's rectangle back across itself."""
+    from routing_utils import point_in_pad_rect
+    return point_in_pad_rect(x, y, pad, grow)
 
 
 def _dist_seg(px, py, ax, ay, bx, by) -> float:

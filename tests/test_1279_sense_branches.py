@@ -99,6 +99,29 @@ def test_isolate_refuses_tapped_or_unjoined_branches():
     assert sb.isolate(p, [BRANCH]) == {}
 
 
+def test_rotated_join_pad_is_read_in_board_space():
+    """A 90-degree join pad (0.6 x 2.0 in its own frame, 2.0 wide along board
+    x) with the sense trace starting off-centre ON it: the contact is on the
+    join pad, so the branch is protectable. size_x/size_y are board-resolved;
+    turning the point by the pad's absolute angle again read it as off."""
+    with open(BOARD, encoding='utf-8') as f:
+        src = f.read()
+    rot = src.replace('(footprint "T:P" (layer "F.Cu") (at 3 5)',
+                      '(footprint "T:P" (layer "F.Cu") (at 3 5 90)', 1)
+    rot = rot.replace('(pad "1" smd rect (at 0 0) (size 1 1)',
+                      '(pad "1" smd rect (at 0 0 90) (size 0.6 2.0)', 1)
+    rot = rot.replace('(segment (start 3 5)', '(segment (start 3.8 5)')
+    assert rot.count('(at 3 5 90)') == 1 and '(start 3.8 5)' in rot, 'fixture edit missed'
+    path = os.path.join(_tmpdir(), 'rot90.kicad_pcb')
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(rot)
+    p = parse_kicad_pcb(path)
+    c1 = p.footprints['C1'].pads[0]
+    assert (round(c1.size_x, 3), round(c1.size_y, 3), c1.rotation) == (2.0, 0.6, 90.0), \
+        (c1.size_x, c1.size_y, c1.rotation)
+    assert 'vos' in sb.isolate(p, [BRANCH]), 'the trace end on the rotated join pad was not seen'
+
+
 def test_loader_rejects_bad_pad_keys():
     path = _sense_file([{'name': 'x', 'sense': ['U1'], 'join': 'C1.1'}])
     try:
@@ -167,6 +190,7 @@ def test_gui_path_routes_to_join_and_hands_pcb_data_back():
 TESTS = [
     test_isolate_moves_sense_copper_to_a_private_net,
     test_isolate_refuses_tapped_or_unjoined_branches,
+    test_rotated_join_pad_is_read_in_board_space,
     test_loader_rejects_bad_pad_keys,
     test_restore_undoes_isolate,
     test_router_keeps_loads_off_the_sense_trace,
