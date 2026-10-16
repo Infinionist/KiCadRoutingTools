@@ -506,6 +506,11 @@ of the net already touches the branch off the join pad, or a pour of the same
 net covers it off the join pad (the fill already taps it). KiCad's DRC cannot
 see topology, so check the written board.
 
+`route_planes.py` and the Planes tab print a WARNING naming each protected
+branch a pour they create covers, and `route_planes.py` records the layers as
+`poured_over` in its `JSON_SUMMARY.sense_branches`; `repair_planes.py` reports
+the branches judged on the board it wrote.
+
 ### Differential Pair Options (route_diff.py only)
 
 These options are only available in `route_diff.py`. All nets passed to route_diff.py are treated as differential pairs.

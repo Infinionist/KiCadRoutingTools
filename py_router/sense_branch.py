@@ -638,42 +638,67 @@ def stamp_base_obstacles(obstacles, pcb_data, config, nets_to_route, coord, laye
 
 
 def stamp_plane_obstacles(obstacles, pcb_data, config, net_id: int, layers,
-                          tracks: bool) -> None:
+                          tracks: bool, vias: Optional[bool] = None,
+                          extra_clearance: float = 0.0) -> None:
     """The plane path's half (plane_obstacle_builder): the via-placement map
     (`tracks` False) and the single-layer tap-routing map (`tracks` True,
     `layers` its one layer) built for `net_id` leave that net's copper out,
-    so its protected branches are stamped in here, join pad cut out."""
+    so its protected branches are stamped in here, join pad cut out.
+
+    `vias` defaults to `not tracks`: each of those two maps takes one half.
+    plane_region_connector.build_base_obstacles routes AND places vias on one
+    map over every routing layer, so it takes both, with its grid cushion as
+    `extra_clearance` -- the cushion it adds to every foreign item."""
     from routing_config import GridCoord
     branches = protected_branches(pcb_data, net_id)
     if not branches:
         return
+    stamp_vias = (not tracks) if vias is None else vias
     coord = GridCoord(config.grid_step)
     layer_map = {name: i for i, name in enumerate(layers)}
     clearance = (config.obstacle_clearance(net_id)
                  if hasattr(config, 'obstacle_clearance') else config.clearance)
     for b in branches:
-        cells, vias = sense_obstacle_rows(b, config, coord, layer_map, clearance)
+        cells, vrows = sense_obstacle_rows(b, config, coord, layer_map, clearance,
+                                           extra_clearance)
         if tracks and len(cells):
             obstacles.add_blocked_cells_batch(cells)
-        if not tracks and len(vias):
-            obstacles.add_blocked_vias_batch(vias)
+        if stamp_vias and len(vrows):
+            obstacles.add_blocked_vias_batch(vrows)
 
 
-def join_for_point(pcb_data, net_id: int, x: float, y: float, layer: str):
+def join_for_point(pcb_data, net_id: int, x: float, y: float, layer: Optional[str]):
     """The join pad to use instead of (x, y) on `layer`, when that point lies
     on a protected branch of `net_id` off its join pad (member copper or a
     sense pad), else None. KiCad's ratsnest knows nothing of the rule, so a
-    link it reports can end on the sense trace (#572 forced oracle links)."""
+    link it reports can end on the sense trace (#572 forced oracle links,
+    every kicad_oracle link). `layer` None (a via-point anchor) is any layer."""
     for b in protected_branches(pcb_data, net_id):
         if _in_pad(b.join, x, y, _EPS):
             return None
-        on = (any(s.layer == layer and _dist_seg(x, y, s.start_x, s.start_y, s.end_x, s.end_y)
+        on = (any((layer is None or s.layer == layer)
+                  and _dist_seg(x, y, s.start_x, s.start_y, s.end_x, s.end_y)
                   <= s.width / 2.0 + _EPS for s in b.segments)
               or any(math.hypot(x - v.x, y - v.y) <= v.size / 2.0 + _EPS for v in b.vias)
-              or any(_pad_on(p, layer) and _in_pad(p, x, y, _EPS) for p in b.sense_pads))
+              or any((layer is None or _pad_on(p, layer)) and _in_pad(p, x, y, _EPS)
+                     for p in b.sense_pads))
         if on:
             return b.join
     return None
+
+
+def join_link_end(pcb_data, net_id: int, end: tuple) -> tuple:
+    """A link end `(x, y, layer, ...)` -- a #572 forced link's or a
+    kicad_oracle link's -- moved to the join pad when it lies on one of the
+    net's protected branches off that pad (`join_for_point`); otherwise
+    `end` itself. The layer becomes one the join pad has; the rest of the
+    tuple (the oracle's anchor kind) is kept."""
+    join = join_for_point(pcb_data, net_id, end[0], end[1], end[2])
+    if join is None:
+        return end
+    layer = end[2] if (end[2] in join.layers or '*.Cu' in join.layers) else next(
+        (l for l in join.layers if l.endswith('.Cu')), end[2])
+    return (join.global_x, join.global_y, layer) + tuple(end[3:])
 
 
 def terminal_sense_dist(pcb_data, net_id: int, x1: float, y1: float, x2: float, y2: float,

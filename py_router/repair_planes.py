@@ -727,6 +727,23 @@ def grade_plane_completion(board_file: str, net_names) -> Dict:
     return out
 
 
+def sense_branches_shipped(input_file: str, output_file: str) -> List[Dict]:
+    """JSON_SUMMARY.sense_branches for a board this step wrote (#1279):
+    route.py's entries (sense_branch.summary_entries) for every `sense:` group
+    the INPUT declares, each protected one judged against the copper of
+    `output_file` -- this step's region joins, pad taps, cleanup and oracle
+    links -- so a branch they tapped carries `tapped_by_run` (and a printed
+    WARNING). [] without a declaration, and then nothing is parsed."""
+    from sense_branch import sense_groups_from_text, summary_entries
+    with open(input_file, encoding='utf-8') as f:
+        if not sense_groups_from_text(f.read()):
+            return []
+    shipped = parse_kicad_pcb(output_file)
+    # The input's verdict, on the shipped copper (same file, same net table).
+    shipped.sense_branches = parse_kicad_pcb(input_file).sense_branches
+    return summary_entries(shipped)
+
+
 def extract_zone_properties(pcb_data) -> Dict[Tuple[str, str], Dict]:
     """Per-zone (clearance, min_thickness) keyed by (net_name, layer).
 
@@ -938,6 +955,11 @@ def repair_planes(
     if pcb_data is None:
         print(f"Loading PCB from {input_file}...")
         pcb_data = parse_kicad_pcb(input_file)
+        # #1279: the board's `sense:<REF>.<PAD>` groups -- protected, or why
+        # not. Only when this engine parsed the board: a caller handing it
+        # pcb_data (route.py's in-run finalize) has reported them already.
+        from sense_branch import report as _sense_report
+        _sense_report(pcb_data)
 
     # #513 item 5: snapshot each net's dominant routed width BEFORE any rip
     # mutates pcb_data, so the end-of-run reconnect of ripped blockers can
@@ -3968,6 +3990,13 @@ Examples:
         except Exception as _ge:                                # noqa: BLE001
             _summary["status"] = "ungraded"
             _summary["completion_error"] = f"{type(_ge).__name__}: {_ge}"
+        # #1279: every declared sense branch, on the board this step wrote.
+        try:
+            _sense = sense_branches_shipped(args.input_file, args.output_file)
+            if _sense:
+                _summary["sense_branches"] = _sense
+        except Exception as _se:                                # noqa: BLE001
+            print(f"  (sense-branch summary skipped: {type(_se).__name__}: {_se})")
     # `complete` keeps its route_summary meaning: the run FINISHED (it is never
     # a partial tally -- the CLI has no cancel source, so it finished or
     # raised). Whether the plane pads are connected is `status` and the

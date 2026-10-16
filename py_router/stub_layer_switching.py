@@ -380,7 +380,10 @@ def _reuse_nearby_same_net_via(pcb_data, stub, new_layer, config, segment_mods,
     h2h = getattr(config, 'hole_to_hole_clearance', 0.2) or 0.2
     best = None
     for ev in pcb_data.vias:
-        if ev.net_id != stub.net_id:
+        # #1279: a sense branch's member via is never a transition to reuse
+        # (pcb_modification._sense_copper: the connectors would tap it).
+        if ev.net_id != stub.net_id or getattr(ev, 'sense', '') \
+                or getattr(ev, 'held_by', ''):
             continue
         lys = ev.layers or []
         if lys and not ('F.Cu' in lys and 'B.Cu' in lys):
