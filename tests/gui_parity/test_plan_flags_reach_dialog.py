@@ -77,10 +77,6 @@ _QFN_REF, _MOUNTED = 'U2', 'Mounted layer (default)'
 # the file's doing.
 _NCL_FILE = 'ncl.json'
 _NCL = {'/CLOCK_IN': 0.111, '+12V': 0.321}
-# A --sense-branches file beside the manifest (#1279). Only its PATH is under
-# test -- every engine here is a spy -- so its pads need not be a real branch.
-_SB_FILE = 'sense.json'
-_SB = [{'name': 'vos', 'sense': ['U1.1'], 'join': 'C1.1'}]
 # A --fab-overrides file beside the manifest (a comment only: no override).
 _FAB_FILE = 'fab.txt'
 CASES = [
@@ -134,18 +130,6 @@ CASES = [
          param=('net_clearances_path', '{tmp}/' + _NCL_FILE),
          probe='net_clearances_path_diff',
          want=('{tmp}/' + _NCL_FILE,) * 2, default=('', '')),
-    dict(label='route --sense-branches',
-         cmd='python3 py_router/route.py {src} {dst} --nets "*"',
-         flag='--sense-branches ' + _SB_FILE,
-         param=('sense_branches_path', '{tmp}/' + _SB_FILE),
-         probe='sense_branches_path',
-         want=('{tmp}/' + _SB_FILE,) * 2, default=('', '')),
-    dict(label='route_diff --sense-branches',
-         cmd='python3 py_router/route_diff.py {src} {dst} "*"',
-         flag='--sense-branches ' + _SB_FILE,
-         param=('sense_branches_path', '{tmp}/' + _SB_FILE),
-         probe='sense_branches_path_diff',
-         want=('{tmp}/' + _SB_FILE,) * 2, default=('', '')),
     dict(label='route --fab-overrides (relative file)',
          cmd='python3 py_router/route.py {src} {dst} --nets "*"',
          flag='--fab-overrides ' + _FAB_FILE,
@@ -188,10 +172,6 @@ def _probes(dlg):
                                route_cfg.get('fab_overrides_path')),
         'net_clearances_path_diff': (dlg.net_clearances_path.GetValue(),
                                      diff_cfg.get('net_clearances_path')),
-        'sense_branches_path': (dlg.sense_branches_path.GetValue(),
-                                route_cfg.get('sense_branches_path')),
-        'sense_branches_path_diff': (dlg.sense_branches_path.GetValue(),
-                                     diff_cfg.get('sense_branches_path')),
         'centerline_setback': (
             d.centerline_setback_check.GetValue(),
             round(d.centerline_setback.GetValue(), 6),
@@ -212,47 +192,6 @@ def _sub(value, tmp):
     if isinstance(value, tuple):
         return tuple(_sub(v, tmp) for v in value)
     return value
-
-
-def _worker_engine_kwarg(dlg, field, kwarg, path):
-    """{'route' | 'diff': the `kwarg` the Route tab's and the Differential
-    tab's REAL workers hand batch_route / batch_route_diff_pairs} with the
-    dialog text field `field` set to `path`. Each engine is a spy that records
-    the kwarg and stops the run, so nothing routes; wx.CallAfter is held so no
-    completion handler fires later."""
-    import wx
-    import route
-    import route_diff
-
-    class _Stop(Exception):
-        pass
-
-    seen = {}
-
-    def _spy(tag):
-        def _engine(*a, **kw):
-            seen[tag] = kw.get(kwarg, '<kwarg not passed>')
-            raise _Stop('engine reached')
-        return _engine
-
-    real = (route.batch_route, route_diff.batch_route_diff_pairs, wx.CallAfter)
-    d = dlg.differential_tab
-    ctrl = getattr(dlg, field)
-    try:
-        route.batch_route = _spy('route')
-        route_diff.batch_route_diff_pairs = _spy('diff')
-        wx.CallAfter = lambda *a, **k: None
-        ctrl.SetValue(path)
-        dlg._run_routing(dlg._build_routing_config(['/CLOCK_IN'],
-                                                   ['F.Cu', 'B.Cu']))
-        # (the diff worker print_exc()s the stop; it is not a failure)
-        with contextlib.redirect_stderr(io.StringIO()):
-            d._run_diff_routing({**d.get_routing_config(), **d.get_config()},
-                                ['/CLOCK_IN'])
-    finally:
-        route.batch_route, route_diff.batch_route_diff_pairs, wx.CallAfter = real
-        ctrl.SetValue('')
-    return seen
 
 
 def _worker_net_clearances(dlg, path):
@@ -382,9 +321,6 @@ def main():
             json.dump(_NCL, f)
         with open(os.path.join(tmp, _FAB_FILE), 'w', encoding='utf-8') as f:
             f.write('# no override: the path is what is under test\n')
-        sb_path = os.path.join(tmp, _SB_FILE)
-        with open(sb_path, 'w', encoding='utf-8') as f:
-            json.dump(_SB, f)
         with open(manifest, 'w', encoding='utf-8', newline='\n') as f:
             f.write('\n'.join(lines) + '\n')
         conv = subprocess.run(
@@ -445,10 +381,6 @@ def main():
             qfn_runs = _qfn_engine_layers(dlg, run_until)
             ncl_runs = {'file': _worker_net_clearances(dlg, ncl_path),
                         'none': _worker_net_clearances(dlg, '')}
-            sb_runs = {'file': _worker_engine_kwarg(
-                           dlg, 'sense_branches_path', 'sense_branches', sb_path),
-                       'none': _worker_engine_kwarg(
-                           dlg, 'sense_branches_path', 'sense_branches', '')}
         finally:
             dlg.Destroy()
         if len(seen) != len(steps):
@@ -526,17 +458,6 @@ def main():
             check(f"{tag} worker with the field empty: the net classes' map "
                   f"(empty on this all-Default board), not the file's",
                   none == {}, f"{none}")
-
-        print("\n[6] the Sense Branches File reaches the engines: the Route and "
-              "Differential workers hand them the path, as route.py / "
-              "route_diff.py --sense-branches do (#1279)")
-        for tag in ('route', 'diff'):
-            got = sb_runs['file'].get(tag, '<engine not reached>')
-            check(f"{tag} worker with the file: sense_branches is the path",
-                  got == sb_path, f"{got!r}")
-            none = sb_runs['none'].get(tag, '<engine not reached>')
-            check(f"{tag} worker with the field empty: sense_branches is None, "
-                  f"the CLI's omitted flag", none is None, f"{none!r}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

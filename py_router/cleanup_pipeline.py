@@ -695,14 +695,10 @@ def file_only_copper(output_file, pcb_data, scope_net_ids):
 
     def _by_name(pcb, attr, graphic_ok=False):
         out = {}
-        # Protected sense copper rides a private net id for the run
-        # (sense_branch.isolate); in the file it is still its real net's.
-        alias = getattr(pcb, '_net_alias', None) or {}
         for o in getattr(pcb, attr, []) or []:
             if not graphic_ok and getattr(o, 'graphic', False):
                 continue
-            nid = alias.get(o.net_id, o.net_id)
-            n = pcb.nets[nid].name if nid in pcb.nets else nid
+            n = pcb.nets[o.net_id].name if o.net_id in pcb.nets else o.net_id
             out.setdefault(n, []).append(o)
         return out
 

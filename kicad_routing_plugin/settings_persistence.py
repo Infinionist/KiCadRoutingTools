@@ -83,7 +83,6 @@ def get_dialog_settings(dialog):
         'track_proximity_cost': dialog.track_proximity_cost.GetValue(),
         'keep_away': dialog.keep_away.GetValue(),
         'net_clearances_path': dialog.net_clearances_path.GetValue(),
-        'sense_branches_path': dialog.sense_branches_path.GetValue(),
         'keep_away_free': dialog.keep_away_free.GetValue(),
         'keep_away_cost': dialog.keep_away_cost.GetValue(),
         'vertical_attraction_radius': dialog.vertical_attraction_radius.GetValue(),
@@ -434,8 +433,6 @@ def restore_dialog_settings(dialog, settings):
         dialog.keep_away.SetValue(settings['keep_away'])
     if 'net_clearances_path' in settings:
         dialog.net_clearances_path.SetValue(settings['net_clearances_path'])
-    if 'sense_branches_path' in settings:
-        dialog.sense_branches_path.SetValue(settings['sense_branches_path'])
     if 'keep_away_free' in settings:
         dialog.keep_away_free.SetValue(settings['keep_away_free'])
     if 'keep_away_cost' in settings:

@@ -292,9 +292,6 @@ FLAG_PARAMS = {
     # Advanced tab's Net Clearances File field (a relative path is resolved
     # against the recorded cwd, see PATH_PARAMS).
     '--net-clearances': 'net_clearances_path',
-    # route.py / route_diff.py's protected Kelvin sense-branch FILE: the
-    # Advanced tab's Sense Branches File field (resolved like --net-clearances).
-    '--sense-branches': 'sense_branches_path',
     # route_diff.py's meander chamfer multiplier: the diff tab's control.
     '--diff-chamfer-extra': 'chamfer_extra',
     # route_diff.py's centerline setback: the diff tab's control of that name
@@ -545,7 +542,7 @@ def _num(v):
 # absolute against the command's recorded cwd -- what #1067 does for a cap
 # step's --intent. (--fab-overrides was carried raw: a relative override file
 # then went unread, and the replay ran at the bare tier with escalation on.)
-PATH_PARAMS = {'net_clearances_path', 'fab_overrides_path', 'sense_branches_path'}
+PATH_PARAMS = {'net_clearances_path', 'fab_overrides_path'}
 
 
 def parse_command(argv, cwd=None):

@@ -176,17 +176,6 @@ def _net_clearances_unreadable(ns, cwd):
         return f"--net-clearances: {e}"
 
 
-def _sense_branches_unreadable(ns, cwd):
-    path = getattr(ns, 'sense_branches', None)
-    if not path or not _can_see(cwd):
-        return None
-    from sense_branch import load_sense_branches
-    try:
-        load_sense_branches(_at(cwd, path))
-    except (OSError, ValueError) as e:
-        return f"--sense-branches: {e}"
-
-
 def _keep_away(ns, cwd):
     from keep_away import keep_away_knob_error, parse_keep_away_rules
     if getattr(ns, 'keep_away', None):
@@ -265,9 +254,9 @@ def _cap_intent_unreadable(ns, cwd):
 POST_PARSE = {
     'route.py': (_fab_overrides_missing, _output_twice, _route_group_empty,
                  _keep_away, _route_force_reroute_unscoped, _route_group_sources,
-                 _sense_branches_unreadable, _net_clearances_unreadable),
+                 _net_clearances_unreadable),
     'route_diff.py': (_keep_away, _fab_overrides_missing, _output_twice,
-                      _sense_branches_unreadable, _net_clearances_unreadable),
+                      _net_clearances_unreadable),
     'route_planes.py': (_fab_overrides_missing, _output_twice,
                         _planes_count_mismatch),
     'repair_planes.py': (_fab_overrides_missing, _output_twice,
@@ -317,7 +306,6 @@ REFUSAL_SITES = {
         'if _scope_defaulted': ('never a step', 'under --undo, which is refused'),
         "if _es['count'] or _es['fab_tier_escalations']":
             ('after the run', '--strict-sizes: exit 3 after routing'),
-        'call:load_sense_branches': ('file', '_sense_branches_unreadable'),
         'call:load_net_clearances': ('file', '_net_clearances_unreadable'),
     },
     'route_diff.py': {
@@ -330,7 +318,6 @@ REFUSAL_SITES = {
         'call:fab_tier_from_args': ('file', '_fab_overrides_missing'),
         'specify the output path once: positional': ('argv', '_output_twice'),
         'if not net_names': ('board', "which nets the patterns match"),
-        'call:load_sense_branches': ('file', '_sense_branches_unreadable'),
         'call:load_net_clearances': ('file', '_net_clearances_unreadable'),
         'if _NO_PAIRS_MATCHED': ('board', "set by the engine: no pair matched"),
     },

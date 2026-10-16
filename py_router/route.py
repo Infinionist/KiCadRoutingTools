@@ -18,7 +18,6 @@ from __future__ import annotations
 KRT_TOOL = {'scope': ['routing', 'combined'], 'kind': 'actor'}
 
 import env_knobs
-from sense_branch import restoring as _sense_restoring
 import sys
 import os
 import copy
@@ -1170,8 +1169,6 @@ def _sense_link_end(pcb_data, net_id, end):
     return (join.global_x, join.global_y, layer) + tuple(end[3:])
 
 
-# A caller-owned PCBData leaves on its real nets (sense_branch.isolate).
-@_sense_restoring
 def batch_route(input_file: str, output_file: str, net_names: List[str],
                 layers: List[str] = None,
                 # #530: cap every auto-read net class at this clearance (the
@@ -1191,7 +1188,6 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 coplanar_nets: Optional[List[str]] = None,
                 power_nets: Optional[List[str]] = None,
                 power_nets_widths: Optional[List[float]] = None,
-                sense_branches: Optional[str] = None,
                 power_tap_neckdown: bool = True,
                 neckdown_length: float = 2.5,
                 neckdown_taper_length: float = 0.5,
@@ -1524,11 +1520,6 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # #1279: the board's `sense:<REF>.<PAD>` groups -- protected, or why not.
     from sense_branch import report as _sense_report
     _sense_report(pcb_data)
-    # Protected Kelvin sense copper becomes its own net for the run
-    # (sense_branch.py), before anything records the input copper.
-    if sense_branches:
-        from sense_branch import load_sense_branches, isolate as _sb_isolate
-        _sb_isolate(pcb_data, load_sense_branches(sense_branches))
     if final_reconcile:
         from rip_up_reroute import reset_run_ledgers
         reset_run_ledgers(pcb_data)
@@ -8097,10 +8088,6 @@ For differential pair routing, use route_diff.py:
                         help="Glob patterns for power nets (e.g., '*GND*' '*VCC*'). Must pair with --power-nets-widths.")
     parser.add_argument("--power-nets-widths", nargs="*", type=float, default=[],
                         help="Track widths in mm for each power-net pattern (must match --power-nets length)")
-    parser.add_argument("--sense-branches", type=str, default=None, metavar="FILE",
-                        help="JSON list of protected Kelvin sense branches: "
-                             "sense copper joins its net only at the join pad; new copper is "
-                             "kept off it (see sense_branch.py)")
     parser.add_argument("--no-power-tap-neckdown", action="store_true",
                         help="Disable neck-down retry of failed power-net tap edges (issue #72): by default a "
                              "wide tap that cannot fit is re-routed at the layer's default width near the pad")
@@ -8796,12 +8783,6 @@ For differential pair routing, use route_diff.py:
     # was OMITTED the classes are honored in full (each net routes at its own class),
     # and the writeback preserves them. --net-clearances <json> overrides with
     # explicit per-net values, used as-is.
-    if args.sense_branches:
-        # #1279: an unreadable --sense-branches file refuses here, before
-        # routing, as the Route / Differential tabs refuse it before their run
-        # (the engine loads it again, for the GUI's call).
-        from sense_branch import load_sense_branches
-        load_sense_branches(args.sense_branches)
     _net_clearances_map = None
     if args.net_clearances:
         # The Route tab reads its Net Clearances File the same way.
@@ -8848,7 +8829,6 @@ For differential pair routing, use route_diff.py:
                 coplanar_nets=args.coplanar_nets,
                 power_nets=args.power_nets,
                 power_nets_widths=args.power_nets_widths,
-                sense_branches=args.sense_branches,
                 power_tap_neckdown=not args.no_power_tap_neckdown,
                 neckdown_length=args.neckdown_length,
                 neckdown_taper_length=args.neckdown_taper_length,

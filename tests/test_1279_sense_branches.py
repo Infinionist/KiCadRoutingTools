@@ -1,23 +1,32 @@
 #!/usr/bin/env python3
-"""`--sense-branches` keeps new copper off protected Kelvin sense copper (#1279).
+"""A `sense:<REF>.<PAD>` group keeps new copper off a Kelvin sense branch (#1279).
 
 Fixture tests/fixtures/sense_branch/sense_star.kicad_pcb (+ its .kicad_pro):
 net VDD with join pad C1.1 at (3, 5), sense pad U1.1 at (27, 5) joined by one
-0.2 mm F.Cu sense trace, and two load pads U2.1 (15, 8) / U3.1 (20, 8) just
-below the trace.
+0.2 mm F.Cu sense trace (uuid 11111111-...), two load pads U2.1 (15, 8) /
+U3.1 (20, 8) just below the trace, and the declaration
+
+    (group "sense:C1.1" (uuid ...) (members "11111111-0000-0000-0000-000000000001"))
+
+The control is the same board with the group line removed.
 
 Invariants:
-1. Unit: `isolate` moves the sense trace and U1.1 onto a private net (locked,
-   aliased back to VDD) and leaves C1.1 on VDD; it refuses to protect a
-   branch the input already taps, and one whose copper does not reach the
-   join pad yet.
-2. End to end (route.py):
-   - control, no flag: the router taps U2/U3 onto the sense trace (the
-     defect) -- the sense component holds U2.1/U3.1;
-   - with the flag: VDD is fully connected, the sense component holds only
-     U1.1, and the sense trace is still in the written file.
-3. The GUI call shape (in-memory PCBData, return_results=True) hands the
-   PCBData back on its real nets.
+(a) new copper attaches at the join pad only: the pads reached from the sense
+    trace without crossing C1.1 are U1.1, U2.1, U3.1 on the control and only
+    U1.1 with the group; the written board re-parses with the branch still
+    protected.
+(b) no clearance descent: JSON_SUMMARY.design_rules narrows nothing, and the
+    output .kicad_pro Default clearance and min_clearance equal the control's.
+(c) no net id is rewritten: the member track's block and the group are in the
+    written board byte for byte, on VDD.
+(d) a plane chain (pour on B.Cu, then the route step with its in-run plane
+    finalize, and repair_planes with pad repair and blocker rips) keeps the
+    member copper byte for byte and the branch protected.
+(e) every refusal names its reason, and route.py discloses it in
+    JSON_SUMMARY.sense_branches.
+(f) the GUI call shape (an in-memory PCBData, return_results=True) keeps the
+    same rule and leaves every net id as it was. Parse-path parity with
+    pcbnew is tests/test_1279_sense_branches_pcbnew.py.
 
 Run:
     python3 tests/test_1279_sense_branches.py
@@ -33,15 +42,22 @@ import traceback
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS_DIR)
+sys.path.insert(0, TESTS_DIR)
 sys.path.insert(0, os.path.join(ROOT, 'py_router'))
 
 import sense_branch as sb  # noqa: E402
-from kicad_parser import parse_kicad_pcb  # noqa: E402
+from kicad_parser import parse_kicad_pcb, Zone  # noqa: E402
+from run_utils import tool, evidence  # noqa: E402
+
+#: Seven route/plane subprocesses on a 30 x 20 mm board, ~5 s each here.
+RUN_ALL_TIMEOUT = 900
 
 BOARD = os.path.join(TESTS_DIR, 'fixtures', 'sense_branch', 'sense_star.kicad_pcb')
-BRANCH = {'name': 'vos', 'sense': [('U1', '1')], 'join': ('C1', '1')}
+PRO = BOARD[:-len('.kicad_pcb')] + '.kicad_pro'
+MEMBER = '11111111-0000-0000-0000-000000000001'
+GROUP_LINE = ('  (group "sense:C1.1" (uuid "33333333-0000-0000-0000-000000000001") '
+              '(members "11111111-0000-0000-0000-000000000001"))\n')
 GEOM = ['--layers', 'F.Cu', 'B.Cu', '--track-width', '0.3', '--clearance', '0.2']
-SENSE_FILE = [{'name': 'vos', 'sense': ['U1.1'], 'join': 'C1.1'}]
 
 _TMP = []
 
@@ -52,262 +68,329 @@ def _tmpdir():
     return d
 
 
-def _sense_file(doc=None):
-    path = os.path.join(_tmpdir(), 'sense.json')
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(SENSE_FILE if doc is None else doc, f)
-    return path
-
-
-def _sense_pads(board):
-    _j, _s, items, why = sb.sense_component(parse_kicad_pcb(board), BRANCH)
-    assert why is None, why
-    return sorted(f"{i.component_ref}.{i.pad_number}" for k, i in items if k == 'pad')
-
-
-def _route(flag_file=None):
-    """route.py to a FRESH output path (route.py reads a sibling .kicad_pro
-    back), returning (output board, console)."""
-    out = os.path.join(_tmpdir(), 'out.kicad_pcb')
-    cmd = [sys.executable, 'py_router/route.py', BOARD, out, '--nets', 'VDD'] + GEOM
-    if flag_file:
-        cmd += ['--sense-branches', flag_file]
-    r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
-    assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-2000:]
-    assert os.path.isfile(out) and os.path.getsize(out) > 0, 'route.py wrote no board'
-    return out, r.stdout
-
-
-def test_isolate_moves_sense_copper_to_a_private_net():
-    p = parse_kicad_pcb(BOARD)
-    vdd = next(i for i, n in p.nets.items() if n.name == 'VDD')
-    done = sb.isolate(p, [BRANCH])
-    pid = done['vos']
-    assert p._net_alias == {pid: vdd}
-    trace = [s for s in p.segments if s.net_id == pid]
-    assert len(trace) == 1 and trace[0].locked
-    assert [(q.component_ref) for q in p.pads_by_net[pid]] == ['U1']
-    assert sorted(q.component_ref for q in p.pads_by_net[vdd]) == ['C1', 'U2', 'U3']
-
-
-def test_isolate_refuses_tapped_or_unjoined_branches():
-    p = parse_kicad_pcb(BOARD)
-    # Already tapped: moving the join to U2 puts C1 in the sense component.
-    assert sb.isolate(p, [{**BRANCH, 'join': ('U2', '1')}]) == {}
-    p = parse_kicad_pcb(BOARD)
-    p.segments = [s for s in p.segments if s.net_id != p.pads_by_net[1][0].net_id]
-    assert sb.isolate(p, [BRANCH]) == {}
-
-
-def _board_with_loose_sense_pad():
-    """sense_star plus U4.1 (VDD) at (27, 15), on no copper yet."""
+def _src():
     with open(BOARD, encoding='utf-8') as f:
-        src = f.read()
-    u4 = ('  (footprint "T:P" (layer "F.Cu") (at 27 15)\n'
-          '    (property "Reference" "U4" (at 0 -2 0) (layer "F.SilkS") '
-          '(effects (font (size 1 1))))\n'
-          '    (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu" "F.Paste" '
-          '"F.Mask") (net 1 "VDD")))\n')
-    anchor = '  (segment (start 3 5)'
-    assert src.count(anchor) == 1, 'fixture edit missed'
+        return f.read()
+
+
+def _variant(text, name='v'):
+    """`text` written as a board in a fresh dir, with the fixture's .kicad_pro."""
     d = _tmpdir()
-    path = os.path.join(d, 'loose.kicad_pcb')
+    path = os.path.join(d, f'{name}.kicad_pcb')
     with open(path, 'w', encoding='utf-8', newline='\n') as f:
-        f.write(src.replace(anchor, u4 + anchor))
-    shutil.copy(BOARD[:-len('.kicad_pcb')] + '.kicad_pro',
-                os.path.join(d, 'loose.kicad_pro'))
+        f.write(text)
+    shutil.copy(PRO, os.path.join(d, f'{name}.kicad_pro'))
     return path
 
 
-def test_unjoined_sense_pad_is_refused_not_dropped():
-    """A declared sense pad the branch copper does not join yet must not be
-    taken off the net: nothing would route it, and the run's grade, which no
-    longer sees it, called the net complete while the board shipped it open
-    (route.py exit 0, failed/open empty, check_connected: not connected)."""
-    board = _board_with_loose_sense_pad()
+def _control():
+    src = _src()
+    assert src.count(GROUP_LINE) == 1, 'fixture group line moved'
+    return _variant(src.replace(GROUP_LINE, ''), 'control')
+
+
+def _member_block(text):
+    """The member track's `(segment ...)` block as written."""
+    m = re.search(r'\(segment\s[^\n]*?' + re.escape(MEMBER) + r'"\)\)', text)
+    assert m, 'member track block not found'
+    return m.group(0)
+
+
+def _run(script, args, timeout=600):
+    r = subprocess.run([sys.executable, tool(script)] + args, cwd=ROOT,
+                       capture_output=True, text=True, timeout=timeout)
+    assert r.returncode == 0, f'{script} exit {r.returncode}:\n' + r.stdout[-3000:] + r.stderr[-3000:]
+    return r.stdout
+
+
+def _route(board, extra=GEOM):
+    """route.py VDD to a FRESH output path; (output board, console)."""
+    out = os.path.join(_tmpdir(), 'out.kicad_pcb')
+    log = _run('route.py', [board, out, '--nets', 'VDD'] + list(extra))
+    evidence(out, 'route.py output')
+    return out, log
+
+
+def _summary(log):
+    m = re.search(r'^JSON_SUMMARY: (\{.*\})$', log, re.M)
+    assert m, 'route.py printed no JSON_SUMMARY'
+    return json.loads(m.group(1))
+
+
+def _pro_clearances(board):
+    with open(board[:-len('.kicad_pcb')] + '.kicad_pro', encoding='utf-8') as f:
+        doc = json.load(f)
+    default = next(c for c in doc['net_settings']['classes'] if c['name'] == 'Default')
+    return default['clearance'], doc['board']['design_settings']['rules']['min_clearance']
+
+
+def _tapped(board):
+    """Pads of VDD reached from the member trace without crossing C1.1."""
     p = parse_kicad_pcb(board)
     vdd = next(i for i, n in p.nets.items() if n.name == 'VDD')
-    loose = {**BRANCH, 'sense': [('U1', '1'), ('U4', '1')]}
-    assert sb.isolate(p, [loose]) == {}, 'a branch with an unjoined sense pad was protected'
-    assert 'U4' in {q.component_ref for q in p.pads_by_net[vdd]}
+    join = next(q for q in p.footprints['C1'].pads if q.pad_number == '1')
+    items = ([('seg', s) for s in p.segments if s.net_id == vdd]
+             + [('via', v) for v in p.vias if v.net_id == vdd]
+             + [('pad', q) for q in p.pads_by_net[vdd] if q is not join])
+    seen = {i for i, (k, it) in enumerate(items) if k == 'seg' and it.uuid == MEMBER}
+    assert seen, 'member trace missing'
+    todo = list(seen)
+    while todo:
+        i = todo.pop()
+        for j, other in enumerate(items):
+            if j not in seen and sb._touch(items[i], other, join):
+                seen.add(j)
+                todo.append(j)
+    return sorted(f'{it.component_ref}.{it.pad_number}' for i, (k, it) in enumerate(items)
+                  if i in seen and k == 'pad')
 
-    out = os.path.join(_tmpdir(), 'out.kicad_pcb')
-    path = _sense_file([{'name': 'vos', 'sense': ['U1.1', 'U4.1'], 'join': 'C1.1'}])
-    r = subprocess.run([sys.executable, 'py_router/route.py', board, out, '--nets', 'VDD']
-                       + GEOM + ['--sense-branches', path],
+
+def _grade(board, clearance='0.2'):
+    c = subprocess.run([sys.executable, tool('check_connected.py'), board, '--nets', 'VDD'],
                        cwd=ROOT, capture_output=True, text=True)
-    assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-2000:]
-    assert 'U4.1 not joined' in r.stdout, r.stdout[-2000:]
-    c = subprocess.run([sys.executable, 'py_router/check_connected.py', out, '--nets', 'VDD'],
+    assert 'ALL NETS FULLY CONNECTED' in c.stdout, c.stdout[-2000:] + c.stderr[-1000:]
+    d = subprocess.run([sys.executable, tool('check_drc.py'), board, '--clearance', clearance],
                        cwd=ROOT, capture_output=True, text=True)
-    assert 'ALL NETS FULLY CONNECTED' in c.stdout + c.stderr, c.stdout[-2000:]
+    assert 'NO DRC VIOLATIONS FOUND' in d.stdout, d.stdout[-2000:] + d.stderr[-1000:]
 
 
-def _with_vdd_zone(layer, x0, y0, x1, y1):
-    """sense_star parsed, plus a VDD pour outline on `layer`."""
-    from kicad_parser import Zone
-    p = parse_kicad_pcb(BOARD)
-    vdd = next(i for i, n in p.nets.items() if n.name == 'VDD')
-    p.zones = list(p.zones or []) + [Zone(
-        net_id=vdd, net_name='VDD', layer=layer,
-        polygon=[(x0, y0), (x1, y0), (x1, y1), (x0, y1)])]
-    return p
+def _branch(board_or_pcb):
+    p = parse_kicad_pcb(board_or_pcb) if isinstance(board_or_pcb, str) else board_or_pcb
+    assert len(p.sense_branches) == 1, p.sense_branches
+    return p.sense_branches[0]
 
 
-def test_same_net_pour_over_the_sense_copper_is_refused():
-    """A VDD pour whose outline covers the sense trace already joins it to
-    every load the pour feeds once KiCad fills it -- the router keeping
-    tracks off it protects nothing. Refused, with the reason; a pour on
-    another layer, or one that only covers the join pad (the join itself),
-    leaves the branch protectable."""
-    p = _with_vdd_zone('F.Cu', 10, 3, 14, 7)
-    assert sb.isolate(p, [BRANCH]) == {}, 'a branch under a same-net pour was protected'
-    assert sb.isolate(_with_vdd_zone('B.Cu', 10, 3, 14, 7), [BRANCH]) != {}
-    assert sb.isolate(_with_vdd_zone('F.Cu', 1, 3, 3.4, 7), [BRANCH]) != {}
+# --- (a) (b) (c): the main route -------------------------------------------
+
+_MAIN = {}
 
 
-def test_rotated_join_pad_is_read_in_board_space():
-    """A 90-degree join pad (0.6 x 2.0 in its own frame, 2.0 wide along board
-    x) with the sense trace starting off-centre ON it: the contact is on the
-    join pad, so the branch is protectable. size_x/size_y are board-resolved;
-    turning the point by the pad's absolute angle again read it as off."""
-    with open(BOARD, encoding='utf-8') as f:
-        src = f.read()
-    rot = src.replace('(footprint "T:P" (layer "F.Cu") (at 3 5)',
-                      '(footprint "T:P" (layer "F.Cu") (at 3 5 90)', 1)
-    rot = rot.replace('(pad "1" smd rect (at 0 0) (size 1 1)',
-                      '(pad "1" smd rect (at 0 0 90) (size 0.6 2.0)', 1)
-    rot = rot.replace('(segment (start 3 5)', '(segment (start 3.8 5)')
-    assert rot.count('(at 3 5 90)') == 1 and '(start 3.8 5)' in rot, 'fixture edit missed'
-    path = os.path.join(_tmpdir(), 'rot90.kicad_pcb')
-    with open(path, 'w', encoding='utf-8', newline='\n') as f:
-        f.write(rot)
-    p = parse_kicad_pcb(path)
-    c1 = p.footprints['C1'].pads[0]
-    assert (round(c1.size_x, 3), round(c1.size_y, 3), c1.rotation) == (2.0, 0.6, 90.0), \
-        (c1.size_x, c1.size_y, c1.rotation)
-    assert 'vos' in sb.isolate(p, [BRANCH]), 'the trace end on the rotated join pad was not seen'
+def _main_runs():
+    if not _MAIN:
+        _MAIN['ctrl'] = _route(_control())
+        _MAIN['sense'] = _route(BOARD)
+    return _MAIN['ctrl'], _MAIN['sense']
 
 
-def test_loader_rejects_bad_pad_keys():
-    path = _sense_file([{'name': 'x', 'sense': ['U1'], 'join': 'C1.1'}])
-    try:
-        sb.load_sense_branches(path)
-    except ValueError as e:
-        assert 'REF.PAD' in str(e), str(e)
-    else:
-        raise AssertionError('a pad key without REF.PAD was accepted')
+def test_parse_resolves_the_group():
+    b = _branch(BOARD)
+    assert b.protected, b.reason
+    assert (b.join_label(), len(b.segments), len(b.vias)) == ('C1.1', 1, 0)
+    assert [f'{q.component_ref}.{q.pad_number}' for q in b.sense_pads] == ['U1.1']
+    assert b.segments[0].locked and b.segments[0].sense == 'sense:C1.1'
+    assert parse_kicad_pcb(_control()).sense_branches == []
 
 
-def test_router_keeps_loads_off_the_sense_trace():
-    ctrl, _ = _route()
-    assert _sense_pads(ctrl) != ['U1.1'], 'control: router must tap the sense trace unprotected'
+def test_new_copper_joins_at_the_join_pad_only():
+    (ctrl, _), (out, log) = _main_runs()
+    assert _tapped(ctrl) == ['U1.1', 'U2.1', 'U3.1'], \
+        f'control: the router no longer taps the sense trace ({_tapped(ctrl)}); the fixture proves nothing'
+    assert _tapped(out) == ['U1.1'], f'a load reached the sense copper off C1.1: {_tapped(out)}'
+    assert 'sense:C1.1: protected 1 track(s)' in log, log[-2000:]
+    b = _branch(out)
+    assert b.protected, f'the written board taps its own branch: {b.reason}'
+    _grade(out)
 
-    out, log = _route(_sense_file())
-    assert 'vos: protected 1 segment(s)' in log, log[-2000:]
-    assert _sense_pads(out) == ['U1.1'], 'a load reached the sense copper off the join pad'
-    r = subprocess.run([sys.executable, 'py_router/check_connected.py', out, '--nets', 'VDD'],
-                       cwd=ROOT, capture_output=True, text=True)
-    assert 'ALL NETS FULLY CONNECTED' in r.stdout + r.stderr, r.stdout[-2000:]
+
+def test_no_clearance_descent():
+    (ctrl, ctrl_log), (out, log) = _main_runs()
+    s, c = _summary(log), _summary(ctrl_log)
+    dr = s.get('design_rules') or {}
+    assert not dr.get('narrowed') and not dr.get('count'), dr
+    assert not dr.get('fab_tier_escalations'), dr
+    assert s['min_clearance_used'] == c['min_clearance_used'] == 0.2, \
+        (s['min_clearance_used'], c['min_clearance_used'])
+    assert _pro_clearances(out) == _pro_clearances(ctrl) == (0.2, 0.2), \
+        (_pro_clearances(out), _pro_clearances(ctrl))
+    assert 'OVERLAP a foreign' not in log, 'the join pad was blocked by its own branch'
+
+
+def test_no_net_id_is_rewritten():
+    _, (out, _log) = _main_runs()
+    src = _src()
     with open(out, encoding='utf-8') as f:
         text = f.read()
-    assert re.search(r'\(segment\s*\(start 3 5\)\s*\(end 27 5\)', text), 'sense trace was stripped'
-    assert '~sense' not in text, 'the private net name reached the written board'
+    assert _member_block(src) in text, 'the member track was rewritten'
+    assert text.count(MEMBER) == 2, 'member uuid not exactly once in its block and once in the group'
+    assert GROUP_LINE.strip() in text, 'the group declaration was not carried'
+    assert '~sense' not in text and '(locked' not in text, 'a private net or a lock token reached the file'
+    p = parse_kicad_pcb(out)
+    seg = next(s for s in p.segments if s.uuid == MEMBER)
+    assert p.nets[seg.net_id].name == 'VDD'
+    assert sorted(n.name for n in p.nets.values()) == sorted(
+        n.name for n in parse_kicad_pcb(BOARD).nets.values()), 'the net table changed'
 
 
-def test_restore_undoes_isolate():
+# --- (d): plane chains -----------------------------------------------------
+
+def test_plane_chain_keeps_the_branch():
+    d = _tmpdir()
+    pour = os.path.join(d, 'pour.kicad_pcb')
+    _run('route_planes.py', [BOARD, pour, '--nets', 'VDD', '--plane-layers', 'B.Cu',
+                             '--clearance', '0.2', '--track-width', '0.3'])
+    evidence(pour, 'route_planes.py output')
+    block = _member_block(_src())
+    # The route step, plane net in its --nets: its in-run finalize (#562).
+    out, log = _route(pour, ['--layers', 'F.Cu', 'B.Cu', '--track-width', '0.3',
+                             '--clearance-ceiling', '0.2'])
+    assert 'Plane finalize' in log, 'the in-run plane finalize did not run'
+    with open(out, encoding='utf-8') as f:
+        assert block in f.read(), 'the plane finalize rewrote or dropped the member track'
+    assert _tapped(out) == ['U1.1'] and _branch(out).protected, _tapped(out)
+    _grade(out)
+    # repair_planes: pad repair plus blocker rips, on the poured board.
+    rep = os.path.join(d, 'repair.kicad_pcb')
+    _run('repair_planes.py', [pour, rep, '--nets', 'VDD', '--plane-layers', 'B.Cu',
+                              '--repair-pads', '--rip-blocker-nets',
+                              '--clearance', '0.2', '--track-width', '0.3'], timeout=900)
+    evidence(rep, 'repair_planes.py output')
+    with open(rep, encoding='utf-8') as f:
+        assert block in f.read(), 'repair_planes rewrote or dropped the member track'
+    assert _tapped(rep) == ['U1.1'] and _branch(rep).protected, _tapped(rep)
+
+
+# --- (e): refusals -----------------------------------------------------------
+
+def _refused(text):
+    p = parse_kicad_pcb(_variant(text))
+    b = _branch(p)
+    assert not b.protected, 'refused branch was protected'
+    tagged = [x for x in p.segments + p.vias if x.sense or x.locked]
+    tagged += [q for qs in p.pads_by_net.values() for q in qs if q.sense]
+    assert not tagged, f'a refused branch still tagged copper: {tagged}'
+    return b.reason
+
+
+def _with_group(name=None, members=None):
+    g = GROUP_LINE
+    if name is not None:
+        g = g.replace('"sense:C1.1"', f'"{name}"')
+    if members is not None:
+        g = g.replace('(members "11111111-0000-0000-0000-000000000001")',
+                      '(members ' + ' '.join(f'"{u}"' for u in members) + ')')
+    return _src().replace(GROUP_LINE, g)
+
+
+def test_refusals_name_their_reason():
+    cases = [
+        (_with_group(name='sense:C1'), 'does not name the join pad'),
+        (_with_group(name='sense:C9.1'), 'join pad C9.1 is not on the board'),
+        (_with_group(members=[MEMBER, '99999999-0000-0000-0000-000000000009']),
+         'are not tracks or vias on the board'),
+        (_with_group(name='sense:U2.1'), 'does not touch the join pad U2.1'),
+        (_with_group().replace(
+            '  (segment (start 3 5)',
+            '  (segment (start 15 5) (end 15 8) (width 0.3) (layer "F.Cu") (net 1) '
+            '(uuid "44444444-0000-0000-0000-000000000001"))\n  (segment (start 3 5)'),
+         'input copper already taps it (track (15, 5)-(15, 8) on F.Cu)'),
+    ]
+    # A member piece that reaches a sense pad (U4.1) but not the join pad.
+    loose = _with_group(members=[MEMBER, '55555555-0000-0000-0000-000000000001']).replace(
+        '  (segment (start 3 5)',
+        '  (footprint "T:P" (layer "F.Cu") (at 27 15)\n'
+        '    (property "Reference" "U4" (at 0 -2 0) (layer "F.SilkS") (effects (font (size 1 1))))\n'
+        '    (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu" "F.Paste" "F.Mask") (net 1 "VDD")))\n'
+        '  (segment (start 27 15) (end 24 15) (width 0.2) (layer "F.Cu") (net 1) '
+        '(uuid "55555555-0000-0000-0000-000000000001"))\n  (segment (start 3 5)')
+    cases.append((loose, 'not joined to C1.1 by member copper'))
+    for text, why in cases:
+        reason = _refused(text)
+        assert why in reason, f'expected {why!r}, got {reason!r}'
+
+
+def test_same_net_pour_over_the_branch_is_refused():
+    """A VDD pour whose outline covers the member trace already joins it to
+    every load the pour feeds once KiCad fills it. A pour on another layer,
+    or one that covers only the join pad, leaves the branch protectable."""
+    def resolve(layer, box):
+        p = parse_kicad_pcb(BOARD)
+        for it in p.segments:          # a fresh resolution of the same board
+            it.sense, it.locked = '', False
+        for q in p.pads_by_net[1]:
+            q.sense = ''
+        x0, y0, x1, y1 = box
+        p.zones = [Zone(net_id=1, net_name='VDD', layer=layer,
+                        polygon=[(x0, y0), (x1, y0), (x1, y1), (x0, y1)])]
+        return sb.resolve_sense_branches(p, sb.sense_groups_from_text(_src()))[0]
+    b = resolve('F.Cu', (10, 3, 14, 7))
+    assert not b.protected and 'zone on F.Cu pours over its F.Cu track' in b.reason, b.reason
+    assert resolve('B.Cu', (10, 3, 14, 7)).protected
+    assert resolve('F.Cu', (1, 3, 3.4, 7)).protected
+
+
+def test_route_discloses_a_refused_branch():
+    tapped = _variant(_with_group().replace(
+        '  (segment (start 3 5)',
+        '  (segment (start 15 5) (end 15 8) (width 0.3) (layer "F.Cu") (net 1) '
+        '(uuid "44444444-0000-0000-0000-000000000001"))\n  (segment (start 3 5)'), 'tapped')
+    _out, log = _route(tapped)
+    assert 'sense:C1.1: NOT protected -- input copper already taps it' in log, log[-2000:]
+    entry = _summary(log)['sense_branches']
+    assert entry == [{'group': 'sense:C1.1', 'join': 'C1.1', 'net': 'VDD', 'protected': False,
+                      'segments': 1, 'vias': 0, 'sense_pads': ['U1.1'],
+                      'reason': 'input copper already taps it (track (15, 5)-(15, 8) on F.Cu)'}], entry
+
+
+def test_rule_helpers():
+    """The join-pad cut-out: member copper on the pad is the pad; terminal
+    copper on the pad is the join; copper off it is measured."""
     p = parse_kicad_pcb(BOARD)
-    vdd = next(i for i, n in p.nets.items() if n.name == 'VDD')
-    nets_before = sorted(p.nets)
-    # Pad ORDER reaches routing decisions and the GUI routes its next step on
-    # the same PCBData, so restore puts the pads back where they were.
-    order_before = ([id(q) for q in p.pads_by_net[vdd]], [id(q) for q in p.nets[vdd].pads])
-    pid = sb.isolate(p, [BRANCH])['vos']
-    assert sb.isolate(p, [BRANCH]) == {}, 'a nested call must keep the outer isolation'
-    sb.restore(p)
-    assert sorted(p.nets) == nets_before and pid not in p.pads_by_net
-    assert all(s.net_id == vdd and not s.locked for s in p.segments)
-    assert sorted(q.component_ref for q in p.pads_by_net[vdd]) == ['C1', 'U1', 'U2', 'U3']
-    assert ([id(q) for q in p.pads_by_net[vdd]], [id(q) for q in p.nets[vdd].pads]) \
-        == order_before, "restore reordered the net's pads"
-    assert not p._net_alias
+    b = _branch(p)
+    assert sb._outside_join(b.segments[0], b.join) == [(3.5, 5.0, 27.0, 5.0)]
+    # A terminal ending on C1.1's centre from above: on the pad, not a tap.
+    assert sb.terminal_sense_dist(p, 1, 3.0, 3.0, 3.0, 5.0, 'F.Cu', 0.15) > 0.3
+    # The same terminal ending 1.5 mm along the trace: it sits on the trace.
+    assert sb.terminal_sense_dist(p, 1, 4.5, 3.0, 4.5, 5.0, 'F.Cu', 0.15) < 0
+    # Another net sees nothing here (its copper is foreign anyway).
+    assert sb.terminal_sense_dist(p, 2, 4.5, 3.0, 4.5, 5.0, 'F.Cu', 0.15) == 1e9
+    # A ratsnest (#572 oracle) link end on the trace or on U1.1 lands on C1.1.
+    assert sb.join_for_point(p, 1, 15.0, 5.0, 'F.Cu') is b.join
+    assert sb.join_for_point(p, 1, 27.0, 5.0, 'F.Cu') is b.join
+    assert sb.join_for_point(p, 1, 15.0, 8.0, 'F.Cu') is None
+    assert sb.join_for_point(p, 1, 3.0, 5.0, 'F.Cu') is None
 
 
-def test_private_id_clears_every_id_the_board_uses():
-    """`pads_by_net` can carry a pad-only net the net table lacks; the private
-    id must not land on it (the sense pad would join that bucket, and restore
-    would then drop the bucket with the other net's pads in it)."""
-    p = parse_kicad_pcb(BOARD)
-    taken = max(p.nets) + 1
-    ghost = p.pads_by_net[next(iter(p.pads_by_net))][0]
-    p.pads_by_net[taken] = [ghost]
-    pid = sb.isolate(p, [BRANCH])['vos']
-    assert pid != taken and p.pads_by_net[taken] == [ghost], (pid, taken)
-    sb.restore(p)
-    assert p.pads_by_net.get(taken) == [ghost], "restore dropped another net's bucket"
+# --- (f): the GUI call shape -------------------------------------------------
 
-
-def test_loader_refuses_unknown_keys_and_duplicate_names():
-    """`force` was accepted (and printed in the docstring example) but read by
-    nothing; a key that does nothing is refused like any other unknown key.
-    Two branches under one name would share a private net name."""
-    for doc, why in (([{'name': 'x', 'sense': ['U1.1'], 'join': 'C1.1',
-                        'force': ['U2.1']}], 'expected an object with keys'),
-                     ([{'name': 'x', 'sense': ['U1.1'], 'join': 'C1.1'},
-                       {'name': 'x', 'sense': ['U2.1'], 'join': 'C1.1'}], 'used twice')):
-        try:
-            sb.load_sense_branches(_sense_file(doc))
-        except ValueError as e:
-            assert why in str(e), str(e)
-        else:
-            raise AssertionError(f'accepted: {doc}')
-
-
-def test_gui_path_routes_to_join_and_hands_pcb_data_back():
-    """The GUI's call shape: an in-memory PCBData, return_results=True. The
-    engine protects the branch for the run and returns the PCBData on its
-    real nets, so the dialog's next run starts from the board as it is."""
+def test_gui_path_routes_to_the_join():
+    """An in-memory PCBData, return_results=True (the Route tab's call): the
+    branch is protected for the run, no new copper lands on the sense trace
+    off C1.1, and every net id is the one the board gave it."""
     import route as _route_mod
-    path = _sense_file()
     p = parse_kicad_pcb(BOARD)
-    vdd = next(i for i, n in p.nets.items() if n.name == 'VDD')
+    ids_before = {id(s): s.net_id for s in p.segments}
     nets_before = sorted(p.nets)
     _ok, _f, _t, data = _route_mod.batch_route(
         BOARD, '', ['VDD'], return_results=True, pcb_data=p,
-        layers=['F.Cu', 'B.Cu'], track_width=0.3, clearance=0.2,
-        sense_branches=path)
-    assert sorted(p.nets) == nets_before, 'private sense net left on the PCBData'
-    trace = [s for s in p.segments if (s.start_x, s.end_x) == (3, 27)]
-    assert trace and all(s.net_id == vdd and not s.locked for s in trace)
-    assert sorted(q.component_ref for q in p.pads_by_net[vdd]) == ['C1', 'U1', 'U2', 'U3']
+        layers=['F.Cu', 'B.Cu'], track_width=0.3, clearance=0.2)
+    assert sorted(p.nets) == nets_before, 'the net table changed'
+    assert all(s.net_id == ids_before[id(s)] for s in p.segments if id(s) in ids_before)
     new = [s for r in data.get('results', []) for s in (r.get('new_segments') or [])]
-    assert new and all(s.net_id == vdd for s in new)
-    # No new copper may end on the sense trace (y == 5) away from C1.1.
+    assert new and all(s.net_id == 1 for s in new)
     for s in new:
-        for x, y in ((s.start_x, s.start_y), (s.end_x, s.end_y)):
-            assert not (abs(y - 5) <= s.width / 2 + 0.11 and x > 3.6), \
-                f'new copper ends on the sense trace at ({x}, {y})'
+        d = sb.terminal_sense_dist(p, 1, s.start_x, s.start_y, s.end_x, s.end_y,
+                                   s.layer, s.width / 2.0)
+        assert d >= 0.2 + s.width / 2.0 - 1e-6, \
+            f'new copper ({s.start_x}, {s.start_y})-({s.end_x}, {s.end_y}) within clearance of the branch'
 
 
 TESTS = [
-    test_isolate_moves_sense_copper_to_a_private_net,
-    test_isolate_refuses_tapped_or_unjoined_branches,
-    test_rotated_join_pad_is_read_in_board_space,
-    test_unjoined_sense_pad_is_refused_not_dropped,
-    test_same_net_pour_over_the_sense_copper_is_refused,
-    test_loader_rejects_bad_pad_keys,
-    test_loader_refuses_unknown_keys_and_duplicate_names,
-    test_restore_undoes_isolate,
-    test_private_id_clears_every_id_the_board_uses,
-    test_router_keeps_loads_off_the_sense_trace,
-    test_gui_path_routes_to_join_and_hands_pcb_data_back,
+    test_parse_resolves_the_group,
+    test_rule_helpers,
+    test_refusals_name_their_reason,
+    test_same_net_pour_over_the_branch_is_refused,
+    test_new_copper_joins_at_the_join_pad_only,
+    test_no_clearance_descent,
+    test_no_net_id_is_rewritten,
+    test_route_discloses_a_refused_branch,
+    test_plane_chain_keeps_the_branch,
+    test_gui_path_routes_to_the_join,
 ]
 
 
 def main():
-    if not os.path.isfile(BOARD) or not os.path.isfile(BOARD[:-len('.kicad_pcb')] + '.kicad_pro'):
-        print(f'BROKEN TEST: fixture {BOARD} (or its .kicad_pro) is missing')
-        return 2
+    evidence(BOARD, 'the sense_star fixture')
+    evidence(PRO, "the sense_star fixture's .kicad_pro")
     failed = []
     try:
         for t in TESTS:
