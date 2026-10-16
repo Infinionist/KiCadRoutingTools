@@ -592,7 +592,10 @@ skip cleanly without KiCad python). Run any directly:
   a fresh build, a group drawn or removed in the session counts at the next
   sync, and a Route-tab run with the branch's net rippable never strips the
   sense track. Before the shared extractor the re-sync carried no uuid, no
-  KiCad lock and no arcs: 9 checks fail there.
+  KiCad lock and no arcs: 9 checks fail there. Its Apply arm holds the
+  Placement tab's Place + Route Apply to keeping the copper the run left
+  unchanged (uuid, arc, group membership) and writing no lock token the result
+  file does not carry; the wholesale remove-and-recreate failed 6 checks.
 - `diag_fullchain_carry_rp2350.py` -- **DELETED 2026-07-26.** Was a full
   GUI-carry reproduction (ONE board + ONE shared pcb_data across all 10 plan
   steps, graded per stage vs the CLI) built to localize where the carry

@@ -7715,7 +7715,7 @@ def pcbnew_layer_maps(board):
     return copper_id_to_name, id_to_name, get_layer_name
 
 
-def pcbnew_track_copper(board, to_mm=None, get_layer_name=None):
+def pcbnew_track_copper(board, to_mm=None, get_layer_name=None, owners=None):
     """([Segment], [Via]) for a live pcbnew board's tracks, arcs and vias --
     the ONE reader of live track copper (#1279).
 
@@ -7727,6 +7727,11 @@ def pcbnew_track_copper(board, to_mm=None, get_layer_name=None):
     the router whichever way the board was read. The re-sync used to build its
     own Segment/Via with a subset of the fields and no arcs at all, so a GUI
     route after the first sync saw no lock, no uuid and no arc copper.
+
+    `owners`, when a dict, is filled with {id(Segment or Via): the pcbnew item
+    it was read from} -- every piece of an arc maps to its one PCB_ARC -- for
+    a caller that compares live items with parsed copper (the placement
+    Apply keeps an unchanged live item, #1279).
     """
     import pcbnew
     if to_mm is None:
@@ -7764,6 +7769,8 @@ def pcbnew_track_copper(board, to_mm=None, get_layer_name=None):
                 locked=bool(track.IsLocked()),
             )
             segments.append(seg)
+            if owners is not None:
+                owners[id(seg)] = track
         elif track_class == "PCB_ARC":
             # Arc tracks: linearize with the same helper (and the same three
             # defining points) the text parser uses, so GUI and CLI see the
@@ -7785,6 +7792,8 @@ def pcbnew_track_copper(board, to_mm=None, get_layer_name=None):
                     uuid=_item_uuid(track),
                     locked=bool(track.IsLocked()),
                 ))
+                if owners is not None:
+                    owners[id(segments[-1])] = track
         elif track_class == "PCB_VIA":
             # GetFrontWidth() FIRST (#605). KiCad 9/10 padstack vias can
             # refuse layerless GetWidth() with 'result with an error set'
@@ -7820,6 +7829,8 @@ def pcbnew_track_copper(board, to_mm=None, get_layer_name=None):
                 via_type=pcbnew_via_type(track),
             )
             vias.append(v)
+            if owners is not None:
+                owners[id(v)] = track
     return segments, vias
 
 

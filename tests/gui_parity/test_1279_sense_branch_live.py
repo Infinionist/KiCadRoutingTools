@@ -27,6 +27,10 @@ in-test):
 - `route_tab_keeps_the_branch`: the Route tab's call shape after the sync
   (SIG boxed in by VDD and a KiCad-locked wall, VDD named in
   rip_existing_nets) never strips the sense track.
+- `placement_apply_keeps_the_group`: the Placement tab's Apply (Place +
+  Route) keeps the live copper the result left unchanged -- uuid, arc and
+  `sense:` group membership included -- replaces only what the run changed,
+  and writes no lock token the result file does not carry.
 
 Needs pcbnew + wx; re-execs into KiCad's python. Lives in tests/gui_parity/
 because run_all.py collects only tests/test_*.py.
@@ -244,8 +248,76 @@ def route_tab_keeps_the_branch(pcbnew, td):
     check(not locked_wall, 'nor the KiCad-locked WALL track', locked_wall)
 
 
+#: The result board of the Apply arm: one distribution segment rerouted (its
+#: old block gone, two new ones) and one via added; everything else unchanged.
+CHANGED_OLD = ('  (segment (start 15 8) (end 20 8) (width 0.3) (layer "F.Cu") (net 1) '
+               '(uuid "aaaaaaaa-0000-0000-0000-000000000003"))\n')
+CHANGED_NEW = ('  (segment (start 15 8) (end 17.5 9) (width 0.3) (layer "F.Cu") (net 1) '
+               '(uuid "bbbbbbbb-0000-0000-0000-000000000001"))\n'
+               '  (segment (start 17.5 9) (end 20 8) (width 0.3) (layer "F.Cu") (net 1) '
+               '(uuid "bbbbbbbb-0000-0000-0000-000000000002"))\n'
+               '  (via (at 26 14) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 3) '
+               '(uuid "bbbbbbbb-0000-0000-0000-000000000003"))\n')
+KEPT = ('aaaaaaaa-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000002',
+        '99999999-0000-0000-0000-000000000001', '99999999-0000-0000-0000-000000000002',
+        '99999999-0000-0000-0000-000000000003', MEMBER)
+
+
+def placement_apply_keeps_the_group(pcbnew, td):
+    """Placement tab Apply (Place + Route) used to remove EVERY live track and
+    recreate it from the result: new uuids, so the `sense:` group lost its
+    member and KiCad dropped the emptied group on save (and, while the parser
+    still marked members locked in memory, every one came back `(locked
+    yes)`). Unchanged copper is kept now; only what the run changed is
+    replaced."""
+    import re
+    from collections import Counter
+    from kicad_parser import parse_kicad_pcb
+    from kicad_routing_plugin.placement_gui import PlacementTab
+    text = _board_text()
+    assert text.count(CHANGED_OLD) == 1, 'the Apply fixture moved'
+    live_path = _stage(td, 'apply_live', text)
+    result_path = _stage(td, 'apply_result', text.replace(CHANGED_OLD, CHANGED_NEW))
+    result = parse_kicad_pcb(result_path)
+    board = pcbnew.LoadBoard(live_path)
+    added = PlacementTab._apply_copper(None, board, result, pcbnew)
+    check(added == (2, 1), 'Apply adds only the copper the run changed', added)
+    out = os.path.join(td, 'apply_out.kicad_pcb')
+    pcbnew.SaveBoard(out, board)
+    with open(out, encoding='utf-8') as f:
+        saved = f.read()
+    p = parse_kicad_pcb(out)
+    locks = re.findall(r'\(locked(?:\s+yes)?\)', saved)
+    locked = sorted({s.uuid for s in p.segments if s.locked}
+                    | {v.uuid for v in p.vias if v.locked})
+    check(len(locks) == 1 and locked == ['99999999-0000-0000-0000-000000000001'],
+          'the saved board carries one lock token, on the WALL track the file '
+          'locked; nothing the sense hold covers is locked', f'{len(locks)} token(s) on {locked}')
+    uuids = Counter(s.uuid for s in p.segments if not s.graphic) + Counter(v.uuid for v in p.vias)
+    check(all(uuids[u] for u in KEPT),
+          'every unchanged track, arc and via keeps its uuid', sorted(u for u in KEPT if not uuids[u]))
+    check(saved.count('(arc') == 1, 'the unchanged arc is still an arc', saved.count('(arc'))
+    check(not uuids['aaaaaaaa-0000-0000-0000-000000000003'],
+          "the segment the run replaced is gone from the live board")
+    wall = [s for s in p.segments if s.uuid == '99999999-0000-0000-0000-000000000001']
+    check(wall and all(s.locked for s in wall), 'the KiCad-locked WALL track is still locked')
+    br = [(b.name, b.protected) for b in p.sense_branches]
+    check(br == [('sense:C1.1', True)] and MEMBER in saved.split('(group', 1)[-1],
+          'the sense: group survives Apply with its member, and still protects the branch', br)
+
+    def copper(pcb):
+        def k(s):
+            a = (round(s.start_x, 4), round(s.start_y, 4))
+            b = (round(s.end_x, 4), round(s.end_y, 4))
+            return (min(a, b), max(a, b), round(s.width, 4), s.layer, pcb.nets[s.net_id].name)
+        return (Counter(k(s) for s in pcb.segments if not s.graphic),
+                Counter((round(v.x, 4), round(v.y, 4), round(v.size, 4), pcb.nets[v.net_id].name)
+                        for v in pcb.vias))
+    check(copper(p) == copper(result), "the live board's copper is the result's copper")
+
+
 ARMS = [sync_matches_a_fresh_build, group_drawn_or_removed_in_session,
-        route_tab_keeps_the_branch]
+        route_tab_keeps_the_branch, placement_apply_keeps_the_group]
 
 
 def main():
