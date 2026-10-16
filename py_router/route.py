@@ -8772,6 +8772,12 @@ For differential pair routing, use route_diff.py:
     # was OMITTED the classes are honored in full (each net routes at its own class),
     # and the writeback preserves them. --net-clearances <json> overrides with
     # explicit per-net values, used as-is.
+    if args.sense_branches:
+        # #1279: an unreadable --sense-branches file refuses here, before
+        # routing, as the Route / Differential tabs refuse it before their run
+        # (the engine loads it again, for the GUI's call).
+        from sense_branch import load_sense_branches
+        load_sense_branches(args.sense_branches)
     _net_clearances_map = None
     if args.net_clearances:
         # The Route tab reads its Net Clearances File the same way.

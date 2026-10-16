@@ -2574,6 +2574,12 @@ Examples:
     # Cross-class clearance map (KiCad max(classA, classB)): explicit --net-clearances
     # JSON overrides; otherwise auto-read the board's non-Default netclasses from the
     # sibling .kicad_pro. All-Default boards -> empty map -> inert (byte-identical).
+    if args.sense_branches:
+        # #1279: an unreadable --sense-branches file refuses here, before
+        # routing, as the Route / Differential tabs refuse it before their run
+        # (the engine loads it again, for the GUI's call).
+        from sense_branch import load_sense_branches
+        load_sense_branches(args.sense_branches)
     _net_clearances_map = None
     if args.net_clearances:
         # The Differential tab reads its Net Clearances File the same way.
