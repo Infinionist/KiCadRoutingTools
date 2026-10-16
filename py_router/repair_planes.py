@@ -3979,6 +3979,12 @@ Examples:
         _summary['env_knobs'] = _ek653.active_env_knobs()   # dirty baseline
     except Exception:          # without re-reading logs
         pass
+    # #857: what this run delivered below a requested size (route.py's
+    # key), when it delivered anything there.
+    from fab_tiers import narrowed_summary, finish_design_rules
+    _dr857 = narrowed_summary()
+    if _dr857 is not None:
+        _summary['design_rules'] = _dr857
     print('JSON_SUMMARY: ' + json.dumps(_summary, sort_keys=True, default=str),
           flush=True)
 
@@ -4007,8 +4013,9 @@ Examples:
               "connected on the written board. Reconnect them (the chain's "
               "reconnect step) or re-run without --rip-blocker-nets; do not "
               "read this run as clean.")
+        finish_design_rules(args, 4)     # the line only: exit 4 outranks 3
         return 4
-    return 0
+    return finish_design_rules(args, 0)
 
 
 # Naming (#562): this module's engine used to be called route_planes,

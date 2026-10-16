@@ -115,6 +115,12 @@ REGISTRY = {
     # they are written with. bga_fanout's and qfn_fanout's mains and the fanout
     # tab's apply all decide with it before their writeback.
     'fanout_fix_kwargs': ['_apply_fanout_results'],
+    # #857: the end-of-run `Design rules [...]` line (and, CLI-only, the
+    # --strict-sizes exit 3). route.py's line comes from inside batch_route on
+    # both fronts; route_diff / route_planes / the fanouts print it from their
+    # mains, and their GUI tabs call the same helper after the engine
+    # (differential_gui, planes_gui, fanout_gui), so the log says the same.
+    'finish_design_rules': ['finish_design_rules'],
 }
 # NOTE (deliberately NOT registered): move_copper_graphics_to_silkscreen runs
 # inside the shared plane WRITER (plane_io), not a main() -- so this gate, which

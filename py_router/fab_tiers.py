@@ -834,6 +834,39 @@ def escalation_report_line():
             ". Details: JSON_SUMMARY design_rules.")
 
 
+def narrowed_summary():
+    """:func:`escalation_summary` when this run delivered anything below a
+    requested size or escalated a fab tier, else None -- the JSON_SUMMARY
+    ``design_rules`` block the non-route CLIs add only when there is something
+    in it, so a run that narrowed nothing prints what it always printed."""
+    s = escalation_summary()
+    return s if (s['count'] or s['fab_tier_escalations']) else None
+
+
+def finish_design_rules(args, rc=0, *, print_line=True):
+    """The end-of-run disclosure every routing CLI that registers
+    ``--strict-sizes`` makes: the ONE ``Design rules [...]`` line when this
+    run delivered anything below a requested size or escalated a fab tier,
+    and, under ``--strict-sizes``, exit code 3 for it.
+
+    Returns the exit code the main should finish with. ``rc`` is the code it
+    would finish with otherwise; a non-zero ``rc`` wins over 3, because a run
+    that already failed for its own reason says more than "narrowed". route.py
+    prints the line from inside batch_route (both fronts see it there), so its
+    main passes ``print_line=False``.
+
+    Found reviewing #1282: route_planes, repair_planes, route_diff and the two
+    fanouts accepted ``--strict-sizes`` and never acted on it, nor printed the
+    line, so a harness relying on exit 3 read a narrowed run as exact."""
+    line = escalation_report_line()
+    if line and print_line:
+        print(f"  {line}")
+    if line and not rc and getattr(args, 'strict_sizes', False):
+        print(f"  --strict-sizes: {line}")
+        return 3
+    return rc
+
+
 _escalation_lever_said = []
 
 

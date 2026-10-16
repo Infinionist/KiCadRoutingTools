@@ -9069,10 +9069,10 @@ For differential pair routing, use route_diff.py:
             print(f"  (--write-fill skipped: {_e})")
     # #857: --strict-sizes turns any delivery below a requested size, or any
     # fab-tier escalation, into a non-zero exit so a harness needs no grep.
-    if getattr(args, 'strict_sizes', False):
-        from fab_tiers import escalation_summary, escalation_report_line
-        _es = escalation_summary()
-        if _es['count'] or _es['fab_tier_escalations']:
-            print(f"  --strict-sizes: {escalation_report_line()}")
-            sys.exit(3)
+    # The shared helper every routing CLI ends with; batch_route already
+    # printed the Design rules line, so only the exit is decided here.
+    from fab_tiers import finish_design_rules
+    _rc857 = finish_design_rules(args, 0, print_line=False)
+    if _rc857:
+        sys.exit(_rc857)
 

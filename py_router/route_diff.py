@@ -1965,6 +1965,12 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         summary['env_knobs'] = _ek653.active_env_knobs()   # dirty baseline
     except Exception:          # without re-reading logs
         pass
+    # #857: what this run delivered below a requested size (route.py's
+    # key), when it delivered anything there.
+    from fab_tiers import narrowed_summary
+    _dr857 = narrowed_summary()
+    if _dr857 is not None:
+        summary['design_rules'] = _dr857
     print(f"JSON_SUMMARY: {json.dumps(summary)}")
 
     # Write output file or return results for direct application
@@ -2794,3 +2800,11 @@ Examples:
               "so nothing was routed. Exiting non-zero so a chained caller "
               "does not read this as success.", file=sys.stderr)
         sys.exit(2)
+
+    # #857: the Design rules line and --strict-sizes exit 3, shared with
+    # every routing CLI (found reviewing #1282: route_diff accepted the flag
+    # and never acted on it).
+    from fab_tiers import finish_design_rules
+    _rc857 = finish_design_rules(args, 0)
+    if _rc857:
+        sys.exit(_rc857)
