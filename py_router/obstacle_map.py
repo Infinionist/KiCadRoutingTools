@@ -491,6 +491,12 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
     _flush_cell_sink(obstacles, _pad_cell_sink)
     _flush_via_sink(obstacles, _pad_via_sink)
 
+    # #1279: a protected Kelvin sense branch of a net this map is built to
+    # route is foreign copper to that net too, except on its join pad.
+    from sense_branch import stamp_base_obstacles
+    stamp_base_obstacles(obstacles, pcb_data, config, nets_to_route_set, coord,
+                         layer_map, _obstacle_clearance, extra_clearance)
+
     # Intersect each tied net's corridor with the recorded tie-copper stamps:
     # the per-net lift arrays are EXACT subsets of what the base build added
     # for that copper, so prepare/restore's balanced remove/re-add can never

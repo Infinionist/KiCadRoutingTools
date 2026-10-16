@@ -42,6 +42,8 @@ import json
 import math
 from typing import Dict, List, Optional, Set, Tuple
 
+import numpy as np
+
 #: Contact slack in mm.
 _EPS = 0.01
 
@@ -596,6 +598,11 @@ def resolve_sense_branches(pcb_data, raw) -> List[SenseBranch]:
             continue
         for it in b.segments + b.vias + b.sense_pads:
             it.sense = b.name
+        # Immutable for the run, IN MEMORY only (the file is never given a
+        # lock token): every rip, prune, smoothing and layer-switch pass
+        # already leaves KiCad-locked copper alone (#1261).
+        for it in b.segments + b.vias:
+            it.locked = True
     return out
 
 
@@ -623,3 +630,242 @@ def report(pcb_data) -> None:
 def summary_entries(pcb_data) -> List[dict]:
     """JSON_SUMMARY.sense_branches: one entry per declared branch."""
     return [b.summary(pcb_data) for b in (getattr(pcb_data, 'sense_branches', None) or [])]
+
+
+# ---------------------------------------------------------------------------
+# The rule: member copper and sense pads are FOREIGN to their own net, except
+# on the join pad.
+# ---------------------------------------------------------------------------
+
+def _join_shrink(join, half: float) -> float:
+    """How far inside the join pad's edge copper of half-width `half` must be
+    centred to lie on the pad -- never more than the pad's own half-extent,
+    so even a pad narrower than the track keeps its centre landable."""
+    return min(half, min(join.size_x, join.size_y) / 2.0)
+
+
+def _outside_join(seg, join) -> list:
+    """The parts of `seg` (a member track) off the join pad rectangle, as
+    (x1, y1, x2, y2) tuples. Member copper ON the pad is the pad."""
+    from routing_utils import _to_pad_frame
+    if not _pad_on(join, seg.layer):
+        return [(seg.start_x, seg.start_y, seg.end_x, seg.end_y)]
+    ax, ay = _to_pad_frame(seg.start_x, seg.start_y, join)
+    bx, by = _to_pad_frame(seg.end_x, seg.end_y, join)
+    hx, hy = join.size_x / 2.0, join.size_y / 2.0
+    t0, t1 = 0.0, 1.0
+    dx, dy = bx - ax, by - ay
+    for p, q in ((-dx, ax + hx), (dx, hx - ax), (-dy, ay + hy), (dy, hy - ay)):
+        if abs(p) < 1e-12:
+            if q < 0:
+                t0, t1 = 1.0, 0.0          # parallel and outside: no overlap
+            continue
+        r = q / p
+        if p < 0:
+            t0 = max(t0, r)
+        else:
+            t1 = min(t1, r)
+    full = (seg.start_x, seg.start_y, seg.end_x, seg.end_y)
+    if t0 >= t1:
+        return [full]                       # never crosses the pad
+    ex, ey = seg.end_x - seg.start_x, seg.end_y - seg.start_y
+    out = []
+    if t0 > 1e-9:
+        out.append((seg.start_x, seg.start_y, seg.start_x + ex * t0, seg.start_y + ey * t0))
+    if t1 < 1.0 - 1e-9:
+        out.append((seg.start_x + ex * t1, seg.start_y + ey * t1, seg.end_x, seg.end_y))
+    return out
+
+
+class _Piece:
+    """A member track's off-pad part, shaped like a Segment for the stamp
+    helpers."""
+    __slots__ = ('start_x', 'start_y', 'end_x', 'end_y', 'width', 'layer', 'net_id')
+
+    def __init__(self, xy, seg):
+        self.start_x, self.start_y, self.end_x, self.end_y = xy
+        self.width, self.layer, self.net_id = seg.width, seg.layer, seg.net_id
+
+
+class _Collector:
+    """Stands in for a GridObstacleMap while the obstacle_map stamp helpers
+    draw the sense copper, so the join pad can be cut out of what they drew
+    before it reaches the real map."""
+
+    def __init__(self):
+        self.cells, self.vias = [], []
+
+    def add_blocked_cells_batch(self, cells):
+        self.cells.append(np.asarray(cells, dtype=np.int32).reshape(-1, 3))
+
+    add_static_blocked_cells_batch = add_blocked_cells_batch
+
+    def add_blocked_vias_batch(self, vias):
+        self.vias.append(np.asarray(vias, dtype=np.int32).reshape(-1, 2))
+
+    def add_blocked_cell(self, gx, gy, layer):
+        self.add_blocked_cells_batch([[gx, gy, layer]])
+
+    def add_blocked_via(self, gx, gy):
+        self.add_blocked_vias_batch([[gx, gy]])
+
+
+def _off_join_mask(join, xs, ys, shrink: float):
+    """Boolean mask of board points NOT on the join pad shrunk by `shrink`."""
+    dx, dy = xs - join.global_x, ys - join.global_y
+    rr = getattr(join, 'rect_rotation', 0.0) or 0.0
+    if rr:
+        c, s = math.cos(math.radians(rr)), math.sin(math.radians(rr))
+        dx, dy = dx * c + dy * s, -dx * s + dy * c
+    return ~((np.abs(dx) <= join.size_x / 2.0 - shrink)
+             & (np.abs(dy) <= join.size_y / 2.0 - shrink))
+
+
+def sense_obstacle_rows(b: SenseBranch, config, coord, layer_map, clearance: float,
+                        extra_clearance: float = 0.0):
+    """(cells (N, 3), vias (M, 2)): branch `b`'s member copper and sense pads
+    stamped as foreign copper at `clearance` -- the same keep-outs
+    build_base_obstacle_map draws for another net's copper -- minus every
+    cell where new copper of `b`'s net would lie on the join pad."""
+    from obstacle_map import (_add_segment_obstacle, _add_via_obstacle,
+                              _add_pad_obstacle, _via_track_expansion_per_layer)
+    from routing_utils import segment_blocked_cells_array
+    import routing_defaults as defaults
+    col = _Collector()
+    join = b.join
+    names = sorted(layer_map, key=layer_map.get)
+    for s in b.segments:
+        seg_w = s.width if s.width > 0 else config.get_track_width(s.layer)
+        seg_clr = config.layer_clearance(s.layer, clearance)
+        trk = config.track_obstacle_clearance(b.net_id, seg_clr)
+        exp = config.route_reserve_width(s.layer) / 2 + seg_w / 2 + trk + extra_clearance
+        vblk = config.via_size / 2 + seg_w / 2 + seg_clr + extra_clearance
+        li = layer_map.get(s.layer)
+        for xy in _outside_join(s, join):
+            if li is None:              # a layer this run cannot route: vias only
+                col.add_blocked_vias_batch(segment_blocked_cells_array(
+                    *xy, vblk, coord.grid_step))
+                continue
+            _add_segment_obstacle(col, _Piece(xy, s), coord, li, exp, vblk)
+    for v in b.vias:
+        if _in_pad(join, v.x, v.y, 0.0):
+            continue                    # a via on the join pad is the join
+        vs = v.size if v.size > 0 else config.via_size
+        full = _via_track_expansion_per_layer(vs, config, coord, clearance, extra_clearance)
+        # Per layer of THIS map (a plane tap map has one layer).
+        vte = [full[config.layers.index(n)] if n in config.layers else max(full)
+               for n in names]
+        vv = max(1.0, (vs / 2 + config.via_size / 2
+                       + config.stack_clearance(clearance)) * coord.inv_step)
+        _add_via_obstacle(col, v, coord, len(names), vte, vv,
+                          diagonal_margin=defaults.DIAGONAL_MARGIN)
+    for p in b.sense_pads:
+        _add_pad_obstacle(col, p, coord, layer_map, config, extra_clearance,
+                          clearance_override=clearance)
+    cells = (np.concatenate(col.cells) if col.cells else np.empty((0, 3), np.int32))
+    vias = (np.concatenate(col.vias) if col.vias else np.empty((0, 2), np.int32))
+    if len(cells):
+        keep = np.ones(len(cells), dtype=bool)
+        for lname, li in layer_map.items():
+            if not _pad_on(join, lname):
+                continue
+            on = cells[:, 2] == li
+            if on.any():
+                half = config.get_net_track_width(b.net_id, lname) / 2.0
+                keep[on] = _off_join_mask(join, cells[on, 0] * coord.grid_step,
+                                          cells[on, 1] * coord.grid_step,
+                                          _join_shrink(join, half))
+        cells = np.unique(cells[keep], axis=0)
+    if len(vias):
+        keep = _off_join_mask(join, vias[:, 0] * coord.grid_step, vias[:, 1] * coord.grid_step,
+                              _join_shrink(join, config.via_size / 2.0))
+        vias = np.unique(vias[keep], axis=0)
+    return np.ascontiguousarray(cells, dtype=np.int32), np.ascontiguousarray(vias, dtype=np.int32)
+
+
+def stamp_base_obstacles(obstacles, pcb_data, config, nets_to_route, coord, layer_map,
+                         obstacle_clearance, extra_clearance: float = 0.0) -> None:
+    """build_base_obstacle_map's half of the rule. The base map leaves out the
+    copper of every net it is built to route (those nets' caches carry it and
+    each is lifted for its own route), so a protected branch of such a net is
+    stamped here as foreign copper, with the join pad cut out. Every map the
+    router derives from a base -- the working map, a Phase-3 clone, a rescue
+    window's pristine map, each per-net via rung (whose sub-builds run this
+    body again) -- then holds it. A net NOT routed already sees the branch as
+    that net's ordinary copper."""
+    for b in protected_branches(pcb_data):
+        if b.net_id not in nets_to_route:
+            continue
+        cells, vias = sense_obstacle_rows(b, config, coord, layer_map,
+                                          obstacle_clearance(b.net_id), extra_clearance)
+        if len(cells):
+            obstacles.add_blocked_cells_batch(cells)
+        if len(vias):
+            obstacles.add_blocked_vias_batch(vias)
+
+
+def stamp_plane_obstacles(obstacles, pcb_data, config, net_id: int, layers,
+                          tracks: bool) -> None:
+    """The plane path's half (plane_obstacle_builder): the via-placement map
+    (`tracks` False) and the single-layer tap-routing map (`tracks` True,
+    `layers` its one layer) built for `net_id` leave that net's copper out,
+    so its protected branches are stamped in here, join pad cut out."""
+    from routing_config import GridCoord
+    branches = protected_branches(pcb_data, net_id)
+    if not branches:
+        return
+    coord = GridCoord(config.grid_step)
+    layer_map = {name: i for i, name in enumerate(layers)}
+    clearance = (config.obstacle_clearance(net_id)
+                 if hasattr(config, 'obstacle_clearance') else config.clearance)
+    for b in branches:
+        cells, vias = sense_obstacle_rows(b, config, coord, layer_map, clearance)
+        if tracks and len(cells):
+            obstacles.add_blocked_cells_batch(cells)
+        if not tracks and len(vias):
+            obstacles.add_blocked_vias_batch(vias)
+
+
+def terminal_sense_dist(pcb_data, net_id: int, x1: float, y1: float, x2: float, y2: float,
+                        layer: str, half_width: float) -> float:
+    """The terminal-overlap gate's half of the rule: the smallest distance
+    from the centreline of new copper (x1, y1)-(x2, y2) of `net_id` on
+    `layer` to the EDGE of that net's protected sense copper, measured only
+    where the new copper is off the join pad (contact on the join pad is the
+    join). 1e9 when the net has no protected branch."""
+    branches = protected_branches(pcb_data, net_id)
+    if not branches:
+        return 1e9
+    n = max(2, int(math.hypot(x2 - x1, y2 - y1) / 0.02) + 1)
+    t = np.linspace(0.0, 1.0, n + 1)
+    sx, sy = x1 + (x2 - x1) * t, y1 + (y2 - y1) * t
+    best = 1e9
+    for b in branches:
+        join = b.join
+        if _pad_on(join, layer):
+            keep = _off_join_mask(join, sx, sy, _join_shrink(join, half_width))
+            px, py = sx[keep], sy[keep]
+        else:
+            px, py = sx, sy
+        if not len(px):
+            continue
+        for s in b.segments:
+            if s.layer != layer:
+                continue
+            for ax, ay, bx, by in _outside_join(s, join):
+                ex, ey = bx - ax, by - ay
+                l2 = ex * ex + ey * ey
+                tt = (np.clip(((px - ax) * ex + (py - ay) * ey) / l2, 0.0, 1.0)
+                      if l2 > 0 else np.zeros_like(px))
+                d = np.hypot(px - (ax + tt * ex), py - (ay + tt * ey)) - s.width / 2.0
+                best = min(best, float(d.min()))
+        for v in b.vias:
+            if _in_pad(join, v.x, v.y, 0.0):
+                continue
+            best = min(best, float((np.hypot(px - v.x, py - v.y) - v.size / 2.0).min()))
+        from routing_utils import point_to_pad_rect_dist
+        for p in b.sense_pads:
+            if _pad_on(p, layer):
+                best = min(best, min(point_to_pad_rect_dist(x, y, p)
+                                     for x, y in zip(px.tolist(), py.tolist())))
+    return best
