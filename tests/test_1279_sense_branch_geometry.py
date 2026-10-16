@@ -14,10 +14,14 @@ reach, each case built in-test from the fixture's text:
 - a member drawn across the join pad with both ends outside it touches it;
 - a blind member via has copper on its span only: it neither touches nor
   blocks copper on the layers it does not reach;
+- a join pad no wider than the track (an 0402 cap pad under a 0.5 mm power
+  track, off the routing grid) is still landable: the run routes at its
+  clearance, narrows nothing and writes no lower clearance to the project;
 
 Run:
     python3 tests/test_1279_sense_branch_geometry.py
 """
+import json
 import os
 import re
 import shutil
@@ -183,8 +187,9 @@ def _off_pad(pad, xs, ys):
 
 def _free_cells_on_member(board, track_width=0.3, clearance=0.2):
     """Cells near the join pad the branch's stamp leaves free for VDD where a
-    `track_width` track would put copper OFF the join pad's real copper onto
-    member copper off it -- a tap the obstacle map allows."""
+    `track_width` track would put copper OFF the join pad's real copper
+    (more than the 0.01 mm contact slack, sense_branch._EPS) onto member
+    copper off it -- a tap the obstacle map allows."""
     from routing_config import GridRouteConfig, GridCoord
     _p, b = _branch(board)
     assert b.protected, b.reason
@@ -200,7 +205,7 @@ def _free_cells_on_member(board, track_width=0.3, clearance=0.2):
             if (gx, gy) in blocked:
                 continue
             xs, ys = _disc(gx * cfg.grid_step, gy * cfg.grid_step, track_width / 2)
-            if (_in_member(b, xs, ys) & (_off_pad(j, xs, ys) > 1e-6)).any():
+            if (_in_member(b, xs, ys) & (_off_pad(j, xs, ys) > 0.01)).any():
                 bad.append((round(gx * cfg.grid_step, 3), round(gy * cfg.grid_step, 3)))
     return bad
 
@@ -289,7 +294,7 @@ def test_round_join_pad_is_its_copper():
       branch, and the routed net shipped open.
     - With the member leaving the pad at 45 degrees, no cell the stamp leaves
       free lets a 0.3 mm VDD track put copper off the circle onto member copper
-      (before: 41 such cells for the circle, 9 for a 0.25 roundrect), and a
+      (before: 39 such cells for the circle, 6 for a 0.25 roundrect), and a
       load routed in from the upper right lands on the pad, not on the trace
       beyond it (before: contact at (3.73, 4.13), 0.14 mm off the copper)."""
     gap = _with_join_pad(_src(), ROUND).replace('(segment (start 3 5) (end 27 5)',
@@ -367,12 +372,53 @@ def test_blind_member_via_is_on_its_span_only():
                      b.join)
 
 
+def test_join_pad_narrower_than_the_track_is_landable():
+    """C1.1 is 0.5 x 0.5 mm at (3.02, 5.01) -- off the 0.05 mm grid -- and
+    VDD routes at 0.5 mm. The cut-out was the pad shrunk by the track's
+    half-width, a point no grid cell hits, so the join pad was walled in by
+    its own branch: the run reached it only by rescue, descending clearance
+    0.2 -> 0.1818 (written into the output .kicad_pro) and clamping vias to
+    0.45/0.5 in the pad. Now only the copper that sticks out of the pad is held
+    to the rule, and the pad's own cell is always free for tracks and vias."""
+    from routing_config import GridRouteConfig, GridCoord
+    text = (_src().replace('(at 3 5)\n', '(at 3.02 5.01)\n')
+            .replace('(segment (start 3 5)', '(segment (start 3.02 5.01)'))
+    board = _variant(_with_join_pad(text, JOIN_PAD.replace('(size 1 1)', '(size 0.5 0.5)')),
+                     'small')
+    _p, b = _branch(board)
+    assert b.protected and (b.join.global_x, b.join.size_x) == (3.02, 0.5), b.reason
+    cfg = GridRouteConfig(track_width=0.5, clearance=0.2, via_size=0.6, grid_step=0.05,
+                          layers=['F.Cu', 'B.Cu'])
+    coord = GridCoord(0.05)
+    cells, vias = sb.sense_obstacle_rows(b, cfg, coord, {'F.Cu': 0, 'B.Cu': 1}, 0.2)
+    c = coord.to_grid(b.join.global_x, b.join.global_y)
+    assert not ((cells[:, 0] == c[0]) & (cells[:, 1] == c[1]) & (cells[:, 2] == 0)).any(), \
+        'the join pad\'s own cell is blocked for tracks'
+    assert not ((vias[:, 0] == c[0]) & (vias[:, 1] == c[1])).any(), \
+        'the join pad\'s own cell is blocked for vias'
+    out, log = _route(board, ['--track-width', '0.5'])
+    summary = json.loads(re.search(r'^JSON_SUMMARY: (\{.*\})$', log, re.M).group(1))
+    dr = summary.get('design_rules') or {}
+    assert not dr.get('narrowed') and not dr.get('count'), dr.get('narrowed')
+    assert summary['min_clearance_used'] == 0.2, summary['min_clearance_used']
+    assert re.search(r'"multipoint_pads_connected": 4, "multipoint_pads_total": 4', log), log[-2000:]
+    with open(out[:-len('.kicad_pcb')] + '.kicad_pro', encoding='utf-8') as f:
+        doc = json.load(f)
+    default = next(k for k in doc['net_settings']['classes'] if k['name'] == 'Default')
+    assert (default['clearance'], doc['board']['design_settings']['rules']['min_clearance']) \
+        == (0.2, 0.2), (default['clearance'], doc['board']['design_settings']['rules'])
+    assert _tapped(out) == ['U1.1'], f'a load reached the sense copper off C1.1: {_tapped(out)}'
+    hits = _off_join_contacts(out)
+    assert not hits, f'new copper overlaps the member off the join pad at {hits[:3]}'
+
+
 TESTS = [
     test_x_crossing_is_a_tap,
     test_pad_crossed_off_centre_is_a_sense_pad,
     test_round_join_pad_is_its_copper,
     test_member_across_the_join_pad_touches_it,
     test_blind_member_via_is_on_its_span_only,
+    test_join_pad_narrower_than_the_track_is_landable,
 ]
 
 

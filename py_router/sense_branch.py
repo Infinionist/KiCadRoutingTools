@@ -574,11 +574,12 @@ def summary_entries(pcb_data) -> List[dict]:
 # on the join pad.
 # ---------------------------------------------------------------------------
 
-def _join_shrink(join, half: float) -> float:
-    """How far inside the join pad's edge copper of half-width `half` must be
-    centred to lie on the pad -- never more than the pad's own depth, so
-    even a pad narrower than the track keeps its centre landable."""
-    return min(half, _inradius(join))
+def _overhang_allowance(join, half: float) -> float:
+    """How far copper of half-width `half` may reach past the join pad's
+    copper and still be ON the join: the contact slack, or -- on a pad
+    narrower than the copper -- the overhang a track or via of that width
+    centred on the pad cannot avoid."""
+    return max(_EPS, half - _inradius(join))
 
 
 def _is_plain_rect(pad) -> bool:
@@ -714,11 +715,80 @@ class _Collector:
         self.add_blocked_vias_batch([[gx, gy]])
 
 
-def _off_join_mask(join, xs, ys, shrink: float):
-    """Boolean mask of board points NOT on the join pad's real copper shrunk
-    by `shrink` (a round pad's shrunk copper is a smaller circle, not its
-    bounding box)."""
-    return _pad_sd(join, xs, ys) > -shrink
+def _pieces(b: SenseBranch, s) -> list:
+    """`_outside_join(s, b.join)`, kept on the branch (member copper is held
+    immutable for the run, and the clip of a round pad is bisected)."""
+    cache = b.__dict__.setdefault('_pieces', {})
+    if id(s) not in cache:
+        cache[id(s)] = (s, _outside_join(s, b.join))
+    return cache[id(s)][1]
+
+
+def _branch_gap(b: SenseBranch, xs, ys, layer: str):
+    """Edge gap (mm, negative inside) from each point to branch `b`'s copper
+    on `layer` that is OFF its join pad: member track parts off the pad,
+    member vias off it, sense pads."""
+    from geometry_utils import via_on_layer
+    best = np.full(xs.shape, np.inf)
+    for s in b.segments:
+        if s.layer != layer:
+            continue
+        for ax, ay, bx, by in _pieces(b, s):
+            ex, ey = bx - ax, by - ay
+            l2 = ex * ex + ey * ey
+            t = (np.clip(((xs - ax) * ex + (ys - ay) * ey) / l2, 0.0, 1.0)
+                 if l2 > 0 else np.zeros_like(xs))
+            best = np.minimum(best, np.hypot(xs - (ax + t * ex), ys - (ay + t * ey)) - s.width / 2.0)
+    for v in b.vias:
+        if via_on_layer(v, layer) and not _via_on_join(v, b.join):
+            best = np.minimum(best, np.hypot(xs - v.x, ys - v.y) - v.size / 2.0)
+    for p in b.sense_pads:
+        if _pad_on(p, layer):
+            best = np.minimum(best, _pad_sd(p, xs, ys))
+    return best
+
+
+#: Unit offsets sampling a copper disc: its centre and three rings of 32.
+_DISC_A = np.linspace(0.0, 2.0 * math.pi, 32, endpoint=False)
+_DISC_R = np.repeat([1.0 / 3.0, 2.0 / 3.0, 1.0], 32)
+_DISC_X = np.concatenate([[0.0], _DISC_R * np.tile(np.cos(_DISC_A), 3)])
+_DISC_Y = np.concatenate([[0.0], _DISC_R * np.tile(np.sin(_DISC_A), 3)])
+
+
+def _off_join_gap(b: SenseBranch, xs, ys, half: float, layers, allowance: float):
+    """For discs of copper of radius `half` centred at (xs, ys): the edge gap
+    from the part of each disc OFF the join pad -- reaching more than
+    `allowance` past its copper -- to the branch's copper, min over `layers`
+    (on a layer the join pad is not on, the whole disc counts); inf where no
+    part of the disc is off the pad. Copper on the join pad is the join, so
+    only what sticks out of it is held to the rule."""
+    qx = (xs[:, None] + half * _DISC_X[None, :]).ravel()
+    qy = (ys[:, None] + half * _DISC_Y[None, :]).ravel()
+    shape = (len(xs), len(_DISC_X))
+    off = (_pad_sd(b.join, qx, qy) > allowance).reshape(shape)
+    best = np.full(len(xs), np.inf)
+    for layer in layers:
+        g = _branch_gap(b, qx, qy, layer).reshape(shape)
+        if _pad_on(b.join, layer):
+            g = np.where(off, g, np.inf)
+        best = np.minimum(best, g.min(axis=1))
+    return best
+
+
+def _still_blocked(b: SenseBranch, xs, ys, half: float, net_half: float, clearance: float,
+                   layers):
+    """Mask of stamped cells the branch still blocks for a track or via of
+    half-width `half` (the stamp's reserve) centred there: every cell whose
+    copper misses the join pad, and every cell whose copper on the pad sticks
+    out of it within `clearance` of the branch. A cell whose copper is all on
+    the pad -- or overhangs it no more than copper of the net's own width
+    `net_half` centred on a pad narrower than it must -- is the join."""
+    allowance = _overhang_allowance(b.join, net_half)
+    near = _pad_sd(b.join, xs, ys) <= half + allowance
+    out = np.ones(len(xs), dtype=bool)
+    if near.any():
+        out[near] = _off_join_gap(b, xs[near], ys[near], half, layers, allowance) < clearance
+    return out
 
 
 def sense_obstacle_rows(b: SenseBranch, config, coord, layer_map, clearance: float,
@@ -726,7 +796,7 @@ def sense_obstacle_rows(b: SenseBranch, config, coord, layer_map, clearance: flo
     """(cells (N, 3), vias (M, 2)): branch `b`'s member copper and sense pads
     stamped as foreign copper at `clearance` -- the same keep-outs
     build_base_obstacle_map draws for another net's copper -- minus every
-    cell where new copper of `b`'s net would lie on the join pad."""
+    cell where new copper of `b`'s net would meet them only on the join pad."""
     from obstacle_map import (_add_segment_obstacle, _add_via_obstacle,
                               _add_pad_obstacle, _via_track_expansion_per_layer)
     from routing_utils import segment_blocked_cells_array
@@ -766,6 +836,14 @@ def sense_obstacle_rows(b: SenseBranch, config, coord, layer_map, clearance: flo
                           clearance_override=clearance)
     cells = (np.concatenate(col.cells) if col.cells else np.empty((0, 3), np.int32))
     vias = (np.concatenate(col.vias) if col.vias else np.empty((0, 2), np.int32))
+    # Near the join pad the rule holds only the copper that sticks out of it:
+    # a stamped cell whose new copper lies on the pad, or overhangs it clear
+    # of the branch, is freed. The pad's own cell -- the router's terminal for
+    # it (coord.to_grid of the pad) -- is always freed for tracks and vias, so
+    # a join pad no wider than the track still has a cell to land on; copper
+    # centred there is on the join whatever it must overhang.
+    step = coord.grid_step
+    centre = coord.to_grid(join.global_x, join.global_y)
     if len(cells):
         keep = np.ones(len(cells), dtype=bool)
         for lname, li in layer_map.items():
@@ -773,14 +851,20 @@ def sense_obstacle_rows(b: SenseBranch, config, coord, layer_map, clearance: flo
                 continue
             on = cells[:, 2] == li
             if on.any():
-                half = config.get_net_track_width(b.net_id, lname) / 2.0
-                keep[on] = _off_join_mask(join, cells[on, 0] * coord.grid_step,
-                                          cells[on, 1] * coord.grid_step,
-                                          _join_shrink(join, half))
+                clr = config.track_obstacle_clearance(
+                    b.net_id, config.layer_clearance(lname, clearance)) + extra_clearance
+                keep[on] = _still_blocked(
+                    b, cells[on, 0] * step, cells[on, 1] * step,
+                    config.route_reserve_width(lname) / 2.0,
+                    config.get_net_track_width(b.net_id, lname) / 2.0, clr, [lname])
+                keep[on] &= ~((cells[on, 0] == centre[0]) & (cells[on, 1] == centre[1]))
         cells = np.unique(cells[keep], axis=0)
     if len(vias):
-        keep = _off_join_mask(join, vias[:, 0] * coord.grid_step, vias[:, 1] * coord.grid_step,
-                              _join_shrink(join, config.via_size / 2.0))
+        layers = sorted(set(names) | {s.layer for s in b.segments})
+        keep = _still_blocked(b, vias[:, 0] * step, vias[:, 1] * step,
+                              config.via_size / 2.0, config.via_size / 2.0,
+                              config.stack_clearance(clearance) + extra_clearance, layers)
+        keep &= ~((vias[:, 0] == centre[0]) & (vias[:, 1] == centre[1]))
         vias = np.unique(vias[keep], axis=0)
     return np.ascontiguousarray(cells, dtype=np.int32), np.ascontiguousarray(vias, dtype=np.int32)
 
@@ -851,41 +935,27 @@ def terminal_sense_dist(pcb_data, net_id: int, x1: float, y1: float, x2: float, 
                         layer: str, half_width: float) -> float:
     """The terminal-overlap gate's half of the rule: the smallest distance
     from the centreline of new copper (x1, y1)-(x2, y2) of `net_id` on
-    `layer` to the EDGE of that net's protected sense copper, measured only
-    where the new copper is off the join pad (contact on the join pad is the
-    join). 1e9 when the net has no protected branch."""
+    `layer` (half-width `half_width`) to the EDGE of that net's protected
+    sense copper, measured only for the new copper that is off the join pad
+    (contact on the join pad is the join) -- the map's own measure
+    (_still_blocked). 1e9 when the net has no protected branch."""
     branches = protected_branches(pcb_data, net_id)
     if not branches:
         return 1e9
-    from geometry_utils import via_on_layer
     n = max(2, int(math.hypot(x2 - x1, y2 - y1) / 0.02) + 1)
     t = np.linspace(0.0, 1.0, n + 1)
     sx, sy = x1 + (x2 - x1) * t, y1 + (y2 - y1) * t
     best = 1e9
     for b in branches:
-        join = b.join
-        if _pad_on(join, layer):
-            keep = _off_join_mask(join, sx, sy, _join_shrink(join, half_width))
-            px, py = sx[keep], sy[keep]
-        else:
-            px, py = sx, sy
-        if not len(px):
-            continue
-        for s in b.segments:
-            if s.layer != layer:
-                continue
-            for ax, ay, bx, by in _outside_join(s, join):
-                ex, ey = bx - ax, by - ay
-                l2 = ex * ex + ey * ey
-                tt = (np.clip(((px - ax) * ex + (py - ay) * ey) / l2, 0.0, 1.0)
-                      if l2 > 0 else np.zeros_like(px))
-                d = np.hypot(px - (ax + tt * ex), py - (ay + tt * ey)) - s.width / 2.0
-                best = min(best, float(d.min()))
-        for v in b.vias:
-            if _via_on_join(v, join) or not via_on_layer(v, layer):
-                continue
-            best = min(best, float((np.hypot(px - v.x, py - v.y) - v.size / 2.0).min()))
-        for p in b.sense_pads:
-            if _pad_on(p, layer):           # the pad's real copper, not its box
-                best = min(best, float(np.maximum(_pad_sd(p, px, py), 0.0).min()))
+        near = np.zeros(len(sx), dtype=bool)
+        if _pad_on(b.join, layer):
+            allowance = _overhang_allowance(b.join, half_width)
+            near = _pad_sd(b.join, sx, sy) <= half_width + allowance
+            if near.any():
+                # Copper reaching the pad: only what sticks out of it counts,
+                # returned as the centreline distance the caller expects.
+                g = _off_join_gap(b, sx[near], sy[near], half_width, [layer], allowance)
+                best = min(best, float(g.min()) + half_width)
+        if (~near).any():
+            best = min(best, float(_branch_gap(b, sx[~near], sy[~near], layer).min()))
     return best
