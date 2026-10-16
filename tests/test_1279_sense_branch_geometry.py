@@ -19,6 +19,9 @@ reach, each case built in-test from the fixture's text:
   clearance, narrows nothing and writes no lower clearance to the project;
 - a member leaving a tilted join pad obliquely is held to the rule from where
   its COPPER leaves the pad, not its centreline;
+- a same-net pour taps the branch where KiCad can fill: not inside the zone's
+  cut-out or a pour keep-out around the trace, but over a strip of a sense
+  pad whose centre it misses;
 
 Run:
     python3 tests/test_1279_sense_branch_geometry.py
@@ -478,6 +481,55 @@ def test_oblique_member_is_held_from_where_its_copper_leaves():
     assert gap >= 0.2 - 0.015, f'new copper off the pad {gap:.3f} mm from member copper off it'
 
 
+def _zone(polys, uuid='55555555-0000-0000-0000-000000000001'):
+    """A VDD pour on F.Cu: its first ring the outline, the rest cut-outs."""
+    rings = ''.join('    (polygon (pts ' + ' '.join(f'(xy {x} {y})' for x, y in r) + '))\n'
+                    for r in polys)
+    return (f'  (zone (net 1) (net_name "VDD") (layer "F.Cu") (uuid "{uuid}") (hatch edge 0.5)\n'
+            '    (connect_pads (clearance 0.2)) (min_thickness 0.2) (filled_areas_thickness no)\n'
+            '    (fill yes (thermal_gap 0.3) (thermal_bridge_width 0.3))\n' + rings + '  )\n')
+
+
+def _pour_keepout(ring, uuid='55555555-0000-0000-0000-000000000002'):
+    return (f'  (zone (net 0) (net_name "") (layer "F.Cu") (uuid "{uuid}") (hatch edge 0.5)\n'
+            '    (connect_pads (clearance 0)) (min_thickness 0.25)\n'
+            '    (keepout (tracks allowed) (vias allowed) (pads allowed) (copperpour not_allowed) '
+            '(footprints allowed))\n'
+            '    (fill (thermal_gap 0.5) (thermal_bridge_width 0.5))\n'
+            '    (polygon (pts ' + ' '.join(f'(xy {x} {y})' for x, y in ring) + '))\n  )\n')
+
+
+BOARD_RING = [(0.5, 0.5), (29.5, 0.5), (29.5, 19.5), (0.5, 19.5)]
+#: Around the sense trace and U1.1, clear of C1.1's copper (x <= 3.5).
+SLOT = [(3.55, 4.2), (29.4, 4.2), (29.4, 5.8), (3.55, 5.8)]
+
+
+def test_pour_taps_only_where_it_can_fill():
+    """A VDD pour over the whole board on F.Cu, the sense trace's layer:
+    - cut around the trace by a zone CUT-OUT, or by a copper-pour keep-out,
+      KiCad's fill never touches the trace off C1.1 (pcbnew 10.0.3 ZONE_FILLER:
+      0 samples) and the branch is protected -- before, the outline alone was
+      read and both were refused 'pours over its F.Cu track';
+    - a pour over y >= 5.3 feeding U2/U3 overlaps a 0.2 mm strip of the sense
+      pad U1.1 but not its centre: pcbnew fills 150/2500 samples of U1.1, so
+      it is a tap -- before, U1.1 was judged by its centre and protected.
+    The parser keeps the cut-out (Zone.holes); the outline is unchanged."""
+    def resolve(extra, name):
+        return _branch(_variant(_src().replace(ANCHOR, extra + ANCHOR), name))
+
+    p, b = resolve(_zone([BOARD_RING, SLOT]), 'hole')
+    assert [len(z.polygon) for z in p.zones] == [4] and p.zones[0].holes == [SLOT], \
+        [(z.polygon, z.holes) for z in p.zones]
+    assert b.protected, b.reason
+    _p, b = resolve(_zone([BOARD_RING]) + _pour_keepout(SLOT), 'keepout')
+    assert b.protected, b.reason
+    _p, b = resolve(_zone([[(14, 5.3), (29.5, 5.3), (29.5, 10), (14, 10)]]), 'padedge')
+    assert not b.protected and 'pours over sense pad U1.1' in (b.reason or ''), b.reason
+    # Not cut around the trace: still a tap (test_1279_sense_branches has the rest).
+    _p, b = resolve(_zone([BOARD_RING]), 'whole')
+    assert not b.protected and 'pours over its F.Cu track' in (b.reason or ''), b.reason
+
+
 TESTS = [
     test_x_crossing_is_a_tap,
     test_pad_crossed_off_centre_is_a_sense_pad,
@@ -486,6 +538,7 @@ TESTS = [
     test_blind_member_via_is_on_its_span_only,
     test_join_pad_narrower_than_the_track_is_landable,
     test_oblique_member_is_held_from_where_its_copper_leaves,
+    test_pour_taps_only_where_it_can_fill,
 ]
 
 

@@ -266,6 +266,7 @@ placement gate and check_assembly.
 | `island_area_min` | float | mm² floor for mode 2 (0.0 when absent) |
 | `in_footprint` | bool | Zone is owned by a footprint (nested in its `(footprint ...)` block); points are still board coordinates. Plane creation neither replaces nor aborts on these |
 | `teardrop` | bool | KiCad's `(attr (teardrop ...))` (pcbnew `IsTeardropArea()`): a generated teardrop area where a track meets a pad or via. Routing output, so `assess_placement`'s `has_copper` counts it (#1164) |
+| `holes` | List[List[Tuple[float, float]]] | The outline's cut-outs: KiCad's file holds ONE outline per zone and every later `(polygon ...)` block of it is a hole in that outline (pcbnew loads it so, `Outline().HoleCount(0)`). The fill never enters one. Read the same way as `polygon`, by both parse paths; `[]` without cut-outs (#1279) |
 
 A teardrop is still COPPER: the obstacle map, DRC and connectivity read it
 through `pcb.zones` like any zone. It is never a POUR: a consumer deciding
@@ -582,8 +583,8 @@ is the same net on both paths), zones, board outline/cutouts, keepout zones,
 guide paths, and the paste openings (paired within one signature by nearest
 bounds, `_pair_nearest_bounds`, never by a sort of float coordinates).
 Zones are compared per (net, layer) as a multiset of the teardrop
-flag, the outline's vertices on the nm grid, the priority and the
-island-removal semantics, so a pour and the teardrops that share its net and
+flag, the outline's and its cut-outs' vertices on the nm grid, the priority
+and the island-removal semantics, so a pour and the teardrops that share its net and
 layer cannot be paired with the wrong partner; a disagreement on the flag is
 named as a `teardrop count` line (#1164, pinned by
 `tests/gui_parity/test_1164_teardrop_parity.py`). Both fronts hold the

@@ -242,15 +242,39 @@ def _point_in_poly(x: float, y: float, poly) -> bool:
     return inside
 
 
+def _pour_keepouts(pcb_data, layer: str) -> list:
+    """The rule areas forbidding copper pour on `layer`, as rings (outline
+    first, then its holes): KiCad's filler subtracts them from every zone
+    (the layer reading of plane_fill_model's #477 stamp)."""
+    out = []
+    for ko in (getattr(pcb_data.board_info, 'keepouts', None) or ()):
+        if ko.get('copper_pour_allowed', True):
+            continue
+        kls = ko.get('layers') or set()
+        if kls and layer not in kls and '*.Cu' not in kls and not (
+                layer in ('F.Cu', 'B.Cu') and ({'F&B.Cu', 'F&B'} & kls)):
+            continue
+        rings = [r for r in [ko.get('polygon') or []] + list(ko.get('holes') or ())
+                 if len(r) >= 3]
+        if rings:
+            out.append(rings)
+    return out
+
+
 def _zone_tap(pcb_data, items, join) -> Optional[str]:
     """Why a pour of the branch's own net already taps its sense copper, or
     None. A zone floods over same-net copper, so sense copper inside (or
-    touching) a same-net pour outline on its layer is joined to that pour --
-    and through it to every load the pour feeds -- in the board KiCad fills,
-    whatever the router keeps off it. The outline is the conservative proxy
-    for the fill; contact on the join pad itself is the join, not a tap."""
+    touching) the area a same-net pour may fill on its layer is joined to
+    that pour -- and through it to every load the pour feeds -- in the board
+    KiCad fills, whatever the router keeps off it. That area is the zone's
+    outline minus its cut-outs (Zone.holes) and minus every rule area
+    forbidding pour on the layer: a pour cut around the sense trace does not
+    tap it. A sense pad is judged by its copper, not its centre: a pour
+    overlapping a strip of it is a tap. Contact on the join pad itself is
+    the join, not a tap."""
     from kicad_parser import pour_zones
     from connectivity import via_copper_layers
+    from check_drc import _pad_perimeter_points
     net = join.net_id
     zones = [z for z in pour_zones(getattr(pcb_data, 'zones', None))
              if z.net_id == net and len(z.polygon or ()) >= 3]
@@ -258,8 +282,20 @@ def _zone_tap(pcb_data, items, join) -> Optional[str]:
         return None
     copper = list(getattr(pcb_data.board_info, 'copper_layers', None) or ())
     for z in zones:
-        poly = z.polygon
-        edges = list(zip(poly, poly[1:] + poly[:1]))
+        cuts = [h for h in (getattr(z, 'holes', None) or ()) if len(h) >= 3]
+        kos = _pour_keepouts(pcb_data, z.layer)
+
+        def in_ko(x, y, rings):
+            return _point_in_poly(x, y, rings[0]) and not any(
+                _point_in_poly(x, y, h) for h in rings[1:])
+
+        def in_fill(x, y):
+            return (_point_in_poly(x, y, z.polygon)
+                    and not any(_point_in_poly(x, y, h) for h in cuts)
+                    and not any(in_ko(x, y, rings) for rings in kos))
+
+        rings = [z.polygon] + cuts + [r for k in kos for r in k]
+        edges = [(r[i], r[(i + 1) % len(r)]) for r in rings for i in range(len(r))]
         for kind, it in items:
             if kind == 'seg':
                 if it.layer != z.layer:
@@ -276,16 +312,25 @@ def _zone_tap(pcb_data, items, join) -> Optional[str]:
             else:
                 if not _pad_on(it, z.layer):
                     continue
-                pts, r = [(it.global_x, it.global_y)], 0.0
+                pts = [(it.global_x, it.global_y)] + list(_pad_perimeter_points(it))
+                r = 0.0
                 what = f"sense pad {it.component_ref}.{it.pad_number}"
+            hit = None
             for x, y in pts:
                 if _in_pad(join, x, y, r + _EPS):
                     continue
-                if _point_in_poly(x, y, poly) or any(
+                if in_fill(x, y) or any(
                         _dist_seg(x, y, a[0], a[1], b[0], b[1]) <= r + _EPS for a, b in edges):
-                    return (f"a {z.net_name or net} zone on {z.layer} pours over {what} "
-                            f"at ({x:.2f}, {y:.2f}) -- its fill already joins the sense "
-                            f"copper to the net")
+                    hit = (x, y)
+                    break
+            if hit is None and kind == 'pad':
+                # A pour corner poking into the pad between perimeter samples.
+                hit = next(((x, y) for x, y in z.polygon
+                            if _in_pad(it, x, y, 0.0) and not _in_pad(join, x, y, _EPS)), None)
+            if hit is not None:
+                return (f"a {z.net_name or net} zone on {z.layer} pours over {what} "
+                        f"at ({hit[0]:.2f}, {hit[1]:.2f}) -- its fill already joins the sense "
+                        f"copper to the net")
     return None
 
 
