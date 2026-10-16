@@ -969,7 +969,8 @@ def exact_refusal(state, units: Units, moves, tol: float = 1e-6) -> str:
                     base = ctx.seed_baseline(a, b)
                 except Exception:                          # noqa: BLE001
                     continue     # no pad model for this pair; courtyards stand
-                for field in ('pad', 'pad_overlap', 'hole', 'stack'):
+                for field in ('pad', 'pad_overlap', 'hole', 'stack',
+                              'gpad', 'gstack'):        # #1266
                     n_v = getattr(now, field, 0.0) or 0.0
                     b_v = getattr(base, field, 0.0) or 0.0
                     if n_v > b_v + tol:
