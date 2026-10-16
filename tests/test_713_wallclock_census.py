@@ -161,6 +161,11 @@ REGISTRY = {
         'that, one forbidding a MAX_/LIMIT/BUDGET/TIMEOUT constant and one '
         'forbidding any predicting identifier.'),
 
+    'py_placer/place_groups.py': (
+        'reporting',
+        'per-step and whole-run wall seconds, printed and written to the '
+        'report and JSON_SUMMARY; nothing compares them.'),
+
     # --- a claim about time itself ------------------------------------------
     'py_placer/converge.py': (
         'time_claim',

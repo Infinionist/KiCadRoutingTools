@@ -5719,8 +5719,18 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                      diagonal_rotations: Optional[bool] = None,
                      decap_claim_after_ics: Optional[bool] = None,
                      dispose_unseated: bool = True,
-                     input_assessment=None) -> Dict:
+                     input_assessment=None,
+                     decap_owner_scope: Optional[Sequence[str]] = None) -> Dict:
     """Compute a full placement for an unplaced board from its intent.
+
+    `decap_owner_scope`, when given, are the only parts the decap pin stages
+    (2.5 and 3.5) may claim a cap at; None (the default) is every placed
+    owner, as always. Grouped placement (py_placer/place_groups.py) passes
+    each step's own group, so a cap is seated at ITS group's IC and never at a
+    chip of another group that shares the rail (esp_prog: C3 on +3.3V belongs
+    at the LDO, and the CH340 of the group placed before it carries +3.3V
+    too). With it, stage 2.6 also puts a declined cap back at that chip's pin
+    on the cap's supply, clamped into its zone, rather than at the zone centre.
 
     `dispose_unseated` (#1151): stage, below the board, a part it could not
     seat whose input pose makes a hard conflict (`_dispose_unseated`). True
@@ -7305,8 +7315,38 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             # through to the generic stage, which reports honestly
         return avail, len(pins), len(rails), sorted({k[1] for k in pins})
 
+    owner_allow = (set(decap_owner_scope) if decap_owner_scope is not None
+                   else None)
+
+    def _owner_pool(refs):
+        return set(refs) if owner_allow is None else set(refs) & owner_allow
+
+    def _owner_supply_pin(ref):
+        """Stage 2.6's target in a grouped step: the mean of the pads, on the
+        cap's non-ground net, of the most-pinned seated part of
+        `decap_owner_scope` -- the group's own chip, never a chip of another
+        group on the same rail."""
+        from net_queries import is_ground_net_name
+        nets = getattr(pcb_data, 'nets', None) or {}
+        part = state.parts.get(ref)
+        if part is None:
+            return None
+        best = None
+        for nid in part.nets:
+            if is_ground_net_name(getattr(nets.get(nid), 'name', '') or ''):
+                continue
+            for other in sorted(owner_allow & placed):
+                if other == ref or other not in state.parts:
+                    continue
+                o = state.parts[other]
+                pads = [(gx, gy) for gx, gy, pn in o.pad_globals() if pn == nid]
+                if pads and (best is None or o.pin_count > best[0]):
+                    best = (o.pin_count, (sum(x for x, _ in pads) / len(pads),
+                                          sum(y for _, y in pads) / len(pads)))
+        return best[1] if best else None
+
     if decap_scope:
-        decap_owners_early = set(placed)
+        decap_owners_early = _owner_pool(placed)
         avail, decap_pins, decap_rails, _owners25 = _decap_pin_claim(
             decap_owners_early, decap_claimed)
 
@@ -7325,13 +7365,24 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         # refusal, which makes the whole put-back MONOTONE -- no cap can end up
         # worse placed than it is today, and none can become newly unseated.
         # That is what lets it ship on without an A/B row.
+        #
+        # In a grouped step (`decap_owner_scope`) the put-back aims at the
+        # group's own chip's pin on the cap's supply, clamped into the zone,
+        # rather than at the zone's centre: the pin stage claims one cap per
+        # supply pin, so a regulator with more caps than pins declines the
+        # rest, and a functional group's zone is sized for the whole group.
         for ref in _order(sorted(unplaced & decap_scope)):
             z = zone_of_cap.get(ref)
             if z is None or not getattr(z, 'rect', None):
                 continue
             zx0, zy0, zx1, zy1 = z.rect
-            clr = _try_place(state, ref, round((zx0 + zx1) / 2.0, 3),
-                             round((zy0 + zy1) / 2.0, 3), unplaced - {ref},
+            tx, ty = round((zx0 + zx1) / 2.0, 3), round((zy0 + zy1) / 2.0, 3)
+            if owner_allow is not None:
+                pin = _owner_supply_pin(ref)
+                if pin is not None:
+                    tx = round(min(max(pin[0], zx0), zx1), 3)
+                    ty = round(min(max(pin[1], zy0), zy1), 3)
+            clr = _try_place(state, ref, tx, ty, unplaced - {ref},
                              constraint=z.rect,
                              tol=intent.zone_tolerance(z),
                              rotations=_rot_ladder(ref))
@@ -7460,7 +7511,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             late['at'] = ref
             late_left = len(unplaced & decap_scope)
             _a, late['pins'], _r, late['owners'] = _decap_pin_claim(
-                set(placed) - decap_owners_early, late_claimed,
+                _owner_pool(set(placed) - decap_owners_early), late_claimed,
                 tag=' (stage 3.5)',
                 decline_beyond=(float(decap_spec['max_distance_mm'])
                                 if late_within else None),

@@ -606,6 +606,49 @@ and check_floorplan's seeder forecast read the same property. Different `--seed`
 legal seeds; the same seed reproduces byte for byte. The two compose:
 `place_seed --seed N` → `place_portfolio` diversifies and ranks.
 
+## plan_regions.py and place_groups.py — grouped placement
+
+Placement by function (see
+[docs/grouped-placement.md](../../docs/grouped-placement.md) and the
+`/pcb-group-place` skill). An agent writes the groups file
+(`placement/grouping.py` has the format, `py_tools/check_groups.py` checks it);
+`plan_regions.py` gives each group a region. Then `place_seed --intent` fills
+the regions in one pass, or `place_groups.py` seeds the groups into them one
+at a time.
+
+```bash
+python py_placer/plan_regions.py fixed.kicad_pcb --groups groups.json --intent intent.json \
+    --out regions_intent.json --png regions.png
+python py_placer/place_seed.py fixed.kicad_pcb one_pass.kicad_pcb --intent regions_intent.json
+python py_placer/place_groups.py fixed.kicad_pcb by_group.kicad_pcb \
+    --groups groups.json --intent regions_intent.json --json by_group.json
+```
+
+- **`plan_regions.py`** (`placement/regions.py`):
+  - free space per face on a grid: the inset outline minus the locked parts,
+    with slivers under 1 mm removed;
+  - slicing floorplans whose cuts split FREE area in proportion to demand,
+    every one evaluated up to 6 groups and annealed beyond;
+  - a cost of wiring, cluster spread, anchoring and the hints, with hard
+    checks that a region holds its largest part and its parts' area.
+
+  It writes the zones as intent `blocks[]` and exempts from the decap rule the
+  caps the groups file places away from the IC the rule would claim them for.
+  The board is never modified.
+- **`place_groups.py`** runs `place_seed --decap-owners <the group>` once per
+  group on a step board:
+  - the groups not yet placed are deleted, and the placed ones are locked on
+    the step board only;
+  - the intent is trimmed to the parts present;
+  - a cap is claimed only at its own group's IC, and one the pin stage
+    declines is put back at that IC's supply pin, clamped into the zone.
+
+  It copies each group's poses back, then grades the whole board:
+  `floorplan.grade`, `check_assembly`, crossings and HPWL. An error on a part
+  locked in the input is listed apart (`floorplan_errors_pinned`) and does not
+  fail the run. `--final-polish MM` adds a bounded `place_optimize` pass, kept
+  only when not worse. The output carries the input's own locks and no others.
+
 ## place_pose.py — the sanctioned pose setter (issue #892)
 
 The engine's decision-makers all SEARCH; this is the one that takes an order.

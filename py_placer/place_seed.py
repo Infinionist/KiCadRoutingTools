@@ -857,6 +857,15 @@ Examples:
                         "pads face the edge, more crossings and pin-order "
                         "inversions). Opt in when that trade is the one you "
                         "want; a tie keeps the input rotation first.")
+    p.add_argument("--decap-owners", nargs='+', metavar='REF', default=None,
+                   help="Only these parts may own a decap claim this seed: the "
+                        "decap pin stages (2.5, 3.5) seat a cap only at the "
+                        "supply pins of the parts named. Default: every placed "
+                        "owner. py_placer/place_groups.py passes each step's own "
+                        "group, so a cap is seated at its group's IC and not at a "
+                        "chip of another group on the same rail; a cap the pin "
+                        "stage declines is then put back at that IC's pin on its "
+                        "supply, clamped into its zone, not at the zone centre.")
     p.add_argument("--diagonal-rotations", action="store_true",
                    help="Also try the 45-degree lattice (#1099): a part that "
                         "fits at no 90-degree angle at any clearance step "
@@ -1757,6 +1766,7 @@ Examples:
         # connector's input angle means anything.
         input_assessment=st,
         rotate_by_facing=args.rotate_by_facing,
+        decap_owner_scope=args.decap_owners,
         diagonal_rotations=args.diagonal_rotations,
         decap_claim_after_ics=args.decap_claim_after_ics,
         body_model=args.body_model)

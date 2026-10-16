@@ -126,6 +126,7 @@ what runs here is what the buttons run.
 | Skill | Purpose | Main output |
 |-------|---------|-------------|
 | [`/pcb-free-agent`](#pcb-free-agent) | Place and/or route a board end to end, the agent choosing its steps (modes `full` / `place` / `route`) | The best board it reached, a film, and REPORT.md, checked by one independent verifier |
+| [`/pcb-group-place`](#pcb-group-place) | Place a board by function, each functional group in its own region | The placed board, its groups file, the region intent and renders |
 | [`/plan-pcb-routing`](#plan-pcb-routing) | Full board analysis and step-by-step routing plan | Ordered routing commands, executed on approval |
 | [`/analyze-power-nets`](#analyze-power-nets) | Identify power nets and track widths via datasheets | `--power-nets` / `--power-nets-widths` arguments |
 | [`/find-high-speed-nets`](#find-high-speed-nets) | Classify nets by speed tier via datasheets | `--gnd-via-distance` recommendation |
@@ -139,6 +140,15 @@ what runs here is what the buttons run.
 ### /pcb-free-agent
 
 The placement-and-routing entry point. It gives the agent a goal per mode, the repo's CLIs as a toolbox, stop rules and the traps real runs hit, and asks for one independent verifier at the end instead of prescribing stages. It hands back the board, a light 4:3 film from its milestone ledger, and a REPORT.md with a timeline. `scripts/grade.py` and `scripts/measure.py` grade the board and split the wall clock independently of the agent's own claims, and `scripts/make_unplaced.py` builds an all-off-the-board input for from-scratch runs. Measured basis: esp_prog was DONE in 12 min (6 vias), against 3h54m (39 vias) for the staged loop it replaced; glasgow_revC reached blocking 15 in 7h56m, against 35 in ~32 h.
+
+### /pcb-group-place
+
+Placement by function, the way a designer lays a board out:
+- **Grouping.** The agent sorts the parts into functional groups (power entry and conditioning, the core and its clock, each interface, the user interface), reading pin functions and datasheets, and records why. `py_tools/check_groups.py` checks the result.
+- **Regions.** `py_placer/plan_regions.py` computes one region per group from the board's wiring and the agent's hints.
+- **Placement.** `place_seed --intent` fills the regions in one pass, and `py_placer/place_groups.py` seeds the groups one at a time, leaving the groups not yet placed out of each step entirely. The skill runs both and keeps the better.
+
+It places only; `/pcb-free-agent` routes and verifies the result, and lists it as one of its levers. See [Grouped placement](grouped-placement.md).
 
 ### /plan-pcb-routing
 
@@ -182,6 +192,7 @@ A development/QA skill rather than a board-design skill: batch-tests the router 
 
 ```
 Placement (or the whole job):
+  /pcb-group-place              - by function, one region per group --> /pcb-free-agent route
   /pcb-free-agent place         - then continue below
   /pcb-free-agent full|route    - routes itself --> /review-routed-board
         |

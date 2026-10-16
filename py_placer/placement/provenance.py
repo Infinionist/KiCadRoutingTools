@@ -54,6 +54,9 @@ LEVER_REGISTRY = (
     # own layout decision is a registered lever rather than the hand script
     # this regime is built to refuse (run 25's `pose_assist.py`).
     'place_pose.py',
+    # Grouped placement: copies each group's seeded poses from its step board
+    # onto the board (the step boards are place_seed's, recorded as such).
+    'place_groups.py',
     # The ROUTER is a deliberate pose author: #666's scoped cap move calls
     # `write_placed_output` to relocate a cap off a rescue via. Absent from
     # this list it raised `UnaidedViolation` inside the funnel, route.py's

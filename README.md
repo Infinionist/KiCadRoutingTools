@@ -87,6 +87,7 @@ Fast, grid-based A\* routing with a native Rust core (~10× faster than pure Pyt
 
 **Placement, fanout & optimization**
 - [Placement optimization](docs/placement-optimization.md) for routability, before routing
+- [Grouped placement](docs/grouped-placement.md): parts sorted into functional groups, one board region per group, placed in one pass or one group at a time (`/pcb-group-place`)
 - [The design brief](docs/design-brief.md) — state what the board is FOR, in a sibling the toolchain reads: which connectors are user-facing, which edge each belongs on and where along it
 - [Floorplan intent, graded](docs/floorplan-intent.md) — declare where parts belong and check the board against it, so "the render looks fine" stops being a verdict
 - BGA / QFN fanout with decoupling-cap placement cleanup, Hungarian target-swap, and schematic sync

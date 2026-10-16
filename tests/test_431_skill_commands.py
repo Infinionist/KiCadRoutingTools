@@ -123,6 +123,10 @@ SOURCES = [
     # What a part IS, read before grouping parts: any flag a future entry
     # cites is held to the real parser like the rest.
     '.claude/skills/pcb-free-agent/references/part-roles.md',
+    # Grouped placement: the skill that runs check_groups -> plan_regions ->
+    # place_seed --intent / place_groups, which the free agent may follow as
+    # one of its levers.
+    '.claude/skills/pcb-group-place/SKILL.md',
     'docs/floorplan-intent.md',
     'docs/placement-optimization.md',
     'docs/claude-skills.md',

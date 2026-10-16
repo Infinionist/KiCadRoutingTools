@@ -58,6 +58,10 @@ REFUSED_TOOLS = {
         'seeds/repairs a placement from an intent; the plan format has no '
         'placement step. Run it BEFORE the plan and start the plan from the '
         'seeded board'),
+    'place_groups.py': (
+        'seeds a placement one functional group at a time into the regions '
+        'of an intent (place_seed per group); the plan format has no placement '
+        'step. Run it BEFORE the plan and start the plan from its output'),
     'place_reconstruct.py': (
         'reconstructs a damaged placement; the plan format has no placement '
         'step. Run it BEFORE the plan and start the plan from its output'),
