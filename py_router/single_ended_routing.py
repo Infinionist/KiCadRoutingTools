@@ -3216,6 +3216,21 @@ def _route_with_via_unblock(router, obstacles, config, sources, targets, track_m
     return res2 + (used, used_stub_segs)
 
 
+def _uncommit_unblock_copper(pcb_data, vias, segments) -> None:
+    """Take back the unblock copper _route_with_via_unblock committed to
+    pcb_data (#803) for a route its caller then DISCARDS. By identity only:
+    a plan probe committed nothing, and a look-alike is not this route's."""
+    on_v = {id(v) for v in pcb_data.vias}
+    on_s = {id(s) for s in pcb_data.segments}
+    drop_v = {id(v) for v in vias or () if id(v) in on_v}
+    drop_s = {id(s) for s in segments or () if id(s) in on_s}
+    if not drop_v and not drop_s:
+        return
+    pcb_data.vias[:] = [v for v in pcb_data.vias if id(v) not in drop_v]
+    pcb_data.segments[:] = [s for s in pcb_data.segments if id(s) not in drop_s]
+    pcb_data._copper_epoch = getattr(pcb_data, '_copper_epoch', 0) + 1
+
+
 def _route_main_connection(router, obstacles, config, sources, targets, track_margin,
                            pcb_data, net_id, print_prefix="",
                            direction_labels=("forward", "backward"), single_direction=False,
@@ -3970,7 +3985,8 @@ def route_multipoint_main(
     pad_info: List[Tuple],
     attraction_path: Optional[List[Tuple[int, int, int]]] = None,
     state=None,
-    _stub_switch_round: bool = False
+    _stub_switch_round: bool = False,
+    _deferred_main_edges: frozenset = frozenset(),
 ) -> Optional[dict]:
     """
     Route only the main (longest MST segment) connection of a multi-point net.
@@ -4163,16 +4179,29 @@ def route_multipoint_main(
     mst_edges = _select_multipoint_main_edge(pcb_data, pad_info,
                                              pad_components, mst_edges,
                                              attraction_path)
+    # A main edge whose terminal copper overlapped foreign copper on an earlier
+    # pass goes to the back, not away: Phase 1 tries the next edge first and
+    # Phase 3 still routes this one as a tap.
+    _selected_front = mst_edges[0] if mst_edges else None
+    if _deferred_main_edges:
+        mst_edges = ([e for e in mst_edges if (e[0], e[1]) not in _deferred_main_edges]
+                     + [e for e in mst_edges if (e[0], e[1]) in _deferred_main_edges])
     # Net-story note: how the main edge was chosen (longest-first default,
-    # corridor-span re-realization/promotion, or dense-first reorder).
+    # corridor-span re-realization/promotion, dense-first reorder, or the
+    # terminal gate deferring the edge that would have gone first).
     if mst_edges and _edges_before and mst_edges[0] != _edges_before[0]:
-        _sel_note = {'mode': ('corridor-span' if attraction_path
+        _sel_note = {'mode': ('terminal-gate-deferred'
+                              if mst_edges[0] != _selected_front
+                              else 'corridor-span' if attraction_path
                               else 'dense-first'),
                      'main_edge': list(mst_edges[0][:2]),
                      'displaced_longest': list(_edges_before[0][:2])}
     else:
         _sel_note = {'mode': 'longest-first',
                      'main_edge': list(mst_edges[0][:2]) if mst_edges else None}
+    if _deferred_main_edges:
+        _sel_note['deferred_by_terminal_gate'] = sorted(
+            list(e) for e in _deferred_main_edges)
 
     # Distribute guide-corridor waypoints across the MST edges: each waypoint
     # steers the edge it's nearest to, so the net follows the drawn line across
@@ -4272,8 +4301,13 @@ def route_multipoint_main(
     routed_edge_pos = None
     for attempt in range(max_main_attempts):
         idx_a, idx_b, edge_len = mst_edges[attempt]
-        label = ("routing longest MST edge" if attempt == 0
-                 else f"retrying with next MST edge ({attempt + 1}/{max_main_attempts})")
+        if attempt:
+            label = f"retrying with next MST edge ({attempt + 1}/{max_main_attempts})"
+        elif _deferred_main_edges:
+            label = (f"routing the next MST edge ({len(_deferred_main_edges)} "
+                     f"deferred by the terminal gate)")
+        else:
+            label = "routing longest MST edge"
         print(f"  Multi-point net Phase 1: {label} (pads {idx_a} and {idx_b}, length={edge_len:.2f}mm)")
 
         # Build source/target for this pad pair
@@ -4537,6 +4571,30 @@ def route_multipoint_main(
         _why, _ships = _hard_terminal_why(_hard_p1[0])
         print(f"  {YELLOW}Phase 1 {_why} -- failing the edge rather than "
               f"shipping {_ships}{RESET}")
+        # The discarded attempt's #189 unblock copper goes with it: it was
+        # COMMITTED to pcb_data already (#803) and no result carries it now,
+        # so left there it is never written, yet the retry below reads it as
+        # the net's own copper.
+        _uncommit_unblock_copper(pcb_data, main_unblock_vias,
+                                 main_unblock_segments)
+        # #101 holds here too: one overlapping terminal must not abandon the
+        # whole net. Defer this edge (keyed as mst_edges holds it, not by the
+        # possibly-reversed idx_a/idx_b) and rerun Phase 1 on the next one,
+        # under the edge loop's own cap. An already-deferred edge means every
+        # other candidate failed first: nothing is left to try.
+        _edge = (mst_edges[0][0], mst_edges[0][1])
+        _deferred = _deferred_main_edges | {_edge}
+        if _edge not in _deferred_main_edges and len(_deferred) < min(len(mst_edges), 8):
+            print(f"  Deferring MST edge (pads {_edge[0]},{_edge[1]}) to Phase 3; "
+                  f"Phase 1 tries the next edge")
+            retry = route_multipoint_main(
+                pcb_data, net_id, config, obstacles, pad_info,
+                attraction_path=attraction_path, state=state,
+                _stub_switch_round=_stub_switch_round,
+                _deferred_main_edges=frozenset(_deferred))
+            if retry is not None:
+                retry['iterations'] = retry.get('iterations', 0) + total_iterations
+            return retry
         return {'failed': True, 'iterations': total_iterations}
     # Fab-floor via dropped inside a boxed main-edge pad to unblock it (#189);
     # a #535 off-pad escape ships its pad->via stub alongside.
