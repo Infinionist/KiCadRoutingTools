@@ -681,6 +681,35 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                   f"impedance spec(s){' (plus unspecified nets)' if _uncovered else ''} "
                   f"-- cannot reapply call-level; pass --impedance explicitly")
 
+    # Layer-scoped .kicad_dru track_width opts (route.py's #530 twin): with no
+    # --impedance and no --track-width, a rule such as `(layer "In2.Cu") ...
+    # (constraint track_width (opt 0.154mm))` sets that layer's width, which is
+    # how a stripline layer carries a narrower pair than the outer microstrip.
+    # The diff engine bakes one width per layer per call (#156), so this
+    # applies only when every targeted net resolves the same width on each
+    # routed layer, and only when those widths differ between layers.
+    # Members come from pair detection, which expands the patterns the
+    # caller passed; resolve_net_ids above matches exact names only.
+    if impedance is None and not layer_widths and net_names and diff_pair_width_from_class:
+        try:
+            _members = [nid for _pr in find_differential_pairs(pcb_data, net_names).values()
+                        for nid in (_pr.p_net_id, _pr.n_net_id)]
+            from design_rules import DesignRules as _DR
+            from list_nets import fab_floors as _ff
+            _cu_all = list(getattr(pcb_data.board_info, 'copper_layers', None) or layers)
+            _dr = _DR.from_project(pcb_data, input_file, fab_floor=_ff(len(_cu_all)),
+                                   copper_layers=_cu_all)
+            _by_layer = {l: {_dr.draw_size('track_width', nid, l) for nid in _members}
+                         for l in layers}
+            _agreed = {l: next(iter(v)) for l, v in _by_layer.items()
+                       if len(v) == 1 and None not in v}
+            if _members and len(_agreed) == len(layers) and len(set(_agreed.values())) > 1:
+                layer_widths = _agreed
+                print("  Design-rule layer widths: " + ", ".join(
+                    f"{l}={w:g}mm" for l, w in layer_widths.items()))
+        except Exception as _dre:                          # noqa: BLE001
+            print(f"  Warning: design-rule layer widths unavailable ({_dre}).")
+
     # Auto-detect BGA exclusion zones if not specified
     _sel_ids = [nid for _nm, nid in _targets]
     bga_exclusion_zones = setup_bga_exclusion_zones(
