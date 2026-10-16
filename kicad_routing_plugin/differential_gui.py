@@ -1232,8 +1232,14 @@ class DifferentialTab(wx.Panel):
         msg += f"Routed: {successful}\n"
         msg += f"Failed: {failed}\n"
         if single_ended_pairs:
+            # The CLI summary's wording: a deferred pair is electrically
+            # short, or its coupled route failed (#165, and a 2-terminal
+            # pair's fallback defer), which is not the same thing.
+            from diff_pair_custody import deferred_reasons_text
+            _why = deferred_reasons_text(results_data.get('pair_reports'),
+                                         single_ended_pairs)
             msg += (f"Deferred to single-ended: {len(single_ended_pairs)} "
-                    f"(electrically short - route these single-ended next)\n")
+                    f"({_why} - route these single-ended next)\n")
         if skipped_bad_fanout:
             msg += (f"Skipped: {len(skipped_bad_fanout)} "
                     f"(fanout stubs self-overlap - fix the fanout first)\n")

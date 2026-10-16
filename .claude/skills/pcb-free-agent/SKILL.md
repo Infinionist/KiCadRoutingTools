@@ -160,7 +160,7 @@ Read `--help` before assuming a flag does not exist. Two runs declared
 |---|---|
 | score (the authority on `blocking`) | `py_tools/board_score.py <board> --intent <i> --baseline <input> --json <out>`; `check_complete.py <board> --intent <i> --baseline <input>` (fails closed; `--baseline` arms check_assembly's moved-part gates, courtyard overlap and a test point buried under a body; without it both are unarmed, and `ungraded` says so) |
 | read the board | `py_tools/board_brief.py <board> --json <out>`, `py_tools/board_context.py --md` (per-part sheet: pin order, `CROSSED` pairs) |
-| place from scratch | lock the fixed parts with `py_placer/place_pose.py` first, then `py_placer/place_seed.py` (about 5–15 min on a 250-part board; rank seeds with `py_placer/compare_seeds.py`) |
+| place from scratch | lock the fixed parts with `py_placer/place_pose.py` first, then `py_placer/place_seed.py` (about 5–15 min on a 250-part board; rank seeds with `py_placer/compare_seeds.py`). The seeder never moves a part between faces: when the intent puts parts on B.Cu (a block's, an edge connector's or a fixed pose's `side`), apply those faces first with `py_placer/place_intent_sides.py <in> <out> --intent <i>` |
 | improve a placement | `py_placer/place_optimize.py --max-displacement 3` (the quench, for ROUGH placements), `py_placer/place_reconstruct.py` (structural damage), `place_seed --repair` (local violations) / `--reseat` (parts far off), `py_placer/place_portfolio.py --intent --lock --full-probe` (on a SEEDED board), `py_placer/converge.py poses --ref X` (rank one part's poses), `py_placer/place_fanout_clearance.py` |
 | placement vs routing, in a loop | `py_placer/place_route_loop.py` (when routing failed on congestion) |
 | check a placement | `py_tools/check_assembly.py` (read `buildable`), `py_tools/check_floorplan.py --intent` (`--plan-only` before seeding; `--health` for escape lanes), `py_tools/render_placement.py --json-out` (then LOOK at the PNG; `--before <prev> --pair` diffs findings by name), `py_router/check_drc.py --clearance-margin 0` on a copper-free board |
@@ -225,10 +225,12 @@ Read `--help` before assuming a flag does not exist. Two runs declared
   the same function (#1064) -- and a pad on another part's drawn copper
   (a SOT-89 tab, an antenna, #1266) the same way -- so `legal` and `no_worse` see it and
   `--near` looks for a pose off it. A snap re-grades at most
-  `--snap-tries` ranked poses, then as many nearer lattice ones, so it
+  `--snap-tries` ranked poses, then as many nearer lattice ones (for a
+  part starting OFF the board, first as many ranked on it,
+  `ranked_on_board`, #1277), so it
   can refuse with a no-worse pose still in reach: when place_pose's snap
-  census shows `candidates_tried` short of its `ranked` + `lattice`
-  counts, raise `--snap-tries` / `--radius` before reading it as "stuck".
+  census shows `untried` poses, raise `--snap-tries` / `--radius` before
+  reading it as "stuck".
   Courtyards, bodies and coincident origins are
   still `check_assembly`'s alone: after every pose change, run it and
   read `buildable`, not `blocking`.

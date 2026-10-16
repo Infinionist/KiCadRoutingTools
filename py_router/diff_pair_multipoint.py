@@ -365,7 +365,10 @@ def _candidate_relocation_layers(state, terminals, obstacles, max_layers=3):
     if not any(f >= 0.45 for f in own_fracs):
         return []  # nothing is meaningfully blocked
     ranked = []
+    routable = set(config.routable_layers())
     for li, layer in enumerate(config.layers):
+        if layer not in routable:
+            continue
         fracs = [_blocked_fraction(config, obstacles, cx, cy, li) for cx, cy in centers]
         worst = max(fracs)
         # Useful only if it actually unblocks a blocked terminal.
@@ -895,6 +898,12 @@ def route_multipoint_diff_pair(state, pair: DiffPairNet, pair_name: str,
     # peeled). Issue #165.
     print(f"  Coupled routing failed and relocation unavailable - deferring the "
           f"whole pair to single-ended")
+    # The return signal is shared with the all-electrically-short case; the
+    # reason is not. A pair whose coupled legs failed must not be reported as
+    # electrically short.
+    from diff_pair_custody import record_pair_diag
+    record_pair_diag(state, pair_name, outcome='deferred',
+                     reason='coupled-route-failed', stage='multipoint')
     return [], None, list(terminals)
 
 
@@ -905,11 +914,13 @@ def _switch_blocked_terminal_stubs(state, pair: DiffPairNet, terminals):
     tokens, empty when nothing switched. Bare-pad terminals (no stub) are
     left to the relocation path."""
     from stub_layer_switching import (get_stub_info, apply_stub_layer_switch,
-                                      validate_swap)
+                                      validate_swap, revert_stub_layer_switch)
     config = state.config
     pcb_data = state.pcb_data
     obstacles = state.diff_pair_base_obstacles
     switched = []
+    if not getattr(config, 'stub_layer_swap', True):
+        return switched     # --no-stub-layer-swap: input stubs stay put
     for term in terminals:
         pp, nn = term
         cx, cy = _terminal_center(term)
@@ -927,7 +938,7 @@ def _switch_blocked_terminal_stubs(state, pair: DiffPairNet, terminals):
         if stub_p is None or stub_n is None:
             continue
         ranked = sorted(
-            (l for l in config.layers if l != stub_layer),
+            (l for l in config.routable_layers() if l != stub_layer),
             key=lambda l: _blocked_fraction(config, obstacles, cx, cy,
                                             config.layers.index(l)))
         for dest in ranked:
@@ -942,6 +953,12 @@ def _switch_blocked_terminal_stubs(state, pair: DiffPairNet, terminals):
                                                      config, debug=False)
                 vias_all += vias
                 mods_all += mods
+            # Pad vias must clear every existing hole (same net
+            # included) by hole-to-hole -- same funnel as the optimizer sites.
+            from layer_swap_optimization import _swap_vias_fit_or_shrink
+            if vias_all and not _swap_vias_fit_or_shrink(pcb_data, vias_all, config):
+                revert_stub_layer_switch(pcb_data, mods_all, vias_all)
+                continue
             print(f"  Stub layer switch: {pp.component_ref}:"
                   f"{pp.pad_number}/{nn.pad_number} {stub_layer} -> {dest}")
             switched.append((mods_all, vias_all))

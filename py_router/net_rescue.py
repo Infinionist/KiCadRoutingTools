@@ -1570,9 +1570,17 @@ def rescue_failed_nets(state, single_ended_nets, net_clearances=None,
                     used_cfg.net_via(net_id)[0] < config.net_via(net_id)[0] - 1e-9:
                 stepped_vias.append((used_cfg.net_via(net_id)[0],
                                      len(result['new_vias'])))
+            # Print the NET's width, not the board default: a 0.8 mm rail's gap
+            # logged "track 0.09" while its segments shipped at 0.1/0.2 (the
+            # ledger row said so; the line contradicted it).
+            _seg_w = sorted({round(float(getattr(sg, 'width', 0.0)), 4)
+                             for sg in result['new_segments']
+                             if getattr(sg, 'width', None)})
+            _seg_txt = ('/'.join(f'{w:g}' for w in _seg_w) if _seg_w
+                        else f'{used_cfg.track_width:g}')
             print(f"    {GREEN}rescued a gap{RESET}: grid {used_cfg.grid_step:g}, "
                   f"clearance {used_cfg.clearance:g}, track "
-                  f"{used_cfg.track_width:g} ({len(result['new_segments'])} segs, "
+                  f"{_seg_txt} ({len(result['new_segments'])} segs, "
                   f"{len(result.get('new_vias', []))} vias, "
                   f"{result.get('iterations', 0)} iters)")
 

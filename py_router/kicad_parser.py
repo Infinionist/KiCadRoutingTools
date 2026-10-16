@@ -532,6 +532,15 @@ class Via:
     # #1279: the protected sense branch (KiCad group `sense:<REF>.<PAD>`) this
     # via is a member of, '' otherwise (see Pad.sense).
     sense: str = ""
+    # KiCad's via type: 'through', 'blind', 'buried' or 'micro', from the
+    # block's type word (text) or GetViaType() (pcbnew). It, not `layers`,
+    # says whether the via has copper on only part of the stack: KiCad loads
+    # a via block with NO type word as a THROUGH via whatever its `(layers ...)`
+    # says, and this repo's writer emits no type word -- so a via it writes is
+    # through even when its layer pair is not F.Cu/B.Cu (zynq7020_som's
+    # back-side BGA fanout writes `(layers "B.Cu" "In6.Cu")` GND vias).
+    # See geometry_utils.via_on_layer.
+    via_type: str = "through"
 
 
     def __post_init__(self):
@@ -828,7 +837,7 @@ class BoardInfo:
     # inside the panel frame -- dropping it outright let the router lay copper
     # straight across the milled gap between the two keyboard halves (85 items).
     board_edge_contours: List[List[Tuple[float, float]]] = field(default_factory=list)
-    keepouts: List[dict] = field(default_factory=list)  # Keep-out rule areas: {polygon, layers:set, tracks_allowed, vias_allowed, copper_pour_allowed}
+    keepouts: List[dict] = field(default_factory=list)  # Keep-out rule areas: {polygon, layers:set, tracks_allowed, vias_allowed, copper_pour_allowed, name}
     # Smallest copper clearance any routing step actually used on this board this
     # run -- e.g. a fine-pitch tap that escalated below the nominal --clearance.
     # None until a step records one. Routers fold this into the .kicad_pro DRC
@@ -4961,6 +4970,20 @@ _VIA_PREFIX_RE = re.compile(
 _VIA_NET_RE = re.compile(r'\(net\s+(?:"((?:[^"\\]|\\.)*)"|(\d+))\)')
 _VIA_UUID_RE = re.compile(r'\(uuid\s+"([^"]+)"\)')
 _VIA_FREE_RE = re.compile(r'\(free\s+yes\)')
+# KiCad's via type is a bare word of the via block (`(via micro (at ...`,
+# `(via buried ...`); a block with none is a THROUGH via. KiCad 9 writes
+# `blind` for its BLIND_BURIED type; KiCad 10 also writes `buried`.
+_VIA_TYPE_WORDS = ('blind', 'buried', 'micro')
+
+
+def _via_type_from_block(block: str) -> str:
+    """'blind' / 'buried' / 'micro' from a via block's bare words, else
+    'through'. KiCad reads the type from that word alone, never from
+    `(layers ...)`."""
+    if not any(w in block for w in _VIA_TYPE_WORDS):
+        return 'through'
+    return next((w for w in _sexpr_children(block)[1] if w in _VIA_TYPE_WORDS),
+                'through')
 
 
 def extract_vias(content: str, name_to_id: Dict[str, int] = None) -> List[Via]:
@@ -5046,6 +5069,7 @@ def extract_vias(content: str, name_to_id: Dict[str, int] = None) -> List[Via]:
             # linear pre-scan) and it could only reach vias that HAD a uuid.
             free=bool(_VIA_FREE_RE.search(block)),
             locked=_track_locked(block),
+            via_type=_via_type_from_block(block),
         )
         # Protection spec per via (#489 §8): tenting/covering/plugging/capping/
         # filling were parsed by NOBODY, so a re-placed via lost whatever the
@@ -6938,7 +6962,10 @@ def extract_keepouts(content: str) -> List[dict]:
     — e.g. an antenna-flange RF clearance. Returns a list of dicts:
         {polygon: [(x,y),...], layers: set(layer_names),
          tracks_allowed: bool, vias_allowed: bool, copper_pour_allowed: bool,
-         in_footprint: bool}
+         in_footprint: bool, name: str}
+    `name` is the area's `(name ...)` ('' when it has none): a .kicad_dru
+    condition names the area it restricts (`A.intersectsArea('corridor')`),
+    and an area that allows everything can still be one (net_keepouts).
     """
     keepouts = []
     for zc, in_footprint in _iter_zone_blocks(content):
@@ -7002,10 +7029,14 @@ def extract_keepouts(content: str) -> List[dict]:
             search = p_end + 1
         if not polys:
             continue
+        # The zone's own (name "..."): the first one in the block -- no
+        # sub-clause of a zone carries a (name ...) of its own.
+        nm = re.search(r'\(name\s+"((?:[^"\\]|\\.)*)"\s*\)', zc)
         keepouts.append({'polygon': polys[0], 'holes': polys[1:], 'layers': layers,
                          'tracks_allowed': tracks_allowed, 'vias_allowed': vias_allowed,
                          'copper_pour_allowed': copper_pour_allowed,
-                         'in_footprint': in_footprint})
+                         'in_footprint': in_footprint,
+                         'name': nm.group(1).replace('\\"', '"') if nm else ''})
     return keepouts
 
 
@@ -7590,6 +7621,33 @@ def pcbnew_copper_layer_names() -> Dict[int, str]:
         if layer_id is not None:
             names[layer_id] = f'In{i}.Cu'
     return names
+
+
+def pcbnew_via_type(via) -> str:
+    """A pcbnew PCB_VIA's type in Via.via_type's spelling, for parity with
+    the text parser's `_via_type_from_block`. KiCad 9 has one BLIND_BURIED
+    type (written `blind`); KiCad 10 splits it into BLIND and BURIED. A wrapper
+    that cannot answer falls back to the layer pair, which pcbnew normalises to
+    F.Cu/B.Cu for every through via."""
+    import pcbnew
+    try:
+        vt = via.GetViaType()
+        for attr, name in (('VIATYPE_THROUGH', 'through'),
+                           ('VIATYPE_MICROVIA', 'micro'),
+                           ('VIATYPE_BURIED', 'buried'),
+                           ('VIATYPE_BLIND', 'blind'),
+                           ('VIATYPE_BLIND_BURIED', 'blind')):
+            const = getattr(pcbnew, attr, None)
+            if const is not None and vt == const:
+                return name
+    except Exception:                                            # noqa: BLE001
+        pass
+    try:
+        if {via.TopLayer(), via.BottomLayer()} == {pcbnew.F_Cu, pcbnew.B_Cu}:
+            return 'through'
+        return 'blind'
+    except Exception:                                            # noqa: BLE001
+        return 'through'
 
 
 def build_pcb_data_from_board(board, guide_layer: str = "User.1",
@@ -8557,6 +8615,7 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                     track, _via_text_specs(track)),
                 uuid=_item_uuid(track),
                 locked=bool(track.IsLocked()),
+                via_type=pcbnew_via_type(track),
             )
             vias.append(v)
 

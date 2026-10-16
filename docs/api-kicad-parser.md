@@ -185,7 +185,8 @@ and is centred on the copper, not the hole, when the pad has a copper offset.
 | `x`, `y` | float | Position |
 | `size` | float | Outer (pad) diameter |
 | `drill` | float | Hole diameter |
-| `layers` | List[str] | Layer span, e.g. `['F.Cu', 'B.Cu']` |
+| `layers` | List[str] | The two end layers, e.g. `['F.Cu', 'B.Cu']`: as the file writes them (text) or `TopLayer()`/`BottomLayer()` (pcbnew, which reports F.Cu/B.Cu for every through via). Whether the via covers only part of the stack is `via_type`, never this pair |
+| `via_type` | str | `'through'`, `'blind'`, `'buried'` or `'micro'`: the block's type word (text) or `GetViaType()` (pcbnew). KiCad loads a via with no type word as THROUGH whatever its `(layers ...)` says, and this repo's writer emits no type word, so only a typed via has copper on part of the stack, the layers between its end layers (`geometry_utils.via_on_layer` / `via_span_layer_indices`, which the obstacle maps and check_drc read, #1268). A `Via` constructed without one is `'through'` |
 | `net_id` | int | Net ID, as pcbnew's connectivity pass leaves it on load: a non-free via with no same-net track or pad on it that sits in the zone FILL of exactly one net (on a layer it spans), with no track or pad of another net on it, takes that net whatever the file wrote (`propagate_via_cluster_nets`; antmicro lpddr4_test_board's stitching vias). A via joined to netted copper only by a track is not re-netted here |
 | `uuid` | str | UUID from the file |
 | `free` | bool | `(free yes)` flag — KiCad won't reassign the net from overlapping copper |
@@ -285,7 +286,7 @@ layers only.
 | `board_outline` | List[Tuple[float, float]] | Outline polygon for non-rectangular boards (empty if rectangular) |
 | `board_cutouts` | List[List[Tuple]] | Interior cutout polygons |
 | `stackup` | List[StackupLayer] | Physical stackup, top to bottom (empty if the board has none) |
-| `keepouts` | List[dict] | KiCad keepout rule areas (board-level AND footprint-owned): `{'polygon': [...], 'holes': [...], 'layers': set, 'tracks_allowed': bool, 'vias_allowed': bool, 'copper_pour_allowed': bool, 'in_footprint': bool}` |
+| `keepouts` | List[dict] | KiCad keepout rule areas (board-level AND footprint-owned): `{'polygon': [...], 'holes': [...], 'layers': set, 'tracks_allowed': bool, 'vias_allowed': bool, 'copper_pour_allowed': bool, 'in_footprint': bool, 'name': str}` (`name` is the area's `(name ...)`, `''` without one: a `.kicad_dru` area predicate names it) |
 | `pad_to_paste_clearance`, `pad_to_paste_clearance_ratio` | float | The board-level paste margin and ratio from `(setup ...)`, the last term of a pad's paste-margin resolution (#962) |
 | `via_protection_setup` | Dict[str, str] | The board's via protection policy, `{token: inner}` for all five tokens (`tenting`, `covering`, `plugging`, `capping`, `filling`), canonicalised from KiCad 10's per-token form and the legacy `(tenting front back)` form; a token the board does not declare takes KiCad's factory value (#962) |
 

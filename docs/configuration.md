@@ -136,7 +136,7 @@ vias and clearances *down toward* when it needs to. It is shared by every CLI
 |--------|---------|-------------|
 | `--fab-tier` | `auto` | `auto` (the standard floor, escalating to advanced when a fine-pitch fan-out, plane tap or last-resort via cannot fit; warned and counted), `standard` (no extra fab cost, **hard**) or `advanced` (tighter, "more costly", **hard**) |
 | `--fab-overrides` | - | Path to a file overlaying the tier's floors (only the keys it lists) |
-| `--escalation` | `fab` | How far below a **requested** size a failing net may be retried: `fab` (down to the fab tier floor, below the board's own minimums; completion first, every narrowing disclosed), `board` (down to the board's own Board Setup minimums; an unset key falls back to the fab tier floor, except clearance, which falls back to the Default net class's clearance, #1160; with `--no-fix-drc-settings` clearance descents stop at the Default class floored at `min_clearance`, what KiCad grades the unchanged project at, #1262), `off` (never; the net fails and is reported) |
+| `--escalation` | `fab` | How far below a **requested** size a failing net may be retried: `fab` (down to the fab tier floor, below the board's own minimums; completion first, every narrowing disclosed), `board` (down to the board's own Board Setup minimums; an unset key falls back to the fab tier floor, except clearance, which falls back to the Default net class's clearance, #1160; with `--no-fix-drc-settings` clearance descents stop at the Default class floored at `min_clearance`, what KiCad grades the unchanged project at, #1262), `off` (never; the net fails and is reported -- except a wide power/impedance net's pad-entry neck of at most 2 mm of path, `routing_defaults.PAD_ENTRY_NECK_MM`) |
 | `--strict-sizes` | off | Exit 3 when any feature was delivered below its requested size or a fab-tier escalation fired. For `--power-nets` track widths this means copper that SHIPS under width (one `design_rules` row per power net, #1033), not every narrower routing attempt |
 
 The tier is a **floor ladder**:
@@ -187,7 +187,37 @@ minimum (the stock 0.5 mm via on a project nobody edited, routed with
 console, and descents for that key bound at the fab floor instead. An explicit
 request is never pinned up to a board minimum, only to the fab floor. Under
 `off` nothing is narrowed and a net that cannot complete at the requested
-geometry fails and is reported.
+geometry fails and is reported, with one bounded exception: a wide (power or
+impedance) net may neck below its width for at most 2 mm of routed path
+(`routing_defaults.PAD_ENTRY_NECK_MM`) on one edge or one via-to-pad tap --
+the pad-entry stretch a wide rail cannot keep into a narrow pin. A longer neck
+fails the edge. A power net's under-width copper is recorded like any other
+narrowing (below), so `--strict-sizes` still sees it.
+
+**Net-filtered keep-outs.** A KiCad rule area has no net dimension, so a
+region only some nets may cross is a NAMED rule area plus a `.kicad_dru` rule
+whose condition names it, e.g.
+`(rule "corridor" (constraint disallow track via) (condition "A.intersectsArea('corridor') && A.NetName != 'GND'"))`.
+Every routing step reads such rules from the board's own `.kicad_dru` (no flag,
+no GUI control: as for the per-layer rules, the rules file is the single source
+of truth) and keeps each net the rule binds out of the area while that net
+routes; the nets it exempts route through. The bound nets are the rule's own
+condition evaluated per net (net name, net class, item type, layer), separately
+for tracks (`track`) and vias (`via`, `through_via`); a diff pair is bound when
+either member is, and its members' copper, not just its centreline, is kept out.
+`insideArea`, `intersectsArea` and `enclosedByArea` are read (the last as
+`intersectsArea`, which keeps out more than KiCad requires). The console says
+`.kicad_dru rule 'corridor': honoured as a net-filtered keep-out: N of M net(s)
+kept out of 'corridor' (tracks, vias)`. A rule the tool cannot model completely
+-- one with another constraint beside `disallow`, one that forbids an item
+outside every named area (`!A.intersectsArea(...)`), one that combines areas
+other than as a union (`a && b`), or one naming no area the board has -- stays
+`NOT honoured` and is listed in `design_rules.unsupported_rules`; nothing of it
+is applied. The run ends with an audit of the board it ships: bound-net copper
+inside a region (from a path that does not stamp the region, such as the plane
+finalize's taps and joins, or already in the input) is printed and reported as
+`net_keepouts` in `JSON_SUMMARY` / `--json-out` and the GUI's results (`[]` =
+clean; absent when the board has no such rule).
 
 **Disclosure.** Every descent is recorded and reported three ways: the
 `JSON_SUMMARY` block `design_rules` (policy, tier, the board floors read, every
@@ -496,7 +526,7 @@ These options control stub layer switching, which moves stubs to different layer
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--no-stub-layer-swap` | false | Disable stub layer switching (enabled by default) |
+| `--no-stub-layer-swap` | false | Disable stub layer switching (enabled by default): the upfront pass and every rescue that moves a stub (route.py's stub-swap rescue and boxed-stub switches, route_diff.py's multipoint terminal switch). The GUI's "Stub layer swaps" checkbox is the same setting |
 | `--can-swap-to-top-layer` | false | Allow swapping stubs to F.Cu (off by default for diff pairs due to clearance) |
 
 **How it works:**
@@ -511,6 +541,10 @@ These options control stub layer switching, which moves stubs to different layer
   layer, so an inner-layer pair can land on the pad via the via instead of fighting
   through the congested surface channel
 - Multiple swap options are tried: src/src, tgt/tgt, src/tgt, tgt/src
+- No switch, relocation or fan-out targets a **forbidden** layer: the copper
+  layers a `--layers` subset run did not request (appended as obstacles at
+  cost -1) or a negative `--layer-costs` entry. A stub whose other end sits on
+  a forbidden layer is not moved there; the net keeps its via
 - For **multi-point nets** (3+ endpoints, #265), all movable stubs are collapsed onto one
   common layer when every endpoint allows it (through-hole and via-in-pad pads reach any
   layer; bare SMD pads fix their copper layers; already-connected pad-to-pad copper never
@@ -519,7 +553,10 @@ These options control stub layer switching, which moves stubs to different layer
 - The **pad via sizes itself to fit**: a switch leaving the pad's layer drops a
   through-via at the pad, at the run's nominal via size when it clears the
   surrounding copper, else the first smaller via from the fab-tier ladder that
-  does (with the standard fab-escalation warning). A nominal 0.5mm via never
+  does (with the standard fab-escalation warning). Every switch that keeps the
+  via also checks its drill against every existing hole by the hole-to-hole
+  floor, the net's own vias included, shrinking it further when that helps and
+  reverting the switch when nothing fits. A nominal 0.5mm via never
   fits a 0.65mm-pitch ball field boxed by neighboring fanout vias; the 0.3/0.25
   rungs do — so a stub walled in on its own layer can still switch to an open
   layer and escape. Applies everywhere the switch machinery is used: the

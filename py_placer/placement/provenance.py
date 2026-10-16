@@ -54,6 +54,10 @@ LEVER_REGISTRY = (
     # own layout decision is a registered lever rather than the hand script
     # this regime is built to refuse (run 25's `pose_assist.py`).
     'place_pose.py',
+    # #1280: applies the intent's declared faces before seeding -- a side
+    # flip at the pose is a pose write, so outside this list it raised
+    # `UnaidedViolation` in any unaided work dir.
+    'place_intent_sides.py',
     # The ROUTER is a deliberate pose author: #666's scoped cap move calls
     # `write_placed_output` to relocate a cap off a rescue via. Absent from
     # this list it raised `UnaidedViolation` inside the funnel, route.py's

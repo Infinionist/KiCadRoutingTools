@@ -266,8 +266,9 @@ step without it go through `manifest_to_plan`'s CLI and the REAL PlanExecutor
 on the headless dialog, each action replaced by a probe. The flagged step's
 control AND the tab config its engine reads must hold the recorded value; the
 next step must be back at the CLI default. It also drives the QFN tab's real
-fanout run (engine spied) for `--layer` and both routing workers for
-`--net-clearances`, so the value is shown reaching the engine call.
+fanout run (engine spied) for `--layer` and the Route, Differential and
+Planes workers for `--net-clearances`, so the value is shown reaching the
+engine call.
 
 The same blindness applies one level up, to whole TOOLS: an unknown tool only
 bumps the converter's `skipped` count, so a converted plan reads complete
@@ -458,7 +459,10 @@ skip cleanly without KiCad python). Run any directly:
   rule (#498), every copper layer (not the plane step's outer+pour set), and
   the fab copper-to-edge floor; GUI and CLI place identical vias. On the
   pre-2026-09-24 code it fails 9 checks, CLI included (its rules lookup read
-  the output's not-yet-copied `.kicad_dru`).
+  the output's not-yet-copied `.kicad_dru`). Its `file` arm (#1272) sets the
+  Net Clearances File / `--net-clearances`: the file replaces the class map
+  as given on both fronts (2 checks fail before #1272: the tab ignored the
+  file, route_planes.py refused the flag).
 - `test_skip_existing_zones_gui.py` -- the Planes tab's **Skip existing
   zones** box against `route_planes.py` with and without
   `--skip-existing-zones`, on the real tab (create + apply on a live board):
@@ -574,6 +578,13 @@ skip cleanly without KiCad python). Run any directly:
   logged in GREEN; and `reset_params_to_defaults` must NOT untick it (the plan
   executor calls that before every step, so a reset there would abandon the
   run's movie halfway) while an explicit reset-all does.
+- `test_via_type_parse_parity.py` -- a via's copper span (#1268). The text
+  parse, the pcbnew parse and the Route tab's live re-sync
+  (`_sync_pcb_data_from_board`) are each held, layer by layer, to pcbnew's
+  own `PCB_VIA.IsOnLayer` on a board of through, blind, buried and micro vias
+  and on the same board with every type word stripped -- which KiCad loads as
+  through vias, and which is the shape this repo's writer emits. A span read
+  off the layer pair fails the stripped board on the text side only.
 - `diag_fullchain_carry_rp2350.py` -- **DELETED 2026-07-26.** Was a full
   GUI-carry reproduction (ONE board + ONE shared pcb_data across all 10 plan
   steps, graded per stage vs the CLI) built to localize where the carry

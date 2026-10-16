@@ -805,6 +805,14 @@ class GridRouteConfig:
         nc = self.net_clearances.get(net_id, 0.0) if self.net_clearances else 0.0
         return nc if nc > self.clearance else self.clearance
 
+    def routable_layers(self) -> List[str]:
+        """Layers a track may be placed on: config.layers minus the FORBIDDEN ones
+        (negative cost, e.g. the unrequested copper layers appended as obstacles).
+        Candidate lists for relocation, stub switching and layer swaps must come
+        from here -- a GND reference plane is in config.layers but takes no track."""
+        costs = self.layer_costs or []
+        return [l for i, l in enumerate(self.layers) if not (i < len(costs) and costs[i] < 0)]
+
     def get_layer_costs(self) -> List[int]:
         """Get layer cost multipliers for the Rust router.
 

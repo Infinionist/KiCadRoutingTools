@@ -719,6 +719,44 @@ def _is_pose(p: Dict, at) -> bool:
             and pose_score._same_rot(p['rot'], at[2]))    # noqa: PLC2701
 
 
+def _rank(pcb, board_path: str, ref: str, st, **kw):
+    """`pose_score.rank_poses` on the ranker's state `st`: `(on_board,
+    ranked, diagnostics)` (#1277).
+
+    `ranked` and `diagnostics` are the ranking as it always was. When the
+    part's input pose is off the board -- `candidate_valid`'s escape branch
+    is open for it (`QuenchState.escape_board_term`) -- that ranking admits
+    every pose merely LESS off the board than the input, and those can be
+    the cheapest: measured on esp_prog with R3 staged off the board, `set R3
+    143.4 102.0 --rot 180 --snap --radius 4` ranked 24 such poses ahead of
+    any pose on the board, and the snap wrote one its own grade called
+    illegal while a legal pose 0.49 mm nearer the request was never ranked.
+    So `on_board` is the same sweep with that branch CLOSED -- only poses
+    the ordinary gate admits -- for a caller to try FIRST. It is None when
+    the branch is closed anyway (the input is on the board, or overlaps a
+    part), where `ranked` already is that ranking."""
+    import pose_score
+    diag: Dict = {}
+    ranked = pose_score.rank_poses(pcb, board_path, ref, state=st,
+                                   diagnostics=diag, **kw)
+    on_board = None
+    if (hasattr(st, 'escape_board_term')
+            and st.escape_board_term(ref) is not None):
+        st.escape_closed.add(ref)
+        try:
+            on_board = pose_score.rank_poses(pcb, board_path, ref, state=st,
+                                             **kw)
+        finally:
+            st.escape_closed.discard(ref)
+    return on_board, ranked, diag
+
+
+def _pose_key(p: Dict) -> Tuple[float, float, float]:
+    """One candidate pose as a set key, so a pose on two rungs is one."""
+    return (round(p['x'], 4), round(p['y'], 4),
+            round(float(p['rot']) % 360.0, 4))
+
+
 def nearest_legal(board_path: str, ref: str, *, clearance: float,
                   board_edge_clearance: float, radius: float, step: float,
                   rotations=None, limit: int = 12, pcb_data=None, at=None):
@@ -733,19 +771,27 @@ def nearest_legal(board_path: str, ref: str, *, clearance: float,
     The sweep centres there, the part is judged against its pose on THIS
     board (the input, see `_ranker_state`), and `at` itself is never
     returned -- the census counts it as `requested_dropped`.
+
+    From an input pose off the board, the poses on the board come first
+    (#1277, `_rank`), in the order the snap tries them; the census counts
+    them as `ranked_on_board` (None when the input is on the board).
     """
-    import pose_score
     from kicad_parser import parse_kicad_pcb
     pcb = pcb_data if pcb_data is not None else parse_kicad_pcb(board_path)
     st = _ranker_state(pcb, board_path, ref, at, clearance=clearance,
                        board_edge_clearance=board_edge_clearance)
-    diag: Dict = {}
     kw = {} if rotations is None else {'rotations': tuple(rotations)}
-    poses = pose_score.rank_poses(pcb, board_path, ref, radius=radius,
-                                  step=step, limit=limit + 1, state=st,
-                                  diagnostics=diag, **kw)
+    on_board, ranked, diag = _rank(pcb, board_path, ref, st, radius=radius,
+                                   step=step, limit=limit + 1, **kw)
+    poses = ranked
+    if on_board is not None:
+        seen = {_pose_key(p) for p in on_board}
+        poses = list(on_board) + [p for p in ranked
+                                  if _pose_key(p) not in seen]
     kept = [p for p in poses if not _is_pose(p, at)]
     diag['requested_dropped'] = len(poses) - len(kept)
+    diag['ranked_on_board'] = (None if on_board is None else min(limit, sum(
+        1 for p in on_board if not _is_pose(p, at))))
     return kept[:limit], diag
 
 
@@ -778,6 +824,13 @@ def snap_candidates(board_path: str, ref: str, *, rot: float, clearance: float,
     back, so a rung cannot lose a repair). Rung 2 candidates are NOT claimed
     legal -- every candidate from either rung is re-graded by the caller
     before it is written.
+
+    From an input pose OFF the board, rung 1 is preceded by `ranked_on_board`
+    (#1277, `_rank`): the same ranking with the escape branch closed, so a
+    pose on the board is tried before the poses merely less off the board
+    than the input, which rung 1 also admits and can rank cheapest. The
+    census counts it as `ranked_on_board`, None when the input is on the
+    board (rung 1 then already is that ranking).
     """
     import pose_score
     from kicad_parser import parse_kicad_pcb
@@ -797,11 +850,10 @@ def snap_candidates(board_path: str, ref: str, *, rot: float, clearance: float,
                                _home.orig_rot)
         if _v is not None:
             home_veto = {'check': _v[0], 'blocker': _v[1]}
-    diag: Dict = {}
     try:
-        ranked = pose_score.rank_poses(pcb, board_path, ref, radius=radius,
-                                       step=step, limit=24, state=st,
-                                       rotations=(rot,), diagnostics=diag)
+        on_board, ranked, diag = _rank(pcb, board_path, ref, st,
+                                       radius=radius, step=step, limit=24,
+                                       rotations=(rot,))
     except pose_score.PoseUnrankable as exc:
         # #959 (#999): `place_pose` catches PoseRefusal only, so a pad-less
         # block reached a traceback here. The code carries over unchanged;
@@ -814,7 +866,8 @@ def snap_candidates(board_path: str, ref: str, *, rot: float, clearance: float,
             f"--strict-legal) and lock it", code=exc.code, ref=ref) from exc
     # #1256: the request was refused by the caller's grade before this ran,
     # so it is not a candidate -- the lattice below already skips offset 0.
-    requested_dropped = sum(1 for p in ranked if _is_pose(p, request))
+    requested_dropped = int(any(_is_pose(p, request)
+                                for p in list(on_board or ()) + ranked))
     ranked = [p for p in ranked if not _is_pose(p, request)]
     # The Euclidean bound, because `_offsets` walks SQUARE rings: a corner of
     # the r=4 ring sits 5.66 mm out, and a caller who typed `--radius 4` read
@@ -822,6 +875,15 @@ def snap_candidates(board_path: str, ref: str, *, rot: float, clearance: float,
     out = [dict(p, rung='ranked') for p in ranked
            if (p.get('dist_mm') or 0.0) <= radius + 1e-9]
     seen = {(round(p['x'], 4), round(p['y'], 4)) for p in out}
+    # #1277: from an input pose off the board, the ranking with the escape
+    # branch closed comes FIRST, as its own rung -- only adding candidates
+    # ahead of the ranked rung, which stays as it was, as does the lattice
+    # (`seen` is the ranked rung's alone, so no lattice pose is lost to it).
+    # A pose on two rungs is re-graded once (`apply_poses`).
+    first = [] if on_board is None else [
+        dict(p, rung='ranked_on_board') for p in on_board
+        if not _is_pose(p, request)
+        and (p.get('dist_mm') or 0.0) <= radius + 1e-9]
 
     part = st.parts.get(ref) if hasattr(st, 'parts') else None
     lattice = []
@@ -845,15 +907,16 @@ def snap_candidates(board_path: str, ref: str, *, rot: float, clearance: float,
     # passed, so a single nearest-first cap turns a snap that worked into a
     # refusal. The caller's "stay near" is honoured in the second phase, which
     # only considers lattice poses NEARER than the ranked answer.
-    ordered = out + lattice
+    ordered = first + out + lattice
     # The ranker's nearest pose the radius bound dropped (#1209), so a snap
     # that refuses can say "--radius N would reach a pose" -- the honest
     # advice to a call that already snapped -- instead of offering the pose
     # back as something to "try with --snap". Never re-graded here.
-    beyond = min((p for p in ranked
+    beyond = min((p for p in list(on_board or ()) + ranked
                   if (p.get('dist_mm') or 0.0) > radius + 1e-9),
                  key=lambda p: (p.get('dist_mm') or 0.0), default=None)
-    census = {'ranked': len(out),
+    census = {'ranked_on_board': None if on_board is None else len(first),
+              'ranked': len(out),
               'ranked_before_radius': len(ranked),
               'requested_dropped': requested_dropped,
               'nearest_beyond_radius': (
@@ -1399,23 +1462,47 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
             # prefer one of those if it passes. A single shared cap in either
             # order loses one of the two -- nearest-first starves the ranked
             # rung, ranked-first starves the lattice (the reviewer's finding).
+            #
+            # #1277: from an input pose off the board, a THIRD budget comes
+            # first -- the ranking with the escape branch closed
+            # (`ranked_on_board`). It only adds candidates ahead of the
+            # ranked rung, whose own budget and order are unchanged. A pose
+            # already re-graded is not graded twice, nor counted again:
+            # every such pose was refused (the walk stops at the first that
+            # passes), so skipping it cannot lose a later rung's answer.
+            #
+            # And when that rung answers, a nearer lattice pose must grade no
+            # worse than ITS answer too, not only no worse than the input.
+            # From an input off the board, "no worse than the input" admits
+            # pad copper still past the outline: measured on esp_prog with R3
+            # staged off the board, `set R3 145.0 97.5 --rot 180 --snap
+            # --radius 3` re-graded a clean on-board pose 2.92 mm away, then
+            # wrote (145.25, 97.5), 0.25 mm away with a pad past the outline.
             chosen = None
-            tried = 0
-            for cp in [p for p in poses if p['rung'] == 'ranked'][:snap_tries]:
-                tried += 1
-                trial, pcb_c, g, b = _grade_pose(cp)
-                if not b and (not strict or is_clean(g)):
-                    chosen = (cp, trial, pcb_c, g, b)
+            graded = set()
+
+            def _walk(cands, floor=None):
+                for cp in [p for p in cands
+                           if _pose_key(p) not in graded][:snap_tries]:
+                    graded.add(_pose_key(cp))
+                    trial, pcb_c, g, b = _grade_pose(cp)
+                    if (not b and (not strict or is_clean(g))
+                            and (floor is None or not worsened(floor, g))):
+                        return (cp, trial, pcb_c, g, b)
+                return None
+
+            for rung in ('ranked_on_board', 'ranked'):
+                chosen = _walk([p for p in poses if p['rung'] == rung])
+                if chosen is not None:
                     break
             limit = chosen[0]['dist_mm'] if chosen else float('inf')
-            for cp in [p for p in poses
-                       if p['rung'] == 'lattice'
-                       and (p['dist_mm'] or 0.0) < limit][:snap_tries]:
-                tried += 1
-                trial, pcb_c, g, b = _grade_pose(cp)
-                if not b and (not strict or is_clean(g)):
-                    chosen = (cp, trial, pcb_c, g, b)   # strictly nearer
-                    break
+            nearer = _walk([p for p in poses
+                            if p['rung'] == 'lattice'
+                            and (p['dist_mm'] or 0.0) < limit],
+                           floor=chosen[3] if chosen and chosen[0]['rung']
+                           == 'ranked_on_board' else None)
+            chosen = nearer or chosen                # strictly nearer
+            tried = len(graded)
             summary['snap_census']['candidates_tried'] = tried
 
             if chosen is not None:
@@ -1424,7 +1511,8 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                 summary['nearest_legal'] = cand_pose
                 summary['nearest_legal_basis'] = (
                     'the snapped pose: ranked by pose_score.rank_poses '
-                    '(rung ranked) or taken from the lattice (rung lattice), '
+                    '(rung ranked, or ranked_on_board from an input pose off '
+                    'the board) or taken from the lattice (rung lattice), '
                     'then RE-GRADED here and passed before it was written')
                 # RE-STAGE the winner. Phase 2 may have graded other poses
                 # after it, so the staging file holds the LAST candidate
@@ -1440,7 +1528,8 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                     'dist_mm': cand_pose.get('dist_mm'),
                     # WHICH rung answered: 'ranked' means the pose scorer and
                     # this verb agreed, 'lattice' means only this verb's own
-                    # grade accepted it.
+                    # grade accepted it; 'ranked_on_board' is 'ranked' with
+                    # the scorer's off-board escape licence closed (#1277).
                     'rung': cand_pose.get('rung'),
                     'candidates_tried': tried}
                 for n in notes:
@@ -1456,6 +1545,8 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                 # THEIR request rather than the last thing tried.
                 # `candidates_tried` against `ranked + lattice` is how a reader
                 # tells "there was nothing" from "we stopped looking".
+                # `untried` counts distinct poses: a ranked_on_board pose is
+                # often on the ranked rung too (#1277).
                 summary['nearest_legal_basis'] = (
                     'none: --snap re-graded every candidate it tried and '
                     'refused each one (snap_census.regrade_refused_by), and '
@@ -1467,7 +1558,7 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                     k: dict(sorted(v.items(), key=lambda kv: (-kv[1], kv[0])))
                     for k, v in sorted(refused_pairs.items()) if v}
                 summary['snap_census']['untried'] = max(
-                    0, census['ranked'] + census['lattice'] - tried)
+                    0, len({_pose_key(p) for p in poses}) - tried)
                 summary['snap_census']['snap_tries'] = snap_tries
                 write_placed_output(board_path, cand, placements)
                 copy_siblings(board_path, cand)
@@ -1653,6 +1744,9 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                     # a THIRD, so it is named rather than folded into null.
                     summary['nearest_legal_census'] = {
                         'ranked': len(poses),
+                        # #1277: how many of them are on the board, ranked
+                        # first; None when the input pose is on the board.
+                        'ranked_on_board': _d.get('ranked_on_board'),
                         'dropped_total': _d.get('dropped_total', 0),
                         'dropped_in_place': _d.get('dropped_in_place', []),
                         'dropped_by': _d.get('dropped_by', {}),   # #1113
@@ -1992,17 +2086,22 @@ def _snap_census_sentence(sc: Dict) -> str:
         return ' (%s%s)' % (', '.join(names[:4]),
                             ', +%d more' % more if more > 0 else '')
 
+    # #1277: the on-board rung exists only from an input pose off the board.
+    on_board = ('%d ranked on the board + ' % sc['ranked_on_board']
+                if sc.get('ranked_on_board') is not None else '')
     if tried:
-        out = (" --snap re-graded %d candidate(s) within %g mm (of %d ranked "
+        out = (" --snap re-graded %d candidate(s) within %g mm (of %s%d ranked "
                "+ %d lattice poses in reach) and refused every one: %s."
-               % (tried, radius, sc.get('ranked') or 0, sc.get('lattice') or 0,
+               % (tried, radius, on_board, sc.get('ranked') or 0,
+                  sc.get('lattice') or 0,
                   ', '.join('%s x%d%s' % (k, n, _named(k))
                             for k, n in list(by.items())[:6])
                   or 'no category recorded'))
     else:
-        out = (" --snap had no candidate to re-grade within %g mm (%d ranked "
+        out = (" --snap had no candidate to re-grade within %g mm (%s%d ranked "
                "+ %d lattice poses in reach)."
-               % (radius, sc.get('ranked') or 0, sc.get('lattice') or 0))
+               % (radius, on_board, sc.get('ranked') or 0,
+                  sc.get('lattice') or 0))
     untried = sc.get('untried') or 0
     if untried:
         out += (" %d pose(s) in reach were NOT re-graded (--snap-tries %s per "

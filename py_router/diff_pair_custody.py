@@ -84,6 +84,21 @@ def classify_diff_pair_failure(result: Optional[dict]) -> str:
     return 'no-route'
 
 
+def deferred_reasons_text(pair_reports, pair_names) -> str:
+    """Why the pairs in ``pair_names`` were left whole for the single-ended
+    pass, counted by their pair_reports ``failure_reason``:
+    "2 electrically short, 1 coupled route failed". One wording for the
+    CLI's end-of-run summary and the GUI's completion dialog."""
+    names = set(pair_names or ())
+    counts: Dict[str, int] = {}
+    for rep in pair_reports or ():
+        if rep.get('pair') in names:
+            why = rep.get('failure_reason') or 'unknown'
+            counts[why] = counts.get(why, 0) + 1
+    return ', '.join(f"{n} {why.replace('-', ' ')}"
+                     for why, n in sorted(counts.items()))
+
+
 def blocker_names(rippable_blockers, diff_pair_by_net_id, limit: int = 3) -> List[str]:
     """Human names (pair name when applicable) for the top blocking nets."""
     names = []
@@ -145,6 +160,14 @@ def build_pair_reports(state, diff_pair_ids_to_route, member_audit,
     with terminals peeled to the single-ended follow-up), 'deferred' (whole
     pair left for the single-ended follow-up), 'failed', 'skipped' (fanout
     pre-check, #242).
+
+    failure_reason (set for 'failed' and 'deferred'): a classify_diff_pair_
+    failure code, 'congestion' or 'multipoint-leg-failure' for a pair whose
+    coupled route failed -- a 2-terminal pair deferred as the fallback keeps
+    its code. A deferred pair otherwise carries 'electrically-short' (every
+    leg below the coupled floor: coupling buys nothing) or
+    'coupled-route-failed' (a multipoint pair no coupled chain could route,
+    deferred as the fallback, #165). 'unknown' when nothing was recorded.
     """
     reports = []
     routed_results = state.routed_results

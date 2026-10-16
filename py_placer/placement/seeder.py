@@ -5246,6 +5246,55 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple],
     return (None if reasons else 'contained'), reasons, conflicts
 
 
+def fixed_pose_pair_conflicts(state, entries, waived=frozenset()
+                              ) -> List[Dict[str, object]]:
+    """Pairwise contradictions among declared ``fixed_poses[]`` entries.
+
+    This is the read-only geometry slice of stage 0 that ``plan_check`` can
+    run before writing a seed.  It deliberately uses ``_fixed_pose_check``'s
+    own courtyard, pad and hole predicates instead of maintaining a second
+    preflight approximation.  Entries that the seeder cannot resolve, or
+    whose declared face differs from the board, are left to their existing
+    resolution/refusal paths; inventing flipped geometry here would compare a
+    part stage 0 cannot actually seat.
+
+    One record is returned per unordered pair.  Cross-face SMD courtyards and
+    pads do not conflict because the shared legality predicates are
+    side-aware; drilled geometry still reaches both faces. `waived` is
+    stage 0's own set of courtyard-waiver pairs (#1060), so a pair the
+    seater accepts is not refused here.
+    """
+    declared: Dict[str, Tuple] = {}
+    for f in sorted(entries, key=lambda row: str(row['ref'])):
+        ref = str(f['ref'])
+        part = state.parts.get(ref)
+        if part is None:
+            continue
+        side = f.get('side')
+        if side in ('F', 'B') and side != part.side:
+            continue
+        rot_decl = f.get('rot')
+        rot = (part.rot % 360.0 if rot_decl is None or rot_decl == 'unknown'
+               else float(rot_decl) % 360.0)
+        declared[ref] = (round(float(f['x']), 3),
+                         round(float(f['y']), 3),
+                         _materialise_rotation(part, rot))
+
+    out: List[Dict[str, object]] = []
+    refs = sorted(declared)
+    for i, a in enumerate(refs):
+        for b in refs[i + 1:]:
+            _how, _reasons, conflicts = _fixed_pose_check(
+                state, a, declared[a], {b: declared[b]}, waived=waived)
+            reason = conflicts.get(b)
+            if reason is None:
+                continue
+            out.append({'pair': [a, b], 'reason': reason,
+                        'poses': {a: list(declared[a]),
+                                  b: list(declared[b])}})
+    return out
+
+
 def _fixed_pose_prep(state, pcb_data, f: Dict, placed: Set[str],
                      held: Set[str], seated: Dict[str, Dict],
                      refused: Dict[str, Dict], lock: Set[str],
@@ -5307,7 +5356,8 @@ def _fixed_pose_prep(state, pcb_data, f: Dict, placed: Set[str],
             f"declared side {side_decl}, and the part is on {side_now}: the "
             f"seeder has no flip move, so it cannot seat it there"))
         notes.append(f"fixed pose {ref}: REFUSED -- {refused[ref]['reason']}"
-                     f"; flip the part on the board first")
+                     f"; flip the part on the board first "
+                     f"(place_intent_sides.py applies every declared face)")
         return None
     if ref in placed:
         # Authoritative already: locked in the FILE (or by another cause the

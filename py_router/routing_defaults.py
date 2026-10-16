@@ -60,6 +60,14 @@ TRACK_PROXIMITY_COST = 0.0
 STUB_PROXIMITY_RADIUS = 2.0  # mm
 NECKDOWN_LENGTH = 2.5  # mm of narrow track from the pad on neck-down routes (issue #72)
 NECKDOWN_TAPER_LENGTH = 0.5  # mm narrow->wide width taper (0 = abrupt)
+# Under --escalation off, the most routed path a wide (power / impedance) net
+# may run below its requested width on one edge or one via-to-pad tap: the
+# pad-entry stretch a 2 mm rail cannot keep into a 0.2 mm pin. A longer neck
+# is refused and the edge or pad is reported instead. Measured as path
+# LENGTH, not span. Shared by the neck-down ladder (single_ended_routing) and
+# the tap router (route_planes); not a CLI/GUI parameter. The fab / board
+# policies do not read it (their necks are shaped by NECKDOWN_LENGTH).
+PAD_ENTRY_NECK_MM = 2.0
 TRACK_PROXIMITY_DISTANCE = 2.0  # mm
 # #1146 pairwise keep-away: band cost per cell (mm equivalent; 0 = measure
 # and report only) and the radius around the routed net's own pads where the

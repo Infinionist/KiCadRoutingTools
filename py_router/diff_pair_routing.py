@@ -20,6 +20,7 @@ from connectivity import (
 from obstacle_map import check_line_clearance
 from geometry_utils import simplify_path, segments_intersect_tuple
 from net_queries import resolve_gnd_net_id, resolve_return_net_id
+from net_keepouts import stamping as _nk_stamping
 # Note: Layer switching is now done upfront in route.py, not during routing
 
 # Import Rust router
@@ -1090,7 +1091,32 @@ def _pair_via_offset(config, spacing_mm, p_net=None, n_net=None):
     track_via_clearance = (pn_clr + max_track_width / 2
                            + config.via_size / 2) * config.routing_clearance_margin
     return max(spacing_mm, _min_via_center_distance(config, p_net, n_net) / 2.0,
-               track_via_clearance - spacing_mm)
+               track_via_clearance - spacing_mm,
+               _layer_track_via_offset(config, pn_clr))
+
+
+def _layer_track_via_offset(config, pn_clr):
+    """Smallest P/N via offset at which every routable layer's tracks clear the
+    partner via when each layer runs at its own pitch (layer_pair_spacing).
+
+    _process_via_positions sets the tracks on a layer at that layer's
+    half-pitch (w + gap) / 2 and clears the partner via at pn_clr + w/2 +
+    via/2 on that layer, so the via must sit the difference off the
+    centerline. The scalar term above prices the widest layer at the call's
+    pitch, which covers this unless every layer is narrower than the call's
+    track width. 0 with no per-layer widths."""
+    if not getattr(config, 'layer_widths', None):
+        return 0.0
+    costs = config.get_layer_costs()
+    need = 0.0
+    for i, name in enumerate(config.layers):
+        if i < len(costs) and costs[i] < 0:
+            continue                        # forbidden: carries no track
+        w = config.get_track_width(name)
+        need = max(need, (pn_clr + w / 2 + config.via_size / 2)
+                   * config.routing_clearance_margin
+                   - (w + config.diff_pair_gap) / 2)
+    return need
 
 
 def _gnd_via_offsets(config, spacing_mm, gnd_net_id, pair_net_ids):
@@ -1629,6 +1655,17 @@ def _float_path_to_geometry(float_path, net_id, original_start, original_end, si
             term_pts.append((original_end[0], original_end[1]))
         _neck_terminal_grazes(segs, term_pts, pcb_data, net_id, config)
 
+        # A layer wider than the call's track width runs at its own wider
+        # pitch (layer_pair_spacing), while the centreline obstacle map
+        # reserves one half-pitch, the call's, on every layer: the outer track
+        # there can reach (layer width - track width) / 2 into a neighbour's
+        # clearance. Neck such a segment where it does, the same way.
+        wide = [s for s in segs if s.width > config.track_width + 1e-9]
+        if wide and getattr(config, 'layer_widths', None):
+            _neck_terminal_grazes(
+                wide, [p for s in wide for p in ((s.start_x, s.start_y), (s.end_x, s.end_y))],
+                pcb_data, net_id, config)
+
     return segs, vias, connector_lines
 
 
@@ -1784,6 +1821,23 @@ def get_diff_pair_endpoints(pcb_data: PCBData, p_net_id: int, n_net_id: int,
     return paired_sources, paired_targets, None
 
 
+def layer_pair_spacing(config):
+    """Half the P/N centre pitch on each layer: (layer width + gap) / 2.
+
+    With per-layer widths (impedance solve or a layer-scoped design rule) a pair
+    on a stripline layer is narrower than on the outer microstrip; keeping the
+    outer pitch there widens the edge gap and misses the declared impedance.
+    Returns a float when every layer shares one width."""
+    if not getattr(config, 'layer_widths', None):
+        return (config.track_width + config.diff_pair_gap) / 2
+    names = list(config.layers)
+
+    def spacing(layer):
+        name = names[layer] if isinstance(layer, int) and 0 <= layer < len(names) else layer
+        return (config.get_track_width(name) + config.diff_pair_gap) / 2
+    return spacing
+
+
 def create_parallel_path_from_float(centerline_path, sign, spacing_mm=0.1, start_dir=None, end_dir=None):
     """
     Create a path parallel to centerline from float coordinates (no grid conversion).
@@ -1887,8 +1941,9 @@ def create_parallel_path_from_float(centerline_path, sign, spacing_mm=0.1, start
         else:
             corner_scale = 1.0
 
-        perp_x = -ndy * sign * spacing_mm * corner_scale
-        perp_y = ndx * sign * spacing_mm * corner_scale
+        sp = spacing_mm(layer) if callable(spacing_mm) else spacing_mm
+        perp_x = -ndy * sign * sp * corner_scale
+        perp_y = ndx * sign * sp * corner_scale
 
         result.append((x + perp_x, y + perp_y, layer))
 
@@ -2052,7 +2107,10 @@ def _try_route_direction(src, tgt, pcb_data, config, obstacles, base_obstacles,
     pn_clr = config.pair_clearance(p_net_id, n_net_id, kind='stack')
     track_via_clearance = (pn_clr + max_track_width / 2 + config.via_size / 2) * config.routing_clearance_margin
     min_via_spacing = config.via_size + pn_clr  # Minimum via center-to-center distance
-    min_via_spacing_for_track = track_via_clearance - spacing_mm
+    # ...and every layer's tracks at their own pitch (_layer_track_via_offset),
+    # where the via placer will put them.
+    min_via_spacing_for_track = max(track_via_clearance - spacing_mm,
+                                    _layer_track_via_offset(config, pn_clr))
     via_spacing = max(spacing_mm, min_via_spacing / 2, min_via_spacing_for_track)
     # Exclusion calculation: if centerline is at position X, the N track is at X + spacing_mm
     # N via is at centerline_via + via_spacing
@@ -2673,6 +2731,7 @@ def _connector_grazes_foreign_copper(new_segments, pcb_data, p_net_id, n_net_id,
     or None.
     """
     from check_drc import check_pad_segment_overlap, check_via_segment_overlap
+    from geometry_utils import via_on_layer
 
     own = (p_net_id, n_net_id)
     pair_segs = [s for s in new_segments if s.net_id in own]
@@ -2728,6 +2787,8 @@ def _connector_grazes_foreign_copper(new_segments, pcb_data, p_net_id, n_net_id,
         for via in vias:
             if via.net_id == seg.net_id:
                 continue  # the connector legitimately lands on its own-net via
+            if not via_on_layer(via, seg.layer):
+                continue  # a blind/micro via has no copper on this layer
             vclr = _obs_clr(via.net_id, seg.layer)
             vm = vclr + seg.width / 2 + via.size / 2
             if (via.x < sxmin - vm or via.x > sxmax + vm or
@@ -2790,6 +2851,11 @@ def _pad_obstacle_segments(pad, layer_names):
                     width=a[4], layer=L, net_id=pad.net_id) for L in cu]
 
 
+# Net-filtered keep-outs: the hybrid's coupled middle is laid for BOTH members,
+# so a region binding either is stamped into its map at the centreline
+# geometry, as for the standard route (its legs stamp their own net, above).
+@_nk_stamping(lambda a: (a['diff_pair'].p_net_id, a['diff_pair'].n_net_id),
+              lambda a: (a['obstacles'],), centerline=True)
 def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_names,
                                  leg_obstacles=None, endpoints=None, terminal_pads=None):
     """Hybrid coupled middle (last resort): route a clean parallel P/N pair
@@ -3143,8 +3209,10 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
         # side P's vias are actually on. A genuine side-swap (P-via on opposite
         # sides at the two ends) costs one crossing either way, but this never
         # crosses BOTH legs gratuitously.
-        off_plus = create_parallel_path_from_float(centerline_float, sign=1, spacing_mm=spacing_mm)
-        off_minus = create_parallel_path_from_float(centerline_float, sign=-1, spacing_mm=spacing_mm)
+        off_plus = create_parallel_path_from_float(centerline_float, sign=1,
+                                                   spacing_mm=layer_pair_spacing(config))
+        off_minus = create_parallel_path_from_float(centerline_float, sign=-1,
+                                                    spacing_mm=layer_pair_spacing(config))
 
         # Choose which offset track is P by the SIDE the P pad sits on relative to the
         # local centerline direction at each end -- NOT raw distance to the middle's
@@ -3818,6 +3886,9 @@ def _terminal_island_taps(term_xy, own_segs, own_vias, coord, layer_names):
     return get_all_segment_tap_points(isl_s, coord, layer_names, vias=isl_v)
 
 
+# Net-filtered keep-outs (net_keepouts.py): a hybrid leg is ONE net's track,
+# laid on its own map, so the regions binding that net are stamped into it.
+@_nk_stamping(lambda a: (a['net_id'],), lambda a: (a['obstacles'],))
 def _route_hybrid_leg(pcb_data, net_id, config, obstacles, layer_names, coord,
                       mid_pt, term, partner_segs, partner_vias, pair_vias,
                       partner_pads=None, mid_vias=None,
@@ -4226,6 +4297,31 @@ def seam_reask_chain_leg(pcb_data, pair, config, leg_obstacles, layer_names,
 
 
 def route_diff_pair_with_obstacles(pcb_data: PCBData, diff_pair: DiffPairNet,
+                                    config: GridRouteConfig,
+                                    obstacles: GridObstacleMap,
+                                    *args, **kwargs) -> Optional[dict]:
+    """Route a differential pair; see `_route_diff_pair_with_obstacles_impl`.
+
+    Net-filtered keep-outs binding EITHER member are stamped for the
+    duration of the route (the pair is laid as one centreline, so a region
+    forbidden to one member is forbidden to the pair) and removed afterwards
+    -- into the pair map at the centreline geometry (centerline_config), and
+    into `base_obstacles`, the map the terminal connectors are checked
+    against (_try_route_direction), at the plain one: a connector is one
+    member's track."""
+    if not getattr(pcb_data, '_net_keepouts', None):
+        return _route_diff_pair_with_obstacles_impl(pcb_data, diff_pair, config, obstacles,
+                                                    *args, **kwargs)
+    from net_keepouts import stamp as _nk_stamp, centerline_config
+    pair = (diff_pair.p_net_id, diff_pair.n_net_id)
+    base = args[0] if args else kwargs.get('base_obstacles')
+    with _nk_stamp(obstacles, pcb_data, pair, centerline_config(config)), \
+            _nk_stamp(None if base is obstacles else base, pcb_data, pair, config):
+        return _route_diff_pair_with_obstacles_impl(pcb_data, diff_pair, config, obstacles,
+                                                    *args, **kwargs)
+
+
+def _route_diff_pair_with_obstacles_impl(pcb_data: PCBData, diff_pair: DiffPairNet,
                                     config: GridRouteConfig,
                                     obstacles: GridObstacleMap,
                                     base_obstacles: GridObstacleMap = None,
@@ -4763,9 +4859,11 @@ def route_diff_pair_with_obstacles(pcb_data: PCBData, diff_pair: DiffPairNet,
         if math.hypot(fx - exact[0], fy - exact[1]) <= config.grid_step * 0.75:
             centerline_float[idx] = (exact[0], exact[1], flayer)
 
-    p_float_path = create_parallel_path_from_float(centerline_float, sign=p_sign, spacing_mm=spacing_mm,
+    p_float_path = create_parallel_path_from_float(centerline_float, sign=p_sign,
+                                                   spacing_mm=layer_pair_spacing(config),
                                                    start_dir=start_stub_dir, end_dir=end_stub_dir)
-    n_float_path = create_parallel_path_from_float(centerline_float, sign=n_sign, spacing_mm=spacing_mm,
+    n_float_path = create_parallel_path_from_float(centerline_float, sign=n_sign,
+                                                   spacing_mm=layer_pair_spacing(config),
                                                    start_dir=start_stub_dir, end_dir=end_stub_dir)
 
     # Process via positions
@@ -5114,6 +5212,25 @@ def _process_via_positions(simplified_path, p_float_path, n_float_path, coord, c
     if not p_float_path or not n_float_path or len(simplified_path) < 2:
         return p_float_path, n_float_path
 
+    # With per-layer widths the P/N paths run at each layer's own pitch
+    # (layer_pair_spacing), so the approach and exit points must too: at the
+    # call's scalar pitch the whole segment into and out of every via tapered
+    # back to it, and on a layer wider than the call's track width it closed
+    # the P/N gap there. Each side then clears the partner via at its own
+    # width; _pair_via_offset spaces the vias so that fits on every layer.
+    _layer_sp = layer_pair_spacing(config)
+    _layer_names = list(config.layers)
+
+    def _side_geometry(layer):
+        """(P/N centre pitch, track-to-partner-via offset) on `layer`."""
+        if not callable(_layer_sp):
+            return spacing_mm * 2, track_via_clearance
+        name = (_layer_names[layer] if isinstance(layer, int)
+                and 0 <= layer < len(_layer_names) else layer)
+        w = config.get_track_width(name)
+        return (_layer_sp(layer) * 2,
+                (pn_clr + w / 2 + config.via_size / 2) * config.routing_clearance_margin)
+
     # Find all layer change indices first
     layer_change_indices = []
     for i in range(len(simplified_path) - 1):
@@ -5172,8 +5289,10 @@ def _process_via_positions(simplified_path, p_float_path, n_float_path, coord, c
         n_via_x = cx + perp_x * n_sign * via_spacing
         n_via_y = cy + perp_y * n_sign * via_spacing
 
-        # Calculate approach and exit positions to keep main tracks parallel
-        diff_pair_spacing = spacing_mm * 2
+        # Calculate approach and exit positions to keep main tracks parallel,
+        # each at its own layer's pitch
+        in_pitch, in_tvc = _side_geometry(layer1)
+        out_pitch, out_tvc = _side_geometry(layer2)
         in_perp_x, in_perp_y = -in_dir_y, in_dir_x
         out_perp_x, out_perp_y = -out_dir_y, out_dir_x
 
@@ -5199,30 +5318,30 @@ def _process_via_positions(simplified_path, p_float_path, n_float_path, coord, c
         perp_sign = 1 if perp_dot >= 0 else -1
 
         if inner_is_p:
-            n_approach_x = inner_via_x + in_perp_x * perp_sign * track_via_clearance
-            n_approach_y = inner_via_y + in_perp_y * perp_sign * track_via_clearance
-            p_approach_x = n_approach_x - in_perp_x * perp_sign * diff_pair_spacing
-            p_approach_y = n_approach_y - in_perp_y * perp_sign * diff_pair_spacing
+            n_approach_x = inner_via_x + in_perp_x * perp_sign * in_tvc
+            n_approach_y = inner_via_y + in_perp_y * perp_sign * in_tvc
+            p_approach_x = n_approach_x - in_perp_x * perp_sign * in_pitch
+            p_approach_y = n_approach_y - in_perp_y * perp_sign * in_pitch
         else:
-            p_approach_x = inner_via_x + in_perp_x * perp_sign * track_via_clearance
-            p_approach_y = inner_via_y + in_perp_y * perp_sign * track_via_clearance
-            n_approach_x = p_approach_x - in_perp_x * perp_sign * diff_pair_spacing
-            n_approach_y = p_approach_y - in_perp_y * perp_sign * diff_pair_spacing
+            p_approach_x = inner_via_x + in_perp_x * perp_sign * in_tvc
+            p_approach_y = inner_via_y + in_perp_y * perp_sign * in_tvc
+            n_approach_x = p_approach_x - in_perp_x * perp_sign * in_pitch
+            n_approach_y = p_approach_y - in_perp_y * perp_sign * in_pitch
 
         # Calculate exit positions (after via, on layer2)
         out_perp_dot = inner_to_outer_x * out_perp_x + inner_to_outer_y * out_perp_y
         out_perp_sign = 1 if out_perp_dot >= 0 else -1
 
         if inner_is_p:
-            n_exit_x = inner_via_x + out_perp_x * out_perp_sign * track_via_clearance
-            n_exit_y = inner_via_y + out_perp_y * out_perp_sign * track_via_clearance
-            p_exit_x = n_exit_x - out_perp_x * out_perp_sign * diff_pair_spacing
-            p_exit_y = n_exit_y - out_perp_y * out_perp_sign * diff_pair_spacing
+            n_exit_x = inner_via_x + out_perp_x * out_perp_sign * out_tvc
+            n_exit_y = inner_via_y + out_perp_y * out_perp_sign * out_tvc
+            p_exit_x = n_exit_x - out_perp_x * out_perp_sign * out_pitch
+            p_exit_y = n_exit_y - out_perp_y * out_perp_sign * out_pitch
         else:
-            p_exit_x = inner_via_x + out_perp_x * out_perp_sign * track_via_clearance
-            p_exit_y = inner_via_y + out_perp_y * out_perp_sign * track_via_clearance
-            n_exit_x = p_exit_x - out_perp_x * out_perp_sign * diff_pair_spacing
-            n_exit_y = p_exit_y - out_perp_y * out_perp_sign * diff_pair_spacing
+            p_exit_x = inner_via_x + out_perp_x * out_perp_sign * out_tvc
+            p_exit_y = inner_via_y + out_perp_y * out_perp_sign * out_tvc
+            n_exit_x = p_exit_x - out_perp_x * out_perp_sign * out_pitch
+            n_exit_y = p_exit_y - out_perp_y * out_perp_sign * out_pitch
 
         # Update position at index i to approach position
         p_float_path[i] = (p_approach_x, p_approach_y, layer1)

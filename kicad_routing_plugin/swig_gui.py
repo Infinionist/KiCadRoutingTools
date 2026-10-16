@@ -117,9 +117,10 @@ def _nm_to_mm(nm):
 
 
 def net_clearances_file_error(path):
-    """Why the Net Clearances File (route.py / route_diff.py --net-clearances)
-    cannot be used, or None when it is empty or loads -- through the loader
-    the CLI mains call, so a file the CLI would fail on is refused here too."""
+    """Why the Net Clearances File (route.py / route_diff.py / route_planes.py
+    --net-clearances) cannot be used, or None when it is empty or loads --
+    through the loader the CLI mains call, so a file the CLI would fail on is
+    refused here too."""
     path = (path or '').strip()
     if not path:
         return None
@@ -320,7 +321,7 @@ class RoutingDialog(wx.Dialog):
 
         try:
             import pcbnew
-            from kicad_parser import Segment, Via
+            from kicad_parser import Segment, Via, pcbnew_via_type
 
             board = pcbnew.GetBoard()
             if board is None:
@@ -365,6 +366,9 @@ class RoutingDialog(wx.Dialog):
                         drill=pcbnew.ToMM(via.GetDrill()),
                         layers=[get_layer_name(top_layer), get_layer_name(bot_layer)],
                         net_id=via.GetNetCode(),
+                        # #1268: the span a blind/buried/micro via blocks
+                        # comes from its type, as on both parse paths.
+                        via_type=pcbnew_via_type(via),
                     )
                     new_vias.append(v)
 
@@ -673,7 +677,9 @@ class RoutingDialog(wx.Dialog):
         self.escalation.SetToolTip(
             "How far below a requested size a failing net may be retried. off: never "
             "-- sizes and clearances are exact, a net that cannot complete at them "
-            "fails and is reported. board: down to the board's own declared floors "
+            "fails and is reported (a wide power/impedance net may still neck for at "
+            f"most {defaults.PAD_ENTRY_NECK_MM:g} mm of path at a pad entry). board: "
+            "down to the board's own declared floors "
             "(Board Setup > Constraints; an unset key falls back to the fab tier "
             "floor, an unset minimum clearance to the Default class). That is what "
             "KiCad's DRC accepts once 'Fix DRC settings after routing' lowers the "
@@ -1156,10 +1162,10 @@ class RoutingDialog(wx.Dialog):
                     "one side route against each other at the normal clearance. The "
                     "log reports per net the length left inside a band. Empty = off.")
                 grid.Add(self.keep_away, 0, wx.EXPAND)
-                # route.py / route_diff.py --net-clearances FILE, named after
-                # the plan param: an explicit per-net clearance map that
-                # replaces the one the Route and Differential tabs build from
-                # the board's net classes.
+                # route.py / route_diff.py / route_planes.py --net-clearances
+                # FILE, named after the plan param: an explicit per-net
+                # clearance map that replaces the one the Route, Differential
+                # and Planes tabs build from the board's net classes.
                 grid.Add(wx.StaticText(parent, label="Net Clearances File:"), 0,
                          wx.ALIGN_CENTER_VERTICAL)
                 ncl_sizer = wx.BoxSizer(wx.HORIZONTAL)
@@ -1168,9 +1174,10 @@ class RoutingDialog(wx.Dialog):
                 self.net_clearances_path.SetToolTip(
                     "Optional JSON file mapping net name -> clearance in mm, "
                     "e.g. {\"/USB_D+\": 0.12, \"/USB_D-\": 0.12} (route.py / "
-                    "route_diff.py --net-clearances). When set it REPLACES the "
-                    "per-net clearances the Route and Differential tabs read "
-                    "from the board's net classes, used as given (no class, no "
+                    "route_diff.py / route_planes.py --net-clearances). When "
+                    "set it REPLACES the per-net clearances the Route, "
+                    "Differential and Planes tabs read from the board's net "
+                    "classes, used as given (no class, no "
                     "ceiling); a net it does not name routes at the run's "
                     "clearance. Empty = from the net classes.")
                 ncl_sizer.Add(self.net_clearances_path, 1, wx.EXPAND | wx.RIGHT, 4)
@@ -2079,6 +2086,9 @@ class RoutingDialog(wx.Dialog):
                 'clamp_netclasses': self._ceiling_on(),
                 'fab_tier': self.fab_tier.GetString(self.fab_tier.GetSelection()),
                 'fab_overrides_path': self.fab_overrides_path.GetValue().strip(),
+                # route_planes.py --net-clearances: the Advanced tab's Net
+                # Clearances File reaches the plane taps and GND vias too.
+                'net_clearances_path': self.net_clearances_path.GetValue().strip(),
                 'escalation': self._escalation_policy(),
                 'board_floors': self._board_floor_dict(),
                 # #1262: what KiCad grades a Default net at when the DRC

@@ -278,6 +278,10 @@ _FINALIZE_ROUTE_KNOBS = (
     'bus_enabled', 'bus_detection_radius', 'bus_attraction_radius',
     'bus_attraction_bonus', 'bus_min_nets',
     'keep_away', 'keep_away_free', 'keep_away_cost',
+    # Net-filtered keep-outs (net_keepouts.py), resolved from the step's
+    # .kicad_dru: a reconnect of a bound net must stay out of the regions the
+    # step kept it out of.
+    'net_keepouts',
     # #1260: the step's pour barriers, so a casualty reconnect cannot cut
     # the out-of-scope pours the step itself was kept out of.
     'pour_barriers',
@@ -1188,6 +1192,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 coplanar_nets: Optional[List[str]] = None,
                 power_nets: Optional[List[str]] = None,
                 power_nets_widths: Optional[List[float]] = None,
+                # Net-filtered keep-outs (net_keepouts.py) a PARENT run resolved
+                # from its board's .kicad_dru, handed to a nested sub-run like
+                # layer_clearances (#498). Internal: no CLI flag, no GUI
+                # control; None = derive them from this run's own rules.
+                net_keepouts: Optional[List[dict]] = None,
                 power_tap_neckdown: bool = True,
                 neckdown_length: float = 2.5,
                 neckdown_taper_length: float = 0.5,
@@ -2032,6 +2041,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             pcb_data._keep_away_state = {}
     config_kwargs['neckdown_length'] = neckdown_length
     config_kwargs['neckdown_taper_length'] = neckdown_taper_length
+    # --no-stub-layer-swap reached only the up-front stub pass; the in-loop and
+    # reconciliation STUB-SWAP RESCUE read config.stub_layer_swap and kept moving
+    # input stubs (a 0.8 mm stub swapped onto F.Cu shorted a fine-pitch pad).
+    config_kwargs['stub_layer_swap'] = enable_layer_switch
     if direction_order is not None:
         config_kwargs['direction_order'] = direction_order
     if layer_widths:
@@ -2425,9 +2438,21 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # here for the swap passes over the nets this call routes, and again over
     # the full routed set once it is known (below).
     from kicad_dru import install_layer_clearances, install_track_clearances
-    install_layer_clearances(config, layer_clearances, input_file, pcb_data)
+    install_layer_clearances(config, layer_clearances, input_file, pcb_data,
+                             net_keepouts=True)
     install_track_clearances(config, track_clearances, input_file, pcb_data,
                              routed_net_ids=[nid for _, nid in net_ids])
+    # Net-filtered keep-outs: the board's .kicad_dru `disallow` rules on a
+    # named rule area, derived with config.rules just above (net_keepouts.
+    # derive_area_keepouts) and stamped per net while a bound net routes.
+    # Set on EVERY run -- the GUI hands each run the same PCBData, so a board
+    # whose rule is gone must not keep the last run's regions. A nested
+    # sub-run takes its parent's resolved list, as it takes the #498 map: the
+    # output's .kicad_dru does not exist yet mid-run.
+    from net_keepouts import attach as _nk_attach
+    _nk_attach(pcb_data, net_keepouts if net_keepouts is not None
+               else getattr(getattr(config, 'rules', None), 'net_keepouts', None))
+    _reconcile_kwargs['net_keepouts'] = list(getattr(pcb_data, '_net_keepouts', None) or [])
 
     # Apply target swaps for single-ended swappable-nets
     single_ended_target_swaps: Dict[str, str] = {}
@@ -5231,6 +5256,13 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         _ka = disclose_keep_away(pcb_data, config)
         if _ka is not None:
             summary['keep_away'] = _ka
+        # Net-filtered keep-outs: bound-net copper inside a region, on the
+        # first pass's board (re-measured on the SHIPPED board at the end,
+        # where it is printed; absent when the run has no keep-out).
+        from net_keepouts import audit as _nk_audit
+        _nk_first = _nk_audit(pcb_data, pcb_data.segments, pcb_data.vias)
+        if _nk_first is not None:
+            summary['net_keepouts'] = _nk_first
     # WHICH SUMMARY IS THIS? A run that fires the reconciliation sub-pass emits
     # a SECOND JSON_SUMMARY, scoped to that subset, and the only thing saying so
     # was a prose "Note:" printed after it. Anything that scrapes the last
@@ -7563,6 +7595,37 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             print(f"  WARNING: pour-cut audit skipped "
                   f"({type(_pce).__name__}: {_pce})")
 
+    # Net-filtered keep-outs: the bound-net copper the SHIPPED board has
+    # inside a region. stamp() keeps the router's own searches out, but the
+    # plane finalize's taps and joins and the post-route passes lay copper
+    # without it, and the input may already have some: KiCad grades every
+    # piece as items_not_allowed, so it is said here, not found there.
+    _nk_shipped = None
+    if final_reconcile and not _ckpt_stop and getattr(pcb_data, '_net_keepouts', None):
+        try:
+            from net_keepouts import audit as _nk_audit, format_audit
+            _rd_nk = locals().get('results_data')
+            _nk_board = _nk_copper = None
+            if return_results and _rd_nk is not None:
+                _nk_s, _nk_v = _gui_write_model(_rd_nk)
+                _nk_board = pcb_data
+                _nk_copper = ([s for _l in _nk_s.values() for s in _l],
+                              [v for _l in _nk_v.values() for v in _l])
+            elif output_file and os.path.isfile(output_file):
+                from kicad_parser import parse_kicad_pcb as _pk_nk
+                _nk_board = _pk_nk(output_file)
+                _nk_copper = (_nk_board.segments, _nk_board.vias)
+            if _nk_board is not None:
+                _nk_shipped = _nk_audit(_nk_board, *_nk_copper,
+                                        keepouts=pcb_data._net_keepouts)
+                _nk_line = format_audit(_nk_shipped, 'the shipped board')
+                print(f"\n{RED}  {_nk_line}{RESET}" if _nk_shipped else f"  {_nk_line}")
+                if return_results and _rd_nk is not None:
+                    _rd_nk['net_keepouts'] = _nk_shipped
+        except Exception as _nke:                               # noqa: BLE001
+            print(f"  WARNING: net keep-out audit skipped "
+                  f"({type(_nke).__name__}: {_nke})")
+
     # Per-net story dump (KICAD_NET_STORY=1): the complete journey of every
     # net -- bus membership, ordering, failures with named blockers, rips,
     # rescues, Phase-3 tap order, costs -- assembled from state.
@@ -7583,6 +7646,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             # #1260: likewise the pour-cut audit of the shipped board.
             if _merged is not None and _pour_cuts:
                 _merged['pour_cuts'] = _pour_cuts
+            # Likewise the net-filtered keep-out audit of the shipped board.
+            if _merged is not None and _nk_shipped is not None:
+                _merged['net_keepouts'] = _nk_shipped
             # ALL-OR-NOTHING (#830). This was `open(json_out,'w')` +
             # `json.dump`, which truncates the destination before the first
             # chunk is encoded and then STREAMS into it -- so a failure partway
