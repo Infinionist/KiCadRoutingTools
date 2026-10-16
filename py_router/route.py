@@ -5224,6 +5224,13 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         _ka = disclose_keep_away(pcb_data, config)
         if _ka is not None:
             summary['keep_away'] = _ka
+        # Net-filtered keep-outs: bound-net copper inside a region, on the
+        # first pass's board (re-measured on the SHIPPED board at the end,
+        # where it is printed; absent when the run has no keep-out).
+        from net_keepouts import audit as _nk_audit
+        _nk_first = _nk_audit(pcb_data, pcb_data.segments, pcb_data.vias)
+        if _nk_first is not None:
+            summary['net_keepouts'] = _nk_first
     # WHICH SUMMARY IS THIS? A run that fires the reconciliation sub-pass emits
     # a SECOND JSON_SUMMARY, scoped to that subset, and the only thing saying so
     # was a prose "Note:" printed after it. Anything that scrapes the last
@@ -7551,6 +7558,37 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             print(f"  WARNING: pour-cut audit skipped "
                   f"({type(_pce).__name__}: {_pce})")
 
+    # Net-filtered keep-outs: the bound-net copper the SHIPPED board has
+    # inside a region. stamp() keeps the router's own searches out, but the
+    # plane finalize's taps and joins and the post-route passes lay copper
+    # without it, and the input may already have some: KiCad grades every
+    # piece as items_not_allowed, so it is said here, not found there.
+    _nk_shipped = None
+    if final_reconcile and not _ckpt_stop and getattr(pcb_data, '_net_keepouts', None):
+        try:
+            from net_keepouts import audit as _nk_audit, format_audit
+            _rd_nk = locals().get('results_data')
+            _nk_board = _nk_copper = None
+            if return_results and _rd_nk is not None:
+                _nk_s, _nk_v = _gui_write_model(_rd_nk)
+                _nk_board = pcb_data
+                _nk_copper = ([s for _l in _nk_s.values() for s in _l],
+                              [v for _l in _nk_v.values() for v in _l])
+            elif output_file and os.path.isfile(output_file):
+                from kicad_parser import parse_kicad_pcb as _pk_nk
+                _nk_board = _pk_nk(output_file)
+                _nk_copper = (_nk_board.segments, _nk_board.vias)
+            if _nk_board is not None:
+                _nk_shipped = _nk_audit(_nk_board, *_nk_copper,
+                                        keepouts=pcb_data._net_keepouts)
+                _nk_line = format_audit(_nk_shipped, 'the shipped board')
+                print(f"\n{RED}  {_nk_line}{RESET}" if _nk_shipped else f"  {_nk_line}")
+                if return_results and _rd_nk is not None:
+                    _rd_nk['net_keepouts'] = _nk_shipped
+        except Exception as _nke:                               # noqa: BLE001
+            print(f"  WARNING: net keep-out audit skipped "
+                  f"({type(_nke).__name__}: {_nke})")
+
     # Per-net story dump (KICAD_NET_STORY=1): the complete journey of every
     # net -- bus membership, ordering, failures with named blockers, rips,
     # rescues, Phase-3 tap order, costs -- assembled from state.
@@ -7571,6 +7609,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             # #1260: likewise the pour-cut audit of the shipped board.
             if _merged is not None and _pour_cuts:
                 _merged['pour_cuts'] = _pour_cuts
+            # Likewise the net-filtered keep-out audit of the shipped board.
+            if _merged is not None and _nk_shipped is not None:
+                _merged['net_keepouts'] = _nk_shipped
             # ALL-OR-NOTHING (#830). This was `open(json_out,'w')` +
             # `json.dump`, which truncates the destination before the first
             # chunk is encoded and then STREAMS into it -- so a failure partway

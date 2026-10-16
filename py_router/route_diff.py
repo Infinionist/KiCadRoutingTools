@@ -1899,6 +1899,14 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     _ka = disclose_keep_away(pcb_data, config)
     if _ka is not None:
         summary['keep_away'] = _ka
+    # Net-filtered keep-outs: bound-net copper inside a region on the routed
+    # board (absent when the run has none; route.py reports the same key).
+    from net_keepouts import audit as _nk_audit, format_audit as _nk_format
+    _nk_found = _nk_audit(pcb_data, pcb_data.segments, pcb_data.vias)
+    if _nk_found is not None:
+        summary['net_keepouts'] = _nk_found
+        print(f"{RED}{_nk_format(_nk_found, 'the routed board')}{RESET}"
+              if _nk_found else _nk_format(_nk_found, 'the routed board'))
     try:                       # #653: env knobs into the machine-readable
         import env_knobs as _ek653   # summary, so a harness can detect a
         summary['env_knobs'] = _ek653.active_env_knobs()   # dirty baseline
@@ -1933,6 +1941,9 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
             # #1146: the nets JSON_SUMMARY['keep_away'] lists as left inside
             # a band, one dict per net (empty without a rule).
             'keep_away': keep_away_entries(summary.get('keep_away')),
+            # Net-filtered keep-outs: JSON_SUMMARY['net_keepouts'] (None
+            # without a keep-out, [] when the copper is clean).
+            'net_keepouts': summary.get('net_keepouts'),
             # successful/failed only count pairs that were coupled-routed or
             # outright failed -- electrically-short pairs deferred to the
             # single-ended pass, and pairs skipped for self-overlapping fanout,

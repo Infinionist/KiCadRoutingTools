@@ -149,6 +149,25 @@ def test_attach_none_clears_a_previous_run():
         assert not m.cells and not m.vias, "a cleared run must stamp nothing"
 
 
+def test_attach_warns_on_a_layer_the_board_lacks():
+    """A misspelt layer resolves to nothing in the rasteriser, which then
+    blocks no track cell: attach() says so instead of running silently."""
+    import io
+    import contextlib
+    pcb = parse_kicad_pcb(BOARD)
+    ko = _keepout(D8_BOX)
+    ko['layers'] = ['F.cu', '*.Cu']
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        nk.attach(pcb, [nk._validate(ko, 0, "t")])
+    log = buf.getvalue()
+    assert "WARNING" in log and "F.cu" in log and "*.Cu" not in log.split("WARNING")[1], log
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        nk.attach(pcb, [nk._validate(_keepout(D8_BOX), 0, "t")])
+    assert "WARNING" not in buf.getvalue(), buf.getvalue()
+
+
 def test_window_cells_do_not_leak_to_the_whole_board():
     """A rescue window is a shallow copy sharing the whole board's cell cache;
     its clipped raster must not be served to a whole-board route."""
@@ -306,6 +325,63 @@ def test_route_respects_net_filter():
     assert d9_in > 0, "exempt net must still route through its region"
 
 
+def test_audit_finds_bound_copper_inside_a_region():
+    """audit() is plain geometry: a bound net's track crossing the region or
+    a via inside it is reported; a track merely near it, an exempt net, and
+    a track on a layer the region is not on are not."""
+    from types import SimpleNamespace as NS
+    pcb = parse_kicad_pcb(BOARD)
+    d8 = next(i for i, n in pcb.nets.items() if n.name == "Net-(D8-A)")
+    d9 = next(i for i, n in pcb.nets.items() if n.name == "Net-(D9-A)")
+    ko = nk._validate(_keepout(D8_BOX, exemptNets=["Net-(D9-A)"]), 0, "t")
+    ko['layers'] = {'F.Cu'}
+
+    def seg(nid, y, layer='F.Cu', w=0.2):
+        return NS(start_x=149.0, start_y=y, end_x=154.0, end_y=y, width=w,
+                  layer=layer, net_id=nid, graphic=False)
+
+    segs = [seg(d8, 77.0),               # crosses the box
+            seg(d8, 76.2),               # copper edge 0.1 mm short of the top edge
+            seg(d8, 77.0, 'B.Cu'),       # the region is F.Cu only
+            seg(d9, 77.0)]               # exempt
+    vias = [NS(x=151.4, y=77.4, size=0.6, net_id=d8, layers=['F.Cu', 'B.Cu']),
+            NS(x=151.4, y=77.4, size=0.6, net_id=d9, layers=['F.Cu', 'B.Cu'])]
+    got = nk.audit(pcb, segs, vias, keepouts=[ko])
+    assert got == [{'region': 'corridor', 'net': 'Net-(D8-A)', 'tracks': 1, 'vias': 1}], got
+    assert nk.audit(pcb, segs[1:3], [], keepouts=[ko]) == [], "near or off-layer is clean"
+    nk.attach(pcb, None)
+    assert nk.audit(pcb, segs, vias) is None, "no keep-out: no report at all"
+
+
+def test_shipped_board_audit_on_both_fronts():
+    """Copper the router did not lay is still reported: on a board whose
+    Net-(D8-A) already crosses the region, a run routing ANOTHER net with
+    the file says so -- the CLI in its --json-out, the GUI's in-memory call
+    in its results -- with the same row, the one KiCad's DRC flags."""
+    from route import batch_route
+    ctrl, _ = _route(["Net-(D8-A)"])
+    path = _write_keepouts([_keepout(D8_BOX, name="a", exemptNets=["Net-(D9-A)"])])
+    want = [{'region': 'a', 'net': 'Net-(D8-A)', 'tracks': 1, 'vias': 0}]
+    td = tempfile.mkdtemp(prefix="nko_")
+    out, js = os.path.join(td, "o.kicad_pcb"), os.path.join(td, "o.json")
+    r = subprocess.run([sys.executable, "py_router/route.py", ctrl, out] + GEOM
+                       + ["--nets", "Net-(D10-A)", "--net-keepouts", path,
+                          "--json-out", js],
+                       cwd=ROOT, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-2000:]
+    assert "bound-net item(s) inside a region on the shipped board" in r.stdout
+    with open(js, encoding="utf-8") as f:
+        assert json.load(f).get("net_keepouts") == want
+    pcb = parse_kicad_pcb(ctrl)
+    import io
+    import contextlib
+    with contextlib.redirect_stdout(io.StringIO()):
+        res = batch_route(ctrl, "", ["Net-(D10-A)"], layers=["F.Cu", "B.Cu"],
+                          track_width=0.5, clearance=0.4, via_size=0.6, via_drill=0.5,
+                          net_keepouts=path, return_results=True, pcb_data=pcb)
+    assert res[3].get("net_keepouts") == want, res[3].get("net_keepouts")
+
+
 def _copper_gap(board, net_name, poly):
     """Smallest distance (mm) from `net_name`'s track copper to polygon
     `poly`'s outline; negative when the copper overlaps the polygon. An
@@ -358,6 +434,7 @@ TESTS = [
     test_binds_applies_and_exempt,
     test_loader_refuses_bad_entries,
     test_attach_none_clears_a_previous_run,
+    test_attach_warns_on_a_layer_the_board_lacks,
     test_window_cells_do_not_leak_to_the_whole_board,
     test_cli_refuses_a_bad_file_before_routing,
     test_stamp_balances_and_skips_exempt_net,
@@ -365,6 +442,8 @@ TESTS = [
     test_stamp_reaches_every_via_rung_at_its_own_via,
     test_route_respects_net_filter,
     test_route_diff_member_copper_stays_out,
+    test_audit_finds_bound_copper_inside_a_region,
+    test_shipped_board_audit_on_both_fronts,
 ]
 
 

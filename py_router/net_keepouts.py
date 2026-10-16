@@ -31,9 +31,17 @@ balance and an exempt net routes through the region as if it were not there.
 Existing copper is never touched: copper already inside the region is an ordinary
 obstacle, and nothing rips it.
 
-Coverage is the route entries named in `stamp()`'s callers. A path that reaches
-the A* without them would not see the region; KiCad DRC of the exported rules
-stays the authority, as it is for every other constraint.
+Coverage is the route entries that stamp: route_net_with_obstacles,
+route_multipoint_main / _taps (and with them net_rescue, stub-swap and terminal
+escalation, which call them -- a rescue window is a shallow copy that carries
+the regions), and on the diff-pair side the pair route (its centreline map at
+`centerline_config`, its connectors' base map plain), the hybrid coupled middle
+and its legs (`stamping`). Copper laid by anything else -- the plane finalize's
+taps and region joins, which have their own A*, and post-route passes such as
+meanders -- does not see a region, so the run ends with `audit()` of the board
+it ships: bound-net copper found inside a region is printed and reported as
+JSON_SUMMARY / --json-out `net_keepouts`, never shipped silently. KiCad DRC of
+the equivalent rule stays the authority.
 """
 from __future__ import annotations
 
@@ -305,3 +313,99 @@ def stamping(net_ids_of, maps_of, centerline: bool = False):
                 return run.__wrapped__(*args, **kwargs)
         return run
     return deco
+
+
+def _on_layer(ko_layers, layer: str) -> bool:
+    """Does a region on `ko_layers` exist on copper layer `layer`? The
+    composite tokens are the ones the keep-out rasteriser expands."""
+    return (layer in ko_layers or '*.Cu' in ko_layers
+            or (layer in ('F.Cu', 'B.Cu') and bool({'F&B.Cu', 'F&B'} & set(ko_layers))))
+
+
+def _via_layers(via, copper: List[str]) -> List[str]:
+    """The copper layers a via's barrel spans, in board order (a through via:
+    all of them)."""
+    ends = [l for l in (getattr(via, 'layers', None) or ()) if l in copper]
+    if len(ends) < 2:
+        return list(copper)
+    i, j = sorted((copper.index(ends[0]), copper.index(ends[-1])))
+    return copper[i:j + 1]
+
+
+def audit(pcb_data, segments, vias,
+          keepouts: Optional[List[dict]] = None) -> Optional[List[dict]]:
+    """The copper of `segments` / `vias` that a net-filtered keep-out forbids
+    and that INTERSECTS its region -- what KiCad's DRC reports as
+    items_not_allowed for the equivalent insideArea() rule. One row per
+    (region, net): {'region', 'net', 'tracks', 'vias'}, sorted; [] when the
+    copper is clean, None when the run has no net-filtered keep-out.
+
+    It reads only geometry, so it sees copper from every path, including the
+    ones stamp() does not reach (the plane finalize's taps and joins, post-route
+    meanders) and copper the input already had inside a region.
+
+    `pcb_data` supplies the net names and copper layers of the copper given,
+    and the keep-outs unless `keepouts` names them (a re-parsed output board
+    carries none of its own)."""
+    from geometry_utils import segment_to_segment_distance
+    from obstacle_map import point_in_polygon, point_to_polygon_edge_distance
+    kos = keepouts if keepouts is not None else getattr(pcb_data, '_net_keepouts', None)
+    if not kos:
+        return None
+    names = {nid: n.name for nid, n in pcb_data.nets.items() if nid and n.name}
+    copper = list(getattr(pcb_data.board_info, 'copper_layers', None) or [])
+    eps = 1e-6
+    rows: Dict[Tuple[str, str], List[int]] = {}
+    for ko in kos:
+        ring = ko['polygon']
+        edges = list(zip(ring, ring[1:] + ring[:1]))
+        x0 = min(p[0] for p in ring)
+        y0 = min(p[1] for p in ring)
+        x1 = max(p[0] for p in ring)
+        y1 = max(p[1] for p in ring)
+
+        def hit(xa, ya, xb, yb, r):
+            if (max(xa, xb) < x0 - r or min(xa, xb) > x1 + r
+                    or max(ya, yb) < y0 - r or min(ya, yb) > y1 + r):
+                return False
+            if point_in_polygon(xa, ya, ring) or point_in_polygon(xb, yb, ring):
+                return True
+            return any(segment_to_segment_distance(xa, ya, xb, yb, a[0], a[1], b[0], b[1])
+                       < r - eps for a, b in edges)
+
+        def row(nid):
+            name = names.get(nid)
+            if not name or not binds(ko, name):
+                return None
+            return rows.setdefault((ko['name'], name), [0, 0])
+
+        if not ko.get('tracks_allowed', True):
+            for s in segments:
+                if getattr(s, 'graphic', False) or not _on_layer(ko['layers'], s.layer):
+                    continue
+                r = row(s.net_id)
+                if r is not None and hit(s.start_x, s.start_y, s.end_x, s.end_y,
+                                         s.width / 2):
+                    r[0] += 1
+        if not ko.get('vias_allowed', True):
+            for v in vias:
+                if not any(_on_layer(ko['layers'], l) for l in _via_layers(v, copper)):
+                    continue
+                r = row(v.net_id)
+                if r is not None and (
+                        point_in_polygon(v.x, v.y, ring)
+                        or point_to_polygon_edge_distance(v.x, v.y, ring) < v.size / 2 - eps):
+                    r[1] += 1
+    return [{'region': k[0], 'net': k[1], 'tracks': t, 'vias': n}
+            for k, (t, n) in sorted(rows.items()) if t or n]
+
+
+def format_audit(found: List[dict], where: str) -> str:
+    """One line for the console: what `audit` found on `where`."""
+    if not found:
+        return f"Net-filtered keep-outs: no bound-net copper inside a region on {where}"
+    items = sum(r['tracks'] + r['vias'] for r in found)
+    parts = '; '.join(f"{r['region']}: {r['net']} "
+                      f"({r['tracks']} track(s), {r['vias']} via(s))" for r in found)
+    return (f"WARNING: net-filtered keep-outs: {items} bound-net item(s) inside a "
+            f"region on {where} (KiCad reports them as items_not_allowed): {parts}")
