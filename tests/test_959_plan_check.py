@@ -562,6 +562,31 @@ def test_the_board_area_bound_reads_declared_block_faces():
           "pile's current face")
 
 
+def test_the_forced_overlap_is_measured_on_the_declared_faces():
+    """SOUNDNESS. Fourteen of the sixteen parts declared on B.Cu force
+    212.94 - 200 = 12.94 mm2 of overlap there, inside a 20 mm2 budget, so
+    the plan is satisfiable. The ERROR's own measurement -- the graded
+    outlines per face -- once read the pile's faces: all sixteen on F.Cu,
+    43.36 mm2 forced, and an ERROR (place_seed exit 5) on this plan."""
+    with tempfile.TemporaryDirectory() as tmp:
+        big = [(dx, dy, 0.9, 0.9) for dx in range(4) for dy in range(4)]
+        parts = [(f'U{i}', 2 + 4 * (i % 4), 2 + 4 * (i // 4) % 8, big)
+                 for i in range(16)]
+        board = _board(tmp, 'declared-busy-back.kicad_pcb', parts)
+        blocks = [{'name': 'back', 'refs': [f'U{i}' for i in range(14)],
+                   'side': 'B'}]
+        found, measured = _check(
+            _raw(blocks=blocks,
+                 legality_budget={'overlap_area': 20, 'oob_count': 0}),
+            board)
+        assert not [v for v in found if v.rule == 'plan_board_overfull'], (
+            found, measured)
+        assert measured['outline_area_per_face_mm2'] == {
+            'B': 212.94, 'F': 30.42}, measured
+    print("  PASS: 12.94 mm2 forced on the declared back face, inside the "
+          "20 mm2 budget, is not an ERROR")
+
+
 def test_place_seed_refuses_before_writing_and_repair_only_reports():
     with tempfile.TemporaryDirectory() as tmp:
         b = _board(tmp, 'o.kicad_pcb', [('U1', 3, 3, PAD), ('U2', 6, 3, PAD)])
@@ -990,6 +1015,7 @@ TESTS = [
     test_the_edge_bound_reads_pads_not_courtyards,
     test_the_board_area_bound_is_per_face,
     test_the_board_area_bound_reads_declared_block_faces,
+    test_the_forced_overlap_is_measured_on_the_declared_faces,
     test_place_seed_refuses_before_writing_and_repair_only_reports,
     test_plan_only_on_a_pile,
     test_plan_only_on_a_true_pile_and_its_exit_4,

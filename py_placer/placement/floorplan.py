@@ -8667,8 +8667,13 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
     # every graded outline the budget sees, per face, against the usable
     # area. Never more than the rect sum, so a weaker bound -- never an
     # unsound one.
+    # On the declared faces, as `g0` charges them: read off the pile, every
+    # outline lands on F.Cu and the forced overlap is overstated -- an ERROR
+    # for a plan whose declared busiest face is within the budget.
     _faces_x: Dict[str, float] = {'F': 0.0, 'B': 0.0}
-    for _side, _a in _budget_outline_areas(ctx, list(state.parts)).values():
+    for _r, (_side, _a) in _budget_outline_areas(
+            ctx, list(state.parts)).items():
+        _side = planned_sides.get(_r, _side)
         _faces_x[_side] = _faces_x.get(_side, 0.0) + _a
     excess0_x = (max(_faces_x.values())
                  - (m0.get('usable_area_mm2') or 0.0))
