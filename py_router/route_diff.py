@@ -510,6 +510,14 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         layers = ['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu']  # Default 4-layer signal stack
     print(f"Using {len(layers)} routing layers: {layers}")
 
+    # One cost per requested layer, or the full-stack append below puts its
+    # FORBIDDEN entries on the wrong layers (routing_config.layer_costs_count_error).
+    from routing_config import layer_costs_count_error
+    _lc_err = layer_costs_count_error(layers, layer_costs)
+    if _lc_err:
+        from routing_exceptions import LayerCostsCountError
+        raise LayerCostsCountError(_lc_err)
+
     # Per-layer cost multipliers bias which layer(s) coupled diff pairs prefer
     # (issue #193). Default is 1.0x on every layer so behavior is unchanged unless
     # --layer-costs is given; unlike route.py there is no 2-layer F.Cu/B.Cu default.
@@ -2215,7 +2223,7 @@ Examples:
                              "forbidden: the layer is an obstacle / via span but carries no routed copper), one per --layers "
                              "entry, to bias which layer(s) coupled diff pairs prefer (e.g. '1 1 1 3' "
                              "to discourage the 4th layer). Default: 1.0 on every layer "
-                             "(behavior unchanged). Matches route.py / route_planes.")
+                             "(behavior unchanged). Another count is refused. Matches route.py / route_planes.")
 
     # Track and via geometry
     parser.add_argument("--track-width", type=float, default=None,

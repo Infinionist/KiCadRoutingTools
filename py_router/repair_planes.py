@@ -1019,6 +1019,13 @@ def repair_planes(
         routing_layers = pcb_data.board_info.copper_layers
         if not routing_layers:
             routing_layers = ['F.Cu', 'B.Cu']  # Fallback
+    # One cost per routing layer: the nested batch_route sub-runs below append
+    # the unrequested copper layers after these costs, positionally.
+    from routing_config import layer_costs_count_error
+    _lc_err = layer_costs_count_error(routing_layers, layer_costs)
+    if _lc_err:
+        from routing_exceptions import LayerCostsCountError
+        raise LayerCostsCountError(_lc_err)
 
     # Build routing config
     config = GridRouteConfig(

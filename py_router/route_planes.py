@@ -3162,6 +3162,14 @@ def create_plane(
         print(f"Error: Number of nets ({len(net_names)}) must match number of layers ({len(plane_layers)})")
         return _empty_plane_results(return_results)
 
+    # One cost per routing layer, or the full-stack append below puts its
+    # FORBIDDEN entries on the wrong layers (routing_config.layer_costs_count_error).
+    from routing_config import layer_costs_count_error
+    _lc_err = layer_costs_count_error(all_layers, layer_costs)
+    if _lc_err:
+        print(f"ERROR: {_lc_err}")
+        return _empty_plane_results(return_results)
+
     # Board-setup copper-to-edge rule (#338): zone outlines and tap copper must
     # honor the sibling .kicad_pro's min_copper_edge_clearance (engine-side so
     # the GUI planes tab inherits it; see batch_route).
@@ -4261,7 +4269,8 @@ Examples:
     parser.add_argument("--layer-costs", nargs="+", type=float, default=[],
                         help="Per-layer routing cost multipliers (1.0-1000, or any negative value e.g. -1 = "
                              "forbidden: the layer stays an obstacle / via span but gets no routed copper). "
-                             "Order matches --layers. Example: --layer-costs 1.0 -1 -1 3.0")
+                             "One value per --layers entry, in that order (another count is refused). "
+                             "Example: --layer-costs 1.0 -1 -1 3.0")
 
     # #381 D9: accept the plural --no-bga-zones spelling too (route.py uses the
     # plural). Same store_true dest -- additive, old spelling kept.
