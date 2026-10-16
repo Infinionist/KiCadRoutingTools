@@ -25,7 +25,7 @@ from connectivity import (
     get_copper_connected_terminal_groups,
     compute_component_mst_edges,
 )
-from obstacle_map import get_same_net_through_hole_positions
+from obstacle_map import get_same_net_through_hole_positions, same_net_partial_via_spans
 from bresenham_utils import walk_line
 from geometry_utils import simplify_path
 
@@ -2281,6 +2281,9 @@ def _route_net_with_obstacles_impl(pcb_data: PCBData, net_id: int, config: GridR
 
     # Get through-hole pad positions for this net (layer transitions without via)
     through_hole_positions = get_same_net_through_hole_positions(pcb_data, net_id, config)
+    # ...and the net's blind/micro vias, which carry a layer change only
+    # between layers they span.
+    partial_spans = same_net_partial_via_spans(pcb_data, net_id, config)
 
     # Simplify path by removing collinear intermediate points
     path = simplify_path(path)
@@ -2311,7 +2314,9 @@ def _route_net_with_obstacles_impl(pcb_data: PCBData, net_id: int, config: GridR
         if layer1 != layer2:
             # Check if layer change is at an existing through-hole pad
             # If so, skip creating a via - the pad provides the layer transition
-            if (gx1, gy1) not in through_hole_positions:
+            if ((gx1, gy1) not in through_hole_positions
+                    and not {layer_names[layer1], layer_names[layer2]}
+                    <= partial_spans.get((gx1, gy1), frozenset())):
                 _vsz, _vdr = _emit_via_size(pcb_data, gx1, gy1, config,
                                             net_id=net_id, x=x1, y=y1)
                 via = Via(
@@ -2924,7 +2929,7 @@ def _place_shrunk_via_in_pad_impl(pad_obj, obstacles, config, pcb_data, net_id, 
         return None
     v = tap_res.via
     via = Via(x=v['x'], y=v['y'], size=v['size'], drill=v['drill'],
-              layers=v.get('layers', [layer_names[0], layer_names[-1]]), net_id=net_id)
+              layers=v.get('layers', ['F.Cu', 'B.Cu']), net_id=net_id)
     vgx, vgy = coord.to_grid(v['x'], v['y'])
     # Record this cell's DRC-legal shrunk via size so route conversion emits THAT
     # size (not the full config.via_size) if the path later changes layer here
@@ -4945,8 +4950,9 @@ def _route_multipoint_taps_impl(
     # places vias lets a later edge REUSE a via the main edge already dropped at
     # the same cell, instead of stacking a second coincident one (EPHY_TX_N).
     through_hole_positions = set(get_same_net_through_hole_positions(pcb_data, net_id, config))
+    from obstacle_map import via_stops_short
     for _v in pcb_data.vias:
-        if _v.net_id == net_id:
+        if _v.net_id == net_id and not via_stops_short(_v, pcb_data):
             through_hole_positions.add(coord.to_grid(_v.x, _v.y))
 
     # In-progress vias (this net's main + earlier tap edges) are NOT yet in
@@ -5671,7 +5677,8 @@ def _trim_after_fill_via(path, coord, layer_names, pcb_data, net_id):
     return path, None
 
 
-def _reusable_same_net_via(pcb_data, net_id, x, y, new_drill, config):
+def _reusable_same_net_via(pcb_data, net_id, x, y, new_drill, config,
+                           layers=None):
     """An existing same-net via this path can RIDE instead of drilling beside it
     (#671), or None.
 
@@ -5699,10 +5706,15 @@ def _reusable_same_net_via(pcb_data, net_id, x, y, new_drill, config):
     """
     if pcb_data is None or not getattr(pcb_data, 'vias', None):
         return None
+    from geometry_utils import via_on_layer
     h2h = getattr(config, 'hole_to_hole_clearance', 0.25) or 0.25
     best = None
     for v in pcb_data.vias:
         if v.net_id != net_id:
+            continue
+        # `layers`: the two layers this transition joins. A blind/micro
+        # barrel that misses either joins nothing here (found reviewing #1268).
+        if layers and not all(via_on_layer(v, name) for name in layers):
             continue
         d = math.hypot(v.x - x, v.y - y)
         if d >= (new_drill + (v.drill or 0.0)) / 2.0 + h2h:
@@ -5754,6 +5766,10 @@ def _path_to_segments_vias(
 
     path_start = path[0]
     path_end = path[-1]
+    # The net's blind/micro vias carry a layer change only between layers
+    # they span (found reviewing #1268).
+    partial_spans = (same_net_partial_via_spans(pcb_data, net_id, config)
+                     if pcb_data is not None else {})
 
     # Per-point float positions. Route the two TERMINAL segments to the EXACT
     # off-grid endpoint instead of its grid-cell stand-in when that cell grazes a
@@ -5804,6 +5820,9 @@ def _path_to_segments_vias(
             if through_hole_positions and (gx1, gy1) in through_hole_positions:
                 # No via needed - existing through-hole pad connects all layers
                 pass
+            elif {layer_names[layer1], layer_names[layer2]} <= \
+                    partial_spans.get((gx1, gy1), frozenset()):
+                pass    # a blind/micro via of the net spans both layers
             else:
                 vx, vy = coord.to_float(gx1, gy1)  # via stays on the grid cell
                 _vsz, _vdr = _emit_via_size(pcb_data, gx1, gy1, config,
@@ -5813,7 +5832,9 @@ def _path_to_segments_vias(
                 # through_hole_positions skip above -- an existing conductor
                 # already provides this transition.
                 _reuse = _reusable_same_net_via(pcb_data, net_id, vx, vy,
-                                                _vdr, config)
+                                                _vdr, config,
+                                                (layer_names[layer1],
+                                                 layer_names[layer2]))
                 if _reuse is not None:
                     if os.environ.get('KICAD_VIA_REUSE_DEBUG') == '1':
                         print(f"      via reuse (#671): net {net_id} rides the "

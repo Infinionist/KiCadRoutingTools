@@ -73,8 +73,9 @@ BOARD = '''(kicad_pcb
 '''
 
 
-def check(label, ok):
-    print(("PASS " if ok else "FAIL ") + label)
+def check(label, ok, detail=None):
+    print(("PASS " if ok else "FAIL ") + label
+          + (f"  [{detail}]" if detail is not None and not ok else ""))
     if not ok:
         FAILS.append(label)
 
@@ -147,8 +148,15 @@ def test_parser_reads_the_type():
     check("text parser: `(via micro` is via_type micro",
           by_uuid['v-micro'].via_type == 'micro')
     check("text parser: an untyped via is via_type through even with an "
-          "F.Cu/In1.Cu layer pair", by_uuid['v-untyped'].via_type == 'through'
-          and by_uuid['v-untyped'].layers == ['F.Cu', 'In1.Cu'])
+          "F.Cu/In1.Cu layer pair", by_uuid['v-untyped'].via_type == 'through')
+    # ...and its pair is snapped to F.Cu/B.Cu, as KiCad loads it and as
+    # build_pcb_data_from_board reports it: every consumer that still reads
+    # the pair sees a through via, and the two parse paths agree.
+    check("text parser: an untyped F.Cu/In1.Cu via reads layers F.Cu/B.Cu",
+          by_uuid['v-untyped'].layers == ['F.Cu', 'B.Cu'],
+          by_uuid['v-untyped'].layers)
+    check("text parser: a microvia keeps its own pair (control)",
+          by_uuid['v-micro'].layers == ['F.Cu', 'In1.Cu'], by_uuid['v-micro'].layers)
     check("text parser: plain through via", by_uuid['v-through'].via_type == 'through')
     return pcb
 

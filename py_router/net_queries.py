@@ -183,9 +183,12 @@ def calculate_route_length(segments: List[Segment], vias: List[Via] = None, pcb_
 
     # Add via barrel lengths if pcb_data with stackup is provided
     if vias and pcb_data and hasattr(pcb_data, 'get_via_barrel_length'):
+        from geometry_utils import via_end_layers
         for via in vias:
             if via.layers and len(via.layers) >= 2:
-                barrel_len = pcb_data.get_via_barrel_length(via.layers[0], via.layers[1])
+                # A through via's barrel is the whole stack, whatever pair it
+                # carries (found reviewing #1268).
+                barrel_len = pcb_data.get_via_barrel_length(*via_end_layers(via))
                 total += barrel_len
 
     return total
@@ -205,10 +208,11 @@ def calculate_via_barrel_length(vias: List[Via], pcb_data) -> float:
     if not vias or not pcb_data or not hasattr(pcb_data, 'get_via_barrel_length'):
         return 0.0
 
+    from geometry_utils import via_end_layers
     total = 0.0
     for via in vias:
         if via.layers and len(via.layers) >= 2:
-            total += pcb_data.get_via_barrel_length(via.layers[0], via.layers[1])
+            total += pcb_data.get_via_barrel_length(*via_end_layers(via))
     return total
 
 
@@ -494,12 +498,12 @@ def _net_track_graph(pcb_data: PCBData, net_id: int, pads,
     for v in pcb_data.vias:
         if v.net_id != net_id or len(v.layers or ()) < 2:
             continue
-        span = list(v.layers)
-        if copper_layers and span[0] in copper_layers and span[1] in copper_layers:
-            i, j = copper_layers.index(span[0]), copper_layers.index(span[1])
-            spanned = copper_layers[min(i, j):max(i, j) + 1]
-        else:
-            spanned = span
+        # The via's copper by its TYPE (found reviewing #1268): every layer
+        # for a through via whatever its pair, the run between the ends for a
+        # typed blind/micro one.
+        from geometry_utils import via_copper_layers, via_end_layers
+        spanned = (via_copper_layers(v, copper_layers) if copper_layers
+                   else list(via_end_layers(v)))
         radius = max((getattr(v, 'size', 0) or 0) / 2, tolerance)
         discs.append((v.x, v.y, radius, spanned,
                       lambda x, y, _v=v, _r=radius: math.hypot(x - _v.x, y - _v.y) <= _r + tolerance,

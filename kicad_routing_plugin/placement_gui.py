@@ -1147,7 +1147,7 @@ class PlacementTab(wx.Panel):
         """
         from kicad_parser import mm_to_iu
         from .swig_gui import _build_layer_mappings
-        from .gui_utils import apply_via_protection
+        from .gui_utils import apply_via_protection, set_via_layers
         name_to_id, _ = _build_layer_mappings()
 
         # Result-board net ids can differ from live net codes; map by name.
@@ -1190,8 +1190,9 @@ class PlacementTab(wx.Panel):
             pcb_via.SetDrill(mm_to_iu(via.drill))
             pcb_via.SetNetCode(live_net_code(via.net_id))
             if getattr(via, "layers", None) and len(via.layers) >= 2:
-                pcb_via.SetLayerPair(name_to_id.get(via.layers[0], pcbnew.F_Cu),
-                                     name_to_id.get(via.layers[-1], pcbnew.B_Cu))
+                set_via_layers(pcb_via, name_to_id.get(via.layers[0], pcbnew.F_Cu),
+                               name_to_id.get(via.layers[-1], pcbnew.B_Cu),
+                               getattr(via, "via_type", None))
             pcb_via.SetLocked(bool(getattr(via, "locked", False)))  # #521
             # Keep a via's own tenting/plugging spec (#489 §8).
             apply_via_protection(pcb_via, getattr(via, "tenting_attrs", None))

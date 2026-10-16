@@ -3818,11 +3818,45 @@ def get_same_net_through_hole_positions(pcb_data: PCBData, net_id: int,
     # Existing same-net vias are reusable holes too (see free-via reuse). Without
     # this, only the multipoint tap path augmented the set, so the Phase-1 main edge
     # and single-ended routes dropped a duplicate via onto an existing via-in-pad.
+    # NOT a blind/micro via whose copper stops short of the stack: a layer
+    # change there joins only the layers it spans (same_net_partial_via_spans).
     for via in pcb_data.vias:
-        if via.net_id == net_id:
+        if via.net_id == net_id and not via_stops_short(via, pcb_data):
             positions.add(coord.to_grid(via.x, via.y))
 
     return positions
+
+
+def via_stops_short(via, pcb_data) -> bool:
+    """Is this a via KiCad types blind/buried/micro whose copper misses at
+    least one of the board's copper layers? Such a via is NOT a reusable hole
+    for an arbitrary layer change (found reviewing #1268): the router rode an
+    F.Cu->In1.Cu microvia to B.Cu at zero cost and emitted no via."""
+    from geometry_utils import PARTIAL_VIA_TYPES, via_copper_layers
+    if getattr(via, 'via_type', 'through') not in PARTIAL_VIA_TYPES:
+        return False
+    cu = list(getattr(getattr(pcb_data, 'board_info', None), 'copper_layers',
+                      None) or ['F.Cu', 'B.Cu'])
+    return len(via_copper_layers(via, cu)) < len(cu)
+
+
+def same_net_partial_via_spans(pcb_data, net_id: int,
+                               config: GridRouteConfig) -> Dict[Tuple[int, int], frozenset]:
+    """{(gx, gy): copper layer names} for this net's vias that stop short of
+    the stack (`via_stops_short`). A layer change at such a cell rides the via
+    only between two layers of its span; any other layer change there needs a
+    via of its own. Stacked partial vias at one cell pool their spans."""
+    from geometry_utils import via_copper_layers
+    coord = GridCoord(config.grid_step)
+    cu = list(getattr(getattr(pcb_data, 'board_info', None), 'copper_layers',
+                      None) or ['F.Cu', 'B.Cu'])
+    spans: Dict[Tuple[int, int], frozenset] = {}
+    for via in pcb_data.vias:
+        if via.net_id == net_id and via_stops_short(via, pcb_data):
+            cell = coord.to_grid(via.x, via.y)
+            spans[cell] = spans.get(cell, frozenset()) | frozenset(
+                via_copper_layers(via, cu))
+    return spans
 
 
 def _batch_cells_one_layer(obstacles, cells_xy: "np.ndarray", layer_idx: int,

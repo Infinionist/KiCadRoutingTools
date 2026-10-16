@@ -5776,7 +5776,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                          # tented instead of filled+capped+plated.
                          'tenting_attrs': dict(
                              getattr(v, 'tenting_attrs', None) or {}),
-                         'inherit_when_unspecified': True}
+                         'inherit_when_unspecified': True,
+                         # ...and a blind/micro via keeps its type word.
+                         'via_type': getattr(v, 'via_type', 'through')}
                         for _, _, _mv in _lost666 for v in _mv]
                     import tempfile as _tf666, shutil as _sh666
                     _fd666, _tmp666 = _tf666.mkstemp(suffix='.kicad_pcb')

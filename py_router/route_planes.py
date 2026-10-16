@@ -2029,7 +2029,11 @@ def _neck_plane_segments(all_new_segments, pcb_data, clearance, all_layers,
     """
     import math
     from check_drc import segment_to_rect_distance, _into_pad_frame  # reuse exact DRC geometry
-    vias = [(v.x, v.y, v.size / 2.0, v.net_id, v.layers) for v in pcb_data.vias]
+    # Each via's copper by its TYPE (found reviewing #1268): every layer for a
+    # through via whatever pair it carries, and the run between the ends of a
+    # typed blind/micro via -- its middle layers included.
+    from geometry_utils import via_on_layer
+    vias = [(v.x, v.y, v.size / 2.0, v.net_id, v) for v in pcb_data.vias]
     EPS = 1e-4  # stay just inside the rule
     _nc = net_clearances or {}
 
@@ -2059,10 +2063,10 @@ def _neck_plane_segments(all_new_segments, pcb_data, clearance, all_layers,
         minx, maxx = min(x0, x1), max(x0, x1)
         miny, maxy = min(y0, y1), max(y0, y1)
         # foreign vias
-        for vx, vy, vr, vnid, vlayers in vias:
+        for vx, vy, vr, vnid, vobj in vias:
             if vnid == nid:
                 continue
-            if not (('F.Cu' in vlayers and 'B.Cu' in vlayers) or layer in vlayers):
+            if not via_on_layer(vobj, layer):
                 continue
             _cl = _pair_clearance(nid, vnid)
             margin = half + vr + _cl
@@ -4657,6 +4661,7 @@ Examples:
                 'drill': v.drill,
                 'net_id': v.net_id,
                 'layers': v.layers,
+                'via_type': getattr(v, 'via_type', 'through'),
                 'free': getattr(v, 'free', False)
             } for v in gnd_vias]
             # #962: a GND return via this adds in a pad or paste opening

@@ -1184,13 +1184,11 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
     via_point_ids = {}      # via_idx -> every point id of the via (one per layer)
     via_copper_layers = {}  # via_idx -> set of copper layers the via spans
     for via_idx, via in enumerate(vias):
-        if via.layers:
-            if 'F.Cu' in via.layers and 'B.Cu' in via.layers:
-                via_layers = all_copper_layers
-            else:
-                via_layers = via.layers
-        else:
-            via_layers = all_copper_layers
+        # A through via joins every layer whatever pair it carries; a typed
+        # blind/micro via the run between its ends -- not just its two ends
+        # (found reviewing #1268).
+        from geometry_utils import via_copper_layers as _via_cu
+        via_layers = _via_cu(via, all_copper_layers) or all_copper_layers
 
         via_size = getattr(via, 'size', 0.6)  # Default via size if not available
         via_ids = []

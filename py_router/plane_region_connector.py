@@ -67,19 +67,19 @@ def _collect_anchor_points(
     anchor_grid_points: List[Tuple[int, int]] = []
     seen_anchors: Set[Tuple[float, float]] = set()
 
-    def via_connects_layer(via_layers: List[str], layer: str) -> bool:
-        """Check if a via connects to a given layer."""
-        if layer in via_layers:
-            return True
-        if 'F.Cu' in via_layers and 'B.Cu' in via_layers:
-            return layer in routing_layers
-        return False
+    def via_connects_layer(via, layer: str) -> bool:
+        """Check if a via connects to a given layer -- by its TYPE (found
+        reviewing #1268): a through via on every routing layer whatever pair
+        it carries, a typed blind/micro via on the run between its ends."""
+        from geometry_utils import via_on_layer
+        return via_on_layer(via, layer) and (
+            layer in routing_layers or layer in (via.layers or ()))
 
     # Add vias of our net that touch any zone layer
     for via in pcb_data.vias:
         if via.net_id != net_id:
             continue
-        touches_zone = any(via_connects_layer(via.layers, zl) for zl in zone_layers)
+        touches_zone = any(via_connects_layer(via, zl) for zl in zone_layers)
         if not touches_zone:
             continue
         if min_x <= via.x <= max_x and min_y <= via.y <= max_y:
@@ -120,17 +120,19 @@ def _collect_cross_layer_points(
     Returns:
         List of (x, y, connected_layers) tuples
     """
-    def get_via_connected_layers(via_layers: List[str]) -> Set[str]:
-        """Get all layers a via connects to."""
-        if 'F.Cu' in via_layers and 'B.Cu' in via_layers:
-            return set(routing_layers)
-        return set(via_layers)
+    def get_via_connected_layers(via) -> Set[str]:
+        """Get all layers a via connects to -- by its TYPE (found reviewing
+        #1268): every routing layer for a through via whatever pair it carries,
+        the run between the ends of a typed blind/micro via (not just its two
+        ends)."""
+        from geometry_utils import via_copper_layers
+        return set(via_copper_layers(via, routing_layers))
 
     cross_layer_points: List[Tuple[float, float, Set[str]]] = []
 
     for via in pcb_data.vias:
         if via.net_id == net_id:
-            cross_layer_points.append((via.x, via.y, get_via_connected_layers(via.layers)))
+            cross_layer_points.append((via.x, via.y, get_via_connected_layers(via)))
 
     for pad in pcb_data.pads_by_net.get(net_id, []):
         if '*.Cu' in pad.layers:  # Through-hole pad
@@ -1002,13 +1004,6 @@ def find_disconnected_zone_regions(
 
     # Collect cross-layer connection points using helper function
     cross_layer_points = _collect_cross_layer_points(net_id, pcb_data, routing_layers)
-
-    # Helper function for via layer connections (still needed for loop below)
-    def get_via_connected_layers(via_layers: List[str]) -> Set[str]:
-        """Get all layers a via connects to."""
-        if 'F.Cu' in via_layers and 'B.Cu' in via_layers:
-            return set(routing_layers)
-        return set(via_layers)
 
     # Build map from grid position to cross-layer point index
     grid_to_crosslayer: Dict[Tuple[int, int], List[int]] = {}

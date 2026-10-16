@@ -16,7 +16,7 @@ import numpy as np
 from kicad_parser import PCBData, Segment, Via, Pad, Zone
 from routing_config import GridRouteConfig, GridCoord
 from routing_utils import pos_key, segment_length, POSITION_DECIMALS, build_layer_map
-from geometry_utils import UnionFind
+from geometry_utils import UnionFind, via_on_layer
 from routing_constants import BGA_DEFAULT_EDGE_TOLERANCE, BGA_EDGE_DETECTION_TOLERANCE
 
 
@@ -1084,10 +1084,15 @@ def calculate_stub_via_barrel_length(stub_vias: List, stub_layer: str, pcb_data)
         if pad_layer and pad_layer != stub_layer:
             # Calculate barrel from stub layer to pad layer
             total += pcb_data.get_via_barrel_length(stub_layer, pad_layer)
-        elif stub_layer in via.layers:
-            # No pad found or same layer - use via's other layer
-            other_layer = via.layers[1] if via.layers[0] == stub_layer else via.layers[0]
-            total += pcb_data.get_via_barrel_length(stub_layer, other_layer)
+        else:
+            # No pad found or same layer - use the via's other END, read by
+            # its type: a through via's ends are F.Cu/B.Cu whatever pair it
+            # carries (found reviewing #1268).
+            from geometry_utils import via_end_layers
+            ends = via_end_layers(via)
+            if stub_layer in ends:
+                other_layer = ends[1] if ends[0] == stub_layer else ends[0]
+                total += pcb_data.get_via_barrel_length(stub_layer, other_layer)
 
     return total
 
@@ -1441,6 +1446,8 @@ def _get_net_endpoints_ordered(pcb_data: PCBData, net_id: int, config: GridRoute
                     for _via in _vlist:
                         gx, gy = coord.to_grid(_via.x, _via.y)
                         for _vlayer in config.layers:
+                            if not via_on_layer(_via, _vlayer):
+                                continue    # a blind/micro via: its span only
                             layer_idx = layer_map.get(_vlayer)
                             if layer_idx is not None:
                                 _side.append((gx, gy, layer_idx, _via.x, _via.y))
@@ -1530,8 +1537,11 @@ def _get_net_endpoints_ordered(pcb_data: PCBData, net_id: int, config: GridRoute
                     # the tip is on an unmapped layer) or it lands on the target pad.
                     if (use_stub_free_ends and sources and not near_unconnected):
                         continue
-                    # Add via as endpoint on ALL routing layers (vias are through-hole)
+                    # Add via as endpoint on every routing layer it reaches: all
+                    # of them for a through via, its span for a blind/micro one.
                     for layer in config.layers:
+                        if not via_on_layer(via, layer):
+                            continue
                         layer_idx = layer_map.get(layer)
                         if layer_idx is not None:
                             if near_unconnected:
@@ -1561,6 +1571,8 @@ def _get_net_endpoints_ordered(pcb_data: PCBData, net_id: int, config: GridRoute
             for v in svias:
                 vgx, vgy = coord.to_grid(v.x, v.y)
                 for _layer in config.layers:
+                    if not via_on_layer(v, _layer):
+                        continue    # a blind/micro via: its span only
                     layer_idx = layer_map.get(_layer)
                     if layer_idx is not None:
                         side.append((vgx, vgy, layer_idx, v.x, v.y))

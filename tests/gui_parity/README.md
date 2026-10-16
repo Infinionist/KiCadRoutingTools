@@ -590,7 +590,10 @@ skip cleanly without KiCad python). Run any directly:
   own `PCB_VIA.IsOnLayer` on a board of through, blind, buried and micro vias
   and on the same board with every type word stripped -- which KiCad loads as
   through vias, and which is the shape this repo's writer emits. A span read
-  off the layer pair fails the stripped board on the text side only.
+  off the layer pair fails the stripped board on the text side only. A third
+  arm re-creates every typed via the way the plugin does
+  (`gui_utils.set_via_layers`: the type before the layer pair, which pcbnew
+  otherwise snaps to F.Cu/B.Cu) and holds it to the original copper.
 - `diag_fullchain_carry_rp2350.py` -- **DELETED 2026-07-26.** Was a full
   GUI-carry reproduction (ONE board + ONE shared pcb_data across all 10 plan
   steps, graded per stage vs the CLI) built to localize where the carry

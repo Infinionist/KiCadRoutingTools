@@ -345,6 +345,22 @@ def apply_via_protection(pcb_via, tenting_attrs):
     return applied
 
 
+def set_via_layers(pcb_via, top_id, bottom_id, via_type=None):
+    """Give a PCB_VIA its type, THEN its layer pair -- in that order.
+
+    A PCB_VIA is born THROUGH, and pcbnew snaps a through via's pair to
+    F.Cu/B.Cu as it is set: setting the pair first and the type after leaves
+    a microvia spanning the whole stack (probed on pcbnew 10.0.3 and 9.0.6).
+    `via_type` is the Via's own Via.via_type; None or 'through' (every via the
+    tool adds) keeps pcbnew's default type, as before. Found reviewing #1268:
+    every site re-created an existing blind/micro via as a through via."""
+    from kicad_parser import pcbnew_viatype_value
+    vt = pcbnew_viatype_value(via_type)
+    if vt is not None:
+        pcb_via.SetViaType(vt)
+    pcb_via.SetLayerPair(top_id, bottom_id)
+
+
 def apply_castellated_landing_retract(board, board_edge_clearance):
     """CLI/GUI parity twin of pcb_modification.retract_castellated_landings
     (run-6 fix 1.7): compute the shared castellated-landing retract delta on
@@ -1401,8 +1417,9 @@ def run_kicad_oracle_on_live_board(board, net_names, *, clearance,
             via.SetWidth(mm_to_iu(v.size))
             via.SetNetCode(v.net_id)
             lys = v.layers or ['F.Cu', 'B.Cu']
-            via.SetLayerPair(board.GetLayerID(lys[0]),
-                             board.GetLayerID(lys[-1]))
+            set_via_layers(via, board.GetLayerID(lys[0]),
+                           board.GetLayerID(lys[-1]),
+                           getattr(v, 'via_type', None))
             apply_via_protection(via, getattr(v, 'tenting_attrs', None))
             board.Add(via)
         if orc.get('links_routed'):

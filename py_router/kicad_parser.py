@@ -528,10 +528,12 @@ class Via:
     # block's type word (text) or GetViaType() (pcbnew). It, not `layers`,
     # says whether the via has copper on only part of the stack: KiCad loads
     # a via block with NO type word as a THROUGH via whatever its `(layers ...)`
-    # says, and this repo's writer emits no type word -- so a via it writes is
-    # through even when its layer pair is not F.Cu/B.Cu (zynq7020_som's
-    # back-side BGA fanout writes `(layers "B.Cu" "In6.Cu")` GND vias).
-    # See geometry_utils.via_on_layer.
+    # says, and both parse paths then report its pair as F.Cu/B.Cu (the text
+    # parser snaps it, pcbnew already has). A Via the tool builds in-run is
+    # through unless given a type, whatever pair it carries -- the back-side
+    # BGA fanout's through vias used to carry `["B.Cu", "In6.Cu"]`. Read a
+    # via's copper through geometry_utils.via_on_layer / via_copper_layers,
+    # never off this pair.
     via_type: str = "through"
 
 
@@ -5038,12 +5040,23 @@ def extract_vias(content: str, name_to_id: Dict[str, int] = None) -> List[Via]:
             # against the net's own copper.
             net_id = name_to_id.get(net_name, 0)
         u = _VIA_UUID_RE.search(block)
+        via_type = _via_type_from_block(block)
+        layers = [geom[4], geom[5]]
+        if via_type == 'through' and set(layers) != {'F.Cu', 'B.Cu'}:
+            # KiCad loads a via with no type word as THROUGH and snaps its pair
+            # to F.Cu/B.Cu (probed on pcbnew 10.0.3 and 9.0.6), which is what
+            # build_pcb_data_from_board then reads back. Keeping the file's
+            # pair -- this repo's writer emitted `(layers "B.Cu" "In6.Cu")` for
+            # back-side BGA fanout vias -- made every consumer that reads the
+            # pair model a through via as a blind one, and the two parse paths
+            # disagree (found reviewing #1268).
+            layers = ['F.Cu', 'B.Cu']
         via = Via(
             x=float(geom[0]),
             y=float(geom[1]),
             size=float(geom[2]),
             drill=float(geom[3]),
-            layers=[geom[4], geom[5]],
+            layers=layers,
             net_id=net_id,
             uuid=(u.group(1) if u else uuid_or_tstamp(block)),  # KiCad 6: (tstamp ...)
             # Read from the block, not from a capture group and not from a
@@ -5052,7 +5065,7 @@ def extract_vias(content: str, name_to_id: Dict[str, int] = None) -> List[Via]:
             # linear pre-scan) and it could only reach vias that HAD a uuid.
             free=bool(_VIA_FREE_RE.search(block)),
             locked=_track_locked(block),
-            via_type=_via_type_from_block(block),
+            via_type=via_type,
         )
         # Protection spec per via (#489 §8): tenting/covering/plugging/capping/
         # filling were parsed by NOBODY, so a re-placed via lost whatever the
@@ -7626,6 +7639,20 @@ def pcbnew_via_type(via) -> str:
         return 'blind'
     except Exception:                                            # noqa: BLE001
         return 'through'
+
+
+def pcbnew_viatype_value(via_type):
+    """The pcbnew VIATYPE constant for a Via.via_type, or None for a through
+    via (a new PCB_VIA is already THROUGH). The reverse of pcbnew_via_type:
+    KiCad 10 has BLIND and BURIED, KiCad 9 one BLIND_BURIED for both."""
+    import pcbnew
+    if via_type == 'micro':
+        return getattr(pcbnew, 'VIATYPE_MICROVIA', None)
+    if via_type in ('blind', 'buried'):
+        own = getattr(pcbnew, 'VIATYPE_BURIED' if via_type == 'buried'
+                      else 'VIATYPE_BLIND', None)
+        return own if own is not None else getattr(pcbnew, 'VIATYPE_BLIND_BURIED', None)
+    return None
 
 
 def build_pcb_data_from_board(board, guide_layer: str = "User.1",

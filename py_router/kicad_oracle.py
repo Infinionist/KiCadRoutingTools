@@ -2538,9 +2538,10 @@ def oracle_reconnect(board_file: str, net_names, config,
                     for _v in _e2vias:
                         new_sexprs.append(generate_via_sexpr(
                             _v.x, _v.y, _v.size, _v.drill,
-                            [routing_layers[0], routing_layers[-1]], net_id,
+                            ['F.Cu', 'B.Cu'], net_id,
                             net_name=net_name if v10 else None,
-                            tenting_attrs=_new_via_attrs))
+                            tenting_attrs=_new_via_attrs,
+                            via_type=_v.via_type))
                         pcb_data.vias.append(_v)
                         emitted_vias.append(_v)
                     print(f"    {net_name}: exact-fill strap OK (escalated: "
@@ -2969,8 +2970,7 @@ def oracle_reconnect(board_file: str, net_names, config,
                                 'new_vias': [_Via649(
                                     x=_vx, y=_vy, size=config.via_size,
                                     drill=config.via_drill,
-                                    layers=[routing_layers[0],
-                                            routing_layers[-1]],
+                                    layers=['F.Cu', 'B.Cu'],
                                     net_id=net_id)]}
                         _esc_cfg = config
                         print(f"    {net_name}: stitching via placed at "
@@ -3023,9 +3023,10 @@ def oracle_reconnect(board_file: str, net_names, config,
                     for _v in _evias:
                         new_sexprs.append(generate_via_sexpr(
                             _v.x, _v.y, _v.size, _v.drill,
-                            [routing_layers[0], routing_layers[-1]], net_id,
+                            ['F.Cu', 'B.Cu'], net_id,
                             net_name=net_name if v10 else None,
-                            tenting_attrs=_new_via_attrs))
+                            tenting_attrs=_new_via_attrs,
+                            via_type=_v.via_type))
                         pcb_data.vias.append(_v)
                         emitted_vias.append(_v)
                     print(f"    {net_name}: ({ax:.2f},{ay:.2f})"
@@ -3266,9 +3267,10 @@ def oracle_reconnect(board_file: str, net_names, config,
             for vx, vy in via_positions:
                 new_sexprs.append(generate_via_sexpr(
                     vx, vy, used_via_size, used_via_drill,
-                    [routing_layers[0], routing_layers[-1]], net_id,
+                    ['F.Cu', 'B.Cu'], net_id,
                     net_name=net_name if v10 else None,
-                    tenting_attrs=_new_via_attrs))
+                    tenting_attrs=_new_via_attrs,
+                    via_type=None))   # a via the oracle adds: through
             if via_positions and used_via_size < config.via_size - 1e-9:
                 # #1170: a smaller via is a descent, disclosed in
                 # design_rules like every other site's.
@@ -3291,7 +3293,7 @@ def oracle_reconnect(board_file: str, net_names, config,
             for vx, vy in via_positions:
                 _vobj = _Via(x=vx, y=vy, size=used_via_size,
                              drill=used_via_drill,
-                             layers=[routing_layers[0], routing_layers[-1]],
+                             layers=['F.Cu', 'B.Cu'],
                              net_id=net_id)
                 pcb_data.vias.append(_vobj)
                 emitted_vias.append(_vobj)
