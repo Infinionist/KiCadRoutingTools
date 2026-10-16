@@ -1926,9 +1926,9 @@ def _assign_multipoint_net_per_cluster(
             if cnt > best_count:
                 best_count, best_L = cnt, L
         if best_L is None or best_count == 0:
-            # Some endpoint is feasible on no layer at all -- cannot happen
-            # (every endpoint is at least 'free' on its own current layer),
-            # but guard defensively rather than loop forever.
+            # Some endpoint is feasible on no ROUTABLE layer: a bare pad
+            # pinned to a forbidden layer (a --layers subset run). It needs
+            # a via whatever is chosen, so leave the net as it is.
             return -1
         chosen.append(best_L)
         uncovered = {i for i in uncovered if _placement(entries[i], best_L) is None}
