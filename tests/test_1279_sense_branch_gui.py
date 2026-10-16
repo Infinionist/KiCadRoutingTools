@@ -13,10 +13,14 @@ tests/gui_parity/test_1279_sense_branch_live.py):
 - the #313 via nudge (place_fanout_clearance's last resort for a boxed cap):
   it moved a KiCad-locked or held via and the placement writer deleted it and
   re-emitted it under a new uuid. Now the nudge leaves it and the writer
-  refuses a move that names one.
-
-Rig: tests/test_741_via_nudge_tenting.py's, whose cap C1 is boxed by via VF1
-(nudged to (11.325, 9.5) there) and C2 by VF2 (the unlocked control).
+  refuses a move that names one. Rig: tests/test_741_via_nudge_tenting.py's,
+  whose cap C1 is boxed by via VF1 (nudged to (11.325, 9.5) there) and C2 by
+  VF2 (the unlocked control).
+- the castellated-landing retract (every routing step's post-pass,
+  pcb_modification.retract_castellated_landings): it pulled a track end on a
+  castellated pad back from the edge by stripping the track and re-emitting
+  it. Rig: the sense_star fixture with U1.1 made a castellated pad at the
+  right board edge and the member trace ending 0.15 mm from the edge.
 
 Run:
     python3 tests/test_1279_sense_branch_gui.py
@@ -157,15 +161,85 @@ def test_writer_refuses_a_move_of_a_locked_via():
     assert not os.path.exists(dst), 'the refused write left an output file'
 
 
+SENSE_BOARD = os.path.join(TESTS_DIR, 'fixtures', 'sense_branch', 'sense_star.kicad_pcb')
+SENSE_PRO = SENSE_BOARD[:-len('.kicad_pcb')] + '.kicad_pro'
+MEMBER = '11111111-0000-0000-0000-000000000001'
+GROUP_LINE = ('  (group "sense:C1.1" (uuid "33333333-0000-0000-0000-000000000001") '
+              '(members "11111111-0000-0000-0000-000000000001"))\n')
+U1_AT = '(footprint "T:P" (layer "F.Cu") (at 27 5)'
+U1_PAD = ('(pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu" "F.Paste" "F.Mask") '
+          '(net 1 "VDD")))\n  (footprint "T:P" (layer "F.Cu") (at 15 8)')
+MEMBER_HEAD = '(segment (start 3 5) (end 27 5) (width 0.2)'
+
+
+def _castellated(group=True, lock=False):
+    """sense_star with U1 a castellated pad straddling the right edge (x 29..30)
+    and the member trace ending on it at x 29.85, 0.15 mm from the edge."""
+    with open(SENSE_BOARD, encoding='utf-8') as f:
+        src = f.read()
+    assert all(src.count(a) == 1 for a in (U1_AT, U1_PAD, MEMBER_HEAD, GROUP_LINE)), \
+        'the sense_star fixture moved'
+    src = src.replace(U1_AT, '(footprint "T:P" (layer "F.Cu") (at 29.5 5)')
+    src = src.replace(U1_PAD, U1_PAD.replace('(size 1 1) ', '(size 1 1) (property pad_prop_castellated) '))
+    head = '(segment (start 3 5) (end 29.85 5) (width 0.2)' + (' (locked yes)' if lock else '')
+    src = src.replace(MEMBER_HEAD, head)
+    if not group:
+        src = src.replace(GROUP_LINE, '')
+    d = _tmpdir()
+    path = os.path.join(d, 'castel.kicad_pcb')
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(src)
+    shutil.copy(SENSE_PRO, path[:-len('.kicad_pcb')] + '.kicad_pro')
+    return path
+
+
+def _retract(path):
+    """The routing mains' post-pass on `path`; (count, the member as written)."""
+    from pcb_modification import retract_castellated_landings
+    with contextlib.redirect_stdout(io.StringIO()):
+        n = retract_castellated_landings(path, 0.3)
+    out = parse_kicad_pcb(path)
+    vdd = [s for s in out.segments if not s.graphic and out.nets[s.net_id].name == 'VDD']
+    assert len(vdd) == 1, f'{len(vdd)} VDD tracks after the retract'
+    return n, vdd[0], out
+
+
+def test_castellated_retract_moves_an_ordinary_landing():
+    """The rig's control: the same landing, neither locked nor held, IS
+    retracted -- so the two arms below test the guard, not a miss."""
+    n, seg, _ = _retract(_castellated(group=False))
+    assert n == 1 and seg.end_x < 29.85 - 1e-6, (n, seg.end_x)
+
+
+def test_castellated_retract_never_rewrites_a_locked_track():
+    path = _castellated(group=False, lock=True)
+    assert parse_kicad_pcb(path).segments[0].locked, 'the member is not KiCad-locked'
+    n, seg, _ = _retract(path)
+    got = (n, seg.end_x, seg.uuid, seg.locked)
+    assert got == (0, 29.85, MEMBER, True), got
+
+
+def test_castellated_retract_never_rewrites_a_held_track():
+    n, seg, out = _retract(_castellated())
+    assert n == 0 and (seg.end_x, seg.uuid) == (29.85, MEMBER), (n, seg.end_x, seg.uuid)
+    br = [(b.name, b.protected, b.reason) for b in out.sense_branches]
+    assert br == [('sense:C1.1', True, None)], f'the written branch: {br}'
+
+
 TESTS = [
     test_nudge_never_moves_a_locked_via,
     test_nudge_never_moves_a_held_via,
     test_writer_refuses_a_move_of_a_locked_via,
+    test_castellated_retract_moves_an_ordinary_landing,
+    test_castellated_retract_never_rewrites_a_locked_track,
+    test_castellated_retract_never_rewrites_a_held_track,
 ]
 
 
 def main():
     evidence(os.path.join(TESTS_DIR, 'test_741_via_nudge_tenting.py'), 'the #741 rig module')
+    evidence(SENSE_BOARD, 'the sense_star fixture')
+    evidence(SENSE_PRO, "the sense_star fixture's .kicad_pro")
     failed = []
     try:
         for t in TESTS:
