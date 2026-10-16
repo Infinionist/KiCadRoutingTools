@@ -531,6 +531,37 @@ def test_the_board_area_bound_is_per_face():
           "none, and both print the utilisation")
 
 
+def test_the_board_area_bound_reads_declared_block_faces():
+    """A plan check grades the arrangement the plan declares, not the input
+    pile's incidental footprint layers.
+
+    This is the pre-seed check: generators commonly emit every movable part on
+    F.Cu, while ``blocks[].side`` partitions the intended placement over both
+    faces. Charging that pile to F.Cu rejects a plan whose declared placement
+    fits comfortably.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        big = [(dx, dy, 0.9, 0.9) for dx in range(4) for dy in range(4)]
+        parts = [(f'U{i}', 2 + 4 * (i % 4), 2 + 4 * (i // 4) % 8, big)
+                 for i in range(16)]
+        board = _board(tmp, 'declared-sides.kicad_pcb', parts)
+        blocks = [
+            {'name': 'front', 'refs': [f'U{i}' for i in range(8)],
+             'side': 'F'},
+            {'name': 'back', 'refs': [f'U{i}' for i in range(8, 16)],
+             'side': 'B'},
+        ]
+        found, measured = _check(
+            _raw(blocks=blocks,
+                 legality_budget={'overlap_area': 0, 'oob_count': 0}),
+            board)
+        assert not [v for v in found if v.rule == 'plan_board_overfull'], (
+            found, measured)
+        assert measured['utilisation_per_face_clearance0'] < 0.7, measured
+    print("  PASS: plan-board area follows blocks[].side, not the input "
+          "pile's current face")
+
+
 def test_place_seed_refuses_before_writing_and_repair_only_reports():
     with tempfile.TemporaryDirectory() as tmp:
         b = _board(tmp, 'o.kicad_pcb', [('U1', 3, 3, PAD), ('U2', 6, 3, PAD)])
@@ -930,6 +961,7 @@ TESTS = [
     test_the_area_bound_is_sound_for_the_grade,
     test_the_edge_bound_reads_pads_not_courtyards,
     test_the_board_area_bound_is_per_face,
+    test_the_board_area_bound_reads_declared_block_faces,
     test_place_seed_refuses_before_writing_and_repair_only_reports,
     test_plan_only_on_a_pile,
     test_plan_only_on_a_true_pile_and_its_exit_4,

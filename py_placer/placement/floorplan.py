@@ -8162,6 +8162,32 @@ PLAN_SEED_REFUSES = frozenset({
     'block_glob_literal'})
 
 
+def _planned_block_sides(intent: Intent,
+                         blocks: Dict[str, List[str]]) -> Dict[str, str]:
+    """Unambiguous member faces declared by ``blocks[].side``.
+
+    ``plan_check`` runs before the planned placement exists. The board can be
+    a generator pile with every movable footprint on one face, so its current
+    layers are not evidence for the plan's per-face capacity. Conflicting
+    declarations are deliberately not resolved here: choosing either face
+    would invent a precedence rule, and the ordinary side grade remains the
+    instrument that names that contradiction.
+    """
+    claimed: Dict[str, str] = {}
+    conflicted = set()
+    for zone in intent.blocks:
+        if zone.side is None:
+            continue
+        for ref in blocks.get(zone.name, ()):
+            previous = claimed.get(ref)
+            if previous is not None and previous != zone.side:
+                conflicted.add(ref)
+            else:
+                claimed[ref] = zone.side
+    return {ref: side for ref, side in claimed.items()
+            if ref not in conflicted}
+
+
 def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                group_sources: Sequence[str] = (),
                clearance: Optional[float] = None,
@@ -8396,6 +8422,7 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
     # #1174: an edge member whose declared edge the zone leaves open may
     # sit past that side, so the zone need hold none of it.
     _claimed5 = claimed_edges(intent)
+    planned_sides = _planned_block_sides(intent, blocks)
     for z in intent.blocks:
         if z.rect is None:
             continue
@@ -8435,12 +8462,13 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                 # sit wholly past the open side, so charging its outline
                 # ERRORed an intent the grade passes (phase-1 verifier).
                 continue
-            per_face[part.side] = per_face.get(part.side, 0.0) + w * h
-            per_face_c[part.side] = per_face_c.get(part.side, 0.0) + (
+            planned_side = planned_sides.get(r, part.side)
+            per_face[planned_side] = per_face.get(planned_side, 0.0) + w * h
+            per_face_c[planned_side] = per_face_c.get(planned_side, 0.0) + (
                 (w + clr_used) * (h + clr_used))
             if r in _outline:
-                per_face_x[part.side] = (per_face_x.get(part.side, 0.0)
-                                         + _outline[r][1])
+                per_face_x[planned_side] = (
+                    per_face_x.get(planned_side, 0.0) + _outline[r][1])
             t0 = (part.tht_by_rot or {}).get(0.0)
             if t0 is not None:
                 # The drilled-pad rect's part INSIDE the courtyard: only the
@@ -8452,7 +8480,7 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                 # the far side: the union box charged ulx3s GPDI1's two shell
                 # posts and the gap between them, and called its own shipped
                 # arrangement (0.0 mm2 under the grade) a forced overlap.
-                far = 'B' if part.side == 'F' else 'F'
+                far = 'B' if planned_side == 'F' else 'F'
                 per_face[far] = per_face.get(far, 0.0) + (
                     legality.far_overlap_area(t0, b0))
                 # The budget measures the far side on these same cluster
@@ -8589,7 +8617,8 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
     # 7. interior utilisation
     try:
         g0 = _opts.grow_board(pcb_data, pcb_file, clearance=0.0,
-                              board_edge_clearance=0.0, assembly_sides=None)
+                              board_edge_clearance=0.0, assembly_sides=None,
+                              side_overrides=planned_sides)
     except Exception as exc:                                # noqa: BLE001
         g0 = {'error': f"{type(exc).__name__}: {exc}"}
     m0 = g0.get('measured') or {}
@@ -8653,7 +8682,8 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
         try:
             g1 = _opts.grow_board(pcb_data, pcb_file, clearance=0.0,
                                   board_edge_clearance=0.0,
-                                  assembly_sides=sides)
+                                  assembly_sides=sides,
+                                  side_overrides=planned_sides)
         except Exception:                                   # noqa: BLE001
             g1 = {}
         util1 = (g1.get('measured') or {}).get('utilisation')

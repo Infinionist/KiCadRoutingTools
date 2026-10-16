@@ -40,7 +40,7 @@ Every option carries the house shape:
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Mapping, Optional, Sequence
 
 # A board packed tighter than this by courtyard area is worth remarking on even
 # when every part currently fits: the parts have to be ROUTED between, and the
@@ -185,7 +185,8 @@ def _far_face_area(fp, clearance: float) -> float:
 
 def grow_board(pcb_data, pcb_file: str, *, clearance: float,
                board_edge_clearance: float,
-               assembly_sides: Optional[str] = None) -> Dict:
+               assembly_sides: Optional[str] = None,
+               side_overrides: Optional[Mapping[str, str]] = None) -> Dict:
     """Does the total part area fit inside the outline, and by how much not?
 
     This is the number the prohibition asks for and nobody computes. It is
@@ -214,6 +215,12 @@ def grow_board(pcb_data, pcb_file: str, *, clearance: float,
     back-side area. It moves the 7 that do not, and flips the verdict on the
     two whose sum exceeds their usable area (orangecrab_ext_pll 0.92 -> 1.25,
     ulx3s 0.90 -> 1.34).
+
+    `side_overrides` is the plan-check projection of declared
+    ``blocks[].side`` values. A plan is checked before its placement exists,
+    so its necessary area bound must charge a member to the face the plan
+    requires rather than to the generator pile's incidental current layer.
+    Ordinary option callers omit it and continue to measure the board as-is.
     """
     from placement.parser import extract_courtyard_bboxes
     bi = pcb_data.board_info
@@ -291,7 +298,9 @@ def grow_board(pcb_data, pcb_file: str, *, clearance: float,
         # board's footprints are on F.Cu or B.Cu -- and the point is that it
         # stays inert. Same helper the census, the rule and every other
         # per-side instrument in the tree read.
-        layer = 'B.Cu' if footprint_side(fp) == 'B' else 'F.Cu'
+        planned_side = ((side_overrides or {}).get(ref)
+                        or footprint_side(fp))
+        layer = 'B.Cu' if planned_side == 'B' else 'F.Cu'
         per_side[layer] = per_side.get(layer, 0.0) + a
         # #878. `layer` again rather than a second `footprint_side` call: ONE
         # side decision per part, so the near and far charges cannot land on
