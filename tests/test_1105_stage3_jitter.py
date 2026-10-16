@@ -16,7 +16,8 @@ targets as well as the claim. What each case pins:
   test_1105_decap_claim_after_ics.py reads), so drawing the jitter up front
   changed no pose.
 * the same with anchors-first on (tests/fixtures/1105/
-  seed_anchors_first_baseline.json, recorded at 055fa9e1 with `--record`).
+  seed_anchors_first_baseline.json, recorded at 055fa9e1 with `--record`;
+  its esp_prog and watchy runs re-recorded at ed157dfc for #1266).
   None of the fixture's other runs turns anchors-first on, so a draw moved
   ABOVE the anchors-first reorder changed every pose of such a seed (18 of 18
   on esp_prog, 84 of 84 on watchy) with every other case green.

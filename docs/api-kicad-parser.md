@@ -242,7 +242,10 @@ modelled). The segments are the **perimeter**; a filled shape's interior is
 its `graphic_ring` (#1181), which the obstacle map stamps for every foreign net
 and check_drc grades containment in -- the same for board-level graphics. The
 off-outline grade (`check_drc.footprint_graphic_outline_census`, #962) reads
-`Segment.graphic_filled` to look inside a filled shape.
+`Segment.graphic_filled` to look inside a filled shape, and another part's
+PADS on the copper (`check_drc.footprint_graphic_pad_census`, #1266) are
+measured the same way -- strokes, then the interior -- for check_drc, the
+placement gate and check_assembly.
 
 ### `Zone`
 
