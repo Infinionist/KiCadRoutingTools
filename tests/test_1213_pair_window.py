@@ -80,7 +80,8 @@ class Witness(unittest.TestCase):
         self.assertGreater(parts['U6'].n_pads * parts['U8'].n_pads,
                            PAIR_TEST_CAP)
         sf = ctx.pair_shortfall('U6', 'U8')
-        self.assertEqual(tuple(sf), (0.0, False, 0.0, False))
+        # (#1266 widened the tuple with the graphic-copper share, gpad/gstack)
+        self.assertEqual(tuple(sf), (0.0, False, 0.0, False, 0.0, False))
         u6, u8 = fps['U6'], fps['U8']
         ra = parts['U6'].pad_rects(u6.x, u6.y, u6.rotation)
         rb = parts['U8'].pad_rects(u8.x, u8.y, u8.rotation)

@@ -380,7 +380,13 @@ def check_pair(argv, step, base=None):
                 else os.path.normpath(os.path.join(base, val)))
         got = params.get(key)
         n += 1
-        if not (isinstance(got, str) and os.path.isabs(got) and got == want):
+        # Rooted, not drive-absolute: a manifest recorded on POSIX
+        # (`# cwd=/repo`) joins to `\repo\x` on Windows, which ntpath.isabs
+        # stops calling absolute on Python 3.13+, and no drive can be added.
+        rooted = (isinstance(got, str)
+                  and (os.path.isabs(got)
+                       or os.path.splitdrive(got)[1][:1] in ('/', '\\')))
+        if not (rooted and got == want):
             bad.append((flag, f"want the absolute path {want!r} (recorded "
                               f"{val!r}), got {key}={got!r}"))
 
@@ -1807,7 +1813,9 @@ def check_post_parse_witnesses():
         gone = os.path.join(tmp, 'not-here')
         refusing = set()
         for check, cmd, want, *where in _POST_PARSE_WITNESSES:
-            argv = ['python3'] + shlex.split(cmd.format(tmp=tmp))
+            # Quoted, as record_invocation writes a manifest: an unquoted
+            # Windows path loses its backslashes to the POSIX split.
+            argv = ['python3'] + shlex.split(cmd.format(tmp=shlex.quote(tmp)))
             got = cac.rejection(argv, cwd=gone if where == ['gone'] else tmp)
             if want is None and got:
                 bad.append((check, f"refused a command its tool accepts: "

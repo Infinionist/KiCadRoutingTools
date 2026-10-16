@@ -33,7 +33,8 @@ What each case pins, and why:
 * bit-identity: with no array, no `rigid` block and no tether declared, the
   quench's placements and metrics equal those recorded at 8bcce3fba
   (`fixtures/1051/quench_unarmed_baseline.json`, from
-  `fixtures/1051/record_quench_unarmed.py`).
+  `fixtures/1051/record_quench_unarmed.py`; the esp_prog case re-recorded
+  for #1266, whose pad gate sees U2's drawn tab).
 
     python3 tests/test_1051_quench_blocks.py [name-filter ...]
 """
@@ -1166,7 +1167,7 @@ def test_unarmed_quench_is_bit_identical_to_the_pre_phase4_quench():
     n = sum(len(c['placements']) for c in now)
     assert n > 0, "the recorded quench moved nothing, so identity is vacuous"
     print(f"  PASS: {len(now)} unarmed quench(es), {n} placement(s), "
-          f"metrics and poses equal to 8bcce3fba's")
+          f"metrics and poses equal to the recorded quench's")
 
 
 TESTS = [
