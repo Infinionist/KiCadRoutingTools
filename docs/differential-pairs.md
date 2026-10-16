@@ -214,6 +214,15 @@ setback   = centerline_setback (if set) else 4 × (track_width + diff_pair_gap)/
 - A **multi-point** pair defers short legs individually; if *every* leg is
   short the whole pair is left for single-ended.
 
+Being short is not the only way a pair is left whole for single-ended: a
+multi-point pair whose coupled chain cannot be routed at all is deferred as
+the fallback (#165), and so is a 2-terminal pair whose coupled route failed.
+Each such pair is listed in `single_ended_diff_pairs` with `pair_reports[]`
+`outcome: "deferred"`, and its `failure_reason` says which: `electrically-short`,
+`coupled-route-failed` (the multi-point fallback), or the 2-terminal pair's
+own failure code. The end-of-run `Single-ended:` line and the GUI's completion
+dialog count the deferred pairs by that reason.
+
 **Why the 3 mm absolute floor.** The geometric term alone (`5 × setback =
 10 × (width+gap)` in the auto case) drops to only ~2 mm at tight pitch, which
 is *below* the length at which coupling matters electrically. Below ~λ/10 at
