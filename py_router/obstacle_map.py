@@ -559,12 +559,17 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
     add_board_edge_obstacles(obstacles, pcb_data, config, extra_clearance,
                              progress=_report)
 
-    # Add user-drawn User-layer keepout polygons (issue #27) - block all copper layers
+    # Add user-drawn User-layer keepout polygons (issue #27) - block all copper layers.
+    # Both keep-out passes take the map's extra clearance like every other
+    # obstacle here: on a diff-pair CENTRELINE map (extra = the member offset)
+    # the members, not just the centreline, must stay out (found reviewing #1278).
     _report("keepouts", 0, 0, force=True)
-    add_user_keepout_obstacles(obstacles, pcb_data, config, coord, num_layers)
+    add_user_keepout_obstacles(obstacles, pcb_data, config, coord, num_layers,
+                               extra_clearance)
 
     # Block KiCad native keep-out rule areas (zone (keepout ...)), per-layer (PR #25)
-    add_rule_area_keepout_obstacles(obstacles, pcb_data, config)
+    add_rule_area_keepout_obstacles(obstacles, pcb_data, config,
+                                    extra_clearance=extra_clearance)
 
     # Pour islands of out-of-scope nets that this run could only cut (#1260)
     add_pour_barrier_obstacles(obstacles, pcb_data, config, extra_clearance,
@@ -1011,13 +1016,19 @@ def _polygon_grid_cells(points_mm, coord: GridCoord):
 
 
 def add_user_keepout_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
-                               config: GridRouteConfig, coord: GridCoord, num_layers: int):
+                               config: GridRouteConfig, coord: GridCoord, num_layers: int,
+                               extra_clearance: float = 0.0):
     """Block all grid cells inside user-drawn keepout polygons on every copper layer.
 
     Keepout zones (issue #27) are hard blocks: routed tracks cannot enter them. The
     block applies to every net routed in the run. Because cells are blocked
     unconditionally, a zone drawn over a routed net's pad can make that net
     unroutable -- zones are meant for open board area, not over pads.
+
+    ``extra_clearance`` (a diff-pair centreline map: the member offset) also
+    blocks the cells within that distance of the polygon, so each member's
+    centreline stays out as a single track's does. 0 leaves the cell set
+    exactly the polygon's interior.
     """
     if not config.keepout_enabled or not pcb_data.keepout_zones:
         return
@@ -1025,6 +1036,13 @@ def add_user_keepout_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
     all_cells = set()
     for zone in pcb_data.keepout_zones:
         all_cells |= _polygon_grid_cells(zone.points, coord)
+        if extra_clearance > 0:
+            gx_lo, gy_lo, nx, _ny, inside, edge_dist = _rasterize_polygon_box(
+                zone.points, coord, extra_clearance + coord.grid_step)
+            if inside is not None:
+                band_x, band_y = _box_masked_cells(
+                    gx_lo, gy_lo, nx, edge_dist < extra_clearance - GRID_TIE_EPS)
+                all_cells |= set(zip(band_x.tolist(), band_y.tolist()))
 
     if not all_cells:
         return
@@ -1118,7 +1136,8 @@ def point_to_polygon_edge_distance(x: float, y: float, polygon: List[Tuple[float
 
 def add_rule_area_keepout_obstacles(obstacles: GridObstacleMap, pcb_data: PCBData,
                                     config: GridRouteConfig,
-                                    layers: Optional[List[str]] = None):
+                                    layers: Optional[List[str]] = None,
+                                    extra_clearance: float = 0.0):
     """Block tracks/vias inside KiCad keep-out rule areas.
 
     Each keepout (parsed from `(zone ... (keepout ...))`) blocks track cells on its
@@ -1129,6 +1148,11 @@ def add_rule_area_keepout_obstacles(obstacles: GridObstacleMap, pcb_data: PCBDat
     Cells whose centre is inside the polygon are blocked, as are cells just outside
     whose track/via copper (half-width plus clearance) would intrude past the keep-out
     boundary, so the copper itself stays out of the region rather than just the centre.
+
+    ``extra_clearance`` widens both bands, as it does every other obstacle: on a
+    diff-pair CENTRELINE map it is the member offset, without which a member's
+    copper reached into the area (lvds_converter_dualclk /CLK+: KiCad
+    items_not_allowed; found reviewing #1278).
     """
     keepouts = getattr(pcb_data.board_info, 'keepouts', None)
     if not keepouts:
@@ -1137,8 +1161,8 @@ def add_rule_area_keepout_obstacles(obstacles: GridObstacleMap, pcb_data: PCBDat
     coord = GridCoord(config.grid_step)
     layer_list = layers if layers is not None else config.layers
     layer_map = build_layer_map(layer_list)
-    track_clear = config.clearance + config.track_width / 2
-    via_clear = config.clearance + config.via_size / 2
+    track_clear = config.clearance + config.track_width / 2 + extra_clearance
+    via_clear = config.clearance + config.via_size / 2 + extra_clearance
     # Restrict rasterization to the map's extent: on a local-window build a
     # whole-board ring keep-out would otherwise rasterize the entire board per
     # call (the dominant cost of repair_planes and the via-in-pad
