@@ -3373,6 +3373,8 @@ class _Ctx:
         #: `{ref: census amount}` of every exempt part, in the census's own
         #: currency, so `rule_legality` can take them out of `oob_amount`.
         self._oob_exempt_census: Dict[str, float] = {}
+        #: `_graphic_copper_off_board`'s answer, computed on first use.
+        self._graphic_off = None
         #: #961. One row per declared edge connector on the board, passing
         #: ones included: the number its `overhang_mm` band was graded on,
         #: the currency of that number, the drawn-body measurements and the
@@ -3458,9 +3460,14 @@ class _Ctx:
         part, not a placement a budget can refuse -- counted, it made
         `oob_count: 0` unsatisfiable by any seed. Only at the declared pose:
         a part moved off its datum is a placement again and stays counted
-        (the fixed-pose anchor names the move). Pad copper past the outline
-        is never licensed."""
+        (the fixed-pose anchor names the move), and so does one on the other
+        face than the entry declares, which is not the part the datum
+        describes (stage 0 refuses to seat it there). Copper past the
+        outline is never licensed: pads (their extent box, at zero margin)
+        and, since a drawn tab is copper too (#962), the footprint's graphic
+        copper, read off the census `grade_pad_legality` publishes."""
         from . import reconcile as _rc
+        from .legality import footprint_side
         out: Dict[str, float] = {}
         for f in self.intent.fixed_poses:
             ref = str(f['ref'])
@@ -3470,6 +3477,9 @@ class _Ctx:
                 continue
             if not _rc.same_pose(_rc.fixed_pose_tuple(f),
                                  (fp.x, fp.y, (fp.rotation or 0.0) % 360.0)):
+                continue
+            if (f.get('side') in ('F', 'B')
+                    and footprint_side(fp) != f['side']):
                 continue
             amt = self.gate.rect_outside_amount(
                 part.rect, skip_rings=self.state._owned_rings(ref))  # noqa: SLF001
@@ -3481,9 +3491,26 @@ class _Ctx:
             if ext is None or self.zero_gate().rect_outside_amount(
                     ext) > legality.EPS:
                 continue
+            if ref in self._graphic_copper_off_board():
+                continue
             out[ref] = float(amt)
             self._oob_exempt_census[ref] = float(amt)
         return out
+
+    def _graphic_copper_off_board(self) -> frozenset:
+        """Refs whose footprint GRAPHIC copper reaches past the outline, or
+        whose graphic copper the census could not measure -- a zero reading
+        certifies nothing for them. #962's one measurement
+        (`legality._graphic_copper_channel`, check_drc's census), so this
+        and `grade_pad_legality`'s `oob_graphic_copper_refs` cannot disagree.
+        Computed once per grade, and only when a datum reaches the question."""
+        if self._graphic_off is None:
+            ch = legality._graphic_copper_channel(self.pcb, 0.0)  # noqa: SLF001
+            self._graphic_off = frozenset(
+                [str(r) for r, _amt in ch['oob_graphic_copper_refs']]
+                + [str(u[0]) for u in ch['oob_graphic_copper_unmeasured']
+                   if u and u[0]])
+        return self._graphic_off
 
     def zero_gate(self):
         """The outline at ZERO margin -- "is this copper ON the board", which

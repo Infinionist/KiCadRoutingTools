@@ -22,6 +22,10 @@ from placement import floorplan                    # noqa: E402
 COURTYARD = '(fp_rect (start -1 -1) (end 1 1) (layer "F.CrtYd"))'
 PAD_INBOARD = '(pad "1" smd rect (at .5 0) (size .5 .5) (layers "F.Cu"))'
 PAD_OFF = '(pad "1" smd rect (at -1.5 0) (size .5 .5) (layers "F.Cu"))'
+#: #962: a drawn F.Cu tab 0.4 mm wide whose outer 0.5 mm is past the west edge
+#: with J1 at x = 1.1 -- copper off the board that no pad extent sees.
+TAB_OFF = ('(fp_rect (start -1.6 -0.3) (end -1.2 0.3) (stroke (width 0.1) '
+           '(type solid)) (fill solid) (layer "F.Cu"))')
 BUDGET = {'oob_count': 0, 'oob_amount': 0}
 
 
@@ -37,15 +41,15 @@ class MechanicalDatum(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def board(self, pad=PAD_INBOARD, x=1.1):
+    def board(self, pad=PAD_INBOARD, x=1.1, extra=''):
         """J1's courtyard 0.1 mm from the west edge, inside the 0.25 band."""
-        path = self.root / f'j1_{x:g}_{len(pad)}.kicad_pcb'
+        path = self.root / f'j1_{x:g}_{len(pad)}_{len(extra)}.kicad_pcb'
         path.write_text(
             '(kicad_pcb (version 20241229) (generator "tmech")\n'
             '  (gr_rect (start 0 0) (end 20 20) (layer "Edge.Cuts"))\n'
             f'  (footprint "t" (layer "F.Cu") (at {x} 10 0)\n'
             '    (property "Reference" "J1")\n'
-            f'    {COURTYARD}\n    {pad}))\n', encoding='utf-8')
+            f'    {COURTYARD}\n    {pad}\n    {extra}))\n', encoding='utf-8')
         return path
 
     def grade(self, path, **pose):
@@ -78,6 +82,22 @@ class MechanicalDatum(unittest.TestCase):
         r = self.grade(self.board(pad=PAD_OFF))
         self.assertEqual(r.legality.get('oob_count_exempt'), 0)
         self.assertTrue(_legality(r))
+
+    def test_datum_on_the_other_face_stays_counted(self):
+        """At its declared x, y and rotation but on F.Cu where the entry
+        declares B.Cu: not the part the datum describes (stage 0 refuses to
+        seat it there), so not exempt."""
+        r = self.grade(self.board(), side='B')
+        self.assertEqual(r.legality.get('oob_count_exempt'), 0)
+        self.assertEqual(len(_legality(r)), 2)
+
+    def test_graphic_copper_off_the_outline_is_never_licensed(self):
+        """#962: footprint GRAPHIC copper past the edge is copper off the
+        board as much as a pad is, and a lock is not a waiver for it. Every
+        pad is on the board here, so only the graphic census can see it."""
+        r = self.grade(self.board(extra=TAB_OFF))
+        self.assertEqual(r.legality.get('oob_count_exempt'), 0)
+        self.assertEqual(len(_legality(r)), 2)
 
     def test_amount_publishes_the_raw_total(self):
         r = self.grade(self.board(), basis='declared')
