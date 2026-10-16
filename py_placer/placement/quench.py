@@ -1710,7 +1710,11 @@ class QuenchState:
                 # inside) on a board that declares none with tracks
                 # forbidden.
                 keepouts=legality.RuleAreaKeepouts.for_board(
-                    pcb_data, clearance, pcb_file))
+                    pcb_data, clearance, pcb_file),
+                # #1266: footprint graphic copper (a SOT-89 tab), charged
+                # against other parts' pads; empty on most boards.
+                graphics=legality.build_part_graphics(
+                    pcb_data, refs=set(part_pads)))
 
         # net -> refs touching it, as a SORTED LIST, not a set (#457).
         #
@@ -3354,6 +3358,10 @@ class QuenchState:
             return False
         if cur.pad_overlap and not base.pad_overlap:
             return False
+        # #1266: pads on the other part's graphic copper, on their own licence
+        if cur.gpad > base.gpad + EPS_IMPROVE or (cur.gstack
+                                                  and not base.gstack):
+            return False
         return cur.hole <= base.hole + EPS_IMPROVE
 
     def _incumbent_violation(self, ref, exclude=None):
@@ -4116,11 +4124,18 @@ class QuenchState:
             pp = self.legality_ctx.parts.get(ref)
             if pp is None:
                 return []
+            # #1266: and the part's footprint graphic copper, which
+            # `pair_shortfall` charges and which can reach past every pad
+            # (esp_prog U2's tab runs 4 mm beyond its pins).
+            gr = self.legality_ctx.graphics.get(ref)
             out = []
             for r in rots:
                 e = pp.extent_local(r)
                 if e is not None:
                     out.append(e)
+                g = gr.extent_local(r) if gr is not None else None
+                if g is not None:
+                    out.append(g)
             return out
 
         geom = {}
@@ -4137,6 +4152,11 @@ class QuenchState:
                     if pe is not None:
                         box = (min(box[0], pe[0]), min(box[1], pe[1]),
                                max(box[2], pe[2]), max(box[3], pe[3]))
+                    gr = self.legality_ctx.graphics.get(ref)   # #1266
+                    ge = gr.extent(p.x, p.y, p.rot) if gr is not None else None
+                    if ge is not None:
+                        box = (min(box[0], ge[0]), min(box[1], ge[1]),
+                               max(box[2], ge[2]), max(box[3], ge[3]))
                 geom[ref] = (box, 0.0)
             else:
                 boxes = [p.bounds_by_rot[r] if r in p.bounds_by_rot

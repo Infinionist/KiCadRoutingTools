@@ -459,6 +459,19 @@ but only `check_drc --baseline <the run's starting board>` can tell an
 inherited graze from one a part move created (`graphic-board-edge`); without
 it they read `unverified`. Pass `--baseline` whenever you have that board.
 
+**Another part's pad ON that copper is the same blind spot (#1266).** Pad
+legality measured pads against pads, so `place_pose set C3 135.6 96.69 --rot
+180` parked esp_prog C3 on U2's tab -- one pad across its edge, one wholly
+inside the filled shape -- `legal`, `buildable`, and check_drc saw only the
+first. `check_drc.footprint_graphic_pad_census` is the one measurement:
+check_drc grades the interior, `grade_pad_legality` publishes it as
+`graphic_pad_*` (place_pose gates on it), the seeder's gate
+(`LegalityContext.pair_shortfall`) charges it against pads with an
+off-board seed licensing nothing, and check_assembly gates a contact the way
+it gates courtyards -- a member MOVED vs `--baseline`, report-only without
+one -- because human boards ship such contacts by design (net ties on Kelvin
+shunt pads, a jumper on an antenna feed; a tie's own net is never a stack).
+
 **Scope a placement search to the refs the gate names.** When a gate names
 specific parts, free exactly those and lock everything else. A global sweep
 orders its violators by its own priority — usually worst-off-board first — and
@@ -871,7 +884,9 @@ pcb = parse_kicad_pcb('path/to/file.kicad_pcb')
   (`segment.graphic_ring`, #1181) is stamped by the obstacle map and graded by
   check_drc, lifted only for the shape's one own-pad net (or a declared tie
   group), and a touching track or via grants net-tie copper its net but no
-  other footprint's (KiCad gives that copper none). #962 adds what a
+  other footprint's (KiCad gives that copper none). A PAD grants a part's
+  copper its net only when it is that part's own pad (#1266): a foreign pad
+  over one vertex of esp_prog U2's tab used to waive its own short. #962 adds what a
   MEASUREMENT needs: `segment.drawn_width`
   (the stroke as drawn -- `width` models a stroke-0 fill at the track width),
   `graphic_kind`, `graphic_circle` (the true circle; the outline is a 16-gon)

@@ -41,11 +41,13 @@ import krt_capabilities as k                                # noqa: E402
 RUN_ALL_TIMEOUT = 300
 
 #: A long option as argparse RENDERS it: at the start of an option line, on its
-#: own or after a short alias. Scraping every `--token` out of the help TEXT
+#: own or after a short alias -- `-o, --output OUTPUT` on Python 3.13+, but
+#: `-o OUTPUT, --output OUTPUT` before it, which repeats the metavar after the
+#: alias. Scraping every `--token` out of the help TEXT
 #: instead picks up prose ("Use --group-by to choose...") and words broken
 #: across a wrap, which manufactures phantom flags like `--net-` and makes the
 #: comparison meaningless in the direction that matters.
-_OPT = re.compile(r'^\s{0,10}(?:-\w,\s*)?(--[A-Za-z0-9][A-Za-z0-9-]*)', re.M)
+_OPT = re.compile(r'^\s{0,10}(?:-\w(?: [A-Z][A-Z0-9_]*)?,\s*)?(--[A-Za-z0-9][A-Za-z0-9-]*)', re.M)
 
 
 def _real_flags(script):
