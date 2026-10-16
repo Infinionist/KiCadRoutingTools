@@ -69,7 +69,9 @@ it was, how to tell, and the board.
   chip's decap: on ch32v003_usb, the seed graded C4 (20 pF on PA2) as "9.08 mm from
   U3, the IC it decouples".
   - *Group:* with the crystal, the caps symmetric at the crystal's pads, and the
-    crystal on the IC's oscillator face.
+    crystal on the IC's oscillator face. `plan_regions.py` writes that as
+    `proximity[]` claims (`py_placer/placement/crystals.py`), and the seeder
+    seats the crystal beside its IC and each cap beside the crystal.
 - **A 4-pin crystal is not a 4-pin oscillator.** A 2016 or 3225 crystal has two GND
   pins. An oscillator has a supply pin, and the cap on that pin is the oscillator's
   decap.
@@ -155,7 +157,10 @@ python3 tests/stress/placement_survey.py report rows.jsonl
 - **ESD and TVS parts sit at their connector,** about 2.5 mm from it; 96% are nearer
   the connector than the main IC.
 - **Crystals:** about 4 mm from the IC (pad centre to pad centre); load caps about
-  1.8 mm from the crystal.
+  1.8 mm from the crystal. Measured as a `proximity[]` claim grades them, pad
+  edge to the pad on the same net: the farther crystal leg is 5.4 mm from its
+  IC pin (median; 75th percentile 8.1 mm), the farther load cap 0.8 mm from
+  the crystal (75th percentile 2.2 mm).
 - **Decaps:** about 2.5 mm from the supply pin (3.6 mm on 2-layer boards, 2.2 mm on
   4+ layers). On 4+ layer boards, about a third sit on the opposite face.
 - **LEDs and buttons** lean toward the edge. **Connectors** sit at it.

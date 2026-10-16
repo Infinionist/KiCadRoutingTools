@@ -1710,6 +1710,15 @@ def _sweep_positions(state, tx: float, ty: float):
         yield x, y
 
 
+#: How near a proximity follower's declared pads must sit to their partner's
+#: pins, pad centre to pad centre, for the partner's rotation trial to call a
+#: rotation good and choose among such on wiring (`seed_from_intent`'s
+#: followers stage). The human corpus's median crystal leg is 5.37 mm pad
+#: edge to pad edge (`placement_survey.py`, 258 crystals); pad centres add
+#: about half a pad on each side.
+FOLLOWER_SEAT_MM = 6.0
+
+
 def _try_place(state, ref: str, tx: float, ty: float, exclude: Set[str],
                constraint=None, tol: float = 0.5,
                max_disp: Optional[float] = None,
@@ -6943,6 +6952,317 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                            for m in spec['present']}
     center = ((bounds[0] + bounds[2]) / 2.0, (bounds[1] + bounds[3]) / 2.0)
 
+    # ---- 1.9 followers: a declared proximity subject sits by its partner ---
+    # A `proximity[]` claim says WHICH pins a part belongs at: a crystal's
+    # load legs at its IC's oscillator pins, a load cap at the crystal pad on
+    # its net. Every stage below aims elsewhere (a zone's centre, the
+    # centroid of all the part's nets), and the quench only HOLDS a claim
+    # once it is met, so a claim the seed missed stayed missed (measured,
+    # ch32v006_dev: a 1.5 mm crystal claim graded 4.3 and 6.3 mm). A claim's
+    # subject is therefore seated right AFTER its partner, nearest the
+    # partner's declared pads, at the rotation that brings its declared pads
+    # nearest their own nets; a chain (cap -> crystal -> IC) follows link by
+    # link. It keeps its own zone when it has one. A subject whose partner
+    # never seats, or that finds no pose, takes its ordinary turn at the end
+    # of stage 3. No `proximity[]` claim: nothing here runs, and the seed is
+    # bit-identical.
+    followers: Dict[str, List[Dict]] = {}
+    for _claim in (getattr(intent, 'proximity', None) or ()):
+        _sub, _par = str(_claim.get('ref')), str(_claim.get('near'))
+        if (_sub != _par and _sub in unplaced and _par in state.parts
+                and _sub not in array_members and _sub not in held):
+            followers.setdefault(_sub, []).append(_claim)
+    follower_log: Dict[str, Dict] = {}
+    if followers:
+        _fd = sorted(decap_scope & set(followers))
+        if _fd:
+            decap_scope -= set(followers)
+            notes.append(f"followers: {', '.join(_fd)} follow a declared "
+                         f"proximity partner rather than the decap pin stage")
+    # A follower keeps its own zone when it has one; one that has none is
+    # held to the zone of the part its chain of claims ends at (a crystal
+    # and its caps to their IC's), so it never takes room another group's
+    # region was planned for (measured, ch32v003_usb: a zone-free crystal
+    # seated in the power group's region and left the LDO no pose).
+    _zone_of = {r: zones_by_name[zn] for zn in sorted(zones_by_name)
+                for r in blocks.get(zn, ())}
+    follower_zone = {}
+    for _sub in followers:
+        _z = _zone_of.get(_sub)
+        if _z is None:
+            _seen, _r = {_sub}, _sub
+            while _r in followers and _r not in _zone_of:
+                _nxt = str(followers[_r][0]['near'])
+                if _nxt in _seen:
+                    break
+                _seen.add(_nxt)
+                _r = _nxt
+            _z = _zone_of.get(_r)
+        if _z is not None:
+            follower_zone[_sub] = _z
+
+    def _claim_nets(claim, side):
+        """Net ids of the pads `claim` declares for `side`, or None when it
+        declares none (then every pad of `side` counts)."""
+        want = (claim.get('pads') or {}).get(side)
+        if not want:
+            return None
+        names = {str(w) for w in want}
+        fp = pcb_data.footprints.get(side)
+        return {pd.net_id for pd in (fp.pads if fp else ())
+                if str(pd.pad_number) in names and pd.net_id}
+
+    def _partner_points(ref, claim):
+        """The partner's pads this claim measures `ref` against: its declared
+        pads, else its pads on the subject's declared nets, else all."""
+        par = str(claim['near'])
+        pn, sn = _claim_nets(claim, par), _claim_nets(claim, ref)
+        pts = state.parts[par].pad_globals()
+        if pn is not None:
+            return [(x, y, n) for x, y, n in pts if n in pn]
+        if sn is not None:
+            return [(x, y, n) for x, y, n in pts if n in sn] or pts
+        return pts
+
+    def _follower_cost(ref):
+        """Sum over `ref`'s claims with a seated partner: each declared
+        subject pad to the nearest partner pad on its net (pad centres), or
+        the closest pair of pads when the claim declares none."""
+        cost = 0.0
+        sub = state.parts[ref].pad_globals()
+        for claim in followers[ref]:
+            if str(claim['near']) not in placed:
+                continue
+            pp = _partner_points(ref, claim)
+            if not pp:
+                continue
+            sn = _claim_nets(claim, ref)
+            if sn is None:
+                cost += min(math.hypot(a[0] - b[0], a[1] - b[1])
+                            for a in sub for b in pp)
+                continue
+            for sx, sy, net in sub:
+                if net not in sn:
+                    continue
+                same = [(x, y) for x, y, n in pp if n == net] or \
+                    [(x, y) for x, y, _n in pp]
+                cost += min(math.hypot(sx - x, sy - y) for x, y in same)
+        return cost
+
+    def _follower_worst(ref):
+        """The farthest declared subject pad of `ref` from the nearest
+        partner pad on its net, pad centre to pad centre (0 when none)."""
+        worst = 0.0
+        sub = state.parts[ref].pad_globals()
+        for claim in followers[ref]:
+            if str(claim['near']) not in placed:
+                continue
+            pp = _partner_points(ref, claim)
+            sn = _claim_nets(claim, ref)
+            if not pp or sn is None:
+                continue
+            for sx, sy, net in sub:
+                if net in sn:
+                    same = [(x, y) for x, y, n in pp if n == net] or \
+                        [(x, y) for x, y, _n in pp]
+                    worst = max(worst, min(math.hypot(sx - x, sy - y)
+                                           for x, y in same))
+        return worst
+
+    def _follower_ready(ref):
+        return all(str(c['near']) in placed for c in followers[ref])
+
+    def _seat_follower(ref, log=True):
+        """Seat `ref` nearest its seated partners' declared pads, at the
+        best rotation of its ladder; True when seated. `log` False is a
+        trial seat (`_orient_for_followers`), which records nothing."""
+        pts = [q for c in followers[ref] if str(c['near']) in placed
+               for q in _partner_points(ref, c)]
+        if not pts:
+            return False
+        tx = sum(x for x, _y, _n in pts) / len(pts)
+        ty = sum(y for _x, y, _n in pts) / len(pts)
+        z = follower_zone.get(ref)
+        rect = getattr(z, 'rect', None)
+        tol = intent.zone_tolerance(z) if rect else 0.5
+        if rect:
+            tx = min(max(tx, rect[0]), rect[2])
+            ty = min(max(ty, rect[1]), rect[3])
+        part = state.parts[ref]
+        was = (part.x, part.y, part.rot)
+        ladder = _rot_ladder(ref)
+        rots = (list(ladder) if ladder else
+                [(was[2] + 90.0 * k) % 360.0 for k in range(4)])
+        best = None
+        for k, rot in enumerate(rots):
+            clr = _try_place(state, ref, round(tx, 3), round(ty, 3),
+                             unplaced - {ref}, rotations=[rot],
+                             constraint=rect, tol=tol)
+            if clr is not None:
+                q = state.parts[ref]
+                key = (clr < state.clearance, _follower_cost(ref), k)
+                if best is None or key < best[0]:
+                    best = (key, (q.x, q.y, q.rot), clr)
+            state.apply_move(ref, *was)
+        if best is None:
+            return False
+        state.apply_move(ref, *best[1])
+        placed.add(ref)
+        unplaced.discard(ref)
+        _last_seat[ref] = best
+        if not log:
+            return True
+        _log_follower(ref, best)
+        return True
+
+    _last_seat: Dict[str, Tuple] = {}
+
+    def _log_follower(ref, best):
+        partners = sorted({str(c['near']) for c in followers[ref]})
+        follower_log[ref] = {'partners': partners,
+                             'pad_centre_mm': round(best[0][1], 3),
+                             'rot': best[1][2],
+                             'zone': getattr(follower_zone.get(ref), 'name', None)}
+        notes.append(f"{ref}: seated beside {', '.join(partners)} (proximity "
+                     f"follower), declared pads {best[0][1]:.2f} mm from their "
+                     f"nets' pins, pad centre to pad centre"
+                     + (f", at reduced courtyard clearance {best[2]:g}"
+                        if best[2] < state.clearance else ""))
+
+    def _seat_chain(partner, log=True):
+        """Seat every follower now ready because `partner` seated, then
+        theirs, link by link; the refs seated, in order."""
+        seated: List[str] = []
+        todo = [partner]
+        while todo:
+            par = todo.pop(0)
+            for sub in sorted(followers):
+                if (sub in unplaced and _follower_ready(sub)
+                        and any(str(c['near']) == par for c in followers[sub])
+                        and _seat_follower(sub, log=log)):
+                    seated.append(sub)
+                    todo.append(sub)
+        return seated
+
+    def _seat_followers_of(partner):
+        if followers:
+            _seat_chain(partner)
+
+    def _chain_of(partner):
+        """Every follower that hangs off `partner`, directly or through
+        another follower."""
+        out, todo = set(), [partner]
+        while todo:
+            par = todo.pop()
+            for sub, claims in followers.items():
+                if sub not in out and any(str(c['near']) == par for c in claims):
+                    out.add(sub)
+                    todo.append(sub)
+        return out
+
+    _orient_rails: List[Set[int]] = []
+
+    def _own_wiring(ref, chain):
+        """`ref`'s pads to the nearest seated pad on each one's net, rails
+        left out (`grouping.rail_net_ids`): what turning it costs its own
+        connections."""
+        if not _orient_rails:
+            from placement.grouping import rail_net_ids
+            nets = getattr(pcb_data, 'nets', None) or {}
+            _orient_rails.append(rail_net_ids(
+                {nid: set(o) for nid, o in state.net_refs.items()},
+                lambda nid: getattr(nets.get(nid), 'name', '') or '',
+                len(state.parts)))
+        rails = _orient_rails[0]
+        total = 0.0
+        for gx, gy, net in state.parts[ref].pad_globals():
+            if net in rails:
+                continue
+            best = None
+            for other in state.net_refs.get(net, ()):
+                if other == ref or other in chain or other not in placed:
+                    continue
+                for ox, oy, onet in state.parts[other].pad_globals():
+                    if onet == net:
+                        d = math.hypot(gx - ox, gy - oy)
+                        if best is None or d < best:
+                            best = d
+            if best is not None:
+                total += best
+        return total
+
+    def _orient_for_followers(ref, tx, ty, rect, tol):
+        """`ref` has just been seated by its stage. When parts follow it,
+        re-seat it at each rotation of its ladder, seat its followers on
+        trial at each, and keep, among the rotations that seat every
+        direct follower within FOLLOWER_SEAT_MM of its declared pads, the
+        one with the least wiring: its followers' distance to their pads
+        plus its own pads' distance to their seated partners. When no
+        rotation gets there, the one that comes nearest. A designer turns
+        the MCU so its oscillator pins face room for the crystal, but not at
+        the price of its other pins: measured on esp_prog, choosing on the
+        followers alone turned the CH340 away from the parts it wires to
+        (+13 routed vias), and choosing on wiring alone left the crystal
+        8 mm from its pins. Ties keep the rotation the stage chose. Then
+        seat the followers."""
+        chain = _chain_of(ref) if followers else set()
+        if not chain:
+            return
+        p0 = state.parts[ref]
+        pose0 = (p0.x, p0.y, p0.rot)
+        ladder = _rot_ladder(ref)
+        rots = (list(ladder) if ladder else
+                [(pose0[2] + 90.0 * k) % 360.0 for k in range(4)])
+        if pose0[2] in rots:
+            rots.remove(pose0[2])
+        rots.insert(0, pose0[2])
+        start = {r: (state.parts[r].x, state.parts[r].y, state.parts[r].rot)
+                 for r in chain}
+        best = None
+        for k, rot in enumerate(rots):
+            if k:
+                if _try_place(state, ref, tx, ty, unplaced - {ref},
+                              rotations=[rot], constraint=rect,
+                              tol=tol) is None:
+                    state.apply_move(ref, *pose0)
+                    continue
+            got = _seat_chain(ref, log=False)
+            seats = [(r, _last_seat[r]) for r in got]
+            direct = [r for r in got
+                      if any(str(c['near']) == ref for c in followers[r])]
+            far = max((_follower_worst(r) for r in direct), default=0.0)
+            key = (len(chain) - len(got),
+                   round(max(0.0, far - FOLLOWER_SEAT_MM), 3),
+                   round(sum(_follower_cost(r) for r in got)
+                         + _own_wiring(ref, chain), 6), k)
+            if best is None or key < best[0]:
+                q = state.parts[ref]
+                best = (key, (q.x, q.y, q.rot), seats)
+            for r in reversed(got):
+                state.apply_move(r, *start[r])
+                placed.discard(r)
+                unplaced.add(r)
+            state.apply_move(ref, *pose0)
+        if best is None:
+            _seat_followers_of(ref)
+            return
+        if best[1] != pose0:
+            state.apply_move(ref, *best[1])
+            notes.append(f"{ref}: rotated {pose0[2]:g} -> {best[1][2]:g} for "
+                         f"its proximity followers ({', '.join(sorted(chain))}) "
+                         f"and its own wiring")
+        # The kept trial's own seats, replayed: the chain's seat search is
+        # deterministic, so seating it again would find these same poses.
+        for r, seat in best[2]:
+            state.apply_move(r, *seat[1])
+            placed.add(r)
+            unplaced.discard(r)
+            _log_follower(r, seat)
+
+    if followers:
+        for _par in sorted(placed):
+            _seat_followers_of(_par)
+
     # ---- 2. zoned blocks: radial pack from the zone center -----------------
     # A single-member zone is the spec-coordinate pattern (a rect a few
     # hundred microns wide around where the spec pins the part), so it gets
@@ -6963,7 +7283,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                             unplaced, center, _rot_ladder, array_pose_cap,
                             arrays_formed, array_unseated, notes)
         members = [r for r in _order(blocks.get(name, ()))
-                   if r not in decap_scope and r not in array_zoned_members]
+                   if r not in decap_scope and r not in array_zoned_members
+                   and r not in followers]
         if not members:
             continue
         cx = (z.rect[0] + z.rect[2]) / 2.0
@@ -6979,6 +7300,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             if clr is not None:
                 placed.add(ref)
                 unplaced.discard(ref)
+                _orient_for_followers(ref, cx + jx, cy + jy, z.rect, tol)
                 if zinfo.get('anchor_zone'):
                     notes.append(f"{ref}: zone {name!r} smaller than the "
                                  f"courtyard -- seated by anchor point")
@@ -7013,6 +7335,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         if clr is not None:
             placed.add(ref)
             unplaced.discard(ref)
+            _orient_for_followers(ref, target[0] + jx, target[1] + jy, None,
+                                  0.5)
             if state.parts[ref].rot != rot_before:
                 notes.append(f"{ref}: rotated {rot_before:g} -> "
                              f"{state.parts[ref].rot:g} " + _rot_why(ref))
@@ -7518,6 +7842,8 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 declined=late['declined'])
         if ref not in unplaced:
             continue    # #1105: claimed by stage 3.5 just above
+        if ref in followers and not _follower_ready(ref):
+            continue    # seated when its partner is, else after this loop
         clr, target, jx, jy = _centroid_seat(ref, jit=q_jit[ref])
         if clr is None:
             unseated.append(ref)
@@ -7528,6 +7854,37 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             unseated_ctx.setdefault(
                 ref, (target[0] + jx, target[1] + jy, None, 0.5))
             notes.append(f"{ref}: no legal pose anywhere on the board")
+    # The followers stage 3 deferred: seated by their partners if those are
+    # placed now, else (partner unseated, or no pose by it) their ordinary
+    # turn -- inside their zone when they have one, else the centroid seat.
+    for ref in sorted(r for r in followers if r in unplaced):
+        if _follower_ready(ref) and _seat_follower(ref):
+            _seat_followers_of(ref)
+            continue
+        z = follower_zone.get(ref)
+        if z is not None:
+            zx0, zy0, zx1, zy1 = z.rect
+            ztol = intent.zone_tolerance(z)
+            ztgt = (round((zx0 + zx1) / 2.0, 3), round((zy0 + zy1) / 2.0, 3))
+            if _try_place(state, ref, ztgt[0], ztgt[1], unplaced - {ref},
+                          rotations=_rot_ladder(ref), constraint=z.rect,
+                          tol=ztol) is not None:
+                placed.add(ref)
+                unplaced.discard(ref)
+                follower_log[ref] = {'fallback': 'zone'}
+                notes.append(f"{ref}: a proximity follower its partner could "
+                             f"not take -- seated in zone {z.name!r}")
+                _seat_followers_of(ref)
+                continue
+        clr, target, jx, jy = _centroid_seat(ref, jit=_jitter())
+        if clr is None:
+            unseated.append(ref)
+            unseated_ctx.setdefault(
+                ref, (target[0] + jx, target[1] + jy,
+                      getattr(z, 'rect', None), 0.5))
+            notes.append(f"{ref}: no legal pose anywhere on the board")
+        else:
+            follower_log[ref] = {'fallback': 'centroid'}
     if decap_stage['armed']:
         late['caps'] = list(late_claimed)
         late['claimed'] = len(late_claimed)
@@ -7988,6 +8345,11 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
             # ({armed, at, owners, pins, caps, claimed, reason}) is stage
             # 3.5's, present whenever the stage is armed by the intent.
             'decap_stage': decap_stage,
+            # {ref: {partners, pad_centre_mm, rot, zone}} for every
+            # `proximity[]` subject seated beside its partner, {ref:
+            # {fallback}} for one that took its ordinary turn instead. Empty
+            # when the intent declares no proximity claim.
+            'followers': follower_log,
             # #1051: {name: {serves, members (in row order), rot, pitch_mm,
             # axis, anchor, target, zone, poses_tried, clearance, verdict,
             # failed, unchecked}} for every declared row seated whole;

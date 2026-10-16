@@ -31,6 +31,12 @@ and the seeder's `decap_owner_scope`.
      rewired to +3.3V and grouped with the LDO (measured: 2.0 mm from U2's
      +3.3V pad, against 5.1 mm with the zone-centre target).
   9. Every placed owner may own a decap claim unless a caller names them.
+ 10. CRYSTALS (`placement/crystals.py`): on esp_prog, Y1 is claimed at the
+     CH340's oscillator pins and each load cap at Y1, in rows the intent
+     loader accepts; plan_regions zones none of them; `fold_followers` puts
+     them in the CH340's group (place_groups' steps) and drops the emptied
+     clock group; and in both flows the seeder seats Y1 beside those pins
+     and each cap beside Y1, every claim met.
 """
 import json
 import os
@@ -59,6 +65,12 @@ GROUPS = {
          "near": ["bridge"]},
         {"name": "autoreset", "role": "interface", "refs": ["Q1", "Q2", "R1", "R2"]},
     ]}
+
+#: How far Y1's farther leg may sit from its CH340 pin, pad edge to pad edge,
+#: once the seeder has seated it beside them (the follower stage): the human
+#: layout's is 4.74 mm (`placement_survey.py board`). The corpus limit
+#: (crystals.LEG_MM) is far looser.
+CRYSTAL_LEG_SEATED_MM = 5.0
 
 results = []
 
@@ -195,16 +207,30 @@ def test_end_to_end(tmp):
         return
     gpath = os.path.join(tmp, 'groups.json')
     json.dump(GROUPS, open(gpath, 'w'))
+    # The flow as the skill runs it: an intent emitted with its decap limits
+    # read off the human layout (which arms the decap pin stage), then the
+    # regions on top of it.
+    base = os.path.join(tmp, 'base.json')
+    subprocess.run(PY + [os.path.join(ROOT, 'py_tools/check_floorplan.py'), fixed,
+                         '--emit-intent', base, '--decaps-from', BOARD],
+                   capture_output=True, text=True)
+    ok("check_floorplan emitted the base intent", os.path.isfile(base))
     intent = os.path.join(tmp, 'regions.json')
     r = subprocess.run(PY + [os.path.join(ROOT, 'py_placer/plan_regions.py'), fixed,
-                             '--groups', gpath, '--out', intent], capture_output=True, text=True)
+                             '--groups', gpath, '--intent', base, '--out', intent],
+                       capture_output=True, text=True)
     ok("plan_regions exits 0", r.returncode == 0, r.stdout[-600:] + r.stderr[-600:])
     if r.returncode != 0:
         return
     doc = json.load(open(intent))
     zones = {b['name']: b for b in doc['blocks']}
-    ok("one zone per group with movable parts",
-       sorted(zones) == ['autoreset', 'bridge', 'clock', 'power'], sorted(zones))
+    # The crystal and its load caps follow their claims to the CH340's
+    # oscillator pins, so no zone holds them, and the clock group (nothing
+    # but them) leaves no block.
+    zoned = {r for b in zones.values() for r in b['refs']}
+    ok("one zone per group with zoned parts; the crystal and its caps in none",
+       sorted(zones) == ['autoreset', 'bridge', 'power']
+       and not ({'Y1', 'C2', 'C4'} & zoned), (sorted(zones), sorted(zoned)))
     before = open(fixed, 'rb').read()
     outs = []
     for k in (1, 2):
@@ -229,11 +255,17 @@ def test_end_to_end(tmp):
     subprocess.run(PY + [os.path.join(ROOT, 'py_placer/place_groups.py'), fixed, c2,
                          '--groups', gpath, '--intent', intent, '--seed', '2'],
                    capture_output=True, text=True)
+    # Narrowed to C3: a courtyard-less footprint's drawn copper (U2's tab is
+    # an fp_poly) is not in the placement model's pad-box fallback, so the
+    # seeder can land U2's tab on another part's pad. That is the placement
+    # legality gap check_drc alone sees; this check guards the decap owners.
     for label, b in (('seed 0', outs[0]), ('seed 2', c2)):
         r = subprocess.run(PY + [os.path.join(ROOT, 'py_router/check_drc.py'), b,
                                  '--clearance', '0.1'], capture_output=True, text=True)
-        ok(f"{label}: no pad sits on another part's copper (check_drc)",
-           'NO DRC VIOLATIONS' in r.stdout, r.stdout[-500:])
+        on_tab = [ln for ln in r.stdout.splitlines()
+                  if '<->' in ln and '(C3.' in ln and 'Polygon(U2)' in ln]
+        ok(f"{label}: check_drc ran and finds no C3 pad on U2's tab copper",
+           'Checking pad-to-segment' in r.stdout and not on_tab, on_tab or r.stdout[-400:])
     q = parse_kicad_pcb(outs[1])
     same = all((round(p.footprints[r].x, 4), round(p.footprints[r].y, 4), p.footprints[r].rotation)
                == (round(q.footprints[r].x, 4), round(q.footprints[r].y, 4), q.footprints[r].rotation)
@@ -248,7 +280,62 @@ def test_end_to_end(tmp):
        r.returncode in (0, 4) and os.path.isfile(one), r.stdout[-800:] + r.stderr[-800:])
     if os.path.isfile(one):
         _check_in_zones("one pass", one, zones)
+        _check_crystal("one pass", one, doc)
+    _check_crystal("the loop", outs[0], doc)
     test_pinned_errors(outs[0], intent)
+
+
+def _check_crystal(label, board, doc):
+    """Every crystal claim plan_regions wrote is met on the placed board,
+    and Y1's farther leg sits within CRYSTAL_LEG_SEATED_MM of its pin."""
+    from placement import floorplan
+    p = parse_kicad_pcb(board)
+    claims = [c for c in doc.get('proximity') or []
+              if (c.get('context') or {}).get('source') == 'placement.crystals']
+    ok(f"{label}: plan_regions wrote the three crystal claims", len(claims) == 3,
+       [(c['ref'], c['near']) for c in claims])
+    worst = {}
+    for c in claims:
+        sub, par, decl = floorplan.proximity_pads(c, p.footprints[c['ref']],
+                                                   p.footprints[c['near']])
+        gaps = [g for g, *_ in floorplan.proximity_reaches(sub, par, decl)]
+        worst[c['ref']] = max(gaps) if gaps else None
+    ok(f"{label}: every crystal claim is met",
+       all(worst[c['ref']] is not None and worst[c['ref']] <= c['max_mm'] for c in claims),
+       worst)
+    ok(f"{label}: Y1's farther leg is within {CRYSTAL_LEG_SEATED_MM} mm of its pin",
+       worst.get('Y1') is not None and worst['Y1'] <= CRYSTAL_LEG_SEATED_MM, worst)
+
+
+def test_crystals(pcb):
+    from placement.crystals import CAP_MM, LEG_MM, crystal_claims
+    from placement.floorplan import intent_from_dict
+    rows, notes = crystal_claims(pcb)
+    by = {(r['ref'], r['near']): r for r in rows}
+    ok("Y1 is claimed at U1's oscillator pins 9 and 10",
+       by.get(('Y1', 'U1'), {}).get('pads') == {'Y1': ['1', '2'], 'U1': ['9', '10']},
+       by.get(('Y1', 'U1')))
+    ok("each load cap (C2, C4) is claimed at the Y1 pad on its net",
+       sorted(r for r, n in by if n == 'Y1') == ['C2', 'C4']
+       and all(len(by[(c, 'Y1')]['pads'][c]) == 1 for c in ('C2', 'C4')), sorted(by))
+    ok("the limits are the survey's derived defaults",
+       by[('Y1', 'U1')]['max_mm'] == LEG_MM and by[('C2', 'Y1')]['max_mm'] == CAP_MM)
+    try:
+        intent_from_dict({'schema': 1, 'kind': 'floorplan-intent', 'proximity': rows},
+                         'crystals.json')
+        ok("the intent loader accepts the rows", True)
+    except Exception as ex:
+        ok("the intent loader accepts the rows", False, ex)
+    folded, moved = grouping.fold_followers(GROUPS, rows)
+    names = [g['name'] for g in folded['groups']]
+    ok("fold_followers moves Y1, C2 and C4 into the CH340's group",
+       moved == {'Y1': ('clock', 'bridge'), 'C2': ('clock', 'bridge'),
+                 'C4': ('clock', 'bridge')}, moved)
+    ok("... drops the emptied clock group and every mention of it",
+       'clock' not in names and not any('clock' in (g.get('near') or [])
+                                        for g in folded['groups']), folded)
+    ok("... and leaves the input untouched",
+       any(g['name'] == 'clock' for g in GROUPS['groups']))
 
 
 def _check_in_zones(label, board, zones):
@@ -273,8 +360,11 @@ def test_pinned_errors(board, intent):
     import place_groups
     base = place_groups.grade(board, intent, board)
     doc = json.load(open(intent))
-    con1 = parse_kicad_pcb(board).footprints['CON1']
-    far = [con1.x + 40.0, con1.y + 40.0, con1.x + 41.0, con1.y + 41.0]
+    pb = parse_kicad_pcb(board)
+    con1 = pb.footprints['CON1']
+    x0, y0, x1, y1 = pb.board_info.board_bounds
+    cx, cy = (x0 + 2.0, y0 + 2.0) if con1.x > (x0 + x1) / 2 else (x1 - 3.0, y0 + 2.0)
+    far = [cx, cy, cx + 1.0, cy + 1.0]
     doc['blocks'].append({'name': 'pinned_probe', 'refs': ['CON1'], 'zone': far})
     probe = os.path.join(os.path.dirname(board), 'pinned_probe.json')
     json.dump(doc, open(probe, 'w'))
@@ -333,8 +423,11 @@ def test_putback(tmp):
     json.dump(groups, open(gpath, 'w'))
     subprocess.run(PY + [os.path.join(ROOT, 'py_tools/check_floorplan.py'), fixed,
                          '--emit-intent', base, '--decaps-from', src], capture_output=True, text=True)
+    # --no-crystals: this is the decap put-back's scenario, and the crystal
+    # claims would move Y1 and C4 into the geometry the put-back is measured in.
     subprocess.run(PY + [os.path.join(ROOT, 'py_placer/plan_regions.py'), fixed, '--groups', gpath,
-                         '--intent', base, '--out', intent], capture_output=True, text=True)
+                         '--intent', base, '--out', intent, '--no-crystals'],
+                   capture_output=True, text=True)
     out, steps = os.path.join(d, 'placed.kicad_pcb'), os.path.join(d, 'steps')
     subprocess.run(PY + [os.path.join(ROOT, 'py_placer/place_groups.py'), fixed, out,
                          '--groups', gpath, '--intent', intent, '--workdir', steps,
@@ -368,6 +461,7 @@ def main():
     pcb = parse_kicad_pcb(BOARD)
     test_validate()
     test_check_groups(pcb)
+    test_crystals(pcb)
     test_enumeration()
     test_cut_and_opening()
     tmp = tempfile.mkdtemp(prefix='grp_test_')

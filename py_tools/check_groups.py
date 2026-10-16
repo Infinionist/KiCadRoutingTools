@@ -15,6 +15,11 @@ checked before any part moves:
   REPORTED         bridges (2-pad parts linking two groups), the inter-group
                    signal-link matrix the region planner prices, the rails,
                    and the placement order `place_groups.py` will use.
+  CRYSTALS         each passive crystal, its IC and its load caps
+                   (`placement/crystals.py`). plan_regions writes their
+                   claims, and the seeder seats them beside the IC whatever
+                   group they are in, so a load cap is no decap conflict
+                   (`--no-crystals`: checked as if no claim were written).
 
     python3 py_tools/check_groups.py board.kicad_pcb --groups groups.json
     python3 py_tools/check_groups.py board.kicad_pcb --groups groups.json --json out.json
@@ -32,7 +37,8 @@ import json
 import sys
 
 from kicad_parser import parse_kicad_pcb  # noqa: E402
-from placement.grouping import GroupsError, analyze, load_groups  # noqa: E402
+from placement.grouping import (GroupsError, analyze, follower_roots,  # noqa: E402
+                                load_groups)
 
 
 def main(argv=None):
@@ -42,6 +48,9 @@ def main(argv=None):
     ap.add_argument('board', help='the board the groups are for')
     ap.add_argument('--groups', required=True, help='the groups JSON file')
     ap.add_argument('--json', dest='json_out', help='write the full report here')
+    ap.add_argument('--no-crystals', action='store_true',
+                    help="check as if no crystal claim were written (as "
+                         "plan_regions --no-crystals plans)")
     a = ap.parse_args(argv)
     try:
         doc = load_groups(a.groups)
@@ -53,7 +62,14 @@ def main(argv=None):
     except Exception as ex:  # an unreadable board is an input error, not a finding
         print(f"check_groups: cannot read {a.board}: {ex}", file=sys.stderr)
         return 2
-    rep = analyze(doc, pcb)
+    crystal_notes, followers = [], []
+    if not a.no_crystals:
+        from placement.crystals import crystal_claims
+        claims, crystal_notes = crystal_claims(pcb)
+        followers = sorted(follower_roots(claims))
+    for line in crystal_notes:
+        print(f"  {line} -- seated by its claim, beside the IC")
+    rep = analyze(doc, pcb, followers=followers)
 
     for g in rep['groups']:
         fixed = f"  fixed: {', '.join(g['fixed'])}" if g['fixed'] else ''
@@ -80,7 +96,8 @@ def main(argv=None):
                'groups': len(rep['groups']), 'bridges': len(rep['bridges']),
                'pulled': [p['ref'] for p in rep['pulled']],
                'decap_cross_group': [d['cap'] for d in rep['decap_cross_group']],
-               'order': rep['order']}
+               'order': rep['order'], 'crystals': crystal_notes,
+               'followers': followers}
     print('JSON_SUMMARY: ' + json.dumps(summary, sort_keys=True))
     return 4 if rep['errors'] else 0
 

@@ -158,8 +158,48 @@ The human column is the human's placement, routed by the same chain.
   where it is the only flow with no blocking in any seed. One pass is ahead
   on the other two. Both take seconds (the loop 2-9 s, one pass 0.5-4 s), so
   `/pcb-group-place` runs both and keeps the better.
-- **A crystal is not yet seated on its IC's oscillator pins.** It lands
-  3-14 mm from them, where the human put it 2.7-5.5 mm away.
+
+## Crystals
+
+A crystal and its load caps belong at the IC's oscillator pins, and nothing
+in a netlist says so: a 3 mm crystal loop and a 30 mm one have the same
+connections. `plan_regions.py` therefore writes, for each passive crystal
+(`placement/crystals.py`, which reads the crystal and its IC off
+`placement/emc_roles.py`), two kinds of `proximity[]` claim:
+- **the crystal**: each signal pad within 8.1 mm of the IC pin on its net;
+- **each load cap** (a two-pad cap from a load net to ground): its load-net
+  pad within 2.2 mm of the crystal pad on that net.
+
+The limits are the human corpus's 75th percentiles, measured the way the
+claim grades them, pad edge to pad edge (`tests/stress/placement_survey.py`:
+258 crystals, median crystal leg 5.4 mm, median load cap 0.8 mm). They guard
+against drift. The placing is done by the seeder:
+- **A claim's subject is seated right after its partner**, nearest the
+  partner's declared pads (the followers stage of `seeder.seed_from_intent`):
+  the crystal right after its IC, each cap right after the crystal.
+- **The IC is turned for its crystal when it must be.** Among the rotations
+  that seat the crystal within 6 mm of its pins (pad centres; the corpus
+  median), the IC keeps the one its own connections prefer. Turning the IC
+  for the crystal alone cost esp_prog 13 routed vias.
+- **The claimed parts sit in no zone.** The regions are planned on the
+  groups as written, and each claimed part stays inside its IC's zone, so it
+  takes no room another group's region was planned for. Moving the crystal
+  into its IC's group before planning re-planned the whole board, and cost
+  ch32v003_usb 22 routed vias.
+
+`check_groups.py` names each crystal it finds; `--no-crystals` on both tools
+writes no claim. Measured as above (five seeds, routed by each board's
+recorded chain), with the farther crystal leg pad centre to pad centre:
+
+| board | crystal leg, before | with claims | human | blocking / vias, one pass, before -> with | group by group, before -> with |
+|---|---|---|---|---|---|
+| ch32v003_usb | 3.0-6.9 mm | 4.0-6.4 mm | 2.7 mm | 1.0 / 55.8 -> 0.2 / 64.4 | 0 / 47.6 -> 0.2 / 56.4 |
+| esp_prog | 7.3-13.5 mm | 3.1-4.9 mm | 5.5 mm | 0 / 35.0 -> 0 / 32.4 | 0 / 37.2 -> 0 / 33.4 |
+| ch32v006_dev | 6.7-12.7 mm | 3.9-9.5 mm | 4.5 mm | 0 / 58.4 -> 0 / 76.8 | 0 / 65.4 -> 0 / 70.2 |
+
+The crystals now sit where a human puts them. The routing cost is mixed:
+fewer vias on esp_prog, more on the other two, inside a seed-to-seed spread
+of about 15 vias.
 
 ## Where humans put each group
 

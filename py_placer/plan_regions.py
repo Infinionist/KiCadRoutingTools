@@ -19,8 +19,21 @@ entry per group that has movable parts -- `zone`, `side`, `tolerance_mm` and a
 `context.grouped_placement` record of what the zone was chosen on. It also
 adds to `decaps.exempt` every cap the groups file places away from the IC
 the decap rule would claim it for (a crystal's load cap, an RC filter; see
-`check_groups.py`), so the seed places it with its group. Then grade the plan
-before any part moves:
+`check_groups.py`), so the seed places it with its group.
+
+It also writes the CRYSTAL claims (`placement/crystals.py`): each passive
+crystal within reach of its IC's oscillator pins and each load cap within
+reach of the crystal, as `proximity[]` rows (a pair the input intent already
+claims is left as it is; `--no-crystals` writes none). The seeder seats a
+claim's subject right after its partner, wherever that is, so a subject is
+written into no zone: the regions are planned on the groups as written (the
+space a clock group would take stays free), and each block lists only the
+parts it seats; a block left empty is dropped. The load caps go into
+`decaps.exempt`, since their own claims govern them. Folding the subjects
+into their partner's group before planning was measured and REPLANS the
+board: on ch32v003_usb the ui group lost its south-edge strip and routed
+vias went 48 -> 70.
+Then grade the plan before any part moves:
 
     python3 py_tools/check_floorplan.py board.kicad_pcb --intent regions_intent.json --plan-only
 
@@ -42,15 +55,19 @@ import sys
 
 from kicad_parser import parse_kicad_pcb  # noqa: E402
 from placement.grouping import (BoardView, GroupsError, decap_conflicts,  # noqa: E402
-                                load_groups)
+                                follower_roots, load_groups)
 from placement import regions  # noqa: E402
 
 #: How far a member may stand past its zone (blocks[].tolerance_mm).
 DEFAULT_TOLERANCE_MM = 0.5
 
 
-def build_intent(base, doc, plan, conflicts, tolerance):
-    """`base` with the planned zones as blocks and the conflicting caps exempt."""
+def build_intent(base, doc, plan, conflicts, tolerance, claims=(), exempt=(),
+                 followers=()):
+    """`base` with the planned zones as blocks, the conflicting caps and
+    `exempt` exempt from the decap rule, and `claims` appended to
+    `proximity[]`. `followers` (claim subjects) are left out of every block,
+    and a block they empty is dropped."""
     if base:
         out = copy.deepcopy(base)
     else:
@@ -62,9 +79,12 @@ def build_intent(base, doc, plan, conflicts, tolerance):
     for name in [g['name'] for g in doc['groups'] if g['name'] in planned]:
         z = plan['zones'][name]
         g = roles[name]
+        refs = [r for r in z['refs'] if r not in set(followers)]
+        if not refs:
+            continue
         blocks.append({
             'name': name,
-            'refs': list(z['refs']),
+            'refs': refs,
             'zone': z['zone'],
             'side': z['side'],
             'tolerance_mm': tolerance,
@@ -74,7 +94,9 @@ def build_intent(base, doc, plan, conflicts, tolerance):
                 'need_mm2': z['need_mm2'], 'planned_by': 'plan_regions.py'}},
         })
     out['blocks'] = blocks
-    exempt_caps = sorted({c['cap'] for c in conflicts})
+    if claims:
+        out['proximity'] = list(out.get('proximity') or []) + [dict(c) for c in claims]
+    exempt_caps = sorted({c['cap'] for c in conflicts} | set(exempt))
     if exempt_caps and out.get('decaps'):
         ex = list(out['decaps'].get('exempt') or [])
         out['decaps']['exempt'] = ex + [c for c in exempt_caps if c not in ex]
@@ -145,6 +167,10 @@ def main(argv=None):
     ap.add_argument('--seed', type=int, default=0,
                     help='annealing seed when there are more groups than are '
                          'searched exhaustively (default: %(default)s)')
+    ap.add_argument('--no-crystals', action='store_true',
+                    help="write no crystal claims (placement/crystals.py): each "
+                         "crystal at its IC's oscillator pins and each load cap "
+                         "at the crystal, and its followers in its IC's region")
     a = ap.parse_args(argv)
     try:
         doc = load_groups(a.groups)
@@ -157,10 +183,23 @@ def main(argv=None):
     if edge is None:
         from list_nets import board_constraint
         edge = board_constraint(a.board, 'min_copper_edge_clearance') or 0.3
+    claims = list((base or {}).get('proximity') or [])
+    new_claims, crystal_notes = [], []
+    if not a.no_crystals:
+        from placement.crystals import crystal_claims
+        have = {(str(c.get('ref')), str(c.get('near'))) for c in claims}
+        rows, crystal_notes = crystal_claims(pcb)
+        new_claims = [r for r in rows if (r['ref'], r['near']) not in have]
+    followers = sorted(follower_roots(claims + new_claims))
+    load_caps = [r['ref'] for r in new_claims
+                 if (r.get('context') or {}).get('role') == 'crystal load cap']
     plan = regions.plan(pcb, a.board, doc, grid=a.grid, util=a.util,
                         gutter=a.gutter, edge_clearance=edge, seed=a.seed)
-    conflicts = decap_conflicts(doc, BoardView(pcb))
-    intent = build_intent(base, doc, plan, conflicts, a.tolerance)
+    conflicts = [c for c in decap_conflicts(doc, BoardView(pcb))
+                 if c['cap'] not in set(followers)]
+    intent = build_intent(base, doc, plan, conflicts, a.tolerance,
+                          claims=new_claims, exempt=load_caps,
+                          followers=followers)
     with open(a.out, 'w', encoding='utf-8') as f:
         json.dump(intent, f, indent=2)
     if a.png:
@@ -171,6 +210,11 @@ def main(argv=None):
                        'faces': {s: {k: (str(v) if k == 'tree' else v) for k, v in f_.items()}
                                  for s, f_ in plan['faces'].items()},
                        'decap_exempt': [c['cap'] for c in conflicts]}, f, indent=1)
+    for line in crystal_notes:
+        print(f"  {line}")
+    if followers:
+        print(f"  zoned in no block (each follows its proximity claim): "
+              f"{', '.join(followers)}")
     for side, f_ in plan['faces'].items():
         print(f"  face {side}: {f_['evaluated']} floorplan(s) evaluated, cost "
               f"{f_['cost']}, parts {f_['need_mm2']:.0f} of {f_['free_mm2']:.0f} mm2 free "
@@ -182,13 +226,17 @@ def main(argv=None):
     if conflicts:
         print(f"  decaps.exempt += {', '.join(c['cap'] for c in conflicts)} "
               f"(placed with their group, not at the decap rule's IC)")
+    if load_caps and intent.get('decaps'):
+        print(f"  decaps.exempt += {', '.join(load_caps)} (crystal load caps: "
+              f"their proximity claims govern them)")
     for w in plan['warnings']:
         print(f"  WARN  {w}")
     infeasible = [s for s, f_ in plan['faces'].items()
                   if f_['terms'].get('infeasible', 0) >= regions.INFEASIBLE]
     summary = {'zones': {n: z['zone'] for n, z in plan['zones'].items()},
                'infeasible_faces': infeasible,
-               'decap_exempt': [c['cap'] for c in conflicts], 'out': a.out}
+               'decap_exempt': [c['cap'] for c in conflicts], 'out': a.out,
+               'crystal_claims': len(new_claims), 'followers': followers}
     print('JSON_SUMMARY: ' + json.dumps(summary, sort_keys=True))
     return 4 if infeasible else 0
 

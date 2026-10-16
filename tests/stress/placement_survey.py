@@ -155,6 +155,19 @@ def is_connector(ref, fp, cls):
         or (pref == 'X' and 'crystal' not in name and len(cu_pads(fp)) >= 3)
 
 
+def _reach(sub_fp, sub_ref, near_fp, near_ref, sub_pads, near_pads):
+    """Pad-edge gaps, one per subject pad, exactly as a `proximity[]` claim
+    naming these pads is graded (`floorplan.proximity_pads` and
+    `proximity_reaches`)."""
+    from placement import floorplan
+    if not sub_pads or not near_pads:
+        return []
+    claim = {'ref': sub_ref, 'near': near_ref,
+             'pads': {sub_ref: sorted(set(sub_pads)), near_ref: sorted(set(near_pads))}}
+    subject, partners, declared = floorplan.proximity_pads(claim, sub_fp, near_fp)
+    return [g for g, *_ in floorplan.proximity_reaches(subject, partners, declared)]
+
+
 def survey(path, stress_dir=DEFAULT_STRESS):
     """One JSON-able row for the board at `path` (see the module docstring)."""
     from shapely.geometry import Point, box
@@ -420,10 +433,26 @@ def survey(path, stress_dir=DEFAULT_STRESS):
             cs = [c for c in net_parts.get(n, ()) if c in caps]
             if cs:
                 lc.append(min(cs, key=lambda c: (dmin(r, c), c)))
+        # The two numbers a `proximity[]` claim grades, measured by the
+        # grader's own functions: each crystal leg pad edge to the IC pad on
+        # its net, and each load cap's crystal-net pad to the crystal's pad
+        # on that net. The farthest leg and the farthest cap, because a claim
+        # holds for every leg.
+        legs = _reach(fp, r, fps[ic], ic,
+                      [p.pad_number for p in cu_pads(fp) if p.net_id in sig],
+                      [q.pad_number for q in cu_pads(fps[ic]) if q.net_id in sig])
+        cap_gaps = []
+        for c in lc:
+            cn = {q.net_id for q in cu_pads(fps[c])} & sig
+            cap_gaps += _reach(fps[c], c, fp, r,
+                               [q.pad_number for q in cu_pads(fps[c]) if q.net_id in cn],
+                               [q.pad_number for q in cu_pads(fp) if q.net_id in cn])
         crystals.append({'ref': r, 'ic': ic, 'd_ic': round(dmin(r, ic), 2),
                          'd_ic_rel': round(dmin(r, ic) / max(1e-6, math.sqrt(
                              max(1, npads(ic)))), 3),
                          'load_cap_mm': round(max((dmin(r, c) for c in lc), default=-1), 2),
+                         'leg_gap_mm': round(max(legs), 2) if legs else -1,
+                         'cap_gap_mm': round(max(cap_gaps), 2) if cap_gaps else -1,
                          'edge_n': round(edge_n(r), 3)})
 
     esd = []
@@ -676,6 +705,11 @@ def report(rows, out=print):
     out(f"\n=== CRYSTALS {len(cr)}: d_ic (pad gap to the IC) {q([c['d_ic'] for c in cr])}; "
         f"<= 3 mm {frac([c['d_ic'] for c in cr], lambda x: x <= 3)}; load caps (farthest) "
         f"{q([c['load_cap_mm'] for c in cr if c['load_cap_mm'] >= 0])}")
+    lg = [c['leg_gap_mm'] for c in cr if c.get('leg_gap_mm', -1) >= 0]
+    cg = [c['cap_gap_mm'] for c in cr if c.get('cap_gap_mm', -1) >= 0]
+    out(f"  as a proximity[] claim grades them, pad edge to the pad on the same net: "
+        f"farthest leg to the IC {q(lg)} (n={len(lg)}); farthest load cap to the "
+        f"crystal {q(cg)} (n={len(cg)})")
 
     es = [e for r in rows for e in r['esd']]
     out(f"\n=== ESD/TVS {len(es)}: d_conn {q([e['d_conn'] for e in es])}; d_main "

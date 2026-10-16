@@ -57,7 +57,7 @@ import time
 from kicad_parser import iter_footprint_blocks, parse_kicad_pcb  # noqa: E402
 from place_seed import _split_pinned  # noqa: E402
 from placement.grouping import (BoardView, GroupsError, analyze,  # noqa: E402
-                                load_groups, placement_order)
+                                fold_followers, load_groups, placement_order)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -241,8 +241,18 @@ def main(argv=None):
         print("place_groups: the groups cannot be placed as written -- see "
               "py_tools/check_groups.py", file=sys.stderr)
         return 2
+    # A claim's subject is seated beside its partner (the seeder's followers
+    # stage), so it is placed in its partner's step: plan_regions folded it
+    # into that group's region by the same rule.
+    names_before = {g['name'] for g in doc['groups']}
+    doc, moved = fold_followers(doc, intent.get('proximity') or [])
+    for ref, (src, dst) in sorted(moved.items()):
+        print(f"  {ref} follows its proximity partner: placed with group "
+              f"{dst!r}, not {src!r}")
+    gone = names_before - {g['name'] for g in doc['groups']}
     view = BoardView(pcb)
     order = a.order.split(',') if a.order else placement_order(doc, view)
+    order = [n for n in order if n not in gone]
     unknown = [n for n in order if n not in {g['name'] for g in doc['groups']}]
     if unknown:
         print(f"place_groups: --order names no group {unknown}", file=sys.stderr)

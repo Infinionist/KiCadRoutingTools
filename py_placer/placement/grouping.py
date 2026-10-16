@@ -237,6 +237,69 @@ def decap_conflicts(doc: Dict, view: BoardView) -> List[Dict]:
     return out
 
 
+def follower_roots(claims: Iterable[Dict]) -> Dict[str, str]:
+    """{subject: the part its chain of `proximity[]` claims ends at}: a load
+    cap's claim names its crystal and the crystal's names the IC, so both
+    end at the IC. A subject with several claims follows its first; a cycle
+    stops where it closes."""
+    near: Dict[str, str] = {}
+    for c in claims:
+        near.setdefault(str(c['ref']), str(c['near']))
+    roots = {}
+    for sub, nxt in near.items():
+        seen = {sub}
+        while nxt in near and nxt not in seen:
+            seen.add(nxt)
+            nxt = near[nxt]
+        roots[sub] = nxt
+    return roots
+
+
+def fold_followers(doc: Dict, claims: Iterable[Dict]) -> Tuple[Dict, Dict[str, Tuple[str, str]]]:
+    """`(doc, moved)`: the groups file with every `proximity[]` subject moved
+    into the group of the part its claims end at (`follower_roots`), and
+    {ref: (from group, to group)} for each part moved.
+
+    A follower is seated beside its partner (the seeder's followers stage),
+    so it must share its partner's region: a crystal in a clock group of its
+    own would be held to a region apart from the IC whose pins it belongs
+    at. A group the move empties is dropped, and the `near`, `apart` and
+    `order` entries naming it are pointed at the group that took its parts.
+    The input is not modified."""
+    roots = follower_roots(claims)
+    where = group_of(doc)
+    moved = {s: (where[s], where[r]) for s, r in roots.items()
+             if s in where and r in where and where[s] != where[r]}
+    if not moved:
+        return doc, {}
+    out = json.loads(json.dumps(doc))
+    for g in out['groups']:
+        g['refs'] = [r for r in g['refs'] if r not in moved]
+        g['refs'] += sorted(s for s, (_f, t) in moved.items() if t == g['name'])
+        if g.get('anchor') is not None and g['anchor'] not in g['refs']:
+            del g['anchor']
+    gone = {g['name'] for g in out['groups'] if not g['refs']}
+    took: Dict[str, str] = {}
+    for _s, (f, t) in sorted(moved.items()):
+        if f in gone:
+            took.setdefault(f, t)
+    out['groups'] = [g for g in out['groups'] if g['refs']]
+    for g in out['groups']:
+        for key in ('near', 'apart'):
+            if g.get(key):
+                names = [took.get(n, n) for n in g[key]]
+                names = [n for i, n in enumerate(names)
+                         if n != g['name'] and n not in gone and n not in names[:i]]
+                if names:
+                    g[key] = names
+                else:
+                    del g[key]
+    if out.get('order'):
+        order = [n for n in out['order'] if n not in gone]
+        out['order'] = order
+    return out, moved
+
+
 def link_matrix(doc: Dict, view: BoardView) -> Dict[Tuple[str, str], int]:
     """{(group a, group b): signal links between them}, a < b, links counted
     once per (part pair, shared net) -- the region planner's wiring weights."""
@@ -294,7 +357,8 @@ def placement_order(doc: Dict, view: BoardView,
     return order
 
 
-def analyze(doc: Dict, pcb, movable: Optional[Iterable[str]] = None) -> Dict:
+def analyze(doc: Dict, pcb, movable: Optional[Iterable[str]] = None,
+            followers: Iterable[str] = ()) -> Dict:
     """Everything the checker reports, as data. `movable` defaults to every
     copper-bearing part the file does not lock."""
     view = BoardView(pcb)
@@ -350,7 +414,10 @@ def analyze(doc: Dict, pcb, movable: Optional[Iterable[str]] = None) -> Dict:
             if borders:
                 bridges.append({'ref': ref, 'group': own, 'borders': borders})
 
-    decap_cross = decap_conflicts(doc, view)
+    # A cap that follows a proximity claim (a crystal's load cap) is seated
+    # by its claim, not by the decap rule, so it is no conflict.
+    decap_cross = [d for d in decap_conflicts(doc, view)
+                   if d['cap'] not in set(followers)]
 
     matrix = link_matrix(doc, view)
     errors = []

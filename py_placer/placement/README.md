@@ -634,7 +634,11 @@ python py_placer/place_groups.py fixed.kicad_pcb by_group.kicad_pcb \
 
   It writes the zones as intent `blocks[]` and exempts from the decap rule the
   caps the groups file places away from the IC the rule would claim them for.
-  The board is never modified.
+  It also writes each crystal's claims (`placement/crystals.py`): the crystal
+  at its IC's oscillator pins, each load cap at the crystal. Those parts are
+  left out of every zone, and the seeder's followers stage seats each one
+  right after its partner, turning the IC when its oscillator pins face no
+  room. The board is never modified.
 - **`place_groups.py`** runs `place_seed --decap-owners <the group>` once per
   group on a step board:
   - the groups not yet placed are deleted, and the placed ones are locked on
@@ -1653,6 +1657,7 @@ is followed by a settle beat, so the moves only play once the camera has arrived
 | `part_class.py` | What determines a part's position — a pose-INDEPENDENT class |
 | `roles.py` | What a part IS (regulator, crystal, transistor, ...), read off footprint name, pins and prefix: the table `board_context` prints and the decap owner predicate (`groups.supply_owners`, #1249) reads |
 | `emc_roles.py` | Converters, crystals, oscillators and ESD arrays by pin function, each leg measured pad edge to pad edge, with a ready `proximity[]` row (`max_mm` null) -- `board_context --json`'s `emc_roles` (#1254). Also PROPOSES design-brief `keep_away` rules: each crystal's or oscillator's clock nets against the switch nodes (SW / LX, a discrete switch's drain; pin-less parts as `candidate`), at a 3 mm derived-default gap, measured by check_floorplan's own `keep_away` grade, with a `brief_row` to paste (#1253). Report only |
+| `crystals.py` | Crystal claims: each passive crystal (`emc_roles`) within `LEG_MM` of its IC's oscillator pins and each load cap (a two-pad cap from a load net to ground) within `CAP_MM` of the crystal pad on its net, as `proximity[]` rows. The limits are the human corpus's 75th percentiles (`tests/stress/placement_survey.py`). `plan_regions.py` writes them; the seeder seats each claimed part right after its partner |
 | `options.py` | When a board cannot hold its parts, say so WITH THE NUMBER and the options |
 | `provenance.py` | Was every pose in this board produced by a registered engine lever? |
 | `lock_advisor.py` | Which parts should not be moved, and why (#431). Advice only |
