@@ -2,7 +2,7 @@
 
 High-performance A* grid router implemented in Rust with Python bindings via PyO3.
 
-**Current Version: 0.23.0**
+**Current Version: 0.23.1**
 
 > **Release note:** the 0.20.0 per-platform binaries are published as of
 > [v0.20.0](https://github.com/drandyhaas/KiCadRoutingTools/releases/tag/v0.20.0),
@@ -310,6 +310,22 @@ src/
 - **Costs**: ORTHO_COST=1000, DIAG_COST=1414 (sqrt(2) * 1000), DEFAULT_TURN_COST=1000
 
 ## Version History
+
+### 0.23.1 (2026-10-13)
+
+- **`pair_search`**: the whole-route snap's grid search for a PAIR
+  (`awx/whole_snap.py`, `route()` -> `search(..., poses=True)`), ported
+  exactly as `lane_search` ports a single's -- A* over (cell, heading, vias
+  taken, straight steps owed, straight steps taken) from pose to pose, the pair
+  router's own moves (45-degree turns at most, each only with no straight step
+  owed; a via only after the via's straight steps, one heading through it), an
+  opposite-hands pair's first dive its crossover (its clearance a test the
+  Python makes, called back and kept), the staircase and share prices, and the
+  multi-start search from every start pose to any end pose (no heuristic; with
+  no path, the farthest along the lane it got). The heap orders entries as
+  Python's tuples do, so the same states are expanded in the same order: the
+  snapped plans are byte-identical to the Python search's. An older binary
+  searches in Python.
 
 ### 0.23.0 (2026-09-26)
 

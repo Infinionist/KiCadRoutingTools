@@ -1,14 +1,26 @@
 {
  "clearance": 0.2,
  "limit_mm": 3.0,
- "recorded_at": "4aa33a88",
- "root": "krt-1105-base",
+ "recorded_at": "ed157dfc",
+ "root": "krt-fix1266",
  "runs": {
   "esp_prog:0": {
    "decap_stage": {
     "armed": true,
     "array_members_skipped": [],
     "claimed": 0,
+    "late": {
+     "armed": false,
+     "armed_by": "set",
+     "at": null,
+     "caps": [],
+     "claimed": 0,
+     "declined": [],
+     "owners": [],
+     "pins": 0,
+     "reason": "off for this run (place_seed --no-decap-claim-after-ics); --decap-claim-after-ics arms it",
+     "variant": null
+    },
     "pins": 0,
     "put_back": 0,
     "reason": "no PLACED IC carries a scoped cap's rail (pins 0) -- no owner IC is seated before this stage (a fixed pose, must_lock, a zoned block or a declared row's `serves` seats one earlier); owners must be U-prefixed unless decap_owner_chips",
@@ -20,23 +32,23 @@
    ],
    "placements": {
     "C1": [
-     120.937,
-     98.751,
+     125.048,
+     92.973,
      90.0
     ],
     "C2": [
-     125.731,
-     102.228,
+     120.606,
+     102.815,
      270.0
     ],
     "C3": [
-     124.004,
-     92.083,
+     122.651,
+     92.74,
      180.0
     ],
     "C4": [
-     122.063,
-     100.133,
+     120.484,
+     92.812,
      90.0
     ],
     "CON1": [
@@ -55,18 +67,18 @@
      180.0
     ],
     "Q2": [
-     121.738,
-     94.709,
+     119.738,
+     99.709,
      180.0
     ],
     "R1": [
-     121.975,
-     97.463,
+     125.308,
+     96.129,
      270.0
     ],
     "R2": [
-     120.778,
-     101.412,
+     122.112,
+     99.079,
      90.0
     ],
     "R3": [
@@ -85,8 +97,8 @@
      0.0
     ],
     "Ref*~2": [
-     119.22,
-     103.436,
+     118.22,
+     96.436,
      0.0
     ],
     "U1": [
@@ -95,8 +107,8 @@
      0.0
     ],
     "U2": [
-     126.34,
-     94.905,
+     122.34,
+     95.905,
      270.0
     ],
     "USB1": [
@@ -117,6 +129,18 @@
     "armed": true,
     "array_members_skipped": [],
     "claimed": 0,
+    "late": {
+     "armed": false,
+     "armed_by": "set",
+     "at": null,
+     "caps": [],
+     "claimed": 0,
+     "declined": [],
+     "owners": [],
+     "pins": 0,
+     "reason": "off for this run (place_seed --no-decap-claim-after-ics); --decap-claim-after-ics arms it",
+     "variant": null
+    },
     "pins": 0,
     "put_back": 0,
     "reason": "no PLACED IC carries a scoped cap's rail (pins 0) -- no owner IC is seated before this stage (a fixed pose, must_lock, a zoned block or a declared row's `serves` seats one earlier); owners must be U-prefixed unless decap_owner_chips",
@@ -128,23 +152,23 @@
    ],
    "placements": {
     "C1": [
-     122.125,
-     102.08,
+     141.811,
+     103.46,
      90.0
     ],
     "C2": [
-     134.326,
-     94.708,
+     132.076,
+     103.458,
      270.0
     ],
     "C3": [
-     136.646,
-     95.603,
+     135.441,
+     95.035,
      180.0
     ],
     "C4": [
-     130.908,
-     103.912,
+     140.384,
+     94.6,
      90.0
     ],
     "CON1": [
@@ -168,32 +192,32 @@
      180.0
     ],
     "R1": [
-     121.463,
-     93.299,
+     122.463,
+     99.299,
      270.0
     ],
     "R2": [
-     121.562,
-     95.201,
+     122.562,
+     97.201,
      90.0
     ],
     "R3": [
-     136.572,
-     94.311,
+     138.572,
+     95.311,
      180.0
     ],
     "R4": [
-     139.173,
-     95.841,
+     144.173,
+     98.841,
      180.0
     ],
     "Ref*": [
-     119.526,
-     98.503,
+     121.526,
+     102.503,
      0.0
     ],
     "Ref*~2": [
-     128.768,
+     129.768,
      104.297,
      0.0
     ],
@@ -203,8 +227,8 @@
      0.0
     ],
     "U2": [
-     123.655,
-     98.241,
+     145.655,
+     96.241,
      270.0
     ],
     "USB1": [
@@ -225,6 +249,18 @@
     "armed": true,
     "array_members_skipped": [],
     "claimed": 0,
+    "late": {
+     "armed": false,
+     "armed_by": "set",
+     "at": null,
+     "caps": [],
+     "claimed": 0,
+     "declined": [],
+     "owners": [],
+     "pins": 0,
+     "reason": "off for this run (place_seed --no-decap-claim-after-ics); --decap-claim-after-ics arms it",
+     "variant": null
+    },
     "pins": 0,
     "put_back": 0,
     "reason": "no PLACED IC carries a scoped cap's rail (pins 0) -- no owner IC is seated before this stage (a fixed pose, must_lock, a zoned block or a declared row's `serves` seats one earlier); owners must be U-prefixed unless decap_owner_chips",
@@ -236,23 +272,23 @@
    ],
    "placements": {
     "C1": [
-     134.264,
+     135.042,
      95.29,
      0.0
     ],
     "C2": [
-     130.824,
-     91.996,
+     123.99,
+     94.933,
      0.0
     ],
     "C3": [
-     137.439,
-     95.538,
+     119.328,
+     93.902,
      0.0
     ],
     "C4": [
-     140.22,
-     98.802,
+     128.932,
+     92.102,
      0.0
     ],
     "CON1": [
@@ -271,38 +307,38 @@
      0.0
     ],
     "Q2": [
-     122.935,
-     93.668,
+     123.935,
+     102.668,
      0.0
     ],
     "R1": [
-     119.77,
-     94.656,
+     121.103,
+     101.656,
      0.0
     ],
     "R2": [
-     119.573,
-     93.605,
+     125.906,
+     104.605,
      0.0
     ],
     "R3": [
      120.488,
-     101.15,
+     103.15,
      0.0
     ],
     "R4": [
-     124.612,
+     120.612,
      103.98,
      0.0
     ],
     "Ref*": [
      141.325,
-     101.215,
+     99.215,
      0.0
     ],
     "Ref*~2": [
-     120.22,
-     103.436,
+     141.22,
+     96.436,
      0.0
     ],
     "U1": [
@@ -311,8 +347,8 @@
      0.0
     ],
     "U2": [
-     123.882,
-     101.094,
+     122.882,
+     92.094,
      0.0
     ],
     "USB1": [
@@ -333,6 +369,18 @@
     "armed": true,
     "array_members_skipped": [],
     "claimed": 0,
+    "late": {
+     "armed": false,
+     "armed_by": "set",
+     "at": null,
+     "caps": [],
+     "claimed": 0,
+     "declined": [],
+     "owners": [],
+     "pins": 0,
+     "reason": "off for this run (place_seed --no-decap-claim-after-ics); --decap-claim-after-ics arms it",
+     "variant": null
+    },
     "pins": 0,
     "put_back": 0,
     "reason": "no PLACED IC carries a scoped cap's rail (pins 0) -- no owner IC is seated before this stage (a fixed pose, must_lock, a zoned block or a declared row's `serves` seats one earlier); owners must be U-prefixed unless decap_owner_chips",
@@ -358,12 +406,12 @@
    "placements": {
     "AE1": [
      84.438,
-     89.4,
+     78.4,
      0.0
     ],
     "C1": [
-     82.518,
-     107.3,
+     97.518,
+     93.3,
      90.0
     ],
     "C10": [
@@ -412,8 +460,8 @@
      180.0
     ],
     "C19": [
-     97.586,
-     91.523,
+     95.586,
+     83.523,
      90.0
     ],
     "C2": [
@@ -527,8 +575,8 @@
      270.0
     ],
     "J1": [
-     96.657,
-     81.093,
+     97.657,
+     85.093,
      90.0
     ],
     "J2": [
@@ -542,8 +590,8 @@
      0.0
     ],
     "L1": [
-     96.325,
-     88.773,
+     95.325,
+     86.023,
      270.0
     ],
     "L2": [
@@ -587,8 +635,8 @@
      0.0
     ],
     "R12": [
-     95.262,
-     86.386,
+     96.262,
+     90.386,
      0.0
     ],
     "R13": [
@@ -697,18 +745,18 @@
      0.0
     ],
     "TP2": [
-     97.578,
-     86.556,
+     98.578,
+     90.556,
      0.0
     ],
     "TP3": [
-     89.198,
-     77.145,
+     94.198,
+     78.145,
      0.0
     ],
     "TP4": [
-     99.992,
-     87.424,
+     78.992,
+     107.424,
      0.0
     ],
     "TP4~2": [
@@ -717,13 +765,13 @@
      0.0
     ],
     "TP5": [
-     78.243,
-     107.385,
+     94.243,
+     80.385,
      0.0
     ],
     "TP5~2": [
      99.798,
-     92.234,
+     93.234,
      0.0
     ],
     "TP6": [

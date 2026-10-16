@@ -343,13 +343,15 @@ def test_a_cap_pushed_past_the_decap_radius_is_not_cleared():
     radius between the two.
 
     Since #1150 (b) the seat first looks for a pose that takes C3 no farther
-    from U2, and here it finds one: C3 is moved off its neighbours, stays
-    inside the radius at no greater distance, and is still unresolved (it is
-    still past its limit). Before, the plain seat pushed it 0.5mm further,
-    to 2.056mm -- past the radius. That plain seat is still what a board
-    with NO such pose gets, so the honesty half is pinned with the
-    preference switched off (`_DecapView.no_worse` answering None): the push
-    past the radius reads as `decap_ungraded`, not as the charge cleared."""
+    from U2. It used to find one 1.556mm from U2 and leave C3 unresolved --
+    a pose on U2's own SOT-89 tab, C3.2 inside the filled copper, which the
+    seat could not see until #1266. Now it finds one inside the limit and C3
+    is REPAIRED there, honestly: a fresh grade charges it nothing. Before
+    #1150 the plain seat pushed it 0.5mm further, to 2.056mm -- past the
+    radius. That plain seat is still what a board with NO such pose gets,
+    so the honesty half is pinned with the preference switched off
+    (`_DecapView.no_worse` answering None): the push past the radius reads
+    as `decap_ungraded`, not as the charge cleared."""
     import math
     pcb = parse_kicad_pcb(ESP)
     c = pcb.footprints['C3']
@@ -370,11 +372,10 @@ def test_a_cap_pushed_past_the_decap_radius_is_not_cleared():
         res = _repair(board, intent)
         got = c3_after(res, 'near_out.kicad_pcb')
         assert 'C3' in {m['reference'] for m in res['moves']}, res['moves']
-        assert [r for r, _m in got] == ['decap_distance'], got
-        assert got[0][1]['distance_mm'] <= 1.556 + 1e-3, got
-        assert 'C3' in res['unresolved'], (res['repaired'], res['notes'])
-        kept = [n for n in res['notes'] if n.startswith('C3: UNRESOLVED')]
-        assert kept and 'decap_distance' in kept[0], res['notes']
+        assert got == [], got
+        assert 'C3' in res['repaired'], (res['repaired'], res['notes'])
+        kept = [n for n in res['notes'] if n.startswith('C3: re-seated')]
+        assert kept, res['notes']
 
         real = seeder._DecapView.no_worse
         seeder._DecapView.no_worse = lambda self, ref, findings: None
@@ -387,7 +388,7 @@ def test_a_cap_pushed_past_the_decap_radius_is_not_cleared():
         assert 'C3' in res['unresolved'], (res['repaired'], res['notes'])
         note = [n for n in res['notes'] if n.startswith('C3: UNRESOLVED')]
         assert note and 'decap_ungraded' in note[0], res['notes']
-    print(f"  PASS: kept inside the radius ({kept[0]}); the plain seat's "
+    print(f"  PASS: repaired inside the radius ({kept[0]}); the plain seat's "
           f"push past it -- {note[0]}")
 
 
