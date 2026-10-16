@@ -1515,7 +1515,9 @@ class DifferentialTab(wx.Panel):
         if hasattr(via, 'layers') and len(via.layers) >= 2:
             top_layer = get_layer_id(via.layers[0])
             bot_layer = get_layer_id(via.layers[1])
-            pcb_via.SetLayerPair(top_layer, bot_layer)
+            from .gui_utils import set_via_layers
+            set_via_layers(pcb_via, top_layer, bot_layer,
+                           getattr(via, 'via_type', None))
         # Keep a re-placed via's own tenting/plugging/filling (#489 §8).
         from .gui_utils import apply_via_protection
         apply_via_protection(pcb_via, getattr(via, 'tenting_attrs', None))

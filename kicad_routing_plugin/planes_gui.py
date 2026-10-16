@@ -1558,7 +1558,10 @@ class PlanesTab(wx.Panel):
                 # Set via layers
                 layers = via_data.get('layers', ['F.Cu', 'B.Cu'])
                 if len(layers) >= 2:
-                    via.SetLayerPair(get_layer_id(layers[0]), get_layer_id(layers[-1]))
+                    from .gui_utils import set_via_layers
+                    set_via_layers(via, get_layer_id(layers[0]),
+                                   get_layer_id(layers[-1]),
+                                   via_data.get('via_type'))
                 # #962: the engine stamped Type VII onto a via it put in a pad
                 # or paste opening, and a re-placed via carries its own spec.
                 # This tab applied NEITHER before (every other tab did).

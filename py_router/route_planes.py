@@ -4648,6 +4648,7 @@ Examples:
                 'drill': v.drill,
                 'net_id': v.net_id,
                 'layers': v.layers,
+                'via_type': getattr(v, 'via_type', 'through'),
                 'free': getattr(v, 'free', False)
             } for v in gnd_vias]
             # #962: a GND return via this adds in a pad or paste opening

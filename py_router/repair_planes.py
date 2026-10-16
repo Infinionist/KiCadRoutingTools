@@ -50,6 +50,7 @@ exit_on_error_if_main(__name__)
 from kicad_parser import parse_kicad_pcb, PCBData, Segment, Via, pcb_uses_name_nets, pad_is_plated_through
 from kicad_writer import (generate_segment_sexpr, generate_gr_line_sexpr,
                           generate_via_sexpr, via_net_name)
+from geometry_utils import PARTIAL_VIA_TYPES
 from routing_config import GridRouteConfig
 from plane_io import extract_zones
 from plane_region_connector import (route_disconnected_regions,
@@ -1427,13 +1428,15 @@ def repair_planes(
                     all_new_vias.append(
                         {'x': _v.x, 'y': _v.y, 'size': _v.size,
                          'drill': _v.drill, 'layers': _v.layers,
-                         'net_id': _v.net_id})
+                         'net_id': _v.net_id,
+                         'via_type': getattr(_v, 'via_type', 'through')})
                     _prov_via(_v.net_id, _v.x, _v.y, 'reconnect')
             for _v in (_rdata.get('all_swap_vias') or []):
                 all_new_vias.append(
                     {'x': _v.x, 'y': _v.y, 'size': _v.size,
                      'drill': _v.drill, 'layers': _v.layers,
-                     'net_id': _v.net_id})
+                     'net_id': _v.net_id,
+                     'via_type': getattr(_v, 'via_type', 'through')})
                 _prov_via(_v.net_id, _v.x, _v.y, 'reconnect')
             for _s in (_rdata.get('all_swap_segments') or []):
                 all_new_segments.append(
@@ -1875,7 +1878,8 @@ def repair_planes(
         for _kv in _kvias:
             _d = {'x': _kv.x, 'y': _kv.y, 'size': _kv.size,
                   'drill': _kv.drill, 'layers': _kv.layers,
-                  'net_id': _pid}
+                  'net_id': _pid,
+                  'via_type': getattr(_kv, 'via_type', 'through')}
             all_new_vias.append(_d)
             _partial_emitted_vias.append(_d)
             _prov_via(_pid, _kv.x, _kv.y, 'partial-restore')
@@ -2045,7 +2049,8 @@ def repair_planes(
                 def _vd(_v):
                     return {'x': _v.x, 'y': _v.y, 'size': _v.size,
                             'drill': _v.drill, 'layers': _v.layers,
-                            'net_id': _v.net_id}
+                            'net_id': _v.net_id,
+                            'via_type': getattr(_v, 'via_type', 'through')}
                 for _r in _rdata.get('results', []):
                     for _s in (_r.get('new_segments') or []):
                         all_new_segments.append(_sd(_s))
@@ -2217,6 +2222,8 @@ def repair_planes(
                                       {'x': _x.x, 'y': _x.y, 'size': _x.size,
                                        'drill': _x.drill, 'layers': _x.layers,
                                        'net_id': _x.net_id,
+                                       'via_type': getattr(_x, 'via_type',
+                                                           'through'),
                                        'tenting_attrs': dict(
                                            getattr(_x, 'tenting_attrs', None)
                                            or {})})
@@ -2718,7 +2725,8 @@ def repair_planes(
                     all_new_vias.extend(
                         {'x': _v.x, 'y': _v.y, 'size': _v.size,
                          'drill': _v.drill, 'layers': _v.layers,
-                         'net_id': _v.net_id}
+                         'net_id': _v.net_id,
+                         'via_type': getattr(_v, 'via_type', 'through')}
                         for _v in (_r.get('new_vias') or []))
                 # Swap channels too (parity audit H1a): the inner route's
                 # stub-layer switches append swap copper to pcb_data; the
@@ -2734,7 +2742,8 @@ def repair_planes(
                 all_new_vias.extend(
                     {'x': _v.x, 'y': _v.y, 'size': _v.size,
                      'drill': _v.drill, 'layers': _v.layers,
-                     'net_id': _v.net_id}
+                     'net_id': _v.net_id,
+                     'via_type': getattr(_v, 'via_type', 'through')}
                     for _v in (_rdata3.get('all_swap_vias') or []))
                 for _ch in ('all_segment_modifications', 'pad_swaps',
                             'single_ended_target_swap_info'):
@@ -3257,7 +3266,8 @@ def repair_planes(
                     all_new_vias.append(
                         {'x': _v.x, 'y': _v.y, 'size': _v.size,
                          'drill': _v.drill, 'layers': _v.layers,
-                         'net_id': _v.net_id})
+                         'net_id': _v.net_id,
+                         'via_type': getattr(_v, 'via_type', 'through')})
 
             def _skey(_s):
                 return (round(_s.start_x, 3), round(_s.start_y, 3),
@@ -3425,13 +3435,17 @@ def _write_output(input_file: str, output_file: str, segments: List[Dict], vias:
                 y=via['y'],
                 size=via['size'],
                 drill=via['drill'],
-                layers=['F.Cu', 'B.Cu'],  # Through-hole vias
+                # A repair via is a through via; a kept or restored
+                # blind/micro via keeps its own span and type word.
+                layers=(via['layers'] if via.get('via_type') in
+                        PARTIAL_VIA_TYPES else ['F.Cu', 'B.Cu']),
                 net_id=via['net_id'],
                 # #749 D: the ONE resolver -- net 0 is absent from every map,
                 # and a numeric ref emitted alongside a spec used to be a via
                 # the parser could not read back at all (#748).
                 net_name=via_net_name(via['net_id'], net_id_to_name),
-                tenting_attrs=via.get('tenting_attrs')
+                tenting_attrs=via.get('tenting_attrs'),
+                via_type=via.get('via_type')
             )
             via_sexprs.append(sexpr)
 

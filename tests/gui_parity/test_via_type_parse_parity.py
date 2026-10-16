@@ -15,6 +15,11 @@ reads from `GetViaType()`. This gate holds both against pcbnew's own answer,
     read off the pair would put the text path a layer short of KiCad here
     while the pcbnew path (which normalises the pair to F.Cu/B.Cu) agreed.
 
+A third arm, RE-CREATE, puts each via of the typed board back on a fresh board
+the way the plugin does (gui_utils.set_via_layers) and holds the result to the
+original copper. Its negative control is the pair-then-type order, which
+pcbnew snaps to the full stack.
+
 Needs pcbnew; re-execs into KiCad's python automatically.
 
     python3 -X utf8 tests/gui_parity/test_via_type_parse_parity.py
@@ -163,6 +168,66 @@ def _grade(pcbnew, label, path, expect_partial_pairs):
               'model says %s' % sorted(got))
 
 
+def _recreate(pcbnew, td, path):
+    """The plugin puts a via it took off the board back with a NEW PCB_VIA
+    (placement Apply re-creates every via of the result; the fanout tab's
+    via-nudge; a route tab re-placing one). Each must come back with the
+    copper it had: gui_utils.set_via_layers, as every site now calls it."""
+    from kicad_parser import parse_kicad_pcb
+    from kicad_routing_plugin.gui_utils import set_via_layers
+
+    print('\nRE-CREATE')
+    src = parse_kicad_pcb(path)
+    board = pcbnew.BOARD()
+    board.SetCopperLayerCount(len(COPPER))
+    bad = pcbnew.BOARD()
+    bad.SetCopperLayerCount(len(COPPER))
+    for b, right_order in ((board, True), (bad, False)):
+        for v in src.vias:
+            nv = pcbnew.PCB_VIA(b)
+            nv.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(v.x), pcbnew.FromMM(v.y)))
+            nv.SetDrill(pcbnew.FromMM(v.drill))
+            top, bot = b.GetLayerID(v.layers[0]), b.GetLayerID(v.layers[-1])
+            if right_order:
+                set_via_layers(nv, top, bot, v.via_type)
+            else:
+                # The order the sites used to be one SetViaType away from.
+                from kicad_parser import pcbnew_viatype_value
+                nv.SetLayerPair(top, bot)
+                if pcbnew_viatype_value(v.via_type) is not None:
+                    nv.SetViaType(pcbnew_viatype_value(v.via_type))
+            b.Add(nv)
+    out = os.path.join(td, 'recreated.kicad_pcb')
+    pcbnew.SaveBoard(out, board)
+    again = pcbnew.LoadBoard(out)
+    ids = {name: again.GetLayerID(name) for name in COPPER}
+    want = {(round(v.x, 3), round(v.y, 3)): {n for n in COPPER if
+                                              _on(v, n)} for v in src.vias}
+    got = {}
+    for t in again.GetTracks():
+        if t.GetClass() == 'PCB_VIA':
+            got[(round(pcbnew.ToMM(t.GetPosition().x), 3),
+                 round(pcbnew.ToMM(t.GetPosition().y), 3))] = \
+                {n for n in COPPER if t.IsOnLayer(ids[n])}
+    for key, w in sorted(want.items()):
+        check(got.get(key) == w, 'RE-CREATE: via at %s comes back on %s'
+              % (key, sorted(w)), 'pcbnew says %s' % sorted(got.get(key) or ()))
+    # Negative control: the pair first, then the type, spans the whole stack.
+    bids = {name: bad.GetLayerID(name) for name in COPPER}
+    wrong = sum(1 for t in bad.GetTracks() if t.GetClass() == 'PCB_VIA'
+                and {n for n in COPPER if t.IsOnLayer(bids[n])} != want.get(
+                    (round(pcbnew.ToMM(t.GetPosition().x), 3),
+                     round(pcbnew.ToMM(t.GetPosition().y), 3))))
+    check(wrong == 4, 'RE-CREATE control: SetLayerPair before SetViaType '
+          'snaps all 4 partial vias to the full stack, so the order is what '
+          'the helper is for', 'got %d' % wrong)
+
+
+def _on(v, layer):
+    from geometry_utils import via_on_layer
+    return via_on_layer(v, layer)
+
+
 def main():
     try:
         import pcbnew  # noqa: F401
@@ -188,6 +253,7 @@ def main():
             f.write(stripped)
         _grade(pcbnew, 'TYPED', typed, expect_partial_pairs=4)
         _grade(pcbnew, 'UNTYPED', untyped, expect_partial_pairs=4)
+        _recreate(pcbnew, td, typed)
 
     print('\n%d failure(s)' % len(FAILURES))
     for f in FAILURES:

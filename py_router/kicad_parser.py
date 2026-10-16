@@ -7628,6 +7628,20 @@ def pcbnew_via_type(via) -> str:
         return 'through'
 
 
+def pcbnew_viatype_value(via_type):
+    """The pcbnew VIATYPE constant for a Via.via_type, or None for a through
+    via (a new PCB_VIA is already THROUGH). The reverse of pcbnew_via_type:
+    KiCad 10 has BLIND and BURIED, KiCad 9 one BLIND_BURIED for both."""
+    import pcbnew
+    if via_type == 'micro':
+        return getattr(pcbnew, 'VIATYPE_MICROVIA', None)
+    if via_type in ('blind', 'buried'):
+        own = getattr(pcbnew, 'VIATYPE_BURIED' if via_type == 'buried'
+                      else 'VIATYPE_BLIND', None)
+        return own if own is not None else getattr(pcbnew, 'VIATYPE_BLIND_BURIED', None)
+    return None
+
+
 def build_pcb_data_from_board(board, guide_layer: str = "User.1",
                               keepout_layer: str = "User.2") -> PCBData:
     """Build PCBData directly from a pcbnew board object (no file I/O).
