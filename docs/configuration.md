@@ -479,12 +479,19 @@ tracks, arcs and vias:
 ```
 
 In KiCad: select the sense copper, Group it, and name the group. The sense pads
-are the pads of the same net that member copper touches, the join pad excepted.
+are the pads of the same net that member copper touches, the join pad excepted
+-- touching the way KiCad's connectivity does: a track across a pad off-centre
+touches it, so do two tracks crossing in an X, and a blind or buried via touches
+only on the layers it spans. Pads are their real copper (a round pad is a
+circle). A member uuid that matches no item is ignored, as KiCad drops it on
+load, and named in the entry's `warnings`.
 There is no CLI flag and no GUI control: the board file is the declaration, so
 every step of a chain, both front-ends and every leg that parses the board read
 it (`sense_branch.py`). For the branch's own net the member copper and the
 sense pads are foreign copper, at the net's clearance, everywhere except on the
-join pad; the endpoint derivations never offer them as a place to attach, plane
+join pad: only new copper sticking out of the join pad is held to the
+clearance, so a join pad no wider than the track (an 0402 cap under a power
+track) is landed at its centre without narrowing anything; the endpoint derivations never offer them as a place to attach, plane
 pad taps skip the sense pads, and the member copper is held immutable
 (`held_by`): no pass moves, rewrites or removes it, even when the branch is
 refused. The hold is not a KiCad lock and is never written to the board. The
@@ -503,7 +510,9 @@ missing or has no net, a member is not a track or via on the board, member
 copper is on another net, member copper does not touch the join pad, a sense
 pad or member is not joined to the join pad by member copper yet, other copper
 of the net already touches the branch off the join pad, or a pour of the same
-net covers it off the join pad (the fill already taps it). KiCad's DRC cannot
+net can fill over it off the join pad (the fill already taps it). A pour's
+cut-outs and copper-pour keep-out rule areas are not fill: a pour cut around
+the sense trace leaves the branch protected. KiCad's DRC cannot
 see topology, so check the written board.
 
 `route_planes.py` and the Planes tab print a WARNING naming each protected

@@ -659,6 +659,12 @@ class Zone:
     teardrop: bool = False  # #1164: KiCad's (attr (teardrop ...)) -- a GENERATED
     # teardrop area where a track meets a pad or via. Routing output, like a
     # track: KiCad regenerates it on refill, and it sits on its pad's old pose.
+    # #1279: the zone's CUT-OUTS. KiCad's file holds one outline per zone and
+    # every later (polygon ...) block in it is a hole in that outline (pcbnew
+    # loads it so: OutlineCount 1, HoleCount(0) = the rest; writing a second
+    # outline drops it). The fill never enters a hole. Both parse paths fill
+    # it; `polygon` stays the outline alone.
+    holes: List[List[Tuple[float, float]]] = field(default_factory=list)
 
 
 def pour_zones(zones):
@@ -6952,6 +6958,18 @@ def extract_zones(content: str, name_to_id: Dict[str, int] = None) -> List[Zone]
         if not polygon:
             continue
 
+        # #1279: every later (polygon ...) block of the zone is a hole in its
+        # outline; the (filled_polygon ...) blocks after them are the fill.
+        holes = []
+        _fill_at = zone_content.find('(filled_polygon')
+        for _hm in re.finditer(r'\(polygon\b', zone_content):
+            if _hm.start() <= pts_start or (_fill_at != -1 and _hm.start() > _fill_at):
+                continue
+            _he = find_matching_paren(zone_content, _hm.start())
+            _hole = zone_outline_points(zone_content[_hm.start():_he])
+            if len(_hole) >= 3:
+                holes.append(_hole)
+
         for zl in zone_layers:
             zones.append(Zone(
                 net_id=net_id,
@@ -6965,7 +6983,8 @@ def extract_zones(content: str, name_to_id: Dict[str, int] = None) -> List[Zone]
                 clearance=zone_clearance_val,
                 min_thickness=zone_min_th,
                 in_footprint=in_footprint,
-                teardrop=is_teardrop
+                teardrop=is_teardrop,
+                holes=holes,
             ))
 
     return zones
@@ -9625,6 +9644,7 @@ def _extract_zones_from_pcbnew(board, to_mm, get_layer_name):
 
             # Extract polygon outline
             polygon = []
+            holes = []
             try:
                 outline = zone.Outline()
                 if outline and outline.OutlineCount() > 0:
@@ -9632,6 +9652,13 @@ def _extract_zones_from_pcbnew(board, to_mm, get_layer_name):
                     for j in range(contour.PointCount()):
                         pt = contour.CPoint(j)
                         polygon.append((to_mm(pt.x), to_mm(pt.y)))
+                    # #1279 parity with extract_zones: the outline's cut-outs.
+                    for h in range(outline.HoleCount(0)):
+                        chain = outline.Hole(0, h)
+                        hole = [(to_mm(chain.CPoint(j).x), to_mm(chain.CPoint(j).y))
+                                for j in range(chain.PointCount())]
+                        if len(hole) >= 3:
+                            holes.append(hole)
             except Exception:
                 continue
 
@@ -9672,7 +9699,8 @@ def _extract_zones_from_pcbnew(board, to_mm, get_layer_name):
                     clearance=_zcl,
                     min_thickness=_mth,
                     in_footprint=_in_fp,
-                    teardrop=_td
+                    teardrop=_td,
+                    holes=holes,
                 ))
     except Exception:
         pass
@@ -10115,13 +10143,18 @@ def compare_pcb_data(from_board: 'PCBData', from_file: 'PCBData', tolerance: flo
         return (bool(getattr(z, 'teardrop', False)), len(z.polygon),
                 getattr(z, 'priority', 0), mode,
                 round(getattr(z, 'island_area_min', 0.0), 3) if mode == 2 else None,
-                tuple((_kiround(x * 1e6), _kiround(y * 1e6)) for x, y in z.polygon))
+                tuple((_kiround(x * 1e6), _kiround(y * 1e6)) for x, y in z.polygon),
+                # #1279: the cut-outs, the same way.
+                tuple(tuple((_kiround(x * 1e6), _kiround(y * 1e6)) for x, y in h)
+                      for h in (getattr(z, 'holes', None) or ())))
 
     def _zone_fmt(s):
         import zlib
         return (f"[{'teardrop' if s[0] else 'pour'} vertices={s[1]} priority={s[2]} "
                 f"island_mode={s[3]}" + (f" island_area_min={s[4]}" if s[3] == 2 else '')
-                + f" outline=#{zlib.crc32(repr(s[5]).encode()):08x}]")
+                + f" outline=#{zlib.crc32(repr(s[5]).encode()):08x}"
+                + (f" holes={len(s[6])}#{zlib.crc32(repr(s[6]).encode()):08x}" if s[6] else '')
+                + "]")
 
     from collections import Counter as _Counter
     _zb, _zf = {}, {}
