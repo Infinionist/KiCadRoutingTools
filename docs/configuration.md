@@ -189,6 +189,31 @@ request is never pinned up to a board minimum, only to the fab floor. Under
 `off` nothing is narrowed and a net that cannot complete at the requested
 geometry fails and is reported.
 
+**Net-filtered keep-outs.** A KiCad rule area has no net dimension, so a
+region only some nets may cross is a NAMED rule area plus a `.kicad_dru` rule
+whose condition names it, e.g.
+`(rule "corridor" (constraint disallow track via) (condition "A.intersectsArea('corridor') && A.NetName != 'GND'"))`.
+Every routing step reads such rules from the board's own `.kicad_dru` (no flag,
+no GUI control: as for the per-layer rules, the rules file is the single source
+of truth) and keeps each net the rule binds out of the area while that net
+routes; the nets it exempts route through. The bound nets are the rule's own
+condition evaluated per net (net name, net class, item type, layer), separately
+for tracks (`track`) and vias (`via`, `through_via`); a diff pair is bound when
+either member is, and its members' copper, not just its centreline, is kept out.
+`insideArea`, `intersectsArea` and `enclosedByArea` are read (the last as
+`intersectsArea`, which keeps out more than KiCad requires). The console says
+`.kicad_dru rule 'corridor': honoured as a net-filtered keep-out: N of M net(s)
+kept out of 'corridor' (tracks, vias)`. A rule the tool cannot model completely
+-- one with another constraint beside `disallow`, one that forbids an item
+outside every named area (`!A.intersectsArea(...)`), one that combines areas
+other than as a union (`a && b`), or one naming no area the board has -- stays
+`NOT honoured` and is listed in `design_rules.unsupported_rules`; nothing of it
+is applied. The run ends with an audit of the board it ships: bound-net copper
+inside a region (from a path that does not stamp the region, such as the plane
+finalize's taps and joins, or already in the input) is printed and reported as
+`net_keepouts` in `JSON_SUMMARY` / `--json-out` and the GUI's results (`[]` =
+clean; absent when the board has no such rule).
+
 **Disclosure.** Every descent is recorded and reported three ways: the
 `JSON_SUMMARY` block `design_rules` (policy, tier, the board floors read, every
 narrowing with net / kind / requested / delivered / site, the fab-tier escalation
@@ -333,7 +358,6 @@ See [Rip-Up and Reroute](rip-up-reroute.md) for how failed routes trigger rip-up
 | `--keep-away AGG:VICTIM:GAP` | (off) | Soft keep-away between two net groups (#1146), repeatable. While a net of one side routes, cells where its track would sit closer than GAP mm (edge to edge, same layer) to the other side's copper cost `--keep-away-cost`. Each side is comma-separated net patterns as in `--nets` and/or net classes as `class=NAME` (`!class=NAME` takes one out), e.g. `class=Digital:class=Audio:0.5`. `route.py` and `route_diff.py`. The board's design brief may declare rules too (its `keep_away` list, #1253); they are added to these with no flag. See [Keep-away](api-routing-config.md#pairwise-keep-away-keep_away--keep_away_free--keep_away_cost) |
 | `--keep-away-free` | 1.5 | Within this distance of the routed net's own pads the keep-away band is not priced (mm) |
 | `--keep-away-cost` | 0.5 | Cost per cell inside a keep-away band (mm equivalent; 0 = measure and report only) |
-| `--net-keepouts FILE` | (off) | JSON list of net-filtered copper keep-outs: `[{"name", "polygon": [[x, y], ...], "layers": [...], "tracks": true, "vias": true, "appliesToNets": [globs], "exemptNets": [globs]}]`. The region a KiCad `insideArea()` DRC rule restricts by net, which a rule area cannot express on its own. It is a HARD keep-out (same rasterisation and clearance band as a `(zone (keepout ...))`) only while a net it binds routes; exempt nets route through. A diff pair is bound if either member is, and its members' copper (not just the centreline) is kept out. A file the loader refuses is a usage error (exit 2) before the board is read. Paths that lay copper without the stamp (the plane finalize's taps and joins, post-route passes) and copper the input already had are covered by an audit of the shipped board: bound-net copper inside a region is printed and reported as `net_keepouts` in JSON_SUMMARY / `--json-out` (`[]` = clean). `route.py` and `route_diff.py`; GUI: Advanced tab, Net Keep-outs File |
 | `--vertical-attraction-radius` | 1.0 | Radius for cross-layer track attraction (mm) |
 | `--vertical-attraction-cost` | 0.0 | Cost bonus for aligning with tracks on other layers (0 = disabled) |
 

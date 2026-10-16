@@ -1,29 +1,27 @@
 """Net-filtered copper keep-outs: a region some nets may cross and others may not.
 
 A KiCad rule area has no net dimension, so a design that says "only GND and the
-four RF nets may run tracks or vias through this corridor" exports it as an
-allow-everything rule area plus a custom DRC rule
+four RF nets may run tracks or vias through this corridor" is drawn as a NAMED
+rule area plus a custom rule in the board's .kicad_dru:
 
-    (rule "..." (constraint disallow track)
-                (condition "A.insideArea('corridor') && !(A.NetName == 'GND' || ...)"))
+    (rule "corridor" (constraint disallow track via)
+          (condition "A.intersectsArea('corridor') && !(A.NetName == 'GND' || ...)"))
 
-`zone (keepout ...)` parsing (`extract_keepouts`) sees only the permissive rule
-area, and `design_rules` reports an `insideArea()` condition as UNSUPPORTED, so
-the router laid the filtered nets straight through the region and KiCad DRC
-reported `items_not_allowed` afterwards.
+The resolver (design_rules) cannot evaluate an area predicate, so it reported
+such a rule as NOT honoured and the router laid the filtered nets straight
+through the region; KiCad's DRC then reported `items_not_allowed`.
 
-`--net-keepouts FILE` carries the same regions with their net filter as JSON:
+`derive_area_keepouts` reads those rules -- the board's own .kicad_dru is the
+single source of truth (as for #498's layer clearances: no flag, no GUI
+control) -- into regions: one per rule area a `disallow` rule names, carrying
+the polygon, the layers, which items it forbids and the set of nets it BINDS.
+It is called by design_rules.install_design_rules, which every routing engine
+passes through, so both front-ends get it from the shared engine. The bound
+nets come from the resolver's own evaluator (NetName, NetClass, Type, layer
+predicates ...), separately for tracks and for vias; a rule it cannot model
+completely stays reported as NOT honoured rather than half-applied.
 
-    [{"name": "RF corridor", "polygon": [[x, y], ...], "layers": ["F.Cu"],
-      "tracks": true, "vias": true,
-      "appliesToNets": ["*"], "exemptNets": ["GND", "RF_*"]}]
-
-`tracks` / `vias` say which items the region forbids (true = not allowed).
-`appliesToNets` (fnmatch globs, absent/empty = every net) selects the nets the
-region binds; `exemptNets` removes nets from that set. A net the region binds is
-FILTERED.
-
-The region is stamped into the obstacle map only while a filtered net routes:
+A region is stamped into the obstacle map only while a net it binds routes:
 `stamp()` wraps the single-ended and diff-pair route entries, adds the cells
 (the same rasterisation and clearance band `add_rule_area_keepout_obstacles`
 uses for a native keep-out) and removes exactly those cells on exit, so refcounts
@@ -40,129 +38,217 @@ and its legs (`stamping`). Copper laid by anything else -- the plane finalize's
 taps and region joins, which have their own A*, and post-route passes such as
 meanders -- does not see a region, so the run ends with `audit()` of the board
 it ships: bound-net copper found inside a region is printed and reported as
-JSON_SUMMARY / --json-out `net_keepouts`, never shipped silently. KiCad DRC of
-the equivalent rule stays the authority.
+JSON_SUMMARY / --json-out `net_keepouts`, never shipped silently. KiCad's DRC of
+the rule stays the authority.
 """
 from __future__ import annotations
 
 import contextlib
-import fnmatch
-import json
-import math
+from itertools import combinations
 from types import SimpleNamespace
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, FrozenSet, Iterable, List, Optional, Tuple
 
 import numpy as np
 
-#: Keys a keep-out entry may carry. Unknown keys are refused so a typo in the
-#: handoff file cannot read as an honoured constraint.
-_KEYS = {'name', 'polygon', 'layers', 'tracks', 'vias', 'appliesToNets', 'exemptNets'}
+#: `disallow` item tokens naming copper the router lays, by the kind it lays.
+#: The router's vias are through vias; KiCad's other tokens (blind_via,
+#: micro_via, buried_via, pad, zone, text, graphic, hole, footprint) name
+#: nothing a routing step places, so they are left to KiCad's DRC.
+_ROUTED_TOKENS = {'track': 'track', 'via': 'via', 'through_via': 'via'}
 
-#: Layer tokens add_rule_area_keepout_obstacles expands (#369 A5).
-_COMPOSITE_LAYERS = {'*.Cu', 'F&B.Cu', 'F&B'}
-
-
-def load_net_keepouts(path: str) -> List[dict]:
-    """Read and validate a `--net-keepouts` JSON file. Raises ValueError naming
-    the file, the offending entry and what a valid one looks like -- an
-    unreadable or non-JSON file included, so a caller catches one type."""
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            doc = json.load(f)
-    except OSError as e:
-        raise ValueError(f"{path}: cannot read ({e.strerror or e})") from e
-    except ValueError as e:                      # json.JSONDecodeError
-        raise ValueError(f"{path}: not valid JSON ({e})") from e
-    if not isinstance(doc, list):
-        raise ValueError(f"{path}: expected a JSON array of keep-outs, "
-                         f"got {type(doc).__name__}")
-    return [_validate(entry, i, path) for i, entry in enumerate(doc)]
+#: A condition naming more rule areas than this is not modelled: the union
+#: check below walks every subset of them.
+_MAX_AREAS = 6
 
 
-def _is_mm(v) -> bool:
-    """A finite JSON number (a bool is not one)."""
-    return (isinstance(v, (int, float)) and not isinstance(v, bool)
-            and math.isfinite(v))
+class _NotAKeepout(Exception):
+    """The rule cannot be honoured as a union of net-filtered regions."""
 
 
-def _validate(entry, i: int, path: str) -> dict:
-    """One keep-out entry, checked and normalised to the extract_keepouts dict
-    shape plus its net filter."""
-    where = f"{path} entry {i}"
-    if not isinstance(entry, dict):
-        raise ValueError(f"{where}: expected an object, got {type(entry).__name__}")
-    unknown = sorted(set(entry) - _KEYS)
-    if unknown:
-        raise ValueError(f"{where}: unknown key(s) {', '.join(unknown)}; "
-                         f"allowed: {', '.join(sorted(_KEYS))}")
-    poly = entry.get('polygon')
-    if (not isinstance(poly, list) or len(poly) < 3
-            or not all(isinstance(p, list) and len(p) == 2 and all(map(_is_mm, p))
-                       for p in poly)):
-        raise ValueError(f"{where}: polygon must be >= 3 [x, y] vertices in mm")
-    layers = entry.get('layers')
-    if not isinstance(layers, list) or not layers or not all(isinstance(l, str) for l in layers):
-        raise ValueError(f"{where}: layers must be a non-empty list of copper layer names")
-    applies = entry.get('appliesToNets') or []
-    exempt = entry.get('exemptNets') or []
-    for key, val in (('appliesToNets', applies), ('exemptNets', exempt)):
-        if not isinstance(val, list) or not all(isinstance(v, str) and v for v in val):
-            raise ValueError(f"{where}: {key} must be a list of net-name globs")
-    # true/false only: bool("false") is True, so a quoted value would read as
-    # the opposite of what it says.
-    for key in ('tracks', 'vias'):
-        if key in entry and not isinstance(entry[key], bool):
-            raise ValueError(f"{where}: {key} must be true or false, "
-                             f"got {entry[key]!r}")
-    tracks = entry.get('tracks', True)
-    vias = entry.get('vias', True)
-    return {
-        'name': str(entry.get('name') or f'net_keepout_{i}'),
-        'polygon': [(float(x), float(y)) for x, y in poly],
-        'holes': [],
-        'layers': set(layers),
-        'tracks_allowed': not tracks,
-        'vias_allowed': not vias,
-        'applies': list(applies),
-        'exempt': list(exempt),
-    }
+def _area_names(node, out: set) -> set:
+    """Every rule-area name an areas=True condition AST mentions."""
+    if isinstance(node, tuple) and node:
+        if node[0] == 'area':
+            out.add(node[3])
+        else:
+            for x in node[1:]:
+                _area_names(x, out)
+    return out
+
+
+def _area_fns(node, out: set) -> set:
+    """The area predicates (lower-cased) an areas=True AST uses."""
+    if isinstance(node, tuple) and node:
+        if node[0] == 'area':
+            out.add(node[2])
+        else:
+            for x in node[1:]:
+                _area_fns(x, out)
+    return out
+
+
+def _layer_dependent(node) -> bool:
+    """Does the condition's answer depend on the copper layer?"""
+    if not isinstance(node, tuple) or not node:
+        return False
+    if node[0] == 'L' or (node[0] == 'prop' and node[2] == 'layer'):
+        return True
+    if node[0] == 'call' and node[2] in ('onlayer', 'existsonlayer'):
+        return True
+    return any(_layer_dependent(x) for x in node[1:])
+
+
+def _expand_layers(tokens, copper: List[str]) -> List[str]:
+    """A rule area's layer tokens as board copper layers, in board order (no
+    token = every layer; the composites the keep-out rasteriser expands)."""
+    if not tokens:
+        return list(copper)
+    toks = set(tokens)
+    return [l for l in copper
+            if l in toks or '*.Cu' in toks
+            or (l in ('F.Cu', 'B.Cu') and bool({'F&B.Cu', 'F&B'} & toks))]
+
+
+def derive_area_keepouts(rules, pcb_data) -> List[dict]:
+    """The net-filtered keep-outs the board's `disallow` rules on named rule
+    areas define, as region dicts (the extract_keepouts shape plus `nets`,
+    the frozenset of net names the region binds, and `rule`). Sets
+    `rule.honoured` on each rule it honours, or a specific `rule.unsupported`
+    reason on one it cannot, so the resolver's report says which.
+
+    A rule is honoured when ALL of this holds; otherwise it stays NOT honoured
+    (nothing of it is applied):
+    - its only constraint is `disallow` and its condition parses with the
+      area predicates (design_rules.parse_condition(areas=True));
+    - it disallows `track`, `via` or `through_via` (other tokens alone: not
+      copper the router lays);
+    - for every net and item kind, the condition is false outside every
+      named area (else it forbids the item everywhere -- not a keep-out),
+      and the areas it names combine as a union (`a || b`, not `a && b`);
+    - at least one area it names exists on the board (a name the board does
+      not have is disclosed either way).
+    `enclosedByArea` (KiCad: the item lies wholly inside) is read as
+    `intersectsArea`, which keeps out more than KiCad requires; the report
+    says so."""
+    from dataclasses import replace
+    from design_rules import Unsupported, _eval
+    areas: Dict[str, List[dict]] = {}
+    for ko in getattr(pcb_data.board_info, 'keepouts', None) or []:
+        if ko.get('name'):
+            areas.setdefault(ko['name'], []).append(ko)
+    copper = list(getattr(pcb_data.board_info, 'copper_layers', None)
+                  or rules.copper_layers or [])
+    nets = {nid: n.name for nid, n in pcb_data.nets.items() if nid and n.name}
+    regions: List[dict] = []
+    for rule in rules.rules:
+        ast = getattr(rule, 'area_condition', None)
+        if ast is None:
+            continue
+        rule.honoured = None
+        if set(rule.constraints) != {'disallow'}:
+            continue          # keeps its condition reason: the rest is not modelled
+        tokens = set(rule.constraints['disallow'].get('disallow', ()))
+        kinds = sorted({_ROUTED_TOKENS[t] for t in tokens if t in _ROUTED_TOKENS})
+        if not kinds:
+            rule.unsupported = (f"disallow {', '.join(sorted(tokens)) or 'nothing'} on a "
+                                f"rule area: nothing the router lays")
+            continue
+        names = sorted(_area_names(ast, set()))
+        missing = [n for n in names if n not in areas]
+        if len(names) > _MAX_AREAS:
+            rule.unsupported = (f"condition names {len(names)} rule areas "
+                                f"(more than {_MAX_AREAS} is not modelled)")
+            continue
+        if len(missing) == len(names):
+            rule.unsupported = (f"names rule area(s) {', '.join(repr(n) for n in missing)}, "
+                                f"which the board does not have")
+            continue
+        rule_layers = rule.layers_for(copper)
+        rule_layers = list(copper) if rule_layers is None else rule_layers
+        eval_layers = rule_layers if _layer_dependent(ast) else [None]
+        subsets = [frozenset(c) for k in range(2, len(names) + 1)
+                   for c in combinations(names, k)]
+        bound: Dict[Tuple[str, str], Dict[str, set]] = {}   # (area, kind) -> net -> layers
+        try:
+            for kind in kinds:
+                facts = {'via_type': 'through'} if kind == 'via' else {}
+                for nid, net in nets.items():
+                    for layer in eval_layers:
+                        item = rules.item_for_net(nid, kind, layer, **facts)
+
+                        def ev(inside, item=item, layer=layer):
+                            return bool(_eval(ast, replace(item, areas=inside), None, layer))
+
+                        if ev(frozenset()):
+                            raise _NotAKeepout(f"forbids {kind}s of {net} outside every "
+                                               f"named area: not a keep-out")
+                        single = {a: ev(frozenset([a])) for a in names}
+                        for s in subsets:
+                            if ev(s) != any(single[a] for a in s):
+                                raise _NotAKeepout(
+                                    f"combines rule areas {', '.join(sorted(s))} other "
+                                    f"than as a union: not modelled")
+                        for a, hit in single.items():
+                            if hit and a in areas:
+                                bound.setdefault((a, kind), {}).setdefault(net, set()).update(
+                                    rule_layers if layer is None else [layer])
+        except _NotAKeepout as e:
+            rule.unsupported = str(e)
+            continue
+        except Unsupported as e:
+            rule.unsupported = f"condition: {e}"
+            continue
+        # One region per (area polygon, bound nets, layers), tracks and vias
+        # merged where they bind the same nets on the same layers.
+        groups: Dict[Tuple[str, FrozenSet[str], FrozenSet[str]], set] = {}
+        for (a, kind), by_net in bound.items():
+            by_layers: Dict[FrozenSet[str], set] = {}
+            for net, lays in by_net.items():
+                by_layers.setdefault(frozenset(lays), set()).add(net)
+            for lays, nset in by_layers.items():
+                groups.setdefault((a, frozenset(nset), lays), set()).add(kind)
+        kept_out: set = set()
+        for (a, nset, lays), ks in sorted(groups.items(), key=lambda g: (g[0][0], sorted(g[0][1]))):
+            for ko in areas[a]:
+                layers = [l for l in _expand_layers(ko.get('layers'), copper) if l in lays]
+                if not layers:
+                    continue
+                kept_out |= nset
+                regions.append({
+                    'name': a, 'rule': rule.name,
+                    'polygon': ko['polygon'], 'holes': list(ko.get('holes') or []),
+                    'layers': set(layers),
+                    'tracks_allowed': 'track' not in ks, 'vias_allowed': 'via' not in ks,
+                    'nets': nset})
+        present = [n for n in names if n in areas]
+        what = (f"honoured as a net-filtered keep-out: {len(kept_out)} of {len(nets)} "
+                f"net(s) kept out of {', '.join(repr(n) for n in present)} "
+                f"({', '.join(k + 's' for k in kinds)})")
+        if missing:
+            what += (f"; names rule area(s) {', '.join(repr(n) for n in missing)}, "
+                     f"which the board does not have")
+        if 'enclosedbyarea' in _area_fns(ast, set()):
+            what += "; enclosedByArea read as intersectsArea (keeps out more)"
+        rule.honoured = what
+    return regions
 
 
 def binds(ko: dict, net_name: str) -> bool:
     """True when keep-out `ko` forbids its items to net `net_name`."""
-    applies = ko.get('applies') or []
-    if applies and not any(fnmatch.fnmatchcase(net_name, g) for g in applies):
-        return False
-    return not any(fnmatch.fnmatchcase(net_name, g) for g in ko.get('exempt') or [])
+    return net_name in ko.get('nets', ())
 
 
 def attach(pcb_data, keepouts: Optional[List[dict]]) -> None:
-    """Record the run's net-filtered keep-outs on `pcb_data` and say which nets
-    each binds. No keep-outs CLEARS any a previous run attached: the GUI hands
-    every run the same long-lived PCBData, so a field emptied between two runs
-    must not leave the first run's regions stamping the second."""
+    """Record the run's net-filtered keep-outs on `pcb_data`. None or [] CLEARS
+    any a previous run attached: the GUI hands every run the same long-lived
+    PCBData, so a run on a board whose rule was removed (or a tab whose run
+    reads no rule) must not keep stamping the previous run's regions."""
     if not keepouts:
         pcb_data.__dict__.pop('_net_keepouts', None)
         pcb_data.__dict__.pop('_net_keepout_cells', None)
         return
     pcb_data._net_keepouts = list(keepouts)
     pcb_data._net_keepout_cells = {}
-    names = {nid: n.name for nid, n in pcb_data.nets.items() if nid and n.name}
-    copper = set(getattr(pcb_data.board_info, 'copper_layers', None) or ())
-    print(f"Net-filtered keep-outs: {len(keepouts)} region(s)")
-    for ko in keepouts:
-        exempt = sorted(n for n in names.values() if not binds(ko, n))
-        shown = ', '.join(exempt[:8]) + (', ...' if len(exempt) > 8 else '')
-        print(f"  {ko['name']}: {len(names) - len(exempt)} net(s) kept out, "
-              f"{len(exempt)} exempt ({shown or 'none'})")
-        # A misspelt layer resolves to nothing in the keep-out rasteriser,
-        # which then blocks no track cell at all: say so rather than run as
-        # if the region were honoured on it.
-        unknown = sorted(l for l in ko['layers']
-                         if l not in copper and l not in _COMPOSITE_LAYERS)
-        if copper and unknown:
-            print(f"  WARNING: {ko['name']}: layer(s) {', '.join(unknown)} are not "
-                  f"copper layers of this board; the region blocks no track there")
 
 
 class _Recorder:
@@ -335,8 +421,8 @@ def _via_layers(via, copper: List[str]) -> List[str]:
 def audit(pcb_data, segments, vias,
           keepouts: Optional[List[dict]] = None) -> Optional[List[dict]]:
     """The copper of `segments` / `vias` that a net-filtered keep-out forbids
-    and that INTERSECTS its region -- what KiCad's DRC reports as
-    items_not_allowed for the equivalent insideArea() rule. One row per
+    and that INTERSECTS its region (the polygon minus its holes) -- what
+    KiCad's DRC reports as items_not_allowed for the rule. One row per
     (region, net): {'region', 'net', 'tracks', 'vias'}, sorted; [] when the
     copper is clean, None when the run has no net-filtered keep-out.
 
@@ -358,17 +444,25 @@ def audit(pcb_data, segments, vias,
     rows: Dict[Tuple[str, str], List[int]] = {}
     for ko in kos:
         ring = ko['polygon']
-        edges = list(zip(ring, ring[1:] + ring[:1]))
+        rings = [ring] + [h for h in (ko.get('holes') or []) if len(h) >= 3]
+        edges = [e for rg in rings for e in zip(rg, rg[1:] + rg[:1])]
         x0 = min(p[0] for p in ring)
         y0 = min(p[1] for p in ring)
         x1 = max(p[0] for p in ring)
         y1 = max(p[1] for p in ring)
 
+        def inside(x, y):
+            # even-odd over the outline and its holes
+            return sum(point_in_polygon(x, y, rg) for rg in rings) % 2 == 1
+
+        def near(x, y, r):
+            return any(point_to_polygon_edge_distance(x, y, rg) < r - eps for rg in rings)
+
         def hit(xa, ya, xb, yb, r):
             if (max(xa, xb) < x0 - r or min(xa, xb) > x1 + r
                     or max(ya, yb) < y0 - r or min(ya, yb) > y1 + r):
                 return False
-            if point_in_polygon(xa, ya, ring) or point_in_polygon(xb, yb, ring):
+            if inside(xa, ya) or inside(xb, yb):
                 return True
             return any(segment_to_segment_distance(xa, ya, xb, yb, a[0], a[1], b[0], b[1])
                        < r - eps for a, b in edges)
@@ -392,9 +486,7 @@ def audit(pcb_data, segments, vias,
                 if not any(_on_layer(ko['layers'], l) for l in _via_layers(v, copper)):
                     continue
                 r = row(v.net_id)
-                if r is not None and (
-                        point_in_polygon(v.x, v.y, ring)
-                        or point_to_polygon_edge_distance(v.x, v.y, ring) < v.size / 2 - eps):
+                if r is not None and (inside(v.x, v.y) or near(v.x, v.y, v.size / 2)):
                     r[1] += 1
     return [{'region': k[0], 'net': k[1], 'tracks': t, 'vias': n}
             for k, (t, n) in sorted(rows.items()) if t or n]

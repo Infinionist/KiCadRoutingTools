@@ -278,8 +278,9 @@ _FINALIZE_ROUTE_KNOBS = (
     'bus_enabled', 'bus_detection_radius', 'bus_attraction_radius',
     'bus_attraction_bonus', 'bus_min_nets',
     'keep_away', 'keep_away_free', 'keep_away_cost',
-    # Net-filtered keep-outs (net_keepouts.py): a reconnect of a bound net
-    # must stay out of the regions the step kept it out of.
+    # Net-filtered keep-outs (net_keepouts.py), resolved from the step's
+    # .kicad_dru: a reconnect of a bound net must stay out of the regions the
+    # step kept it out of.
     'net_keepouts',
     # #1260: the step's pour barriers, so a casualty reconnect cannot cut
     # the out-of-scope pours the step itself was kept out of.
@@ -1179,7 +1180,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 coplanar_nets: Optional[List[str]] = None,
                 power_nets: Optional[List[str]] = None,
                 power_nets_widths: Optional[List[float]] = None,
-                net_keepouts: Optional[str] = None,
+                # Net-filtered keep-outs (net_keepouts.py) a PARENT run resolved
+                # from its board's .kicad_dru, handed to a nested sub-run like
+                # layer_clearances (#498). Internal: no CLI flag, no GUI
+                # control; None = derive them from this run's own rules.
+                net_keepouts: Optional[List[dict]] = None,
                 power_tap_neckdown: bool = True,
                 neckdown_length: float = 2.5,
                 neckdown_taper_length: float = 0.5,
@@ -1526,14 +1531,6 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # keeps its parent's mark, as it keeps the parent's ledgers.
         from rip_up_reroute import mark_input_copper
         mark_input_copper(pcb_data)
-
-    # Net-filtered keep-outs, stamped per net while a bound net routes. The
-    # outermost run always (re)sets them -- the GUI hands every run the same
-    # PCBData, so an emptied field must clear the last run's regions -- and a
-    # nested sub-run handed no file keeps its parent's.
-    if net_keepouts or final_reconcile:
-        from net_keepouts import load_net_keepouts, attach as _nk_attach
-        _nk_attach(pcb_data, load_net_keepouts(net_keepouts) if net_keepouts else None)
 
     # KICAD_DUP_TRAP=1: report the call site that re-appends the SAME copper
     # object to pcb_data. Inert otherwise. Armed here so it covers the whole
@@ -2422,9 +2419,21 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # here for the swap passes over the nets this call routes, and again over
     # the full routed set once it is known (below).
     from kicad_dru import install_layer_clearances, install_track_clearances
-    install_layer_clearances(config, layer_clearances, input_file, pcb_data)
+    install_layer_clearances(config, layer_clearances, input_file, pcb_data,
+                             net_keepouts=True)
     install_track_clearances(config, track_clearances, input_file, pcb_data,
                              routed_net_ids=[nid for _, nid in net_ids])
+    # Net-filtered keep-outs: the board's .kicad_dru `disallow` rules on a
+    # named rule area, derived with config.rules just above (net_keepouts.
+    # derive_area_keepouts) and stamped per net while a bound net routes.
+    # Set on EVERY run -- the GUI hands each run the same PCBData, so a board
+    # whose rule is gone must not keep the last run's regions. A nested
+    # sub-run takes its parent's resolved list, as it takes the #498 map: the
+    # output's .kicad_dru does not exist yet mid-run.
+    from net_keepouts import attach as _nk_attach
+    _nk_attach(pcb_data, net_keepouts if net_keepouts is not None
+               else getattr(getattr(config, 'rules', None), 'net_keepouts', None))
+    _reconcile_kwargs['net_keepouts'] = list(getattr(pcb_data, '_net_keepouts', None) or [])
 
     # Apply target swaps for single-ended swappable-nets
     single_ended_target_swaps: Dict[str, str] = {}
@@ -8117,11 +8126,6 @@ For differential pair routing, use route_diff.py:
                         help="Glob patterns for power nets (e.g., '*GND*' '*VCC*'). Must pair with --power-nets-widths.")
     parser.add_argument("--power-nets-widths", nargs="*", type=float, default=[],
                         help="Track widths in mm for each power-net pattern (must match --power-nets length)")
-    parser.add_argument("--net-keepouts", type=str, default=None, metavar="FILE",
-                        help="JSON list of net-filtered copper keep-outs (a region a KiCad "
-                             "insideArea() DRC rule restricts by net name, with appliesToNets/"
-                             "exemptNets globs): each region blocks tracks/vias only for the nets "
-                             "it binds; exempt nets route through (see net_keepouts.py)")
     parser.add_argument("--no-power-tap-neckdown", action="store_true",
                         help="Disable neck-down retry of failed power-net tap edges (issue #72): by default a "
                              "wide tap that cannot fit is re-routed at the layer's default width near the pad")
@@ -8591,15 +8595,6 @@ For differential pair routing, use route_diff.py:
     _kae = keep_away_knob_error(args.keep_away_free, args.keep_away_cost)
     if _kae:
         parser.error(_kae)
-    # A bad --net-keepouts file is a usage error, refused before the board is
-    # parsed (the engine, which loads it, would otherwise stop mid-run with a
-    # traceback). The GUI refuses it through the same loader.
-    if args.net_keepouts:
-        from net_keepouts import load_net_keepouts
-        try:
-            load_net_keepouts(args.net_keepouts)
-        except ValueError as _nke:
-            parser.error(f"--net-keepouts: {_nke}")
 
     if args.force_reroute and not all_patterns and not component_patterns:
         parser.error("--force-reroute requires an explicit net scope "
@@ -8872,7 +8867,6 @@ For differential pair routing, use route_diff.py:
                 coplanar_nets=args.coplanar_nets,
                 power_nets=args.power_nets,
                 power_nets_widths=args.power_nets_widths,
-                net_keepouts=args.net_keepouts,
                 power_tap_neckdown=not args.no_power_tap_neckdown,
                 neckdown_length=args.neckdown_length,
                 neckdown_taper_length=args.neckdown_taper_length,

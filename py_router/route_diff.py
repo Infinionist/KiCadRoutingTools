@@ -289,7 +289,6 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                 bus_attraction_radius: float = defaults.BUS_ATTRACTION_RADIUS,
                 bus_attraction_bonus: int = defaults.BUS_ATTRACTION_BONUS,
                 bus_min_nets: int = defaults.BUS_MIN_NETS,
-                net_keepouts: Optional[str] = None,
                 keepout_enabled: bool = False,
                 keepout_layer: str = defaults.KEEPOUT_LAYER,
                 proximity_heuristic_factor: float = defaults.PROXIMITY_HEURISTIC_FACTOR,
@@ -468,11 +467,6 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     from rip_up_reroute import reset_run_ledgers, mark_input_copper
     reset_run_ledgers(pcb_data)
     mark_input_copper(pcb_data)  # #980
-    # Net-filtered keep-outs, stamped per pair while a bound member routes.
-    # Always (re)set: the GUI's Differential tab hands every run the same
-    # PCBData, so an emptied field must clear the last run's regions.
-    from net_keepouts import load_net_keepouts, attach as _nk_attach
-    _nk_attach(pcb_data, load_net_keepouts(net_keepouts) if net_keepouts else None)
     # #962: the input's vias as values, for the ship-time Type VII stamp
     from fab_notes import via_snapshot as _via_snapshot962
     _input_vias962 = _via_snapshot962(pcb_data.vias, pcb_data)  # #1171: + sites
@@ -1060,10 +1054,17 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     # #498: per-layer .kicad_dru clearance rules, installed engine-side so the
     # GUI inherits them with no wiring (see kicad_dru.install_layer_clearances).
     from kicad_dru import install_layer_clearances, install_track_clearances
-    install_layer_clearances(config, layer_clearances, input_file, pcb_data)
+    install_layer_clearances(config, layer_clearances, input_file, pcb_data,
+                             net_keepouts=True)
     # Track-scoped .kicad_dru rules (#735; raise-only on seg-vs-seg stamps).
     install_track_clearances(config, track_clearances, input_file, pcb_data,
                              routed_net_ids=[nid for _, nid in net_ids])
+    # Net-filtered keep-outs: the .kicad_dru `disallow` rules on a named rule
+    # area, derived with config.rules (net_keepouts.derive_area_keepouts) and
+    # stamped per pair while a bound member routes. Set on every run: the
+    # GUI's Differential tab hands each run the same PCBData.
+    from net_keepouts import attach as _nk_attach
+    _nk_attach(pcb_data, getattr(getattr(config, 'rules', None), 'net_keepouts', None))
 
     # Upfront layer swap optimization: analyze all diff pairs and apply beneficial swaps
     # BEFORE MPS ordering, so ordering sees correct segment layers
@@ -2227,9 +2228,6 @@ Examples:
                         help=f"Cost bonus for staying near neighbor track (default: {defaults.BUS_ATTRACTION_BONUS})")
     parser.add_argument("--bus-min-nets", type=int, default=defaults.BUS_MIN_NETS,
                         help=f"Minimum nets to form a bus group (default: {defaults.BUS_MIN_NETS})")
-    parser.add_argument("--net-keepouts", type=str, default=None, metavar="FILE",
-                        help="JSON list of net-filtered copper keep-outs: each region blocks "
-                             "tracks/vias only for the nets it binds (see net_keepouts.py)")
     parser.add_argument("--keepout", action="store_true",
                         help="Keep routed tracks out of polygons drawn on a User layer (issue #27)")
     parser.add_argument("--keepout-layer", type=str, default=defaults.KEEPOUT_LAYER,
@@ -2431,15 +2429,6 @@ Examples:
     _kae = keep_away_knob_error(args.keep_away_free, args.keep_away_cost)
     if _kae:
         parser.error(_kae)
-    # A bad --net-keepouts file is a usage error, refused before the board is
-    # parsed (the engine, which loads it, would otherwise stop mid-run with a
-    # traceback). The GUI refuses it through the same loader.
-    if args.net_keepouts:
-        from net_keepouts import load_net_keepouts
-        try:
-            load_net_keepouts(args.net_keepouts)
-        except ValueError as _nke:
-            parser.error(f"--net-keepouts: {_nke}")
     # --track-width IS the diff-pair LEG WIDTH here: when omitted, default to the
     # board's OWN Default net-class diff_pair_width (else routing_defaults), so a
     # bare diff route uses the board's own differential geometry -- parity with the
@@ -2645,7 +2634,6 @@ Examples:
                 bus_attraction_bonus=args.bus_attraction_bonus,
                 bus_min_nets=args.bus_min_nets,
                 keepout_enabled=args.keepout,
-                net_keepouts=args.net_keepouts,
                 keepout_layer=args.keepout_layer,
                 stub_proximity_radius=args.stub_proximity_radius,
                 stub_proximity_cost=args.stub_proximity_cost,

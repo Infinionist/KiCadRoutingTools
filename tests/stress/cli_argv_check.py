@@ -176,17 +176,6 @@ def _net_clearances_unreadable(ns, cwd):
         return f"--net-clearances: {e}"
 
 
-def _net_keepouts_unreadable(ns, cwd):
-    path = getattr(ns, 'net_keepouts', None)
-    if not path or not _can_see(cwd):
-        return None
-    from net_keepouts import load_net_keepouts
-    try:
-        load_net_keepouts(_at(cwd, path))
-    except ValueError as e:
-        return f"--net-keepouts: {e}"
-
-
 def _keep_away(ns, cwd):
     from keep_away import keep_away_knob_error, parse_keep_away_rules
     if getattr(ns, 'keep_away', None):
@@ -264,11 +253,9 @@ def _cap_intent_unreadable(ns, cwd):
 #: tool -> its argument-judged post-parse checks, in its main's order.
 POST_PARSE = {
     'route.py': (_fab_overrides_missing, _output_twice, _route_group_empty,
-                 _keep_away, _net_keepouts_unreadable,
-                 _route_force_reroute_unscoped, _route_group_sources,
+                 _keep_away, _route_force_reroute_unscoped, _route_group_sources,
                  _net_clearances_unreadable),
-    'route_diff.py': (_keep_away, _net_keepouts_unreadable,
-                      _fab_overrides_missing, _output_twice,
+    'route_diff.py': (_keep_away, _fab_overrides_missing, _output_twice,
                       _net_clearances_unreadable),
     'route_planes.py': (_fab_overrides_missing, _output_twice,
                         _planes_count_mismatch),
@@ -305,7 +292,6 @@ REFUSAL_SITES = {
         'except ValueError from read_brief_keep_away': (
             'board', "the design brief's keep_away (as above)"),
         'if _kae': ('argv', '_keep_away'),
-        '--net-keepouts: ': ('file', '_net_keepouts_unreadable'),
         '--force-reroute requires an explicit net':
             ('argv', '_route_force_reroute_unscoped'),
         '--component matched no footprint on this':
@@ -329,7 +315,6 @@ REFUSAL_SITES = {
         'except ValueError from read_brief_keep_away': (
             'board', "the design brief's keep_away"),
         'if _kae': ('argv', '_keep_away'),
-        '--net-keepouts: ': ('file', '_net_keepouts_unreadable'),
         'call:fab_tier_from_args': ('file', '_fab_overrides_missing'),
         'specify the output path once: positional': ('argv', '_output_twice'),
         'if not net_names': ('board', "which nets the patterns match"),

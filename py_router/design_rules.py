@@ -193,6 +193,8 @@ class RuleItem:
     # zone (connect_pads (clearance ...)) -> KiCad's post-loop max path
     local_clearance: Optional[float] = None
     plated: bool = True
+    # the rule areas the item lies in, for an areas=True condition only
+    areas: FrozenSet[str] = frozenset()
 
 
 @dataclass
@@ -206,6 +208,13 @@ class Rule:
     severity: Optional[str] = None
     unsupported: Optional[str] = None         # reason this rule is NOT evaluated
     unconsumed_kinds: List[str] = field(default_factory=list)
+    # A `disallow` rule's condition parsed WITH its rule-area predicates
+    # (parse_condition(areas=True)); `condition` stays None and `unsupported`
+    # stays set, so the resolver never evaluates it. net_keepouts reads it.
+    area_condition: object = None
+    # set by net_keepouts.derive_area_keepouts when the router honours the
+    # rule as a net-filtered keep-out: what it honours, for the report
+    honoured: Optional[str] = None
 
     def layers_for(self, copper_layers: Sequence[str]) -> Optional[List[str]]:
         """Concrete copper layers this rule's (layer ...) clause names, or None
@@ -349,6 +358,19 @@ def parse_dru(text: str) -> Tuple[List[Rule], List[str]]:
                 rule.condition = parse_condition(rule.condition_src)
             except Unsupported as e:
                 rule.unsupported = f"condition: {e}"
+                # A rule that only disallows, on a rule area: the routing
+                # steps read it as a net-filtered keep-out (net_keepouts);
+                # the resolver and every other step still do not.
+                if set(rule.constraints) == {'disallow'}:
+                    try:
+                        rule.area_condition = parse_condition(rule.condition_src,
+                                                              areas=True)
+                    except Unsupported:
+                        pass
+                    else:
+                        rule.unsupported = (f"condition: {e} here; route.py and "
+                                            f"route_diff.py read it as a "
+                                            f"net-filtered keep-out")
         if rule.layer_clause is not None and rule.unsupported is None:
             lc = rule.layer_clause
             if not (lc in ('outer', 'inner', '*.Cu', '*') or lc.endswith('.Cu')):
@@ -374,6 +396,8 @@ def parse_dru(text: str) -> Tuple[List[Rule], List[str]]:
 # Supported functions: hasNetclass, hasExactNetclass, onLayer, existsOnLayer,
 #   isMicroVia, isBlindBuriedVia, isPlated, memberOfFootprint, memberOfGroup
 # Recognised but NOT modelled (-> Unsupported): intersectsArea, enclosedByArea,
+#   insideArea (each modelled ONLY for a `disallow` rule's net-filtered keep-out:
+#   parse_condition(areas=True), net_keepouts.derive_area_keepouts),
 #   intersectsCourtyard, intersectsFrontCourtyard, intersectsBackCourtyard,
 #   inDiffPair, isCoupledDiffPair, fromTo, memberOfSheet, memberOfSheetOrChildren,
 #   hasComponentClass, getField, and any numeric comparison (<, >, arithmetic).
@@ -392,8 +416,11 @@ _SUPPORTED_PROPS = {'netclass', 'netname', 'net', 'type', 'layer', 'pad_type',
 _SUPPORTED_FUNCS = {'hasnetclass', 'hasexactnetclass', 'onlayer', 'existsonlayer',
                     'ismicrovia', 'isblindburiedvia', 'isplated',
                     'memberoffootprint', 'memberofgroup'}
+#: Rule-area predicates. KiCad's insideArea() is the older spelling of
+#: intersectsArea() and KiCad 10 still grades it.
+_AREA_FUNCS = {'insidearea', 'intersectsarea', 'enclosedbyarea'}
 _KNOWN_UNSUPPORTED_FUNCS = {
-    'intersectsarea', 'enclosedbyarea', 'intersectscourtyard',
+    'insidearea', 'intersectsarea', 'enclosedbyarea', 'intersectscourtyard',
     'intersectsfrontcourtyard', 'intersectsbackcourtyard', 'indiffpair',
     'iscoupleddiffpair', 'fromto', 'memberofsheet', 'memberofsheetorchildren',
     'hascomponentclass', 'getfield', 'isbetween',
@@ -418,9 +445,10 @@ def _tokens(src: str):
 
 
 class _Parser:
-    def __init__(self, src: str):
+    def __init__(self, src: str, areas: bool = False):
         self.toks = _tokens(src)
         self.i = 0
+        self.areas = areas
 
     def peek(self):
         return self.toks[self.i] if self.i < len(self.toks) else (None, None)
@@ -509,6 +537,10 @@ class _Parser:
                     else:
                         raise Unsupported(f"argument {av!r} to {name}()")
                 self.take('op', ')')
+                if self.areas and lname in _AREA_FUNCS:
+                    if len(args) != 1:
+                        raise Unsupported(f"{name}() with {len(args)} arguments")
+                    return ('area', item_u, lname, args[0])
                 if lname in _KNOWN_UNSUPPORTED_FUNCS or lname not in _SUPPORTED_FUNCS:
                     raise Unsupported(f"predicate {name}() not modelled")
                 return ('call', item_u, lname, tuple(args))
@@ -518,9 +550,14 @@ class _Parser:
         raise Unsupported(f"unexpected token {v!r}")
 
 
-def parse_condition(src: str):
-    """AST for a rule condition, or raise Unsupported."""
-    return _Parser(src).parse()
+def parse_condition(src: str, areas: bool = False):
+    """AST for a rule condition, or raise Unsupported. With ``areas`` the
+    rule-area predicates parse too, as ('area', item, fn, name) nodes that
+    `_eval` answers from RuleItem.areas. Only net_keepouts asks for that, on
+    a `disallow` rule: everywhere else an area predicate stays Unsupported,
+    so a `!A.intersectsArea()` clearance rule is not read as matching
+    every item on the board."""
+    return _Parser(src, areas=areas).parse()
 
 
 def _norm_type(t: Optional[str]) -> str:
@@ -556,6 +593,9 @@ def _eval(node, a: RuleItem, b: Optional[RuleItem], layer: Optional[str]):
         return eq if cop == '==' else not eq
     if op == 'call':
         return bool(_call(node, a, b, layer))
+    if op == 'area':
+        it = _item(node[1], a, b)
+        return it is not None and node[3] in it.areas
     if op == 'prop':
         v = _value(node, a, b, layer)
         return bool(v)
@@ -686,6 +726,8 @@ class DesignRules:
     source: str = ''
     dru_path: str = ''
     notes: List[str] = field(default_factory=list)
+    # net_keepouts.derive_area_keepouts' regions (install_design_rules)
+    net_keepouts: List[dict] = field(default_factory=list)
     _cache: dict = field(default_factory=dict, repr=False)
     _effective: Dict[int, str] = field(default_factory=dict, repr=False)
 
@@ -1071,7 +1113,13 @@ class DesignRules:
     # ---------------- disclosure ----------------
 
     def unsupported(self) -> List[Tuple[str, str]]:
-        return [(r.name, r.unsupported) for r in self.rules if r.unsupported]
+        return [(r.name, r.unsupported) for r in self.rules
+                if r.unsupported and not r.honoured]
+
+    def honoured_rules(self) -> List[Tuple[str, str]]:
+        """Rules the resolver does not evaluate but another consumer honours
+        (net_keepouts: a `disallow` rule on a named rule area)."""
+        return [(r.name, r.honoured) for r in self.rules if r.honoured]
 
     def unconsumed(self) -> List[Tuple[str, List[str]]]:
         return [(r.name, r.unconsumed_kinds) for r in self.rules
@@ -1079,6 +1127,8 @@ class DesignRules:
 
     def report_lines(self) -> List[str]:
         out = []
+        for name, what in self.honoured_rules():
+            out.append(f".kicad_dru rule '{name}': {what}")
         for name, why in self.unsupported():
             out.append(f".kicad_dru rule '{name}': NOT honoured ({why}); "
                        f"KiCad will still enforce it")
@@ -1101,6 +1151,7 @@ class DesignRules:
                                 for k, v in sorted(r.constraints.items())},
                 'layer': r.layer_clause, 'condition': r.condition_src,
                 'severity': r.severity, 'unsupported': r.unsupported,
+                'honoured': r.honoured,
                 'unconsumed': list(r.unconsumed_kinds),
             } for r in self.rules],
             'fab_floor': dict(sorted(self.fab_floor.items())),
@@ -1207,7 +1258,7 @@ _ANNOUNCED = set()
 
 
 def install_design_rules(config, input_file, pcb_data=None, *, fab_floor=None,
-                         cli=None, board=None):
+                         cli=None, board=None, net_keepouts=False):
     """Build the board's DesignRules and attach it as ``config.rules``. The
     .kicad_dru / .kicad_pro are discovered beside ``input_file`` (else
     ``pcb_data.source_path``), the same way install_layer_clearances does.
@@ -1227,12 +1278,23 @@ def install_design_rules(config, input_file, pcb_data=None, *, fab_floor=None,
         except Exception:                                      # noqa: BLE001
             pass
         return None
+    # Net-filtered keep-outs (``net_keepouts``: the routing engines, which
+    # stamp them): the `disallow` rules on a named rule area, derived against
+    # this board before the report, which says which are honoured. Never
+    # raises into the engine either.
+    if net_keepouts and pcb_data is not None:
+        try:
+            from net_keepouts import derive_area_keepouts
+            rules.net_keepouts = derive_area_keepouts(rules, pcb_data)
+        except Exception as e:                                 # noqa: BLE001
+            rules.net_keepouts = []
+            rules.notes.append(f"net-filtered keep-outs not derived ({e})")
     try:
         config.rules = rules
     except Exception:                                          # noqa: BLE001
         pass
     key = (os.path.abspath(rules.source) if rules.source else '',
-           tuple((r.name, r.unsupported) for r in rules.rules))
+           tuple((r.name, r.unsupported, r.honoured) for r in rules.rules))
     if key not in _ANNOUNCED:
         _ANNOUNCED.add(key)
         for line in rules.report_lines():

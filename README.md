@@ -798,7 +798,7 @@ One-line summaries below (all of these modules live in `py_router/`); the
 | `obstacle_map.py` | Obstacle map building from PCB data |
 | `obstacle_cache.py` | Net obstacle caching for incremental obstacle map builds |
 | `obstacle_costs.py` | Stub and track proximity cost calculations |
-| `net_keepouts.py` | Net-filtered copper keep-outs (`--net-keepouts`): a region stamped into the obstacle map only while a net it binds routes, and the audit of bound-net copper the shipped board has inside one |
+| `net_keepouts.py` | Net-filtered copper keep-outs from the board's `.kicad_dru` (`disallow` rules on a named rule area): the regions, stamped into the obstacle map only while a net a rule binds routes, and the audit of bound-net copper the shipped board has inside one |
 | `keep_away.py` | Pairwise keep-away between net groups (#1146): the per-net band cost and the in-band report; the design brief's `keep_away` rules, read for the router and the placement grade alike (#1253) |
 | `bresenham_utils.py` | Bresenham line-walking utilities for grid-based segment operations |
 | `geometry_utils.py` | Shared geometry calculations (point-to-segment distance, segment intersection, UnionFind) |

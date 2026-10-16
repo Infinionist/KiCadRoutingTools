@@ -5114,14 +5114,15 @@ def smooth_octolinear_chains(results, pcb_data: PCBData, scope_net_ids=None,
         _kls = _ko.get('layers') or set()
         _keepout_areas.append((_rings, (min(_kxs), min(_kys), max(_kxs), max(_kys)),
                                set(_kls) if _kls else None, None))
-    # Net-filtered keep-outs bind only some nets; the route detoured
-    # around them for those nets, so a shortcut must not undo it.
+    # Net-filtered keep-outs (net_keepouts.py) bind only some nets; the route
+    # detoured around them for those nets, so a shortcut must not undo it.
     for _ko in (getattr(pcb_data, '_net_keepouts', None) or []):
         if _ko.get('tracks_allowed', True):
             continue
         _poly = _ko['polygon']
-        _keepout_areas.append(([_poly], (min(p[0] for p in _poly), min(p[1] for p in _poly),
-                                         max(p[0] for p in _poly), max(p[1] for p in _poly)),
+        _keepout_areas.append(([_poly] + [h for h in (_ko.get('holes') or []) if len(h) >= 3],
+                               (min(p[0] for p in _poly), min(p[1] for p in _poly),
+                                max(p[0] for p in _poly), max(p[1] for p in _poly)),
                                set(_ko.get('layers') or ()) or None, _ko))
     if getattr(config, 'keepout_enabled', False):
         for _kz in (getattr(pcb_data, 'keepout_zones', None) or []):

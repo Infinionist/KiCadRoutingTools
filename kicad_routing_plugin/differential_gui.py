@@ -888,12 +888,6 @@ class DifferentialTab(wx.Panel):
             wx.MessageBox(_ncl_err, "Invalid Net Clearances File",
                           wx.OK | wx.ICON_WARNING)
             return
-        from .swig_gui import net_keepouts_file_error
-        _nko_err = net_keepouts_file_error(config.get('net_keepouts_path'))
-        if _nko_err:
-            wx.MessageBox(_nko_err, "Invalid Net Keep-outs File",
-                          wx.OK | wx.ICON_WARNING)
-            return
 
         # Remember the routed floors so _apply_results_to_board can make the live
         # board's DRC constraints consistent with them (issue #160).
@@ -1110,7 +1104,6 @@ class DifferentialTab(wx.Panel):
                 keep_away=split_keep_away_specs(config.get('keep_away')) or None,
                 keep_away_free=config.get('keep_away_free', defaults.KEEP_AWAY_FREE),
                 keep_away_cost=config.get('keep_away_cost', defaults.KEEP_AWAY_COST),
-                net_keepouts=config.get('net_keepouts_path') or None,
                 crossing_layer_check=not config.get('no_crossing_layer_check', False),
                 can_swap_to_top_layer=config.get('can_swap_to_top_layer', False),
                 swappable_net_patterns=config.get('swappable_nets'),
