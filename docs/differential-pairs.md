@@ -319,8 +319,9 @@ coupled-pair track: its net class's `diff_pair_width`, then the rules that match
 on that layer, clamped into their min/max and the fab floor. A layer no rule scopes
 therefore keeps the class pair width, not the class's single-ended track width. The
 run prints `Design-rule layer widths: ...`. The engine draws one width per layer per
-call, so the widths apply only when every targeted pair resolves the same width on
-each layer.
+call, so when the targeted pairs resolve different widths on a layer (pairs in
+different classes, a rule scoped to some of them) the rules are not applied and the
+run prints a NOTE naming the layer; route each group of pairs in its own call.
 
 ### Corner Handling (Miters)
 

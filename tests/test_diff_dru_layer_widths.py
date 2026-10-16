@@ -19,7 +19,10 @@ Fixture: cap_chain's two pairs (DPA_*, DPB_*, coupled on F.Cu), Default class
     pair net connected;
   - a class whose single-ended track_width (0.3) is not its diff_pair_width
     (0.25), F.Cu priced up so the pairs run on B.Cu: the layer no rule scopes
-    keeps the 0.25 pair width (KiCad's inDiffPair implicit rule), not 0.3.
+    keeps the 0.25 pair width (KiCad's inDiffPair implicit rule), not 0.3;
+  - DPB in a class of its own (diff_pair_width 0.2): the pairs disagree on
+    B.Cu, the engine carries one width per layer, so the rule is NOT applied
+    and the run says which layer disagrees.
 
     python3 tests/test_diff_dru_layer_widths.py
 """
@@ -44,6 +47,12 @@ PRO = {"net_settings": {"classes": [{
     "diff_pair_width": 0.25, "via_diameter": 0.6, "via_drill": 0.3}]}}
 # Default's single-ended track_width differs from its diff_pair_width.
 PRO_TW = {"net_settings": {"classes": [dict(PRO["net_settings"]["classes"][0], track_width=0.3)]}}
+# DPB in a class of its own with a narrower pair width.
+PRO_SPLIT = {"net_settings": {
+    "classes": PRO["net_settings"]["classes"] + [{
+        "name": "Narrow", "clearance": 0.25, "track_width": 0.2, "diff_pair_gap": 0.25,
+        "diff_pair_width": 0.2, "via_diameter": 0.6, "via_drill": 0.3, "priority": 0}],
+    "netclass_patterns": [{"netclass": "Narrow", "pattern": "DPB_*"}]}}
 FAILS = []
 
 
@@ -141,6 +150,14 @@ def main():
         check('class track_width 0.3: DRC clean at 0.25', list(drc1) == [], str(drc1)[:200])
         check('class track_width 0.3: every pair net connected', list(conn1) == [],
               str(conn1)[:200])
+
+        log2, _pcb2, drc2, conn2 = _route(td, dru=True, label='split', pro=PRO_SPLIT)
+        check('split classes: the rule is not applied', 'Design-rule layer widths' not in log2)
+        check('split classes: the run names the layer the pairs disagree on',
+              'NOT applied' in log2 and 'B.Cu (0.2/0.25mm)' in log2,
+              next((l.strip() for l in log2.splitlines() if 'NOT applied' in l), log2[-300:]))
+        check('split classes: DRC clean at 0.25', list(drc2) == [], str(drc2)[:200])
+        check('split classes: every pair net connected', list(conn2) == [], str(conn2)[:200])
     if FAILS:
         print(f'\nFAIL: {len(FAILS)} check(s): ' + '; '.join(FAILS))
         return 1

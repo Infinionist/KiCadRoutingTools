@@ -718,7 +718,8 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     # the class diff_pair_width the pair routes at anyway (KiCad's inDiffPair
     # implicit rule), not the class's single-ended track_width. The diff
     # engine bakes one width per layer per call (#156), so the widths apply
-    # only when every member resolves the same width on each layer.
+    # only when every member resolves the same width on each layer; when they
+    # do not, the run says which layers disagree.
     # Members come from pair detection, which expands the patterns the
     # caller passed; resolve_net_ids above matches exact names only.
     if impedance is None and not layer_widths and net_names and diff_pair_width_from_class:
@@ -739,7 +740,16 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                                            diff_pair=_pn)
                         _by_layer[l].add(round(_w, 6))
                         _scoped = _scoped or abs(_w - _base) > 1e-9
-            if _scoped and all(len(v) == 1 for v in _by_layer.values()):
+            _split = {l: sorted(v) for l, v in _by_layer.items() if len(v) > 1}
+            if _scoped and _split:
+                print("  NOTE: layer-scoped track_width rule(s) NOT applied: the "
+                      "targeted pairs resolve different widths on "
+                      + ", ".join(f"{l} ({'/'.join(f'{w:g}' for w in ws)}mm)"
+                                  for l, ws in _split.items())
+                      + " and the diff engine draws one width per layer per call "
+                        "(#156), so they route at their net-class width. Route each "
+                        "group of pairs in its own call to apply the rules.")
+            elif _scoped:
                 layer_widths = {l: next(iter(v)) for l, v in _by_layer.items()}
                 print("  Design-rule layer widths: " + ", ".join(
                     f"{l}={w:g}mm" for l, w in layer_widths.items()))
