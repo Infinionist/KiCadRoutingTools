@@ -9155,16 +9155,7 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
     # #962: the paste stencil, parity with parse_kicad_pcb. The board setup is
     # read from the LIVE design settings (the file can be stale mid-plan), and
     # the apertures come from the same shared builder, fed this path's graphics.
-    try:
-        _ds962 = board.GetDesignSettings()
-        board_info.pad_to_paste_clearance = to_mm(_ds962.m_SolderPasteMargin)
-        board_info.pad_to_paste_clearance_ratio = float(_ds962.m_SolderPasteMarginRatio)
-        board_info.via_protection_setup = via_protection_setup_from_design_settings(_ds962)
-    except Exception as _e962:
-        print(f"  WARNING: could not read the board's paste/via-protection setup "
-              f"from pcbnew ({type(_e962).__name__}: {_e962}); using KiCad's "
-              f"defaults (#962)")
-        board_info.via_protection_setup = dict(VIA_PROTECTION_SETUP_DEFAULTS)
+    _pcbnew_paste_setup(board, board_info, to_mm)
     _paste_apertures = build_paste_apertures(
         footprints, board_info,
         _pcbnew_paste_graphics(board, _live_fps, _live_keys, get_layer_name, to_mm))
@@ -9264,6 +9255,42 @@ LIVE_COPPER_MEMOS = (
     '_foreign_via_arr_cache', '_gopn_cache', '_net_graph_cache',
     '_pourable_anchor_cache', '_tap_spatial_index_cache', '_attach_pts_memo',
     '_blockid_geom_memo', '_via_place_fail_memo')
+
+
+def _pcbnew_paste_setup(board, board_info, to_mm) -> None:
+    """The live board's paste margin and via-protection setup onto
+    `board_info` (#962), KiCad's defaults when pcbnew cannot say."""
+    try:
+        _ds962 = board.GetDesignSettings()
+        board_info.pad_to_paste_clearance = to_mm(_ds962.m_SolderPasteMargin)
+        board_info.pad_to_paste_clearance_ratio = float(_ds962.m_SolderPasteMarginRatio)
+        board_info.via_protection_setup = via_protection_setup_from_design_settings(_ds962)
+    except Exception as _e962:
+        print(f"  WARNING: could not read the board's paste/via-protection setup "
+              f"from pcbnew ({type(_e962).__name__}: {_e962}); using KiCad's "
+              f"defaults (#962)")
+        board_info.via_protection_setup = dict(VIA_PROTECTION_SETUP_DEFAULTS)
+
+
+def resync_live_paste_apertures(pcb_data, board) -> None:
+    """Rebuild `pcb_data.paste_apertures` from the live board (#962), as
+    build_pcb_data_from_board builds them: the board's paste setup, then the
+    shared builder over the footprints and the paste graphics.
+
+    Call it once the footprints and pads are current
+    (gui_utils.sync_footprint_positions_from_board). An opening is a pad's
+    paste grown by its margin, or a paste graphic, so a part moved in the
+    session (optimize_caps, the placement Apply, the user) moves its
+    openings. Kept as built, they stayed where the part had been, and the
+    via-in-paste keep-out (obstacle_map) and Type VII stamping (fab_notes)
+    read them there."""
+    import pcbnew
+    get_layer_name = pcbnew_layer_maps(board)[2]
+    live_fps, _raw, live_keys = pcbnew_live_footprints(board)
+    _pcbnew_paste_setup(board, pcb_data.board_info, pcbnew.ToMM)
+    pcb_data.paste_apertures = build_paste_apertures(
+        pcb_data.footprints, pcb_data.board_info,
+        _pcbnew_paste_graphics(board, live_fps, live_keys, get_layer_name, pcbnew.ToMM))
 
 
 def resync_live_copper(pcb_data, board) -> None:
