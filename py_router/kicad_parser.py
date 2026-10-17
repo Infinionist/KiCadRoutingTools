@@ -5081,15 +5081,24 @@ def extract_vias(content: str, name_to_id: Dict[str, int] = None) -> List[Via]:
         u = _VIA_UUID_RE.search(block)
         via_type = _via_type_from_block(block)
         layers = [geom[4], geom[5]]
-        if via_type == 'through' and set(layers) != {'F.Cu', 'B.Cu'}:
+        if via_type == 'through':
             # KiCad loads a via with no type word as THROUGH and snaps its pair
             # to F.Cu/B.Cu (probed on pcbnew 10.0.3 and 9.0.6), which is what
             # build_pcb_data_from_board then reads back. Keeping the file's
             # pair -- this repo's writer emitted `(layers "B.Cu" "In6.Cu")` for
             # back-side BGA fanout vias -- made every consumer that reads the
             # pair model a through via as a blind one, and the two parse paths
-            # disagree (found reviewing #1268).
+            # disagree (found reviewing #1268). A through via written
+            # `(layers "B.Cu" "F.Cu")` reads F.Cu first too: pcbnew's
+            # TopLayer()/BottomLayer() order is what the GUI path holds.
             layers = ['F.Cu', 'B.Cu']
+        else:
+            # A typed pair top layer first, as pcbnew reads it back: the two
+            # paths then hold one tuple, which placement Apply's via key
+            # compares (a pair written bottom first was re-created there,
+            # with a new uuid, on every apply).
+            from geometry_utils import _copper_order
+            layers.sort(key=_copper_order)
         via = Via(
             x=float(geom[0]),
             y=float(geom[1]),
@@ -10173,11 +10182,16 @@ def compare_pcb_data(from_board: 'PCBData', from_file: 'PCBData', tolerance: flo
                         lambda s: f"ends={s[0]} w={s[1]} layer={s[2]} net={s[3]}")
 
     # --- Compare vias (geometry, not just count) ---
+    # The pair IN ORDER and the type: a consumer keys on both (placement
+    # Apply's via key is the ordered pair), so a sorted pair hid the paths
+    # disagreeing on a via written bottom first.
     def _via_sig(v):
-        return (_q(v.x), _q(v.y), _q(v.size), _q(v.drill), v.net_id, tuple(sorted(v.layers)))
+        return (_q(v.x), _q(v.y), _q(v.size), _q(v.drill), v.net_id, tuple(v.layers),
+                getattr(v, 'via_type', 'through'))
 
     _multiset_diff(from_board.vias, from_file.vias, _via_sig, "Via",
-                   lambda v: f"({v[0]},{v[1]}) size={v[2]} drill={v[3]} net={v[4]} layers={list(v[5])}")
+                   lambda v: f"({v[0]},{v[1]}) size={v[2]} drill={v[3]} net={v[4]} "
+                             f"layers={list(v[5])} type={v[6]}")
 
     # --- Compare zones, as a multiset per (net, layer) ---
     # Pairing the two lists by sort order on (net_id, layer) was ambiguous
