@@ -226,8 +226,9 @@ python3 -X utf8 py_tools/check_assembly.py wk/<run>/placed.kicad_pcb --baseline 
 ```
 
 Check the render against `.claude/skills/pcb-free-agent/references/placement-lessons.md`:
-a switching regulator's FETs and inductor in one tight cluster, parts beside the
-pins they serve, a fine-pitch chip's caps near its pins but off its escape field.
+a switching regulator's stage in one tight cluster, parts on the side of the chip
+where their pins are with the connecting pad toward the pin, a clear ring around
+fine-pitch chips, same-footprint passives in rows, repeated channels as copies.
 
 ## 6. Hand back
 

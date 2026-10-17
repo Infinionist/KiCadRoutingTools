@@ -55,10 +55,11 @@ serves those nets from the fill.
   prefix, a footprint name or pins named IN/OUT mislead: an RF amplifier
   reads as a regulator, a crystal's load cap as a decap. It also records
   where humans put each functional group.
-- **Read `references/placement-lessons.md` when you review a placement**
-  against a route: what a regulator's power stage, a module's pins and a
-  fine-pitch chip's caps need, how each shows on a routed board, and what
-  to move.
+- **Read `references/placement-lessons.md` when you place or review a
+  placement:** what 437 human boards do, with targets (spacing by density,
+  the ring around fine-pitch chips, decaps, regulator stages, connectors,
+  clocks, rows and repeated channels), how a mistake shows on a routed board,
+  and what to move.
 - **Declared facts win.** If the board has a sibling
   `<board>.design-brief.json` or `mechanical.json`, compile the intent from it:
   `python3 -X utf8 py_tools/check_floorplan.py <board> --emit-intent <intent.json>`.

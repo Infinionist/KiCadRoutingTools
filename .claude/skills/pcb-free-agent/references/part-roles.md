@@ -164,6 +164,8 @@ python3 tests/stress/placement_survey.py report rows.jsonl
 - **Decaps:** about 2.5 mm from the supply pin (3.6 mm on 2-layer boards, 2.2 mm on
   4+ layers). On 4+ layer boards, about a third sit on the opposite face.
 - **LEDs and buttons** lean toward the edge. **Connectors** sit at it.
+- For spacing, orientation and arrangement inside each group, see
+  `placement-lessons.md`.
 - **Habits:**
   - 75% of boards place every part at a multiple of 90°.
   - Two-pad passives mix orientations: about 62% share the majority axis.
