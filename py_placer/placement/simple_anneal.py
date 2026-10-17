@@ -26,6 +26,13 @@ Moves, each priced by `Model.local` against the committed state near it:
     gturn   a group's movable members turned together about their centre
     gswap   two groups with no fixed member exchange places
 
+A move never leaves the board: the parts it moves are translated together
+until their courtyards are inside the board less its edge clearance. A part
+pushed off the board behind a fixed one (a header on the edge) could
+otherwise only come back over it, a jump the overlap weight refuses late in
+the run. Only the kinds a board can make are drawn: no group moves on a
+board without groups, no swap without two parts of one footprint.
+
 `reach` falls from a sixth of the board as (1 - progress)^2, to 0.1 mm. A
 move is kept when it lowers the cost, or with probability exp(-delta / T);
 T falls geometrically from where a move changing the cost by the median
@@ -160,7 +167,40 @@ class Annealer:
         return total
 
     # -- proposals: {ref: new pose} or None --------------------------------------
+    def kinds(self) -> List[str]:
+        """The move kinds this board can make."""
+        out = [k for k in MOVES if k not in ('swap', 'gshift', 'gturn', 'gswap')]
+        if any(self.twins.values()):
+            out.append('swap')
+        if self.groups:
+            out += ['gshift', 'gturn']
+        if len(self.free_groups) >= 2:
+            out.append('gswap')
+        return [k for k in MOVES if k in out]
+
     def propose(self, kind, reach):
+        """A move of `kind`, its parts translated together onto the board,
+        or None."""
+        new = self._move(kind, reach)
+        if not new:
+            return new
+        rs = []
+        for r, (x, y, rot) in new.items():
+            p = self.st.parts[r]
+            p.ensure_rotation(rot)
+            rs.append(p.rect(x, y, rot))
+        u = (min(q[0] for q in rs), min(q[1] for q in rs),
+             max(q[2] for q in rs), max(q[3] for q in rs))
+        i = self.inner
+        if u[2] - u[0] > i[2] - i[0] or u[3] - u[1] > i[3] - i[1]:
+            return None
+        dx = max(0.0, i[0] - u[0]) - max(0.0, u[2] - i[2])
+        dy = max(0.0, i[1] - u[1]) - max(0.0, u[3] - i[3])
+        if dx == 0.0 and dy == 0.0:
+            return new
+        return {r: (x + dx, y + dy, rot) for r, (x, y, rot) in new.items()}
+
+    def _move(self, kind, reach):
         rng, st = self.rng, self.st
         if not self.mov:
             return None
@@ -350,7 +390,7 @@ def anneal(model, movable: List[str], *, moves: int = 11000, seconds: float = 0.
     ov = a.overlap()
     start = cur
     best, best_poses = (cur, {r: a.pose(r) for r in a.mov}) if ov < CLEAN else (math.inf, None)
-    kinds = list(MOVES)
+    kinds = a.kinds()
     wts = [MOVES[k] for k in kinds]
     stats = {k: [0, 0] for k in kinds}
     reach0 = a.span / 6.0
