@@ -513,10 +513,11 @@ same moves -- and the baseline was re-recorded.
 
 ## Where humans put each group
 
-The priors the agent's hints follow come from a survey of the 437
-human-placed boards of the stress corpus (`tests/stress/placement_survey.py`;
-the numbers are in `.claude/skills/pcb-free-agent/references/part-roles.md`).
-For example:
+The priors the agent's hints follow, and every other placement lesson -- from a
+survey of the 437 human-placed boards of the stress corpus
+(`tests/stress/placement_survey.py`) and from the routed comparisons on this
+page -- are in one file,
+`.claude/skills/pcb-free-agent/references/placement-lessons.md`. For example:
 - A power conditioner is no closer to the board edge than an average part. It
   sits by its power entry: on the median board only 16% of parts are nearer
   that connector than the regulator is.

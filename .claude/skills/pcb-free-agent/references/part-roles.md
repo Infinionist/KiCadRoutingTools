@@ -136,37 +136,8 @@ it was, how to tell, and the board.
 
 ## Where humans put each group
 
-Measured on the 437 human-placed boards of the stress corpus, sets 1-30, on
-2026-10-15. Use these as priors for the region hints, not as rules. To
-reproduce them (building the corpus is in `tests/stress/RUNBOOK.md`):
-
-```bash
-python3 tests/stress/placement_survey.py run --sets 1-30 --jobs 6 --out rows.jsonl
-python3 tests/stress/placement_survey.py report rows.jsonl
-```
-
-- **Power conditioners** (regulators, switchers, chargers) **sit at the power entry,
-  not at the edge.**
-  - They are no closer to the outline than an average part, and only 12% are within
-    3 mm of it.
-  - The median conditioner has only 16% of the board's parts closer to its entry
-    connector than it is.
-  - 66% sit nearer the entry than the main IC.
-  - Input cap about 2.0 mm away, output cap 2.2 mm, inductor 2.6 mm.
-- **The main IC is central:** 57% sit in the central region, against 28% of all parts.
-- **ESD and TVS parts sit at their connector,** about 2.5 mm from it; 96% are nearer
-  the connector than the main IC.
-- **Crystals:** about 4 mm from the IC (pad centre to pad centre); load caps about
-  1.8 mm from the crystal. Measured as a `proximity[]` claim grades them, pad
-  edge to the pad on the same net: the farther crystal leg is 5.4 mm from its
-  IC pin (median; 75th percentile 8.1 mm), the farther load cap 0.8 mm from
-  the crystal (75th percentile 2.2 mm).
-- **Decaps:** about 2.5 mm from the supply pin (3.6 mm on 2-layer boards, 2.2 mm on
-  4+ layers). On 4+ layer boards, about a third sit on the opposite face.
-- **LEDs and buttons** lean toward the edge. **Connectors** sit at it.
-- For spacing, orientation and arrangement inside each group, see
-  `placement-lessons.md`.
-- **Habits:**
-  - 75% of boards place every part at a multiple of 90°.
-  - Two-pad passives mix orientations: about 62% share the majority axis.
-  - About half are aligned in a row or column with a neighbour within 4 mm.
+The priors for where each group sits on the board (power at its entry, the main IC
+central, ESD at its connector, LEDs and buttons toward the edge), with the numbers
+and the commands that reproduce them, are in `placement-lessons.md`, section
+"Functional groups". That page also has the spacing, orientation and arrangement
+inside each group.

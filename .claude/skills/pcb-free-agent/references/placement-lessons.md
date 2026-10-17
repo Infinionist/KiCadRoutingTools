@@ -402,6 +402,8 @@ six others.
     exactly as well (62-77% within 0.01 mm).
   - *Not:* across the whole board, only 62% of passives are on one axis. The alignment
     is local, so do not force one axis board-wide.
+  - *Board-wide habits:* 75% of boards place every part at a multiple of 90°, and about
+    half of all parts are aligned in a row or column with a neighbour within 4 mm.
 - **When side-by-side passives share a net, put that pad at the same end, so the pads
   form one strip.**
   - *Humans:* 94% for a shared ground or supply pad, 89% for a shared signal pad, against
@@ -441,6 +443,14 @@ six others.
 
 ## Functional groups
 
+- **Place by function: give each group its own region.**
+  - *Measured on a route:* on ch32v003_usb, esp_prog and ch32v006_dev (five seeds per
+    flow, each routed by the board's recorded chain), both grouped flows routed with
+    less blocking and 10-50% fewer vias than placing every part at once. On esp_prog
+    they used as few vias as the human placement. The method is in
+    `docs/grouped-placement.md`.
+  - *Apply:* five to eight groups suit a small board. More than about twelve make
+    every region tiny.
 - **Keep each functional group in one compact region on one face.**
   - *Humans:* on 94 boards whose hierarchical sheets label the parts, a part's nearest
     labelled neighbour is in its own sheet 93% of the time, against 37% with the labels
@@ -453,6 +463,46 @@ six others.
   - *Humans:* boundary parts sit 1.02 mm from the nearest part of another group and
     0.17 mm from their own group (4-layer boards; n=1,744, 74 boards). On 2-layer boards
     the two are 0.91 and 0.89 mm.
+- **Put the power conditioners at the power entry, not at the edge.** Do not give the
+  power group an `edge` hint.
+  - *Humans:* regulators, switchers and chargers are no closer to the outline than an
+    average part; only 12% are within 3 mm of it. On the median board only 16% of the
+    parts are nearer the entry connector than the conditioner is, and 66% of
+    conditioners sit nearer the entry than the main IC does. The input cap sits about
+    2.0 mm away, the output cap 2.2 mm and the inductor 2.6 mm.
+- **Put the main IC central.**
+  - *Humans:* 57% of main ICs (the part with the most pads) sit in the central region,
+    against 28% of all parts.
+- **Put ESD and TVS parts at their connector.**
+  - *Humans:* about 2.5 mm from it; 96% sit nearer their connector than the main IC.
+    Section "Interface protection and helpers" has the per-interface numbers.
+- **LEDs and buttons lean toward the edge; connectors sit on it.** Sections "User
+  interface" and "Connectors and the board edge" have the numbers.
+- **Decaps sit about 2.5 mm from the supply pin they serve:** 3.6 mm on 2-layer boards
+  and 2.2 mm on 4-layer boards. On 4-layer boards about a third sit on the opposite face.
+  Section "Decoupling" has the detail.
+- **A group's parts on the other face stand by the group's connector, not only by the
+  group's main region.**
+  - *Measured:* pulled only toward its main region, bitaxe_ultra's USB group put its CC
+    resistors 35 mm from their connector J8 (locked on the back), and its fan
+    controller 80 mm from the fan header.
+- **A group's face is the one its parts' courtyards cover most, not the one most of its
+  parts are on.**
+  - *Measured:* ulx3s's core has its two large chips on the front and 43 decaps on the
+    back. Its region went to the back by part count, and U2 was seated 26 mm off the
+    board.
+- **The region must hold its largest part near its centre.** When you look at the
+  region plan, check where the group's biggest part can sit, not only that it fits.
+  - *Measured:* ulx3s's FPGA region came out as a 25 mm strip with a locked HDMI
+    connector inside it, so the 18 mm FPGA was seated 26 mm from its target and 30 mm
+    from its 43 decaps on the back.
+- **The groups' numbers come from `tests/stress/placement_survey.py`.** To reproduce them
+  (building the corpus is in `tests/stress/RUNBOOK.md`):
+
+```bash
+python3 tests/stress/placement_survey.py run --sets 1-30 --jobs 6 --out rows.jsonl
+python3 tests/stress/placement_survey.py report rows.jsonl
+```
 
 ## The back face
 
@@ -557,6 +607,16 @@ six others.
   - *Not:* crystals are not kept away from the edge (11% within 3 mm, like other parts).
     The strip between crystal and chip may hold the chip's decaps (38% have a part
     there).
+  - *Limits:* measured pad edge to the pad on the same net, the way an intent's
+    `proximity[]` claim grades it, the farther crystal leg is 5.4 mm from its pin
+    (75th percentile 8.1 mm) and the farther load cap 0.8 mm from the crystal (75th
+    percentile 2.2 mm; 258 crystals). `plan_regions.py` writes claims at those 75th
+    percentiles.
+  - *Measured on a route:* turning the IC for its crystal alone cost esp_prog 13 routed
+    vias; turn it for the crystal only among the rotations its other connections
+    accept. Moving the crystal into its IC's group before planning the regions
+    re-planned the whole board and cost ch32v003_usb 22 vias; leave the crystal in its
+    clock group and let the claim seat it.
 - **Put one load cap at each crystal pad, about 0.7 mm away, as a mirrored pair
   flanking the crystal.**
   - *Humans:* 0.66 mm pad gap (327 caps, 129 boards), each on its own pad's half of the
@@ -607,6 +667,11 @@ six others.
     mm), uniform in 74%, one rotation in 90%, within 6 mm of the edge in 66%. The
     resistors are collinear in 81%.
   - *Not:* status LEDs are not placed near the MCU.
+  - *Measured on a route:* laying each group's LED channels as one row, LED and resistor
+    alternating, cut ft2232h_jtag from 92.7 to 81.7 vias (better on all six
+    candidates) and glasgow_revC's blocking from 56.3 to 50.8, from the same regions.
+  - *Not:* a row of like value is not a bank. ft2232h_jtag's row of 1 kΩ parts is a
+    reset pull-up and four LED resistors.
 - **A side-actuated button goes on the outline; a top-actuated one leans toward the
   edge.** Their pull-ups and debounce caps are loose, 6-7 mm away.
   - *Humans:* side-actuated buttons: 86% within 3 mm of the edge, 39% overhanging (69
@@ -627,6 +692,10 @@ six others.
     (701 corner holes, 195 boards). The x and y insets are equal in 68%. Four-hole boards
     form a rectangle in 86%. Foreign pads stay 1.5 mm (M2) to 4 mm (M3) from the hole
     edge. 48% of boards have no holes; those are the smaller boards.
+  - *Only four:* all four holes sit within 8 mm of a corner on 86 of the 125 boards with
+    exactly four. With one to three holes, or five or more, no hole count reaches 30%,
+    so do not send those to the corners by default. A hole's position is the
+    enclosure's: lock it where the brief or the user puts it.
 - **Put a test point within about 2 mm of a pad it probes, all test points on one face,
   at least 2.5 mm apart (centre to centre), and not at the edge.**
   - *Humans:* 1.95 mm pad gap (2,446 test points, 181 boards). All on one face on 80% of

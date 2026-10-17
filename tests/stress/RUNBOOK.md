@@ -663,10 +663,10 @@ lists verbatim. No file dumps.
 `tests/stress/placement_survey.py` measures where the corpus's human designers
 put each functional group: power conditioners against their power entry and
 the edge, crystals, ESD parts, decaps, LEDs, buttons, connectors and mounting
-holes, plus orientation and alignment habits. Its roll-up is the "Where humans
-put each group" section of
-`.claude/skills/pcb-free-agent/references/part-roles.md`; re-run it when the
-corpus grows.
+holes, plus orientation and alignment habits. Its roll-up is in the
+"Functional groups" section of
+`.claude/skills/pcb-free-agent/references/placement-lessons.md`; re-run it when
+the corpus grows.
 
 ```bash
 python3 tests/stress/placement_survey.py run --sets 1-30 --jobs 6 --out rows.jsonl

@@ -123,6 +123,10 @@ SOURCES = [
     # What a part IS, read before grouping parts: any flag a future entry
     # cites is held to the real parser like the rest.
     '.claude/skills/pcb-free-agent/references/part-roles.md',
+    # Every placement lesson, human habits and routed measurements: the
+    # commands it cites (converge.py where, render_placement, the survey) are
+    # run as written.
+    '.claude/skills/pcb-free-agent/references/placement-lessons.md',
     # Grouped placement: the skill that runs check_groups -> plan_regions ->
     # place_seed --intent / place_groups, which the free agent may follow as
     # one of its levers.

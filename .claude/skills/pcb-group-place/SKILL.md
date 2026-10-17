@@ -51,8 +51,11 @@ then the mean via count:
   pin functions, nets by face, and what each cap serves).
 - **Read `.claude/skills/pcb-free-agent/references/part-roles.md` before you
   decide what any part is.** A prefix, a footprint name or pins named IN/OUT
-  mislead; that page lists what gets misread on real boards and where humans
-  put each kind of group.
+  mislead; that page lists what gets misread on real boards.
+- **Read `.claude/skills/pcb-free-agent/references/placement-lessons.md`
+  before you group and hint.** Its "Functional groups" section says where
+  humans put each kind of group and what changed routed results; the rest
+  says how the parts inside a group are arranged.
 
 ## 2. Place and lock the fixed parts
 

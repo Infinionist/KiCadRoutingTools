@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Where do HUMANS put each functional group? Measured over the stress corpus.
 
-The priors in `.claude/skills/pcb-free-agent/references/part-roles.md` ("Where
-humans put each group") come from this tool, run over the human-placed boards
+The group priors in `.claude/skills/pcb-free-agent/references/placement-lessons.md`
+("Functional groups") come from this tool, run over the human-placed boards
 of stress sets 1-30 (`boards_set<N>/` under the stress dir; building them is
 in tests/stress/RUNBOOK.md).
 
@@ -30,7 +30,7 @@ What a row measures:
 The classifier is heuristic by design -- part-number regexes, pin names, and
 net-name voltages to orient a regulator whose pins carry no function -- and it
 says "unknown" rather than guess a switcher's input. A part it misreads is an
-entry for part-roles.md as well as a fix here.
+entry for part-roles.md (what parts are) as well as a fix here.
 """
 import argparse
 import glob

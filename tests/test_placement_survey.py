@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tests/stress/placement_survey.py: the classifier behind part-roles.md's priors.
+"""tests/stress/placement_survey.py: the classifier behind placement-lessons.md's group priors.
 
 The survey's numbers are only as good as what it decides a part IS, and every
 rule below was added after a spot-check over the stress corpus caught a real
@@ -13,7 +13,7 @@ misreading. Each check pins one of them, so a later edit cannot quietly undo it:
   3. a footprint keyword never makes a diode a connector (`D_SMA` is a diode
      package, not an SMA jack);
   4. the `board` and `report` modes run end to end on a tracked board
-     (kicad_files/esp_prog.kicad_pcb), and the reproduce commands part-roles.md
+     (kicad_files/esp_prog.kicad_pcb), and the reproduce commands placement-lessons.md
      cites run VERBATIM on a one-board corpus -- test_431 skips tools under
      tests/, so nothing else holds that recipe to the real parser.
 
@@ -106,14 +106,14 @@ def test_board_and_report_cli():
 
 
 def test_cited_commands_run():
-    """The reproduce commands part-roles.md prints, run VERBATIM on a one-board
+    """The reproduce commands placement-lessons.md prints, run VERBATIM on a one-board
     corpus. test_431 does not hold a tests/ tool's flags to its parser, so this
     is what keeps the page's recipe runnable."""
     doc = os.path.join(ROOT, '.claude', 'skills', 'pcb-free-agent', 'references',
-                       'part-roles.md')
+                       'placement-lessons.md')
     cmds = [shlex.split(line.strip()) for line in open(doc, encoding='utf-8')
             if line.strip().startswith('python3 tests/stress/placement_survey.py')]
-    ok("part-roles.md cites a run and a report command",
+    ok("placement-lessons.md cites a run and a report command",
        [c[2] for c in cmds] == ['run', 'report'], str(cmds))
     if len(cmds) != 2:
         return
@@ -132,7 +132,7 @@ def test_cited_commands_run():
 
 
 def main():
-    print("placement_survey: the classifier behind part-roles.md")
+    print("placement_survey: the classifier behind placement-lessons.md's group priors")
     test_voltages_and_rails()
     test_connector_exclusions()
     test_board_and_report_cli()
