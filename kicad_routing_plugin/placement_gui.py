@@ -999,9 +999,8 @@ class PlacementTab(wx.Panel):
                          "kept unchanged stays as it is (groups included), "
                          "the rest is replaced. Replaced arc tracks come "
                          "back as short straight segments (the parser "
-                         "linearizes arcs) and blind/buried vias as through "
-                         "vias - if the run changed either, open the result "
-                         "board file instead.")
+                         "linearizes arcs) - if the run changed any, open "
+                         "the result board file instead.")
         lines.append("The live board may have changed since the run started - "
                      "this diff is against its state right now. Continue?")
         if wx.MessageBox("\n\n".join(lines), "Apply Placement Result",
