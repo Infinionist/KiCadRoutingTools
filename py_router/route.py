@@ -1263,6 +1263,14 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 # sibling .kicad_dru track rules; explicit dict (tests) wins.
                 track_clearances: Optional[Dict[int, float]] = None,
                 final_reconcile: bool = True,
+                # A placement review's first round: route the main pass and
+                # skip the recovery tail -- the net rescue, the terminal
+                # escalation, the plane finalize and the reconciliation laps.
+                # What is still open, and what cost the most, names what to
+                # move; the tail is where a poor placement's time goes. The
+                # board is a diagnosis, never one to ship (JSON_SUMMARY
+                # `quick_pass`).
+                quick_pass: bool = False,
                 rip_preexisting: Optional[bool] = None,
                 add_teardrops: bool = False,
                 collect_stats: bool = False,
@@ -3548,7 +3556,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     if progress_callback:
         progress_callback(0, 0, "Rescuing failed nets...")
     from net_rescue import rescue_failed_nets
-    rescue_summary = None if _ckpt_stop else rescue_failed_nets(
+    rescue_summary = None if (_ckpt_stop or quick_pass) else rescue_failed_nets(
         state, single_ended_nets, net_clearances=net_clearances,
         progress_callback=progress_callback, cancel_check=cancel_check)
 
@@ -3571,7 +3579,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # ITS escalation the same way (the "opens emerged after the escalation"
     # class from the term_ecp5 study -- victims were invisible, not late).
     _esc_scope = _escalation_scope(single_ended_nets, pcb_data)
-    terminal_escalation_summary = None if _ckpt_stop else \
+    terminal_escalation_summary = None if (_ckpt_stop or quick_pass) else \
         terminal_geometry_escalation(
             state, _esc_scope, net_clearances=net_clearances,
             progress_callback=progress_callback, cancel_check=cancel_check)
@@ -4994,6 +5002,13 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # loud on a terminal and invisible to pipelines. Key absent when no
         # clamp fired.
         summary['impedance_width_clamped'] = impedance_width_clamped
+    if quick_pass:
+        # A diagnosis, never a board to ship: the recovery tail did not run.
+        summary['quick_pass'] = {
+            'skipped': ['net_rescue', 'terminal_escalation', 'plane_finalize',
+                        'reconciliation'],
+            'why': 'a placement review first round: what is open and what '
+                   'cost most names what to move; route again to ship'}
     if rescue_summary:
         # #331/#371 rescue pass outcome (key absent when nothing was rescued,
         # so pre-rescue JSON_SUMMARY consumers/diffs are unaffected).
@@ -5948,7 +5963,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         except Exception as _e9c:
             print(f"  (pre-finalize checkpoint failed: {_e9c})")
     if (final_reconcile and (not skip_routing or _fin_only)
-            and not _ckpt_stop
+            and not _ckpt_stop and not quick_pass
             and (output_file or return_results)
             and not _plane_finalize_active()
             and os.environ.get('KICAD_PLANE_FINALIZE', '1') == '1'):
@@ -6722,6 +6737,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             if nid in _scope_pre9 and nid not in _copper_pre9
             and nid not in _zone_pre9 and len(net.pads) >= 2)
     if (final_reconcile and not skip_routing and not _ckpt_stop
+            and not quick_pass
             and (output_file or return_results)
             and (failed_single or failed_multipoint or _custody_nets9
                  or _victim_retry_names or open_single or _zero_pre9)):
@@ -8399,6 +8415,15 @@ For differential pair routing, use route_diff.py:
                         help="Acceptable time variance in picoseconds (default: 1.0)")
 
     # Rip-up and retry options
+    parser.add_argument("--quick-pass", action="store_true",
+                        help="A placement review's first round: route the main "
+                             "pass only, skipping the net rescue, the terminal "
+                             "escalation, the plane finalize and the "
+                             "reconciliation laps. What stays open and what "
+                             "costs most names what to move "
+                             "(py_tools/route_review.py); the board is a "
+                             "diagnosis, not one to ship (JSON_SUMMARY "
+                             "quick_pass)")
     parser.add_argument("--max-ripup", type=int, default=defaults.MAX_RIPUP,
                         help=f"Maximum blockers to rip up at once during rip-up and retry (default: {defaults.MAX_RIPUP})")
     parser.add_argument("--ripup-abandon-metric",
@@ -8967,6 +8992,7 @@ For differential pair routing, use route_diff.py:
     _preview_out = batch_route(args.input_file,
                 "" if args.preview else args.output_file, net_names,
                 return_results=args.preview,
+                quick_pass=args.quick_pass,
                 direction_order=args.direction,
                 ordering_strategy=args.ordering,
                 disable_bga_zones=args.no_bga_zones,

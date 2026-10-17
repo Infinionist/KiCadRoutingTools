@@ -1872,13 +1872,21 @@ Examples:
         from placement.cli_gates import resolve_intent_gate_for_cli
         _gate, _ = resolve_intent_gate_for_cli(
             intent, pcb_seeded, sources, args.intent)
+        # The whitespace halo is the human one: almost none. On the 437
+        # human-placed boards of stress sets 1-30, passives sit touching
+        # (courtyard gap 0.18 mm median), and the copper gap's p10 grows by
+        # only 0.017 mm per sqrt(pin); the halo of 0.5 + 0.15 sqrt(pins) per
+        # part this polish used asked ~1.4 mm between two passives and forbade
+        # 53-81% of human spacings. Measured from grouped-placement regions on
+        # 10 corpus boards, six candidates each, routed by each board's
+        # recorded chain: blocking 4.8 -> 3.2, vias -2%, copper -1%.
         placements = quench(
             pcb_seeded, pcb_file=args.output_file,
             max_displacement=args.max_displacement,
             step=1.0, grid_step=args.grid_step, clearance=args.clearance,
             board_edge_clearance=args.board_edge_clearance,
-            crossing_penalty=30.0, length_weight=0.3, halo_base=0.5,
-            halo_coef=0.15, halo_weight=2.0, edge_halo=2.0, edge_weight=2.0,
+            crossing_penalty=30.0, length_weight=0.3, halo_base=0.0,
+            halo_coef=0.02, halo_weight=2.0, edge_halo=2.0, edge_weight=2.0,
             ignore_nets=args.ignore_nets,
             metrics_out=ratsnest, intent_gate=_gate,
             body_model=args.body_model,

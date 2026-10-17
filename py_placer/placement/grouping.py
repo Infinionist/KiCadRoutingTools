@@ -300,25 +300,32 @@ def fold_followers(doc: Dict, claims: Iterable[Dict]) -> Tuple[Dict, Dict[str, T
     return out, moved
 
 
-def link_matrix(doc: Dict, view: BoardView) -> Dict[Tuple[str, str], int]:
-    """{(group a, group b): signal links between them}, a < b, links counted
-    once per (part pair, shared net) -- the region planner's wiring weights."""
+def tree_weight(n: int) -> float:
+    """The weight of each pair of a net's `n` nodes when the net is priced
+    as its spanning tree: the tree has n - 1 edges over n (n - 1) / 2 pairs,
+    so each pair carries 2 / n of an edge, and the net sums to n - 1."""
+    return 2.0 / n if n > 1 else 0.0
+
+
+def link_matrix(doc: Dict, view: BoardView) -> Dict[Tuple[str, str], float]:
+    """{(group a, group b): signal links between them}, a < b -- the region
+    planner's wiring weights. A signal net reaching m groups is a spanning
+    tree over them, m - 1 links, spread evenly over its group pairs
+    (`tree_weight`), however many parts of each group it touches. Counting
+    once per (part pair, shared net) instead made a net on k parts weigh
+    k (k - 1) / 2: a bus on six parts in two groups counted 9 links where its
+    wiring needs one."""
     gof = group_of(doc)
-    out: Dict[Tuple[str, str], int] = {}
-    seen = set()
-    for ref, ga in sorted(gof.items()):
-        if ref not in view.parts:
+    out: Dict[Tuple[str, str], float] = {}
+    for nid in sorted(view.owners):
+        if nid in view.rails:
             continue
-        for other, n in sorted(view.signal_partners(ref).items()):
-            gb = gof.get(other)
-            if gb is None or gb == ga:
-                continue
-            key = tuple(sorted((ref, other)))
-            if key in seen:
-                continue
-            seen.add(key)
-            k = tuple(sorted((ga, gb)))
-            out[k] = out.get(k, 0) + n
+        gs = sorted({gof[r] for r in view.owners[nid]
+                     if r in gof and r in view.parts})
+        w = tree_weight(len(gs))
+        for i, ga in enumerate(gs):
+            for gb in gs[i + 1:]:
+                out[(ga, gb)] = out.get((ga, gb), 0.0) + w
     return out
 
 
@@ -392,11 +399,15 @@ def analyze(doc: Dict, pcb, movable: Optional[Iterable[str]] = None,
         # a hub -- the group's anchor, or any part of HUB_PADS+ pads -- talks
         # to every group by design; "pulled" is a question about satellites
         hub = ref in anchors or view.pad_count(ref) >= HUB_PADS
+        # one link per (signal net, group it reaches): joining a net needs
+        # one connection to it, however many of a group's parts it touches
         by_group: Dict[str, int] = {}
-        for other, n in view.signal_partners(ref).items():
-            g = first.get(other)
-            if g is not None:
-                by_group[g] = by_group.get(g, 0) + n
+        for nid in view.nets_of.get(ref, ()):
+            if nid in view.rails:
+                continue
+            for g in {first[o] for o in view.owners.get(nid, ())
+                      if o != ref and o in first}:
+                by_group[g] = by_group.get(g, 0) + 1
         own_n = by_group.get(own, 0)
         others = {g: n for g, n in by_group.items()
                   if g != own and g not in fixed_groups}

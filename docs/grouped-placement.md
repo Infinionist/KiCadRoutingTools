@@ -83,13 +83,19 @@ cuts, one group per leaf.
 
 The cost:
 - **wiring**: links between groups, and from each group to the pads of the
-  fixed parts it wires to, priced by Manhattan distance between regions;
+  fixed parts it wires to, priced by Manhattan distance between regions. A
+  signal net is priced as a spanning tree over the groups (and fixed parts)
+  it reaches: m nodes are m - 1 links, shared evenly among their pairs
+  (`grouping.tree_weight`), however many parts of each group it touches.
+  Counted once per pair of parts, a net on six parts in two groups weighed 9
+  links where its wiring needs one;
 - **spread**: each group's internal links times the span its parts' cluster
   takes in that region shape, so a group is not stretched into a strip;
 - **anchor**: a group stays touching its own fixed members;
 - **hints**: `edge`, `near` and `apart` are priced as costs;
 - **hard checks**: a region must hold its largest part at some quarter turn,
-  and its parts' area, in its free cells.
+  one row shape of each of its indicator banks (below), and its parts' area,
+  in its free cells.
 
 **Both faces.** Each face is planned on its own, so a region lies on one
 face. A group's parts on the other face -- a chip's decaps under it, a
@@ -329,10 +335,18 @@ belongs in a row. `plan_regions.py` writes each bank of them as one intent
   the connectors J3 and J4 cut the IO_Banks region and left no strip the
   16.5 mm row needs, so the bank was laid as two rows of three and two LEDs
   (the routed table below measured that); its front-face region now holds
-  the row whole. tigard's 2.45 mm UI strip holds no row of its bank at all.
+  the row whole.
   The free space is the seeder's own (a locked part's
   courtyard on its face, its drilled pads' boxes on the other, no
   container), on a 0.05 mm grid: a row can fill its zone to within 0.2 mm.
+- **the plan sizes the region for its row**: `plan_regions.py` finds the
+  banks before it plans (`bank_shapes`: every shape a bank can be seated
+  as, whole or split, at the seeder's row size), and a region holding a bank
+  must fit one of them, as it must fit its largest part. Before, a weakly
+  linked group could be planned into a strip no row fits, and the bank was
+  then left out: tigard's 2.45 mm UI strip held no row of its five LEDs, and
+  ch32v006_dev's ui group, in a 4 mm column over J1's pin row, put R1 40 mm
+  from its LED. Both now form their rows.
 - **the seeder searches the whole zone** for a zoned row: only anchors inside
   the zone (plus tolerance), and the zone swept after the 1 mm ring, where
   an unzoned row sweeps the board. The rings reach 30 mm from the row's

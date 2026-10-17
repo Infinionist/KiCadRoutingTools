@@ -126,6 +126,23 @@ def led_rows(pcb, zone_of: Dict[str, str]) -> List[dict]:
     return rows
 
 
+def bank_splits(members: List[str]) -> List[List[List[str]]]:
+    """A bank's members (LED, resistor, LED, resistor, ...) as 1, 2, ...
+    rows: its channels in order and never apart, balanced to within one
+    channel, each row of two channels or more."""
+    pairs = [members[i:i + 2] for i in range(0, len(members), 2)]
+    n = len(pairs)
+    out = []
+    for k in range(1, n // 2 + 1):
+        sizes = [n // k + (1 if i < n % k else 0) for i in range(k)]
+        chunks, i = [], 0
+        for size in sizes:
+            chunks.append([m for p in pairs[i:i + size] for m in p])
+            i += size
+        out.append(chunks)
+    return out
+
+
 def split_bank(row: dict, fits) -> List[dict]:
     """`row` (a bank from `led_rows`) as the fewest rows that fit, or [].
 
@@ -135,15 +152,8 @@ def split_bank(row: dict, fits) -> List[dict]:
     apart, into 2, 3, ... rows balanced to within one channel, each of two
     channels or more (one LED is not a bank); the first split that fits is
     returned, each row named after its first LED. None fits: []."""
-    members = list(row['members'])
-    pairs = [members[i:i + 2] for i in range(0, len(members), 2)]
-    n = len(pairs)
-    for k in range(1, n // 2 + 1):
-        sizes = [n // k + (1 if i < n % k else 0) for i in range(k)]
-        chunks, i = [], 0
-        for size in sizes:
-            chunks.append([m for p in pairs[i:i + size] for m in p])
-            i += size
+    for chunks in bank_splits(row['members']):
+        k = len(chunks)
         if not fits(chunks):
             continue
         if k == 1:

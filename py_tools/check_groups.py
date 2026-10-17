@@ -78,7 +78,7 @@ def main(argv=None):
     if rep['links']:
         print("  signal links between groups (rails excluded):")
         for row in rep['links']:
-            print(f"    {row['a']} <-> {row['b']}: {row['signal_links']}")
+            print(f"    {row['a']} <-> {row['b']}: {row['signal_links']:.3g}")
     print(f"  rails: {', '.join(rep['rails']) or 'none'}")
     if rep['bridges']:
         print("  bridges: " + ', '.join(f"{b['ref']} ({b['group']} | {'/'.join(b['borders'])})"

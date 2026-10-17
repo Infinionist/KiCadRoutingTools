@@ -355,8 +355,10 @@ The aided from-scratch path. Given an UNPLACED board (netlist import, a
 generator's pile) plus a floorplan intent, it emits a legal starting
 placement: edge connectors on their declared edge inside their overhang band,
 single-ref zones at the spec coordinate, multi-ref zones by each member's placed partners,
-everything else at the nearest legal pose to its connectivity centroid (which
-is also what lands a decap next to its IC). The intent's `must_lock` and
+everything else at the nearest legal pose to where it adds the least wire --
+each of its nets priced by its minimum spanning tree, so each net votes once,
+at its nearest placed pad (`seeder._wiring_target`; this is also what lands a
+decap next to its IC). The intent's `must_lock` and
 seated `fixed_poses[]` refs are stamped `(locked yes)` into the output, a
 quench polish tidies the free
 parts, and the result is **graded against the same intent it was built
@@ -379,7 +381,7 @@ parts, and parts outside `seed_refs`, count as placed before stage 0):
 | 2.4 | declared non-zoned arrays: each row's served part, then the row (stage 2.45), each row at its members' rank. A row member is never seated alone here. The order is disclosed in the seeder's `early_order` |
 | 2.45 | one declared array as ONE row (`_seat_array` -> `_seat_block`, #1051): the served part's pin order, one rotation, one pitch, a capped pose count (`ARRAY_SEAT_POSE_CAP`); a zoned row walks only anchors in its zone (plus tolerance) and sweeps the zone after the 1 mm ring, so a long zone is reached end to end. A row not seated whole goes to `array_unseated` and its members are seated one by one |
 | 2.5 / 2.6 | the decap-governed caps, one per supply pin; what the pin stage declines is put back into its zone. `decap_stage` says what it claimed, and why when nothing -- on an unzoned seed, that no owner IC is seated before the stage (#1053) |
-| 3 | everything else, at the nearest legal pose to its connectivity centroid |
+| 3 | everything else, at the nearest legal pose to its wiring target: the geometric median of each net's nearest placed pad, one vote per net (`_wiring_target`) |
 | 3.5 | on by default when the INPUT board is a pile (`PlacementState.pile`), off otherwise (#1105; `--decap-claim-after-ics` / `--no-decap-claim-after-ics` force it): inside stage 3, at the first scoped cap after the queue's last owner IC, the pin claim again over the owner ICs stage 3 seated (never one 2.5 served). The pile default runs the within-limit variant, undoing a seat that lands past `decaps.max_distance_mm` as the grade measures it (`DECAP_PILE_WITHIN_LIMIT`); the explicit flag runs after-ics on any input, keeping every seat it finds (`DECAP_LATE_WITHIN_LIMIT`, off). It draws no RNG, so every part seated before it -- every IC -- is seated as without it; a cap it declines keeps its own turn. Stage 3's target jitter is drawn for every queue entry before the claim or the `after_queue` reorder, so the parts seated after it are aimed exactly as without it too. `decap_stage.late` says what it did, `late.armed_by` why it ran (`pile`, `not a pile`, or `set` by the flag) and `late.variant` which variant ran. The pile default is the maintainer's call on the `decap-pile-within-limit-*` A/B rows (tests/1105_pile_ab_prereg_v2.json): it pulls decaps in on every pile, at a cost in wire length or crossings on some, which the A/B's zero-tolerance guards alone would not accept. On placed boards the `decap-*` rows rejected every variant |
 | 3c / 3b | the eviction rung (`--evict-depth`, below), then the gated anchor re-seat rounds |
 

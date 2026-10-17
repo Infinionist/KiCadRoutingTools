@@ -909,7 +909,7 @@
 "test_run_all_shard_balance.py": 0.4,
 "test_run_ledgers_reset.py": 0.8,
 "test_same_net_keepout_slot1_rung.py": 2.7,
-"test_seeder_partner_centroid.py": 0.1,
+"test_seeder_wiring_target.py": 0.1,
 "test_segment_layer_mods.py": 0.1,
 "test_shared_via_maps.py": 9.4,
 "test_sibling_copies.py": 4.6,

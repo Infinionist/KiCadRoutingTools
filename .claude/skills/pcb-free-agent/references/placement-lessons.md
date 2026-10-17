@@ -25,7 +25,7 @@ Use the numbers as targets and checks, not as hard limits. The board's own desig
 and the router decide what is legal. Section "What humans do not do consistently" lists
 habits that look like rules but are not; do not enforce those.
 
-**Contents:** Spacing and density · Around a fine-pitch chip · Parts that serve a chip's pins · Decoupling · Bulk caps and filters · Switching regulators · Linear regulators · Power entry · Chips, buses and connectors · Rows, banks and alignment · Repeated channels · Functional groups · The back face · Connectors and the board edge · Interface protection and helpers · Clocks · Signals between chips · User interface · Modules and mechanical parts · What humans do not do consistently.
+**Contents:** What human placements optimise · Spacing and density · Around a fine-pitch chip · Parts that serve a chip's pins · Decoupling · Bulk caps and filters · Switching regulators · Linear regulators · Power entry · Chips, buses and connectors · Rows, banks and alignment · Repeated channels · Functional groups · The back face · Connectors and the board edge · Interface protection and helpers · Clocks · Signals between chips · User interface · Modules and mechanical parts · What humans do not do consistently.
 
 When a review finds a new pattern that a move fixed, add an entry in the same shape.
 
@@ -44,6 +44,43 @@ the turned two-pad parts in one pass. One at a time:
 **Move one cluster at a time, and route again.** Moves in several places at once
 cannot be attributed: on bitaxe_ultra, seven moves together closed two nets and opened
 six others.
+
+## What human placements optimise
+
+- **Each net's wire is its minimum spanning tree over its pads, measured
+  Manhattan, not each connection on its own.**
+  - *Humans:* among every legal position within ±15 mm, a part's human position is
+    likeliest under the rectilinear MST of its nets, then the Euclidean MST, then
+    half-perimeter; a star (each pad to the net's centre) and a clique (every pad pair)
+    fit worse (12,781 parts, 419 boards). The difference is in multi-point nets: for a
+    part on nets of 6 or more parts, the MST optimum lies a median 3.2 mm from the human
+    position, the star's 6.3 mm, and an optimum aimed at the centroid of every partner
+    10 mm. 74-80% of legal 1-4 mm moves, turns and swaps make the human MST longer.
+  - *Apply:* place a part where its pads join each net's tree cheapest: next to the
+    nearest pad of each net, not in the middle of all its partners.
+  - *Measured on a route:* aiming the seeder's parts this way, pricing the region
+    planner's links between groups as each net's tree, and the spacing below, routed
+    the grouped candidates of 10 corpus boards (six each, by each board's recorded
+    chain) with blocking 4.2 → 3.2, 6% fewer vias and 5% less copper; vias were lower
+    on 9 of the 10 boards.
+- **Humans do not pay much wire to avoid a straight-airwire crossing.**
+  - *Humans:* fitted on 165,771 legal moves, one crossing is worth about 0.14 mm of
+    Manhattan MST (0.07 mm on 4-layer boards, 0.65 mm on 2-layer ones). Still, human
+    boards have 1.07 crossings per airwire against 2.09 with every part turned at random
+    and 6.0 with positions shuffled: the crossings they avoid come from turning parts
+    and ordering pins, not from moving them apart.
+  - *Not:* the straight-airwire "layers needed" (the colouring of the crossing graph) is
+    4 on 2-layer boards and 6 on 4-layer ones: it is not the routing layer count.
+- **Align parts exactly with a neighbour.**
+  - *Humans:* 68-72% of movable parts share an exact x or y with a part within 25 mm,
+    against 7-16% after a ±1 mm jitter, and 31% of airwires lie within 5° of an axis
+    (11% for random angles). Of every preference measured, this is the strongest one
+    wire length does not explain.
+  - *Apply:* snap a part onto a neighbour's x or y when it costs no wire.
+- **Congestion grows with the layer count, not past it.**
+  - *Humans:* the 95th percentile of tracks needed per 1 mm cell, divided by the copper
+    layers, is 0.09 [0.06 0.14] on 2-, 4- and 6-layer boards alike: designers add layers
+    in proportion to how much wiring crosses each area.
 
 ## Spacing and density
 
@@ -71,12 +108,31 @@ six others.
     decaps in a QFP's corner notch, small passives against a U.FL or a connector's empty
     courtyard area, and headers butted end to end.
   - *Apply:* grade legality on pads and bodies. Keep any courtyard-overlap penalty soft.
-- **Fill about half the front face, evenly.**
+- **Fill about half the front face.**
   - *Humans:* courtyards cover 48% of the front face on both 2-layer and 4-layer boards.
     Small boards (under 10 cm²) reach 65%. The largest empty disc has a radius of about
     0.13-0.16 √(board area).
   - *Apply:* a seed with crowded areas next to an empty disc wider than 0.2 √(area) is
     unevenly spread. Even it out before routing.
+  - *Not:* free space is not spread evenly part by part. Humans pack groups tight and
+    leave pools: 27-31% of 5 mm blocks are empty, against 11-22% in a random legal
+    arrangement.
+- **Give no part extra room for its pin count. A gap widens only for the tracks that
+  must pass through it.**
+  - *Humans:* the free band around a part is about 1.0-1.3 mm at every pin count (2 pins
+    0.98 mm, 65-128 pins 1.33 mm), and fine-pitch chips get less, not more, because
+    their decaps fill it. 78-87% of the gaps between neighbours carry no airwire. Where
+    tracks pass, the copper gap grows by about 0.33 mm per track on the parts' layer:
+    at least 0.41 + 0.33·n mm on 4-layer boards and 0.73 + 0.33·n mm on 2-layer ones
+    (5th percentile, n tracks).
+  - *Apply:* leave room where the wiring needs a channel, not around every part. An IC
+    keeps a little more than a passive: its neighbours' copper rarely comes within 0.5
+    mm (4-layer) or 0.8 mm (2-layer).
+  - *Measured on a route:* the seeder's polish asked 0.5 + 0.15·√pins mm of courtyard
+    room per part, about 1.4 mm between two passives, which forbade 53-81% of human
+    spacings. Cut to 0.02·√pins, the grouped candidates of 10 corpus boards (six each,
+    routed by each board's recorded chain) routed with blocking 4.8 → 3.2, 2% fewer
+    vias and 1% less copper.
 
 ## Around a fine-pitch chip
 

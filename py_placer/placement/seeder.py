@@ -4721,41 +4721,94 @@ def _edge_refusal_tail(refused) -> str:
     return ', '.join(parts) + (" -- " + '; '.join(advice) if advice else '')
 
 
-def _partner_centroid(state, ref: str, placed: Set[str],
+def _nearest_pad(pts: List[Tuple[float, float]], x: float, y: float) -> Tuple[float, float]:
+    """The point of `pts` nearest `(x, y)`."""
+    return min(pts, key=lambda p: (p[0] - x) ** 2 + (p[1] - y) ** 2)
+
+
+def _wiring_target(state, ref: str, placed: Set[str],
                       max_fanout: int = 20) -> Optional[Tuple[float, float]]:
-    """Centroid of already-placed partners on shared nets: ONE vote per
-    (partner footprint, net), each vote the mean of that partner's matching
-    pads. Voting per PAD (the pre-run-7 behavior) let a partner with
-    duplicated pins outvote one with a single pin -- a USB-C receptacle's
-    doubled A6/B6 DP pads pulled the 27R series pair 2:1 toward the
-    connector, seating R7 15.3mm from the U1 face the intent named. Nets
-    owned by more than `max_fanout` parts are excluded for the
-    routability.py reason: they reach everywhere by design and would
-    collapse every centroid onto the board middle. Plane nets are NOT
-    otherwise excluded here -- for a decap, the rail net is exactly what
-    tethers it to its IC."""
+    """Where `ref` adds the least wire to its nets: each net is priced by
+    its MINIMUM SPANNING TREE, not by its connections one by one.
+
+    Joining a net whose other pads are placed lengthens its pad tree by the
+    distance to the nearest of them (Prim's step), so the target minimises
+    the sum of those distances over `ref`'s nets: the geometric median of
+    each net's nearest placed pad (Weiszfeld, re-choosing the nearest pad as
+    it moves), started from the least-squares point, which picks the middle
+    of a flat valley (a series part costs the same anywhere between its two
+    ends). So each NET is one vote, whatever its part count: voting once per
+    (partner, net), the earlier rule, let a net on six parts outvote a
+    two-pin net 5:1 and pulled the part into the middle of the big net, where
+    no partner is. Duplicated pins (a USB-C receptacle's A6/B6) are two pads
+    of one net and cast no extra vote.
+
+    The nearest PAD, not the nearest point of the net's airwires: the polish
+    prices a net by its pads' tree and its crossings, and a part aimed at
+    the middle of another net's airwire (a track could tee in there) was
+    seated between its partners with its own airwires across the bundle --
+    bread_dcmotor's motor driver, 130 -> 168 crossings. Nets owned by more
+    than `max_fanout` parts are excluded for the routability.py reason: they
+    reach everywhere by design. Plane nets are NOT otherwise excluded here --
+    for a decap, the rail net is exactly what tethers it to its IC."""
     part = state.parts.get(ref)
     if part is None:
         return None
-    xs: List[float] = []
-    ys: List[float] = []
-    for nid in part.nets:
+    votes = []
+    for nid in sorted(part.nets):
         owners = state.net_refs.get(nid, ())
         if len(owners) > max_fanout:
             continue
-        for other in owners:
-            if other == ref or other not in placed:
-                continue
-            pxs = [gx for gx, gy, pn in state.parts[other].pad_globals()
-                   if pn == nid]
-            pys = [gy for gx, gy, pn in state.parts[other].pad_globals()
-                   if pn == nid]
-            if pxs:
-                xs.append(sum(pxs) / len(pxs))
-                ys.append(sum(pys) / len(pys))
-    if not xs:
+        pts = [(gx, gy) for other in sorted(owners)
+               if other != ref and other in placed
+               for gx, gy, pn in state.parts[other].pad_globals() if pn == nid]
+        if pts:
+            votes.append((pts,
+                          (sum(p[0] for p in pts) / len(pts),
+                           sum(p[1] for p in pts) / len(pts))))
+    if not votes:
         return None
-    return sum(xs) / len(xs), sum(ys) / len(ys)
+    tx = sum(c[0] for _s, c in votes) / len(votes)
+    ty = sum(c[1] for _s, c in votes) / len(votes)
+    # least squares: each net's nearest pad, averaged
+    for _ in range(20):
+        near = [_nearest_pad(s, tx, ty) for s, _c in votes]
+        nx = sum(p[0] for p in near) / len(near)
+        ny = sum(p[1] for p in near) / len(near)
+        moved = math.hypot(nx - tx, ny - ty)
+        tx, ty = nx, ny
+        if moved < 1e-3:
+            break
+    # the sum of distances (Weiszfeld), from there
+    for _ in range(50):
+        near = [_nearest_pad(s, tx, ty) for s, _c in votes]
+        wsum = sx = sy = rx = ry = 0.0
+        at = 0
+        for px, py in near:
+            d = math.hypot(px - tx, py - ty)
+            if d < 1e-6:
+                at += 1
+                continue
+            wsum += 1.0 / d
+            sx += px / d
+            sy += py / d
+            rx += (px - tx) / d
+            ry += (py - ty) / d
+        # optimal: no vote left to pull, or the votes sitting AT the point
+        # outweigh the others' pull (the test at a data point)
+        if wsum <= 0.0 or (at and math.hypot(rx, ry) <= at):
+            break
+        nx, ny = sx / wsum, sy / wsum
+        cost_now = sum(math.hypot(px - tx, py - ty) for px, py in near)
+        cost_new = sum(math.hypot(px - nx, py - ny) for px, py in
+                       (_nearest_pad(s, nx, ny) for s, _c in votes))
+        if cost_new > cost_now - 1e-9:
+            break
+        moved = math.hypot(nx - tx, ny - ty)
+        tx, ty = nx, ny
+        if moved < 1e-3:
+            break
+    return tx, ty
 
 
 #: #1051: the most ROW poses (an anchor position at one rotation, axis and
@@ -5011,7 +5064,7 @@ def _seat_array(state, pcb_data, intent, spec: Dict, zone, placed: Set[str],
     * DIRECTION: along the chosen axis the order is flipped when the first
       member's served pins lie further along the axis than the last's, so
       the row runs the way the pins do.
-    * TARGET: the mean of the members' `_partner_centroid`s (every placed
+    * TARGET: the mean of the members' `_wiring_target`s (every placed
       partner, host and far side alike); with none, the centroid of the
       served part's pads the members reach by their OWN nets (a net every
       member shares is a rail, and lands on every supply pin); else the
@@ -5070,14 +5123,14 @@ def _seat_array(state, pcb_data, intent, spec: Dict, zone, placed: Set[str],
             if pts:
                 host_pin[m] = (sum(p[0] for p in pts) / len(pts),
                                sum(p[1] for p in pts) / len(pts))
-    # The target is the mean of the members' `_partner_centroid`s -- ALL
+    # The target is the mean of the members' `_wiring_target`s -- ALL
     # their placed partners, the host pins AND each member's far side --
     # which is what a member seated alone would aim at. The host pins alone
     # (the first form) pulled the row off its far-side nets: on glasgow the
     # airwire length on the members' nets rose 3264 -> 3718mm (phase-3
     # verifier). The host pins still decide the DIRECTION; the axis is laid
     # across the host-to-target line (AXIS, above).
-    cs = [c for c in (_partner_centroid(state, m, placed) for m in members)
+    cs = [c for c in (_wiring_target(state, m, placed) for m in members)
           if c is not None]
     if cs:
         tx = sum(c[0] for c in cs) / len(cs)
@@ -7625,7 +7678,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 # 559-849 airwire crossings, 162-188 with the zones dropped).
                 tx, ty = cx, cy
                 if len(members) > 1:
-                    pc = _partner_centroid(state, ref, placed)
+                    pc = _wiring_target(state, ref, placed)
                     if pc is not None:
                         tx = min(max(pc[0], z.rect[0]), z.rect[2])
                         ty = min(max(pc[1], z.rect[1]), z.rect[3])
@@ -7670,7 +7723,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         """`(clearance or None, target, jx, jy)`; seats on success. `jit`
         is a jitter drawn earlier for this ref (stage 3's `q_jit`); None
         draws it here, as stage 2.4 does."""
-        target = _partner_centroid(state, ref, placed) or center
+        target = _wiring_target(state, ref, placed) or center
         jx, jy = _jitter() if jit is None else jit
         rot_before = state.parts[ref].rot
         clr = _try_place(state, ref, target[0] + jx, target[1] + jy,
@@ -8612,7 +8665,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                 if (state.parts[ref].locked or ref in fixed_seated
                         or ref in row_members):
                     continue
-                target = _partner_centroid(state, ref, placed - {ref})
+                target = _wiring_target(state, ref, placed - {ref})
                 if target is None:
                     continue
                 ox, oy = state.parts[ref].x, state.parts[ref].y

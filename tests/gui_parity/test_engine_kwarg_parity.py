@@ -93,6 +93,11 @@ CLI_ONLY_OK = {
     # harness to scrape. The GUI consumes results in-memory (return_results=
     # True) and has no summary-file output, so there is nothing to point at.
     "json_out": "CLI writes a JSON summary file; the GUI consumes results in-memory",
+    # route.py --quick-pass: the free agent's placement review routes a first
+    # round without the recovery tail to see what a placement leaves open.
+    # The review runs the CLIs (also from the GUI's Place + Route); the GUI's
+    # own routing always routes to ship.
+    "quick_pass": "a placement review's first round via the CLI; the GUI routes to ship",
     # (net_name_patterns was exempted here as "the GUI has no raw globs".
     # REVERSED: ai_plan resolving a plan's globs to exact names BEFORE the
     # call is not the reason the exemption is safe, it is the reason it was

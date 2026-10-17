@@ -332,6 +332,7 @@ See [Power Net Analysis](power-nets.md) for automatic detection, AI-powered anal
 | `--heuristic-weight` | 2.3 | A* greediness (>1 = faster, <1 = more optimal). 2.3 is the corpus dose-response peak (#586); 1.9 was the default before it |
 | `--turn-cost` | 1000 | Penalty for direction changes (encourages straighter paths) |
 | `--max-ripup` | 3 | Max blockers to rip up at once during rip-up and retry |
+| `--quick-pass` | off | A placement review's first round: the main pass only, without the net rescue, the terminal escalation, the plane finalize and the reconciliation laps. What stays open and what costs most names what to move (`py_tools/route_review.py`); the board is a diagnosis, not one to ship, and JSON_SUMMARY says so (`quick_pass`) |
 | `--ripup-abandon-metric` | `stranded` | Keep-retry vs abandon rule for multipoint tap rip-ups (see [rip-up-reroute.md](rip-up-reroute.md#abandon-metrics)) |
 | `--routing-clearance-margin` | 1.0 | Diff pairs only (a pair the run routes or restores): multiplier on the track-to-via distance that sets the P/N via offset and the centerline's via keep-out (1.0 = minimum DRC). Single-ended tracks and vias do not read it |
 | `--hole-to-hole-clearance` | board's `min_hole_to_hole` (else 0.20) | Minimum drill hole edge-to-edge clearance (mm). Omitted → the board's own constraint minimum (#439) |

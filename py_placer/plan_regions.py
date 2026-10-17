@@ -164,7 +164,53 @@ def mount_hole_rows(pcb, board, intent_path, base):
 FIT_GRID_MM = 0.05
 
 
-def fit_banks(pcb, board, intent, banks, holes):
+def _bank_state(pcb, board, holes):
+    """The seeder's state for measuring and fitting rows: the board's floor
+    clearance, the mounting holes at their poses."""
+    from list_nets import board_floor_knobs
+    import pose_score
+    clearance, edge, _ = board_floor_knobs(board)
+    state = pose_score.make_state(pcb, board, clearance=clearance,
+                                  board_edge_clearance=edge, grid_step=0.1)
+    for h in holes:
+        if h['ref'] in state.parts:
+            state.apply_move(h['ref'], h['x'], h['y'], h['rot'])
+    return state
+
+
+def bank_shapes(pcb, base, doc, followers, holes, state):
+    """The indicator banks the groups hold, found before any region exists:
+    `[{'members', 'shapes'}]`, each shape a `(length, width)` mm the bank can
+    be seated as -- whole, or split into rows side by side
+    (`group_rows.bank_splits`, `clearance` apart) -- at the seeder's own row
+    size (`seeder.row_block`: the auto pitch, at 0 or 90 degrees, along
+    either axis). The region planner makes one of them fit the region that
+    holds the bank (`regions.plan`'s `banks`)."""
+    from placement.group_rows import bank_splits
+    from placement.seeder import _materialise_rotation, row_block
+    blocks = [{'name': g['name'], 'zone': [0.0, 0.0, 0.0, 0.0], 'refs': list(g['refs'])}
+              for g in doc['groups']]
+    found = dict(base or {}, blocks=blocks,
+                 fixed_poses=list((base or {}).get('fixed_poses') or []) + list(holes))
+    rows, _dropped = indicator_banks(pcb, found, followers)
+    out = []
+    for row in rows:
+        for m in row['members']:
+            for rot in (0.0, 90.0):
+                _materialise_rotation(state.parts[m], rot)
+        shapes = set()
+        for chunks in bank_splits(list(row['members'])):
+            for rot in (0.0, 90.0):
+                for axis in ('x', 'y'):
+                    dims = [row_block(state, c, rot, axis) for c in chunks]
+                    shapes.add((round(max(d[0] for d in dims), 3),
+                                round(sum(d[1] for d in dims)
+                                      + (len(chunks) - 1) * state.clearance, 3)))
+        out.append({'members': list(row['members']), 'shapes': sorted(shapes)})
+    return out
+
+
+def fit_banks(pcb, board, intent, banks, holes, state=None):
     """`(rows, notes)`: each bank laid in its region by
     `group_rows.split_bank` -- whole when a row of it fits the free space of
     its zone (plus tolerance), else as the fewest rows that fit side by side,
@@ -175,18 +221,14 @@ def fit_banks(pcb, board, intent, banks, holes):
     size is the seeder's too (`seeder.row_block`: the auto pitch, at 0 or 90
     degrees, along either axis), the rows `clearance` apart."""
     from list_nets import board_floor_knobs
-    import pose_score
     from placement.group_rows import split_bank
     from placement.legality import far_boxes
     from placement.regions import FitChecker
     from placement.seeder import _materialise_rotation, row_block
-    clearance, edge, _ = board_floor_knobs(board)
-    state = pose_score.make_state(pcb, board, clearance=clearance,
-                                  board_edge_clearance=edge, grid_step=0.1)
+    _clearance, edge, _ = board_floor_knobs(board)
+    if state is None:
+        state = _bank_state(pcb, board, holes)
     seated = {h['ref'] for h in holes}
-    for h in holes:
-        if h['ref'] in state.parts:
-            state.apply_move(h['ref'], h['x'], h['y'], h['rot'])
     obstacles = {'F': [], 'B': []}
     for ref, p in state.parts.items():
         if not (p.locked or ref in seated) or ref in state.container_refs:
@@ -384,9 +426,16 @@ def main(argv=None):
     holes, hole_notes = [], []
     if not a.no_mount_holes:
         holes, hole_notes = mount_hole_rows(pcb, a.board, a.intent, base)
+    # the banks are found before the plan, so a region that holds one is
+    # sized for its row (`regions.plan`'s `banks`)
+    pre_banks, bank_state = [], None
+    if not a.no_arrays:
+        bank_state = _bank_state(pcb, a.board, holes)
+        pre_banks = bank_shapes(pcb, base, doc, followers, holes, bank_state)
     plan = regions.plan(pcb, a.board, doc, grid=a.grid, util=a.util,
                         gutter=a.gutter, edge_clearance=edge, seed=a.seed,
-                        placed={h['ref']: (h['x'], h['y'], h['rot']) for h in holes})
+                        placed={h['ref']: (h['x'], h['y'], h['rot']) for h in holes},
+                        banks=pre_banks)
     conflicts = [c for c in decap_conflicts(doc, BoardView(pcb))
                  if c['cap'] not in set(followers)]
     intent = build_intent(base, doc, plan, conflicts, a.tolerance,
@@ -396,7 +445,8 @@ def main(argv=None):
     if not a.no_arrays:
         banks, banks_dropped = indicator_banks(pcb, intent, followers)
         if banks:
-            banks, bank_notes = fit_banks(pcb, a.board, intent, banks, holes)
+            banks, bank_notes = fit_banks(pcb, a.board, intent, banks, holes,
+                                          state=bank_state)
         if banks:
             intent['arrays'] = list(intent.get('arrays') or []) + banks
             intent['min_reader'] = max(int(intent.get('min_reader') or 0), 7)

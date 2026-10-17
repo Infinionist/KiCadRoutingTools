@@ -188,7 +188,8 @@ Read `--help` before assuming a flag does not exist. Two runs declared
 - **Place and lock the connectors and mechanically fixed parts first**
   (`place_pose set … --rot`, then `lock`, or the plan's `fixed_poses`). Then
   zone the rest and seed. The seeder puts undeclared parts at their
-  connectivity centroid in the first rotation that fits.
+  wiring target (each net's nearest placed pad, one vote per net) in the
+  first rotation that fits.
 - **Repeated sheet instances (channel strips, one buffer per bank): arrange
   ONE, then copy it** instead of writing a helper:
   `python3 -X utf8 py_placer/place_pose.py <in> <out> replicate --from CH1 --to CH2 --to CH3 --anchor J1`
@@ -384,7 +385,14 @@ Read `--help` before assuming a flag does not exist. Two runs declared
    - **Hard cap:** 10 hours of wall clock, unless the user sets another.
    - **In `full` mode, review the placement once after the first full
      route,** then route again. Route the placement with the whole chain
-     (planes, fanout, diff pairs, `route.py`), then read what it shows:
+     (planes, fanout, diff pairs, `route.py`). On a big board, or a
+     placement that will leave nets open, give that first `route.py` step
+     `--quick-pass`: it skips the recovery tail (net rescue, terminal
+     escalation, plane finalize, reconciliation laps), where a poor
+     placement's routing time goes -- up to 95% of it on big boards -- and its
+     review names the same trouble nets as the full route's (19 of 20
+     placements on 10 corpus boards). Never ship a quick-pass board. Then
+     read what it shows:
      ```bash
      python3 -X utf8 py_tools/route_review.py <routed.kicad_pcb> --json wk/<run>/review.json
      ```

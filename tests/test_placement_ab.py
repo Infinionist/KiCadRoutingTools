@@ -549,7 +549,10 @@ ROWS = [
         'ignore_nets': ['GND', '+3V3', '+1V1', 'VCC*'],
         'signal': 'courtyard_blocking',
         'guard': ('unseated', 'body_blocking', 'crossings', 'hpwl'),
-        'expect': 'regress',
+        # regress -> improve with the seeder's MST wiring target and the human halo (2026-10-17): the
+        # seed under both arms moved. Still rejected: the other body-seed
+        # rows regress.
+        'expect': 'improve',
         'rejected': True,
         'why': ('MECHANISM: the courtyard pair COUNT does not move (the '
                 'area shrinks), so the signal is neutral, and wirelength '
@@ -603,7 +606,8 @@ ROWS = [
         # the rest. Toggling `_stage1_choose_edge_angle` and
         # `_edge_courtyard_tier` off restores the old mark exactly. The term
         # stays rejected: facing-seed-esp_prog still regresses.
-        'expect': 'improve',
+        # improve -> neutral with the seeder's MST wiring target and the human halo (2026-10-17).
+        'expect': 'neutral',
         'rejected': True,
         'why': ('MECHANISM: as facing-seed-esp_prog, with the wire guards '
                 'going the OTHER way: crossings and wire length fall with '
@@ -698,11 +702,10 @@ ROWS += [
         # change detector with its measured mark; the numbers are in the
         # baseline, not here.
         'rejected': True,
-        # ulx3s reads neutral since fa10 P1 (#1206): its OFF seed packs on
-        # per-cluster far sides (GPDI1's posts), and the toggle that merges
-        # them back restores regress.
-        'expect': ('neutral' if b in _FLAT or b == 'ulx3s.kicad_pcb'
-                   else 'regress'),
+        # ulx3s read neutral from fa10 P1 (#1206), when its OFF seed packed on
+        # per-cluster far sides (GPDI1's posts); it regresses again with
+        # the seeder's MST wiring target and the human halo (2026-10-17).
+        'expect': ('neutral' if b in _FLAT else 'regress'),
         'why': (('MECHANISM: the ON arm seeds from an intent carrying the '
                  'observed decap limit, so seeder stage 2.5 seats each '
                  'tethered cap at a supply pin of an IC its zone placed '
@@ -752,22 +755,15 @@ _AFTER_ICS_BOARDS = ('esp_prog', 'splitflap_driver', 'tigard', 'watchy',
 #: (family, board) -> the measured mark of a rejected row.
 _AFTER_ICS_MARKS = {
     ('decap-within-limit', 'esp_prog'): 'neutral',
-    # #1141: the within-limit check measures as the grade does since then
-    ('decap-within-limit', 'orangecrab_ext_pll'): 'improve',
-    ('decap-after-queue', 'splitflap_driver'): 'neutral',
-    ('decap-after-queue', 'tigard'): 'improve',
-    ('decap-after-queue', 'glasgow_revC'): 'neutral',
-    # fa10 P1 (#1206): ulx3s's OFF seed moved -- GPDI1's two shell posts are
-    # two far-side boxes now, not one box spanning the gap between them --
-    # and on that seed both families read neutral (merging the clusters
-    # back restores improve / regress: the attribution toggle).
-    ('decap-within-limit', 'ulx3s'): 'neutral',
+    # Re-measured with the seeder's MST wiring target and the human halo
+    # (2026-10-17): the after-queue family now improves on watchy and
+    # orangecrab and is neutral on esp_prog and tigard; splitflap, glasgow
+    # and (within-limit) orangecrab and ulx3s regress. Still rejected.
+    ('decap-after-queue', 'esp_prog'): 'neutral',
+    ('decap-after-queue', 'tigard'): 'neutral',
+    ('decap-after-queue', 'watchy'): 'improve',
+    ('decap-after-queue', 'orangecrab_ext_pll'): 'improve',
     ('decap-after-queue', 'ulx3s'): 'neutral',
-    # #1172 (fa10 P2): splitflap's seed moved -- the courtyard tier seats
-    # J18 clear of J3's courtyard (5.03mm2 before, the OFF arm's one intent
-    # error, a `legality` one) -- and on that seed these two read
-    # neutral, not regress. The #1172 flags off restore regress exactly.
-    ('decap-after-ics', 'splitflap_driver'): 'neutral',
     ('decap-within-limit', 'splitflap_driver'): 'neutral',
 }
 ROWS += [
@@ -834,10 +830,14 @@ with open(PILE_PREREG_V2, encoding='utf-8') as _fh:
 #: AE1's antenna copper, the claim still lowers its signal (8 -> 7) but
 #: raises the crossings guard (203 -> 206), so it is the FOURTH pile where
 #: the adopted trade costs a guard.
+#: Re-measured with the seeder's MST wiring target and the human halo (2026-10-17):
+#: tigard and watchy now improve; esp_prog, glasgow_revC and ulx3s regress
+#: on a guard. Five of seven piles now pay a guard for the claim, against
+#: four when the maintainer adopted it -- the adoption is his to revisit.
 _PILE_DECAP_MARKS = {
-    'esp_prog': 'improve', 'splitflap_driver': 'regress',
-    'tigard': 'regress', 'watchy': 'regress', 'glasgow_revC': 'improve',
-    'ulx3s': 'improve', 'orangecrab_ext_pll': 'regress',
+    'esp_prog': 'regress', 'splitflap_driver': 'regress',
+    'tigard': 'improve', 'watchy': 'improve', 'glasgow_revC': 'regress',
+    'ulx3s': 'regress', 'orangecrab_ext_pll': 'regress',
 }
 ROWS += [
     {
@@ -907,8 +907,11 @@ ROWS += [
         # seated before the row (a row of small parts had taken the strip a
         # big part needed): glasgow improves too, coldfire's crossings fall
         # but its block displacement grows -- still rejected, 2 of 4.
+        # With the seeder's MST wiring target and the human halo (2026-10-17) ulx3s improves
+        # too -- 3 of 4, coldfire still regresses, still rejected.
         'expect': ('improve' if b in ('splitflap_driver.kicad_pcb',
-                                      'glasgow_revC.kicad_pcb')
+                                      'glasgow_revC.kicad_pcb',
+                                      'ulx3s.kicad_pcb')
                    else 'regress'),
         'rejected': True,
         'why': ('MECHANISM: the ON arm seeds each suggested row as one '
@@ -1066,7 +1069,8 @@ ROWS += [
     }
     for b, ign, exp in (
         ('glasgow_revC.kicad_pcb', ['GND', '+3V3'], 'neutral'),
-        ('sonde_u.kicad_pcb', ['GND'], 'improve'),
+        # improve -> regress with the seeder's MST wiring target and the human halo (2026-10-17)
+        ('sonde_u.kicad_pcb', ['GND'], 'regress'),
         ('splitflap_driver.kicad_pcb', ['GND', '+5V', '+3V3'], 'neutral'))
 ]
 ROWS += [
@@ -1102,9 +1106,10 @@ ROWS += [
         # (enforced errors 3 -> 1 and 4 -> 0, no guard worse): with the
         # parts kept off U2's tab and AE1's antenna, the rung's seats no
         # longer cost a guard there -- 3 of 5, still short of N-1.
-        'expect': {'watchy.kicad_pcb': 'improve',
-                   'esp_prog.kicad_pcb': 'improve',
-                   'glasgow_revC.kicad_pcb': 'regress',
+        # Re-measured with the seeder's MST wiring target and the human halo (2026-10-17):
+        # glasgow improves, esp_prog is neutral, watchy regresses -- 2 of 5.
+        'expect': {'watchy.kicad_pcb': 'regress',
+                   'glasgow_revC.kicad_pcb': 'improve',
                    'tigard.kicad_pcb': 'improve'}.get(b, 'neutral'),
         'rejected': True,
         'why': ('MECHANISM: the ordinary repair seat has no decap target, '

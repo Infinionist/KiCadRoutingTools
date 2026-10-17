@@ -46,7 +46,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from placement.grouping import BoardView, link_matrix
+from placement.grouping import BoardView, group_of, link_matrix, tree_weight
 from placement.legality import footprint_side
 
 #: Every floorplan is evaluated up to this many groups (283,680 at 6).
@@ -93,12 +93,25 @@ MINOR_PULL = 3.0
 FACE_PASSES = 3
 
 
+def _tree_links(view: BoardView, ref: str) -> float:
+    """`ref`'s share of its signal nets' spanning trees: a net on n parts
+    has n - 1 edges over its n (n - 1) / 2 part pairs, and `ref` is in n - 1
+    of those pairs (`tree_weight` each)."""
+    out = 0.0
+    for nid in view.nets_of.get(ref, ()):
+        if nid in view.rails:
+            continue
+        k = len(view.owners.get(nid, ()))
+        out += (k - 1) * tree_weight(k)
+    return out
+
+
 class Group:
     """One group's planning inputs."""
 
     def __init__(self, name, side, movable, fixed, demand, need_area,
                  dims, edge, near, apart, internal_links=0, anchors=None,
-                 big_links=0):
+                 big_links=0, rows=None):
         self.name, self.side = name, side
         self.movable, self.fixed = movable, fixed
         # the fixed parts its region stands by: the group's, on either face
@@ -108,6 +121,10 @@ class Group:
         self.demand = demand        # mm^2 of free area it asks for
         self.need_area = need_area  # sum of member occupancy areas (hard floor)
         self.dims = dims            # (short, long) of its largest member
+        # its indicator banks: per bank, the (length, width) mm shapes it can
+        # be seated as (whole, or split into rows side by side); one of them
+        # must fit the region, as its largest member must
+        self.rows = rows or []
         self.edge, self.near, self.apart = edge, near, apart
 
 
@@ -352,6 +369,11 @@ class Planner:
         self.fits = {n: [self._fit(g.dims[0], g.dims[1]),
                          self._fit(g.dims[1], g.dims[0])]
                      for n, g in groups.items()}
+        # the same for each indicator bank: any of its row shapes, either turn
+        self.row_fits = {n: [[f for (a, b) in shapes
+                              for f in (self._fit(b, a), self._fit(a, b))]
+                             for shapes in g.rows]
+                         for n, g in groups.items()}
         self.gut_cells = int(math.ceil(gutter / 2.0 / fg.g))
         # An exhaustive search lays out every tree, and the same split of
         # the same box, and the same group in the same cells, recur across
@@ -462,21 +484,25 @@ class Planner:
         return (hc, wc, FreeGrid._ps(ok))
 
     def _fits_in(self, name, cells):
-        """Does the group's largest part fit in the free cells of `cells`
-        (shrunk by half a gutter on every side), at some quarter turn?"""
+        """Do the group's largest part, and one shape of each of its
+        indicator banks, fit in the free cells of `cells` (shrunk by half a
+        gutter on every side), at some quarter turn? Each is asked alone."""
         i0, j0, i1, j1 = cells
         k = self.gut_cells
         i0, j0, i1, j1 = i0 + k, j0 + k, i1 - k, j1 - k
-        for hc, wc, ps in self.fits[name]:
-            if ps is None:
-                continue
-            a0, a1 = i0, i1 - hc + 1      # anchor rows [a0, a1)
-            b0, b1 = j0, j1 - wc + 1
-            if a1 <= a0 or b1 <= b0:
-                continue
-            if FreeGrid._q(ps, a0, b0, a1, b1) > 0:
-                return True
-        return False
+
+        def any_fit(fits):
+            for hc, wc, ps in fits:
+                if ps is None:
+                    continue
+                a0, a1 = i0, i1 - hc + 1      # anchor rows [a0, a1)
+                b0, b1 = j0, j1 - wc + 1
+                if a1 <= a0 or b1 <= b0:
+                    continue
+                if FreeGrid._q(ps, a0, b0, a1, b1) > 0:
+                    return True
+            return False
+        return any_fit(self.fits[name]) and all(any_fit(f) for f in self.row_fits[name])
 
     def _fit_reach(self, name, cells, cen):
         """The smallest FIT_RADII rung (mm) within which of `cen` the
@@ -722,7 +748,8 @@ class FitChecker:
 def plan(pcb, pcb_file: str, doc: Dict, *, grid: float = 0.25,
          util: float = 0.55, gutter: float = 0.6, edge_clearance: float = 0.3,
          seed: int = 0, iters: Optional[int] = None,
-         placed: Optional[Dict[str, Tuple[float, float, float]]] = None) -> Dict:
+         placed: Optional[Dict[str, Tuple[float, float, float]]] = None,
+         banks: Optional[List[Dict]] = None) -> Dict:
     """Plan one region per group with movable parts. Returns
     {'zones': {group: {...}}, 'faces': {...}, 'warnings': [...]}.
 
@@ -730,7 +757,15 @@ def plan(pcb, pcb_file: str, doc: Dict, *, grid: float = 0.25,
     before any group (plan_regions' mounting holes at the board corners):
     each is an obstacle at that pose, like a locked part, and is no group's
     to place or to anchor to. A drilled one blocks its footprint on the far
-    face as well (a hole's standoff and screw)."""
+    face as well (a hole's standoff and screw).
+
+    `banks` ([{'members': [...], 'shapes': [(length, width), ...]}]) are the
+    indicator banks plan_regions will lay as rows: a region holding every
+    member of one must fit one of its shapes, at either quarter turn, as it
+    must fit its largest part. Without it a weakly linked group was planned
+    into a strip no row of its bank fits, the bank was left out, and its
+    LEDs and resistors were seated one by one: ch32v006_dev's ui group, in a
+    4 mm column over J1's pin row, put R1 40 mm from its LED."""
     view = BoardView(pcb)
     poly = _outline(pcb, pcb_file)
     if poly is None:
@@ -761,8 +796,12 @@ def plan(pcb, pcb_file: str, doc: Dict, *, grid: float = 0.25,
         for side, sub in parts.items():
             name = g['name'] if side == main else f"{g['name']}@{side}"
             members = set(sub) | (set(fix) if side == main else set())
-            internal = sum(n for r in sub for o, n in view.signal_partners(r).items()
-                           if o in members) // 2
+            # a signal net on j of the group's parts is j - 1 internal
+            # links: its spanning tree inside the group
+            internal = sum(
+                len(view.owners[nid] & members) - 1
+                for nid in {n for r in sub for n in view.nets_of.get(r, ())}
+                if nid not in view.rails and len(view.owners[nid] & members) > 1)
             dims = [(min(q[2] - q[0], q[3] - q[1]), max(q[2] - q[0], q[3] - q[1]))
                     for q in (rects[r] for r in sub)]
             need = sum(area[r] for r in sub)
@@ -781,31 +820,40 @@ def plan(pcb, pcb_file: str, doc: Dict, *, grid: float = 0.25,
                 # bitaxe_ultra's put its CC resistors 35 mm from J8 and its
                 # fan controller 80 mm from the fan header.
                 anchors=fix,
-                big_links=sum(view.signal_partners(
-                    max(sub, key=lambda r: (area[r], r))).values()))
+                big_links=_tree_links(view, max(sub, key=lambda r: (area[r], r))),
+                rows=[b['shapes'] for b in (banks or ())
+                      if b['shapes'] and set(b['members']) <= set(sub)])
             owner[name] = g['name']
             if not main_side:
                 pulls[name] = g['name']
 
     links = link_matrix(doc, view)
-    # pad-level terminals: a group's signal links to FIXED parts
+    # pad-level terminals: a group's signal links to FIXED parts. A net is a
+    # spanning tree over its nodes -- the groups whose movable parts it
+    # reaches and the fixed parts on it -- so each (group, fixed part) pair
+    # on it carries `tree_weight` of a link, however many of the group's
+    # parts the net touches.
+    gof = group_of(doc)
+    net_nodes: Dict[int, int] = {}
+    for nid, owners in view.owners.items():
+        if nid in view.rails:
+            continue
+        net_nodes[nid] = (len({gof[r] for r in owners if r in gof and r not in view.locked})
+                          + sum(1 for r in owners if r in view.locked))
     terminals: Dict[str, List] = {}
     for n, g in groups.items():
         rows = {}
-        for r in g.movable:
-            for nid in view.nets_of.get(r, ()):
-                if nid in view.rails:
-                    continue
-                for f in view.owners.get(nid, ()):
-                    if f in view.locked:
-                        pads = [(p.global_x, p.global_y) for p in pcb.footprints[f].pads
-                                if p.net_id == nid]
-                        if pads:
-                            key = (f, nid)
-                            px = sum(x for x, _ in pads) / len(pads)
-                            py = sum(y for _, y in pads) / len(pads)
-                            prev = rows.get(key)
-                            rows[key] = (px, py, (prev[2] if prev else 0) + 1)
+        for nid in sorted({nid for r in g.movable for nid in view.nets_of.get(r, ())}):
+            if nid in view.rails:
+                continue
+            for f in sorted(view.owners.get(nid, ())):
+                if f in view.locked:
+                    pads = [(p.global_x, p.global_y) for p in pcb.footprints[f].pads
+                            if p.net_id == nid]
+                    if pads:
+                        px = sum(x for x, _ in pads) / len(pads)
+                        py = sum(y for _, y in pads) / len(pads)
+                        rows[(f, nid)] = (px, py, tree_weight(net_nodes[nid]))
         # a group's own fixed members count OWN_FIXED_WEIGHT per link
         terminals[n] = [(v[0], v[1], v[2] * (OWN_FIXED_WEIGHT if f in g.fixed else 1.0))
                         for (f, _nid), v in sorted(rows.items())]
