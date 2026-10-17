@@ -194,15 +194,53 @@ def _seg_meets_pad(seg, pad, grow: float = _EPS):
     """(touches, point): whether the track's copper reaches the pad's REAL
     copper (custom polygons, round corners and tilt held, within `grow`) on
     the track's layer, anywhere along it -- a track through a pad touches it
-    with both ends outside -- and the point on the track nearest the pad."""
+    with both ends outside -- and the point on the track nearest the pad
+    (where it first meets the copper from its start, when it enters it).
+
+    Exact, on check_connected's own measure: check_drc.segment_pad_gap, which
+    track_reaches_pad asks. The 0.05 mm samples of check_pad_segment_overlap
+    it replaced stood either side of a narrow corner graze and missed it."""
     if not _pad_on(pad, seg.layer) or _dist_seg(
             pad.global_x, pad.global_y, seg.start_x, seg.start_y, seg.end_x,
             seg.end_y) > _pad_reach(pad) + seg.width / 2 + grow:
         return False, None
-    from check_drc import check_pad_segment_overlap
-    hit, _overlap, pt = check_pad_segment_overlap(pad, seg, grow, [seg.layer],
-                                                  clearance_margin=0.0)
-    return hit, pt
+    from check_drc import segment_pad_gap
+    if segment_pad_gap(seg.start_x, seg.start_y, seg.end_x, seg.end_y,
+                       pad) >= seg.width / 2 + grow:
+        return False, None
+    return True, _track_point_nearest_pad(seg, pad)
+
+
+def _track_point_nearest_pad(seg, pad) -> Tuple[float, float]:
+    """The point on the track's centreline nearest the pad's copper, the first
+    from its start where it lies on the copper. The gap to a polygon's edges
+    is least at a centreline end, at a polygon vertex's foot on the
+    centreline, or where the centreline crosses an edge, so those are the
+    only places to look (a round pad's core grown by its radius has the same
+    nearest points)."""
+    from check_drc import _pad_copper_core
+    x1, y1 = seg.start_x, seg.start_y
+    dx, dy = seg.end_x - x1, seg.end_y - y1
+    l2 = dx * dx + dy * dy
+    ts = {0.0, 1.0}
+    for poly in _pad_copper_core(pad)[0]:
+        n = len(poly)
+        for i in range(n):
+            ax, ay = poly[i]
+            bx, by = poly[(i + 1) % n]
+            if l2 > 0:
+                ts.add(min(1.0, max(0.0, ((ax - x1) * dx + (ay - y1) * dy) / l2)))
+            ex, ey = bx - ax, by - ay
+            den = dx * ey - dy * ex
+            if den:
+                t = ((ax - x1) * ey - (ay - y1) * ex) / den
+                u = ((ax - x1) * dy - (ay - y1) * dx) / den
+                if 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0:
+                    ts.add(t)
+    t = np.array(sorted(ts))
+    gap = np.maximum(_pad_sd(pad, x1 + dx * t, y1 + dy * t), 0.0)
+    k = int(np.argmin(gap))         # the first of equal gaps: nearest the start
+    return float(x1 + dx * t[k]), float(y1 + dy * t[k])
 
 
 #: Sampling step (mm) along a track when locating where it meets other copper.

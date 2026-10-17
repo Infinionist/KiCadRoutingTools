@@ -223,34 +223,27 @@ def _pad_bounding_radius(pad) -> float:
     return math.hypot(pad.size_x, pad.size_y) / 2
 
 
-def _pad_credit_disc(pad):
-    """(cx, cy, reach): the disc inside which a track counts as landing on this
-    pad's copper.
+def track_reaches_pad(seg, pad, tolerance: float = 0.02) -> bool:
+    """Whether track `seg`'s copper overlaps `pad`'s real copper anywhere
+    along it (layers are the caller's business) -- KiCad's answer, measured
+    on pcbnew 9.0.6 and 10.0.3: a track crossing a 2 x 2 mm pad 0.7 mm off
+    its centre, or overlapping its edge by 5 um, is connected; one exactly
+    tangent to the edge, or passing a roundrect's rounded corner, is not.
 
-    Run-7 finding, and the reason this is not just `min(size)/4` about the
-    anchor: a CUSTOM pad is stored as a symmetric box around its anchor big
-    enough to enclose the real primitives, and the anchor is frequently a
-    corner of them rather than their centre. One MOSFET tab measured 4.57 x
-    5.01mm of real copper modelled as a 9.13 x 10.01mm box whose centre sat
-    3.4mm away from it -- so a 2.28mm credit disc sat in empty space, and any
-    track passing near it was unioned onto the pad. Two islands of that net
-    each "reached" the phantom disc, and the net graded CONNECTED while its
-    copper was in two pieces. The router then skipped it as already routed.
-
-    When the real primitive polygons are available, use their bbox. They are
-    the actual copper.
-    """
-    polys = getattr(pad, 'polygons', None)
-    if polys:
-        xs = [pt[0] for poly in polys for pt in poly]
-        ys = [pt[1] for poly in polys for pt in poly]
-        if xs and ys:
-            w, h = max(xs) - min(xs), max(ys) - min(ys)
-            return ((max(xs) + min(xs)) / 2.0, (max(ys) + min(ys)) / 2.0,
-                    (min(w, h) / 4.0) if (w > 0 and h > 0) else 0.05)
-    if pad.size_x and pad.size_y:
-        return pad.global_x, pad.global_y, min(pad.size_x, pad.size_y) / 4.0
-    return pad.global_x, pad.global_y, 0.05
+    The overlap is exact (check_drc.segment_pad_gap on the pad's core
+    polygon and corner radius), so a CUSTOM pad is its primitives, never the
+    box the parser stores around its anchor (run 7: a 2.28 mm credit disc
+    about that box's anchor sat in empty space and joined two islands of one
+    net). Tangency is not contact: the reach is the track's half-width less
+    1 nm, KiCad's grid -- the endpoint-in-pad rule's own margin, floored at
+    `tolerance` the same way."""
+    reach = max(seg.width / 2 - 1e-6, tolerance)
+    from geometry_utils import point_to_segment_distance
+    if point_to_segment_distance(pad.global_x, pad.global_y, seg.start_x, seg.start_y,
+                                 seg.end_x, seg.end_y) > _pad_bounding_radius(pad) + reach:
+        return False                        # cheap reject: nowhere near the pad
+    from check_drc import segment_pad_gap
+    return segment_pad_gap(seg.start_x, seg.start_y, seg.end_x, seg.end_y, pad) <= reach
 
 
 #: #1157: two real pads are ONE terminal only where their copper meets, as
@@ -1288,9 +1281,14 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
         # validator logic only on the inside ones -- mask byte-identical).
         points_in_zone = []   # legacy blob (no model verdict)
         points_by_comp = {}   # fill component id -> [pid]
-        _mask = points_in_polygon_mask([p[0] for p in points_on_layer],
-                                       [p[1] for p in points_on_layer],
-                                       zone.polygon)
+        _pxs = [p[0] for p in points_on_layer]
+        _pys = [p[1] for p in points_on_layer]
+        _mask = points_in_polygon_mask(_pxs, _pys, zone.polygon)
+        # A zone's cut-outs (Zone.holes) are not pour: copper in one is not
+        # on the zone, whatever its outline says (KiCad never fills a hole).
+        for _hole in (getattr(zone, 'holes', None) or ()):
+            if _mask.any():
+                _mask &= ~points_in_polygon_mask(_pxs, _pys, _hole)
         for _in_poly, (x, y, layer, pid, size) in zip(_mask, points_on_layer):
             if _in_poly:
                 # Removal gates pass a fill validator (#outline-over-credit,
@@ -1495,15 +1493,18 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
     # endpoints sat >1mm outside, the endpoint rule above missed it, and the
     # pad graded as a phantom disconnect while the router's terminal selector
     # (correctly) dropped it as already connected -- so every retry did
-    # nothing and the board could never grade complete. Mirror
-    # connectivity._pad_on_group's conservative gate exactly: credit only when
-    # the centreline reaches well inside the pad (segment half-width plus a
-    # quarter of the smaller pad dimension from the pad CENTRE), so a track
-    # merely grazing the pad outline still grades as disconnected.
+    # nothing and the board could never grade complete. The credit is
+    # KiCad's: the track's copper overlaps the pad's real copper anywhere
+    # (track_reaches_pad), and connectivity._pad_on_group asks the same
+    # question, so the two cannot disagree the way #479 did. It used to be a
+    # disc of a quarter of the pad's short side about its centre, which left
+    # a track crossing a 2 x 2 mm pad 0.7 mm off centre open while KiCad
+    # connects it (a Kelvin sense trace across a same-net pad, #1279).
     if pad_repr_id and segments:
         for pad_idx in pad_repr_id:
             pad = pads[pad_idx]
-            px, py, reach_pad = _pad_credit_disc(pad)
+            px, py = pad.global_x, pad.global_y
+            reach_pad = _pad_bounding_radius(pad)
             for layer in pad_copper_layers[pad_idx]:
                 if layer in pad_hole_only.get(pad_idx, ()):
                     # Unflashed layer: the track must cross the hole itself.
@@ -1519,19 +1520,7 @@ def check_net_connectivity(net_id: int, segments: List[Segment], vias: List[Via]
                     continue
                 for seg, seg_start_id in seg_index.query_near(
                         px, py, layer, radius=max_seg_width / 2 + reach_pad):
-                    dx = seg.end_x - seg.start_x
-                    dy = seg.end_y - seg.start_y
-                    seg_len_sq = dx * dx + dy * dy
-                    if seg_len_sq < 1e-8:
-                        cx, cy = seg.start_x, seg.start_y
-                    else:
-                        t = ((px - seg.start_x) * dx
-                             + (py - seg.start_y) * dy) / seg_len_sq
-                        t = max(0.0, min(1.0, t))
-                        cx = seg.start_x + t * dx
-                        cy = seg.start_y + t * dy
-                    if math.sqrt((px - cx) ** 2 + (py - cy) ** 2) \
-                            <= seg.width / 2 + reach_pad:
+                    if track_reaches_pad(seg, pad, tolerance):
                         _union(pad_repr_id[pad_idx], seg_start_id)
 
     # Check for T-junctions: points that lie on the middle of a segment (same layer)

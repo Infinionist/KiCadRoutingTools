@@ -233,6 +233,18 @@ KNOWN_CLI_ONLY = {
     'replace_track_rows': 'repair_planes.py: --power-nets ledger rows from '
                           'the copper it ships (report-only, no board '
                           'mutation)',
+    # #1279, found by the 2026-10-16 parity audit (neither module is in
+    # POSTPASS_MODULES, so discovery cannot see them; listed by hand as
+    # replace_track_rows was). Both only fill JSON_SUMMARY.sense_branches.
+    # The WARNINGs a GUI user needs -- a pour over a branch, a run tapping
+    # one -- are printed by the engines on both fronts.
+    'consume_sense_branches': 'route_planes.py: takes create_plane\'s '
+                              'sense-branch entries (with poured_over) for '
+                              'JSON_SUMMARY (report-only, no board mutation)',
+    'sense_branches_shipped': 'repair_planes.py: judges the declared sense '
+                              'branches on the board it wrote, for '
+                              'JSON_SUMMARY (report-only, no board mutation; '
+                              'no GUI front runs repair_planes\' main)',
 }
 
 

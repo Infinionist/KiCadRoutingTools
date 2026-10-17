@@ -161,6 +161,32 @@ def test_parser_reads_the_type():
     return pcb
 
 
+def test_parser_reads_the_pair_top_first():
+    """A pair written bottom first reads top layer first, as pcbnew's
+    TopLayer()/BottomLayer() read it back on the GUI path: a through via
+    `(layers "B.Cu" "F.Cu")` (this repo's writer emits them: zynq7020_som's
+    Type VII vias) and typed pairs either way round. Placement Apply keys a
+    via on its ORDERED pair, so the paths disagreeing re-created every such
+    via, with a new uuid, on every apply."""
+    vias = ('\t(via (at 10 5) (size 0.25) (drill 0.1) (layers "F.Cu" "In1.Cu") '
+            '(net 1) (uuid "v-untyped"))\n')
+    reversed_vias = (
+        '\t(via (at 10 5) (size 0.3) (drill 0.15) (layers "B.Cu" "F.Cu") (net 1) (uuid "r-through"))\n'
+        '\t(via blind (at 11 5) (size 0.3) (drill 0.15) (layers "In2.Cu" "F.Cu") (net 1) (uuid "r-blind"))\n'
+        '\t(via micro (at 12 5) (size 0.25) (drill 0.1) (layers "B.Cu" "In4.Cu") (net 1) (uuid "r-micro"))\n')
+    assert BOARD.count(vias) == 1
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'reversed.kicad_pcb')
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(BOARD.replace(vias, reversed_vias))
+        pcb = parse_kicad_pcb(path)
+    by_uuid = {v.uuid: v for v in pcb.vias}
+    for uuid, want in (('r-through', ['F.Cu', 'B.Cu']), ('r-blind', ['F.Cu', 'In2.Cu']),
+                       ('r-micro', ['In4.Cu', 'B.Cu'])):
+        got = by_uuid[uuid].layers if uuid in by_uuid else None
+        check(f"text parser: {uuid} written bottom first reads {want}", got == want, got)
+
+
 def test_microvia_frees_inner_layers_and_balances():
     cfg = _config()
     coord = GridCoord(cfg.grid_step)
@@ -234,6 +260,7 @@ def test_per_net_cache(pcb):
 def main():
     test_span_indices()
     pcb = test_parser_reads_the_type()
+    test_parser_reads_the_pair_top_first()
     test_microvia_frees_inner_layers_and_balances()
     test_shuffled_map()
     test_per_net_cache(pcb)

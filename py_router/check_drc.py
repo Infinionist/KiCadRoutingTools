@@ -1715,6 +1715,35 @@ def pad_copper_gap(pad_a: Pad, pad_b: Pad) -> float:
     return max(0.0, best - ra - rb)
 
 
+def segment_pad_gap(x1: float, y1: float, x2: float, y2: float, pad: Pad) -> float:
+    """EXACT gap between a track's CENTRELINE (x1, y1)-(x2, y2) and a pad's
+    copper, 0 where the centreline enters it: the segment twin of
+    pad_copper_gap, on the same shape (_pad_copper_core: custom polygons,
+    round corners, tilt). A track of width w overlaps the pad's copper by
+    w/2 - gap, wherever along it -- a track passing through a pad with both
+    ends outside it included. Not sampled, so a corner graze is measured, not
+    stepped over. Layers are the caller's business."""
+    core, radius = _pad_copper_core(pad)
+    best = float('inf')
+    for poly in core:
+        if not poly:
+            continue
+        # A centreline end inside the core is on the copper; one crossing the
+        # core meets an edge (distance 0) below.
+        if _point_in_poly(x1, y1, poly) or _point_in_poly(x2, y2, poly):
+            return 0.0
+        n = len(poly)
+        for i in range(n):
+            ax, ay = poly[i]
+            bx, by = poly[(i + 1) % n]
+            d = _seg_seg_dist_coords(x1, y1, x2, y2, ax, ay, bx, by)
+            if d < best:
+                best = d
+    if best == float('inf'):
+        return best
+    return max(0.0, best - radius)
+
+
 def _pad_has_no_copper(pad: Pad) -> bool:
     """True for pads with no copper to clearance-check: NPTH mechanical holes
     (KiCad lists *.Cu on them for hole keep-out, but an np_thru_hole pad carries

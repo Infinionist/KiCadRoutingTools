@@ -64,12 +64,19 @@ def _pad_touches_copper_group(pad, group, net_vias, routing_layers) -> bool:
     endpoint with no via graded "connected", Case 2 skipped it, and Case 4
     then declared the net already routed without ever verifying.
 
-    Conservative: claims connection only when group copper provably reaches
-    well inside the pad area (segment half-width plus a quarter of the pad's
-    smaller dimension). Under-claiming just adds a redundant endpoint the
-    router connects in a few iterations; over-claiming recreates the
-    phantom-success bug.
+    On the pad's own layers this is check_connected's track-through-pad
+    credit itself (track_reaches_pad: the track's copper overlaps the pad's
+    real copper, KiCad's answer), so the terminal selector and the grader
+    cannot disagree the way #479's "nothing to route" loop needed. It used to
+    be a disc of a quarter of the pad's short side about its centre, mirrored
+    in the grader, which left a track crossing a pad off-centre an open pad
+    to both while KiCad connects it. Reaching the pad on ANOTHER layer
+    through a via-in-pad keeps the conservative disc: there the question is
+    whether the copper reaches the via, which the pad's outline does not
+    answer. Under-claiming just adds a redundant endpoint the router connects
+    in a few iterations; over-claiming recreates the phantom-success bug.
     """
+    from check_connected import track_reaches_pad
     from net_queries import expand_pad_layers
     px, py = pad.global_x, pad.global_y
     pad_layers = expand_pad_layers(pad.layers, routing_layers)
@@ -92,7 +99,11 @@ def _pad_touches_copper_group(pad, group, net_vias, routing_layers) -> bool:
         for v in net_vias
     )
     for seg in group:
-        if seg.layer not in pad_layers and not reaches_all_layers:
+        if seg.layer in pad_layers:
+            if track_reaches_pad(seg, pad):
+                return True
+            continue
+        if not reaches_all_layers:
             continue
         dx = seg.end_x - seg.start_x
         dy = seg.end_y - seg.start_y
