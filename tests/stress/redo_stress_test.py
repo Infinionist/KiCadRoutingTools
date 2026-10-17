@@ -36,6 +36,11 @@ import sys
 import time
 from pathlib import Path
 
+try:
+    import resource as _resource   # POSIX only: per-command CPU via getrusage
+except ImportError:                # Windows: no CPU figure is recorded
+    _resource = None
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # for _gitver when run as a script
 # #522/py_placer layout. The engine dirs hang off the REPO ROOT, which is
 # parent.parent.parent (tests/stress/ -> repo), not parent -- and the join
@@ -148,6 +153,30 @@ def _tree_footprint_mb(pid):
     return total
 
 
+def _kill_tree(p):
+    """Kill a replayed command and its children (the heavy router workers).
+
+    POSIX kills the children `pgrep` names, then the wrapper. Windows has no
+    pgrep (calling it raised FileNotFoundError out of the timeout path), and
+    killing only the wrapper leaves its pool workers running, so `taskkill /T`
+    takes the whole tree."""
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)],
+                       capture_output=True)
+    else:
+        for k in subprocess.run(["pgrep", "-P", str(p.pid)],
+                                capture_output=True, text=True).stdout.split():
+            try:
+                os.kill(int(k), 9)
+            except (ValueError, ProcessLookupError):
+                pass
+    try:
+        p.kill()
+    except ProcessLookupError:
+        pass
+    p.wait()
+
+
 def run_with_peak_rss(argv, cwd, interval=0.5, timeout=None, footprint_interval=5.0):
     """Run a command (inheriting stdout/stderr) while sampling its process-tree
     RSS; return (returncode, peak_rss_kb, timed_out, peak_footprint_mb). Lets the
@@ -183,18 +212,7 @@ def run_with_peak_rss(argv, cwd, interval=0.5, timeout=None, footprint_interval=
             last_fp = now
         if timeout is not None and now - start > timeout:
             timed_out = True
-            # Kill the children first (the heavy router workers), then the wrapper.
-            for k in subprocess.run(["pgrep", "-P", str(p.pid)],
-                                    capture_output=True, text=True).stdout.split():
-                try:
-                    os.kill(int(k), 9)
-                except (ValueError, ProcessLookupError):
-                    pass
-            try:
-                p.kill()
-            except ProcessLookupError:
-                pass
-            p.wait()
+            _kill_tree(p)
             break
         time.sleep(interval)
     return p.returncode, peak, timed_out, peak_fp
@@ -847,22 +865,26 @@ def main():
         # commands run serially and each child's whole reaped tree folds into
         # the counter at wait(), so the delta is that command's tree CPU.
         # Wall time is load-confounded (parallel pools, shared cloud hosts);
-        # CPU-seconds are the honest cross-run cost metric.
-        import resource as _res
-        _ru0 = _res.getrusage(_res.RUSAGE_CHILDREN)
+        # CPU-seconds are the honest cross-run cost metric. Windows has no
+        # getrusage, so there the record carries no cpu_seconds at all (its
+        # readers default a missing figure, as they do for older timings).
+        _ru0 = _resource.getrusage(_resource.RUSAGE_CHILDREN) if _resource else None
         timeout = args.timeout if args.timeout and args.timeout > 0 else None
         rc, peak_kb, timed_out, peak_fp_mb = run_with_peak_rss(argv, cwd, timeout=timeout)
-        _ru1 = _res.getrusage(_res.RUSAGE_CHILDREN)
-        cpu_s = (_ru1.ru_utime - _ru0.ru_utime) + (_ru1.ru_stime - _ru0.ru_stime)
+        cpu_s = None
+        if _resource:
+            _ru1 = _resource.getrusage(_resource.RUSAGE_CHILDREN)
+            cpu_s = (_ru1.ru_utime - _ru0.ru_utime) + (_ru1.ru_stime - _ru0.ru_stime)
         if rc == 0 and not timed_out:
             # A `cp`/`mv` of a board must carry its .kicad_pro (the recorded DRC
             # floor) or the renamed board grades at the looser design default.
             mirror_project_sibling(argv, cwd)
         dt = time.time() - cmd_t0
-        rec = {"index": i, "seconds": round(dt, 3),
-               "cpu_seconds": round(cpu_s, 3), "returncode": rc,
+        rec = {"index": i, "seconds": round(dt, 3), "returncode": rc,
                "peak_rss_mb": round(peak_kb / 1024, 1),
                "timed_out": timed_out, "argv": argv}
+        if cpu_s is not None:
+            rec["cpu_seconds"] = round(cpu_s, 3)
         # peak_footprint_mb (darwin only): the authoritative memory number that
         # captures mimalloc-retained + IOAccelerator-tagged pages RSS misses
         # (issue #419). Omitted on platforms where it's unavailable (0.0).
