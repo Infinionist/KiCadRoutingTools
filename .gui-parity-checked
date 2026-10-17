@@ -1,3 +1,116 @@
+1abb36572c661331fee7328a1c106e3da6fca599 2026-10-16 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
+Audit of d5d6e116..6cfcc802 (194 commits, 133 non-merge), plus the four fixes
+it produced (6552e70f..5f197db2). The range holds:
+- bergmorten's #1268-#1283 and their nine follow-up fixes;
+- #1279 sense branches and its round-3 fixes: the live re-sync of copper and
+  graphics, the KiCad-true through-pad credit, zone holes, diff-pair terminals;
+- the GUI sync, placement Apply and castellated-retract changes;
+- route_planes --net-clearances and place_intent_sides;
+- the redo_stress_test Windows, sense pad-contact and repair_planes
+  passed-map fixes.
+
+METHOD. Two read-only halves plus every gate.
+(A) Flags and kwargs:
+- an AST diff of every argparse flag in py_router/, py_tools/ and py_placer/:
+  1048 -> 1053 add_argument calls, 5 new flags, none removed or renamed, no
+  default changed. #1279 --sense-branches and #1278 --net-keepouts were added
+  and dropped inside the range;
+- the signatures of 10 engine entry points and GridRouteConfig (batch_route
+  105 -> 106 params: net_keepouts), and every changed signature in the
+  changed modules (18);
+- a static Class-1 check of each CLI main's engine kwargs against each GUI
+  call site.
+(B) Post-passes and parse paths:
+- every changed line of the routing mains attributed to its function by AST;
+- the whole kicad_routing_plugin diff read;
+- the parse paths MEASURED under KiCad 10.0.3 (9.0.6 for one generated
+  fixture), with compare_pcb_data plus the fields it does not compare: via
+  type and ordered pair, uuid, locks, held_by/sense, Zone.holes, keep-out
+  names, and sense branches with their warnings;
+- boards: sense_star; generated 4-layer fixtures with typed vias, arc and
+  blind sense members, a pour with a cut-out and a named rule area; 10
+  kicad_files boards; 3 wave outputs;
+- the GUI re-sync and placement Apply's identity case, each against a fresh
+  build.
+
+IN RANGE, NO GAP:
+- route_planes --net-clearances. The CLI resolves the map and passes it to
+  create_plane and the GND-via map. The GUI has the Planes tab's Net
+  Clearances File, refuses an unreadable file, and has its FLAG_PARAMS row,
+  reset and persistence.
+- batch_route(net_keepouts), #1278, is INTERNAL. Both fronts derive the
+  keep-outs from the .kicad_dru through input_file; only
+  _FINALIZE_ROUTE_KNOBS and _reconcile_kwargs pass the kwarg.
+- #1270 --no-stub-layer-swap is fixed inside the engines.
+- #1282 escalation off reaches both fronts through fab_tiers.may_narrow.
+- #1276 is gated on diff_pair_width_from_class, which the GUI passes.
+- 342ff405 shares class_diff_pair_geometry with the GUI.
+- #1268: both parse paths read the via type, and set_via_layers keeps it at
+  all 7 PCB_VIA sites.
+- #1279: both paths read the groups, and the live re-sync re-resolves them.
+- place_intent_sides: manifest_to_plan refuses it by name.
+- No routing default changed; routing_defaults only gained
+  PAD_ENTRY_NECK_MM and RESCUE_MAX_MARGIN_CELLS.
+
+FIXED, each with a test that fails without it:
+- 6552e70f: the text parser read a through via written (layers "B.Cu"
+  "F.Cu") B.Cu first, and a typed pair written bottom first in that order;
+  pcbnew reads both top first. zynq7020_som's chain output carries 27 such
+  Type VII vias, and placement Apply (keyed on the ordered pair) re-created
+  them with new uuids on every apply. compare_pcb_data now compares the
+  ordered pair and via_type.
+- 3a740898: the GUI's pre-step re-sync never rebuilt paste_apertures (#962),
+  so a part moved in the session left its openings behind (esp_prog: 5 of 56
+  stale). Fixed by resync_live_paste_apertures; new gate
+  test_962_paste_resync.
+- d9adb145: consume_sense_branches and sense_branches_shipped are now
+  registered KNOWN_CLI_ONLY in test_cli_postpass_coverage. They are
+  report-only and sit outside the gate's discovery modules.
+- 5f197db2: placement Apply's confirmation said blind/buried vias come back
+  as through vias. set_via_layers keeps the type, so the text was wrong.
+
+OPEN (decisions or disclosure, not fixed):
+- PRE-EXISTING: the Planes tab ignores route_planes.py --layers.
+  - planes_gui builds F.Cu + planes + B.Cu. A plan's `layers` sets the
+    Basic-tab checks, which the Planes tab reads only to place costs.
+  - Exposure: 12 of 849 recorded route_planes steps, on 11 boards. On
+    mod_bme280 the GUI routes F.Cu, which the CLI excluded.
+  - test_manifest_plan_parity counts the flag as reached, so it cannot be
+    listed as a known gap.
+  - DECISION FOR ANDY: plan `layers` drives create_plane(all_layers), a
+    control, or a recorded gap.
+- 7b665cb7: the Planes tab places Layer Costs by name in BOARD order; the CLI
+  reads them by position in all_layers order (plane layers in assignment
+  order). They differ only when planes are assigned out of board order with
+  one value per copper layer. No recorded step does: the one route_planes
+  --layer-costs step also passes --layers.
+- #1279's dangling-member WARNING (63ff4fec) is CLI-only. pcbnew drops a
+  group member uuid that matches no item on load, so sense_groups_from_board
+  cannot name it. Protection is identical; this is disclosure only.
+- A project-less board on the Differential tab with the overrides unticked
+  routes at pcbnew's factory 0.2/0.25, against route_diff's routing_defaults
+  0.3/0.101. This is the known project-less class.
+- Not traced: route.py takes JSON_SUMMARY.sense_branches before the in-run
+  plane finalize and does not re-judge the shipped board, on either front.
+- The OPEN item of the 0fd9547d entry (SWIG SetSeverity) is unchanged.
+
+GATES RUN (Windows, KiCad 10.0.3): all 72 tests/gui_parity/test_*.py, plus
+test_parser_pcbnew_parity, test_engine_kwarg_parity_launch,
+test_checker_kicad_parity and the two #1279 pcbnew tests, on 6cfcc802 and
+again on 5f197db2 (73 with test_962_paste_resync): all pass on both. Highlights:
+- test_gui_engine_parity: PARITY, copper sets IDENTICAL, kicad unconnected
+  0/0, drc 0/0. test_gui_livechain_rp2350: PASS.
+- test_manifest_plan_parity over the G:/kicad_stress_test mirror: 11422 flag
+  checks across 475 manifests, 0 mismatches, registry 48 tools OK.
+- test_plan_flags_reach_dialog 48/48. test_cli_postpass_coverage: 16
+  registered, 6 CLI-only acknowledged, 0 failures.
+- test_fanout_rotated_gui 10/10, test_fanout_backside_gui 12/12,
+  test_engine_kwarg_parity OK, test_714_mirror_pcbnew_parity PASS.
+- test_966_unset_clearance, test_967_pad_geometry_coverage and
+  test_zero_diff_pair_width_gui do not re-exec into KiCad's python, so they
+  were run under it directly.
+- Modal suite: 1005/0 on 6cfcc802; 1005/0 on 5f197db2.
+
 d5d6e11699de290b2b759751e4c0305722354c07 2026-10-15 -- FIRST TOKEN OF THIS FILE MUST BE THE AUDITED SHA.
 Audit of 0fd9547d..d5d6e116 (107 commits, 105 non-merge), for the v0.23.1
 release: 61 from main after the last audit (#1261 locked copper, #1262
