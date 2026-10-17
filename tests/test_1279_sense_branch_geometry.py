@@ -34,6 +34,7 @@ Run:
     python3 tests/test_1279_sense_branch_geometry.py
 """
 import json
+import math
 import os
 import re
 import shutil
@@ -614,6 +615,69 @@ def test_contact_is_judged_where_the_copper_meets():
     assert not hits, f'new copper overlaps the member more than 0.1 mm off the pad at {hits[:3]}'
 
 
+def test_pad_contact_is_the_checkers_measure():
+    """sense_branch._seg_meets_pad asks check_connected's question exactly
+    (check_drc.segment_pad_gap, which track_reaches_pad asks), not on 0.05 mm
+    samples along the track.
+
+    - A 0.05 mm track grazing a 1 x 1 mm pad's corner 0.023 mm off its
+      centreline overlaps the pad by 2 um, and KiCad joins them. Its samples,
+      0.054 mm apart on a 0.54 mm track, stood 0.027 mm either side of the
+      contact and 0.0354 mm off the copper, past the 0.035 mm reach (half
+      width plus the 0.01 mm contact slack): before, no contact.
+    - At the checker's own reach (no slack: the half width less 1 nm) the
+      answer equals track_reaches_pad on 3000 tracks ending or passing near
+      rect, tilted, round, oval, roundrect and custom pads, and a contact's
+      point lies on the track as near the copper as the track comes."""
+    import numpy as np
+    from check_connected import track_reaches_pad
+    from check_drc import segment_pad_gap
+    from kicad_parser import Pad
+
+    def pad_of(shape, sx, sy, tilt=0.0, ratio=0.0, polygons=None):
+        return Pad(component_ref='C1', pad_number='1', global_x=3.0, global_y=5.0,
+                   local_x=0.0, local_y=0.0, size_x=sx, size_y=sy, shape=shape,
+                   layers=['F.Cu'], net_id=1, net_name='VDD', rect_rotation=tilt,
+                   roundrect_rratio=ratio, polygons=polygons)
+
+    square = pad_of('rect', 1.0, 1.0)
+    h = 0.5 ** 0.5
+    cx, cy = 3.5 + 0.023 * h, 5.5 + 0.023 * h        # off the corner (3.5, 5.5)
+    ux, uy = h, -h
+    a = 0.54 * 0.55                                    # the contact between two samples
+    graze = _seg(cx - ux * a, cy - uy * a, cx + ux * (0.54 - a), cy + uy * (0.54 - a),
+                 width=0.05)
+    assert track_reaches_pad(graze, square), 'the fixture is no contact for KiCad'
+    hit, pt = sb._seg_meets_pad(graze, square)
+    assert hit, 'a 2 um corner graze between two samples read as no contact'
+    assert math.hypot(pt[0] - cx, pt[1] - cy) < 1e-9, pt
+
+    tri = [(3.0, 4.0), (4.2, 5.6), (1.9, 5.5)]
+    pads = [square, pad_of('rect', 2.4, 0.6, tilt=30.0), pad_of('circle', 2.0, 2.0),
+            pad_of('oval', 2.5, 1.0, tilt=-20.0),
+            pad_of('roundrect', 2.0, 1.2, tilt=15.0, ratio=0.25),
+            pad_of('custom', 2.4, 1.6, polygons=[tri])]
+    rng = np.random.default_rng(12790)
+    agreed = hits = 0
+    for pad in pads:
+        for _ in range(500):
+            x1, y1 = 3.0 + rng.uniform(-2.2, 2.2), 5.0 + rng.uniform(-2.2, 2.2)
+            ang, length = rng.uniform(0, 2 * math.pi), rng.uniform(0.05, 3.0)
+            seg = _seg(x1, y1, x1 + length * math.cos(ang), y1 + length * math.sin(ang),
+                       width=rng.uniform(0.1, 0.4))
+            touch, pt = sb._seg_meets_pad(seg, pad, grow=-1e-6)
+            assert touch == track_reaches_pad(seg, pad), (pad.shape, seg)
+            agreed += 1
+            if touch:
+                hits += 1
+                gap = segment_pad_gap(seg.start_x, seg.start_y, seg.end_x, seg.end_y, pad)
+                on = sb._dist_seg(pt[0], pt[1], seg.start_x, seg.start_y, seg.end_x, seg.end_y)
+                assert on < 1e-9, (pad.shape, seg, pt)
+                assert max(float(sb._pad_sd(pad, pt[0], pt[1])[0]), 0.0) <= gap + 1e-9, \
+                    (pad.shape, seg, pt, gap)
+    assert hits > 300, f'only {hits} of {agreed} tracks touch their pad: the sample is not near the copper'
+
+
 TESTS = [
     test_x_crossing_is_a_tap,
     test_pad_crossed_off_centre_is_a_sense_pad,
@@ -626,6 +690,7 @@ TESTS = [
     test_dangling_member_is_ignored_as_kicad_does,
     test_pad_signed_distance_is_the_pad_copper,
     test_contact_is_judged_where_the_copper_meets,
+    test_pad_contact_is_the_checkers_measure,
 ]
 
 
