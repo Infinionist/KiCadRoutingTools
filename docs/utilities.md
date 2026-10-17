@@ -714,6 +714,35 @@ FOUND 3 ISSUES:
 ============================================================
 ```
 
+## Route Review (`route_review.py`)
+
+What to move after a route. It reads one routed board and lists what a
+placement pass that moves parts and routes again needs:
+
+- **open nets**, each with the parts holding its loose pads (the
+  connectivity checker's verdict). A net a pour serves is marked `poured`,
+  since the fill rather than the placement decides it;
+- **costly signal nets**, ranked by vias and by detour: routed length over the
+  length of the minimum spanning tree of the net's pads. Rails and poured
+  nets are left out;
+- **congested areas**: the board on a grid (`--cell`, 2 mm). A cell's
+  occupancy is its track length times the routing pitch (track width plus
+  clearance), plus its vias' footprint on every signal layer, over its area
+  on the layers that carry signal copper. Cells at `--hot` (0.5) or more are
+  joined into areas, each listed with its parts and the nets through it;
+- **turned parts**: two-pad parts whose two nets would both be shorter with
+  the part turned 180°.
+
+```bash
+python3 -X utf8 py_tools/route_review.py routed.kicad_pcb
+python3 -X utf8 py_tools/route_review.py routed.kicad_pcb --top 12 --json review.json
+```
+
+What to do about each finding is in
+`.claude/skills/pcb-free-agent/references/placement-lessons.md`; the free
+agent's review pass (`.claude/skills/pcb-free-agent/SKILL.md`, §5) runs it
+once after the first full route.
+
 ## Orphan Stub Checker (`check_orphan_stubs.py`)
 
 Detects trace endpoints that end without a proper connection point (via or pad).

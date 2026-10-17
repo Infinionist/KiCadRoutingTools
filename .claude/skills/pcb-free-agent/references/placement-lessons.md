@@ -29,7 +29,9 @@ habits that look like rules but are not; do not enforce those.
 
 When a review finds a new pattern that a move fixed, add an entry in the same shape.
 
-**How to find the problems on a routed board:**
+**How to find the problems on a routed board:** `python3 -X utf8 py_tools/route_review.py
+BOARD` lists the open nets, the costliest nets, the congested areas with their parts and
+the turned two-pad parts in one pass. One at a time:
 - **Open nets:** for each one, `python3 -X utf8 py_placer/converge.py where BOARD --nets
   NET ...` gives the gap and the copper walling it in.
 - **Nets with many vias, and long detours:** compare each net's routed length with the

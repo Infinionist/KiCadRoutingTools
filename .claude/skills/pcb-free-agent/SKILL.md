@@ -382,6 +382,24 @@ Read `--help` before assuming a flag does not exist. Two runs declared
      - a fanout RAISES `blocking` by construction, moving nets from unrouted
        to broken.
    - **Hard cap:** 10 hours of wall clock, unless the user sets another.
+   - **In `full` mode, review the placement once after the first full
+     route,** then route again. Route the placement with the whole chain
+     (planes, fanout, diff pairs, `route.py`), then read what it shows:
+     ```bash
+     python3 -X utf8 py_tools/route_review.py <routed.kicad_pcb> --json wk/<run>/review.json
+     ```
+     It lists the open nets with the parts holding their loose pads, the
+     signal nets with the most vias and the longest detours (routed length
+     over the pads' spanning tree), the congested areas with the parts and
+     nets in them, and the two-pad parts turned against their wiring. Move
+     what it names with `place_pose`, following `references/placement-lessons.md`:
+     - a part far from the pins it serves goes beside them;
+     - the small parts of a congested area move out to give its nets room;
+     - a turned part turns 180°.
+
+     Check the moves (`check_assembly`, `render_placement`), route the
+     moved board with the same chain, and keep the better of the two boards
+     by the goal's order.
 4. **An "impossible" claim needs its measurement.** "I tried A–F" is not a
    measurement: 9 of 14 such claims were later refuted. Quote
    `check_reachability` (PASSABLE is a router problem, CAGED is geometry) or
