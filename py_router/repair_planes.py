@@ -1132,12 +1132,15 @@ def repair_planes(
             print(f"Warning: could not auto-read netclass clearances ({_e}); "
                   f"repairing at the uniform clearance.")
             net_clearances = None
-    # #439: --clearance was the CEILING -> cap every class at min(class, ceiling).
-    # When not clamping (--clearance omitted), honor the classes in full. The
-    # capped map propagates to the reconnect sub-runs below (they reuse it).
-    if net_clearances and clamp_netclasses and clearance_ceiling is not None:
-        net_clearances = {nid: min(c, clearance_ceiling)
-                          for nid, c in net_clearances.items()}
+        # #439: --clearance was the CEILING -> cap every class at min(class,
+        # ceiling). When not clamping (--clearance omitted), honor the classes
+        # in full. Only the auto-read map is capped: a map the caller passes
+        # (the #562 finalize's resolved map, a --net-clearances file) is used
+        # as given, as batch_route and create_plane do. The map propagates to
+        # the reconnect sub-runs below (they reuse it).
+        if net_clearances and clamp_netclasses and clearance_ceiling is not None:
+            net_clearances = {nid: min(c, clearance_ceiling)
+                              for nid, c in net_clearances.items()}
     if net_clearances:
         config.net_clearances = dict(net_clearances)
     LAST_NET_CLEARANCES_BY_NAME = config.net_clearances_by_name(pcb_data.nets)
