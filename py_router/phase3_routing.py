@@ -21,7 +21,8 @@ from routing_config import GridRouteConfig
 from routing_state import RoutingState, record_net_event
 from routing_context import (build_single_ended_obstacles, build_incremental_obstacles,
                              carry_run_state)
-from single_ended_routing import route_multipoint_taps, route_net_with_obstacles, route_multipoint_main
+from single_ended_routing import (route_multipoint_taps, route_net_with_obstacles,
+                                  route_multipoint_main, uncommit_dropped_result)
 from connectivity import get_multipoint_net_pads, get_copper_connected_terminal_groups
 from blocking_analysis import analyze_frontier_blocking, print_blocking_analysis, filter_rippable_blockers, invalidate_obstacle_cache, record_frontier_blocking
 from protected_nets import rip_refusal
@@ -275,6 +276,8 @@ def _probe_abandon_world(stranded_ids, orig_tap_segs, orig_tap_vias, ctx):
             r = route_net_with_obstacles(pcb_data, rid, probe_cfg, obstacles)
             result[rid] = bool(r and not r.get('failed')
                                and (r.get('path') or r.get('phase1_exhausted')))
+            # A probe commits nothing; its #189 unblock copper goes too.
+            uncommit_dropped_result(pcb_data, r)
     finally:
         if guard:
             remove_segments_list_from_obstacles(state.working_obstacles, orig_tap_segs, config)
@@ -502,6 +505,9 @@ def _phase3_tap_relocation_retry(net_id, completed_result, pcb_data, config,
             return retry
         print(f"  PHASE-3 TAP RELOCATION: re-tap declined -> reverting "
               f"(retry discarded)")
+    # The retry carries completed_result's copper as its prefix; the rest,
+    # never committed, takes its #189 unblock copper with it.
+    uncommit_dropped_result(pcb_data, retry, kept=completed_result)
     for token in reversed(tokens):
         restore_tap(pcb_data, working, cache, token)
     return None
@@ -556,6 +562,9 @@ def _phase3_stub_switch_retry(net_id, completed_result, pcb_data, config,
             state.all_segment_modifications.extend(seg_mods)
             state.all_swap_vias.extend(new_vias)
         return retry
+    # The retry carries completed_result's copper as its prefix; the rest,
+    # never committed, takes its #189 unblock copper with it.
+    uncommit_dropped_result(pcb_data, retry, kept=completed_result)
     for seg_mods, new_vias, _from, _dest in reversed(switched):
         revert_stub_layer_switch(pcb_data, seg_mods, new_vias)
     return None
@@ -721,6 +730,10 @@ def run_phase3_tap_routing(
                     obstacle_cache=obstacle_cache
                 )
                 if retry_result is not None:
+                    # The first pass's taps are dropped (the retry re-taps
+                    # from the main route); their #189 unblock copper too.
+                    uncommit_dropped_result(pcb_data, completed_result,
+                                            kept=retry_result)
                     completed_result = retry_result
 
             # Tap relocation first (matches the initial-loop rung order:
@@ -812,19 +825,16 @@ def run_phase3_tap_routing(
         # failing re-route, rip again and restore, twice per call, zero gain
         # (test-board run 5: QSPI_SS churned until every call was made
         # single-net just to starve this path of siblings).
-        from protected_nets import cached_protection_map, rip_override_names
+        from protected_nets import in_run_rip_reason
         _seam_done = getattr(state, '_seam_reask_done', None)
         if _seam_done is None:
             _seam_done = set()
             state._seam_reask_done = _seam_done
         _net_nm = (pcb_data.nets[net_id].name
                    if net_id in pcb_data.nets else None)
-        _prot = cached_protection_map(pcb_data)
         if net_id in _seam_done:
             pass
-        elif (_net_nm and _net_nm in _prot
-                and (_prot[_net_nm] == 'locked'
-                     or _net_nm not in rip_override_names(pcb_data))):
+        elif in_run_rip_reason(pcb_data, _net_nm):
             print(f"  (seam re-ask skipped: {_net_nm} is protected)")
         else:
             _seam_done.add(net_id)
@@ -1241,6 +1251,10 @@ def try_phase3_ripup(
                     print(f"    {RED}{net_name}: tap rip-up {abandon_detail} "
                           f"({stranded_names}); abandoning tap, "
                           f"re-routing victim(s){RESET}")
+                    # The abandoned retry's #189 unblock copper goes before
+                    # the victims re-route around the kept original tap.
+                    uncommit_dropped_result(pcb_data, retry_result,
+                                            kept=completed_result)
                     guard = (state.working_obstacles is not None
                              and (orig_tap_segs or orig_tap_vias))
                     guard_token = None
@@ -1346,6 +1360,9 @@ def try_phase3_ripup(
                 return retry_result
             else:
                 print(f"    {net_name}: Retry FAILED (N={N}): still {retry_failed} failed edges")
+                # Dropped: the next rung re-taps from the main route again.
+                uncommit_dropped_result(pcb_data, retry_result,
+                                        kept=completed_result)
                 # Store blocked cells from retry for next iteration's analysis
                 retry_blocking = retry_result.get('failed_edge_blocking', {})
                 if retry_blocking:
@@ -1820,6 +1837,8 @@ def _reroute_phase3_ripped_nets(
 
                             if retry_result is not None:
                                 print(f"    {net_name}: Rip-up retry succeeded!")
+                                uncommit_dropped_result(pcb_data, tap_result,
+                                                        kept=retry_result)
                                 tap_result = retry_result
 
                 if tap_result:

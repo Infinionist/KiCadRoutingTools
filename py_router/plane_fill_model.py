@@ -478,8 +478,10 @@ class ZoneFillModel:
                 _stamp_ring_band(_ec)
 
         # Outline clip (#556: scanline kernel, bit-identical to the old
-        # per-row ray cast -- see _rings_inside_rows).
-        free &= _rings_inside_rows(cxs, cys, [zone.polygon]).T
+        # per-row ray cast -- see _rings_inside_rows), even-odd over the
+        # outline AND its cut-outs (Zone.holes): KiCad never fills a hole.
+        free &= _rings_inside_rows(
+            cxs, cys, [zone.polygon] + list(getattr(zone, 'holes', None) or ())).T
 
         # Min-thickness OPENING (KiCad parity): erode by mth/2 then dilate
         # by mth/2 -- exactly the filler's deflate-then-stroke. Regions

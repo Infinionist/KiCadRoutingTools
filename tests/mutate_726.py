@@ -75,18 +75,20 @@ ROWS = [
      "        _block_key = _raw_reference",
      (T_KEYS, T_PARITY), 'KILLED'),
 
+    # The pcbnew path's keys come from pcbnew_live_footprints, which the GUI's
+    # live re-sync shares with build_pcb_data_from_board.
     ('pcbnew-path-reverts-to-last-wins', 'p',
-     "    _live_keys = disambiguate_references(_raw_refs)",
-     "    _live_keys = list(_raw_refs)",
+     "    return live_fps, _raw_refs, disambiguate_references(_raw_refs)",
+     "    return live_fps, _raw_refs, list(_raw_refs)",
      (T_GUI,), 'KILLED'),
 
     # Mutates ONLY the pcbnew path while the text path stays fixed. If nothing
     # goes red here, the parity gate is not doing its job -- a one-sided fix is
     # exactly what it exists to catch.
     ('only-the-text-path-disambiguates', 'p',
-     "    _dups_live = duplicate_reference_counts(_raw_refs)",
-     "    _dups_live = duplicate_reference_counts(_raw_refs)\n"
-     "    _raw_refs = ['%s#%d' % (r, i) for i, r in enumerate(_raw_refs)]",
+     "    return live_fps, _raw_refs, disambiguate_references(_raw_refs)",
+     "    return live_fps, _raw_refs, disambiguate_references(\n"
+     "        ['%s#%d' % (r, i) for i, r in enumerate(_raw_refs)])",
      (T_GUI,), 'KILLED'),
 
     ('the-ordinal-starts-at-the-wrong-block', 'p',

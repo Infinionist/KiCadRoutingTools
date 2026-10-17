@@ -331,7 +331,7 @@ ROWS = [
     # can exercise, which is exactly why it is stated here rather than left as
     # an untested preference.
     ('the-side-partition-reads-the-raw-layer-string', 'op',
-     "        layer = 'B.Cu' if footprint_side(fp) == 'B' else 'F.Cu'\n",
+     "        layer = 'B.Cu' if planned_side == 'B' else 'F.Cu'\n",
      "        layer = getattr(fp, 'layer', None) or 'F.Cu'\n",
      (CAP, CEN), 'SURVIVED'),
 

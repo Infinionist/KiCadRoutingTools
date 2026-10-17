@@ -809,6 +809,14 @@ class PlanesTab(wx.Panel):
 
         config = self._build_mode_config()
         config['assignments'] = assignments
+        # A Net Clearances File route_planes.py would fail to read is refused
+        # before the run, as on the Route and Differential tabs.
+        from .swig_gui import net_clearances_file_error
+        _ncl_err = net_clearances_file_error(config.get('net_clearances_path'))
+        if _ncl_err:
+            wx.MessageBox(_ncl_err, "Invalid Net Clearances File",
+                          wx.OK | wx.ICON_WARNING)
+            return
 
         # Disable UI
         self.action_btn.Disable()
@@ -856,6 +864,10 @@ class PlanesTab(wx.Panel):
 
         try:
             self._run_create_planes(config)
+            # #857: the Design rules line route_planes.py's main prints (the
+            # exit code is the CLI's alone).
+            from fab_tiers import finish_design_rules
+            finish_design_rules(None, 0)
 
         except Exception as e:
             import traceback
@@ -943,6 +955,16 @@ class PlanesTab(wx.Panel):
         _seen = set()
         all_layers = [l for l in (['F.Cu'] + _plane_layers_in_order + ['B.Cu'])
                       if not (l in _seen or _seen.add(l))]
+        # The Basic-tab layer costs, one per entry of all_layers BY NAME. They
+        # were handed over aligned to the SELECTED layers, which create_plane
+        # read positionally against all_layers -- on a 4-layer board the
+        # default costs priced the wrong layers and the full-stack append's
+        # FORBIDDEN entry for the unrequested inner layer fell off the end.
+        from .gui_utils import layer_costs_for_layers
+        plane_layer_costs = layer_costs_for_layers(
+            config.get('layer_costs_typed'), all_layers,
+            config.get('layer_costs_selected_layers') or [],
+            list(self.pcb_data.board_info.copper_layers or []))
 
         total_vias = 0
         total_traces = 0
@@ -1020,6 +1042,14 @@ class PlanesTab(wx.Panel):
         except Exception as e:
             print(f"Warning: Could not get net class clearances: {e}")
             _plane_net_clearances = None
+        # route_planes.py --net-clearances FILE (the Advanced tab's Net
+        # Clearances File): it replaces the class-derived map, as given, for
+        # the plane taps and the GND vias alike.
+        from .swig_gui import explicit_net_clearances
+        _explicit = explicit_net_clearances(config.get('net_clearances_path'),
+                                            self.pcb_data)
+        if _explicit is not None:
+            _plane_net_clearances = _explicit
 
         failed_pads = 0
         try:
@@ -1053,7 +1083,7 @@ class PlanesTab(wx.Panel):
                                                 defaults.RIPUP_BLOCKER_SELECT),
                 # #381 D6: per-layer cost bias from the shared Basic-tab control
                 # (route_planes.py passes --layer-costs); None -> engine default.
-                layer_costs=config.get('layer_costs') or None,
+                layer_costs=plane_layer_costs or None,
                 # #381 D6: plane knobs the CLI threads, supplied by the
                 # create panel's controls of the same names (each starting at
                 # route_planes.py's argparse default).
@@ -1542,7 +1572,10 @@ class PlanesTab(wx.Panel):
                 # Set via layers
                 layers = via_data.get('layers', ['F.Cu', 'B.Cu'])
                 if len(layers) >= 2:
-                    via.SetLayerPair(get_layer_id(layers[0]), get_layer_id(layers[-1]))
+                    from .gui_utils import set_via_layers
+                    set_via_layers(via, get_layer_id(layers[0]),
+                                   get_layer_id(layers[-1]),
+                                   via_data.get('via_type'))
                 # #962: the engine stamped Type VII onto a via it put in a pad
                 # or paste opening, and a re-placed via carries its own spec.
                 # This tab applied NEITHER before (every other tab did).

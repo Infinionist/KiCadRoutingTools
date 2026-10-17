@@ -1192,7 +1192,24 @@ def write_placed_output(input_file: str, output_file: str,
     if via_moves or new_segments:
         from plane_io import _remove_vias_at_positions
         from kicad_writer import generate_via_sexpr, generate_segment_sexpr
+        from kicad_parser import is_immutable_copper
         n2n = getattr(pcb_data, 'net_id_to_name', None) if pcb_data is not None else None
+        # A KiCad-locked via (#521) or one a `sense:` group holds (#1279) is
+        # never re-emitted: deleting it and appending it again gives it a new
+        # uuid, which takes it out of its group, and moves pinned copper. The
+        # nudge never proposes one, so a move naming one is a caller's bug --
+        # refused rather than written. The nudge moves its Via in place, so
+        # the via is looked for at the move's old AND new position.
+        for m in (via_moves or ()) if pcb_data is not None else ():
+            nid = m[2]['net_id']
+            for v in getattr(pcb_data, 'vias', ()) or ():
+                if v.net_id == nid and is_immutable_copper(v) and any(
+                        abs(v.x - x) < 1e-6 and abs(v.y - y) < 1e-6
+                        for x, y in ((m[0], m[1]), (m[2]['x'], m[2]['y']))):
+                    raise ValueError(
+                        f"via move ({m[0]}, {m[1]}) -> ({m[2]['x']}, "
+                        f"{m[2]['y']}) names a KiCad-locked or sense-held via; "
+                        f"such a via is never re-emitted (#1279)")
 
         def _net_name(net_id):
             """This board's name for a net id, or None if it has none.
@@ -1287,7 +1304,9 @@ def write_placed_output(input_file: str, output_file: str,
                     # cannot do this job -- the repo's own idiom for carrying a
                     # spec is `dict(...)`, which would turn any dict-shaped
                     # sentinel back into a plain {}.
-                    inherit_when_unspecified=True))
+                    inherit_when_unspecified=True,
+                    # A nudged blind/micro via keeps its type word.
+                    via_type=v.get('via_type')))
         for nsd in (new_segments or []):
             nm = n2n.get(nsd['net_id']) if n2n else None
             elements.append(generate_segment_sexpr(

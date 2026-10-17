@@ -501,7 +501,7 @@ def install_track_clearances(config, track_clearances, input_file,
 _ANNOUNCED = set()  # (board path, map items) already printed this process
 
 
-def _install_rules_quietly(config, input_file, pcb_data):
+def _install_rules_quietly(config, input_file, pcb_data, net_keepouts=False):
     """#530: attach the full DesignRules table as ``config.rules`` at the same
     chokepoint every engine already passes through for the layer map. Report-
     only in this phase (the resolver announces unsupported rules once per
@@ -519,7 +519,8 @@ def _install_rules_quietly(config, input_file, pcb_data):
             fab = fab_floors(len(copper) or 2)
         except Exception:                                       # noqa: BLE001
             fab = None
-        install_design_rules(config, input_file, pcb_data, fab_floor=fab)
+        install_design_rules(config, input_file, pcb_data, fab_floor=fab,
+                             net_keepouts=net_keepouts)
     except Exception as e:                                      # noqa: BLE001
         print(f"  WARNING: design rules not installed ({e})")
 
@@ -625,7 +626,8 @@ def pair_gap_rule_floor(layer_map: Dict[str, float], layers,
     return best, why
 
 
-def install_layer_clearances(config, layer_clearances, input_file, pcb_data=None):
+def install_layer_clearances(config, layer_clearances, input_file, pcb_data=None,
+                             net_keepouts=False):
     """Resolve and install the #498 per-layer map on ``config``, engine-side so
     BOTH fronts inherit it (the CLI passes nothing; the GUI passes nothing --
     there is deliberately no flag or control, the .kicad_dru is the single
@@ -633,17 +635,19 @@ def install_layer_clearances(config, layer_clearances, input_file, pcb_data=None
     mirroring the net_clearances pattern; None -> read the sibling .kicad_dru
     of ``input_file``, expanded over the BOARD's full copper list (rules may
     target layers outside the routed subset -- via keep-outs still need them)
-    and pinned up to the fab tier's clearance floor. Prints what is honored."""
+    and pinned up to the fab tier's clearance floor. Prints what is honored.
+    ``net_keepouts``: the caller stamps net-filtered keep-outs (route.py /
+    route_diff.py), so the design rules derive them (net_keepouts.py)."""
     if layer_clearances is not None:
         config.layer_clearances = dict(layer_clearances)
-        _install_rules_quietly(config, input_file, pcb_data)
+        _install_rules_quietly(config, input_file, pcb_data, net_keepouts)
         _record_board_copper(config, pcb_data)
         return
     if not input_file:
         # Engines whose signatures carry no input path (planes, fanout, oracle
         # sub-configs) discover the board file via PCBData.source_path.
         input_file = getattr(pcb_data, 'source_path', "") or ""
-    _install_rules_quietly(config, input_file, pcb_data)
+    _install_rules_quietly(config, input_file, pcb_data, net_keepouts)
     lmap, notes, copper = _read_layer_map(input_file, pcb_data, config.layers)
     # The copper list the map is expanded over, for pad_pair_clearance (a
     # `*.Cu` pad's shared layers are the BOARD's, not the routed subset's).

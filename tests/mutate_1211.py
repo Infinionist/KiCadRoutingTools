@@ -46,6 +46,13 @@ net, `merge`), a target pad on a SOURCE channel net (`onto`, through
 default anchor a partial copy implies (`--skip U1`). The parity gate gained
 its comparator witness (a sheet name changed on one side is reported) for
 the `compare_pcb_data-skips-the-sheet-fields` row.
+
+#1277 added two rows for the net map (`the-net-map-is-first-come`,
+`a-pair-that-breaks-under-any-map-votes`). Measured on Windows at the
+commit that added them, with the twelve rows that mutate `correspond`
+(the five net-rule arms, three waiver rows on it, the refusal's
+flags, sharedness over the whole instance, and the two new rows), run
+one by one: 12 KILLED, 0 SURVIVED, 0 BROKEN.
 """
 from __future__ import annotations
 
@@ -77,6 +84,7 @@ def _w(path, *cases):
 
 
 NETS = _w(_T, 'nets_not')
+NETMAP = _w(_T, 'net_map')
 WAIVE = _w(_T, 'waived_per_pad')
 GLASGOW = _w(_T, 'glasgow')
 PARTIAL = _w(_T, 'partial')
@@ -111,6 +119,17 @@ ROWS = [
      "        if (a == 0) != (b == 0):",
      "        if False:",
      (NETS,), 'KILLED'),
+    # #1277: the map the two map arms judge against. First-come within a
+    # group of competing pairings named the pads wired alike; a pair that
+    # breaks under any map voting lets a netless pad claim its net.
+    ('the-net-map-is-first-come', 'rep',
+     "        if got + votes[e] + _best(rest) == target:",
+     "        if True:",
+     (NETMAP,), 'KILLED'),
+    ('a-pair-that-breaks-under-any-map-votes', 'rep',
+     "        if _why(a, b) is None:",
+     "        if True:",
+     (NETMAP,), 'KILLED'),
     # ---- the waiver -----------------------------------------------------------
     ('a-waived-pad-still-breaks-the-rule', 'rep',
      "            (waived_rows if given is not None else rows).append(",

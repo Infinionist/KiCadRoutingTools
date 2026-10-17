@@ -115,6 +115,12 @@ REGISTRY = {
     # they are written with. bga_fanout's and qfn_fanout's mains and the fanout
     # tab's apply all decide with it before their writeback.
     'fanout_fix_kwargs': ['_apply_fanout_results'],
+    # #857: the end-of-run `Design rules [...]` line (and, CLI-only, the
+    # --strict-sizes exit 3). route.py's line comes from inside batch_route on
+    # both fronts; route_diff / route_planes / the fanouts print it from their
+    # mains, and their GUI tabs call the same helper after the engine
+    # (differential_gui, planes_gui, fanout_gui), so the log says the same.
+    'finish_design_rules': ['finish_design_rules'],
 }
 # NOTE (deliberately NOT registered): move_copper_graphics_to_silkscreen runs
 # inside the shared plane WRITER (plane_io), not a main() -- so this gate, which
@@ -220,6 +226,25 @@ KNOWN_CLI_ONLY = {
     'grade_plane_completion': 'repair_planes.py: grades the plane nets on the '
                               'written board for JSON_SUMMARY (report-only, '
                               'no board mutation)',
+    # Found reviewing #1282: repair_planes' main replaces its per-attempt
+    # --power-nets `plane tap` ledger rows with the copper it ships. No GUI
+    # front runs repair_planes' main; the route tab's in-run finalize is
+    # graded by route.py's engine-side pass, on both fronts.
+    'replace_track_rows': 'repair_planes.py: --power-nets ledger rows from '
+                          'the copper it ships (report-only, no board '
+                          'mutation)',
+    # #1279, found by the 2026-10-16 parity audit (neither module is in
+    # POSTPASS_MODULES, so discovery cannot see them; listed by hand as
+    # replace_track_rows was). Both only fill JSON_SUMMARY.sense_branches.
+    # The WARNINGs a GUI user needs -- a pour over a branch, a run tapping
+    # one -- are printed by the engines on both fronts.
+    'consume_sense_branches': 'route_planes.py: takes create_plane\'s '
+                              'sense-branch entries (with poured_over) for '
+                              'JSON_SUMMARY (report-only, no board mutation)',
+    'sense_branches_shipped': 'repair_planes.py: judges the declared sense '
+                              'branches on the board it wrote, for '
+                              'JSON_SUMMARY (report-only, no board mutation; '
+                              'no GUI front runs repair_planes\' main)',
 }
 
 

@@ -121,8 +121,8 @@ ROWS = [
 
     # ---- the snap ---------------------------------------------------------
     ('the-snap-ladder-loses-its-lattice-rung', 'o',
-     "    ordered = out + lattice",
-     "    ordered = out",
+     "    ordered = first + out + lattice",
+     "    ordered = first + out",
      (T_POSE,), 'KILLED'),
 
     ('the-radius-stops-bounding-the-distance', 'o',

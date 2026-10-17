@@ -65,6 +65,28 @@ sys.path.insert(0, os.path.join(ROOT, 'tests', 'stress'))
 #:
 #: MEASURED, from the run recorded in the pull request. Never predicted.
 #:
+#: RE-RECORDED 2026-10-16 (fix-unblock-via-gates). `truth.quality` of ONE
+#: row; blocking and the headline unmoved.
+#:   * esp_prog:authored -- /+3.3V's Phase 3 tap needed a #189 via-in-pad
+#:     unblock, and the tap gate then refused that attempt. The discarded
+#:     attempt's via stayed in pcb_data (committed at #803), unwritten, and
+#:     later routes of /+3.3V treated it as their own copper, and cleanup's
+#:     orphan sweep then removed what had been built on it. The
+#:     gate now takes the via back, the retries lay their own, and the
+#:     cleanup sweeps nothing. Connected and DRC-clean both ways.
+#:   esp_prog:authored            vias 36 -> 32, segs 182 -> 188, copper 318.69 -> 311.88
+#:   other rows                   unmoved
+#:
+#: RE-RECORDED 2026-10-16 (#1266). ONE row, and its headline falls.
+#:   * esp_prog:portfolio-1 -- `truth.headline` 2 -> 0. This candidate
+#:     used to land U2's SOT89 tab on Q1's pads (the drc 1, and the broken
+#:     /U0TXD #1181 exposed): pad legality could not see a footprint's
+#:     drawn copper. Now the quench's gate charges it, the candidate seats
+#:     U2 clear of Q1, and the board routes with nothing blocking. Its
+#:     predictors move with the poses (crossings 23 -> 27).
+#:   esp_prog:portfolio-1         headline 2 -> 0, vias 28 -> 29, segs 207 -> 178, copper 335.22 -> 343.2
+#:   other rows                   unmoved
+#:
 #: RE-RECORDED 2026-10-07 (#1186). `truth.quality` of ONE row; blocking and
 #: the headline unmoved. It passes at the commit before #1186 and fails at
 #: #1186 with the value HEAD of the #1185-#1198 batch gives.
@@ -398,7 +420,8 @@ EXPECTED = {
                # 2026-09-16 (#958 fine-pitch tie guard): segs 250 -> 260
                # 2026-10-07 (#1159 at-rule neck): 32/303.46/201 -> 36/318.64/182
                # 2026-10-07 (#1186 T by distance): copper 318.64 -> 318.69
-               'quality': {'vias': 36, 'copper_mm': 318.69, 'segments': 182}},
+               # 2026-10-16 (unblock via taken back): 36/318.69/182 -> 32/311.88/188
+               'quality': {'vias': 32, 'copper_mm': 311.88, 'segments': 188}},
         predictors={
             'crossings': 53, 'hpwl': 253.98092000000003,
             'halo': 127.48707486477095, 'overlap_area': 1.1400451712000104,
@@ -462,7 +485,7 @@ EXPECTED = {
     # routed board is in fact slightly better -- vias 28 -> 23, copper
     # 299.93 -> 263.91mm, segments 231 -> 203 -- at the same blocking.
     'esp_prog:portfolio-1': dict(
-        poses_sha256='d1290d938a770bb17f2c6a4869b8224eb30aeba6bb37e11c2ae2f3c6c042695b',
+        poses_sha256='997e028ac07970dc6ba52b47050b93a9911d5e16461fd799df942669277fc554',
         argv_sha='52aaeed47e14fea796be12c36db09c605a4b8ec588da12bded6a2573b1c7f0b0',
         seconds=12.0,
         # headline 3 -> 0 (2026-09-03) -> 1 (2026-09-10). The 1 is `drc`, NOT
@@ -470,7 +493,8 @@ EXPECTED = {
         # pads, and #908 is what makes that visible. See the header note.
         # -> 2 (2026-10-07, #1181): + broken /U0TXD, which used to route
         # THROUGH the tab's interior (a short nobody graded). Header note.
-        truth={'headline': 2,
+        # -> 0 (2026-10-16, #1266): the tab no longer lands on Q1's pads.
+        truth={'headline': 0,
                # 2026-09-03 (auto/fab defaults): 32/347.03/270 -> 31/341.99/263
                # 2026-09-10 (#908 footprint copper): 31/341.99/263 -> 30/350.67/304
                # 2026-09-14 (#958 phase 2): segs 304 -> 269; vias/copper unmoved
@@ -478,12 +502,13 @@ EXPECTED = {
                # 2026-09-16 (#958 fine-pitch tie guard): 35/362.75/282 ->
                #   35/362.65/293 (the only row whose copper moved, -0.10mm)
                # 2026-10-07 (#1181 filled interior): 33/347.97/225 -> 28/335.22/207
-               'quality': {'vias': 28, 'copper_mm': 335.22, 'segments': 207}},
+               # 2026-10-16 (#1266 graphic copper gated): -> 29/343.2/178
+               'quality': {'vias': 29, 'copper_mm': 343.2, 'segments': 178}},
         predictors={
-            'crossings': 23, 'hpwl': 260.0687799999999,
-            'halo': 101.01900525631262, 'overlap_area': 1.0,
+            'crossings': 27, 'hpwl': 258.97183999999993,
+            'halo': 110.30795292456104, 'overlap_area': 1.0,
             'pad_copper': 0, 'pad_clearance_pairs': 0,
-            'edge': 21.49349600000009, 'total': 605.1074633433927,
+            'edge': 17.867008500000082, 'total': 654.7584480245018,
             'oob_count': 0,
         }),
     # A SECOND board, so a change that only moves one board's numbers cannot

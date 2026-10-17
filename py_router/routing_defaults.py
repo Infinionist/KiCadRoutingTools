@@ -60,6 +60,14 @@ TRACK_PROXIMITY_COST = 0.0
 STUB_PROXIMITY_RADIUS = 2.0  # mm
 NECKDOWN_LENGTH = 2.5  # mm of narrow track from the pad on neck-down routes (issue #72)
 NECKDOWN_TAPER_LENGTH = 0.5  # mm narrow->wide width taper (0 = abrupt)
+# Under --escalation off, the most routed path a wide (power / impedance) net
+# may run below its requested width on one edge or one via-to-pad tap: the
+# pad-entry stretch a 2 mm rail cannot keep into a 0.2 mm pin. A longer neck
+# is refused and the edge or pad is reported instead. Measured as path
+# LENGTH, not span. Shared by the neck-down ladder (single_ended_routing) and
+# the tap router (route_planes); not a CLI/GUI parameter. The fab / board
+# policies do not read it (their necks are shaped by NECKDOWN_LENGTH).
+PAD_ENTRY_NECK_MM = 2.0
 TRACK_PROXIMITY_DISTANCE = 2.0  # mm
 # #1146 pairwise keep-away: band cost per cell (mm equivalent; 0 = measure
 # and report only) and the radius around the routed net's own pads where the
@@ -320,6 +328,10 @@ RESCUE_CLEARANCE_STEPS = 4        # clearance rungs from nominal down to the fab
 RESCUE_WINDOW_MARGIN = 4.0        # mm of window past the gap bbox on every side
 RESCUE_MIN_WINDOW_HALF = 6.0      # mm - minimum window half-size (detour room)
 RESCUE_MAX_WINDOW_CELLS = 4_000_000  # per-layer cell budget; grid coarsens to fit
+RESCUE_MAX_MARGIN_CELLS = 30      # a rung whose wide-net A* track margin exceeds
+                                  # this many cells runs on a coarser grid (never
+                                  # past the run's own): the swept-capsule test
+                                  # costs (2r+1)^2 cells per neighbour
 RESCUE_MAX_EDGES_PER_NET = 8      # max gap-closing attempts per rescued net
 RESCUE_MAX_ITERATIONS = 1_000_000  # per-rung A* backstop. Deliberately generous:
                                    # hopeless rungs exhaust the small fenced window

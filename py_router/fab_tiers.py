@@ -24,7 +24,15 @@ The **escalation policy** (``--escalation``, one shared control in the GUI) is
 orthogonal to the tier and bounds every descent site in the engine:
 
   - ``off``    sizes and clearances are exact. A net that cannot complete at
-               them fails and is reported; nothing is narrowed or shrunk.
+               them fails and is reported; nothing is narrowed or shrunk,
+               with one bounded exception: a wide (power / impedance) net may
+               neck below its width for at most
+               ``routing_defaults.PAD_ENTRY_NECK_MM`` (2 mm) of routed path
+               on one edge or one via-to-pad tap -- the pad-entry stretch a
+               wide rail cannot keep into a narrow pin. A longer neck fails
+               the edge. A power net's under-width copper is in the ledger
+               (route.py's ``power copper shipped under width`` row), so
+               ``--strict-sizes`` still sees it.
   - ``board``  a failing net may be retried narrower / with a smaller
                via / tighter clearance, down to the BOARD'S OWN declared floors
                (Board Setup ``rules.min_*``). A key the board leaves unset
@@ -750,7 +758,19 @@ def replace_power_track_rows(power_net_ids, shipped):
     from the same measurement as JSON_SUMMARY power_widths. ``shipped`` is
     [(net_id, net_name, requested, min_delivered, under_mm), ...]. Other
     kinds (vias, clearance) and other nets are untouched."""
-    ids = set(power_net_ids or ())
+    replace_track_rows(power_net_ids, shipped,
+                       'power copper shipped under width')
+
+
+def replace_track_rows(net_ids, shipped, site):
+    """:func:`replace_power_track_rows` for any set of nets: drop every
+    ``track_width`` row of ``net_ids`` (recorded per routing ATTEMPT) and add
+    one row, labelled ``site``, per net in ``shipped`` that ships copper under
+    its requested width. Found reviewing #1282: an impedance- or class-width
+    net necks through the same ladder as a power net, and its rows were per
+    attempt (a `plane tap` row for a tap that never shipped still failed
+    --strict-sizes) or absent altogether (the neck-down ladder records none)."""
+    ids = set(net_ids or ())
     _LEDGER['narrowed'] = [r for r in _LEDGER['narrowed']
                            if not (r.get('kind') == 'track_width'
                                    and r.get('net') in ids)]
@@ -761,7 +781,7 @@ def replace_power_track_rows(power_net_ids, shipped):
             'net': int(nid), 'net_name': name, 'kind': 'track_width',
             'requested': round(float(req), 4),
             'delivered': round(float(dlv), 4),
-            'site': 'power copper shipped under width',
+            'site': site,
             'count': 1, 'length_mm': round(float(under), 2),
         })
 
@@ -824,6 +844,39 @@ def escalation_report_line():
     return (f"Design rules [--escalation {s['escalation_policy']}, --fab-tier "
             f"{s['fab_tier']}]: " + '; '.join(parts) +
             ". Details: JSON_SUMMARY design_rules.")
+
+
+def narrowed_summary():
+    """:func:`escalation_summary` when this run delivered anything below a
+    requested size or escalated a fab tier, else None -- the JSON_SUMMARY
+    ``design_rules`` block the non-route CLIs add only when there is something
+    in it, so a run that narrowed nothing prints what it always printed."""
+    s = escalation_summary()
+    return s if (s['count'] or s['fab_tier_escalations']) else None
+
+
+def finish_design_rules(args, rc=0, *, print_line=True):
+    """The end-of-run disclosure every routing CLI that registers
+    ``--strict-sizes`` makes: the ONE ``Design rules [...]`` line when this
+    run delivered anything below a requested size or escalated a fab tier,
+    and, under ``--strict-sizes``, exit code 3 for it.
+
+    Returns the exit code the main should finish with. ``rc`` is the code it
+    would finish with otherwise; a non-zero ``rc`` wins over 3, because a run
+    that already failed for its own reason says more than "narrowed". route.py
+    prints the line from inside batch_route (both fronts see it there), so its
+    main passes ``print_line=False``.
+
+    Found reviewing #1282: route_planes, repair_planes, route_diff and the two
+    fanouts accepted ``--strict-sizes`` and never acted on it, nor printed the
+    line, so a harness relying on exit 3 read a narrowed run as exact."""
+    line = escalation_report_line()
+    if line and print_line:
+        print(f"  {line}")
+    if line and not rc and getattr(args, 'strict_sizes', False):
+        print(f"  --strict-sizes: {line}")
+        return 3
+    return rc
 
 
 _escalation_lever_said = []
@@ -955,7 +1008,9 @@ def add_fab_tier_args(parser, *, include_escalation=True):
             '--escalation', choices=list(ESCALATION_POLICIES), default=_esc_dflt,
             help=f"How far below a REQUESTED size a failing net may be retried "
                  f"(default {DEFAULT_ESCALATION}). 'off': never -- sizes and clearances are exact, "
-                 "a net that cannot complete at them fails and is reported. 'board': "
+                 "a net that cannot complete at them fails and is reported (a wide "
+                 "power/impedance net may still neck for at most "
+                 f"{defaults.PAD_ENTRY_NECK_MM:g} mm of path at a pad entry). 'board': "
                  "down to the board's own declared floors (Board Setup rules.min_*; "
                  "an unset key falls back to the fab tier floor, an unset "
                  "min_clearance to the Default class). That is what KiCad's DRC "

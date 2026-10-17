@@ -372,11 +372,14 @@ Validate routed boards against the *real* spec, with the right checker — most
     That recipe (`from_registry` + `USER root`, since the official image runs
     as USER kicad; + `python-is-python3`, since Modal's builder shells out to
     `python -m pip`; + `--break-system-packages` for PEP 668) is the proven
-    way to give the suite image KiCad too, and would recover exactly the two
+    way to give the suite image KiCad too, and would recover exactly the
     genuinely KiCad-gated self-skips: `test_887_iso_render` (wants the
     kicad-cli BINARY; Pillow, its other precondition, is already in
-    `requirements.txt`) and `test_910_fill_for_delivery` (wants KiCad's
-    bundled python). The env-level default is OFF because a new base image is
+    `requirements.txt`), `test_910_fill_for_delivery` (wants KiCad's
+    bundled python), and the three whose pcbnew/wx half re-runs under
+    KiCad's python and exits 77 without one -- `test_505_min_connection_clamp`,
+    `test_505_gui_half_runs` and `test_engine_kwarg_parity_launch`.
+    The env-level default is OFF because a new base image is
     a NEW BASELINE ERA that voids cross-wave numeric comparisons -- a reason
     that does NOT apply to the pass/fail suite, which compares no numbers
     across runs.
@@ -458,6 +461,19 @@ the last lap made. Grazes INSIDE the outline stay accepted as library art,
 but only `check_drc --baseline <the run's starting board>` can tell an
 inherited graze from one a part move created (`graphic-board-edge`); without
 it they read `unverified`. Pass `--baseline` whenever you have that board.
+
+**Another part's pad ON that copper is the same blind spot (#1266).** Pad
+legality measured pads against pads, so `place_pose set C3 135.6 96.69 --rot
+180` parked esp_prog C3 on U2's tab -- one pad across its edge, one wholly
+inside the filled shape -- `legal`, `buildable`, and check_drc saw only the
+first. `check_drc.footprint_graphic_pad_census` is the one measurement:
+check_drc grades the interior, `grade_pad_legality` publishes it as
+`graphic_pad_*` (place_pose gates on it), the seeder's gate
+(`LegalityContext.pair_shortfall`) charges it against pads with an
+off-board seed licensing nothing, and check_assembly gates a contact the way
+it gates courtyards -- a member MOVED vs `--baseline`, report-only without
+one -- because human boards ship such contacts by design (net ties on Kelvin
+shunt pads, a jumper on an antenna feed; a tie's own net is never a stack).
 
 **Scope a placement search to the refs the gate names.** When a gate names
 specific parts, free exactly those and lock everything else. A global sweep
@@ -871,7 +887,9 @@ pcb = parse_kicad_pcb('path/to/file.kicad_pcb')
   (`segment.graphic_ring`, #1181) is stamped by the obstacle map and graded by
   check_drc, lifted only for the shape's one own-pad net (or a declared tie
   group), and a touching track or via grants net-tie copper its net but no
-  other footprint's (KiCad gives that copper none). #962 adds what a
+  other footprint's (KiCad gives that copper none). A PAD grants a part's
+  copper its net only when it is that part's own pad (#1266): a foreign pad
+  over one vertex of esp_prog U2's tab used to waive its own short. #962 adds what a
   MEASUREMENT needs: `segment.drawn_width`
   (the stroke as drawn -- `width` models a stroke-0 fill at the track width),
   `graphic_kind`, `graphic_circle` (the true circle; the outline is a 16-gon)
@@ -972,6 +990,12 @@ pcb = parse_kicad_pcb('path/to/file.kicad_pcb')
 - `segment.net_id` - Net ID
 - `segment.locked` - KiCad `(locked yes)`: user-pinned copper; its net is never
   rip-eligible (#521), no override
+- `segment.held_by` - the `sense:<REF>.<PAD>` KiCad group holding this copper
+  immutable (#1279, a declared Kelvin sense branch). A pass that moves,
+  rewrites or removes existing copper must test
+  `kicad_parser.is_immutable_copper(item)` (locked OR held), never `locked`
+  alone; the hold is never written as `(locked yes)` and does not make the
+  net's routes of the run unrippable
 
 ### Via Attributes
 

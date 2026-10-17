@@ -333,7 +333,8 @@ key-by-key reading.
 
 Before anything is written, the PLAN is checked against itself and the board
 (`floorplan.plan_check`, #959). An area bound no arrangement can meet within
-a declared overlap budget, a part longer than its edge, or a real reference
+a declared overlap budget, a part longer than its edge, two exact fixed poses
+whose side-aware courtyard/pad/hole geometry conflicts, or a real reference
 used as a glob that lands a part in two disjoint zones refuses at **exit 5**
 with nothing written and `JSON_SUMMARY.refused: 'plan_check'`
 (`floorplan.PLAN_SEED_REFUSES`). Every other plan finding is printed as
@@ -740,7 +741,10 @@ grade on the input, refusing (exit 4, nothing written) only a request that
 makes a category worse. A pad stack (two parts' pad copper overlapping, any
 net -- check_assembly's `pad_intersection`) is a category since #1064,
 measured by `legality.pad_intersection_pairs`, the function check_assembly's
-channel now is. An absolute gate would refuse poses no worse than
+channel now is; so, since #1266, is a pad on another part's footprint
+graphic copper (`graphic_pad_*`, check_drc's `footprint_graphic_pad_census`),
+which the search's gate charges in `pair_shortfall` too, licensed by an
+on-board seed only. An absolute gate would refuse poses no worse than
 where the part already sits — and would refuse to arrange the unplaced pile
 this tool exists for. `--strict-legal` is the absolute arm, `--force` the
 waiver, and a KiCad `(locked yes)` is refused unless the same call `unlock`s

@@ -70,6 +70,7 @@ When specifying multiple nets, each net is paired with its corresponding plane l
 | `--via-drill` | 0.3 | Via drill size in mm |
 | `--track-width` | 0.3 | Track width for via-to-pad connections in mm |
 | `--clearance` | 0.25 | Clearance from other copper in mm |
+| `--net-clearances` | - | JSON file mapping net name -> clearance in mm (the file `route.py` / `route_diff.py` take). It REPLACES the per-net map auto-read from the board's net classes for plane taps, the pour's fill model and `--add-gnd-vias` return vias, used as given (not capped by `--clearance-ceiling`); a net it does not name routes at the run's clearance. GUI: the Advanced tab's **Net Clearances File** |
 
 ### Zone Options
 
@@ -87,7 +88,7 @@ When specifying multiple nets, each net is paired with its corresponding plane l
 | `--hole-to-hole-clearance` | 0.2 | Minimum clearance between drill holes in mm (fab floor) |
 | `--same-net-pad-clearance` | project record, else -1 | Edge-to-edge clearance (mm) between placed vias and same-net pads. `> 0` keeps **all** of this step's vias (stitching, taps, region joins) off same-net pads at that clearance, and records the value in the sibling `.kicad_pro` (`kicad_routing_tools.same_net_pad_clearance`) so later chain steps — `route.py`, `route_diff.py`, `bga_fanout`/`qfn_fanout`, `repair_planes` — inherit it (#581). `0` keeps its legacy stitching-only meaning; `-1` explicitly allows via-in-pad. Unset = use the project's recorded value if one exists |
 | `--layers`, `-l` | F.Cu + plane-layers + B.Cu | All copper layers for routing and via span (auto-computed) |
-| `--layer-costs` | 1.0 per layer (4+) or F.Cu=1.0/B.Cu=3.0 (2-layer) | Per-layer routing cost multipliers (1.0-1000) |
+| `--layer-costs` | 1.0 per layer (4+) or F.Cu=1.0/B.Cu=3.0 (2-layer) | Per-layer routing cost multipliers (1.0-1000), one per `--layers` entry; any other count is refused |
 
 ### Multi-net Plane Layer Options
 

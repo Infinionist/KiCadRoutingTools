@@ -114,8 +114,8 @@ ROWS = [
      (T1106,), 'KILLED'),
     # --- #1108: route_planes refusals exit non-zero -------------------------
     ('no-output-exits-zero', 'rp',
-     "    return 1 if _no_output else 0",
-     "    return 0",
+     "    return finish_design_rules(args, 1 if _no_output else 0)",
+     "    return finish_design_rules(args, 0)",
      (T1108,), 'KILLED'),
     ('count-mismatch-not-an-arg-error', 'rp',
      "        parser.error(\n"

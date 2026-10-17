@@ -193,9 +193,10 @@ def _net_conn_graph(net_id: int, pcb_data: PCBData, inv_tol: float) -> "_NetConn
         xs.append(s.end_x);   ys.append(s.end_y);   ks.append(k2[0])
 
     def via_layers(v) -> List[str]:
-        if not v.layers or ('F.Cu' in v.layers and 'B.Cu' in v.layers):
-            return all_cu
-        return v.layers
+        # Every layer for a through via whatever its pair; the run between the
+        # ends of a typed blind/micro via (found reviewing #1268).
+        from geometry_utils import via_copper_layers
+        return via_copper_layers(v, all_cu) or all_cu
 
     via_at: Dict[Tuple, set] = {}
     vx, vy, vr, vkeys, vlayers = [], [], [], [], []
@@ -345,6 +346,8 @@ def identify_target_pads(
     off_board = make_off_board_test(pcb_data.board_info)
 
     for pad in pads:
+        if pad.sense:
+            continue    # #1279: a sense pad joins its net at the join pad only
         if off_board is not None and off_board(pad.global_x, pad.global_y):
             target_pads.append({
                 'pad': pad,
@@ -566,6 +569,10 @@ def build_via_obstacle_map(
     # rule areas (#25).
     add_user_keepout_obstacles(obstacles, pcb_data, config, coord, num_layers)
     add_rule_area_keepout_obstacles(obstacles, pcb_data, config)
+    # #1279: the target net's protected sense branches are foreign to it.
+    from sense_branch import stamp_plane_obstacles
+    stamp_plane_obstacles(obstacles, pcb_data, config, exclude_net_id,
+                          config.layers, tracks=False)
 
     if verbose:
         print(f"  Total obstacle build: {time.time() - t_start:.2f}s")
@@ -1344,6 +1351,10 @@ def build_routing_obstacle_map(
     # (index 0 == route_layer), so scope the rule-area pass to route_layer.
     add_user_keepout_obstacles(obstacles, pcb_data, config, coord, num_layers)
     add_rule_area_keepout_obstacles(obstacles, pcb_data, config, layers=[route_layer])
+    # #1279: the target net's protected sense branches are foreign to it.
+    from sense_branch import stamp_plane_obstacles
+    stamp_plane_obstacles(obstacles, pcb_data, config, exclude_net_id,
+                          [route_layer], tracks=True)
 
     if verbose:
         print(f"  Total routing obstacle build: {time.time() - t_start:.2f}s")

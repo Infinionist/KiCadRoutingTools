@@ -920,6 +920,17 @@ def cmd_poses(a):
                               'nets': len(a.affected),
                               'returncode': res.get('returncode'),
                               'summary_error': res.get('summary_error')}
+    # A part OFF the board is ranked with the poses merely less off it too
+    # (the escape branch, so it can come home); `rank_poses` labels those
+    # `legal: false, escape: true`, and this says so where a reader looks.
+    _esc = sum(1 for p in poses if p.get('escape'))
+    _esc_note = None
+    if _esc:
+        _esc_note = (f"{a.ref} sits off the board: {_esc} of the "
+                     f"{len(poses)} ranked poses are only LESS off it "
+                     f"(escape: true, legal: false) -- a way home, not a "
+                     f"legal pose")
+        print(f"converge poses {a.ref}: {_esc_note}", file=sys.stderr)
     # A cut sweep returns a DIFFERENT best pose with a byte-identical document
     # shape -- measured, r=3/s=0.25: a full sweep chose rot 0 where a truncated
     # one chose rot 90, with no key marking it partial. A ranking nobody can
@@ -931,6 +942,7 @@ def cmd_poses(a):
                       'dropped_in_place': diag.get('dropped_in_place', []),
                       **_veto,
                       **({'note': _all_note} if _all_note else {}),
+                      **({'escape_note': _esc_note} if _esc_note else {}),
                       'poses': poses}, indent=1))
     return 0
 

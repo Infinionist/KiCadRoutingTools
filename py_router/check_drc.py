@@ -21,6 +21,7 @@ from geometry_utils import (
     closest_point_on_segment,
     segment_to_segment_closest_points,
     segment_to_segment_distance as _seg_seg_dist_coords,
+    via_on_layer,
 )
 from net_queries import expand_pad_layers
 
@@ -416,9 +417,11 @@ def check_via_segment_overlap(via: Via, seg: Segment, clearance: float, clearanc
     Args:
         clearance_margin: Fraction of clearance to use as tolerance (default 0.05 = 5%).
     """
-    # Standard through-hole vias go through ALL copper layers, not just the ones listed
-    # Only skip non-copper layers
+    # A through via is on ALL copper layers; a blind/buried/micro via only on the
+    # layers between its end layers (an F.Cu->In1.Cu microvia is not on In2..B.Cu).
     if not seg.layer.endswith('.Cu'):
+        return False, 0.0
+    if not via_on_layer(via, seg.layer):
         return False, 0.0
 
     required_dist = via.size / 2 + seg.width / 2 + clearance
@@ -837,9 +840,22 @@ def graphic_effective_nets(pcb_data, include_mutable=True):
                         if _sh is not None and _sh.contains(v.x, v.y):
                             continue
                         eff.add(v.net_id)
-            # touching pads (on the graphic's layer)
+            # touching pads (on the graphic's layer). #1266: only the OWNER's
+            # pads give a footprint's copper a net -- a net tie's included,
+            # whose copper KiCad grades against a pad outside its tie
+            # (OpenWeatherStation: `shorting_items` between NT1's pad and
+            # NT2's polygon). A foreign pad that merely covered one of the
+            # shape's vertices granted ITS net to the whole cluster, which
+            # then waived its own short: esp_prog C3 placed with pad 1 over a
+            # corner of U2's tab graded clean.
+            _own_pads = None
+            if _owner:
+                _own_pads = ({id(p) for p in _ofp.pads} if _ofp is not None
+                             else set())
             for pads in pcb_data.pads_by_net.values():
                 for pd in pads:
+                    if _own_pads is not None and id(pd) not in _own_pads:
+                        continue
                     lys = pd.layers or []
                     if g.layer not in lys and '*.Cu' not in lys:
                         continue
@@ -1081,6 +1097,335 @@ def filled_graphic_lift_nets(shape: FilledGraphic, own_pad_nets, footprints):
     fp = (footprints or {}).get(shape.owner_ref) if shape.owner_ref else None
     tie = _net_tie_group_nets(fp, nets) if fp is not None else set()
     return frozenset(nets) if tie and nets <= tie else frozenset()
+
+
+# --- #1266: pad copper against ANOTHER part's footprint graphic copper -------
+#
+# A footprint's drawn copper (#908's `fp_poly` / `fp_line` on F.Cu or B.Cu: a
+# SOT-89 tab, an antenna) reached placement and check_assembly only as the
+# OUTLINE census above, never part against part: esp_prog C3 placed on U2's tab
+# was `legal` to place_pose and `buildable` to check_assembly. One measurement,
+# here, serves all three: check_drc grades its interior below, placement's pad
+# census (`grade_pad_legality`) and its per-candidate gate
+# (`LegalityContext.pair_shortfall`) call `pad_graphic_piece_overlap`, and
+# check_assembly gates on the census's contacts.
+
+class GraphicStroke:
+    """One stroke of footprint graphic copper at a pose (#1266): the fields
+    `check_pad_segment_overlap` reads, plus `drawn`, the stroke as DRAWN. A
+    slotted record rather than a Segment copy, because the placement gate
+    poses these per candidate.
+
+    `width` is the MODELLED stroke the checker grades clearance at (a
+    stroke-0 fill is modelled at the track width, #962), and `drawn` the
+    copper's real width, which is what decides CONTACT: graded at the
+    modelled width, every pad that abuts a stroke-0 shape read as 0.15 mm
+    deep in it."""
+    __slots__ = ('start_x', 'start_y', 'end_x', 'end_y', 'width', 'layer',
+                 'drawn')
+    graphic = True
+    net_id = 0
+
+    def __init__(self, sx, sy, ex, ey, width, layer, drawn=None):
+        self.start_x, self.start_y, self.end_x, self.end_y = sx, sy, ex, ey
+        self.width = width
+        self.layer = layer
+        self.drawn = width if drawn is None else drawn
+
+
+class GraphicPiece:
+    """One SHAPE of a footprint's graphic copper, at one pose (#1266).
+
+    `strokes` are its `GraphicStroke`s (a filled shape's perimeter, or a
+    drawn line or arc), `filled` its `FilledGraphic` interior or None, `nets`
+    the nets its owner's OWN pads give it (`filled_graphic_lift_nets`' rule:
+    exactly one, or a declared tie group's), `tie` whether the owner declares
+    a net tie, and `bbox` the copper's extent with the stroke half-width.
+    """
+    __slots__ = ('owner_ref', 'layer', 'strokes', 'filled', 'nets', 'bbox',
+                 'tie')
+
+    def __init__(self, owner_ref, layer, strokes, filled, nets, tie=False):
+        self.owner_ref = owner_ref
+        self.layer = layer
+        self.strokes = strokes
+        self.filled = filled
+        self.nets = nets
+        self.tie = tie
+        hw = max((s.width for s in strokes), default=0.0) / 2.0
+        xs = [v for s in strokes for v in (s.start_x, s.end_x)]
+        ys = [v for s in strokes for v in (s.start_y, s.end_y)]
+        if filled is not None:
+            x0, y0, x1, y1 = filled._bbox
+            xs += [x0, x1]
+            ys += [y0, y1]
+            if filled.circle is not None:
+                cx, cy, r = filled.circle
+                xs += [cx - r, cx + r]
+                ys += [cy - r, cy + r]
+        self.bbox = ((min(xs) - hw, min(ys) - hw, max(xs) + hw, max(ys) + hw)
+                     if xs else None)
+
+    def posed(self, move) -> 'GraphicPiece':
+        """This piece with every point sent through `move(x, y) -> (x, y)`."""
+        strokes = [GraphicStroke(*move(s.start_x, s.start_y),
+                                 *move(s.end_x, s.end_y), s.width, s.layer,
+                                 s.drawn)
+                   for s in self.strokes]
+        filled = None
+        f = self.filled
+        if f is not None:
+            circ = None
+            if f.circle is not None:
+                cx, cy = move(f.circle[0], f.circle[1])
+                circ = (cx, cy, f.circle[2])
+            filled = FilledGraphic(tuple(move(x, y) for x, y in f.ring),
+                                   f.layer, f.net_id, f.owner_ref, circ)
+            filled.members = strokes
+        return GraphicPiece(self.owner_ref, self.layer, strokes, filled,
+                            self.nets, self.tie)
+
+
+def _graphic_motion(fp):
+    """`move(x, y)` taking a footprint's graphic copper from where it was
+    PARSED to where the footprint is NOW (`_reposed_shape`'s transform), None
+    when it has not moved (or has no parse pose), False when it changed side
+    (a mirror this does not re-derive)."""
+    pp = getattr(fp, 'parsed_pose', None)
+    if not pp:
+        return None
+    x0, y0, r0, l0 = pp
+    if fp.layer != l0:
+        return False
+    x1, y1, r1 = fp.x, fp.y, (fp.rotation or 0.0)
+    dr = ((r1 - r0) + 180.0) % 360.0 - 180.0
+    if abs(x1 - x0) < 1e-9 and abs(y1 - y0) < 1e-9 and abs(dr) < 1e-9:
+        return None
+    from kicad_parser import _global_to_local, local_to_global
+
+    def move(gx, gy):
+        lx, ly = _global_to_local(x0, y0, r0, gx, gy)
+        return local_to_global(x1, y1, r1, lx, ly)
+    return move
+
+
+def footprint_graphic_pieces(pcb_data):
+    """`(pieces, unmeasured)`: every FOOTPRINT's graphic copper as
+    `GraphicPiece`s at its owner's CURRENT pose (#1266).
+
+    Board-level art (`gr_*`, no owner) is not a part's copper and is left out.
+    A part that changed side in memory is listed in `unmeasured`
+    (`{'owner_ref', 'kind': 'moved-side', 'reason'}`) rather than graded where
+    it no longer is. A piece's `nets` are read on the PARSED geometry, where
+    the owner's pads and copper still agree.
+    """
+    fps = getattr(pcb_data, 'footprints', None) or {}
+    own = graphic_own_pad_nets(pcb_data)
+    pieces, unmeasured, motions = [], [], {}
+    for shape in graphic_copper_shapes(pcb_data):
+        owner = shape['owner']
+        fp = fps.get(owner) if owner else None
+        if fp is None:
+            continue
+        segs = shape['segs']
+        strokes = [GraphicStroke(s.start_x, s.start_y, s.end_x, s.end_y,
+                                 s.width, s.layer,
+                                 getattr(s, 'drawn_width', None))
+                   for s in segs]
+        filled = None
+        if any(getattr(s, 'graphic_ring', None) for s in segs):
+            for sh in filled_graphic_shapes(_SegmentsOnly(segs)):
+                filled = sh
+                break
+        nets = (filled_graphic_lift_nets(filled, own, fps) if filled is not None
+                else filled_graphic_lift_nets(_SegmentsOnly(segs, owner), own,
+                                              fps))
+        if filled is not None:
+            filled.members = strokes
+        piece = GraphicPiece(owner, shape['layer'], strokes, filled, nets,
+                             bool(getattr(fp, 'net_tie_groups', None)))
+        if owner not in motions:
+            motions[owner] = _graphic_motion(fp)
+        move = motions[owner]
+        if move is False:
+            if not any(u['owner_ref'] == owner for u in unmeasured):
+                unmeasured.append({'owner_ref': owner, 'kind': 'moved-side',
+                                   'reason': 'the part changed side since '
+                                             'parse; its copper is not '
+                                             're-mirrored'})
+            continue
+        pieces.append(piece.posed(move) if move is not None else piece)
+    return pieces, unmeasured
+
+
+class _SegmentsOnly:
+    """The two fields `filled_graphic_shapes` / `filled_graphic_lift_nets`
+    read, over a plain list of graphic segments."""
+    def __init__(self, segs, owner_ref=''):
+        self.segments = segs
+        self.members = segs
+        self.owner_ref = owner_ref
+
+
+def pad_graphic_piece_overlap(pad, piece: GraphicPiece, clearance: float,
+                              routing_layers) -> Tuple[float, bool, bool]:
+    """ONE pad's copper against ONE piece of another part's graphic copper
+    (#1266): `(shortfall_mm, contact, inside)`.
+
+    `shortfall_mm` is how far the pad falls short of `clearance` from the
+    copper, 0.0 when clear: the strokes by `check_pad_segment_overlap` (the
+    test check_drc grades pad-to-segment with) and the filled interior by
+    depth, since a pad lying INSIDE a filled shape touches none of its
+    strokes. `contact` is the copper TOUCHING the pad, whatever the nets --
+    the assembly fact, judged on the stroke as DRAWN (`GraphicStroke.drawn`)
+    where the shortfall takes the modelled width the checker grades. `inside`
+    is the pad WHOLLY inside the filled interior: its centre in it and no
+    stroke touching it. Margin 0. Nets are the caller's: `piece.nets` says
+    which ones the copper is its owner's own.
+    """
+    best = 0.0
+    contact = False
+    for s in piece.strokes:
+        hit, over, _pt = check_pad_segment_overlap(pad, s, clearance,
+                                                   routing_layers, 0.0)
+        if hit:
+            if over > best:
+                best = over
+            drawn = getattr(s, 'drawn', None)
+            if drawn is None:
+                drawn = getattr(s, 'drawn_width', None)
+            if drawn is None:
+                drawn = s.width
+            # `over` is width/2 + clearance - (pad edge to the centre line)
+            if s.width / 2.0 + clearance - over <= drawn / 2.0 + FP_EPS_MM:
+                contact = True
+    inside = False
+    f = piece.filled
+    if f is not None and f.layer in _expand_cu(pad.layers, routing_layers) \
+            and f.contains(pad.global_x, pad.global_y):
+        inside = not contact
+        contact = True
+        best = max(best, clearance + f.boundary_distance(pad.global_x,
+                                                         pad.global_y))
+    return best, contact, inside
+
+
+def graphic_contact_is_stack(piece: GraphicPiece, pad_net: int,
+                             contact: bool) -> bool:
+    """Is a pad's CONTACT with another part's graphic copper a stack (#1266)?
+
+    Any net -- two parts' copper in one place, check_assembly's
+    pad_intersection argument -- except a pad of a NET TIE's own tied net on
+    the tie's copper. That contact is what a net tie is FOR, and KiCad grades
+    it clean: DIN_41612_Backplane's Kelvin ties NT1-NT4 sit on shunt
+    resistors R3/R21's pads, while OpenWeatherStation's NT1 pad on NT2's
+    copper (another net) is a `shorting_items`.
+    """
+    return bool(contact) and not (piece.tie and pad_net
+                                  and pad_net in piece.nets)
+
+
+#: What `footprint_graphic_pad_census` measures, carried in every report.
+GRAPHIC_PAD_BASIS = (
+    "each part's pad copper against every OTHER part's footprint graphic "
+    "copper (fp_poly / fp_line / fp_arc / fp_rect / fp_circle on a copper "
+    "layer, #908) on a shared layer: the strokes by check_drc's "
+    "pad-to-segment test, a filled shape's interior by containment (#1181). "
+    "A CONTACT is judged on the stroke as drawn and is a `stack` on ANY net "
+    "(two parts' copper in one place, check_assembly's pad_intersection "
+    "argument) except a net tie's own tied net on the tie's copper; the "
+    "clearance shortfall is graded at the modelled stroke check_drc grades "
+    "and skips a pad of the one net the copper's owner gives it. Board-level "
+    "art is not measured, nor copper the parser does not model "
+    "(graphic_copper_unmeasured)")
+
+
+def footprint_graphic_pad_census(pcb_data, clearance: float,
+                                 routing_layers=None,
+                                 clearance_of=None) -> Dict[str, Any]:
+    """Every pad that touches, or sits within clearance of, ANOTHER part's
+    footprint graphic copper (#1266). `{'rows', 'unmeasured', 'basis'}`.
+
+    One row per (pad, copper owner), worst piece first::
+
+        {'pad_ref': 'C3.2', 'ref': 'C3', 'owner_ref': 'U2', 'layer': 'F.Cu',
+         'net': 'GND', 'shortfall_mm': 1.03, 'contact': True,
+         'inside_filled': True, 'same_net': False}
+
+    `shortfall_mm` is the DIFFERENT-net clearance shortfall (0.0 when the pad
+    is the copper's own net); `contact` is on any net. `clearance_of(pad,
+    layer)`, when given, is the pair's requirement (placement passes its
+    `PadClearanceModel`); else the flat `clearance`. Pads at the footprint's
+    current `global_x/y`, copper re-posed with its owner (#962).
+    """
+    pieces, unmeasured = footprint_graphic_pieces(pcb_data)
+    rows: List[Dict[str, Any]] = []
+    if not pieces:
+        return {'rows': rows, 'unmeasured': unmeasured,
+                'basis': GRAPHIC_PAD_BASIS}
+    if routing_layers is None:
+        routing_layers = list(getattr(pcb_data.board_info, 'copper_layers',
+                                      None) or ['F.Cu', 'B.Cu'])
+    fps = getattr(pcb_data, 'footprints', None) or {}
+    pads = []
+    for key, fp in fps.items():
+        for pd in fp.pads or ():
+            if _pad_has_no_copper(pd):
+                continue
+            polys = getattr(pd, 'polygons', None)
+            if polys:
+                pts = [p for poly in polys for p in poly]
+                bx = (min(p[0] for p in pts), min(p[1] for p in pts),
+                      max(p[0] for p in pts), max(p[1] for p in pts))
+            else:
+                r = math.hypot(pd.size_x, pd.size_y) / 2.0
+                bx = (pd.global_x - r, pd.global_y - r,
+                      pd.global_x + r, pd.global_y + r)
+            pads.append((key, pd, bx))
+    nets = getattr(pcb_data, 'nets', None) or {}
+    worst: Dict[Tuple[int, str], Dict[str, Any]] = {}
+    reach0 = clearance
+    for piece in pieces:
+        x0, y0, x1, y1 = piece.bbox
+        for key, pd, bx in pads:
+            if key == piece.owner_ref:
+                continue
+            eff = (clearance_of(pd, piece.layer) if clearance_of is not None
+                   else clearance)
+            m = max(eff, reach0)
+            if (bx[0] > x1 + m or bx[2] < x0 - m
+                    or bx[1] > y1 + m or bx[3] < y0 - m):
+                continue
+            sf, contact, inside = pad_graphic_piece_overlap(
+                pd, piece, eff, routing_layers)
+            same = bool(pd.net_id) and pd.net_id in piece.nets
+            diff_sf = 0.0 if same else sf
+            if diff_sf <= FP_EPS_MM and not contact:
+                continue
+            k = (id(pd), piece.owner_ref)
+            row = worst.get(k)
+            if row is None:
+                n = nets.get(pd.net_id)
+                row = worst[k] = {
+                    'pad_ref': f'{key}.{pd.pad_number}', 'ref': key,
+                    'owner_ref': piece.owner_ref, 'layer': piece.layer,
+                    'net': n.name if n else '',
+                    'shortfall_mm': 0.0, 'contact': False, 'stack': False,
+                    'inside_filled': False, 'same_net': True,
+                    'net_tie': piece.tie}
+            if diff_sf > row['shortfall_mm']:
+                row['shortfall_mm'] = round(diff_sf, 4)
+                row['layer'] = piece.layer
+            row['contact'] = row['contact'] or contact
+            row['stack'] = row['stack'] or graphic_contact_is_stack(
+                piece, pd.net_id, contact)
+            row['inside_filled'] = row['inside_filled'] or inside
+            row['same_net'] = row['same_net'] and same
+    rows = sorted(worst.values(),
+                  key=lambda r: (-r['shortfall_mm'], r['pad_ref'],
+                                 r['owner_ref']))
+    return {'rows': rows, 'unmeasured': unmeasured,
+            'basis': GRAPHIC_PAD_BASIS}
 
 
 _GRAPHIC_OWN_PAD_NETS = {}  # set per check run beside _GRAPHIC_EFFECTIVE_NETS
@@ -1368,6 +1713,35 @@ def pad_copper_gap(pad_a: Pad, pad_b: Pad) -> float:
     if best == float('inf'):
         return best
     return max(0.0, best - ra - rb)
+
+
+def segment_pad_gap(x1: float, y1: float, x2: float, y2: float, pad: Pad) -> float:
+    """EXACT gap between a track's CENTRELINE (x1, y1)-(x2, y2) and a pad's
+    copper, 0 where the centreline enters it: the segment twin of
+    pad_copper_gap, on the same shape (_pad_copper_core: custom polygons,
+    round corners, tilt). A track of width w overlaps the pad's copper by
+    w/2 - gap, wherever along it -- a track passing through a pad with both
+    ends outside it included. Not sampled, so a corner graze is measured, not
+    stepped over. Layers are the caller's business."""
+    core, radius = _pad_copper_core(pad)
+    best = float('inf')
+    for poly in core:
+        if not poly:
+            continue
+        # A centreline end inside the core is on the copper; one crossing the
+        # core meets an edge (distance 0) below.
+        if _point_in_poly(x1, y1, poly) or _point_in_poly(x2, y2, poly):
+            return 0.0
+        n = len(poly)
+        for i in range(n):
+            ax, ay = poly[i]
+            bx, by = poly[(i + 1) % n]
+            d = _seg_seg_dist_coords(x1, y1, x2, y2, ax, ay, bx, by)
+            if d < best:
+                best = d
+    if best == float('inf'):
+        return best
+    return max(0.0, best - radius)
 
 
 def _pad_has_no_copper(pad: Pad) -> bool:
@@ -1696,8 +2070,11 @@ def check_pad_via_overlap(pad: Pad, via: Via, clearance: float,
     # Expand pad layers (handles *.Cu wildcards)
     expanded_layers = _expand_cu(pad.layers, routing_layers)
 
-    # Vias are through-hole, so they conflict with pads on any copper layer
-    if not any(layer.endswith('.Cu') for layer in expanded_layers):
+    # A through via conflicts with a pad on any copper layer; a via KiCad
+    # types blind/buried/micro only with a pad on its span (#1268): an SMD pad
+    # on B.Cu over an F.Cu->In1.Cu microvia is no conflict.
+    if not any(layer.endswith('.Cu') and via_on_layer(via, layer)
+               for layer in expanded_layers):
         return False, 0.0
 
     # Distance from via center to pad edge. Handles custom comb/finger polygons
@@ -3614,6 +3991,10 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
             print("Checking copper inside filled graphics...")
         _vxy = (np.array([(v.x, v.y) for v in pcb_data.vias], dtype=np.float64)
                 if pcb_data.vias else np.empty((0, 2)))
+        _pad_list = [_p for _fp in (pcb_data.footprints or {}).values()
+                     for _p in (_fp.pads or ()) if not _pad_has_no_copper(_p)]
+        _pxy = (np.array([(_p.global_x, _p.global_y) for _p in _pad_list],
+                         dtype=np.float64) if _pad_list else np.empty((0, 2)))
         _tracks_by_layer = defaultdict(list)
         for _t in pcb_data.segments:
             if not getattr(_t, 'graphic', False):
@@ -3637,6 +4018,8 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                     _v = pcb_data.vias[int(_i)]
                     if _v.net_id == _sh.net_id and _sh.net_id:
                         continue
+                    if not via_on_layer(_v, _sh.layer):
+                        continue    # #1268: a blind/micro via off this layer
                     if not (_shape_ok or matching_net_ids is None
                             or _v.net_id in matching_net_ids):
                         continue
@@ -3661,6 +4044,54 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                         'overlap_mm': _eff + _bd + _r,
                         'via_loc': (_v.x, _v.y),
                         'seg_loc': (_x0, _y0, _x1, _y1),
+                        'inside_filled': True,
+                    }, _eff))
+            # #1266: and a PAD wholly inside one -- esp_prog C3.2 (GND)
+            # placed inside U2's tab touched no stroke and graded clean. The
+            # depth is `pad_graphic_piece_overlap`'s, the measurement
+            # placement and check_assembly read.
+            if len(_pxy):
+                _near = np.nonzero((_pxy[:, 0] >= _x0) & (_pxy[:, 0] <= _x1)
+                                   & (_pxy[:, 1] >= _y0) & (_pxy[:, 1] <= _y1))[0]
+                _piece = None
+                for _i in _near:
+                    _p = _pad_list[int(_i)]
+                    if _p.net_id == _sh.net_id:
+                        continue    # the stroke loop's own same-net skip
+                    if not (_shape_ok or matching_net_ids is None
+                            or _p.net_id in matching_net_ids):
+                        continue
+                    _eff = _pad_pair_cl(_p, _sh.net_id, layer=_sh.layer)
+                    if any(check_pad_segment_overlap(_p, _m, _eff, routing_layers,
+                                                     clearance_margin)[0]
+                           for _m in _sh.members):
+                        continue    # the stroke test reached it (flagged or waived)
+                    if _piece is None:
+                        _piece = GraphicPiece(_sh.owner_ref, _sh.layer,
+                                              _sh.members, _sh, frozenset())
+                    _over, _c, _in = pad_graphic_piece_overlap(
+                        _p, _piece, _eff, routing_layers)
+                    if not _in:
+                        continue
+                    if _graphic_pair_is_same_net(_g0, None, _sh.net_id, _p.net_id):
+                        _own = _footprint_own_copper_owner(_g0, None, _sh.net_id,
+                                                           _p.net_id)
+                        if _own:
+                            _accepted_edge.append(_footprint_own_copper_row(
+                                pcb_data, _own, _p.net_id, _sh.layer, 0.0,
+                                (_p.global_x, _p.global_y)))
+                        continue
+                    violations.append(_mark_required({
+                        'type': 'pad-segment',
+                        'item2': graphic_item_label(_g0),
+                        'no_net': _p.net_id == 0 or _sh.net_id == 0,
+                        'net1': _name(_p.net_id), 'net2': _name(_sh.net_id),
+                        'layer': _sh.layer,
+                        'overlap_mm': _over,
+                        'pad_loc': (_p.global_x, _p.global_y),
+                        'pad_ref': f"{_p.component_ref}.{_p.pad_number}",
+                        'seg_loc': (_x0, _y0, _x1, _y1),
+                        'closest_pt': (_p.global_x, _p.global_y),
                         'inside_filled': True,
                     }, _eff))
             _arr = _txy.get(_sh.layer)

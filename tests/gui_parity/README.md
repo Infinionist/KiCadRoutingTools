@@ -266,8 +266,9 @@ step without it go through `manifest_to_plan`'s CLI and the REAL PlanExecutor
 on the headless dialog, each action replaced by a probe. The flagged step's
 control AND the tab config its engine reads must hold the recorded value; the
 next step must be back at the CLI default. It also drives the QFN tab's real
-fanout run (engine spied) for `--layer` and both routing workers for
-`--net-clearances`, so the value is shown reaching the engine call.
+fanout run (engine spied) for `--layer` and the Route, Differential and
+Planes workers for `--net-clearances`, so the value is shown reaching the
+engine call.
 
 The same blindness applies one level up, to whole TOOLS: an unknown tool only
 bumps the converter's `skipped` count, so a converted plan reads complete
@@ -436,6 +437,12 @@ skip cleanly without KiCad python). Run any directly:
 - `test_plane_all_layers_parity.py` -- GUI create passes `all_layers` =
   outer+pour (the route_planes default), not all 6 copper layers (mocks
   create_plane to capture the kwarg).
+- `test_plane_layer_costs_gui.py` -- and one Layer Costs value per entry of
+  that `all_layers`, placed by name from the Basic-tab field (one per copper
+  or per selected layer). The tab used to hand over the SELECTED layers'
+  costs, which create_plane read positionally against its own list; a
+  per-selected-layer field that cannot price an unselected pour layer is
+  refused before the engine. Real dialog, create_plane mocked.
 - `test_live_fab_floor_origin.py` -- a GUI routing step's live writeback
   (`apply_targets_to_board`, then `update_live_drc_floors`) records the board's
   ORIGINAL fab floors in `kicad_routing_tools.fab_floor_origin` before lowering
@@ -458,7 +465,10 @@ skip cleanly without KiCad python). Run any directly:
   rule (#498), every copper layer (not the plane step's outer+pour set), and
   the fab copper-to-edge floor; GUI and CLI place identical vias. On the
   pre-2026-09-24 code it fails 9 checks, CLI included (its rules lookup read
-  the output's not-yet-copied `.kicad_dru`).
+  the output's not-yet-copied `.kicad_dru`). Its `file` arm (#1272) sets the
+  Net Clearances File / `--net-clearances`: the file replaces the class map
+  as given on both fronts (2 checks fail before #1272: the tab ignored the
+  file, route_planes.py refused the flag).
 - `test_skip_existing_zones_gui.py` -- the Planes tab's **Skip existing
   zones** box against `route_planes.py` with and without
   `--skip-existing-zones`, on the real tab (create + apply on a live board):
@@ -574,6 +584,31 @@ skip cleanly without KiCad python). Run any directly:
   logged in GREEN; and `reset_params_to_defaults` must NOT untick it (the plan
   executor calls that before every step, so a reset there would abandon the
   run's movie halfway) while an explicit reset-all does.
+- `test_via_type_parse_parity.py` -- a via's copper span (#1268). The text
+  parse, the pcbnew parse and the Route tab's live re-sync
+  (`_sync_pcb_data_from_board`) are each held, layer by layer, to pcbnew's
+  own `PCB_VIA.IsOnLayer` on a board of through, blind, buried and micro vias
+  and on the same board with every type word stripped -- which KiCad loads as
+  through vias, and which is the shape this repo's writer emits. A span read
+  off the layer pair fails the stripped board on the text side only. A third
+  arm re-creates every typed via the way the plugin does
+  (`gui_utils.set_via_layers`: the type before the layer pair, which pcbnew
+  otherwise snaps to F.Cu/B.Cu) and holds it to the original copper.
+- `test_1279_sense_branch_live.py` -- the live board keeps a `sense:` branch
+  (#1279). After the Route tab's re-sync the tracks, arc pieces and vias carry
+  what a fresh `build_pcb_data_from_board` reads (one shared extractor), copper
+  graphics survive, the branches and the protection map (memo included) match
+  a fresh build, a group drawn or removed in the session counts at the next
+  sync, and a Route-tab run with the branch's net rippable never strips the
+  sense track. Before the shared extractor the re-sync carried no uuid, no
+  KiCad lock and no arcs: 9 checks fail there. Its Apply arm holds the
+  Placement tab's Place + Route Apply to keeping the copper the run left
+  unchanged (uuid, arc, group membership) and writing no lock token the result
+  file does not carry; the wholesale remove-and-recreate failed 6 checks. Its
+  last arm moves and turns a part whose land pattern draws F.Cu copper (#908)
+  in the live session: after the sync the model's copper graphics must equal
+  a fresh build's. A sync that kept the graphics built at dialog open left the
+  tab where the part had been.
 - `diag_fullchain_carry_rp2350.py` -- **DELETED 2026-07-26.** Was a full
   GUI-carry reproduction (ONE board + ONE shared pcb_data across all 10 plan
   steps, graded per stage vs the CLI) built to localize where the carry

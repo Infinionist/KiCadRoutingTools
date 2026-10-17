@@ -16,7 +16,7 @@ import numpy as np
 from kicad_parser import PCBData, Segment, Via, Pad, Zone
 from routing_config import GridRouteConfig, GridCoord
 from routing_utils import pos_key, segment_length, POSITION_DECIMALS, build_layer_map
-from geometry_utils import UnionFind
+from geometry_utils import UnionFind, via_on_layer
 from routing_constants import BGA_DEFAULT_EDGE_TOLERANCE, BGA_EDGE_DETECTION_TOLERANCE
 
 
@@ -64,12 +64,19 @@ def _pad_touches_copper_group(pad, group, net_vias, routing_layers) -> bool:
     endpoint with no via graded "connected", Case 2 skipped it, and Case 4
     then declared the net already routed without ever verifying.
 
-    Conservative: claims connection only when group copper provably reaches
-    well inside the pad area (segment half-width plus a quarter of the pad's
-    smaller dimension). Under-claiming just adds a redundant endpoint the
-    router connects in a few iterations; over-claiming recreates the
-    phantom-success bug.
+    On the pad's own layers this is check_connected's track-through-pad
+    credit itself (track_reaches_pad: the track's copper overlaps the pad's
+    real copper, KiCad's answer), so the terminal selector and the grader
+    cannot disagree the way #479's "nothing to route" loop needed. It used to
+    be a disc of a quarter of the pad's short side about its centre, mirrored
+    in the grader, which left a track crossing a pad off-centre an open pad
+    to both while KiCad connects it. Reaching the pad on ANOTHER layer
+    through a via-in-pad keeps the conservative disc: there the question is
+    whether the copper reaches the via, which the pad's outline does not
+    answer. Under-claiming just adds a redundant endpoint the router connects
+    in a few iterations; over-claiming recreates the phantom-success bug.
     """
+    from check_connected import track_reaches_pad
     from net_queries import expand_pad_layers
     px, py = pad.global_x, pad.global_y
     pad_layers = expand_pad_layers(pad.layers, routing_layers)
@@ -92,7 +99,11 @@ def _pad_touches_copper_group(pad, group, net_vias, routing_layers) -> bool:
         for v in net_vias
     )
     for seg in group:
-        if seg.layer not in pad_layers and not reaches_all_layers:
+        if seg.layer in pad_layers:
+            if track_reaches_pad(seg, pad):
+                return True
+            continue
+        if not reaches_all_layers:
             continue
         dx = seg.end_x - seg.start_x
         dy = seg.end_y - seg.start_y
@@ -614,12 +625,14 @@ def get_terminal_component_info(
     # Local import: check_connected -> net_queries -> connectivity would cycle.
     from check_connected import check_net_connectivity
 
-    net_segments = [s for s in pcb_data.segments if s.net_id == net_id]
-    net_vias = [v for v in pcb_data.vias if v.net_id == net_id]
+    # #1279: the islands a route may launch from or land on never include
+    # protected sense copper (`routable`).
+    net_segments = routable(s for s in pcb_data.segments if s.net_id == net_id)
+    net_vias = routable(v for v in pcb_data.vias if v.net_id == net_id)
     net_zones = [z for z in pcb_data.zones if z.net_id == net_id]
     # ALL net pads (not just terminals): a non-terminal pad can be the copper
     # that bridges two islands (e.g. both escapes land in one connector pad).
-    net_pads = pcb_data.pads_by_net.get(net_id, [])
+    net_pads = routable(pcb_data.pads_by_net.get(net_id, []))
 
     res = check_net_connectivity(net_id, net_segments, net_vias, net_pads,
                                  net_zones, return_graph=True,
@@ -1084,10 +1097,15 @@ def calculate_stub_via_barrel_length(stub_vias: List, stub_layer: str, pcb_data)
         if pad_layer and pad_layer != stub_layer:
             # Calculate barrel from stub layer to pad layer
             total += pcb_data.get_via_barrel_length(stub_layer, pad_layer)
-        elif stub_layer in via.layers:
-            # No pad found or same layer - use via's other layer
-            other_layer = via.layers[1] if via.layers[0] == stub_layer else via.layers[0]
-            total += pcb_data.get_via_barrel_length(stub_layer, other_layer)
+        else:
+            # No pad found or same layer - use the via's other END, read by
+            # its type: a through via's ends are F.Cu/B.Cu whatever pair it
+            # carries (found reviewing #1268).
+            from geometry_utils import via_end_layers
+            ends = via_end_layers(via)
+            if stub_layer in ends:
+                other_layer = ends[1] if ends[0] == stub_layer else ends[0]
+                total += pcb_data.get_via_barrel_length(stub_layer, other_layer)
 
     return total
 
@@ -1110,6 +1128,15 @@ def drop_off_board_pads(pcb_data: PCBData, pads: List[Pad]) -> List[Pad]:
     if off_board is None:
         return pads
     return [p for p in pads if not off_board(p.global_x, p.global_y)]
+
+
+def routable(items) -> list:
+    """`items` (a net's segments, vias or pads) without the protected Kelvin
+    sense copper and sense pads (#1279, sense_branch.py): a net's new copper
+    may join an existing sense branch only at its join pad, so the endpoint
+    and terminal derivations below never offer the branch as a place to
+    attach. The join pad is not tagged and stays an ordinary terminal."""
+    return [x for x in items if not getattr(x, 'sense', '')]
 
 
 def get_net_endpoints_anchor_split(pcb_data: PCBData, net_id: int,
@@ -1162,7 +1189,7 @@ def get_net_endpoints_anchor_split(pcb_data: PCBData, net_id: int,
         db = (x - bx) ** 2 + (y - by) ** 2
         (side_a if da <= db else side_b).append((gx, gy, layer_idx, x, y))
 
-    for seg in pcb_data.segments:
+    for seg in routable(pcb_data.segments):   # #1279
         if seg.net_id != net_id:
             continue
         layer_idx = layer_map.get(seg.layer)
@@ -1173,13 +1200,13 @@ def get_net_endpoints_anchor_split(pcb_data: PCBData, net_id: int,
         _add(seg.start_x, seg.start_y, layer_idx, gx1, gy1)
         if (gx1, gy1) != (gx2, gy2):
             _add(seg.end_x, seg.end_y, layer_idx, gx2, gy2)
-    for pad in drop_off_board_pads(pcb_data, pcb_data.pads_by_net.get(net_id, [])):
+    for pad in routable(drop_off_board_pads(pcb_data, pcb_data.pads_by_net.get(net_id, []))):
         gx, gy = coord.to_grid(pad.global_x, pad.global_y)
         for layer in expand_pad_layers(pad.layers, config.layers):
             layer_idx = layer_map.get(layer)
             if layer_idx is not None:
                 _add(pad.global_x, pad.global_y, layer_idx, gx, gy)
-    for via in pcb_data.vias:
+    for via in routable(pcb_data.vias):
         if via.net_id != net_id:
             continue
         gx, gy = coord.to_grid(via.x, via.y)
@@ -1262,9 +1289,10 @@ def _get_net_endpoints_ordered(pcb_data: PCBData, net_id: int, config: GridRoute
     coord = GridCoord(config.grid_step)
     layer_map = build_layer_map(config.layers)
 
-    net_segments = [s for s in pcb_data.segments if s.net_id == net_id]
-    net_pads = drop_off_board_pads(pcb_data, pcb_data.pads_by_net.get(net_id, []))
-    net_vias = [v for v in pcb_data.vias if v.net_id == net_id]
+    # #1279: a protected sense branch is never a terminal (`routable`).
+    net_segments = routable(s for s in pcb_data.segments if s.net_id == net_id)
+    net_pads = routable(drop_off_board_pads(pcb_data, pcb_data.pads_by_net.get(net_id, [])))
+    net_vias = routable(v for v in pcb_data.vias if v.net_id == net_id)
 
     # Case 1: Multiple segment groups
     if len(net_segments) >= 2:
@@ -1441,6 +1469,8 @@ def _get_net_endpoints_ordered(pcb_data: PCBData, net_id: int, config: GridRoute
                     for _via in _vlist:
                         gx, gy = coord.to_grid(_via.x, _via.y)
                         for _vlayer in config.layers:
+                            if not via_on_layer(_via, _vlayer):
+                                continue    # a blind/micro via: its span only
                             layer_idx = layer_map.get(_vlayer)
                             if layer_idx is not None:
                                 _side.append((gx, gy, layer_idx, _via.x, _via.y))
@@ -1530,8 +1560,11 @@ def _get_net_endpoints_ordered(pcb_data: PCBData, net_id: int, config: GridRoute
                     # the tip is on an unmapped layer) or it lands on the target pad.
                     if (use_stub_free_ends and sources and not near_unconnected):
                         continue
-                    # Add via as endpoint on ALL routing layers (vias are through-hole)
+                    # Add via as endpoint on every routing layer it reaches: all
+                    # of them for a through via, its span for a blind/micro one.
                     for layer in config.layers:
+                        if not via_on_layer(via, layer):
+                            continue
                         layer_idx = layer_map.get(layer)
                         if layer_idx is not None:
                             if near_unconnected:
@@ -1561,6 +1594,8 @@ def _get_net_endpoints_ordered(pcb_data: PCBData, net_id: int, config: GridRoute
             for v in svias:
                 vgx, vgy = coord.to_grid(v.x, v.y)
                 for _layer in config.layers:
+                    if not via_on_layer(v, _layer):
+                        continue    # a blind/micro via: its span only
                     layer_idx = layer_map.get(_layer)
                     if layer_idx is not None:
                         side.append((vgx, vgy, layer_idx, v.x, v.y))
@@ -1665,14 +1700,15 @@ def _get_multipoint_net_pads_unordered(
     coord = GridCoord(config.grid_step)
     layer_map = build_layer_map(config.layers)
 
-    net_segments = [s for s in pcb_data.segments if s.net_id == net_id]
+    # #1279: a protected sense branch is never a terminal (`routable`).
+    net_segments = routable(s for s in pcb_data.segments if s.net_id == net_id)
     # Unnumbered pads (pad_number == "") are paste/thermal artifacts that KiCad
     # does not netlist individually; they must not become routing targets or
     # they show up as failed pads with component_ref '?' (issue #94). They are
     # still copper, so they keep blocking via pcb_data.pads_by_net elsewhere.
-    net_pads = [p for p in drop_off_board_pads(pcb_data, pcb_data.pads_by_net.get(net_id, []))
+    net_pads = [p for p in routable(drop_off_board_pads(pcb_data, pcb_data.pads_by_net.get(net_id, [])))
                 if (p.pad_number or '').strip() != '']
-    net_vias = [v for v in pcb_data.vias if v.net_id == net_id]
+    net_vias = routable(v for v in pcb_data.vias if v.net_id == net_id)
 
     # Case 1: No segments and 3+ pads
     if len(net_segments) == 0 and len(net_pads) >= 3:
