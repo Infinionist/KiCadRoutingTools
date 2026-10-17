@@ -1792,6 +1792,8 @@ than rendering an empty ratsnest, which would read as "this net has no airwires"
 | File | Purpose |
 |------|---------|
 | `quench.py` | The optimizer: cost terms, move generation, greedy quench |
+| `simple.py` | The simple path's cost model (`../place_simple.py`): signal and rail trees, crossings, claims, decaps, group gap trees, halo, foreign-pad hits, congestion -- priced locally per move (`SpatialIndex`, cached breakdowns, Rust kernels) |
+| `simple_anneal.py` | The simple path's optimiser: simulated annealing on `simple.py`'s exact cost from a random scatter, soft overlap rising to hard, seeded and deterministic |
 | `portfolio.py` | K diverse candidates: perturbation strategies, gates, ranking, diversity selection |
 | `seeder.py` | Intent-driven initial placement for unplaced boards, and `(locked yes)` stamping |
 | `../group_routing.py` | Block → net scoping, and the undo, for `route.py` (#459) |

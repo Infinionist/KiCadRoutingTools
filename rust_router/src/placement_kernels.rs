@@ -175,3 +175,224 @@ pub fn mst_prim(xs: PyReadonlyArray1<f64>, ys: PyReadonlyArray1<f64>) -> Vec<(i6
     }
     edges
 }
+
+// ---------------------------------------------------------------------------
+// The simple path's model (`py_placer/placement/simple.py`), priced for every
+// move of its annealer: a net's Manhattan tree, tree edges against pads, and
+// tree edges against tree edges. Each is `simple.py`'s Python reference
+// (`_mst_l1_py`, `_seg_hits_py`, `_crossings_py`), operation for operation.
+
+/// `simple.mst_l1`: the Manhattan minimum spanning tree of (xs, ys) by Prim
+/// from point 0 -- the lowest index among equal keys, a key lowered only by
+/// a strictly shorter edge, each distance `|xi - xj| + |yi - yj|`, the total
+/// summed in the order the points join. Returns (total, [(from, to)]).
+#[pyfunction]
+pub fn mst_l1(xs: PyReadonlyArray1<f64>, ys: PyReadonlyArray1<f64>) -> (f64, Vec<(i64, i64)>) {
+    let xs = xs.as_array();
+    let ys = ys.as_array();
+    let n = xs.len();
+    let mut edges: Vec<(i64, i64)> = Vec::new();
+    if n < 2 {
+        return (0.0, edges);
+    }
+    let dist = |i: usize, j: usize| -> f64 { (xs[i] - xs[j]).abs() + (ys[i] - ys[j]).abs() };
+    let mut done = vec![false; n];
+    let mut frm = vec![0usize; n];
+    let mut best: Vec<f64> = (0..n).map(|j| dist(0, j)).collect();
+    done[0] = true;
+    best[0] = f64::INFINITY;
+    let mut total = 0.0f64;
+    for _ in 0..(n - 1) {
+        let mut k = usize::MAX;
+        let mut bk = f64::INFINITY;
+        for i in 0..n {
+            if !done[i] && best[i] < bk {
+                k = i;
+                bk = best[i];
+            }
+        }
+        if k == usize::MAX {
+            break;
+        }
+        done[k] = true;
+        total += bk;
+        edges.push((frm[k] as i64, k as i64));
+        for i in 0..n {
+            if !done[i] {
+                let d = dist(k, i);
+                if d < best[i] {
+                    best[i] = d;
+                    frm[i] = k;
+                }
+            }
+        }
+    }
+    (total, edges)
+}
+
+/// `simple._seg_hits_py`: every (segment i, rect j) that touch -- a bounding
+/// box test, then Liang-Barsky clipping of the segment to the rect, a step
+/// with |d| < 1e-12 taken as parallel. Segments are (x0, y0, x1, y1), rects
+/// (x0, y0, x1, y1). Returns (ii, jj) in row-major order.
+#[pyfunction]
+pub fn seg_rect_hits<'py>(
+    py: Python<'py>,
+    s: PyReadonlyArray2<'py, f64>,
+    p: PyReadonlyArray2<'py, f64>,
+) -> (Bound<'py, PyArray1<i64>>, Bound<'py, PyArray1<i64>>) {
+    let s = s.as_array();
+    let p = p.as_array();
+    let mut ii: Vec<i64> = Vec::new();
+    let mut jj: Vec<i64> = Vec::new();
+    for i in 0..s.nrows() {
+        let (x0, y0, x1, y1) = (s[[i, 0]], s[[i, 1]], s[[i, 2]], s[[i, 3]]);
+        let (sx0, sx1) = (np_min(x0, x1), np_max(x0, x1));
+        let (sy0, sy1) = (np_min(y0, y1), np_max(y0, y1));
+        let dx = x1 - x0;
+        let dy = y1 - y0;
+        for j in 0..p.nrows() {
+            let (px0, py0, px1, py1) = (p[[j, 0]], p[[j, 1]], p[[j, 2]], p[[j, 3]]);
+            if !(sx0 <= px1 && sx1 >= px0 && sy0 <= py1 && sy1 >= py0) {
+                continue;
+            }
+            let mut lo = 0.0f64;
+            let mut hi = 1.0f64;
+            let mut ok = true;
+            for (d, q) in [(-dx, x0 - px0), (dx, px1 - x0), (-dy, y0 - py0), (dy, py1 - y0)] {
+                let zero = d.abs() < 1e-12;
+                if zero && q < 0.0 {
+                    ok = false;
+                }
+                let t = q / if zero { 1.0 } else { d };
+                if !zero && d < 0.0 {
+                    lo = np_max(lo, t);
+                }
+                if !zero && d > 0.0 {
+                    hi = np_min(hi, t);
+                }
+            }
+            if ok && lo <= hi {
+                ii.push(i as i64);
+                jj.push(j as i64);
+            }
+        }
+    }
+    (ii.into_pyarray(py), jj.into_pyarray(py))
+}
+
+/// numpy's sign of `simple._orient`: (bx - ax)*(cy - ay) - (by - ay)*(cx - ax).
+#[inline]
+fn orient(ax: f64, ay: f64, bx: f64, by: f64, cx: f64, cy: f64) -> f64 {
+    let v = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    if v > 0.0 {
+        1.0
+    } else if v < 0.0 {
+        -1.0
+    } else {
+        v // 0.0, or NaN as np.sign gives it
+    }
+}
+
+#[inline]
+fn proper_cross(a: [f64; 4], b: [f64; 4]) -> bool {
+    let o1 = orient(a[0], a[1], a[2], a[3], b[0], b[1]);
+    let o2 = orient(a[0], a[1], a[2], a[3], b[2], b[3]);
+    let o3 = orient(b[0], b[1], b[2], b[3], a[0], a[1]);
+    let o4 = orient(b[0], b[1], b[2], b[3], a[2], a[3]);
+    o1 * o2 < 0.0 && o3 * o4 < 0.0
+}
+
+/// `simple._crossings_py`: how many (a row, b row) pairs cross properly
+/// (each strictly on either side of the other's line). With `labels`
+/// (`b` None) the pairs are those of `a` with itself, i < j, of different
+/// labels -- a set of nets' edges among themselves.
+#[pyfunction]
+#[pyo3(signature = (a, b=None, labels=None))]
+pub fn seg_crossings(
+    a: PyReadonlyArray2<f64>,
+    b: Option<PyReadonlyArray2<f64>>,
+    labels: Option<PyReadonlyArray1<i64>>,
+) -> i64 {
+    let a = a.as_array();
+    let row = |m: &numpy::ndarray::ArrayView2<f64>, i: usize| [m[[i, 0]], m[[i, 1]], m[[i, 2]], m[[i, 3]]];
+    let mut count = 0i64;
+    match b {
+        Some(b) => {
+            let b = b.as_array();
+            for i in 0..a.nrows() {
+                let ra = row(&a, i);
+                for j in 0..b.nrows() {
+                    if proper_cross(ra, row(&b, j)) {
+                        count += 1;
+                    }
+                }
+            }
+        }
+        None => {
+            let lab = labels.map(|l| l.as_array().to_vec());
+            for i in 0..a.nrows() {
+                let ra = row(&a, i);
+                for j in (i + 1)..a.nrows() {
+                    if let Some(l) = &lab {
+                        if l[i] == l[j] {
+                            continue;
+                        }
+                    }
+                    if proper_cross(ra, row(&a, j)) {
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+    count
+}
+
+/// `seg_crossings`, returning the crossing pairs instead of their count:
+/// (ii, jj) over (a row, b row) in row-major order, or with `labels` (`b`
+/// None) over a's rows with i < j of different labels.
+#[pyfunction]
+#[pyo3(signature = (a, b=None, labels=None))]
+pub fn seg_cross_pairs<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray2<'py, f64>,
+    b: Option<PyReadonlyArray2<'py, f64>>,
+    labels: Option<PyReadonlyArray1<'py, i64>>,
+) -> (Bound<'py, PyArray1<i64>>, Bound<'py, PyArray1<i64>>) {
+    let a = a.as_array();
+    let row = |m: &numpy::ndarray::ArrayView2<f64>, i: usize| [m[[i, 0]], m[[i, 1]], m[[i, 2]], m[[i, 3]]];
+    let mut ii: Vec<i64> = Vec::new();
+    let mut jj: Vec<i64> = Vec::new();
+    match b {
+        Some(b) => {
+            let b = b.as_array();
+            for i in 0..a.nrows() {
+                let ra = row(&a, i);
+                for j in 0..b.nrows() {
+                    if proper_cross(ra, row(&b, j)) {
+                        ii.push(i as i64);
+                        jj.push(j as i64);
+                    }
+                }
+            }
+        }
+        None => {
+            let lab = labels.map(|l| l.as_array().to_vec());
+            for i in 0..a.nrows() {
+                let ra = row(&a, i);
+                for j in (i + 1)..a.nrows() {
+                    if let Some(l) = &lab {
+                        if l[i] == l[j] {
+                            continue;
+                        }
+                    }
+                    if proper_cross(ra, row(&a, j)) {
+                        ii.push(i as i64);
+                        jj.push(j as i64);
+                    }
+                }
+            }
+        }
+    }
+    (ii.into_pyarray(py), jj.into_pyarray(py))
+}

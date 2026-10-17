@@ -257,8 +257,9 @@ def follower_roots(claims: Iterable[Dict]) -> Dict[str, str]:
 
 def fold_followers(doc: Dict, claims: Iterable[Dict]) -> Tuple[Dict, Dict[str, Tuple[str, str]]]:
     """`(doc, moved)`: the groups file with every `proximity[]` subject moved
-    into the group of the part its claims end at (`follower_roots`), and
-    {ref: (from group, to group)} for each part moved.
+    into the group of the part its claims end at (`follower_roots`) -- and,
+    when a subject is its group's anchor, the rest of that group with it --
+    and {ref: (from group, to group)} for each part moved.
 
     A follower is seated beside its partner (the seeder's followers stage),
     so it must share its partner's region: a crystal in a clock group of its
@@ -270,6 +271,17 @@ def fold_followers(doc: Dict, claims: Iterable[Dict]) -> Tuple[Dict, Dict[str, T
     where = group_of(doc)
     moved = {s: (where[s], where[r]) for s, r in roots.items()
              if s in where and r in where and where[s] != where[r]}
+    # A group whose ANCHOR moved follows it whole: a clock group is its
+    # crystal, and the jumpers or 0-ohm bridges on the oscillator pins belong
+    # at the crystal. Left behind in a region of their own, ch32v003_usb's
+    # JP1/JP2 sat across the board from U3 and its crystal, and PA2 routed
+    # 27 mm with 4 vias where the human routes 6.
+    for g in doc['groups']:
+        a = g.get('anchor')
+        if a in moved and moved[a][0] == g['name']:
+            for r in g['refs']:
+                if r not in moved and where.get(r) == g['name']:
+                    moved[r] = (g['name'], moved[a][1])
     if not moved:
         return doc, {}
     out = json.loads(json.dumps(doc))
