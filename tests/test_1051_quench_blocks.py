@@ -423,11 +423,14 @@ def test_member_leaves_only_through_a_disclosed_release():
                              max_displacement=1.0)
     assert m2['rigid_released'] == [], m2['rigid_released']
     assert _offsets(ctl_pcb, members) == before, "control row sheared"
-    # The intruder UNLOCKED, at the polish's 3mm cap: it can clear the clash
-    # from its own side, so the row keeps its member (the verifier's case --
-    # a first-sight release broke R6 out for good here).
+    # The intruder UNLOCKED, with room to move: it can clear the clash from
+    # its own side, so the row keeps its member (the verifier's case -- a
+    # first-sight release broke R6 out for good here). The reach is 5 mm, not
+    # the polish's 3: on the seed of the MST wiring target the intruder's
+    # nearest legal pose is 3.61 mm off, and within 3 mm it has none, which
+    # is the locked case above.
     free = os.path.join(td, 'sf_release_free.kicad_pcb')
-    m3, free_pcb = _quench_to(bad, gate, free)
+    m3, free_pcb = _quench_to(bad, gate, free, max_displacement=5.0)
     assert m3['rigid_released'] == [], m3['rigid_released']
     assert _offsets(free_pcb, members) == before, "row sheared"
     moved = math.hypot(free_pcb.footprints[intruder].x - v.x,
@@ -574,8 +577,19 @@ def _rigid_block_intent(doc, refs, rigid):
 def test_rigid_true_block_moves_as_one():
     td = _workdir()
     doc, _ip = _splitflap_intent()
-    seed, _formed = _seeded_no_polish()
+    seed0, _formed = _seeded_no_polish()
     refs = next(a['members'] for a in doc['arrays'] if a['name'] == 'U4:47k')
+    # The row is shifted 2 mm off its seat, so the polish has a reason to
+    # move it: the seeder can seat it where its wiring wants it (the MST
+    # wiring target does), and then neither arm moves it and the test
+    # proves nothing.
+    p0 = parse_kicad_pcb(seed0)
+    seed = os.path.join(td, 'rigid_seed_shifted.kicad_pcb')
+    write_placed_output(seed0, seed, [
+        {'reference': r, 'new_x': p0.footprints[r].x + 2.0,
+         'new_y': p0.footprints[r].y,
+         'new_rotation': p0.footprints[r].rotation or 0.0} for r in refs])
+    copy_siblings(seed0, seed)
     pcb = parse_kicad_pcb(seed)
     before = _shape(pcb, refs)
     on = _rigid_block_intent(doc, refs, True)

@@ -288,11 +288,13 @@ against drift. The placing is done by the seeder:
   that seat the crystal within 6 mm of its pins (pad centres; the corpus
   median), the IC keeps the one its own connections prefer. Turning the IC
   for the crystal alone cost esp_prog 13 routed vias.
-- **The claimed parts sit in no zone.** The regions are planned on the
-  groups as written, and each claimed part stays inside its IC's zone, so it
-  takes no room another group's region was planned for. Moving the crystal
-  into its IC's group before planning re-planned the whole board, and cost
-  ch32v003_usb 22 routed vias.
+- **The claimed parts are planned in their IC's region** (Andy's rule: no
+  crystal region). `plan_regions.py` moves each claim's subject into the
+  group of the part its claims end at before planning
+  (`grouping.fold_followers`, as `place_groups.py` already did), so the IC's
+  region is sized for its crystal and caps, and a clock group they leave
+  empty is dropped. Held to a separate clock region instead, ch32v003_usb's
+  load caps went round to the far side of U3, 7 mm from the crystal.
 
 `check_groups.py` names each crystal it finds; `--no-crystals` on both tools
 writes no claim. Measured as above (five seeds, routed by each board's

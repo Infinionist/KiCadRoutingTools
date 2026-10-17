@@ -213,7 +213,10 @@ class TheSeed(unittest.TestCase):
             _r, s = _run(_synthetic(td, _scoped()), {}, code=4,
                          refuse='pad copper past the board outline on R2',
                          blind=True)
-        self.assertEqual(s['pad_copper_off_board_seeded'], [['R2', 0.904]])
+        # past the edge: 0.904 mm when recorded, 1.904 since the seeder's MST
+        # target aims R2 1 mm further east -- the twin's point is that it IS past
+        self.assertEqual([r for r, _mm in s['pad_copper_off_board_seeded']], ['R2'])
+        self.assertGreater(s['pad_copper_off_board_seeded'][0][1], 0.5)
 
 
 def _at_old_seat():

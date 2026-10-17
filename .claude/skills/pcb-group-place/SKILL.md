@@ -109,10 +109,10 @@ Write `wk/<run>/groups.json` -- the format is in `py_placer/placement/grouping.p
 - **A cap belongs with the IC whose supply pin it decouples.** A load cap or an
   RC cap belongs with its crystal or its button: say so by its group. The
   decap rule would otherwise claim it at the IC.
-- **Crystals take care of themselves.** Put a crystal and its load caps in a
-  clock group (or with their IC); either way `plan_regions.py` claims the
-  crystal at its IC's oscillator pins and each load cap at the crystal, and
-  the seeder seats them there, outside any region. Jumpers or 0 Ω parts on
+- **Crystals take care of themselves.** Wherever you group a crystal and its
+  load caps, `plan_regions.py` plans them in their IC's region (no crystal
+  region), claims the crystal at the IC's oscillator pins and each load cap
+  at the crystal, and the seeder seats them there. Jumpers or 0 Ω parts on
   the oscillator pins stay in the clock group and get its region.
   `check_groups.py` names each crystal it finds; one it does not name (no
   pin functions, an oscillator, a ceramic resonator) needs your judgement.

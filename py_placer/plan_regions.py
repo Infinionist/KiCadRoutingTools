@@ -71,7 +71,7 @@ import sys
 
 from kicad_parser import parse_kicad_pcb  # noqa: E402
 from placement.grouping import (BoardView, GroupsError, decap_conflicts,  # noqa: E402
-                                follower_roots, load_groups)
+                                fold_followers, follower_roots, load_groups)
 from placement import regions  # noqa: E402
 
 #: How far a member may stand past its zone (blocks[].tolerance_mm).
@@ -421,6 +421,11 @@ def main(argv=None):
         rows, crystal_notes = crystal_claims(pcb)
         new_claims = [r for r in rows if (r['ref'], r['near']) not in have]
     followers = sorted(follower_roots(claims + new_claims))
+    # A crystal and its load caps are part of their IC's region, planned
+    # with it: no region of their own. A clock group they leave empty is
+    # dropped (its hints point at the IC's group instead); one that still
+    # holds jumpers or a resonator's parts keeps a region for those.
+    doc, folded = fold_followers(doc, claims + new_claims)
     load_caps = [r['ref'] for r in new_claims
                  if (r.get('context') or {}).get('role') == 'crystal load cap']
     holes, hole_notes = [], []
@@ -462,6 +467,9 @@ def main(argv=None):
                        'decap_exempt': [c['cap'] for c in conflicts]}, f, indent=1)
     for line in crystal_notes:
         print(f"  {line}")
+    if folded:
+        print("  planned in their IC's group's region: "
+              + ', '.join(f"{r} ({f} -> {t})" for r, (f, t) in sorted(folded.items())))
     if followers:
         print(f"  zoned in no block (each follows its proximity claim): "
               f"{', '.join(followers)}")

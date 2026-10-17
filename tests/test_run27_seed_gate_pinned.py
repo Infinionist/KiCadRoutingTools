@@ -124,11 +124,15 @@ def main():
               and (s2.get('grade_errors_pinned') or 0) >= 1,
               f'rc {rc2} {s2 and {k: s2.get(k) for k in ("grade_errors", "grade_errors_pinned")}}')
         # --- 3: the gate still bites on the seed's OWN work ----------------
-        # A zone too small for three parts: the seed cannot satisfy it, and
-        # that IS the seeder's failure -- exit 4 as before, the pinned count
-        # still reported beside it.
+        # A zone too small for any of the three parts: the seed cannot
+        # satisfy it, and that IS the seeder's failure -- exit 4 as before,
+        # the pinned count still reported beside it. (A 1 mm zone stopped
+        # being impossible when the polish stopped spacing parts by a
+        # pin-count halo: with its 0.5 mm tolerance it holds the three
+        # 1.5 x 0.5 mm parts packed. 0.2 mm, 1.2 mm with the tolerance,
+        # holds none of them at either angle.)
         rc3, s3, text3 = _run(tmp, 'own', True,
-                              _intent([14.5, 9.5, 15.5, 10.5], must_lock=['J1']))
+                              _intent([14.9, 9.9, 15.1, 10.1], must_lock=['J1']))
         check('an error on a part the seed placed still fails the gate',
               rc3 == 4 and s3 is not None
               and ((s3.get('grade_errors') or 0) >= 1

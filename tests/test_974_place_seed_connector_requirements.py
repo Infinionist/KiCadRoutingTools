@@ -236,8 +236,9 @@ def main():
               rep.get('errors_pinned') == [], f'{rep}')
 
         # --- fresh seed: run27's own-error arm (zone too small) ------------
+        # (the zone run27 uses: 0.2 mm, which holds none of its parts)
         b, i = _write(tmp, 'small_zone', run27.BOARD % ' (locked yes)',
-                      run27._intent([14.5, 9.5, 15.5, 10.5],
+                      run27._intent([14.9, 9.9, 15.1, 10.1],
                                     must_lock=['J1']))
         rc, s, text = _cli(b, i, out_of('small_zone'), [])
         check('rc: small_zone: an own error still fails the seed', rc == 4,

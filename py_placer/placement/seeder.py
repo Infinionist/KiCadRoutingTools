@@ -8651,6 +8651,12 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
     # #1051: the anchor rounds re-seat ONE part at a time, which would pull a
     # formed row apart; its members sit the rounds out.
     row_members = {m for rec in arrays_formed.values() for m in rec['members']}
+    # A declared edge connector was seated on its edge by stage 1, and its
+    # wiring target is somewhere inside the board: re-seated there, it left
+    # its edge (splitflap: J3, J7, J12, J18 off the north edge). Immovable
+    # here as it is to the eviction rung.
+    edge_held = ({c['ref'] for c in intent.edge_claims() if c.get('edge')}
+                 if intent is not None else set())
     if anchors_first and anchor_rounds > 1 and placed:
         from placement.reconstruct import measure, part_extent_mm
         for rnd in range(2, max(2, anchor_rounds) + 1):
@@ -8663,7 +8669,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                             key=lambda r: (-part_extent_mm(state, r), r))
             for ref in order2:
                 if (state.parts[ref].locked or ref in fixed_seated
-                        or ref in row_members):
+                        or ref in row_members or ref in edge_held):
                     continue
                 target = _wiring_target(state, ref, placed - {ref})
                 if target is None:

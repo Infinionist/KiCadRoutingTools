@@ -502,9 +502,9 @@ six others.
 ## Functional groups
 
 - **Place by function: give each group its own region.**
-  - *Measured on a route:* on ch32v003_usb, esp_prog and ch32v006_dev (five seeds per
+  - *Measured on a route:* on three small boards of 21-26 parts (five seeds per
     flow, each routed by the board's recorded chain), both grouped flows routed with
-    less blocking and 10-50% fewer vias than placing every part at once. On esp_prog
+    less blocking and 10-50% fewer vias than placing every part at once. On one of them
     they used as few vias as the human placement. The method is in
     `docs/grouped-placement.md`.
   - *Apply:* five to eight groups suit a small board. More than about twelve make
@@ -546,12 +546,12 @@ six others.
     controller 80 mm from the fan header.
 - **A group's face is the one its parts' courtyards cover most, not the one most of its
   parts are on.**
-  - *Measured:* ulx3s's core has its two large chips on the front and 43 decaps on the
+  - *Measured:* a 4-layer FPGA board's core has its two large chips on the front and 43 decaps on the
     back. Its region went to the back by part count, and U2 was seated 26 mm off the
     board.
 - **The region must hold its largest part near its centre.** When you look at the
   region plan, check where the group's biggest part can sit, not only that it fits.
-  - *Measured:* ulx3s's FPGA region came out as a 25 mm strip with a locked HDMI
+  - *Measured:* on the same board, the FPGA's region came out as a 25 mm strip with a locked HDMI
     connector inside it, so the 18 mm FPGA was seated 26 mm from its target and 30 mm
     from its 43 decaps on the back.
 - **The groups' numbers come from `tests/stress/placement_survey.py`.** To reproduce them
@@ -670,11 +670,14 @@ python3 tests/stress/placement_survey.py report rows.jsonl
     (75th percentile 8.1 mm) and the farther load cap 0.8 mm from the crystal (75th
     percentile 2.2 mm; 258 crystals). `plan_regions.py` writes claims at those 75th
     percentiles.
-  - *Measured on a route:* turning the IC for its crystal alone cost esp_prog 13 routed
+  - *Measured on a route:* turning the IC for its crystal alone cost a 21-part board 13 routed
     vias; turn it for the crystal only among the rotations its other connections
-    accept. Moving the crystal into its IC's group before planning the regions
-    re-planned the whole board and cost ch32v003_usb 22 vias; leave the crystal in its
-    clock group and let the claim seat it.
+    accept.
+  - *Apply:* the crystal and its load caps belong to their IC's region, planned with
+    it; they get no region of their own. Held to a separate clock region beside the
+    chip, a 25-part board's load caps went round to the far side of the IC, 7 mm from
+    the crystal, and the oscillator nets routed 13-40 mm with 2-5 vias each where the
+    human routes 6 mm.
 - **Put one load cap at each crystal pad, about 0.7 mm away, as a mirrored pair
   flanking the crystal.**
   - *Humans:* 0.66 mm pad gap (327 caps, 129 boards), each on its own pad's half of the
@@ -727,7 +730,7 @@ python3 tests/stress/placement_survey.py report rows.jsonl
   - *Not:* status LEDs are not placed near the MCU.
   - *Measured on a route:* laying each group's LED channels as one row, LED and resistor
     alternating, cut ft2232h_jtag from 92.7 to 81.7 vias (better on all six
-    candidates) and glasgow_revC's blocking from 56.3 to 50.8, from the same regions.
+    candidates) and a 272-part board's blocking from 56.3 to 50.8, from the same regions.
   - *Not:* a row of like value is not a bank. ft2232h_jtag's row of 1 kΩ parts is a
     reset pull-up and four LED resistors.
 - **A side-actuated button goes on the outline; a top-actuated one leans toward the

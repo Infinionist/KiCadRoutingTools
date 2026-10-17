@@ -263,8 +263,10 @@ class TheRepairGate(unittest.TestCase):
 
     def test_r2_a_repair_that_leaves_copper_past_the_outline_fails(self):
         # R2's pad sits 4 mm outside its courtyard; the BLIND seat search
-        # (courtyard only, as before #1257) leaves the pad 0.904 mm past the
-        # east edge while calling R2 repaired, and the exit gate charges it
+        # (courtyard only, as before #1257) leaves the pad past the east edge
+        # (0.904 mm when recorded; 1.904 since the seeder's MST target aims
+        # R2 1 mm further east) while calling R2 repaired, and the exit gate
+        # charges it
         # anyway. The real search now re-seats R2 with its pad on the board,
         # and a part no seat can hold is charged unrepaired
         # (test_1257_seat_pad_copper.py).
@@ -275,7 +277,8 @@ class TheRepairGate(unittest.TestCase):
                                'outline on R2',
                         out_name='rep.kicad_pcb', flags=('--repair',),
                         blind=True)
-        self.assertEqual(s['pad_copper_off_board_charged'], [['R2', 0.904]])
+        self.assertEqual([r for r, _mm in s['pad_copper_off_board_charged']], ['R2'])
+        self.assertGreater(s['pad_copper_off_board_charged'][0][1], 0.5)
         self.assertEqual(s['pad_copper_off_board_pinned'], [])
         self.assertEqual(s['grade_errors'], 0)
         self.assertIn('R2', s['repaired_refs'])
