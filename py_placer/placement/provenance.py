@@ -47,20 +47,10 @@ REGIME_NAME = '.unaided-manifest.json'
 # The CLI entry points allowed to author poses. A tool absent from this list
 # is not forbidden -- it simply cannot claim the run was engine-authored.
 LEVER_REGISTRY = (
-    'place_seed.py', 'place_optimize.py',
-    'place_reconstruct.py', 'place_portfolio.py', 'place_route_loop.py',
-    'place_fanout_clearance.py', 'converge.py',
+    'place_simple.py', 'place_fanout_clearance.py', 'converge.py',
     # #892: the sanctioned pose SETTER. It exists so that applying a model's
-    # own layout decision is a registered lever rather than the hand script
-    # this regime is built to refuse (run 25's `pose_assist.py`).
+    # own layout decision is a registered lever rather than a hand script.
     'place_pose.py',
-    # Grouped placement: copies each group's seeded poses from its step board
-    # onto the board (the step boards are place_seed's, recorded as such).
-    'place_groups.py',
-    # #1280: applies the intent's declared faces before seeding -- a side
-    # flip at the pose is a pose write, so outside this list it raised
-    # `UnaidedViolation` in any unaided work dir.
-    'place_intent_sides.py',
     # The ROUTER is a deliberate pose author: #666's scoped cap move calls
     # `write_placed_output` to relocate a cap off a rescue via. Absent from
     # this list it raised `UnaidedViolation` inside the funnel, route.py's
@@ -68,17 +58,6 @@ LEVER_REGISTRY = (
     # repair it performs everywhere else -- so an unaided work dir got a
     # different router. It lives in py_router/, not py_placer/.
     'route.py',
-    # Staging tools author poses BY DESIGN -- that is what staging is.
-    # `perturb.py` is a LIBRARY with no __main__; it is reached through
-    # stage_blind, whose declaration covers it by the innermost-wins rule.
-    #
-    # `stage_unaided.py` was MISSING here while its own __main__ carried the
-    # comment "In LEVER_REGISTRY, so it must DECLARE" -- the file asserted a
-    # membership this tuple did not grant. That was harmless only while
-    # NOTHING armed a regime (#903): now that both stagers arm their own work
-    # dir, a RESTAGE declares `stage_unaided.py`, and without this entry the
-    # stager is refused by the guard it installed one line earlier.
-    'perturb.py', 'stage_blind.py', 'stage_unaided.py',
 )
 
 # Registered but NOT pose writers. `beautify_labels.py` moves reference-

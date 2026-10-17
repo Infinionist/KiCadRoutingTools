@@ -217,11 +217,13 @@ def main(argv=None):
         print(f"  WARNING: no legal pose found for: {', '.join(illegal)}")
     from placement.writer import write_placed_output
     from placement.portfolio import copy_siblings
+    from placement.provenance import declare_lever
     placements = [{'reference': r, 'new_x': round(state.parts[r].x, 4),
                    'new_y': round(state.parts[r].y, 4),
                    'new_rotation': state.parts[r].rot % 360.0}
                   for r in movable]
-    write_placed_output(a.board, a.out, placements)
+    with declare_lever('place_simple.py', sys.argv):
+        write_placed_output(a.board, a.out, placements)
     copy_siblings(a.board, a.out)
     final.pop('per_group', None)
     report = {'final': final, 'moves': res['moves'], 'seed': a.seed,

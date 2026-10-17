@@ -2118,11 +2118,15 @@ def warn_unmatched(report: dict) -> None:
 
 
 def _load_summary(path):
-    """Failed + blocker net names from a JSON_SUMMARY file or a route log.
+    """Failed + blocker net names from a JSON_SUMMARY file or a route log,
+    and the route's counts.
 
-    Uses place_route_loop's OWN arithmetic (metrics_from_summary, split out for
-    exactly this) rather than re-deriving failure counts here.
+    A verdict counts `failed_single` + `open_single` + the multipoint pad
+    deficit (a non-multipoint open net is in neither of the other two).
+    Blockers come from the structured `blockers` key; only a log that has
+    none (pre-#409) falls back to its printed blocker lines.
     """
+    import re
     if not path or not os.path.isfile(path):
         return [], [], {}
     txt = open(path, encoding='utf-8', errors='replace').read()
@@ -2130,12 +2134,25 @@ def _load_summary(path):
     try:
         summary = json.loads(txt)
     except ValueError:
-        from place_route_loop import merge_route_summaries
+        from route_summary import merge_route_summaries
         summary = merge_route_summaries(txt)
     if not summary:
         return [], [], {}
-    from place_route_loop import metrics_from_summary
-    m = metrics_from_summary(summary, txt)
+    failed = list(summary.get('failed_single', []))
+    failed += [d['net_name'] if isinstance(d, dict) else d
+               for d in summary.get('failed_multipoint', [])]
+    deficit = (summary.get('multipoint_pads_total', 0)
+               - summary.get('multipoint_pads_connected', 0))
+    jb = summary.get('blockers')
+    if jb is not None:
+        blockers = {b['net'] for e in jb for b in e.get('blocked_by', [])}
+    else:
+        blockers = set(re.findall(r'^\s+\d+\.\s+(\S+?):\s+\d+\s+\(', txt, re.M))
+    m = {'failures': (len(summary.get('failed_single', []))
+                      + len(summary.get('open_single', [])) + deficit),
+         'failed_nets': failed, 'blockers': sorted(blockers),
+         'iterations': summary.get('total_iterations', 0),
+         'vias': summary.get('total_vias', 0)}
     return m['failed_nets'], m['blockers'], m
 
 

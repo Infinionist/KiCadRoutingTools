@@ -48,6 +48,14 @@ TOOL_ACTIONS = {
 # only bumps a `skipped` counter -- a number, not a name -- so the converted
 # plan looks complete when it is not.
 REFUSED_TOOLS = {
+    'place_simple.py': (
+        'places the board by its groups and one annealed objective; the plan '
+        'format has no placement step. Run it BEFORE the plan and start the '
+        'plan from the placed board'),
+    # place_optimize, place_route_loop, place_seed, place_groups,
+    # place_candidates, place_reconstruct, place_portfolio, rank_rotations and
+    # place_intent_sides are retired, but recorded manifests still name them,
+    # and a step this table does not know is dropped silently, not refused.
     'place_optimize.py': (
         'moves footprints; the plan format has no placement step. Run it BEFORE '
         'the plan and start the plan from the placed board'),

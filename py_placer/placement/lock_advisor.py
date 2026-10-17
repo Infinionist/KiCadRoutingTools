@@ -420,12 +420,9 @@ def advise_locks(pcb_data, pcb_file: Optional[str] = None, *,
             adv.advisories.append({
                 'ref': ref, 'kind': 'high_pin_count',
                 'connected_pins': len(netted),
-                'reason': (f"{len(netted)} connected pins. place_route_loop guards "
-                           f"these with --max-target-pins but place_optimize does "
-                           f"NOT, so this part CAN be dragged; "
-                           f"docs/placement-optimization.md records that as how "
-                           f"placements get destroyed. Consider --lock for a "
-                           f"conservative first run.")})
+                'reason': (f"{len(netted)} connected pins: every move of this part "
+                           f"drags that many airwires with it. Consider locking it "
+                           f"for a conservative first run.")})
 
         # Run-4 A: classify (pose-independent) and grade the pose against
         # the class. Only edge_receptacle makes a plausibility claim.

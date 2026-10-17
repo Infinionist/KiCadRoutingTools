@@ -57,7 +57,10 @@ CLI_MAINS = ["py_router/route.py", "py_router/route_diff.py",
              # none today by construction -- the sibling carry and the legality
              # grade live in `placement/pose_ops.py`, which both fronts call --
              # and scanning it is what keeps that true.
-             "py_placer/place_pose.py"]
+             "py_placer/place_pose.py",
+             # The placement CLI writes boards too; the GUI's Place button
+             # runs it through the placement skill.
+             "py_placer/place_simple.py"]
 
 # Known post-engine passes -> GUI counterpart symbol(s). A pass is "covered" if
 # ANY listed symbol appears anywhere under kicad_routing_plugin/. Keep the RHS
