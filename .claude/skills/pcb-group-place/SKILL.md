@@ -225,6 +225,10 @@ python3 -X utf8 py_tools/render_placement.py wk/<run>/placed.kicad_pcb -o wk/<ru
 python3 -X utf8 py_tools/check_assembly.py wk/<run>/placed.kicad_pcb --baseline wk/<run>/fixed.kicad_pcb
 ```
 
+Check the render against `.claude/skills/pcb-free-agent/references/placement-lessons.md`:
+a switching regulator's FETs and inductor in one tight cluster, parts beside the
+pins they serve, a fine-pitch chip's caps near its pins but off its escape field.
+
 ## 6. Hand back
 
 - The placed board (with its `.kicad_pro`), `groups.json`,
