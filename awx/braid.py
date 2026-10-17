@@ -6732,7 +6732,17 @@ def setup(board, names, dest, log, plan=None, pairs=False):
             try:
                 with open(_pj, encoding='utf-8') as _f:
                     plan = _json_pl.load(_f)
-                named = [nm for nm in names if nm in plan.get('ends', {})]
+                # (a pair member by its legs: the sidecar keys a pair's
+                # ends, layers and directions by its legs, as every read
+                # below takes them. Asked by its member's name alone, an
+                # all-pair bus's plan named none of its nets and was
+                # dropped: sdi_mipi_conv's MIPI bus to J4 read its escape
+                # directions off copper, MIPI0_D3's south tooth read west,
+                # a far-face tooth inside U11, and the solve refused every
+                # round -- the fanout's audit, its legs as singles, clean)
+                _pe = plan.get('ends', {})
+                named = [nm for nm in names if nm in _pe
+                         or any(l_ in _pe for l_ in _pairs_here.get(nm, ()))]
                 if not named:
                     log(f'plan sidecar {os.path.basename(_pj)} names none of '
                         f'this run\'s nets -- ignored')
@@ -6747,7 +6757,7 @@ def setup(board, names, dest, log, plan=None, pairs=False):
                     # than the one the plan was judged in (measured at
                     # K41: every net read off copper, the spine 0.07 mm
                     # off the judged one, three legs moved to one s)
-                    miss = [nm for nm in names if nm not in plan.get('ends', {})]
+                    miss = [nm for nm in names if nm not in named]
                     log(f'plan from {os.path.basename(_pj)}: {len(named)} of '
                         f'{len(names)} nets; {", ".join(miss)} read off the board')
                 else:

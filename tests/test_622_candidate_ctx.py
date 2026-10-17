@@ -18,7 +18,10 @@ state's escapes LAID (escape_plan.lay) and its plan sidecar beside it, as the ro
    the trunk whose pads the solve's built-in via cuts read the lanes' references against;
 2. the whole frame built on each (whole_frame.build) is the same: its lanes, launch and final orders, ring classes,
    starts, landings, handoffs, and each lane's reference (mid);
-3. whole_solve.solve(check=True) gives each the same verdict -- and its solve, run as the round runs it, the same plan.
+3. whole_solve.solve(check=True) gives each the same verdict -- and its solve, run as the round runs it, the same plan;
+4. a run of the pair alone, every lane a pair, reads the same sidecar (keyed by the pair's legs) and the same fields --
+   an all-pair bus's setup once found its member's name in none of the sidecar's keys and dropped the plan, reading
+   the escape directions off copper (sdi_mipi_conv's MIPI bus to J4: a south tooth read west, refused every round).
 
 A field setup gains and candidate() does not read is a drift this test sees only where the frame or the solve reads it.
 """
@@ -202,6 +205,21 @@ def main():
         keep = lambda J: None if J is None else {k: J[k] for k in ('cross', 'changes', 'layers', 'entry', 'end', 'tend')}
         if keep(Jc) != keep(Jr):
             fails.append('3. the solve on the two benches differs')
+        # 4. a run of the pair alone (every lane a pair): setup reads the sidecar, which keys the pair by its legs
+        pr_nets = ['D_P', 'D_N']
+        with contextlib.redirect_stdout(io.StringIO()):
+            real1, _g1 = bd.setup(laid, pr_nets, 'U5', lambda *a: None, pairs=True)
+        cand1 = whole_ctx.candidate(pcb, pr_nets, 'U5', plan, tracks, board=base)
+        if real1.plan is None:
+            fails.append('4. the pair alone: setup dropped the plan sidecar')
+        for f_ in ('tooth_layer', 'dest_layer', 'pair_layers', 'tooth_dir', 'stub_dir'):
+            a = {k: (r6(v) if f_.endswith('_dir') else v) for k, v in getattr(cand1, f_).items()}
+            b = {k: (r6(v) if f_.endswith('_dir') else v) for k, v in getattr(real1, f_).items() if k in a}
+            if a != b:
+                fails.append(f'4. the pair alone, {f_}: candidate {a} != setup {b}')
+        if {k: (r6(v[0]), r6(v[1])) for k, v in cand1.ends.items()} != \
+                {k: (r6(v[0]), r6(v[1])) for k, v in real1.ends.items() if k in cand1.ends}:
+            fails.append('4. the pair alone: ends differ')
         if not fails:
             print(f'   {len(nets)} nets, {len(E.lanes)} lanes, {len(tracks)} escape runs; check {vc}; frame lanes '
                   f'{Fc.M}')
