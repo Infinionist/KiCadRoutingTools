@@ -8,8 +8,9 @@ locks, decap rules), so a board whose repo declares one can get a legal,
 deterministic, seeded starting placement instead of a refusal.
 
 IT PLACES THE RESIDUE, NOT THE DECISIONS. Everything below is greedy
-first-fit: a zone is packed radially from its centre, anything unzoned lands
-on its connectivity centroid, and the first rotation that fits is kept. That
+first-fit: a zoned part lands nearest its placed partners inside its zone,
+anything unzoned on its connectivity centroid, and the first rotation that
+fits is kept. That
 is the right shape for the many small parts and it is not a chooser -- it has
 no representation for a pose that is a DECISION. An edge band says which edge
 and not where along it, so a connector is seated at the band's midpoint.
@@ -39,9 +40,11 @@ What each intent construct becomes, in placement order:
                            point, and candidate_valid would veto it.
   2. single-ref zones      the zone center -- the "few hundred microns around
                            the spec coordinate" pattern for spec-pinned parts.
-  3. multi-ref zones       members packed radially from the zone center,
-                           highest pin count first, constrained to the zone
-                           rect plus its declared tolerance.
+  3. multi-ref zones       members, highest pin count first, each at the
+                           nearest legal pose to its placed partners'
+                           centroid (the zone center when none is placed),
+                           constrained to the zone rect plus its declared
+                           tolerance.
   4. everything else       nearest legal pose to the centroid of its already-
                            placed partners (fanout-capped, so GND does not
                            drag everything to the board middle) -- which is
@@ -7571,7 +7574,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         for _par in sorted(placed):
             _seat_followers_of(_par)
 
-    # ---- 2. zoned blocks: radial pack from the zone center -----------------
+    # ---- 2. zoned blocks: each member by its partners, inside the zone -----
     # A single-member zone is the spec-coordinate pattern (a rect a few
     # hundred microns wide around where the spec pins the part), so it gets
     # the exact center; multi-member zones jitter each target so different
@@ -7588,7 +7591,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         rows_here = [spec for spec in array_try
                      if getattr(array_zone.get(spec['name']), 'name', None) == name]
         # #1051: a row zoned HERE is seated before the zone's other members
-        # -- a row needs a contiguous strip, and the radial pack fills the
+        # -- a row needs a contiguous strip, and the zone pack fills the
         # zone around it (measured on glasgow: RN5+RN6 seated into a packed
         # sheet zone only at clearance 0.1, after 243k poses; into the
         # empty one first). It aims at `_seat_array`'s target (its members'
@@ -7614,15 +7617,27 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
         def _pack(refs):
             for ref in refs:
                 jx, jy = (0.0, 0.0) if len(members) == 1 else _jitter()
+                # A member of a multi-part zone aims at its placed partners,
+                # held inside the zone -- the zone says WHERE the group
+                # lives, its wiring says where in it each part goes. Aimed at
+                # the zone centre, a zone's parts packed out by pin count
+                # whatever they wired to (bitaxe_ultra, every part zoned:
+                # 559-849 airwire crossings, 162-188 with the zones dropped).
+                tx, ty = cx, cy
+                if len(members) > 1:
+                    pc = _partner_centroid(state, ref, placed)
+                    if pc is not None:
+                        tx = min(max(pc[0], z.rect[0]), z.rect[2])
+                        ty = min(max(pc[1], z.rect[1]), z.rect[3])
                 rot_before = state.parts[ref].rot
                 zinfo: Dict = {}
-                clr = _try_place(state, ref, cx + jx, cy + jy, unplaced - {ref},
+                clr = _try_place(state, ref, tx + jx, ty + jy, unplaced - {ref},
                                  rotations=_rot_ladder(ref),
                                  constraint=z.rect, tol=tol, info=zinfo)
                 if clr is not None:
                     placed.add(ref)
                     unplaced.discard(ref)
-                    _orient_for_followers(ref, cx + jx, cy + jy, z.rect, tol)
+                    _orient_for_followers(ref, tx + jx, ty + jy, z.rect, tol)
                     if zinfo.get('anchor_zone'):
                         notes.append(f"{ref}: zone {name!r} smaller than the "
                                      f"courtyard -- seated by anchor point")
@@ -7636,7 +7651,7 @@ def seed_from_intent(pcb_data, pcb_file: str, intent, rng: random.Random, *,
                                      f"{state.clearance:g})")
                 else:
                     unseated.append(ref)
-                    unseated_ctx[ref] = (cx + jx, cy + jy, z.rect, tol)
+                    unseated_ctx[ref] = (tx + jx, ty + jy, z.rect, tol)
                     notes.append(f"{ref}: no legal pose inside zone {name!r}")
 
         _pack(big)

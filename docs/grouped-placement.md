@@ -103,6 +103,10 @@ header's resistors behind it -- need room there too:
   (`regions.MINOR_PULL`). The main regions are planned first, then both
   faces again with the pull, until no main region moves by a millimetre
   (three passes at most);
+- the second region also stands by the group's fixed parts, as the main
+  region does. Pulled only toward the main region, bitaxe_ultra's put the
+  USB group's CC resistors 35 mm from their connector, J8, locked on the
+  back, and the fan controller 80 mm from the fan header;
 - every block declares the face its parts are on, so `place_intent_sides`
   finds nothing to mirror.
 
@@ -144,8 +148,14 @@ plan before any part moves, and `--png` draws it.
 Two flows fill the same regions.
 
 **One pass.** `place_seed --intent regions_intent.json` seats every group at
-once, each part held to its group's zone. It is the seeder as it always was;
-the regions are the only new input.
+once, each part held to its group's zone. The seeder seats each member of a
+zone at the nearest legal pose to the parts it wires to that are already
+placed, inside the zone; a member with none placed yet goes to the zone's
+centre. It used to pack every zone outward from its centre in pin-count
+order, whatever the parts wired to. A part with no zone was always seated by
+its partners, and in grouped placement every part has one: on bitaxe_ultra,
+the same intent with its zones removed placed with 162-188 airwire crossings,
+against 556-589 with them.
 
 **Group by group.** `place_groups.py` runs `place_seed` once per group, in
 order. Each step runs on a **step board** built from the board so far:
@@ -212,6 +222,25 @@ The human column is the human's placement, routed by the same chain.
   where it is the only flow with no blocking in any seed. One pass is ahead
   on the other two. Both take seconds (the loop 2-9 s, one pass 0.5-4 s), so
   `/pcb-group-place` runs both and keeps the better.
+
+On larger boards (2026-10-16), grouped placement first routed worse than
+placing everything at once: on bitaxe_ultra, 70% more vias. Two causes were
+found and fixed: zoned parts were seated by pin count instead of by their
+wiring, and a group's back-face region was not held near the group's
+connector (both described above). The candidate `place_candidates` keeps,
+before and after the fixes, routed on one machine by the same chains
+(blocking / vias / copper mm):
+
+| board | before | after | all at once (3 seeds) | the human placement |
+|---|---|---|---|---|
+| bitaxe_ultra (137 parts) | 0 / 283 / 3087 | 0 / 182 / 2276 | 0 / 167-180 | 0 / 167 / 2067 |
+| ch32v003_usb (25) | 1 / 53 / 363 | 0 / 51 / 349 | | 0 / 36 / 275 |
+| tigard | 1 / 277 / 2586 | 1 / 250 / 2333 | 0-2 / 221-275 | 0 / 168 |
+| vis_nir_spec | 6 / 275 / 2864 | 2 / 262 / 2413 | 3 / 201-237 | 0 / 145 |
+
+The all-at-once and tigard / vis_nir_spec human cells were routed on Linux;
+the rest on one Mac. One kept candidate per board: the direction holds on all
+four, the size of the gain is one seed's.
 
 ## Crystals
 

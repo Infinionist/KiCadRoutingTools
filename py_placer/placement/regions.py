@@ -26,7 +26,7 @@ The model:
         FIXED part's pads (pad-level terminals, so a core lands beside the
         header it talks to);
       - anchor: a group holding fixed members (a connector placed first) is
-        pulled to touch them;
+        pulled to touch them, on both faces: its second region too;
       - edge: a group with an `edge` hint pays its distance from that side;
       - near / apart: hinted pairs pay for distance / for adjacency;
       - shape and capacity are HARD: a region that cannot hold its largest
@@ -85,9 +85,11 @@ class Group:
     """One group's planning inputs."""
 
     def __init__(self, name, side, movable, fixed, demand, need_area,
-                 dims, edge, near, apart, internal_links=0):
+                 dims, edge, near, apart, internal_links=0, anchors=None):
         self.name, self.side = name, side
         self.movable, self.fixed = movable, fixed
+        # the fixed parts its region stands by: the group's, on either face
+        self.anchors = fixed if anchors is None else anchors
         self.internal_links = internal_links
         self.demand = demand        # mm^2 of free area it asks for
         self.need_area = need_area  # sum of member occupancy areas (hard floor)
@@ -418,7 +420,7 @@ class Planner:
         asp = long_ / max(1e-6, short)
         aspect = W_ASPECT * (asp - ASPECT_FREE) if asp > ASPECT_FREE else None
         anchor = [W_ANCHOR * _gap(rect, fr)
-                  for fr in (self.fixed_rects.get(f) for f in g.fixed) if fr is not None]
+                  for fr in (self.fixed_rects.get(f) for f in g.anchors) if fr is not None]
         edge = None
         if g.edge:
             bx0, by0, bx1, by1 = self.bounds
@@ -731,7 +733,13 @@ def plan(pcb, pcb_file: str, doc: Dict, *, grid: float = 0.25,
                 g.get('edge') if main_side else None,
                 list(g.get('near') or ()) if main_side else [],
                 list(g.get('apart') or ()) if main_side else [],
-                internal_links=max(internal, len(sub) - 1))
+                internal_links=max(internal, len(sub) - 1),
+                # A second region stands by the group's fixed parts too: a
+                # USB group whose connector is locked on the back keeps its
+                # front parts beside it. Pulled only toward the main region,
+                # bitaxe_ultra's put its CC resistors 35 mm from J8 and its
+                # fan controller 80 mm from the fan header.
+                anchors=fix)
             owner[name] = g['name']
             if not main_side:
                 pulls[name] = g['name']
