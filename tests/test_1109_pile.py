@@ -3,7 +3,7 @@
 
 board_brief's `unplaced` read false on run 38's StickHub pile (a staging RING,
 93% of parts off the outline) while check_floorplan's emitter called it a pile;
-the free-agent skill chose its mode from `unplaced`. `PlacementState.pile` is
+the placement skill chose its mode from `unplaced`. `PlacementState.pile` is
 now the one test; board_brief publishes it.
 """
 import json
@@ -137,7 +137,7 @@ class TestPilePredicate(unittest.TestCase):
         self.assertIn('state: PILE;', r.stdout)
 
     def test_the_skill_command_runs_on_a_fresh_checkout(self):
-        """#1115: the free-agent skill's first command writes
+        """#1115: the placement skill's first command writes
         `--json wk/<run>/brief.json`, and wk/ does not exist on a fresh
         checkout. It died with a traceback before JSON_SUMMARY."""
         with tempfile.TemporaryDirectory() as td:

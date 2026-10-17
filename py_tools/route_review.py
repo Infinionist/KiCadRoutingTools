@@ -28,7 +28,7 @@ placement pass that moves parts and routes again:
     python3 -X utf8 py_tools/route_review.py routed.kicad_pcb --top 12 --json review.json
 
 What to do about each finding is in
-`.claude/skills/pcb-free-agent/references/placement-lessons.md`. Exit codes:
+`.claude/skills/plan-pcb-placement/references/placement-lessons.md`. Exit codes:
 0 reviewed (findings or not), 2 unreadable input.
 """
 #: #937 registry: which door(s) show this tool, and whether it changes

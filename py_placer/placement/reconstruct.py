@@ -109,7 +109,7 @@ def measure(state, edge_bands=None, *, overlap=None) -> Tuple:
     overlap_area below hpwl (it had vetoed a 44 mm hpwl homecoming over
     +0.73 mm^2 of courtyard kiss; run 2 measured it POSITIVELY correlated
     with distance-to-truth -- DISTANCE, not routed blocking
-    (docs/placement-predictors.md) -- r = +0.72; courtyards carry their own margin
+    -- r = +0.72; courtyards carry their own margin
     and human boards have a nonzero floor). Run 5 then shipped two 0402s
     STACKED because nothing above hpwl could see them: the stack-pair COUNT
     is the non-gameable per-pair channel (corpus-calibrated ZERO on all 33

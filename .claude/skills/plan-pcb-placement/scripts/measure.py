@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Where a pcb-free-agent session's wall clock went, from its transcript.
+"""Where a plan-pcb-placement session's wall clock went, from its transcript.
 
-    python3 -X utf8 .claude/skills/pcb-free-agent/scripts/measure.py [SESSION.jsonl]
+    python3 -X utf8 .claude/skills/plan-pcb-placement/scripts/measure.py [SESSION.jsonl]
         [--self] [--evidence PATH ...] [--agent-id ID] [--projects-dir DIR]
         [--json OUT]
 

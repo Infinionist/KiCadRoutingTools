@@ -14,7 +14,7 @@ emits the plan as an executable artifact and then PROVES it, with a checker
 that refuses by name rather than a paragraph you are trusted to have read.
 
 There is no driver here, and that is deliberate (the staged placement drivers
-were retired too, for `/pcb-free-agent`). Routing's failure mode is the CHAIN
+were retired too, for `/plan-pcb-placement`). Routing's failure mode is the CHAIN
 being wrong, not a judgement being wrong, so what this half needs is a checker
 over the plan, and it gets one: routing stages encode the copper chain, which
 the engine moves underneath them.
@@ -26,7 +26,7 @@ chain, the nets and the parameters, and you read the failures; `route.py` and
 its siblings lay the copper. You do not hand-place copper, and you do not work
 around a checker that refuses.
 
-That is the opposite of placement (`/pcb-free-agent place`), where YOU DECIDE
+That is the opposite of placement (`/plan-pcb-placement place`), where YOU DECIDE
 -- which parts move, where, and why -- and the scripts legalize and measure. The test for
 which mode you are in: **if the work replays from a recorded command list
 without judgement, it is script work.** Routing passes it, which is why every
@@ -80,8 +80,8 @@ the end of the chain.
 Classify from the JSON fields, not from exit status: `check_assembly` exits 4
 for any of its seven conjuncts and its VERDICT line already says which one.
 
-- **NOT BUILDABLE** -> stop. This is placement work. Use `/pcb-free-agent place`
-  for the placement alone, or `/pcb-free-agent full` when the board needs both.
+- **NOT BUILDABLE** -> stop. This is placement work. Use `/plan-pcb-placement place`
+  for the placement alone, or `/plan-pcb-placement full` when the board needs both.
 - **buildable** -> go to Step 1.
 
 **Run both commands every time.** They cost seconds. A board handed over by a
@@ -1848,7 +1848,7 @@ about 190 scoped laps, and most of the waste traced to these:
    `--nets *` is not globbed into file names, and read the recorded argv back.
 
 Each rule above was measured in a recorded run; the stop rules they feed are
-`.claude/skills/pcb-free-agent/SKILL.md` §5.
+`.claude/skills/plan-pcb-placement/SKILL.md` §5.
 
 #### Octolinear smoothing is ON by default -- leave it alone
 
@@ -2682,13 +2682,12 @@ to get wrong:
   holds a poured net never reports `already_connected`: it carries on to the
   plane finalize instead (#1112).
 - **`complete` means "a sub-run did not finish", never "a budget expired".**
-  Since #713 `place_portfolio` writes `complete: false` when it REFUSES to rank
-  (a per-candidate plane-score failure), and `check_floorplan` carries the same
-  key for a grade that left a declared channel unmeasured. No ROUTING main
+  `check_floorplan` writes `complete: false` for a grade that left a declared
+  channel unmeasured. No ROUTING main
   writes one, because none of them can stop early. The key is read and it is the disclosure that keeps a partial tally from
   being merged into a whole-board one: `route_summary.merge_summaries` forces it
   onto the merged summary when ANY summary it merges carries it (merging is
-  otherwise last-wins), and `place_route_loop` refuses a summary that has it. A
+  otherwise last-wins). A
   hand-read must do the same — `.get('complete', True)`, so an ordinary log is
   unaffected.
 
@@ -2795,8 +2794,6 @@ run, and the classification table below reads BOTH. The *ledger* and the
      |---|---|
      | fewer nets in the search | `route.py --nets` — name the sub-bus rather than `'*'` |
      | a shallower rip-up search | `--max-ripup` (on `route.py` and `route_diff.py`) |
-     | fewer parts in a placement repair | `py_placer/place_seed.py --reseat <REFS>` takes the refs; scope it yourself instead of sweeping the board |
-     | no neighbour eviction | `py_placer/place_seed.py --evict-depth 0` (the default) — it censuses `no_pose_blockers`, records a `no_pose_verdict` per stuck part and moves nothing. 1 trades one blocker, 2 also censuses pairs and costs the most |
      | a half that closes on a counted plateau | `py_placer/converge.py verdict --flat N` counts RECORDED laps (default 5), and `converge.py record --exhausted <half>` closes one honestly |
 
      Then run the long step DETACHED and read its log, rather than wrapping it
@@ -2815,7 +2812,7 @@ run, and the classification table below reads BOTH. The *ledger* and the
 
   When a step you launched is genuinely long, do not sit on it: the delegation
   half of this rule — never leave a background job unwatched for long, and kill
-  a search that stopped improving — is `.claude/skills/pcb-free-agent/SKILL.md`
+  a search that stopped improving — is `.claude/skills/plan-pcb-placement/SKILL.md`
   §5's "watch long jobs" stop rule.
 
 ### Tune mode (issue #153) — opt-in per-board feedback loop
@@ -3233,7 +3230,7 @@ DONE **plus** an independent verifier's PASS (`board_score` exits 0 at
 checker's clauses are not `board_score` components). A blocker that is
 geometrically unsatisfiable is a finding about the REQUIREMENT and needs the
 measurement that proves it. The plateau, "no approach left" and time-cap rules
-are `.claude/skills/pcb-free-agent/SKILL.md` §5.
+are `.claude/skills/plan-pcb-placement/SKILL.md` §5.
 
 "This is taking a long time" is not one of them, for the reason given under
 the budget doctrine above.

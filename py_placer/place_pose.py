@@ -11,9 +11,9 @@
     place_pose.py BOARD OUT replicate --from CH1 --to CH2 --to CH3   # #1211
 
 Every verb writes through `placement.writer.write_placed_output` -- the same
-writer `place_seed` uses -- carries the sibling `.kicad_pro` / `.kicad_dru`
-(#441), and runs inside `declare_lever('place_pose.py')`, so an armed unaided
-regime accepts this tool and still refuses the hand script it replaces. The
+writer `place_simple` uses -- carries the sibling `.kicad_pro` / `.kicad_dru`
+(#441), and runs inside `declare_lever('place_pose.py')`, so its writes are
+attributed to it rather than to a hand script. The
 provenance row is recorded when the finished candidate is promoted onto OUT,
 not when it is staged (#960).
 
@@ -30,8 +30,8 @@ typo you fix by rewriting the command; 3 the board carries copper (moving a
 footprint would strand its tracks -- `--allow-routed` to override); 4 the
 request is WELL FORMED and the board said no (it grades worse, or the part is
 locked) and nothing was written -- a measurement you act on. Note that 4
-departs from `place_seed`, where it means "written, but the grade found
-errors": here a refusal writes nothing at all, which is what #892 asks for.
+departs from `place_simple`, where it means "written, with parts left
+illegal": here a refusal writes nothing at all, which is what #892 asks for.
 
 Every exit THIS TOOL decides prints exactly one `JSON_SUMMARY:` line, refusals
 included -- the board gate and the unreadable-input path as well as the pose
@@ -40,8 +40,8 @@ inside argparse before there is a board, a grade or a summary to print; if you
 are parsing output, treat "exit 2 with no summary line" as a usage error.
 
 WHAT IS GRADED, and what "illegal" means. The verdict is
-`placement.legality.grade_pad_legality` -- the same numbers `place_seed` and
-the review sheet print, netclass- and `.kicad_dru`-aware (#697) -- taken on the
+`placement.legality.grade_pad_legality` -- the same numbers `check_assembly`
+and the review sheet print, netclass- and `.kicad_dru`-aware (#697) -- taken on the
 candidate board and compared with the SAME grade on the input. A request is
 refused when it makes a category worse -- the counts (pad conflicts, hole
 conflicts, pads off-board) and their MAGNITUDES (`pad_shortfall`,
@@ -174,7 +174,7 @@ def build_parser(with_verbs=True):
     p.add_argument('output_file',
                    help='board to write (still required with --dry-run, '
                         'which writes nothing and reports the path under '
-                        '`would_write` -- the same shape place_seed uses, and '
+                        '`would_write`, and '
                         'it keeps a verb token from being read as the output '
                         'path)')
     p.add_argument('--clearance', type=float, default=None, metavar='MM',
@@ -353,7 +353,7 @@ def split_segments(rest):
     lowercase match, so a footprint actually REFERENCED `set` or `lock` would
     start a segment instead of being a name. KiCad references are conventionally
     uppercase and no board in this repo has one, but if you meet one, place it
-    with `place_seed`/`place_optimize` rather than here -- a quoting escape
+    with `place_simple` rather than here -- a quoting escape
     would be a second syntax to learn for a case nobody has.
     """
     segments = []
@@ -556,7 +556,7 @@ def main(argv=None):
     if any(o.get('declared') for o in ops):
         # #1211: `replicate` with no --from/--to is the intent's
         # `replicate[]`, one op per declaration, in file order -- the ops
-        # place_seed's replicate stage applies, through the same engine.
+        # the copies the verb would make one by one, through the same engine.
         decls = tuple(getattr(intent, 'replicate', ()) or ()) if intent else ()
         if not decls:
             return _refuse(

@@ -1,7 +1,7 @@
 """
 KiCad Routing Tools - headless placement-run contracts (Placement tab).
 
-The Placement tab drives Claude Code headless with the /pcb-free-agent skill,
+The Placement tab drives Claude Code headless with the /plan-pcb-placement skill,
 in its `place` or `full` mode. Unlike the "Ask AI" analysis skills,
 those runs WRITE (lap boards, a converge ledger, renders, REPORT.md), take
 minutes to hours, and must be observable from the outside while they run.
@@ -44,7 +44,7 @@ DATASHEET_SENTENCE = (
 # alone since #633; on 2.1.251 the dispatch event carries `"name":"Agent"`, so
 # the close-out verification this comment claims may never have been granted.
 #
-# Monitor, because /pcb-free-agent's stop rules require watching long jobs
+# Monitor, because /plan-pcb-placement's stop rules require watching long jobs
 # (never unwatched for more than 20 minutes); without it a headless run can
 # only poll with Bash.
 #
@@ -67,10 +67,10 @@ PLACEMENT_RESULT_SCHEMA = (
     '"summary": "<one line>"}')
 
 # Tab mode -> (skill, the skill's own mode argument). Both tab modes run the
-# one free-agent skill; the keys also name the run folders (_RUN_DIR_RE).
+# one placement skill; the keys also name the run folders (_RUN_DIR_RE).
 PLACEMENT_SKILLS = {
-    "place": "pcb-free-agent",
-    "place_route": "pcb-free-agent",
+    "place": "plan-pcb-placement",
+    "place_route": "plan-pcb-placement",
 }
 PLACEMENT_SKILL_MODES = {
     "place": "place",

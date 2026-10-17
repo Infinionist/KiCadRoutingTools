@@ -49,7 +49,7 @@ controls):
 | AI tab | **Plan Routing** | `/plan-pcb-routing` | Fills parameters across the tabs and loads a checkable step list; **Run Selected Steps** executes them in-process |
 | AI tab | **Review Routed Board** | `/review-routed-board` | QA report in the transcript with a PASS/FAIL verdict |
 | AI tab | **Diagnose Routing Failures** | `/diagnose-routing-failures` | Root-cause report from the board + the Log tab content |
-| AI tab (Placement) | **Place (AI)** / **Place + Route (AI)** | `/pcb-free-agent place` / `full` | A headless run into a `krt_placement/` folder beside the board: final board, REPORT.md; progress from the milestone ledger |
+| AI tab (Placement) | **Place (AI)** / **Place + Route (AI)** | `/plan-pcb-placement place` / `full` | A headless run into a `krt_placement/` folder beside the board: final board, REPORT.md; progress from the milestone ledger |
 | Route tab (Layers) | **Check Stackup (Claude)** | `/recommend-stackup` | Stackup report; recommended layer count logged |
 | Route tab (Options) | **Ask AI** (Power Nets) | `/analyze-power-nets` | Fills the Power Nets / Power Widths fields |
 | Differential tab | **Ask AI** | `/identify-diff-pairs` | Checks confirmed pairs, unchecks name-matching false positives; unconventional pairs reported in the log |
@@ -117,8 +117,7 @@ what runs here is what the buttons run.
 
 | Skill | Purpose | Main output |
 |-------|---------|-------------|
-| [`/pcb-free-agent`](#pcb-free-agent) | Place and/or route a board end to end, the agent choosing its steps (modes `full` / `place` / `route`) | The best board it reached and REPORT.md, checked by one independent verifier |
-| [`/pcb-group-place`](#pcb-group-place) | Place a board by function, each functional group in its own region | The placed board, its groups file, the region intent and renders |
+| [`/plan-pcb-placement`](#plan-pcb-placement) | Place a board by function, fast-route it, change the groups and place again; in `full` mode route and verify it (modes `place` / `full`) | The best board it reached, its groups file and REPORT.md, checked by one independent verifier |
 | [`/plan-pcb-routing`](#plan-pcb-routing) | Full board analysis and step-by-step routing plan | Ordered routing commands, executed on approval |
 | [`/analyze-power-nets`](#analyze-power-nets) | Identify power nets and track widths via datasheets | `--power-nets` / `--power-nets-widths` arguments |
 | [`/find-high-speed-nets`](#find-high-speed-nets) | Classify nets by speed tier via datasheets | `--gnd-via-distance` recommendation |
@@ -129,18 +128,13 @@ what runs here is what the buttons run.
 | [`/review-routed-board`](#review-routed-board) | Post-route QA and sign-off | Pass/fail report with next actions |
 | [`/stress-test-router`](#stress-test-router) | Batch-test the router on real-world open-source boards | Completion/DRC summary table + GitHub issues for findings |
 
-### /pcb-free-agent
-
-The placement-and-routing entry point. It gives the agent a goal per mode, the repo's CLIs as a toolbox, stop rules and the traps real runs hit, and asks for one independent verifier at the end instead of prescribing stages. It hands back the board and a REPORT.md with a timeline from its milestone ledger. `scripts/grade.py` and `scripts/measure.py` grade the board and split the wall clock independently of the agent's own claims, and `scripts/make_unplaced.py` builds an all-off-the-board input for from-scratch runs. Measured basis: esp_prog was DONE in 12 min (6 vias), against 3h54m (39 vias) for the staged loop it replaced; glasgow_revC reached blocking 15 in 7h56m, against 35 in ~32 h.
-
-### /pcb-group-place
+### /plan-pcb-placement
 
 Placement by function, the way a designer lays a board out:
-- **Grouping.** The agent sorts the parts into functional groups (power entry and conditioning, the core and its clock, each interface, the user interface), reading pin functions and datasheets, and records why. `py_tools/check_groups.py` checks the result.
-- **Regions.** `py_placer/plan_regions.py` computes one region per group from the board's wiring and the agent's hints.
-- **Placement.** `place_seed --intent` fills the regions in one pass, and `py_placer/place_groups.py` seeds the groups one at a time, leaving the groups not yet placed out of each step entirely. `py_placer/place_candidates.py` runs both over several seeds at once and keeps the best.
-
-It places only; `/pcb-free-agent` routes and verifies the result, and lists it as one of its levers. See [Grouped placement](grouped-placement.md).
+- **Grouping.** The agent sorts the parts into functional groups (power entry and conditioning, the core and its clock, each interface, the user interface), reading pin functions and datasheets, and records why. `py_tools/check_groups.py` checks the result; `near` / `apart` / `edge` / `side` hints steer where groups go.
+- **Placement.** `py_placer/place_simple.py` keeps each group in one piece and arranges the pieces by one objective (wire, crossings, decaps at their own IC, the hints, spacing, congestion), annealed from a random start; the same seed gives the same placement.
+- **Review.** A fast route (`route.py --quick-pass`) and `py_tools/route_review.py` show what the placement costs the router; the agent changes the groups, hints or intent claims and places again, keeping the board that routes best.
+- **Routing (full mode).** The kept placement is routed with the full chain, graded, and checked by one independent verifier; the board comes back with REPORT.md. `scripts/grade.py` and `scripts/measure.py` grade the board and split the wall clock independently of the agent's own claims, and `scripts/make_unplaced.py` builds an all-off-the-board input for from-scratch runs.
 
 ### /plan-pcb-routing
 
@@ -184,9 +178,8 @@ A development/QA skill rather than a board-design skill: batch-tests the router 
 
 ```
 Placement (or the whole job):
-  /pcb-group-place              - by function, one region per group --> /pcb-free-agent route
-  /pcb-free-agent place         - then continue below
-  /pcb-free-agent full|route    - routes itself --> /review-routed-board
+  /plan-pcb-placement place     - group, place, fast-route, re-place; then continue below
+  /plan-pcb-placement full      - also routes itself --> /review-routed-board
         |
         v
 Before routing:
@@ -202,7 +195,7 @@ Before routing:
   routing runs (route.py, route_diff.py, route_planes.py)
         |
         +-- failures? --> /diagnose-routing-failures --> targeted retry
-        |                   (placement-shaped? --> /pcb-free-agent full)
+        |                   (placement-shaped? --> /plan-pcb-placement full)
         |
         v
   /review-routed-board      - final sign-off

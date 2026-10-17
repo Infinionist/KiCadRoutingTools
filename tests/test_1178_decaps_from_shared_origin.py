@@ -17,7 +17,7 @@ is read off EVERY part: it is the reference's own fixed point
 (`_decap_derivation`), so the reference must still grade clean against it.
 
 What still refuses: a reference that IS a pile (the same board run through the
-free-agent skill's `make_unplaced.py`), and the auto arm on run 29's heap,
+placement skill's `make_unplaced.py`), and the auto arm on run 29's heap,
 whose 83% stacked parts read `pile` through its heap arm.
 
 Run: python3 -X utf8 tests/test_1178_decaps_from_shared_origin.py
@@ -43,7 +43,7 @@ from run_utils import check, evidence                          # noqa: E402
 PY = sys.executable
 RP = os.path.join(ROOT, 'kicad_files', 'rp2350_fpga_eensy_prePlane.kicad_pcb')
 RUN29 = os.path.join(ROOT, 'tests', 'fixtures', '959', 'run29_pile.kicad_pcb')
-MAKE_UNPLACED = os.path.join(ROOT, '.claude', 'skills', 'pcb-free-agent',
+MAKE_UNPLACED = os.path.join(ROOT, '.claude', 'skills', 'plan-pcb-placement',
                              'scripts', 'make_unplaced.py')
 STRIP = os.path.join(ROOT, 'tests', 'stress', 'strip_copper_only.py')
 

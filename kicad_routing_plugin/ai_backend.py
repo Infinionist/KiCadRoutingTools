@@ -97,7 +97,7 @@ def datasheet_scratch():
 # agents themselves, and it applies to Claude Code only, while this sentence
 # has to reach opencode too. What ships here is the repo's EXISTING convention
 # for bounding a child -- a subagent brief quoted verbatim (see
-# .claude/skills/pcb-free-agent/references/verifier.md) -- stated once instead of eight
+# .claude/skills/plan-pcb-placement/references/verifier.md) -- stated once instead of eight
 # times. Treat the enforced version as owed, not done.
 #
 # VERDICT= rather than RESULT= for the child's answer, because

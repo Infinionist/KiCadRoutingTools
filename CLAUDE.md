@@ -95,20 +95,6 @@ Validate routed boards against the *real* spec, with the right checker — most
   is missing tests nothing — and process substitution (`<(echo ...)`) is not a
   file on Windows. Measured: a negative control copied to a temp dir died on
   `ModuleNotFoundError` and was read as "the gate refused".
-- **A skill's claims are gated three ways, and each gate says what it cannot
-  see (#923).** `tests/test_431_skill_commands.py` holds every cited `--flag`
-  to the real argparse, every quoted DEFAULT to the real default (read from
-  `--help` where the parser is built under `if __name__ == '__main__'` and
-  cannot be imported), and every `exits N` annotation to whether that flag can
-  reach `gate_or_exit` at all. (The staged placement and combined drivers it
-  also read through `--dump-all` / `--dump-refusals` were retired with their
-  skills in favour of `/pcb-free-agent`, which prescribes no stages.)
-  `tests/test_923_output_key_claims.py` is the third: it RUNS the instruments
-  the skills quote (`check_floorplan`, `render_placement`, `board_score`) on a
-  tracked fixture and resolves every cited key against what they really wrote (`hot[].ratio` was never an emitted key;
-  `broken.poured_nets_meaning` is written under `components.`). A claim about a
-  tool it does not run, or one in prose naming no instrument, is still
-  invisible -- both files say so.
 - **A mutation battery calls `preflight(__file__)` from
   `tests/mutation_anchors.py`, right after its `ROWS`.** A stale anchor then
   refuses in one second instead of reporting BROKEN after the witnesses are
@@ -121,8 +107,8 @@ Validate routed boards against the *real* spec, with the right checker — most
 - **Read the failure buckets by their real definitions.** `failed_single` = "no
   result at all"; `open_single` = a KEPT result whose pads are still disconnected
   (non-multipoint only — a multipoint shortfall is already the pad deficit). A
-  verdict is `len(failed_single) + len(open_single) + pad-deficit`, which is what
-  `place_route_loop` counts. Reading only `failed_single` + the deficit is how a
+  verdict is `len(failed_single) + len(open_single) + pad-deficit`. Reading only
+  `failed_single` + the deficit is how a
   board shipping open copper reports `failures=0`: a NON-multipoint open net
   contributes to neither term. `terminal_restores` names rip victims restored at
   terminal failure with their outcome (`full` is the only success; `full_open`
@@ -222,8 +208,8 @@ Validate routed boards against the *real* spec, with the right checker — most
   or GUI control; the run prints `Keep-away: N rule(s) read from the design
   brief`. One declaration, two readers through one parser
   (`keep_away.brief_rule_rows`): check_floorplan grades it pad edge to pad
-  edge on the placement, WARN unless `severity` promotes it, and no placement
-  search reads it, `floorplan.GRADE_ONLY_RULES`.)
+  edge on the placement, WARN unless `severity` promotes it, and the placer
+  does not read it.)
   `--brief PATH` overrides, `--no-brief` is the OFF arm,
   `--require-brief` refuses a grade with nothing declared behind it. On the
   `--intent` path it reports DRIFT instead of merging, because the graded
@@ -247,7 +233,7 @@ Validate routed boards against the *real* spec, with the right checker — most
   and the outline, value by value with an authority, and compiled into
   grade-only anchors, whose refs must be locked -- or named, unlocked,
   by a plan `fixed_poses[]` entry at the declared pose (with its `rot` where the
-  file has one), which the seeder's stage 0 seats and locks (#1054).
+  file has one), which `place_simple` seats and holds (#1054).
   `docs/floorplan-intent.md` has the authority table.
 - **Protected nets (#521): matched groups and routed diff pairs are recorded in
   the sibling `.kicad_pro`** (`kicad_routing_tools.protected_nets`, written next
@@ -344,9 +330,8 @@ Validate routed boards against the *real* spec, with the right checker — most
   `tests/run_all_durations.json` (refresh it with `run_all_modal.py
   --write-durations`, which refuses a red run, and commit it when the cost
   shape moves), and a test of independent rows may declare `RUN_ALL_PARTS = N`
-  and take `--part I/N` to run as N units -- `test_placement_ab` does (8).
-  No packing beats the slowest single unit (`test_compare_seeds`, ~730 s), so
-  that is the fan-out's floor: 50 shards finished green in 765 s (2026-10-05).
+  and take `--part I/N` to run as N units. No packing beats the slowest
+  single unit, so that unit is the fan-out's floor.
   Three things that decide whether you can trust the result:
   - **The verdict is each shard's own exit code, never the parsed counts.** A
     container that OOMs prints no summary line at all, so a driver deciding on
@@ -409,25 +394,11 @@ Validate routed boards against the *real* spec, with the right checker — most
 and zero `unrouted` and zero `broken` nets at the end. It is NOT restoring
 parts to the poses they had before.**
 
-This is stated here because the perturbed-corpus rig (#411) grades on
-`recovery` and `home /N`, which measure **distance to the original pose** —
-and those are the wrong headline for this goal. A placement that is
-electrically excellent but arranged differently scores ~0 recovery. Measured,
-run 10: `recovery` **−0.0014** and `home` **0/30** on a run that took
-copper-free DRC 9 → 0, assembly blocking 4 → 0, and `check_assembly` from NOT
-BUILDABLE to **buildable**. The headline said failure about a board that had
-become strictly more buildable.
-
 So, when grading a placement:
 
 - **Lead with the routed outcome** — `board_score`'s `blocking`
   (`unrouted + broken` first, then the rest), with `quality` (vias,
   copper_mm, segments) as the tie-break once `blocking` is 0.
-- **Keep `recovery` as a DIAGNOSTIC, never the score.** It is how you catch a
-  run that wandered — `collateral_pad_rms` rising (run 10: 0.000 → 3.670 mm)
-  means parts nothing had damaged were moved, which is a real defect. But a
-  negative recovery on a board that got more buildable is not a failure of
-  the run.
 - **The human original is a BENCHMARK TO APPROACH, not a pose to match**
   (its vias / copper_mm / segments), because a human layout is one solution,
   not the only one.
@@ -466,24 +437,21 @@ legality measured pads against pads, so `place_pose set C3 135.6 96.69 --rot
 inside the filled shape -- `legal`, `buildable`, and check_drc saw only the
 first. `check_drc.footprint_graphic_pad_census` is the one measurement:
 check_drc grades the interior, `grade_pad_legality` publishes it as
-`graphic_pad_*` (place_pose gates on it), the seeder's gate
-(`LegalityContext.pair_shortfall`) charges it against pads with an
-off-board seed licensing nothing, and check_assembly gates a contact the way
+`graphic_pad_*` (place_pose gates on it), the seat gate
+(`LegalityContext.pair_shortfall`, which `place_simple`'s final legality
+reads) charges it against pads with an off-board seed licensing nothing, and check_assembly gates a contact the way
 it gates courtyards -- a member MOVED vs `--baseline`, report-only without
 one -- because human boards ship such contacts by design (net ties on Kelvin
 shunt pads, a jumper on an antenna feed; a tie's own net is never a stack).
 
-**Scope a placement search to the refs the gate names.** When a gate names
-specific parts, free exactly those and lock everything else. A global sweep
-orders its violators by its own priority — usually worst-off-board first — and
-may never reach the ones actually blocking you. Measured: freeing 2 parts and
-locking the other 105 cleared both blocking pairs in **63 seconds**, where
-whole-board sweeps ran 10+ minutes without touching them.
-
-**Repair searches start from the part's CURRENT pose**, which carries no
-information once a part is tens of millimetres from where it belongs. Expect
-cost to grow sharply with the displacement cap, and prefer re-seating such a
-part over nudging it.
+**Judge a placement by routing it, over seeds.** `py_placer/place_simple.py`
+gives the same placement for the same board, inputs and `--seed`, but seeds
+differ more than most changes to its objective or inputs: on ch32v003_usb,
+seeds 0-3 of one configuration routed 24-54 vias. So place several seeds of
+each arm, route each by the board's recorded chain (blocking first, then
+vias, copper_mm, segments), and LOOK at the routed boards -- the objective's
+own cost, crossings and hpwl are proxies for ranking unrouted candidates,
+never the verdict.
 
 ## Stress testing & A/B replay
 
@@ -506,62 +474,11 @@ one. A change that touches per-net vias is A/B'd with
 `tests/stress/pernet_via_ab.py`, which replays each board's recorded route step
 with `--via-size` stripped (176 boards qualify).
 
-**A new PLACEMENT objective term goes through `tests/test_placement_ab.py`
-before it ships on.** It runs the same board twice (flag off, flag on), writes
-both, and grades both with an *independent* check — `floorplan.grade(...,
-with_health=True)` re-derives its corridors from the FINAL poses, so a term that
-only improves the model it is computed from shows up as "improved nothing". Add
-a row to `ROWS`, do not add a file. Five rules the table encodes and that are
-easy to get wrong:
-
-- **Judge on ≥3 DISTINCT boards, paired and directional** (improve on ≥ N−1,
-  regress on none), never a per-board absolute. Neutral boards are printed, not
-  dropped. This is **enforced in `gate()`**, not just stated here (#694): the
-  old rule counted trial *rows*, so one improving row on one board passed, and
-  `--row` made that the convenient path. The refusal applies to rows **on
-  trial**, and every row in the table today is pinned — so a real run does not
-  reach it and `--self-test` does. A term whose per-board direction is a coin
-  flip passes the rule 1 run in 2^N (1 in 8 at N=3), which the run prints when
-  a term is on trial.
-- **Keep the row that disagrees.** A term that helps on one board of three is
-  not a term, and deleting the dissenting row is how that becomes folklore.
-- **A rejected term keeps its rows**, marked `rejected` with its measured
-  `expect`, so it stays a change detector instead of a permanent red mark that
-  someone eventually deletes along with the finding.
-- **Numbers live in `tests/placement_ab_baseline.json`, never in a `why`
-  string.** Every run re-measures and compares it per key and per arm, reporting
-  a reversed direction (`INVERTED`) apart from a moved value (`DRIFT`), a
-  baseline row `ROWS` no longer declares (`ORPHAN`), and a baseline that is not
-  shaped like one (`MALFORMED`). A `why` records the MECHANISM only. This exists
-  because `corridor-ulx3s` sat rejected on a recorded claim whose signal had
-  reversed while the gate printed PASS (#694) — and the reason is worth getting
-  right, because the obvious reading is wrong: **the gate never compared the
-  signal.** `_verdict` collapses the signal, the guards and intent errors into
-  ONE mark, and only that mark is checked against `expect`, so the reversal was
-  MASKED by a different criterion turning the mark `regress` for its own
-  reasons. An aggregate verdict cannot say which of its inputs moved.
-  **A placement-engine change that moves these numbers re-records the baseline
-  (`--write-baseline`) in the same commit**, after reading the table; a partial
-  run refuses to write one, and a missing baseline FAILs rather than passing.
-  `--baseline ""` is the deliberate way to run without the comparison, and
-  `--self-test` runs the gate and comparator logic in milliseconds at the top of
-  every invocation.
-- **A mark resting on intent errors names the rules that moved**
-  (`intent errors A -> B (zone_containment X -> Y)`). An unattributed error
-  count is what let #694's inverted row keep reading as an intact finding.
-
-Two traps measured the hard way: the first run of that harness reported the
-corridor term inert because it had been pointed at a **merged** net glob whose
-`cover` was 0.46 — a phantom corridor (declare sub-buses separately; `SDRAM_A*`
-scores 0.81, `SDRAM_*` 0.46). And grade intent errors **paired**, not against
-zero: both arms quench the board, so both walk parts out of the emitted intent's
-zones for reasons the flag did not cause.
-
-Every metric in that harness is still a **proxy**, so `tests/test_placement_probe.py`
-(opt-in, slower) actually routes. It scopes the route **causally, not by which
-parts moved** — the nets `net_affinity` flagged plus the declared corridor nets,
-fixed from the OFF board and identical on both. Scoping by moved parts is
-circular: a term that moves nothing would score a perfect null.
+**A new PLACEMENT objective term ships on by the routed result.** Route both
+arms over the same seeds on representative boards (the rule above), compare
+paired per board and seed, and keep the arm that routes better on most of
+them and worse on none by more than the seed spread. A term that only lowers
+the objective it is part of has shown nothing.
 
 ## Keep CLI and GUI routing in sync
 

@@ -143,7 +143,7 @@ CONVERGE_ROWS = [
 # --- loop_driver: RETIRED -------------------------------------------------
 # Its nine rows (the close-out order, the lens-file slots, the verdict paths)
 # left with loop_driver.py and its killer test_904_closeout_order.py when the
-# combined skill was retired for pcb-free-agent.
+# combined skill was retired for plan-pcb-placement.
 
 # --- the GUI copy of the label ladder -------------------------------------
 GUI_ROWS = [

@@ -1,8 +1,8 @@
 """
 KiCad Routing Tools - Placement sub-tab (AI tab notebook).
 
-Two Claude-Code-driven actions ("Place" via /pcb-free-agent place, "Place +
-Route" via /pcb-free-agent full) plus the non-AI "Beautify Labels"
+Two Claude-Code-driven actions ("Place" via /plan-pcb-placement place, "Place +
+Route" via /plan-pcb-placement full) plus the non-AI "Beautify Labels"
 action (issue #481). The AI runs are headless, write into a persistent
 workdir (placement_run.create_workdir), take minutes to hours, and are
 observed from outside: a 1 s monitor timer merges the stream-json transcript,
@@ -511,7 +511,7 @@ class PlacementTab(wx.Panel):
             sw, choices=[BACKENDS[bid].label for bid in BACKEND_IDS])
         self.backend_choice.SetSelection(BACKEND_IDS.index(self.backend.id))
         self.backend_choice.SetToolTip(
-            "Harness that runs the /pcb-free-agent skill. Only Claude Code is "
+            "Harness that runs the /plan-pcb-placement skill. Only Claude Code is "
             "supported today (placement runs must WRITE, and the other "
             "harnesses' agents deny edits); more harnesses later.")
         self.backend_choice.Bind(wx.EVT_CHOICE, self._on_backend_choice)
@@ -541,7 +541,7 @@ class PlacementTab(wx.Panel):
 
         self.place_btn = wx.Button(sw, label="Place (AI)")
         self.place_btn.SetToolTip(
-            "Claude Code runs /pcb-free-agent place headless on a "
+            "Claude Code runs /plan-pcb-placement place headless on a "
             "snapshot of this board. Runs minutes to hours; artifacts land "
             "in a krt_placement folder next to the board file, which keeps "
             f"this board's newest {KEEP_RUNS} runs.")
@@ -549,8 +549,8 @@ class PlacementTab(wx.Panel):
                      wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
         self.place_route_btn = wx.Button(sw, label="Place + Route (AI)")
         self.place_route_btn.SetToolTip(
-            "Claude Code runs /pcb-free-agent full headless (it places "
-            "and routes, choosing its own steps). Runs "
+            "Claude Code runs /plan-pcb-placement full headless (it places, "
+            "fast-routes and re-places, then routes the best). Runs "
             "minutes to hours; artifacts land in a krt_placement folder "
             f"next to the board file, which keeps this board's newest "
             f"{KEEP_RUNS} runs.")

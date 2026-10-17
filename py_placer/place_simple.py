@@ -2,7 +2,7 @@
 """Place a board by function, simply: groups, one objective, annealed.
 
     python3 -X utf8 py_placer/place_simple.py board.kicad_pcb placed.kicad_pcb \\
-        --groups groups.json --intent intent.json [--moves 11000] [--seed 0] [--json report.json]
+        --groups groups.json --intent intent.json [--seed 0] [--json report.json]
 
 1. GROUPS: the groups file (`check_groups.py`), a crystal and its load caps
    folded into their IC's group. A group is a set of parts kept together;
@@ -20,9 +20,10 @@
    crossings, claims, decaps at their own group's supply pins, each group's
    gap tree, the halo between unwired neighbours, airwires over foreign
    pads, routing congestion -- lowered by simulated annealing
-   (`placement/simple_anneal.py`), a fixed number of moves from `--seed`,
-   so the same board and seed give the same placement. On ch32v003_usb
-   (22 movable parts) the whole run takes about 4.3 s.
+   (`placement/simple_anneal.py`), MOVES_PER_PART moves per movable part
+   from `--seed`, so the same board, inputs and seed give the same
+   placement. On ch32v003_usb (22 movable parts) the whole run takes about
+   4.3 s.
 
 Exit codes: 0 placed, 2 unreadable input or a face the board cannot take
 (two declarations disagree, or a KiCad-locked part is declared on the other
@@ -33,6 +34,11 @@ face or at another pose), 4 placed with parts left illegal.
 KRT_TOOL = {'scope': ['placement', 'combined'], 'kind': 'actor'}
 
 import _path  # noqa: F401  (py_placer -> py_router/py_tools on sys.path)
+
+#: The anneal's default length per movable part, set by the time budget:
+#: ch32v003_usb (22 movable parts) anneals in about 4 s. More moves still pay
+#: (`--moves`); fewer leave the run cooling too fast.
+MOVES_PER_PART = 500
 
 import argparse
 import json
@@ -104,14 +110,18 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
     from placement.simple import Model
     notes = []
     clearance, edge, _ = board_floor_knobs(board)
-    zones = fp.zone_entries(intent, blocks or {}) if intent is not None else ()
+    # every declared zone binds its members (containment) and, when exclusive,
+    # keeps strangers out; the board's bounds open a zone side on the outline
+    # to an edge-claim member (#1174)
+    zones = (fp.zone_entries(intent, blocks or {}, bounds=pcb.board_info.board_bounds)
+             if intent is not None else ())
     state = pose_score.make_state(pcb, board, clearance=clearance,
                                   board_edge_clearance=edge, grid_step=0.1,
                                   halo_base=args.halo_base, halo_coef=args.halo_coef,
                                   halo_weight=args.halo_weight,
                                   extra_locked_refs=set(fixed) or None,
                                   keepouts=intent.keepouts if intent is not None else (),
-                                  intent_zones=[z for z in zones if not z['exclusive']],
+                                  intent_zones=list(zones),
                                   exclusive_zones=[z for z in zones if z['exclusive']])
     movable = sorted(r for r, p in state.parts.items() if not p.locked)
     # claims: the intent's own, and each crystal at its IC's oscillator pins
@@ -248,8 +258,9 @@ def main(argv=None):
     ap.add_argument('--track-pitch', type=float, default=0.33,
                     help='mm of board one track takes, width plus clearance, for the '
                          'congestion supply (default 0.33)')
-    ap.add_argument('--moves', type=int, default=11000,
-                    help='annealing moves (default 11000)')
+    ap.add_argument('--moves', type=int, default=0,
+                    help='annealing moves (default 0: MOVES_PER_PART per movable '
+                         'part)')
     ap.add_argument('--seed', type=int, default=0,
                     help='the random stream: the start and the moves (default 0)')
     ap.add_argument('--json', help='write the report here')
@@ -334,7 +345,8 @@ def main(argv=None):
         print(f"  group {name}: {', '.join(members)}")
     t1 = time.time()
     simple_anneal.scatter(model, movable, seed=a.seed)
-    res = simple_anneal.anneal(model, movable, moves=a.moves, seed=a.seed,
+    moves = a.moves or MOVES_PER_PART * len(movable)
+    res = simple_anneal.anneal(model, movable, moves=moves, seed=a.seed,
                                log=lambda s: print(f"  {s}"))
     final = model.total()
     t2 = time.time()

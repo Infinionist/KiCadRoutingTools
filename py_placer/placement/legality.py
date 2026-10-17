@@ -6482,7 +6482,7 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
             # outline measure the docs designate as authoritative.
             #
             # HOW FAR APART THEY ACTUALLY LAND, measured over #703's 120
-            # placements (#788, docs/placement-predictors.md): graded at each
+            # placements (#788): graded at each
             # board's own netclass floor the two agree in sign on 119 of 119
             # and exactly on 118; graded at the 0.25 fallback, 112 of 120 and
             # 104. Every one of the 8 disagreements is THIS count reporting a

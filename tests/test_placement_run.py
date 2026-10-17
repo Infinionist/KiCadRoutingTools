@@ -331,30 +331,30 @@ check("instructions carry the RESULT schema", PLACEMENT_RESULT_SCHEMA in instr)
 check("place mode has no --no-delegate", "--no-delegate" not in instr)
 check("instructions refuse copper stripping", '"refused"' in instr)
 instr_pr = build_placement_instructions(wk, "place_route", extra="Focus on U1.")
-# The free-agent skill has no staged driver to run inline, so neither mode
+# The placement skill has no staged driver to run inline, so neither mode
 # passes the old loop driver's --no-delegate any more.
 check("place_route mode has no --no-delegate either",
       "--no-delegate" not in instr_pr)
 check("extra instructions included", "Focus on U1." in instr_pr)
 
-# Both tab modes run the one free-agent skill; the skill's own mode argument
+# Both tab modes run the one placement skill; the skill's own mode argument
 # is what tells them apart.
-check("both tab modes run pcb-free-agent",
-      PLACEMENT_SKILLS == {"place": "pcb-free-agent",
-                           "place_route": "pcb-free-agent"},
+check("both tab modes run plan-pcb-placement",
+      PLACEMENT_SKILLS == {"place": "plan-pcb-placement",
+                           "place_route": "plan-pcb-placement"},
       str(PLACEMENT_SKILLS))
 check("tab modes map to the skill's place / full modes",
       PLACEMENT_SKILL_MODES == {"place": "place", "place_route": "full"},
       str(PLACEMENT_SKILL_MODES))
 _board_fwd = os.path.abspath(staged).replace("\\", "/")
 prompt = build_placement_prompt(ai_backend.BACKENDS["claude"], wk, staged, "place")
-check("place prompt is /pcb-free-agent place <board>",
-      prompt.startswith(f"/pcb-free-agent place {_board_fwd}"), prompt[:120])
+check("place prompt is /plan-pcb-placement place <board>",
+      prompt.startswith(f"/plan-pcb-placement place {_board_fwd}"), prompt[:120])
 check("prompt names the staged board", staged.replace("\\", "/") in prompt)
 prompt_pr = build_placement_prompt(ai_backend.BACKENDS["claude"], wk, staged,
                                    "place_route")
-check("place_route prompt is /pcb-free-agent full <board>",
-      prompt_pr.startswith(f"/pcb-free-agent full {_board_fwd}"),
+check("place_route prompt is /plan-pcb-placement full <board>",
+      prompt_pr.startswith(f"/plan-pcb-placement full {_board_fwd}"),
       prompt_pr[:120])
 
 # ------------------------------------------------------------------- RESULT

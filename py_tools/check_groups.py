@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Check a grouped-placement groups file against its board.
+"""Check a groups file against its board, before `place_simple.py` places it.
 
 The groups -- which parts belong together functionally -- are an agent's
-judgement (see `.claude/skills/pcb-group-place/SKILL.md`). This instrument
+judgement (see `.claude/skills/plan-pcb-placement/SKILL.md`). This instrument
 refuses a file that cannot be placed and measures the judgement so it can be
 checked before any part moves:
 
@@ -10,16 +10,17 @@ checked before any part moves:
                    board does not have, a group with no part on the board.
   WARNINGS         a part with more SIGNAL links to another group than to its
                    own (rails left out: `placement.grouping.rail_net_ids`); a
-                   decap tether that crosses a group line (the seeder claims
-                   that cap at its IC's supply pin whatever the file says).
+                   decap whose IC is in another group and no IC of its own
+                   group is on its rail (`place_simple` then leaves it out of
+                   the decap term: right for a load or RC cap, wrong for a
+                   real decap).
   REPORTED         bridges (2-pad parts linking two groups), the inter-group
-                   signal-link matrix the region planner prices, the rails,
-                   and the placement order `place_groups.py` will use.
+                   signal-link matrix, the rails, and a placement order.
   CRYSTALS         each passive crystal, its IC and its load caps
-                   (`placement/crystals.py`). plan_regions writes their
-                   claims, and the seeder seats them beside the IC whatever
-                   group they are in, so a load cap is no decap conflict
-                   (`--no-crystals`: checked as if no claim were written).
+                   (`placement/crystals.py`). `place_simple` folds them into
+                   their IC's group and claims them at its oscillator pins,
+                   so a load cap is no decap conflict (`--no-crystals`:
+                   checked as if no claim were written).
 
     python3 py_tools/check_groups.py board.kicad_pcb --groups groups.json
     python3 py_tools/check_groups.py board.kicad_pcb --groups groups.json --json out.json

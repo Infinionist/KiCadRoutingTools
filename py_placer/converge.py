@@ -297,7 +297,7 @@ def check_rip_invariants(nets, rip_set, power_nets=(), impedance_nets=()):
 #: `connectivity` asks "is every net actually joined", which is exactly
 #: `unrouted` + `broken`; `drc` asks "does the copper break a rule", which is
 #: `drc` + `undersized`; `spec` asks "does the board meet what was ASKED for"
-#: (the verifier brief's `spec` lens, .claude/skills/pcb-free-agent/
+#: (the verifier brief's `spec` lens, .claude/skills/plan-pcb-placement/
 #: references/verifier.md: check_complete's impedance, length and width
 #: clauses plus the declared mechanical facts), which is `impedance` +
 #: `floorplan` + `length` + `net_widths`.
@@ -569,7 +569,7 @@ def _grades_another_board(board, score):
 def read_lens_file(path):
     """(line, lineno) -- the FIRST line of `path` that begins `VERDICT=`.
 
-    The verifier brief (.claude/skills/pcb-free-agent/references/verifier.md)
+    The verifier brief (.claude/skills/plan-pcb-placement/references/verifier.md)
     requires every verifier to write its verdict to disk, as its retired
     predecessor did since run 23 ("a reply is a notification and notifications
     get lost"). Nothing read those files: the line was retyped into `--lens`
@@ -605,7 +605,7 @@ def read_lens_file(path):
         f"no line beginning 'VERDICT=' in {path} ({n} line(s) scanned). The "
         f"token is case-sensitive, and the verifier's own reply format is "
         f"`VERDICT=(PASS|FAIL):lens=<lens>` on a line of its own "
-        f"(the verifier brief, .claude/skills/pcb-free-agent/references/verifier.md). A boundary-verification verdict "
+        f"(the verifier brief, .claude/skills/plan-pcb-placement/references/verifier.md). A boundary-verification verdict "
         f"spells `check=<1-5>` instead of `lens=<name>` and is not a lens: "
         f"cite it in the report, not here.")
 
@@ -1540,7 +1540,7 @@ def cmd_record(a):
             # fragments it is still correct for a human and invisible to any
             # grep -- including the cited-path guard this repo runs, whose
             # citation pattern needs a '/' inside a single token.
-            _ref = ('.claude/skills/pcb-free-agent/references/verifier.md')
+            _ref = ('.claude/skills/plan-pcb-placement/references/verifier.md')
             print(f"record: --final needs the routed-board lenses and is "
                   f"missing {', '.join(_miss)}. Have an independent verifier "
                   f"({_ref}) write one `VERDICT=PASS|FAIL:lens=<name>` line "
@@ -1579,7 +1579,7 @@ def cmd_record(a):
                   f"A close-out is this run's terminal record and nothing "
                   f"reopens a ledger, so every verdict in it needs an artifact "
                   f"a later reader can open -- not a line retyped from a "
-                  f"reply. The verifier brief (pcb-free-agent references/verifier.md) requires "
+                  f"reply. The verifier brief (plan-pcb-placement references/verifier.md) requires "
                   f"every verifier to write its VERDICT= line to disk; pass "
                   f"that file and the row stores its path and sha256:\n"
                   f"    --lens-file <the verifier's file for that lens>\n\n"
@@ -3103,7 +3103,7 @@ def build_parser():
                         'sha256 in entry["lens_source"]. Repeatable, one per '
                         'lens. Prefer this: a retyped line is a claim about '
                         'the run, a file is a claim about a file, and '
-                        'the pcb-free-agent verifier brief requires the '
+                        'the plan-pcb-placement verifier brief requires the '
                         'copy on disk. --final --kind completion REQUIRES it '
                         'for connectivity, drc and spec. Combines with --lens '
                         '(bare verdicts first, then files, each in the order '

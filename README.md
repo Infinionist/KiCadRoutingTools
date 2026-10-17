@@ -86,8 +86,7 @@ Fast, grid-based A\* routing with a native Rust core (~10× faster than pure Pyt
 - [Bus routing](docs/bus-routing.md), plus [guide corridors and keep-out zones](docs/configuration.md) drawn on a User layer
 
 **Placement, fanout & optimization**
-- [Placement optimization](docs/placement-optimization.md) for routability, before routing
-- [Grouped placement](docs/grouped-placement.md): parts sorted into functional groups, one board region per group, placed in one pass or one group at a time (`/pcb-group-place`)
+- [Placement by function](py_placer/placement/README.md): parts sorted into functional groups, one objective annealed (`place_simple.py`), a fast route to see what to change, then place again (`/plan-pcb-placement`)
 - [The design brief](docs/design-brief.md) — state what the board is FOR, in a sibling the toolchain reads: which connectors are user-facing, which edge each belongs on and where along it
 - [Floorplan intent, graded](docs/floorplan-intent.md) — declare where parts belong and check the board against it, so "the render looks fine" stops being a verdict
 - BGA / QFN fanout with decoupling-cap placement cleanup, Hungarian target-swap, and schematic sync
@@ -188,7 +187,7 @@ Other useful skills:
 > /recommend-stackup kicad_files/my_board.kicad_pcb          # Stackup advice for impedance/time-matching accuracy
 > /diagnose-routing-failures my_board.kicad_pcb /tmp/route_output.txt  # Root-cause failed routes, get a retry command
 > /review-routed-board my_board_routed.kicad_pcb             # Post-route QA: DRC, connectivity, length match, GND vias
-> /pcb-free-agent full kicad_files/my_board.kicad_pcb        # Place and route end to end; the agent picks its steps
+> /plan-pcb-placement full kicad_files/my_board.kicad_pcb    # Group, place, fast-route, re-place, then route end to end
 ```
 
 See [Claude Skills](docs/claude-skills.md) for what each skill does and how they fit together.
@@ -198,8 +197,8 @@ All of these are also available inside KiCad without leaving the plugin - see [A
 **Option C: Manual Command Line (For scripting and automation)**
 
 ```bash
-# Optionally optimize an existing placement for routability (before routing)
-python py_placer/place_optimize.py my_board.kicad_pcb --max-displacement 3
+# Optionally place the board first, by its functional groups (see py_placer/placement/README.md)
+python py_placer/place_simple.py my_board.kicad_pcb placed.kicad_pcb --groups groups.json --intent intent.json
 
 # Pour the planes FIRST (#562): the fanout's plane-drop vias then land on
 # real fill, and the route step welds plane pads into it.
@@ -517,7 +516,7 @@ python3 py_tools/render_placement.py board.kicad_pcb --list-groups --group-by sh
 python3 py_tools/render_placement.py board.kicad_pcb --zoom-group sheet:58d913ec --per-side -o out/
 
 # which parts should NOT be moved -- advice only, locks nothing, writes no board
-python3 py_placer/place_optimize.py board.kicad_pcb --suggest-locks
+python3 py_tools/board_brief.py board.kicad_pcb
 ```
 
 Toggles for `--borders` / `--labels` / `--ratsnest` / `--arrows` / `--ghosts`;
@@ -649,14 +648,12 @@ See [tests/README.md](tests/README.md) for detailed documentation of all test sc
 | [Utilities](docs/utilities.md) | DRC checker, connectivity checker, fanout generators, layer switcher, DRC-settings fixer |
 | [Design Brief](docs/design-brief.md) | Declare what the board IS -- the facts a board file cannot contain -- and compile them into the intent (`<board>.design-brief.json`) |
 | [Floorplan Intent](docs/floorplan-intent.md) | Declare the floorplan, grade the board against it (`check_floorplan.py`) |
-| [Placement Predictors](docs/placement-predictors.md) | What actually predicts routed `blocking`, measured (#703) |
-| [Placement Calibration](docs/placement-calibration.md) | Why P-close's routability threshold was withdrawn, and the rows it was withdrawn on (#803) |
 | [BGA Fanout](py_router/bga_fanout/README.md) | BGA escape routing generator |
 | [QFN Fanout](py_router/qfn_fanout/README.md) | QFN/QFP escape routing generator |
 | [Rust Router](rust_router/README.md) | Building and using the Rust A* module |
 | [Power Net Analysis](docs/power-nets.md) | Power net detection, AI analysis, track width guidelines |
 | [Claude Skills](docs/claude-skills.md) | All ten AI skills: placement and routing end to end, routing plans, power/high-speed/diff-pair analysis, stackup, plane mappings, failure diagnosis, board review |
-| [Placement](py_placer/placement/README.md) | Placement optimization for routability |
+| [Placement](py_placer/placement/README.md) | Placement by function: groups, one annealed objective, legality, the floorplan intent's grade |
 | [Integration Tests](tests/README.md) | Test scripts and performance benchmarks |
 | [Release Pipeline](docs/release-pipeline.md) | How to tag a release and submit it to the KiCad PCM (maintainers) |
 
@@ -665,8 +662,6 @@ See [tests/README.md](tests/README.md) for detailed documentation of all test sc
 ```
 KiCadRoutingTools/
 ├── py_router/                # Routing engine + CLI entry points (~100 modules)
-│   ├── place_optimize.py         # Main CLI - placement optimization (quench)
-│   ├── place_route_loop.py       # Main CLI - router-in-the-loop placement repair
 │   ├── route.py                  # Main CLI - single-ended routing (ends with the in-run plane finalize, #562)
 │   ├── route_diff.py             # Main CLI - differential pair routing
 │   ├── route_planes.py           # Main CLI - power/ground plane pours
@@ -770,7 +765,7 @@ KiCadRoutingTools/
     ├── recommend-stackup/    # Stackup review/recommendation skill
     ├── recommend-plane-mappings/  # Net-to-plane-layer assignment skill
     ├── diagnose-routing-failures/  # Failure root-cause and retry skill
-    ├── pcb-free-agent/       # Agent-driven place and/or route, one verifier, report
+    ├── plan-pcb-placement/   # Place by function, fast-route, re-place, then route; one verifier, report
     ├── review-routed-board/  # Post-route QA and sign-off skill
     └── stress-test-router/   # Batch stress-test on real-world boards + issue filing (dev/QA)
 ```
@@ -888,7 +883,7 @@ Every tool prints its full option list with `--help`, and **[docs/configuration.
 | `repair_planes.py` | Plane region repair + pad taps | [Plane Routing](docs/route-plane.md) |
 | `bga_fanout.py` / `qfn_fanout.py` | BGA / QFN escape fanout | [BGA](py_router/bga_fanout/README.md) · [QFN](py_router/qfn_fanout/README.md) · [Utilities](docs/utilities.md) |
 | `place_fanout_clearance.py` | Move decoupling caps off fanout vias | [Utilities](docs/utilities.md) |
-| `place_optimize.py` | Placement for routability | [Placement Optimization](docs/placement-optimization.md) |
+| `place_simple.py` | Place a board by its functional groups | [Placement](py_placer/placement/README.md) |
 | `board_brief.py` | Assemble what a placement author needs to read, in one artifact | [Design Brief](docs/design-brief.md) |
 | `check_floorplan.py` | Grade a board against a declared floorplan intent | [Floorplan Intent](docs/floorplan-intent.md) |
 | `check_*.py` | DRC / connectivity / hygiene / pad checks | [Utilities](docs/utilities.md) |

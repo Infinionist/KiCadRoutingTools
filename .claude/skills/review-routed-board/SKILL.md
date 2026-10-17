@@ -310,4 +310,4 @@ UNGRADED (not scored, not passed): impedance, length
    its welds unverified until route.py's plane finalize runs)
 ```
 
-When connectivity or routing failures are found, recommend `/diagnose-routing-failures` as the follow-up rather than diagnosing inline here. If they trace to part positions (pad copper off the outline, unreachable pads, `check_assembly` not buildable), recommend `/pcb-free-agent full` instead of a router retry.
+When connectivity or routing failures are found, recommend `/diagnose-routing-failures` as the follow-up rather than diagnosing inline here. If they trace to part positions (pad copper off the outline, unreachable pads, `check_assembly` not buildable), recommend `/plan-pcb-placement full` instead of a router retry.

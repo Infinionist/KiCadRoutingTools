@@ -504,14 +504,13 @@ class Intent:
     fixed_poses: Tuple[Dict[str, object], ...] = ()
     #: #1253. Declared keep-aways, `[{rule, source?, note?, context?}]`, one
     #: rule each. NEVER emitted: which nets are noisy and which sensitive is
-    #: a design fact the board does not hold. Graded by `keep_away`; read by
-    #: no placement search (`GRADE_ONLY_RULES`).
+    #: a design fact the board does not hold. Graded by `keep_away`; the
+    #: placer does not read it.
     keep_away: Tuple[Dict[str, object], ...] = ()
     #: #1211. Declared channel copies, `[{from, to[], anchor?, ...}]`. NEVER
     #: emitted: which instance is the template is a design decision. Copied
-    #: by `place_seed`'s replicate stage and by `place_pose replicate
-    #: --intent`; graded by `replicate`, which no seat search reads
-    #: (`GRADE_ONLY_RULES`).
+    #: by `place_pose replicate --intent`; graded by `replicate`, which the
+    #: placer does not read.
     replicate: Tuple[Dict[str, object], ...] = ()
 
     def assembly_sides(self) -> str:
@@ -6440,8 +6439,8 @@ def rule_replicate(ctx) -> Iterator[Violation]:
     (`REPLICATE_TOLERANCE_MM`), or with a part rotated or on the other side
     from its source. WARN by default (both names); the `severity` map may
     promote either. Every target is recorded on `ctx.replicate_measured`,
-    passing ones too. Grade only (`GRADE_ONLY_RULES`): no seat search reads
-    it -- `place_seed`'s replicate stage is what ACTS on the declaration."""
+    passing ones too. Grade only: `place_pose replicate --intent` is what ACTS
+    on the declaration."""
     from .pose_ops import PoseRefusal
     from .replicate import measure_declared
     sev = ctx.intent.severity_of('replicate', default=WARN)
@@ -7524,8 +7523,7 @@ def _run_rules(ctx, abstained=None, leave_out=()):
     The one loop both `grade` and `PoseGrader` run, so a grade asked about a
     pose nothing has written yet cannot drift from the grade of the board.
     `abstained` is the emitter's withheld-budget map, used only to word a
-    skip reason. `leave_out` names rules not run at all (`PoseGrader` leaves
-    out `GRADE_ONLY_RULES`)."""
+    skip reason. `leave_out` names rules not run at all."""
     found: List[Violation] = []
     ran: List[str] = []
     skipped: Dict[str, str] = {}

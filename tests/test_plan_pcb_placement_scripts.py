@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pcb-free-agent's scripts, each held to a positive AND a negative control.
+"""plan-pcb-placement's scripts, each held to a positive AND a negative control.
 
 The skill's contract rests on three scripts that measure a run from outside
 the agent: `grade.py` (the independent grade), `measure.py` (where the wall
@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.join(ROOT, 'tests'))
 sys.path.insert(0, os.path.join(ROOT, 'py_router'))
 import run_utils                                              # noqa: E402
 
-SKILL = os.path.join(ROOT, '.claude', 'skills', 'pcb-free-agent')
+SKILL = os.path.join(ROOT, '.claude', 'skills', 'plan-pcb-placement')
 SCRIPTS = os.path.join(SKILL, 'scripts')
 sys.path.insert(0, SCRIPTS)
 import measure                                                # noqa: E402
@@ -271,11 +271,11 @@ def test_grade_refuses_a_missing_board_or_intent():
 def test_the_skill_names_every_script_it_ships_and_ships_every_script_it_names():
     with open(os.path.join(SKILL, 'SKILL.md'), encoding='utf-8') as fh:
         text = fh.read()
-    named = set(re.findall(r'pcb-free-agent/scripts/(\w+\.py)', text))
+    named = set(re.findall(r'plan-pcb-placement/scripts/(\w+\.py)', text))
     shipped = {n for n in os.listdir(SCRIPTS) if n.endswith('.py')}
     assert named == shipped, (named, shipped)
     assert os.path.isfile(os.path.join(SKILL, 'references', 'verifier.md'))
-    assert '/pcb-free-agent' in text and all(m in text for m in ('`full`', '`place`', '`route`'))
+    assert '/plan-pcb-placement' in text and all(m in text for m in ('`full`', '`place`'))
     print(f"  PASS: SKILL.md and scripts/ agree on {sorted(shipped)}")
 
 

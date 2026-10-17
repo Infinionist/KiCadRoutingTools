@@ -1187,7 +1187,7 @@ def main(argv=None):
                   f"{len(mech['poses'])} pose(s), {len(mech['edges'])} "
                   f"edge(s) -- recorded facts ({_prov[0]}: {_prov[1]})")
     if a.json:
-        # #1115: the free-agent skill's FIRST command writes to wk/<run>/,
+        # #1115: the placement skill's FIRST command writes to wk/<run>/,
         # which does not exist yet on a fresh checkout (wk/ is gitignored).
         # It died there with a traceback before printing JSON_SUMMARY.
         _jdir = os.path.dirname(os.path.abspath(a.json))
@@ -1200,7 +1200,7 @@ def main(argv=None):
          'nets': brief['board'].get('nets'),
          'unplaced': (brief.get('state') or {}).get('unplaced'),
          'pile': (brief.get('state') or {}).get('pile'),
-         # #1115: the free-agent skill picks its mode from `pile` and
+         # #1115: the placement skill picks its mode from `pile` and
          # `has_copper`; this line carried only the first, so the second was
          # readable only from a --json file the skill's command never wrote.
          'has_copper': (brief.get('state') or {}).get('has_copper'),

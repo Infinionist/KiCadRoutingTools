@@ -3,7 +3,7 @@
 
 Receives the EXACT argv ClaudeBackend.build_cmd produced (the test prepends
 this script to it), asserts the placement-run contract (write-capable
-allowlist, --add-dir, a /pcb-free-agent prompt), then plays a canned run:
+allowlist, --add-dir, a /plan-pcb-placement prompt), then plays a canned run:
 stream-json init + a milestone `converge.py record` tool line, a lap board +
 ledger row (left to sit long enough for the monitor's size-stable artifact
 scan to render a preview; the row is what the tab's stage line shows now that
@@ -43,8 +43,8 @@ def main():
             sys.stderr.write(f"fake_claude: {tool} missing from allowlist: {allowed}\n")
             return 2
     if ("input.kicad_pcb" not in prompt or "--no-delegate" in prompt
-            or "/pcb-free-agent " not in prompt):
-        # Both tab modes run the free-agent skill on the board staged into
+            or "/plan-pcb-placement " not in prompt):
+        # Both tab modes run the placement skill on the board staged into
         # the workdir; no retired loop-driver flag.
         sys.stderr.write(f"fake_claude: unexpected prompt: {prompt[:200]}\n")
         return 2
@@ -59,7 +59,7 @@ def main():
 
     emit({"type": "system", "subtype": "init", "model": "fake-model",
           "claude_code_version": "0.0-test", "cwd": workdir,
-          "skills": ["pcb-free-agent"]})
+          "skills": ["plan-pcb-placement"]})
     # Both keys, like real Claude Code events. The skill records each
     # milestone in the converge ledger, and the ledger row written below is
     # what the tab's stage line derives from.

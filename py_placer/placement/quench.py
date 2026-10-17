@@ -1856,10 +1856,9 @@ class QuenchState:
 
         WHY IT IS OFF BY DEFAULT, and why that is not timidity:
         `pair_order`'s own header records the standing decision that these
-        metrics "deliberately do NOT join quench.total_cost", and
-        `docs/placement-optimization.md` is a file-length negative result about
-        adding proxies to this objective -- "proxy-routability correlation is
-        weak", "proxies propose, the router disposes". A lower bound is a
+        metrics "deliberately do NOT join quench.total_cost": adding proxies
+        to this objective measured as a negative result -- "proxy-routability
+        correlation is weak", "proxies propose, the router disposes". A lower bound is a
         better citizen than a correlational proxy (improving it cannot be
         gamed), but "better citizen" is an argument, not a measurement. The
         weight is the way to MEASURE it; `tests/test_placement_ab.py` is the

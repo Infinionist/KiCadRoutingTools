@@ -1,8 +1,7 @@
 """Resolved placement edge floor on the published esp_prog poses (#967).
 
 Reconstruct geometry from the existing repository board, never edit it.
-Frozen public board/brief identities and independent native evidence are in
-docs/issue-967-verification.md. These tests need no KiCad installation.
+These tests need no KiCad installation.
 """
 import copy
 import hashlib

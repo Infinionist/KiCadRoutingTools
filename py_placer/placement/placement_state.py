@@ -2,22 +2,17 @@
 
 Two gates, both report-only here; the CLIs decide what to do with the verdict.
 
-**Unplaced.** The quench is *perturbative* -- `docs/placement-optimization.md`
-argues at length that a human seed is what lets it inherit every unmodeled
-constraint for free, and `place_optimize.py`'s own docstring promises output that
-is "your placement, nudged". Handed a pile of parts at the origin it has nothing
-to refine: every candidate pose is illegal, so the run prints "0 parts moved"
-plus a legality block that *looks like a result*. Worse, a large
-`--max-displacement` produces a tiny scatter around the origin that looks like
-progress and is not a placement. This module detects that and lets the caller
-refuse instead. Placing a board from scratch is deliberately out of scope.
+**Unplaced.** A tool that refines poses, or reads anything off them, has
+nothing to work with on a pile of parts at the origin: every candidate pose is
+illegal, so a refinement prints "0 parts moved" plus a legality block that
+*looks like a result*, and an intent emitted from a pile records the pile as
+the spec. This module detects that and lets the caller refuse or, like
+`place_simple.py`, read nothing off the parts' poses.
 
-**Already routed.** Verified in code, not assumed: the quench models no copper at
-all -- `place_optimize.py` contains zero references to segments or vias, legality
-is courtyard + outline, cost is pad-to-pad airwires, and
-`placement.writer.write_placed_output` rewrites footprint positions only. So
-placement on a routed board moves every part and leaves every track behind,
-detached from its pad. Nothing warned about this before.
+**Already routed.** Placement models no copper at all: legality is courtyard,
+pads and outline, cost is airwires, and `placement.writer.write_placed_output`
+rewrites footprint positions only. So placement on a routed board moves parts
+and leaves every track behind, detached from its pad.
 
 Deliberately NOT in `legality.py`. That module answers "is this placement legal",
 and by that measure `watchy.kicad_pcb` is illegal -- 81 of its 82 parts are in
@@ -111,7 +106,7 @@ class PlacementState:
         unlocked ones when some are locked. A staging ring is spread, not
         stacked, so it reads neither unplaced nor partially unplaced; and a
         pile whose fixed parts were placed and LOCKED first -- the order the
-        free-agent skill prescribes -- reads under the whole-board threshold
+        placement skill prescribes -- reads under the whole-board threshold
         once enough of them stand on the board."""
         sig = self.signals or {}
         return bool(sig.get('s3_outside') or sig.get('s3_movable_outside'))
@@ -128,7 +123,7 @@ class PlacementState:
         (`stacked_suspect_refs`, which excuses far-side and marker
         co-locations; the raw `duplicate_fraction` read a placed orangecrab
         as a pile). The ONE pile test: emit_intent, board_brief and
-        place_seed's gate read it, and the free-agent skill chooses its mode
+        place_seed's gate read it, and the placement skill chooses its mode
         from it. A locked part's pose stays a decision on a pile: emit_intent
         keeps its claims.
         """

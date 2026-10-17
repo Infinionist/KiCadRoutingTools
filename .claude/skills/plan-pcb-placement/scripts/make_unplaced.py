@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pile a board's components off its outline: the input for a from-scratch run.
 
-    python3 -X utf8 .claude/skills/pcb-free-agent/scripts/make_unplaced.py SRC DST [--keep-locked] [--keep-local-zones]
+    python3 -X utf8 .claude/skills/plan-pcb-placement/scripts/make_unplaced.py SRC DST [--keep-locked] [--keep-local-zones]
 
 Nothing else in the toolchain PRODUCES an unplaced board. `perturb.py` damages
 a placement, and every corpus board ships placed. This script builds that

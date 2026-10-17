@@ -643,7 +643,7 @@ put each functional group: power conditioners against their power entry and
 the edge, crystals, ESD parts, decaps, LEDs, buttons, connectors and mounting
 holes, plus orientation and alignment habits. Its roll-up is in the
 "Functional groups" section of
-`.claude/skills/pcb-free-agent/references/placement-lessons.md`; re-run it when
+`.claude/skills/plan-pcb-placement/references/placement-lessons.md`; re-run it when
 the corpus grows.
 
 ```bash
@@ -1154,33 +1154,22 @@ they interoperate with `--compare` and `--regrade`.
   into an existing dir reads back the sibling `.kicad_pro` DRC floor and silently
   changes the routing — it looks like non-determinism but isn't.
 
-## Choosing a subject BEFORE you stage it (read this first)
+## Making the unrouted twin of a routed board
 
-Four perturbed-corpus runs have posted a recovery near zero, and only one of
-them (run 8, the corner-only slot model) was the placer's fault. Run 7 was a
-wrong basin, run 9 was three tools failing to terminate, run 14 was a dose
-clipped to 0.100 mm. **Three of the four were the measurement rig, and each one
-cost an hour of chain time to discover.** Most of that is avoidable, because the
-questions are cheap to ask up front and nobody was asking them.
-
-### 0. You need UNROUTED candidates, and the corpus is nearly empty
-
-`boards_unrouted_set1/` currently holds exactly one board. Qualify against
-unrouted twins, not against `boards_set1/`: a routed board is refused by the
-placement CLIs (`place_optimize`, `place_portfolio`, `place_route_loop` and
-`check_floorplan` without `--allow-routed`), and its copper encodes the original
-poses (run 14 measured 301 of 569 pads sitting within 5 um of their own track
-endpoint, which `fence_audit` cannot see because it compares poses and never
-opens copper).
+A placement input must carry no routing: placement moves footprints, not
+tracks, so every track would be left behind detached from its pad.
+`place_pose.py` refuses a routed board unless given `--allow-routed`, and the
+plan-pcb-placement skill's `make_unplaced.py` refuses one with exit 3. Routed
+copper also records the original poses (on one corpus board, 301 of 569 pads
+sat within 5 um of their own track endpoint). Strip it first:
 
 ```bash
-python3 -X utf8 tests/stress/strip_copper_only.py \
-    $STRESS/boards_set1/<name>.kicad_pcb $STRESS/boards_unrouted_set1/<name>.kicad_pcb
+python3 -X utf8 tests/stress/strip_copper_only.py <routed>.kicad_pcb <unrouted>.kicad_pcb
 ```
 
 **Do NOT use `strip_routing.py` or `prep_set2.py` for this.** They are corpus
-normalizers and they rewrite `Edge.Cuts`, so the subject would no longer share an
-outline with the human reference it is graded against. `strip_copper_only.py`
+normalizers and they rewrite `Edge.Cuts`, so the twin would no longer share an
+outline with the original it is compared against. `strip_copper_only.py`
 drops routing output and nothing else: top-level `segment`, `arc` and `via`,
 `filled_polygon` inside zones, TEARDROP zones (`(attr (teardrop ...))`, which
 KiCad generates on every pad or via a track meets), `generated` forms (length-
@@ -1193,308 +1182,36 @@ identical pose digest and identical bounds. The placement gates count a
 teardrop zone as routed copper, so a board stripped by anything that keeps
 them is refused the way a routed one is.
 
-### 1. Qualify the board (seconds, not an hour)
-
-```bash
-python3 -X utf8 tests/stress/qualify_subject.py \
-    $STRESS/boards_unrouted_set1/*.kicad_pcb --draws 8
-```
-
-It perturbs to a temp dir, grades copper-free, and prints aggregates only (rates
-and medians, never the kind, block, seed or direction), so it is safe to run on a
-board you then intend to stage blind. Three verdicts:
-
-| verdict | meaning |
-|---|---|
-| `REJECT` | the rig cannot damage this board. Draws clip to nothing, so `recovery` and `home /N` will read near-perfect whatever the run does. |
-| `WEAK` | usable, but a coin flip decides whether the run gets a subject. Redraw and never assume the dose landed. |
-| `GOOD` | the dose lands nearly every time AND the copper-free gates fire. Only this is a subject. |
-
-Run 14's board scores **WEAK** on this test (6 of 8 draws land; applied dose
-ranges 0.100 to 57.2 mm, and the 0.100 is the draw the run actually got). Had
-anyone run it, run 14 would have picked a different board or expected the
-redraw. `stage_blind` now redraws by itself, but that only rescues an unlucky
-draw; it cannot rescue an unsuitable board.
-
-### 1b. Choose damage kinds the fence can adjudicate
-
-A qualified board can still stage an **undecidable** run: on a grid-homed
-board, `swap` and `translate` recovery is byte-identical to the truth board
-BY CONSTRUCTION — every displaced part's home pose is a grid point any honest
-search also lands on, so a perfect result and a truth-file LEAK produce the
-same bytes and the fence cannot tell them apart (run 18's undecidable LEAK
-verdict). Before staging, pick from `KINDS` (`placement/perturb.py:56` —
-`translate`, `wrong_side`, `swap`, `scatter`, `pile`) with the fence in mind:
-on grid-homed boards prefer `pile`/`scatter`, whose recovered poses carry no
-byte-identity shortcut, or pre-declare the secondary tell (which independent
-measurement will separate an honest recovery from a leak) BEFORE the damage
-is drawn. A tell declared after the result is an accusation, not a fence.
-
-### 2. Run a positive control first
-
-The series has no control arm, so every null is ambiguous between "the placer
-failed" and "the rig failed". **tigard is the known positive**: run 3 delivered
-recovery +0.133 with 26 of 51 parts home. Re-run it whenever the rig changes.
-If it reproduces, a null elsewhere means something. If it does not, you have
-found the next rig bug for the price of a board you already understand.
-
-### 3. Confirm the damage actually threatens ROUTABILITY
-
-`qualify_subject.py` stops at the copper-free gates because routing is the
-expensive half. The question it cannot answer is the one that decides whether a
-placement run can succeed at all:
-
-```bash
-# the original must route ...
-python3 -X utf8 py_router/route.py <control>.kicad_pcb /tmp/ctl.kicad_pcb --nets "*"
-python3 -X utf8 py_router/check_connected.py /tmp/ctl.kicad_pcb
-# ... and the damaged one must NOT
-python3 -X utf8 py_router/route.py <staged>.kicad_pcb  /tmp/dmg.kicad_pcb --nets "*"
-python3 -X utf8 py_router/check_connected.py /tmp/dmg.kicad_pcb
-```
-
-**A placement-focused subject is one where a material dose makes the board
-unroutable and recovery makes it routable again.** That is falsifiable, it is
-what the tool is actually for, and it is the doctrine's own metric: lead on
-`blocking`, keep `recovery` as a diagnostic. On run 14 the damaged board routed
-to `blocking 0` unaided, which means the placement half had nothing to prove
-even before the dose was found to be 0.1 mm.
-
-### 4. Do not pay for a full route per trial
-
-Placement science needs many trials; a full chain costs about an hour and most
-of that is routing that tells you nothing new. Grade trials with the copper-free
-battery plus `tests/test_placement_probe.py`, which scopes the route CAUSALLY
-(the nets `net_affinity` flagged plus the declared corridor nets, fixed from the
-OFF board) rather than by which parts moved. Scoping by moved parts is circular:
-a term that moves nothing scores a perfect null. Run the full chain once, at the
-end, on the arm you intend to keep.
-
-### 5. Report shape
-
-Lead with `blocking`. Report `recovery` and `home /N` as diagnostics, and state
-the applied dose next to them every time, because a recovery number without the
-dose that produced it is uninterpretable. `collateral_pad_rms` is the one
-recovery figure that signals a real defect: it means parts nothing had damaged
-were moved (run 9: 0.000 to 1.171 mm; run 10: 0.000 to 3.670 mm).
-
-## Staging a perturbed subject (#411 recovery rig)
-
-A recovery experiment measures how close a repaired placement lands to the
-original, and that number means nothing if the tools could have read the
-original. So the staging has exactly one rule:
-
-**Ground truth never enters the work dir. Stage it into a SIBLING `_truth/`
-from the start, and audit by CONTENT before the run.**
-
-```
-wk/<run>/<subject>/         <- THE WORK DIR. every tool runs here.
-    board.kicad_pcb         <- the damaged board, the only input
-wk/<run>/_truth/<subject>/  <- fenced, OUTSIDE the work dir. nothing reads it.
-    control.kicad_pcb       <- the human placement, pose for pose
-    board.perturb.json      <- the record: it embeds `original_poses`
-```
-
-`placement.perturb.perturb(..., control_out=...)` puts both there in one call —
-the record follows the control — and prints where each landed:
-
-```python
-P.perturb(src, 'wk/run12/tigard/board.kicad_pcb',
-          kind=kind, dose_mm=dose, seed=seed,
-          control_out='wk/run12/_truth/tigard/control.kicad_pcb')
-```
-
-**Omitting `control_out` is the unsafe default and is kept only for
-compatibility.** It writes `<out>.control.kicad_pcb` beside the damaged board —
-the human placement, inside the directory the run then works in, where any glob
-or `--before` can reach it. `perturb()` prints a WARNING when it does this;
-`tests/stress/perturb_batch.py` shows the fenced form (`_truth/` a sibling of
-the dose cells).
-
-Audit before the run and again after, by content, never by name:
-
-```bash
-python3 -X utf8 tests/stress/fence_audit.py \
-    --control wk/run12/_truth/tigard/control.kicad_pcb \
-    --workdir wk/run12/tigard --mode create        # exit 4 == a leak
-# ... the run ...
-python3 -X utf8 tests/stress/fence_audit.py \
-    --control wk/run12/_truth/tigard/control.kicad_pcb \
-    --workdir wk/run12/tigard --mode audit
-```
-
-`--mode create` writes `.fence-manifest.json`, which is what later tells a
-*recovered* board (produced by the run, reaching truth — the experiment
-succeeding) apart from a *leaked* one (present at creation). There is no
-name-based exemption for `*.control.kicad_pcb`: a control inside the work dir is
-a leak whatever it is called, because the next carrier will have a different
-name.
-
-**And none for `*.perturb.json` either — `DEFAULT_ALLOW` is empty.** The audit
-now opens `.json` files and reads `original_poses` out of them, so a
-perturbation record is caught by content like anything else. That exemption
-existed while the scan walked only `.kicad_pcb`, i.e. while it exempted a file
-the tool could not open; making the scan live turned it into a working blind
-spot. This is the *default* path, not a corner case — `perturb()` without
-`control_out` writes the record beside the damaged board, inside the fence, and
-that record embeds the human placement pose-for-pose. Stage with `control_out=`
-pointing at a **sibling** `_truth/` (never a child of the work dir — the audit
-recurses into it) and neither file ever enters. The record test reads bytes, so
-re-saving it as UTF-16 does not evade it.
-
-### Staging blind, in one call
-
-`tests/stress/stage_blind.py` does the whole staging above and draws the
-perturbation itself, so the operator never learns the kind, dose, block or
-seed:
-
-```bash
-python3 -X utf8 tests/stress/stage_blind.py \
-    kicad_files/tigard.kicad_pcb wk/run12/tigard wk/run12/_truth/tigard
-```
-
-It also SANITISES the project it carries into the work dir. The project must
-travel or the board grades at the stock netclass (#441), but KiCad writes
-`meta.filename` into it and `pcbnew.last_paths` holds the author's own
-directories, so a verbatim copy puts the source board's NAME inside the fence.
-The declaration of what it withheld is written to `_truth/draw.json` under
-`staged_project`, not into the work dir, because naming the withheld strings
-inside the fence would be the leak itself.
-
-### Staging unaided, in one call
-
-`tests/stress/stage_unaided.py` puts every non-exempt footprint at the board
-centre at ROTATION 0 -- the placement is gone, angle included, which is the
-place-from-scratch task rather than a damaged-placement one:
-
-```bash
-python3 -X utf8 tests/stress/stage_unaided.py     kicad_files/esp_prog.kicad_pcb wk/run25/esp_prog wk/run25/_truth/esp_prog
-python3 -X utf8 tests/stress/fence_audit.py     --control wk/run25/_truth/esp_prog/control.kicad_pcb     --workdir wk/run25/esp_prog --mode create
-```
-
-Mechanical parts keep their true pose and are DECLARED, per ref with a reason,
-in `<workdir>/mechanical.json` -- an input the run may read, and legitimate
-precisely because it is written down. Truth goes to a SIBLING directory, never
-a child. The source is recorded by HASH, not by path.
-
-It also ARMS the unaided regime as its last act (see below), so run it BEFORE
-`fence_audit --mode create`, as above.
-
-### Auditing that every pose came from the engine
-
-`fence_audit` answers "did the answer key get in". It cannot answer "did a
-human place this by hand", because a hand-placed board is not the control's
-placement either. That is a separate question with a separate instrument:
-
-```bash
-python3 -X utf8 tests/stress/provenance_audit.py --workdir wk/run12/tigard
-# 0 CLEAN   every moved pose traces to a registered lever, and the board is
-#           an arrangement the ledger's lineage produced (or matches the
-#           nearest one it did, pose for pose)
-# 4 VIOLATION a moved pose has no lever, or is not where the recorded writes
-#           put it
-# 5 UNPROVEN  nothing can be concluded (the causes are listed below)
-```
-
-BOTH STAGERS ARM IT. `stage_unaided.py` and `stage_blind.py` write
-`.unaided-manifest.json` into the work dir as their last act. (The library
-call they make is `placement.provenance.start_regime`; while NOTHING in
-production called it, this audit printed UNPROVEN on every real run, the
-ledger was never written, and the gate that refuses an undeclared pose writer
-was installed and never armed -- #903.) The CLIs in `LEVER_REGISTRY` then
-record every pose they write to `.pose-provenance.jsonl`, and an undeclared
-write RAISES instead of landing, before the file exists.
-
-A staging row in that ledger is REDACTED to "a staging happened": the ledger
-lives inside the fence, and an unredacted row named the source board and the
-truth dir in its argv and carried the control's own poses.
-
-THE LEDGER IS A LINEAGE, LINKED BY ARRANGEMENT (#972). Every engine row
-records the pose digest of the board it read (`parent_pose_sha256`) and of the
-board it wrote (`board_pose_sha256`): a hash of every footprint's position,
-rotation and side, and nothing else. The audit replays the rows forward from
-the staged board, so the delivered board must be an arrangement the recorded
-writes actually produced, with every pose where they put it. It links by
-arrangement rather than by file bytes or path, because lock stamps, routed
-copper, label moves, fills, copies and renames all rewrite a board without
-moving a part. Before this, pose claims came only from rows naming the
-delivered file, and a declared write of a hand-edited board to a NEW path
-graded CLEAN. A board no recorded write produced is compared with the NEAREST
-one the ledger did (the fewest parts differing), and the parts that differ are
-named, and a part the lineage expects that is gone (deleted, or renamed) makes
-the board UNPROVEN, while a renamed part that turns up somewhere no lever put
-it is a violation. The doc's `lineage` key says which case applied: `verified`,
-`broken` (a recorded write read a board nothing recorded), `unrecorded`,
-`legacy` (some claiming row predates the digests: the old per-file reading,
-plus a check that a pose with no claim to compare is at least one some row
-MOVED that part to) or `unlinkable` (a digest is missing or of another
-scheme). `place_seed --repair/--reseat`, its polish and re-seat fix, and
-`place_route_loop` record their copy or rename delivery against the output
-itself (#973), so the audit picks the output rather than an intermediate.
-`place_reconstruct`'s staged promote and `place_fanout_clearance`'s no-move
-copy do not: the lineage still links their boards by arrangement, but the
-audit's own pick can land on an earlier board, so pass `--delivered` for
-them. `place_pose` records its promote only once #970 is in; without it a
-`place_pose` step is an unrecorded change, and the audit of every later write
-is at least UNPROVEN -- a VIOLATION naming the parts it moved, unless that
-later write moved them again. What a digest does NOT see: two footprints that share a reference
-swapping places together with their block order, and a footprint whose own
-`(at ...)` carries an exponent-form angle, which the parser reads from the
-first child `(at ...)` instead (a pre-existing parser limit). And a board
-built from a SUPERSEDED staging is compared with the current one, not with the
-staging it came from. The digests make a forger append rows claiming the hand
-pose -- an affirmative act -- but they are no defence against one: a row
-with no digests at all is read the legacy way.
-
-`5 UNPROVEN` has these live causes, and the `cheats` watcher names them: the
-dir was staged by neither stager; it was MOVED after staging (the manifest
-holds an absolute path); a manifest whose `staged_sha256` no longer matches
-the board it names, which means the baseline every verdict is measured
-against is stale; no delivered board sits beside the staged one at the top
-level -- pass `--delivered`; no ledger AND no pose differs from the staged
-board; a part the lineage expects is missing; a recorded write that read a
-board no recorded write produced and re-moved every part that differs, so the
-change cannot be named; pose digests that cannot link while some claims have
-no pose to compare; or the audit itself raised, which the CLI reports as 5
-with the exception on stderr and no VERDICT line.
-
-### Watching a long run
+## Watching a long run
 
 `tests/stress/run_watch.py` has two modes, both of which emit one stdout line
 per event so they can be armed once and left alone:
 
 ```bash
-python3 -X utf8 tests/stress/run_watch.py bugs   --workdir wk/run12/tigard
-python3 -X utf8 tests/stress/run_watch.py cheats --workdir wk/run12/tigard \
-    --truthdir wk/run12/_truth/tigard --done wk/run12/tigard/DONE \
-    --report-done wk/run12/tigard/REPORT_DONE --report-wait 5400
+python3 -X utf8 tests/stress/run_watch.py bugs   --workdir wk/<run>
+python3 -X utf8 tests/stress/run_watch.py cheats --workdir wk/<run> \
+    --done wk/<run>/DONE --report-done wk/<run>/REPORT_DONE --report-wait 5400
 ```
 
-`bugs` reports new problems as they appear and runs until you stop it.
-`cheats` reports the ways the run could report success without earning it (a
-scope narrowed to the failing nets, a grader floor overridden, a waiver spent).
-At `DONE` it runs `fence_audit` and `provenance_audit` — the audits that read
-the BOARD — and then KEEPS GOING to `REPORT_DONE`, where it audits `REPORT.md`
-itself and re-runs those two if `DONE` changed in between. `--report-done ''`
-restores the old exit-at-DONE contract, which is what you want when replaying
-over a finished run. Neither watcher grades on a clock; `--report-wait` bounds
-how long the last marker is waited for and changes only what is printed.
+`bugs` reports new problems as they appear (tracebacks, refusals, rejected
+laps, a `blocking` that went up) and runs until you stop it. `cheats` reports
+the ways the run could report success without earning it: a scope narrowed to
+the failing nets, a grader floor overridden, a waiver spent, a toolchain file
+edited after the watch began. It counts only flags that were PASSED -- read
+from a tool's `CMD:` banner line or from the `lever_argv` / `argv` of a JSONL
+row -- never a flag merely mentioned in prose. It ends at a marker, not a
+clock: `DONE` (the copper is frozen), then `REPORT_DONE`, where it audits
+`REPORT.md` itself. `--report-done ''` ends it at `DONE`, which is what you
+want when replaying over a finished run. `--report-wait` bounds how long the
+last marker is waited for and changes only what is printed.
 
-`RESTAGE` counts invocations of EITHER stager, from two sources: a teed `CMD:`
-line, and a pose-provenance row. The second is the one that works -- neither
-stager installs `cli_banner`, and the first staging creates the work dir, so
-there is nowhere to tee it to yet. A `PROVENANCE VERDICT: UNPROVEN` on a dir a
-stager armed is itself a finding and `cheats` says so; it still exits 0,
-because "I cannot prove it" and "I proved it false" are different numbers.
-
-`cheats` reads a tool's argv from its `CMD:` banner line. The two skill
-drivers install no banner, so wrap timed invocations in
-`tests/stress/tee_cmd.py`, which tees the output and appends one
-`cmd_timing.jsonl` row per invocation carrying the argv, the exit code and the
-elapsed time:
+A tool that prints no `CMD:` banner is invisible to `cheats` unless it runs
+through `tests/stress/tee_cmd.py`, which tees the output to
+`logs/<label>.log` and appends one `cmd_timing.jsonl` row per invocation
+carrying the argv, the exit code and the elapsed time:
 
 ```bash
-python3 -X utf8 tests/stress/tee_cmd.py --workdir wk/run12/tigard \
+python3 -X utf8 tests/stress/tee_cmd.py --workdir wk/<run> \
     route4 -- python3 -X utf8 py_router/route.py in.kicad_pcb out.kicad_pcb
 ```
 
@@ -1507,8 +1224,8 @@ the difference reported as "time outside the tools", and the three longest steps
 — is deterministic, so run it:
 
 ```bash
-python3 -X utf8 py_router/cmd_timing.py wk/run12/tigard          # markdown
-python3 -X utf8 py_router/cmd_timing.py wk/run12/tigard --json   # the same, as data
+python3 -X utf8 py_router/cmd_timing.py wk/<run>          # markdown
+python3 -X utf8 py_router/cmd_timing.py wk/<run> --json   # the same, as data
 ```
 
 It reproduces run 24's hand-written audit to the digit and cannot get the sums
@@ -1520,43 +1237,3 @@ Labels bucket by PREFIX (`staging`, `fence`/`close` → close-out, then `P`/`L`/
 `R`/`V`), case-sensitively. A run that labels its steps by another convention
 lands in `other` and the report says so at the top rather than leaving an
 unexplained zero.
-
-### Agent watchers: prompts at the start, one agent at the end
-
-`run_watch.py` is a shell and costs nothing to leave running. An AGENT watcher
-is not: each spawn pays a fixed preamble — system prompt, CLAUDE.md, memory
-index, skill listing — before it does anything. One measured run spawned three
-watchers twice over, the first time only to arm a file monitor the background
-shell above already provides, and the six spawns plus their reports came to
-about 1.3 M tokens.
-
-Split what arming actually PROTECTS from what it costs:
-
-1. **At the start, write each watcher's prompt to `<workdir>/watch/`** —
-   `<name>_prompt.md`, one per lens. That file's mtime IS the arming evidence,
-   and it is what pre-registration protects: a brief written after the outcome
-   is a brief tailored to it. The boundary verification's contemporaneity check
-   reads exactly this kind of timestamp, so the prompts are checkable by an
-   instrument that already exists.
-2. **Spawn at the end, once, as ONE agent with one section per brief** — into
-   ONE file, never over a `watch/<name>.md` that already exists. Three agents
-   re-reading the same logs derive the same numbers three times and bind to
-   nothing; one agent with three headed sections produces three verdicts from
-   one preamble and one read. "At the end" means at the SECOND marker,
-   `REPORT_DONE`, not at `DONE`: `DONE` means the copper is frozen and
-   `REPORT.md` is written after it, carrying verdicts that do not exist until
-   then. Measured (run 29): dispatched from a run prompt that specified the
-   mechanism differently, four watchers ran twice, `cheats.md` was written
-   twice with the second overwriting the first, and `tool_usage.md` never
-   landed. The skill is the single specification; a run prompt names the briefs
-   and defers to it.
-3. **Override the model.** Reading a report and a JSONL and reporting
-   discrepancies is not the task the largest model exists for; set the Agent
-   tool's `model` field to a smaller one for that spawn. It is one field.
-4. **Feed it the DERIVED files first and the raw logs on demand**: `REPORT.md`,
-   `cmd_timing.jsonl` and `ledger.jsonl` are the run in three files. Hand it the
-   hundreds of `logs/*.log` only when a section names one. A watcher that starts
-   from raw logs re-derives what the ledger already states.
-
-A watcher that finds nothing is a result. A watcher that ran out of window
-before it reported is not.

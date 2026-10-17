@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Independent grade of a pcb-free-agent board -- never the agent's own claim.
+"""Independent grade of a plan-pcb-placement board -- never the agent's own claim.
 
-    python3 -X utf8 .claude/skills/pcb-free-agent/scripts/grade.py BOARD \
+    python3 -X utf8 .claude/skills/plan-pcb-placement/scripts/grade.py BOARD \
         --baseline INPUT.kicad_pcb [--intent INTENT.json] [--mode full|place|route] \
         [--label NAME] [--out-dir DIR]
 

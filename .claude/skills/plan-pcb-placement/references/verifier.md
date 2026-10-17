@@ -23,8 +23,8 @@ Trust nothing it told you. Measure it yourself, from the repo root.
      (`--baseline` arms the courtyard gate: a pair a moved part entered gates). It names
      pad copper past the outline and any part on a PCB-edge plug's mating region (`mating_keepout_refs`);
      name each one in your verdict. A part still in the staging pile is pad copper off the outline, so it is
-     in `oob_pad_copper_gating_refs`; any such part on the board you grade is a FAIL. (`place_seed` names its
-     unseated parts in its `JSON_SUMMARY` line, `unseated_refs`, and its exit-4 message, not in the ledger.)
+     in `oob_pad_copper_gating_refs`; any such part on the board you grade is a FAIL. (`place_simple` names
+     the parts it left illegal in its `JSON_SUMMARY` line, `illegal`, and exits 4, not in the ledger.)
    - `python3 -X utf8 py_tools/check_floorplan.py <BOARD> --intent <INTENT> --allow-routed`: 0 errors;
    - `python3 -X utf8 py_tools/render_placement.py <BOARD> --json-out <RUN DIR>/verify_<N>_render.json`:
      `checklist.a_off_outline` must list no gating pad copper (`pad_copper_gating`), graphic or keep-out (`keepout_copper`) copper; LOOK at the PNG;

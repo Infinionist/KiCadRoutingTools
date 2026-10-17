@@ -378,13 +378,11 @@ is available here, and both refusals are deliberate:
 - **`place_fixed`** and the rest of that plan-op vocabulary are named only in
   comments in `py_tools/board_brief.py`. There is no plan-op implementation in
   this repository; those ops live in a downstream consumer.
-- **`must_lock`** is refused on measured evidence. `emit_intent` writes it empty
-  and its own comment records why: filling it made `place_seed --repair` treat
-  those refs as seeder-owned and **lift the user's locks** — "unlock exactly the
-  parts the user locked, and move them", measured on two run-7 boards. It also
-  buys nothing, because `resolve_intent_gate` already freezes every edge claim
-  inside the quench, so a brief-declared connector is already pinned where it
-  matters.
+- **`must_lock`** is refused. A lock is the board's own `(locked yes)`, which
+  every placement tool keeps, and `emit_intent` writes the key empty: a lock
+  list in the intent would be a second, disagreeing record of it. A connector
+  whose pose is a fact is declared as a `fixed_poses[]` entry, which
+  `place_simple` seats and holds.
 
 So every `fixed[]` row reaches `context.brief.fixed`, where a reader and a
 later tool can see it; only a `pose` reaches an engine, through `fixed_poses[]`.
@@ -574,9 +572,9 @@ way to resolve.
 
 `.design-brief.json` is in `copy_board.SIBLING_EXTS`, and **every** other site
 that copies a board's siblings imports that one list. There were nine
-independent hand-written copies of it before this change — **four** of them the
-narrower `('.kicad_pro', '.kicad_dru')` form (`ai_gui.py`, `plane_score.py`,
-`check_join.py`, `placement_run.py`) — and the one the placement CLIs actually
+independent hand-written copies of it before this change — some of them the
+narrower `('.kicad_pro', '.kicad_dru')` form (`ai_gui.py`, `check_join.py`,
+`placement_run.py`) — and the one the placement CLIs actually
 go through, `placement/portfolio.copy_siblings`, was not the one anybody would
 think to edit. `tests/test_711_sibling_lists.py` refuses a tenth.
 

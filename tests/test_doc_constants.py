@@ -36,11 +36,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: Same doc set as the flag gate. Keep the two in step.
 DOCS = (
     os.path.join('.claude', 'skills', 'plan-pcb-routing', 'SKILL.md'),
-    # The free-agent skill replaced the staged placement and combined skills
+    # The placement skill (plan-pcb-placement) replaced the staged placement and combined skills
     # (#923 had enrolled those after a number they quoted was pinned nowhere);
     # it inherits their place in the list, verifier brief included.
-    os.path.join('.claude', 'skills', 'pcb-free-agent', 'SKILL.md'),
-    os.path.join('.claude', 'skills', 'pcb-free-agent', 'references',
+    os.path.join('.claude', 'skills', 'plan-pcb-placement', 'SKILL.md'),
+    os.path.join('.claude', 'skills', 'plan-pcb-placement', 'references',
                  'verifier.md'),
     os.path.join('docs', 'api-routing-config.md'),
 )

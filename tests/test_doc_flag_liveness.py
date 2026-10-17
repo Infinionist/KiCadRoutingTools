@@ -49,7 +49,7 @@ import krt_capabilities as K                                   # noqa: E402
 
 #: The docs this gate holds to the engine's actual surface.
 #:
-#: (History: the staged placement skill, since retired for pcb-free-agent.)
+#: (History: the staged placement skill, since retired for plan-pcb-placement.)
 #: `plan-pcb-placement/SKILL.md` was excluded (#923) over two rows that came
 #: back, on the reasoning that neither was a defect and a gate shipping two
 #: standing false positives stops being read. #936 resolved both instead, so
@@ -75,11 +75,11 @@ import krt_capabilities as K                                   # noqa: E402
 #: what makes the coverage real rather than asserted.
 DOCS = (
     os.path.join('.claude', 'skills', 'plan-pcb-routing', 'SKILL.md'),
-    # The free-agent skill replaced the staged placement and combined skills
+    # The placement skill (plan-pcb-placement) replaced the staged placement and combined skills
     # (#923 had enrolled those after a number they quoted was pinned nowhere);
     # it inherits their place in the list, verifier brief included.
-    os.path.join('.claude', 'skills', 'pcb-free-agent', 'SKILL.md'),
-    os.path.join('.claude', 'skills', 'pcb-free-agent', 'references',
+    os.path.join('.claude', 'skills', 'plan-pcb-placement', 'SKILL.md'),
+    os.path.join('.claude', 'skills', 'plan-pcb-placement', 'references',
                  'verifier.md'),
     os.path.join('docs', 'api-routing-config.md'),
 )
@@ -289,7 +289,7 @@ EXTERNAL = {
     '--name-only', '--porcelain', '--short', '--set-upstream', '--amend',
     '--no-pager', '--follow', '--patch', '--word-diff', '--color',
     '--recurse-submodules', '--depth', '--branch', '--tags',
-    # `gh issue list --search` (pcb-free-agent's hand-back: check the open
+    # `gh issue list --search` (plan-pcb-placement's hand-back: check the open
     # issues before filing a tool gap).
     '--search',
     # Prose placeholders, not flags: "`--flag`" in a worked example, and

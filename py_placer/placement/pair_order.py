@@ -31,9 +31,8 @@ gamed by the optimizer.
 
 They join ``quench.total_cost`` ONLY under an explicit non-zero
 ``facing_weight``, whose default is 0.0 (#893). Before that they joined it
-never, and the reason is still the operative one for the default:
-docs/placement-optimization.md is a file-length negative result about adding
-proxies to this objective. Being a lower bound rather than a correlational
+never, and the reason is still the operative one for the default: adding
+proxies to an objective measured as a negative result. Being a lower bound rather than a correlational
 proxy is an argument for trying it, not a measurement that it helps -- so the
 weight exists to MEASURE the question and
 ``tests/test_placement_ab.py`` exists to decide it. The consumers are pose

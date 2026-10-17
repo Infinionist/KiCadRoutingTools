@@ -6,9 +6,9 @@ A floorplan intent is a fully geometric document -- `docs/floorplan-intent.md`:
 `keepouts[]` a `rect` or a `circle`, `edge_connectors[]` an edge plus an
 `along_edge_band` given as two fractions. All drawable.
 
-**And nothing drew it.** `render_placement --intent` reads that file for exactly
-one thing -- `overlap_waivers` -- so the plan existed only as JSON and as
-pass/fail counts out of `check_floorplan`. On an UNPLACED board the declared
+**This draws it.** `render_placement --intent` reads that file for its
+`overlap_waivers` and, through this module, draws the plan; otherwise it
+exists only as JSON and as pass/fail counts out of `check_floorplan`. On an UNPLACED board the declared
 zones are the only statement of intent there is: no prior arrangement to
 compare against, so without them a render is an empty outline and nothing else.
 

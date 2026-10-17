@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Where do HUMANS put each functional group? Measured over the stress corpus.
 
-The group priors in `.claude/skills/pcb-free-agent/references/placement-lessons.md`
+The group priors in `.claude/skills/plan-pcb-placement/references/placement-lessons.md`
 ("Functional groups") come from this tool, run over the human-placed boards
 of stress sets 1-30 (`boards_set<N>/` under the stress dir; building them is
 in tests/stress/RUNBOOK.md).

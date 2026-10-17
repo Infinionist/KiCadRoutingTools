@@ -1,7 +1,8 @@
 # Placement lessons: what human boards do, what a routed board shows, and what to move
 
-Read this when you place a board or review a placement: before seeding, between
-candidates, or in a loop that routes, looks and moves parts.
+Read this when you place a board or review a placement: before you write the groups,
+between candidates, or in the loop that routes, looks and changes what the placement
+is given.
 
 The lessons come from two sources:
 
@@ -58,8 +59,9 @@ six others.
     10 mm. 74-80% of legal 1-4 mm moves, turns and swaps make the human MST longer.
   - *Apply:* place a part where its pads join each net's tree cheapest: next to the
     nearest pad of each net, not in the middle of all its partners.
-  - *Measured on a route:* aiming the seeder's parts this way, pricing the region
-    planner's links between groups as each net's tree, and the spacing below, routed
+  - *Measured on a route:* aiming parts this way, pricing the links between groups as
+    each net's tree, and the spacing below (the grouped seeder before `place_simple`;
+    its wire term is this tree), routed
     the grouped candidates of 10 corpus boards (six each, by each board's recorded
     chain) with blocking 4.2 → 3.2, 6% fewer vias and 5% less copper; vias were lower
     on 9 of the 10 boards.
@@ -128,7 +130,7 @@ six others.
   - *Apply:* leave room where the wiring needs a channel, not around every part. An IC
     keeps a little more than a passive: its neighbours' copper rarely comes within 0.5
     mm (4-layer) or 0.8 mm (2-layer).
-  - *Measured on a route:* the seeder's polish asked 0.5 + 0.15·√pins mm of courtyard
+  - *Measured on a route:* an earlier placement polish asked 0.5 + 0.15·√pins mm of courtyard
     room per part, about 1.4 mm between two passives, which forbade 53-81% of human
     spacings. Cut to 0.02·√pins, the grouped candidates of 10 corpus boards (six each,
     routed by each board's recorded chain) routed with blocking 4.8 → 3.2, 2% fewer
@@ -501,21 +503,23 @@ six others.
 
 ## Functional groups
 
-- **Place by function: give each group its own region.**
-  - *Measured on a route:* on three small boards of 21-26 parts (five seeds per
-    flow, each routed by the board's recorded chain), both grouped flows routed with
-    less blocking and 10-50% fewer vias than placing every part at once. On one of them
-    they used as few vias as the human placement. The method is in
-    `docs/grouped-placement.md`.
-  - *Apply:* five to eight groups suit a small board. More than about twelve make
-    every region tiny.
-- **Keep each functional group in one compact region on one face.**
+- **Place by function: write the groups.** A group is the parts that work together
+  (power entry and its conditioning, the core and its clock, an interface and its
+  protection, the user interface); `place_simple` keeps each group in one piece,
+  whatever shape the free space gives it, and arranges the pieces by one objective.
+  - *Measured on a route:* a 25-part 2-layer board (6 groups) from a scatter, routed by
+    its recorded chain: 0 blocking on every seed tried, 24-54 vias against the human's
+    36 -- the seed spread is the larger effect, so place more than one seed.
+  - *Apply:* five to eight groups suit a small board; more than about twelve leave
+    each group too few parts to be a piece.
+- **Keep each functional group compact and on one face.**
   - *Humans:* on 94 boards whose hierarchical sheets label the parts, a part's nearest
     labelled neighbour is in its own sheet 93% of the time, against 37% with the labels
     shuffled. This holds on every one of the 94 boards. Groups have 12 [7 20] members
     and a radius of about 0.14 √(board area): 6.6 mm for 4-10 parts, 11.4 mm for 10-30,
     18.3 mm for more. They stay on one face (median 100% of members).
-  - *Apply:* give a group a region of radius about 2 mm × √(member count) + 3 mm.
+  - *Apply:* a group with a `side` is put on that face before placing; leave `side`
+    out to keep each part on the face it is on.
 - **On a 4-layer board, leave about 1 mm between neighbouring groups.** Inside a group,
   parts are about 0.2 mm apart. 2-layer boards show no such gutter.
   - *Humans:* boundary parts sit 1.02 mm from the nearest part of another group and
@@ -539,21 +543,10 @@ six others.
 - **Decaps sit about 2.5 mm from the supply pin they serve:** 3.6 mm on 2-layer boards
   and 2.2 mm on 4-layer boards. On 4-layer boards about a third sit on the opposite face.
   Section "Decoupling" has the detail.
-- **A group's parts on the other face stand by the group's connector, not only by the
-  group's main region.**
-  - *Measured:* pulled only toward its main region, bitaxe_ultra's USB group put its CC
-    resistors 35 mm from their connector J8 (locked on the back), and its fan
+- **A group's parts on the other face stand by the group's connector.**
+  - *Measured:* pulled only toward the rest of its group, bitaxe_ultra's USB group put
+    its CC resistors 35 mm from their connector J8 (locked on the back), and its fan
     controller 80 mm from the fan header.
-- **A group's face is the one its parts' courtyards cover most, not the one most of its
-  parts are on.**
-  - *Measured:* a 4-layer FPGA board's core has its two large chips on the front and 43 decaps on the
-    back. Its region went to the back by part count, and U2 was seated 26 mm off the
-    board.
-- **The region must hold its largest part near its centre.** When you look at the
-  region plan, check where the group's biggest part can sit, not only that it fits.
-  - *Measured:* on the same board, the FPGA's region came out as a 25 mm strip with a locked HDMI
-    connector inside it, so the 18 mm FPGA was seated 26 mm from its target and 30 mm
-    from its 43 decaps on the back.
 - **The groups' numbers come from `tests/stress/placement_survey.py`.** To reproduce them
   (building the corpus is in `tests/stress/RUNBOOK.md`):
 
@@ -668,13 +661,14 @@ python3 tests/stress/placement_survey.py report rows.jsonl
   - *Limits:* measured pad edge to the pad on the same net, the way an intent's
     `proximity[]` claim grades it, the farther crystal leg is 5.4 mm from its pin
     (75th percentile 8.1 mm) and the farther load cap 0.8 mm from the crystal (75th
-    percentile 2.2 mm; 258 crystals). `plan_regions.py` writes claims at those 75th
-    percentiles.
+    percentile 2.2 mm; 258 crystals). `placement/crystals.py` writes claims at those
+    75th percentiles.
   - *Measured on a route:* turning the IC for its crystal alone cost a 21-part board 13 routed
     vias; turn it for the crystal only among the rotations its other connections
     accept.
-  - *Apply:* the crystal and its load caps belong to their IC's region, planned with
-    it; they get no region of their own. Held to a separate clock region beside the
+  - *Apply:* the crystal and its load caps belong to their IC's group: `place_simple`
+    folds them into it and claims them at its oscillator pins. Held to a separate
+    clock group beside the
     chip, a 25-part board's load caps went round to the far side of the IC, 7 mm from
     the crystal, and the oscillator nets routed 13-40 mm with 2-5 vias each where the
     human routes 6 mm.
@@ -728,9 +722,6 @@ python3 tests/stress/placement_survey.py report rows.jsonl
     mm), uniform in 74%, one rotation in 90%, within 6 mm of the edge in 66%. The
     resistors are collinear in 81%.
   - *Not:* status LEDs are not placed near the MCU.
-  - *Measured on a route:* laying each group's LED channels as one row, LED and resistor
-    alternating, cut ft2232h_jtag from 92.7 to 81.7 vias (better on all six
-    candidates) and a 272-part board's blocking from 56.3 to 50.8, from the same regions.
   - *Not:* a row of like value is not a bank. ft2232h_jtag's row of 1 kΩ parts is a
     reset pull-up and four LED resistors.
 - **A side-actuated button goes on the outline; a top-actuated one leans toward the

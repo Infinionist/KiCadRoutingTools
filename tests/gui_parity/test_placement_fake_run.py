@@ -200,7 +200,7 @@ def main():
     check("transcript shows the tool line (description preferred)",
           "Record the milestone board" in transcript, transcript[:400])
     # The staged driver's `--stage P4` line is retired with that skill; the
-    # pcb-free-agent run records milestones in the converge ledger, and the
+    # plan-pcb-placement run records milestones in the converge ledger, and the
     # tab's progress line is derived from the newest LEDGER ROW.
     check("progress derived from the ledger row",
           any("lap 1: quench/nudge" in s for s in statuses), str(statuses))

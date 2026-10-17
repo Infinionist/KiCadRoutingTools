@@ -49,7 +49,7 @@ Three things to know before you trust its output:
   was balanced, and on how many measured tests. No balancing beats the
   slowest single test, so a test of independent rows may declare
   `RUN_ALL_PARTS = N` and take `--part I/N`: it then runs as N units
-  (`test_placement_ab.py[3/8]`), each sharded on its own.
+  (`test_x.py[3/8]`), each sharded on its own.
 - **The verdict is each shard's own exit code**, never the parsed counts. A
   container that OOMs prints no summary line at all, and a driver that decided
   on parsed counts would read that silence as zero failures. A shard that

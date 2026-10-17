@@ -89,7 +89,7 @@ CLI_ONLY_OK = {
     # harness to scrape. The GUI consumes results in-memory (return_results=
     # True) and has no summary-file output, so there is nothing to point at.
     "json_out": "CLI writes a JSON summary file; the GUI consumes results in-memory",
-    # route.py --quick-pass: the free agent's placement review routes a first
+    # route.py --quick-pass: the placement skill's placement review routes a first
     # round without the recovery tail to see what a placement leaves open.
     # The review runs the CLIs (also from the GUI's Place + Route); the GUI's
     # own routing always routes to ship.

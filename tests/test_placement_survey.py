@@ -109,7 +109,7 @@ def test_cited_commands_run():
     """The reproduce commands placement-lessons.md prints, run VERBATIM on a one-board
     corpus. test_431 does not hold a tests/ tool's flags to its parser, so this
     is what keeps the page's recipe runnable."""
-    doc = os.path.join(ROOT, '.claude', 'skills', 'pcb-free-agent', 'references',
+    doc = os.path.join(ROOT, '.claude', 'skills', 'plan-pcb-placement', 'references',
                        'placement-lessons.md')
     cmds = [shlex.split(line.strip()) for line in open(doc, encoding='utf-8')
             if line.strip().startswith('python3 tests/stress/placement_survey.py')]

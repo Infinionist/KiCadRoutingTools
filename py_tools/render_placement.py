@@ -2,11 +2,9 @@
 """Headless PNG stills of placement status (#431).
 
 A routed board is self-evidently inspectable: open it in KiCad, the tracks are
-there. A placement repair is a set of position deltas whose merit is invisible
-without the context that motivated it -- which airwires were failing, which nets
-walled them off, what moved and how far. `docs/placement-optimization.md` names
-the acceptance criterion ("output that is visibly 'your placement, nudged' can
-be reviewed in minutes") but nothing produced an artifact to review.
+there. A placement is a set of poses whose merit is invisible without the
+context around it -- which airwires cross, which nets wall others off, what
+moved and how far. This renders that, to be looked at in minutes.
 
 This composes; it does not re-render. Every pixel goes through
 `route_render.BoardRenderer` (board outline, cutouts, zones, pads, drills, the
@@ -2237,9 +2235,9 @@ def main(argv=None):
             # blocks[].zone, keepouts[].rect/circle,
             # edge_connectors[].along_edge_band -- and this reader used it for
             # exactly ONE thing: overlap_waivers. The plan existed only as JSON
-            # and as pass/fail counts out of check_floorplan, so a still (and
-            # the film built from these panels) showed parts with no indication
-            # of where they were supposed to go. `render_plan` draws it,
+            # and as pass/fail counts out of check_floorplan, so a still
+            # showed parts with no indication of where they were supposed to
+            # go. `render_plan` draws it,
             # through the same `frame(overlays=...)` seam everything else here
             # uses, so it costs no frame geometry.
             model.intent_plan = _it

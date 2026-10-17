@@ -50,7 +50,7 @@ def _lens_files(td, **verdicts):
     reopens a ledger, and a line retyped from a reply is a claim about the run
     where the row could carry a claim about a file. So every close-out arm in
     this file writes the verdict where the verifier is already required to
-    write it (the pcb-free-agent verifier brief) and passes the path.
+    write it (the plan-pcb-placement verifier brief) and passes the path.
 
     Defaults to a clean PASS for all three; name a lens to override, e.g.
     `_lens_files(td, drc='VERDICT=FAIL:lens=drc;finding=short;evidence=x')`.

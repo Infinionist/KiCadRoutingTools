@@ -345,7 +345,7 @@ def corridor_cut_mm(state, corridor: Corridor,
     is the quantity `check_impedance.py`'s void-run counter later grades.
 
     It is NOT a useful thing to minimise by nudging parts, and that is measured,
-    not assumed -- see `docs/placement-optimization.md`. A wire that fully
+    not assumed. A wire that fully
     traverses the lane pays w/sin(theta) wherever along the lane it crosses, so
     the chord is POSITION-INVARIANT and a small move slides the crossing point
     without changing the toll.

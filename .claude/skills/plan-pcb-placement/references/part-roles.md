@@ -66,12 +66,12 @@ it was, how to tell, and the board.
 
 - **Crystal load caps are clock parts, not decaps.** A 2-pad cap from an oscillator
   net to GND serves the crystal. The placement decap rule can still elect it as the
-  chip's decap: on ch32v003_usb, the seed graded C4 (20 pF on PA2) as "9.08 mm from
-  U3, the IC it decouples".
+  chip's decap: on ch32v003_usb, an earlier seeder graded C4 (20 pF on PA2) as "9.08 mm
+  from U3, the IC it decouples".
   - *Group:* with the crystal, the caps symmetric at the crystal's pads, and the
-    crystal on the IC's oscillator face. `plan_regions.py` writes that as
-    `proximity[]` claims (`py_placer/placement/crystals.py`), and the seeder
-    seats the crystal beside its IC and each cap beside the crystal.
+    crystal on the IC's oscillator face. `place_simple` writes that as `proximity[]`
+    claims (`py_placer/placement/crystals.py`): the crystal at its IC's oscillator
+    pins, each cap at the crystal, all in the IC's group.
 - **A 4-pin crystal is not a 4-pin oscillator.** A 2016 or 3225 crystal has two GND
   pins. An oscillator has a supply pin, and the cap on that pin is the oscillator's
   decap.
