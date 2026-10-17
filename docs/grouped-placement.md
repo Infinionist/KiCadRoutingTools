@@ -137,6 +137,24 @@ were its back-face parts in front-face blocks. Its one unbuildable candidate
 is now sized for the front-face parts alone, and the decap stage seats C87
 after the region has filled.
 
+A region must also hold its largest part near its centroid. The hard check
+only asks that the part fit somewhere in the region, and a region it fits
+only at one end strands it from the wiring the centroid stands for. On
+ulx3s, the FPGA's region came out as a 25 mm strip with the locked HDMI
+connector inside it, so the 18 mm FPGA was seated 26 mm from its target,
+and 30 mm from its 43 decaps on the back, on 2 of 5 planner seeds. The plan
+now pays per signal link of the largest part for each millimetre past 8 mm
+that its nearest seat lies from the centroid (`regions.W_FIT`,
+`FIT_FREE_MM`). Over five planner seeds, ulx3s's worst kept candidate went
+from 9737 to 6748 airwire crossings; bitaxe_ultra, where no part is
+stranded, placed as before.
+
+A plan of more than six groups on a face is found by simulated annealing,
+and the planner's seed alone moves the result as much as most changes to its
+cost: bitaxe_ultra's kept candidate ranged from 238 to 367 crossings over
+plan seeds 0-4 (`--seed`), and the plan the cost rated best was not the one
+that placed best. Compare a change to the planner over several seeds.
+
 Each region is written to the intent as a `blocks[]` entry: `zone`, `side`,
 `tolerance_mm` (0.5) and a `context.grouped_placement` record (a second
 region's names the group it belongs to, `second_region_of`). Neighbouring

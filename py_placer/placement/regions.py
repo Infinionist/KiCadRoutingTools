@@ -72,6 +72,18 @@ CLUSTER_DENSITY = 0.6
 W_ASPECT = 2.0       # per unit of aspect ratio beyond ASPECT_FREE
 ASPECT_FREE = 4.0
 INFEASIBLE = 1e6
+#: How far from its region's centroid the region's largest part must sit,
+#: priced per signal link of that part per mm past FIT_FREE_MM. The hard fit
+#: test only asks that the part fit SOMEWHERE in its region, and a region it
+#: fits only at one end strands it from the wiring the centroid stands for:
+#: ulx3s's FPGA, in a 25 mm strip beside a locked HDMI connector, was seated
+#: 26 mm from its target and 30 mm from its back-side decaps, on 2 of 5
+#: planner seeds. A part a few mm off-centre is harmless, and pricing it
+#: only steered the annealing elsewhere (bitaxe_ultra, FIT_FREE_MM 2: worse
+#: on 4 of 5 seeds), hence the free 8 mm. Measured on rungs of FIT_RADII.
+W_FIT = 1.0
+FIT_FREE_MM = 8.0
+FIT_RADII = (2.0, 4.0, 8.0, 16.0, 32.0, 64.0)
 #: A group's parts on its other face are planned as a second region there,
 #: pulled toward the group's main region by this many links per part.
 MINOR_PULL = 3.0
@@ -85,11 +97,13 @@ class Group:
     """One group's planning inputs."""
 
     def __init__(self, name, side, movable, fixed, demand, need_area,
-                 dims, edge, near, apart, internal_links=0, anchors=None):
+                 dims, edge, near, apart, internal_links=0, anchors=None,
+                 big_links=0):
         self.name, self.side = name, side
         self.movable, self.fixed = movable, fixed
         # the fixed parts its region stands by: the group's, on either face
         self.anchors = fixed if anchors is None else anchors
+        self.big_links = big_links  # signal links of its largest part
         self.internal_links = internal_links
         self.demand = demand        # mm^2 of free area it asks for
         self.need_area = need_area  # sum of member occupancy areas (hard floor)
@@ -409,9 +423,12 @@ class Planner:
         w, h = x1 - x0 - self.gutter, y1 - y0 - self.gutter
         short, long_ = max(1e-6, min(w, h)), max(w, h)
         inf_fit = None
+        fit = 0.0
         if not self._fits_in(n, c):
             inf_fit = INFEASIBLE + max(0.0, g.dims[0] - short) \
                 + max(0.0, g.dims[1] - long_)
+        elif g.big_links:
+            fit = W_FIT * g.big_links * max(0.0, self._fit_reach(n, c, cen) - FIT_FREE_MM)
         blob = g.need_area / CLUSTER_DENSITY
         a = min(short, math.sqrt(blob))
         spread = W_SPREAD * g.internal_links * (a + blob / a) / 3.0
@@ -428,7 +445,8 @@ class Planner:
             edge = W_EDGE * max(0.0, d)
         wire = [w_ * (abs(cen[0] - tx) + abs(cen[1] - ty))
                 for (tx, ty, w_) in self.terminals.get(n, ())]
-        got = (rect, cen, free, inf_fit, spread, inf_free, aspect, anchor, edge, wire)
+        got = (rect, cen, free, inf_fit, spread, inf_free, aspect, anchor, edge, wire,
+               fit)
         self._leaf_memo[key] = got
         return got
 
@@ -460,6 +478,27 @@ class Planner:
                 return True
         return False
 
+    def _fit_reach(self, name, cells, cen):
+        """The smallest FIT_RADII rung (mm) within which of `cen` the
+        group's largest part has a free seat in `cells` (shrunk by half a
+        gutter), at some quarter turn; past the last rung, twice it."""
+        i0, j0, i1, j1 = cells
+        k = self.gut_cells
+        i0, j0, i1, j1 = i0 + k, j0 + k, i1 - k, j1 - k
+        fg = self.fg
+        for r in FIT_RADII:
+            for hc, wc, ps in self.fits[name]:
+                if ps is None:
+                    continue
+                # anchors (top-left cells) whose part centre is within r
+                a0 = max(i0, int(math.ceil((cen[1] - r - fg.y0) / fg.g - hc / 2.0)))
+                a1 = min(i1 - hc + 1, int(math.floor((cen[1] + r - fg.y0) / fg.g - hc / 2.0)) + 1)
+                b0 = max(j0, int(math.ceil((cen[0] - r - fg.x0) / fg.g - wc / 2.0)))
+                b1 = min(j1 - wc + 1, int(math.floor((cen[0] + r - fg.x0) / fg.g - wc / 2.0)) + 1)
+                if a1 > a0 and b1 > b0 and FreeGrid._q(ps, a0, b0, a1, b1) > 0:
+                    return r
+        return 2.0 * FIT_RADII[-1]
+
     def evaluate(self, tree, cells=None) -> Tuple[float, Dict]:
         """(cost, info) of `tree`, laid out by `layout` unless `cells` (the
         exhaustive search's own layout of it) are given."""
@@ -471,14 +510,16 @@ class Planner:
         free = {n: v[2] for n, v in leaf.items()}
         cost = 0.0
         terms = {'wire': 0.0, 'spread': 0.0, 'anchor': 0.0, 'edge': 0.0,
-                 'near': 0.0, 'apart': 0.0, 'aspect': 0.0, 'infeasible': 0.0}
+                 'near': 0.0, 'apart': 0.0, 'aspect': 0.0, 'fit': 0.0,
+                 'infeasible': 0.0}
         for n in self.groups:
             # the group's cluster: a square blob when the region is wide
             # enough, else a strip `short` wide -- intra-group wire length
             # grows with its span (mean Manhattan distance ~ (a + b) / 3);
             # see `_leaf`, which computes each term once per cells.
             (_r, _c, _f, inf_fit, spread, inf_free, aspect, anchor, edge,
-             wire) = leaf[n]
+             wire, fit) = leaf[n]
+            terms['fit'] += fit
             if inf_fit is not None:
                 terms['infeasible'] += inf_fit
             terms['spread'] += spread
@@ -739,7 +780,9 @@ def plan(pcb, pcb_file: str, doc: Dict, *, grid: float = 0.25,
                 # front parts beside it. Pulled only toward the main region,
                 # bitaxe_ultra's put its CC resistors 35 mm from J8 and its
                 # fan controller 80 mm from the fan header.
-                anchors=fix)
+                anchors=fix,
+                big_links=sum(view.signal_partners(
+                    max(sub, key=lambda r: (area[r], r))).values()))
             owner[name] = g['name']
             if not main_side:
                 pulls[name] = g['name']
