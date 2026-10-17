@@ -7,10 +7,13 @@
 1. GROUPS: the groups file (`check_groups.py`), a crystal and its load caps
    folded into their IC's group. A group is a set of parts kept together;
    it gets no region and no shape -- the objective's group term keeps it in
-   one piece, whatever shape the free space gives it.
+   one piece, whatever shape the free space gives it. A group's `near`,
+   `apart` and `edge` hints are soft terms of the objective; its `side`, and
+   every face the intent declares, is applied first (the writer's flip).
 2. The parts the file locks stay put (connectors on their edges, mounting
    holes: whatever the enclosure or a mating part decides); every other
-   part starts at a random place on the board.
+   part starts at a random place on the board. The intent's keep-outs and
+   zones bind every part through the anneal's overlap term.
 3. ANNEAL: one cost (`placement/simple.py`) -- signal and rail trees,
    crossings, claims, decaps at their own group's supply pins, each group's
    gap tree, the halo between unwired neighbours, airwires over foreign
@@ -19,7 +22,9 @@
    so the same board and seed give the same placement. On ch32v003_usb
    (22 movable parts) the whole run takes about 4.3 s.
 
-Exit codes: 0 placed, 2 unreadable input, 4 placed with parts left illegal.
+Exit codes: 0 placed, 2 unreadable input or a face the board cannot take
+(two declarations disagree, or a KiCad-locked part is declared on the other
+face), 4 placed with parts left illegal.
 """
 #: #937 registry: which door(s) show this tool, and whether it changes
 #: the board. Read by krt_registry.py -- by AST, never imported.
@@ -29,7 +34,10 @@ import _path  # noqa: F401  (py_placer -> py_router/py_tools on sys.path)
 
 import argparse
 import json
+import os
+import shutil
 import sys
+import tempfile
 import time
 
 from kicad_parser import parse_kicad_pcb  # noqa: E402
@@ -40,9 +48,52 @@ def _is_ground(name):
     return 'GND' in u or 'VSS' in u
 
 
-def build(pcb, board, doc, base, args):
+def face_targets(intent, blocks, doc, pcb):
+    """`(sides, conflicts)`: the face each part must be on -- every face the
+    intent declares (`floorplan.declared_side_claims`) and each group's
+    `side` -- and the parts two declarations put on different faces."""
+    from placement import floorplan
+    claims = {r: list(rows) for r, rows in
+              floorplan.declared_side_claims(intent, blocks).items()
+              if r in pcb.footprints}
+    for g in doc['groups']:
+        if g.get('side') in ('F', 'B'):
+            for r in g['refs']:
+                if r in pcb.footprints:
+                    claims.setdefault(r, []).append((g['side'], f"group {g['name']}"))
+    return floorplan.declared_sides(claims)
+
+
+def hints(doc, state, movable, args):
+    """The groups file's `near`, `apart` and `edge` hints as cost-model
+    terms, each over every member the board has (fixed members included);
+    a hint whose members are all fixed is a constant and is left out."""
+    members = {g['name']: [r for r in g['refs'] if r in state.parts] for g in doc['groups']}
+    mov = set(movable)
+    out, seen = [], set()
+    for g in doc['groups']:
+        a = members[g['name']]
+        if not a:
+            continue
+        if g.get('edge') and any(r in mov for r in a):
+            out.append({'key': f"edge:{g['name']}:{g['edge']}", 'kind': 'edge', 'a': a,
+                        'b': None, 'edge': g['edge'], 'weight': args.edge_weight})
+        for kind, w in (('near', args.near_weight), ('apart', args.apart_weight)):
+            for other in g.get(kind) or ():
+                b = members.get(other) or []
+                pair = (kind,) + tuple(sorted((g['name'], other)))
+                if not b or pair in seen or not any(r in mov for r in a + b):
+                    continue
+                seen.add(pair)
+                out.append({'key': f"{kind}:{pair[1]}:{pair[2]}", 'kind': kind, 'a': a,
+                            'b': b, 'edge': None, 'weight': w})
+    return out
+
+
+def build(pcb, board, doc, base, args, intent=None, blocks=None):
     """`(state, model, movable, notes)` for the board, its groups and its
-    base intent."""
+    base intent (the JSON for its claims; the loaded `intent`, with its
+    resolved `blocks`, for its keep-outs and zones)."""
     import pose_score
     from list_nets import board_floor_knobs
     from placement import floorplan as fp
@@ -51,10 +102,14 @@ def build(pcb, board, doc, base, args):
     from placement.simple import Model
     notes = []
     clearance, edge, _ = board_floor_knobs(board)
+    zones = fp.zone_entries(intent, blocks or {}) if intent is not None else ()
     state = pose_score.make_state(pcb, board, clearance=clearance,
                                   board_edge_clearance=edge, grid_step=0.1,
                                   halo_base=args.halo_base, halo_coef=args.halo_coef,
-                                  halo_weight=args.halo_weight)
+                                  halo_weight=args.halo_weight,
+                                  keepouts=intent.keepouts if intent is not None else (),
+                                  intent_zones=[z for z in zones if not z['exclusive']],
+                                  exclusive_zones=[z for z in zones if z['exclusive']])
     movable = sorted(r for r, p in state.parts.items() if not p.locked)
     # claims: the intent's own, and each crystal at its IC's oscillator pins
     rows = list(base.get('proximity') or [])
@@ -128,16 +183,19 @@ def build(pcb, board, doc, base, args):
                   ground_nets={n for n in view.rails if _is_ground(pcb.nets[n].name)},
                   ground_weight=args.ground_weight, pad_weight=args.pad_weight,
                   crossing_weight=args.crossing_weight, claim_weight=args.claim_weight,
-                  decap_weight=args.decap_weight, group_weight=args.group_weight)
+                  decap_weight=args.decap_weight, group_weight=args.group_weight,
+                  hints=hints(doc, state, movable, args))
     return state, model, movable, notes
 
 
 def _line(t):
     groups = ', '.join(f"{n} {v:.1f}" for n, v in t['per_group'].items() if v > 0.05)
+    hints = ', '.join(f"{n} {v:.1f}" for n, v in t['per_hint'].items() if v > 0.05)
     return (f"cost {t['cost']:.1f} (wire {t['wire']:.1f} mm, {t['crossings']} crossings, "
             f"claims {t['claims']:.1f}, decaps {t['decaps']:.1f}, halo {t['halo']:.2f}, "
             f"pad hits {t['pad_hits']:.0f}, congestion {t['congestion']:.2f}, "
-            f"groups {t['groups']:.1f}" + (f": {groups}" if groups else "") + ")")
+            f"groups {t['groups']:.1f}" + (f": {groups}" if groups else "")
+            + f", hints {t['hints']:.1f}" + (f": {hints}" if hints else "") + ")")
 
 
 def main(argv=None):
@@ -147,7 +205,7 @@ def main(argv=None):
     ap.add_argument('--groups', required=True, help='the groups file (check_groups.py)')
     ap.add_argument('--intent', required=True,
                     help='the emitted intent (check_floorplan --emit-intent): its '
-                         'proximity claims and decap rules')
+                         'proximity claims, keep-outs, zones and declared faces')
     ap.add_argument('--crossing-weight', type=float, default=2.0,
                     help='mm of wire one airwire crossing costs (default 2)')
     ap.add_argument('--claim-weight', type=float, default=1.0,
@@ -157,6 +215,15 @@ def main(argv=None):
     ap.add_argument('--group-weight', type=float, default=5.0,
                     help='per mm of gap in a group\'s tree over its members\' '
                          'courtyards (default 5)')
+    ap.add_argument('--near-weight', type=float, default=2.0,
+                    help='per mm of gap between two groups the groups file puts '
+                         '`near` each other (default 2)')
+    ap.add_argument('--apart-weight', type=float, default=5.0,
+                    help='per mm two groups kept `apart` come within 3 mm of each '
+                         'other (default 5)')
+    ap.add_argument('--edge-weight', type=float, default=2.0,
+                    help="per mm a group with an `edge` is from that board edge "
+                         "(default 2)")
     ap.add_argument('--halo-base', type=float, default=0.0,
                     help='mm of halo every part keeps (default 0)')
     ap.add_argument('--halo-coef', type=float, default=0.2,
@@ -185,17 +252,61 @@ def main(argv=None):
     ap.add_argument('--json', help='write the report here')
     a = ap.parse_args(argv)
     t0 = time.time()
+    from placement import floorplan
+    from placement.groups import parse_sources
     from placement.grouping import GroupsError, load_groups
+    from placement.legality import footprint_side
+    from placement.parser import extract_locked_refs
+    from placement.portfolio import copy_siblings
+    from placement.provenance import declare_lever
+    from placement.writer import SideFlipUnsupported, write_placed_output
     try:
         doc = load_groups(a.groups)
         base = json.load(open(a.intent, encoding='utf-8'))
+        intent = floorplan.load_intent(a.intent)
         pcb = parse_kicad_pcb(a.board)
     except (GroupsError, OSError, ValueError) as ex:
         print(f"place_simple: {ex}", file=sys.stderr)
         return 2
+    sources = parse_sources('auto')
+    blocks, _problems = floorplan.resolve_blocks(intent, pcb, sources)
+    # FACES first: the parts a declaration puts on the other face are
+    # flipped at their pose (the writer's #714 flip) before anything is placed
+    sides, conflicts = face_targets(intent, blocks, doc, pcb)
+    if conflicts:
+        print("place_simple: contradictory face declarations: " + '; '.join(
+            f"{r}: " + ', '.join(f"{s} from {src}" for s, src in rows)
+            for r, rows in sorted(conflicts.items())) + ". Nothing was written.",
+            file=sys.stderr)
+        return 2
+    flips = [{'reference': r, 'new_x': pcb.footprints[r].x, 'new_y': pcb.footprints[r].y,
+              'new_rotation': pcb.footprints[r].rotation or 0.0, 'new_side': side}
+             for r, side in sorted(sides.items()) if footprint_side(pcb.footprints[r]) != side]
+    locked = sorted({f['reference'] for f in flips} & extract_locked_refs(a.board))
+    if locked:
+        print(f"place_simple: {', '.join(locked)} locked in the board on the face its "
+              f"declaration does not name; a lock is a decision. Nothing was written.",
+              file=sys.stderr)
+        return 2
+    src, tmp = a.board, None
+    if flips:
+        tmp = tempfile.mkdtemp(prefix='place_simple_')
+        src = os.path.join(tmp, os.path.basename(a.board))
+        try:
+            with declare_lever('place_simple.py', sys.argv):
+                write_placed_output(a.board, src, flips)
+        except (ValueError, SideFlipUnsupported) as ex:
+            shutil.rmtree(tmp, ignore_errors=True)
+            print(f"place_simple: cannot flip: {ex}", file=sys.stderr)
+            return 2
+        copy_siblings(a.board, src)
+        pcb = parse_kicad_pcb(src)
+        blocks, _problems = floorplan.resolve_blocks(intent, pcb, sources)
+        print(f"  NOTE: on their declared face: " + ', '.join(
+            f"{f['reference']} -> {f['new_side']}" for f in flips))
     from placement import simple_anneal
     from placement.simple import legal
-    state, model, movable, notes = build(pcb, a.board, doc, base, a)
+    state, model, movable, notes = build(pcb, src, doc, base, a, intent, blocks)
     for n in notes:
         print(f"  NOTE: {n}")
     print(f"place_simple: {len(movable)} movable part(s), fixed: "
@@ -208,25 +319,29 @@ def main(argv=None):
                                log=lambda s: print(f"  {s}"))
     final = model.total()
     t2 = time.time()
-    illegal = [r for r in movable
-               if not legal(state, r, state.parts[r].x, state.parts[r].y, state.parts[r].rot)]
+    def ok(r):
+        p = state.parts[r]
+        return (legal(state, r, p.x, p.y, p.rot)
+                and state.intent_clear(r, p.grade_rects(p.x, p.y, p.rot)))
+    illegal = [r for r in movable if not ok(r)]
     print(f"place_simple: annealed {res['moves']} moves in {t2 - t1:.1f} s; {_line(final)}")
     if res['reseated']:
         print(f"  NOTE: moved to the nearest legal pose after the anneal: {', '.join(res['reseated'])}")
     if illegal:
         print(f"  WARNING: no legal pose found for: {', '.join(illegal)}")
-    from placement.writer import write_placed_output
-    from placement.portfolio import copy_siblings
-    from placement.provenance import declare_lever
     placements = [{'reference': r, 'new_x': round(state.parts[r].x, 4),
                    'new_y': round(state.parts[r].y, 4),
                    'new_rotation': state.parts[r].rot % 360.0}
                   for r in movable]
     with declare_lever('place_simple.py', sys.argv):
-        write_placed_output(a.board, a.out, placements)
+        write_placed_output(src, a.out, placements)
     copy_siblings(a.board, a.out)
+    if tmp:
+        shutil.rmtree(tmp, ignore_errors=True)
     final.pop('per_group', None)
+    final.pop('per_hint', None)
     report = {'final': final, 'moves': res['moves'], 'seed': a.seed,
+              'flipped': {f['reference']: f['new_side'] for f in flips},
               'reseated': res['reseated'], 'illegal': illegal, 'notes': notes,
               'groups': model.groups, 'stats': res['stats'],
               'seconds': {'setup': round(t1 - t0, 1), 'anneal': round(t2 - t1, 1)}}

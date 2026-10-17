@@ -25,6 +25,9 @@ this cost by simulated annealing; `place_simple.py` is the CLI.
          + pad_weight x each tree edge's crossings of foreign pads: a pad of
            a part other than the edge's two ends, grown by the clearance, a
            through-hole pad counting twice (it blocks both layers)
+         + the groups file's hints, each weighted: `near`, the gap between
+           two groups' nearest courtyards; `apart`, how far that gap falls
+           short of APART_MM; `edge`, how far a group is from its board edge
          + congestion_weight x the sum over a grid of each cell's routing
            overflow squared: every net spreads its tree's length evenly over
            its bounding box (the demand, mm of track); a cell holds its area
@@ -59,6 +62,8 @@ _sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..'
 import grid_router  # noqa: E402  the kernels: mst_l1, seg_rect_hits, seg_crossings (0.23.3)
 
 ROTS = (0.0, 90.0, 180.0, 270.0)
+#: mm two groups the groups file keeps `apart` must leave between them.
+APART_MM = 3.0
 
 
 # --------------------------------------------------------------------------
@@ -285,8 +290,13 @@ class Model:
                  group_weight: float, congestion_weight: float = 0.0,
                  track_pitch: float = 0.33, cell: float = 0.5,
                  congestion_nets=None, rail_weight: float = 0.0,
-                 ground_nets=(), ground_weight: float = 0.0, pad_weight: float = 0.0):
+                 ground_nets=(), ground_weight: float = 0.0, pad_weight: float = 0.0,
+                 hints: Sequence[Dict] = ()):
         self.state, self.pcb = state, pcb
+        self.hints = [h for h in hints if h['weight'] > 0]
+        b = pcb.board_info.board_bounds
+        e = state.board_edge_clearance
+        self.inner = (b[0] + e, b[1] + e, b[2] - e, b[3] - e)
         self.cw, self.kw, self.dw, self.gw = (crossing_weight, claim_weight,
                                               decap_weight, group_weight)
         self.nets = sorted(n for n, refs in state.net_refs.items()
@@ -395,6 +405,24 @@ class Model:
     def group_cost(self, members):
         """The group's gap tree: 0 while its courtyards form one piece."""
         return gap_tree([self.state.parts[r].rect() for r in members])[0]
+
+    def hint_cost(self, h):
+        """A groups-file hint, weighted. `near`: the gap between the two
+        groups' nearest courtyards (nothing once they touch). `apart`: how
+        far that gap falls short of APART_MM. `edge`: how far the group's
+        nearest courtyard is from its board edge, less the edge clearance."""
+        P = self.state.parts
+        A = [P[r].rect() for r in h['a']]
+        if h['kind'] == 'edge':
+            i = self.inner
+            side = {'N': lambda q: q[1] - i[1], 'S': lambda q: i[3] - q[3],
+                    'W': lambda q: q[0] - i[0], 'E': lambda q: i[2] - q[2]}[h['edge']]
+            return h['weight'] * max(0.0, min(side(q) for q in A))
+        B = [P[r].rect() for r in h['b']]
+        gap = min(rect_gap(p, q) for p in A for q in B)
+        if h['kind'] == 'near':
+            return h['weight'] * gap
+        return h['weight'] * max(0.0, APART_MM - gap)
 
     def wired(self, a, b):
         """Are parts `a` and `b` meant to touch: a shared signal net, or a
@@ -677,16 +705,18 @@ class Model:
         dec = sum(self.decap_cost(c, n) for c, n in self.decaps)
         per_group = {name: self.group_cost(m) for name, m in self.groups}
         grp = sum(per_group.values())
+        per_hint = {h['key']: self.hint_cost(h) for h in self.hints}
+        hint = sum(per_hint.values())
         halo = self.halo_cost()
         if self.qw > 0:
             self._cong_init()       # from scratch: total() is the reference
         cong = self.congestion()
         pads = self.pad_crossings() if self.pw_pad > 0 else 0.0
         return {'wire': wire, 'crossings': cross, 'claims': claims, 'decaps': dec,
-                'groups': grp, 'per_group': per_group, 'halo': halo, 'congestion': cong,
-                'pad_hits': pads,
+                'groups': grp, 'per_group': per_group, 'hints': hint, 'per_hint': per_hint,
+                'halo': halo, 'congestion': cong, 'pad_hits': pads,
                 'cost': (wire + self.cw * cross + self.kw * claims + self.dw * dec
-                         + self.gw * grp + halo + self.qw * cong + self.pw_pad * pads)}
+                         + self.gw * grp + hint + halo + self.qw * cong + self.pw_pad * pads)}
 
     # -- local pricing of a set of moved parts --------------------------------
     # -- airwires over foreign pads -------------------------------------------
@@ -847,6 +877,10 @@ class Model:
         for name, m in self.groups:
             for r in m:
                 self._groups_by.setdefault(r, []).append((name, m))
+        self._hints_by: Dict[str, List[Dict]] = {}
+        for h in self.hints:
+            for r in set(h['a']) | set(h['b'] or ()):
+                self._hints_by.setdefault(r, []).append(h)
         self._synced = True
         self._build_breakdowns()
 
@@ -865,6 +899,7 @@ class Model:
                     self._hnb[a].add(b)
                     self._hnb[b].add(a)
         self._gc = {name: self.group_cost(m) for name, m in self.groups}
+        self._hc = {h['key']: self.hint_cost(h) for h in self.hints}
         self._xc = {n: {} for n in self.nets}
         E, ends, labs = self._edges_of(self.nets)
         if len(E):
@@ -974,6 +1009,7 @@ class Model:
                 self._hnb.setdefault(a, set()).add(b)
                 self._hnb.setdefault(b, set()).add(a)
         self._gc.update(pend['groups'])
+        self._hc.update(pend['hints'])
         for t in T:                                     # crossings: T's rows anew
             for m in list(self._xc.get(t, {})):
                 self._xc[m].pop(t, None)
@@ -1013,7 +1049,8 @@ class Model:
         cl = list({id(c): c for r in refs for c in self._claims_by.get(r, ())}.values())
         dc = sorted({d for r in refs for d in self._decaps_by.get(r, ())})
         gr = list({name: m for r in refs for name, m in self._groups_by.get(r, ())}.values())
-        return nets, cl, dc, gr
+        hs = list({h['key']: h for r in refs for h in self._hints_by.get(r, ())}.values())
+        return nets, cl, dc, gr, hs
 
     def local(self, refs, touched=None, reprice=True):
         """The part of the cost `refs` can change. `reprice` False: the
@@ -1021,7 +1058,7 @@ class Model:
         and the cached trees -- a move's "before". True: re-priced at the
         live poses against the committed state near them, its breakdown
         held as pending for `commit` -- a move's "after"."""
-        nets, cl, dc, gr = touched or self.touched(refs)
+        nets, cl, dc, gr, hs = touched or self.touched(refs)
         R = sorted(refs)
         T = [n for n in nets if n in self.signal]
         claims = sum(self.claim_cost(c) for c in cl)
@@ -1045,8 +1082,10 @@ class Model:
                     if b not in rset or b > r:
                         halo += self._hp[(r, b) if r < b else (b, r)]
             grp = sum(self._gc[name] for name in self._group_names(gr))
+            hint = sum(self._hc[h['key']] for h in hs)
             return (wire + self.cw * cross + self.kw * claims + self.dw * dec
-                    + self.gw * grp + halo + self.qw * self.congestion() + self.pw_pad * pads)
+                    + self.gw * grp + hint + halo + self.qw * self.congestion()
+                    + self.pw_pad * pads)
         for n in nets:
             self._price_net(n)
         if self.qw > 0:
@@ -1059,6 +1098,7 @@ class Model:
         cross, pend['cross'] = self._local_crossings_bd(T)
         groups = {name: self.group_cost(m) for name, m in zip(self._group_names(gr), gr)}
         pend['groups'] = groups
+        pend['hints'] = {h['key']: self.hint_cost(h) for h in hs}
         if self.pw_pad > 0:
             pend['pads'] = self._local_pads_bd(T, R)
             pads = sum(pend['pads'].values())
@@ -1067,8 +1107,9 @@ class Model:
         pend['halo'] = self._local_halo_bd(R)
         self._pend = pend
         return (wire + self.cw * cross + self.kw * claims + self.dw * dec
-                + self.gw * sum(groups.values()) + sum(pend['halo'].values())
-                + self.qw * self.congestion() + self.pw_pad * pads)
+                + self.gw * sum(groups.values()) + sum(pend['hints'].values())
+                + sum(pend['halo'].values()) + self.qw * self.congestion()
+                + self.pw_pad * pads)
 
     def _group_names(self, gr):
         names = {id(m): name for name, m in self.groups}

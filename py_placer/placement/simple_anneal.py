@@ -4,8 +4,9 @@ The cost is `simple.Model`'s, exactly as it is priced -- each net's Manhattan
 spanning tree, crossings among those trees, claims, decaps, each group's gap
 tree, the halo, foreign-pad hits and congestion -- plus, while it runs, an
 OVERLAP penalty: the area where two parts' courtyards, each grown by half
-the clearance, intersect on a face they share, and how far a courtyard is
-outside the board less its edge clearance. Its weight rises from
+the clearance, intersect on a face they share, how far a courtyard is
+outside the board less its edge clearance, and how far a part breaks the
+intent's keep-outs and zones. Its weight rises from
 `LAM_START` to `LAM_END` as the run cools, so parts may pass through each
 other early and a group can cross a crowded board; only an overlap-free
 state can become the best one,
@@ -139,12 +140,24 @@ class Annealer:
         return (hh * (max(0.0, i[0] - c[0]) + max(0.0, c[2] - i[2]))
                 + w * (max(0.0, i[1] - c[1]) + max(0.0, c[3] - i[3])))
 
+    def _intent(self, r):
+        """How far `r` breaks the intent's claims on it -- keep-outs and
+        exclusive zones (mm2 inside), containment zones (mm outside) --
+        each term past its own threshold."""
+        spec = self.st.intent_spec_for(r)
+        if not spec:
+            return 0.0
+        p = self.st.parts[r]
+        vals = self.st.intent_terms(r, p.grade_rects(p.x, p.y, p.rot))
+        return sum(max(0.0, v - t.threshold) for v, t in zip(vals, spec))
+
     def overlap(self, refs=None) -> float:
         """Overlap (mm2) of every pair with a part in `refs` (all pairs when
-        None), each pair once, plus those parts' distance off the board."""
+        None), each pair once, plus those parts' distance off the board and
+        into what the intent keeps them out of."""
         mine = self.mov if refs is None else sorted(refs)
         mset = set(mine)
-        total = sum(self._outside(r) for r in mine)
+        total = sum(self._outside(r) + self._intent(r) for r in mine)
         grown = {}
         h = self.half
         for a in mine:
