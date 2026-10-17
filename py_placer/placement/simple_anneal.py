@@ -5,7 +5,7 @@ spanning tree, crossings among those trees, claims, decaps, each group's gap
 tree, the halo, foreign-pad hits and congestion -- plus, while it runs, an
 OVERLAP penalty: the area where two parts' courtyards, each grown by half
 the clearance, intersect on a face they share, how far a courtyard is
-outside the board less its edge clearance, and how far a part breaks the
+outside the board less its edge margin, and how far a part breaks the
 intent's keep-outs and zones. Its weight rises from
 `LAM_START` to `LAM_END` as the run cools, so parts may pass through each
 other early and a group can cross a crowded board; only an overlap-free
@@ -26,9 +26,11 @@ Moves, each priced by `Model.local` against the committed state near it:
     gshift  a group's movable members by the same step
     gturn   a group's movable members turned together about their centre
     gswap   two groups with no fixed member exchange places
+    escape  a part that overlaps something, to the least-overlap pose of a
+            few drawn at random over the board
 
 A move never leaves the board: the parts it moves are translated together
-until their courtyards are inside the board less its edge clearance. A part
+until their courtyards are inside the board less its edge margin. A part
 pushed off the board behind a fixed one (a header on the edge) could
 otherwise only come back over it, a jump the overlap weight refuses late in
 the run. Only the kinds a board can make are drawn: no group moves on a
@@ -52,7 +54,8 @@ from typing import Dict, List, Tuple
 from placement.simple import ROTS, legal, nearest_legal, target
 
 MOVES = {'shift': 0.40, 'turn': 0.15, 'swap': 0.10, 'jump': 0.10, 'dock': 0.10,
-         'gshift': 0.12, 'gturn': 0.08, 'gswap': 0.05}
+         'gshift': 0.12, 'gturn': 0.08, 'gswap': 0.05, 'escape': 0.05}
+ESCAPE_TRIES = 12   # random poses an escape move draws, keeping the least overlap
 CLEAN = 1e-3        # mm2 of overlap that counts as none
 ACCEPT = 0.1        # the start: the median cost change taken uphill this often
 T_END = 0.02
@@ -104,9 +107,10 @@ class Annealer:
             by_fp.setdefault(st.parts[r].footprint_name, []).append(r)
         self.twins = {r: [o for o in by_fp[st.parts[r].footprint_name] if o != r]
                       for r in self.mov}
-        b = model.pcb.board_info.board_bounds
-        e = st.board_edge_clearance
-        self.inner = (b[0] + e, b[1] + e, b[2] - e, b[3] - e)
+        # the board less the margin the legality gate holds a courtyard to
+        # (`QuenchState.usable`: the larger of the clearance and the edge
+        # clearance), so a pose inside it is never refused for the edge
+        self.inner = tuple(st.usable)
         self.span = max(self.inner[2] - self.inner[0], self.inner[3] - self.inner[1])
         self.half = st.clearance / 2.0
         self.names = sorted(st.parts)
@@ -241,6 +245,8 @@ class Annealer:
             return {r: (tx - (c[0] + c[2]) / 2.0, ty - (c[1] + c[3]) / 2.0, rot)}
         if kind == 'dock':
             return self._dock(rng.choice(self.mov))
+        if kind == 'escape':
+            return self._escape(rng.choice(self.mov))
         if kind == 'gshift':
             if not self.groups:
                 return None
@@ -271,6 +277,33 @@ class Annealer:
                     out[r] = (x + tx - fx, y + ty - fy, rot)
             return out
         return None
+
+    def _escape(self, r):
+        """`r` out of an overlap small steps cannot leave -- wedged between
+        fixed parts, or past one: when it overlaps anything, the pose of least
+        overlap among ESCAPE_TRIES drawn at random over the board. Late in the
+        run the overlap weight takes it; early, its wire cost mostly refuses it."""
+        if self.overlap([r]) <= CLEAN:
+            return None
+        st, rng, p = self.st, self.rng, self.st.parts[r]
+        was = self.pose(r)
+        i = self.inner
+        best = None
+        for _ in range(ESCAPE_TRIES):
+            rot = rng.choice(ROTS)
+            p.ensure_rotation(rot)
+            c = p.rect(0.0, 0.0, rot)
+            w, h = c[2] - c[0], c[3] - c[1]
+            cx = rng.uniform(i[0] + w / 2.0, max(i[0] + w / 2.0, i[2] - w / 2.0))
+            cy = rng.uniform(i[1] + h / 2.0, max(i[1] + h / 2.0, i[3] - h / 2.0))
+            pose = (cx - (c[0] + c[2]) / 2.0, cy - (c[1] + c[3]) / 2.0, rot)
+            _place(st, r, *pose)
+            ov = self.overlap([r])
+            if best is None or ov < best[0]:
+                best = (ov, pose)
+        p.ensure_rotation(was[2])
+        _place(st, r, *was)
+        return {r: best[1]}
 
     def _dock(self, r):
         """`r` against the part of the nearest partner pad on one of its nets."""
@@ -370,13 +403,11 @@ class Annealer:
 
 def scatter(model, movable: List[str], seed: int = 0):
     """Every movable part at a random place on the board (less its edge
-    clearance), at its present turn: the start, a part's neighbourhood local
+    margin), at its present turn: the start, a part's neighbourhood local
     from the first move."""
     st = model.state
     rng = random.Random(seed)
-    b = model.pcb.board_info.board_bounds
-    e = st.board_edge_clearance
-    inner = (b[0] + e, b[1] + e, b[2] - e, b[3] - e)
+    inner = tuple(st.usable)
     for r in movable:
         p = st.parts[r]
         c = p.rect()

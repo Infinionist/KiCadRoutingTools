@@ -294,9 +294,7 @@ class Model:
                  hints: Sequence[Dict] = ()):
         self.state, self.pcb = state, pcb
         self.hints = [h for h in hints if h['weight'] > 0]
-        b = pcb.board_info.board_bounds
-        e = state.board_edge_clearance
-        self.inner = (b[0] + e, b[1] + e, b[2] - e, b[3] - e)
+        self.inner = tuple(state.usable)
         self.cw, self.kw, self.dw, self.gw = (crossing_weight, claim_weight,
                                               decap_weight, group_weight)
         self.nets = sorted(n for n, refs in state.net_refs.items()
@@ -410,7 +408,7 @@ class Model:
         """A groups-file hint, weighted. `near`: the gap between the two
         groups' nearest courtyards (nothing once they touch). `apart`: how
         far that gap falls short of APART_MM. `edge`: how far the group's
-        nearest courtyard is from its board edge, less the edge clearance."""
+        nearest courtyard is from its board edge, less the edge margin."""
         P = self.state.parts
         A = [P[r].rect() for r in h['a']]
         if h['kind'] == 'edge':
