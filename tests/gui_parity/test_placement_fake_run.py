@@ -5,7 +5,7 @@ Proves the whole runner -> monitor -> completion loop headless: the tab
 launches the CLI with the placement contract (write-capable allowlist, one
 --add-dir, staged board), streams the transcript, derives the progress line from
 the converge ledger row a milestone writes, renders a live preview frame from a mid-run lap board,
-parses the terminal RESULT= JSON, surfaces REPORT.md + movie buttons, and
+parses the terminal RESULT= JSON, surfaces the REPORT.md button, and
 re-arms its buttons. The fake CLI is a real .cmd shim on Windows, so the
 npm-install path is under test end to end: the runner must strip the
 quote-laden prompt from argv (cmd.exe mangles list2cmdline's \" escaping)
@@ -233,7 +233,6 @@ def main():
     check("status shows finished + blocking",
           any("finished" in s and "blocking 0" in s for s in statuses),
           str(statuses))
-    check("movie button armed", tab.preview.open_movie_btn.IsEnabled())
     check("report button armed", tab.preview.open_report_btn.IsEnabled())
     check("apply armed", tab.apply_btn.IsEnabled())
     check("buttons re-armed", tab.place_btn.IsEnabled()
@@ -277,7 +276,7 @@ def main():
     second = tab.last_workdir
     check("second run accepted", tab._runner is not None and second != workdir)
     check("preview cleared for the new run",
-          not tab.preview._frames and tab.preview._movie is None)
+          not tab.preview._frames and tab.preview._report is None)
     check("second run finished before timeout",
           pump_until(lambda: tab._runner is None
                      and any("older run(s)" in t for t in logged), 90))

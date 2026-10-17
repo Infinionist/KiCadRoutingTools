@@ -636,7 +636,7 @@ def seed_input_boards(manifest, cmds, dest_dir):
 # Flags whose VALUE is a file the command WRITES. A produced file may already
 # exist in the original run dir, so copying it would pre-seed a stale output.
 _OUTPUT_FLAGS = frozenset({
-    "-o", "--out", "--output", "--json-out", "--timings-out", "--routetrace",
+    "-o", "--out", "--output", "--json-out", "--timings-out",
     "--report", "--log", "--save", "--dump",
 })
 
@@ -727,11 +727,6 @@ def main():
                          "failure, so a non-terminating board (issue #211) can't wedge "
                          "the whole replay forever. Pass 0 to disable the cap.")
     args = ap.parse_args()
-
-    # Record a per-copper route trace for each replayed route.py / route_diff.py
-    # step (#482) so render_run can splice fine rip/restore animation into the
-    # whole-run movie. Default-on; set KICAD_ROUTE_TRACE=0 to skip.
-    os.environ.setdefault("KICAD_ROUTE_TRACE", "1")
 
     remaps = []
     for r in args.remap:
@@ -941,18 +936,16 @@ def main():
         if not os.path.isfile(fb_path):
             fb_path = None
 
-    # Final-board snapshot (combined + per-layer PNGs, #296/#424) AND the
-    # whole-run routing movie (#482), via the fast geometry renderer
-    # (render_run -> route_render + animate_route), replacing the old kicad-cli
-    # + headless-Chrome board_layer_images path. Drops <board>.png,
-    # <board>_<layer>.png, and <rundir>/routing.gif. Non-fatal.
+    # Final-board snapshot (combined + per-layer PNGs, #296/#424), via the fast
+    # geometry renderer (render_run -> route_render), replacing the old kicad-cli
+    # + headless-Chrome board_layer_images path. Drops <board>.png and
+    # <board>_<layer>.png. Non-fatal.
     if fb_path:
         try:
-            from render_run import render_final_snapshot, render_run_movie
+            from render_run import render_final_snapshot
             render_final_snapshot(fb_path)
-            render_run_movie(os.path.dirname(os.path.abspath(fb_path)))
         except Exception as e:
-            print(f"board render/movie skipped ({e})")
+            print(f"board render skipped ({e})")
 
     # Parser-parity validation of the FINAL board (the headless twin of the
     # GUI's "Validate PCB Data" button): the pcbnew-built PCBData and the text

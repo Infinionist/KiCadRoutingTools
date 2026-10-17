@@ -108,9 +108,6 @@ _DECLARED = {
             'share. Reads an already-resolved `p.side`, not a layer, and adds a '
             'defensive .upper(). `side_of_layer` has none, so converting '
             'would silently drop the hardening.'),
-    ('py_router/movie_camera.py', '_moved_side'):
-        (1, 'py_router. Importing placement.legality here would invert the '
-            'layer graph -- py_placer imports py_router, not the reverse.'),
     ('py_router/kicad_parser.py', 'flip_layer_token'):
         (1, "a layer-NAME transform on 'B.' WITH the dot, not a side rule; "
             'and py_router again.'),
@@ -118,20 +115,6 @@ _DECLARED = {
         (1, 'runs inside KiCad pcbnew, where py_placer is imported only '
             'lazily inside try blocks and is not guaranteed importable. Its '
             'or-F.Cu default is behaviour-identical to side_of_layer.'),
-    # #1081: the stage3d film's 3D board reads a part's side off the layer
-    # string the parser (or the stage record) already carries.
-    ('py_router/stage3d/scene.py', '_local_pad'):
-        (1, 'the stage3d film (#1081), in py_router: importing placement.legality would invert the layer graph (py_placer imports py_router, not the reverse); a PAD face rule (F/B/through), not a part side.'),
-    ('py_router/stage3d/scene.py', 'build_scene'):
-        (1, 'the stage3d film (#1081), in py_router: importing placement.legality would invert the layer graph (py_placer imports py_router, not the reverse).'),
-    ('py_router/stage3d/scene.py', 'export_glb'):
-        (1, 'the stage3d film (#1081), in py_router: importing placement.legality would invert the layer graph (py_placer imports py_router, not the reverse); the F/B tag of the GLB pose table.'),
-    ('py_router/stage3d/timeline.py', 'activity_sides'):
-        (1, 'the stage3d film (#1081), in py_router: importing placement.legality would invert the layer graph (py_placer imports py_router, not the reverse); the resting layer of the moving parts decides which face the '
-            'camera shows.'),
-    ('py_router/stage3d/blender_scene.py', 'main'):
-        (1, 'runs INSIDE Blender, which has none of this repo on its path; '
-            'the same F/B read as scene.py.'),
     ('kicad_routing_plugin/placement_gui.py', 'PlacementTab._apply_pose'):
         (1, 'same as _pose_moves above -- the GUI half, not importable from '
             'a py_placer-less pcbnew session.'),

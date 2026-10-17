@@ -147,8 +147,7 @@ def _run(extra_args, rounds=1, proposal=None, seen=None):
     sys.argv = ['place_route_loop.py', board,
                 os.path.join(work, 'out.kicad_pcb'),
                 '--route-args', '--nets "*"', '--rounds', str(rounds),
-                '--max-displacement', '3.0', '--work-dir', work,
-                '--no-movie'] + extra_args
+                '--max-displacement', '3.0', '--work-dir', work] + extra_args
     buf = StringIO()
     sys.stdout = buf
     sidecars = {}

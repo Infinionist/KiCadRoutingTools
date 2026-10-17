@@ -486,8 +486,6 @@ def _tap_pad_with_ripup(pad, pad_layer, net_id, pcb_data, tap_config, blocker_co
             corridor_ghosts.set_net(blocker, rsegs, rvias)
         ripped_local.append((blocker, rsegs, rvias))
         ripped_ids_local.add(blocker)
-        from route_trace import plane_capture as _plane_capture
-        _plane_capture(pcb_data, 'plane-rip', blocker, bname)  # individual rip frame
         if shared_via_maps is not None:
             shared_via_maps.resync()
             if plane_pad_tap._TAP_MAP_VERIFY:
@@ -578,8 +576,6 @@ def _tap_pad_with_ripup(pad, pad_layer, net_id, pcb_data, tap_config, blocker_co
                 elif corridor_ghosts is not None:
                     # Fully restored: nothing vacated, nothing to reserve.
                     corridor_ghosts.drop_net(blocker)
-            from route_trace import plane_capture as _plane_capture
-            _plane_capture(pcb_data, 'plane-restore', net_id)  # restored non-conflicting pieces
             return result
         failure = result
     # FINAL FAILURE: restore every ripped net's copper (#329), but only the
@@ -646,8 +642,6 @@ def _tap_pad_with_ripup(pad, pad_layer, net_id, pcb_data, tap_config, blocker_co
                         corridor_ghosts.set_net(blocker, rsegs, rvias)
         print(f"(restored {n_restored}/{len(ripped_local)} ripped net(s))",
               end=" ", flush=True)
-        from route_trace import plane_capture as _plane_capture
-        _plane_capture(pcb_data, 'plane-restore')  # tap failed: non-conflicting copper back
     return None
 
 
@@ -996,13 +990,6 @@ def repair_planes(
     if getattr(pcb_data, '_input_copper', None) is None:
         from rip_up_reroute import mark_input_copper
         mark_input_copper(pcb_data)
-
-    # Route trace (#482): plane repair adds join tracks/vias and rips blockers
-    # OUTSIDE the copper choke points, so record it by snapshot-diffing pcb_data
-    # at each phase. Local (not attached) so the internal reconnect batch_route
-    # calls don't collide. baseline captured now; deltas captured below.
-    from route_trace import start_plane_trace as _start_plane_trace
-    _ptrace = _start_plane_trace(pcb_data, output_file)
 
     # Resolve net IDs
     net_ids = []
@@ -1702,8 +1689,6 @@ def repair_planes(
                         # strap to them (transitive, no graph rebuild).
                         plane_oracle.note_tap_committed(pad, new_via_objs,
                                                         new_seg_objs)
-                        from route_trace import plane_capture as _plane_capture
-                        _plane_capture(pcb_data, 'plane-join', net_id, net_name)  # individual pad-tap frame
                         print(f"{GREEN}{where}, {len(result.segments)} trace segment(s){params_note}{RESET}")
                     else:
                         failed_repair_pads.append(f"{pad.component_ref}.{pad.pad_number} ({net_name})")
@@ -1830,8 +1815,6 @@ def repair_planes(
                     net_id=v['net_id']
                 ))
                 _prov_via(v['net_id'], v['x'], v['y'], 'region-join')
-            from route_trace import plane_capture as _plane_capture
-            _plane_capture(pcb_data, 'plane-join', net_id, net_name)  # individual region-join frame
 
         if routes_added > 0:
             _absorb_join(region_segments, region_vias, routes_added,
@@ -1925,11 +1908,6 @@ def repair_planes(
         pcb_data.segments = [s for s in pcb_data.segments
                              if s.net_id not in ripped_net_ids]
         pcb_data.vias = [v for v in pcb_data.vias if v.net_id not in ripped_net_ids]
-
-    # Route trace (#482): the island-join tracks/vias added and blocker copper
-    # ripped by the per-net repair pass above.
-    if _ptrace is not None:
-        _ptrace.capture(pcb_data, 'plane-join')
 
     # #347 (core1106 CLK1P): a net ripped or partially dropped for a pad
     # repair must not depend on a LATER chain step existing to reconnect it --
@@ -3240,12 +3218,6 @@ def repair_planes(
     from pcb_modification import merge_close_same_net_vias
     merge_close_same_net_vias(all_new_vias, all_new_segments, pcb_data,
                               config.hole_to_hole_clearance)
-
-    # Route trace (#482): the rip-casualty reconnect + round-2 join copper added
-    # since the plane-join capture; then write <output>_routetrace.json.
-    if _ptrace is not None:
-        _ptrace.capture(pcb_data, 'plane-reconnect')
-        _ptrace.dump(output_file, pcb_data)
 
     _reconcile_write_list_vs_board('final')
 

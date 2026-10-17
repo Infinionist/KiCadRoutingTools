@@ -327,14 +327,13 @@ def write_round_sidecar(work: str, rnd: int, *, board: str, routed: str,
 
     The boards alone are NOT a chain: a REJECTED loop_round2.kicad_pcb sits
     between rounds 1 and 3 in both name and mtime order, and anything that
-    walks the directory would animate it as though it had been kept. `parent`
+    walks the directory would read it as though it had been kept. `parent`
     is the field that fixes that -- it names the board this round was actually
     derived from, which is the last ACCEPTED one, not N-1.
 
     An artifact rather than a callback, deliberately: it is how the rest of this
-    repo communicates between tools (make_movie reads directories), it needs no
-    hook in this monolithic main(), and both the renderer and the movie camera
-    can consume it without either importing the other.
+    repo communicates between tools, it needs no hook in this monolithic main(),
+    and any reader can consume it without importing the loop.
     """
     path = os.path.join(work, f'loop_round{rnd}.json')
     doc = {
@@ -444,7 +443,7 @@ def relocate_round(pcb_data, pcb_file, blocks, *, block=None, refs=None,
 
 
 def moves_from_placements(parent_pcb, placements) -> list:
-    """`[{reference, from:[x,y,rot], to:[x,y,rot]}]` for the movie's tween.
+    """`[{reference, from:[x,y,rot], to:[x,y,rot]}]`: each part a round moved.
 
     quench() returns only the destination pose, so the source is read off the
     board the round started from. Also the degraded path when a work dir has no
@@ -829,26 +828,6 @@ def main():
     parser.add_argument("--work-dir", default=None,
                         help="Directory for intermediate files "
                              "(default: alongside output)")
-    # ON BY DEFAULT. The loop already writes every round's board and sidecar,
-    # so the movie is the only artifact that shows WHY a round was taken -- and
-    # a flag nobody remembers to pass is a flag nobody sees. It renders from
-    # what is already on disk after the loop has finished, so it cannot change
-    # the routing result, and a failure to render is caught and reported rather
-    # than failing the run.
-    parser.add_argument("--movie", nargs='?', const='', default='',
-                        metavar="OUT",
-                        help="render a movie of the whole repair when the loop "
-                             "finishes, with the placement camera on (#431): "
-                             "overview -> zoom to each round's moved parts -> "
-                             "pan when the work moves -> then play the moves. "
-                             "ON BY DEFAULT; pass --no-movie to skip it. "
-                             "Default path: <work-dir>/placement.mp4")
-    parser.add_argument("--no-movie", dest='movie', action='store_const',
-                        const=None,
-                        help="skip the end-of-run movie (see --movie)")
-    parser.add_argument("--movie-tween", type=int, default=10, metavar="N",
-                        help="frames per placement glide in --movie; 0 = no "
-                             "glide, cut straight to the new placement")
     add_board_state_args(parser)
     add_intent_arg(parser)
     add_lock_advisor_args(parser)
@@ -1252,13 +1231,13 @@ def main():
         def _round_moved(placements):
             """Every pose this ROUND changed, against the board it started from.
 
-            Two bugs this closes, both in the movie's only input. `pcb_data` is
+            Two bugs this closes, both in the sidecar's `moved`. `pcb_data` is
             the RE-PARSED relocated board by the time the sidecar is written, so
             measuring against it recorded each `from` as the pose the part had
             AFTER the relocation -- disagreeing with the `parent` the same
             sidecar names, on 6 of 10 refs. And a part the relocation moved but
-            the quench did not was absent entirely, so `movie_camera` framed the
-            shot off the wrong set and never animated the relocation leg at all.
+            the quench did not was absent entirely, so the sidecar named the
+            wrong set and never recorded the relocation leg at all.
 
             The quench's entry wins where both moved the same ref: it is the
             final pose, and the relocation's is an intermediate.
@@ -1552,25 +1531,6 @@ def main():
             'target_select_efficacy': NO_EFFICACY_CLAIM,
         })
     print("JSON_SUMMARY: " + json.dumps(summary, sort_keys=True))
-
-    if args.movie is not None:
-        # The work dir already holds every round board plus the loop_round{N}.json
-        # sidecars, so this needs no extra plumbing -- make_movie reads a
-        # directory, and the sidecars are what make the set a chain.
-        try:
-            from make_movie import make_movie
-            out = args.movie or os.path.join(work, 'placement.mp4')
-            # tween= was MISSING here, so --movie-tween was parsed into
-            # args.movie_tween and then read by NOTHING: `--movie-tween 0`
-            # (cut straight to each new placement, no glide) silently rendered
-            # the default 10-frame glide instead, and so did every other value.
-            # A flag argparse accepts and the code ignores is worse than a flag
-            # that does not exist, because it looks like it worked.
-            got = make_movie([work], out=out, camera='auto', quiet=False,
-                             tween=args.movie_tween)
-            print(f"Movie: {got}" if got else "Movie: nothing to animate")
-        except Exception as e:
-            print(f"  (movie skipped: {e})")
 
     # 0 = the loop RAN. Deliberately not "0 = the board routes": every other
     # tool in this family reserves non-zero for "this tool could not do its

@@ -211,8 +211,7 @@ def loop_arm(board, out_board, work, label, cfg, nets, clearance, applied,
             '--rounds', str(rounds),
             '--max-displacement', str(max_disp), '--step', str(step),
             '--max-target-pins', str(cfg['pins']),
-            '--group-by', cfg['group'],
-            '--no-movie']
+            '--group-by', cfg['group']]
     if cfg.get('targeted'):
         argv += ['--target-nets'] + nets
     argv += ['--ignore-nets'] + IGNORE_NETS

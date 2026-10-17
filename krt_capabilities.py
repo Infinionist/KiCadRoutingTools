@@ -81,7 +81,7 @@ KNOWN_MODULES = (
     # plane opens that are not real. A tool nobody can discover gets
     # used by nobody.
     'fill_for_delivery.py',
-    'make_movie.py', 'render_placement.py', 'list_nets.py', 'route_summary.py',
+    'render_placement.py', 'list_nets.py', 'route_summary.py',
     # The two pre-route placement instruments. `check_channels.py` is the
     # per-face lane ledger the placement skill tells an operator to run before
     # blaming the router; `check_capacity.py` is the only tool that answers

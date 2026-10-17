@@ -49,7 +49,7 @@ controls):
 | AI tab | **Plan Routing** | `/plan-pcb-routing` | Fills parameters across the tabs and loads a checkable step list; **Run Selected Steps** executes them in-process |
 | AI tab | **Review Routed Board** | `/review-routed-board` | QA report in the transcript with a PASS/FAIL verdict |
 | AI tab | **Diagnose Routing Failures** | `/diagnose-routing-failures` | Root-cause report from the board + the Log tab content |
-| AI tab (Placement) | **Place (AI)** / **Place + Route (AI)** | `/pcb-free-agent place` / `full` | A headless run into a `krt_placement/` folder beside the board: final board, film, REPORT.md; progress from the milestone ledger |
+| AI tab (Placement) | **Place (AI)** / **Place + Route (AI)** | `/pcb-free-agent place` / `full` | A headless run into a `krt_placement/` folder beside the board: final board, REPORT.md; progress from the milestone ledger |
 | Route tab (Layers) | **Check Stackup (Claude)** | `/recommend-stackup` | Stackup report; recommended layer count logged |
 | Route tab (Options) | **Ask AI** (Power Nets) | `/analyze-power-nets` | Fills the Power Nets / Power Widths fields |
 | Differential tab | **Ask AI** | `/identify-diff-pairs` | Checks confirmed pairs, unchecks name-matching false positives; unconventional pairs reported in the log |
@@ -61,12 +61,6 @@ above and persist with the other dialog settings (model/effort are remembered pe
 backend; opencode models are `provider/model` strings, its effort maps to
 `--variant`). Claude Code runs show a startup header (version, model, discovered
 skills) so you can confirm what actually ran.
-
-**Recording a plan run.** Tick **Make routing movie** in the Advanced options tab's *Debug*
-section (default off) and a plan run writes one movie covering every step it ran,
-next to the board, with the path logged in green. A routing step run on its own tab
-gets its own movie the same way. See
-[Board rendering & routing animation](route-animation.md).
 
 **Saving and replaying a plan.** Next to the step list the AI tab has **Save…**
 and **Load…** buttons. **Save…** writes the current plan steps (actions, nets/pairs/
@@ -110,13 +104,11 @@ bundled python (which has `pcbnew` + `wx`) automatically:
 python3 py_router/run_plan.py board.kicad_pcb plan.json -o routed.kicad_pcb
 python3 py_router/run_plan.py board.kicad_pcb plan.json --list        # show the steps
 python3 py_router/run_plan.py board.kicad_pcb plan.json --steps 1,3-5 # run a subset
-python3 py_router/run_plan.py board.kicad_pcb plan.json --movie routing.mp4
 ```
 
 The input board is never modified — it is copied *with its `.kicad_pro`* (which
 carries the DRC floor, #441) to the output path, and the plan runs on that.
-`--snapshot-dir` keeps the board after each step; `--movie` snapshots and then
-renders the whole run with [`make_movie.py`](route-animation.md).
+`--snapshot-dir` keeps the board after each step.
 
 This is the same driver (`headless_plan.py`) the GUI/CLI parity harness uses, so
 what runs here is what the buttons run.
@@ -125,7 +117,7 @@ what runs here is what the buttons run.
 
 | Skill | Purpose | Main output |
 |-------|---------|-------------|
-| [`/pcb-free-agent`](#pcb-free-agent) | Place and/or route a board end to end, the agent choosing its steps (modes `full` / `place` / `route`) | The best board it reached, a film, and REPORT.md, checked by one independent verifier |
+| [`/pcb-free-agent`](#pcb-free-agent) | Place and/or route a board end to end, the agent choosing its steps (modes `full` / `place` / `route`) | The best board it reached and REPORT.md, checked by one independent verifier |
 | [`/pcb-group-place`](#pcb-group-place) | Place a board by function, each functional group in its own region | The placed board, its groups file, the region intent and renders |
 | [`/plan-pcb-routing`](#plan-pcb-routing) | Full board analysis and step-by-step routing plan | Ordered routing commands, executed on approval |
 | [`/analyze-power-nets`](#analyze-power-nets) | Identify power nets and track widths via datasheets | `--power-nets` / `--power-nets-widths` arguments |
@@ -139,7 +131,7 @@ what runs here is what the buttons run.
 
 ### /pcb-free-agent
 
-The placement-and-routing entry point. It gives the agent a goal per mode, the repo's CLIs as a toolbox, stop rules and the traps real runs hit, and asks for one independent verifier at the end instead of prescribing stages. It hands back the board, a light 4:3 film from its milestone ledger, and a REPORT.md with a timeline. `scripts/grade.py` and `scripts/measure.py` grade the board and split the wall clock independently of the agent's own claims, and `scripts/make_unplaced.py` builds an all-off-the-board input for from-scratch runs. Measured basis: esp_prog was DONE in 12 min (6 vias), against 3h54m (39 vias) for the staged loop it replaced; glasgow_revC reached blocking 15 in 7h56m, against 35 in ~32 h.
+The placement-and-routing entry point. It gives the agent a goal per mode, the repo's CLIs as a toolbox, stop rules and the traps real runs hit, and asks for one independent verifier at the end instead of prescribing stages. It hands back the board and a REPORT.md with a timeline from its milestone ledger. `scripts/grade.py` and `scripts/measure.py` grade the board and split the wall clock independently of the agent's own claims, and `scripts/make_unplaced.py` builds an all-off-the-board input for from-scratch runs. Measured basis: esp_prog was DONE in 12 min (6 vias), against 3h54m (39 vias) for the staged loop it replaced; glasgow_revC reached blocking 15 in 7h56m, against 35 in ~32 h.
 
 ### /pcb-group-place
 

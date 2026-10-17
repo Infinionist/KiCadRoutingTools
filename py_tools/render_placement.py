@@ -1487,10 +1487,9 @@ def draw_legend(d, r, spec) -> None:
         if spec.hot_nets:
             rows.append((C_AIR_FAIL, 'line', 'failed net'))
     # #1014: the ROWS are still chosen here -- which keys this panel can show
-    # is a placement question -- but the DRAWING moved to
-    # `py_router/render_chrome.draw_key`, so `animate_route` can draw the
-    # movie's key with the same marks rather than a second implementation of
-    # them. `pad_scale=r.ss` because an overlay draws on the SUPERSAMPLED
+    # is a placement question -- but the DRAWING lives in
+    # `py_router/render_chrome.draw_key`, which reads each mark off the same
+    # theme role as the draw site. `pad_scale=r.ss` because an overlay draws on the SUPERSAMPLED
     # canvas: using the output height here once put the legend a fraction of
     # the way up the image, on top of the board.
     from render_chrome import draw_key

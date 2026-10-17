@@ -1,29 +1,25 @@
 #!/usr/bin/env python3
-"""Stress-run rendering: final-board snapshot + whole-run routing movie (#482).
+"""Stress-run rendering: the final-board snapshot (#482).
 
 Replaces the old kicad-cli + headless-Chrome renderer (board_image.py /
-board_layer_images.py) with the fast geometry renderer (route_render), and
-adds an animated movie of the whole routing run (make_movie -> animate_route;
-``python3 py_router/make_movie.py RUNDIR`` makes the same movie by hand). Drops, next
-to the final board / in the run dir:
+board_layer_images.py) with the fast geometry renderer (route_render). Drops,
+next to the final board:
 
   * ``<board>.png``            -- combined final snapshot (all copper layers)
   * ``<board>_<layer>.png``    -- one snapshot per copper layer
-  * ``<rundir>/routing.gif``   -- whole-run movie: every stepN board's copper
-                                  delta revealed in order, with fine rip/restore
-                                  animation spliced in for steps that recorded a
-                                  ``*_routetrace.json`` (KICAD_ROUTE_TRACE=1).
 
 Geometry rendering is ~100x faster than the SVG->PNG path and needs no KiCad
-or browser, so it is feasible to render a movie per board on every run.
+or browser, so it is feasible on every run.
 
 Usage:
     python3 tests/stress/render_run.py RUNDIR [FINAL_BOARD]
-      RUNDIR      stress run dir (holds stepN_*.kicad_pcb [+ *_routetrace.json])
+      RUNDIR      stress run dir (holds stepN_*.kicad_pcb)
       FINAL_BOARD final board to snapshot (default: the last step board)
 """
 import argparse
+import glob
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -32,6 +28,40 @@ sys.path.insert(0, _REPO)
 sys.path.insert(0, os.path.join(_REPO, 'py_router'))  # #522
 sys.path.insert(0, os.path.join(_REPO, 'py_placer'))  # #522
 sys.path.insert(0, os.path.join(_REPO, 'py_tools'))  # #522
+
+
+def _step_sort_key(path):
+    # The step number anywhere in the name: chains use both `step6_route` and
+    # `board_step6_route`; sub-steps (step2a/2b) sort by number, then letter.
+    b = os.path.basename(path)
+    m = re.search(r'step\s*(\d+)([a-z]*)', b, re.I)
+    return (int(m.group(1)) if m else 9999, m.group(2) if m else '', b)
+
+
+def final_board_of(run_dir):
+    """The run dir's final board: an explicit ``final*`` board when there is
+    one, else the last step board -- step-numbered order when any board is
+    step-numbered, write-time (mtime) order otherwise. None when there is no
+    board at all."""
+    all_pcb = glob.glob(os.path.join(run_dir, '*.kicad_pcb'))
+    stepped = [p for p in all_pcb
+               if re.search(r'step\s*\d', os.path.basename(p), re.I)]
+    if stepped:
+        boards = sorted(stepped, key=_step_sort_key)
+        # A semantically-named final board must not be dropped just because
+        # step-numbered boards exist (#513 item 10).
+        finals = [p for p in all_pcb if p not in stepped
+                  and 'final' in os.path.basename(p).lower()]
+        boards += sorted(finals, key=lambda p: (os.path.getmtime(p),
+                                                os.path.basename(p)))
+    else:
+        boards = sorted(all_pcb, key=lambda p: (os.path.getmtime(p),
+                                                os.path.basename(p)))
+    final = boards[-1] if boards else None
+    for b in boards:                      # an explicit final_board wins
+        if 'final' in os.path.basename(b).lower():
+            final = b
+    return final
 
 
 def render_final_snapshot(board_path, size=1600, per_layer=True, quiet=False):
@@ -58,52 +88,25 @@ def render_final_snapshot(board_path, size=1600, per_layer=True, quiet=False):
     return written
 
 
-def render_run_movie(run_dir, out=None, size=1000, fps=8.0, quiet=False):
-    """Whole-run movie from the run dir's step boards + traces. Returns path or
-    None (no chain boards found). Writes ``routing.mp4`` (H.264, ~10-50x smaller
-    than GIF and plays everywhere) when imageio-ffmpeg is available, else falls
-    back to ``routing.gif`` -- the .mp4 extension drives the choice in
-    save_movie."""
-    from make_movie import make_movie
-    written = make_movie([run_dir], out=out, size=size, fps=fps, quiet=quiet)
-    if not written and not quiet:
-        print(f"render_run: no chain boards in {run_dir}; no movie")
-    return written
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('run_dir')
     ap.add_argument('final_board', nargs='?', default=None)
     ap.add_argument('--size', type=int, default=1600, help='snapshot px (default 1600)')
-    ap.add_argument('--movie-size', type=int, default=1000)
-    ap.add_argument('--fps', type=float, default=6.0)
-    ap.add_argument('--no-movie', action='store_true')
-    ap.add_argument('--no-snapshot', action='store_true')
     ap.add_argument('--quiet', action='store_true')
     args = ap.parse_args()
 
-    final = args.final_board
-    if final is None:
-        import animate_route as a
-        _steps, final = a.discover_steps(args.run_dir)
-
-    ok = False
-    if final and os.path.exists(final) and not args.no_snapshot:
-        try:
-            paths = render_final_snapshot(final, size=args.size, quiet=args.quiet)
-            ok = ok or bool(paths)
-        except Exception as e:
-            print(f"render_run: snapshot failed: {e}", file=sys.stderr)
-    if not args.no_movie:
-        try:
-            mv = render_run_movie(args.run_dir, size=args.movie_size,
-                                  fps=args.fps, quiet=args.quiet)
-            ok = ok or bool(mv)
-        except Exception as e:
-            print(f"render_run: movie failed: {e}", file=sys.stderr)
-    return 0 if ok else 1
+    final = args.final_board or final_board_of(args.run_dir)
+    if not final or not os.path.exists(final):
+        print(f"render_run: no board to snapshot in {args.run_dir}", file=sys.stderr)
+        return 1
+    try:
+        paths = render_final_snapshot(final, size=args.size, quiet=args.quiet)
+    except Exception as e:
+        print(f"render_run: snapshot failed: {e}", file=sys.stderr)
+        return 1
+    return 0 if paths else 1
 
 
 if __name__ == '__main__':

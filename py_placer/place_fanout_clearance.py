@@ -88,8 +88,8 @@ Examples:
                         help="Hard clearance from board edge in mm (default: the "
                              "board's own min_copper_edge_clearance when it asks "
                              "for MORE than 0.55, else 0.55). #733: resolved by "
-                             "the shared engine, so the GUI plugin and "
-                             "animate_fanout_clearance.py get the same answer.")
+                             "the shared engine, so the GUI plugin gets the "
+                             "same answer.")
     parser.add_argument("--capture-radius", type=float, default=2.0,
                         help="Max distance over which a same-net ball attracts "
                              "a cap pad in mm (default: 2.0)")

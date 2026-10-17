@@ -78,35 +78,6 @@ REGISTRY = {
     'kicad_routing_plugin/deps_check.py': (
         'hang_detector',
         'pip/import probes of an external toolchain, plus a worker join.'),
-    'py_router/kicad_iso_render.py': (
-        'hang_detector',
-        'ISO_RENDER_HANG_GUARD_S on the kicad-cli pcb render child (#887). Its '
-        'expiry returns a NAMED reason -- "kicad-cli pcb render timed out after '
-        'Ns" -- so it never becomes a bare None. It is NOT a cost cap: a '
-        'caller caps a COUNT of renders, chosen over a seconds budget so the '
-        'same work is done on a fast machine and a slow one.'),
-    # #1081: the stage3d film's optional external children. Each expiry
-    # returns a NAMED reason, and the film then keeps the 2D X-ray for EVERY
-    # frame and says why -- a timeout never becomes a partial or silent film.
-    'py_router/stage3d/render3d.py': (
-        'hang_detector',
-        'STATE_BUDGET_S / BLENDER_STATE_BUDGET_S on the node+Chromium and '
-        'Blender render children, and a 30 s `node --version` probe. Expiry '
-        'returns "the 3D render took over N s", and stage3d.film keeps the '
-        'X-ray and prints that reason. The budget scales with the state '
-        'COUNT, so it is a hang guard, not a cost cap.'),
-    'py_router/stage3d/scene.py': (
-        'hang_detector',
-        'GLB_TIMEOUT_S on the kicad-cli pcb export glb child; expiry returns '
-        'a named reason and the parts stay boxes (no models).'),
-    'py_router/movie_benchmark.py': (
-        'hang_detector',
-        'the one board_score child that grades a --benchmark-board without a '
-        '--benchmark-score; expiry leaves the benchmark ungraded, which the '
-        'band names and which can never earn gold.'),
-    'py_router/stage3d/blender_scene.py': (
-        'reporting',
-        'ms_per_state on the Blender render, printed in the status line.'),
     'kicad_routing_plugin/ai_gui.py': (
         'hang_detector', 'a stderr reader thread join.'),
     'kicad_routing_plugin/ai_plan.py': (
@@ -150,16 +121,6 @@ REGISTRY = {
         '(the date maths in `reign_downloads`, `weekly_rollup` and '
         '`collect_pcm_listings` reads stamps out of the collected DATA, not '
         'off the clock).'),
-    'py_router/cmd_timing.py': (
-        'record',
-        'reads back the clock tee_cmd already recorded, and formats it -- a '
-        'board mtime, to place a movie frame on the run\'s timeline, and a '
-        'strftime for the UTC stamp. Both DESCRIPTIVE (#887). Nothing here '
-        'compares a duration to a limit: it declares no threshold constant and '
-        'never exits non-zero for a slow run, inheriting tee_cmd.py:14-16 -- '
-        '"no budget, no cap and no timeout" -- and two AST tests assert exactly '
-        'that, one forbidding a MAX_/LIMIT/BUDGET/TIMEOUT constant and one '
-        'forbidding any predicting identifier.'),
 
     'py_placer/place_candidates.py': (
         'reporting',
@@ -233,14 +194,6 @@ REGISTRY = {
         'status.py pins the three arms wx-free.'),
 
     # --- filesystem timestamps, not our elapsed time ------------------------
-    'py_router/animate_route.py': (
-        'file_mtime', 'orders movie frames by st_mtime'),
-    'py_router/movie_attempts.py': (
-        'file_mtime',
-        'a joined place+route attempts graph puts first whichever record '
-        'started first: the ledger\'s first row `t` vs the loop sidecars\' '
-        'earliest st_mtime (#946/C4). Ordering of a rendered film only; no '
-        'elapsed time of ours.'),
     'py_router/route_planes.py': (
         'file_mtime',
         'compares the output file st_mtime before/after to detect that a '
@@ -254,11 +207,6 @@ REGISTRY = {
         'throttle', 'time.sleep(0.01) yielding to the wx event loop'),
     'kicad_routing_plugin/planes_gui.py': (
         'throttle', '_time.sleep(0.01) yielding to the wx event loop'),
-
-    # --- a render cap, not a routing decision -------------------------------
-    'py_router/make_movie.py': (
-        'harness',
-        '--camera-budget caps a RENDER, which produces no board'),
 
     # --- no clock at all ----------------------------------------------------
     'py_router/routing_common.py': (

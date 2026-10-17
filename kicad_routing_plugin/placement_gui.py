@@ -8,7 +8,7 @@ workdir (placement_run.create_workdir), take minutes to hours, and are
 observed from outside: a 1 s monitor timer merges the stream-json transcript,
 the converge ledger tail, and newly-appearing board artifacts into an
 elapsed/stage status line, and renders preview frames from new boards while
-the run is going. At the end the movie and REPORT.md are surfaced in the tab
+the run is going. At the end REPORT.md and the run folder are surfaced in the tab
 and the result can be explicitly applied back to the live board.
 
 Claude Code is REQUIRED for the two AI actions: they are pinned to the Claude
@@ -177,7 +177,6 @@ class FramePreviewPanel(wx.Panel):
         super().__init__(parent)
         self._frames = []       # PNG paths, oldest first
         self._index = -1
-        self._movie = None
         self._report = None
         self._workdir = None
         self._play_timer = wx.Timer(self)
@@ -205,13 +204,12 @@ class FramePreviewPanel(wx.Panel):
         self.prev_btn = wx.Button(self, label="<", size=(32, -1))
         self.play_btn = wx.Button(self, label="Play", size=(56, -1))
         self.next_btn = wx.Button(self, label=">", size=(32, -1))
-        self.open_movie_btn = wx.Button(self, label="Open Movie")
         self.open_report_btn = wx.Button(self, label="Open Report")
         self.open_workdir_btn = wx.Button(self, label="Open Folder")
         for b in (self.prev_btn, self.play_btn, self.next_btn):
             btns.Add(b, 0, wx.RIGHT, 3)
         btns.AddStretchSpacer()
-        for b in (self.open_movie_btn, self.open_report_btn, self.open_workdir_btn):
+        for b in (self.open_report_btn, self.open_workdir_btn):
             btns.Add(b, 0, wx.LEFT, 3)
         sizer.Add(btns, 0, wx.EXPAND | wx.ALL, 3)
         self.SetSizer(sizer)
@@ -219,7 +217,6 @@ class FramePreviewPanel(wx.Panel):
         self.prev_btn.Bind(wx.EVT_BUTTON, lambda e: self._step(-1))
         self.next_btn.Bind(wx.EVT_BUTTON, lambda e: self._step(+1))
         self.play_btn.Bind(wx.EVT_BUTTON, self._on_play)
-        self.open_movie_btn.Bind(wx.EVT_BUTTON, lambda e: self._launch(self._movie))
         self.open_report_btn.Bind(wx.EVT_BUTTON, lambda e: self._launch(self._report))
         self.open_workdir_btn.Bind(wx.EVT_BUTTON, lambda e: self._launch(self._workdir))
         self._refresh_buttons()
@@ -269,8 +266,7 @@ class FramePreviewPanel(wx.Panel):
                           os.path.basename(self._frames[self._index]))
         self._refresh_buttons()
 
-    def set_outputs(self, movie=None, report=None, workdir=None):
-        self._movie = movie if movie and os.path.isfile(movie) else None
+    def set_outputs(self, report=None, workdir=None):
         self._report = report if report and os.path.isfile(report) else None
         self._workdir = workdir if workdir and os.path.isdir(workdir) else None
         self._refresh_buttons()
@@ -285,7 +281,6 @@ class FramePreviewPanel(wx.Panel):
         self.prev_btn.Enable(has)
         self.next_btn.Enable(has)
         self.play_btn.Enable(has)
-        self.open_movie_btn.Enable(self._movie is not None)
         self.open_report_btn.Enable(self._report is not None)
         self.open_workdir_btn.Enable(self._workdir is not None)
 
@@ -403,11 +398,11 @@ class PlacementRunMonitor:
     def _render_work(self, board_path):
         png = None
         try:
-            from make_movie import board_snapshot
+            from route_render import render_board_file
             os.makedirs(self._preview_dir, exist_ok=True)
             stem = os.path.splitext(os.path.basename(board_path))[0]
             out = os.path.join(self._preview_dir, stem + ".png")
-            png = board_snapshot(board_path, out=out, size=900, quiet=True)
+            png = render_board_file(board_path, out, size=900, quiet=True)
         except ImportError:
             self._preview_ok = False  # Pillow/renderer missing: previews off
         except Exception:
@@ -905,8 +900,7 @@ class PlacementTab(wx.Panel):
             report = outputs.get("report")
             if report:
                 self._load_report(report)
-            self.preview.set_outputs(movie=outputs.get("movie"), report=report,
-                                     workdir=workdir)
+            self.preview.set_outputs(report=report, workdir=workdir)
             frames = []
             preview_dir = os.path.join(workdir, "_gui_preview") if workdir else None
             if preview_dir and os.path.isdir(preview_dir):
@@ -920,7 +914,7 @@ class PlacementTab(wx.Panel):
                 # One final frame of the result board itself (queued behind
                 # any render still in flight).
                 self._monitor._maybe_render(board, final=True)
-            for key in ("board", "movie", "report"):
+            for key in ("board", "report"):
                 if outputs.get(key):
                     self._append_transcript(f"{key}: {outputs[key]}\n")
                     self.append_log(f"Placement {key}: {outputs[key]}\n")
@@ -1466,8 +1460,7 @@ class PlacementTab(wx.Panel):
             return
         self.last_workdir = workdir
         outputs = scan_workdir_outputs(workdir)
-        self.preview.set_outputs(movie=outputs.get("movie"),
-                                 report=outputs.get("report"), workdir=workdir)
+        self.preview.set_outputs(report=outputs.get("report"), workdir=workdir)
         preview_dir = os.path.join(workdir, "_gui_preview")
         if os.path.isdir(preview_dir):
             self.preview.set_frames(sorted(

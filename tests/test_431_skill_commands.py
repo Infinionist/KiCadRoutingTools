@@ -115,7 +115,7 @@ SOURCES = [
     '.claude/skills/plan-pcb-routing/SKILL.md',
     # The free-agent skill replaced the staged placement and combined skills
     # (and their drivers). It prescribes no procedure, but every command it
-    # does spell -- the milestone record, the film, the verifier's checks --
+    # does spell -- the milestone record, the verifier's checks --
     # is one the executor runs verbatim. Its reference page carries most of
     # them (#549: a block moved out of SKILL.md must not go flag-unchecked).
     '.claude/skills/pcb-free-agent/SKILL.md',

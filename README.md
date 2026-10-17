@@ -100,7 +100,7 @@ Fast, grid-based A\* routing with a native Rust core (~10× faster than pure Pyt
 **Interfaces**
 - Full [KiCad plugin GUI](#kicad-plugin) (KiCad 9 & 10) and a scriptable [CLI](#command-line-interface)
 - [AI assistance](docs/claude-skills.md) — a **AI tab** that plans an entire routing workflow, per-field "Ask AI" helpers, and datasheet-driven power / high-speed / diff-pair analysis
-- [Board rendering & routing animation](docs/route-animation.md) — fast geometry PNG renderer, plus a movie of the router laying/ripping/restoring copper (`make_movie.py`, or the Advanced options tab's **Make routing movie** debug checkbox → `.mp4`/`.gif`)
+- [Board rendering](docs/utilities.md#board-renderer-route_renderpy) — fast geometry PNG renderer (`route_render.py`), and placement stills (`render_placement.py`)
 - [Routing plans as files](docs/claude-skills.md#plans-from-the-command-line) — save/load a whole routing chain as JSON: build one from a recorded command chain (`make_plan.py`), run it headless through the real plugin (`run_plan.py`), or load it in the GUI
 
 ## Quick Start
@@ -731,7 +731,6 @@ KiCadRoutingTools/
 │   ├── extract_pcb_geometry.py   # Geometry extraction
 │   ├── clean_ignored.py          # Remove ignored copper
 │   ├── analyze_power_paths.py    # Power-path analysis (backs /analyze-power-nets)
-│   ├── animate_fanout_clearance.py # Animate cap-placement repair
 │   └── _path.py                  # sys.path bootstrap so the tools import py_router
 │
 ├── tests/                    # Integration tests
@@ -754,7 +753,6 @@ KiCadRoutingTools/
 │   ├── ai_gui.py             # AI tab (spawns the agent CLI headless, streams transcript)
 │   ├── ai_plan.py            # AI tab routing-plan orchestration
 │   ├── ai_backend.py         # Agent CLI backend selection (Claude Code / opencode)
-│   ├── movie_recorder.py     # Routing-movie capture for the GUI
 │   ├── board_swaps.py        # Shared board pad/net swap helpers
 │   ├── deps_check.py         # Plugin dependency checks
 │   ├── about_tab.py          # About tab with version info
@@ -772,7 +770,7 @@ KiCadRoutingTools/
     ├── recommend-stackup/    # Stackup review/recommendation skill
     ├── recommend-plane-mappings/  # Net-to-plane-layer assignment skill
     ├── diagnose-routing-failures/  # Failure root-cause and retry skill
-    ├── pcb-free-agent/       # Agent-driven place and/or route, one verifier, film + report
+    ├── pcb-free-agent/       # Agent-driven place and/or route, one verifier, report
     ├── review-routed-board/  # Post-route QA and sign-off skill
     └── stress-test-router/   # Batch stress-test on real-world boards + issue filing (dev/QA)
 ```
@@ -894,7 +892,7 @@ Every tool prints its full option list with `--help`, and **[docs/configuration.
 | `board_brief.py` | Assemble what a placement author needs to read, in one artifact | [Design Brief](docs/design-brief.md) |
 | `check_floorplan.py` | Grade a board against a declared floorplan intent | [Floorplan Intent](docs/floorplan-intent.md) |
 | `check_*.py` | DRC / connectivity / hygiene / pad checks | [Utilities](docs/utilities.md) |
-| `make_movie.py` | Movie of a routing run (`.mp4`/`.gif`) | [Rendering & animation](docs/route-animation.md) |
+| `route_render.py` | PNG still of a board from its geometry | [Utilities](docs/utilities.md#board-renderer-route_renderpy) |
 | `make_plan.py` / `run_plan.py` | Build a GUI routing plan from a recorded chain / run one headless | [Plans from the CLI](docs/claude-skills.md#plans-from-the-command-line) |
 
 ```bash

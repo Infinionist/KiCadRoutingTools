@@ -487,12 +487,10 @@ def score_component(score, key):
 
 
 # ONE rule for what a `blocking` is (#1088): `_score_key` (the ranking),
-# `record` (the refusal), `check_complete`, `run_watch` and the film all use
-# the same two functions. They live in `py_router/ledger_score.py` so the
-# router side can import them without importing a placement engine
-# (`_placer_path`'s one-way rule); converge re-exports them. The film used to
-# MIRROR this rule by hand, pinned by a parity test -- a mirror is a second
-# place to get it wrong.
+# `record` (the refusal), `check_complete` and `run_watch` all use the same
+# two functions. They live in `py_router/ledger_score.py` so the router side
+# can import them without importing a placement engine (`_placer_path`'s
+# one-way rule); converge re-exports them.
 from ledger_score import blocking_defect, blocking_value  # noqa: E402,F401
 
 
@@ -1825,7 +1823,7 @@ def cmd_record(a):
               "no trigger.", file=sys.stderr)
     if a.final:
         entry['final'] = True
-    # The TOKEN alone, so a reader (and `verdict`, and the film) can match it
+    # The TOKEN alone, so a reader (and `verdict`) can match it
     # against the vocabulary instead of parsing prose (#901). The reason keeps
     # its own key -- absent, not empty, when there is none. Recorded on ANY row
     # that carries one, not only a --final row: the first cut stored both keys
@@ -1861,7 +1859,7 @@ def cmd_record(a):
     if a.exhausted:
         print(f"recorded: {a.exhausted} declared EXHAUSTED. `verdict` will "
               f"stop asking that half to plateau, and the reason is in the "
-              f"ledger where the film and every re-entry read it. A later "
+              f"ledger where every re-entry reads it. A later "
               f"recorded lap of that half SUPERSEDES this declaration.",
               file=sys.stderr)
     print(json.dumps(e, indent=1, sort_keys=True))
@@ -2194,7 +2192,7 @@ def parent_score(rows, row):
 
     `cmd_record` has written `parent_sha` on every ledger row since the ledger
     existed. `tests/stress/harvest_predictor_rows.py` walks it as a lineage
-    graph and `py_tools/make_film.py` names it, but nothing in converge itself
+    graph, but nothing in converge itself
     ever resolved it back to the parent's SCORE. This is that read side.
 
     Returns None when there is no parent, when no row carries that
@@ -2731,8 +2729,8 @@ def cmd_verdict(a):
                       # The --lever the too-few-laps remedy above has always
                       # carried and this one never did. An --exhausted row has
                       # `lever: null` by construction otherwise, and every
-                      # consumer that renders a lap -- the film's caption, the
-                      # GUI's stage label, the watcher's rejected-lap line --
+                      # consumer that renders a lap -- the GUI's stage label,
+                      # the watcher's rejected-lap line --
                       # then prints a blank or a literal "?" for the one row
                       # whose whole content is a human's reason.
                       f'        --lever "declaration: {h} has nothing further"')

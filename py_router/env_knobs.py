@@ -281,57 +281,13 @@ def refresh() -> None:
     # --env` so an A/B arm can replay those manifests like-for-like. Never
     # set it for a real run -- pass --clearance-ceiling instead.
     g['CLEARANCE_LEGACY_CEILING'] = _s('KICAD_CLEARANCE_LEGACY_CEILING') == '1'
-    # #431: the placement-movie camera. 'off' (default) keeps every existing
-    # movie bit-for-bit; one variable turns it on for the GUI recorder,
-    # run_plan.py --movie and the stress renderer at once, which is the
-    # CLI/GUI parity story for a feature with no GUI control of its own.
-    g['MOVIE_CAMERA'] = _s('KICAD_MOVIE_CAMERA', 'off')
 
-    # RETIRED movie knobs: `stage3d` is the only film layout, so these
-    # select nothing any more. Read ONLY so a value still set in someone's
-    # shell is SAID (once, by `frame_layout.warn_retired_knobs`) rather than
-    # ignored in silence. KICAD_MOVIE_PANELS was #887's iso panel;
-    # KICAD_MOVIE_LAYOUT chose between the retired layouts.
-    g['MOVIE_RETIRED'] = {k: os.environ[k]
-                          for k in ('KICAD_MOVIE_LAYOUT', 'KICAD_MOVIE_PANELS')
-                          if os.environ.get(k)}
-
-    # #946/#1012: the render theme. 'light' (default since #1081, at the
-    # requester's call: the stage3d film's mockup is light) for EVERY render;
-    # 'dark' -- KiCad's own canvas -- is one flag or variable away. Same shape and same reason as MOVIE_CAMERA
-    # above: the GUI recorder passes no render parameters at all
-    # (movie_recorder.py:160 is `make_movie(boards, out=out, quiet=True)`), so
-    # one variable is how a feature with no dialog control of its own reaches
-    # every front end at once. The knob is for a PRODUCER making a figure for a
-    # light-background document, not for a viewer -- a rendered file's ground
-    # cannot be changed afterwards.
+    # #946/#1012: the render theme. 'light' (default since #1081) for EVERY
+    # render; 'dark' -- KiCad's own canvas -- is one flag or variable away.
+    # The knob is for a PRODUCER making a figure for a light-background
+    # document, not for a viewer -- a rendered file's ground cannot be changed
+    # afterwards.
     g['RENDER_THEME'] = _s('KICAD_RENDER_THEME', 'light')
-
-    # #946/#1018: the film's target aspect ('' = the stage3d frame's own
-    # 16:9). Same shape and same reason as MOVIE_CAMERA: one variable
-    # reaches every front end at once.
-    g['MOVIE_ASPECT'] = _s('KICAD_MOVIE_ASPECT', '')
-    # #1081: the stage3d board -- 'auto' (the 3D board when this machine can
-    # render it, else the X-ray, said), '2d' (always the X-ray) or 'blender'
-    # (the hi-fi Cycles backend, #1089). The one way a front end with no
-    # flag of its own -- the GUI recorder, place_route_loop -- chooses.
-    g['MOVIE_BOARD3D'] = _s('KICAD_MOVIE_BOARD3D', 'auto')
-
-    # #1036: the routing movie's FRAME BUDGET. A per-segment route trace
-    # (KICAD_ROUTE_TRACE=1) plays one frame per event, and run 32's 22-board
-    # chain over ~9000 segments made ~6100 frames -- a 17-minute film at
-    # 6 fps. Over budget, a traced step falls back to the chunked
-    # board-to-board reveal and the movie SAYS so. 2400 frames is 400 s at
-    # the default 6 fps. 0 = no budget. Same shape and same reason as
-    # MOVIE_CAMERA: one variable reaches every front end at once.
-    g['MOVIE_MAX_FRAMES'] = _i('KICAD_MOVIE_MAX_FRAMES', 2400)
-
-    # #1036 review: the least footprint displacement (mm) that counts as a
-    # PLACEMENT move for the movie. Below it a pose change is drift -- a
-    # 0.05 mm nudge a router or a writer left behind -- and it turns no
-    # camera on and glides nothing; the per-step substrate still draws it. A
-    # rotation always counts. Same shape and reason as MOVIE_CAMERA.
-    g['MOVIE_MOVE_MIN_MM'] = _f('KICAD_MOVIE_MOVE_MIN_MM', 0.5)
 
     # --- truthy diagnostics / overrides -------------------------------------
     g['UNBLOCK_DEBUG'] = _truthy('KICAD_UNBLOCK_DEBUG')

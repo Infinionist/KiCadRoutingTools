@@ -743,6 +743,44 @@ What to do about each finding is in
 agent's review pass (`.claude/skills/pcb-free-agent/SKILL.md`, §5) runs it
 once after the first full route.
 
+## Board Renderer (`route_render.py`)
+
+A still PNG of a board straight from its parsed geometry (segments, vias,
+pads, zones, outline) with [Pillow](https://python-pillow.org/): no KiCad,
+`kicad-cli`, SVG step or headless browser, ~0.2 s a board. `render_placement.py`
+draws its placement stills on the same renderer.
+
+```bash
+python3 py_router/route_render.py BOARD.kicad_pcb [-o OUT.png] [--size 1600]
+    [--supersample 2] [--layer-alpha N] [--no-pads] [--no-zones]
+    [--layers F.Cu,B.Cu] [--view X0,Y0,X1,Y1] [--theme light|dark]
+```
+
+- `--size` — longest image dimension in px. `--supersample` anti-aliases (1 = fastest, 2 = crisp stills).
+- `--layer-alpha` — per-layer copper opacity 1–255; `<255` blends overlapping layers at crossings, `255` = opaque.
+- `--layers` — render only these copper layers (per-layer views).
+- `--view` — crop to a world rect in board mm; `--refs` and `--ruler` default on for a crop.
+- `--theme` — `light` (the default, or `$KICAD_RENDER_THEME`) or `dark` (KiCad's own canvas).
+
+![the same board in both themes](946-themes.png)
+
+Library API:
+
+```python
+import sys
+sys.path.insert(0, "py_router")
+from kicad_parser import parse_kicad_pcb
+from route_render import BoardRenderer
+
+r = BoardRenderer(parse_kicad_pcb("board.kicad_pcb"))
+r.render().save("board.png")                       # whole board
+r.frame(segments=subset, vias=[]).save("f.png")    # an arbitrary subset
+```
+
+`BoardRenderer` computes the world→pixel transform and the static substrate
+(outline, zones, pads) **once**; each `frame(...)` composites a chosen subset of
+copper on top, with optional highlight colors.
+
 ## Orphan Stub Checker (`check_orphan_stubs.py`)
 
 Detects trace endpoints that end without a proper connection point (via or pad).

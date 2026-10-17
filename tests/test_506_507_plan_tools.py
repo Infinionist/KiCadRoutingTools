@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
-"""make_movie / make_plan / run_plan: the CLI front doors (#506, #507).
+"""make_plan / run_plan: the CLI front doors (#506, #507).
 
-Three small tools that expose what the stress harness already did:
+Two small tools that expose what the stress harness already did:
 
-  * ``make_movie.py``  -- a routing movie from a run dir, a board list, or one
-    board (the shared core the GUI's "Routing Movie..." button also calls)
   * ``make_plan.py``   -- a GUI-loadable plan JSON from a recorded command chain
   * ``run_plan.py``    -- run that plan headless through the real plugin
 
 What is checked here is everything that does NOT need wx/pcbnew: the manifest ->
 plan conversion (including that it still matches ``manifest_to_plan.py`` exactly
-after both were pointed at one shared function), input resolution, output-path
-defaults, step-range parsing, and a real end-to-end movie render off two boards.
+after both were pointed at one shared function), input resolution and
+step-range parsing.
 """
-import glob
 import json
 import os
 import shutil
@@ -110,68 +107,11 @@ def test_run_plan_selection():
             check(f"out-of-range '{spec}' is refused", True)
 
 
-def test_make_movie(tmp):
-    print("3. make_movie: inputs, defaults, and a real render")
-    import make_movie
-
-    # These are produced by test_fanout_and_route.py, which run_all.py runs 54
-    # files LATER, and they are gitignored -- so on a clean tree this check
-    # reported a FAILURE for a missing fixture rather than testing make_movie.
-    # Build them from the tracked root instead.
-    from fixture_boards import ensure_many
-    boards = ensure_many('fanout_output1.kicad_pcb', 'fanout_output2.kicad_pcb')
-
-    rundir = os.path.join(tmp, 'run')
-    os.makedirs(rundir)
-    for i, b in enumerate(boards, 1):
-        shutil.copy(b, os.path.join(rundir, f'step{i}_route.kicad_pcb'))
-
-    steps, final = make_movie.resolve_inputs([rundir])
-    check("a directory resolves its chain in stepN order",
-          [os.path.basename(s[1]) for s in steps]
-          == ['step1_route.kicad_pcb', 'step2_route.kicad_pcb'],
-          str([os.path.basename(s[1]) for s in steps]))
-    check("the last step board is the final board",
-          os.path.basename(final) == 'step2_route.kicad_pcb')
-    check("a run dir's movie defaults inside it",
-          make_movie.default_output([rundir]) == os.path.join(rundir, 'routing.mp4'))
-    check("a board list's movie defaults beside the last board",
-          make_movie.default_output(boards).endswith(
-              os.path.splitext(os.path.basename(boards[-1]))[0] + '_routing.mp4'))
-
-    bsteps, bfinal = make_movie.resolve_inputs(boards)
-    check("an explicit board list keeps the order given",
-          [s[1] for s in bsteps] == [os.path.abspath(b) for b in boards]
-          and bfinal == os.path.abspath(boards[-1]))
-    try:
-        make_movie.resolve_inputs([os.path.join(tmp, 'nope.kicad_pcb')])
-        check("a missing board is an error", False)
-    except FileNotFoundError:
-        check("a missing board is an error", True)
-
-    try:
-        import PIL  # noqa: F401
-    except ImportError:
-        print("     (Pillow not installed - skipping the render)")
-        return
-    # .gif so the render needs no imageio/ffmpeg; make_movie reports the file it
-    # actually wrote either way.
-    out = make_movie.make_movie([rundir], out=os.path.join(tmp, 'movie.gif'),
-                                size=200, quiet=True)
-    check("the movie renders", bool(out) and os.path.exists(out), str(out))
-    check("and is non-empty", bool(out) and os.path.getsize(out) > 0)
-
-    single = make_movie.make_movie([boards[0]], out=os.path.join(tmp, 'one.gif'),
-                                   size=200, quiet=True)
-    check("a single board animates too", bool(single) and os.path.exists(single))
-
-
 def main():
-    tmp = tempfile.mkdtemp(prefix='plan_movie_tools_')
+    tmp = tempfile.mkdtemp(prefix='plan_tools_')
     try:
         test_make_plan(tmp)
         test_run_plan_selection()
-        test_make_movie(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -179,7 +119,7 @@ def main():
     if failures:
         print(f"FAILED ({len(failures)}): {failures}")
         return 1
-    print("PASS: make_plan / run_plan / make_movie behave")
+    print("PASS: make_plan / run_plan behave")
     return 0
 
 

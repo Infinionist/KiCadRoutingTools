@@ -260,12 +260,12 @@ check("nothing pruned -> the note is only the unattributed-run line",
       _quiet.count("\n") == 1 and "never pruned" in _quiet, _quiet)
 
 if os.name == "nt":
-    # A file held open (a movie in a player) blocks deletion on Windows, and
+    # A file held open (a report in an editor) blocks deletion on Windows, and
     # rmtree removes .krt_run.json first there. The half-deleted run must stay
     # this board's so the next run retries it, as the note promises -- in a
     # two-board folder a marker-less run would be nobody's.
     busy = mk_run(root2, "20260101_000000_place", ba)
-    held = open(os.path.join(busy, "placement.mp4"), "w")
+    held = open(os.path.join(busy, "REPORT.md"), "w")
     try:
         res_busy = prune_runs(new_a, ba, 1)
         check("an open file fails the prune, disclosed",
@@ -366,7 +366,7 @@ open(report_md, "w").write("# report\n")
 
 ok_payload = json.dumps({
     "status": "complete", "board": final_board.replace("\\", "/"),
-    "movie": None, "report": report_md, "blocking": 0, "summary": "done"})
+    "report": report_md, "blocking": 0, "summary": "done"})
 out, errs = parse_placement_result(ok_payload)
 check("result parses", out is not None and not errs, str(errs))
 check("result board normalized",
@@ -389,9 +389,9 @@ check("refused needs no board", out is not None and out["status"] == "refused",
       str(errs))
 out, errs = parse_placement_result(json.dumps(
     {"status": "complete", "board": final_board,
-     "movie": os.path.join(wk, "nope.mp4"), "blocking": "zero"}))
-check("bad movie/blocking non-fatal",
-      out is not None and out["movie"] is None and out["blocking"] is None
+     "report": os.path.join(wk, "nope.md"), "blocking": "zero"}))
+check("bad report/blocking non-fatal",
+      out is not None and out["report"] is None and out["blocking"] is None
       and len(errs) == 2, str(errs))
 # #1075: `isinstance(True, int)` holds, so a bool (and a negative) passed.
 # The REFUSAL is asserted, not its wording: 3.0 and "0" were refused before
@@ -500,19 +500,16 @@ check("scavenge prefers final.kicad_pcb",
 check("scavenge finds report", scav["report"] == report_md)
 check("scavenge status", scav["status"] == "scavenged")
 os.remove(final_board)
-put_gif = os.path.join(wk, "placement.gif")
-open(put_gif, "wb").write(b"GIF89a")
 lap = os.path.join(wk, "lap1.kicad_pcb")
 open(lap, "w").write("(kicad_pcb lap1)\n")
 scav2 = scan_workdir_outputs(wk)
 check("scavenge falls back to newest non-input board",
       scav2["board"] == lap, str(scav2))
-check("scavenge gif fallback", scav2["movie"] == put_gif)
 empty_wk = os.path.join(TMP, "empty")
 os.makedirs(empty_wk)
 scav3 = scan_workdir_outputs(empty_wk)
 check("scavenge on empty dir is all-None",
-      scav3["board"] is None and scav3["movie"] is None and scav3["report"] is None)
+      scav3["board"] is None and scav3["report"] is None)
 
 # ----------------------------------------------- ai_backend build_cmd kwargs
 

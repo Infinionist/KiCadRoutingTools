@@ -280,7 +280,7 @@ def probe(off, on, nets, work):
 #: .kicad_pro (check_drc reads it), not at 0.2.
 _LAYERS = ['F.Cu', 'In1.Cu', 'In2.Cu', 'B.Cu']
 _ROUTE_ENV = {
-    'KICAD_ROUTE_TRACE': '1', 'KICAD_GLOBAL_PLAN': '1',
+    'KICAD_GLOBAL_PLAN': '1',
     'KICAD_GLOBAL_PLAN_SEQ': '1', 'KICAD_GLOBAL_PLAN_SEQ_COST': '1.5',
     'KICAD_GLOBAL_PLAN_VIA_COST': '20', 'KICAD_GLOBAL_PLAN_ITERS': '50000',
     'KICAD_GLOBAL_PLAN_ATTRACT': '1', 'KICAD_ATTRACT_POTENTIAL': '65',
@@ -312,7 +312,7 @@ def full_route(board, work, tag):
                   '--clearance-ceiling', '0.1', '--via-size', '0.5',
                   '--via-drill', '0.3', '--layers'] + _LAYERS
          + ['--layer-costs', '1.0', '6.0', '1.5', '1.0'],
-         {'KICAD_ROUTE_TRACE': '1'}),
+         {}),
         ('route', ['py_router/route.py', p('diff'), p('route'), '--nets', '*',
                    '--no-bga-zones', '--max-ripup', '5',
                    '--ripped-route-avoidance-cost', '3',

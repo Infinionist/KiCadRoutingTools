@@ -72,10 +72,9 @@ Three things to know before you trust its output:
   while the CLI you actually launch defaults it ON, and a KiCad wave labels
   itself `-kc`.
 
-  Only **five** of `run_all`'s self-skips would be recovered by giving the
-  suite image KiCad -- `test_887_iso_render` (wants the `kicad-cli` binary;
-  Pillow, its other precondition, IS in `requirements.txt`),
-  `test_910_fill_for_delivery` (wants KiCad's bundled python), and three that
+  Only **four** of `run_all`'s self-skips would be recovered by giving the
+  suite image KiCad -- `test_910_fill_for_delivery` (wants KiCad's bundled
+  python), and three that
   run a pcbnew/wx half under KiCad's python and self-skip without one
   (2026-10-16, found reviewing #1272: such a half used to print a skip and
   pass, so it ran nowhere): `test_505_min_connection_clamp`,

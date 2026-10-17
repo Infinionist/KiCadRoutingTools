@@ -231,37 +231,6 @@ def test_the_first_verdict_line_wins_even_when_it_is_the_bad_news():
     print("  PASS: first VERDICT= line wins, malformed refuses, BOM is fine")
 
 
-def test_the_film_captions_a_row_that_has_no_lever():
-    """The film is "the ledger read out loud" -- so a row whose whole content
-    is a human's reason may not be read out as silence."""
-    sys.path.insert(0, os.path.join(ROOT, 'py_tools'))
-    import make_film
-    from board_store import BoardStore
-    with tempfile.TemporaryDirectory() as td:
-        store = BoardStore(os.path.join(td, 'boards'))
-        sha = store.put(BOARD)
-        led = os.path.join(td, 'l.jsonl')
-        rows = [
-            {'iteration': 0, 'kind': 'placement', 'accepted': True,
-             'result_sha': sha, 'lever': 'place_optimize --refs U1'},
-            {'iteration': 1, 'kind': 'systemic', 'accepted': True,
-             'result_sha': sha, 'lever': None,
-             'exhausted': {'half': 'placement', 'reason': 'every lever spent'}},
-            {'iteration': 2, 'kind': 'completion', 'accepted': True,
-             'result_sha': sha, 'final': True, 'stop_condition': 'STUCK'},
-        ]
-        with open(led, 'w', encoding='utf-8') as fh:
-            for row in rows:
-                fh.write(json.dumps(row) + '\n')
-        labels = [s.get('label') or '' for s in
-                  make_film.shots_from_ledger(led, work=os.path.join(td, 'f'))]
-        assert len(labels) == 3, labels
-        assert 'place_optimize --refs U1' in labels[0], labels
-        assert 'declared exhausted: every lever spent' in labels[1], labels
-        assert 'close-out: STUCK' in labels[2], labels
-    print("  PASS: the film captions a lever-less row with what it does say")
-
-
 def test_a_final_row_of_any_kind_needs_its_files():
     """The gate is about the RECORD, so `--kind` cannot get you round it.
 

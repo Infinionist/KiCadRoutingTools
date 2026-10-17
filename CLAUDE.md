@@ -373,10 +373,8 @@ Validate routed boards against the *real* spec, with the right checker — most
     as USER kicad; + `python-is-python3`, since Modal's builder shells out to
     `python -m pip`; + `--break-system-packages` for PEP 668) is the proven
     way to give the suite image KiCad too, and would recover exactly the
-    genuinely KiCad-gated self-skips: `test_887_iso_render` (wants the
-    kicad-cli BINARY; Pillow, its other precondition, is already in
-    `requirements.txt`), `test_910_fill_for_delivery` (wants KiCad's
-    bundled python), and the three whose pcbnew/wx half re-runs under
+    genuinely KiCad-gated self-skips: `test_910_fill_for_delivery` (wants
+    KiCad's bundled python), and the three whose pcbnew/wx half re-runs under
     KiCad's python and exits 77 without one -- `test_505_min_connection_clamp`,
     `test_505_gui_half_runs` and `test_engine_kwarg_parity_launch`.
     The env-level default is OFF because a new base image is

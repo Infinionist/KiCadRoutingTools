@@ -100,50 +100,28 @@ variable.
    `boards_set1/`, `results_set1/`; set 2 → `boards_unrouted_set2/`, `runs_set2/`,
    `boards_set2/`, `results_set2/`)
 
-## Run artifacts: final snapshot + routing movie (#482)
+## Run artifacts: final snapshot (#482)
 
 At the end of each board's run the harness renders, into the run dir, via the
-fast geometry renderer (`tests/stress/render_run.py` → `route_render` +
-`animate_route`; no KiCad / kicad-cli / browser, ~2 s/board — this replaced the
-old kicad-cli + headless-Chrome `board_layer_images` path):
+fast geometry renderer (`tests/stress/render_run.py` → `route_render`; no KiCad
+/ kicad-cli / browser, ~2 s/board — this replaced the old kicad-cli +
+headless-Chrome `board_layer_images` path):
 
 - `<final-board>.png` — combined all-copper snapshot of the final board.
 - `<final-board>_<layer>.png` — one snapshot per copper layer (plane vs signal
   at a glance; plane pours render natively).
-- `<run-dir>/routing.mp4` — a movie of the WHOLE run: each chain board's copper
-  delta is revealed in chain order (so fanout, diff pairs, planes, signal, and
-  repair all appear), with fine per-copper rip/restore animation spliced in for
-  any step that recorded a trace. New copper flashes white, reroutes/restores
-  green, rips flash red. Written as **H.264 `.mp4`** (≈10-50× smaller than GIF,
-  plays everywhere) when `imageio-ffmpeg` is installed, else falls back to
-  `routing.gif`.
 
 Both the live worker (`run_board.sh`) and the no-LLM replay
-(`redo_stress_test.py`) produce these automatically.
-
-**By hand, for any run dir** (same movie, same code — `render_run.py` now calls
-`make_movie.py`, which is also what the GUI's "Routing Movie..." button runs):
+(`redo_stress_test.py`) produce these automatically. By hand, for any run dir:
 
 ```bash
-python3 py_router/make_movie.py runs_set1/myboard              # -> runs_set1/myboard/routing.mp4
-python3 py_router/make_movie.py step1.kicad_pcb step2.kicad_pcb -o out.mp4
+python3 tests/stress/render_run.py runs_set1/myboard   # the final board of the dir
 ```
 
-**For these to be created correctly:**
-- The movie discovers the chain boards automatically: it prefers a `stepN` in
-  the filename (`step6_route` or `board_step6_route`, sub-steps `step2a/2b`
-  ordered correctly); when a chain names outputs semantically instead
-  (`diff_groupA`, `planes`, `final_board`), it falls back to **write-time
-  order**. An explicit `final*` board is used as the final/substrate, else the
-  last in order. (mp4 needs `pip install imageio imageio-ffmpeg`.)
-- **Route tracing is ON by default** (`KICAD_ROUTE_TRACE=1`, exported by
-  `run_board.sh`, set by `redo_stress_test.py`). Each `route.py`, `route_diff.py`,
-  `route_planes.py`, and `repair_planes.py` step then drops a sibling
-  `<output>_routetrace.json` recording every segment/via committed, ripped, and
-  restored — which the movie splices in for fine animation. Set
-  `KICAD_ROUTE_TRACE=0` in the environment to skip tracing (leaner/faster runs;
-  the movie falls back to a coarse per-step reveal from the step boards alone).
-  Tracing is read-only over routing and never changes the routed result.
+The final board is an explicit `final*` board when there is one, else the last
+chain board: `stepN` order in the filename (`step6_route` or
+`board_step6_route`, sub-steps `step2a/2b` ordered correctly), or **write-time
+order** when a chain names outputs semantically (`diff_groupA`, `planes`).
 
 ## Building a board set (source → validate → prep)
 
@@ -1536,8 +1514,7 @@ python3 -X utf8 py_router/cmd_timing.py wk/run12/tigard --json   # the same, as 
 It reproduces run 24's hand-written audit to the digit and cannot get the sums
 wrong, which a subagent doing arithmetic over 153 JSONL rows at the end of a run
 demonstrably can: that audit's "16 of its 81 steps are the Pclose placement
-close-out" is 21. The same reader drives the movie's run-clock overlay, so the
-number in the report and the number in the frame come from one place.
+close-out" is 21.
 
 Labels bucket by PREFIX (`staging`, `fence`/`close` → close-out, then `P`/`L`/
 `R`/`V`), case-sensitively. A run that labels its steps by another convention

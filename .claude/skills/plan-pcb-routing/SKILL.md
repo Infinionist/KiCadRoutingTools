@@ -2602,39 +2602,6 @@ After generating the plan:
 
 ## After Routing Completes
 
-### Render the routing movie
-
-The logs below say what the router decided; the movie shows it — every track and
-via laid down, ripped up and restored, in order, from the bare input to the
-finished board. It is the fastest way to see WHERE a run struggled, and it costs
-about a second:
-
-```bash
-python3 -X utf8 py_router/make_movie.py <work-dir> -o routing.mp4
-```
-
-`make_movie` takes a run directory, or the step boards in chain order. The fine
-per-copper rip/restore animation needs `KICAD_ROUTE_TRACE=1`, which is **OFF unless
-you export it** (`py_router/route_trace.py`; only the stress harness sets it). It
-leaves a `<board>_routetrace.json` beside each routed board; a step without one
-reveals its board-to-board delta in chunks instead — which is what a hand-driven
-run gets by default.
-
-A long trace no longer holds the film in memory: frames are spooled to disk,
-and a trace over its share of the `--max-frames` budget falls back to the
-chunked reveal, printing `TRACE OVER BUDGET` (#1036). If the chain starts with
-placement boards whose parts MOVE, `make_movie` turns its camera on by itself
-and glides the parts in first. `--camera off` keeps a copper-only film, and the
-movie then names the copper-free boards it skipped.
-
-The frame is the `stage3d` layout, the only one: the board (3D when Node,
-playwright-core and a Chromium are present, else the 2D X-ray, and it says
-which), a layer column beside it and a benchmark band under it; `--aspect`
-sets the frame's ratio. A run wrapped in
-`tests/stress/tee_cmd.py` gets a run-clock overlay read from its
-`cmd_timing.jsonl`. `--theme light` is for a figure going into a
-light-background document.
-
 ### Capture Logs for Analysis
 
 Always capture command output to `/tmp` files for later analysis — **in an

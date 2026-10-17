@@ -85,10 +85,6 @@ PAIRS = [
 # Keep this list SHORT and justified -- every entry is a place the two fronts
 # genuinely differ, not a place we gave up.
 CLI_ONLY_OK = {
-    # The CLI streams a route trace to build the stress movie (#482). The GUI has
-    # its own recorder (movie_recorder.py) driven from the dialog, so it does not
-    # hand the engine a callback.
-    "vis_callback": "GUI uses movie_recorder.py instead of an engine callback (#482/#506)",
     # --json-out writes the merged JSON_SUMMARY to a FILE for the stress
     # harness to scrape. The GUI consumes results in-memory (return_results=
     # True) and has no summary-file output, so there is nothing to point at.

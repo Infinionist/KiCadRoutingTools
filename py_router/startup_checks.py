@@ -44,9 +44,8 @@ class RenderDependencyError(StartupCheckError, ImportError):
     Also an `ImportError`, deliberately (#943). Every consumer that DISABLES
     rendering rather than failing spells that `except ImportError`, because the
     thing it guards is a `from PIL import ...`. A bare StartupCheckError is a
-    RuntimeError, so it walked straight past those handlers: the GUI's routing
-    movie reported "failed (<install instructions>)" instead of "not rendered -
-    install Pillow", and the placement tab's preview fell into its silent
+    RuntimeError, so it walked straight past those handlers: the placement
+    tab's preview fell into its silent
     branch without setting `_preview_ok = False`, so it re-attempted the render
     on every board. Being both types means a caller can catch whichever it
     means -- the missing import, or the startup precondition.
@@ -474,7 +473,7 @@ def _raise_if_missing(missing, exc=StartupCheckError):
 def check_render_dependencies():
     """Check the libraries the RASTER path needs. Raises RenderDependencyError.
 
-    Pillow only (#887). Every board still, review sheet and movie needs it --
+    Pillow only (#887). Every board still and review sheet needs it --
     yet it was declared in neither requirements.txt nor these checks, and a
     fresh clone learned that from a runtime ImportError string rather than from
     the check that exists to say so up front.

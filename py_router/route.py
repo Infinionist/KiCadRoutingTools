@@ -3096,17 +3096,6 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         mem_after_working = get_process_memory_mb()
         print(format_memory_stats("After working obstacle map", mem_after_working, mem_after_working - mem_start))
 
-    # Route trace (#482, KICAD_ROUTE_TRACE=1): attach a recorder to pcb_data so
-    # the two copper choke points (add_route_to_pcb_data /
-    # remove_route_from_pcb_data) log every segment/via added, ripped, and
-    # restored, in order, for animating the routing process. Default-off.
-    # Gate on a real output path: an internal reconnect batch_route (e.g.
-    # repair_planes) calls this with output_file="" and must not
-    # start/dump a trace of its own (the plane front-end keeps a local one).
-    if output_file:
-        from route_trace import attach_trace as _attach_route_trace
-        _attach_route_trace(pcb_data)
-
     # Create routing state object to hold all shared state
     state = create_routing_state(
         pcb_data=pcb_data,
@@ -7774,11 +7763,6 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             dump_net_story(state, output_file or input_file)
         except Exception as _e:
             print(f"  net story dump failed: {_e}")
-
-    # Route trace dump (KICAD_ROUTE_TRACE=1): the per-copper add/rip/restore
-    # timeline recorded at the choke points, for animate_route.py (#482).
-    from route_trace import dump_trace as _dump_route_trace
-    _dump_route_trace(state.pcb_data, output_file)
 
     # KICAD_DUP_TRAP=1: final verdict. Says whether the traps SURVIVED the
     # run -- a rebind swaps in a plain list and disarms them, so a bare

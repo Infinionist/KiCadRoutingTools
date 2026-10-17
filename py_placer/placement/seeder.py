@@ -12497,7 +12497,7 @@ def reseat_scope(pcb_data, pcb_file: str, intent, *,
     # `placements` covers every PLACED ref -- 101 of 107 on the measured board
     # -- and `make_state` normalises rotation mod 360, so returning all of them
     # rewrites -112.5 -> 247.5 on parts this pass never touched and pollutes
-    # every diff, every movie frame and every recovery measurement. Filter --
+    # every diff, every render and every recovery measurement. Filter --
     # to the scope AND to the parts the rung was licensed to evict, which is
     # the only widening of this filter that does not bring the churn back.
     seated = {p['reference']: p for p in res['placements']

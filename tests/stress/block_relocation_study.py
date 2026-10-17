@@ -202,7 +202,7 @@ def relocate_arm(board, out_board, work, label, refs, rounds=2,
             board, out_board,
             '--route-args', '--nets "*"',
             '--work-dir', os.path.join(work, label),
-            '--rounds', str(rounds), '--no-movie',
+            '--rounds', str(rounds),
             '--relocate', '--group-by', GROUP_BY,
             '--relocate-refs'] + list(refs)
     if corridor_mm is not None:
@@ -231,7 +231,7 @@ def loop_arm(board, out_board, work, label, rounds=2):
             board, out_board,
             '--route-args', '--nets "*"',
             '--work-dir', os.path.join(work, label),
-            '--rounds', str(rounds), '--no-movie',
+            '--rounds', str(rounds),
             '--max-target-pins', '100000', '--group-by', GROUP_BY,
             '--max-displacement', '6.0', '--step', '1.0']
     argv += ['--ignore-nets'] + IGNORE_NETS

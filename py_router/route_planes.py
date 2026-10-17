@@ -3285,12 +3285,6 @@ def create_plane(
                   f"not net:layer pairs.")
             return _empty_plane_results(return_results)
 
-    # Route trace (#482): plane creation builds its tap tracks/vias as dicts in
-    # all_new_segments/all_new_vias (never touching pcb_data.segments), so record
-    # them from those dicts at the end. Local trace, baseline = the input copper.
-    from route_trace import start_plane_trace as _start_plane_trace
-    _ptrace = _start_plane_trace(pcb_data, output_file)
-
     # Zone clearance defaults to the step's ROUTED clearance, and escalates
     # DOWN toward the fab floor when even that cannot thread the densest BGA
     # via lattice the pour must serve (ottercast: the old fixed 0.2 default
@@ -4063,21 +4057,6 @@ def create_plane(
     _asim962(_stamps962)
     _pvpr962(_via_in_pad962, "plane stitching vias")
     create_plane.last_via_in_pad = _via_in_pad962
-
-    # Route trace (#482): emit the finalized plane-tap tracks/vias, grouped by
-    # net so each plane's taps land as one animation event, then write
-    # <output>_routetrace.json. finalize=False: the tap copper is in these dicts,
-    # not pcb_data, so the whole-run animator trues up to the step board instead.
-    if _ptrace is not None:
-        _by_net: Dict[int, list] = {}
-        for _s in all_new_segments:
-            _by_net.setdefault(_s.get('net_id'), [[], []])[0].append(_s)
-        for _v in all_new_vias:
-            _by_net.setdefault(_v.get('net_id'), [[], []])[1].append(_v)
-        for _nid, (_segs, _vias) in _by_net.items():
-            _nm = pcb_data.nets[_nid].name if _nid in pcb_data.nets else ''
-            _ptrace.record_dicts(_segs, _vias, 'plane-tap', _nid, _nm)
-        _ptrace.dump(output_file, pcb_data, finalize=False)
 
     # NPTH slot edge keepouts (#448): KiCad's DRC grades copper proximity to a
     # milled NPTH SLOT as copper_edge_clearance, but its zone filler pulls fill

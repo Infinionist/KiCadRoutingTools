@@ -1,6 +1,6 @@
 ---
 name: pcb-group-place
-description: Places a KiCad board by function, each functional group in its own board region. The agent sorts the parts into groups by what they do (power input and conditioning, the core and its clock, an interface and its protection, user interface, I/O), reading pin functions and datasheets; plan_regions.py computes a region per group from the agent's hints and the board's wiring; place_seed then fills the regions in one pass, or place_groups.py seeds the groups one at a time. Hands back the placed board, the groups file, the region intent and renders. Use it for a from-scratch or re-done placement where human-like structure matters, or when the free agent wants a functional seed. It places only; to route, verify and film, continue with pcb-free-agent.
+description: Places a KiCad board by function, each functional group in its own board region. The agent sorts the parts into groups by what they do (power input and conditioning, the core and its clock, an interface and its protection, user interface, I/O), reading pin functions and datasheets; plan_regions.py computes a region per group from the agent's hints and the board's wiring; place_seed then fills the regions in one pass, or place_groups.py seeds the groups one at a time. Hands back the placed board, the groups file, the region intent and renders. Use it for a from-scratch or re-done placement where human-like structure matters, or when the free agent wants a functional seed. It places only; to route and verify, continue with pcb-free-agent.
 ---
 
 # Grouped placement
@@ -17,7 +17,7 @@ be a pile (every part off the outline; build one with
 or placed; either way every part not locked in the file is re-placed.
 
 It places only. Hand the board to `/pcb-free-agent route` (or its `full` mode,
-which re-checks the placement) to route it, verify it and make the film.
+which re-checks the placement) to route it and verify it.
 
 ## Measured basis
 

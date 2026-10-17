@@ -243,8 +243,7 @@ def run_loop(relocate):
                  'new_y': 100.0, 'new_rotation': 0.0}]
 
     argv = ['place_route_loop.py', board, OUT, '--route-args', '--nets "*"',
-            '--rounds', '2', '--max-displacement', '3.0', '--work-dir', work,
-            '--no-movie']
+            '--rounds', '2', '--max-displacement', '3.0', '--work-dir', work]
     if relocate:
         argv += ['--relocate', '--group-by', 'decap']
     saved = (prl.quench, prl.run_route, prl.relocate_round, sys.argv)

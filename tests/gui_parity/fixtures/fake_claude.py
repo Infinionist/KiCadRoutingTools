@@ -7,7 +7,7 @@ allowlist, --add-dir, a /pcb-free-agent prompt), then plays a canned run:
 stream-json init + a milestone `converge.py record` tool line, a lap board +
 ledger row (left to sit long enough for the monitor's size-stable artifact
 scan to render a preview; the row is what the tab's stage line shows now that
-there is no staged driver), then REPORT.md, a movie, final.kicad_pcb, and a
+there is no staged driver), then REPORT.md, final.kicad_pcb, and a
 terminal result event ending with a valid RESULT= line.
 """
 import json
@@ -83,14 +83,11 @@ def main():
 
     with open(os.path.join(workdir, "REPORT.md"), "w") as f:
         f.write("# Fake placement report\n\nblocking 0 -> 0 (canned).\n")
-    with open(os.path.join(workdir, "placement.gif"), "wb") as f:
-        f.write(b"GIF89a\x01\x00\x01\x00\x00\x00\x00;")
     final = os.path.join(workdir, "final.kicad_pcb")
     shutil.copyfile(staged, final)
 
     result = json.dumps({
         "status": "complete", "board": final.replace("\\", "/"),
-        "movie": os.path.join(workdir, "placement.gif").replace("\\", "/"),
         "report": os.path.join(workdir, "REPORT.md").replace("\\", "/"),
         "blocking": 0, "summary": "canned run"})
     emit({"type": "result", "is_error": False,

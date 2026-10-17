@@ -1074,11 +1074,11 @@ python py_placer/place_fanout_clearance.py fanned.kicad_pcb capclean.kicad_pcb -
 | `--capture-radius` | 2 mm | Max distance over which a same-net ball attracts a pad |
 | `--max-displacement` / `--max-displacement-cap` | 2 / 3 mm | Initial and grown move budget per cap |
 | `--default-via-size` | 0.3 mm | Fallback only, for vias with no readable size. Honoured by the grader **and** the via-nudge since #732; before that the nudge priced such a via at a hard-coded 0.5 and the two disagreed. |
-| `--board-edge-clearance` | the board's own `min_copper_edge_clearance` when it asks for MORE, else 0.55 mm | Copper-to-Edge.Cuts margin for a moved cap **and** for a via the #313 nudge relocates -- one number since #733, where the nudger gated its own emitted copper at the bare `--clearance` and parked it 0.30 mm inside the band the cap mover reserves. Resolved by the shared engine, so the GUI plugin and `animate_fanout_clearance.py` get the same answer; TIGHTEN-only on an omitted flag, because `fix_project_for_output` pins this field up to the 0.20 fab floor on every board the chain writes. A given value is honoured as typed. |
+| `--board-edge-clearance` | the board's own `min_copper_edge_clearance` when it asks for MORE, else 0.55 mm | Copper-to-Edge.Cuts margin for a moved cap **and** for a via the #313 nudge relocates -- one number since #733, where the nudger gated its own emitted copper at the bare `--clearance` and parked it 0.30 mm inside the band the cap mover reserves. Resolved by the shared engine, so the GUI plugin gets the same answer; TIGHTEN-only on an omitted flag, because `fix_project_for_output` pins this field up to the 0.20 fab floor on every board the chain writes. A given value is honoured as typed. |
 | `--lock` | – | Extra reference patterns to pin in place |
 | `--intent` | – | Floorplan intent JSON (#1067). Its decap limits (`decaps.max_distance_mm`, `decaps.max_pin_distance_mm`, each at error severity) are HELD no worse per claim, through the quench's own tether gate (`quench.TetherGateView`): a move may not take a claim past its limit and further than the board as it stands. A LADDER, not a wall: a cap whose every clear pose breaks a claim clears the foreign copper anyway (a short is worse than a far decap) and the claim is named (`Decap limit broken to clear foreign copper`, `decap.broken`). A hold made early can cost a claim later, or box another cap in, so a gated run that broke a claim or left a cap grazing is compared with the same pass without the gate, on a pristine copy, and the result with fewer unresolved grazes, then fewer decap claims made worse, is kept (`decap.compared`; measured on run 34's real board, which is not committed: the ungated one is kept, 1 claim worse against 2). Only the kept run's lines are printed. The decap grade before and after and a `JSON_SUMMARY` are printed after the summary line. Its declared rotations (`blocks[].rotation`, `rotation_candidates`) are held too (#1122): a cap declared at one angle is never turned away from it, and one with candidates turns only within them, on its own quarter-turn lattice -- in BOTH passes, because the one without the decap gate is often the one kept (`Declared rotations (intent)` names the caps, `declared_rotations` in the summary). Two blocks declaring one part (any part, as every intent gate refuses) at different angles exit 2 before anything is written or recorded, and a rotation block that resolves to no part is printed as an `INTENT WARN`. A hold has a price: a held cap can leave a graze the free pass would clear (it stays on the `Unresolved` line and in the `unresolved` key), and declaring one cap can change which other cap the run leaves grazing. Nothing else in the intent is read. An unreadable file exits 2 before anything is written or recorded. Omitted, the run is unchanged. The GUI fanout tab's `cap_intent_path` is the same parameter. |
-| *(no flag)* track-scoped `.kicad_dru` rules | the board's own custom rules | What the #313 via-nudge charges between the connector copper it draws and a foreign **track**. KiCad stores a track-to-track requirement as a custom rule scoped to a net class (`A.Type=='track' && B.Type=='track' && A.NetClass=='X'`); netclasses cannot express it, and before #735 this pass could not read it, so on a declaring board it drew connectors closer to foreign copper than `check_drc` accepts -- an under-block, which ships the violation rather than refusing the landing. **RAISE-only** over the pair's already-resolved value, and **tracks only**: the cap-pad, board-pad and via arms are exempt by KiCad's own condition, not by omission. The board's value is a **PREFERENCE, not a gate**, the same shape as the drill floors above: the sweep runs every drill rung honouring the rule first and only falls back to the base requirement if nothing clears, saying so on stdout -- because a hard gate would abandon the via and leave the pad-via graze this pass exists to remove, which `check_drc` counts too. Resolved by the shared engine through the same `kicad_dru.track_pair_clearance` `check_drc` grades with, so the GUI plugin and `animate_fanout_clearance.py` get the same answer; an unsaved GUI board has no path to read a `.kicad_dru` from and keeps the netclass value. No board in this repo ships a `.kicad_dru`, so the channel is inert on the whole tracked corpus. |
-| *(no flag)* drill-to-drill floors | the board's own `min_hole_to_hole` when it asks for MORE, else the fab tier's 0.20 (via-hole to via-hole) and 0.45 (via-hole to pad-hole) | What the #313 via-nudge charges when it relocates a barrel. Board-first and RAISE-only since #756; before that both were flat literals, so on a board declaring above 0.20 the pass parked a via at 0.20 while `check_drc` graded the same drill pair at the declared value and flagged it. Resolved by the shared engine off the board's sibling `.kicad_pro`, so the GUI plugin and `animate_fanout_clearance.py` get the same answer; an unsaved GUI board has no project to read and keeps the fab floors. The board's value is a PREFERENCE, not a gate: the nudge sweeps for a landing that clears it and falls back to the fab floor rather than abandoning the repair, so it can never place a via worse than it would have before. `--fab-tier` cannot move these floors (both tiers declare 0.20/0.45); a `--fab-overrides` file can, but note `place_fanout_clearance.py` accepts neither flag — the fab tier reaches this pass only as the process-wide value some other step set, which is how the GUI's Fanout tab supplies it. The pad-hole floor stays stricter than `check_drc`'s pad-drill arm (which grades at the single hole-to-hole value) by `max(d, 0.45) - max(0.20, d)` — 0.25 mm on a board declaring nothing, decaying to 0 at 0.45. Deliberate: 0.45 is the JLC fab minimum and nothing else in the repo enforces it. |
+| *(no flag)* track-scoped `.kicad_dru` rules | the board's own custom rules | What the #313 via-nudge charges between the connector copper it draws and a foreign **track**. KiCad stores a track-to-track requirement as a custom rule scoped to a net class (`A.Type=='track' && B.Type=='track' && A.NetClass=='X'`); netclasses cannot express it, and before #735 this pass could not read it, so on a declaring board it drew connectors closer to foreign copper than `check_drc` accepts -- an under-block, which ships the violation rather than refusing the landing. **RAISE-only** over the pair's already-resolved value, and **tracks only**: the cap-pad, board-pad and via arms are exempt by KiCad's own condition, not by omission. The board's value is a **PREFERENCE, not a gate**, the same shape as the drill floors above: the sweep runs every drill rung honouring the rule first and only falls back to the base requirement if nothing clears, saying so on stdout -- because a hard gate would abandon the via and leave the pad-via graze this pass exists to remove, which `check_drc` counts too. Resolved by the shared engine through the same `kicad_dru.track_pair_clearance` `check_drc` grades with, so the GUI plugin gets the same answer; an unsaved GUI board has no path to read a `.kicad_dru` from and keeps the netclass value. No board in this repo ships a `.kicad_dru`, so the channel is inert on the whole tracked corpus. |
+| *(no flag)* drill-to-drill floors | the board's own `min_hole_to_hole` when it asks for MORE, else the fab tier's 0.20 (via-hole to via-hole) and 0.45 (via-hole to pad-hole) | What the #313 via-nudge charges when it relocates a barrel. Board-first and RAISE-only since #756; before that both were flat literals, so on a board declaring above 0.20 the pass parked a via at 0.20 while `check_drc` graded the same drill pair at the declared value and flagged it. Resolved by the shared engine off the board's sibling `.kicad_pro`, so the GUI plugin gets the same answer; an unsaved GUI board has no project to read and keeps the fab floors. The board's value is a PREFERENCE, not a gate: the nudge sweeps for a landing that clears it and falls back to the fab floor rather than abandoning the repair, so it can never place a via worse than it would have before. `--fab-tier` cannot move these floors (both tiers declare 0.20/0.45); a `--fab-overrides` file can, but note `place_fanout_clearance.py` accepts neither flag — the fab tier reaches this pass only as the process-wide value some other step set, which is how the GUI's Fanout tab supplies it. The pad-hole floor stays stricter than `check_drc`'s pad-drill arm (which grades at the single hole-to-hole value) by `max(d, 0.45) - max(0.20, d)` — 0.25 mm on a board declaring nothing, decaying to 0 at 0.45. Deliberate: 0.45 is the JLC fab minimum and nothing else in the repo enforces it. |
 
 On ulx3s U1 (22×22, 0.8 mm) this took the fanned board from 4 PAD-VIA to
 fully DRC-clean, tidying 19 caps toward same-net balls (all ≤1.9 mm). In the
@@ -1088,36 +1088,6 @@ The advanced knobs above (capture radius, near margin, search step, max
 displacement / cap / growth, max passes, cap-ref prefix, allow-rotation) are
 exposed in that tab's **"Cap Placement (advanced)"** box; `--clearance`,
 `--grid-step`, and the via size come from the Basic tab.
-
-### animate_fanout_clearance.py — visualize the repair as a GIF
-
-`animate_fanout_clearance.py` (repo root) runs the **same** repair engine and
-records every accepted cap move via the engine's optional `on_move` hook, then
-renders an animated GIF of the caps gliding from their seed placement to their
-final, via-clearing positions. The view is framed to the BGA ball field (not
-the whole board); fanout vias appear as net-coloured disks with their keep-out
-ring, cap pads are coloured by net, and a faint ghost rectangle marks each
-cap's seed position. It accepts all of `place_fanout_clearance.py`'s repair
-options plus `--size`, `--fps`, and `--sub-frames` (motion smoothness).
-
-![Decoupling caps gliding off foreign-net fanout vias on the glasgow revC BGA](../../docs/fanout-cap-placement.gif)
-
-```bash
-# after: bga_fanout.py board.kicad_pcb -o fanned.kicad_pcb --escape-method underpad \
-#            --via-size 0.3 --via-drill 0.2 --track-width 0.1 --clearance 0.1
-python py_tools/animate_fanout_clearance.py fanned.kicad_pcb capmove.gif --clearance 0.1
-```
-
-This is a read-only visualization tool: the `on_move` hook defaults to `None`,
-so `place_fanout_clearance.py`, the GUI, and the engine itself behave exactly
-as before when it is unused. Requires only **Pillow** -- as of #431 it renders
-through `route_render.BoardRenderer` and encodes through
-`animate_route.save_movie`, so it no longer carries its own world->pixel
-transform, GIF writer or font handling, and `pygame` is no longer needed. Two
-things came free with the port: the **real board** beneath the BGA field
-(outline, cutouts, zones), which the pygame version never drew, and `.mp4`
-output (extension picks the format, falling back to a sibling `.gif` when
-imageio-ffmpeg is absent).
 
 ## Testing
 
@@ -1816,23 +1786,6 @@ what it means there. A pattern that matches nothing says so on stderr rather
 than rendering an empty ratsnest, which would read as "this net has no airwires".
 
 `--focus` adds one cropped panel per failed-net cluster.
-
-### The movie
-
-`make_movie.py WORKDIR --camera auto` animates a `place_route_loop` work dir:
-an establishing overview, a zoom to the parts each round moved, and — when the
-work moves to the other face — the board **turns over**, 180° about the vertical
-axis, with every frame after that mirrored, because you are now looking at the
-back.
-
-13 components, 4 on the back, routed. `--tween 0` cuts to each new placement
-instead of gliding.
-
-![placement movie](../docs/placement-movie.gif)
-
-One rule makes the sequencing legible: **a frame either moves the camera or
-changes the board, never both.** Every transition happens over a frozen board and
-is followed by a settle beat, so the moves only play once the camera has arrived.
 
 ## Module layout
 

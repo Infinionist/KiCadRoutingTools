@@ -8,7 +8,7 @@
   3. beautify_labels never said it does not model silk graphics.
   4. "Override with --allow-routed" printed by tools that always override.
   5. board_score's poured_nets was [] on a fully connected board with a zone.
-  6. make_film --from-ledger titled every film `_film`.
+  6. (make_film's ledger-film title; the film tool is retired.)
   7. converge record refused stop condition 3 beside a FAIL lens while its
      synonym STUCK passed.
   8. route.py's progress line hid nets sitting ripped in the reroute queue.
@@ -163,33 +163,6 @@ def main():
         bs.run_tool(ROOT, 'check_connected.py', ro)
         check('run_tool records per-tool seconds',
               bs.TOOL_SECONDS.get('check_connected.py', 0) > 0, str(bs.TOOL_SECONDS))
-
-        # 6. make_film --from-ledger titles the film after the ledger's run.
-        import make_film
-        import animate_route
-        from board_store import BoardStore
-        run_dir = os.path.join(tmp, '10_glasgow')
-        os.makedirs(run_dir)
-        store = BoardStore(os.path.join(run_dir, 'boards'))
-        sha = store.put(ro)
-        led = os.path.join(run_dir, 'ledger.jsonl')
-        open(led, 'w').write(json.dumps({'iteration': 0, 'kind': 'placement',
-                                         'result_sha': sha, 'accepted': True,
-                                         'score': {'blocking': 3}}) + '\n')
-        seen = {}
-        real = animate_route.build_boards
-
-        def spy(*a, **k):
-            seen['title'] = k.get('title')
-            return []
-        animate_route.build_boards = spy
-        try:
-            quiet(make_film.main, ['--from-ledger', led, '-o',
-                                   os.path.join(tmp, 'f.gif'), '--board-3d', '2d'])
-        finally:
-            animate_route.build_boards = real
-        check('a ledger film is titled after its run directory',
-              seen.get('title') == '10_glasgow', str(seen))
 
         # 7. converge.
         import converge

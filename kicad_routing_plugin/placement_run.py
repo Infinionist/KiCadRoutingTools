@@ -3,7 +3,7 @@ KiCad Routing Tools - headless placement-run contracts (Placement tab).
 
 The Placement tab drives Claude Code headless with the /pcb-free-agent skill,
 in its `place` or `full` mode. Unlike the "Ask AI" analysis skills,
-those runs WRITE (lap boards, a converge ledger, REPORT.md, the movie), take
+those runs WRITE (lap boards, a converge ledger, renders, REPORT.md), take
 minutes to hours, and must be observable from the outside while they run.
 
 This module holds everything about such a run that is not wx: the workdir
@@ -62,7 +62,6 @@ PLACEMENT_RESULT_SCHEMA = (
     'RESULT=<compact single-line JSON> with this exact schema: '
     '{"status": "complete"|"residue"|"refused", '
     '"board": "<absolute path to the final board file>", '
-    '"movie": "<absolute path to the movie, or null>", '
     '"report": "<absolute path to REPORT.md, or null>", '
     '"blocking": <final board_score blocking count as an integer, or null>, '
     '"summary": "<one line>"}')
@@ -106,7 +105,7 @@ _RUN_DIR_RE = re.compile(
 def create_workdir(board_filename, mode):
     """Create and return the run's working directory.
 
-    Lives next to the board file (krt_placement/<stamp>_<mode>/) so the movie
+    Lives next to the board file (krt_placement/<stamp>_<mode>/) so the board
     and REPORT.md survive the session and are easy to find; falls back to the
     system temp dir when the board has no on-disk file yet. The folder gets a
     .gitignore and the run a RUN_MARKER naming its board, which is what lets
@@ -370,7 +369,7 @@ def build_placement_instructions(workdir, mode, extra=""):
     lines = [
         "Work headless and unattended; never wait for user input.",
         f"Use {wd} as the working directory for ALL artifacts (ledger, lap "
-        "boards, renders, scores, REPORT.md, journal.md, the movie). Keep the "
+        "boards, renders, scores, REPORT.md, journal.md). Keep the "
         f"converge ledger at {wd}/ledger.jsonl.",
         f"Do not modify any file outside {wd}, and never edit "
         "input.kicad_pcb in place.",
@@ -387,8 +386,7 @@ def build_placement_instructions(workdir, mode, extra=""):
         f"VERDICT= (never RESULT=, which this GUI reads as the run's own "
         f"result line).",
         f"At close-out write the final board to {wd}/final.kicad_pcb (with "
-        f"sibling final.kicad_pro), the movie to {wd}/placement.mp4 (or .gif "
-        f"fallback), and the report to {wd}/REPORT.md.",
+        f"sibling final.kicad_pro) and the report to {wd}/REPORT.md.",
         "If a gate refuses (for example the board already carries routed "
         'copper), stop and report status "refused" instead of stripping '
         "copper.",
@@ -423,9 +421,9 @@ def _norm_existing(path):
 def parse_placement_result(value):
     """Parse the RESULT= JSON payload -> (outputs dict | None, [errors]).
 
-    outputs: {status, board, movie, report, blocking, summary}. A missing or
+    outputs: {status, board, report, blocking, summary}. A missing or
     non-existing board path is fatal for complete/residue (the caller falls
-    back to scan_workdir_outputs); movie/report problems are non-fatal.
+    back to scan_workdir_outputs); report problems are non-fatal.
     """
     errors = []
     if not value:
@@ -442,9 +440,6 @@ def parse_placement_result(value):
     board = _norm_existing(data.get("board"))
     if board is None and status != "refused":
         return None, [f"RESULT= board path missing or not found: {data.get('board')!r}"]
-    movie = _norm_existing(data.get("movie"))
-    if data.get("movie") and movie is None:
-        errors.append(f"movie path not found: {data.get('movie')!r}")
     report = _norm_existing(data.get("report"))
     if data.get("report") and report is None:
         errors.append(f"report path not found: {data.get('report')!r}")
@@ -460,7 +455,6 @@ def parse_placement_result(value):
     return {
         "status": status,
         "board": board,
-        "movie": movie,
         "report": report,
         "blocking": blocking,
         "summary": str(data.get("summary", "")),
@@ -602,8 +596,8 @@ def scan_workdir_outputs(workdir):
     """Fallback outputs when the RESULT= line is missing or unusable.
 
     Scavenges what the run left behind: the declared final board (else the
-    newest stable non-input board), REPORT.md, and the movie (mp4 preferred,
-    gif fallback). Same dict shape as parse_placement_result, with
+    newest stable non-input board) and REPORT.md. Same dict shape as
+    parse_placement_result, with
     status "scavenged" so callers can say so.
     """
     artifacts = [t for t in list_board_artifacts(workdir)
@@ -616,25 +610,9 @@ def scan_workdir_outputs(workdir):
     report = os.path.join(workdir, "REPORT.md")
     if not os.path.isfile(report):
         report = None
-    movie = None
-    for name in ("placement.mp4", "placement.gif"):
-        candidate = os.path.join(workdir, name)
-        if os.path.isfile(candidate):
-            movie = candidate
-            break
-    if movie is None:
-        try:
-            movies = sorted(
-                (os.path.join(workdir, n) for n in os.listdir(workdir)
-                 if n.endswith((".mp4", ".gif"))),
-                key=lambda p: os.path.getmtime(p))
-        except OSError:
-            movies = []
-        movie = movies[-1] if movies else None
     return {
         "status": "scavenged",
         "board": board,
-        "movie": movie,
         "report": report,
         "blocking": None,
         "summary": "",

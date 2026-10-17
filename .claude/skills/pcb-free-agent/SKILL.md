@@ -1,6 +1,6 @@
 ---
 name: pcb-free-agent
-description: Places and/or routes a KiCad board to a finished, verified result. The agent picks its own steps from the repo's CLIs, then one independent verifier grades the board; it hands back the board, a film and REPORT.md. Modes are full (place + route), place, and route (a placed board, no part moved). Use it to place, arrange, re-place or optimise components, fix a placement, handle an unplaced board or parts piled off the outline, place and route end to end or from scratch, cut vias, or run the GUI's Place / Place + Route. It never changes the outline. For a routing PLAN only, use plan-pcb-routing; for sign-off QA, use review-routed-board.
+description: Places and/or routes a KiCad board to a finished, verified result. The agent picks its own steps from the repo's CLIs, then one independent verifier grades the board; it hands back the board and REPORT.md. Modes are full (place + route), place, and route (a placed board, no part moved). Use it to place, arrange, re-place or optimise components, fix a placement, handle an unplaced board or parts piled off the outline, place and route end to end or from scratch, cut vias, or run the GUI's Place / Place + Route. It never changes the outline. For a routing PLAN only, use plan-pcb-routing; for sign-off QA, use review-routed-board.
 ---
 
 # PCB free agent
@@ -417,7 +417,7 @@ Read `--help` before assuming a flag does not exist. Two runs declared
    `references/verifier.md`, filled in for your mode, board, sha256, baseline,
    intent and spec flags. On FAIL, fix what it names and continue. Spawn no
    other subagents unless the user asks.
-6. **Record milestones for the film:** the first legal placement, each kept
+6. **Record milestones in the ledger:** the first legal placement, each kept
    placement, the first routed board, the first DONE, each improvement, the
    final board, and tried-and-worse boards with `--rejected`.
    ```bash
@@ -426,8 +426,7 @@ Read `--help` before assuming a flag does not exist. Two runs declared
        --board <board> --kind placement --parent <the board it was made from> \
        --lever "<what you did, one line>" --score-file <board>.score.json
    ```
-   - Use `--kind completion` for a routed board. The film's benchmark band
-     is drawn from these rows.
+   - Use `--kind completion` for a routed board.
    - `record` refuses (exit 2) a score whose `blocking` is not a non-negative
      number, such as a per-term dict; record board_score's own JSON.
    - **Close the ledger** with one `record --final --stop-condition <1|2|3|4>`
@@ -436,16 +435,7 @@ Read `--help` before assuming a flag does not exist. Two runs declared
 ## 6. Hand-back
 
 1. **The board**, with its `.kicad_pro`, and its sha256.
-2. **The film**:
-   ```bash
-   python3 -X utf8 py_tools/make_film.py --from-ledger wk/<run>/ledger.jsonl \
-       --theme light --aspect 4:3 -o wk/<run>/<run>_film.mp4
-   ```
-   Look at a few frames before you call it done. Its last line says which
-   board box the film got: `make_film: WARNING board box: 2D X-ray` means
-   the 3D board did not render (in a fresh worktree, run `npm ci` in
-   `py_router/stage3d` and film again).
-3. **`wk/<run>/REPORT.md`**, containing:
+2. **`wk/<run>/REPORT.md`**, containing:
    - **the result first:** a table of the mode's DONE conditions with measured
      values, the `blocking_by` breakdown, and vias / copper_mm / segments for
      routed modes;
@@ -461,7 +451,7 @@ Read `--help` before assuming a flag does not exist. Two runs declared
    - **tool gaps**, including any tool that said "fine" about something that
      was not; check the open issues first (`gh issue list --search`);
    - **each verifier verdict.**
-4. **Independent grade and timing**, for the report's own table, never
+3. **Independent grade and timing**, for the report's own table, never
    replacing the verifier:
    ```bash
    python3 -X utf8 .claude/skills/pcb-free-agent/scripts/grade.py <board> --baseline <input> --intent <i> --mode <mode>

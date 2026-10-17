@@ -92,8 +92,7 @@ def _run(r1_x, td, judge=False):
     prl.quench, prl.run_route = fake_quench, fake_run_route
     prl.accept_score = fake_accept_score
     sys.argv = (['place_route_loop.py', board, out, '--route-args',
-                 '--nets "*"', '--rounds', '1', '--work-dir', work,
-                 '--no-movie']
+                 '--nets "*"', '--rounds', '1', '--work-dir', work]
                 + (['--accept-cmd', 'recorded'] if judge else []))
     buf = StringIO()
     sys.stdout = buf

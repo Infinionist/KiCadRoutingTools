@@ -709,7 +709,7 @@ class _Cap:
         # #725, mirroring PartPads (legality.py): the per-pad clearance FLOOR
         # rides in a parallel list index-aligned with self.pads, never widened
         # into the pad tuple -- pad_rects()' 5-tuple is unpacked positionally by
-        # tests and by animate_fanout_clearance.py. `max_floor` is the
+        # tests. `max_floor` is the
         # over-reach a broad phase must use (a .kicad_dru rule REPLACES, so it
         # can also LOWER a pair; a prune must never under-reach).
         # NOTE the copper filter below stays _Cap's own `endswith('.Cu')` test
@@ -1125,12 +1125,12 @@ class _Repair:
         # cap pad must clear vias of a DIFFERENT net by this. Through-vias, so
         # they apply to caps on either board side.
         # #725: `keepout` is the OVER-REACH -- radius + max(clearance, this
-        # via's own upper-bound floor). It feeds the prunes, the locked-part
-        # warning and the animator's drawn disk, all of which may over-reach.
+        # via's own upper-bound floor). It feeds the prunes and the locked-part
+        # warning, both of which may over-reach.
         # The EXACT per-(cap pad, via) value is resolved in the eff lists
         # below, never from this slot. Byte-identical (radius + clearance) when
         # the model is inert. The 4-tuple shape is pinned: tests assign
-        # st.vias wholesale and animate_fanout_clearance.py unpacks it.
+        # st.vias wholesale and unpack it.
         self.vias: List[Tuple[float, float, int, float]] = []
         # The RADIUS, keyed on the tuple's identity. _via_effs has to strip the
         # over-reach back off element 3, and deriving the radius arithmetically
@@ -1221,9 +1221,6 @@ class _Repair:
                 if p.net_id > 0:
                     self.attract.setdefault(p.net_id, []).append(
                         (p.global_x, p.global_y))
-        # Kept for visualization (animate_fanout_clearance.py): the BGA ball-field
-        # bounding boxes that define the region of interest.
-        self.bga_bboxes = bga_bboxes
 
         # --- static obstacle rects (locked parts incl. BGAs) ---
         # and movable caps near a BGA. Courtyard collisions are checked
@@ -3450,7 +3447,7 @@ def _repair_one_arm(pcb_data: PCBData, pcb_file: str,
 
     on_move, if given, is a callback invoked with the internal _Repair state
     once at the seed placement and again after every accepted cap move. It is
-    used purely for visualization (animate_fanout_clearance.py) and has no
+    an inspection hook (the tests read the repair state through it) and has no
     effect on the result.
     """
     extra_locked: Set[str] = set()

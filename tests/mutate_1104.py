@@ -45,7 +45,6 @@ TARGETS = {
     'reseat': os.path.join(_PL, 'reseat.py'),
     'pstate': os.path.join(_PL, 'placement_state.py'),
     'rp': os.path.join(_ROOT, 'py_router', 'route_planes.py'),
-    'film': os.path.join(_ROOT, 'py_tools', 'make_film.py'),
 }
 
 
@@ -123,14 +122,10 @@ ROWS = [
      "        print(\n"
      "            f\"number of net arguments",
      (T1108,), 'KILLED'),
-    # --- #1109: one pile predicate; the film says when it fell back ---------
+    # --- #1109: one pile predicate ----------------------------------------
     ('pile-misses-a-staging-ring', 'pstate',
      "        return bool(self.unplaced or self.off_outline",
      "        return bool(self.unplaced or False",
-     (T1109,), 'KILLED'),
-    ('film-fallback-not-a-warning', 'film',
-     "        print(\"make_film: WARNING board box: 2D X-ray, NOT the 3D board -- %s\"",
-     "        print(\"make_film: board box: 2D X-ray -- %s\"",
      (T1109,), 'KILLED'),
 ]
 

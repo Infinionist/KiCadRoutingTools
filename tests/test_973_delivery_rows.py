@@ -450,7 +450,7 @@ def run_loop(OUT, staged, *, rounds, quench_moves, failures, work_dir=None,
                 'vias': 0, 'blocker_report': None}
 
     argv = ['place_route_loop.py', staged, OUT, '--route-args', '--nets "*"',
-            '--rounds', str(rounds), '--max-displacement', '3.0', '--no-movie']
+            '--rounds', str(rounds), '--max-displacement', '3.0']
     if work_dir:
         argv += ['--work-dir', work_dir]
     if relocation is not None:

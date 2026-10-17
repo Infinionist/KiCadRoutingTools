@@ -577,13 +577,6 @@ skip cleanly without KiCad python). Run any directly:
   the kwarg from both calls, and `test_engine_kwarg_parity` could not see it
   because it read no `**kwargs` call (it now follows `GUI_KWARGS_DICTS`, and a
   pair it cannot read FAILs instead of printing SKIP).
-- `test_movie_recorder.py` -- the Advanced tab's **Make routing movie** debug
-  checkbox (#506): default OFF and inert while off; one routing step renders
-  ONE movie; a plan run (`begin_group`/`end_group`, what the AI tab's Run
-  Selected Steps brackets) renders ONE movie for ALL its steps; the path is
-  logged in GREEN; and `reset_params_to_defaults` must NOT untick it (the plan
-  executor calls that before every step, so a reset there would abandon the
-  run's movie halfway) while an explicit reset-all does.
 - `test_via_type_parse_parity.py` -- a via's copper span (#1268). The text
   parse, the pcbnew parse and the Route tab's live re-sync
   (`_sync_pcb_data_from_board`) are each held, layer by layer, to pcbnew's

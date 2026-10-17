@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
-"""#1109: one pile predicate, and a 2D film fallback that is said out loud.
+"""#1109: one pile predicate.
 
-(a) board_brief's `unplaced` read false on run 38's StickHub pile (a staging
-    RING, 93% of parts off the outline) while check_floorplan's emitter
-    called it a pile; the free-agent skill chose its mode from `unplaced`.
-    `PlacementState.pile` is now the one test; board_brief publishes it.
-(b) make_film fell back to the 2D X-ray with only a stderr line mid-log.
+board_brief's `unplaced` read false on run 38's StickHub pile (a staging RING,
+93% of parts off the outline) while check_floorplan's emitter called it a pile;
+the free-agent skill chose its mode from `unplaced`. `PlacementState.pile` is
+now the one test; board_brief publishes it.
 """
-import contextlib
-import io
 import json
 import os
 import subprocess
@@ -157,39 +154,6 @@ class TestPilePredicate(unittest.TestCase):
                 self.assertIn('has_copper', json.load(fh)['state'])
         self.assertTrue(any(ln.startswith('JSON_SUMMARY: ')
                             for ln in r.stdout.splitlines()))
-
-
-class TestFilmBoardBoxLine(unittest.TestCase):
-    def _line(self, report):
-        import make_film
-        from stage3d import film
-        film.LAST_REPORT.clear()
-        film.LAST_REPORT.update(report)
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            make_film._board_box_line()
-        film.LAST_REPORT.clear()
-        return buf.getvalue()
-
-    def test_fallback_is_a_warning_on_stdout(self):
-        out = self._line({'mode': '2d', 'asked': 'auto',
-                          'why': 'playwright-core is not installed'})
-        self.assertIn('WARNING board box: 2D X-ray', out)
-        self.assertIn('playwright-core is not installed', out)
-
-    def test_asked_2d_and_3d_are_not_warnings(self):
-        self.assertNotIn('WARNING', self._line({'mode': '2d', 'asked': '2d'}))
-        out = self._line({'mode': '3d', 'asked': 'auto', 'renderer': 'x'})
-        self.assertIn('board box: 3D', out)
-        self.assertNotIn('WARNING', out)
-
-    def test_apply_records_its_report(self):
-        from stage3d import film
-        film.LAST_REPORT.clear()
-        frames, rep = film.apply([], None, None, None, None,
-                                 stage_present=False, mode='2d')
-        self.assertEqual(film.LAST_REPORT.get('mode'), '2d')
-        self.assertEqual(film.LAST_REPORT.get('asked'), '2d')
 
 
 if __name__ == '__main__':

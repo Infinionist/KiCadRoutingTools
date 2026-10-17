@@ -3730,12 +3730,8 @@ class PadClearanceModel:
         when the clamp lands, leave it None otherwise, or the pass prices at a
         class KiCad will still enforce.
 
-        The distinction is not pedantic -- `animate_fanout_clearance.py` passes
-        a ceiling and writes no project at all, because it exists to VISUALISE
-        `place_fanout_clearance.py` and must price identically or the GIF shows
-        a repair the tool does not perform. `grade_pad_legality` and `quench`
-        leave it None for the opposite reason: nothing downstream of them
-        clamps anything.
+        The distinction is not pedantic: `grade_pad_legality` and `quench`
+        leave it None because nothing downstream of them clamps anything.
         """
         path = pcb_file or getattr(pcb_data, 'source_path', '') or ''
         fps = getattr(pcb_data, 'footprints', None) or {}
