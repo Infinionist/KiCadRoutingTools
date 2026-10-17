@@ -473,23 +473,3 @@ def tightest_body_seam(parts) -> Optional[BodySeam]:
     return best
 
 
-def source_mix(bodies) -> Dict[str, int]:
-    """`{source: count}` over `BodyGeometry` records, in ladder order.
-
-    The number `check_assembly`'s BODY COVERAGE line reports, so the coverage
-    claim and the geometry cannot drift apart.
-    """
-    counts = {s: 0 for s in SOURCES}
-    for g in (bodies.values() if isinstance(bodies, dict) else bodies):
-        counts[g.source] = counts.get(g.source, 0) + 1
-    return counts
-
-
-def format_source_mix(bodies) -> str:
-    """One line naming every rung that answered, zeros included.
-
-    Zeros are kept deliberately: "0 courtyard" on a board is the finding, and a
-    mix that only lists what it found cannot say that.
-    """
-    counts = source_mix(bodies)
-    return ', '.join(f'{counts[s]} {s}' for s in SOURCES)

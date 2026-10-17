@@ -11,7 +11,9 @@
    `apart` and `edge` hints are soft terms of the objective; its `side`, and
    every face the intent declares, is applied first (the writer's flip).
 2. The parts the file locks stay put (connectors on their edges, mounting
-   holes: whatever the enclosure or a mating part decides); every other
+   holes: whatever the enclosure or a mating part decides), and so does
+   every part the intent seats at a declared pose (`fixed_poses[]`, from
+   the design brief or mechanical.json), written there first; every other
    part starts at a random place on the board. The intent's keep-outs and
    zones bind every part through the anneal's overlap term.
 3. ANNEAL: one cost (`placement/simple.py`) -- signal and rail trees,
@@ -24,7 +26,7 @@
 
 Exit codes: 0 placed, 2 unreadable input or a face the board cannot take
 (two declarations disagree, or a KiCad-locked part is declared on the other
-face), 4 placed with parts left illegal.
+face or at another pose), 4 placed with parts left illegal.
 """
 #: #937 registry: which door(s) show this tool, and whether it changes
 #: the board. Read by krt_registry.py -- by AST, never imported.
@@ -90,7 +92,7 @@ def hints(doc, state, movable, args):
     return out
 
 
-def build(pcb, board, doc, base, args, intent=None, blocks=None):
+def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
     """`(state, model, movable, notes)` for the board, its groups and its
     base intent (the JSON for its claims; the loaded `intent`, with its
     resolved `blocks`, for its keep-outs and zones)."""
@@ -107,6 +109,7 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None):
                                   board_edge_clearance=edge, grid_step=0.1,
                                   halo_base=args.halo_base, halo_coef=args.halo_coef,
                                   halo_weight=args.halo_weight,
+                                  extra_locked_refs=set(fixed) or None,
                                   keepouts=intent.keepouts if intent is not None else (),
                                   intent_zones=[z for z in zones if not z['exclusive']],
                                   exclusive_zones=[z for z in zones if z['exclusive']])
@@ -279,14 +282,28 @@ def main(argv=None):
             for r, rows in sorted(conflicts.items())) + ". Nothing was written.",
             file=sys.stderr)
         return 2
-    flips = [{'reference': r, 'new_x': pcb.footprints[r].x, 'new_y': pcb.footprints[r].y,
-              'new_rotation': pcb.footprints[r].rotation or 0.0, 'new_side': side}
-             for r, side in sorted(sides.items()) if footprint_side(pcb.footprints[r]) != side]
-    locked = sorted({f['reference'] for f in flips} & extract_locked_refs(a.board))
+    # ... and every part the intent seats at a declared pose goes there and
+    # stays (`fixed_poses[]`: the mechanical facts the brief compiles)
+    fixed = {str(f['ref']): f for f in intent.fixed_poses if str(f['ref']) in pcb.footprints}
+    pre = {}
+    for r, f in sorted(fixed.items()):
+        foot = pcb.footprints[r]
+        rot = float(f['rot']) if f.get('rot') is not None else (foot.rotation or 0.0)
+        if (abs(float(f['x']) - foot.x) > 1e-6 or abs(float(f['y']) - foot.y) > 1e-6
+                or abs((rot - (foot.rotation or 0.0) + 180.0) % 360.0 - 180.0) > 1e-6):
+            pre[r] = {'reference': r, 'new_x': float(f['x']), 'new_y': float(f['y']),
+                      'new_rotation': rot}
+    for r, side in sorted(sides.items()):
+        foot = pcb.footprints[r]
+        if footprint_side(foot) != side:
+            pre.setdefault(r, {'reference': r, 'new_x': foot.x, 'new_y': foot.y,
+                               'new_rotation': foot.rotation or 0.0})['new_side'] = side
+    flips = [pre[r] for r in sorted(pre)]
+    locked = sorted(set(pre) & extract_locked_refs(a.board))
     if locked:
-        print(f"place_simple: {', '.join(locked)} locked in the board on the face its "
-              f"declaration does not name; a lock is a decision. Nothing was written.",
-              file=sys.stderr)
+        print(f"place_simple: {', '.join(locked)} locked in the board on a face or at a "
+              f"pose its declaration does not name; a lock is a decision. Nothing was "
+              f"written.", file=sys.stderr)
         return 2
     src, tmp = a.board, None
     if flips:
@@ -302,11 +319,13 @@ def main(argv=None):
         copy_siblings(a.board, src)
         pcb = parse_kicad_pcb(src)
         blocks, _problems = floorplan.resolve_blocks(intent, pcb, sources)
-        print(f"  NOTE: on their declared face: " + ', '.join(
-            f"{f['reference']} -> {f['new_side']}" for f in flips))
+        print(f"  NOTE: at their declared pose or face: " + ', '.join(
+            f"{f['reference']}" + (f" -> {f['new_side']}" if 'new_side' in f else
+                                   f" at ({f['new_x']:g}, {f['new_y']:g}) {f['new_rotation']:g}")
+            for f in flips))
     from placement import simple_anneal
     from placement.simple import legal
-    state, model, movable, notes = build(pcb, src, doc, base, a, intent, blocks)
+    state, model, movable, notes = build(pcb, src, doc, base, a, intent, blocks, set(fixed))
     for n in notes:
         print(f"  NOTE: {n}")
     print(f"place_simple: {len(movable)} movable part(s), fixed: "
@@ -341,7 +360,7 @@ def main(argv=None):
     final.pop('per_group', None)
     final.pop('per_hint', None)
     report = {'final': final, 'moves': res['moves'], 'seed': a.seed,
-              'flipped': {f['reference']: f['new_side'] for f in flips},
+              'declared': sorted(f['reference'] for f in flips),
               'reseated': res['reseated'], 'illegal': illegal, 'notes': notes,
               'groups': model.groups, 'stats': res['stats'],
               'seconds': {'setup': round(t1 - t0, 1), 'anneal': round(t2 - t1, 1)}}

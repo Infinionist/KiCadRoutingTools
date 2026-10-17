@@ -463,8 +463,8 @@ def analyze(doc: Dict, pcb, movable: Optional[Iterable[str]] = None,
     for d in decap_cross:
         warnings.append(f"{d['cap']} ({d['cap_group']}) is a decap of "
                         f"{'/'.join(d['owners'])} ({'/'.join(d['owner_groups'])}) to the "
-                        f"seeder's decap rule, and no IC in its own group carries its "
-                        f"net {d['net']}: plan_regions exempts it from the decap rule "
+                        f"decap rule, and no IC in its own group carries its "
+                        f"net {d['net']}: place_simple exempts it from the decap rule "
                         f"so it is placed with {d['cap_group']} -- right for a load or "
                         f"RC cap, wrong for a real decap (move it to its IC's group)")
     return {

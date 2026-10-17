@@ -2003,8 +2003,8 @@ Examples:
     # 53 crossings to 116, which reads as a corrupted write and is not one.
     p.add_argument('--ignore-nets', nargs='+', default=None, metavar='NET',
                    help='net-name globs to exclude from airwire scoring; pass '
-                        'the same set given to place_optimize --ignore-nets, '
-                        'or crossings/hpwl will not match its JSON_SUMMARY')
+                        'the set the placement or route ignored, or '
+                        'crossings/hpwl will not match its JSON_SUMMARY')
     p.add_argument('--size', type=int, default=1600)
     p.add_argument('--supersample', type=int, default=2)
     p.add_argument('--json', action='store_true',

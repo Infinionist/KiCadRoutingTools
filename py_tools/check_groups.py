@@ -49,8 +49,7 @@ def main(argv=None):
     ap.add_argument('--groups', required=True, help='the groups JSON file')
     ap.add_argument('--json', dest='json_out', help='write the full report here')
     ap.add_argument('--no-crystals', action='store_true',
-                    help="check as if no crystal claim were written (as "
-                         "plan_regions --no-crystals plans)")
+                    help="check as if no crystal claim were written")
     a = ap.parse_args(argv)
     try:
         doc = load_groups(a.groups)

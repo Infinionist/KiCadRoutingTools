@@ -600,21 +600,6 @@ class Intent:
                                        DEFAULT_ZONE_TOLERANCE_MM))
 
 
-def empty_intent(board: str = '') -> Intent:
-    """An intent that declares nothing -- every construct empty.
-
-    For engine paths that are intent-DRIVEN but must still run when the caller
-    has none (`place_reconstruct` without `--intent`, `place_seed --reseat` on a
-    board with no floorplan file). Declaring nothing is not the same as having
-    no intent object: the seeding stages read zones, edge bands and must_lock
-    off it, and each of those reads is a no-op here rather than a branch at
-    every site."""
-    return Intent(schema=SCHEMA_VERSION, kind=KIND, board=board, units='mm',
-                  envelope={}, defaults={}, blocks=(), keepouts=(),
-                  edge_connectors=(), decaps={}, must_lock=(),
-                  legality_budget={}, health={}, severity={})
-
-
 # --------------------------------------------------------------------------
 # loading and board-independent validation
 # --------------------------------------------------------------------------
@@ -2266,10 +2251,6 @@ def _ceil4(v: float) -> float:
     return math.ceil(v * 1e4 - 1e-9) / 1e4
 
 
-def _rects_touch(a, b) -> bool:
-    return legality.rect_overlap_area(a, b) > legality.EPS
-
-
 def _circle_hits_rect(cx, cy, radius, rect) -> bool:
     nx = min(max(cx, rect[0]), rect[2])
     ny = min(max(cy, rect[1]), rect[3])
@@ -3026,92 +3007,6 @@ def zone_entries(intent: Intent, blocks: Dict[str, List[str]],
         for z in intent.blocks if z.rect is not None)
 
 
-def resolve_intent_gate(intent: Intent, pcb_data,
-                        group_sources: Sequence[str] = ()
-                        ) -> Tuple[Dict[str, object], List[Violation]]:
-    """The pose-INVARIANT join a per-move gate needs, plus the problems (#702).
-
-    `resolve_blocks` returns refs and NO geometry, so every consumer has had to
-    join `block name -> Zone.rect` itself; `place_seed.py` was the first copy
-    and four more quench call sites were about to add theirs. One resolver
-    instead, for the reason `Intent.edge_claims` gives about its own split: a
-    filter that must be remembered is a filter that will be forgotten at the
-    next call site.
-
-    Returns PLAIN DATA -- dicts and tuples, no `Intent`, no `Zone`. The quench
-    must not have to import this schema to run, and `grade` builds a
-    QuenchState of its own that must keep measuring INDEPENDENTLY of whatever
-    the optimizer was gated on (tests/test_701_keepout_predicate.py:395).
-
-    `lock_refs` carries the two rules that are enforced by FREEZING rather than
-    by a pose term, because neither is a property of a pose:
-
-      * `must_lock` is a claim about the FILE. No pose satisfies or violates
-        it. Freezing does not launder the grade -- the file is still unstamped,
-        so `rule_must_lock` still fires and still tells the author to stamp it.
-      * `edge_claims()`, NOT `edge_connectors`: a `connector_affinity` entry
-        makes no seat claim and must not be locked out of the search. That
-        split is measured in `Intent.edge_claims`' own docstring (6 extra refs
-        on tigard_placed).
-    """
-    blocks, problems = resolve_blocks(intent, pcb_data, group_sources)
-    zones = zone_entries(intent, blocks, bounds=getattr(
-        getattr(pcb_data, 'board_info', None), 'board_bounds', None))
-
-    # Total coverage AND the per-member "leaves it no pose" case (#799), from
-    # the one function `grade` also calls -- so the same intent on the same
-    # board cannot get a different verdict depending on which entry point asked.
-    problems.extend(intent_zone_keepout_problems(intent, blocks, pcb_data))
-
-    # #793, raised HERE as well as in `grade`: the gate is what the four
-    # quenching CLIs run, and it is where a stale `allow` is actively stranding
-    # the part right now. One raiser, two reach points -- `block_unresolved`'s
-    # own shape, and for the same reason.
-    problems.extend(unresolved_keepout_allows(intent, pcb_data))
-    # #1051: the board-aware half of `arrays[]`, one raiser for both reach
-    # points. The FILE lock is read off `fp.locked` here -- the gate has the
-    # parsed board and no path.
-    _aprobs = array_problems(intent, pcb_data, blocks)
-    problems.extend(_aprobs)
-
-    lock: set = set()
-    for pat in intent.must_lock:
-        lock.update([r for r in sorted(pcb_data.footprints) if fnmatch.fnmatchcase(r, pat)])
-    lock.update(str(c['ref']) for c in intent.edge_claims()
-                if c.get('ref') in pcb_data.footprints)
-    # #893. The declared ROTATION travels with the gate, so the quench can
-    # enforce what the seeder honoured. Without it the feature was strictly
-    # WEAKER than the advice it replaced: locking a part DID protect its angle
-    # from the quench (one boolean covers position and rotation), so
-    # `place_seed` -> `place_optimize` would have turned a declared part
-    # straight back -- against the very U3 case the seeder docstring cites.
-    #
-    # #1051/#1052/#1054: the declared rows, the fixed poses and the rigid
-    # groups ride in the same bundle as DATA. The quench merges
-    # `rigid_blocks` into its group phase and holds their members out of the
-    # single-part nudge; `arrays` and `fixed_poses` are the seeder's.
-    #
-    # #1043: `tethers` -- the declared limits of the three tether rules the
-    # quench now gates (`decap_distance`, `decap_pin_distance`, `proximity`),
-    # each present only when the intent DECLARES it at error severity. `{}` on
-    # every other intent, and the quench is then bit-identical.
-    return ({'rotations': rotations_for_ref(intent, blocks),
-             'zones': zones,
-             'keepouts': tuple(intent.keepouts),
-             'lock_refs': tuple(sorted(lock)),
-             'arrays': resolved_arrays(intent, pcb_data),
-             'fixed_poses': tuple(dict(f) for f in intent.fixed_poses),
-             'rigid_blocks': rigid_groups(intent, blocks, pcb_data,
-                                          problems=_aprobs),
-             'tethers': tether_gate_spec(intent)},
-            problems)
-
-
-#: The tether rules the quench can gate (#1043), in `INTENT_ENFORCED_RULES`
-#: order. Each is armed by its OWN declared limit.
-TETHER_RULES = ('decap_distance', 'decap_pin_distance', 'proximity')
-
-
 def tether_gate_spec(intent: Intent) -> Dict[str, object]:
     """The declared tether limits a per-move gate may hold (#1043). Plain data.
 
@@ -3248,55 +3143,6 @@ def tether_pairings(tethers: Dict[str, object], pcb_data
         out.append({'rule': 'proximity', 'name': f"proximity[{i}]",
                     'refs': (ref, near), 'claim': dict(claim),
                     'basis': basis, 'limit': float(claim['max_mm'])})
-    return out
-
-
-def resolved_arrays(intent: Intent, pcb_data) -> Tuple[Dict[str, object], ...]:
-    """Each declared array, resolved against the board: `arrays.spec_of`'s
-    fields plus `present` (members on the board, in declared order) and
-    `order_refs` / `order_unresolved` -- the expected order along the row
-    (`arrays.expected_order`: the served part's pin order, or the declared
-    list, or None for `order: "unknown"`). Plain data, for the engines."""
-    from . import arrays as arr
-    out = []
-    fps = pcb_data.footprints or {}
-    for a in intent.arrays:
-        spec = arr.spec_of(a)
-        spec['present'] = [m for m in spec['members'] if m in fps]
-        order_refs, unresolved = arr.expected_order(pcb_data, spec)
-        spec['order_refs'] = order_refs
-        spec['order_unresolved'] = dict(unresolved)
-        out.append(spec)
-    return tuple(out)
-
-
-def rigid_groups(intent: Intent, blocks: Dict[str, List[str]], pcb_data,
-                 problems: Sequence['Violation'] = ()
-                 ) -> Dict[str, List[str]]:
-    """`{group name: refs}` for every group the quench is to move as ONE
-    piece: each declared array (`array:<name>`, members on the board) and
-    each block declaring `rigid: true` (`block:<name>`, its resolved refs).
-    Prefixed so an array and a block sharing a name stay two groups.
-
-    An array `problems` (`array_problems`) names at ERROR is left out: a row
-    the intent check refuses is not one the seeder seats (it seats the
-    members one by one), so holding the members together would weld two
-    unrelated poses (esp_prog `mixed: [R3, C4]`, an array_conflict, used to
-    come out `array:mixed` all the same). The quench then holds an array
-    only while it is FORMED at the poses it starts from (`quench`,
-    `rigid.unformed`)."""
-    fps = pcb_data.footprints or {}
-    refused = {str(v.block) for v in problems or ()
-               if v.severity == ERROR and v.block}
-    out: Dict[str, List[str]] = {}
-    for a in intent.arrays:
-        if str(a['name']) in refused:
-            continue
-        out[f"array:{a['name']}"] = [str(m) for m in a['members']
-                                     if m in fps]
-    for z in intent.blocks:
-        if z.rigid:
-            out[f"block:{z.name}"] = list(blocks.get(z.name, ()))
     return out
 
 
@@ -4848,8 +4694,8 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
                 message=(f"{ref} is on {part.side}.Cu, but the declared "
                          f"viewing face puts it on {c['side']}.Cu -- advisory:"
                          f" no placement search moves a part between faces; "
-                         f"place_intent_sides.py applies the declared face "
-                         f"before seeding"),
+                         f"place_simple.py applies the declared face "
+                         f"before placing"),
                 measured={'side': part.side}, expected={'side': c['side']})
         amount = ctx.gate.rect_outside_amount(part.rect)
         lim = c.get('overhang_mm') or {}
@@ -6382,12 +6228,6 @@ KEEP_AWAY_NOT_MEASURED = (
     'the board says it',
 )
 
-#: Rules graded by `grade` and NOT by `PoseGrader`, the seat searches' grade
-#: (#1253). A rule here is a verdict, never a search input: promoted to
-#: ERROR it fails the grade, and still no seat search, quench or repair rung
-#: refuses or prefers a pose over it -- that would be a placement objective
-#: term, which goes through tests/test_placement_ab.py first.
-GRADE_ONLY_RULES = ('keep_away', 'replicate')
 
 #: Aggressor pads measured against every victim pad at once.
 _KEEP_AWAY_CHUNK = 256
@@ -6648,7 +6488,7 @@ def rule_replicate(ctx) -> Iterator[Violation]:
                        if row['flipped'] else '')
                     + f"; worst {worst['ref']} (as {worst['source']}, "
                       f"{worst['residual_mm']:.2f}mm). `place_pose "
-                      f"replicate --intent` or place_seed copies it"),
+                      f"replicate --intent` copies it"),
                 measured={'index': i, 'to': row['to'], 'off': len(off),
                           'pairs': row['pairs'],
                           'max_residual_mm': row['max_residual_mm'],
@@ -7804,243 +7644,6 @@ def _ctx_overlap_pairs_among(ctx, among):
         census, refs, poses, rect_of=rect_of)[2]
 
 
-class _PosedState:
-    """What `_Ctx` reads off a `QuenchState`, answered for the board a seat
-    search is ASKING about rather than one it has written: the search state's
-    own parts at its current poses, `poses` overriding some, `exclude` (the
-    pile) left out. Each answer calls the state's own code on that part set."""
-
-    def __init__(self, state, exclude=(), poses=None):
-        self._s = state
-        self._exclude = frozenset(exclude)
-        self._poses = dict(poses or {})
-        self.edge_gate = state.edge_gate
-        # #1174: the pad rects `rule_zone_containment` grades past an open
-        # side, read through `pose` like everything else here.
-        self.legality_ctx = getattr(state, 'legality_ctx', None)
-        # #1104: `legality_metrics` reads it; without it a posed view of a
-        # courtyard-waived board priced courtyard overlap again.
-        self.courtyards_ignored = getattr(state, 'courtyards_ignored', False)
-        # fa10 P1: and the containers it leaves out of the overlap -- a posed
-        # view used to price rp2350's U8 frame rect again.
-        self.container_refs = getattr(state, 'container_refs', ()) or ()
-
-    def pose(self, ref):
-        if ref in self._poses:
-            return self._poses[ref]
-        part = self._s.parts[ref]
-        return (part.x, part.y, part.rot)
-
-    def graded_parts(self):
-        out = []
-        for ref, part in self._s.parts.items():
-            if ref in self._exclude:
-                continue
-            x, y, rot = self.pose(ref)
-            # The GRADE ladder (#1182): what `grade` reads off a default
-            # state, so an armed (`body_model`) search state is graded on the
-            # same rects as the board it will write.
-            out.append(legality.GradedPart(ref=ref, side=part.side,
-                                           rect=part.grade_rect(x, y, rot),
-                                           tht_rect=part.tht_rect(x, y, rot),
-                                           has_tht=part.has_tht))
-        return out
-
-    def _owned_rings(self, ref):
-        """Ring ownership at the pose this board would be WRITTEN at: a grade
-        of the written board takes its seed pose from the file."""
-        part = self._s.parts[ref]
-        x, y, rot = self.pose(ref)
-        pts = [(gx, gy) for (gx, gy, _net) in part.pad_globals(x, y, rot)]
-        return self.edge_gate.rings_enclosing(pts) if pts else frozenset()
-
-    def hpwl(self):          # no rule reads it
-        return 0.0
-
-    def pad_legality_metrics(self):   # no rule reads it; the gate grades pads itself
-        return {}
-
-    def legality_metrics(self):
-        from .quench import QuenchState
-        return QuenchState.legality_metrics(self)
-
-    def board(self):
-        from copy import copy
-        view = copy(self._s.pcb_data)
-        view.footprints = {
-            ref: (legality.footprint_at_pose(fp, self.pose(ref))
-                  if ref in self._s.parts else fp)
-            for ref, fp in self._s.pcb_data.footprints.items()
-            if ref not in self._exclude}
-        return view
-
-
-class PoseGrader:
-    """The intent grade of a seat search's board at poses it has not written
-    (#975's grade delta). Constructing one reads nothing; the pose-invariant
-    inputs (outline, locked refs, drawn bodies) are read on first use and kept.
-
-    Every violation comes from the same RULES loop `grade` runs (`_run_rules`)
-    over a `_Ctx` built on `_PosedState`. The violations `grade` adds outside
-    that loop (intent validation, block resolution, keep-out allows) read only
-    the intent and the footprint SET, so they cannot differ between two poses
-    of one part and are left out of a delta.
-
-    ONE cached input is NOT pose-invariant, which is why `interior_split`
-    exists: the state's `edge_gate` carries the PARSER's split of interior
-    Edge.Cuts contours into cutouts (holes, which put anything inside them off
-    the board) and milled rings (edges copper holds clearance from). A contour
-    enclosing >= 2 pad CENTRES is reclassified from the first to the second
-    (`kicad_parser.drop_pad_containing_cutouts`), so a pose that carries pads
-    into or out of one changes the classification -- and a grade of the board
-    that would be WRITTEN, which re-parses, then reads different off-board
-    numbers than this grader does. Measured on a synthetic board: a
-    sub-millimetre move of a declared connector (0.5 mm on each axis) took
-    `board_cutouts` 1 -> 0 and the written board's `oob_count` 2 -> 0 while
-    this grader's reading held at 2. A caller comparing two poses asks `interior_split` for each and
-    does not compare grades across a difference."""
-
-    def __init__(self, intent, state, *, blocks, clearance=None,
-                 board_edge_clearance=None):
-        self.intent, self.state, self.blocks = intent, state, blocks
-        self.floors = (clearance, board_edge_clearance)
-        self._outline = None
-        self._locked = None
-        self._bodies = None
-        self._census = None
-        self._rings = None
-        self._ring_base = None
-        self._ring_at = None
-
-    def interior_split(self, poses=None):
-        """The cutout / milled verdict for each interior contour at `poses`.
-
-        A tuple of bools, one per interior contour in a fixed order: True when
-        at least two pad centres fall inside it, which is the parser's own
-        threshold for calling it a milled ring rather than a hole. `()` on a
-        board with no interior contour, which is most of them and costs
-        nothing after the first call.
-
-        Counted over the pads of every part the search knows -- the pile at its
-        input coordinates included, because the parser counts every footprint in
-        the file it reads back, and both poses of a comparison include it
-        identically. Only the refs in `poses`, and those the SEARCH has moved
-        since the last call, are re-measured; the rest are kept.
-
-        That last clause is load-bearing: caching every other part's count once
-        and never re-reading it let an `apply_move` of a DIFFERENT part mask a
-        real crossing of the threshold, which is the failure this method exists
-        to catch. Stage 1 shares one grader across every edge connector and
-        moves parts between them, so the case is not hypothetical.
-        """
-        gate = getattr(self.state, 'edge_gate', None)
-        if self._rings is None:
-            rings = [r for r in (getattr(gate, 'cutouts', None) or ())
-                     if len(r) >= 3]
-            rings += [r for r in (getattr(gate, 'milled', None) or ())
-                      if len(r) >= 3 and r not in rings]
-            self._rings = rings
-        if not self._rings:
-            return ()
-        if self._ring_base is None:
-            self._ring_base, self._ring_at = {}, {}
-        counts = [0] * len(self._rings)
-        for ref, part in self.state.parts.items():
-            if poses and ref in poses:
-                per = self._ring_counts(ref, poses[ref])
-            else:
-                here = (part.x, part.y, part.rot)
-                if self._ring_at.get(ref) != here:
-                    self._ring_base[ref] = self._ring_counts(ref, here)
-                    self._ring_at[ref] = here
-                per = self._ring_base[ref]
-            for i, n in enumerate(per):
-                counts[i] += n
-        return tuple(n >= 2 for n in counts)
-
-    def legality_at(self, *, exclude=(), poses=None):
-        """The placement's own legality numbers at `poses` -- overlap and
-        off-board -- whatever the intent declares.
-
-        `violations` cannot stand in for these. `_run_rules` skips `legality`
-        when the intent carries no `legality_budget`, and `emit_intent`
-        WITHHOLDS `overlap_area` exactly on a board that already has blocking
-        body pairs or unwaived courtyard interpenetration -- so on the boards
-        where courtyard overlap is the live risk, the rule that would catch it
-        is not armed. A caller comparing two poses therefore compares these as
-        well, or it is blind to a move that buys interpenetration: measured on
-        a fixture, 0.18 mm2 of new overlap with a LOCKED part, no pad or hole
-        predicate able to see it and no grade error raised.
-        """
-        view = _PosedState(self.state, exclude, poses)
-        out = view.legality_metrics()
-        # #1162: the reading the `legality` rule grades now, beside the
-        # quench's own -- a caller comparing two poses compares both.
-        out['overlap_area_exact'] = round(
-            _ctx_overlap_exact(self._exact_ctx(view))[0], 4)
-        return out
-
-    def _exact_ctx(self, view):
-        """The few `_Ctx` fields `_ctx_overlap_exact` reads, for `view`,
-        with this grader's one census."""
-        from types import SimpleNamespace
-        if self._census is None:
-            self._census = legality.CourtyardCensus(self.state.pcb_data,
-                                                    self.state.pcb_file)
-        return SimpleNamespace(
-            state=view, pcb=self.state.pcb_data, pcb_file=self.state.pcb_file,
-            parts={p.ref: p for p in view.graded_parts()},
-            _census=self._census, _overlap_exact=None)
-
-    def _ring_counts(self, ref, pose):
-        """How many of `ref`'s pad centres fall inside each interior contour.
-
-        `pose` None means the pose the search holds for it right now, which is
-        the file's for anything the seeder has not moved.
-        """
-        from kicad_parser import _pt_in_ring
-        fp = (self.state.pcb_data.footprints or {}).get(ref)
-        if fp is None:
-            return [0] * len(self._rings)
-        if pose is None:
-            part = self.state.parts[ref]
-            pose = (part.x, part.y, part.rot)
-        pads = [(p.global_x, p.global_y)
-                for p in legality.pads_at_pose(fp, pose)]
-        return [sum(1 for (px, py) in pads if _pt_in_ring(px, py, r))
-                for r in self._rings]
-
-    def violations(self, *, exclude=(), poses=None) -> List[Violation]:
-        state = self.state
-        if self._outline is None:
-            self._outline = outline_state(state.pcb_data, state.pcb_file)
-        if not self._outline['trustworthy']:
-            raise UntrustworthyOutline(self._outline['problems'])
-        if self._locked is None:
-            try:
-                from .parser import extract_locked_refs
-                self._locked = (extract_locked_refs(state.pcb_file)
-                                if state.pcb_file else set())
-            except (OSError, ValueError):
-                self._locked = set()
-        if self._bodies is None:
-            from .body import board_bodies
-            self._bodies = board_bodies(state.pcb_data, state.pcb_file)
-        view = _PosedState(state, exclude, poses)
-        ctx = _Ctx(self.intent, view.board(), state.pcb_file, view, self.blocks,
-                   self._locked, self._outline)
-        ctx.requested_floors = self.floors
-        ctx._bodies = self._bodies
-        if self._census is None:
-            self._census = legality.CourtyardCensus(state.pcb_data,
-                                                    state.pcb_file)
-        ctx._census = self._census
-        # #1253: a grade-only rule is a verdict on the written board, never
-        # a reason for a seat search to refuse or prefer a pose.
-        found, _ran, _skipped = _run_rules(ctx, leave_out=GRADE_ONLY_RULES)
-        return found
-
-
 def violation_claim(v: Violation) -> Tuple:
     """The identity `grade_delta` counts a violation by: `(rule, ref, block,
     expected keys)`. The message and the measured numbers are left out, so
@@ -8276,26 +7879,6 @@ def glob_escape(ref: str) -> str:
     """The pattern that matches `ref` and nothing else (`Ref*` -> `Ref[*]`)."""
     import glob as _glob
     return _glob.escape(ref)
-
-
-#: The `plan_check` findings `place_seed` REFUSES on (#959): the area
-#: bounds and the literal glob -- plans the seeder has no per-member answer
-#: for -- and `plan_fixed_pose_conflict` (#1280), whose answer IS stage 0's:
-#: the same pairwise predicate (`seeder.fixed_pose_pair_conflicts`), the
-#: same two refs and reason, so refusing it here loses nothing the seeder
-#: would have said and saves the seed it would have spent first. The older
-#: plan contradictions keep their pre-#959 contract there:
-#: a zone a keep-out covers (#701/#799) and a zone a stranger's EXCLUSIVE
-#: zone swallows (#797) are seeded, and the seeder names the member it could
-#: not seat with a measured verdict (`keepout_blocks`,
-#: `zone_exclusive_blocks`, the per-zone and joint censuses), which
-#: `test_701_keepout_seating` and `test_797_zone_exclusive_seating` pin and
-#: which a plan-level refusal would replace with a coarser answer. Those,
-#: `intent_zone_outside_envelope` and `block_unresolved` are PRINTED by
-#: place_seed and REFUSED by P1, which gates every plan ERROR.
-PLAN_SEED_REFUSES = frozenset({
-    'plan_zone_overfull', 'plan_edge_overfull', 'plan_board_overfull',
-    'block_glob_literal', 'plan_fixed_pose_conflict'})
 
 
 def declared_side_claims(intent: Intent, blocks: Dict[str, List[str]]
@@ -11111,208 +10694,4 @@ def summary(r: GradeResult) -> Dict:
 # #974: the declared connector requirements, reported -- never a gate
 # --------------------------------------------------------------------------
 
-#: What an `overhang_evidence` row keeps of the grade's evidence row: the
-#: band's number, currency, limit and verdict, and the copper conjunct's
-#: verdict and amounts -- with the grade's lists as COUNTS. JSON_SUMMARY is
-#: one stdout line, and the whole rows (body position, grade-wide basis
-#: strings repeated per row, per-pad lists) measured 26.7 KB for 28 declared
-#: connectors on kit-dev-coldfire's emitted intent. They stay in
-#: `check_floorplan --json`'s `edge_connector_evidence`.
-_EVIDENCE_ROW_KEYS = ('ref', 'edge', 'overhang_mm', 'overhang_basis',
-                      'overhang_limit_mm', 'overhang_disposition',
-                      'body_measured')
-_EVIDENCE_COPPER_KEYS = ('disposition', 'outside_mm', 'certified',
-                         'minimum_gap_mm', 'required_mm')
-_EVIDENCE_COUNTED_LISTS = ('findings', 'unmeasured', 'rules_unmeasured')
 
-#: `unmeasured[].reason` for a declared ref the grade left no evidence row
-#: for, when no "not on this board" finding explains it.
-NO_EVIDENCE_ROW = 'the grade produced no evidence row for it'
-
-#: `unmeasured[].reason` for a declared along-edge claim that was neither
-#: measured nor abstained -- `_grade_along_edge` returns silently on a
-#: zero-length edge span.
-NO_ALONG_EDGE_MEASUREMENT = 'no along-edge measurement recorded'
-
-#: `bands_dropped[].reason`.
-BAND_DROPPED_REASON = ("--reseat set this edge declaration aside because its "
-                       "ref is in the re-seat scope, so none of its conjuncts "
-                       "was graded, whether or not the ref moved")
-
-
-def connector_requirements_ungraded(reason: str) -> Dict[str, object]:
-    """`connector_requirements` for a run that graded nothing (#974)."""
-    return {'complete': False, 'reason': str(reason)}
-
-
-def connector_requirements(graded: GradeResult, own: Sequence[Violation],
-                           pinned: Sequence[Violation], *,
-                           bands_dropped=None) -> Dict[str, object]:
-    """What a written board's grade said about its DECLARED edge connectors,
-    as JSON_SUMMARY data (#974): abstain and report, never withhold.
-
-    `own` / `pinned` are the caller's own split of `graded.errors` -- the
-    SAME lists that decide its exit code -- so `errors_own` is non-empty
-    exactly when a connector error counted against the run. The split is
-    never recomputed here. `bands_dropped` is `seeder.reseat_scope`'s
-    `edge_bands_dropped` ({ref: band max}): entries the grade never saw.
-
-    `complete` means every declared requirement was MEASURED; it says nothing
-    about whether they passed, and it is not `graded.complete`, which also
-    counts channels that have nothing to do with connectors.
-
-    Report-only, so it never raises: a report that crashed after the board
-    was written would turn the caller's exit code into 1.
-    """
-    try:
-        return _json_plain(_connector_requirements(graded, own, pinned,
-                                                   bands_dropped))
-    except Exception as exc:  # noqa: BLE001 -- a report must not fail the run
-        try:
-            detail = str(exc)
-        except Exception:  # noqa: BLE001 -- nor may the message of one
-            detail = '<unprintable>'
-        return connector_requirements_ungraded(
-            f"connector_requirements failed: {type(exc).__name__}: {detail}")
-
-
-def _connector_requirements(graded, own, pinned, bands_dropped):
-    declared = list(graded.intent.edge_connectors)
-    declared_refs = sorted({str(c['ref']) for c in declared})
-    evidence = list(graded.edge_connector_evidence)
-    evidence_refs = {str(e['ref']) for e in evidence}
-    not_found = {str(v.ref) for v in graded.violations
-                 if v.rule == 'edge_connector'
-                 and (v.measured or {}).get('found') is False}
-
-    unmeasured = []
-    for c in declared:
-        ref = str(c['ref'])
-        if ref not in evidence_refs:
-            unmeasured.append({
-                'ref': ref, 'requirement': 'presence',
-                'reason': ('not on this board' if ref in not_found
-                           else NO_EVIDENCE_ROW)})
-            continue
-        centre, band = c.get('center_on_edge'), c.get('along_edge_band')
-        if centre is None and band is None:
-            continue
-        claim = 'center_on_edge' if centre is not None else 'along_edge_band'
-        # A recorded measurement of THIS entry settles it: the grade abstains
-        # only when it appends no measuring row, so an abstention beside one
-        # is a hand-written `context.budget_withheld` key. Matched on the
-        # entry, not the ref: a ref declared twice gets a measuring row from
-        # any entry that names an edge, claim or not. Every row names its
-        # edge, so an edgeless entry matches none.
-        if any(str(row.get('ref')) == ref and row.get('declared')
-               and row.get('edge') == c.get('edge')
-               and 'along_edge_offset_mm' in row
-               for row in graded.edge_seating):
-            continue
-        why = graded.budget_abstained.get(f"edge_connectors[{ref}].{claim}")
-        unmeasured.append({'ref': ref, 'requirement': claim,
-                           'reason': NO_ALONG_EDGE_MEASUREMENT
-                           if why is None else why})
-
-    for row in evidence:
-        ref = str(row['ref'])
-        lim = row.get('overhang_limit_mm') or {}
-        # A band no reading can fail -- no max and a zero min -- needs no
-        # body to grade it. Emitted `connector_affinity` entries are exactly
-        # that, and counting them would mark every emitted intent incomplete.
-        vacuous = (lim.get('max') is None
-                   and float(lim.get('min') or 0.0) <= legality.EPS)
-        if not row.get('body_measured') and not vacuous:
-            unmeasured.append({
-                'ref': ref, 'requirement': 'overhang_body',
-                'reason': row.get('body_unmeasured_reason'),
-                'graded_on': row.get('overhang_basis')})
-        copper = row.get('pad_copper_edge') or {}
-        # The copper-past-the-outline conjunct is graded on the BODY path
-        # only. Its CLEARANCE half (and board-wide `.kicad_dru` rules) is
-        # evidence, not a requirement, so it never reaches `unmeasured`.
-        if row.get('body_measured'):
-            if (copper.get('certified') is False
-                    or ('outside_mm' in copper
-                        and copper['outside_mm'] is None)):
-                pads = sorted({f"{u.get('pad_ref')}: {u.get('reason')}"
-                               for u in copper.get('unmeasured') or ()})
-                unmeasured.append({
-                    'ref': ref, 'requirement': 'pad_copper_outside',
-                    'reason': ('; '.join(pads) if pads else
-                               'the edge grader cannot model a pad shape, so '
-                               'its outside_mm is not a certified reading')})
-        elif row.get('edge') is not None and (
-                copper.get('minimum_gap_mm') is not None
-                or copper.get('findings') or copper.get('unmeasured')):
-            # An entry that CLAIMS an edge, on a part with copper, whose body
-            # could not be read: the conjunct was skipped, whatever its band
-            # says. A vacuous band exempts `overhang_body` above, never this.
-            unmeasured.append({
-                'ref': ref, 'requirement': 'pad_copper_outside',
-                'reason': ('pad copper is graded against the outline on the '
-                           'drawn-body path only, and this body was not '
-                           'measured: '
-                           + str(row.get('body_unmeasured_reason')))})
-
-    # Sorted, and only EXACT duplicates removed: a ref declared twice yields
-    # the same entries twice, while two requirements on one ref are two
-    # entries.
-    seen, deduped = set(), []
-    for u in sorted(unmeasured, key=lambda u: (u['ref'], u['requirement'],
-                                               str(u['reason']),
-                                               str(u.get('graded_on')))):
-        key = tuple(sorted((k, str(v)) for k, v in u.items()))
-        if key not in seen:
-            seen.add(key)
-            deduped.append(u)
-
-    dropped = [{'ref': str(ref), 'band_max_mm': mm, 'graded': False,
-                'reason': BAND_DROPPED_REASON}
-               for ref, mm in sorted((bands_dropped or {}).items(),
-                                     key=lambda kv: str(kv[0]))]
-
-    projected = []
-    for row in evidence:
-        copper = row.get('pad_copper_edge') or {}
-        slim = {key: row.get(key) for key in _EVIDENCE_ROW_KEYS}
-        slim_copper = {key: copper.get(key) for key in _EVIDENCE_COPPER_KEYS}
-        for name in _EVIDENCE_COUNTED_LISTS:
-            slim_copper['n_' + name] = len(copper.get(name) or ())
-        slim['pad_copper_edge'] = slim_copper
-        projected.append(slim)
-
-    return {
-        'complete': not deduped and not dropped,
-        'declared_refs': declared_refs,
-        'errors_own': [v.to_dict() for v in own
-                       if v.rule == 'edge_connector'],
-        'errors_pinned': [v.to_dict() for v in pinned
-                          if v.rule == 'edge_connector'],
-        'warnings': [v.to_dict() for v in graded.warnings
-                     if v.rule == 'edge_connector'],
-        'overhang_evidence': projected,
-        'unmeasured': deduped,
-        'bands_dropped': dropped,
-    }
-
-
-def _json_plain(value):
-    """`value` as data a STRICT JSON parser accepts, sharing nothing with its
-    source: string keys, lists for tuples and sets, `None` for a non-finite
-    float (`json.dumps` would write the invalid token `NaN`), `str()` for
-    anything else."""
-    import numbers
-    if isinstance(value, dict):
-        return {str(k): _json_plain(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_plain(v) for v in value]
-    if isinstance(value, (set, frozenset)):
-        return [_json_plain(v) for v in sorted(value, key=str)]
-    if value is None or isinstance(value, (bool, str)):
-        return value
-    if isinstance(value, numbers.Integral):
-        return int(value)
-    if isinstance(value, numbers.Real):
-        return float(value) if math.isfinite(value) else None
-    return str(value)

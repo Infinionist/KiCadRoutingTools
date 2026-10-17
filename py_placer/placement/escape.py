@@ -48,11 +48,6 @@ from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 FACES = ('north', 'east', 'south', 'west')
 
-#: This module's face names -> the letters `routability.face_lane_ledger`
-#: publishes (#850). ONE mapping, because the two ledgers name the same four
-#: faces differently and its rows are a published JSON schema
-#: (`check_channels --json`, key `ledgers`), so the letters stay.
-FACE_LETTER = {'north': 'N', 'east': 'E', 'south': 'S', 'west': 'W'}
 
 # A pad is "interior" when it is not on the part's own pad bounding box, i.e.
 # it has neighbours on every side and cannot leave sideways at any pitch.

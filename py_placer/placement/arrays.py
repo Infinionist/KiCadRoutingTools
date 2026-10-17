@@ -322,30 +322,6 @@ def formation(members_poses: Sequence[Dict[str, object]], *,
             'axis': axis, 'order': observed, 'checks': checks}
 
 
-def formation_at_state(state, pcb, spec: Dict[str, object],
-                       members: Sequence[str]) -> Dict[str, object]:
-    """`formation` over `members` at their CURRENT poses in a placement
-    state (`pose_score.make_state` / `QuenchState`), in the grade's own
-    measurement: each member's courtyard centre on the grade ladder
-    (`part.grade_rect()`, the rect `rule_array_formation` reads -- under
-    `body_model` `rect()` is the occupancy, whose centre moved by up to
-    3.5 mm on One-Air-Max), its board rotation, its copper pad count.
-    `spec` is a resolved array (`floorplan.resolved_arrays`: `order_refs`,
-    `rotation`, `pitch_mm`, `axis`). The seeder's row self-check and the
-    quench's "is this row formed, so hold it rigid" both call this."""
-    poses = []
-    for m in members:
-        p = state.parts[m]
-        r = p.grade_rect() if hasattr(p, 'grade_rect') else p.rect()
-        poses.append({'ref': m, 'x': (r[0] + r[2]) / 2.0,
-                      'y': (r[1] + r[3]) / 2.0, 'rot': p.rot % 360.0,
-                      'pads': _copper_pad_count(pcb.footprints[m])})
-    return formation(poses, order_key=spec.get('order_refs'),
-                     rotation_spec=spec.get('rotation'),
-                     pitch_spec=spec.get('pitch_mm', 'auto'),
-                     axis_spec=spec.get('axis', 'auto'))
-
-
 def spec_of(entry: Dict[str, object]) -> Dict[str, object]:
     """One intent `arrays[]` entry with its absent keys RESOLVED.
 

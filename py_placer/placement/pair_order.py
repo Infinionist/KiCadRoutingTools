@@ -363,25 +363,3 @@ def ref_inversions(state, ref: str,
     return total
 
 
-def inversions_delta(state, ref: str, x: float, y: float, rot: float) -> Dict:
-    """Before/after inversion totals for moving `ref` to (x, y, rot), with the
-    per-pair breakdown at the CANDIDATE pose. Recomputes only pairs involving
-    `ref`; the state is never mutated."""
-    part = state.parts.get(ref)
-    if part is None:
-        return {'before': 0, 'after': 0, 'delta': 0, 'pairs': {}}
-    before = ref_inversions(state, ref)
-    after = ref_inversions(state, ref, x, y, rot)
-    pose = (x, y, rot)
-    partners = set()
-    for nid in part.nets:
-        partners.update(state.net_refs.get(nid, ()))
-    partners.discard(ref)
-    pairs = {}
-    for other in sorted(partners):
-        m = (pair_metrics(state, ref, other, pose_a=pose) if ref < other
-             else pair_metrics(state, other, ref, pose_b=pose))
-        if m is not None:
-            pairs[tuple(sorted((ref, other)))] = m
-    return {'before': before, 'after': after, 'delta': after - before,
-            'pairs': pairs}

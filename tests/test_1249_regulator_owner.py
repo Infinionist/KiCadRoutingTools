@@ -23,9 +23,7 @@ Cases:
   `Net-(C1-Pad1)`, which the rail-net channel never reads) and 3; the pin
   rule grades C1 against pad 2 (4.41 mm) and C3 against pad 3 (1.12 mm);
   every IC's channel is unchanged;
-* ONE owner set: `rail_chips`, `chip_refs`, `arrays.pose_free_chip_refs`
-  and the seeder's `decap_owner_refs` all carry U2; the seeder's U-prefix
-  restriction drops no owner on any tracked board's U parts;
+* ONE owner set: `rail_chips` and `arrays.pose_free_chip_refs` carry U2;
 * kit-dev LV101 (a DS1818 reset supervisor) is admitted by the three-pad
   shape -- the named case -- and changes 0 of that board's 53 elections;
   it is not read by role (`regulator_owners`), so its supply pin is +3.3V
@@ -211,26 +209,12 @@ def test_supply_pins_read_the_regulator_by_role():
 
 
 def test_one_owner_set():
-    from placement import arrays, groups, seeder
+    from placement import arrays, groups
     pcb = _parse(ESP)
     assert 'U2' in groups.rail_chips(pcb, 'C3'), groups.rail_chips(pcb, 'C3')
     assert 'U2' in groups.rail_chips(pcb, 'C1'), groups.rail_chips(pcb, 'C1')
     assert 'U2' in arrays.pose_free_chip_refs(pcb)
-    assert 'U2' in seeder.decap_owner_refs(pcb, False)
-    assert 'U2' in seeder.decap_owner_refs(pcb, True)
-    # The seeder's default restricts the owner set to U-prefixed refs; on
-    # every tracked board it keeps every U-prefixed part the old rule took.
-    lost = []
-    for path in run_utils.corpus_boards():
-        p = _parse(path)
-        owners = seeder.decap_owner_refs(p, False)
-        lost += [(os.path.basename(path), r) for r, fp_ in p.footprints.items()
-                 if r[:1] == 'U' and r not in owners
-                 and len([q for q in fp_.pads if q.net_id > 0]) >= 3]
-    assert not lost, lost
-    print("  PASS: rail_chips, chip_refs, pose_free_chip_refs and both "
-          "seeder owner rules carry U2; no tracked U part with 3+ net pads "
-          "is dropped by the U-prefix restriction")
+    print("  PASS: rail_chips and pose_free_chip_refs carry U2")
 
 
 def test_kit_dev_supervisor_is_the_named_case():

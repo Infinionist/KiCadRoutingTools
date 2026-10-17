@@ -60,13 +60,6 @@ LEVER_REGISTRY = (
     'route.py',
 )
 
-# Registered but NOT pose writers. `beautify_labels.py` moves reference-
-# designator silkscreen through `write_label_output`, which is not the pose
-# funnel -- it never records and never raises, so listing it here would be a
-# decorative entry that implies a coverage this instrument does not have.
-# Named rather than silently omitted, because "why is it missing" is a
-# question someone will ask.
-NOT_POSE_WRITERS = ('beautify_labels.py',)
 
 #: Levers whose ledger row must carry NO inputs and NO poses.
 #:
@@ -457,24 +450,6 @@ def record_write(input_file: str, output_file: str,
     return row
 
 
-def read_ledger(root: str) -> List[Dict]:
-    """Every row, tolerating a torn last line (board_store.Ledger's rule)."""
-    path = os.path.join(root, LEDGER_NAME)
-    out: List[Dict] = []
-    if not os.path.isfile(path):
-        return out
-    with open(path, encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                out.append(json.loads(line))
-            except ValueError:
-                pass
-    return out
-
-
 def locked_poses(board_path: str) -> Dict[str, List[float]]:
     """`{block key: [x, y, rot]}` for every FILE-locked footprint (#959)."""
     from kicad_parser import parse_kicad_pcb
@@ -485,79 +460,3 @@ def locked_poses(board_path: str) -> Dict[str, List[float]]:
             if getattr(f, 'locked', False)}
 
 
-def start_regime(workdir: str, staged_board: str, **extra) -> str:
-    """Mark a work dir unaided and seed the chain with the staged board."""
-    os.makedirs(workdir, exist_ok=True)
-    # The locks the staged board carries NOW, and where, before any lever
-    # runs (#959): the only locks that are a pre-run fact. The staged file
-    # itself is edited in place later, so it cannot answer this afterwards.
-    doc = {'schema': SCHEMA, 'kind': 'unaided-regime',
-           'staged_board': os.path.abspath(staged_board),
-           'staged_sha256': sha256_file(staged_board),
-           'staged_lock_poses': locked_poses(staged_board),
-           'lever_registry': list(LEVER_REGISTRY), **extra}
-    path = os.path.join(workdir, REGIME_NAME)
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(doc, f, indent=1, sort_keys=True)
-    return path
-
-
-@contextlib.contextmanager
-def recorded_delivery(input_file: str, output_file: str,
-                      placements: Sequence[Dict]):
-    """Record a delivery that is not a writer call -- a copy or a rename (#973).
-
-    A lever that builds its board somewhere else and then `shutil.copy`s or
-    `os.replace`s it onto the output leaves either no row at all or a row
-    naming the intermediate: place_seed's `--repair`/`--reseat` staged in a
-    temp dir and delivered with an EMPTY writer call, its polish wrote
-    `<out>.polish` and renamed it, and place_route_loop copied its last round.
-    Wrap the copy:
-
-        with provenance.recorded_delivery(real_input, out, moves):
-            shutil.copyfile(staged_board, out)
-
-    `placements` are the moves the LEVER made, relative to `input_file` --
-    never a diff of the two files, which would record whatever else the staged
-    board carries as the lever's own work. If the delivered file disagrees
-    with them, the audit's replay names the difference.
-
-    The row is recorded BEFORE the body, so an undeclared caller is refused
-    while the output is untouched; it is committed after the body, so its
-    board digest is the delivered file's. A body that raises leaves no row.
-    Outside a regime this does nothing and parses nothing.
-    """
-    row = record_write(input_file, output_file, placements, pending=True)
-    if row is None:
-        yield None
-        return
-    key = os.path.abspath(output_file)
-    try:
-        yield row
-        # A writer call to the same path inside the body keys its own pending
-        # row on this path and commits it; put this one back before committing.
-        _PENDING[key] = row
-        # `key`, not `output_file`: resolved before the body, so a relative
-        # path cannot resolve somewhere else after it.
-        commit_write(key)
-    finally:
-        if _PENDING.get(key) is row:
-            del _PENDING[key]
-
-
-def accumulate_moves(acc: Dict, moves: Sequence[Dict]) -> Dict:
-    """Fold a pass's moves into `acc` ({ref: placement}), later passes winning
-    KEY BY KEY, for a `recorded_delivery` that claims several passes at once.
-
-    Key by key, so a later move that omits `new_rotation` keeps the earlier
-    pass's; and a None value is skipped rather than copied, because the writer
-    reads `new_side: None` as "keep the current side" -- copying it would wipe
-    an earlier pass's flip from the claim while the board keeps it.
-    """
-    for m in moves:
-        ref = m.get('reference')
-        if not ref:
-            continue
-        acc[ref] = dict(acc.get(ref, {}),
-                        **{k: v for k, v in m.items() if v is not None})
-    return acc

@@ -249,12 +249,6 @@ class Brief:
     keep_away_unknown: bool = False
 
 
-def empty_brief(board: str = '') -> Brief:
-    return Brief(schema=SCHEMA_VERSION, kind=KIND, board=board, units='mm',
-                 product={}, interfaces=(), keepouts=(), fixed=(),
-                 unknown=(), proximity=(), context={}, arrays=())
-
-
 # --------------------------------------------------------------------------
 # discovery and loading
 # --------------------------------------------------------------------------
@@ -2057,8 +2051,6 @@ def drifted_clause_ids(intent_doc: Dict, fragment: Dict) -> List[str]:
     """The clause ids `drift_pairs` could attribute. Deduped, sorted."""
     return sorted({cid for cid, _line in drift_pairs(intent_doc, fragment)
                    if cid})
-
-
 
 
 # --------------------------------------------------------------------------

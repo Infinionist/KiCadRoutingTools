@@ -58,7 +58,6 @@ TARGETS = {'p': PARSER, 'w': WRITER, 'g': PPARSER, 's': SEEDER,
 
 T_KEYS = os.path.join(TESTS, 'test_726_duplicate_reference_keys.py')
 T_WRITER = os.path.join(TESTS, 'test_726_writer_resolves_one_block.py')
-T_CONS = os.path.join(TESTS, 'test_726_consumers_see_both_blocks.py')
 T_PARITY = os.path.join(TESTS, 'test_parser_pcbnew_parity.py')
 T_GUI = os.path.join(TESTS, 'gui_parity', 'test_726_parse_path_parity.py')
 T_SYNC = os.path.join(TESTS, 'gui_parity', 'test_726_gui_sync.py')
@@ -99,7 +98,7 @@ ROWS = [
     ('duplicate-references-counts-extras-not-occurrences', 'p',
      "    return {r: c for r, c in counts.items() if c > 1}",
      "    return {r: c - 1 for r, c in counts.items() if c > 1}",
-     (T_KEYS, T_CONS), 'KILLED'),
+     (T_KEYS,), 'KILLED'),
 
     ('the-key-is-uuid-sorted-not-file-ordered', 'p',
      "    for (start, end, text), r, key in zip(spans, raw,\n"
@@ -182,11 +181,6 @@ ROWS = [
      (T_WRITER,), 'KILLED'),
 
     # ---- the consumers -----------------------------------------------------
-    ('side-maps-keep-the-last-block', 'g',
-     "        yield key, fp_text",
-     "        yield _raw_ref, fp_text",
-     (T_CONS,), 'KILLED'),
-
     # RE-ANCHORED (#892). `stamp_unlocked` landed beside `stamp_locked` with
     # the same loop head, so `        if key not in want:` began matching
     # TWICE and `replace(..., 1)` pointed this row at whichever copy comes
@@ -202,12 +196,6 @@ ROWS = [
      "        if key not in want:\n            continue\n        head_end",
      "        if _raw_ref not in want:\n            continue\n        head_end",
      (T_WRITER,), 'KILLED'),
-
-    ('footprint-blocks-uses-the-old-formula', 'a',
-     "            'footprint_blocks': len(pcb.footprints),",
-     "            'footprint_blocks': len(pcb.footprints) + sum(dup_refs.values())\n"
-     "                                - len(dup_refs),",
-     (T_CONS,), 'KILLED'),
 
     # SURVIVED on the first run, because nothing covered this function on a
     # board with duplicates: `test_footprint_position_sync.py` does cover it

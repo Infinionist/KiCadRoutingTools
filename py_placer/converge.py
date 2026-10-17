@@ -806,9 +806,8 @@ def _in_place_clause(ref, diag) -> str:
     if turned:
         out += (" A one-part move holds every neighbour where it is, so it "
                 "cannot judge a rotation the neighbours were packed around: "
-                f"rank {ref}'s rotations at seed level with "
-                "py_placer/rank_rotations.py on the pile this board was "
-                "seeded from.")
+                f"re-place {ref} with its neighbours (place_simple.py, whose "
+                "anneal turns parts as it moves them) instead.")
     return out
 
 

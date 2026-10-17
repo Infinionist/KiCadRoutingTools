@@ -96,11 +96,6 @@ def rect_gap(a, b):
     return math.hypot(max(dx, 0), max(dy, 0)) if (dx > 0 and dy > 0) else max(dx, dy)
 
 
-def rect_overlap_shortfall(a, b, clearance):
-    """Clearance shortfall between two rects (0 when they are clear)."""
-    return max(0.0, clearance - rect_gap(a, b))
-
-
 def pad_half_extents(pad):
     """(half_x, half_y) of a pad's axis-aligned bbox, honouring `rect_rotation`.
 
@@ -793,7 +788,6 @@ def container_refs(pcb_data, graded=None, pcb_file: Optional[str] = None
     return set(container_kinds(pcb_data, lbs))
 
 
-
 def rect_on(side_wanted: str, own_side: str, courtyard_rect, tht_rect):
     """The rect a part presents on `side_wanted`.
 
@@ -1386,12 +1380,6 @@ class GradedPart(NamedTuple):
         return sides_occupied(self.side, self.has_tht)
 
 
-class OutOfBoard(NamedTuple):
-    count: int          # parts with any board-boundary violation
-    amount: float       # summed rect_outside_amount (distance-like)
-    area: float         # summed out_of_board_area (mm^2, bbox-exact)
-
-
 def placement_overlap_area(parts: Sequence[GradedPart]) -> float:
     """OO: total pairwise courtyard overlap area, side-aware (mm^2).
 
@@ -1405,22 +1393,6 @@ def placement_overlap_area(parts: Sequence[GradedPart]) -> float:
             total += pair_overlap_area(a.sides, a.side, a.rect, a.tht_rect,
                                        b.sides, b.side, b.rect, b.tht_rect)
     return total
-
-
-def placement_out_of_board(parts: Sequence[GradedPart], board_info,
-                           margin: float) -> OutOfBoard:
-    """OoB: how many parts leave the real board outline, and by how much."""
-    gate = BoardOutlineGate(board_info, margin)
-    count = 0
-    amount = 0.0
-    area = 0.0
-    for p in parts:
-        amt = gate.rect_outside_amount(p.rect)
-        if amt > EPS:
-            count += 1
-            amount += amt
-            area += gate.out_of_board_area(p.rect)
-    return OutOfBoard(count=count, amount=amount, area=area)
 
 
 # --- body-overlap channel (run-6: the assembly gate) --------------------------
@@ -2953,20 +2925,6 @@ class CourtyardCensus:
             severity_basis=self.severity_basis,
             severity_waiver=self.severity_waiver, waivers=waivers,
             pin_pairs=pin_pairs, pin_blocking=pin_blocking)
-
-
-def courtyard_census(pcb_data, pcb_file: Optional[str] = None, *,
-                     poses: Optional[Dict[str, tuple]] = None, moved=None,
-                     **kw) -> CourtyardGrade:
-    """The grader's own courtyard pairs, publicly (#1162's comment).
-
-    Rebuilding them from `graded_parts_from_file` + `pair_overlap_area`
-    answers a different question in a different universe -- rects instead
-    of drawn outlines, synthetic logo bodies counted, no waivers -- and an
-    agent discarded a legal layout on that reconstruction. Call this.
-    """
-    return CourtyardCensus(pcb_data, pcb_file, **kw).grade(poses,
-                                                            moved=moved)
 
 
 def grade_body_overlap(pcb_data, clearance: float,
@@ -6091,29 +6049,6 @@ class EdgeCopperContext:
                 'basis': ('analytic pad copper extrema (custom pads: parsed polygons) '
                           'vs rectangular Edge.Cuts centreline; '
                           'other outlines sampled, not certified; no body/track/via/fill check')}
-
-
-def edge_copper_for(holder, pcb_data, pcb_file, clearance, edge_margin):
-    """One `EdgeCopperContext` per holder (a search state), rebuilt when the
-    holder is asked about a different board object, path, clearance or edge
-    margin. Returns `(context, None)`, or `(None, error)` when the board's
-    constants cannot be read -- a failure is cached too, so a malformed
-    project costs one read per holder, not one per candidate.
-
-    The key is the board OBJECT, not its contents: a caller that edits
-    `pcb_data.board_info` in place would be served the old outline, so such a
-    caller builds its own context."""
-    key = (pcb_file or getattr(pcb_data, 'source_path', None), clearance, edge_margin)
-    hit = getattr(holder, '_edge_copper', None)
-    if hit is None or hit[0] is not pcb_data or hit[1] != key:
-        try:
-            hit = (pcb_data, key,
-                   EdgeCopperContext.for_board(pcb_data, pcb_file, clearance, edge_margin),
-                   None)
-        except Exception as exc:  # noqa: BLE001 -- reported, never raised mid-search
-            hit = (pcb_data, key, None, f'{type(exc).__name__}: {exc}')
-        holder._edge_copper = hit
-    return hit[2], hit[3]
 
 
 def grade_pad_edge_clearance(pcb_data, required: float, pcb_file=None) -> Dict:

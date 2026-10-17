@@ -348,15 +348,3 @@ def rank_poses(pcb_data, board_path: str, ref: str, *, radius: float = 2.0,
     return scored[:limit]
 
 
-def best_pose(pcb_data, board_path: str, ref: str, *, min_gain: float = 1e-6,
-              **kw) -> Optional[Dict]:
-    """The single best pose, or None when nothing beats staying put.
-
-    `min_gain` is hysteresis: a pose that is better by a rounding error is not
-    better, and accepting one turns a convergence loop into a random walk.
-    """
-    poses = rank_poses(pcb_data, board_path, ref, **kw)
-    if not poses:
-        return None
-    top = poses[0]
-    return top if top['delta'] < -abs(min_gain) else None

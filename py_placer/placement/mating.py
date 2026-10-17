@@ -77,7 +77,7 @@ Measured over the tracked corpus and the fa10 human boards
 the edge it is seated on.
 """
 import math
-from typing import Dict, NamedTuple, Optional, Tuple
+from typing import NamedTuple, Optional, Tuple
 
 #: A body must sit at least this far (mm) off its pad row's centre to name a
 #: face. The census's gap among receptacles is 0.085 (the most offset that
@@ -333,18 +333,3 @@ def facing_edge(face: Optional[str], rotation: float) -> Optional[str]:
     return 'south' if vy > 0 else 'north'
 
 
-def facing_rotations(face: Optional[str], edge: str) -> Tuple[float, ...]:
-    """The quarter turns at which `face` points at `edge`, ascending."""
-    return tuple(float(r) for r in (0, 90, 180, 270)
-                 if facing_edge(face, r) == edge)
-
-
-def board_faces(pcb_data, pcb_file: Optional[str] = None,
-                bodies: Optional[Dict] = None) -> Dict[str, LocalFace]:
-    """`{ref: LocalFace}` for every footprint `body.board_bodies` answers."""
-    if bodies is None:
-        from .body import board_bodies
-        bodies = board_bodies(pcb_data, pcb_file)
-    fps = getattr(pcb_data, 'footprints', None) or {}
-    return {ref: mating_face_local(fps[ref], geom)
-            for ref, geom in sorted(bodies.items()) if ref in fps}

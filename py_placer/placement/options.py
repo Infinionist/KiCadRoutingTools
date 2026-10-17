@@ -444,10 +444,8 @@ def grow_board(pcb_data, pcb_file: str, *, clearance: float,
             # two models "differ by that much" when they differ by nothing.
             ([] if not far_parts else
              [f'a through-hole part is charged {FAR_FACE_BASIS}, not its '
-              f'whole courtyard -- `check_pockets.courtyard_cover` charges '
-              f'the whole courtyard on both faces, and the two per-face '
-              f'models differ by that much (#878 charged the smaller one, '
-              f'which is the model the placement search itself enforces)'
+              f'whole courtyard (#878: the model the placement search '
+              f'itself enforces)'
               + (' -- and NONE of it reaches `utilisation` here, because a '
                  'declared one-face policy charges each part exactly once on '
                  'the face the fab populates, where the leads compete with '
@@ -1018,39 +1016,6 @@ OPTIONS = {
     'narrow_track': narrow_track,
     'smaller_footprint': smaller_footprint,
 }
-
-
-def capacity_options(pcb_data, pcb_file: str, *, clearance: float,
-                     board_edge_clearance: float,
-                     track_width: Optional[float] = None,
-                     assembly_sides: Optional[str] = None,
-                     only: Optional[Sequence[str]] = None) -> Dict:
-    """Every option, each either measured or explaining why it was not."""
-    out: Dict[str, Dict] = {}
-    for name, fn in OPTIONS.items():
-        if only and name not in only:
-            continue
-        kw = {'clearance': clearance}
-        if name == 'grow_board':
-            kw['board_edge_clearance'] = board_edge_clearance
-            # #837, and only here. `smaller_footprint` also calls grow_board
-            # but reads `largest_parts_mm2` and `usable_area_mm2` only, and
-            # the policy touches neither.
-            kw['assembly_sides'] = assembly_sides
-        if name in ('add_layers', 'move_blocker', 'relax_clearance',
-                    'narrow_track'):
-            kw['track_width'] = track_width
-        try:
-            out[name] = fn(pcb_data, pcb_file, **kw)
-        except Exception as e:                   # noqa: BLE001 - disclosed
-            # A crash is NOT "this option does not apply here", and the two
-            # must not read alike: a leftover tuple index in add_layers once
-            # raised KeyError and arrived looking exactly like the honest
-            # "this board has no fine-pitch part" skip, on a board with 43
-            # deficit lanes. `error` is what tells them apart.
-            out[name] = dict(_skip(f'INTERNAL ERROR: {type(e).__name__}: {e}'),
-                             error=True)
-    return out
 
 
 def format_text(opts: Dict) -> str:
