@@ -299,8 +299,8 @@ class RoutingDialog(wx.Dialog):
         event.Skip()
 
     def _sync_pcb_data_from_board(self):
-        """Sync pcb_data's copper, zones, footprints and `sense:` branches
-        from pcbnew's in-memory board.
+        """Sync pcb_data's copper, zones, footprints, paste openings and
+        `sense:` branches from pcbnew's in-memory board.
 
         This is necessary because pcb_data is parsed from the file on disk,
         but tracks added during previous routing sessions only exist in pcbnew's
@@ -318,6 +318,7 @@ class RoutingDialog(wx.Dialog):
         try:
             import pcbnew
             from kicad_parser import (pcbnew_layer_maps, resync_live_copper,
+                                      resync_live_paste_apertures,
                                       resolve_live_sense_branches)
 
             board = pcbnew.GetBoard()
@@ -351,6 +352,16 @@ class RoutingDialog(wx.Dialog):
                 sync_footprint_positions_from_board(board, self.pcb_data)
             except Exception as e:
                 print(f"Warning: Error syncing footprint positions from board: {e}")
+
+            # #962: the paste openings follow the parts just synced, or the
+            # via-in-paste keep-out and Type VII stamping read them where a
+            # moved part used to be.
+            try:
+                resync_live_paste_apertures(self.pcb_data, board)
+            except Exception as e:
+                print(f"Warning: Error syncing paste openings from board "
+                      f"({type(e).__name__}: {e}); via-in-paste checks (#962) "
+                      f"read the openings as they were")
 
             # #1279: the board's `sense:` groups, against the copper, pads and
             # zones just read -- a group drawn or edited in this session

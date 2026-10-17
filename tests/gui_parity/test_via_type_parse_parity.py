@@ -144,11 +144,12 @@ def _grade(pcbnew, label, path, expect_partial_pairs):
     l_types = sorted((round(v.x, 3), v.via_type) for v in live.vias)
     check(t_types == l_types, '%s: both parse paths read the same via_type' % label,
           '%s vs %s' % (t_types, l_types))
-    # ...and the same layer PAIR: pcbnew snaps an untyped via's pair to
-    # F.Cu/B.Cu, and so does the text parser, so a consumer reading the pair
-    # sees KiCad's via on either path.
-    t_pairs = sorted((round(v.x, 3), tuple(sorted(v.layers))) for v in text.vias)
-    l_pairs = sorted((round(v.x, 3), tuple(sorted(v.layers))) for v in live.vias)
+    # ...and the same layer PAIR, IN ORDER: pcbnew snaps an untyped via's
+    # pair to F.Cu/B.Cu and reads every pair top layer first, and so does the
+    # text parser, so a consumer reading the pair -- placement Apply keys a
+    # via on the ordered pair -- sees KiCad's via on either path.
+    t_pairs = sorted((round(v.x, 3), tuple(v.layers)) for v in text.vias)
+    l_pairs = sorted((round(v.x, 3), tuple(v.layers)) for v in live.vias)
     check(t_pairs == l_pairs, '%s: both parse paths read the same layer pairs' % label,
           '%s vs %s' % (t_pairs, l_pairs))
 
@@ -265,6 +266,18 @@ def main():
         # The file carries 4 partial pairs (asserted above by the strip); the
         # text parse snaps every one to F.Cu/B.Cu, as pcbnew does.
         _grade(pcbnew, 'UNTYPED', untyped, expect_partial_pairs=0)
+        # Every via's pair written BOTTOM FIRST, as this repo's writer wrote
+        # zynq7020_som's Type VII through vias: pcbnew reads each top layer
+        # first, and the text parse must hold the same ordered pair.
+        # (The fixture has no footprints: every two-name `(layers ...)` in it
+        # is a via's, and pcbnew writes a via block over several lines.)
+        flipped = re.sub(r'\(layers "([^"]+)" "([^"]+)"\)', r'(layers "\2" "\1")', txt)
+        check(flipped != txt and re.search(r'\(layers "B\.Cu" "F\.Cu"\)', flipped),
+              'the reversed fixture writes a through via B.Cu first')
+        reversed_path = os.path.join(td, 'reversed.kicad_pcb')
+        with open(reversed_path, 'w', encoding='utf-8') as f:
+            f.write(flipped)
+        _grade(pcbnew, 'REVERSED', reversed_path, expect_partial_pairs=4)
         _recreate(pcbnew, td, typed)
 
     print('\n%d failure(s)' % len(FAILURES))
