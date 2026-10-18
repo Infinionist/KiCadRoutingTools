@@ -1332,7 +1332,13 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 # computed from this call's scope; a list is the OUTER run's,
                 # handed to its reconciliation and finalize sub-runs so they
                 # block what it blocked. INTERNAL: no CLI flag, no GUI control.
-                pour_barriers: Optional[List[dict]] = None) -> Tuple[int, int, float]:
+                pour_barriers: Optional[List[dict]] = None,
+                # #1285: False = the caller will not write the DRC floors back
+                # (--no-fix-drc-settings / the GUI's "Fix DRC settings after
+                # routing" unticked), so the #650 in-run floor sync must not
+                # lower them either: the output project ships as authored, and
+                # the in-run audits grade the pours at the authored floors.
+                fix_drc_settings: bool = True) -> Tuple[int, int, float]:
     """
     Route single-ended nets using the Rust router.
 
@@ -4690,8 +4696,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 # pulls the pours back further than the shipped board's will
                 # and this check over-reports opens. Its entries land in
                 # failed_multipoint before the reconcile gate reads them, so
-                # a phantom open costs a real retry. Grade at what ships.
-                if env_knobs.INRUN_FLOOR_SYNC:
+                # a phantom open costs a real retry. Grade at what ships --
+                # which, with the writeback off, IS the input's project
+                # (#1285).
+                if env_knobs.INRUN_FLOOR_SYNC and fix_drc_settings:
                     try:
                         from fix_kicad_drc_settings import apply_routed_floors
                         apply_routed_floors(_staged,
@@ -5734,7 +5742,13 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             # it depends on the caller having passed a --clearance ceiling,
             # which is a main() fact, not an engine one). Lowering them here
             # could ship a tightened class on a run that meant to honor them.
-            if env_knobs.INRUN_FLOOR_SYNC:
+            #
+            # Gated on fix_drc_settings for the same reason (#1285): this pass
+            # may only write what the writeback will. With the writeback off
+            # it lowered rules.min_hole_clearance 0.25 -> 0.2 in a project
+            # --no-fix-drc-settings promised to ship untouched, and the
+            # reconcile sub-run inherits the gate through _reconcile_kwargs.
+            if env_knobs.INRUN_FLOOR_SYNC and fix_drc_settings:
                 try:
                     from fix_kicad_drc_settings import apply_routed_floors
                     apply_routed_floors(output_file,
@@ -9054,7 +9068,8 @@ For differential pair routing, use route_diff.py:
                 schematic_dir=args.schematic_dir,
                 layer_costs=args.layer_costs,
                 add_teardrops=args.add_teardrops,
-                collect_stats=args.stats)
+                collect_stats=args.stats,
+                fix_drc_settings=not args.no_fix_drc_settings)
 
     if args.preview:
         _ok, _fail, _t, _data = _preview_out

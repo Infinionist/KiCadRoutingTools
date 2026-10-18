@@ -3883,6 +3883,12 @@ class RoutingDialog(wx.Dialog):
                     return_results=True,
                     pcb_data=self.pcb_data,
                     net_clearances=net_clearances,
+                    # #1285: the Fix DRC settings box, as the CLI passes
+                    # --no-fix-drc-settings. Inert here today (the in-run
+                    # floor sync it gates writes FILES, and this run writes
+                    # none), passed so the engine never assumes a writeback
+                    # the user turned off.
+                    fix_drc_settings=config.get('fix_drc_settings', True),
                     # #562 parity: let the plane finalize run its ORACLE leg
                     # IN-RUN, at the CLI's own sequence point, by handing it a
                     # save of the LIVE board to stage onto. Saving the live
