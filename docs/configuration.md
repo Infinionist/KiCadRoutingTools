@@ -136,7 +136,7 @@ vias and clearances *down toward* when it needs to. It is shared by every CLI
 |--------|---------|-------------|
 | `--fab-tier` | `auto` | `auto` (the standard floor, escalating to advanced when a fine-pitch fan-out, plane tap or last-resort via cannot fit; warned and counted), `standard` (no extra fab cost, **hard**) or `advanced` (tighter, "more costly", **hard**) |
 | `--fab-overrides` | - | Path to a file overlaying the tier's floors (only the keys it lists) |
-| `--escalation` | `fab` | How far below a **requested** size a failing net may be retried: `fab` (down to the fab tier floor, below the board's own minimums; completion first, every narrowing disclosed), `board` (down to the board's own Board Setup minimums; an unset key falls back to the fab tier floor, except clearance, which falls back to the Default net class's clearance, #1160; with `--no-fix-drc-settings` clearance descents stop at the Default class floored at `min_clearance`, what KiCad grades the unchanged project at, #1262), `off` (never; the net fails and is reported -- except a wide power/impedance net's pad-entry neck of at most 2 mm of path, `routing_defaults.PAD_ENTRY_NECK_MM`) |
+| `--escalation` | `fab` | How far below a **requested** size a failing net may be retried: `fab` (down to the fab tier floor, below the board's own minimums; completion first, every narrowing disclosed), `board` (down to the board's own Board Setup minimums; an unset key falls back to the fab tier floor, except clearance, which falls back to the Default net class's clearance, #1160; with `--no-fix-drc-settings` descents stop at what KiCad grades the unchanged project at: a rule it leaves out at KiCad's factory value, #1287, and clearance at the Default class floored at `min_clearance`, #1262), `off` (never; the net fails and is reported -- except a wide power/impedance net's pad-entry neck of at most 2 mm of path, `routing_defaults.PAD_ENTRY_NECK_MM`) |
 | `--strict-sizes` | off | Exit 3 when any feature was delivered below its requested size or a fab-tier escalation fired -- on every routing CLI that takes it (`route.py`, `route_diff.py`, `route_planes.py`, `repair_planes.py`, `bga_fanout.py`, `qfn_fanout.py`); an exit code the run already had for its own reason wins. For a net with its own width -- `--power-nets`, an impedance width, a wider net class -- this means copper that SHIPS under width (one `design_rules` row per net), not every narrower routing attempt: a power net on `route.py` is measured over the whole net (#1033); an impedance- or class-width net, and `repair_planes.py`'s `--power-nets` taps, over the copper the run laid, so a fanout stub an earlier step drew at its own width is not counted |
 
 The tier is a **floor ladder**:
@@ -173,18 +173,25 @@ Whether KiCad then accepts the copper depends on the DRC-settings writeback:
   the INPUT project when `min_clearance` sits below the Default class: the input
   still grades Default nets at the class.
 - **Without it** (`--no-fix-drc-settings`, or the GUI's "Fix DRC settings after
-  routing" unticked) the project is left as it was, so clearance descents stop
-  at the clearance KiCad grades a Default net at: the Default class, floored at
-  `min_clearance` (#1262). A run whose own clearance is already below that (an
-  explicit `--clearance` or `--clearance-ceiling`) descends no clearance at all.
-  No descent then goes below what KiCad grades the input project at.
+  routing" unticked) the project is left as it was, so every descent stops at
+  what KiCad grades the input project at. A rule the project leaves out is
+  graded at KiCad's factory value, which is what KiCad loads for it (KiCad 10:
+  track 0.2, via 0.5 / drill 0.3, annular 0.1, hole-to-hole 0.25,
+  copper-to-edge 0.5; `fab_tiers.KICAD_FACTORY_RULES`, #1287). A declared 0 is
+  KiCad's "no check" and still falls back to the fab tier floor. Clearance
+  descents stop at the clearance KiCad grades a Default net at: the Default
+  class, floored at `min_clearance` (#1262). A run whose own request is
+  already below one of these floors (an explicit `--clearance`,
+  `--clearance-ceiling` or `--track-width`) keeps the request as that key's
+  floor and descends nothing of that key.
 
 Either way a `.kicad_dru` layer rule or a pad clearance override replaces the
 base clearance where it applies, as KiCad does. A board minimum bounds descents only
-when the run's own request respects it: a request already below the declared
-minimum (the stock 0.5 mm via on a project nobody edited, routed with
-`--via-size 0.3`) marks that minimum as stale for the run, is said so on the
-console, and descents for that key bound at the fab floor instead. An explicit
+when the run's own request respects it: with the writeback, a request already
+below the declared minimum (the stock 0.5 mm via on a project nobody edited,
+routed with `--via-size 0.3`) marks that minimum as stale for the run, is said
+so on the console, and descents for that key bound at the fab floor instead.
+Without the writeback the request is that key's floor, as above. An explicit
 request is never pinned up to a board minimum, only to the fab floor. Under
 `off` nothing is narrowed and a net that cannot complete at the requested
 geometry fails and is reported, with one bounded exception: a wide (power or
