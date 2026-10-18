@@ -3,13 +3,10 @@
 
 Why this exists
 ---------------
-`place_route_loop.better()` compares `failures` and `iterations`, and BOTH come
-out of route.py's own ``JSON_SUMMARY``. It never runs a checker. CLAUDE.md warns
-about exactly this -- *"Routers can report false success. A router's own 'routed'
-tally may come from a local/heuristic proxy while pads stay disconnected"* -- so a
-round can be reported ACCEPTED while pads sit disconnected and DRC is dirty. That
-is how a board went out at 39/44 nets with 762 DRC errors and 141/141 vias below
-its own spec.
+A router's own ``JSON_SUMMARY`` is not a verdict. CLAUDE.md: *"Routers can report
+false success. A router's own 'routed' tally may come from a local/heuristic
+proxy while pads stay disconnected"* -- so a board can read as routed while pads
+sit disconnected and DRC is dirty.
 
 This script is the second opinion. It answers one question -- *is this board
 better than that board?* -- with a number that cannot be produced by the thing

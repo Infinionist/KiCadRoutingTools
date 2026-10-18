@@ -511,14 +511,9 @@ def _use_key(label, flag, tool, toks):
             hashlib.sha1(payload.encode('utf-8', 'replace')).hexdigest()[:16])
 
 
-#: JSONL keys that carry a REAL argv, in priority order. `lever_argv` is the
-#: argv a provenance row records for the lever that wrote a board
-#: (`provenance.declare_lever`; older converge ledgers carried the same key);
-#: `argv` / `cmdline` are what tests/stress/tee_cmd.py records
-#: for EVERY invocation a timed run makes. Run 22 wrote 203 such rows and this
-#: watcher extracted nothing from any of them, because it looked only for
-#: `lever_argv` -- so every driver invocation was invisible (the drivers
-#: install no cli_banner, so they print no CMD: line of their own either).
+#: JSONL keys that carry a REAL argv, in priority order. `lever_argv` is in
+#: ledgers written by older converge versions; `argv` / `cmdline` are what
+#: tests/stress/tee_cmd.py records for every invocation a timed run makes.
 _ARGV_KEYS = ('lever_argv', 'argv', 'cmdline')
 
 
@@ -526,8 +521,8 @@ def _scan_ledger_argv(path, seen, rel):
     """Cheat flags in a ledger row's `lever_argv` -- the second source of truth.
 
     `lever_argv` is a real command the run executed, where a row carries one
-    (a provenance row, or an older converge ledger; a row without it is read
-    for `argv` / `cmdline`, else skipped). `lever` beside it is free prose and
+    (an older converge ledger; a row without it is read for `argv` /
+    `cmdline`, else skipped). `lever` beside it is free prose and
     is NEVER
     matched: run 20's levers narrate the flags they used, which is exactly the
     disclosure the run is supposed to make, and reporting it as a finding

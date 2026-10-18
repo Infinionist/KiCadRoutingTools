@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
-"""The two things a surgical convergence loop needs and did not have.
-
-1. A step back that is a CHECKOUT, not a reconstruction. A prose ledger records
-   `reverted_to: "grid back to 0.1"` and `reverted_to: "wk/seed.kicad_pcb"` --
-   one unusable by a program, the other naming a path three iterations wrote in
-   turn. Content-addressing the board makes it mechanical.
-
-2. A pose ranked as ONE decision. Position and rotation were never scored
-   together: the existing multi-pose scorer holds position fixed and varies
-   rotation only, so a part needing 1.5 mm and 90 degrees has no evidence
-   behind it.
+"""The milestone ledger's board store and ledger (`board_store`), and
+`pose_score.rank_poses`: position and rotation ranked together, nearest
+legal pose first.
 """
 import os
 import shutil
@@ -38,9 +30,9 @@ def test_same_content_is_one_entry_and_round_trips():
         shutil.copyfile(BOARD, b)          # same bytes, different path
         sha1, sha2 = s.put(a), s.put(b)
         assert sha1 == sha2, "content-addressed: the path must not matter"
-        out = s.get(sha1, os.path.join(td, 'out.kicad_pcb'))
-        assert sha256_file(out) == sha1, "checkout must be byte-identical"
-    print("  PASS: same content -> one entry; checkout is byte-identical")
+        stored = os.path.join(s.root, sha1, 'board.kicad_pcb')
+        assert sha256_file(stored) == sha1, "the stored copy must be byte-identical"
+    print("  PASS: same content -> one entry; the stored copy is byte-identical")
 
 
 def test_siblings_travel_with_the_board():
@@ -56,30 +48,16 @@ def test_siblings_travel_with_the_board():
             f.write('(version 1)\n')
         s = BoardStore(os.path.join(td, 'store'))
         sha = s.put(brd)
-        dest = os.path.join(td, 'sub', 'y.kicad_pcb')
-        s.get(sha, dest)
-        assert os.path.isfile(os.path.join(td, 'sub', 'y.kicad_pro')), \
+        assert os.path.isfile(os.path.join(s.root, sha, 'board.kicad_pro')), \
             "the project sibling did not travel"
-        assert os.path.isfile(os.path.join(td, 'sub', 'y.kicad_dru')), \
+        assert os.path.isfile(os.path.join(s.root, sha, 'board.kicad_dru')), \
             "the custom-rules sibling did not travel"
     print("  PASS: .kicad_pro and .kicad_dru travel with the board")
 
 
-def test_an_unknown_sha_raises_rather_than_returning_nothing():
-    with tempfile.TemporaryDirectory() as td:
-        s = BoardStore(os.path.join(td, 'store'))
-        assert not s.has('0' * 64)
-        try:
-            s.get('0' * 64, os.path.join(td, 'z.kicad_pcb'))
-        except KeyError:
-            print("  PASS: an unknown sha raises")
-            return
-        raise AssertionError("a missing board must not fail silently")
-
-
 # --------------------------------------------------------------------- ledger
 
-def test_the_last_accepted_row_is_the_one_to_step_back_to():
+def test_the_last_accepted_row_is_found_past_a_rejected_one():
     with tempfile.TemporaryDirectory() as td:
         lg = Ledger(os.path.join(td, 'ledger.jsonl'))
         lg.append({'iteration': 1, 'kind': 'completion', 'parent_sha': 'a' * 64,
@@ -87,7 +65,7 @@ def test_the_last_accepted_row_is_the_one_to_step_back_to():
         lg.append({'iteration': 2, 'kind': 'systemic', 'accepted': False,
                    'lever': 'restored the net classes'})
         assert lg.last_accepted()['iteration'] == 1, \
-            "step back goes to the last ACCEPTED entry, not the last entry"
+            "the last ACCEPTED entry, not the last entry"
     print("  PASS: the last accepted row is found past a rejected one")
 
 
@@ -121,7 +99,7 @@ def test_poses_are_ranked_and_legal_only():
     assert dists == sorted(dists), "poses must come back nearest first"
     assert all(p['legal'] for p in poses), "an illegal pose must be dropped, not ranked"
     assert {'x', 'y', 'rot', 'dist_mm', 'legal'} <= set(poses[0])
-    # position AND rotation vary -- the gap this fills
+    # position AND rotation vary
     assert len({p['rot'] for p in poses}) >= 1
     assert len({(p['x'], p['y']) for p in poses}) > 1, \
         "position must vary, not just rotation"

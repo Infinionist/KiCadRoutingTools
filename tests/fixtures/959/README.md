@@ -4,10 +4,9 @@ Copied from the run-29 work directory (`wk/run29/esp_prog/` on branch `run29-har
 
 | file | what it is | source file | sha256 (of the committed LF bytes) |
 |---|---|---|---|
-| `run29_pile.kicad_pcb` | the staged pile `stage_unaided` wrote: every part at the board centre except the mechanical refs, with no locks | `board.kicad_pcb` | `c9ed55ee…828d` |
+| `run29_pile.kicad_pcb` | the staged pile: every part at the board centre except the mechanical refs, with no locks | `board.kicad_pcb` | `c9ed55ee…828d` |
 | `run29_pile.kicad_pro` | its project sibling (carries the DRC floor; never copy a board without it) | `board.kicad_pro` | `9a9ab694…6395` |
 | `zone_plan_r1.json` | the run's first zone plan (six zoned blocks, `fiducial-nw` among them, `Ref[*]~2` in `must_lock`) | `zone_plan.json` | `702f8fc0…85b9` |
-| `run29_mechanical.json` | the mechanical declaration `stage_unaided` wrote beside the pile: `Ref*`, `Ref*~2` and `USB1` at their source poses (USB1 on the WEST edge, which the brief contradicts), plus the staging floors | `mechanical.json` | `1d99b10d…19af` |
 | `zone_plan_r2_lap5.json` | the lap-5 draft of the second plan, which the run amended within a minute. Reconstructed from the session record, not copied from a file: its two overlaps (1.60 and 0.6325 mm2) are the ones the lap-5 grade reported | (session record) | `81c101c8…2845` |
 
 The hashes are of the bytes git stores (LF line endings). A Windows checkout with `core.autocrlf` writes CRLF and hashes differently; pin against `git show HEAD:<path>`, not the working copy.

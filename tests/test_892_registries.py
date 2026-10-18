@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """#892: a new pose-writing CLI has to JOIN the registries, or it is invisible.
 
-Four of them, each with a different failure if the entry is missing, and none
-of the four failures looks like "a registration is missing" from the outside:
+Three of them, each with a different failure if the entry is missing, and none
+of the three failures looks like "a registration is missing" from the outside:
 
-* `provenance.LEVER_REGISTRY` -- every board the tool writes under an unaided
-  work dir raises `UnaidedViolation`, and `provenance_audit` exits 4;
 * `manifest_to_plan.REFUSED_TOOLS` -- a recorded `place_pose.py` step converts
   through the UNKNOWN-tool path, which only bumps a `skipped` counter, so the
   converted plan looks complete while the replayed chain diverges at a step
@@ -50,23 +48,6 @@ def _module_constant(path, name):
             if isinstance(tgt, ast.Name) and tgt.id == name:
                 return ast.literal_eval(node.value)
     raise AssertionError("%s has no module-level %s" % (path, name))
-
-
-class LeverRegistry(unittest.TestCase):
-    def test_place_pose_may_author_poses(self):
-        from placement import provenance
-        self.assertIn(TOOL, provenance.LEVER_REGISTRY)
-
-    def test_the_gate_reads_the_constant(self):
-        # The refusal at `record_write` tests the module constant, not the
-        # `lever_registry` snapshot `start_regime` writes into a manifest --
-        # so an OLD work dir's manifest is a record of what was registered
-        # then, and not a second gate that also has to be updated. Asserted
-        # because the opposite belief would send someone editing manifests.
-        from placement import provenance
-        with io.open(provenance.__file__, encoding='utf-8') as f:
-            src = f.read()
-        self.assertIn("if lever['lever'] not in LEVER_REGISTRY:", src)
 
 
 class ManifestConverter(unittest.TestCase):

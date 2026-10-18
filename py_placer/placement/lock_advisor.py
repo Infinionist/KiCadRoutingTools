@@ -1,8 +1,8 @@
 """Which parts should NOT be moved? Advice, never action (#431).
 
 The user's ask was "lock components, but only the ones really needed on that
-exact location (HAT ports etc)". This reports them with a reason each and prints
-a paste-ready `--lock` list. It never locks anything, because a wrong auto-lock
+exact location (HAT ports etc)". This reports them with a reason each and gives
+the paste-ready `place_pose.py ... lock REF ...` arguments. It never locks anything, because a wrong auto-lock
 silently freezes a part that needed to move and that failure is invisible --
 the run just quietly does less.
 
@@ -121,12 +121,12 @@ class LockAdvice:
         return {'findings_high': by['high'], 'findings_medium': by['medium'],
                 'findings_low': by['low'],
                 # The actionable number: high-confidence parts still free to
-                # move. The round trip (feed the printed --lock back in) drives
-                # it to 0, which is this design's own acceptance test.
+                # move. The round trip (lock the printed refs with place_pose)
+                # drives it to 0, which is this design's own acceptance test.
                 'unlocked_high': sum(1 for f in self.findings
                                      if f.confidence == 'high' and not f.already_locked),
                 # findings already covered, by EITHER a (locked yes) in the file
-                # or a --lock pattern the caller passed...
+                # or a `lock_patterns` entry the caller passed...
                 'findings_covered': sum(1 for f in self.findings if f.already_locked),
                 # ...vs parts the FILE pins, which may include parts no rule
                 # fired on (a logo footprint, say) and so are not findings.
@@ -358,7 +358,7 @@ def advise_locks(pcb_data, pcb_file: Optional[str] = None, *,
         elif clr is not None and clr < edge_margin:
             rules.append('near_board_edge')
             reasons.append(f"{clr:.2f} mm from the board edge "
-                           f"(under --lock-edge-margin {edge_margin:g})")
+                           f"(under the {edge_margin:g} mm edge margin)")
             geometric = True
 
         # --- rule 4/5: lexical.
@@ -544,12 +544,11 @@ def to_json(adv: LockAdvice) -> Dict:
                       'class_confidence': f.class_confidence,
                       'pose_plausible': f.pose_plausible} for f in adv.findings],
         'advisories': adv.advisories,
-        # The tally goes in the FILE, not only on stdout. The placement
-        # driver's next stage gates on `unlocked_high`, reading it from this
-        # JSON -- and this JSON did not carry it, so the guard read None,
-        # decided there was nothing to object to, and passed. A gate whose key
-        # its own producer omits is a gate that never fires.
+        # The tally goes in the FILE, not only on stdout, so a reader of the
+        # JSON sees `unlocked_high` too.
         **adv.tally(),
         'lock_patterns': adv.lock_patterns(),
-        'lock_argv': (['--lock'] + adv.lock_patterns()) if adv.lock_patterns() else [],
+        # `place_pose.py IN OUT lock REF ...`'s verb and refs: the one tool
+        # that writes a KiCad lock.
+        'lock_argv': (['lock'] + adv.lock_patterns()) if adv.lock_patterns() else [],
     }

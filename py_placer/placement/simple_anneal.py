@@ -64,7 +64,7 @@ LAM_START, LAM_END = 1.0, 10000.0
 
 def _place(st, ref, x, y, rot):
     """`QuenchState.apply_move` without its last step: the pose, and the
-    legality caches a move makes stale, but not quench's own airwires --
+    legality caches a move makes stale, but not the state's own airwires --
     nothing the annealer prices or tests reads them, and rebuilding them
     was a quarter of each move. `anneal` puts every part through the real
     `apply_move` once at the end."""
@@ -419,8 +419,9 @@ def anneal(model, movable: List[str], *, moves: int = 11000, seconds: float = 0.
            seed: int = 0, log=None) -> Dict:
     """Anneal from the live poses and leave the best overlap-free placement
     seen applied, each part then held to the exact legality. Returns
-    {'moves', 'seconds', 'loop_seconds', 'start', 'best', 'tracked_best',
-    't0', 'stats': {kind: (tried, kept)}, 'capped', 'reseated'}."""
+    {'moves' (executed), 'seconds', 'loop_seconds', 'start', 'best',
+    'tracked_best', 't0', 'stats': {kind: (tried, kept)}, 'capped',
+    'reseated' (parts moved to their nearest legal pose afterwards)}."""
     a = Annealer(model, movable, seed=seed)
     st = model.state
     t_start = time.time()
@@ -437,12 +438,13 @@ def anneal(model, movable: List[str], *, moves: int = 11000, seconds: float = 0.
     reach0 = a.span / 6.0
     window = [0, 0]             # moves tried, kept, since the last log line
     capped = False
-    k = 0
+    done = 0            # moves executed (a `seconds` cap stops the loop early)
     t_loop = time.time()
     for k in range(moves):
         if seconds and time.time() - t_start > seconds:
             capped = True
             break
+        done = k + 1
         frac = k / moves
         T = t0 * (T_END / t0) ** frac
         a.lam = LAM_START * (LAM_END / LAM_START) ** frac
@@ -466,7 +468,7 @@ def anneal(model, movable: List[str], *, moves: int = 11000, seconds: float = 0.
                 f"overlap {ov:6.2f} mm2 best {best:7.1f} accepted {window[1] / max(1, window[0]):.2f}")
             window = [0, 0]
     loop_seconds = time.time() - t_loop
-    for r in a.mov:     # quench's own state, airwires and all
+    for r in a.mov:     # the QuenchState's own state, airwires and all
         pose = best_poses[r] if best_poses is not None else a.pose(r)
         st.parts[r].ensure_rotation(pose[2])
         st.apply_move(r, *pose)
@@ -475,15 +477,15 @@ def anneal(model, movable: List[str], *, moves: int = 11000, seconds: float = 0.
         p = st.parts[r]
         if legal(st, r, p.x, p.y, p.rot):
             continue
-        reseated.append(r)
         for rot in (p.rot,) + tuple(q for q in ROTS if q != p.rot):
             got = nearest_legal(st, r, p.x, p.y, rot, frozenset(), reach=6.0)
             if got:
                 st.apply_move(r, *got)
+                reseated.append(r)
                 break
     model.reprice_all()
     final = model.total()['cost']
-    return {'moves': k + 1, 'seconds': round(time.time() - t_start, 2), 'start': start,
+    return {'moves': done, 'seconds': round(time.time() - t_start, 2), 'start': start,
             'best': final, 'tracked_best': best, 't0': t0, 'capped': capped,
             'reseated': reseated, 'loop_seconds': round(loop_seconds, 3),
             'stats': {kk: tuple(v) for kk, v in stats.items()}}

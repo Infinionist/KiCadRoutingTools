@@ -1,11 +1,10 @@
 """What a part IS, read off the board -- role knowledge both sides share.
 
-`py_tools/board_context.py` prints a role per part (#891), and the decap
-owner predicate (`groups.supply_owner_evidence`, #1249) asks the same
-question of a part with fewer than four copper pads: is this a regulator?
-The answer used to live in `board_context` alone, which the placement engine
-must not import (py_placer never reads py_tools). It lives here so the sheet
-and the election read ONE table.
+`py_tools/board_context.py` prints a role per part, and the decap owner
+predicate (`groups.supply_owner_evidence`) asks the same question of a part
+with fewer than four copper pads: is this a regulator? The table lives here,
+in py_placer (which never imports py_tools), so the sheet and the predicate
+read ONE table.
 
 Deliberately NOT part of `part_class.classify_part`: `grade_body_overlap.
 _waiver_for` branches on that classifier's `.name` against its marker and
@@ -25,10 +24,8 @@ from typing import Dict, List, Optional
 
 #: (role, keys) by footprint-name substring, matched on `_norm`ed text (lower
 #: case, separators dropped) -- so `TO-92_HandSolder`, `TO92` and `to_92`
-#: are one name. Before #1249 the match was a raw substring and KiCad's own
-#: spelling `TO-92` never matched the key `to92`, nor `SOT-223-3_TabPin2` the
-#: key `sot223`, so both rows were dead on every board that uses the stock
-#: library.
+#: are one name, and KiCad's own spellings (`TO-92`, `SOT-223-3_TabPin2`)
+#: match the keys `to92` and `sot223`.
 _ROLE_FP = (
     ('crystal', ('xtal', 'crystal', 'resonator', 'oscillator')),
     ('usb receptacle', ('usbmicro', 'usbc', 'usbb', 'usba', 'uicro')),

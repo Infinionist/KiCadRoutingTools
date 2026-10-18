@@ -1,4 +1,4 @@
-"""Seat legality, wiring targets, decap claims and lock stamps.
+"""Seat legality, wiring targets, fixed-pose checks and lock stamps.
 
 What is left of the intent seeder once the simple path (`place_simple.py`)
 replaced its placement stages, kept because the simple path and the tools
@@ -13,10 +13,10 @@ around it use these pieces:
     at its nearest placed pad, combined by geometric median (`simple.target`,
     the anneal's jump move);
   * `fixed_pose_pair_conflicts` and `_fixed_pose_check`: declared fixed poses
-    against each other (`floorplan.plan_check`);
+    against each other (`floorplan.plan_check`), with `_materialise_rotation`
+    filling a declared angle's rotation caches;
   * `stamp_locked` / `stamp_unlocked`: KiCad `(locked yes)` on a written
-    board (`place_pose lock` / `unlock`);
-  * `_materialise_rotation`, for the pose tools.
+    board (`place_pose lock` / `unlock`).
 """
 from __future__ import annotations
 

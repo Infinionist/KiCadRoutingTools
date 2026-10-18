@@ -8026,25 +8026,6 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
 
 if __name__ == "__main__":
     import argparse
-    # #666's scoped cap move calls `write_placed_output`, which makes this a
-    # registered pose author (LEVER_REGISTRY). Declare it for the whole
-    # process: this `__main__` is one long inline block rather than a call to
-    # a main(), so an ExitStack closed at interpreter exit gives exactly the
-    # lifetime a `with` around the block would. Best-effort -- a flat install
-    # without py_placer/ must still route.
-    try:
-        import atexit
-        import contextlib
-        # Imported for its SIDE EFFECT only (it appends py_placer/ to
-        # sys.path), and without binding a name, because two later blocks in
-        # this same __main__ import it under that name for the same reason.
-        __import__('_placer_path')
-        from placement.provenance import declare_lever as _declare_lever
-        _lever_stack = contextlib.ExitStack()
-        _lever_stack.enter_context(_declare_lever('route.py', sys.argv))
-        atexit.register(_lever_stack.close)
-    except Exception:                                        # noqa: BLE001
-        pass
     # Windows consoles default to cp1252, which can't encode the non-ASCII glyphs
     # some log lines use (arrows in bus order, Ohm in impedance, the fab-floor
     # warning sign); reconfigure stdout/stderr to UTF-8 so a print never crashes

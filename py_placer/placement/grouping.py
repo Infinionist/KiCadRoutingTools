@@ -13,13 +13,11 @@ measures what the judgement implies so the agent can check it:
     group. Ground and board-wide rails are left out (`rail_net_ids`): on a
     small board GND reaches most parts and would make every part look like it
     belongs everywhere;
-  * decap tethers that cross a group line (`groups.decap_tethers`): a cap the
-    placer will claim for an IC in another group;
+  * decaps whose IC sits in another group (`decap_conflicts`): place_simple
+    leaves such a cap out of its decap term and places it with its own group;
   * bridges: 2-pad parts with signal links into another group (series
     resistors, jumpers) -- they belong to one side and border the other;
-  * the inter-group link matrix;
-  * a placement order: the anchor group first, then by links to what is
-    placed.
+  * the inter-group link matrix.
 
 The file (schema 1):
 
@@ -28,14 +26,12 @@ The file (schema 1):
        {"name": "core", "role": "core", "refs": ["U3", "C3", "R1"],
         "anchor": "U3", "why": "MCU and its decoupling",
         "edge": null, "side": "F", "near": ["clock"], "apart": []}
-     ],
-     "order": ["core", "clock", "usb_in", "power", "ui"]}
+     ]}
 
 `refs` may name file-LOCKED parts (a connector placed and locked first): they
-are fixed members, the group's region is planned around them, and nothing
+are fixed members, the rest of the group is placed around them, and nothing
 moves them. `edge` is one of N/S/E/W (the board side a group belongs on),
-`near` / `apart` name other groups. `order` is optional; without it
-`placement_order` decides.
+`near` / `apart` name other groups.
 """
 from __future__ import annotations
 
@@ -46,7 +42,7 @@ SCHEMA = 1
 EDGES = ('N', 'S', 'E', 'W')
 GROUP_KEYS = ('name', 'role', 'refs', 'anchor', 'why', 'edge', 'side', 'near',
               'apart', 'note')
-DOC_KEYS = ('schema', 'board', 'groups', 'order', 'note')
+DOC_KEYS = ('schema', 'board', 'groups', 'note')
 
 #: A net is a RAIL -- left out of every connectivity vote here -- when its
 #: name says ground or it reaches more
@@ -128,11 +124,6 @@ def validate_doc(doc, where: str = 'groups') -> Dict:
                 if other not in names:
                     raise GroupsError(f"{where}: group {g['name']!r} `{key}` names "
                                       f"{other!r}, which is not a group")
-    order = doc.get('order')
-    if order is not None:
-        if (not isinstance(order, list) or sorted(order) != sorted(names)):
-            raise GroupsError(f"{where}: `order` must list every group exactly once "
-                              f"(groups: {names})")
     return doc
 
 
@@ -184,9 +175,8 @@ def group_of(doc: Dict) -> Dict[str, str]:
 def cap_owners(view: BoardView, cap: str):
     """`(net name, [owner refs])` when `cap` is a decap by the electrical
     rule -- a 2-pad C with one pad on ground and one on a net a U-prefixed
-    part of 3+ copper pads carries -- else None. The board's own election
-    (`groups.decap_tethers`) is by distance,
-    which a pile does not have; this is the electrical half alone."""
+    part of 3+ copper pads carries -- else None. Electrical only: it asks
+    nothing of where the parts are, so it answers on a pile too."""
     from net_queries import is_ground_net_name
     if not cap.upper().startswith('C') or view.pad_count(cap) != 2:
         return None
@@ -205,7 +195,7 @@ def decap_conflicts(doc: Dict, view: BoardView) -> List[Dict]:
     """Caps the placer would claim at an IC of ANOTHER group: no decap owner
     of the cap's net is in the cap's own group. The groups file is the author
     saying the cap belongs elsewhere (a crystal's load cap, an RC filter), so
-    the region intent exempts it from the decap rule."""
+    place_simple leaves it out of its decap term."""
     first = group_of(doc)
     out = []
     for cap, g in sorted(first.items()):
@@ -220,6 +210,23 @@ def decap_conflicts(doc: Dict, view: BoardView) -> List[Dict]:
         out.append({'cap': cap, 'cap_group': g, 'net': net, 'owners': owners,
                     'owner_groups': sorted({first.get(o, '?') for o in owners})})
     return out
+
+
+def claim_rows(pcb, intent_doc: Optional[Dict] = None,
+               crystals: bool = True) -> Tuple[List[Dict], List[str]]:
+    """`(rows, notes)`: the proximity claims place_simple seats -- the
+    intent's own `proximity[]` rows (`intent_doc` is the intent JSON) and,
+    unless `crystals` is False, each passive crystal's claim at its IC's
+    oscillator pins (`crystals.crystal_claims`) that the intent does not
+    already make -- and the crystal finder's notes."""
+    rows = list((intent_doc or {}).get('proximity') or [])
+    if not crystals:
+        return rows, []
+    from placement.crystals import crystal_claims
+    have = {(str(c.get('ref')), str(c.get('near'))) for c in rows}
+    xrows, notes = crystal_claims(pcb)
+    rows += [r for r in xrows if (r['ref'], r['near']) not in have]
+    return rows, notes
 
 
 def follower_roots(claims: Iterable[Dict]) -> Dict[str, str]:
@@ -249,18 +256,16 @@ def fold_followers(doc: Dict, claims: Iterable[Dict]) -> Tuple[Dict, Dict[str, T
     A follower is placed beside its partner, so it must share its
     partner's group: a crystal in a clock group of its own would be held
     apart from the IC whose pins it belongs at. A group the move empties is
-    dropped, and the `near`, `apart` and
-    `order` entries naming it are pointed at the group that took its parts.
-    The input is not modified."""
+    dropped, and the `near` and `apart` entries naming it are pointed at the
+    group that took its parts. The input is not modified."""
     roots = follower_roots(claims)
     where = group_of(doc)
     moved = {s: (where[s], where[r]) for s, r in roots.items()
              if s in where and r in where and where[s] != where[r]}
     # A group whose ANCHOR moved follows it whole: a clock group is its
     # crystal, and the jumpers or 0-ohm bridges on the oscillator pins belong
-    # at the crystal. Left behind in a region of their own, ch32v003_usb's
-    # JP1/JP2 sat across the board from U3 and its crystal, and PA2 routed
-    # 27 mm with 4 vias where the human routes 6.
+    # at the crystal. A group whose anchor is not a claim subject keeps its
+    # other parts.
     for g in doc['groups']:
         a = g.get('anchor')
         if a in moved and moved[a][0] == g['name']:
@@ -291,9 +296,6 @@ def fold_followers(doc: Dict, claims: Iterable[Dict]) -> Tuple[Dict, Dict[str, T
                     g[key] = names
                 else:
                     del g[key]
-    if out.get('order'):
-        order = [n for n in out['order'] if n not in gone]
-        out['order'] = order
     return out, moved
 
 
@@ -305,12 +307,10 @@ def tree_weight(n: int) -> float:
 
 
 def link_matrix(doc: Dict, view: BoardView) -> Dict[Tuple[str, str], float]:
-    """{(group a, group b): signal links between them}, a < b -- the region
-    planner's wiring weights. A signal net reaching m groups is a spanning
-    tree over them, m - 1 links, spread evenly over its group pairs
-    (`tree_weight`), however many parts of each group it touches. Counting
-    once per (part pair, shared net) instead made a net on k parts weigh
-    k (k - 1) / 2: a bus on six parts in two groups counted 9 links where its
+    """{(group a, group b): signal links between them}, a < b. A signal net
+    reaching m groups is a spanning tree over them, m - 1 links, spread
+    evenly over its group pairs (`tree_weight`), however many parts of each
+    group it touches: a bus on six parts in two groups is one link, as its
     wiring needs one."""
     gof = group_of(doc)
     out: Dict[Tuple[str, str], float] = {}
@@ -326,51 +326,20 @@ def link_matrix(doc: Dict, view: BoardView) -> Dict[Tuple[str, str], float]:
     return out
 
 
-def placement_order(doc: Dict, view: BoardView,
-                    fixed: Optional[Set[str]] = None) -> List[str]:
-    """The declared `order`, else: the anchor group first -- a group whose
-    role is core, else the group holding the part with the most pads -- then,
-    repeatedly, the group with the most signal links to the groups already
-    placed (ties: more pads, then name). Groups made only of locked parts sit
-    at the front: they are placed already."""
-    if doc.get('order'):
-        return list(doc['order'])
-    names = [g['name'] for g in doc['groups']]
-    locked = view.locked if fixed is None else fixed
-    refs = {g['name']: [r for r in g['refs'] if r in view.parts] for g in doc['groups']}
-    fixed = [n for n in names if refs[n] and all(r in locked for r in refs[n])]
-    pads = {n: sum(view.pad_count(r) for r in refs[n]) for n in names}
-    rest = [n for n in names if n not in fixed]
-    if not rest:
-        return fixed
-    cores = [g['name'] for g in doc['groups'] if g.get('role') == 'core' and g['name'] in rest]
-    if cores:
-        first = max(cores, key=lambda n: (pads[n], n))
-    else:
-        first = max(rest, key=lambda n: (max((view.pad_count(r) for r in refs[n]), default=0), n))
-    m = link_matrix(doc, view)
-
-    def links(a, placed):
-        return sum(m.get(tuple(sorted((a, b))), 0) for b in placed)
-    order = fixed + [first]
-    rest.remove(first)
-    while rest:
-        nxt = max(rest, key=lambda n: (links(n, order), pads[n], n))
-        order.append(nxt)
-        rest.remove(nxt)
-    return order
-
-
 def analyze(doc: Dict, pcb, movable: Optional[Iterable[str]] = None,
-            followers: Iterable[str] = ()) -> Dict:
+            followers: Iterable[str] = (), extra_fixed: Iterable[str] = ()) -> Dict:
     """Everything the checker reports, as data. `movable` defaults to every
-    copper-bearing part the file does not lock."""
+    copper-bearing part the file does not lock and `extra_fixed` does not
+    name (the parts the intent seats at a declared pose). `followers` are
+    the subjects of proximity claims, seated by their claim rather than by
+    the decap rule."""
     view = BoardView(pcb)
     gof: Dict[str, List[str]] = {}
     for g in doc['groups']:
         for r in g['refs']:
             gof.setdefault(r, []).append(g['name'])
-    movable = set(movable) if movable is not None else set(view.parts) - view.locked
+    movable = (set(movable) if movable is not None
+               else set(view.parts) - view.locked - set(extra_fixed))
     # a part that is not movable is FIXED for every question below: locked in
     # the file, or held out by the caller (`movable`)
     fixed = set(view.parts) - movable
@@ -458,7 +427,6 @@ def analyze(doc: Dict, pcb, movable: Optional[Iterable[str]] = None,
                     'movable': [r for r in g['refs'] if r in movable],
                     'fixed': [r for r in g['refs'] if r in fixed]}
                    for g in doc['groups']],
-        'order': placement_order(doc, view, fixed) if not errors else [],
         'links': [{'a': a, 'b': b, 'signal_links': n}
                   for (a, b), n in sorted(matrix.items())],
         'rails': sorted(view.name_of(n) for n in view.rails),

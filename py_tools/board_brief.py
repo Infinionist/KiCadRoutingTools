@@ -47,7 +47,6 @@ import _path  # noqa: F401  (py_tools -> py_router/py_placer on sys.path)
 
 import argparse
 import json
-import math
 import os
 import sys
 
@@ -92,7 +91,6 @@ def _shoelace(ring):
 
 
 def board_section(pcb, pcb_file, skipped):
-    from kicad_parser import parse_kicad_pcb  # noqa: F401  (documents origin)
     bi = pcb.board_info
     out = {
         'path': os.path.abspath(pcb_file),
@@ -256,16 +254,11 @@ PILE_FRACTION = 0.5
 # they are correct for the board AS IT IS and not for the board as it will
 # be. Named rather than nulled because each is the best answer available and
 # an author needs it: `extent_mm` is what sizes a part, per-face `demand` is
-# what an escape budget is read from. What makes them treacherous on a
-# staged board is that `stage_unaided` writes ROTATION 0 for every part it
-# moves, and all of these follow rotation.
-#
-# Measured on boards staged by this repo's own stager: 130 of 234 ulx3s parts
-# have `extent_mm` with width and height SWAPPED against the placed board
-# (BAT1 [20.3, 14.1] at rot 90 -> [14.1, 20.3] at rot 0); watchy 43 of 84,
-# tigard 30 of 92, every one an exact swap. And U2's escape demand moves
-# north 21 -> 2 / east 1 -> 21 as the part turns, so the per-face table is
-# right about a rotation the author has not chosen yet.
+# what an escape budget is read from. What makes them treacherous on a pile
+# is that a piled part's rotation is not a decision yet, and all of these
+# follow rotation: a part at 90 degrees reports its width and height swapped
+# against the same part at 0, and an IC's escape demand moves from face to
+# face as it turns.
 POSE_DERIVED_KEPT = (
     ('parts[].rotation',
      'on a staged board this is a generator default, not a decision'),
@@ -450,8 +443,8 @@ def parts_section(pcb, pcb_file, skipped):
     the drawn .Fab body, else silk unioned with the pad bbox, else the pad
     bbox -- and `extent_source` says WHICH, because a pad bbox carries no
     courtyard margin and treating the two alike is how a part gets seated
-    tighter than its own footprint allows (the quench warns about this on
-    every board that needs it).
+    tighter than its own footprint allows (the placement state warns about
+    this on every board that needs it).
 
     It reads the model rather than its own ladder because this table and the
     body-overlap channel used to answer the same question differently: this
@@ -463,7 +456,6 @@ def parts_section(pcb, pcb_file, skipped):
     from placement.legality import rotate_local_bounds
     from placement.utility import compute_footprint_bbox_local  # noqa: F401
     from placement.part_class import classify_part
-    from placement.escape import lane_pitch  # noqa: F401 (documents origin)
 
     bodies = _safe('parts.bodies', board_bodies, skipped, pcb, pcb_file) or {}
     out = {}
@@ -549,18 +541,16 @@ def mechanical_section(pcb, pcb_file, skipped):
     whether the board's own author already pinned the part.
 
     It exists because the brief's only other channel for the same question --
-    `measurements.locks.high` -- is GEOMETRIC and collapses on exactly the
-    input an unaided author has. Measured placed -> piled: watchy 7 -> 1,
-    ulx3s 10 -> 0, splitflap_driver 16 -> 2. `part_class.classify_part` reads
+    `measurements.locks.high` -- is GEOMETRIC and collapses on a pile. `part_class.classify_part` reads
     footprint name, reference prefix and pin function and never a coordinate,
     so it answers the same on both.
 
     `pose_shared_with` is the per-part honesty check, and it is per PART
     rather than a whole-board verdict for the reason `plan_resolve` gives:
     a part alone at its coordinate is where someone put it, whatever state
-    the rest of the board is in. A staged unaided board carries the real
-    poses of exactly these parts, so an empty list here is the difference
-    between `place_fixed` having a coordinate to assert and not.
+    the rest of the board is in. On a pile only the parts left in place keep
+    a coordinate of their own, so an empty list says this part's pose is a
+    real one.
     """
     from placement.part_class import mechanical_parts
     found = mechanical_parts(pcb)
@@ -875,14 +865,12 @@ def build_brief(pcb, pcb_file, *, clearance=None, board_edge_clearance=None,
     st = brief.get('state') or {}
     # NOT `st['unplaced']` alone. `assess_placement`'s verdict needs BOTH a
     # high duplicate fraction AND `distinct_positions <= max(3, 0.1n)`, and
-    # this repo's own stager breaks the second conjunct with the very
-    # exemptions that make an unaided board usable: `stage_unaided` on
-    # splitflap_driver leaves 58 of 65 parts on one coordinate but 8 distinct
-    # positions (7 mechanical + the pile), so `unplaced` is False,
-    # `partially_unplaced` is True -- and this whole disclosure did not fire
-    # on the tool's own output. The brief's question is narrower than the
-    # stager's: "are these coordinates meaningful", and half the parts
-    # sharing one is enough to answer no. A netlist re-import dropping three
+    # a pile that leaves its mechanical parts in place (`make_unplaced` keeps
+    # every locked part) breaks the second conjunct: most parts share one
+    # coordinate but there are several distinct positions, so `unplaced` is
+    # False and `partially_unplaced` True. The brief's question is narrower:
+    # "are these coordinates meaningful", and half the parts sharing one is
+    # enough to answer no. A netlist re-import dropping three
     # new parts on a placed board is 3/65 = 0.046 and stays unmarked, which
     # is the case `partially_unplaced` exists for.
     dup = st.get('duplicate_fraction') or 0.0
@@ -1030,7 +1018,7 @@ def format_text(b):
     if lk:
         t = lk.get('tally') or {}
         _uh = t.get('unlocked_high')
-        L.append(f"  locks: "
+        L.append("  locks: "
                  + (f"{_uh} high-confidence part(s) NOT locked" if _uh
                     is not None else
                     "confidence NOT MEASURED (needs a placement) -- see the "
@@ -1038,7 +1026,9 @@ def format_text(b):
                  + f"; {t.get('locked_in_file', 0)} already locked in the "
                    f"file")
         if lk.get('lock_argv'):
-            L.append(f"    {' '.join(lk['lock_argv'])}")
+            L.append(f"    python3 -X utf8 py_placer/place_pose.py "
+                     f"{bd.get('path', '<board>')} <out> "
+                     f"{' '.join(lk['lock_argv'])}")
     for row in (b.get('fit') or []):
         w, h = row['extent_mm']
         if row['fits']:
@@ -1172,12 +1162,8 @@ def main(argv=None):
                         fit_step=a.fit_step, render_doc=render_doc,
                         design_brief=dbrief, design_brief_path=dbrief_path)
     if mech is not None:
-        from placement import reconcile as _rc_mod
-        _prov = _rc_mod.mechanical_provenance(mech, a.board)
         brief['mechanical_declared'] = {
-            'path': mech_path, 'shape': mech['shape'],
-            'sha256': mech['sha256'], 'provenance': _prov[0],
-            'provenance_why': _prov[1],
+            'path': mech_path, 'sha256': mech['sha256'],
             'poses': mech['poses'], 'edges': mech['edges'],
             'floors': mech['floors']}
     if not a.quiet:
@@ -1185,7 +1171,7 @@ def main(argv=None):
         if mech is not None:
             print(f"mechanical declaration {mech_path}: "
                   f"{len(mech['poses'])} pose(s), {len(mech['edges'])} "
-                  f"edge(s) -- recorded facts ({_prov[0]}: {_prov[1]})")
+                  f"edge(s) -- recorded facts")
     if a.json:
         # #1115: the placement skill's FIRST command writes to wk/<run>/,
         # which does not exist yet on a fresh checkout (wk/ is gitignored).

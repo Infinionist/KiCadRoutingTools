@@ -1,15 +1,11 @@
-"""Apply a MODEL-CHOSEN pose, and let the engine grade it (#892).
+"""Apply a model-chosen pose, and let the engine grade it.
 
-The ranking half of "where should this part go" already shipped: `pose_score.
-rank_poses` returns legal (x, y, rot) candidates nearest first, and
+`pose_score.rank_poses` lists legal (x, y, rot) candidates nearest first, and
 `grade_pad_legality` / `check_assembly` / `render_placement --review-sheet`
-all grade a pose. What did not exist is the verb that
-APPLIES one: no placement CLI in the tree accepted a pose at all, so a model
-that had decided "U1 belongs here, facing that way" had to write a hand script
-around `placement.writer.write_placed_output` (run 25's `pose_assist.py`;
-run 24 reused `freeze_stamp.py` for the lock half). A hand script is exactly
-what the provenance regime refuses and the cheats watcher flags, so the
-sanctioned tool has to be a registered lever -- see `place_pose.py`.
+grade a pose; this module APPLIES one, so a decision such as "U1 belongs
+here, facing that way" reaches the board through a registered tool
+(`place_pose.py`) rather than a hand script around
+`placement.writer.write_placed_output`.
 
 This module is the ENGINE half, so both fronts get the same behaviour: the CLI
 parses argv into `ops` and calls `apply_poses`; anything in-process (the GUI's
@@ -54,8 +50,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 #: raising a footprint's rotation by 90 degrees sends a pad at local (+1, 0)
 #: to global offset (0, -1) -- east to north, since `escape.face_of` calls the
 #: smaller-y side north on a y-grows-down board.
-#: `tests/test_892_place_pose.py` pins this against a real write + re-parse,
-#: because a cycle written the wrong way round is a plausible-looking rotation
+#: A cycle written the wrong way round would be a plausible-looking rotation
 #: that faces the part backwards.
 FACE_CYCLE = ('east', 'north', 'west', 'south')
 
@@ -670,29 +665,22 @@ def _legality_row(before: Dict, after: Dict) -> Dict:
 
 def _ranker_state(pcb, board_path: str, ref: str, at, *, clearance: float,
                   board_edge_clearance: float):
-    """The ranker's state for `ref`, judged from the INPUT board (#1256).
+    """The ranker's state for `ref`, judged from the INPUT board.
 
     `pcb` / `board_path` are the board the caller's re-grade compares
     against, so every part's SEED -- the baseline `LegalityContext.pads_ok`
     and `keepout_ok` refuse a pose relative to -- is its pose there. `at`
     (x, y, rot), when given, is where the caller asked the part to go: it is
     moved there AFTER the state is built, so the sweep centres on the request
-    while the part is still judged against where it started.
-
-    Built from the STAGED board instead (the requested pose already written),
-    the request was its own baseline: it passed at offset 0, and so did every
-    nearby pose carrying the same new conflict at no greater depth, while the
-    re-grade -- against the input -- refused them all. Measured on esp_prog
-    with C1 given a 1.5 mm pad clearance, `set C2 140.06 96.23 --rot 90
-    --snap --radius 2`: 8 ranked poses, the request among them at 0.000 mm,
-    every one refused by the re-grade.
+    while the part is still judged against where it started. A state built
+    from the staged board would take the request as its own baseline and
+    admit nearby poses carrying the same new conflict, which the re-grade,
+    against the input, then refuses.
 
     The INCUMBENT of `candidate_valid`'s off-board escape branch is pinned
-    to the input pose too (`QuenchState.incumbent_at`, #1259), before the
-    move: measured at the request, an off-board request licensed every pose
-    merely less off the board than it. esp_prog `set R3 146.0 101.5 --snap
-    --radius 4` ranked 3 such poses and the re-grade refused all 9 tries
-    (exit 4); judged from the input pose it ranks 9, and the 7th passes.
+    to the input pose too (`QuenchState.incumbent_at`), before the move, so
+    that branch admits only poses less off the board than the INPUT, not
+    than the request.
     """
     import pose_score
     st = pose_score.make_state(pcb, board_path, clearance=clearance,
@@ -721,20 +709,16 @@ def _is_pose(p: Dict, at) -> bool:
 
 def _rank(pcb, board_path: str, ref: str, st, **kw):
     """`pose_score.rank_poses` on the ranker's state `st`: `(on_board,
-    ranked, diagnostics)` (#1277).
+    ranked, diagnostics)`.
 
-    `ranked` and `diagnostics` are the ranking as it always was. When the
-    part's input pose is off the board -- `candidate_valid`'s escape branch
-    is open for it (`QuenchState.escape_board_term`) -- that ranking admits
-    every pose merely LESS off the board than the input, and those can rank
-    first: measured on esp_prog with R3 staged off the board, `set R3
-    143.4 102.0 --rot 180 --snap --radius 4` ranked 24 such poses ahead of
-    any pose on the board, and the snap wrote one its own grade called
-    illegal while a legal pose 0.49 mm nearer the request was never ranked.
-    So `on_board` is the same sweep with that branch CLOSED -- only poses
-    the ordinary gate admits -- for a caller to try FIRST. It is None when
-    the branch is closed anyway (the input is on the board, or overlaps a
-    part), where `ranked` already is that ranking."""
+    `ranked` and `diagnostics` are the plain ranking. When the part's input
+    pose is off the board -- `candidate_valid`'s escape branch is open for it
+    (`QuenchState.escape_board_term`) -- that ranking also admits poses
+    merely LESS off the board than the input, and those can come first. So
+    `on_board` is the same sweep with that branch CLOSED -- only poses the
+    ordinary gate admits -- for a caller to try FIRST. It is None when the
+    branch is closed anyway (the input is on the board, or overlaps a part),
+    where `ranked` already is that ranking."""
     import pose_score
     diag: Dict = {}
     ranked = pose_score.rank_poses(pcb, board_path, ref, state=st,
@@ -935,8 +919,7 @@ def snap_candidates(board_path: str, ref: str, *, rot: float, clearance: float,
               # {check, blocker} when vetoed there, else None (#1256).
               'input_pose_vetoed': home_veto,
               # #1113: which check vetoed them, and against whom.
-              'dropped_by': diag.get('dropped_by', {}),
-              'stopped_early': bool(diag.get('stopped_early'))}
+              'dropped_by': diag.get('dropped_by', {})}
     return ordered, census
 
 
@@ -1446,39 +1429,34 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                             bucket[pr] = bucket.get(pr, 0) + 1
                 return trial, pcb_c, g, b
 
-            # TWO PHASES, each with its OWN budget, and the reason is the
-            # measured behaviour of the two rungs rather than tidiness:
+            # TWO PHASES, each with its OWN budget:
             #
             # * the RANKED rung is pre-filtered by `candidate_valid`, so its
-            #   candidates usually pass this verb's grade too -- on esp_prog
-            #   the first one did. Cost-ordered, so its first answer can be
-            #   several mm out.
+            #   candidates usually pass this verb's grade too. It is nearest
+            #   first among the poses the gate admits, so when the nearer
+            #   poses are vetoed its first answer can still be several mm out.
             # * the LATTICE rung is unfiltered, and its nearest members sit
             #   right beside a point that was just refused, so they mostly
-            #   fail. Measured: the 24 nearest candidates around C4's pose all
-            #   failed while a ranked pose 4.78 mm away passed.
+            #   fail.
             #
             # So: take the ranked rung's first passing pose, then spend a
             # SECOND budget on lattice poses that are NEARER than it, and
             # prefer one of those if it passes. A single shared cap in either
-            # order loses one of the two -- nearest-first starves the ranked
-            # rung, ranked-first starves the lattice (the reviewer's finding).
+            # order loses one of the two -- lattice-first starves the ranked
+            # rung, ranked-first starves the lattice.
             #
-            # #1277: from an input pose off the board, a THIRD budget comes
-            # first -- the ranking with the escape branch closed
-            # (`ranked_on_board`). It only adds candidates ahead of the
-            # ranked rung, whose own budget and order are unchanged. A pose
-            # already re-graded is not graded twice, nor counted again:
-            # every such pose was refused (the walk stops at the first that
-            # passes), so skipping it cannot lose a later rung's answer.
+            # From an input pose off the board, a THIRD budget comes first --
+            # the ranking with the escape branch closed (`ranked_on_board`).
+            # It only adds candidates ahead of the ranked rung, whose own
+            # budget and order are unchanged. A pose already re-graded is not
+            # graded twice, nor counted again: every such pose was refused
+            # (the walk stops at the first that passes), so skipping it
+            # cannot lose a later rung's answer.
             #
             # And when that rung answers, a nearer lattice pose must grade no
-            # worse than ITS answer too, not only no worse than the input.
-            # From an input off the board, "no worse than the input" admits
-            # pad copper still past the outline: measured on esp_prog with R3
-            # staged off the board, `set R3 145.0 97.5 --rot 180 --snap
-            # --radius 3` re-graded a clean on-board pose 2.92 mm away, then
-            # wrote (145.25, 97.5), 0.25 mm away with a pad past the outline.
+            # worse than ITS answer too, not only no worse than the input:
+            # from an input off the board, "no worse than the input" admits
+            # pad copper still past the outline.
             chosen = None
             graded = set()
 
@@ -1750,8 +1728,7 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                         'ranked_on_board': _d.get('ranked_on_board'),
                         'dropped_total': _d.get('dropped_total', 0),
                         'dropped_in_place': _d.get('dropped_in_place', []),
-                        'dropped_by': _d.get('dropped_by', {}),   # #1113
-                        'stopped_early': bool(_d.get('stopped_early')),
+                        'dropped_by': _d.get('dropped_by', {}),
                         # The SWEEP's radius, and it is a Chebyshev box half
                         # width, not the Euclidean bound `--radius` applies to
                         # a snap: this list is information about what exists,
@@ -1814,8 +1791,7 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
                 summary['output'] = None
                 raise PoseRefusal(reason, summary=summary, unlock_failed=still)
 
-        _promote(cand, out_path, summary, input_file=board_path,
-                 placements=placements)
+        _promote(cand, out_path, summary)
         return summary
     finally:
         stage.cleanup()
@@ -1879,30 +1855,15 @@ def zone_check(intent, pcb, board_path, cand_pcb, cand_path, refs, *,
     return doc
 
 
-def _promote(staged: str, out_path: str, summary: Optional[Dict] = None, *,
-             input_file: Optional[str] = None,
-             placements: Sequence[Dict] = ()) -> None:
+def _promote(staged: str, out_path: str, summary: Optional[Dict] = None) -> None:
     """Move a finished staged board and its siblings onto the output path.
 
     Stage all files and back up prior destinations before replacing anything.
     Roll back completed replacements on failure. If restoration itself fails,
     report the affected paths and retain backups instead of claiming atomicity.
     Destination-only requirements cannot join a board graded without them.
-
-    PROVENANCE IS RECORDED HERE, against `out_path` (#960). The candidate was
-    written in a temp dir, and `record_write` finds the regime by walking up
-    from the path it is handed -- so the writer's own call, made for the temp
-    path, found no regime, returned None and refused nothing, and this copy
-    then landed the board in an armed work dir with no row. `input_file` is the
-    board `placements` were resolved against: a row's `refs_moved` is the
-    input diffed against the placements, so recording against the staged
-    candidate would claim nothing at all.
     """
-    if placements and input_file is None:
-        raise TypeError("_promote needs input_file when placements are given: "
-                        "the provenance row diffs the placements against it")
     from copy_board import SIBLING_EXTS
-    from placement import provenance
     src_base = os.path.splitext(staged)[0]
     dst_base = os.path.splitext(out_path)[0]
     pairs = [(staged, out_path)]
@@ -1920,12 +1881,6 @@ def _promote(staged: str, out_path: str, summary: Optional[Dict] = None, *,
     for ext in SIBLING_EXTS:
         if os.path.isfile(src_base + ext):
             pairs.append((src_base + ext, dst_base + ext))
-    # BEFORE the first copy, so an armed work dir with no declared lever
-    # refuses with the destination untouched. And before the replace for a
-    # second reason: on an in-place write `input_file` IS `out_path`, and the
-    # diff is only meaningful while that file still holds the incumbent board.
-    provenance.record_write(input_file or staged, out_path, list(placements),
-                            pending=True)
     staged_tmps = []
     backups = {}
     replaced = []
@@ -1954,9 +1909,6 @@ def _promote(staged: str, out_path: str, summary: Optional[Dict] = None, *,
             os.replace(entry[0], entry[1])
             replaced.append(entry[1])
             staged_tmps.remove(entry)
-        # Inside the `try`: a ledger that cannot be appended to rolls the board
-        # back with everything else, so no board lands without its row.
-        provenance.commit_write(out_path)
     except OSError as exc:
         rollback_errors = []
         for dst in reversed(replaced):
@@ -1990,9 +1942,6 @@ def _promote(staged: str, out_path: str, summary: Optional[Dict] = None, *,
         doc['rollback_errors'] = rollback_errors
         raise PoseRefusal(reason, code=2, summary=doc)
     finally:
-        # A no-op after a commit. Otherwise the write did not land, and its row
-        # must not stay pending for some later commit of this path to pick up.
-        provenance.discard_write(out_path)
         for backup in backups.values():
             if backup and backup not in recovery_paths:
                 try:

@@ -5,9 +5,9 @@
         --groups groups.json --intent intent.json [--seed 0] [--json report.json]
 
 1. GROUPS: the groups file (`check_groups.py`), a crystal and its load caps
-   folded into their IC's group. A group is a set of parts kept together;
-   it gets no region and no shape -- the objective's group term keeps it in
-   one piece, whatever shape the free space gives it. A group's `near`,
+   folded into their IC's group. A group is a set of parts kept together:
+   the objective's group term keeps it in one piece, whatever shape the
+   free space gives it. A group's `near`,
    `apart` and `edge` hints are soft terms of the objective; its `side`, and
    every face the intent declares, is applied first (the writer's flip).
 2. The parts the file locks stay put (connectors on their edges, mounting
@@ -109,8 +109,8 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
     import pose_score
     from list_nets import board_floor_knobs
     from placement import floorplan as fp
-    from placement.crystals import crystal_claims
-    from placement.grouping import BoardView, decap_conflicts, fold_followers, group_of
+    from placement.grouping import (BoardView, claim_rows, decap_conflicts,
+                                    fold_followers, group_of)
     from placement.simple import Model
     notes = []
     clearance, edge, _ = board_floor_knobs(board)
@@ -127,10 +127,7 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
                                   exclusive_zones=[z for z in zones if z['exclusive']])
     movable = sorted(r for r, p in state.parts.items() if not p.locked)
     # claims: the intent's own, and each crystal at its IC's oscillator pins
-    rows = list(base.get('proximity') or [])
-    have = {(str(c.get('ref')), str(c.get('near'))) for c in rows}
-    xrows, xnotes = crystal_claims(pcb)
-    rows += [r for r in xrows if (r['ref'], r['near']) not in have]
+    rows, xnotes = claim_rows(pcb, base)
     notes += xnotes
     doc, folded = fold_followers(doc, rows)
     if folded:
@@ -283,7 +280,6 @@ def main(argv=None):
     from placement.legality import footprint_side
     from placement.parser import extract_locked_refs
     from placement.portfolio import copy_siblings
-    from placement.provenance import declare_lever
     from placement.writer import SideFlipUnsupported, write_placed_output
     try:
         doc = load_groups(a.groups)
@@ -332,8 +328,7 @@ def main(argv=None):
         tmp = tempfile.mkdtemp(prefix='place_simple_')
         src = os.path.join(tmp, os.path.basename(a.board))
         try:
-            with declare_lever('place_simple.py', sys.argv):
-                write_placed_output(a.board, src, flips)
+            write_placed_output(a.board, src, flips)
         except (ValueError, SideFlipUnsupported) as ex:
             shutil.rmtree(tmp, ignore_errors=True)
             print(f"place_simple: cannot flip: {ex}", file=sys.stderr)
@@ -341,7 +336,7 @@ def main(argv=None):
         copy_siblings(a.board, src)
         pcb = parse_kicad_pcb(src)
         blocks, _problems = floorplan.resolve_blocks(intent, pcb, sources)
-        print(f"  NOTE: at their declared pose or face: " + ', '.join(
+        print("  NOTE: at their declared pose or face: " + ', '.join(
             f"{f['reference']}" + (f" -> {f['new_side']}" if 'new_side' in f else
                                    f" at ({f['new_x']:g}, {f['new_y']:g}) {f['new_rotation']:g}")
             for f in flips))
@@ -393,8 +388,7 @@ def main(argv=None):
                    'new_y': round(state.parts[r].y, 4),
                    'new_rotation': state.parts[r].rot % 360.0}
                   for r in movable]
-    with declare_lever('place_simple.py', sys.argv):
-        write_placed_output(src, a.out, placements)
+    write_placed_output(src, a.out, placements)
     copy_siblings(a.board, a.out)
     if tmp:
         shutil.rmtree(tmp, ignore_errors=True)

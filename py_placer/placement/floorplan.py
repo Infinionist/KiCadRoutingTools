@@ -187,7 +187,7 @@ _TOP_LEVEL_KEYS = {
 #: a pad-less block the placer cannot place, a contradiction between two
 #: declared sources. Every value is a non-empty `why`. No READER_VERSION bump:
 #: the rule above says not to bump for a field nothing grades, and a
-#: disposition changes no verdict -- it answers P1's refusal, which reads it.
+#: disposition changes no verdict -- it answers what `--plan-only` reports.
 #: An older build still refuses the file (unknown top-level key), which is the
 #: safe direction.
 _DISPOSITION_KEYS = {'rules', 'withheld', 'refs', 'contradictions'}
@@ -461,8 +461,8 @@ class Intent:
     # untouched and an intent declaring none behaves exactly as before.
     proximity: Tuple[Dict[str, object], ...] = ()
     #: #959 (#997). `{kind: {key: why}}` for kind in `_DISPOSITION_KEYS`: the
-    #: plan's written answers to the questions P1 refuses on. Read by
-    #: `rule_roster` and the driver, never by a rule -- a disposition is not a
+    #: plan's written answers to the questions `check_floorplan --plan-only`
+    #: reports. Read by `rule_roster`, never by a rule -- a disposition is not a
     #: verdict. Defaulted, so every existing construction site is untouched.
     dispositions: Dict[str, Dict[str, str]] = field(default_factory=dict)
     #: #959 (#1002). `context.basis`: `{intent path: basis}` -- what each
@@ -1654,10 +1654,9 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
     # trusting the disposition would skip a live finding. Checked here, where
     # only the intent is needed. Refs need the board: `stale_dispositions`
     # reports them when handed it (`grade` and `check_floorplan --plan-only`
-    # do), and the P1 driver refuses on them in its own words. Contradiction
-    # ids need the brief and mechanical.json: `stale_dispositions` names them
-    # when handed the reconciliation (both of those callers do), and P1
-    # refuses them.
+    # do). Contradiction ids need the brief and mechanical.json:
+    # `stale_dispositions` names them when handed the reconciliation (both of
+    # those callers do).
     armed = sorted(r for r in dispositions.get('rules', {})
                    if _wants(intent, r))
     if armed:
@@ -1676,8 +1675,8 @@ def _dispositions(raw) -> Dict[str, Dict[str, str]]:
     question nobody can see: an unknown kind, a non-string or empty `why`, a
     rule name `RULES` does not have, a withheld key the emitter cannot
     withhold. An empty `why` is the one that matters most -- a disposition
-    with no reason is a flag that makes the refusal go away rather than an
-    answer to it, which is exactly what the driver's `--waive x:` refuses.
+    with no reason is a flag that makes the report go away rather than an
+    answer to it.
     """
     if raw is None:
         return {}
@@ -1750,8 +1749,8 @@ def mechanical_drift(intent: Intent, pcb_data, mechanical: Dict, *,
         default = ERROR if (turned or not fp.pads) else WARN
         # The plan may PROMOTE the move-only WARN, never demote the ERROR:
         # the pose is a recorded fact, and a plan's severity map overruling
-        # it at grade and P-close is exactly what the anchor's fixed ERROR
-        # forbids (PR fact-check: a 90-degree turn read `warn` under
+        # it at grade is exactly what the anchor's fixed ERROR forbids (a
+        # 90-degree turn must not read `warn` under
         # `severity: {mechanical_drift: warn}`).
         sev = (ERROR if default == ERROR
                else intent.severity_of('mechanical_drift', default))
@@ -1846,8 +1845,8 @@ def fixed_pose_violations(intent: Intent, pcb_data, pcb_file: str, *,
     skipped here: the file's own anchor grades that pose, and grading it
     twice would report one moved part as two findings. An entry at a
     DIFFERENT pose is graded too -- skipping it on the ref alone let a brief
-    pose 13 mm from the file's go ungraded (Phase-1 verifier); the pose row
-    of `reconcile` reports the disagreement as a contradiction P1 refuses.
+    pose 13 mm from the file's go ungraded; the pose row of `reconcile`
+    reports the disagreement as a contradiction.
     And an entry carrying the file's pose for a ref whose mechanical value
     LOST a contradiction (`mechanical_skip`) is an ERROR: the placer would
     seat the losing value, and neither anchor grades it.
@@ -3999,10 +3998,8 @@ def zone_pose_feasibility(zone_rect, tolerance: float, part,
     compression over the admissible box and the keep-outs' forbidden rects, and
     every candidate is then judged by `zone_escape` and `keepout_hit` -- the
     same two functions `rule_zone_containment` and `rule_keepout` grade with.
-    (Not `seeder.pose_ok`: it applies no zone predicate at all, and its
-    caller's `zone_gate` uses `_rect_inside` and a bare origin-in-zone test
-    rather than `zone_escape`. The kernel matches the GRADE, which is whose
-    contradiction this is.) So the verdict cannot drift from the grade,
+    (Not `seeder.pose_ok`, which applies no zone predicate at all. The kernel
+    matches the GRADE, which is whose contradiction this is.) So the verdict cannot drift from the grade,
     and two float-scale traps disappear on their own: a keep-out a candidate
     overlaps by less than `EPS` of AREA is not a hit and the candidate stands,
     and a degenerate keep-out forbids nothing because it can hit nothing.
@@ -6989,13 +6986,10 @@ def _brief_claims(rule: str, brief_fragment) -> List[str]:
     """What the design BRIEF declares that `rule` grades, by name (#959).
 
     A brief-declared requirement is not the roster's to excuse: a plan that
-    leaves it out has DROPPED a declaration, and P1's brief-clause check
-    refuses that by clause id -- answered by carrying the clause, or by
-    `--waive brief-clause:<id>:<why>`, the same spelling P-close takes. So
+    leaves it out has DROPPED a declaration, which leaves that clause without
+    a verdict (`check_floorplan --require-brief-coverage` exits 4 on it). So
     the roster reports such a rule `uncovered` rather than asking for a
-    second, rule-level answer to the same question. (The Phase-1 verifier
-    measured the gap this closes: a plan dropping all four of fixture 902's
-    brief proximity claims, or splitflap's 17 brief edge claims, passed P1.)"""
+    second, rule-level answer to the same question."""
     frag = brief_fragment or {}
     if rule == 'proximity':
         return [f"{p.get('ref')}~{p.get('near')}"
@@ -7090,8 +7084,8 @@ def _gating(rule: str, intent: Intent, ctx) -> bool:
     The table default decides, plus one direction of the intent's map: a
     PROMOTION to error makes a rule gating, a demotion never makes it
     advisory. A dark rule never runs, so demoting it would change nothing but
-    this answer -- a way to make P1's refusal go away by editing a severity
-    no finding will ever carry (#959 plan review, round 3).
+    this answer -- a way to make the report go away by editing a severity
+    no finding will ever carry.
 
     The one exception is `decap_ungraded` under a `--decaps-from` intent
     (#1142): its held list makes it gating per cap, and an explicit `warn`
@@ -7125,7 +7119,8 @@ def _gating(rule: str, intent: Intent, ctx) -> bool:
 def _roster(intent: Intent, pcb_data, ctx, *, census=None,
             brief_fragment=None) -> List[Dict[str, object]]:
     """One row per rule in `RULES`: is it armed, and if not, does anything
-    answer for that? The `needs_disposition` rows are what P1 refuses on.
+    answer for that? The `needs_disposition` rows are what `--plan-only`
+    reports as `rules_dark_undispositioned`.
 
     A rule is REFUSED only when all of these hold: it is dark (or abstained,
     or armed with a withheld key), it is not a policy rule, a board fact says
@@ -7175,9 +7170,8 @@ def _roster(intent: Intent, pcb_data, ctx, *, census=None,
             applicable, why_app = True, (
                 f"the design brief declares {len(brief)} "
                 f"({', '.join(brief[:6])}{', ...' if len(brief) > 6 else ''}"
-                f"); a plan that drops one is refused by P1's brief-clause "
-                f"check, answered by carrying it or by `--waive "
-                f"brief-clause:<id>:<why>`")
+                f"); a plan that drops one leaves it without a verdict, "
+                f"which --require-brief-coverage refuses")
         elif policy:
             applicable, why_app = True, _POLICY_RULES[name]
         else:
@@ -7223,9 +7217,7 @@ def stale_dispositions(intent: Intent, rows, pcb_data=None,
     A withheld-key disposition for a key the emitter did not withhold; and,
     with the board in hand, a `refs` disposition for a block the board does
     not have, one that carries pads (the placer's to place), or one already
-    FILE-locked (the lock is the answer). The P1 driver refuses on the refs
-    cases with its own wording; this is the same judgement for
-    `check_floorplan`, so the two never disagree about one file.
+    FILE-locked (the lock is the answer).
     """
     if reconciliation is not None:
         ids = {r['id'] for r in reconciliation
@@ -7260,7 +7252,7 @@ def stale_dispositions(intent: Intent, rows, pcb_data=None,
 
 
 def roster_refusal_lines(rows) -> List[str]:
-    """One line per row P1 refuses on, naming the key that arms the rule and
+    """One line per `needs_disposition` row, naming the key that arms the rule and
     the disposition spelling that answers it. Never steers toward inventing a
     limit: "declare it from a requirement" and "write why it does not apply"
     are offered side by side."""
@@ -7292,7 +7284,7 @@ def rule_roster(intent: Intent, pcb_data, pcb_file: str, *,
                 clearance: Optional[float] = None,
                 board_edge_clearance: Optional[float] = None,
                 brief_fragment=None) -> List[Dict[str, object]]:
-    """The roster for a PLAN, before anything is graded (P1's question).
+    """The roster for a PLAN, before anything is graded (`--plan-only`).
 
     Builds the same `_Ctx` `grade` builds, so the board facts the roster reads
     (supply pins, the decap census) are the ones the grade would read."""
@@ -7381,7 +7373,7 @@ class GradeResult:
 
     @property
     def dark_undispositioned(self) -> List[str]:
-        """Rules P1 would refuse on, by name. Empty when no roster was built,
+        """Dark rules no disposition answers, by name. Empty when no roster was built,
         so read it together with `roster is not None`."""
         return [r['rule'] for r in (self.roster or ())
                 if r['needs_disposition']]
@@ -8100,8 +8092,8 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
         out.append(Violation(
             rule='plan_fixed_overlap_budget',
             # As strong as the rule it stands for: with `legality` demoted
-            # the grade passes this overlap, so P1 must not refuse it (the
-            # Phase-7 fact-check found it still an ERROR).
+            # the grade passes this overlap, so the plan check must not
+            # call it an error either.
             severity=_plan_severity(intent, 'plan_fixed_overlap_budget',
                                     ('legality',)),
             message=(f"the LOCKED parts alone overlap by {fixed_total:.3f}"
@@ -8140,9 +8132,8 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
     # The rotation claims, per ref, from every block. A part two blocks
     # declare at different angles is a contradiction (`rotations_for_ref`
     # raises, naming both blocks); here it is bounded on EVERY angle a block
-    # claims for it, never on its own angle (final P1 verifiers: the
-    # bound read 45-degree bars declared at 0 and at 90 as overfull at 45,
-    # and standing the whole bound down hid an unrelated zone's real one).
+    # claims for it, never on its own angle: a bound read on its own angle
+    # reads 45-degree bars declared at 0 and at 90 as overfull at 45.
     _conflicts: Dict[str, List[tuple]] = {}
     _claims = rotations_for_ref(intent, blocks, conflicts=_conflicts)
     for _r, _seen in _conflicts.items():
@@ -9506,10 +9497,11 @@ def emit_intent(pcb_data, pcb_file: str, *,
         # identified by its bytes -- never pointed at. The reference is
         # typically a human layout, and an intent carrying its path hands a
         # run that grades against it the one file it must not read.
-        from .provenance import sha256_file as _sha256_file
+        import hashlib
         _ref_name = os.path.basename(decaps_from)
         _census['reference_board'] = _ref_name
-        _census['reference_board_sha256'] = _sha256_file(decaps_from)
+        with open(decaps_from, 'rb') as _rf:
+            _census['reference_board_sha256'] = hashlib.sha256(_rf.read()).hexdigest()
         _census['reference_tethers'] = _ref_census.get('tethers')
         # The reference REPLACES the auto/strict arms: an auto withholding
         # about THIS board is not a statement about the number written.
@@ -9625,8 +9617,8 @@ def emit_intent(pcb_data, pcb_file: str, *,
             if _mode == 'auto':
                 # Recorded in the census, which the emit prints, NOT in
                 # budget_withheld: `auto` promises an emit that changes no
-                # exit code. P1 still owes the dark decap rule; the census is
-                # the reason, not the answer.
+                # exit code. The dark decap rule is still owed a
+                # disposition; the census is the reason, not the answer.
                 _census['auto_withheld'] = _why
             else:
                 _withheld['decaps.max_distance_mm'] = _why
@@ -10428,8 +10420,8 @@ def declaration_ledger(intent: Intent, rows, *, result=None,
     # #959 (#1001): every ref two channels speak to. A contradiction is
     # failed until the plan acknowledges it; drift the BOARD alone loses is
     # pending before a grade (a pile is expected to disagree with where a
-    # part will go) and failed after one; drift a plan loses is failed --
-    # P1 refuses it; a floors row is reported, not graded.
+    # part will go) and failed after one; drift a plan loses is failed;
+    # a floors row is reported, not graded.
     answered = (intent.dispositions or {}).get('contradictions', {})
     for r in reconciliation or ():
         kind = r.get('kind')

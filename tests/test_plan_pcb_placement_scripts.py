@@ -58,28 +58,25 @@ def _transcript(td, rows, bom=False):
 
 # ------------------------------------------------------------------ measure
 
-def test_measure_flags_only_the_retired_drivers_and_counts_converge_verbs():
+def test_measure_counts_converge_verbs():
     with tempfile.TemporaryDirectory() as td:
         p = _transcript(td, [
             _row('2026-09-27T06:00:00Z', 'm1',
                  ('a', 'Bash', {'command': 'python3 -X utf8 py_placer/converge.py record --ledger l --board b'})),
             _row('2026-09-27T06:01:00Z', 'm2',
-                 ('b', 'Bash', {'command': 'python3 py_placer/converge.py verdict --ledger l; python3 py_placer/converge.py where b --nets GND'}),
-                 ('c', 'Bash', {'command': 'python3 .claude/skills/plan-pcb-placement-and-routing/scripts/loop_driver.py --stage L1'})),
+                 ('b', 'Bash', {'command': 'python3 py_placer/converge.py verdict --ledger l; python3 py_placer/converge.py where b --nets GND'})),
             _row('2026-09-27T06:02:00Z', 'm3',
                  ('d', 'Bash', {'command': 'python3 -X utf8 py_tools/board_score.py b.kicad_pcb --json s.json'}),
                  # a path after the script name is not a verb
                  ('e', 'Bash', {'command': 'grep -n record py_placer/converge.py py_tools/board_score.py'})),
         ], bom=True)
         out = measure.measure(p)['main']
-        hits = sorted(f['hit'] for f in out['forbidden_uses'])
-        assert hits == ['loop_driver.py'], hits
         assert out['converge_verbs'] == {'record': 1, 'verdict': 1,
                                          'where': 1}, out['converge_verbs']
         assert out['converge_record_calls'] == 1, out
         assert out['unparsed_lines'] == 0, 'the BOM line was dropped'
         assert out['repo_scripts'].get('board_score.py') == 2, out
-    print("  PASS: only the drivers are flagged; converge verbs counted, paths are not verbs")
+    print("  PASS: converge verbs counted, paths are not verbs")
 
 
 def test_measure_splits_waiting_from_work_and_counts_bad_lines():
@@ -131,20 +128,16 @@ def test_measure_counts_idling_on_a_background_job_as_waiting():
     print("  PASS: 30 min idle until a background job reports back reads as waiting")
 
 
-def test_measure_cli_exits_1_on_a_forbidden_use_and_0_without():
+def test_measure_cli_measures_a_session_and_exits_0():
     with tempfile.TemporaryDirectory() as td:
-        bad = _transcript(td, [_row('2026-09-27T06:00:00Z', 'm1',
-                                    ('a', 'Bash', {'command': 'python3 x/placement_driver.py --stage P1'}))])
-        r = run_utils.check(PY + [os.path.join(SCRIPTS, 'measure.py'), bad],
-                            code=1, refuse='placement_driver.py')
         good = os.path.join(td, 'good.jsonl')
         with open(good, 'w', encoding='utf-8') as fh:
             fh.write(json.dumps(_row('2026-09-27T06:00:00Z', 'm1',
                                      ('a', 'Bash', {'command': 'ls'}))) + '\n')
-        run_utils.check(PY + [os.path.join(SCRIPTS, 'measure.py'), good],
-                        accept=True)
-        assert r.returncode == 1
-    print("  PASS: exit 1 names the forbidden verb; a clean session exits 0")
+        r = run_utils.check(PY + [os.path.join(SCRIPTS, 'measure.py'), good],
+                            accept=True)
+        assert r.returncode == 0
+    print("  PASS: a session is measured, exit 0")
 
 
 # ------------------------------------------------------------ make_unplaced
@@ -208,19 +201,18 @@ def test_make_unplaced_refuses_a_routed_input_before_writing():
 
 # -------------------------------------------------------------------- grade
 
-def test_grade_route_mode_names_every_moved_part_and_is_not_done():
+def test_grade_full_mode_on_a_pile_is_not_done_and_records_its_spec():
     run_utils.evidence(ESP)
     with tempfile.TemporaryDirectory() as td:
         pile = os.path.join(td, 'pile.kicad_pcb')
         run_utils.check(PY + [os.path.join(SCRIPTS, 'make_unplaced.py'), ESP, pile],
                         accept=True)
         r = run_utils.check(PY + [os.path.join(SCRIPTS, 'grade.py'), pile,
-                                  '--baseline', ESP, '--mode', 'route',
+                                  '--baseline', ESP, '--mode', 'full',
                                   '--spec', 'min-via-diameter=0.6',
-                                  '--out-dir', td], code=4, refuse='moved_parts')
+                                  '--out-dir', td], code=4, refuse='"done": false')
         doc = json.loads(r.stdout.splitlines()[0])
         assert doc['done'] is False, doc
-        assert len(doc['moved_parts']) == 18 and 'U1' in doc['moved_parts'], doc
         with open(os.path.join(td, 'grade_pile.json'), encoding='utf-8') as fh:
             full = json.load(fh)
         # render_placement's own metric keys, read by name (a misspelt key
@@ -241,16 +233,7 @@ def test_grade_route_mode_names_every_moved_part_and_is_not_done():
                               '--baseline', ESP, '--spec', 'no-equals-sign'],
                         refuse='expected NAME=VALUE', code=2,
                         allow=('usage:',))
-        # control: a byte copy of the input moves nothing, through the same
-        # pose reader the route-mode check uses
-        import shutil
-        import grade
-        same = os.path.join(td, 'same.kicad_pcb')
-        shutil.copyfile(ESP, same)
-        before, after = grade._poses(ESP), grade._poses(same)
-        assert len(before) == 18
-        assert sorted(k for k in before if after.get(k) != before[k]) == []
-    print("  PASS: route mode lists all 18 moved parts and is not DONE; a copy moves none")
+    print("  PASS: a pile is not DONE in full mode; its spec and gating basis are on the record")
 
 
 def test_grade_refuses_a_missing_board_or_intent():

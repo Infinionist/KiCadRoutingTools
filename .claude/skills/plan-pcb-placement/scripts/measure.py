@@ -29,7 +29,7 @@ and how many candidates there were are printed (stderr) and stored under
 `selection`. Subagent transcripts in <session>/subagents/ of a measured
 top-level session are reported separately.
 
-Exit codes: 0 measured; 1 a forbidden entry point was used; 3 refused.
+Exit codes: 0 measured; 3 refused.
 
 Reports:
 - wall clock;
@@ -40,9 +40,8 @@ Reports:
   model time -- each gap between transcript rows goes to what ended it;
 - tokens, de-duplicated by message id (a streamed message repeats its usage
   per content block);
-- any use of a forbidden entry point: the retired staged drivers. Every
-  `converge.py` verb is allowed (the skill hands the agent all of py_placer/);
-  they are COUNTED per verb, so a report can say how the ledger was used.
+- `converge.py` calls, COUNTED per verb, so a report can say how the ledger
+  was used.
 
 A line that does not parse is counted in `unparsed_lines`, never dropped.
 """
@@ -67,7 +66,6 @@ MEASURE_RE = re.compile(r'measure\.py\b')
 SELF_TAIL_BYTES = 4 << 20
 REFUSED = 3
 SCRIPT_RE = re.compile(r'([\w./\\-]*\w\.py)\b')
-FORBIDDEN_SCRIPTS = ('loop_driver.py', 'placement_driver.py')
 #: converge's own subcommands. Matching a closed set means an argument that
 #: merely follows the script name (`grep x converge.py py_tools/y.py`) is not
 #: read as a verb.
@@ -138,7 +136,7 @@ def _split(rows, uses):
 
 def tally(rows):
     tools, scripts, tokens = (collections.Counter() for _ in range(3))
-    forbidden, seen, uses, results = [], set(), {}, {}
+    seen, uses, results = set(), {}, {}
     first = last = None
     turns = agents = 0
     verbs = collections.Counter()
@@ -172,8 +170,6 @@ def tally(rows):
                 hits = {os.path.basename(s.replace('\\', '/'))
                         for s in SCRIPT_RE.findall(cmd)}
                 scripts.update(hits)
-                for f in sorted(hits & set(FORBIDDEN_SCRIPTS)):
-                    forbidden.append({'hit': f, 'command': cmd[:300]})
                 if 'converge.py' in hits:
                     verbs.update(CONVERGE_VERB_RE.findall(cmd))
     wait, work, model = _split(rows, uses)
@@ -189,7 +185,7 @@ def tally(rows):
             'agent_spawns': agents,
             'converge_record_calls': verbs.get('record', 0),
             'converge_verbs': dict(verbs),
-            'tokens': dict(tokens), 'forbidden_uses': forbidden}
+            'tokens': dict(tokens)}
 
 
 def identity(path, rows=None):
@@ -424,7 +420,7 @@ def main(argv=None):
     if a.json:
         with open(a.json, 'w', encoding='utf-8') as fh:
             json.dump(out, fh, indent=2)
-    return 1 if out['main']['forbidden_uses'] else 0
+    return 0
 
 
 if __name__ == '__main__':

@@ -344,7 +344,7 @@ def _plan_only(args, intent, pcb, sources, brief_fragment, brief_path,
         return UNPLACED_EXIT
     errors = [v for v in found if v.severity == 'error']
     # The channels reconciled here too, so the before-placement ledger names
-    # every contradiction P1 will refuse on.
+    # every contradiction the plan owes a disposition.
     recon = _rc.reconcile(pcb, args.board, brief_fragment=brief_fragment,
                           brief_source=brief_path or None, mechanical=mech,
                           intent_doc=intent_doc_for_drift(args.intent),
@@ -558,10 +558,8 @@ def main(argv=None):
     if _mrc:
         return _mrc
     if mech is not None and not args.quiet:
-        _prov = _rc.mechanical_provenance(mech, args.board)
         print(f"mechanical declaration {mech_path}: {len(mech['poses'])} "
-              f"pose(s), {len(mech['edges'])} edge(s) ({mech['shape']}; "
-              f"{_prov[0]}: {_prov[1]})")
+              f"pose(s), {len(mech['edges'])} edge(s)")
     from list_nets import board_floor_knobs as _bfk
     _floors_used = _bfk(args.board, args.clearance,
                         args.board_edge_clearance)[2]
@@ -610,11 +608,8 @@ def main(argv=None):
             _anchors, _skipped = _rc.anchor_blocks(
                 pcb, args.board, mech,
                 lost=_rc.lost_mechanical_refs(_rows))
-            _prov = _rc.mechanical_provenance(mech, args.board)
             _ctx['mechanical'] = {
                 'path': mech['path'], 'sha256': mech['sha256'],
-                'shape': mech['shape'], 'provenance': _prov[0],
-                'provenance_why': _prov[1],
                 'anchored': sorted(b['name'][len('mech:'):]
                                    for b in _anchors),
                 'skipped': _skipped}
@@ -662,7 +657,7 @@ def main(argv=None):
                                 for k, v in sorted(_m['skipped'].items()))
                 print(f"  {len(_m['anchored'])} mechanical ref(s) the "
                       f"grade anchors at their declared pose (compiled from "
-                      f"the file at grade time; P1 requires each locked "
+                      f"the file at grade time; each must be locked "
                       f"there, or seated by a fixed_poses entry)"
                       + (f"; skipped: {_sk}" if _sk else ''))
                 _fs = ', '.join(f"{k} ({v})" for k, v in
@@ -763,8 +758,7 @@ def main(argv=None):
                       f"-- bulk or filter caps with no IC to be near; "
                       f"graded by nothing, and correctly so")
             # #959 (#997): what the emitted intent leaves dark, and what a
-            # plan built from it will owe at P1 -- said at the moment of
-            # emission, not discovered laps later.
+            # plan built from it will owe -- said at the moment of emission.
             try:
                 from list_nets import board_floor_knobs
                 _c, _e, _k = board_floor_knobs(args.board, args.clearance,
@@ -1017,11 +1011,8 @@ def main(argv=None):
     if not result.complete:
         # #713 item 5: an ungraded DECLARED channel is not a pass, and the exit
         # code is what most callers actually branch on -- board_score (and
-        # check_complete through it) reads `errors` or the exit status, as the
-        # retired staged drivers did, and none reads GradeResult.passed.
-        # Measured on the tracked corpus: 5 of 22 boards reported pass:true
-        # and exit 0 in the default emit-then-grade round trip while
-        # `overlap_area` was never graded.
+        # check_complete through it) reads `errors` or the exit status, and
+        # none reads GradeResult.passed.
         # `--exit-zero` still suppresses the code without lying about `pass`,
         # exactly as it does for violations.
         print(f"  NOT FULLY GRADED: "

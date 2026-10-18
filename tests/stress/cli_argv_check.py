@@ -13,7 +13,7 @@ runs, and succeeds, in the GUI -- where the CLI ran nothing at all.
 `rejection(argv)` answers with the tool's real parser, not a copy of its flag
 list: the parser is captured in a CHILD process (it is built inside each
 tool's `main()` or `__main__` block, whose side effects -- the redo-manifest
-recorder, cli_banner's exit echo, the provenance registry -- must not run in
+recorder, cli_banner's exit echo -- must not run in
 the caller), at its first `ArgumentParser.parse_args` call, which is then
 handed each command line in turn. One child per tool, kept for the life of
 the calling process, so converting the whole corpus costs one parser build

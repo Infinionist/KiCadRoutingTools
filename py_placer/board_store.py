@@ -38,11 +38,9 @@ def sha256_file(path: str) -> str:
 
 
 class BoardStore:
-    """Boards by content hash, siblings included.
-
-    put()  -> sha, copying the board and every sibling under <root>/<sha>/
-    get()  -> a path to a checked-out copy, so a caller can mutate it freely
-    """
+    """Boards by content hash, siblings included: put() copies the board and
+    every sibling under <root>/<sha>/ (as board.kicad_pcb, board.kicad_pro,
+    ...) and returns the sha."""
 
     def __init__(self, root: str):
         self.root = root
@@ -66,23 +64,6 @@ class BoardStore:
                 shutil.copyfile(src, os.path.join(tmp, 'board' + ext))
         os.replace(tmp, d)                  # atomic: a killed run leaves .partial
         return sha
-
-    def has(self, sha: str) -> bool:
-        return os.path.isdir(self._dir(sha))
-
-    def get(self, sha: str, dest: str) -> str:
-        """Check a stored board out to `dest`, siblings alongside. Returns dest."""
-        d = self._dir(sha)
-        if not os.path.isdir(d):
-            raise KeyError(f"no board {sha[:12]} in {self.root}")
-        os.makedirs(os.path.dirname(os.path.abspath(dest)) or '.', exist_ok=True)
-        shutil.copyfile(os.path.join(d, 'board.kicad_pcb'), dest)
-        base = os.path.splitext(dest)[0]
-        for ext in SIBLING_EXT:
-            src = os.path.join(d, 'board' + ext)
-            if os.path.isfile(src):
-                shutil.copyfile(src, base + ext)
-        return dest
 
 
 class Ledger:

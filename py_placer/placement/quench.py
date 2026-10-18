@@ -41,11 +41,10 @@ from placement.legality import (CONTAINER_RATIO, CONTAINMENT_FRAC,
 
 ROTATIONS = [0.0, 90.0, 180.0, 270.0]
 
-#: Kill switch for the body-containment conjunct in `candidate_valid`. It is a
-#: HARD gate on real boards, so a way to isolate it without a git stash is
-#: worth the one line -- `KRT_NO_CONTAINMENT_GATE=1` restores the pre-2026-08
-#: behaviour exactly. Not a supported flag; a debugging lever.
-_CONTAINMENT_GATE = os.environ.get('KRT_NO_CONTAINMENT_GATE', '') != '1'
+#: The body-containment conjunct of `candidate_valid`, on. A module constant
+#: so a test can switch it off and show that this conjunct is the one that
+#: refuses a pose.
+_CONTAINMENT_GATE = True
 EPS_IMPROVE = 1e-6
 
 
@@ -56,7 +55,7 @@ def _seeder():
     """`placement.seeder`, imported on first use (it imports this module).
     `candidate_valid` reads the #1257 pad conjunct through the module
     object, so a test that patches `seeder._pad_copper_overhang` switches
-    the seat search's and the state's copies off together."""
+    the seat gate's and the state's copies off together."""
     global _SEEDER
     if _SEEDER is None:
         from . import seeder
@@ -189,14 +188,12 @@ def exclusive_spec(zones, parts, refs=None
     filter, so the seat gate and the GRADE -- the pair whose disagreement is an
     exit 4 on a correct board -- agree exactly.
 
-    THE `zone_containment` TERMS ARE DROPPED HERE, AND MUST NEVER REACH A SEAT
-    GATE. `pose_score.make_state` withholds `intent_zones` from every seat
-    state, because a MONOTONE containment gate would make a repair refuse its
-    own target: moving a part that is already outside its zone back into it.
-    `zone_exclusive` is the opposite shape -- a must-be-OUTSIDE claim, whose
-    target is clean by definition -- which is why it can be gated absolutely
-    and containment cannot. This filter is the one line that keeps that
-    argument true.
+    THE `zone_containment` TERMS ARE DROPPED HERE. Containment is gated only
+    through `intent_zones`, by `candidate_valid`'s MONOTONE `intent_ok` (a pose
+    inside the zone, or no further outside it than the part's current pose),
+    never absolutely. `zone_exclusive` is the opposite shape -- a
+    must-be-OUTSIDE claim, whose target is clean by definition -- which is
+    why it alone is gated absolutely here.
     """
     # A zone whose members did not RESOLVE binds nobody here. "Stranger" means
     # "not a member", so with an empty member set EVERY part on the board is
@@ -612,9 +609,8 @@ class _NearIndex:
     `tht_rect()` at its live pose, the two rects the courtyard pair tests
     read -- bucketed on a uniform grid, so the full-board sweeps of
     `violation_parts` and `candidate_valid` visit only the parts that can
-    come within the clearance. The seeder asks both at every candidate pose
-    against every part on the board; on a 272-part pile that sweep was 96%
-    of the seed.
+    come within the clearance. The placer asks both at every candidate pose
+    against every part on the board.
 
     A PRUNE, never a verdict. `near` returns a part unless its footprint
     lies at least `reach` from the query box along one axis. Every gap the
@@ -937,8 +933,7 @@ class _Part(_NearWatched):
         wants the normalised key normalises first). THE one place an entry is
         made after construction (#1206): the far side is turned cluster by
         cluster (`legality.rotate_far`), so no cache can flatten a FarSide
-        to its union box -- four inline copies of this fill (three in the
-        seeder, one in the swap) each could.
+        to its union box, which an inline copy of this fill could.
 
         An entry it adds can change what `rect()` answers for a part already
         AT that angle (a missing key falls back to the 0-degree bounds), so
@@ -1125,15 +1120,12 @@ class QuenchState:
                  # has to keep measuring independently of whatever a seat was
                  # gated on.
                  intent_zones: Optional[Sequence[Dict]] = None,
-                 # --- #797 declared EXCLUSIVE zones, for the SEAT predicate.
-                 # A SEPARATE parameter from `intent_zones` on purpose, and not
-                 # merely a different spelling of it: this one carries the
-                 # must-be-OUTSIDE slice alone, so it can be gated ABSOLUTELY
-                 # without arming the monotone containment gate that
-                 # `pose_score.make_state` keeps off the seat paths. Same
-                 # plain data (`floorplan.zone_entries`), empty by default;
-                 # zone_exclusive enforcement in `candidate_valid` stays where
-                 # #702 put it, in `intent_ok`.
+                 # --- declared EXCLUSIVE zones, for the SEAT predicate
+                 # (`exclusive_clear`). A SEPARATE parameter from
+                 # `intent_zones`: this one carries the must-be-OUTSIDE slice
+                 # alone, gated ABSOLUTELY, while `intent_zones` feeds
+                 # `candidate_valid`'s MONOTONE `intent_ok`. Same plain data
+                 # (`floorplan.zone_entries`), empty by default.
                  exclusive_zones: Optional[Sequence[Dict]] = None):
         bounds = pcb_data.board_info.board_bounds
         if bounds is None:
@@ -1143,8 +1135,8 @@ class QuenchState:
         self.usable = (bounds[0] + margin, bounds[1] + margin,
                        bounds[2] - margin, bounds[3] - margin)
         # Real board outline / cutouts (#456 item 2): `usable` is a bbox inset,
-        # so on an L-shaped outline or a board with interior cutouts it happily
-        # nudges parts into the notch or the hole. The gate measures against the
+        # so on an L-shaped outline or a board with interior cutouts it would
+        # admit parts in the notch or the hole. The gate measures against the
         # true Edge.Cuts rings and self-disables when the bbox inset is already
         # exact (single rectangular ring, no cutouts) or when the parser found no
         # usable ring at all -- in which case behaviour is unchanged.
@@ -1185,10 +1177,9 @@ class QuenchState:
             # courtyard (#1152).
             if not fp.pads:
                 # Zero-pad footprints (graphics-only mechanical parts, logos
-                # with a courtyard) used to be dropped entirely -- neither
-                # movable NOR an obstacle, so the optimizer walked parts onto
-                # them. With a drawn courtyard they now enter as locked static
-                # obstacles; without one there is no geometry to respect.
+                # with a courtyard) enter as locked static obstacles when
+                # they draw a courtyard; without one there is no geometry to
+                # respect.
                 if ref in courtyards:
                     self.parts[ref] = _Part(ref, fp, courtyards, True)
                     self.lock_reasons[ref] = (
@@ -1243,13 +1234,13 @@ class QuenchState:
                   f"{', '.join(self.outline_locked)} -- moving one would"
                   f" resize the board. Edit the part and the outline"
                   f" together in KiCad if it really must move.")
-        warn_missing_courtyards(no_courtyard, 'quench')
+        warn_missing_courtyards(no_courtyard, 'placement')
 
         # #701 intent keep-outs, resolved ONCE per state rather than once per
         # candidate pose. Neither an `allow` fnmatch against a reference nor
         # the set of faces a part occupies changes when the part moves, so the
         # only pose-dependent work left for the seat predicate is the geometry
-        # itself. A seat search evaluates thousands of poses per part, so this
+        # itself. The placer evaluates thousands of poses per part, so this
         # is the difference between a conjunct and a regression.
         #
         # `keepouts_for` is EMPTY on every board that declares no keep-out --
@@ -1257,8 +1248,7 @@ class QuenchState:
         # that emptiness, so the whole channel is inert unless asked for.
         # #1098: plus the mating region of every PCB-edge plug on the board
         # (derived from the footprint; a declared `mating:<ref>` wins), so
-        # no seat, nudge or swap puts a part on a USB tongue whatever the
-        # intent says. Empty on a board with no such plug.
+        # no move puts a part on a USB tongue whatever the intent says. Empty on a board with no such plug.
         from . import floorplan as _fpk
         # #1101: the board's OWN `courtyards_overlap` severity, read the way
         # check_assembly reads it (#1095, `legality.courtyard_severity_of`:
@@ -1278,12 +1268,11 @@ class QuenchState:
                                                    pcb_file)
         # A plug SEATED at its edge is the mechanical fact its keep-out is
         # derived from: moved inland, the region would go with it and the
-        # parts it kept off the tongue would be free to return (#1098
-        # review). So the search never moves it -- as with a KiCad lock.
-        # Only while it IS seated (`seated_plugs`): a plug a declared
-        # `mating:` keep-out names but which sits in the staging pile, or
-        # hangs across an edge, must stay free, or the seeder writes it back
-        # where it was and reports nothing unseated.
+        # parts it kept off the tongue would be free to return. So the
+        # placer never moves it -- as with a KiCad lock. Only while it IS
+        # seated (`seated_plugs`): a plug a declared `mating:` keep-out names
+        # but which sits in the staging pile, or hangs across an edge, must
+        # stay free, or it would stay where it is.
         for _ref in _fpk.seated_plugs(self.keepouts, pcb_data, pcb_file):
             if _ref in self.parts:
                 self.parts[_ref].locked = True
@@ -1312,8 +1301,8 @@ class QuenchState:
 
         # --- #797 declared EXCLUSIVE zones, for the SEAT predicate ----------
         # Resolved once per state, like `keepouts_for`, and for the same
-        # reason: membership and the side filter are pose-invariant, and a
-        # seat search evaluates thousands of poses per part.
+        # reason: membership and the side filter are pose-invariant, and the
+        # placer evaluates thousands of poses per part.
         #
         # DELIBERATELY NOT FOLDED INTO `_intent_spec`, and not counted in
         # `_intent_active`. Those drive `candidate_valid`'s MONOTONE
@@ -1672,7 +1661,7 @@ class QuenchState:
         """ABSOLUTE: every term at or below its own threshold.
 
         The SEAT policy. Placement from scratch has no incumbent worth
-        improving on (`seeder.pose_ok`), so a seat search demands cleanliness
+        improving on (`seeder.pose_ok`), so the seat gate demands cleanliness
         rather than non-worsening: a part whose current pose is fully inside a
         keep-out is REFUSED, which the monotone rule below would admit.
         """
@@ -1805,8 +1794,8 @@ class QuenchState:
         return v
 
     def intent_ok(self, ref, x, y, rot, rects=None) -> bool:
-        """MONOTONE: the QUENCH policy. A pose is admitted when every term is
-        clean, or -- TERMWISE -- no worse than the pose the part is in.
+        """MONOTONE: a pose is admitted when every term is clean, or --
+        TERMWISE -- no worse than the pose the part is in.
 
         Termwise and never summed, and never traded across terms: a part may
         not buy its way into keep-out B by leaving keep-out A.
@@ -1816,23 +1805,19 @@ class QuenchState:
         ("Only now, on a rejected candidate, is the incumbent's legality worth
         computing"). On a compliant board it is never computed at all.
 
-        NON-STRICT (`<=`), unlike the #456 off-board branch's strict compare.
-        That branch needs strictness because it hands out a licence to be
-        ILLEGAL; this one does not, because acceptance is still governed by
-        `current - best > EPS + min_gain_per_mm * dist`, a strictly decreasing
-        potential. The gate is a FILTER on which poses exist, not a descent
-        direction, so equality cannot cycle. Strictness here would instead be a
-        bug: `keepout_hit` reports a circle as a fabricated 1.0 marker, so
-        `<` would freeze a part already inside a circle unless it could clear
-        the whole circle in a single nudge.
+        NON-STRICT (`<=`), unlike the off-board branch's strict compare. That
+        branch needs strictness because it hands out a licence to be ILLEGAL;
+        this one does not: it is a FILTER on which poses exist, and the
+        caller's own acceptance rule chooses between them. Strictness here
+        would be a bug: `keepout_hit` reports a circle as a fabricated 1.0
+        marker, so `<` would freeze a part already inside a circle unless it
+        could clear the whole circle in a single move.
 
         THE TRADE THIS MAKES, STATED. Because the conjunct sits ABOVE the #456
         off-board escape branch and returns rather than setting a flag, a part
         that is OFF THE OUTLINE and whose only reachable homeward poses lie in
-        a declared keep-out stays off the outline. Measured on a fixture: the
-        ungated run brings it 1.50mm inside the usable inset, the gated run
-        leaves it 2.50mm outside. That trades a `keepout` finding for an
-        off-board part, and CLAUDE.md ranks a part whose pad copper lies
+        a declared keep-out stays off the outline. That trades a `keepout`
+        finding for an off-board part, and CLAUDE.md ranks a part whose pad copper lies
         outside the outline as the TOP-priority placement defect, because it
         converts one-for-one into unrouted and broken nets.
 
@@ -1887,8 +1872,8 @@ class QuenchState:
     def candidate_veto(self, ref, x, y, rot,
                        exclude: Optional[Set[str]] = None):
         """`None` when `candidate_valid` admits the pose, else `(check,
-        blocker)`: the conjunct that refused it (`VETO_CHECKS`) and the part
-        it was refused against, when there is one (#1113). It CALLS
+        blocker)`: the label of the conjunct that refused it and the part it
+        was refused against, when there is one. It CALLS
         candidate_valid, so the two can never disagree; the labels are
         written on candidate_valid's own rejection paths."""
         self._why = {}
@@ -2088,11 +2073,9 @@ class QuenchState:
                                _hit.b if _hit.a == ref else _hit.a)
         if legal:
             # BODY layer. A pose that buries this part inside another part's
-            # .Fab body is not a trade-off to be priced -- it is illegal, the
-            # same verdict reconstruct._pair_conflicts already returns for the
-            # assign/exchange ILP. Without it here, a seat search could put a
-            # charged part straight back inside the body it was charged
-            # for.
+            # .Fab body is not a trade-off to be priced -- it is illegal.
+            # Without it here, the placer could put a part straight back
+            # inside the body it was charged for.
             #
             # FAB currency, and only fab. The courtyard would be a false-veto
             # machine: four healthy corpus boards ship frac-1.0 COURTYARD
@@ -2310,8 +2293,8 @@ class QuenchState:
                         override=None) -> float:
         """`_tether_value`'s body, for term `t`, the gate's term `i`."""
         _fp, _groups = _FP_GROUPS or _load_fp_groups()
-        # `override` is one or two refs on every path but a group move, so
-        # membership is asked of IT, never by walking a term's (long) rail.
+        # `override` is one or two refs, so membership is asked of IT, never
+        # by walking a term's (long) rail.
         moving = override or {}
         if t.kind == 'decap':
             # The grade's LIVE election: the nearest chip on the cap's rail at
@@ -2432,11 +2415,6 @@ class QuenchState:
         else:
             idx = sorted({i for r in override
                           for i in self._tethers_of.get(r, ())})
-        if self._tether_override:
-            # A group move: the OTHER members move too, so they are posed at
-            # their shifted poses -- but only this call's refs' terms are
-            # checked; the other members are checked by their own calls.
-            override = dict(self._tether_override, **override)
         for i in idx:
             t = self._tether_terms[i]
             c = self._tether_value(i, override)
@@ -2454,8 +2432,7 @@ class QuenchState:
         one finding `grade_delta` counts (a cap, an IC's pin, a proximity
         pad), and an IC with one pin already past its limit must still be
         allowed to move in ways that keep every OTHER pin within limit.
-        `override` maps each moving ref to its candidate pose; a group
-        move's shifted members ride in `_tether_override`."""
+        `override` maps each moving ref to its candidate pose."""
         if not self._tether_active:
             return True
         return next(self._iter_tether_failures(override), None) is None
@@ -2467,17 +2444,9 @@ class QuenchState:
     def _incumbent_violation(self, ref, exclude=None):
         """The incumbent pose's violation, cached per (ref, exclude).
 
-        The `exclude` half is why this exists. `candidate_valid`'s rejection
-        path guarded the cache with `if exclude:` and fell through to an
-        uncached `violation_parts` whenever one was supplied -- and the seeder
-        ALWAYS supplies one (the unplaced pile), so on the path that matters
-        the cache never ran. Measured over 30s of a real seeding run: 61,119
-        incumbent-pose calls, of which 61,092 (99.96%) were exact repeats of
-        the same (ref, clearance, exclude). Each one walks the neighbours and
-        the outline; the comment three lines above the guard already said this
-        must not happen.
-
-        The key is a frozenset, so it costs O(|exclude|) hashing against a
+        Keyed on `exclude` too, so a caller that always passes one (the
+        unplaced pile) still hits the cache: each miss walks the neighbours
+        and the outline. The key is a frozenset, so it costs O(|exclude|) hashing against a
         full neighbour-and-outline sweep -- cheap by a wide margin. The whole
         cache is cleared on every move (see apply_move), which is what makes
         an incumbent answer safe to hold at all.
@@ -2536,8 +2505,10 @@ class QuenchState:
         return sd._pad_copper_off_board(self, ref, x, y, rot)
 
     def _edges_near(self, ref) -> list:
-        """Cached: the Edge.Cuts edges this part's reachable disk can touch.
-        Empty means the exact ring test is skippable for every pose it can take."""
+        """Cached: the Edge.Cuts edges this part can touch -- every edge for
+        a movable part (its travel is unbounded), only those at its seed pose
+        for a locked one. Empty means the exact ring test is skippable for
+        every pose it can take."""
         part = self.parts[ref]
         travel = 0.0 if part.locked else float('inf')
         # center= the pose ORIGIN: a part ROTATES about it, so an off-centre
@@ -2588,8 +2559,8 @@ class QuenchState:
         cannot be refused, and callers disclose that rather than assuming
         coverage they do not have.
 
-        Lazy: nothing is parsed until the first call, so every existing
-        quench/seeder path pays nothing.
+        Lazy: nothing is parsed until the first call, so a caller that never
+        asks pays nothing.
         """
         if self._fab_local is None:
             try:
@@ -2914,7 +2885,7 @@ class QuenchState:
         """The placement as `legality.GradedPart` records, for the graders.
 
         Lets a scorecard compute OO (overlap area) and OoB from the same
-        geometry and the same side rules the optimizer gated on, rather than
+        geometry and the same side rules the gate uses, rather than
         re-deriving courtyards and disagreeing about what legal means (#456).
         """
         return [legality.GradedPart(ref=ref, side=p.side, rect=p.rect(),
@@ -2941,8 +2912,8 @@ class QuenchState:
                 oob_amount += amt
                 oob_area += self.edge_gate.out_of_board_area(p.rect)
         # A container's RECT is not a body (fa10 P1): the grader dropped a
-        # pin frame's rect pairs and waives an outline's, so the optimizer's
-        # number leaves them out too -- rp2350's was mostly U8's frame.
+        # pin frame's rect pairs and waives an outline's, so this number
+        # leaves them out too -- rp2350's was mostly U8's frame.
         _cont = getattr(self, 'container_refs', ()) or ()
         overlap = legality.placement_overlap_area(
             [g for g in parts if g.ref not in _cont])
@@ -2950,10 +2921,8 @@ class QuenchState:
                'oob_count': oob_count, 'oob_amount': oob_amount,
                'oob_area': oob_area, 'hpwl': self.hpwl()}
         if getattr(self, 'courtyards_ignored', False):
-            # #1104: the project waives courtyard overlap (#1101's
-            # predicate), so it is not a legality cost here -- the decap
-            # rung, the reseat/evict gates and the portfolio all compare this
-            # key, and each refused the moves the waiver exists for. The
+            # The project waives courtyard overlap
+            # (`courtyards_ignored`), so it is not a legality cost here; the
             # measurement is kept, under its own name, for disclosure.
             out['overlap_area'] = 0.0
             out['overlap_area_waived'] = overlap
@@ -3062,7 +3031,6 @@ class TetherGateView:
         self._tgap = {}
         self._posed = {}
         self._bounds = {}
-        self._tether_override = None
         self._tether_bodies = None
         self.tethers = dict(tethers or {})
         if self.tethers:

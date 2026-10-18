@@ -11,11 +11,8 @@
     place_pose.py BOARD OUT replicate --from CH1 --to CH2 --to CH3   # #1211
 
 Every verb writes through `placement.writer.write_placed_output` -- the same
-writer `place_simple` uses -- carries the sibling `.kicad_pro` / `.kicad_dru`
-(#441), and runs inside `declare_lever('place_pose.py')`, so its writes are
-attributed to it rather than to a hand script. The
-provenance row is recorded when the finished candidate is promoted onto OUT,
-not when it is staged (#960).
+writer `place_simple` uses -- and carries the sibling `.kicad_pro` /
+`.kicad_dru` (#441).
 
 SEVERAL VERBS IN ONE CALL describe ONE arrangement: every op is resolved
 against the INPUT board and written in a single pass, so no op sees another's
@@ -88,9 +85,7 @@ VERBS = ('set', 'rotate', 'face', 'lock', 'unlock', 'replicate')
 
 #: The verbs and THEIR flags. `main()` parses with the verb-less parser, so
 #: what `--help` renders is THIS TEXT -- the subparsers exist for a reader who
-#: goes looking through the parser object (and for
-#: `tests/test_431_skill_commands.py`, which does exactly that), not for the
-#: help screen. (`place_pose.py` is deliberately absent from
+#: goes looking through the parser object, not for the help screen. (`place_pose.py` is deliberately absent from
 #: `krt_capabilities.FLAG_SCRIPTS` for the same reason -- that contract is
 #: "every flag this script accepts is visible in --help as an option and
 #: accepted at the top level", and a per-verb flag is neither.)
@@ -159,9 +154,9 @@ exact points given -- so --near / --snap need a call with ONE pose op):
 def build_parser(with_verbs=True):
     """The CLI's parser.
 
-    `with_verbs` registers the verb parsers as subparsers -- which is how
-    `tests/test_431_skill_commands.py` finds `--rot` / `--near` / `--relative`
-    when it checks that a documented flag exists. `main()` asks for the parser
+    `with_verbs` registers the verb parsers as subparsers -- which is how a
+    reader of the parser object finds `--rot` / `--near` / `--relative` when
+    it checks that a documented flag exists. `main()` asks for the parser
     WITHOUT them, because a subparsers action consumes the rest of the line at
     the first verb and this tool takes several in one call; so what `--help`
     actually renders is the epilog, not a subparser section.
@@ -244,10 +239,8 @@ def _verb_parsers(sub=None):
     even though `main()` parses each segment by hand (several verbs in one
     call, which a subparsers action cannot express -- it consumes the rest of
     the line at the first one). The registration is not decoration: it is how
-    `--rot` / `--near` / `--relative` are discoverable, and both
-    `tests/test_431_skill_commands.py` (documented flags must exist) goes
-    looking for them through the subparsers action -- `--help` itself renders
-    the epilog, since `main()` builds the verb-less parser. The
+    `--rot` / `--near` / `--relative` are discoverable through the
+    subparsers action -- `--help` itself renders the epilog, since `main()` builds the verb-less parser. The
     parsers registered there are the SAME objects the split-segment path
     parses with, so a flag cannot be documented in one and honoured by the
     other.
@@ -787,11 +780,5 @@ def _report(summary):
 
 
 if __name__ == "__main__":
-    # Declare the lever for the WHOLE run, so every pose this CLI writes
-    # carries its name (#903). place_pose.py is in
-    # placement.provenance.LEVER_REGISTRY: an armed unaided regime accepts
-    # this tool and still refuses the hand script it replaces.
-    from placement.provenance import declare_lever
-    with declare_lever('place_pose.py', sys.argv):
-        import cli_banner; cli_banner.install()  # CMD/EXIT self-echo (run-3 B1)
-        sys.exit(main())
+    import cli_banner; cli_banner.install()  # CMD/EXIT self-echo
+    sys.exit(main())

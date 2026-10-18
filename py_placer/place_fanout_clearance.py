@@ -40,8 +40,7 @@ import _path  # noqa: F401  (py_placer -> py_router/py_tools on sys.path)
 
 import math
 import os
-import sys  # declare_lever() below reads sys.argv -- without this the module
-             # raised NameError on EVERY invocation, --help included (run 20)
+import sys
 
 from kicad_parser import parse_kicad_pcb
 import routing_defaults as defaults
@@ -386,11 +385,6 @@ Examples:
 
 
 if __name__ == "__main__":
-    # In LEVER_REGISTRY, so it must DECLARE -- an entry that writes
-    # poses without declaring makes an armed regime refuse the engine
-    # itself, which is the failure the registry exists to prevent.
-    from placement.provenance import declare_lever
-    with declare_lever('place_fanout_clearance.py', sys.argv):
-        from console_encoding import enable_utf8_console
-        enable_utf8_console()  # cp1252-safe non-ASCII prints (issue #152)
-        sys.exit(main())
+    from console_encoding import enable_utf8_console
+    enable_utf8_console()  # cp1252-safe non-ASCII prints (issue #152)
+    sys.exit(main())

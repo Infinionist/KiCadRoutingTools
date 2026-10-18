@@ -248,7 +248,7 @@ def beautify_labels(pcb_data, pcb_file: Optional[str],
 
     Pure computation: nothing is written (that is `write_label_output`'s
     job), so the GUI can apply the same results directly to a live board.
-    `cancel_check`/`progress_callback` follow the quench protocol (zero-arg
+    `cancel_check`/`progress_callback` follow the engines' protocol (zero-arg
     cancel probe; `(current, total, label)` progress).
 
     Returns ``{'results': [LabelResult...], 'summary': {...}}``.

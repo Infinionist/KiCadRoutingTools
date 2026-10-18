@@ -54,7 +54,7 @@ position (sonde_u's DSUBs put the text 21.55 mm along the line), and it
 never names a face alone: a marker that agrees makes the body's face STRONG
 (basis `+marker`), one that contradicts makes it abstain -- never fail --
 and no marker leaves today's reading. Calibrated on KiCad 10's 154 marked
-stock footprints (`tests/measure_1245_edge_marker.py`): it agrees with all
+stock footprints: it agrees with all
 73 strong body faces at every quarter turn, agrees with 75 weak ones and
 vetoes one (the Pico W module's RF-edge marker). The three wrong jacks above
 draw no marker, so for them the weak tier is still the only guard.
@@ -102,7 +102,7 @@ _UNIT = {'+x': (1.0, 0.0), '-x': (-1.0, 0.0),
 #: (`marker_face_local`)...
 MARKER_NEARER_RATIO = 2.0
 #: ...and at least this much nearer (mm). Measured on KiCad 10's 154 marked
-#: stock footprints (`tests/measure_1245_edge_marker.py`): no rival there is
+#: stock footprints: no rival there is
 #: nearer than 2.57 times (Amphenol 12401948E412A) or 2.15 mm (Technik
 #: TWP-4002D-H3) farther than the line read, so neither floor binds on the
 #: library; they are there for a footprint whose text sits between two lines.

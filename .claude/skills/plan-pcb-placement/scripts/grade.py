@@ -2,7 +2,7 @@
 """Independent grade of a plan-pcb-placement board -- never the agent's own claim.
 
     python3 -X utf8 .claude/skills/plan-pcb-placement/scripts/grade.py BOARD \
-        --baseline INPUT.kicad_pcb [--intent INTENT.json] [--mode full|place|route] \
+        --baseline INPUT.kicad_pcb [--intent INTENT.json] [--mode full|place] \
         [--label NAME] [--out-dir DIR]
 
 Runs the graders the skill's verifier runs, at the board's own .kicad_pro
@@ -10,7 +10,6 @@ floor, and writes `<out-dir>/grade_<label>.json` with the headline numbers
 and each tool's exit code. Grade every arm of a comparison with this same
 script at the same commit, or the numbers do not compare.
 
-`--mode route` also checks that no footprint moved against --baseline.
 Exit 0 when the mode's DONE conditions all hold, 4 when they do not, 2 on
 usage.
 """
@@ -40,17 +39,6 @@ def _load(path):
             return json.load(fh)
     except (OSError, ValueError):
         return None
-
-
-def _poses(board):
-    sys.path.insert(0, os.path.join(ROOT, 'py_router'))
-    from kicad_parser import parse_kicad_pcb
-    pcb = parse_kicad_pcb(board)
-    # `f.pads` on purpose (#1143): these are the poses a run can MOVE, and
-    # place_simple moves a part whose only pads are paste/mask apertures.
-    return {k: (round(f.x, 4), round(f.y, 4), round((f.rotation or 0) % 360, 3),
-                f.layer)
-            for k, f in pcb.footprints.items() if f.pads}
 
 
 def grade(board, baseline, intent=None, mode='full', label=None, out_dir=None,
@@ -130,7 +118,7 @@ def grade(board, baseline, intent=None, mode='full', label=None, out_dir=None,
         and not out['keepout_copper'] \
         and (not intent or out.get('floorplan_errors') == 0)
 
-    if mode in ('full', 'route'):
+    if mode == 'full':
         sj = os.path.join(tmp, 'score.json')
         out['board_score_rc'], _ = _run(['py_tools/board_score.py', board,
                                          *iflag, *spec_args, '--baseline', baseline,
@@ -165,12 +153,6 @@ def grade(board, baseline, intent=None, mode='full', label=None, out_dir=None,
         done = done and out['blocking'] == 0 and out['check_complete'] == 'DONE' \
             and out['check_connected_rc'] == 0 and out['check_drc_rc'] == 0
 
-    if mode == 'route':
-        before, after = _poses(baseline), _poses(board)
-        moved = sorted(k for k in before if after.get(k) != before[k])
-        out['moved_parts'] = moved
-        done = done and not moved
-
     out['done'] = bool(done)
     dst = os.path.join(out_dir, f'grade_{label}.json')
     with open(dst, 'w', encoding='utf-8') as fh:
@@ -184,7 +166,7 @@ def main(argv=None):
     ap.add_argument('--baseline', required=True,
                     help='the input board the run started from')
     ap.add_argument('--intent', default=None)
-    ap.add_argument('--mode', choices=('full', 'place', 'route'), default='full')
+    ap.add_argument('--mode', choices=('full', 'place'), default='full')
     ap.add_argument('--label', default=None)
     ap.add_argument('--out-dir', default=None,
                     help="default: the board's own directory")
@@ -203,7 +185,7 @@ def main(argv=None):
                      spec)
     keys = ('done', 'blocking', 'unrouted', 'broken', 'drc', 'vias',
             'copper_mm', 'segments', 'check_complete', 'check_complete_authored',
-            'assembly_verdict', 'floorplan_errors', 'moved_parts')
+            'assembly_verdict', 'floorplan_errors')
     print(json.dumps({k: out.get(k) for k in keys if k in out}))
     print('wrote', dst)
     return 0 if out['done'] else 4

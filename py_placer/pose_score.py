@@ -2,7 +2,7 @@
 """Rank candidate (x, y, rotation) poses for a part, nearest legal first.
 
     legality of a pose      QuenchState.candidate_valid
-    the rotations to try    quench.ROTATIONS = [0, 90, 180, 270]
+    the rotations to try    ROTATIONS = (0, 90, 180, 270)
     does it actually route  route.py --nets <affected> --json-out
 
 `rank_poses` sweeps a lattice around the part's pose, drops every pose the
@@ -42,25 +42,25 @@ def _offsets(radius: float, step: float):
 def make_state(pcb_data, board_path: str, *, clearance: float = 0.25,
                board_edge_clearance: float = 0.55, extra_locked_refs=None,
                keepouts=None, intent_zones=None, exclusive_zones=None):
-    """A QuenchState used as an oracle -- built, queried, thrown away."""
+    """A QuenchState for `pcb_data`: its parts, their poses and the seat
+    gate. `place_simple` keeps one for the whole run; the pose tools build
+    one per call."""
     from placement.quench import QuenchState
     return QuenchState(
         pcb_data=pcb_data, pcb_file=board_path,
         clearance=clearance, board_edge_clearance=board_edge_clearance,
         extra_locked_refs=extra_locked_refs,
-        # #701: the intent's keep-outs, for the SEAT predicate. Passed through
-        # rather than read here, because this factory has no intent -- every
-        # caller that has one hands it over, and a caller that has none gets
-        # the inert default.
+        # The intent's keep-outs, for the seat gate. Passed through rather
+        # than read here: this factory has no intent, so every caller that
+        # has one hands it over, and a caller that has none gets the inert
+        # default.
         keepouts=keepouts,
-        # #702: declared zones, same passthrough. A caller that REPAIRS a part
-        # already outside its zone must not pass them: the zone gate is
-        # monotone against the pose the part is in, so it would refuse the
-        # repair's own target.
+        # Declared zones: containment, gated MONOTONE by `candidate_valid`
+        # (`QuenchState.intent_ok`) -- a pose inside the zone, or no further
+        # outside it than the part's current pose.
         intent_zones=intent_zones,
-        # #797: the EXCLUSIVE slice, a must-be-OUTSIDE claim whose target is
-        # clean by definition, so an absolute gate on it cannot refuse a
-        # repair its own target. See `quench.exclusive_spec`.
+        # The EXCLUSIVE slice, a must-be-OUTSIDE claim gated absolutely
+        # (see `quench.exclusive_spec`).
         exclusive_zones=exclusive_zones)
 
 
@@ -114,9 +114,8 @@ def veto_phrase(dropped_by: Dict, top: int = 3) -> str:
 
 def rank_poses(pcb_data, board_path: str, ref: str, *, radius: float = 2.0,
                step: float = 0.5, rotations: Sequence[float] = ROTATIONS,
-               limit: int = 12, allow_rotations: bool = True,
-               state=None, diagnostics: Optional[Dict] = None,
-               cancel_check=None,
+               limit: int = 12, state=None,
+               diagnostics: Optional[Dict] = None,
                **state_kw) -> List[Dict]:
     """Legal poses for `ref`, nearest its current pose first.
 
@@ -169,7 +168,7 @@ def rank_poses(pcb_data, board_path: str, ref: str, *, radius: float = 2.0,
             f"and lock it", code=4, why=why)
 
     x0, y0, rot0 = part.x, part.y, part.rot
-    rots = list(rotations) if allow_rotations else [rot0]
+    rots = list(rotations)
 
     scored = []
     dropped_total = 0
@@ -195,10 +194,6 @@ def rank_poses(pcb_data, board_path: str, ref: str, *, radius: float = 2.0,
         # THE SWEEP, which `limit` does not bound: it truncates the sorted
         # RESULT on the last line of this function. `_offsets` yields flat
         # POINTS, not rings, so this runs once per candidate position.
-        if cancel_check is not None and cancel_check():
-            if diagnostics is not None:
-                diagnostics['stopped_early'] = True
-            break
         for rot in rots:
             x, y = x0 + dx, y0 + dy
             evaluated += 1

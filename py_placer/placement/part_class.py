@@ -1,14 +1,4 @@
-"""What determines this part's position? A pose-INDEPENDENT class (run-4 A).
-
-Run 3 shipped its largest placement error because no machine-readable
-component classification existed: the USB-C receptacle J1 sat 15.8 mm
-interior of its true edge slot and every instrument called it fine -- the
-lock advisor demanded a GEOMETRIC signal for high confidence, so a
-*misplaced* edge part was demoted exactly when it mattered; `--emit-intent`
-declared edge connectors from *current overhang only*, so it could only
-re-declare parts that were already right; and the slide switch SW1's
-by-design actuator overhang read as a defect all run until a hand-authored
-intent said otherwise.
+"""What determines this part's position? A pose-INDEPENDENT class.
 
 The class question is pose-independent -- "what determines where this part
 belongs" is a property of what the part IS (footprint, pin functions, ref
@@ -19,7 +9,7 @@ Two edge classes with deliberately different strength:
 
 - ``edge_receptacle`` -- mates THROUGH the board edge (USB, HDMI, RJ45,
   D-sub, card slots, jacks). An interior pose is mechanically implausible:
-  the plug could not reach it. This is the R1 test run 3 failed to apply.
+  the plug could not reach it.
 - ``edge_actuator`` -- a switch/button whose actuator MAY overhang the
   edge by design (tigard SW1). Many switches are legitimately interior
   (tactile buttons), so this class makes NO implausibility claim; its value
@@ -28,13 +18,12 @@ Two edge classes with deliberately different strength:
 Generic connector keywords (jst, molex, pinheader, header, socket,
 terminal) deliberately do NOT map to an edge class: a JST wire-to-board
 connector (tigard J7) is legitimately interior, and classifying it edge
-would misplace it -- the false-positive guard the generalization gates
-measure corpus-wide.
+would misplace it.
 
 Thresholds derive from the board or the part, never from any one board:
 ``seat_tol`` defaults to 0.5 mm and callers should pass
 ``max(0.5, 2 * grid_step)``; overhang bands come from the part's own
-extents. (Generalization requirement: no tigard constants.)
+extents.
 """
 from __future__ import annotations
 
@@ -118,12 +107,11 @@ _PREFIX_RE = re.compile(r'^([A-Za-z]+)')
 
 SEAT_TOL_MM = 0.5      # default; callers pass max(0.5, 2*grid_step)
 
-#: run-23: past this distance from every edge, a `connector_affinity` part is
-#: flagged INTERIOR -- by the intent grade (advisory) and the review sheet,
-#: the SAME constant so the two never disagree. 3.0mm is a cable-clearance
-#: scale, not a board-derived number: within it a plug can usually still
-#: reach over the edge parts; run 23's J4 sat 6.03mm interior (flagged),
-#: J2/J5/J6/J7 sat 0.7-2.9mm from their edges (declared, not flagged).
+#: Past this distance from every edge, a `connector_affinity` part is flagged
+#: INTERIOR -- by the intent grade (advisory) and the review sheet, the SAME
+#: constant so the two never disagree. 3.0mm is a cable-clearance scale, not
+#: a board-derived number: within it a plug can usually still reach over the
+#: edge parts.
 INTERIOR_AFFINITY_MM = 3.0
 
 
@@ -189,15 +177,14 @@ def classify_part(fp, ref: str) -> PartClass:
               else f"reference prefix {pref!r} (convention only)"]
         return PartClass('edge_actuator', 'medium' if fp_act else 'low',
                          tuple(ev))
-    # run-23: the WEAK connector class. Generic connectors (headers, JST,
-    # molex, terminal blocks) deliberately make NO edge claim -- a JST
-    # wire-to-board part is legitimately interior (the guard above stands) --
-    # but they are still where a human plugs something in, and run 23 seated
-    # J2/J5/J6/J7 mid-board with NO instrument able to say so, because a part
-    # with no class is invisible to every intent rule. `connector_affinity`
-    # exists to be DECLARED and graded at ADVISORY severity: a mid-board pose
-    # is a flag for the boundary review, never an error, and pose_plausible
-    # makes no claim for it.
+    # The WEAK connector class. Generic connectors (headers, JST, molex,
+    # terminal blocks) make NO edge claim -- a JST wire-to-board part is
+    # legitimately interior (the guard above stands) -- but they are still
+    # where a human plugs something in, and a part with no class is invisible
+    # to every intent rule. `connector_affinity` exists to be DECLARED and
+    # graded at ADVISORY severity: a mid-board pose is a flag for the
+    # boundary review, never an error, and pose_plausible makes no claim
+    # for it.
     if any(k in name for k in CONNECTOR_FP) and not is_ic_pkg:
         return PartClass('connector_affinity', 'low',
                          ('connector-family footprint name; no edge claim',))
@@ -223,11 +210,7 @@ def mechanical_parts(pcb_data) -> Dict[str, Dict]:
     a placed watchy and 1 on the same board piled, and 10 -> 0 on ulx3s,
     because its two-channel promotion needs a geometric rule to fire.
 
-    It was `tests/stress/stage_unaided.classify_exempt`, which is a stress
-    harness -- so the one artifact naming a board's mechanical parts was
-    something no product path could read. Both callers project from this:
-    the stager wants `(x, y, rot)` and a reason, the brief wants the class
-    and its evidence.
+    Callers project from this: the brief wants the class and its evidence.
 
     `at` is REPORTED, never asserted. On a pile it is the pile coordinate,
     which is the honest answer -- the caller decides what that is worth.

@@ -547,7 +547,7 @@ def via_pitch(pcb_data, pcb_file: Optional[str] = None,
             import list_nets
             # The caller may already have read them -- `escape_ledger` does,
             # for the lane pitch. A second read per ledger is ~12ms against a
-            # ~46ms ledger, on a path `portfolio` grades once per candidate.
+            # ~46ms ledger.
             dr = (design_rules if design_rules is not None
                   else list_nets.read_design_rules(path))
             for key, val in want.items():
@@ -610,9 +610,7 @@ def signal_layer_count(pcb_data, *, signal_layers: Optional[int] = None,
 
     The part's OWN layer is always counted, plane or not, because `supply`
     already measures that layer directly; this only decides how many OTHERS
-    exist. Never returns None: `tests/test_board_brief.py` fails on any
-    undeclared None leaf, with a message about position dependence that reads
-    as unrelated.
+    exist. Never returns None.
     """
     cu = [l for l in (getattr(getattr(pcb_data, 'board_info', None),
                               'copper_layers', None) or [])
@@ -1018,18 +1016,12 @@ def assign_faces(fp, geom, *, lane_mm, fallback_rect=None,
                  through_row: bool = False) -> FaceAssignment:
     """THE face rule: which face each of `fp`'s pads escapes through.
 
-    One function because the disagreement #850 names is not in `face_of`'s
-    arithmetic -- it is in what the caller PAIRS with it. Three copies of this
-    loop existed, and each paired differently:
-
-    * `part_escape` measured each pad's own copper box against
-      `CopperGeometry.copper`, with `max(pad_pitch/2, INTERIOR_EPS)` tolerance.
-    * `routability.face_lane_ledger` measured pad CENTRES against the
-      hole-inclusive `PartPads.extent`, with no tolerance and no interior
-      bucket -- so every netted pad was demand on some face, a BGA's inner
-      balls included.
-    * `tests/stress/demand_halo_study.py` carried a third, whose own docstring
-      called that "the defect #841 exists to remove".
+    One function because what matters is not `face_of`'s arithmetic but what
+    the caller PAIRS with it: each pad's own copper box against
+    `CopperGeometry.copper`, with `max(pad_pitch/2, INTERIOR_EPS)` tolerance
+    and an interior bucket -- not pad CENTRES against the hole-inclusive
+    `PartPads.extent`, which makes every netted pad demand on some face, a
+    BGA's inner balls included.
 
     Getting the pairing wrong is not a small error: measure a pad's CENTRE
     against a copper box and every pad moves half its own width inside the
@@ -1239,13 +1231,9 @@ def span_eaten(lo, hi, band, horizontal, obstacles):
     more than fully blocked, and an over-100% total silently becomes "supply 0"
     rather than an error. The witness is ulx3s H4 south: TWO neighbours
     covering 6.16mm of a 5.50mm face -- summed that is supply 0, unioned it is
-    3.71mm and supply 4. (It used to be glasgow_revC's J1 east, nine
-    neighbours covering 12.42mm of a 9.64mm face. Once both ledgers charge pad
-    COPPER rather than the courtyard or the bbox of pad centres (#841), that
-    face is supply 8 either way and glasgow has no discriminating face left;
-    `tests/test_835_escape_side_aware.py` records the re-scan. Note also that
-    `face_lane_ledger`'s `eaten_by` is truncated to the top 8 for display, so
-    counting THAT list undercounts the obstruction -- ask this function.)
+    3.71mm and supply 4. (Note that `face_lane_ledger`'s `eaten_by` is
+    truncated to the top 8 for display, so counting THAT list undercounts the
+    obstruction -- ask this function.)
 
     Corpus-wide over the git-tracked boards, at the pad-copper rect: 60 of the
     388 faces the ESCAPE ledger reports have neighbours covering the same
@@ -1260,9 +1248,8 @@ def span_eaten(lo, hi, band, horizontal, obstacles):
     the union stands: every interval is already clipped to [lo, hi] as it is
     built, so their union is a subset of [lo, hi] and cannot measure more than
     `hi - lo`. It is kept because it is the guard that binds the moment the
-    union is removed, and a mutation that drops it is recorded as an expected
-    survivor rather than deleted (`tests/mutate_834_835.py`). Do not read it as
-    the thing that fixed the 12.42-on-9.64 number; the union is.
+    union is removed; the union is what measures overlapping neighbours
+    once.
     """
     intervals: List[Tuple[float, float, str]] = []
     for ref, (oxmin, oymin, oxmax, oymax) in obstacles:
@@ -1442,12 +1429,12 @@ class EscapeBand(NamedTuple):
     `source` is the term that decided: 'caller' (an explicit override),
     'lanes' (`lanes * lane_mm`), or 'floor'. An exact tie reports 'lanes',
     because a floor equal to the scaled term decides nothing -- which is not a
-    pedantic distinction: at the basis `tests/test_run8_starved_face_gate.py`
-    uses (track 0.127, clearance 0.09, grid 0.05) the quantized pitch is 0.25
+    pedantic distinction: at track 0.127, clearance 0.09 and grid 0.05 the
+    quantized pitch is 0.25
     and `4 * pitch` is exactly 1.0, so the floor TIES there and does not bind,
     while at the basis the shipped CLI resolves for the same board (track
     0.0889, grid 0.1) the pitch is 0.20, `4 * pitch` is 0.80, and it DOES.
-    Same band, two different reasons, and #847 is about only one of them.
+    Same band, two different reasons.
     """
     mm: float
     source: str          # 'caller' | 'lanes' | 'floor'

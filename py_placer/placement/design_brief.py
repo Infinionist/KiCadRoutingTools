@@ -1586,7 +1586,7 @@ def compile_with_consequences(brief: 'Brief', pcb=None,
                               board_path: str = ''):
     """`compile_brief` and then `connector_consequences`: what every CLI
     that reads a brief against a board calls, so the emit path, the grade
-    path, `--plan-only`, `board_brief` and P1 derive the SAME clauses -- a
+    path, `--plan-only` and `board_brief` derive the SAME clauses -- a
     consequence only the emit path derived would never reach drift."""
     frag, rep = compile_brief(
         brief, board_refs=sorted((pcb.footprints or {}) if pcb else ()),
@@ -2414,8 +2414,7 @@ def clause_coverage(report: Dict, intent_doc: Dict, *,
     # A drift id no row above names: the intent carries a consequence of a
     # clause the brief no longer states at all -- a derived keep-out whose
     # envelope was removed, a setback whose mount_mode was. Without a row it
-    # reached neither P1's refusal nor P-close's, which both read these rows,
-    # while the placer kept enforcing it (round-2 verifier, S5).
+    # would reach no report that reads these rows.
     have = {c['id'] for c in clauses}
     for cid in sorted(drift_set - have):
         rec = parse_clause_id(cid) or {}

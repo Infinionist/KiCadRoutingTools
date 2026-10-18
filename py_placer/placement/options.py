@@ -1,29 +1,16 @@
 """When a board cannot hold its parts, say so WITH THE NUMBER.
 
 `grow_board` measures the board's area utilisation per face and what outline
-would hold the parts; `floorplan`'s overfull and crowded rules read it.
+would hold the parts; `floorplan`'s overfull and crowded rules read it. A board
+that is genuinely too small is reported with the measured number, so the
+person reading it knows what to change.
 
-The prohibition this serves is written down in six places -- docs/floorplan-
-intent.md:29-40, floorplan.py:14-19, check_floorplan.py:19-24,
-rule_envelope:692, and both placement skills -- and every one of them says the
-same sentence:
+`out_of_board_area` is not that number: a part sitting inside a cutout scores
+0.0 area, which is why `floorplan` disqualifies it as a budget key.
 
-    the honest response to a board that is genuinely too small is to say so
-    with the measured number and stop
-
-The number was never computed. `out_of_board_area` is the nearest quantity and
-`floorplan.py:347-360` explicitly DISQUALIFIES it as a budget key, because a
-part sitting inside a cutout scores 0.0 area. Nothing sums a required area,
-nothing re-runs a lane ledger at another layer count, and nothing converts a
-face deficit into the millimetres of span that would clear it. So a run that
-hits a genuinely too-small board can only stop, and the person reading it has
-to go and measure by hand what to change.
-
-THIS REPORTS; IT NEVER REFUSES AND NEVER ACTS. That is the house pattern from
-the retired `placement_driver._guard_congestion` -- "ok is False ONLY when the
-evidence is missing; the numbers themselves never refuse... The executor
-decides" -- and from `lock_advisor`, which prints a paste-ready `--lock` and
-locks nothing, because a wrong auto-action fails invisibly.
+THIS REPORTS; IT NEVER REFUSES AND NEVER ACTS: `ran` is False only when the
+evidence is missing, and the numbers themselves never refuse. A wrong
+auto-action fails invisibly.
 
 Nothing here writes Edge.Cuts or a stackup. The only two things in the tree
 that write an outline stay `kicad_writer.strip_zero_length_edge_cuts` and the

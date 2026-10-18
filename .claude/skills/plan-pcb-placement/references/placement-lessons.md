@@ -60,9 +60,8 @@ six others.
   - *Apply:* place a part where its pads join each net's tree cheapest: next to the
     nearest pad of each net, not in the middle of all its partners.
   - *Measured on a route:* aiming parts this way, pricing the links between groups as
-    each net's tree, and the spacing below (the grouped seeder before `place_simple`;
-    its wire term is this tree), routed
-    the grouped candidates of 10 corpus boards (six each, by each board's recorded
+    each net's tree, and the spacing below (`place_simple`'s wire term is this tree)
+    routed the grouped candidates of 10 corpus boards (six each, by each board's recorded
     chain) with blocking 4.2 → 3.2, 6% fewer vias and 5% less copper; vias were lower
     on 9 of the 10 boards.
 - **Humans do not pay much wire to avoid a straight-airwire crossing.**

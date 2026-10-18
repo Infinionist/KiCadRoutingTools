@@ -65,7 +65,7 @@ import contextlib
 import json
 import os
 import sys
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 SCHEMA = 1
 
@@ -74,12 +74,11 @@ SCHEMA = 1
 # Roles. The table and `infer_role` live in `placement.roles` (#1249): the
 # decap owner predicate (`placement.groups`) asks whether a part is a
 # regulator, and the placement engine must not import py_tools -- so the one
-# table moved where both can read it. Re-exported here for this tool's
-# callers.
+# table lives where both can read it. `infer_role` is re-exported here for
+# this tool's callers.
 # ---------------------------------------------------------------------------
 
-from placement.roles import (  # noqa: E402,F401
-    _ROLE_FP, _ROLE_PREFIX, _prefix, infer_role)
+from placement.roles import infer_role  # noqa: E402,F401
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +296,7 @@ def build_context(pcb_data, pcb_file: str, *, clearance: float,
         if ref in declared_roles:
             inferred = role['role']
             role = {'role': declared_roles[ref], 'source': 'brief',
-                    'evidence': [f'declared in the design brief']}
+                    'evidence': ['declared in the design brief']}
             if inferred not in ('unknown', declared_roles[ref]):
                 role['contradicts_inference'] = inferred
 

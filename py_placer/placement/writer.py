@@ -1325,55 +1325,14 @@ def write_placed_output(input_file: str, output_file: str,
             close = content.rindex(')')
             content = content[:close] + '\n'.join(elements) + '\n)' + content[close+1:]
 
-    # THE SINGLE POSE FUNNEL, and it must run BEFORE the write. Every
-    # footprint `(at ...)` rewrite in py_placer comes through here, so this is
-    # the one place that can answer "was every pose in this board produced by
-    # a registered engine lever?". Outside an unaided regime it is a no-op and
-    # the behaviour is byte-identical; inside one, an undeclared write raises,
-    # and the row records the input's and the output's pose digests -- the
-    # links `provenance_audit` walks from the staged board (#972).
-    # A tool that copies or renames a board built elsewhere into place
-    # records that delivery too, via `provenance.recorded_delivery` (#973).
-    #
-    # It used to raise AFTER `f.write(content)`, which made the refusal
-    # decorative: the poses were already on disk, so the "gate" reported a
-    # violation about a file it had just helped produce. Refusing means not
-    # writing.
-    #
-    # NOTE the qualifier -- "in py_placer". The GUI writes poses through
-    # pcbnew (`ai_plan._run_place_plan`, `fanout_gui`, `placement_gui`) and
-    # does NOT come through here, so a GUI-driven placement leaves no row.
-    # See provenance.record_write for what that means for a verdict.
-    # #829 tripwire: would this write change the board OUTLINE? The per-ref
-    # gate above answers "may this footprint move"; this answers the question
-    # the placement stack's contract actually makes -- "is the outline the same
-    # board it was" -- and it catches a route no gate anticipated.
-    #
-    # BEFORE THE WRITE, comparing the ORIGINAL text against the in-memory
-    # `content`. Both halves of that matter and the first draft got both wrong:
-    #
-    #  * Raising after `f.write` left the resized board sitting at
-    #    `output_file` with `commit_write` skipped -- a board with a changed
-    #    outline on disk, no ledger row for it, and an orphaned _PENDING entry.
-    #    `provenance.py` documents that exact shape as the defect its
-    #    pending/commit split was introduced to fix; doing it here reinstated
-    #    it.
-    #  * Re-reading `output_file` made the check STRUCTURALLY INERT when
-    #    `input_file is output_file` -- which is `route.py:4074`, the #666
-    #    scoped cap move, the very call site this backstop cites as its reason
-    #    to exist. Both paths read the same bytes, so it could never fire.
-    #
-    # It compares a FINGERPRINT, not `board_bounds`. Bounds are blind to an
-    # interior cutout moving and to a rotated circular window (fp_circle bounds
-    # are rotation-invariant about the moved centre), and rings are blind to an
-    # open stub that never chains -- the #829 repro moved bounds while
-    # board_outlines stayed identical, so either alone would have missed it.
-    #
-    # Armed off the BOARD, not off which refs the per-ref gate happened to
-    # check: using the gate's cache made the tripwire depend on a side effect,
-    # so it disarmed whenever the moved footprints were not the ones carrying
-    # Edge.Cuts. Only a board with footprint-embedded Edge.Cuts arms it, which
-    # is 0 of the 27 tracked boards.
+    # Outline tripwire (#829): would this write change the board OUTLINE? It
+    # runs BEFORE the write and compares the ORIGINAL text against the
+    # in-memory `content`, so nothing is written when it fires, and it still
+    # works when `input_file is output_file` (route.py's scoped cap move).
+    # It compares a structural FINGERPRINT, not `board_bounds`: bounds are
+    # blind to an interior cutout moving and to a rotated circular window,
+    # and rings are blind to an open stub that never chains. Only a board
+    # with footprint-embedded Edge.Cuts arms it.
     if _outline_owner_map(input_file):
         from kicad_parser import structural_outline_fingerprint, read_board_text
         # The same read as `content` (#1149), or a repaired footprint block
@@ -1388,14 +1347,8 @@ def write_placed_output(input_file: str, output_file: str,
                 f"owns. Nothing was written. This is a bug in whatever "
                 f"produced the placement list (#829).")
 
-    from placement import provenance
-    provenance.record_write(input_file, output_file, placements,
-                            pending=True)
-
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(content)
-
-    provenance.commit_write(output_file)
 
     print(f"Modified {modified_count} footprint positions")
     _report_unapplied(placement_by_ref, matched, unapplied_blocks,

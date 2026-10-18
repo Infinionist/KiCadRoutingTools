@@ -319,8 +319,8 @@ src/
   test, then Liang-Barsky); `seg_crossings(a, b=None, labels=None)`, proper
   crossings between two sets of tree edges or within one set across labels,
   and `seg_cross_pairs`, the same returning the crossing pairs.
-  Each is `simple.py`'s Python reference (`_mst_l1_py`, `_seg_hits_py`,
-  `_crossings_py`), operation for operation, so a placement is unchanged.
+  Each matches the Python code it replaced, operation for operation, so a
+  placement is unchanged.
 
 ### 0.23.2 (2026-10-16)
 - **Placement kernels** (`placement_kernels.rs`) for the quench polish in

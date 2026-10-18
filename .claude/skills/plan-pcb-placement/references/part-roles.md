@@ -65,9 +65,8 @@ it was, how to tell, and the board.
 ## Clock parts
 
 - **Crystal load caps are clock parts, not decaps.** A 2-pad cap from an oscillator
-  net to GND serves the crystal. The placement decap rule can still elect it as the
-  chip's decap: on ch32v003_usb, an earlier seeder graded C4 (20 pF on PA2) as "9.08 mm
-  from U3, the IC it decouples".
+  net to GND serves the crystal, though a rule that reads only nets can take it for
+  the chip's decap (ch32v003_usb's C4, 20 pF on PA2, reads as U3's).
   - *Group:* with the crystal, the caps symmetric at the crystal's pads, and the
     crystal on the IC's oscillator face. `place_simple` writes that as `proximity[]`
     claims (`py_placer/placement/crystals.py`): the crystal at its IC's oscillator
@@ -81,8 +80,8 @@ it was, how to tell, and the board.
 
 ## Caps and resistors whose role is their nets
 
-- **An RC reset cap is not a decap.** On ch32v003_usb, an earlier seeder's decap stage
-  claimed C6 (100 nF on PD7/NRST) as U3's decap.
+- **An RC reset cap is not a decap**, though 100 nF from NRST to ground reads like
+  one (ch32v003_usb's C6 on PD7/NRST).
   - *Group:* the reset circuit, at the NRST pin or with the reset button.
 - **Bulk caps (10 µF and up, electrolytic or tantalum)** belong at the regulator or
   the power entry, not at an IC's supply pin.

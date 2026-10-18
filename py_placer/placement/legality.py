@@ -1,15 +1,15 @@
 """Placement legality geometry: board side, true board outline, courtyard rects.
 
 The single home for the geometric predicates that decide whether a placement is
-LEGAL, as opposed to merely cheap. Both placement engines consume it:
+LEGAL, as opposed to merely cheap. Its consumers:
 
-- ``placement/quench.py`` -- the perturbative nudge/rotate/swap optimizer
+- ``placement/quench.py`` -- the placement state's seat gate
+  (`candidate_valid`), which `place_simple` and the pose tools use
 - ``placement/fanout_clearance.py`` -- the decoupling-cap repair pass
 
-and so can a placement grader: `placement_overlap_area` (total courtyard overlap
-area) and `placement_out_of_board` are the two legality metrics the placement
-scorecard needs (#456, feeding #411/#110), computed by the same code the
-optimizers gate on rather than by a second implementation that can disagree.
+and the graders: `placement_overlap_area` (total courtyard overlap area) is
+computed by the same code the gates use, rather than by a second
+implementation that can disagree.
 
 Two things here are easy to get wrong and are therefore centralized:
 
@@ -299,8 +299,7 @@ def side_of_layer(layer) -> str:
     THE string-level rule (#878). `footprint_side` below is this applied to an
     object's `.layer`; every other site in the tree that carried its own copy
     of the same collapse now calls one of the two, and
-    `tests/test_878_side_rule_sites.py` refuses a new copy rather than letting
-    a ninth appear.
+    there is one rule, not several copies of it.
 
     `str(...)` where the old spelling had `or ''` is a widening, not a change:
     the old form raised `AttributeError` on a truthy non-string layer, and every
@@ -308,11 +307,8 @@ def side_of_layer(layer) -> str:
 
     On a `str` or `None` layer this and the spellings it replaced are
     ALGEBRAICALLY equal, so the corpus cannot separate them -- it carries
-    exactly two layer values, `F.Cu` and `B.Cu`, over 1349 footprints. The
-    corpus check in `tests/test_878_side_rule_sites.py` is therefore a change
-    detector for THIS function, not evidence that the spellings differ; the
-    inputs that do separate them (a falsy layer, a truthy non-string) are
-    exercised there synthetically, because no board can supply them.
+    exactly two layer values, `F.Cu` and `B.Cu`; the inputs that do separate
+    them (a falsy layer, a truthy non-string) no board can supply.
     """
     return 'B' if str(layer or '').startswith('B') else 'F'
 
@@ -854,8 +850,8 @@ class BoardOutlineGate:
 
     def __init__(self, board_info, margin: float):
         # Function-local import: check_drc pulls the DRC stack, and this module
-        # is imported at the top of both placement engines. Same reason
-        # fanout_clearance imported it locally.
+        # is imported at the top of quench and fanout_clearance. Same reason
+        # fanout_clearance imports it locally.
         from check_drc import board_edge_geometry
         rings, outer, cutouts = board_edge_geometry(board_info)
         self.rings = rings
@@ -1142,17 +1138,11 @@ class BoardOutlineGate:
         pose.
 
         THE EXEMPTION COVERS THE EDGE-MARGIN TEST TOO, not only the swallow
-        probe. It did not, and the omission made the exemption almost useless:
-        a part whose own pads caused a contour to be reclassified as an inner
-        milled edge still had every pose within `margin` of that contour
-        vetoed -- which, for a part sitting INSIDE its own relief, is every
-        pose there is. Measured on run 20's SW2, which owns the strap slot its
-        two NPTH posts sit in: 0 legal poses of 14884 at the board's own
-        floors, and at margin 0, 508 of 9604 -- all at rot 0/180, none at SW2's
-        own rot 270. `place_optimize` with SW2 free and 83 refs locked moved it
-        0 mm with the edge term as the entire objective; `place_reconstruct`
-        reported "no legal pose within any cap". The run had to declare SW2 an
-        `edge_actuator` and waive it permanently.
+        probe: a part whose own pads caused a contour to be reclassified as an
+        inner milled edge would otherwise have every pose within `margin` of
+        that contour vetoed -- which, for a part sitting INSIDE its own
+        relief (a switch whose NPTH posts sit in its strap slot), is every
+        pose there is.
 
         PER-PART, never global: the ring stays a hard edge for every other
         part, and `rings_enclosing` only ever returns MILLED ids, so the outer
@@ -1820,7 +1810,7 @@ class LocalBounds(NamedTuple):
     # above is kept as a FIELD rather than becoming a property derived from
     # this -- a NamedTuple cannot carry both under one name, and removing it
     # would change `_fields`, the arity and `_asdict()` ordering that
-    # floorplan's `measured` dict and tests/mutate_799.py both read.
+    # floorplan's `measured` dict reads.
     source: str = ''
     # #896. Silk was drawn but did not survive the ladder: either the
     # footprint has no pads (a logo) or its silk bbox lies inside the pad
@@ -1849,7 +1839,7 @@ def part_local_bounds(pcb_data, pcb_file: Optional[str] = None
     footprint graphics on `Footprint`); falls back to `pcb_data.source_path`,
     then to pad bboxes everywhere.
 
-    NOT the quench's ladder. `quench._Part.__init__` keeps its own
+    NOT the placement state's ladder. `quench._Part.__init__` keeps its own
     courtyard-or-pad-bbox bounds deliberately (see `body.py`): adopting the
     model there changes which poses `pose_ok` admits and therefore the basin
     the anneal lands in, which is a search change needing its own A/B, not a
@@ -2076,10 +2066,9 @@ def courtyard_severity_of(pcb_file: Optional[str],
 # The waiver ladder, the blocking floors and the moved-vs-baseline gate lived
 # as closures inside `grade_body_overlap` and inline in check_assembly's
 # main(), so nothing could ask the grader's question about a pose nobody had
-# written. The seeder, `--repair`, `--reseat` and the floorplan budget each
-# answered it again on their own rects, and their answers disagreed with the
-# grader's (#1182, #1162). These are the same code, lifted; `CourtyardCensus`
-# is the one place it runs.
+# written. These are the same code, lifted, so the gate, the floorplan
+# budget and the grader cannot answer it differently; `CourtyardCensus` is the
+# one place it runs.
 
 _MARKER_CLASSES = ('mount_hole', 'fiducial', 'testpoint')
 _EDGE_CLASSES = ('edge_receptacle', 'edge_actuator')
@@ -2313,8 +2302,8 @@ class PairWaivers:
         # mechanical, both locked, waived in intent.json, carried the banner
         # `BLOCKING, past the floors (1)` on every review sheet of the run
         # while check_assembly --baseline called the same pair baseline's own.
-        # `waiver_sets` is empty on every caller but check_assembly --intent and
-        # place_reconstruct --intent, and this runs per PAIR per grade -- so do
+        # `waiver_sets` is empty on every caller but check_assembly --intent,
+        # and this runs per PAIR per grade -- so do
         # not build a frozenset for boards that declared no waivers at all.
         if self.waiver_sets:
             pair = frozenset((a, b))
@@ -2549,7 +2538,6 @@ class CourtyardCensus:
     #: KiCad's arc approximation error (ARC_HIGH_DEF, 0.005 mm). Grading the
     #: exact circle made a 1 um graze NOT BUILDABLE that KiCad passes (fa10
     #: 06 s04_u6r90_seed0, second phase-3 verifier).
-    #: `tests/measure_1212_kicad_pins.py --onset` re-measures it.
     #: KiCad's model is not this one, only equal to it on a straight edge: it
     #: deflates the courtyard POLYGON by that error and tests the exact hole.
     #: Probed (79cfc025 verifier): at a convex corner KiCad reports 1-2 um
@@ -3531,11 +3519,8 @@ class PadFloor(NamedTuple):
 class PadClearanceModel:
     """The per-pair required clearance, resolved exactly as check_drc does.
 
-    #697: the placement census used to price every pad pair at one flat scalar,
-    so a board that could not pass DRC reported nothing to fix. Measured: a
-    fiducial keep-clear pad (`local_clearance` 1.016mm) 0.94mm from a connector
-    pad -- `check_drc` flagged it, while `grade_pad_legality` and
-    `place_reconstruct --stages legalize` both reported 0 conflict pairs.
+    A flat scalar would miss a pair check_drc flags: a fiducial keep-clear pad
+    (`local_clearance` 1.016mm) 0.94mm from a connector pad.
 
     The formula is check_drc's, and deliberately CALLS its code rather than
     mirroring it (`check_drc.pads_shared_layer_clearance`, `pad_copper_layers`)::
@@ -3730,10 +3715,11 @@ class PadClearanceModel:
             # And a note SAYING WHICH RULES WERE HONOURED would be a lie in
             # two of this constructor's three callers. `notes` reaches the
             # operator as `pad clearance: ...` from `grade_pad_legality` and
-            # from the quench census, and NEITHER reads `track_rules` --
-            # a track rule binds no pad pair, which is the whole reason it is
-            # a separate tier. The pass that does honour it discloses it where
-            # it acts, in the nudger's own fallback line.
+            # from the placement state's census, and NEITHER reads
+            # `track_rules` -- a track rule binds no pad pair, which is the
+            # whole reason it is a separate tier. The pass that does honour
+            # it discloses it where it acts, in the nudger's own fallback
+            # line.
             try:
                 from kicad_dru import board_track_rules
                 track_rules, net_classes = board_track_rules(pcb_data, path)
@@ -4865,7 +4851,7 @@ class LegalityContext:
         `pad` (skipped for a pad of the one net the copper's owner gives
         it), a different-net contact into `pad_overlap`, and any contact
         into `stack`. So every consumer -- pads_ok and its seed baseline,
-        the quench's energy, the seeder's census -- sees the copper the way
+        the placement state's census, the graders -- sees the copper the way
         it sees a pad, and the result is unchanged (the same object) for a
         pair whose parts draw none."""
         sf = self._pads_pair_shortfall(a, b, pose_a, pose_b)
@@ -5061,8 +5047,7 @@ class LegalityContext:
             # over-cap part on glasgow (U1 x U30 is 83 x 121). The hole
             # argument above still holds -- J5 remains the only over-cap part
             # that CARRIES holes, which is what that paragraph is really
-            # about. Re-derive both with
-            # `tests/measure_834_835_side_awareness.py --table A`.
+            # about.
             #
             # The gap is taken PER SHARED SIDE, because the extent boxes above
             # span both faces and a pair reaching this branch may share only
@@ -5232,10 +5217,8 @@ class LegalityContext:
 def format_waiver_warnings(grade, limit: int = 6):
     """Lines naming declared waivers that resolved to nothing (#897).
 
-    ONE spelling, beside the measure, because every consumer that passes
-    `intent_waivers` needs to say the same thing and the first cut said it in
-    `check_assembly` only -- so `place_reconstruct --intent`, which takes the
-    same waivers, still swallowed a stale one silently.
+    ONE spelling, beside the measure, so every consumer that passes
+    `intent_waivers` says the same thing.
 
     `waivers_unresolved` names a ref the board does not have: a rename or a
     deletion, and the pair it was written for is back in the census under
@@ -5524,9 +5507,8 @@ def _copper_vertices(geom) -> List[Tuple[float, float]]:
 def pad_copper_outside_amount(pp, x: float, y: float, rot: float, gate,
                               skip_rings=None) -> float:
     """The worst SINGLE copper pad's outline violation, each pad's rect graded
-    alone -- `grade_pad_legality`'s `oob_pad_copper_refs` magnitude (#937),
-    which calls this, and `seeder.repair_placement`'s off-board census
-    (#1193). 0.0 for a part with no copper pads.
+    alone -- `grade_pad_legality`'s `oob_pad_copper_refs` magnitude, which
+    calls this. 0.0 for a part with no copper pads.
 
     Never the part's pad UNION: on a notched outline that box's corner can
     sit in the notch while no pad does (StickHub's locked J5, charged 0.65 mm
@@ -5857,8 +5839,8 @@ def pad_pair_conflict(pp_a, rects_a, pads_a, pp_b, rects_b, pads_b,
 
     Lifted out VERBATIM so `render_placement`'s pad-clearance checklist can
     CALL the grader instead of mirroring it with bounding-box gaps
-    (`LegalityContext.pair_shortfall` is the seeder and quench gate, and
-    stays as it is). Same-net pads never conflict here; a net-0 pad conflicts
+    (`LegalityContext.pair_shortfall` is the seat gate, and stays as it
+    is). Same-net pads never conflict here; a net-0 pad conflicts
     with everything.
     """
     floors_a = pp_a.pad_floors if model is not None else None
@@ -5933,8 +5915,8 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
     them, mirroring check_drc's `required_mm` disclosure; a board that declares
     none of the three grades exactly as it did before.
 
-    `worst` deliberately stays a 3-tuple: seeder's repair census unpacks it
-    positionally, and the disclosure rides the separate `required` list.
+    `worst` stays a 3-tuple; the disclosure rides the separate `required`
+    list.
 
     `edge_margin` now sets the independent per-pad edge requirement, resolved
     from the project (else .55 mm) when absent. The historical `oob_pad_*`
@@ -5942,8 +5924,8 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
     stays at margin zero. `exact` describes the pad-pair checker only: edge
     coverage is separately recorded in `pad_edge.complete`.
 
-    Consumers: place_optimize / place_seed JSON summaries, the render
-    legality overlay, and the reconstruct gate.
+    Consumers: place_pose's verdict, check_assembly, the floorplan grade and
+    the lock advisor.
     """
     # The legacy part-AABB diagnostic keeps its copper-clearance inset.
     # The independent per-pad channel enforces the resolved edge requirement;
@@ -6088,9 +6070,8 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
                 # but not into `worst`, so a hole-ONLY conflict is printed by
                 # `format_required_clause` and is invisible to
                 # `floorplan.suspect_pairs`, which is built from `worst`.
-                # Widening `worst` changes what `place_seed --repair` chooses
-                # to move -- a placement-behaviour change needing its own
-                # before/after, not a rider on an arithmetic fix.
+                # Widening `worst` would change what those consumers report,
+                # which needs its own before/after.
                 if hole_req > clearance + 1e-9:
                     required.append([key[0], key[1], round(hole_req, 4),
                                      'NPTH hole'])

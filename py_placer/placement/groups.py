@@ -1,45 +1,33 @@
-"""Placement blocks: which footprints should move as one rigid body (#459).
+"""Placement blocks, and the decoupling facts several graders share.
 
-A local search fixes what it can reach — individual parts within a few mm.
-The failures that sink a board are block-scale: a magnetics block 80mm from its
-endpoints, unroutable because of the floorplan rather than the routing. Before
-anything can *move* a block, something has to know what a block IS, and nothing
-in this repo did.
-
-Four sources, in precedence order, first match wins per footprint. Each is
-reported with its source so a user can see what was inferred before trusting it.
+A BLOCK is a set of footprints that belong together. Four sources derive
+blocks (`derive_groups`), in precedence order, first match wins per
+footprint; each block carries its source, so a user can see what was
+inferred before trusting it:
 
     kicad      KiCad (group ...) blocks -- the designer's own statement that
                these parts belong together, so it outranks everything inferred.
-    sheet      Schematic sheet path. A sheet IS the functional block a floorplan
-               thinks in, and it is declarative rather than guessed.
-    netprefix  Net-name prefix (AUDIO_*, GPDI_*), gated on spatial coherence.
-    decap      Two-pad capacitors tethered to the IC they decouple.
+    sheet      Schematic sheet path: a sheet is a functional block, declared
+               rather than guessed.
+    netprefix  Net-name prefix (AUDIO_*, GPDI_*), kept only when its parts lie
+               within NETPREFIX_MAX_SPREAD_MM; auto-generated and power names
+               are ignored. The weakest source.
+    decap      Two-pad capacitors tethered to the IC they decouple
+               (`decap_tethers`: the nearest chip within DECAP_RADIUS_MM that
+               shares the cap's power net).
 
-CORPUS EVIDENCE (measured across kicad_files/, not assumed):
+The default (`AUTO_SOURCES`) is the two declarative ones. Blocks are how an
+intent names parts (`floorplan.resolve_blocks`), how `render_placement` frames
+and colours a board (`--group-by`), and a routing scope (`route.py --group`).
+Nothing moves a block as a body: `place_simple` keeps the functional groups
+of the groups file (`grouping.py`) together through its cost.
 
-  kicad      0 of 27 boards carry a single (group ...) block. Exact when present,
-             but no in-repo board exercises it end to end.
-  sheet      12 of 22 boards with (path ...) have more than one sheet. ulx3s: 11
-             sheets sized 83/34/23/20/20/12 footprints. glasgow_revC: 4, nested.
-             This is the workhorse.
-  decap      Median distance from a 2-pad cap to the nearest IC bbox is 0.0-2.6mm
-             across 8 boards, and the cap shares a net with that IC in 93-100% of
-             cases (e.g. glasgow 91/92, orangecrab 75/75, ulx3s 57/70). The
-             net-sharing check is what makes this safe: it is what separates "a
-             cap that decouples this IC" from "a cap that happens to sit nearby",
-             and on ulx3s it correctly rejects 13 of 70.
-  netprefix  The WEAKEST source, and it is worth saying so. Raw prefixes are
-             dominated by KiCad's auto-generated Net-(U1-Pad) names -- 21 to 92
-             refs per board under a bogus "NET" prefix, spread over 16-75mm.
-             With auto-generated and power names excluded and a 20mm coherence
-             gate, what remains is small but genuine: ulx3s 9 blocks / 63 refs
-             (AUDIO, GPDI, JTAG, LED, FPGA), orangecrab 13/80, glasgow 3/20,
-             rp2350 1 block of 3, tigard 0. Enable it expecting little.
+The module also holds what the graders share about decoupling: which parts
+are chips, which own a supply pin (`supply_owners`), and which cap decouples
+which chip.
 
-All output is sorted. Anything whose order can reach the optimizer must be
-deterministic, or placement output stops being reproducible across processes
-(#457).
+All output is sorted, so the same board gives the same blocks in every
+process.
 """
 from __future__ import annotations
 
@@ -57,14 +45,12 @@ DECAP_MIN_IC_PADS = 4          # what chip_boundary already calls "not a passive
 # --- netprefix -------------------------------------------------------------
 # KiCad's auto-generated names carry no functional meaning: Net-(U1-Pad3),
 # unconnected-(U2-Pad7). Bucketing on them produces one enormous "NET" pseudo
-# block per board (up to 92 refs spread over 75mm), which is exactly the kind of
-# wrong group that is worse than no group at all -- it would rigidly drag half
-# the board.
+# block per board (up to 92 refs spread over 75mm), a wrong group worse than
+# none.
 _AUTO_NET = re.compile(r'^(net-\(|unconnected-\(|net\d)', re.I)
 # Power and ground reach everywhere by design, so they say nothing about blocks.
-# The pattern MOVED to `net_queries.is_power_net_name` (#705): the pin rule's
-# rail-net fallback asks the same question, and a second copy of a predicate
-# this tree already spells nine ways is exactly what it keeps paying for.
+# The pattern is `net_queries.is_power_net_name`, which the pin rule's
+# rail-net fallback also reads.
 # Imported in the function body, matching this module's own idiom for a
 # `py_router` sibling (see `decap_tethers`) -- a module-level import would need
 # `py_router` on `sys.path` before `placement` is imported, which several test
@@ -433,13 +419,8 @@ def _chip_list(pcb_data):
 
 def chip_refs(pcb_data) -> Set[str]:
     """The refs this module calls a cap's owner: an IC (>= 4 COPPER pads,
-    and not a row) or a supply owner (`supply_owners`, #1249).
-
-    Public since #792, because a second reader was answering the same
-    question with `owner[0] == 'U'` -- a second answer to the problem
-    `_pads_are_collinear`
-    was written for, and the one without the measurement behind it. One
-    question, one answer, and this is the one that carries its scar.
+    and not a row) or a supply owner (`supply_owners`). Public so every
+    reader asks "is this an IC" the same way.
     """
     return {c.reference for c in _chip_list(pcb_data)}
 
@@ -447,11 +428,7 @@ def chip_refs(pcb_data) -> Set[str]:
 def is_decoupling_cap(fp, ref: str) -> bool:
     """The syntactic half of "is this a decap": a `C*` bridging exactly two nets.
 
-    TWO DISTINCT NETS, not two net-bearing PADS, and case-INSENSITIVE. Both
-    differences were spelled three ways across this tree before #792 (here,
-    in a placement scope, and in `emit_intent`'s census) and all three produce
-    identical sets on every tracked board -- so the choice is argued, not
-    measured:
+    TWO DISTINCT NETS, not two net-bearing PADS, and case-INSENSITIVE:
 
     * a 2-pad part with both pads on ONE net is a zero-ohm link, not a decap
       (pad-count says yes, distinct-nets says no);
@@ -468,26 +445,16 @@ def is_decoupling_cap(fp, ref: str) -> bool:
 def _elect_tethers(pcb_data, movable=None):
     """[(cap, ic|None, distance|None)] in sorted cap order -- the ONE election.
 
-    **The radius never reaches here, and that is the entire point.** It used to
-    live at the end of `decap_tethers` as a prune on the winner, which meant
-    that asking the same question at two radii ran the election twice and made
-    "the wider answer contains the narrower one" a per-board coincidence that a
-    test had to re-verify. `decap_census`'s own comment asserted the opposite --
-    that the unbounded pass "can pick a DIFFERENT chip, so this is a second
-    measurement rather than a superset" -- and that was never true of this code:
-    `radius` appeared only after the argmin, and `chips` and `ic_nets` are built
-    before any cap is considered. Measured over the tracked corpus, 0 of 357
-    tethers re-elect. With one election it is a property of the code shape
-    instead of a fact about a corpus.
+    **The radius never reaches here.** Callers prune the winner by distance
+    afterwards, so asking at two radii runs ONE election, and the wider
+    answer always contains the narrower one.
 
     `ic is None` means NO chip carries this cap's rail -- a bulk or filter cap
-    upstream of an LC network, not a decoupler. Ten of ulx3s's caps are that,
-    and they are why "a decap by its rail" and "graded against an IC" are two
-    different questions rather than two spellings of one (#792).
+    upstream of an LC network, not a decoupler: "a decap by its rail" and
+    "graded against an IC" are two different questions.
     """
     # THE SAME chip list `chip_refs` publishes, so an owner test and the
-    # grader's tether election cannot answer "what is an
-    # IC" differently -- which is the whole of #792.
+    # grader's tether election cannot answer "what is an IC" differently.
     chips = _chip_list(pcb_data)
     if movable is None:
         movable = set(pcb_data.footprints)
@@ -541,8 +508,9 @@ def nearest_chip(pt, candidates) -> Tuple[Optional[str], Optional[float]]:
     """`(ref, distance)` -- the election's argmin over `(ref, bounds)`
     candidates in the order given (the first strict minimum wins), or
     `(None, None)`. `_elect_tethers` calls it over the chips carrying a cap's
-    rail; the #1043 quench gate calls it over the same chips at LIVE poses,
-    so the pair it holds is the pair the grade will elect."""
+    rail; the decap tether gate (`quench.TetherGateView`, which
+    `place_fanout_clearance --intent` runs) calls it over the same chips at
+    LIVE poses, so the pair it holds is the pair the grade will elect."""
     best, best_d = None, None
     for ref, bounds in candidates:
         d = _point_to_bounds(pt, bounds)
@@ -554,7 +522,7 @@ def nearest_chip(pt, candidates) -> Tuple[Optional[str], Optional[float]]:
 def rail_chips(pcb_data, cap: str) -> List[str]:
     """The chips `_elect_tethers` would consider for `cap`, in its order:
     every chip of `_chip_list` (bar the cap) carrying the cap's power rail.
-    Pose-invariant for a quench (membership reads pad counts, nets, and the
+    Pose-invariant under a move (membership reads pad counts, nets, and the
     collinearity of a chip's pads, which a 90-degree move keeps; a supply
     owner's evidence -- pintypes, footprint name, nets -- reads no pose)."""
     fp = pcb_data.footprints.get(cap)
@@ -582,8 +550,8 @@ def _point_to_bounds(pt, bounds) -> float:
 def chip_bounds_of(fp):
     """The bounds `_chip_list` gives this ONE footprint at the pose it holds,
     or None when it has no pads. Through `build_chip_list` itself, so a
-    caller measuring a footprint the election has not seen (#1043: the
-    quench, at a pose it is only considering) reads the election's margin."""
+    caller measuring a footprint the election has not seen (the tether gate,
+    at a pose it is only considering) reads the election's margin."""
     from types import SimpleNamespace
     from chip_boundary import build_chip_list
     got = build_chip_list(SimpleNamespace(footprints={
@@ -595,7 +563,7 @@ def elect_live(cap_fp, candidates) -> Tuple[Optional[str], Optional[float]]:
     """`_elect_tethers`' election for ONE cap with the footprints at whatever
     poses they hold: the cap's pad centroid against `(ref, bounds)` of the
     chips on its rail (`rail_chips`' order, bounds from `chip_bounds_of`),
-    nearest wins. The #1043 quench gate calls this per candidate pose, so
+    nearest wins. The tether gate calls this per candidate pose, so
     it holds the pair the GRADE will elect -- a cap that walks toward a
     different chip on its rail is measured against that chip."""
     return nearest_chip(_centroid(cap_fp), candidates)
@@ -611,26 +579,15 @@ def decap_tethers(pcb_data, movable=None,
     they have no electrical relationship with, and dragging those along would be
     a wrong group.
 
-    Public, and returning the DISTANCE, because two consumers need the same
-    tether and must not each decide what "near its IC" means: `_from_decap`
-    wants the membership, and the floorplan grader's `decap_distance` rule
-    (#549) wants the number. Grading the quench's own decap rule against a
-    second implementation of it would measure the reimplementation, not the
-    board.
+    A filter over `_elect_tethers`, the one election the decap grade
+    (`decap_populations`) also reads, so the block and the grade never
+    disagree about which IC a cap belongs to. `_from_decap` builds the
+    `decap` blocks from it (`--group-by decap`, on the CLI and the GUI).
 
     `movable` restricts which caps are considered (None = every footprint), as
     in `derive_groups`. Iteration is over a SORTED ref list: `movable` reaches
     us as a set, and cap order within an IC's list would otherwise vary with
-    PYTHONHASHSEED (#457).
-
-    Since #794 this is a thin filter over `_elect_tethers`. **Signature and
-    result are unchanged, deliberately**: THREE callers depend on both --
-    `_from_decap`, `reseat.clusters_from_tethers` and `board_brief` -- and
-    `_from_decap` is what `--group-by decap` resolves through on BOTH the CLI
-    and the GUI, so a change here is a change to grouping on two front ends.
-    (`rule_decap_distance` and `decap_census` used to be a fourth and fifth;
-    they now reach the election through `decap_populations`. An earlier draft
-    of this line said six, which was the count before that refactor.)
+    PYTHONHASHSEED.
     """
     out: Dict[str, List[Tuple[str, float]]] = {}
     for cap, ic, d in _elect_tethers(pcb_data, movable):
@@ -645,12 +602,10 @@ def decap_populations(pcb_data, movable=None,
 
     * `near`    {ic: [(cap, d)]} -- byte-identical to `decap_tethers(radius)`;
                 the population `rule_decap_distance` grades.
-    * `beyond`  [(cap, ic, d)] cap-sorted -- elected, then pruned by the radius.
-                Invisible to the grader before #794; `rule_decap_ungraded`
-                reports them.
+    * `beyond`  [(cap, ic, d)] cap-sorted -- elected, then pruned by the radius;
+                `rule_decap_ungraded` reports them.
     * `orphans` [cap] -- in scope, but NO chip carries their rail. There is no
-                IC for them to be far from, so the grader is right to ignore
-                them; the SEEDER is not, which is #792.
+                IC for them to be far from, so the grader ignores them.
 
     The three sets partition the in-scope population, and `decap_census` emits
     an `unaccounted` key whose only correct value is 0 so that stays a measured

@@ -1,8 +1,8 @@
 """The simple placement path's cost model: groups, one objective.
 
-There are no regions. A GROUP is a set of parts optimised together and kept
-together; the shape it takes is whatever the objective and the free space
-make of it. Only parts the file locks stay put. `simple_anneal.py` lowers
+A GROUP is a set of parts optimised together and kept together; the shape
+it takes is whatever the objective and the free space make of it. Only the
+parts the file locks or the intent seats stay put. `simple_anneal.py` lowers
 this cost by simulated annealing; `place_simple.py` is the CLI.
 
     cost = sum over signal nets of the Manhattan MST of their pads
@@ -47,8 +47,8 @@ this cost by simulated annealing; `place_simple.py` is the CLI.
            free of pad copper, per copper layer, over the track pitch (the
            supply). Ground, poured as a plane, is left out.
 
-Rails -- ground and nets reaching more than a quarter of the parts
-(`grouping.rail_net_ids`) -- carry a fraction of a signal's cost per mm of
+Rails -- ground, and nets reaching more than a quarter of the parts and
+more than six of them (`grouping.rail_net_ids`) -- carry a fraction of a signal's cost per mm of
 their tree: a supply `rail_weight` (wide or poured, but not nothing, or
 nothing pulls a regulator toward the parts it feeds), ground `ground_weight`
 (a plane: each pad only drops a via, so almost nothing). They take no part
@@ -169,8 +169,7 @@ def mst_l1(pts: Sequence[Tuple[float, float]]):
     """`(length, edges)` of the Manhattan minimum spanning tree of `pts`
     (Prim from point 0, the lowest index among equal keys, a key lowered
     only by a strictly shorter edge); edges as `(x0, y0, x1, y1)`. The Rust
-    kernel `grid_router.mst_l1` from three points; `_mst_l1_py` is its
-    reference."""
+    kernel `grid_router.mst_l1` from three points."""
     n = len(pts)
     if n < 2:
         return 0.0, []
@@ -180,62 +179,6 @@ def mst_l1(pts: Sequence[Tuple[float, float]]):
     total, ij = grid_router.mst_l1(np.fromiter((p[0] for p in pts), float, n),
                                    np.fromiter((p[1] for p in pts), float, n))
     return total, [(pts[i][0], pts[i][1], pts[j][0], pts[j][1]) for i, j in ij]
-
-
-def _mst_l1_py(pts: Sequence[Tuple[float, float]]):
-    """`mst_l1` in Python: plain loops up to 16 points, a distance matrix
-    above -- the same tree either way."""
-    n = len(pts)
-    if n < 2:
-        return 0.0, []
-    if n == 2:      # most nets: no tree to search
-        (ax, ay), (bx, by) = pts
-        return abs(bx - ax) + abs(by - ay), [(ax, ay, bx, by)]
-    if n <= 16:
-        inf = float('inf')
-        x0, y0 = pts[0]
-        best = [abs(x0 - x) + abs(y0 - y) for x, y in pts]
-        frm = [0] * n
-        done = [False] * n
-        done[0] = True
-        best[0] = inf
-        total, edges = 0.0, []
-        for _ in range(n - 1):
-            k, bk = -1, inf
-            for i in range(n):
-                if not done[i] and best[i] < bk:
-                    k, bk = i, best[i]
-            done[k] = True
-            total += bk
-            a = pts[frm[k]]
-            px, py = pts[k]
-            edges.append((a[0], a[1], px, py))
-            for i in range(n):
-                if not done[i]:
-                    d = abs(px - pts[i][0]) + abs(py - pts[i][1])
-                    if d < best[i]:
-                        best[i], frm[i] = d, k
-        return total, edges
-    P = np.asarray(pts, dtype=float)
-    D = np.abs(P[:, None, :] - P[None, :, :]).sum(axis=2)
-    best = D[0].copy()
-    frm = np.zeros(n, dtype=int)
-    done = np.zeros(n, dtype=bool)
-    done[0] = True
-    best[0] = np.inf
-    total, edges = 0.0, []
-    for _ in range(n - 1):
-        k = int(np.argmin(best))
-        total += float(best[k])
-        a = P[frm[k]]
-        edges.append((a[0], a[1], P[k][0], P[k][1]))
-        done[k] = True
-        best[k] = np.inf
-        row = D[k]
-        upd = (~done) & (row < best)
-        best[upd] = row[upd]
-        frm[upd] = k
-    return total, edges
 
 
 def rect_gap(a, b) -> float:
@@ -276,29 +219,13 @@ def _orient(ax, ay, bx, by, cx, cy):
 def crossings(A: np.ndarray, B: np.ndarray, same: bool = False) -> int:
     """Proper crossings between segment arrays A (n x 4) and B (m x 4);
     `same` counts each pair of one array once (i < j). The Rust kernel
-    `grid_router.seg_crossings`; `_crossings_py` is its reference."""
+    `grid_router.seg_crossings`."""
     if len(A) == 0 or len(B) == 0:
         return 0
     A = np.ascontiguousarray(A, dtype=float)
     if same:
         return int(grid_router.seg_crossings(A))
     return int(grid_router.seg_crossings(A, np.ascontiguousarray(B, dtype=float)))
-
-
-def _crossings_py(A: np.ndarray, B: np.ndarray, same: bool = False) -> int:
-    """`crossings` in numpy."""
-    if len(A) == 0 or len(B) == 0:
-        return 0
-    a0x, a0y, a1x, a1y = (A[:, None, i] for i in range(4))
-    b0x, b0y, b1x, b1y = (B[None, :, i] for i in range(4))
-    o1 = _orient(a0x, a0y, a1x, a1y, b0x, b0y)
-    o2 = _orient(a0x, a0y, a1x, a1y, b1x, b1y)
-    o3 = _orient(b0x, b0y, b1x, b1y, a0x, a0y)
-    o4 = _orient(b0x, b0y, b1x, b1y, a1x, a1y)
-    m = (o1 * o2 < 0) & (o3 * o4 < 0)
-    if same:
-        m = np.triu(m, 1)
-    return int(m.sum())
 
 
 # --------------------------------------------------------------------------
@@ -703,13 +630,6 @@ class Model:
                             self._gy0 + c * np.arange(self._ny + 1))
         return g[1], g[2]
 
-    def _cover(self, x0, x1, y0, y1):
-        """The area of rect [x0, x1] x [y0, y1] in each grid cell (ny x nx)."""
-        ex, ey = self._grid_edges()
-        cx = np.clip(np.minimum(ex[1:], x1) - np.maximum(ex[:-1], x0), 0.0, None)
-        cy = np.clip(np.minimum(ey[1:], y1) - np.maximum(ey[:-1], y0), 0.0, None)
-        return np.outer(cy, cx)
-
     def _pad_shapes(self, ref):
         """`[(x, y, w, h, layers)]` of `ref`'s pads at its live pose."""
         part = self.state.parts[ref]
@@ -998,39 +918,11 @@ class Model:
     @staticmethod
     def _seg_hits(S, P):
         """`(i, j)` index arrays of segment i touching rect j: the Rust kernel
-        `grid_router.seg_rect_hits`; `_seg_hits_py` is its reference."""
+        `grid_router.seg_rect_hits`."""
         if len(S) == 0 or len(P) == 0:
             return np.zeros(0, dtype=int), np.zeros(0, dtype=int)
         return grid_router.seg_rect_hits(np.ascontiguousarray(S, dtype=float),
                                          np.ascontiguousarray(P, dtype=float))
-
-    @staticmethod
-    def _seg_hits_py(S, P):
-        """`_seg_hits` in numpy: a bounding-box prefilter, then Liang-Barsky
-        on the pairs that pass it."""
-        if len(S) == 0 or len(P) == 0:
-            return np.zeros(0, dtype=int), np.zeros(0, dtype=int)
-        sx0, sx1 = np.minimum(S[:, 0], S[:, 2]), np.maximum(S[:, 0], S[:, 2])
-        sy0, sy1 = np.minimum(S[:, 1], S[:, 3]), np.maximum(S[:, 1], S[:, 3])
-        bb = ((sx0[:, None] <= P[None, :, 2]) & (sx1[:, None] >= P[None, :, 0])
-              & (sy0[:, None] <= P[None, :, 3]) & (sy1[:, None] >= P[None, :, 1]))
-        i, j = np.nonzero(bb)
-        if len(i) == 0:
-            return i, j
-        x0, y0 = S[i, 0], S[i, 1]
-        dx, dy = S[i, 2] - x0, S[i, 3] - y0
-        lo = np.zeros(len(i))
-        hi = np.ones(len(i))
-        ok = np.ones(len(i), dtype=bool)
-        for d, q in ((-dx, x0 - P[j, 0]), (dx, P[j, 2] - x0),
-                     (-dy, y0 - P[j, 1]), (dy, P[j, 3] - y0)):
-            zero = np.abs(d) < 1e-12
-            ok &= ~(zero & (q < 0))
-            t = q / np.where(zero, 1.0, d)
-            lo = np.where(~zero & (d < 0), np.maximum(lo, t), lo)
-            hi = np.where(~zero & (d > 0), np.minimum(hi, t), hi)
-        keep = ok & (lo <= hi)
-        return i[keep], j[keep]
 
     def _pad_hits(self, edges, pads):
         """Weighted hits of tree edges on pads foreign to them: another net,
@@ -1064,7 +956,6 @@ class Model:
         by-part lookups: the COMMITTED state every move is priced against.
         A caller that keeps a move tells it (`commit`); one that moves parts
         some other way calls this, as `total` does."""
-        st = self.state
         self._ixp, self._ixd, self._ixe = SpatialIndex(), SpatialIndex(), SpatialIndex()
         self._edge_geo, self._edge_keys, self._npads = {}, {}, {}
         # pads as flat rows, an index key -> row (rows of a part are reused)
@@ -1399,11 +1290,14 @@ TERMS = ('wire', 'cross', 'claims', 'decaps', 'group', 'halo')
 
 
 def blame(model) -> Dict[str, Dict[str, float]]:
-    """The cost split onto parts, each term in cost units, summing to
-    `model.total()['cost']`: a net tree edge's length half to each end's
-    part; a crossing a quarter to each of its two edges' four end parts; a
-    claim to its subject; a decap term to the cap; a group tree edge's gap
-    half to each member; a halo pair half to each part."""
+    """Six of the cost's terms (`TERMS`) split onto parts, in cost units: a
+    net tree edge's length half to each end's part; a crossing a quarter to
+    each of its two edges' four end parts; a claim to its subject; a decap's
+    distance to its matched site to the cap; a group tree edge's gap half to
+    each member; a halo pair half to each part. Each part's `total` is the
+    sum of its six. The hint, congestion and pad-hit terms are not split, so
+    the parts' totals fall short of `model.total()['cost']` by those three.
+    A debugging view: nothing in the placer calls it."""
     st = model.state
     out = {r: dict.fromkeys(TERMS, 0.0) for r in st.parts}
     seg, own = [], []
