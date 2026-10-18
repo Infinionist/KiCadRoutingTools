@@ -967,9 +967,9 @@ class PlacementTab(wx.Panel):
         lines = [f"{len(moves)} footprint(s) will move."]
         if moves:
             lines.append(_refs([r for r, _fp, _p in moves]))
-        # #1054: the run's locks are part of its result (the seeder stamps its
-        # seated fixed_poses, `place_pose lock/unlock` stamps and strips), so
-        # Apply mirrors them -- and NAMES them first, an unlock above all.
+        # #1054: the run's locks are part of its result (`place_pose
+        # lock/unlock` stamps and strips them), so Apply mirrors them -- and
+        # NAMES them first, an unlock above all.
         to_lock = [r for r, _fp, want in locks if want]
         to_unlock = [r for r, _fp, want in locks if not want]
         if to_lock:
@@ -1101,10 +1101,10 @@ class PlacementTab(wx.Panel):
         """[(ref, live_fp, want_locked)] for every footprint whose KiCad lock
         differs from the result board's (#1054).
 
-        A SEPARATE pass from `_pose_moves`, because a lock is not a pose: the
-        seeder stamps `(locked yes)` on a fixed_pose it seats, and one already
-        at its seat changes its lock and nothing else, so a pose diff never
-        sees it. The result board is mirrored in BOTH directions. Placement
+        A SEPARATE pass from `_pose_moves`, because a lock is not a pose:
+        `place_pose lock` stamps `(locked yes)` on a part and changes nothing
+        else, so a pose diff never sees it. The result board is mirrored in
+        BOTH directions. Placement
         unlocks on purpose -- `place_pose unlock` is the only way to move a
         KiCad-locked part, and make_unplaced strips each moved part's lock --
         so keeping the live lock would ship a part locked at a pose nobody

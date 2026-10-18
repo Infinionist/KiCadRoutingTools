@@ -165,7 +165,7 @@ def mating_faces(pcb_data, pcb_file: str, clearance: float):
     # because run 23 seated four generic connectors mid-board and nothing said
     # so. WHERE the part's edge is, this measures from the BODY model rather
     # than reusing that function's number, because it reads `model.rect` --
-    # the quench's pad-box ladder, which this PR deliberately does not
+    # the placement state's pad-box ladder, which this PR deliberately does not
     # convert. Reusing it would put two different geometries on one sheet,
     # which is what #896 exists to stop: measured on esp_prog, USB1's pad box
     # sits 0.49mm inside the west edge while its drawn .Fab body overhangs it,
@@ -405,7 +405,7 @@ def build_context(pcb_data, pcb_file: str, *, clearance: float,
                       '`dist_mm` / `overhang_mm` measure to THAT edge; '
                       '`nearest_*` always to the nearest. Both from the '
                       'placement.body occupancy rect, because '
-                      'connector_edge_facts reads the quench pad-box ladder '
+                      'connector_edge_facts reads the placement state pad-box ladder '
                       'and would put two geometries on one sheet',
         },
     }
@@ -594,12 +594,12 @@ def pin_order_rows(pcb_data, pcb_file: str, clearance: float):
         # `PlacementModel` builds the QuenchState, resolving the board's own
         # floors and handling the no-outline fallback. Constructing one here
         # would be a second copy of a ten-argument block that has already
-        # drifted once (render vs place_optimize, before #431 fixed it).
+        # drifted once (before #431 fixed it).
         from render_placement import PlacementModel
         model = PlacementModel(pcb_data, pcb_file,
                                quench_kwargs={'clearance': clearance})
         if model.state is None:
-            return {'error': 'the quench state could not be built', 'rows': []}
+            return {'error': 'the placement state could not be built', 'rows': []}
         got = pair_inversions(model.state)
     except Exception as exc:                                 # noqa: BLE001
         return {'error': f'{type(exc).__name__}: {exc}', 'rows': []}
@@ -1216,7 +1216,7 @@ def main(argv=None):
     # Everything the LIBRARIES print goes to stderr while the document is
     # built. `cli_banner` is not the only thing that can poison a bare-JSON
     # stdout: `parser.warn_missing_courtyards` prints to stdout from inside
-    # the quench, and on esp_prog -- 18 courtyard-less parts -- that alone
+    # the placement state, and on esp_prog -- 18 courtyard-less parts -- that alone
     # made `--json` a JSONDecodeError at char 2. The warning is worth keeping;
     # it just is not part of the document.
     with contextlib.redirect_stdout(sys.stderr):

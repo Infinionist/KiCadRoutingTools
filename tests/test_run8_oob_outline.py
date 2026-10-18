@@ -61,7 +61,7 @@ def bbox_term(state, bands=None):
 def state_for(path, clearance):
     pcb = parse_kicad_pcb(path)
     return pose_score.make_state(pcb, path, clearance=clearance,
-                                 board_edge_clearance=0.2, grid_step=0.1)
+                                 board_edge_clearance=0.2)
 
 
 def main():

@@ -112,7 +112,7 @@ def _caller() -> str:
     ITSELF here, whatever it does or does not declare.
 
     It used to skip every frame under `/py_placer/`, which is where all the
-    lever CLIs live (`place_seed.py`, `place_optimize.py`, ...) -- so the field
+    lever CLIs live (`place_simple.py`, `place_pose.py`, ...) -- so the field
     documented as the detector recorded `<unknown>` for exactly the tools it
     exists to identify, and `<frozen runpy>` under `python -m`. Only the
     package internals are uninteresting; the CLI that called them is the
@@ -160,8 +160,8 @@ def sha256_file(path: str) -> str:
 
 # THE POSE DIGEST (#972). The byte hashes above answer "is this the same FILE",
 # and a chain of rows cannot be linked on that: legitimate steps rewrite a board
-# without moving a part -- `seeder.stamp_locked` adds `(locked yes)` after the
-# seed row, route.py writes copper, `beautify_labels` moves silkscreen, a fill
+# without moving a part -- `place_pose lock` adds `(locked yes)`, route.py
+# writes copper, `beautify_labels` moves silkscreen, a fill
 # or a pcbnew re-save rewrites the text -- and every one of them would read as
 # an unrecorded change. The digest answers "is this the same ARRANGEMENT": a
 # canonical hash of every footprint's (x, y, rotation, side), so a row's

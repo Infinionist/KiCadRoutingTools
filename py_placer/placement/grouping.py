@@ -1,9 +1,8 @@
 """Functional groups for grouped placement: the `groups.json` an agent writes,
 and what the board says about it.
 
-Grouped placement places a board ONE FUNCTIONAL GROUP AT A TIME, each group in
-a region of its own (`py_placer/plan_regions.py` draws the regions,
-`py_placer/place_groups.py` runs the loop). The groups are a judgement -- power
+`place_simple` keeps each FUNCTIONAL GROUP together through its group term
+(`placement/simple.py`). The groups are a judgement -- power
 input and its conditioning, the core and its clock, an interface and its
 protection -- made by an agent reading the parts, their pin functions and their
 datasheets. This module does not make that judgement. It loads the file,
@@ -15,10 +14,10 @@ measures what the judgement implies so the agent can check it:
     small board GND reaches most parts and would make every part look like it
     belongs everywhere;
   * decap tethers that cross a group line (`groups.decap_tethers`): a cap the
-    seeder will claim for an IC in another group;
+    placer will claim for an IC in another group;
   * bridges: 2-pad parts with signal links into another group (series
     resistors, jumpers) -- they belong to one side and border the other;
-  * the inter-group link matrix the region planner prices wiring with;
+  * the inter-group link matrix;
   * a placement order: the anchor group first, then by links to what is
     placed.
 
@@ -44,16 +43,13 @@ import json
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 SCHEMA = 1
-ROLES = ('power_in', 'power', 'core', 'clock', 'interface', 'signal_in',
-         'signal_out', 'analog', 'rf', 'io', 'ui', 'protection', 'memory',
-         'mechanical', 'misc')
 EDGES = ('N', 'S', 'E', 'W')
 GROUP_KEYS = ('name', 'role', 'refs', 'anchor', 'why', 'edge', 'side', 'near',
               'apart', 'note')
 DOC_KEYS = ('schema', 'board', 'groups', 'order', 'note')
 
-#: A net is a RAIL -- left out of every connectivity vote here and in
-#: plan_regions' wiring cost -- when its name says ground or it reaches more
+#: A net is a RAIL -- left out of every connectivity vote here -- when its
+#: name says ground or it reaches more
 #: than RAIL_SHARE of the board's parts (and more than RAIL_MIN_OWNERS).
 RAIL_SHARE = 0.25
 RAIL_MIN_OWNERS = 6
@@ -171,17 +167,6 @@ class BoardView:
         self.name_of = lambda nid: getattr(nets.get(nid), 'name', '') or ''
         self.rails = rail_net_ids(self.owners, self.name_of, len(self.parts))
 
-    def signal_partners(self, ref: str) -> Dict[str, int]:
-        """{other ref: number of signal nets shared with `ref`}."""
-        out: Dict[str, int] = {}
-        for nid in self.nets_of.get(ref, ()):
-            if nid in self.rails:
-                continue
-            for other in self.owners.get(nid, ()):
-                if other != ref:
-                    out[other] = out.get(other, 0) + 1
-        return out
-
     def pad_count(self, ref: str) -> int:
         return len(_cu_pads(self.parts[ref]))
 
@@ -197,10 +182,10 @@ def group_of(doc: Dict) -> Dict[str, str]:
 
 
 def cap_owners(view: BoardView, cap: str):
-    """`(net name, [owner refs])` when `cap` is a decap to the SEEDER's rule
-    -- a 2-pad C with one pad on ground and one on a net a U-prefixed part of
-    3+ copper pads carries (`seeder._decap_owner_ok`'s default rule) -- else
-    None. The board's own election (`groups.decap_tethers`) is by distance,
+    """`(net name, [owner refs])` when `cap` is a decap by the electrical
+    rule -- a 2-pad C with one pad on ground and one on a net a U-prefixed
+    part of 3+ copper pads carries -- else None. The board's own election
+    (`groups.decap_tethers`) is by distance,
     which a pile does not have; this is the electrical half alone."""
     from net_queries import is_ground_net_name
     if not cap.upper().startswith('C') or view.pad_count(cap) != 2:
@@ -217,7 +202,7 @@ def cap_owners(view: BoardView, cap: str):
 
 
 def decap_conflicts(doc: Dict, view: BoardView) -> List[Dict]:
-    """Caps the seeder would claim at an IC of ANOTHER group: no decap owner
+    """Caps the placer would claim at an IC of ANOTHER group: no decap owner
     of the cap's net is in the cap's own group. The groups file is the author
     saying the cap belongs elsewhere (a crystal's load cap, an RC filter), so
     the region intent exempts it from the decap rule."""
@@ -261,10 +246,10 @@ def fold_followers(doc: Dict, claims: Iterable[Dict]) -> Tuple[Dict, Dict[str, T
     when a subject is its group's anchor, the rest of that group with it --
     and {ref: (from group, to group)} for each part moved.
 
-    A follower is seated beside its partner (the seeder's followers stage),
-    so it must share its partner's region: a crystal in a clock group of its
-    own would be held to a region apart from the IC whose pins it belongs
-    at. A group the move empties is dropped, and the `near`, `apart` and
+    A follower is placed beside its partner, so it must share its
+    partner's group: a crystal in a clock group of its own would be held
+    apart from the IC whose pins it belongs at. A group the move empties is
+    dropped, and the `near`, `apart` and
     `order` entries naming it are pointed at the group that took its parts.
     The input is not modified."""
     roots = follower_roots(claims)
@@ -398,8 +383,8 @@ def analyze(doc: Dict, pcb, movable: Optional[Iterable[str]] = None,
 
     # cohesion, per part: signal links to its own group vs the strongest
     # other MOVABLE group. A link to a group of fixed parts (the headers a core
-    # talks to) is not a grouping mistake -- it is what the region planner
-    # places the group next to -- so it never makes a part "pulled".
+    # talks to) is not a grouping mistake -- it is what the placer puts the
+    # group next to -- so it never makes a part "pulled".
     fixed_groups = {g['name'] for g in doc['groups']
                     if all(r in fixed for r in g['refs'] if r in view.parts)}
     anchors = {g.get('anchor') for g in doc['groups'] if g.get('anchor')}

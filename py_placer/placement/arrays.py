@@ -2,18 +2,16 @@
 
 A declared `arrays[]` entry says "these parts are one row": resistor banks along
 a bus in the served IC's pin order, a decap row under a chip, one rotation for
-the lot. The seeder has no term that builds such a row and the quench pulls
-each member toward its own nets, so identical parts scatter (run 32:
-3750 crossings against the human layout's 1352).
+the lot. A search that pulls each member toward its own nets scatters
+identical parts (run 32: 3750 crossings against the human layout's 1352).
 
 This module holds the two PURE pieces every consumer shares:
 
 * `formation` -- ONE predicate for "is this set of poses a formed row": a
   common axis, the expected order along it, one shared rotation, an even
-  pitch. The grade rule `array_formation` calls it, and the seeder's row seat
-  and the quench's block move are to call it too (#1051 phases 3-4) rather
-  than each carrying a copy, which is how a grader and an engine come to
-  disagree about what "formed" means.
+  pitch. The grade rule `array_formation` calls it, and any engine that
+  forms rows is to call it too rather than carry a copy, which is how a
+  grader and an engine come to disagree about what "formed" means.
 * `pin_order` -- the order a row must follow for `order: "pin"`: the served
   IC's pad numbering, read off pads and nets only. POSE-BLIND on purpose: an
   order read off where the parts sit would bless whatever arrangement the

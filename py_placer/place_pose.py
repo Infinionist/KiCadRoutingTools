@@ -190,7 +190,7 @@ def build_parser(with_verbs=True):
                    help="Track width the FACE rule prices a lane at. "
                         "Omitted, the board's Default netclass width")
     p.add_argument('--snap', action='store_true',
-                   help="If the requested pose is refused, take the best "
+                   help="If the requested pose is refused, take the nearest "
                         "legal pose within --radius instead (ranked by "
                         "pose_score, then RE-GRADED here -- the ranker's "
                         "legality is an AABB gate and this verb's verdict is "
@@ -274,8 +274,8 @@ def _verb_parsers(sub=None):
     q.add_argument('y', nargs='?', type=float)
     q.add_argument('--near', nargs=2, type=float, metavar=('X', 'Y'),
                    help='the same coordinates read as APPROXIMATE: implies '
-                        '--snap, so the engine seats the part at the best '
-                        'legal pose near the point you aimed at. One pose op '
+                        '--snap, so the engine seats the part at the nearest '
+                        'legal pose to the point you aimed at. One pose op '
                         'per call: with a second one it is refused (exit 2)')
     q.add_argument('--rot', type=float, default=None,
                    help='absolute rotation in degrees; omitted, the part '

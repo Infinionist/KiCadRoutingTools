@@ -8,17 +8,18 @@ the run just quietly does less.
 
 ## The strongest rule is a code fact, not folklore
 
-`placement/quench.py:207` keeps only `net_id > 0` pads:
+The placement state (`placement/quench.py`'s `_Part`) keeps only
+`net_id > 0` pads:
 
     self.pads_local = [(p.local_x, p.local_y, p.net_id)
                        for p in fp.pads if p.net_id > 0]
 
-so a net-less NPTH mounting hole has `pin_count == 0` and `nets == []`. The only
-skip in the part loop (`:340`) is `if not fp.pads`, and a mounting hole HAS a
-pad. So it is in `state.parts`, it is movable, and **no airwire opposes it** --
-only the halo and edge terms decide where it goes. The quench will slide an M3
-hole across the board to relieve someone else's halo gradient. Measured:
-`tigard.kicad_pcb` has 4 unlocked M3 holes in exactly this state.
+so a net-less NPTH mounting hole has `pin_count == 0` and `nets == []`. A
+mounting hole HAS a pad, so it is in `state.parts`, it is movable, and **no
+airwire opposes it** -- only the spacing and edge terms decide where it goes,
+and a placement search will slide an M3 hole across the board to make room
+for someone else. Measured: `tigard.kicad_pcb` has 4 unlocked M3 holes in
+exactly this state.
 
 ## Confidence, and being honest about which signals are weak
 
@@ -37,7 +38,7 @@ Every rule above asks what a part IS (a connector, a hole) or where it sits
 relative to the OUTLINE. Neither can see that a part is a member of an
 ARRANGEMENT -- a ring of LEDs, a bolt circle, a fiducial triangle -- and a
 placement search that cannot see one will happily take a member out of it to
-buy a legality number. Measured: a 63-second targeted `place_optimize` lap
+buy a legality number. Measured: a 63-second targeted optimisation lap
 moved a decoupling cap 30 mm (and flipped it 180 deg) out of a geometrically
 perfect 8-fold ring, and was reported as the run's best moment.
 `reconstruct.fit_family_orbits` supplies that fact and `family_orbit_seat`
@@ -65,7 +66,7 @@ from placement.part_class import (  # noqa: E402
 
 _PREFIX_RE = re.compile(r'^([A-Za-z]+)')
 
-HIGH_PIN_ADVISORY = 40   # place_optimize has no --max-target-pins guard
+HIGH_PIN_ADVISORY = 40   # connected pins past which a move drags many airwires
 
 
 @dataclass(frozen=True)
@@ -526,36 +527,6 @@ def _is_plated(pad) -> bool:
     except Exception:
         return bool(getattr(pad, 'drill', 0)) and \
             getattr(pad, 'pad_type', '') != 'np_thru_hole'
-
-
-def format_text(adv: LockAdvice) -> str:
-    free = [f for f in adv.findings if not f.already_locked]
-    out = [f"Lock advisor: {len(adv.findings)} position-critical part(s); "
-           f"{len(free)} currently FREE TO MOVE.",
-           "Nothing was locked. This is advice.", ""]
-    for f in adv.findings:
-        if f.already_locked:
-            continue
-        head = f"  {f.confidence.upper():<7s}{f.ref:<6s}"
-        out.append(head + f.reasons[0])
-        for r in f.reasons[1:]:
-            out.append(" " * len(head) + "+ " + r)
-    already = [f.ref for f in adv.findings if f.already_locked]
-    if already:
-        out += ["", f"  Already locked, no action needed: {', '.join(already)}"]
-    if adv.advisories:
-        out += ["", "Advisory - NOT in the pattern list below:"]
-        for a in adv.advisories:
-            out.append(f"  {a['ref']}  {a['reason']}")
-    pats = adv.lock_patterns()
-    out += ["", "Paste this (review it first):"]
-    out.append("  --lock " + " ".join(pats) if pats
-               else "  (nothing at or above --lock-confidence "
-                    f"{adv.min_confidence})")
-    if adv.use_globs:
-        out.append("  NOTE: --suggest-locks-globs collapsed exact refs to globs; "
-                   "each one freezes every part it matches.")
-    return "\n".join(out)
 
 
 def to_json(adv: LockAdvice) -> Dict:

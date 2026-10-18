@@ -64,12 +64,7 @@ from placement.placement_state import UNPLACED_EXIT, gate_or_exit
 from placement.groups import GroupError, parse_sources
 
 #: What `--emit-intent` does about a decap limit when no flag says (#959,
-#: #1002): 'off' | 'strict' | 'auto'. 'auto' was put to the A/B gate in
-#: tests/test_placement_ab.py (rows `decaps-auto-*`, improve on N-1 boards,
-#: regress on none) and REJECTED: it improved no board and regressed all
-#: three with zones. The three flat boards are structurally neutral (with no
-#: zoned block the seeder's pin stage seats nothing), so a re-trial is
-#: judged on zoned boards; flip this only when those rows say otherwise.
+#: #1002): 'off' | 'strict' | 'auto'. Flip it only on a routed A/B.
 #: Set through `set_defaults` in `build_parser` -- a `default=` on one of
 #: the three shared-dest flags would be dead.
 DECLARE_DECAPS_DEFAULT = 'off'
@@ -624,7 +619,7 @@ def main(argv=None):
                                    for b in _anchors),
                 'skipped': _skipped}
             # #1054: the anchored poses also compile into `fixed_poses[]`,
-            # so the seeder can SEAT what the grade anchors. The grade
+            # so place_simple can SEAT what the grade anchors. The grade
             # still anchors from the FILE, so a plan that drops a row
             # drops the seat, never the grade. A ref another claim of
             # this intent already places is skipped by name -- the

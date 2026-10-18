@@ -90,11 +90,6 @@ C_CONFLICT = _THEME_DARK.rgb('defect_conflict')    # pad/hole legality
 C_HOLE = _THEME_DARK.rgb('defect_hole')            # NPTH keepout circles
 C_COURT_OVL = _THEME_DARK.rgb('defect_courtyard')  # courtyard interpenetration
 
-#: The "required gap" amber. It had NO CONSTANT NAME AT ALL and was typed as a
-#: literal in five places, one of them its own legend row -- a semantic colour
-#: with no name is the clearest single symptom of a palette nobody owns.
-C_REQUIRED_GAP = _THEME_DARK.rgb('defect_required_gap')
-
 
 # ---------------------------------------------------------------------------
 # Model: what to draw, computed from the board (no PIL below this line)
@@ -128,9 +123,9 @@ class PlacementModel:
         from list_nets import board_floor_knobs
         # BOARD-FIRST floors, resolved HERE rather than in main() so the CLI and
         # every library caller get the same answer -- and so this instrument
-        # agrees with place_optimize, which has resolved them this way since
-        # run-7 S1 (place_optimize.py:144). Until now it did not: the renderer
-        # hardcoded 0.25/0.55 while the optimizer read the board, so on any
+        # agrees with the placement tools, which resolve them this way. It
+        # once did not: the renderer hardcoded 0.25/0.55 while the optimizer
+        # read the board, so on any
         # board declaring its own floor the two disagreed about the geometry
         # they were supposedly sharing. On the measured board that is 0.2 and
         # 0.5, not 0.25 and 0.55.
@@ -141,10 +136,7 @@ class PlacementModel:
             self.pcb_file, clearance=kw.get('clearance'),
             board_edge_clearance=kw.get('board_edge_clearance'),
             clearance_default=defaults.CLEARANCE, edge_default=0.55)
-        args = dict(clearance=clr, board_edge_clearance=edge,
-                    crossing_penalty=10.0, halo_base=0.5, halo_coef=0.25,
-                    halo_weight=2.0, edge_halo=2.0, edge_weight=2.0,
-                    grid_step=defaults.GRID_STEP, length_weight=1.0)
+        args = dict(clearance=clr, board_edge_clearance=edge)
         args.update({k: v for k, v in kw.items() if v is not None})
         try:
             return QuenchState(self.pcb, self.pcb_file, **args)
@@ -163,7 +155,7 @@ class PlacementModel:
             return QuenchState(self.pcb, self.pcb_file, **args)
 
     def _metrics(self) -> Dict[str, object]:
-        m = dict(self.state.total_cost())
+        m = dict(self.state.wire_metrics())
         leg = self.state.legality_metrics()
         m.update(leg)
         if self.no_outline:
@@ -437,7 +429,7 @@ def legality_findings(model) -> Dict[str, object]:
             out['keepout_copper_unmeasured'] = [['*', 'error', '%s: %s'
                                                  % (type(e).__name__, e)]]
         # #1065: pad CLEARANCE is the grader's own measurement, not a mirror.
-        # `pair_shortfall` (the seeder and quench gate) charges bounding-box
+        # `pair_shortfall` (the seat gate) charges bounding-box
         # gaps, so an oval pad 0.277 mm from its neighbour read 0.0215 mm
         # short at 0.25 and render flagged a pose grade_pad_legality and
         # check_drc both call clean -- and a run gated its search on it. Its
@@ -1903,7 +1895,7 @@ Examples:
                    help='seed board; enables ghost rects and displacement arrows')
     p.add_argument('-o', '--output', help='PNG path (one panel) or directory')
     p.add_argument('--summary-json', metavar='FILE',
-                   help='route.py JSON_SUMMARY or a loop round log, naming the '
+                   help='route.py JSON_SUMMARY or a route log, naming the '
                         'failed and blocker nets to highlight')
     p.add_argument('--zoom-group', metavar='BLOCK',
                    help='frame one placement block (same names as route.py --group)')

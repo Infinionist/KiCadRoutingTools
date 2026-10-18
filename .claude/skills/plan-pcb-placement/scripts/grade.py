@@ -47,7 +47,7 @@ def _poses(board):
     from kicad_parser import parse_kicad_pcb
     pcb = parse_kicad_pcb(board)
     # `f.pads` on purpose (#1143): these are the poses a run can MOVE, and
-    # the quench moves a part whose only pads are paste/mask apertures.
+    # place_simple moves a part whose only pads are paste/mask apertures.
     return {k: (round(f.x, 4), round(f.y, 4), round((f.rotation or 0) % 360, 3),
                 f.layer)
             for k, f in pcb.footprints.items() if f.pads}

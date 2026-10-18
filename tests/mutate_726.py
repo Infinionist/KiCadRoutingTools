@@ -19,7 +19,7 @@ Two traps this battery is built against, both measured in this repo before:
     source SIZE), and several rows below are single-token edits, so the mutated
     and restored files are the SAME SIZE. Mutate, run and restore inside one
     second and the `.pyc` compiled from the MUTATED source stays valid for
-    every later import. `_uncache` (lifted from `mutate_703.py`) is called
+    every later import. `_uncache` is called
     after BOTH writes, and children run with `PYTHONDONTWRITEBYTECODE=1`.
 
   * **Prose anchors.** `placement/perturb.py` and `placement/placement_state.py`

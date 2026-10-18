@@ -49,11 +49,6 @@ DEFAULT_THRESHOLDS = {'dup_fraction': DUP_FRACTION,
                       'spread_ratio': SPREAD_RATIO,
                       'outside_fraction': OUTSIDE_FRACTION}
 
-#: `PlacementState.seed_scope` values (#1165).
-SEED_ALL = 'all'            # every unlocked part
-SEED_STACKED = 'stacked'    # only `stacked_suspect_refs`
-SEED_NONE = 'placed'        # the board looks placed: nothing without --force
-
 
 @dataclass
 class PlacementState:
@@ -123,7 +118,7 @@ class PlacementState:
         (`stacked_suspect_refs`, which excuses far-side and marker
         co-locations; the raw `duplicate_fraction` read a placed orangecrab
         as a pile). The ONE pile test: emit_intent, board_brief and
-        place_seed's gate read it, and the placement skill chooses its mode
+        check_assembly read it, and the placement skill chooses its mode
         from it. A locked part's pose stays a decision on a pile: emit_intent
         keeps its claims.
         """
@@ -132,30 +127,6 @@ class PlacementState:
                     or (self.partially_unplaced
                         and len(self.stacked_suspect_refs) / n
                         >= DUP_FRACTION))
-
-    @property
-    def seed_scope(self) -> str:
-        """What place_seed seeds without --force (#1165) -- ONE answer for
-        its gate, `rank_rotations`' eligibility and check_floorplan's seeder
-        forecast, so none of them can scope a seed the gate did not:
-
-        * `SEED_ALL` -- every unlocked part: the board is `unplaced`, or its
-          parts still to be placed sit off the outline (`off_outline`).
-          Checked BEFORE the stacked scope: a pile whose fixed parts were
-          placed first can carry a deliberate stack (CM5 module halves at
-          one origin), and scoping the seed to that stack seeded nothing but
-          two locked parts and left the pile where it was.
-        * `SEED_STACKED` -- a partially-unplaced board: only
-          `stacked_suspect_refs`; the rest is someone's work.
-        * `SEED_NONE` -- the board looks placed: place_seed refuses.
-
-        Locked parts are never seeded in any scope (seed_from_intent treats
-        a file-locked part as placed)."""
-        if self.unplaced or self.off_outline:
-            return SEED_ALL
-        if self.partially_unplaced:
-            return SEED_STACKED
-        return SEED_NONE
 
     @property
     def blocked(self) -> bool:
@@ -280,7 +251,7 @@ def assess_placement(pcb_data, pcb_file: Optional[str] = None,
     s3 = (st.outside_fraction is not None
           and st.outside_fraction >= th['outside_fraction'])
     # #1165: the same test over the UNLOCKED parts. Only a REPORTED signal
-    # (`off_outline`, so `pile` and `seed_scope`): `unplaced` and
+    # (`off_outline`, so `pile`): `unplaced` and
     # `partially_unplaced` are unchanged, so every `gate_or_exit` caller
     # refuses and warns exactly as before.
     _locked = [fp for fp in fps if getattr(fp, 'locked', False)]
@@ -385,7 +356,8 @@ def _outside_fraction(pcb_data, pcb_file, fps,
 
 def _global_rect(fp, side_boxes, rotate_local_bounds):
     """Absolute courtyard rect for a footprint, falling back to its pad bbox --
-    the same fallback the quench uses when a footprint draws no courtyard."""
+    the same fallback the placement state uses when a footprint draws no
+    courtyard."""
     local = None
     if side_boxes:
         from placement.legality import footprint_side
@@ -508,9 +480,8 @@ def stack_suspects(refs_at_one_spot, sides_of, is_marker,
                    touch=None) -> List[str]:
     """The refs at ONE coordinate that are not explicable, PER SIDE
     (`sides_of(ref)` -> its sides, `is_marker(ref)` -> a marker class).
-    THE stack rule: `assess_placement` calls it about the board, the
-    seeder's #1151 disposition about the parts PRESENT when it decides
-    (`coincident_stack_suspects`).
+    THE stack rule: `assess_placement` calls it about the board, and
+    `coincident_stack_suspects` about the parts at one origin.
 
     `touch(a, b, side)`, when given (#1204), keeps in a side's group only
     the parts that share something physical there with another member
@@ -544,7 +515,7 @@ def stack_suspects(refs_at_one_spot, sides_of, is_marker,
         # NOTE what is deliberately NOT here: "all locked". A lock records
         # a decision about WHERE a part goes; it does not make two parts
         # able to occupy one space. And this toolchain stamps its own locks
-        # -- seeder.stamp_locked, called on place_seed's output -- so a
+        # -- `place_pose lock`, through seeder.stamp_locked -- so a
         # pile-up the tools CREATED would have been invisible to the check
         # meant to catch pile-ups. Markers are the real discriminator: a
         # fiducial and a mounting hole are different physical things and
@@ -693,8 +664,8 @@ def coincident_stack_groups(pcb_data, pcb_file: Optional[str] = None, *,
     `body_contact_pairs`); all-marker groups are exonerated. `refs` keeps
     every suspect part at the point, markers included. A pair the intent's
     `overlap_waivers` names (`waivers`) is accepted here as it is in the
-    courtyard channel. One function, so the seeder's #1151 disposition and
-    the grader cannot disagree about what a stack is.
+    courtyard channel. One function, so every reader and the grader cannot
+    disagree about what a stack is.
 
     `exempt_out`, when given, receives `{point, refs, why}` for each origin
     the origin-only rule would have gated and this one does not: `why` is

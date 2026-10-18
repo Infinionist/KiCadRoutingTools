@@ -871,14 +871,14 @@ class _Cap:
 def _candidate_positions(cap, max_disp, step, grid_step):
     """Candidate cap centres, snapped on the OFFSET rather than the position.
 
-    Same #708 correction as `quench._candidate_positions`: snapping
+    The #708 correction: snapping
     `cap.seed_x + ix*step` to a lattice through board ORIGIN discards the
     seed's residue and walks the part off whatever pitch the board was laid out
     on, for nothing -- at every step this tool ships, the absolute snap removed
     zero candidates.
 
-    Unlike quench, this site keeps the `grid_step` RASTER rather than the
-    board's inferred lattice, and that asymmetry is deliberate and measured.
+    This site keeps the `grid_step` RASTER rather than the board's inferred
+    lattice, deliberately and measured.
     This search IS the clearance repair: its whole job is to find the
     sub-millimetre pose that clears a foreign via. At `step=0.2` the candidate
     count is 81 on the raster, 29 on a 0.3175mm lattice and 9 on 0.635 -- so a

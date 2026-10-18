@@ -793,18 +793,11 @@ def write_summary_file(path: str, merged: Optional[Dict]) -> None:
     stdout line refused -- non-deterministic, and silently divergent from
     ``merge_route_summaries(log)``, which a test compares against this file.
 
-    Deliberately NO fallback document either. `converge.route_verdict` scores a
-    truthy dict carrying none of the failure keys as `(0, 'clean')`, so an
-    ``{'complete': false}`` placeholder would rank a broken candidate FIRST.
-    Failing closed -- no file -- lands every caller in the `summary = {}` /
-    "no summary" case they all already handle. Stated precisely, because the
-    three handle it differently: compare_seeds ranks such a row last and never
-    picks it as `best`; cmd_poses only annotates; place_portfolio DROPS it from
-    the routed ranking and falls through to the static one, so with every probe
-    unreadable it still names a best on crossings/HPWL alone (`probe_kind:
-    null` is the only tell). That last one is pre-existing and is not made
-    worse here -- but it is not "ranks last", and saying so would be the
-    comfortable version.
+    Deliberately NO fallback document either. A ranker that scores a truthy
+    dict carrying none of the failure keys as clean would rank an
+    ``{'complete': false}`` placeholder FIRST. Failing closed -- no file --
+    lands every caller in the `summary = {}` / "no summary" case it already
+    handles.
 
     FAILING CLOSED MEANS DELETING THE DESTINATION, and that is not fussiness.
     An atomic publish that merely declines to overwrite leaves the PREVIOUS

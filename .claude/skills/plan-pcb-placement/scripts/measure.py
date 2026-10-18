@@ -71,8 +71,7 @@ FORBIDDEN_SCRIPTS = ('loop_driver.py', 'placement_driver.py')
 #: converge's own subcommands. Matching a closed set means an argument that
 #: merely follows the script name (`grep x converge.py py_tools/y.py`) is not
 #: read as a verb.
-CONVERGE_VERBS = ('poses', 'where', 'record', 'step-back', 'replay', 'status',
-                  'verdict')
+CONVERGE_VERBS = ('where', 'record', 'verdict')
 CONVERGE_VERB_RE = re.compile(r'converge\.py["\']?\s+(%s)(?![\w./\\-])'
                               % '|'.join(re.escape(v) for v in CONVERGE_VERBS))
 WAIT_RE = re.compile(r'(^|[;&|]\s*|\bdo\s+)(until|sleep)\b')

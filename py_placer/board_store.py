@@ -1,22 +1,13 @@
 #!/usr/bin/env python3
-"""A content-addressed board store, and a ledger a step back can actually use.
+"""A content-addressed board store, and the append-only ledger beside it.
 
-A convergence run is a sequence of attempts, most of which are reverted. What
-makes the sequence worth keeping is the ability to go back to any point and
-re-run it differently -- and that requires two things a prose ledger does not
-give you:
-
-    the board            addressed by content, so "revert to iteration 7" is
-                         exact rather than a path that was overwritten twice
-    the lever            as ARGV, so replaying is subprocess.run(entry.lever_argv)
-                         rather than a human reading "grid back to 0.1" and
-                         reconstructing the command
-
-Observed failure this replaces: a real ledger recorded `reverted_to` values of
-`"wk/seed.kicad_pcb"`, `"grid back to 0.1"` and `"iteration 7's chain, plus the
-Step 5c reconnect"` -- two of three unusable by a program, and the third naming
-a path that three iterations had written in turn. Nothing in that run was
-replayable, so every step back was a reconstruction.
+A run is a sequence of attempts, most of which are reverted. Each recorded
+board is kept by CONTENT, so "the board of iteration 7" is exact rather than a
+path that was overwritten twice. Observed failure this replaces: a real ledger
+recorded `reverted_to` values of `"wk/seed.kicad_pcb"`, `"grid back to 0.1"`
+and `"iteration 7's chain, plus the Step 5c reconnect"` -- two of three
+unusable by a program, and the third naming a path that three iterations had
+written in turn.
 
 Nothing here knows what a board IS. It stores bytes with their siblings and
 records what produced them.
@@ -138,8 +129,8 @@ class Ledger:
         Not `len(entries())`. A line that is not a row (a torn one, or since
         #1078 a stray `42`) is not counted, but rows written after it by the
         old count were numbered past it, so the count fell back onto a number
-        a row already holds -- and `step-back` / `replay --iteration` then
-        match two rows. On a ledger numbered 0..n-1 this IS the count.
+        a row already holds, and two rows then answered to one iteration. On a
+        ledger numbered 0..n-1 this IS the count.
         """
         rows = self.entries()
         used = [e.get('iteration') for e in rows]
@@ -152,33 +143,3 @@ class Ledger:
             if e.get('accepted'):
                 return e
         return None
-
-    def counts(self) -> Dict[str, int]:
-        """completion vs placement vs systemic -- 'am I converging on the
-        board, its placement, or the tooling?'. A run once spent nine of
-        eleven iterations on the instrument and finished with five nets
-        carrying no copper; two later runs filed PLACEMENT repairs (which
-        connect nothing and tune no instrument) as systemic for want of a
-        kind, and the systemic-share warning cried wolf on both."""
-        out = {'total': 0, 'completion': 0, 'placement': 0, 'systemic': 0,
-               'accepted': 0}
-        for e in self.entries():
-            out['total'] += 1
-            out[e.get('kind', 'completion')] = out.get(e.get('kind', 'completion'), 0) + 1
-            if e.get('accepted'):
-                out['accepted'] += 1
-        return out
-
-
-def replay_command(entry: Dict) -> List[str]:
-    """The argv that produced an entry -- the whole point of recording it.
-
-    Raises rather than guessing: an entry without a lever_argv is not
-    replayable, and pretending otherwise is how a ledger becomes prose.
-    """
-    argv = entry.get('lever_argv')
-    if not argv:
-        raise ValueError(
-            f"iteration {entry.get('iteration')} recorded no lever_argv, so it "
-            f"cannot be replayed -- only re-read")
-    return list(argv)

@@ -378,11 +378,10 @@ def fab_floor_bucket(copper_layer_count):
     module docstring's source line) and this module does not invent the rest.
 
     A consumer that COMPARES two layer counts cannot otherwise tell "the floor
-    genuinely does not move" from "this table cannot see the difference", and
-    `placement.options.add_layers` -- the only such consumer -- printed the
-    first while meaning the second on every board above 2 copper layers. On a
-    6-layer board 121 escape lanes short it said "more layers buy NO extra
-    lanes on a face" (issue #700).
+    genuinely does not move" from "this table cannot see the difference"; one
+    such consumer printed the first while meaning the second on every board
+    above 2 copper layers. On a 6-layer board 121 escape lanes short it said
+    "more layers buy NO extra lanes on a face" (issue #700).
 
     A SEPARATE FUNCTION, not a key on the floor dict: the floor dicts contain
     exactly ``FLOOR_KEYS`` and are written out as-is --
@@ -601,9 +600,7 @@ def count_copper_layers_in_file(pcb_path):
     # `None` is the in-memory case, and it is the one this counter exists to
     # hand over to `count_copper_layers_in_data` -- a live GUI board has
     # `source_path is None`, not `''`. Without this it raised TypeError out of
-    # `open`, which `placement.options.capacity_options` reports as INTERNAL
-    # ERROR, a channel reserved for genuine crashes. Worse than the skip it
-    # replaced.
+    # `open`, which a caller reports as an internal error.
     if not pcb_path:
         return 0
     try:
@@ -618,9 +615,8 @@ def count_copper_layers_in_data(pcb_data):
     ``count_copper_layers_in_file``.
 
     The file twin returns 0 for a live GUI board whose ``board_info.copper_layers``
-    is perfectly good, which is why ``placement.options.add_layers`` skipped
-    entirely on one ("could not count this board's copper layers") and why
-    ``fanout_clearance.resolve_drill_floors`` says so in its own docstring.
+    is perfectly good, which is why ``fanout_clearance.resolve_drill_floors``
+    says so in its own docstring.
 
     Returns 0 when the list is missing or empty -- the SAME "I could not look"
     value its file twin returns, and deliberately NOT a 2-or-4 guess. The

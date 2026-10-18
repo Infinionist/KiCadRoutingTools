@@ -16,7 +16,7 @@ around it use these pieces:
     against each other (`floorplan.plan_check`);
   * `stamp_locked` / `stamp_unlocked`: KiCad `(locked yes)` on a written
     board (`place_pose lock` / `unlock`);
-  * `_materialise_rotation` and `scope_hpwl`, for the pose tools.
+  * `_materialise_rotation`, for the pose tools.
 """
 from __future__ import annotations
 
@@ -30,29 +30,25 @@ def pose_ok(state, ref: str, x: float, y: float, rot: float,
     """THE seat predicate: fully contained, and clear of everything not in
     `exclude`.
 
-    Lifted out of `_try_place` so a POSE COUNTER can use the identical test.
-    `count_legal_poses` below answers "how many seats would lifting X free",
-    and that answer is only worth anything if a positive count implies the
-    seat would really have been taken -- which needs the same predicate, not
-    a second copy of it that drifts.
+    ONE predicate, so every caller that asks "may this part sit here"
+    (`simple.legal`, `nearest_legal`, the pose tools) gets the same answer.
 
     Note `candidate_valid` alone is not enough: for a part whose incumbent
     pose is off the board, its #456 branch accepts poses that move strictly
     TOWARD the board while still outside it. Placement from scratch has no
     incumbent worth improving on, so full containment is demanded explicitly.
 
-    The third conjunct is the intent's declared KEEP-OUTS (#701). Before it,
-    `rule_keepout` graded a region the seat search walked parts into, forever:
-    a declared keep-out was enforced by nothing at all. It sits BEFORE
-    `candidate_valid` for the same reason `count_legal_poses` puts the zone
-    gate first -- a handful of float compares against a usually-empty tuple,
-    where `candidate_valid` ends in the neighbour loop.
+    The third conjunct is the intent's declared KEEP-OUTS (#701), without
+    which `rule_keepout` would grade a region the search walked parts into.
+    It sits BEFORE `candidate_valid` because it is a handful of float
+    compares against a usually-empty tuple, where `candidate_valid` ends in
+    the neighbour loop.
 
     Containment is of the COURTYARD and, since #1257, of the PAD COPPER too,
     for a part whose copper reaches past its own courtyard by more than the
     edge margin the courtyard is held to: there a contained courtyard proves
-    nothing about the pads, and the search seated (and `--repair` "repaired")
-    a part with a pad 4 mm east of its courtyard past the outline -- the
+    nothing about the pads, and a search could seat a part with a pad 4 mm
+    east of its courtyard past the outline -- the
     top-priority placement defect, which check_assembly gates on. The copper
     is judged by check_assembly's own gate (`legality.pad_copper_gating_mm`),
     so a castellated module on its edge stays exempt as it is there. Every
@@ -75,20 +71,17 @@ def pose_ok(state, ref: str, x: float, y: float, rot: float,
     # leads pass through a keep-out even when its body sits on the far side,
     # so a courtyard-only seat would be accepted here and flagged there --
     # exit 4 on a board this function placed correctly.
-    # ABSOLUTE, via the state's shared loop. `edge_seat_ok` below had a second
-    # copy of this and #702 gave `candidate_valid` a third -- with a MONOTONE
-    # policy, which this predicate must not inherit: seeding from scratch has
-    # no incumbent worth improving on, and `test_701_keepout_predicate.py`
-    # seats a part whose current pose is fully inside a keep-out and asserts
-    # refusal, which "no worse than where you already are" would admit. One
-    # loop, two policies, both named.
+    # ABSOLUTE, via the state's shared loop. `candidate_valid` asks the same
+    # loop with a MONOTONE policy (#702), which this predicate must not
+    # inherit: placing from scratch has no incumbent worth improving on, and
+    # "no worse than where you already are" would admit a part whose current
+    # pose is fully inside a keep-out. One loop, two policies, both named.
     if not state.keepout_clear(ref, (r, tht)):
         return False
-    # #797, the FOURTH conjunct. `rule_zone_exclusive` graded a reserved
-    # rectangle that the seat search walked STRANGERS into: `place_seed` could
-    # seat an unrelated part in the middle of a region the intent reserved and
-    # then exit 4 against the intent it was built from. That is the round trip
-    # the keep-out conjunct above closed, one rule over.
+    # #797, the FOURTH conjunct: without it a search could seat an unrelated
+    # part in the middle of a region the intent reserved, and
+    # `rule_zone_exclusive` would then fail the board against the intent it
+    # was built from. The keep-out conjunct above, one rule over.
     #
     # ABSOLUTE, for the reason the paragraph above gives, and BEFORE
     # `candidate_valid` for the reason the keep-out one is: a handful of float
@@ -176,20 +169,12 @@ def _materialise_rotation(part, rot: float) -> float:
     `_Part.rect` silently falls back to `bounds_by_rot[0.0]` for an angle it
     has no entry for -- so a declared 45 on a part seeded at 0 would be judged
     for overlap, halo and containment on the UNROTATED box and then written
-    out at 45. The quench's nudge loop materialises the entry before using it
-    for exactly this reason; every seat search must too.
+    out at 45. Every seat search must materialise the entry before using it.
 
     KEYED BY THE NORMALISED ANGLE, which is what `_Part.rect` looks up
-    (`bounds_by_rot.get(rot % 360)`). `_try_place` fills by the RAW angle
-    instead (`_Part.ensure_rotation(_r)`), so a part whose board spells its rotation
-    -45 gets an entry at -45 that `rect` never reads and is judged on the
-    unrotated box anyway. That is a real bug and it is deliberately NOT fixed
-    here: 14 of 40 corpus boards spell a rotation outside [0, 360), fixing it
-    moves placement on them, and it is measurable -- with `_try_place` routed
-    through this function, `mutate_711`'s `both-along-edge-forms-allowed` row
-    flips from KILLED to SURVIVED. It owes its own change and its own A/B.
-    Declared angles reach here already normalised (`floorplan._rotation`), so
-    the two callers cannot disagree on anything a declaration can express.
+    (`bounds_by_rot.get(rot % 360)`): a part whose board spells its rotation
+    -45 would otherwise get an entry at -45 that `rect` never reads. Declared
+    angles reach here already normalised (`floorplan._rotation`).
     """
     rot = rot % 360.0
     part.ensure_rotation(rot)
@@ -207,38 +192,6 @@ def _zero_edge_gate(state):
         zero = BoardOutlineGate(state.pcb_data.board_info, 0.0)
         state._zero_edge_gate = zero
     return zero
-
-
-# ---- #975: the pad-copper edge floor, as a PREFERENCE of the edge seat ------
-#
-# `edge_seat_ok` never measured pad copper against the board-edge floor: its
-# pad conjunct asks whether each pad CENTRE is on the board at the gate margin,
-# so a seat could leave a connector's shield tabs inside the floor that
-# `grade_pad_legality`'s `pad_edge` then reports (tigard J7 0.073 mm short,
-# ulx3s AUDIO1 0.385). It is not added as a fifth conjunct. A refusal turns a
-# DRC shortfall into an unseated connector, and an unseated connector is an
-# unrouted one, so the seat PREFERS a pose whose copper clears the floor and
-# otherwise keeps the pose it always chose, disclosed in `edge_floor_fallback`.
-#
-# The reading is `legality.EdgeCopperContext.pose_copper`, the grader's own
-# per-pad arithmetic at the trial pose with the board's files read once per
-# state, so the seat and `pad_edge` agree by construction. A pad whose amount
-# cannot be measured (an unsupported shape) keeps only the checks it had.
-
-
-# ---- #1241: pad copper past the outline is never KEPT -----------------------
-#
-# On a connector with no drawn body `edge_seat_ok` asks only whether each pad
-# CENTRE is on the board, so the seat a ladder keeps -- its first conflict-free
-# rung when no pose clears the floor (#975), or stage 1's crowding fallback --
-# could carry pad copper past the outline, the top-priority placement defect:
-# a band `min 1.5` on a body-less 0.6 x 6 mm pad left it 1.2 mm off the board,
-# and the seed passed it on. It is asked of the rung about to be KEPT, after
-# `_floor_rung` has had its chance to move that rung inward clear of the
-# floor: a rung still past the outline is moved inward onto the board here, or
-# it is not a seat and the walk goes on. A drawn-body connector meets the same
-# rule one step earlier -- `edge_seat_ok` refuses its rung for the copper --
-# and is given the same move when that is all it was refused for.
 
 
 def _nearest_pad(pts: List[Tuple[float, float]], x: float, y: float) -> Tuple[float, float]:
@@ -368,18 +321,15 @@ def _courtyard_overlap(state, a: str, pose_a, b: str, pose_b):
     judges a declared pose (`grade_rect`), and where those overlap,
     `legality.pair_overlap_area_exact` on the drawn outlines (#1094:
     StickHub's declared -135 degree human poses were refused on rects
-    alone). Under `body_model` (#1182) a part that draws NO courtyard is
-    screened on its occupancy instead (`occupancy_rect_at(
-    courtyard_less_only=True)`), the currency the armed search seats it on.
-    Unarmed it is screened on the search's own rects, as before #1182: on
-    the occupancy, at this screen's 1e-6 mm2, it refused human poses
-    check_assembly calls advisory (phase-4 verifier: esp_prog's R1, U2 and
-    CON2 at their own file poses, One-Air-Max's C53/U8 at 0.135 mm2) --
-    the courtyard-blocking floors and the silk exemption are the grader's,
-    not this screen's. `w` x `h` is the rects' intersection, for the
-    refusal's text only."""
-    from .legality import (graded_part_at_pose, occupancy_rect_at,
-                           pair_overlap_area, pair_overlap_area_exact)
+    alone). A part that draws NO courtyard is screened on the search's own
+    rects: on its drawn-body occupancy, at this screen's 1e-6 mm2, it refused
+    human poses check_assembly calls advisory (phase-4 verifier: esp_prog's
+    R1, U2 and CON2 at their own file poses, One-Air-Max's C53/U8 at 0.135
+    mm2) -- the courtyard-blocking floors and the silk exemption are the
+    grader's, not this screen's. `w` x `h` is the rects' intersection, for
+    the refusal's text only."""
+    from .legality import (graded_part_at_pose, pair_overlap_area,
+                           pair_overlap_area_exact)
     if getattr(state, 'courtyards_ignored', False):
         # #1101: the project waives KiCad's courtyard rule, so a declared
         # pose is not refused for one (its drill holes still are, below).
@@ -389,11 +339,6 @@ def _courtyard_overlap(state, a: str, pose_a, b: str, pose_b):
     pcb_file = getattr(state, 'pcb_file', None)
     ta, tb = pa.tht_rect(*pose_a), pb.tht_rect(*pose_b)
     ra, rb = pa.grade_rect(*pose_a), pb.grade_rect(*pose_b)
-    if getattr(state, 'body_model', False):
-        ra = occupancy_rect_at(state.pcb_data, a, pose_a, ra, pcb_file,
-                               cache, courtyard_less_only=True)
-        rb = occupancy_rect_at(state.pcb_data, b, pose_b, rb, pcb_file,
-                               cache, courtyard_less_only=True)
     area = pair_overlap_area(pa.sides, pa.side, ra, ta,
                              pb.sides, pb.side, rb, tb)
     if area > FIXED_OVERLAP_EPS_MM2:
@@ -489,13 +434,11 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple],
     COURTYARDS, the way KiCad judges them: an OVERLAP (area above
     `FIXED_OVERLAP_EPS_MM2`, `legality.pair_overlap_area`) is illegal;
     courtyards that ABUT (gap >= 0) are legal. Only for a DECLARED pose:
-    every searched seat keeps the board clearance and its 0.02mm floor
-    (`seat_clearances`), which buy margin where the seeder chooses. A
-    human layout packs courtyards edge to edge (glasgow's RN banks and
-    SN74LVC1T45 buffers: 14 pairs at exactly 0.000mm, which kicad-cli's DRC
-    accepts) and a fixed pose exists to express THAT arrangement -- under
-    the searched-seat floor stage 0 refused 15 of 30 human glasgow poses,
-    each "within 0.02mm".
+    every searched seat keeps the board clearance. A human layout packs
+    courtyards edge to edge (glasgow's RN banks and SN74LVC1T45 buffers: 14
+    pairs at exactly 0.000mm, which kicad-cli's DRC accepts) and a fixed
+    pose exists to express THAT arrangement -- held to a searched seat's
+    floor, 15 of 30 human glasgow poses were refused, each "within 0.02mm".
 
     Everything else at its normal rule, ABSOLUTE (a declared pose has no
     incumbent to be "no worse than"): the outline (containment at the
@@ -608,7 +551,7 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple],
     # #1031's rule-area keep-out band, ABSOLUTE (`keepout_ok` is seed-
     # relative, and a pile seed is no licence): pad copper the band forbids
     # at this pose refuses it, measured in the band's own currency. Without
-    # it stage 0 seated test_1031's R2 at (37.6, 15) -- a pose place_pose
+    # it a fixed pose seated test_1031's R2 at (37.6, 15) -- a pose place_pose
     # refuses and grade_pad_legality reports under oob_keepout_copper_refs.
     if ctx is not None:
         ko = ctx.keepout_amount(ref, x, y, rot)
@@ -660,19 +603,19 @@ def fixed_pose_pair_conflicts(state, entries, waived=frozenset()
                               ) -> List[Dict[str, object]]:
     """Pairwise contradictions among declared ``fixed_poses[]`` entries.
 
-    This is the read-only geometry slice of stage 0 that ``plan_check`` can
-    run before writing a seed.  It deliberately uses ``_fixed_pose_check``'s
-    own courtyard, pad and hole predicates instead of maintaining a second
-    preflight approximation.  Entries that the seeder cannot resolve, or
-    whose declared face differs from the board, are left to their existing
-    resolution/refusal paths; inventing flipped geometry here would compare a
-    part stage 0 cannot actually seat.
+    The read-only geometry check ``plan_check`` runs on a plan's fixed
+    poses.  It deliberately uses ``_fixed_pose_check``'s own courtyard, pad
+    and hole predicates instead of maintaining a second preflight
+    approximation.  Entries that cannot be resolved, or whose declared face
+    differs from the board, are left to their existing resolution/refusal
+    paths; inventing flipped geometry here would compare a part that cannot
+    actually be seated.
 
     One record is returned per unordered pair.  Cross-face SMD courtyards and
     pads do not conflict because the shared legality predicates are
-    side-aware; drilled geometry still reaches both faces. `waived` is
-    stage 0's own set of courtyard-waiver pairs (#1060), so a pair the
-    seater accepts is not refused here.
+    side-aware; drilled geometry still reaches both faces. `waived` is the
+    set of courtyard-waiver pairs (#1060), so a waived pair is not refused
+    here.
     """
     declared: Dict[str, Tuple] = {}
     for f in sorted(entries, key=lambda row: str(row['ref'])):
@@ -806,28 +749,3 @@ def stamp_unlocked(board_file: str, refs: Sequence[str]) -> int:
     with open(board_file, 'w', encoding='utf-8') as f:
         f.write(content)
     return count
-
-
-def _pose_key(state) -> Tuple:
-    """Every part's pose, in `state.parts` order: what the repair grade
-    reads, so two equal keys grade equal (`PoseGrader` re-derives the board
-    from the poses on every call)."""
-    return tuple((r, p.x, p.y, p.rot) for r, p in state.parts.items())
-
-
-# --------------------------------------------------------------------------
-# #698: what an EXPLICIT re-seat may be accepted on
-#
-# The auto scope and an explicit scope differ in one structural way, and every
-# decision below follows from it. On `auto:damage_witnesses` the pass's win IS
-# `oob`, which sits at index 3 of the gate tuple -- ABOVE `hpwl` -- so the
-# lexicographic compare already sees it, prune cannot revert a genuine
-# homecoming, and `after[oob] < before[oob]` is a complete rule. On an explicit
-# scope the win is a declared claim or the scope's own wirelength, which the
-# tuple cannot see AT ALL. That is why the explicit branch needs a term-wise
-# safety condition plus a SEPARATE trigger, and why the answer is not an eighth
-# tuple term (`measure` has no intent to measure, and
-# tests/test_run8_gate_conjuncts.py pins the arity at 7 with its own reason).
-# --------------------------------------------------------------------------
-
-

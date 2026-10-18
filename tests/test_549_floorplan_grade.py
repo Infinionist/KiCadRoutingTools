@@ -343,10 +343,7 @@ def test_a_group_name_resolves_in_both_its_raw_and_short_form():
 def test_a_side_violation_names_the_part():
     pcb = parse_kicad_pcb(ULX)
     state = QuenchState(pcb, ULX, clearance=defaults.CLEARANCE,
-                        board_edge_clearance=0.55, crossing_penalty=10.0,
-                        halo_base=0.5, halo_coef=0.25, halo_weight=2.0,
-                        edge_halo=2.0, edge_weight=2.0,
-                        grid_step=defaults.GRID_STEP, length_weight=1.0)
+                        board_edge_clearance=0.55)
     back = sorted(p.ref for p in state.graded_parts() if p.side == 'B')
     assert len(back) > 20, len(back)
     raw = _emit()
@@ -364,10 +361,7 @@ def test_a_keepout_catches_a_through_hole_part_from_the_other_side():
     mounting-hole keep-out be walked through from the back."""
     pcb = parse_kicad_pcb(ULX)
     state = QuenchState(pcb, ULX, clearance=defaults.CLEARANCE,
-                        board_edge_clearance=0.55, crossing_penalty=10.0,
-                        halo_base=0.5, halo_coef=0.25, halo_weight=2.0,
-                        edge_halo=2.0, edge_weight=2.0,
-                        grid_step=defaults.GRID_STEP, length_weight=1.0)
+                        board_edge_clearance=0.55)
     tht = [p for p in state.graded_parts() if p.has_tht]
     assert tht, "no through-hole part on ulx3s"
     part = sorted(tht, key=lambda p: p.ref)[0]
@@ -391,10 +385,7 @@ def test_a_keepout_allow_list_clears_its_own_part():
     r0 = _graded(raw)
     pcb = parse_kicad_pcb(ULX)
     state = QuenchState(pcb, ULX, clearance=defaults.CLEARANCE,
-                        board_edge_clearance=0.55, crossing_penalty=10.0,
-                        halo_base=0.5, halo_coef=0.25, halo_weight=2.0,
-                        edge_halo=2.0, edge_weight=2.0,
-                        grid_step=defaults.GRID_STEP, length_weight=1.0)
+                        board_edge_clearance=0.55)
     part = sorted(state.graded_parts(), key=lambda p: p.ref)[0]
     raw['keepouts'] = [{'name': 'k', 'rect': list(part.rect)}]
     hit = [v for v in _graded(raw).violations if v.ref == part.ref]
@@ -460,10 +451,7 @@ def test_must_lock_reports_a_part_the_file_does_not_pin():
 def test_legality_numbers_are_the_optimizers_own():
     pcb = parse_kicad_pcb(ULX)
     state = QuenchState(pcb, ULX, clearance=defaults.CLEARANCE,
-                        board_edge_clearance=0.55, crossing_penalty=10.0,
-                        halo_base=0.5, halo_coef=0.25, halo_weight=2.0,
-                        edge_halo=2.0, edge_weight=2.0,
-                        grid_step=defaults.GRID_STEP, length_weight=1.0)
+                        board_edge_clearance=0.55)
     want = state.legality_metrics()
     got = _graded(_emit()).legality
     for k, v in want.items():
@@ -557,14 +545,58 @@ def test_declared_edge_connectors_within_band_are_not_oob():
           f"band (and one with no max) is counted and named")
 
 
+#: A 30 x 20 board. U2 sits at (6, 3) with a three-pin row 2 mm ABOVE its
+#: origin, i.e. 1.0 mm from the north edge, every partner south of it (the
+#: run-26 regulator; rotating it 180 puts the row at y 5, 5 mm from the
+#: edge); U9 has the same row at y 9 with its partners on J1 beyond its
+#: north face (a part wired to the edge strip); J1 is a declared edge
+#: connector on that edge; C1/C2 are two-pad parts no term counts. The
+#: middle pin of each row is staggered 0.1 mm, the SOT-89 shape that once
+#: read as the lattice pitch.
+_EDGE_BOARD = '''(kicad_pcb
+ (version 20241229)
+ (net 0 "")
+ (net 1 "/A") (net 2 "/B") (net 3 "/C") (net 4 "/D") (net 5 "/E") (net 6 "/F")
+ (net 7 "/G") (net 8 "/H") (net 9 "/I")
+ (gr_rect (start 0 0) (end 30 20) (layer "Edge.Cuts") (uuid "e1"))
+ (footprint "test:SOT" (layer "F.Cu") (uuid "fp-u2") (at 6 3%s)
+   (property "Reference" "U2" (at 0 0 0))
+   (pad "1" smd rect (at -1.5 -2) (size 0.8 1.3) (layers "F.Cu") (net 1 "/A") (uuid "u2p1"))
+   (pad "2" smd rect (at 0 -1.9) (size 0.9 1.5) (layers "F.Cu") (net 2 "/B") (uuid "u2p2"))
+   (pad "3" smd rect (at 1.5 -2) (size 0.8 1.3) (layers "F.Cu") (net 3 "/C") (uuid "u2p3"))
+ )
+ (footprint "test:SOT" (layer "F.Cu") (uuid "fp-u9") (at 20 11)
+   (property "Reference" "U9" (at 0 0 0))
+   (pad "1" smd rect (at -1.5 -2) (size 0.8 1.3) (layers "F.Cu") (net 4 "/D") (uuid "u9p1"))
+   (pad "2" smd rect (at 0 -1.9) (size 0.9 1.5) (layers "F.Cu") (net 5 "/E") (uuid "u9p2"))
+   (pad "3" smd rect (at 1.5 -2) (size 0.8 1.3) (layers "F.Cu") (net 6 "/F") (uuid "u9p3"))
+ )
+ (footprint "test:HDR" (layer "F.Cu") (uuid "fp-j1") (at 20 1)
+   (property "Reference" "J1" (at 0 0 0))
+   (pad "1" smd rect (at -2.54 0) (size 1 1) (layers "F.Cu") (net 4 "/D") (uuid "j1p1"))
+   (pad "2" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net 5 "/E") (uuid "j1p2"))
+   (pad "3" smd rect (at 2.54 0) (size 1 1) (layers "F.Cu") (net 6 "/F") (uuid "j1p3"))
+ )
+ (footprint "test:C" (layer "F.Cu") (uuid "fp-c1") (at 6 10)
+   (property "Reference" "C1" (at 0 0 0))
+   (pad "1" smd rect (at -0.5 0) (size 0.5 0.5) (layers "F.Cu") (net 1 "/A") (uuid "c1p1"))
+   (pad "2" smd rect (at 0.5 0) (size 0.5 0.5) (layers "F.Cu") (net 2 "/B") (uuid "c1p2"))
+ )
+ (footprint "test:C" (layer "F.Cu") (uuid "fp-c2") (at 10 10)
+   (property "Reference" "C2" (at 0 0 0))
+   (pad "1" smd rect (at -0.5 0) (size 0.5 0.5) (layers "F.Cu") (net 3 "/C") (uuid "c2p1"))
+   (pad "2" smd rect (at 0.5 0) (size 0.5 0.5) (layers "F.Cu") (net 9 "/I") (uuid "c2p2"))
+ )
+)
+'''
+
+
 def test_pins_to_edge_warns_on_a_row_at_the_edge_and_is_skipped_without_edge_connectors():
     """The facing criterion as a rule: a three-pin row 1 mm from the edge with
     every partner behind it is ONE warn (never an error -- the reviewer
     disposes), a declared edge connector on the same edge is not named, and
     with no `edge_connectors` declared the rule abstains as 'not asked'."""
     import tempfile as _tf
-    sys.path.insert(0, os.path.join(ROOT, 'tests'))
-    from test_894_placement_terms import _EDGE_BOARD
     with _tf.TemporaryDirectory(prefix='t549e_') as tmp:
         board = os.path.join(tmp, 'edge.kicad_pcb')
         with open(board, 'w', encoding='utf-8') as fh:

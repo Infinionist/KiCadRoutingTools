@@ -89,7 +89,7 @@ DOCS = (
 #: per-CLI parser walk -- `krt_capabilities.script_flags` follows a registrar
 #: only when it sits BESIDE the script (the rule that stops it handing
 #: route_planes the whole of route.py's vocabulary), so flags registered from
-#: a sub-package (`py_placer/placement/cli_gates.py` supplies --suggest-locks
+#: a sub-package (`py_placer/placement/cli_gates.py` supplies --allow-unplaced
 #: and --allow-routed) read as dead and the gate cries wolf. A gate that cries
 #: wolf gets deleted, which would be worse than no gate.
 SKIP_DIRS = ('.git', 'wk', 'kicad_files', 'docs', 'node_modules',
@@ -115,7 +115,7 @@ SKIP_DIRS = ('.git', 'wk', 'kicad_files', 'docs', 'node_modules',
 #: never cries at all is worse: it is deleted AND it was never doing anything.
 #:
 #: The two objections the broad scan was reaching for both survive here:
-#:   * flags registered from a sibling sub-package (`--suggest-locks` via
+#:   * flags registered from a sibling sub-package (`--allow-routed` via
 #:     `py_placer/placement/cli_gates.py`) stay live, because the scan is a
 #:     UNION over every non-test source file, not a per-CLI parser walk;
 #:   * generated boolean pairs stay live via the `--no-` derivation below --

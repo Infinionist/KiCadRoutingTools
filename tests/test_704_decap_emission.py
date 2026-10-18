@@ -106,8 +106,7 @@ def test_the_census_is_written_either_way():
             for k in ('source', 'metric', 'search_radius_mm', 'tethers',
                       'ics', 'beyond_radius', 'beyond_radius_refs',
                       'worst_beyond_mm', 'no_rail_chip',
-                      'no_rail_chip_refs', 'population', 'unaccounted',
-                      'seeder_pin_scope'):
+                      'no_rail_chip_refs', 'population', 'unaccounted'):
                 assert k in c, (name, kw, k)
             assert c['source'] == 'auto-tethers'
             # The retired keys must be GONE, not merely unread: a reader
@@ -456,12 +455,11 @@ def test_the_printed_heading_is_not_a_legality_claim():
 
 
 # --------------------------------------------------------------------------
-# the placement coupling, pinned with its numbers
+# the census partition, pinned with its numbers
 # --------------------------------------------------------------------------
 
-def test_the_emitted_limit_changes_what_place_seed_seeds():
-    """Declaring this key is NOT a grading-only change: `place_seed` reads it
-    and pulls caps out of radial zone packing into its per-supply-pin stage.
+def test_the_census_partitions_ulx3s_by_cause():
+    """The census splits the caps no limit grades by CAUSE, on ulx3s.
 
     THIS TEST'S PREDECESSOR PINNED 70 / 53 / 17 AND SAID A SILENT
     RECONCILIATION MUST FAIL LOUDLY. It did, and this is the argument it
@@ -470,8 +468,8 @@ def test_the_emitted_limit_changes_what_place_seed_seeds():
     The old numbers were right and the old EXPLANATION was wrong. The doc and
     the census both blamed the gap on the two "is this a decap" predicates
     disagreeing. Measured over every tracked board, the three spellings of that
-    predicate name identical sets (`tests/test_792_decap_predicate.py`), so the
-    residue attributable to them is ZERO. ulx3s's 17 is:
+    predicate name identical sets, so the residue attributable to them is
+    ZERO. ulx3s's 17 is:
 
         7   beyond the 5mm tether search radius -- a real GRADING hole (#794),
             reported by `decap_ungraded` since this change;
@@ -480,8 +478,7 @@ def test_the_emitted_limit_changes_what_place_seed_seeds():
             /power/SHUT. Every one of those rails is owned only by two-pad
             passives (the caps, L1-L3, RA*/RP*): they are bulk and filter caps
             upstream of an LC network, not decouplers. The GRADER is right to
-            ignore all ten. The SEEDER was not, and #792 narrows its scope to
-            the caps that elect a tether at any distance.
+            ignore all ten.
 
     So the pin is now the PARTITION and the ten refs BY NAME, because the whole
     argument rests on which ten they are rather than on how many.
@@ -508,10 +505,8 @@ def test_the_emitted_limit_changes_what_place_seed_seeds():
     assert c['no_rail_chip'] == 10, c
     assert c['no_rail_chip_refs'] == sorted(orphans), c
     assert c['unaccounted'] == 0, c
-    assert c['seeder_pin_scope'] == 60, c
     print("  PASS: ulx3s -- 70 in scope = 53 graded + 7 beyond the radius + "
-          "10 with no rail-carrying chip; 0 from the predicates, and the "
-          "seeder's pin stage takes the 60 that elect a tether")
+          "10 with no rail-carrying chip; 0 from the predicates")
 
 
 def test_the_worst_beyond_is_the_FARTHEST_cap_not_the_last_one():
@@ -577,7 +572,7 @@ def test_the_worst_beyond_is_the_FARTHEST_cap_not_the_last_one():
 # the CLI: the disclosure only exists on stdout
 # --------------------------------------------------------------------------
 
-def test_the_cli_emits_and_warns_about_the_coupling():
+def test_the_cli_emits_and_states_the_limit():
     name = _present(EMITTING)[0]
     with tempfile.TemporaryDirectory() as wd:
         out = os.path.join(wd, 'fp.json')
@@ -588,10 +583,10 @@ def test_the_cli_emits_and_warns_about_the_coupling():
         run_utils.evidence(out, 'the emitted intent')
         doc = json.load(open(out, encoding='utf-8'))
         assert doc['decaps'].get('max_distance_mm'), doc['decaps']
-        assert 'place_seed' in r.stdout and 'READS this key' in r.stdout, \
-            "the --emit-intent block does not warn about the coupling"
-    print("  PASS: --declare-decaps emits the limit and warns that "
-          "place_seed reads it")
+        lim = doc['decaps']['max_distance_mm']
+        assert f'decaps: max_distance_mm {lim} from' in r.stdout, \
+            "the --emit-intent block does not state the limit and its source"
+    print("  PASS: --declare-decaps emits the limit and states it on stdout")
 
 
 def test_the_cli_refuses_a_shaved_limit_with_the_right_REASON():
@@ -660,9 +655,9 @@ TESTS = [
     test_a_hand_declared_limit_overrides_the_withholding,
     test_an_unmapped_withheld_key_still_abstains_and_blames_no_rule,
     test_the_printed_heading_is_not_a_legality_claim,
-    test_the_emitted_limit_changes_what_place_seed_seeds,
+    test_the_census_partitions_ulx3s_by_cause,
     test_the_worst_beyond_is_the_FARTHEST_cap_not_the_last_one,
-    test_the_cli_emits_and_warns_about_the_coupling,
+    test_the_cli_emits_and_states_the_limit,
     test_the_cli_refuses_a_shaved_limit_with_the_right_REASON,
     test_the_cli_reports_a_withholding_on_stdout,
 ]

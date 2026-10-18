@@ -20,30 +20,15 @@ from typing import Dict, List, Sequence, Set, Tuple
 
 
 GRID_TOL = 0.05          # pattern-fit residual tolerance (one routing grid)
-                         # rewarded, not charged (a conflict-free displaced
-                         # mounting hole has no other reason to go home)
-# ^ run-4 F1: nearest-slot tiebreak, scale-free (per mm of displacement).
-# Zero-net pattern parts have NO net-anchor cost -- _net_anchor_cost's loop
-# body never runs -- so two mounting holes and two free corners were exactly
-# cost-degenerate and HiGHS picked arbitrarily: run 3 shipped H1/H3 at each
-# other's corners, ~40 mm from home each, mechanically equivalent and
-# recovery-visible (worth ~0.16 of recovery on that board). Nearest-slot is
-# the minimal-perturbation choice; the weight stays far below
-# PATTERN_BONUS_MM and MOVE_PENALTY_MM at real move scales (0.32 mm-equiv
-# for a 15.8 mm move), so it can only break ties, never fight the evidence.
-# This deliberately REVERSES placement/README.md's earlier position that
-# hole-slot degeneracy is acceptable: equivalent to the board is not
-# equivalent to recovery.
 
 
 # --------------------------------------------------------------------------
-# measurement -- the stage gate
+# measurement
 # --------------------------------------------------------------------------
 
 def _bbox_outside(ext, b) -> float:
     """Per-axis overshoot of the raw board bbox at ZERO margin. Exact on a
-    rectangular outline; a consistent lower bound on a notched one -- the
-    gate tuple only needs stage-to-stage comparability."""
+    rectangular outline; a consistent lower bound on a notched one."""
     return (max(0.0, b[0] - ext[0]) + max(0.0, ext[2] - b[2])
             + max(0.0, b[1] - ext[1]) + max(0.0, ext[3] - b[3]))
 
@@ -87,53 +72,6 @@ def pad_oob_amount(state, edge_bands=None) -> float:
     return oob
 
 
-def measure(state, edge_bands=None, *, overlap=None) -> Tuple:
-    """The lexicographic gate tuple. Smaller-or-equal is acceptable.
-
-    Order (run-8): LOCKED CONTACTS first, then pad conflicts, hole shortfall,
-    banded pad-oob, then STACK PAIRS (any-net cross-footprint pad
-    intersections -- the assembly channel), then hpwl, then courtyard overlap
-    as the LAST tiebreak.
-
-    Locked contacts lead because they are the one term nothing below may buy.
-    A locked pose is a decision made outside this toolchain -- a standoff
-    against an enclosure, a connector against a panel cut-out -- so a candidate
-    that lands copper on one has not found a trade-off, it has broken a
-    premise. Placing it first makes it a hard conjunct in the machinery that
-    already exists: any candidate that creates one is strictly worse and is
-    rejected, whatever it wins on hpwl. On a healthy board the term is 0 and
-    the order below it is unchanged (measured: the corpus sweep does not
-    move).
-
-    Two measured lessons live in this order. Run 4 demoted the AGGREGATE
-    overlap_area below hpwl (it had vetoed a 44 mm hpwl homecoming over
-    +0.73 mm^2 of courtyard kiss; run 2 measured it POSITIVELY correlated
-    with distance-to-truth -- DISTANCE, not routed blocking
-    -- r = +0.72; courtyards carry their own margin
-    and human boards have a nonzero floor). Run 5 then shipped two 0402s
-    STACKED because nothing above hpwl could see them: the stack-pair COUNT
-    is the non-gameable per-pair channel (corpus-calibrated ZERO on all 33
-    healthy boards, exact and AABB currencies), so it sits ABOVE hpwl where
-    the aggregate never can.
-
-    `overlap` (#1182), a callable `state -> mm2`, replaces the last term's
-    ruler: `reseat_scope` passes check_assembly's courtyard channel at the
-    state's poses (`CourtyardGrade.overlap_exact`), because the search's own
-    rects are pad boxes on a courtyard-less library -- One-Air-Max's reseat
-    read `0.4323 -> 0.4323` while four courtyard pairs gated."""
-    m = state.pad_legality_metrics() if state.legality_ctx is not None else {}
-    leg = state.legality_metrics()
-    ov = (overlap(state) if overlap is not None
-          else leg.get('overlap_area', 0.0))
-    return (m.get('locked_contact_pairs', 0),
-            m.get('pad_conflict_pairs', 0),
-            round(m.get('hole_shortfall', 0.0), 4),
-            round(pad_oob_amount(state, edge_bands), 4),
-            m.get('pad_intersection_pairs', 0),
-            round(leg.get('hpwl', 0.0), 3),
-            round(ov, 4))
-
-
 # --------------------------------------------------------------------------
 # classify
 # --------------------------------------------------------------------------
@@ -141,15 +79,6 @@ def measure(state, edge_bands=None, *, overlap=None) -> Tuple:
 class Tiers:
     __slots__ = ('locked', 'zero_net', 'anchors', 'smalls', 'threshold',
                  'edge')
-
-    def as_dict(self):
-        return {'locked': sorted(self.locked),
-                'zero_net': sorted(self.zero_net),
-                'anchors': sorted(self.anchors),
-                'smalls': sorted(self.smalls),
-                'edge': sorted(self.edge),
-                'anchor_extent_mm': self.threshold}
-
 
 def part_extent_mm(state, ref: str) -> float:
     """Max pad-extent dimension of a part at its current rotation (mm)."""
@@ -169,12 +98,9 @@ def classify(state, intent=None, anchor_extent='auto') -> Tiers:
     everything else is a small."""
     t = Tiers()
     t.locked = {r for r, p in state.parts.items() if p.locked}
-    # A ref the intent declares must_lock belongs in the frame too. This used
-    # to read the file's stamps only, so the three placement tools disagreed
-    # about the same word: the grader demanded the stamp, the seeder treated it
-    # as permission to move, and reconstruct did not look. A hand-written
-    # must_lock is a statement that the ref's pose is a decision, which is
-    # exactly what the frame tier means.
+    # A ref the intent declares must_lock belongs in the frame too, not only
+    # one the file stamps: a hand-written must_lock is a statement that the
+    # ref's pose is a decision, which is exactly what the frame tier means.
     if intent is not None and getattr(intent, 'must_lock', None):
         import fnmatch as _fn
         refs_all = sorted(state.parts)
@@ -296,8 +222,8 @@ def fit_corner_insets(state, tiers: Tiers) -> Dict[str, List[Tuple[float, float]
     Survivors: holes whose (inset_x, inset_y) agree with a common inset within
     GRID_TOL, in DISTINCT corners. >= 2 survivors over-determine a
     translation; holes seated by no family get every FREE slot of every fitted
-    family as proposed positions. Propose-only: the assign stage (or its gate)
-    decides.
+    family as proposed positions. Propose-only: `rigid_vectors` turns the
+    proposals into the displacement vectors the intent's lock advice reads.
 
     Four things this gets right that the corner-only version did not, each
     measured on a board damaged by a 66mm rigid swap:
@@ -450,15 +376,6 @@ class OrbitFit:
         self.inliers = inliers
         self.free_slots = free_slots
 
-    def as_dict(self):
-        return {'family': self.family,
-                'centre': [round(self.cx, 4), round(self.cy, 4)],
-                'radius_mm': round(self.r, 4), 'm': self.m,
-                'residues_deg': [round(a, 4) for a in self.residues],
-                'slots': self.slots, 'inliers': list(self.inliers),
-                'free_slots': [[round(x, 4), round(y, 4)]
-                               for x, y in self.free_slots]}
-
     def __repr__(self):                     # pragma: no cover - diagnostics
         return (f'OrbitFit({self.family} m={self.m}x{len(self.residues)} '
                 f'r={self.r:.4f} c=({self.cx:.4f},{self.cy:.4f}) '
@@ -541,7 +458,6 @@ def fit_family_orbits(state, tiers=None, *,
     behaviour and not a gap: the case that motivates wanting one (six 0603s at
     1.5 mm pitch, all six displaced together) has no surviving member to anchor
     a line, and a pattern fitter with no survivors must propose nothing.
-    Re-seating owns that case (`seeder.reseat_scope`).
 
     `tiers` is accepted for symmetry with `fit_corner_insets` and is unused:
     an orbit is a property of a family's geometry, not of a part's size tier.
@@ -785,43 +701,3 @@ def rigid_vectors(state, proposals: Dict[str, List[Tuple[float, float]]],
                 continue
         out.append(v)
     return out
-
-
-# ^ run-4 F2: mm-equiv charged per mm an edge-class part's pose sits from an
-# edge, INSIDE the joint solve. Offering a displaced receptacle its band
-# candidate is not enough (measured: J1's candidate was offered and never
-# taken -- the net-anchor proxy pulls toward its partners, themselves
-# misplaced), and seating it AFTER the solve fails too (measured: the seat
-# collided with squatters the joint solve would have co-moved: 5 pad pairs,
-# overlap +70). R1's letter -- an edge part's position is not a netlist
-# question -- so for declared edge-less receptacles the edge metric REPLACES
-# the net-anchor cost in the objective, and the exclusion rows resolve the
-# squatters in the same solve. Generic: the weight scales a geometric metric,
-# no board constants.
-
-
-def cand_pose(state, ref: str, cand) -> Tuple[float, float, float]:
-    """(x, y, rot) of an assignment candidate. A candidate is `(x, y)` at the
-    part's own angle, or `(x, y, rot)` when it TURNS the part -- only
-    `facing_seats` makes those (#1242)."""
-    return (cand[0], cand[1],
-            cand[2] if len(cand) > 2 else state.parts[ref].rot)
-
-
-_EDGES = ('north', 'south', 'east', 'west')
-
-
-# --------------------------------------------------------------------------
-# exchange -- the joint +/-v lattice ILP (run-5 F4)
-# --------------------------------------------------------------------------
-
-# ^ how close current-minus-input must sit to an integer multiple of the
-# pattern vector for a part to be on the damage lattice (mm). Parts off the
-# lattice (seeded elsewhere, nudged by another tool) are stay-only.
-
-
-# --------------------------------------------------------------------------
-# assign -- the ILP
-# --------------------------------------------------------------------------
-
-

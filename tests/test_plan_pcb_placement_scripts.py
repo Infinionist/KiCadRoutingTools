@@ -64,7 +64,7 @@ def test_measure_flags_only_the_retired_drivers_and_counts_converge_verbs():
             _row('2026-09-27T06:00:00Z', 'm1',
                  ('a', 'Bash', {'command': 'python3 -X utf8 py_placer/converge.py record --ledger l --board b'})),
             _row('2026-09-27T06:01:00Z', 'm2',
-                 ('b', 'Bash', {'command': 'python3 py_placer/converge.py verdict --ledger l; python3 py_placer/converge.py step-back --best --out o'}),
+                 ('b', 'Bash', {'command': 'python3 py_placer/converge.py verdict --ledger l; python3 py_placer/converge.py where b --nets GND'}),
                  ('c', 'Bash', {'command': 'python3 .claude/skills/plan-pcb-placement-and-routing/scripts/loop_driver.py --stage L1'})),
             _row('2026-09-27T06:02:00Z', 'm3',
                  ('d', 'Bash', {'command': 'python3 -X utf8 py_tools/board_score.py b.kicad_pcb --json s.json'}),
@@ -75,7 +75,7 @@ def test_measure_flags_only_the_retired_drivers_and_counts_converge_verbs():
         hits = sorted(f['hit'] for f in out['forbidden_uses'])
         assert hits == ['loop_driver.py'], hits
         assert out['converge_verbs'] == {'record': 1, 'verdict': 1,
-                                         'step-back': 1}, out['converge_verbs']
+                                         'where': 1}, out['converge_verbs']
         assert out['converge_record_calls'] == 1, out
         assert out['unparsed_lines'] == 0, 'the BOM line was dropped'
         assert out['repo_scripts'].get('board_score.py') == 2, out

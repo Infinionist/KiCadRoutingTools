@@ -1,80 +1,34 @@
 """Argparse flags shared by the placement CLIs (#431, widened by #702).
 
-Defined once so the CLIs cannot drift: a lock advisor that reports on one
-tool but not the other, or an `--allow-unplaced` that spells itself differently,
+Defined once so the CLIs cannot drift: an `--allow-unplaced` that spells
+itself differently, or a `--brief` one tool discovers and another does not,
 is exactly the kind of divergence CLAUDE.md's CLI/GUI section warns about --
 here between two CLIs rather than between a CLI and the GUI.
-
-`add_intent_arg` raises the stakes a level, which is why it lives here rather
-than four times over: since #702 the same resolved intent becomes the same hard
-gate inside the same engine for `place_optimize`, `place_route_loop`,
-`place_seed` and `place_portfolio`. Four spellings of that flag, or four
-descriptions of what it buys, is how one of them ends up gating on something
-the others do not -- and that divergence IS #702, which was `grep -ci intent`
-returning 36 on place_seed.py and 0 on the two CLIs that run the most quench
-iterations in a real chain.
 """
 from __future__ import annotations
 
 
-def add_intent_arg(parser, *, required: bool = False, extra: str = "",
-                   summary: str = "") -> None:
-    """`--intent`: the floorplan intent, for every CLI that quenches (#702).
-
-    `required` because `place_seed` cannot run without one -- there the intent
-    is the INPUT the placement is derived from, not a constraint on a placement
-    that already exists. `extra` appends a per-tool clause, for a real
-    difference in what the flag buys rather than a wording preference: the
-    portfolio's intent is ALSO its hard rank gate and the source of its health
-    signals. `summary` REPLACES the quench paragraph, for a tool that is not a
-    quench and reads only part of the intent (#1067: place_fanout_clearance
-    holds the decap limits and nothing else), so one flag spelling, metavar
-    and default serve every CLI without a help text that lies about one.
+def add_intent_arg(parser, *, summary: str) -> None:
+    """`--intent`: the floorplan intent, with `summary` saying what this CLI
+    reads of it (#1067: place_fanout_clearance holds the decap limits and the
+    declared rotations, and nothing else), so one flag spelling, metavar and
+    default serve every CLI without a help text that lies about one.
     """
-    if summary:
-        parser.add_argument(
-            "--intent", metavar="JSON", required=required, default=None,
-            help="Floorplan intent JSON (`check_floorplan.py --emit-intent` "
-                 "writes a starter). " + summary
-                 + ((" " + extra) if extra else ""))
-        return
     parser.add_argument(
-        "--intent", metavar="JSON", required=required, default=None,
-        help="Floorplan intent JSON (`check_floorplan.py --emit-intent` writes "
-             "a starter). Its declared zones, keep-outs and exclusive zones "
-             "become HARD per-move gates inside the quench, and its must_lock "
-             "globs and edge_connectors edge claims are locked, so a declared "
-             "constraint no longer decays under optimization (#702). "
-             "MONOTONE, not repairing: a part that arrives already violating "
-             "may improve or hold, never worsen -- this prevents a walk-out, "
-             "it does not undo one. WARNING: an intent that --emit-intent "
-             "wrote FROM the board you are repairing records that board's "
-             "damage as the requirement, and now STEERS the search toward it "
-             "rather than merely mis-grading it. Omitted (the default), the "
-             "run is bit-identical to one built before this flag existed"
-             + ((" " + extra) if extra else ""))
+        "--intent", metavar="JSON", default=None,
+        help="Floorplan intent JSON (`check_floorplan.py --emit-intent` "
+             "writes a starter). " + summary)
 
 
 def load_intent_or_exit(args):
     """(intent, exit_code). `exit_code` is 2 when the intent is unreadable.
 
-    Shared because the two things it gets right are the two things a per-CLI
-    copy got wrong:
-
-    * it is called BEFORE `record_invocation`, so an exit 2 never records a
-      manifest command that touched no file (place_route_loop recorded one);
-    * `--suggest-locks` warns and continues rather than erroring, and warns on
-      BOTH CLIs -- place_optimize printed the note and place_route_loop
-      returned before reaching it, which is a small instance of exactly the
-      drift this module exists to prevent.
+    Call it BEFORE `record_invocation`, so an exit 2 never records a manifest
+    command that touched no file.
     """
     import sys
     from placement import floorplan
     if not getattr(args, 'intent', None):
-        return None, 0
-    if getattr(args, 'suggest_locks', False):
-        print("--intent is ignored with --suggest-locks: no quench runs, and "
-              "the lock advisor does not read an intent", file=sys.stderr)
         return None, 0
     try:
         return floorplan.load_intent(args.intent), 0

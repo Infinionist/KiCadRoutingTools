@@ -6,8 +6,8 @@ per call, and the moving part's whole `pad_globals` transform once per PARTNER. 
 are hoisted so the pin-facing cost can be evaluated inside a search loop at all.
 
 This file exists because a speed-up that moves an inversion count is worse than no
-speed-up: every measurement downstream of it -- the A/B baseline, `placement_score`'s
-`pin_order_crossings`, `pose_score`'s ranking -- would be silently rebased on a
+speed-up: every measurement downstream of it -- the A/B baseline, the review
+sheet's pin-order rows, `pose_score`'s ranking -- would be silently rebased on a
 different number. A draft of the pad hoist that always treated the queried ref as
 side A was 6.7x faster and reported ulx3s U2 as **358** inversions where the truth is
 26, because `pair_metrics` builds `order_a` from the FIRST ref's pads and takes its
@@ -135,8 +135,7 @@ def test_pair_metrics_dict_identical_field_for_field():
 
     `ref_inversions` reads only `inversions`, so an equality check through it
     alone would not notice the hoist corrupting a field some OTHER consumer
-    reads -- `placement_score.pin_order_crossings` reads `inversions`, but
-    `pair_length` and the review sheet read the rest.
+    reads -- the review sheet reads the rest.
     """
     from placement import pair_order as PO
     st = _state('tigard.kicad_pcb')

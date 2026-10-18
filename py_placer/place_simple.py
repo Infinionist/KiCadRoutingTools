@@ -120,9 +120,7 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
     zones = (fp.zone_entries(intent, blocks or {}, bounds=pcb.board_info.board_bounds)
              if intent is not None else ())
     state = pose_score.make_state(pcb, board, clearance=clearance,
-                                  board_edge_clearance=edge, grid_step=0.1,
-                                  halo_base=args.halo_base, halo_coef=args.halo_coef,
-                                  halo_weight=args.halo_weight,
+                                  board_edge_clearance=edge,
                                   extra_locked_refs=set(fixed) or None,
                                   keepouts=intent.keepouts if intent is not None else (),
                                   intent_zones=list(zones),
@@ -207,7 +205,8 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
                   crossing_weight=args.crossing_weight, claim_weight=args.claim_weight,
                   decap_weight=args.decap_weight, group_weight=args.group_weight,
                   hints=hints(doc, state, movable, args),
-                  halo_base=args.halo_base, halo_coef=args.halo_coef)
+                  halo_base=args.halo_base, halo_coef=args.halo_coef,
+                  halo_weight=args.halo_weight)
     return state, model, movable, notes
 
 

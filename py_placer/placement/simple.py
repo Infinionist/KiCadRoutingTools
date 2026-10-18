@@ -387,9 +387,10 @@ class Model:
                  track_pitch: float = 0.33, cell: float = 0.5,
                  congestion_nets=None, rail_weight: float = 0.0,
                  ground_nets=(), ground_weight: float = 0.0, pad_weight: float = 0.0,
-                 hints: Sequence[Dict] = (), halo_base: float = 0.0, halo_coef: float = 0.25):
+                 hints: Sequence[Dict] = (), halo_base: float = 0.0, halo_coef: float = 0.25,
+                 halo_weight: float = 10.0):
         self.state, self.pcb = state, pcb
-        self.halo_base, self.halo_coef = halo_base, halo_coef
+        self.halo_base, self.halo_coef, self.halo_weight = halo_base, halo_coef, halo_weight
         self.hints = [h for h in hints if h['weight'] > 0]
         self.inner = tuple(state.usable)
         self.cw, self.kw, self.dw, self.gw = (crossing_weight, claim_weight,
@@ -669,7 +670,7 @@ class Model:
             short = min(short, need - gap)
         if not any_need or short <= 0:
             return 0.0
-        return st.halo_weight * short * short
+        return self.halo_weight * short * short
 
     def halo_cost(self, refs=None):
         """The halo penalty over every pair of parts with one in

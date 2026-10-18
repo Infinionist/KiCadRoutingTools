@@ -238,10 +238,7 @@ def test_the_ring_basis_is_load_bearing():
     from placement.quench import QuenchState
     import routing_defaults as rd
     st = QuenchState(pcb, path, clearance=rd.CLEARANCE,
-                     board_edge_clearance=0.55, crossing_penalty=10.0,
-                     halo_base=0.5, halo_coef=0.25, halo_weight=2.0,
-                     edge_halo=2.0, edge_weight=2.0, grid_step=rd.GRID_STEP,
-                     length_weight=1.0)
+                     board_edge_clearance=0.55)
     lo, hi, basis = fp.edge_span(st.edge_gate, bounds, 'south', r.outline)
     assert basis == 'ring' and abs((hi - lo) - 81.28) < 0.01, (lo, hi, basis)
     bbox_off = (lo + hi) / 2.0 - (bounds[0] + bbox_span / 2.0)

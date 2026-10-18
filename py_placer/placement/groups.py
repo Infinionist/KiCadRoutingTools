@@ -1,7 +1,7 @@
 """Placement blocks: which footprints should move as one rigid body (#459).
 
-The quench fixes what it can reach — individual parts within a few mm. The
-failures that sink a board are block-scale: a magnetics block 80mm from its
+A local search fixes what it can reach — individual parts within a few mm.
+The failures that sink a board are block-scale: a magnetics block 80mm from its
 endpoints, unroutable because of the floorplan rather than the routing. Before
 anything can *move* a block, something has to know what a block IS, and nothing
 in this repo did.
@@ -38,7 +38,8 @@ CORPUS EVIDENCE (measured across kicad_files/, not assumed):
              rp2350 1 block of 3, tigard 0. Enable it expecting little.
 
 All output is sorted. Anything whose order can reach the optimizer must be
-deterministic, or quench output stops being reproducible across processes (#457).
+deterministic, or placement output stops being reproducible across processes
+(#457).
 """
 from __future__ import annotations
 
@@ -415,8 +416,8 @@ def _chip_list(pcb_data):
     """The ChipBoundary objects this module calls a cap's OWNER -- an IC by
     shape (`_ic_list`) or a supply owner (`supply_owners`, #1249). ONE
     answer, one place: `chip_refs`, `_elect_tethers`, `rail_chips` and
-    through them the grade, the quench's tether terms, the seeder's pin
-    stages and `floorplan.supply_pins` all read it. In the footprints'
+    through them the grade, the tether gate and `floorplan.supply_pins`
+    all read it. In the footprints'
     own order, so the election's first-strict-minimum tie-break is the
     one it always was."""
     ics = _ic_list(pcb_data)
@@ -434,8 +435,9 @@ def chip_refs(pcb_data) -> Set[str]:
     """The refs this module calls a cap's owner: an IC (>= 4 COPPER pads,
     and not a row) or a supply owner (`supply_owners`, #1249).
 
-    Public since #792, because the seeder was answering the same question with
-    `owner[0] == 'U'` -- a second answer to the problem `_pads_are_collinear`
+    Public since #792, because a second reader was answering the same
+    question with `owner[0] == 'U'` -- a second answer to the problem
+    `_pads_are_collinear`
     was written for, and the one without the measurement behind it. One
     question, one answer, and this is the one that carries its scar.
     """
@@ -446,8 +448,8 @@ def is_decoupling_cap(fp, ref: str) -> bool:
     """The syntactic half of "is this a decap": a `C*` bridging exactly two nets.
 
     TWO DISTINCT NETS, not two net-bearing PADS, and case-INSENSITIVE. Both
-    differences were spelled three ways across this tree before #792 (here, in
-    `seeder.decap_scope`, and in `emit_intent`'s census) and all three produce
+    differences were spelled three ways across this tree before #792 (here,
+    in a placement scope, and in `emit_intent`'s census) and all three produce
     identical sets on every tracked board -- so the choice is argued, not
     measured:
 
@@ -480,11 +482,11 @@ def _elect_tethers(pcb_data, movable=None):
 
     `ic is None` means NO chip carries this cap's rail -- a bulk or filter cap
     upstream of an LC network, not a decoupler. Ten of ulx3s's caps are that,
-    and they are why "in the seeder's scope" and "graded against an IC" are two
+    and they are why "a decap by its rail" and "graded against an IC" are two
     different questions rather than two spellings of one (#792).
     """
-    # THE SAME chip list `chip_refs` publishes, so the seeder's owner
-    # test and the grader's tether election cannot answer "what is an
+    # THE SAME chip list `chip_refs` publishes, so an owner test and the
+    # grader's tether election cannot answer "what is an
     # IC" differently -- which is the whole of #792.
     chips = _chip_list(pcb_data)
     if movable is None:

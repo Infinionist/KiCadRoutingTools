@@ -43,11 +43,9 @@ housing, sets the offset -- CUI SJ1-3533NG (x2, -x at 0.90 mm; its twin
 SJ1-3535NG, same housing, reads -y) and Neutrik NMJ6HCD3 (-x at 1.36 mm; the
 opening is +x) -- while 60+ correct micro-USB / USB-C faces sit in the same
 0.6-1.6 mm range. Above 2 mm no wrong face is known (227 checked). A weak
-face that is itself wrong is NOT caught: when the seeder's stage 1 chooses
-an undeclared connector's angle (on a pile, whose input angle says nothing),
-it tries the angles that point even a weak face at the edge first, so such a
-jack can be seated with its opening into the board, and the facing conjunct
-then reads that pose as a pass.
+face that is itself wrong is NOT caught: a jack seated with its opening into
+the board by a search that points even a weak face at the edge reads as a
+pass to the facing conjunct.
 
 A THIRD source, since #1245: the "PCB Edge" marker many footprints draw, a
 text beside a line where the board edge goes (`marker_face_local`, carried
@@ -71,10 +69,8 @@ The board frame uses the sign `connector_geometry.rect` and
 the board file stores a B-side footprint's local coordinates already mirrored,
 measured on sonde_u J2, orangecrab J4 and rp2350 J3.
 
-Measured over the tracked corpus and the fa10 human boards
-(`tests/measure_1155_mating_census.py`, fixture
-`tests/fixtures/1155_mating_census.json`): every decisive receptacle faces
-the edge it is seated on.
+Measured over the tracked corpus and the fa10 human boards: every decisive
+receptacle faces the edge it is seated on.
 """
 import math
 from typing import NamedTuple, Optional, Tuple
@@ -98,7 +94,6 @@ FACE_DOMINANCE = 1.5
 #: A pose more than this far off the nearest cardinal angle names no edge.
 CARDINAL_TOL_DEG = 30.0
 
-FACES = ('+x', '-x', '+y', '-y')
 _UNIT = {'+x': (1.0, 0.0), '-x': (-1.0, 0.0),
          '+y': (0.0, 1.0), '-y': (0.0, -1.0)}
 

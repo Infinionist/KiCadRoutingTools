@@ -4,15 +4,13 @@
 1. A step back that is a CHECKOUT, not a reconstruction. A prose ledger records
    `reverted_to: "grid back to 0.1"` and `reverted_to: "wk/seed.kicad_pcb"` --
    one unusable by a program, the other naming a path three iterations wrote in
-   turn. Content-addressing the board and recording the lever as ARGV makes
-   both operations mechanical.
+   turn. Content-addressing the board makes it mechanical.
 
 2. A pose ranked as ONE decision. Position and rotation were never scored
    together: the existing multi-pose scorer holds position fixed and varies
    rotation only, so a part needing 1.5 mm and 90 degrees has no evidence
    behind it.
 """
-import json
 import os
 import shutil
 import sys
@@ -24,7 +22,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'py_placer'))  # placement split
 sys.path.insert(0, os.path.join(ROOT, 'py_router'))  # placement split
 sys.path.insert(0, os.path.join(ROOT, 'py_tools'))  # placement split
-from board_store import BoardStore, Ledger, replay_command, sha256_file  # noqa: E402
+from board_store import BoardStore, Ledger, sha256_file  # noqa: E402
 
 BOARD = os.path.join(ROOT, 'kicad_files', 'splitflap_driver.kicad_pcb')
 
@@ -81,31 +79,16 @@ def test_an_unknown_sha_raises_rather_than_returning_nothing():
 
 # --------------------------------------------------------------------- ledger
 
-def test_the_ledger_is_replayable_not_merely_readable():
+def test_the_last_accepted_row_is_the_one_to_step_back_to():
     with tempfile.TemporaryDirectory() as td:
         lg = Ledger(os.path.join(td, 'ledger.jsonl'))
-        argv = ['python3', 'route.py', 'in.kicad_pcb', 'out.kicad_pcb',
-                '--nets', 'QSPI_SD1', '--grid-step', '0.025']
         lg.append({'iteration': 1, 'kind': 'completion', 'parent_sha': 'a' * 64,
-                   'result_sha': 'b' * 64, 'lever_argv': argv, 'accepted': True})
+                   'result_sha': 'b' * 64, 'accepted': True})
         lg.append({'iteration': 2, 'kind': 'systemic', 'accepted': False,
                    'lever': 'restored the net classes'})
-        assert replay_command(lg.entries()[0]) == argv
-
-        # And an entry that records only prose must SAY it cannot be replayed
-        # rather than silently returning something plausible.
-        try:
-            replay_command(lg.entries()[1])
-        except ValueError as e:
-            assert 'replay' in str(e)
-        else:
-            raise AssertionError("a prose-only entry must not look replayable")
-
         assert lg.last_accepted()['iteration'] == 1, \
             "step back goes to the last ACCEPTED entry, not the last entry"
-        c = lg.counts()
-        assert c['total'] == 2 and c['completion'] == 1 and c['systemic'] == 1
-    print("  PASS: lever_argv replays; prose refuses; counts split the budget")
+    print("  PASS: the last accepted row is found past a rejected one")
 
 
 def test_a_torn_line_does_not_lose_the_ledger():
@@ -134,20 +117,20 @@ def test_poses_are_ranked_and_legal_only():
     ref = sorted(st.parts)[0]
     poses = pose_score.rank_poses(pcb, BOARD, ref, radius=1.0, step=0.5, state=st)
     assert poses, "no legal pose at all, including staying put"
-    costs = [p['cost'] for p in poses]
-    assert costs == sorted(costs), "poses must come back ranked"
+    dists = [p['dist_mm'] for p in poses]
+    assert dists == sorted(dists), "poses must come back nearest first"
     assert all(p['legal'] for p in poses), "an illegal pose must be dropped, not ranked"
-    assert {'x', 'y', 'rot', 'delta', 'components'} <= set(poses[0])
+    assert {'x', 'y', 'rot', 'dist_mm', 'legal'} <= set(poses[0])
     # position AND rotation vary -- the gap this fills
     assert len({p['rot'] for p in poses}) >= 1
     assert len({(p['x'], p['y']) for p in poses}) > 1, \
         "position must vary, not just rotation"
-    print(f"  PASS: {len(poses)} legal poses, ranked, position+rotation together")
+    print(f"  PASS: {len(poses)} legal poses, nearest first, position+rotation together")
 
 
 def test_scoring_leaves_the_board_where_it_found_it():
-    """The scorer applies and reverts moves. If it leaks one, every later
-    decision in the loop is made against a board nobody chose."""
+    """Ranking only asks the gate. If it moved a part, every later
+    decision would be made against a board nobody chose."""
     if not os.path.isfile(BOARD):
         print("  SKIP: fixture missing")
         return
@@ -157,27 +140,12 @@ def test_scoring_leaves_the_board_where_it_found_it():
     st = pose_score.make_state(pcb, BOARD)
     ref = sorted(st.parts)[0]
     before = (st.parts[ref].x, st.parts[ref].y, st.parts[ref].rot)
-    cost_before = st.total_cost()['total']
+    wire_before = st.wire_metrics()
     pose_score.rank_poses(pcb, BOARD, ref, radius=1.0, step=0.5, state=st)
     after = (st.parts[ref].x, st.parts[ref].y, st.parts[ref].rot)
-    assert before == after, f"scoring moved the part: {before} -> {after}"
-    assert abs(st.total_cost()['total'] - cost_before) < 1e-9
+    assert before == after, f"ranking moved the part: {before} -> {after}"
+    assert st.wire_metrics() == wire_before
     print("  PASS: ranking is side-effect free")
-
-
-def test_best_pose_says_leave_it_alone_when_nothing_wins():
-    if not os.path.isfile(BOARD):
-        print("  SKIP: fixture missing")
-        return
-    from kicad_parser import parse_kicad_pcb
-    import pose_score
-    pcb = parse_kicad_pcb(BOARD)
-    st = pose_score.make_state(pcb, BOARD)
-    ref = sorted(st.parts)[0]
-    # An enormous hysteresis makes every real gain too small to accept.
-    assert pose_score.best_pose(pcb, BOARD, ref, radius=1.0, step=0.5,
-                               state=st, min_gain=1e9) is None
-    print("  PASS: 'leave it alone' is an answer, and hysteresis is honoured")
 
 
 if __name__ == '__main__':

@@ -37,16 +37,6 @@ from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
 
 EPS = 1e-6
 
-#: #1127: confirm the per-pad sweep's box hits on the pads' own outlines
-#: before the gate refuses a pose for them. ONE switch for both conjuncts the
-#: boxes decide: `PairShortfall.stack` (`_exact_pad_stack`, the check
-#: check_assembly's pad_intersection channel makes) and the PAD conjunct --
-#: `pad` and `pad_overlap` -- re-measured by check_drc's own pad-pad check at
-#: the pair's requirement (`LegalityContext._pad_confirmed`). Read ONCE, when a
-#: `PartPads` / `LegalityContext` is built, so one context never mixes the two
-#: answers. Off: the conservative box answer, unchanged.
-STACK_EXACT_CONFIRM = False
-
 # Run-6: a part covering at least this fraction of the board bbox MAY be a
 # CONTAINER (a module-outline footprint hosting the design -- a frame, not a
 # body). Calibration: rp2350_fpga_eensy U8 = 1.13x board area; the largest
@@ -1110,12 +1100,9 @@ class BoardOutlineGate:
         minimum distance rather than testing it against a threshold -- the
         nearest edge there may be arbitrarily far away.
 
-        Why it matters: `edges_near` prunes per PART, sized by a displacement
-        budget, and the seeder's state has no budget at all (pose_score builds
-        its QuenchState without `build_neighbor_lists`, so `_travel_budget` is
-        infinite and `edges_near` returns every edge). `_try_place` calls
-        `rect_outside_amount` once per candidate offset, and `_offsets(16,
-        0.25)` alone is 16,641 offsets.
+        Why it matters: a seat search calls `rect_outside_amount` once per
+        candidate pose, many thousands of times per part, with no per-part
+        displacement budget to prune the edges by.
 
         Measured on run 19's urchin, a 638-edge outline with one milled ring:
         7x to 14x depending on machine load and on which rect population is
@@ -1209,13 +1196,6 @@ class BoardOutlineGate:
         u = self.usable
         return (max(0.0, u[0] - rect[0]) + max(0.0, u[1] - rect[1])
                 + max(0.0, rect[2] - u[2]) + max(0.0, rect[3] - u[3]))
-
-    def rect_overrun_mm(self, rect) -> float:
-        """How far `rect` reaches past the outline, in mm (#1096): see
-        `points_overrun_mm`, over the rect's corners."""
-        x0, y0, x1, y1 = rect
-        return self.points_overrun_mm(((x0, y0), (x1, y0), (x1, y1),
-                                       (x0, y1)))
 
     def points_overrun_mm(self, points) -> float:
         """The largest distance from one of `points` that is off the board to
@@ -1673,29 +1653,6 @@ def _bodies_cached(pcb_data, pcb_file, cache):
         except Exception:                                    # noqa: BLE001
             cache['bodies'] = ({}, {})
     return cache['bodies']
-
-
-def occupancy_rect_at(pcb_data, ref: str, pose, fallback=None,
-                      pcb_file: Optional[str] = None,
-                      cache: Optional[dict] = None,
-                      courtyard_less_only: bool = False):
-    """`ref`'s OCCUPANCY rect (`LocalBounds.local`) at `pose` -- the rect
-    check_assembly's courtyard channel grades -- or `fallback` when the
-    board read cannot bound it. Cheap: no polygon is built.
-
-    `courtyard_less_only`: `fallback` for a part that DRAWS a courtyard, too.
-    A declared pose is judged on KiCad's courtyard where one is drawn (#1054:
-    a human layout packs courtyards edge to edge, and pads reaching past a
-    drawn courtyard are not courtyard); only a courtyard-less part, whose
-    search rect is a pad box, is screened on the body (#1182)."""
-    if cache is None:
-        cache = {}
-    lb = _bodies_cached(pcb_data, pcb_file, cache)[0].get(ref)
-    if lb is None or (courtyard_less_only and lb.from_courtyard):
-        return fallback
-    x, y, rot = pose
-    lx0, ly0, lx1, ly1 = rotate_local_bounds(*lb.local, rot)
-    return (x + lx0, y + ly0, x + lx1, y + ly1)
 
 
 def courtyard_budget_universe(census, refs, poses=None):
@@ -2176,7 +2133,7 @@ def courtyard_gating(blocking_pairs, moved) -> list:
 # --- #1255: a component body's distance to the board edge --------------------
 #
 # Past the hard outline gate, the only pressure keeping a BODY off the edge was
-# the quench's soft halo (`_edge_penalty`), and no grader reads that cost.
+# a search's own soft cost, and no grader reads that cost.
 # render's `a_off_outline.courtyard` asks a different question: the courtyard
 # against the outline inset by the clearance and copper-edge floors. Neither
 # check_assembly nor board_score measured body-to-edge distance at all. A
@@ -2512,22 +2469,6 @@ class CourtyardGrade(NamedTuple):
     # gate, absolutely -- KiCad's pth_inside_courtyard has no "moved" either.
     pin_pairs: List[BodyOverlapPair] = []
     pin_blocking: List[BodyOverlapPair] = []
-
-    @property
-    def overlap_exact(self) -> float:
-        """Total courtyard overlap (mm2) over every pair, waived or not, on
-        the grader's exact geometry: `placement_overlap_area`'s question
-        answered on check_assembly's rects. #1182: reseat's gate compares
-        this, not the search's (pad boxes on a courtyard-less library).
-        Synthetic parts (a pad-less logo's +/-0.5 mm fiction), containers
-        and silk-sourced occupancy are left out, as `courtyard_overlap_pairs`
-        and the floorplan budget leave them out (#1162: g8's two logos read
-        2.0 mm2 otherwise; a silk body never gates, #896)."""
-        skip = (set(self.synthetic_refs) | set(self.containers)
-                | set(self.silk_occupancy_refs))
-        return round(sum(p.area_mm2 for p in self.pairs
-                         if p.a not in skip and p.b not in skip), 4)
-
 
 class CourtyardCensus:
     """check_assembly's courtyard channel at any pose map.
@@ -3346,8 +3287,7 @@ def grade_body_overlap(pcb_data, clearance: float,
 def _exact_pad_stack(pa, pb, routing_layers) -> bool:
     """Do two pads' copper outlines INTERSECT? check_drc's exact pad-pad
     check, the confirmation check_assembly's pad_intersection channel puts
-    on every box hit (#1064), shared with the placement gate (#1127) so the
-    two cannot disagree.
+    on every box hit (#1064).
 
     `check_pad_pad_overlap`'s perimeter distance clamps at 0 for interior
     points, so clearance-0 can never register an intersection. Ask at a tiny
@@ -3519,9 +3459,7 @@ def pad_stack_census(pcb_data, clearance: float) -> Dict[str, object]:
 # GATE currency (rotation-inflated axis-aligned pad rects, the proven
 # fanout_clearance._Cap pattern): conservative -- it can falsely reject, never
 # falsely accept. Exact pad geometry (check_drc) is used by
-# `grade_pad_legality` for REPORTS, so summaries carry no AABB phantoms, and
-# by the gate itself only under `STACK_EXACT_CONFIRM` (#1127), which confirms
-# the per-pad sweep's box hits -- stack and pad conjuncts -- on the outlines.
+# `grade_pad_legality` for REPORTS, so summaries carry no AABB phantoms.
 #
 # Baseline semantics: engines gate moves per-PAIR against the SEED poses
 # ("never worse than the board you were handed"), so pre-existing violations
@@ -4006,7 +3944,6 @@ class PartPads:
     """
 
     __slots__ = ('ref', 'side', 'has_tht', 'seed_rot', 'pads_local', '_pad_tilt',
-                 'fp_snapshot',
                  'holes_local', 'holes_extent', 'n_pads', '_pad_cache',
                  '_hole_cache', '_keepout_cache', '_ext_cache', 'pad_floors',
                  'max_floor', 'clearance', 'hole_reach', 'holes_req',
@@ -4030,12 +3967,6 @@ class PartPads:
         # can forget to, which is exactly how the keep-out came to be graded
         # without one.
         self.clearance = float(clearance)
-        # #1127: the footprint as it stood when the offsets below were taken
-        # -- its pose and SHALLOW copies of its pads -- so the gate can pose
-        # the real pads for an exact stack check even after something moves
-        # the live footprint in memory (the reason this class owns the
-        # transform). Only under STACK_EXACT_CONFIRM; None costs nothing.
-        self.fp_snapshot = _fp_snapshot(fp) if STACK_EXACT_CONFIRM else None
         self.pads_local = []    # (off_x, off_y, half_x, half_y, net_id, pside)
         # #1094: each pad's own box and tilt, parallel to `pads_local`, for
         # the off-lattice turns in `_rotated`. `(hx, hy, tilt)`: the seed
@@ -4371,18 +4302,6 @@ class PartPads:
             return None
         return (x + e[0], y + e[1], x + e[2], y + e[3])
 
-    def hole_extent_rects(self, x: float, y: float, rot: float):
-        """[(x0, y0, x1, y1)] one box per NPTH hole at its EXTENT radius (the
-        holes `extent` folds into the union), rotated as `extent_local`
-        rotates them -- so a census can grade each drill ALONE (#1193)."""
-        rad = math.radians(-self._delta_key(rot))
-        hc, hs = math.cos(rad), math.sin(rad)
-        out = []
-        for ox, oy, r in self.holes_extent:
-            cx, cy = x + ox * hc - oy * hs, y + ox * hs + oy * hc
-            out.append((cx - r, cy - r, cx + r, cy + r))
-        return out
-
     def extent_local_side(self, rot: float, side: str):
         """`extent_local`, restricted to the pads that occupy `side` (#834).
 
@@ -4653,8 +4572,7 @@ def part_copper_geometry(footprints: Dict[str, object], clearance: float, *,
     `build_part_pads`). That is deliberate and it closes #841's own hazard:
     the +/-0.5mm `synthetic` fiction `part_local_bounds` invents for a
     footprint with neither courtyard nor pads can no longer reach a lane
-    SUPPLY, which `options.move_blocker` turns into an instruction to move a
-    part. Measured over the whole tracked corpus, the refs this drops from
+    SUPPLY. Measured over the whole tracked corpus, the refs this drops from
     `face_lane_ledger`'s neighbour list are EXACTLY that board's `synthetic`
     set -- set equality, on every board that has one: ulx3s 9, glasgow_revC 8,
     orangecrab 3, tigard 3, esp_prog 3, watchy 2, and interf_u_unrouted /
@@ -4873,8 +4791,8 @@ def _pad_windows(rects_a, ea, rects_b, reach):
 
 
 def _pose_key(pose) -> Tuple[float, float, float]:
-    """A pose as the gate's posed-pad cache keys it (#1127): two poses that
-    round together are posed once, so every exact answer is keyed the same."""
+    """A pose rounded to 1e-6 mm / deg, so two poses that round together
+    compare equal."""
     return (round(pose[0], 6), round(pose[1], 6),
             round(pose[2] % 360.0, 6))
 
@@ -4915,17 +4833,6 @@ class LegalityContext:
         self.pose_of = pose_of
         self.seed_of = seed_of
         self._baselines: Dict[Tuple[str, str], PairShortfall] = {}
-        # #1127: confirm a box stack on the pads' outlines. Fixed here, so a
-        # context never mixes the two answers -- `seed_baseline` caches its
-        # verdicts for the whole run.
-        self.stack_exact = bool(STACK_EXACT_CONFIRM)
-        # ...and the PAD conjunct on them, from the same switch: a stack-exact
-        # gate whose clearance shortfall stayed box refused 29 of #1064's 35
-        # C4/Y1 poses anyway (#1154). Two attributes so one can be measured
-        # without the other; the cached baselines make either fixed per run.
-        self.pad_exact = bool(STACK_EXACT_CONFIRM)
-        self._posed_pads: Dict[Tuple, Optional[List]] = {}
-        self._exact_memo: Dict[Tuple, object] = {}
         # run-19: a PILE seed is not a license. Every conjunct of pads_ok is
         # relative to seed_baseline, and on a pile the seed pair carries huge
         # base.pad with pad_overlap and stack both True -- so ANY smaller
@@ -5196,16 +5103,11 @@ class LegalityContext:
                 if not _sides_interact(sa, sb):
                     continue
                 g = rect_gap((a0, a1, a2, a3), (b0, b1, b2, b3))
-                if g < 0.0 and not stack:
+                if g < 0.0:
                     # any-net physical intersection: the assembly channel,
                     # measured BEFORE the same-net skip below (which exists
-                    # for the SHORT semantics only). #1127: under
-                    # STACK_EXACT_CONFIRM a box hit counts only when the two
-                    # pads' outlines intersect, check_assembly's own test --
-                    # a rotated near-touch the boxes overlap is not a stack.
-                    stack = (not self.stack_exact
-                             or self._stack_confirmed(a, ai, (xa, ya, ra),
-                                                      b, bi, (xb, yb, rb)))
+                    # for the SHORT semantics only).
+                    stack = True
                 if na == nb and na > 0:
                     continue
                 # Cheap pre-reject before resolving the pair's requirement: it
@@ -5215,20 +5117,6 @@ class LegalityContext:
                     continue
                 eff = clr if fa is None else model.pair(fa, floors_b[bi])
                 if g < eff - EPS:
-                    # #1127: under the switch the box hit is re-measured on
-                    # the pads' outlines, and the PAD conjunct charges what
-                    # check_drc would grade -- 0.0 for a box-only graze. A
-                    # short is then a different-net stack, the very
-                    # predicate `stack` confirms with.
-                    conf = (self._pad_confirmed(a, ai, (xa, ya, ra),
-                                                b, bi, (xb, yb, rb), eff)
-                            if self.pad_exact else None)
-                    if conf is not None:
-                        pad_short += conf
-                        if g < 0.0 and conf > 0.0 and not overlap:
-                            overlap = self._stack_confirmed(
-                                a, ai, (xa, ya, ra), b, bi, (xb, yb, rb))
-                        continue
                     pad_short += eff - g
                     if g < 0.0:
                         overlap = True
@@ -5239,84 +5127,9 @@ class LegalityContext:
                                              pb, xb, yb, rb, rects_a),
                              stack)
 
-    def _posed_copper(self, ref: str, pose) -> Optional[List]:
-        """`ref`'s COPPER pads, real `Pad` copies at `pose`, in the index
-        order `pad_rects` emits (#1127); None when the part carries no
-        snapshot. Cached by pose, bounded."""
-        key = (ref,) + _pose_key(pose)
-        if key in self._posed_pads:
-            return self._posed_pads[key]
-        pp = self.parts.get(ref)
-        snap = getattr(pp, 'fp_snapshot', None) if pp is not None else None
-        out = None
-        if snap is not None:
-            posed = footprint_at_pose(snap, tuple(pose))
-            out = [p for p in posed.pads if _pad_carries_copper(p)]
-            if len(out) != pp.n_pads:
-                out = None
-        if len(self._posed_pads) > 4096:
-            self._posed_pads.clear()
-        self._posed_pads[key] = out
-        return out
-
-    def _stack_confirmed(self, a, ai, pose_a, b, bi, pose_b) -> bool:
-        """Is the box hit between pad `ai` of `a` and pad `bi` of `b` a real
-        intersection (#1127)? `_exact_pad_stack` on the posed pads, on the
-        two outer faces -- the shared-face question `_sides_interact` already
-        answered for the boxes. True, the box's answer, whenever a pad
-        cannot be posed: the gate may falsely reject, never falsely accept."""
-        key = ('stack', a, ai, _pose_key(pose_a), b, bi, _pose_key(pose_b))
-        got = self._exact_memo.get(key)
-        if got is not None:
-            return got
-        pa_pads = self._posed_copper(a, pose_a)
-        pb_pads = self._posed_copper(b, pose_b)
-        if (pa_pads is None or pb_pads is None or ai >= len(pa_pads)
-                or bi >= len(pb_pads)):
-            return True
-        return self._remember(key, _exact_pad_stack(
-            pa_pads[ai], pb_pads[bi], ['F.Cu', 'B.Cu']))
-
-    def _pad_confirmed(self, a, ai, pose_a, b, bi, pose_b,
-                       eff: float) -> Optional[float]:
-        """The clearance shortfall (mm) between pad `ai` of `a` and pad `bi`
-        of `b` on the pads' OUTLINES (#1127): check_drc's
-        `check_pad_pad_overlap` -- the check check_drc grades pad-pad
-        clearance with, and `grade_pad_legality` confirms its census with --
-        at the pair's requirement `eff` (`PadClearanceModel.pair`, check_drc's
-        own resolution) and margin 0, on the two outer faces as
-        `_stack_confirmed` asks. 0.0 when the outlines clear `eff`. None, the
-        box's answer, whenever a pad cannot be posed: the gate may falsely
-        reject, never falsely accept."""
-        key = ('pad', a, ai, _pose_key(pose_a), b, bi, _pose_key(pose_b), eff)
-        got = self._exact_memo.get(key)
-        if got is not None:
-            return got
-        pa_pads = self._posed_copper(a, pose_a)
-        pb_pads = self._posed_copper(b, pose_b)
-        if (pa_pads is None or pb_pads is None or ai >= len(pa_pads)
-                or bi >= len(pb_pads)):
-            return None
-        from check_drc import check_pad_pad_overlap
-        hit, over, _pt = check_pad_pad_overlap(pa_pads[ai], pb_pads[bi], eff,
-                                               ['F.Cu', 'B.Cu'],
-                                               clearance_margin=0.0)
-        return self._remember(key, float(over) if hit else 0.0)
-
-    def _remember(self, key, value):
-        """Memoise one exact pad-pair answer (#1127). The searches ask the
-        same posed pair over and over -- measured on StickHub's quench, 77,370
-        pad and 68,486 stack confirmations over 27,652 and 16,993 distinct
-        pairs -- and the answer is a function of the pair's `_pose_key`s, the
-        key `_posed_copper` poses by. Bounded the same way."""
-        if len(self._exact_memo) > 65536:
-            self._exact_memo.clear()
-        self._exact_memo[key] = value
-        return value
-
     def seed_baseline(self, a: str, b: str) -> PairShortfall:
-        # The single choke point every consumer routes through (pads_ok and
-        # swap_pads_ok): a part from a degenerate seed bucket gets the ZERO
+        # The single choke point every consumer routes through (pads_ok): a
+        # part from a degenerate seed bucket gets the ZERO
         # baseline, which is exactly the semantics a pile deserves.
         if not (self._seed_licensed(a) and self._seed_licensed(b)):
             return ZERO_SHORTFALL
@@ -5337,8 +5150,7 @@ class LegalityContext:
 
         #1031: and no deeper into a rule-area keep-out band than the seed
         (`keepout_ok`). Folded in HERE, the one choke point, so every search
-        move is covered -- candidate_valid (both branches), the swap phase
-        (`swap_pads_ok`) and relocate's block shift all call this.
+        move is covered -- candidate_valid (both branches) calls this.
 
         `why` (#1113, `QuenchState.candidate_veto`): a dict that receives the
         refusing check and neighbour, first refusal only; None costs nothing."""
@@ -5550,21 +5362,6 @@ class PadCopper(NamedTuple):
     edge: str
     basis: str
     reason: str
-
-
-class PoseCopper(NamedTuple):
-    """One footprint's readings summarised: `worst_mm` over measured pads,
-    `clears` when no measured pad falls short by more than EPS (exactly when
-    `EdgeCopperContext.grade` would write no finding for it), `certified`
-    when the outline is certified rectangular, no edge rule is unmeasured and
-    every pad was measured without a reason, `fallback` the indices of pads
-    with no measurable amount."""
-    pads: Tuple[PadCopper, ...]
-    worst_mm: Optional[float]
-    worst_index: Optional[int]
-    clears: bool
-    certified: bool
-    fallback: Tuple[int, ...]
 
 
 class _PosedPad:
@@ -5822,7 +5619,7 @@ class EdgeCopperContext:
     same order and with the same exceptions: the requirement is validated
     before anything is read, the outline is certified rectangular from the
     source file, the `.kicad_dru` edge rules and the `.kicad_pro` edge floor
-    are checked. After that `grade`, `pad_copper` and `pose_copper` read no
+    are checked. After that `grade` and `pad_copper` read no
     file. Footprints and pads are read LIVE on every call, so a caller that
     moves a pad in place grades the moved pad.
 
@@ -5977,30 +5774,6 @@ class EdgeCopperContext:
                             (y0-bounds[1], 'bottom'), (bounds[3]-y1, 'top'))
             yield PadCopper(index, pad, required - gap, gap, edge, basis,
                             '; '.join(reasons))
-
-    def pose_copper(self, fp, pose=None) -> PoseCopper:
-        """`pad_copper` summarised for a search: is this footprint, at this
-        pose, clear of the requirement on every pad that can be measured?"""
-        readings = self.pad_copper(fp, pose)
-        worst = worst_index = None
-        fallback = []
-        certified = self.rectangular and not self.rules_unmeasured
-        for reading in readings:
-            if reading.amount_mm is None:
-                fallback.append(reading.index)
-                certified = False
-                continue
-            if reading.reason:
-                certified = False
-            # A NaN amount (a malformed pad size) is no finding in `grade`, so
-            # it is no shortfall here either -- and taken as `worst`, no later
-            # pad could ever replace it.
-            if reading.amount_mm != reading.amount_mm:
-                continue
-            if worst is None or reading.amount_mm > worst:
-                worst, worst_index = reading.amount_mm, reading.index
-        return PoseCopper(readings, worst, worst_index,
-                          worst is None or worst <= EPS, certified, tuple(fallback))
 
     def grade(self, footprints=None) -> Dict:
         """The `grade_pad_edge_clearance` result for `footprints` ({ref: fp},
@@ -6949,26 +6722,6 @@ class RuleAreaKeepouts:
                     return 0.0
         return band - best
 
-    def rect_amount(self, ai: int, rect, pad=None, delta: float = 0.0) -> float:
-        """How far pad copper `rect` falls short of a track landing against
-        area `ai` alone, in mm (see `landings` and `_amount`).
-
-        Every landing is a router cell, and a track cell is free only `band`
-        or more from the keep-out region, so a landing that clears it is a
-        cell the router can end on. Reading "any copper within the band"
-        instead flags a human reference whose pad reaches the band with its
-        far edge only (glasgow_revC R4.1). rp2350's C6.2 IS still named
-        (0.1187 mm at clearance 0.2, fixed-default track): a
-        designer's 0.2 x 0.07 mm F.Cu sliver overlaps that GND pad and no
-        landing on it clears the sliver by the band.
-
-        A landing OFF the board (outside an edge band's outer ring) reads as
-        clear here: that pose is the outline channels' refusal, not this one's.
-        """
-        if not self._near(ai, rect):
-            return 0.0
-        return self._amount([ai], self.landings(rect, pad, delta))
-
     def _pour_reaches(self, zones, rect) -> bool:
         """Does one of these same-net zones reach the pad copper `rect`?
         A sample point of the rect (centre, corners) inside the zone outline
@@ -7148,14 +6901,6 @@ def keepout_pad_findings(keepouts: 'RuleAreaKeepouts',
                                        if ko is not None else None),
         'keepout_copper_basis': KEEPOUT_COPPER_BASIS,
     }
-
-
-def _fp_snapshot(fp):
-    """A shallow copy of `fp` holding shallow copies of its pads (#1127)."""
-    import copy as _copy
-    snap = _copy.copy(fp)
-    snap.pads = [_copy.copy(p) for p in (fp.pads or ())]
-    return snap
 
 
 def _pad_with_copper(pads, copper_index: int, clearance: float):

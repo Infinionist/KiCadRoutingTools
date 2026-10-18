@@ -98,9 +98,8 @@ class FaceLedger:
         """Lanes short. Positive means the face cannot pass its own nets.
 
         OWN-LAYER, and it stays that way. `deficit_floor` is the layer-aware
-        number; this one is what `health_escape_worst_deficit`, board_brief's
-        POSITION_DEPENDENT keys and `options.move_blocker`'s lanes-to-mm
-        conversion have always meant.
+        number; this one is what `health_escape_worst_deficit` and
+        board_brief's POSITION_DEPENDENT keys have always meant.
         """
         return max(0, self.demand - self.supply)
 
@@ -424,7 +423,7 @@ def fine_pitch_parts(pcb_data, min_pads: int = MIN_PADS,
     reporting tools pass the floors they resolved, so "fine" moves with the
     board's own track and clearance instead of only with two absolute
     pitches. Through-hole parts stay out either way (their pins are on every
-    layer; `pin_rows` reports what they do to other nets' crossings).
+    layer; `pin_rows.is_through_hole_part`).
 
     The same test the routing skill spells out inline for the fanout decision,
     lifted here so it has one definition rather than a copy in prose. Raw pad
@@ -573,8 +572,7 @@ def signal_layer_count(pcb_data, *, signal_layers: Optional[int] = None,
 
     Precedence, most authoritative first:
 
-      ``declared_count``   an explicit ``signal_layers=``. The only channel
-                           `options.add_layers` can use, since it is asking
+      ``declared_count``   an explicit ``signal_layers=``, for a question
                            about a stackup this board does not have yet.
       ``declared_planes``  caller-named plane layers, spelled the way
                            ``health.ignore_net_ids`` is.
@@ -1729,20 +1727,6 @@ def part_escape(pcb_data, ref, *, pitch_mm: Optional[float] = None,
                       through_row_pads=through)
 
 
-def board_rule_fine_parts(pcb_data, pcb_file: Optional[str] = None,
-                          track_width: Optional[float] = None,
-                          clearance: Optional[float] = None) -> List[str]:
-    """`escape_ledger(..., fine_at_board_rules=True)`'s population, without
-    the ledger (#1196): fine by pitch or at the rules resolved from these
-    arguments. A caller that ledgers one board at SEVERAL clearances resolves
-    this once and passes it as `refs`, so every rung grades the same parts --
-    otherwise a tighter rung ledgers fewer parts and reads as a gain."""
-    tw, clr, dr = lane_pitch_parts(pcb_data, pcb_file, track_width, clearance,
-                                   return_rules=True)
-    vpitch = via_pitch(pcb_data, pcb_file, clearance=clr, design_rules=dr)
-    return fine_pitch_parts(pcb_data, rules=(tw, clr, vpitch))
-
-
 def escape_ledger(pcb_data, *, refs: Optional[Sequence[str]] = None,
                   pcb_file: Optional[str] = None,
                   track_width: Optional[float] = None,
@@ -1811,39 +1795,3 @@ def escape_ledger(pcb_data, *, refs: Optional[Sequence[str]] = None,
     # `deficit_floor` is not necessarily first, and can be truncated away.
     out.sort(key=lambda p: (-(p.worst.deficit if p.worst else 0), p.ref))
     return out
-
-
-def format_text(ledgers: Sequence[PartEscape], limit: int = 5) -> str:
-    """The ledger as the table a human reads before blaming the router."""
-    if not ledgers:
-        return "escape lanes: no fine-pitch parts on this board"
-    lines = []
-    short = [p for p in ledgers if p.worst]
-    lines.append(f"escape lanes ({len(ledgers)} fine-pitch part(s), "
-                 f"{len(short)} with a face in deficit):")
-    for p in ledgers[:limit]:
-        flag = (f"  DEFICIT {p.worst.deficit} lane(s) on {p.worst.face}"
-                if p.worst else "  ok")
-        lines.append(f"  {p.ref} (pitch {p.pitch_mm:.2f}mm){flag}")
-        for f in p.faces:
-            if f.demand == 0 and f.supply == 0:
-                continue
-            mark = '!!' if f.deficit else '  '
-            who = (f"; blocked {f.blocked_mm:.1f}mm by "
-                   f"{', '.join(f.blockers[:3])}" if f.blockers else "")
-            lines.append(f"   {mark} {f.face:<6} supply {f.supply:>3} / "
-                         f"demand {f.demand:<3} "
-                         f"(span {f.span_mm:.1f}mm @ {f.lane_pitch_mm:.3f}mm"
-                         f"{who})")
-        if p.interior_pads:
-            lines.append(f"      {p.interior_pads} interior pad(s) escape "
-                         f"through NO face -- that is a fanout question, not a "
-                         f"lane one")
-        if p.through_row_pads:
-            lines.append(f"      {p.through_row_pads} through-hole pin(s) "
-                         f"inside the outer rows count on their nearest face: "
-                         f"on every layer already, they need a lane between "
-                         f"the outer pins, not a via")
-    if len(ledgers) > limit:
-        lines.append(f"  ... {len(ledgers) - limit} more")
-    return '\n'.join(lines)

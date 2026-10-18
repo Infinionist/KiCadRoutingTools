@@ -120,8 +120,8 @@ def main():
     # report pad_conflicts 0 -> 0 and buildable True -> True; only the graded
     # clearance and its recorded source moved. Grading at the board's own
     # clearance is right HERE because this tool grades existing geometry --
-    # check_channels PREDICTS routability and therefore needs a fab floor
-    # instead (see list_nets.board_floor, grade-vs-predict).
+    # a tool that PREDICTS routability needs a fab floor instead (see
+    # list_nets.board_floor, grade-vs-predict).
     _board_clr = None
     _decl = None
     try:
@@ -177,7 +177,8 @@ def main():
             body_edge_mm = _intent.body_edge_mm()
             edge_claim_refs = _intent.edge_claim_refs()
             # #1098: the intent's keep-outs, so a declared `mating:<ref>`
-            # replaces the derived plug region here as it does in the seeder.
+            # replaces the derived plug region here as it does in the seat
+            # predicate.
             declared_keepouts = tuple(_intent.keepouts or ())
         except Exception as exc:
             print(f"cannot load intent {args.intent}: {exc}", file=sys.stderr)
@@ -214,8 +215,8 @@ def main():
     # graphics markers are co-located by design and must NOT flag). A bucket is
     # a finding here only when it holds >= 2 suspect NON-marker parts: one real
     # part sitting on a fiducial is not a stack of parts.
-    # `coincident_stack_groups` is that rule (fa10 P1: the seeder's #1151
-    # disposition calls it too, so the two cannot disagree about a stack).
+    # `coincident_stack_groups` is that rule (fa10 P1: one function, so no
+    # two readers can disagree about a stack).
     # #1204: an origin is a library's datum, not a body, so a pair at one
     # origin is a stack only when it shares something PHYSICAL on a face they
     # both occupy -- copper pad boxes (run 19's interleaved pads still
@@ -240,7 +241,7 @@ def main():
         exempt_out=stack_exempt)
     # #897: a waiver that resolves to nothing excuses nothing, and said nothing.
     # Formatted by the engine (`format_waiver_warnings`) rather than here, so
-    # place_reconstruct says the same words. A waiver that accepted a shared
+    # every caller says the same words. A waiver that accepted a shared
     # origin did excuse something (#1204), so it is not "unused".
     _stack_used = {tuple(p) for e in stack_exempt
                    for p in e.get('waived_pairs') or ()}
@@ -757,11 +758,8 @@ def main():
                   + ', '.join(band['unmeasured'][:8]))
 
     # A FOURTH conjunct, and `g['blocking']` is deliberately NOT touched.
-    # `blocking` means "pad intersections" to board_score, to the seeder's
-    # repair census, and -- with INVERTED polarity -- to the retired
-    # placement_driver's _guard_damage, which refused to run the repair stages
-    # when `not blocking`. Folding containment into that count would have
-    # changed all three.
+    # `blocking` means "pad intersections" to board_score; folding
+    # containment into that count would change it.
     # This is the same shape the coincident-origin channel used.
     # `courtyard_gating` is the FIFTH conjunct (run-23): the moved-vs-baseline
     # subset of the courtyard census -- see the currency comment above for
@@ -826,7 +824,7 @@ def main():
     # across its edge and one wholly inside it, graded `buildable`). Two
     # parts' copper in one place, any net but a net tie's own (`stack`);
     # measured by check_drc's `footprint_graphic_pad_census`, which place_pose
-    # and the seeder's gate also read. The courtyard gate's currency: a pair
+    # and the seat gate also read. The courtyard gate's currency: a pair
     # GATES when a member MOVED vs --baseline, and without one it is
     # REPORT-ONLY, because healthy human boards ship such contacts by design
     # -- measured over the stress manifests, 3 boards: ZYNQ_Ruler som's JP2

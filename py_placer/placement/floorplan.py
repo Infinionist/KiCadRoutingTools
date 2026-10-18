@@ -76,10 +76,10 @@ DEFAULT_ENVELOPE_TOLERANCE_MM = 0.5
 #: Measured, run 10: `check_floorplan --emit-intent --declare-classes` on a
 #: damaged board declared all ELEVEN off-board parts edge connectors with bands
 #: equal to their damage displacement (R7 east 34.792 ... TP4 north 160.062).
-#: Every downstream consumer then went blind: seeder's off-board census skips
-#: declared edge refs, so `--repair` found 5 violators and none of the 11; and
-#: reconstruct's gate read `oob = 4.348` on a board with parts 158 mm out
-#: (929.671 without the bands). This generalises the mount_hole refusal below,
+#: Every downstream consumer then went blind: an off-board census that skips
+#: declared edge refs found 5 violators and none of the 11, and a gate read
+#: `oob = 4.348` on a board with parts 158 mm out (929.671 without the
+#: bands). This generalises the mount_hole refusal below,
 #: which already knows this failure mode for one part class.
 EDGE_BAND_SANITY_MM = 5.0
 
@@ -126,36 +126,14 @@ EDGE_BAND_SANITY_MM = 5.0
 #: ANGLE a part is to be placed at, and the set a search may choose from. The
 #: one placement decision the board file cannot hold as a decision: a
 #: footprint's `(at x y rot)` records the angle it HAS, and nothing
-#: distinguishes an angle somebody chose from a generator default, so
-#: `seeder._try_place` has always been free to turn a part whose rotation was
-#: load-bearing. Its docstring said so and told the author to lock the part
-#: instead, which freezes its POSITION too. Declarable, and it changes a
-#: verdict: the seeder honours it and REFUSES rather than falling back to the
-#: 90-degree lattice, and the quench's gate pins the part to it instead of
-#: offering the lattice -- so the rule above mandates the bump.
-#: There is deliberately NO `rule_rotation` in `RULES`: a declared rotation is
-#: ENFORCED (the seat search is given a one-angle ladder), so a grade rule
-#: would be checking an invariant the search cannot violate. That holds only
-#: while EVERY move that can turn a part is held to the declaration, and two
-#: were not (#1117): `place_seed`'s post-polish re-seat searched the fallback
-#: lattice, and the quench's swaps exchanged full poses, angles included.
-#: test_893 now reads every source tree for a `_try_place` call without a
-#: ladder, and the swap refuses an angle the declaration does not admit.
-#: Three more were held by #1120-#1122: stage 1's edge seat applies a
-#: `rotation_candidates` set (a member that fits the edge, or the part is
-#: left unturned and reported); `place_portfolio`'s `poses` strategy offers
-#: a declared part only angles its declaration admits; and
-#: `place_fanout_clearance --intent` turns a cap only within its claim, in
-#: the comparison run without the decap gate too. test_893's standing gate
-#: also reads `_seat_edge` and `perturb_poses` calls for their declaration.
-#: Still NOT held, and so still ungraded: `place_pose`'s set/rotate/face,
-#: which take the caller's angle; `arrays[].rotation`, which is not a block
-#: claim and so not in `rotations_for_ref`; and any actor run WITHOUT the
-#: intent (`place_optimize`, `place_portfolio`, `place_fanout_clearance` or
-#: the GUI cap pass with no intent path), which has no declaration to hold.
-#: An earlier draft
-#: of this comment claimed such a rule existed; it never did, and a
-#: justification naming a grader nobody wrote is worse than a shorter one. Contrast `blocks[].side`, which is declarable and
+#: distinguishes an angle somebody chose from a generator default. Declarable,
+#: and it changes a verdict, so the rule above mandates the bump.
+#: There is NO `rule_rotation` in `RULES`. `place_fanout_clearance --intent`
+#: holds a declaration (a cap turns only within its claim, in the comparison
+#: run without the decap gate too); `place_pose`'s set/rotate/face take the
+#: caller's angle; `arrays[].rotation` is not a block claim and so not in
+#: `rotations_for_ref`; and `place_simple` does not read block rotations.
+#: Contrast `blocks[].side`, which is declarable and
 #: whose rule docs/floorplan-intent.md calls "vacuous, not conservative"
 #: because no search move carries a side: rotation is carried by every nudge.
 #: 6 (#959, #1000): `edge_connectors[].side` -- the face a connector is on,
@@ -167,7 +145,7 @@ EDGE_BAND_SANITY_MM = 5.0
 #: served part, order, rotation, pitch, axis) -- graded by `array_formation`;
 #: `fixed_poses[]` -- an exact pose a part is to be SEATED at, graded by an
 #: anchor the grade compiles from each entry; and `blocks[].rigid`, which
-#: opts a block into moving as one piece. One bump for the three: they
+#: declares a block one piece. One bump for the three: they
 #: arrived together, and each changes a verdict or a placement, so the rule
 #: above mandates it. An older build refuses each key by name.
 #: 8 (#1142): `decaps.within_radius_refs` and `decaps.within_radius_mm` -- the
@@ -189,11 +167,11 @@ EDGE_BAND_SANITY_MM = 5.0
 #: what the rule above asks about, so the bump is mandated. An older build
 #: refuses the key by name.
 #: 11 (#1211): `replicate[]` -- sibling instances of one hierarchical sheet
-#: laid out as translated copies of a SOURCE instance. `place_seed` acts on
-#: it (a stage after the polish copies the source through `place_pose
-#: replicate`'s engine) and the grade measures each target's distance from
-#: the source arrangement, WARN by default; that the seed moves parts for it
-#: and the grade can be promoted is what the rule above asks about. An older
+#: laid out as translated copies of a SOURCE instance. `place_pose
+#: replicate --intent` acts on it and the grade measures each target's
+#: distance from the source arrangement, WARN by default; that a tool moves
+#: parts for it and the grade can be promoted is what the rule above asks
+#: about. An older
 #: build refuses the key by name.
 READER_VERSION = 11
 
@@ -206,7 +184,7 @@ _TOP_LEVEL_KEYS = {
 }
 #: #959 (#997). WRITTEN answers to "why is this not graded", one map per kind
 #: of question: a rule the plan leaves dark, a budget key the emitter withheld,
-#: a pad-less block the seeder cannot place, a contradiction between two
+#: a pad-less block the placer cannot place, a contradiction between two
 #: declared sources. Every value is a non-empty `why`. No READER_VERSION bump:
 #: the rule above says not to bump for a field nothing grades, and a
 #: disposition changes no verdict -- it answers P1's refusal, which reads it.
@@ -215,14 +193,11 @@ _TOP_LEVEL_KEYS = {
 _DISPOSITION_KEYS = {'rules', 'withheld', 'refs', 'contradictions'}
 _BLOCK_KEYS = {'name', 'group', 'refs', 'zone', 'side', 'exclusive',
                'tolerance_mm', 'note', 'context',
-               # #893. `rotation` is a DECISION (honoured exactly, and the
-               # seeder refuses rather than silently turning the part);
+               # #893. `rotation` is a DECISION (this angle);
                # `rotation_candidates` is a SET a search may choose from.
                # Declaring both on one block is refused -- see `_rotation`.
                'rotation', 'rotation_candidates',
-               # #1052. Opt-in: the block moves as ONE piece in the quench.
-               # Opt-in because making every block rigid would change every
-               # intent-driven quench with no A/B behind it.
+               # #1052. Opt-in: the block is declared ONE piece.
                'rigid'}
 #: #1051. One declared row of identical parts. `members` is ORDERED and
 #: literal (no globs): `order: "declared"` reads it as the order, and a glob
@@ -234,7 +209,7 @@ _ARRAY_KEYS = {'name', 'members', 'serves', 'order', 'rotation', 'pitch_mm',
 #: #1054. An exact pose a part is to be seated at. `basis` says whose fact it
 #: is: `declared` (the design brief), `mechanical` (mechanical.json), or
 #: `derived_default` -- nobody's: a pose a planner chose because nothing
-#: declared one (`plan_regions.py`'s mounting holes at the board corners,
+#: declared one (mounting holes at the board corners,
 #: `placement/mount_holes.py`). `rot`/`side` may be `"unknown"`; absent
 #: means nobody said.
 #: `accept_courtyard_overlap` (#1060): the refs whose COURTYARD this pose may
@@ -379,7 +354,7 @@ _WAIVER_KEYS = {'pair', 'reason', 'context'}
 # `band_basis`, `why`, `why_not_repaired` and `rejected_alternative` because
 # there was nowhere else for the reasoning to go. Folding it into `note`
 # instead would be worse still: `note` is load-bearing, grepped for the
-# substring SUSPECT by emit_intent and place_reconstruct.
+# substring SUSPECT by emit_intent.
 _EDGES = ('north', 'south', 'east', 'west')
 
 
@@ -433,7 +408,7 @@ class Zone:
     #: honoured exactly), and the set a search may choose from. Never both.
     rotation: Optional[float] = None
     rotation_candidates: Optional[Tuple[float, ...]] = None
-    #: #1052. The block moves as one piece in the quench (opt-in).
+    #: #1052. The block is declared one piece (opt-in).
     rigid: bool = False
     note: str = ''
     #: Free-form provenance, read by nothing (see `_BLOCK_KEYS`). Carried on
@@ -545,20 +520,17 @@ class Intent:
 
         The wire key holds two populations. An `edge_receptacle` /
         `edge_actuator` entry says "this part's mating face belongs at the
-        boundary", and the placement engines act on that: place_seed LOCKS it
-        during the polish quench, place_reconstruct grants it a banded
-        out-of-outline allowance and excludes it from the exchange stage, and
-        reconstruct.classify forces it into the anchor tier. A
+        boundary", and its readers act on that: the grade's edge rules read
+        its edge, and reconstruct.classify forces it into the anchor tier. A
         `connector_affinity` entry (run-23) says only "this is a
         connector-family part with NO edge claim" -- it exists so a mid-board
         header stops being invisible to `rule_edge_connector`, which flags an
         interior pose at WARN.
 
-        Handing the second population to the first's consumers would silently
-        change placement: on tigard_placed that is 6 extra refs locked in the
-        seed quench, given a 2.0mm off-outline allowance each and pinned as
-        anchors -- for parts nobody said anything about. So the engines read
-        THIS, and the rule reads `edge_connectors`.
+        Handing the second population to the first's consumers would
+        silently claim an edge for parts nobody said anything about (6 extra
+        refs on tigard_placed). So those consumers read THIS, and the rule
+        reads `edge_connectors`.
 
         The split lives here, in one place, rather than as a filter repeated
         at every consumer: a filter that must be remembered is a filter that
@@ -579,7 +551,8 @@ class Intent:
         """The pairs whose COURTYARD overlap a declared pose may carry
         (#1060): `overlap_waivers[]` plus each `fixed_poses[].
         accept_courtyard_overlap` ref paired with its entry's ref. Read by
-        stage 0 only. Deliberately NOT folded into `waiver_pairs`, whose
+        the plan check of fixed poses only. Deliberately NOT folded into
+        `waiver_pairs`, whose
         consumers (`grade_body_overlap`) exempt a pair from the drawn-BODY
         containment gate too -- a courtyard waiver must not license one part
         sitting wholly inside another's body (phase-4 verifier)."""
@@ -635,10 +608,9 @@ def _rotation(raw, where: str) -> Optional[float]:
 def _rotation_candidates(raw, where: str) -> Tuple[float, ...]:
     """The declared candidate set, order PRESERVED.
 
-    Order is load-bearing, not cosmetic: the seeder keeps the FIRST pose that
-    fits, so a reordered list changes which rotation wins a tie. That is why
-    this returns a tuple in the author's order and never a set -- the same
-    warning `quench._candidate_rotations`' docstring carries.
+    Order is load-bearing, not cosmetic: a search that keeps the FIRST pose
+    that fits changes which rotation wins a tie when the list is reordered.
+    That is why this returns a tuple in the author's order and never a set.
 
     An EMPTY list is refused rather than treated as "no constraint": an author
     who writes `[]` has said something, and the something they said admits no
@@ -742,9 +714,9 @@ def _proximity_claims(raw: Dict) -> List[Dict]:
 
     At load and not in `validate_intent`, the deviation `_along_edge_claim`
     already documents and for the same reason: `validate_intent` has exactly
-    one caller -- `grade()` -- while `place_seed` and `place_reconstruct` load
-    an intent and never call it. A refusal that lived there would leave those
-    holding a row whose `pads` is a number.
+    one caller -- `grade()` -- while `place_simple`, `place_pose` and
+    `place_fanout_clearance` load an intent and never call it. A refusal that
+    lived there would leave those holding a row whose `pads` is a number.
 
     Pad numbers are refused unless they are STRINGS. `Pad.pad_number` is a
     string on both parse paths, so a JSON `1` matches no pad, resolves an empty
@@ -846,8 +818,8 @@ def _proximity_claims(raw: Dict) -> List[Dict]:
 
 def _keep_away_claims(raw: Dict) -> List[Dict]:
     """Validate `keep_away[]` (#1253), AT LOAD, for `_proximity_claims`'s
-    reason: `place_seed` and `place_reconstruct` load an intent and never
-    call `validate_intent`.
+    reason: the placement tools load an intent and never call
+    `validate_intent`.
 
     Each `rule` is parsed by the ROUTER's own `parse_keep_away_rules`, so a
     rule this loader accepts is one route.py prices, and a malformed one is
@@ -890,8 +862,8 @@ def _keep_away_claims(raw: Dict) -> List[Dict]:
 
 
 def _replicate_claims(raw: Dict) -> List[Dict]:
-    """Validate `replicate[]` (#1211), AT LOAD: `place_seed` acts on it and
-    never calls `validate_intent`.
+    """Validate `replicate[]` (#1211), AT LOAD: `place_pose replicate` acts
+    on it and never calls `validate_intent`.
 
     What needs no board is checked here -- the shapes, `from` not among its
     own `to`, a target named twice (in one row or across rows: two copies
@@ -977,10 +949,10 @@ def _along_edge_claim(c: Dict, i: int) -> None:
 
     Refused HERE, at load, rather than in `validate_intent`, and that is a
     deliberate deviation from the issue's own text. `validate_intent` has
-    exactly one caller -- `grade()` -- while `place_seed` and
-    `place_reconstruct` load an intent and never call it. A refusal that lived
-    there would leave the SEEDER, which acts on these fields, holding an entry
-    that declares two conflicting bands with no policy for which wins. The
+    exactly one caller -- `grade()` -- while the placement tools load an
+    intent and never call it. A refusal that lived there would leave a reader
+    of these fields holding an entry that declares two conflicting bands with
+    no policy for which wins. The
     precedent is `legality_budget.oob_area`, refused at load for the same
     reason: a contradiction the reader can never satisfy belongs in the
     message, not in a verdict.
@@ -1036,14 +1008,14 @@ def _must_lock_hit(ref: str, must_lock) -> Optional[str]:
 
 
 def _fixed_pose_entries(raw: Dict, conns, must_lock) -> List[Dict]:
-    """Validate `fixed_poses[]` (#1054), AT LOAD -- the seeder acts on it and
-    never calls `validate_intent`, the reason `_proximity_claims` gives.
+    """Validate `fixed_poses[]` (#1054), AT LOAD -- `place_simple` acts on it
+    and never calls `validate_intent`, the reason `_proximity_claims` gives.
 
     A fixed pose collides with two other claims on the same part, and each is
     refused BY NAME rather than given a precedence rule: an `edge_connectors`
-    entry (the seeder's stage 1 seats it at a band midpoint, with no legality
-    gate) and a `must_lock` pattern (a claim about the FILE; a part the plan
-    says to seat is not one the file already pins).
+    entry (a claim on an edge band, not on one pose) and a `must_lock`
+    pattern (a claim about the FILE; a part the plan says to seat is not one
+    the file already pins).
     """
     got = raw.get('fixed_poses')
     if got is not None and not isinstance(got, list):
@@ -1095,7 +1067,7 @@ def _fixed_pose_entries(raw: Dict, conns, must_lock) -> List[Dict]:
         # parts nobody looked at), never the entry's own ref, no repeats, and
         # a `why` -- a waiver is a claim the author must be able to defend.
         # Whether each ref is ON the board is a board question, answered by
-        # the seeder (refused) and the grade (`fixed_pose_unresolved`).
+        # the plan check and the grade (`fixed_pose_unresolved`).
         acc = f.get('accept_courtyard_overlap')
         if acc is not None:
             if not isinstance(acc, list) or not all(
@@ -1122,15 +1094,16 @@ def _fixed_pose_entries(raw: Dict, conns, must_lock) -> List[Dict]:
                     f"why the overlap is the design")
         if ref in edge_refs:
             raise IntentError(
-                f"{where}: {ref} is also an `edge_connectors` entry. Stage 1 "
-                f"seats an edge connector at its band, and a fixed pose seats "
-                f"it exactly -- two placements for one part. Keep one")
+                f"{where}: {ref} is also an `edge_connectors` entry. An edge "
+                f"connector entry claims its edge band, and a fixed pose "
+                f"claims one exact pose -- two placements for one part. Keep "
+                f"one")
         pat = _must_lock_hit(ref, must_lock)
         if pat is not None:
             raise IntentError(
                 f"{where}: {ref} is also named by must_lock {pat!r}. must_lock "
                 f"is a claim that the FILE already pins the part; a fixed "
-                f"pose says the seeder is to put it there. Keep one")
+                f"pose says the placer is to put it there. Keep one")
         out.append(dict(f))
     return out
 
@@ -1201,8 +1174,8 @@ def _array_entries(raw: Dict, conns, must_lock, fixed_refs) -> List[Dict]:
             if m in edge_refs:
                 raise IntentError(
                     f"{where}: member {m} is also an `edge_connectors` entry, "
-                    f"which is seated at its edge and frozen in the quench; "
-                    f"it cannot move with its row. Take it out of one")
+                    f"which claims its own seat at its edge; it cannot move "
+                    f"with its row. Take it out of one")
         serves = a.get('serves')
         if serves is not None and (not isinstance(serves, str) or not serves):
             raise IntentError(f"{where}.serves: expected a reference or "
@@ -1359,9 +1332,9 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
         if b.get('rotation') is not None and b.get('rotation_candidates') is not None:
             raise IntentError(
                 f"blocks[{i}] ({name}): declares BOTH rotation and "
-                f"rotation_candidates. `rotation` is a decision the seeder "
-                f"honours exactly; `rotation_candidates` is a set it may "
-                f"choose from. Declare one")
+                f"rotation_candidates. `rotation` is a decision (this "
+                f"angle); `rotation_candidates` is a set to choose from. "
+                f"Declare one")
         rot = (None if b.get('rotation') is None
                else _rotation(b['rotation'], f"blocks[{i}].rotation"))
         rot_cands = (None if b.get('rotation_candidates') is None
@@ -1771,9 +1744,9 @@ def mechanical_drift(intent: Intent, pcb_data, mechanical: Dict, *,
         # ERROR where nothing else can see it -- a TURN (a symmetric body
         # sits inside its anchor turned 180: 68 of 97 anchored corpus refs)
         # and ANY drift of a pad-less ref, which is never anchored.
-        # `fp.pads` on purpose (#1143): a ref is never anchored when the
-        # seeder never places it, and the quench places an aperture-only
-        # part (reconcile.anchor_blocks reads the same predicate).
+        # `fp.pads` on purpose (#1143): a pad-less ref is never anchored,
+        # and an aperture-only part is placed like any other
+        # (reconcile.anchor_blocks reads the same predicate).
         default = ERROR if (turned or not fp.pads) else WARN
         # The plan may PROMOTE the move-only WARN, never demote the ERROR:
         # the pose is a recorded fact, and a plan's severity map overruling
@@ -1876,12 +1849,12 @@ def fixed_pose_violations(intent: Intent, pcb_data, pcb_file: str, *,
     pose 13 mm from the file's go ungraded (Phase-1 verifier); the pose row
     of `reconcile` reports the disagreement as a contradiction P1 refuses.
     And an entry carrying the file's pose for a ref whose mechanical value
-    LOST a contradiction (`mechanical_skip`) is an ERROR: the seeder would
+    LOST a contradiction (`mechanical_skip`) is an ERROR: the placer would
     seat the losing value, and neither anchor grades it.
 
     A ref the board does not have is an ERROR (`fixed_pose_unresolved`): a
     typo'd pose would otherwise grade clean. A ref the anchor declines for
-    another reason (pad-less: the seeder never places it) is a WARN with that
+    another reason (pad-less: it is never anchored) is a WARN with that
     reason, so the pose is never silently ungraded.
     """
     from . import reconcile as _rc
@@ -1908,7 +1881,7 @@ def fixed_pose_violations(intent: Intent, pcb_data, pcb_file: str, *,
                     ref=ref,
                     message=(f"fixed_poses[{ref}] carries the mechanical.json "
                              f"pose, and that value LOST a contradiction -- "
-                             f"the seeder would seat the losing value and no "
+                             f"the placer would seat the losing value and no "
                              f"anchor grades it. Drop the entry, or answer "
                              f"the contradiction"),
                     measured={'found': True, 'lost_contradiction': True}))
@@ -2021,7 +1994,7 @@ def array_problems(intent: Intent, pcb_data, blocks: Dict[str, List[str]],
 
     Raised by BOTH `grade` and `resolve_intent_gate` -- `block_unresolved`'s
     shape, one raiser and two reach points -- because the gate is what the
-    quenching CLIs run and it must not seat or hold a row the grade calls
+    placement CLIs run and it must not seat or hold a row the grade calls
     impossible. Each finding names the member it is about.
 
     `array_unresolved` (a name the board does not have): a member or the
@@ -2258,14 +2231,14 @@ def _circle_hits_rect(cx, cy, radius, rect) -> bool:
 
 # --------------------------------------------------------------------------
 # keep-outs: ONE resolver and ONE hit test, shared by the grader (rule_keepout,
-# below) and the seat predicate (seeder.pose_ok / seeder.edge_seat_ok).
+# below) and the seat predicate (seeder.pose_ok).
 #
 # They live here, together, because the alternative measured badly elsewhere in
 # this module: docs/floorplan-intent.md says of the rules that "every one of
 # them measures with the geometry the OPTIMIZER ITSELF gates on", and until
 # #701 the keepout row was the one place that was false -- the optimizer gated
 # on nothing at all. A seat the search accepts that the grade then flags is an
-# exit 4 on a board the seeder produced correctly, so the two must not be two
+# exit 4 on a board the placer produced correctly, so the two must not be two
 # implementations.
 # --------------------------------------------------------------------------
 
@@ -2276,7 +2249,7 @@ def keepouts_for_ref(keepouts, ref: str, sides) -> Tuple[Dict, ...]:
     Pose-INVARIANT by construction -- an fnmatch against a reference and the
     set of faces a part occupies are both unchanged by moving it -- which is
     what lets a seat search resolve this ONCE per part instead of once per
-    candidate pose. `_try_place` evaluates thousands of poses per part.
+    candidate pose: a search evaluates thousands of poses per part.
 
     Both filters live here rather than at each caller, for the reason
     `Intent.edge_claims` gives about its own split: a filter that must be
@@ -2378,8 +2351,8 @@ def keepout_hit(entry, rects) -> float:
 
     THE hit test. The `legality.EPS` thresholding is INSIDE this function, not
     at the callers: two `> EPS` comparisons at two call sites are two chances
-    to drift, and a pose the seeder accepts at the boundary that the grade
-    then flags is exactly the round trip this exists to keep closed.
+    to drift, and a pose the seat predicate accepts at the boundary that the
+    grade then flags is exactly the round trip this exists to keep closed.
 
     `rects` may contain None -- `quench._Part.rects()` returns
     `(courtyard, None)` for a part with no drilled pads -- so both callers can
@@ -2413,7 +2386,8 @@ def keepout_hit(entry, rects) -> float:
 # and no keep-out. Courtyards are per side, so a B-side part never pairs with
 # it. The region is derived from the footprint and handed to every consumer
 # of the #701 keep-out channel, which already enforces a rect on both faces
-# with an `allow` exemption (seeder pose_ok, quench, grade), plus the two
+# with an `allow` exemption (seeder.pose_ok, the placement state, grade),
+# plus the two
 # graders that run without an intent (grade_pad_legality -> place_pose, and
 # check_assembly).
 
@@ -2610,8 +2584,9 @@ def with_derived_keepouts(keepouts, pcb_data, pcb_file: Optional[str] = None
 
 def mating_keepouts(pcb_data, pcb_file: Optional[str] = None,
                     declared=()) -> Tuple[Dict, ...]:
-    """The board's mating regions as the seeder, quench and grade resolve
-    them (#1098): `with_derived_keepouts(declared, ...)`, keeping only the
+    """The board's mating regions as the seat predicate and the grade
+    resolve them (#1098): `with_derived_keepouts(declared, ...)`, keeping
+    only the
     `mating:` entries. A declared `mating:<ref>` therefore replaces the
     derived one here exactly as it does there; the intent's other
     keep-outs are the floorplan grade's rules, not an assembly fact."""
@@ -2625,13 +2600,14 @@ def mating_keepout_findings(pcb_data, pcb_file: Optional[str] = None,
     """`[{ref, keepout, side, area_mm2}]`: parts inside a mating keep-out at
     the file's poses (#1098) -- `keepouts` when given, else
     `mating_keepouts(pcb_data, pcb_file, declared)`, so a checker handed the
-    intent's keep-outs resolves the region the seeder enforced. `keepout_hit`
-    over each part's (rect, drilled-pad rect), resolved by `keepouts_for_ref`
-    -- the same two functions the seeder and the grade call.
+    intent's keep-outs resolves the region the placer enforced.
+    `keepout_hit` over each part's (rect, drilled-pad rect), resolved by
+    `keepouts_for_ref` -- the same two functions the seat predicate and the
+    grade call.
 
-    The rect is the QUENCH's (`quench._Part`): the courtyard, else the pad
-    bbox. A checker measuring courtyard-plus-pads here graded a part the
-    seeder had just seated (its pad poking past its own courtyard into the
+    The rect is the placement state's (`quench._Part`): the courtyard, else
+    the pad bbox. A checker measuring courtyard-plus-pads here graded a part
+    the placer had just seated (its pad poking past its own courtyard into the
     tongue) NOT BUILDABLE -- the generator more permissive than the checker,
     which is the one direction that may never happen. So both read one
     rect."""
@@ -2864,8 +2840,8 @@ def zone_covered_by_keepout(zone, keepouts, member_sides=None,
     findings and the optimizer moved it anyway. Under the #702 gate it is not:
     the rule is termwise-monotone, so `keepout` falls only by leaving the
     keep-out, leaving raises `zone_containment`, and no candidate can lower
-    both. The part is CONFINED TO ITS ZONE for the run, where the pre-#702
-    quench would have walked it out.
+    both. The part is CONFINED TO ITS ZONE for the run, where an ungated
+    search would have walked it out.
 
     Confined, not frozen -- the distinction was measured, and the message says
     the weaker true thing rather than the stronger false one. Every pose inside
@@ -2956,18 +2932,12 @@ def declared_ladder(claim) -> Optional[List[float]]:
     """The seat ladder one `rotations_for_ref` claim gives, or None (#1117).
 
     `[rot]` for a declared `rotation`, the author's `rotation_candidates` in
-    the author's order (the seat search keeps the FIRST angle that fits), and
-    None for no claim -- which tells `seeder._try_place` to use its fallback
-    lattice. The angles were normalised at load.
+    the author's order (a search keeps the FIRST angle that fits), and None
+    for no claim -- which tells the caller to use its own lattice. The
+    angles were normalised at load.
 
-    This is the ONE mapping every `_try_place` seat search, the portfolio's
-    `poses` strategy (#1121) and `place_fanout_clearance`'s cap turns
-    (#1122) read. Stage 1's edge seat does not call it: it walks the same
-    claim itself, its current angle first when that is a member that fits,
-    then the author's order (#1120). It was a closure copied into `seed_from_intent` and
-    `repair_placement`, and `place_seed`'s post-polish re-seat had no copy at
-    all, so it searched the fallback lattice and could turn a part whose
-    angle the intent declared (#1117).
+    The ONE mapping, so a caller cannot copy it and drift (#1117):
+    `place_fanout_clearance`'s cap turns (#1122) read it.
     """
     if claim is None:
         return None
@@ -3010,7 +2980,7 @@ def tether_gate_spec(intent: Intent) -> Dict[str, object]:
     """The declared tether limits a per-move gate may hold (#1043). Plain data.
 
     A rule is armed only when the intent declares its limit AND grades it at
-    ERROR -- the currency `grade_delta` and the portfolio's exit gate count.
+    ERROR -- the currency `grade_delta` counts.
     A rule the author demoted to warn is advice; gating the search on it would
     enforce something the author chose not to. Keys:
 
@@ -3155,9 +3125,9 @@ class _Ctx:
     def __init__(self, intent, pcb_data, pcb_file, state, blocks, locked,
                  outline):
         # #1098: plus a PCB-edge plug's derived mating keep-out, so the
-        # grade, its roster, the pose grader and place_seed --repair (which
-        # charges grade errors) all see what the seeder enforces. The same
-        # board without a plug keeps the very intent it was handed.
+        # grade, its roster and the pose grader all see what the seat
+        # predicate enforces. The same board without a plug keeps the very
+        # intent it was handed.
         _ks = with_derived_keepouts(intent.keepouts, pcb_data, pcb_file)
         if len(_ks) != len(intent.keepouts or ()):
             intent = dataclasses.replace(intent, keepouts=_ks)
@@ -3172,8 +3142,9 @@ class _Ctx:
         self.parts = {p.ref: p for p in state.graded_parts()}
         self.gate = state.edge_gate
         self.legality = state.legality_metrics()
-        #: #1162: check_assembly's courtyard channel for `overlap_exact`;
-        #: a PoseGrader hands its own over, `grade` builds one on demand.
+        #: #1162: check_assembly's courtyard channel, for `_ctx_census` and
+        #: `_ctx_overlap_exact`; a PoseGrader hands its own over, `grade`
+        #: builds one on demand.
         self._census = None
         self._overlap_exact = None
         self.envelope = intent.envelope.get('rect')
@@ -3310,7 +3281,7 @@ class _Ctx:
         a part moved off its datum is a placement again and stays counted
         (the fixed-pose anchor names the move), and so does one on the other
         face than the entry declares, which is not the part the datum
-        describes (stage 0 refuses to seat it there). Copper past the
+        describes (the fixed-pose check refuses it there). Copper past the
         outline is never licensed: pads (their extent box, at zero margin)
         and, since a drawn tab is copper too (#962), the footprint's graphic
         copper, read off the census `grade_pad_legality` publishes."""
@@ -3580,13 +3551,9 @@ def edge_facing(entry: Dict, fp, geom, rotation: Optional[float] = None
     the tiering chosen after the phase verifier found stock receptacles whose
     weak face is wrong (`placement.mating`'s docstring).
 
-    THE predicate: the rule calls it, and the seeder imports this function
-    rather than a copy of it, so the seeder's angle choice and the grade read
-    one answer for which way a part faces. That does not make a reversed
-    seat impossible: an author's declared angle is kept, stage 1 falls back
-    to a part's input angle when no facing angle seats, and a wrong WEAK face
-    (`placement.mating`) misleads both alike. The grade reports the first
-    two; the third reads as a pass. A footprint's own "PCB Edge" marker
+    THE predicate the rule calls, so every reader asks one answer for which
+    way a part faces. A wrong WEAK face (`placement.mating`) reads as a
+    pass. A footprint's own "PCB Edge" marker
     (#1245) confirms a face (strong) or vetoes it (an abstention) where it
     draws one, through `mating_face_local`."""
     from .mating import LocalFace, facing_edge, mating_face_local
@@ -3718,9 +3685,8 @@ def zone_fits_courtyard(zone_rect, part_rect, tol: float) -> bool:
     90-degree rotation? False means the zone is a spec-COORDINATE (a tight
     rect around where the part belongs), and containment must be graded on
     the part's anchor point instead -- a courtyard-containment demand against
-    a zone smaller than the courtyard is unsatisfiable by construction (the
-    run-2 R3 failure: place_seed could never seat H1/H3 in their 0.4mm
-    zones)."""
+    a zone smaller than the courtyard is unsatisfiable by construction (run 2:
+    H1/H3 could never be seated in their 0.4mm zones)."""
     zw = zone_rect[2] - zone_rect[0] + 2 * tol
     zh = zone_rect[3] - zone_rect[1] + 2 * tol
     w = part_rect[2] - part_rect[0]
@@ -3739,8 +3705,9 @@ def zone_escape(zone_rect, part_rect, anchor: bool,
     (`zone_open_sides`). The edge rule grades that side, so the zone must not
     -- an edge receptacle's mating face is SUPPOSED to cross it.
 
-    THE zone measurement, shared by `rule_zone_containment` and the quench's
-    intent gate (#702), for the reason `keepout_hit`'s docstring gives about
+    THE zone measurement, shared by `rule_zone_containment` and the
+    placement state's intent gate (#702), for the reason `keepout_hit`'s
+    docstring gives about
     the keep-out one: a pose the optimizer accepts that the grade then flags is
     an exit 4 on a board this tool placed itself, and two implementations of
     "outside its zone" is how that happens.
@@ -3752,12 +3719,11 @@ def zone_escape(zone_rect, part_rect, anchor: bool,
     a per-pose gate must resolve it once per part rather than once per
     candidate pose.
 
-    Note what this is NOT: `seeder.zone_gate`'s anchor branch tests the
-    footprint ORIGIN (x, y), not the courtyard centre. The two differ by
-    (b[0]+b[2])/2, and `_feasible_centre_box` records how much that is -- 17 of
-    65 parts on splitflap_driver and 6 of 89 on tigard have an offset centre,
-    up to 10.15mm on tigard J3. A gate built on the seeder's predicate would
-    admit, by up to 10mm, poses this rule flags.
+    Note it tests the courtyard CENTRE, not the footprint ORIGIN (x, y). The
+    two differ by (b[0]+b[2])/2 -- 17 of 65 parts on splitflap_driver and 6
+    of 89 on tigard have an offset centre, up to 10.15mm on tigard J3 -- so
+    a gate built on the origin would admit, by up to 10mm, poses this rule
+    flags.
     """
     if open_sides:
         zone_rect = open_zone_rect(zone_rect, open_sides)
@@ -3852,12 +3818,10 @@ def open_zone_rect(zone_rect, open_sides):
 def zone_is_anchor(zone_rect, part, tol: float) -> bool:
     """Is this zone a spec-COORDINATE rather than a region? (#799)
 
-    ONE definition, for the three consumers that must agree: `seeder.zone_gate`
-    picks its containment branch with it, `rule_zone_containment` grades on it,
-    and the intent contradiction check asks it before deciding where a member
-    may sit. It used to live inline in `zone_gate`, which meant a load-time
-    check asking the same question had to re-derive it -- and a re-derivation
-    that disagreed would move the anchor boundary for one consumer only.
+    ONE definition, for the consumers that must agree: `rule_zone_containment`
+    grades on it, and the intent contradiction check asks it before deciding
+    where a member may sit. A re-derivation that disagreed would move the
+    anchor boundary for one consumer only.
 
     Pose-INVARIANT: `zone_fits_courtyard` reads only w/h and tests both orders,
     so `part.rot` and `part.rot + 90` settle it for the whole 90-degree
@@ -3874,12 +3838,11 @@ def _anchor_reachable(zone, part, tol: float, claim=None) -> bool:
     member is not sound: seated where it does not fit, the grade does not
     hold it to the zone at all.
 
-    The rotations are the seeder's own: `claim` is the part's entry in
-    `rotations_for_ref` (every block's declaration, not only the zone's own
-    block -- a block may declare an angle with no zone), its decision or
-    else its candidate set; a LOCKED part, or one with no claim, keeps its
-    own 90-degree lattice (the seeder never turns a locked part, whatever
-    a block declares -- b6a63ad8 verifier).
+    The rotations: `claim` is the part's entry in `rotations_for_ref` (every
+    block's declaration, not only the zone's own block -- a block may declare
+    an angle with no zone), its decision or else its candidate set; a LOCKED
+    part, or one with no claim, keeps its own 90-degree lattice (a locked part
+    is never turned, whatever a block declares -- b6a63ad8 verifier).
     (`zone_fits_courtyard` tests both orders, so `r` stands for `r + 90`.)"""
     rot, cands = claim if claim else (None, None)
     if getattr(part, 'locked', False) or (rot is None and not cands):
@@ -3907,18 +3870,15 @@ def zone_origin_box(zone_rect, bounds, tol: float):
     `x + b[2] <= zone[2]+tol`, so `x` in `[zone[0]-tol-b[0], zone[2]+tol-b[2]]`.
 
     Returns a possibly-INVERTED box: `hi < lo` on an axis means this rotation
-    admits nothing. That is `seeder._feasible_centre_box`'s own convention
-    (`zone_census_offsets` detects the inversion), and it is kept rather than
-    returning None so the two callers branch the same way.
+    admits nothing (`zone_census_offsets` detects the inversion), kept rather
+    than returning None so every caller branches the same way.
 
     THE COURTYARD IS NOT CENTRED ON THE FOOTPRINT ORIGIN, so this is the
-    algebra and never a half-extent -- `_feasible_centre_box`'s docstring
-    records two earlier forms that were wrong here in opposite directions, and
-    the offset reaches 10.15mm on tigard J3.
+    algebra and never a half-extent -- the offset reaches 10.15mm on tigard
+    J3.
 
-    Lives here, beside `zone_escape` whose inverse it is, because the intent
-    contradiction check (#799) needs it PER ROTATION while the seeder needs
-    the union over rotations. One algebra, two shapes.
+    Lives here, beside `zone_escape` whose inverse it is: the intent
+    contradiction check (#799) needs it PER ROTATION.
     """
     x0, y0, x1, y1 = (float(v) for v in zone_rect)
     b0x, b0y, b2x, b2y = bounds
@@ -3931,9 +3891,9 @@ def _anchor_origin_box(zone_rect, bounds, tol: float):
 
     `zone_escape(..., anchor=True)` measures `((b0+b2)/2, (b1+b3)/2)` offset
     from the origin, so the admissible origin box is the zone shifted by minus
-    that offset. THE GRADE'S convention, deliberately -- `seeder.zone_gate`
-    constrains the footprint ORIGIN instead, and `zone_escape`'s docstring
-    records that the two differ by up to 10.15mm on tigard J3.
+    that offset. THE GRADE'S convention, deliberately -- a gate on the
+    footprint ORIGIN would differ by up to 10.15mm on tigard J3
+    (`zone_escape`'s docstring).
 
     An earlier draft of #799 intersected the two conventions, on the theory
     that a refusal should be true under both. Measured, that is a false-ERROR
@@ -4024,7 +3984,7 @@ def zone_pose_feasibility(zone_rect, tolerance: float, part,
     missed the same way, and neither triggers a per-entry test.
 
     Why it must be refused where it is authored rather than discovered later:
-    the #702 quench gate is termwise-monotone, so for such a member `keepout`
+    the #702 intent gate is termwise-monotone, so for such a member `keepout`
     falls only by leaving the zone, leaving raises `zone_containment`, and no
     candidate lowers both. The member is CONFINED TO ITS ZONE for the whole run.
     Confined, not frozen -- every pose inside the zone yields an identical term
@@ -4187,11 +4147,10 @@ def zone_pose_feasibility(zone_rect, tolerance: float, part,
             str(k.get('name') or '<unnamed>') for k in discs)
         return out
 
-    # The rects alone refuse. Sound, so attribute it -- the same single-lift
-    # then joint-lift escalation `seed_from_intent` does with the pose census,
-    # in the currency this function has (names, from an exact search) rather
-    # than the census's pose COUNTS. Inventing a count here would be a figure a
-    # reader could quote.
+    # The rects alone refuse. Sound, so attribute it -- single-lift then
+    # joint-lift escalation, in the currency this function has (names, from an
+    # exact search) rather than pose COUNTS. Inventing a count here would be a
+    # figure a reader could quote.
     if _search(()) is None:
         # Nothing binds and it STILL does not fit: the zone is too small for
         # the part, which is `zone_containment`'s finding and not this one.
@@ -4209,7 +4168,7 @@ def zone_pose_feasibility(zone_rect, tolerance: float, part,
                     if _search(tuple(e for e in bound if e is not k)) is not None)
     out['feasible'] = False
     if freeing:
-        # `keepouts_freeing` carries the seeder's meaning: lifting this entry
+        # `keepouts_freeing` means: lifting this entry
         # frees a pose. ONE such entry is the sole cause; SEVERAL means each is
         # individually necessary and they refuse together, which is a different
         # sentence -- "alone leaves it none" would be false of every one of
@@ -4685,8 +4644,8 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
             continue
         # #959 (#1000): the face the brief's viewing side puts it on. A
         # fixed WARN, never the configured severity: nothing moves a part
-        # between faces (#836), and the seat search and quench do not read
-        # it, so it can steer nothing.
+        # between faces (#836), and the placer does not read it, so it can
+        # steer nothing.
         if c.get('side') and part.side != c['side']:
             yield Violation(
                 rule='edge_connector_side', severity=WARN, ref=ref,
@@ -4753,8 +4712,7 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
                                   f"the drawn body ({overhang_basis}) and "
                                   f"licenses no copper"),
                 measured={'pad_copper_outside_mm': round(copper_out, 4),
-                          # `_charge` in the seeder's repair census reads its
-                          # magnitude from `outside_mm`.
+                          # the magnitude, for a reader that ranks by it.
                           'outside_mm': round(copper_out, 4),
                           'overhang_basis': overhang_basis},
                 expected={'pad_copper_outside_mm': 0.0})
@@ -4788,7 +4746,7 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
                     measured={'edge': actual, 'basis': basis},
                     expected={'edge': edge})
         # #1155: the FACING conjunct -- which way the body leaves its pad row
-        # (`edge_facing`, the predicate the seeder also seats by). The
+        # (`edge_facing`). The
         # nearest-edge conjunct above reads where the part SITS, and a DSUB
         # seated backwards sits nearest its declared edge whenever the back
         # of its shell grazes it: sonde_xilinx J2, east, shell over the
@@ -4830,8 +4788,7 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
         # 15.8 mm INTERIOR passed ("nearest west, declared west" is satisfied
         # anywhere on the board). For entries carrying the edge_receptacle
         # class (or an explicit max_setback_mm), no overhang AND off-seat is
-        # a violation -- which is also what makes a misplaced edge part
-        # CHARGEABLE by place_seed --repair.
+        # a violation.
         setback = c.get('max_setback_mm')
         _sev = ctx.sev('edge_connector')
         # #959 (#1000): a connector standing off a face is not held to the
@@ -5143,10 +5100,9 @@ def _grade_along_edge(ctx, c, ref, part, sev) -> Iterator[Violation]:
                 measured={'along_edge_offset_mm': round(offset, 4),
                           'along_edge_offset_pct': round(100.0 * offset / span, 2),
                           'along_edge_fraction': round(frac, 4),
-                          # `_charge` in the seeder's repair census reads a
-                          # magnitude off `measured` and falls back to 1.0mm,
-                          # which would sort a 52mm centring error below every
-                          # pad graze. Publish the magnitude it can use.
+                          # A magnitude a ranking reader can use: without
+                          # it a 52mm centring error would sort below every
+                          # pad graze.
                           'outside_mm': round(abs(offset) - tol, 4)},
                 expected={'center_on_edge_mm': tol, 'edge_span_mm': round(span, 4)})
         return
@@ -6507,9 +6463,8 @@ def rule_pins_to_edge(ctx) -> Iterator[Violation]:
     The facing criterion of the boundary review, as a number (run 26: a SOT-89
     regulator seated with all three pins 0.40 mm from the north edge, every
     net forced under its own body, and a review that wrote PASS because
-    nothing measured it). The geometry is `placement.edge_facing`, shared
-    with `placement_score.edge_facing` and the seeder, so the rule and the
-    term cannot disagree about a pad.
+    nothing measured it). The geometry is `placement.edge_facing`, so every
+    reader of it agrees with the rule about a pad.
 
     ALWAYS WARN, whatever the configured severity, like the
     `connector_affinity` arm of `rule_edge_connector`: this is a judgement
@@ -6553,10 +6508,8 @@ def rule_pins_to_edge(ctx) -> Iterator[Violation]:
             expected={'pads_to_edge': 0})
 
 
-#: `rule_pins_to_edge` grades parts with at least this many CONNECTED pads
-#: -- the same floor `placement_score.EDGE_FACING_MIN_PADS` applies, read
-#: from the geometry core both share (the rule module does not import the
-#: score module).
+#: `rule_pins_to_edge` grades parts with at least this many CONNECTED pads,
+#: read from the geometry core.
 from .edge_facing import MIN_PADS as PINS_TO_EDGE_MIN_PADS  # noqa: E402
 
 
@@ -6565,8 +6518,8 @@ def rule_array_formation(ctx) -> Iterator[Violation]:
     expected order along it, the declared rotation, an even (or declared)
     pitch.
 
-    The verdict is `arrays.formation`'s -- the one predicate the seeder's row
-    seat and the quench's block move are to call too -- over each member's
+    The verdict is `arrays.formation`'s -- the one predicate any row seat is
+    to call too -- over each member's
     courtyard centre (the grader's own `rect`, so identical parts compare
     like for like) and its board rotation. The expected order is
     `arrays.expected_order`: the served part's PIN order for `order: "pin"`,
@@ -6739,13 +6692,13 @@ _NON_RULE_SEVERITIES = frozenset({
     'plan_fixed_outside_zone', 'plan_zone_overfull', 'plan_zone_crowded',
     'plan_edge_overfull', 'plan_edge_crowded', 'plan_board_overfull',
     'plan_board_crowded',
-    # #1054: two exact declarations that stage 0's own courtyard/pad/hole
-    # geometry says cannot both be seated.
+    # #1054: two exact declarations that the fixed-pose check's own
+    # courtyard/pad/hole geometry says cannot both be seated.
     'plan_fixed_pose_conflict',
     # Row 8: two FILE-locked parts overlapping. A WARN per pair; an ERROR
     # only when their overlap alone exceeds a DECLARED overlap budget.
     'plan_fixed_overlap', 'plan_fixed_overlap_budget',
-    # #1051. Raised by `array_problems` (grade AND the quench gate): a member
+    # #1051. Raised by `array_problems` (grade AND the intent gate): a member
     # or served part the board does not have, and a row that cannot be
     # formed as declared (a locked member, mixed footprints, a block
     # rotation or zone contradicting the row). Each names its member.
@@ -7119,9 +7072,7 @@ def _applicability(rule: str, intent: Intent, pcb_data, ctx, census,
     if rule == 'must_lock':
         return False, ("must_lock is a plan's choice, not a requirement no "
                        "board fact can excuse: the design brief never "
-                       "compiles one (filling it made place_seed --repair "
-                       "lift the user's own locks, docs/design-brief.md), so "
-                       "leaving it dark owes nothing")
+                       "compiles one, so leaving it dark owes nothing")
     if rule == 'envelope':
         return True, "the board has an outline, and it bounds every placement"
     if rule == 'zone_containment':
@@ -7271,7 +7222,7 @@ def stale_dispositions(intent: Intent, rows, pcb_data=None,
 
     A withheld-key disposition for a key the emitter did not withhold; and,
     with the board in hand, a `refs` disposition for a block the board does
-    not have, one that carries pads (the seeder's to place), or one already
+    not have, one that carries pads (the placer's to place), or one already
     FILE-locked (the lock is the answer). The P1 driver refuses on the refs
     cases with its own wording; this is the same judgement for
     `check_floorplan`, so the two never disagree about one file.
@@ -7298,7 +7249,7 @@ def stale_dispositions(intent: Intent, rows, pcb_data=None,
             if fp_ is None:
                 why = 'no such block on this board (keys are exact)'
             elif fp_.pads:
-                why = ('the block carries pads -- the seeder places it, '
+                why = ('the block carries pads -- the placer places it, '
                        'and `refs` answers pad-less blocks only')
             elif getattr(fp_, 'locked', False):
                 why = 'the block is already locked; the lock is the answer'
@@ -7646,8 +7597,8 @@ def violation_claim(v: Violation) -> Tuple:
     """The identity `grade_delta` counts a violation by: `(rule, ref, block,
     expected keys)`. The message and the measured numbers are left out, so
     one finding moved by a millimetre is still the same claim. Module-level
-    because `seeder.repair_placement` asks the same question per ref (#1066):
-    is the violation a part was charged for still on the board?"""
+    so a per-ref caller can ask the same question (#1066): is the violation
+    a part was charged for still on the board?"""
     return (v.rule, v.ref or '', v.block or '',
             tuple(sorted((v.expected or {}).keys())))
 
@@ -7723,7 +7674,7 @@ def exclusive_unsatisfiable(intent: Intent, blocks, pcb_data,
     (Phase-4 verifier). A part the state does not carry is graded by neither
     rule and is skipped here too. And two rotation lattices: the part's own
     and the 0-degree one,
-    since an author can turn a part the seeder would not. That is not every
+    since an author can turn a part a search would not. That is not every
     angle, and it need not be for soundness: the part's current pose is on
     its own lattice, so a board that grades clean always has a candidate.
     """
@@ -7886,8 +7837,8 @@ def declared_side_claims(intent: Intent, blocks: Dict[str, List[str]]
     The three places a side can be declared -- `blocks[].side` (for the
     block's RESOLVED members), `edge_connectors[].side` and
     `fixed_poses[].side` -- read once, so `plan_check`'s per-face pricing
-    and `place_intent_sides.py`, which applies the faces before seeding,
-    cannot disagree about where a part belongs. `None` and `"unknown"`
+    and `place_simple`, which applies the faces before annealing, cannot
+    disagree about where a part belongs. `None` and `"unknown"`
     declare nothing. Refs the board lacks are kept: whether to drop them is
     the caller's question.
     """
@@ -7914,7 +7865,7 @@ def declared_sides(claims: Dict[str, List[Tuple[str, str]]]
 
     A conflict is not resolved here: choosing either face would invent a
     precedence rule. `plan_check` leaves such a part on its board face (the
-    side grade names the contradiction) and `place_intent_sides` refuses."""
+    side grade names the contradiction) and `place_simple` refuses."""
     sides: Dict[str, str] = {}
     conflicts: Dict[str, List[Tuple[str, str]]] = {}
     for ref, rows in claims.items():
@@ -7935,8 +7886,8 @@ def _planned_sides(intent: Intent,
     `plan_check` runs before the planned placement exists. The board can be
     a generator pile with every movable footprint on one face, so its current
     layers are not evidence for the plan's per-face capacity; the faces the
-    plan declares are, and `place_intent_sides.py` is what puts the parts on
-    them before seeding.
+    plan declares are, and `place_simple` puts the parts on them before it
+    anneals.
     """
     return declared_sides(declared_side_claims(intent, blocks))[0]
 
@@ -7949,9 +7900,9 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
     pose write (#959, #998). Returns `(violations, measured)`.
 
     Run 29 found its zone plan's ERRORs at lap 5 because the only caller of
-    `validate_intent` was `grade`, which place_seed runs AFTER writing the
-    seed. This runs the checks that need no pose of a movable part, so P1 and
-    place_seed can refuse a plan before anything is placed.
+    `validate_intent` was `grade`, which runs AFTER a placement is written.
+    This runs the checks that need no pose of a movable part, so a plan can
+    be refused before anything is placed.
 
     EVERY ERROR IS SOUND -- the plan cannot be seeded or satisfied however
     the movable parts are arranged -- and the evidence behind each bound is
@@ -7962,12 +7913,13 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
       2. `intent_zone_in_keepout`, as `grade` raises it.
       3. `block_glob_literal`: a real reference used as a glob.
       4. `plan_fixed_outside_zone`: a FILE-locked member already outside its
-         zone. A lock is the only thing the seeder does not move (edge claims
-         and must_lock are seated), so this is a fact about the plan.
+         zone. The placer does not move a locked part, so this is a fact
+         about the plan.
          Also (#1054, WARN unless set) a `fixed_poses[]` entry whose DECLARED
-         pose is outside its own block's zone: stage 0 seats it exactly.
+         pose is outside its own block's zone: the placer seats it exactly.
       4c. `plan_fixed_pose_conflict` (ERROR): two declared exact poses whose
-          courtyards, pads or holes conflict under stage 0's own geometry.
+          courtyards, pads or holes conflict under the fixed-pose check's own
+          geometry.
       8. `plan_fixed_overlap` (WARN, per pair) / `plan_fixed_overlap_budget`
          (ERROR): two FILE-locked parts whose courtyards overlap on a shared
          face overlap in every placement. The grade counts courtyard overlap
@@ -7986,8 +7938,9 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
          geometry the budget is measured on (#1162) -- the WARN their rects.
          With no budget declared, or a project that waives courtyard overlap
          (the grade then prices none), nothing bounds the overlap, and it is
-         the WARN (the seeder never overlaps courtyards, so it may leave
-         members unseated). An anchor-graded member (`zone_is_anchor`) is not
+         the WARN (the placer's legality gate never admits an overlap, so it
+         may leave members illegal). An anchor-graded member
+         (`zone_is_anchor`) is not
          charged.
          Anchor-graded members and zones holding a waived pair are not
          charged; a locked member is, because the grade counts its overlap
@@ -8005,8 +7958,8 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
       Rows 5 and 7 charge each part to the face the intent DECLARES for it
       (`blocks[].side`, `edge_connectors[].side`, `fixed_poses[].side`, when
       they agree -- `declared_side_claims`), else to its board face: a pile
-      has every part on F.Cu, and the plan is priced as it will be seeded
-      once `place_intent_sides.py` has applied those faces.
+      has every part on F.Cu, and the plan is priced as it will be placed
+      once `place_simple` has applied those faces.
     """
     from . import options as _opts
     ctx, outline, state, blocks, block_problems = _grade_ctx(
@@ -8024,7 +7977,7 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
     measured: Dict[str, object] = {}
 
     # 4. file-locked members outside their zone -- the grade's own rule,
-    #    restricted to the members the seeder cannot move.
+    #    restricted to the members the placer cannot move.
     for v in rule_zone_containment(ctx):
         if v.ref in ctx.locked:
             out.append(Violation(
@@ -8036,7 +7989,7 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                                              v.severity),
                 ref=v.ref, block=v.block,
                 message=(f"{v.ref} is LOCKED in the board and already "
-                         f"outside its zone: {v.message}. Nothing the seeder "
+                         f"outside its zone: {v.message}. Nothing the placer "
                          f"does will move it -- fix the zone or the pose"),
                 measured=v.measured, expected=v.expected))
 
@@ -8088,19 +8041,19 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                     message=(f"{ref}'s fixed pose ({float(f['x']):g}, "
                              f"{float(f['y']):g}) lies {esc:.2f}mm outside "
                              f"its block {z.name!r}'s zone (tolerance "
-                             f"{tol:g}mm). Stage 0 seats the pose exactly, "
+                             f"{tol:g}mm). The placer seats the pose exactly, "
                              f"so the zone fails from the first write -- "
                              f"move the pose or the zone"),
                     measured={'escape_mm': round(esc, 4),
                               'pose': [float(f['x']), float(f['y']), rot]},
                     expected={'zone': list(z.rect), 'tolerance_mm': tol}))
 
-    # 4c. Exact declarations are one simultaneous batch in stage 0. Compare
-    # them pairwise now with that stage's own side-aware courtyard/pad/hole
-    # predicate, so an impossible pair is refused before a board is written.
-    # This is deliberately not folded into row 8: these refs need not be
-    # locked in the input file, and no overlap budget can license a pair the
-    # exact-pose seater itself refuses.
+    # 4c. Exact declarations are one simultaneous batch. Compare them
+    # pairwise now with the fixed-pose check's own side-aware
+    # courtyard/pad/hole predicate, so an impossible pair is refused before a
+    # board is written. This is deliberately not folded into row 8: these
+    # refs need not be locked in the input file, and no overlap budget can
+    # license a pair the exact-pose check itself refuses.
     from .seeder import fixed_pose_pair_conflicts
     fixed_pose_conflicts = fixed_pose_pair_conflicts(
         state, intent.fixed_poses,
@@ -8136,7 +8089,7 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                     ref=a_,
                     message=(f"{a_} and {b_} are both LOCKED in the board and "
                              f"their courtyards overlap by {area:.3f}mm2 -- "
-                             f"in every placement, since the seeder moves "
+                             f"in every placement, since the placer moves "
                              f"neither"),
                     measured={'pair': [a_, b_],
                               'overlap_area_mm2': round(area, 4)},
@@ -8173,22 +8126,21 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
     clr_used = float(clearance if clearance is not None else _rd.CLEARANCE)
     waived = {frozenset(p_) for p_ in intent.waiver_pairs()}
     zone_rows = []
-    # Sound for the GRADE, not only for the seeder: courtyards may overlap
+    # Sound for the GRADE, not only for the placer: courtyards may overlap
     # there up to a declared `legality_budget.overlap_area`, so members
     # whose areas exceed the zone by A must overlap by at least A in total
     # (Bonferroni: union >= sum - pairwise), and the grade's overlap is that
     # pairwise sum over the whole board. ERROR only past a DECLARED budget;
-    # with none, nothing bounds the overlap and it is a WARN about the seeder.
+    # with none, nothing bounds the overlap and it is a WARN about the placer.
     # EVERY member counts, locked ones included: the grade counts a locked
     # pair's overlap too, so against the budget the sum is sound -- and
     # dropping them lost a zone a locked part already fills (round-2
     # verifier). A locked member outside its zone is `plan_fixed_outside_zone`.
     overlap_budget = (intent.legality_budget or {}).get('overlap_area')
-    # The seeder's rotation claims, per ref, from every block. A part two
-    # blocks declare at different angles is a contradiction the seeder
-    # refuses (its own `rotations_for_ref` call raises, naming both blocks);
-    # here it is bounded on EVERY angle a block claims for it, never on its
-    # own angle, which the seeder would not use (final P1 verifiers: the
+    # The rotation claims, per ref, from every block. A part two blocks
+    # declare at different angles is a contradiction (`rotations_for_ref`
+    # raises, naming both blocks); here it is bounded on EVERY angle a block
+    # claims for it, never on its own angle (final P1 verifiers: the
     # bound read 45-degree bars declared at 0 and at 90 as overfull at 45,
     # and standing the whole bound down hid an unrelated zone's real one).
     _conflicts: Dict[str, List[tuple]] = {}
@@ -8219,7 +8171,8 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
         zarea = max(0.0, zr[2] - zr[0]) * max(0.0, zr[3] - zr[1])
         per_face = {'F': 0.0, 'B': 0.0}
         # The WARN half: the same sum with the grading clearance around each
-        # member, which is what the seeder actually needs between them.
+        # member, which is what the legality gate actually needs between
+        # them.
         per_face_c = {'F': 0.0, 'B': 0.0}
         # The ERROR half, on the budget's own geometry (#1162 verifier): the
         # members' graded OUTLINES, not their rects.
@@ -8237,8 +8190,7 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                 # charged as if seated at 0 (8492b3c1 verifier) -- or on any
                 # the block DECLARES (`rotation` / `rotation_candidates`),
                 # where a fit at one angle does not forbid the anchor at
-                # another (b6a63ad8 verifier). Not modelled: place_seed's
-                # --diagonal-rotations fallback, which the plan cannot see.
+                # another (b6a63ad8 verifier).
                 continue
             if zone_open_sides(z.rect, ctx.outline_bounds,
                                _claimed5.get(r)):
@@ -8318,7 +8270,8 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                          f"{len(counted)} member(s) on {worst}.Cu "
                          f"need {need:.2f}mm2 by courtyard: they fit only by "
                          f"overlapping ({excess:.2f}mm2 at least), which the "
-                         f"seeder never does -- it may leave some unseated"),
+                         f"placer's legality gate never admits -- it may "
+                         f"leave some illegal"),
                 measured={'members_area_mm2': round(need, 4),
                           'face': worst, 'forced_overlap_mm2':
                           round(excess, 4)},
@@ -8333,7 +8286,7 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                          f"but not with {clr_used}mm clearance around each "
                          f"({per_face_c[face_c]:.2f}mm2 needed on "
                          f"{face_c}.Cu, {zarea:.2f}mm2 available) -- the "
-                         f"seeder may leave some unseated"),
+                         f"placer may leave some illegal"),
                 measured={'members_area_with_clearance_mm2':
                           round(per_face_c[face_c], 4), 'face': face_c},
                 expected={'zone_area_mm2': round(zarea, 4)}))
@@ -8368,8 +8321,8 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                     rule='plan_edge_overfull',
                     # As strong as the rule it stands for: with
                     # `edge_connector` demoted, the grade passes a part that
-                    # overruns its edge, so P1 and place_seed must not
-                    # refuse the plan for it (PR fact-check).
+                    # overruns its edge, so the plan check must not refuse
+                    # the plan for it (PR fact-check).
                     severity=_plan_severity(intent, 'plan_edge_overfull',
                                             ('edge_connector',)),
                     ref=ref,
@@ -8510,10 +8463,7 @@ def _grade_ctx(intent: Intent, pcb_data, pcb_file: str, *,
                  else defaults.CLEARANCE,
                  board_edge_clearance=(board_edge_clearance
                                        if board_edge_clearance is not None
-                                       else 0.55),
-                 crossing_penalty=10.0, halo_base=0.5, halo_coef=0.25,
-                 halo_weight=2.0, edge_halo=2.0, edge_weight=2.0,
-                 grid_step=defaults.GRID_STEP, length_weight=1.0)
+                                       else 0.55))
     state = QuenchState(pcb_data, pcb_file, **qargs)
 
     try:
@@ -8540,8 +8490,7 @@ def grade(intent: Intent, pcb_data, pcb_file: str, *,
 
     `with_roster` (#959) also builds the rule roster -- which rules the intent
     leaves dark and whether a disposition answers for each. Opt-in, because
-    it costs a decap census and most callers (the seeder's self-grade, the
-    A/B harness) never read it.
+    it costs a decap census and most callers never read it.
 
     `with_pad_stacks` (#1064) also measures check_assembly's exact pad
     stacks into `GradeResult.pad_stacks`, for check_floorplan to PRINT. It
@@ -8669,8 +8618,8 @@ def grade(intent: Intent, pcb_data, pcb_file: str, *,
                'outside_fraction': (None if st.outside_fraction is None
                                     else round(st.outside_fraction, 4)),
                'stacked_refs': list(st.stacked_refs),
-               # The subset `partially_unplaced` is actually decided on, and
-               # the one place_seed scopes its seed from. Without it a reader
+               # The subset `partially_unplaced` is actually decided on.
+               # Without it a reader
                # sees `partially_unplaced: false` beside a non-empty
                # `stacked_refs` and has no way to tell "suppressed as markers /
                # opposite sides" from a bug in the check.
@@ -8993,7 +8942,7 @@ def _withhold_reversed_edge(entry: Dict, pcb_data, pcb_file: str,
     bless the very pose the facing conjunct ERRORs, so no edge is declared
     and the entry says which of the two it measured.
     Measured on the 22 tracked boards and the fa10 designer boards: it never
-    fires (`tests/measure_1155_mating_census.py`)."""
+    fires."""
     edge = entry.get('edge')
     fp = (pcb_data.footprints or {}).get(entry.get('ref'))
     if not edge or fp is None:
@@ -9072,10 +9021,7 @@ def emit_intent(pcb_data, pcb_file: str, *,
         raise UntrustworthyOutline(outline['problems'])
 
     state = QuenchState(pcb_data, pcb_file, clearance=defaults.CLEARANCE,
-                        board_edge_clearance=0.55, crossing_penalty=10.0,
-                        halo_base=0.5, halo_coef=0.25, halo_weight=2.0,
-                        edge_halo=2.0, edge_weight=2.0,
-                        grid_step=defaults.GRID_STEP, length_weight=1.0)
+                        board_edge_clearance=0.55)
     parts = {p.ref: p for p in state.graded_parts()}
     bounds = outline['bounds']
 
@@ -9303,9 +9249,9 @@ def emit_intent(pcb_data, pcb_file: str, *,
                 declared.add(ref)
                 continue
             if over_cap:
-                # NO `edge` key: the schema supports edge-less entries and both
-                # the seeder's stage 1 (seeder.py:409-417) and its repair path
-                # already handle them by declining to guess. The band is capped
+                # NO `edge` key: the schema supports edge-less entries, and
+                # their readers handle them by declining to guess. The band is
+                # capped
                 # rather than emitted at the observed amount, so a consumer
                 # that reads only `overhang_mm` cannot be blinded either.
                 entry = {'ref': ref,
@@ -9365,8 +9311,8 @@ def emit_intent(pcb_data, pcb_file: str, *,
         # pose-independently and declare edge-class parts too. `edge` is
         # written ONLY when the current pose is plausible (overhanging or
         # seated); an implausibly-posed receptacle gets a class-default band
-        # and NO edge -- naming one would be an invention, and the seeder
-        # deliberately skips edge-less entries.
+        # and NO edge -- naming one would be an invention, and edge-less
+        # entries claim no edge.
         from .part_class import classify_part, default_band, pose_plausible
         for ref in sorted(parts):
             if ref in declared:
@@ -9470,8 +9416,8 @@ def emit_intent(pcb_data, pcb_file: str, *,
             '(#1103)')
     elif _cy_ignored:
         # #1101 review: the budget is a courtyard OVERLAP AREA, and the
-        # project waives courtyard overlap -- the seeder packs courtyards
-        # there, so a budget read off this board would fail its own seed.
+        # project waives courtyard overlap -- courtyards may pack there, so
+        # a budget read off this board would fail its own placement.
         _withheld['overlap_area'] = (
             "the project sets courtyards_overlap to ignore, so a courtyard "
             "overlap budget grades nothing it asks for")
@@ -9513,13 +9459,13 @@ def emit_intent(pcb_data, pcb_file: str, *,
     # #704. The census runs on EVERY emission: a reader of the document must
     # be able to tell "no cap is far from its IC" from "nobody measured", and
     # `decaps: {}` alone says only the second. The LIMIT is opt-in, because
-    # declaring it is not a grading-only change -- see the seeder note below.
+    # declaring it is not a grading-only change: a tool holding the limit
+    # (place_fanout_clearance --intent) moves caps by it.
     # #959: caps the BRIEF's own proximity relations supersede are graded by
     # those relations where the brief is read -- and DISCLOSED here. The
-    # limit is still read off every cap: the placement engines (place_seed,
-    # portfolio, the seeder's repair) grade without the brief, and a limit
-    # tightened by leaving the superseded caps out failed them there on the
-    # board it was emitted from (Phase-6 verifier).
+    # limit is still read off every cap: a tool that grades without the
+    # brief would otherwise fail a limit tightened by leaving the superseded
+    # caps out, on the board it was emitted from (Phase-6 verifier).
     _sup = (superseded_caps(pcb_data, (brief_fragment or {}).get('proximity'),
                             brief_fragment) if brief_fragment else {})
     _census = decap_census(pcb_data)
@@ -9692,25 +9638,12 @@ def emit_intent(pcb_data, pcb_file: str, *,
             # from.
             _census['emitted_max_distance_mm'] = _limit
             _census['decaps_basis'] = 'observed_baseline'
-    # What declaring this key COSTS, measured, next to the number itself.
-    # `seeder.seed_from_intent` uses its presence to pull caps out of radial
-    # zone packing into stage 2.5, which seats one cap per supply pin -- a
-    # different question from the one graded here, and since #792 a
-    # different SET: the seeder takes the caps that elect a tether at any
-    # distance, because a cap no chip's rail touches has no pin to be
-    # seated at, ever.
-    #
-    # This used to compute a THIRD spelling of "is this a decap" inline --
-    # case-blind like the grouper, pad-counting like the seeder -- and
-    # report the gap as one number, `seeder_scope_ungraded`. Both are gone.
-    # The number conflated three causes and the doc explained it with a
-    # FOURTH that does not exist: measured over every tracked board, the
-    # three predicates name identical sets and the residue attributable to
-    # them is 0. ulx3s's famous 17 is 7 beyond the radius plus 10 whose
-    # rail no chip carries. The census now reports those separately, and
-    # `unaccounted` stays 0 to say the three arms are the whole scope.
-    _census['seeder_pin_scope'] = (_census['tethers']
-                                   + _census['beyond_radius'])
+    # The census reports the caps no limit grades by CAUSE: beyond the
+    # search radius, or on a rail no chip carries. Measured over every
+    # tracked board, the "is this a decap" predicates name identical sets, so
+    # nothing is attributable to them: ulx3s's 17 ungraded caps are 7 beyond
+    # the radius plus 10 whose rail no chip carries, and `unaccounted` stays
+    # 0 to say the three arms are the whole scope.
 
     # #837. An OBSERVATION, so `why` records how it was reached rather than a
     # reason nobody gave. An emitted intent describes a board; it does not make
@@ -9761,13 +9694,9 @@ def emit_intent(pcb_data, pcb_file: str, *,
         # instead, and an explicit severity would override that list.
         # must_lock is a REQUIREMENT ("these refs must end up locked"), and an
         # emitted intent describes a board rather than making demands of it.
-        # Filling it with the board's own locked set (as this did) closed a
-        # loop with the tools that read must_lock: place_seed --repair treated
-        # a must_lock ref as seeder-owned and lifted its lock, so
-        # "--emit-intent then --repair" resolved to "unlock exactly the parts
-        # the user locked, and move them" -- measured on two run-7 boards.
-        # The observation is still worth recording; it belongs in `context`,
-        # which nothing acts on.
+        # Filling it with the board's own locked set would turn an
+        # observation into a demand; the observation is still worth
+        # recording, and it belongs in `context`, which nothing acts on.
         'must_lock': [],
         # Budget values are rounded UP, not to nearest: round() can land up
         # to 5e-5 BELOW the measured value, 50x legality.EPS, so a budget
@@ -10231,8 +10160,9 @@ def format_text(r: GradeResult) -> str:
                     f"({a['length_mm']:.2f}mm){pierced}; moving it onto that "
                     f"net's centroid frees {a['recoverable_mm']:.2f}mm")
                 lines.append(
-                    f"        try: converge.py poses {os.path.basename(r.board)}"
-                    f" --ref {a['ref']} --route")
+                    f"        try: place_pose.py {os.path.basename(r.board)}"
+                    f" OUT set {a['ref']} --near X Y, X Y at the net's "
+                    "centroid")
         for name in sorted(r.health.get('skipped') or {}):
             lines.append(f"    - {name} not measured: "
                          f"{r.health['skipped'][name]}")
@@ -10583,8 +10513,8 @@ def to_json(r: GradeResult) -> Dict:
         'intent': r.intent.source_path,
         'pass': r.passed,
         # #713 item 5. `complete` is the repo's existing name for "this run
-        # did not measure everything" (route_summary.py, refused on by
-        # place_route_loop), reused rather than a second channel invented.
+        # did not measure everything" (route_summary.py), reused rather than
+        # a second channel invented.
         # `not_graded` names WHICH channel, because an aggregate cannot say
         # which of its inputs moved (#694).
         'complete': r.complete,
@@ -10614,7 +10544,7 @@ def to_json(r: GradeResult) -> Dict:
 
 
 def summary(r: GradeResult) -> Dict:
-    """The flat JSON_SUMMARY dict, shaped like place_optimize's."""
+    """The flat JSON_SUMMARY dict."""
     by_rule: Dict[str, int] = {}
     for v in r.violations:
         by_rule[v.rule] = by_rule.get(v.rule, 0) + 1

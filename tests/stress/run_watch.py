@@ -392,8 +392,7 @@ CHEAT_FLAGS = (
     ('SCOPE', '--nets', 'routes a SUBSET -- "0 unrouted" over 6 of 84 nets '
                         'is not the same claim', NET_SCOPED),
     # `--ignore-nets` HAS NO ENTRY, deliberately. The flag exists only on
-    # `place_optimize.py`, `place_seed.py`, `place_portfolio.py`,
-    # `compare_seeds.py` and `render_placement.py`, where it scopes AIRWIRE
+    # `render_placement.py`, where it scopes AIRWIRE
     # SCORING -- it is how you tell the panel not to draw 80 GND stubs -- and
     # reporting it there buried the real uses in run 20. No tool that
     # produces a VERDICT declares it, so an entry scoped to the graders or
@@ -512,8 +511,10 @@ def _use_key(label, flag, tool, toks):
             hashlib.sha1(payload.encode('utf-8', 'replace')).hexdigest()[:16])
 
 
-#: JSONL keys that carry a REAL argv, in priority order. `lever_argv` is a
-#: converge lever; `argv` / `cmdline` are what tests/stress/tee_cmd.py records
+#: JSONL keys that carry a REAL argv, in priority order. `lever_argv` is the
+#: argv a provenance row records for the lever that wrote a board
+#: (`provenance.declare_lever`; older converge ledgers carried the same key);
+#: `argv` / `cmdline` are what tests/stress/tee_cmd.py records
 #: for EVERY invocation a timed run makes. Run 22 wrote 203 such rows and this
 #: watcher extracted nothing from any of them, because it looked only for
 #: `lever_argv` -- so every driver invocation was invisible (the drivers
@@ -524,8 +525,10 @@ _ARGV_KEYS = ('lever_argv', 'argv', 'cmdline')
 def _scan_ledger_argv(path, seen, rel):
     """Cheat flags in a ledger row's `lever_argv` -- the second source of truth.
 
-    `lever_argv` is a real command the run executed (converge refuses one whose
-    argv[0] could never replay). `lever` beside it is free prose and is NEVER
+    `lever_argv` is a real command the run executed, where a row carries one
+    (a provenance row, or an older converge ledger; a row without it is read
+    for `argv` / `cmdline`, else skipped). `lever` beside it is free prose and
+    is NEVER
     matched: run 20's levers narrate the flags they used, which is exactly the
     disclosure the run is supposed to make, and reporting it as a finding
     punishes the disclosure.
@@ -843,10 +846,10 @@ def watch_cheats(workdir, done_path, poll, report_done=None,
         # Two sources of truth, and only two. A flag that appears anywhere else
         # was MENTIONED, not passed:
         #   * a `CMD:` line, written by cli_banner from sys.orig_argv (27 tools)
-        #   * a ledger row's `lever_argv`, which IS an executed command --
-        #     never its `lever`, which is prose. converge.py deliberately does
-        #     not install cli_banner ("converge's stdout is a JSON API"), so its
-        #     invocations reach us only this way.
+        #   * a ledger row's `lever_argv` (or a teed `argv` / `cmdline`),
+        #     which IS an executed command -- never its `lever`, which is
+        #     prose. A tool that installs no cli_banner reaches us only this
+        #     way.
         unanchored = 0
         for path in _walk(workdir):
             if not path.endswith(('.log', '.txt', '.jsonl')):

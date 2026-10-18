@@ -49,7 +49,7 @@ def _outline_owner_map(input_file: str) -> Dict[str, bool]:
         key = (os.path.abspath(input_file), st.st_mtime_ns, st.st_size)
     except OSError:
         return {}
-    # Keyed by (path, mtime, size), NOT by path alone. `place_seed` writes a
+    # Keyed by (path, mtime, size), NOT by path alone. A tool that writes a
     # temp board and `os.replace`s it over the output, and `route.py` writes in
     # place, so a path-keyed memo answers for a file that no longer exists --
     # measured: after the file changed on disk the writer still reported the
@@ -164,9 +164,7 @@ def _report_unapplied(requested, matched, unaddressed, what):
 
     ON STDERR, for the same reason the parser's duplicate-reference warning is
     (`kicad_parser.py`): shipped tools emit bare JSON on stdout, where a
-    WARNING line in front is a JSONDecodeError at char 0. `converge.py` happens
-    to wrap its write in `_StdoutToStderr()`, which is luck rather than a
-    contract.
+    WARNING line in front is a JSONDecodeError at char 0.
     """
     missing = sorted(set(requested) - set(matched))
     if missing:
@@ -559,7 +557,6 @@ _PAD_HANDLED = frozenset({
     'die_delay',
 })
 
-_SIDED_LAYER = re.compile(r'^[FB]\.')
 _INNER_LAYER = re.compile(r'^In\d+\.Cu$', re.IGNORECASE)
 
 
@@ -1074,9 +1071,9 @@ def write_placed_output(input_file: str, output_file: str,
 
         # #714. An OPTIONAL key: absent or None means the layer is left alone
         # and this write is byte-identical to one built before the flip
-        # existed, which is what keeps the ~20 producers of these dicts
-        # (quench, seeder, portfolio, relocate, perturb, fanout_clearance,
-        # place_reconstruct, place_seed, converge, net_rescue) unchanged.
+        # existed, which is what keeps every producer of these dicts
+        # (place_simple, pose_ops, fanout_clearance, converge, net_rescue,
+        # ...) unchanged.
         #
         # Spelled 'F'/'B', matching `legality.footprint_side` exactly, and
         # anything else RAISES at the boundary rather than 200 lines
@@ -1335,9 +1332,8 @@ def write_placed_output(input_file: str, output_file: str,
     # the behaviour is byte-identical; inside one, an undeclared write raises,
     # and the row records the input's and the output's pose digests -- the
     # links `provenance_audit` walks from the staged board (#972).
-    # `place_seed` and `place_route_loop`, which copy or rename a board built
-    # elsewhere into place, record that delivery too, via
-    # `provenance.recorded_delivery` (#973).
+    # A tool that copies or renames a board built elsewhere into place
+    # records that delivery too, via `provenance.recorded_delivery` (#973).
     #
     # It used to raise AFTER `f.write(content)`, which made the refusal
     # decorative: the poses were already on disk, so the "gate" reported a

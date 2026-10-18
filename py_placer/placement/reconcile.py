@@ -746,16 +746,16 @@ def anchor_blocks(pcb, board_path: str, mechanical: Dict, *,
 
     Grade-only: the anchor never seats anything. A part reaches its pose
     either FILE-locked there (which P1 checks) or through an intent
-    `fixed_poses[]` entry, which the seeder's stage 0 seats exactly and
-    locks (#1054) -- a zone is no way to seat one: measured before this was
+    `fixed_poses[]` entry, which place_simple seats exactly and holds
+    (#1054) -- a zone is no way to seat one: measured before this was
     built, a part overhanging the outline has no admissible zone pose at
     all, edge claims are seated before zones, and a seat lands anywhere
     within the tolerance.
     No `rotation` key: rotation drift is graded by `mechanical_drift`, and a
     rotation DECISION on a block would collide with a plan's own claims.
 
-    Skipped, with the reason: pad-less refs (the seeder never places them;
-    they are reconciled only), refs the board does not have, and refs whose
+    Skipped, with the reason: pad-less refs (never placed; they are
+    reconciled only), refs the board does not have, and refs whose
     mechanical value lost a contradiction.
 
     `prefix`/`basis` (#1054): the same anchor, compiled from an intent's
@@ -777,11 +777,11 @@ def anchor_blocks(pcb, board_path: str, mechanical: Dict, *,
         if fp is None:
             skipped[ref] = 'not on this board'
             continue
-        # `fp.pads` on purpose (#1143): "the seeder never places it" is the
-        # quench's question, and the quench keeps a part whose only pads are
-        # paste/mask apertures movable -- so such a part is anchored.
+        # `fp.pads` on purpose (#1143): the placement state keeps a part
+        # whose only pads are paste/mask apertures movable -- so such a part
+        # is anchored.
         if not fp.pads:
-            skipped[ref] = ('pad-less: the seeder never places it, so it is '
+            skipped[ref] = ('pad-less: it is never placed, so it is '
                             'reconciled rather than anchored')
             continue
         if ref in lost:
@@ -826,7 +826,7 @@ def anchor_blocks(pcb, board_path: str, mechanical: Dict, *,
 def mechanical_fixed_poses(mechanical: Dict, anchored: Sequence[str], *,
                            claimed: Dict[str, str] = None):
     """`(entries, skipped)`: mechanical.json poses as intent `fixed_poses[]`
-    rows (#1054), so the seeder can SEAT what the grade anchors.
+    rows (#1054), so place_simple can SEAT what the grade anchors.
 
     Only the refs `anchor_blocks` anchored: its skips (off the board,
     pad-less, a lost contradiction) are the same reasons not to seat one,

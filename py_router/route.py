@@ -7746,7 +7746,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             # published a HALF document. The except below then printed a
             # warning and route.py exited 0, exactly as a run with failed nets
             # does, while every reader of this file -- including an external
-            # `place_route_loop --accept-cmd` judge -- crashed on it. Failing
+            # judge -- crashed on it. Failing
             # CLOSED, with no file, is the case they all already handle.
             write_summary_file(json_out, _merged)
             print(f"  route summary written to {json_out}")
@@ -8059,13 +8059,12 @@ if __name__ == "__main__":
     # EXIT= line never arrives. The tool has no self-budget to fall back on --
     # deliberately, since no result it produces may depend on a wall clock -- so
     # a harness that kills this process owns that gap. The gap the banner does
-    # close: the convergence-ledger protocol says to paste a tool's own CMD:
-    # line into `converge record --argv`, which was unsatisfiable for a routing
-    # lap -- run 11 hand-wrote replay scripts instead.
+    # close: a tool's own CMD: line is what a replay pastes, which was
+    # unsatisfiable for a routing lap -- run 11 hand-wrote replay scripts
+    # instead.
     #
     # NOT under --capabilities, whose whole stdout is ONE JSON document a
-    # consumer does `json.loads()` on (see the block near parse_args, and
-    # converge.py:787 for the same rule stated for the same reason). A `CMD:`
+    # consumer does `json.loads()` on (see the block near parse_args). A `CMD:`
     # line ahead of it is a JSONDecodeError at char 0, which is a broken API
     # rather than a noisy log. Raw argv, because the flag is answered before
     # argparse runs -- the banner has to be decided before then too.

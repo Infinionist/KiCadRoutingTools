@@ -6,9 +6,8 @@ mixer's channel strips, one I/O buffer per bank) already carries the
 correspondence between the copies: every footprint's `(path "/<sheet>/
 <symbol>")` ends in the SAME symbol uuid in every instance, and KiCad's own
 "Repeat Layout" maps by it. Nothing in the placement stack used it --
-`place_seed` seeds each sheet on its own, `arrays` (#1051) rows identical
-parts on ONE sheet, `reconstruct` repairs a damaged placement -- so an agent
-that wanted four channels laid out alike wrote its own helper.
+`arrays` (#1051) rows identical parts on ONE sheet -- so an agent that wanted
+four channels laid out alike wrote its own helper.
 
 This module
 

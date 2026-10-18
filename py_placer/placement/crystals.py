@@ -14,10 +14,9 @@ roles imply:
   net. A cap whose other pad is not ground is not a load cap, so it gets no
   claim.
 
-The rows are ordinary `proximity[]` claims, so `check_floorplan` grades them,
-the quench holds them (#1043), and the seeder seats each subject right after
-its partner (`seeder.seed_from_intent`'s followers): the crystal follows its
-IC, and each cap follows the crystal.
+The rows are ordinary `proximity[]` claims, so `check_floorplan` grades them
+and `place_simple`'s claim term pulls each subject to its partner: the
+crystal to its IC, and each cap to the crystal.
 
 The limits are derived defaults, not declarations. They are read off the
 human-placed stress corpus by `tests/stress/placement_survey.py`
@@ -36,7 +35,7 @@ from typing import Dict, List, Tuple
 #: corpus's 75th percentile, so three human placements in four meet it
 #: (`placement_survey.py report`, CRYSTALS: 258 crystals on 437 boards,
 #: median 5.37 mm, p75 8.11 mm). It guards against a crystal drifting away;
-#: the seeder seats the crystal as near its pins as the board allows.
+#: the anneal's claim term pulls the crystal as near its pins as it can.
 LEG_MM = 8.1
 #: The farthest load cap, pad edge to the crystal pad on its net, likewise
 #: (174 crystals with a load cap: median 0.81 mm, p75 2.22 mm).

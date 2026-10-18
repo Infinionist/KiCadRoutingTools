@@ -352,8 +352,8 @@ def test_a_padless_footprint_is_absent():
     """Rule 4. `legality.part_local_bounds` invents a +/-0.5mm box for a
     footprint with no courtyard AND no pads, and flags it `synthetic`.
     `grade_body_overlap` refuses to gate on those. A lane SUPPLY is a number
-    `options.move_blocker` turns into "move this part", so the fiction must
-    not reach it -- here it cannot, because no pads means no entry."""
+    a reader turns into "move this part", so the fiction must not reach it
+    -- here it cannot, because no pads means no entry."""
     if not run_utils.corpus_boards():
         print('SKIP: git could not name the tracked corpus')
         return

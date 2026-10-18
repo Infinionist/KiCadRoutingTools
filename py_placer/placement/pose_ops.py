@@ -1,9 +1,9 @@
 """Apply a MODEL-CHOSEN pose, and let the engine grade it (#892).
 
 The ranking half of "where should this part go" already shipped: `pose_score.
-rank_poses` returns legal (x, y, rot) candidates cheapest-first, `converge.py
-poses` is its CLI, and `grade_pad_legality` / `check_assembly` / `render_
-placement --review-sheet` all grade a pose. What did not exist is the verb that
+rank_poses` returns legal (x, y, rot) candidates nearest first, and
+`grade_pad_legality` / `check_assembly` / `render_placement --review-sheet`
+all grade a pose. What did not exist is the verb that
 APPLIES one: no placement CLI in the tree accepted a pose at all, so a model
 that had decided "U1 belongs here, facing that way" had to write a hand script
 around `placement.writer.write_placed_output` (run 25's `pose_assist.py`;
@@ -174,7 +174,7 @@ def resolve_knobs(board_path: str, clearance=None, board_edge_clearance=None,
                   track_width=None):
     """(clearance, board_edge_clearance, track_width, knobs) from the BOARD.
 
-    Same resolution `place_seed`, `converge poses` and `board_context` use
+    Same resolution `place_simple` and `board_context` use
     (`list_nets.board_floor_knobs`): explicit value > the board's own Default
     netclass / constraint > the fixed default. A fixed 0.25/0.55 on a board
     routed to 0.15/0.3 vetoes poses the router would happily route, which is
@@ -726,8 +726,8 @@ def _rank(pcb, board_path: str, ref: str, st, **kw):
     `ranked` and `diagnostics` are the ranking as it always was. When the
     part's input pose is off the board -- `candidate_valid`'s escape branch
     is open for it (`QuenchState.escape_board_term`) -- that ranking admits
-    every pose merely LESS off the board than the input, and those can be
-    the cheapest: measured on esp_prog with R3 staged off the board, `set R3
+    every pose merely LESS off the board than the input, and those can rank
+    first: measured on esp_prog with R3 staged off the board, `set R3
     143.4 102.0 --rot 180 --snap --radius 4` ranked 24 such poses ahead of
     any pose on the board, and the snap wrote one its own grade called
     illegal while a legal pose 0.49 mm nearer the request was never ranked.
@@ -807,8 +807,8 @@ def snap_candidates(board_path: str, ref: str, *, rot: float, clearance: float,
     pose on the board (`_ranker_state`), and the requested pose itself is
     never returned (`requested_dropped` in the census).
 
-    Rung 1 is `rank_poses` -- cost-ordered, and worth trying first because it
-    knows about wirelength and crossings, which this verb does not.
+    Rung 1 is `rank_poses` -- the poses the seat gate admits, nearest first,
+    and worth trying first because they already pass the gate.
 
     Rung 2 is the bare lattice around where the part now sits, and it exists
     because rung 1 alone leaves `--snap` DEAD on the boards it is aimed at.
@@ -828,7 +828,7 @@ def snap_candidates(board_path: str, ref: str, *, rot: float, clearance: float,
     From an input pose OFF the board, rung 1 is preceded by `ranked_on_board`
     (#1277, `_rank`): the same ranking with the escape branch closed, so a
     pose on the board is tried before the poses merely less off the board
-    than the input, which rung 1 also admits and can rank cheapest. The
+    than the input, which rung 1 also admits and can rank first. The
     census counts it as `ranked_on_board`, None when the input is on the
     board (rung 1 then already is that ranking).
     """
@@ -899,14 +899,15 @@ def snap_candidates(board_path: str, ref: str, *, rot: float, clearance: float,
             lattice.append({'x': x, 'y': y, 'rot': rot,
                             'dist_mm': round(dist, 4), 'rung': 'lattice'})
         lattice.sort(key=lambda p: (p['dist_mm'], p['x'], p['y']))
-    # Each rung stays in ITS OWN order -- ranked by cost, lattice by distance
-    # -- and `apply_poses` walks them in two phases with a budget each. It
-    # does not concatenate them into one nearest-first list: measured on
-    # esp_prog, the 24 candidates nearest a refused point ALL failed (they sit
-    # beside the thing that refused it) while a cost-ranked pose 4.78 mm away
-    # passed, so a single nearest-first cap turns a snap that worked into a
-    # refusal. The caller's "stay near" is honoured in the second phase, which
-    # only considers lattice poses NEARER than the ranked answer.
+    # Each rung stays in ITS OWN list -- the gate-admitted poses, then the
+    # bare lattice, both nearest first -- and `apply_poses` walks them in two
+    # phases with a budget each. It does not merge them into one nearest-first
+    # list: measured on esp_prog, the 24 lattice candidates nearest a refused
+    # point ALL failed (they sit beside the thing that refused it) while a
+    # ranked pose 4.78 mm away passed, so a single nearest-first cap turns a
+    # snap that worked into a refusal. The caller's "stay near" is honoured in
+    # the second phase, which only considers lattice poses NEARER than the
+    # ranked answer.
     ordered = first + out + lattice
     # The ranker's nearest pose the radius bound dropped (#1209), so a snap
     # that refuses can say "--radius N would reach a pose" -- the honest
@@ -1195,8 +1196,8 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
         # #1098: a PCB-edge plug seated at its edge carries the keep-out that
         # keeps parts off its tongue; moving it inland would take the region
         # with it and read as an improvement. Treated as a lock: `unlock`
-        # the ref in the same call if the move is meant. The quench's own
-        # set (`seated_plugs`): a plug named by a declared `mating:` keep-out
+        # the ref in the same call if the move is meant. The placement
+        # state's own set (`seated_plugs`): a plug named by a declared `mating:` keep-out
         # counts too, and a plug that is NOT seated (in the pile, hanging
         # across an edge) is free to move.
         from placement.floorplan import seated_plugs, with_derived_keepouts
@@ -1393,7 +1394,7 @@ def apply_poses(board_path: str, out_path: Optional[str], ops: Sequence[Dict],
             # geometry) are different currencies: the ranker can hand back the
             # very pose that was refused. Walking the list until one grades
             # clean is what makes --snap mean "a pose that passes", not "the
-            # cheapest pose the other instrument liked".
+            # first pose the other instrument liked".
             ref = placements[0]['reference']
             want_rot = placements[0]['new_rotation']
             try:

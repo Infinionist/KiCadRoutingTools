@@ -2,9 +2,8 @@
 
 The placement state every placement tool builds (`pose_score.make_state`):
 each part's footprint geometry at every quarter turn, its pads and nets, its
-lock, the board outline, the intent's keep-outs and zones, and the pricing
-helpers that measure them -- airwires and their crossings, the halo between
-parts, the edge margin. The simple path (`place_simple.py`) prices its own
+lock, the board outline, the intent's keep-outs and zones, and the airwires
+and their crossings. The simple path (`place_simple.py`) prices its own
 objective (`simple.py`) on this state's live poses and asks it for legality.
 
 Legality (hard constraints, and the whole of what candidate_valid decides) lives
@@ -13,10 +12,6 @@ only collide with parts that share a board SIDE (a back-side decap under a
 front-side BGA is not an overlap; a through-hole part's lead field does reach the
 far side), and board containment measures against the real Edge.Cuts outline, not
 its bounding box.
-
-The halo term spreads apart parts that are not pulled together by shared
-nets -- things that *can* be far apart may as well be, to leave routing room,
-especially around high-pin-count parts.
 """
 from __future__ import annotations
 
@@ -35,8 +30,7 @@ _sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..'
 import grid_router  # noqa: E402  the placement kernels: crossing_pairs, mst_prim
 from placement.parser import (courtyard_for_side, extract_courtyard_sides,
                               extract_locked_refs, warn_missing_courtyards)
-from placement.utility import compute_footprint_bbox_local, snap_to_grid
-from placement.pair_order import pair_inversions, ref_inversions
+from placement.utility import compute_footprint_bbox_local
 from placement import legality
 from placement.legality import (CONTAINER_RATIO, CONTAINMENT_FRAC,
                                 BoardOutlineGate, containment_frac,
@@ -62,7 +56,7 @@ def _seeder():
     """`placement.seeder`, imported on first use (it imports this module).
     `candidate_valid` reads the #1257 pad conjunct through the module
     object, so a test that patches `seeder._pad_copper_overhang` switches
-    the seat search's and the quench's copies off together."""
+    the seat search's and the state's copies off together."""
     global _SEEDER
     if _SEEDER is None:
         from . import seeder
@@ -123,15 +117,8 @@ class _TetherTerm(NamedTuple):
 
 
 # --------------------------------------------------------------------------
-# The declared-claim measurement, as three free functions (#698)
-#
-# `QuenchState` is not the only consumer any more. `seeder.reseat_scope` has to
-# ask "is this part further outside its declared claims than it was" WITHOUT
-# arming the per-pose seat gate -- `pose_score.make_state` passes that state
-# `keepouts` and deliberately withholds `intent_zones`, because the re-seat's
-# whole job is to move a part that is ALREADY violating and a monotone gate
-# would make it refuse its own target. So the measurement is separable from the
-# state that enforces it, and there is still exactly ONE of it.
+# The declared-claim measurement, as three free functions (#698): separable
+# from the state that enforces it, so there is exactly ONE of it.
 # --------------------------------------------------------------------------
 
 def build_zone_spec(zones, parts, refs=None
@@ -164,8 +151,7 @@ def build_zone_spec(zones, parts, refs=None
             if _ref in _z['refs']:
                 # At the ORIGIN: `zone_fits_courtyard` reads only w/h, so
                 # position is irrelevant and passing 0,0 says so. Both
-                # rotations, matching `seeder.zone_gate`'s own form, so the two
-                # cannot disagree about which branch a part is on.
+                # rotations, so a turn cannot move a part between branches.
                 _anchor = not any(
                     _fp.zone_fits_courtyard(
                         _z['rect'], _p.grade_rect(0.0, 0.0, _r), _tol)
@@ -194,51 +180,39 @@ def exclusive_spec(zones, parts, refs=None
 
     A SLICE rather than a second walk, so membership, the `z.side` filter and
     the load-bearing `elif` that exempts a block's own members are resolved in
-    exactly ONE place, and the seat gate and the quench gate read the same
-    construction rather than two that happen to agree today.
+    exactly ONE place, and the seat gate and `candidate_valid`'s #702
+    channel read the same construction rather than two that happen to agree.
 
-    ONE DELIBERATE DIVERGENCE, stated because the sentence above used to claim
-    there were none: the unresolved-zone filter below applies to the SEAT gate
-    and not to the quench's #702 channel. It is a policy about which claims may
-    STRAND a part, and the quench cannot strand one -- it only declines moves.
-    Widening it to `build_zone_spec` would change #702's admitted-move set
-    inside the wrong issue. `floorplan.rule_zone_exclusive` carries the SAME
+    ONE DELIBERATE DIVERGENCE: the unresolved-zone filter below applies to the
+    SEAT gate and not to the #702 channel. It is a policy about which claims
+    may STRAND a part. `floorplan.rule_zone_exclusive` carries the SAME
     filter, so the seat gate and the GRADE -- the pair whose disagreement is an
-    exit 4 on a correct board -- still agree exactly.
+    exit 4 on a correct board -- agree exactly.
 
     THE `zone_containment` TERMS ARE DROPPED HERE, AND MUST NEVER REACH A SEAT
     GATE. `pose_score.make_state` withholds `intent_zones` from every seat
-    state, and `tests/test_698_reseat_acceptance.py` arm H parses `seeder.py`
-    to enforce that, because a MONOTONE containment gate would make a repair
-    refuse its own target: the re-seat's whole job is to move a part that is
-    already outside its zone back into it. `zone_exclusive` is the opposite
-    shape -- a must-be-OUTSIDE claim, whose target is clean by definition --
-    which is why it can be gated absolutely and containment cannot. The
-    seeder's containment channel remains `zone_gate` plus the per-call
-    `constraint`, which is anchor-aware and per-part.
-
-    This filter is the one line that keeps that argument true. Widening it back
-    to every term would re-open the bug arm H exists to prevent, so
-    `test_698`'s runtime half asserts on the RESULT -- every term here is a
-    `zone_exclusive` one, and a member binds none -- rather than on this
-    source.
+    state, because a MONOTONE containment gate would make a repair refuse its
+    own target: moving a part that is already outside its zone back into it.
+    `zone_exclusive` is the opposite shape -- a must-be-OUTSIDE claim, whose
+    target is clean by definition -- which is why it can be gated absolutely
+    and containment cannot. This filter is the one line that keeps that
+    argument true.
     """
     # A zone whose members did not RESOLVE binds nobody here. "Stranger" means
     # "not a member", so with an empty member set EVERY part on the board is
     # one, and enforcing such a zone evicts the very parts it was drawn
     # around. Measured on `fanout_output1.kicad_pcb`, whose block is
     # `group:`-shaped: resolved at bare `()` sources the seat gate refused all
-    # 5 of its OWN members at their own poses, and `repair_placement` then
-    # walked 4 of them 4.00mm out of the region their block reserved.
+    # 5 of its OWN members at their own poses, and a repair then walked 4 of
+    # them 4.00mm out of the region their block reserved.
     #
     # Nothing is silently admitted by this: `resolve_blocks` already reports an
     # unresolved block as `block_unresolved`, an ERROR, so such a board fails
     # on the real finding rather than on a rule that cannot tell a member from
     # a stranger.
     #
-    # Applied HERE rather than in `build_zone_spec`, so the quench's #702 gate
-    # is untouched -- this is a SEAT-gate policy, and widening it would be a
-    # behaviour change shipped inside the wrong issue.
+    # Applied HERE rather than in `build_zone_spec`, so the #702 channel is
+    # untouched -- this is a SEAT-gate policy.
     # Membership is tested against the PARTS THIS WALK CAN SEE, not against
     # the mere presence of a ref string. A first version asked only
     # `z.get('refs')`, and a blind review found the hole: `QuenchState.parts`
@@ -262,15 +236,10 @@ def intent_spec(zone_spec, keepouts_for, ref) -> Tuple[_IntentTerm, ...]:
     """The claims binding `ref` right now: frozen zone terms, plus keep-out
     terms derived LIVE from `keepouts_for`.
 
-    The keep-out slice is deliberately not frozen. `seeder.count_legal_poses`
-    answers "how many seats would lifting keep-out X free" by temporarily
-    removing X from `state.keepouts_for[ref]` and recounting -- and a frozen
-    copy defeats that lift silently, because `pose_ok` reaches this gate
-    through `candidate_valid`. Measured when it WAS frozen: the #701 census
-    went `lifted=49` to `lifted=0` on arm Q's fixture, and a stranded part's
-    verdict degraded from `keepout_blocks` to `no_movable_neighbour`, whose
-    prose -- "NOTHING seated is near enough to be in the way" -- is verbatim
-    the misleading answer that disclosure exists to replace.
+    The keep-out slice is deliberately not frozen: a caller that lifts
+    keep-out X by removing it from `state.keepouts_for[ref]` must see the
+    lift, and a frozen copy would defeat it silently, because `pose_ok`
+    reaches this gate through `candidate_valid`.
 
     Still pose-INVARIANT and still resolved once: `keepouts_for` is the cached
     resolution, and this only reads it.
@@ -309,11 +278,10 @@ def intent_term_values(spec: Tuple[_IntentTerm, ...], rects
     return tuple(out)
 
 
-# Both helpers now live in placement/legality.py, the single home shared with
-# fanout_clearance (which carried byte-identical copies). Kept as module-level
-# aliases: they are part of this module's de-facto surface (tests import them).
+# Lives in placement/legality.py, the single home shared with fanout_clearance
+# (which carried a byte-identical copy). Kept as a module-level alias: it is
+# part of this module's de-facto surface (tests import it).
 _rotate_local_bounds = rotate_local_bounds
-_rect_gap = rect_gap
 
 
 def _airwires_for_points(points: List[Tuple[float, float]], net_id: int):
@@ -456,7 +424,7 @@ def _count_crossings_np(a: np.ndarray, b: np.ndarray,
     Returns (count, weighted). `count` is the raw unweighted pair count, kept
     as an int for reporting. `weighted` prices each crossing at
     max(net_w[net_a], net_w[net_b]), the per-net weighting from #458, where
-    net_w is a net-id-indexed weight lookup (QuenchState._net_w). With net_w
+    net_w is a net-id-indexed weight lookup. With net_w
     None the two are equal and `weighted` is exactly float(count), so
     unweighted callers get bit-identical costs.
 
@@ -602,15 +570,13 @@ def _count_crossings_within(a: np.ndarray,
 
 #: #1152: WHY a part entered a `QuenchState` locked, as the phrase a refusal
 #: names (`QuenchState.lock_reasons`). `_Part.locked` is one boolean with
-#: several causes, and the seeder's stage 0 named every one of them "locked
-#: in the board file" -- sending the author of a logo's fixed pose to unlock
-#: a board file that locks nothing. Recorded where each lock is applied, the
-#: first cause winning; a part absent from the map entered free.
+#: several causes, and naming every one of them "locked in the board file"
+#: sends the author of a logo's fixed pose to unlock a board file that locks
+#: nothing. Recorded where each lock is applied, the first cause winning; a
+#: part absent from the map entered free.
 LOCK_FILE = 'locked in the board file'
 LOCK_CALLER = 'locked by the caller (--lock or the intent)'
 LOCK_OUTLINE = 'draws the board outline (#829)'
-LOCK_SCOPE = 'outside the move scope'
-LOCK_UNCONNECTED = 'has no connected pin (frozen unless --move-unconnected)'
 LOCK_PADLESS = 'has no pad: a static obstacle by its courtyard'
 LOCK_SEATED_PLUG = 'a PCB-edge plug seated at its edge (#1098)'
 
@@ -885,13 +851,12 @@ def locked_body_locals(pcb_data, pcb_file
 class _Part(_NearWatched):
     __slots__ = ('ref', 'pads_local', 'pin_count', 'bounds_by_rot',
                  'seed_x', 'seed_y', 'x', 'y', 'rot', 'locked',
-                 'nets', 'halo', 'footprint_name', 'orig_rot',
+                 'nets', 'footprint_name', 'orig_rot',
                  'side', 'has_tht', 'sides', 'tht_by_rot', 'padbox_local',
                  'padbox_by_rot', 'grade_by_rot', '_live_rects',
                  '_pg_rot', '_pg_pose')
 
-    def __init__(self, ref, fp, courtyard_sides, locked, halo_base, halo_coef,
-                 body_local=None):
+    def __init__(self, ref, fp, courtyard_sides, locked, body_local=None):
         self._live_rects = None
         self.ref = ref
         self.footprint_name = fp.footprint_name
@@ -903,30 +868,16 @@ class _Part(_NearWatched):
         self.side = footprint_side(fp)
         self.has_tht = footprint_has_through_pads(fp)
         self.sides = sides_occupied(self.side, self.has_tht)
-        # #916. `body_local` is `placement.body`'s `occupancy_local` for this
-        # ref, supplied by QuenchState under `body_model=True`. None keeps the
-        # inlined ladder below, which is what every caller got before #916 and
-        # what the default still gets -- so the OFF arm of the A/B is this
-        # file unchanged, not a re-derivation that happens to agree.
-        #
-        # OCCUPANCY, not the bare body, and not the drawn body: this rect is
-        # what `pose_ok`/`candidate_valid` seat against, i.e. "what does this
-        # part occupy". `legality.part_local_bounds` already answers the same
-        # question with `occupancy_local` (legality.py:1213-1216), so before
-        # this the GRADER and the ENFORCER measured different rectangles for
-        # the same part -- the grader courtyard-union-pads, the search bare
-        # courtyard or a pad box. `QuenchState.fab_rect` deliberately does NOT
-        # move: containment is a different question with a fab-only
-        # calibration, and its own docstring calls a courtyard-based
-        # containment test a false-veto machine.
+        # `body_local`, None for nearly every part, is the occupancy of a
+        # LOCKED part with no courtyard: the body check_assembly grades it on
+        # (`locked_body_locals`), so a part seated on it is a blocking pair.
+        # `pose_ok`/`candidate_valid` seat against `rect`, "what does this
+        # part occupy".
         #
         # #1182: the GRADE ladder (courtyard, else pad bbox) is kept beside
         # it, because the floorplan grade -- zones, keep-outs, edge claims,
-        # the board term -- reads a DEFAULT state's rects (`_grade_ctx` builds
-        # one). Armed, only the neighbour/body currency moves to occupancy;
-        # every intent question asks `grade_rect`, so the search cannot refuse
-        # a zone seat the grade accepts. Unarmed the two are ONE dict, so the
-        # default path is this file before #1182.
+        # the board term -- asks `grade_rect`, so the search cannot refuse a
+        # zone seat the grade accepts. Without a body the two are ONE dict.
         grade_lb = courtyard_for_side(courtyard_sides.get(ref), self.side)
         if grade_lb is None:
             grade_lb = compute_footprint_bbox_local(fp)
@@ -959,10 +910,7 @@ class _Part(_NearWatched):
         self.tht_by_rot = ({r: legality.rotate_far(tlb, r) for r in ROTATIONS}
                            if tlb is not None else None)
         # A non-90-degree seed rotation brings its WHOLE 90-degree lattice:
-        # those are the poses _candidate_rotations offers such a part, and
-        # build_neighbor_lists unions bounds_by_rot over the movable
-        # same-footprint group, so recording them here is what keeps the
-        # pruning boxes covering every pose the group can reach.
+        # those are the turns a seat can try for such a part.
         base = fp.rotation % 90
         if base:
             for r in ROTATIONS:
@@ -978,7 +926,6 @@ class _Part(_NearWatched):
         self.orig_rot = fp.rotation % 360
         self.locked = locked
         self.nets = sorted({n for _, _, n in self.pads_local})
-        self.halo = halo_base + halo_coef * math.sqrt(max(self.pin_count, 1))
         # `pad_globals` memos -- see there. Both carry the `pads_local` list
         # they were built from, so a reassigned list can never be served a
         # stale answer.
@@ -1022,9 +969,9 @@ class _Part(_NearWatched):
 
     def grade_rect(self, x=None, y=None, rot=None):
         """The rect the floorplan GRADE reads for this part at a pose:
-        courtyard, else pad bbox (#1182). `rect()` itself under
-        `body_model=False`; the body/neighbour currency (`rect`) becomes
-        occupancy under `body_model=True` and this does not."""
+        courtyard, else pad bbox (#1182). `rect()` itself unless the part
+        carries a body (`body_local`), which `rect` reads and this does
+        not."""
         x = self.x if x is None else x
         y = self.y if y is None else y
         rot = self.rot if rot is None else rot
@@ -1139,8 +1086,7 @@ class _Part(_NearWatched):
         The last pose's answer is memoised: a candidate is evaluated net by
         net and asks for the same pose once per net, and `_net_points` asks
         every OTHER part on a net for its live pose. Measured on
-        routed_output (place_optimize --max-passes 1), this transform was 78%
-        of the run. Every call still returns a NEW list, so a caller that
+        routed_output, this transform was 78% of a placement run. Every call still returns a NEW list, so a caller that
         edits its copy cannot reach the memo.
         """
         x = self.x if x is None else x
@@ -1158,105 +1104,37 @@ class _Part(_NearWatched):
 
 
 class QuenchState:
-    """Current placement plus cached airwires and cost terms."""
-
-    #: #1043: measure every tether term exactly, skipping the bound shortcuts
-    #: in `_tether_value`. Off in production; the test that proves the
-    #: shortcuts change no decision runs a quench both ways.
-    _exact_tethers = False
+    """Current placement plus cached airwires: the seat gate
+    (`candidate_valid`) and the measurements the graders read."""
 
     def __init__(self, pcb_data: PCBData, pcb_file: str,
                  clearance: float, board_edge_clearance: float,
-                 crossing_penalty: float,
-                 halo_base: float, halo_coef: float, halo_weight: float,
-                 edge_halo: float, edge_weight: float,
-                 grid_step: float, length_weight: float = 1.0,
                  ignore_net_ids: Optional[Set[int]] = None,
                  extra_locked_refs: Optional[Set[str]] = None,
-                 move_refs: Optional[Set[str]] = None,
-                 net_weights: Optional[Dict[int, float]] = None,
-                 # --- #548, APPENDED after net_weights on purpose. Three test
-                 # files bind this constructor with TWELVE positional arguments
-                 # (test_458_quench_net_weights.py:131,
-                 # test_458_quench_rotations.py:252 and :284); inserting
-                 # anywhere earlier rebinds them silently.
-                 align_weight: float = 0.0,
-                 align_radius: float = 0.5,
-                 align_span: float = 20.0,
-                 orient_weight: float = 0.0,
-                 # --- pad+drill legality layer, APPENDED for the same
-                 # positional-binding reason as the #548 block above.
-                 pad_legality: bool = True,
-                 # True HERE (no freeze): the zero-net freeze is an OPTIMIZER
-                 # policy, applied by quench() -- the seeder places mounting
-                 # holes from an intent and must not find them pre-locked
-                 # (measured: the freeze-in-state broke test_place_seed's
-                 # declared-edge H5 seat).
-                 move_unconnected: bool = True,
-                 # --- corridor cut. Appended for the same reason as #548's
-                 # four, and OFF by default: at weight 0.0 no corridor is ever
-                 # built and the objective is bit-identical.
-                 corridor_weight: float = 0.0,
-                 corridor_specs: Optional[Sequence[Dict]] = None,
-                 corridor_max_fanout: int = 20,
-                 # --- #701 intent keep-outs. Appended for the same
-                 # positional-binding reason as the #548 block above, and
-                 # empty by default so every state in the tree that does not
-                 # ask for them -- INCLUDING the one `floorplan.grade` builds,
-                 # which must keep measuring independently of the seat gate --
-                 # is bit-identical. Consumed by `seeder.pose_ok` and
-                 # `seeder.edge_seat_ok` under an ABSOLUTE policy, and since
-                 # #702 by `candidate_valid` under a MONOTONE one. The quench
-                 # OBJECTIVE still never reads it: this is a hard gate on which
-                 # poses exist, not a term in the cost.
+                 # --- #701 intent keep-outs, empty by default so a state that
+                 # does not ask for them -- INCLUDING the one `floorplan.grade`
+                 # builds, which must keep measuring independently of the seat
+                 # gate -- has none. Consumed by `seeder.pose_ok` under an
+                 # ABSOLUTE policy, and since #702 by `candidate_valid` under a
+                 # MONOTONE one: a hard gate on which poses exist, not a cost.
                  keepouts: Optional[Sequence[Dict]] = None,
-                 # --- #702 declared zones. APPENDED after `keepouts` for the
-                 # same positional-binding reason as the #548 block above, and
-                 # empty by default for the same bit-identity reason. Plain
-                 # data from `floorplan.resolve_intent_gate`, never an
-                 # `Intent`: the engine must not import that schema to run, and
-                 # `floorplan.grade` builds a state of its own that has to keep
-                 # measuring independently of whatever the optimizer was gated
-                 # on (tests/test_701_keepout_predicate.py:395).
+                 # --- #702 declared zones, empty by default for the same
+                 # reason. Plain data from `floorplan.resolve_intent_gate`,
+                 # never an `Intent`: the engine must not import that schema
+                 # to run, and `floorplan.grade` builds a state of its own that
+                 # has to keep measuring independently of whatever a seat was
+                 # gated on.
                  intent_zones: Optional[Sequence[Dict]] = None,
                  # --- #797 declared EXCLUSIVE zones, for the SEAT predicate.
                  # A SEPARATE parameter from `intent_zones` on purpose, and not
                  # merely a different spelling of it: this one carries the
                  # must-be-OUTSIDE slice alone, so it can be gated ABSOLUTELY
                  # without arming the monotone containment gate that
-                 # `pose_score.make_state` and test_698 arm H exist to keep off
-                 # the seat paths. Same plain data (`floorplan.zone_entries`),
-                 # same empty-by-default bit-identity, and the quench itself
-                 # never passes it -- its zone_exclusive enforcement stays
-                 # where #702 put it, in `intent_ok`.
-                 exclusive_zones: Optional[Sequence[Dict]] = None,
-                 # --- #916. The SEARCH's body currency. APPENDED for the same
-                 # positional-binding reason as the #548 block above, and False
-                 # by default so this commit moves NO number: at False every
-                 # part takes the inlined courtyard-or-pad-box ladder it took
-                 # before, so the A/B's OFF arm is the old code rather than a
-                 # re-derivation that happens to agree. #896 wired every
-                 # GRADING consumer to `placement.body` and deliberately left
-                 # the search behind, because `pose_ok` reads these baked
-                 # bounds and so the change moves which BASIN the anneal lands
-                 # in -- an engine change owing its own A/B, which is what
-                 # flipping this default is gated on.
-                 body_model: bool = False,
-                 # --- #893 pin-order facing term. APPENDED for the same
-                 # positional-binding reason as the #548 block above, and 0.0
-                 # by default: see `_facing_cost` for why the default is a
-                 # measurement question and not timidity.
-                 facing_weight: float = 0.0,
-                 # --- #893 declared rotations, from the intent gate. APPENDED
-                 # for the same positional-binding reason as the #548 block
-                 # above, and empty by default so an undeclared board keeps the
-                 # full lattice and is bit-identical.
-                 declared_rotations: Optional[Dict] = None,
-                 # --- #1043 declared tethers, from the intent gate's
-                 # `tethers` key. APPENDED for the same positional-binding
-                 # reason, and empty by default: no term is built, the gate
-                 # is one bool load, and the quench is bit-identical.
-                 tethers: Optional[Dict] = None):
+                 # `pose_score.make_state` keeps off the seat paths. Same
+                 # plain data (`floorplan.zone_entries`), empty by default;
+                 # zone_exclusive enforcement in `candidate_valid` stays where
+                 # #702 put it, in `intent_ok`.
+                 exclusive_zones: Optional[Sequence[Dict]] = None):
         bounds = pcb_data.board_info.board_bounds
         if bounds is None:
             raise ValueError("No board boundary (Edge.Cuts) found")
@@ -1276,13 +1154,6 @@ class QuenchState:
         # floors, so the pad-copper edge check an edge seat makes (a floor, not
         # a copper clearance) cannot be recovered from it.
         self.board_edge_clearance = board_edge_clearance
-        self.crossing_penalty = crossing_penalty
-        self.length_weight = length_weight
-        self.net_weights = net_weights or {}
-        self.halo_weight = halo_weight
-        self.edge_halo = edge_halo
-        self.edge_weight = edge_weight
-        self.grid_step = grid_step
 
         # Kept so the FAB body channel can be resolved lazily -- see
         # `fab_rect`. Nothing is parsed unless something asks.
@@ -1292,26 +1163,6 @@ class QuenchState:
         self._fab_cache = {}
 
         courtyards = extract_courtyard_sides(pcb_file)
-        # #916. One read for the whole board when armed, never per part:
-        # `board_bodies` makes three regex passes over the file, and the
-        # seeder builds states repeatedly. `{}` when off, so `.get(ref)`
-        # below yields None and `_Part` keeps its own ladder.
-        self.body_model = bool(body_model)
-        self.facing_weight = facing_weight
-        #: #893. {ref: (rotation, candidates)} from the intent gate. Empty when
-        #: nothing is declared, and every consumer falls back to the lattice --
-        #: so a board with no declaration is bit-identical.
-        self.declared_rotations: Dict[str, object] = dict(
-            declared_rotations or {})
-        body_locals: Dict[str, object] = {}
-        body_sources: Optional[Dict[str, str]] = None
-        if self.body_model:
-            from placement import body as _body
-            body_sources = {}
-            for _ref, _geom in _body.board_bodies(pcb_data, pcb_file).items():
-                if _geom.occupancy_local is not None:
-                    body_locals[_ref] = _geom.occupancy_local
-                    body_sources[_ref] = _geom.source
         file_locked = set(extract_locked_refs(pcb_file))
         locked_refs = set(file_locked)
         if extra_locked_refs:
@@ -1327,12 +1178,11 @@ class QuenchState:
         for ref, fp in pcb_data.footprints.items():
             # `fp.pads`, not `non_aperture_pads` -- the one #1143 site left
             # reading every pad, deliberately. A part whose only pads are
-            # paste/mask apertures (a logo) stays MOVABLE here: the seeder
-            # seats such a part by its courtyard when the intent fixes its
-            # pose (test_1051_hardening's copperless logo). A truly pad-less
-            # footprint is locked below, under LOCK_PADLESS, which the
-            # seeder's stage 0 reads as a policy and not a pose: it seats a
-            # declared fixed pose for it by the same courtyard (#1152).
+            # paste/mask apertures (a logo) stays MOVABLE here, seated by its
+            # courtyard when the intent fixes its pose. A truly pad-less
+            # footprint is locked below, under LOCK_PADLESS: a policy, not a
+            # pose -- a declared fixed pose still seats it by the same
+            # courtyard (#1152).
             if not fp.pads:
                 # Zero-pad footprints (graphics-only mechanical parts, logos
                 # with a courtyard) used to be dropped entirely -- neither
@@ -1340,9 +1190,7 @@ class QuenchState:
                 # them. With a drawn courtyard they now enter as locked static
                 # obstacles; without one there is no geometry to respect.
                 if ref in courtyards:
-                    self.parts[ref] = _Part(ref, fp, courtyards, True,
-                                            halo_base, halo_coef,
-                                            body_locals.get(ref))
+                    self.parts[ref] = _Part(ref, fp, courtyards, True)
                     self.lock_reasons[ref] = (
                         LOCK_FILE if ref in file_locked else
                         LOCK_CALLER if ref in locked_refs else LOCK_PADLESS)
@@ -1350,10 +1198,9 @@ class QuenchState:
             # #829: a footprint that draws part of the BOARD's own boundary is
             # never this tool's to move -- its pose transforms that Edge.Cuts
             # geometry, so moving it resizes the board, which is a mechanical
-            # decision the user owns. A fourth lock INPUT with the same
-            # property the other three have (see the union note in `quench()`):
-            # no un-lock operator, so it can never override what a caller
-            # asked for.
+            # decision the user owns. A lock INPUT like the file's and the
+            # caller's: no un-lock operator, so it can never override what a
+            # caller asked for.
             #
             # `owns_board_outline`, NOT `owns_edge_cuts`. Geometry parented to
             # a footprint is usually a relief the designer bound to the part so
@@ -1363,36 +1210,25 @@ class QuenchState:
             # SW2 had 0 legal poses of 14884). Only geometry lying outside the
             # board-level outline is the board's.
             owns_outline = getattr(fp, 'owns_board_outline', False)
-            locked = (ref in locked_refs
-                      or owns_outline
-                      or (move_refs is not None and ref not in move_refs))
+            locked = ref in locked_refs or owns_outline
             if owns_outline:
                 outline_locked.append(ref)
-            body_local = body_locals.get(ref)
+            body_local = None
             if ref not in courtyards:
                 no_courtyard.append(ref)
                 # A LOCKED part without a courtyard is an obstacle by the
                 # body check_assembly grades it on (`locked_body_locals`),
                 # not by its pad box: nothing moves it, so its body is the
                 # board's, and a part seated on it is a blocking pair.
-                if locked and body_local is None:
+                if locked:
                     if locked_bodies is None:
                         locked_bodies = locked_body_locals(pcb_data, pcb_file)
                     body_local = locked_bodies.get(ref)
-            self.parts[ref] = _Part(ref, fp, courtyards, locked,
-                                    halo_base, halo_coef, body_local)
+            self.parts[ref] = _Part(ref, fp, courtyards, locked, body_local)
             if locked:
                 self.lock_reasons[ref] = (
                     LOCK_FILE if ref in file_locked else
-                    LOCK_CALLER if ref in locked_refs else
-                    LOCK_OUTLINE if owns_outline else LOCK_SCOPE)
-            # A part with NO connected pins (mounting hole, NPTH, fiducial) is
-            # invisible to the airwire cost -- only halo/edge decide where it
-            # goes, which is how holes wander. Frozen by default; the caller
-            # frees them explicitly with move_unconnected (--move-unconnected).
-            if self.parts[ref].pin_count == 0 and not move_unconnected:
-                self.parts[ref].locked = True
-                self.lock_reasons.setdefault(ref, LOCK_UNCONNECTED)
+                    LOCK_CALLER if ref in locked_refs else LOCK_OUTLINE)
             # Ignored nets (e.g. plane-routed power) don't contribute airwires
             self.parts[ref].nets = [n for n in self.parts[ref].nets
                                     if n not in ignore]
@@ -1407,14 +1243,13 @@ class QuenchState:
                   f"{', '.join(self.outline_locked)} -- moving one would"
                   f" resize the board. Edit the part and the outline"
                   f" together in KiCad if it really must move.")
-        warn_missing_courtyards(no_courtyard, 'quench',
-                                sources=body_sources)
+        warn_missing_courtyards(no_courtyard, 'quench')
 
         # #701 intent keep-outs, resolved ONCE per state rather than once per
         # candidate pose. Neither an `allow` fnmatch against a reference nor
         # the set of faces a part occupies changes when the part moves, so the
         # only pose-dependent work left for the seat predicate is the geometry
-        # itself. `_try_place` evaluates thousands of poses per part, so this
+        # itself. A seat search evaluates thousands of poses per part, so this
         # is the difference between a conjunct and a regression.
         #
         # `keepouts_for` is EMPTY on every board that declares no keep-out --
@@ -1463,15 +1298,13 @@ class QuenchState:
                     self.keepouts_for[_ref] = _binding
 
         # --- #702 declared claims, resolved ONCE per state ------------------
-        # The zone half is built by the free `build_zone_spec` (#698), which is
-        # the SAME construction `seeder.reseat_scope` uses for its acceptance
-        # measurement -- a second copy here is how the two would come to
-        # disagree about which parts a block binds.
+        # The zone half is built by the free `build_zone_spec` (#698), the one
+        # construction of which parts a block binds.
         #
         # `_intent_active` is False on every board that declares nothing --
         # which is every board in the corpus today -- and `candidate_valid`
         # guards on it before any arithmetic, so the whole channel costs one
-        # bool load and one branch and the objective is bit-identical.
+        # bool load and one branch.
         self.intent_zones = tuple(intent_zones or ())
         self._intent_spec: Dict[str, Tuple[_IntentTerm, ...]] = build_zone_spec(
             self.intent_zones, self.parts)
@@ -1479,8 +1312,8 @@ class QuenchState:
 
         # --- #797 declared EXCLUSIVE zones, for the SEAT predicate ----------
         # Resolved once per state, like `keepouts_for`, and for the same
-        # reason: membership and the side filter are pose-invariant, and
-        # `_try_place` evaluates thousands of poses per part.
+        # reason: membership and the side filter are pose-invariant, and a
+        # seat search evaluates thousands of poses per part.
         #
         # DELIBERATELY NOT FOLDED INTO `_intent_spec`, and not counted in
         # `_intent_active`. Those drive `candidate_valid`'s MONOTONE
@@ -1490,8 +1323,7 @@ class QuenchState:
         # a reserved zone would then be admitted to every pose no worse than
         # that, i.e. seated inside it: #797's own bug, back through the door
         # `pose_ok`'s docstring names for keep-outs. Folding it in would also
-        # change `intent_spec_for`'s arity, which is the coupling
-        # `seeder.count_legal_poses` clears `_inc_intent` for.
+        # change `intent_spec_for`'s arity, which `_inc_intent` is keyed on.
         #
         # Empty on every board that declares no exclusive zone -- which is
         # every board in the corpus today -- and `exclusive_clear` guards on
@@ -1503,44 +1335,6 @@ class QuenchState:
         # `_inc_violation` on every move, for the same reason. Never computed
         # on a compliant board: `intent_ok` returns on its absolute branch.
         self._inc_intent: Dict[str, Tuple[float, ...]] = {}
-        # Refusal tally, for `metrics_out['intent_gate']`. Without it, "the
-        # gate refused nothing" and "the gate is not wired" are the same
-        # observation -- which is the whole anti-vacuity device for #702.
-        self.intent_rejected: Dict[str, int] = {}
-        self.intent_rejected_by_site: Dict[str, int] = {}
-
-        # --- #1043 declared TETHERS -----------------------------------------
-        # The part-vs-PART claims (`decap_distance`, `decap_pin_distance`,
-        # `proximity`), which is why they are not folded into `_intent_spec`:
-        # that channel's terms are part-vs-declared-geometry, and its
-        # incumbent cache (`_incumbent_intent`) is keyed by the moving ref on
-        # exactly that assumption. A tether term reads the poses of every ref
-        # it names, so its incumbent is cached PER TERM and a move of any of
-        # them invalidates it (both caches are cleared on every move).
-        #
-        # The pairings are elected ONCE, here, by `floorplan.tether_pairings`
-        # -- the grader's own election on the board as it stands; a decap
-        # term re-runs the cap's election per pose over the chips on its
-        # rail, because the grade re-elects -- and every
-        # value is measured by CALLING the grader's functions on footprints
-        # posed at the live (or candidate) poses: `groups.elect_live`,
-        # `floorplan.nearest_rail_cap`, `floorplan.proximity_reaches`.
-        #
-        # Empty unless the intent declares a tether limit at error severity,
-        # and then `_tether_active` is False and no path below reads anything.
-        self._tether_terms: List[_TetherTerm] = []
-        self._tethers_of: Dict[str, Tuple[int, ...]] = {}
-        self._inc_tval: Dict[int, float] = {}
-        self._tgap: Dict[Tuple, object] = {}
-        self._posed: Dict[Tuple, object] = {}
-        self._bounds: Dict[Tuple, object] = {}
-        self._tether_override: Optional[Dict[str, Tuple[float, float,
-                                                        float]]] = None
-        self._tether_bodies = None
-        self.tethers = dict(tethers or {})
-        if self.tethers:
-            self._build_tethers()
-        self._tether_active = bool(self._tether_terms)
 
         # Run-6 CONTAINER exemption: a courtyard covering most of the board
         # is a FRAME (a module-outline footprint hosting the whole design),
@@ -1580,50 +1374,47 @@ class QuenchState:
         # --- pad + drill legality (gate currency; see placement/legality.py).
         # pose_of/seed_of read the live _Part records, so the context follows
         # every apply_move with no invalidation; baselines key off SEED poses.
-        self.pad_legality = bool(pad_legality)
-        self.legality_ctx = None
-        if self.pad_legality:
-            # #697: the per-pair required clearance (pad overrides, net
-            # classes, .kicad_dru layer rules), resolved from the board's own
-            # siblings exactly as check_drc does. Inert -- and every gate below
-            # then behaves as it did -- on a board that declares none of them.
-            pad_model = legality.PadClearanceModel.for_board(
-                pcb_data, clearance, pcb_file)
-            pad_model = pad_model if pad_model.active else None
-            # #761: the board's own copper-to-NPTH-hole floor, resolved
-            # once. This context serves `pair_shortfall`, which reads hole
-            # keep-outs, so it is one of the two call sites that need it.
-            #
-            # The notes are PRINTED rather than returned: unlike
-            # `grade_pad_legality` this constructor has no report to file them
-            # into, and a silent fallback drops the modelled floor to the flat
-            # fab value while every downstream number looks normal. Empty on
-            # every board that resolves cleanly.
-            _npth_notes = []
-            _npth = legality.resolve_npth_floor(pcb_data, pcb_file,
-                                                _npth_notes)
-            for _n in _npth_notes:
-                print('WARNING: %s' % _n)
-            part_pads = legality.build_part_pads(
-                {ref: pcb_data.footprints[ref] for ref in self.parts
-                 if ref in pcb_data.footprints}, clearance, pad_model,
-                npth_floor=_npth)
-            self.legality_ctx = legality.LegalityContext(
-                part_pads, self.edge_gate, clearance,
-                pose_of=lambda r: (self.parts[r].x, self.parts[r].y,
-                                   self.parts[r].rot),
-                seed_of=lambda r: (self.parts[r].seed_x, self.parts[r].seed_y,
-                                   self.parts[r].orig_rot),
-                model=pad_model,
-                # #1031: the board's rule-area keep-outs; inert (None
-                # inside) on a board that declares none with tracks
-                # forbidden.
-                keepouts=legality.RuleAreaKeepouts.for_board(
-                    pcb_data, clearance, pcb_file),
-                # #1266: footprint graphic copper (a SOT-89 tab), charged
-                # against other parts' pads; empty on most boards.
-                graphics=legality.build_part_graphics(
-                    pcb_data, refs=set(part_pads)))
+        # #697: the per-pair required clearance (pad overrides, net
+        # classes, .kicad_dru layer rules), resolved from the board's own
+        # siblings exactly as check_drc does. Inert -- and every gate below
+        # then behaves as it did -- on a board that declares none of them.
+        pad_model = legality.PadClearanceModel.for_board(
+            pcb_data, clearance, pcb_file)
+        pad_model = pad_model if pad_model.active else None
+        # #761: the board's own copper-to-NPTH-hole floor, resolved
+        # once. This context serves `pair_shortfall`, which reads hole
+        # keep-outs, so it is one of the two call sites that need it.
+        #
+        # The notes are PRINTED rather than returned: unlike
+        # `grade_pad_legality` this constructor has no report to file them
+        # into, and a silent fallback drops the modelled floor to the flat
+        # fab value while every downstream number looks normal. Empty on
+        # every board that resolves cleanly.
+        _npth_notes = []
+        _npth = legality.resolve_npth_floor(pcb_data, pcb_file,
+                                            _npth_notes)
+        for _n in _npth_notes:
+            print('WARNING: %s' % _n)
+        part_pads = legality.build_part_pads(
+            {ref: pcb_data.footprints[ref] for ref in self.parts
+             if ref in pcb_data.footprints}, clearance, pad_model,
+            npth_floor=_npth)
+        self.legality_ctx = legality.LegalityContext(
+            part_pads, self.edge_gate, clearance,
+            pose_of=lambda r: (self.parts[r].x, self.parts[r].y,
+                               self.parts[r].rot),
+            seed_of=lambda r: (self.parts[r].seed_x, self.parts[r].seed_y,
+                               self.parts[r].orig_rot),
+            model=pad_model,
+            # #1031: the board's rule-area keep-outs; inert (None
+            # inside) on a board that declares none with tracks
+            # forbidden.
+            keepouts=legality.RuleAreaKeepouts.for_board(
+                pcb_data, clearance, pcb_file),
+            # #1266: footprint graphic copper (a SOT-89 tab), charged
+            # against other parts' pads; empty on most boards.
+            graphics=legality.build_part_graphics(
+                pcb_data, refs=set(part_pads)))
 
         # net -> refs touching it, as a SORTED LIST, not a set (#457).
         #
@@ -1656,30 +1447,9 @@ class QuenchState:
         for net_id in self.net_refs:
             self.net_airwires[net_id] = self._build_net_airwires(net_id)
 
-        # Dense net_id -> weight lookup for the crossing kernel, derived once
-        # from net_weights (which is not mutated after construction) and sized
-        # to cover every net id that can appear in an airwire array's column 4.
-        # None when there is nothing to weight, which short-circuits the
-        # crossing kernel back onto its exact integer path.
-        self._net_w = None
-        if self.net_weights:
-            size = max(max(self.net_weights),
-                       max(self.net_airwires, default=-1)) + 1
-            self._net_w = np.ones(size)
-            for net_id, w in self.net_weights.items():
-                if net_id >= 0:
-                    self._net_w[net_id] = w
-
-        # Optional pruned neighbour lists (see build_neighbor_lists)
-        self._neighbors = None
         # The full-sweep prune (`_sweep_others`), built on first use; False
         # when `parts` cannot be indexed.
         self._near_ix = None
-        # Displacement budget, for the outline gate's reachability prune. Unknown
-        # until build_neighbor_lists is told it, and UNBOUNDED until then so the
-        # prune can only ever be conservative (every part pays for the exact ring
-        # test) rather than skip a part that can in fact reach an edge.
-        self._travel_budget = float('inf')
         # ref -> violation of its CURRENT pose; whole-dict invalidated on any
         # move, since a move changes its neighbours' violations too.
         self._inc_violation: Dict[str, float] = {}
@@ -1702,290 +1472,6 @@ class QuenchState:
         # ref -> ids of the milled rings its OWN pads sit inside (#628). Keyed
         # on the SEED pose, so unlike _inc_violation this NEVER invalidates.
         self._owned_rings_cache: Dict[str, frozenset] = {}
-
-        # --- #548: alignment and orientation, both OFF unless asked for ------
-        self.align_weight = float(align_weight)
-        self.align_radius = float(align_radius)
-        self.align_span = float(align_span)
-        self.orient_weight = float(orient_weight)
-        self._peers = self._build_peers(self.align_span) if (
-            self.align_weight > 0.0) else {}
-        # (ref, net_id) -> centroid of that net's pads owned by OTHER parts, or
-        # None when this part is the net's only owner. Cleared beside
-        # _inc_violation on every move.
-        self._anchors: Dict[Tuple[str, int], Optional[Tuple[float, float]]] = {}
-
-        # --- corridor cut, OFF unless a weight was asked for -----------------
-        self.corridor_weight = float(corridor_weight)
-        self._corridor_boxes: List[_CorridorBox] = []
-        if self.corridor_weight > 0.0 and corridor_specs:
-            self._corridor_boxes = self._freeze_corridors(
-                pcb_data, corridor_specs, ignore, corridor_max_fanout)
-
-    def _freeze_corridors(self, pcb_data, specs, ignore_net_ids, max_fanout):
-        """Corridor rectangles, built ONCE and never rebuilt.
-
-        This is the load-bearing property of the whole term, so it is enforced
-        structurally rather than by discipline: `_cluster_ends` derives a
-        corridor's endpoints from LIVE pad positions, so a corridor recomputed
-        after a move would make the objective non-stationary -- the cost of a
-        pose would depend on when it was evaluated, `apply_move`'s accepted gain
-        would not match the recomputed total, and a greedy descent could cycle.
-        Freezing at construction makes that impossible rather than merely
-        avoided. It also makes the model independent of the poses it scores,
-        which is what lets `check_floorplan --health` re-derive corridors from
-        the FINAL placement and act as an honest check on the result.
-        """
-        from .routability import corridors_from_intent
-        boxes: List[_CorridorBox] = []
-        size = max(max(self.net_airwires, default=-1),
-                   max(pcb_data.nets, default=-1)) + 1
-        base = np.zeros(max(size, 1), dtype=bool)
-        for nid in ignore_net_ids:
-            if 0 <= nid < len(base):
-                base[nid] = True
-        if max_fanout:
-            for nid, refs in self.net_refs.items():
-                if len(refs) > max_fanout and 0 <= nid < len(base):
-                    base[nid] = True
-        for cor in corridors_from_intent(self, pcb_data, specs):
-            n = cor.length_mm
-            if n < 1e-9 or cor.width_mm <= 0.0:
-                continue
-            skip = base.copy()
-            for nid in cor.net_ids:
-                if 0 <= nid < len(skip):
-                    skip[nid] = True
-            boxes.append(_CorridorBox(
-                ax=cor.a[0], ay=cor.a[1],
-                ux=(cor.b[0] - cor.a[0]) / n, uy=(cor.b[1] - cor.a[1]) / n,
-                length=n, half_w=cor.width_mm / 2.0, skip=skip))
-        return boxes
-
-    def _build_peers(self, span: float) -> Dict[str, List[str]]:
-        """{ref: sorted peer refs} -- same footprint_name, SEED centres within
-        `span`.
-
-        Built HERE and not in `build_neighbor_lists`, deliberately.
-        `tests/test_quench_neighbor_lists.py:60` asserts a state that never
-        called `build_neighbor_lists` has `_neighbors is None`, and :79-82
-        asserts that state's `part_geometry_cost` equals the built one's
-        EXACTLY. A peer index that only existed on the built path would break
-        that equality as a correctness failure, not a baseline drift.
-
-        It also cannot ride on `_neighbors` at all: that prune is a 2-D BOX
-        overlap test, so a pair must be near in BOTH axes. Alignment is
-        inherently long-range ALONG the shared axis -- two caps 50mm apart in x
-        and 0.1mm apart in y ARE aligned -- and no widening of the box margin
-        covers that without inflating every neighbour list board-wide.
-
-        Seed-relative on purpose: "align to the peers you started next to" is
-        what `your placement, nudged` means. A pair whose seeds are just over
-        `span` apart and that later drift within it is NOT picked up. That makes
-        this a LOSSY prune, unlike `_neighbors`' exact one, and it is said out
-        loud here rather than left to be discovered.
-        """
-        by_fp: Dict[str, List[str]] = {}
-        for ref in sorted(self.parts):
-            by_fp.setdefault(self.parts[ref].footprint_name, []).append(ref)
-        out: Dict[str, List[str]] = {}
-        for group in by_fp.values():
-            if len(group) < 2:
-                continue
-            seeds = {r: (self.parts[r].seed_x, self.parts[r].seed_y)
-                     for r in group}
-            for ref in group:
-                sx, sy = seeds[ref]
-                near = [o for o in group
-                        if o != ref
-                        and math.hypot(seeds[o][0] - sx, seeds[o][1] - sy) <= span]
-                if near:
-                    out[ref] = near
-        return out
-
-    # ----- #548 cost terms --------------------------------------------------
-
-    def _align_pair_penalty(self, part_a, rect_a, part_b, rect_b) -> float:
-        """Off-axis misalignment between two PEER parts.
-
-            d   = min(|cx_a - cx_b|, |cy_a - cy_b|)     # the nearer shared axis
-            pen = align_weight * min(d, align_radius) ** 2
-
-        Three properties chosen deliberately:
-
-        CONTINUOUS at `align_radius`. The obvious "charge inside the radius,
-        zero outside" shape has a cliff there, which pays a part to FLEE the row
-        rather than join it -- the exact opposite of the intent.
-
-        SATURATING beyond it, so every distant peer contributes the same
-        constant and it cancels between one part's candidate poses instead of
-        dragging it across the board toward a peer it will never reach.
-
-        ZERO exactly on a shared axis, so a tidy row costs nothing.
-
-        Peers means identical `footprint_name`: centre-to-centre is the right
-        anchor for two instances of one library footprint and the wrong one for
-        an 0402 against a BGA. It is also the pairing the swap phase already
-        indexes, so the notion is not new to this module.
-        """
-        d = min(abs((rect_a[0] + rect_a[2]) - (rect_b[0] + rect_b[2])),
-                abs((rect_a[1] + rect_a[3]) - (rect_b[1] + rect_b[3]))) * 0.5
-        if d >= self.align_radius:
-            d = self.align_radius
-        return self.align_weight * d * d
-
-    def _facing_cost(self, ref, x=None, y=None, rot=None,
-                     exclude: Optional[Set[str]] = None) -> float:
-        """Price the pin-ORDER a pose forces (#893). Off at weight 0.0.
-
-        `pair_order.ref_inversions` -- the SAME lower bound
-        `placement_score.pin_order_crossings` reports, called rather than
-        re-derived. For each partner sharing >= 2 scoring nets, project both
-        parts' escape pads onto the channel cross-section and count order
-        inversions: in a two-sided channel each inverted pair must cross at
-        least once, so this is a floor on the crossings any router must pay.
-
-        WHY THIS IS NOT `_orient_cost`, which already "rewards a pose whose
-        pads FACE the nets they serve": that term is a DIRECTION, summed per
-        pad against a net centroid, and it is blind to ORDER. Two parts can
-        point their pads straight at each other and still have every net
-        crossed -- which is exactly run 5's U3, where rotating 180 degrees took
-        the same nets from 4/7 routed to 7/7 while the airwire lengths barely
-        moved. `_orient_cost` cannot see that; this can. They are complementary
-        and both are off by default.
-
-        WHY IT IS OFF BY DEFAULT, and why that is not timidity:
-        `pair_order`'s own header records the standing decision that these
-        metrics "deliberately do NOT join quench.total_cost": adding proxies
-        to this objective measured as a negative result -- "proxy-routability
-        correlation is weak", "proxies propose, the router disposes". A lower bound is a
-        better citizen than a correlational proxy (improving it cannot be
-        gamed), but "better citizen" is an argument, not a measurement. The
-        weight is the way to MEASURE it; `tests/test_placement_ab.py` is the
-        way to decide it.
-
-        Cost: `ref_inversions` is ~150-800 us/call depending on the board even
-        after the #893 hot-path work, so this is the most expensive term in
-        `part_geometry_cost` by an order of magnitude. It returns before
-        touching anything at weight 0, so a default run pays nothing.
-        """
-        if self.facing_weight <= 0.0:
-            return 0.0
-        if exclude:
-            # NUDGE ONLY, and this is a correctness bound rather than a
-            # simplification. Inversions are a PAIR quantity evaluated against
-            # the partner's LIVE pose, so the two multi-part evaluators cannot
-            # price it:
-            #
-            # * the SWAP passes `exclude={partner}` to each half and adds the
-            #   a-b halo and align pairs back at the candidate poses (see the
-            #   add-back below the swap loop). There is no such add-back for a
-            #   term that needs BOTH parts moved at once, and scoring `a` at
-            #   its candidate against `b` still at its PRE-swap pose is simply
-            #   the wrong geometry.
-            # * the GROUP translate passes `exclude=members - {r}` precisely
-            #   because intra-group geometry is invariant under a rigid move.
-            #   Facing is not: `r` would be displaced while its in-group
-            #   partners are not, turning an invariant into a bias on block
-            #   moves.
-            #
-            # `exclude` is non-empty only on those two paths, so returning 0.0
-            # here leaves the single-part nudge -- where `ref_inversions` IS
-            # the exact delta -- as the only consumer, and leaves the group and
-            # swap objectives bit-identical to their unarmed selves.
-            return 0.0
-        return self.facing_weight * ref_inversions(self, ref, x, y, rot)
-
-    def _align_cost(self, ref, rect, exclude: Optional[Set[str]] = None
-                    ) -> float:
-        if self.align_weight <= 0.0:
-            return 0.0
-        peers = self._peers.get(ref)
-        if not peers:
-            return 0.0
-        part = self.parts[ref]
-        pen = 0.0
-        for other_ref in peers:
-            if exclude and other_ref in exclude:
-                continue
-            other = self.parts.get(other_ref)
-            if other is None:
-                continue
-            pen += self._align_pair_penalty(part, rect, other, other.rect())
-        return pen
-
-    def _net_anchor(self, ref, net_id):
-        """Centroid of `net_id`'s pads owned by parts OTHER than `ref`."""
-        key = (ref, net_id)
-        if key in self._anchors:
-            return self._anchors[key]
-        xs = ys = 0.0
-        n = 0
-        # net_refs values are SORTED, so the float summation order is a property
-        # of the net rather than of dict iteration (#457).
-        for other in self.net_refs.get(net_id, ()):
-            if other == ref:
-                continue
-            part = self.parts.get(other)
-            if part is None:
-                continue
-            for gx, gy, pn in part.pad_globals():
-                if pn == net_id:
-                    xs += gx
-                    ys += gy
-                    n += 1
-        val = (xs / n, ys / n) if n else None
-        self._anchors[key] = val
-        return val
-
-    def _orient_cost(self, ref, x=None, y=None, rot=None) -> float:
-        """Reward a pose whose pads FACE the nets they serve (#548 item 2).
-
-        With `o` the pose origin, `r = pad_global - o` and `u` the unit vector
-        from `o` toward that net's anchor:
-
-            cost = orient_weight * sum_p ( |r| - r . u )
-
-        Zero when a pad points exactly at its anchor, `2|r|` when exactly away,
-        so the whole term is bounded by `2 * orient_weight * sum|r|` -- mm-scale
-        per part. Bounded on purpose: this should break a rotation TIE, never
-        outrank a real length win.
-
-        Why this rather than "score airwires from the actual pad", as #548
-        proposes: the cost path ALREADY does that. `_net_points` emits one MST
-        node per connected pad from `pad_globals()`, full rotation applied;
-        there is no centroid anywhere in the objective. The gap is NUMERIC -- a
-        ~1mm pad offset perturbs a ~20mm net's MST length by a fraction of a mm,
-        less once the tree re-roots -- so the directional signal is present and
-        drowned. This extracts the same signal at part scale and gives it its
-        own weight.
-
-        Two things it is NOT, worth stating: it is not purely rotational, since
-        moving the part also changes `u`, so a large weight pulls a part toward
-        its nets and overlaps the length term; and through `part_geometry_cost`
-        it also reaches the group phase, so a rigid block translate is steered
-        by it too. Both intended, neither obvious.
-        """
-        if self.orient_weight <= 0.0:
-            return 0.0
-        part = self.parts[ref]
-        ox = part.x if x is None else x
-        oy = part.y if y is None else y
-        pen = 0.0
-        for gx, gy, net_id in part.pad_globals(x, y, rot):
-            anchor = self._net_anchor(ref, net_id)
-            if anchor is None:
-                continue
-            rx, ry = gx - ox, gy - oy
-            rn = math.hypot(rx, ry)
-            if rn < 1e-9:
-                continue
-            ax, ay = anchor[0] - ox, anchor[1] - oy
-            an = math.hypot(ax, ay)
-            if an < 1e-9:
-                continue
-            pen += rn - (rx * ax + ry * ay) / an
-        return self.orient_weight * pen
 
     # ----- airwire helpers -------------------------------------------------
 
@@ -2023,155 +1509,15 @@ class QuenchState:
             self._net_points(net_id, override_ref, override_pads, overrides),
             net_id)
 
-    def airwires_excluding(self, nets: Set[int]) -> np.ndarray:
-        """Every airwire of the nets not in `nets`, as one array, in
-        `net_airwires` order. Each net's array is kept until its list is
-        replaced (a move rebuilds the list), so a visit joins arrays rather
-        than re-reading every airwire on the board."""
-        cache = self.__dict__.setdefault('_aw_arr', {})
-        parts = []
-        for net_id, lst in self.net_airwires.items():
-            if net_id in nets or not lst:
-                continue
-            hit = cache.get(net_id)
-            if hit is None or hit[0] is not lst:
-                hit = cache[net_id] = (lst, _aw_array(lst))
-            parts.append(hit[1])
-        return np.concatenate(parts) if parts else np.zeros((0, 5))
-
-    # ----- cost terms ------------------------------------------------------
-
-    def _halo_pair_penalty(self, part_a: _Part, rect_a, part_b: _Part, rect_b,
-                           rects_a=None, rects_b=None):
-        """Whitespace-shortfall penalty between two parts.
-
-        Zero for a cross-side pair that shares no board side: their whitespace is
-        not shared, so pushing them apart buys no routing room (#456 item 1). The
-        explicit rect_a / rect_b stay in the signature because every caller has
-        them already; rects_a / rects_b carry the far-side rects when the caller
-        has them (defaulting to the parts' live poses).
-        """
-        if (part_a.ref in self.container_refs
-                or part_b.ref in self.container_refs):
-            return 0.0    # run-6: container = frame, not body
-        required = part_a.halo + part_b.halo
-        if not (part_a.has_tht or part_b.has_tht):
-            # Fast path (nearly every pair): plain SMD parts interact only when
-            # they are on the same side, and a per-axis separation of `required`
-            # already proves the true gap clears it -- so the exact gap is only
-            # computed for pairs that can actually be charged.
-            if part_a.side != part_b.side:
-                return 0.0
-            if (rect_a[2] + required <= rect_b[0]
-                    or rect_b[2] + required <= rect_a[0]
-                    or rect_a[3] + required <= rect_b[1]
-                    or rect_b[3] + required <= rect_a[1]):
-                return 0.0
-            gap = rect_gap(rect_a, rect_b)
-        else:
-            gap = part_a.gap_to(
-                part_b,
-                (rect_a, part_a.tht_rect()) if rects_a is None else rects_a,
-                (rect_b, part_b.tht_rect()) if rects_b is None else rects_b)
-            if gap is None:
-                return 0.0
-        if gap >= required:
-            return 0.0
-        # No clamp at zero: a deeper overlap must cost MORE than a shallow one,
-        # or nothing in the objective ever repairs an existing overlap (the
-        # clamp made a 2mm-deep overlap price identically to a touching pair).
-        # Bit-identical on any board with no overlapping pair -- the hard gate
-        # forbids CREATING one, so only seeded-in violations see the change.
-        short = required - gap
-        return self.halo_weight * short * short
-
-    def _edge_penalty(self, rect, ref=None):
-        """Soft margin inside the board edge.
-
-        Measured to the real outline when we have one, so a part sitting in a
-        notch is charged for the notch's edges rather than for a bounding box it
-        is nowhere near (#456 item 2). Falls back to the four bbox gaps.
-        """
-        if self.edge_gate.active:
-            # Same prefilter as the hard gate, but sized to edge_halo, which is
-            # the radius this soft term cares about and is usually WIDER than the
-            # hard margin. Empty list = nothing within edge_halo, penalty 0.
-            near = (self.edge_gate.edges() if ref is None
-                    else self._edges_near_halo(ref))
-            if not near:
-                return 0.0
-            g = self.edge_gate.edge_clearance(rect, edges=near)
-            if g >= self.edge_halo:
-                return 0.0
-            short = self.edge_halo - max(g, 0.0)
-            # One charge on the NEAREST edge, matching what the per-axis sum
-            # below charges a part near a single edge -- which is the ordinary
-            # case the weights were tuned against. (Charging per-direction would
-            # need four directional distances to the outline; multiplying this
-            # one by four instead would bill every edge-adjacent part as though
-            # it were boxed in on all sides, a 4x distortion of the term.)
-            return self.edge_weight * short * short
-        pen = 0.0
-        gaps = (rect[0] - self.board[0], rect[1] - self.board[1],
-                self.board[2] - rect[2], self.board[3] - rect[3])
-        for g in gaps:
-            if g < self.edge_halo:
-                short = self.edge_halo - max(g, 0.0)
-                pen += self.edge_weight * short * short
-        return pen
-
-    def part_geometry_cost(self, ref, x=None, y=None, rot=None,
-                           exclude: Optional[Set[str]] = None):
-        """Halo + edge penalty contributions of one part at a position."""
-        part = self.parts[ref]
-        rects = part.rects(x, y, rot)
-        rect = rects[0]
-        pen = self._edge_penalty(rect, ref)
-        if self._neighbors is not None and ref in self._neighbors:
-            others = ((o, self.parts[o]) for o in self._neighbors[ref])
-        else:
-            others = self.parts.items()
-        for other_ref, other in others:
-            if other_ref == ref or (exclude and other_ref in exclude):
-                continue
-            pen += self._halo_pair_penalty(part, rect, other, other.rect(),
-                                           rects_a=rects)
-        # #548. Hooked HERE because this is the one function all three
-        # evaluators call -- the nudge pass, the group pass and the swap pass --
-        # and it already carries the `exclude` semantics the latter two need.
-        # Both return 0.0 before touching any geometry when their weight is 0,
-        # so a default run is bit-identical and pays nothing.
-        pen += self._align_cost(ref, rect, exclude)
-        pen += self._orient_cost(ref, x, y, rot)
-        # #893. Same hook, same contract: 0.0 before touching geometry when the
-        # weight is 0, so a default run is bit-identical. Deliberately NOT a
-        # separate move phase -- a phase minimising `nets+geo+facing` while the
-        # nudge minimises `nets+geo` gives the loop two objectives, and the
-        # nudge's own rotation loop then reverts every rotation the phase makes
-        # (its candidate list always contains the current angle), so `moves`
-        # never reaches 0 and `improved` sums two currencies.
-        pen += self._facing_cost(ref, x, y, rot, exclude)
-        return pen
-
-    def violation(self, ref, x=None, y=None, rot=None,
-                  exclude: Optional[Set[str]] = None,
-                  limit: Optional[float] = None) -> float:
-        """Total illegality of a pose: 0.0 exactly when it is legal.
-
-        The sum of the two terms `violation_parts` returns; see there. This is
-        the number `placement/legality.py`'s graders report, so the optimizer and
-        the scorecard cannot disagree about what legal means.
-        """
-        board, overlap = self.violation_parts(ref, x, y, rot, exclude, limit)
-        return board + overlap
+    # ----- legality -------------------------------------------------------
 
     def _sweep_others(self, rects, clr):
         """The full-board sweep's `(ref, part)` pairs for a part presenting
         `rects` (its `rects()` at the pose asked about) at clearance `clr`:
         `parts` in order, less the parts `_NearIndex` proves stay `clr`
         clear of it. For the courtyard loops of `violation_parts` and
-        `candidate_valid` only -- a pair test with another reach (halo, pad
-        floors, bodies) needs its own bound."""
+        `candidate_valid` only -- a pair test with another reach (pad floors,
+        bodies) needs its own bound."""
         if len(self.parts) < _NEAR_INDEX_MIN_PARTS:
             return self.parts.items()
         ix = self._near_ix
@@ -2216,11 +1562,7 @@ class QuenchState:
         overlap = 0.0
         if limit is not None and board > limit:
             return board, overlap
-        swept = not (self._neighbors is not None and ref in self._neighbors)
-        if not swept:
-            others = ((o, self.parts[o]) for o in self._neighbors[ref])
-        else:
-            others = self.parts.items()
+        others = self.parts.items()
         if getattr(self, 'courtyards_ignored', False):
             # #1104: the courtyard is waived, so the overlap term is the pad
             # and hole one the waived seat asks (#1101), absolutely -- and a
@@ -2234,8 +1576,7 @@ class QuenchState:
             return board, overlap + self._pin_violation(ref, x, y, rot,
                                                         exclude)
         clr = self.clearance
-        if swept:
-            others = self._sweep_others(rects, clr)
+        others = self._sweep_others(rects, clr)
         rect = rects[0]
         tht = part.has_tht
         skip_containers = (ref in self.container_refs)
@@ -2312,16 +1653,7 @@ class QuenchState:
         """The claims binding `ref` right now: frozen zone terms, plus keep-out
         terms derived LIVE from `keepouts_for`.
 
-        The keep-out slice is deliberately not frozen. `seeder.count_legal_poses`
-        answers "how many seats would lifting keep-out X free" by temporarily
-        removing X from `state.keepouts_for[ref]` and recounting -- and a frozen
-        copy defeats that lift silently, because `pose_ok` reaches this gate
-        through `candidate_valid`. Measured when it WAS frozen: the #701 census
-        went `lifted=49` to `lifted=0` on arm Q's fixture, and a stranded
-        part's verdict degraded
-        from `keepout_blocks` to `no_movable_neighbour`, whose prose --
-        "NOTHING seated is near enough to be in the way" -- is verbatim the
-        misleading answer that disclosure exists to replace.
+        The keep-out slice is deliberately not frozen -- see `intent_spec`.
 
         Still pose-INVARIANT and still resolved once: `keepouts_for` is the
         cached resolution, and this only reads it.
@@ -2341,9 +1673,8 @@ class QuenchState:
 
         The SEAT policy. Placement from scratch has no incumbent worth
         improving on (`seeder.pose_ok`), so a seat search demands cleanliness
-        rather than non-worsening -- and `tests/test_701_keepout_predicate.py`
-        seats a part whose current pose is fully inside a keep-out and asserts
-        REFUSAL, which the monotone rule below would admit.
+        rather than non-worsening: a part whose current pose is fully inside a
+        keep-out is REFUSED, which the monotone rule below would admit.
         """
         spec = self.intent_spec_for(ref)
         if not spec:
@@ -2407,8 +1738,8 @@ class QuenchState:
     def keepout_clear(self, ref, rects) -> bool:
         """The keep-out slice of `intent_clear`, absolute (#701's policy).
 
-        One loop, so `seeder.pose_ok` and `seeder.edge_seat_ok` stop owning a
-        copy each -- the doctrine `floorplan.keepout_hit`'s own header states.
+        One loop, so `seeder.pose_ok` owns no copy -- the doctrine
+        `floorplan.keepout_hit`'s own header states.
         """
         if not self.keepouts_for:
             return True
@@ -2541,52 +1872,6 @@ class QuenchState:
                 for c, u, t in zip(cand, cur, spec)
                 if c > t.threshold and c > u + legality.EPS]
 
-    def _note_intent_refusal(self, ref, site, rects=None,
-                             x=None, y=None, rot=None) -> None:
-        """Tally ONE refusal against `site`, and the rules behind it.
-
-        `by_site` counts REFUSALS and `by_rule` counts BLOCKING TERMS, so the
-        two do not sum to each other in either direction: one refused pose can
-        break two claims at once, and a pose refused for a reason this call was
-        not given a ref for contributes to `by_site` alone. Stated here because
-        a reader will otherwise assume `by_rule` partitions `rejected`.
-        """
-        self.intent_rejected_by_site[site] = (
-            self.intent_rejected_by_site.get(site, 0) + 1)
-        _first = None
-        for rule, _name, _c, _u in self.intent_blockers(ref, x, y, rot, rects):
-            self.intent_rejected[rule] = self.intent_rejected.get(rule, 0) + 1
-            _first = _first or f"{rule}:{_name}"
-        if self._why is not None and site == 'candidate_valid':
-            self._veto('intent', _first)    # #1113
-
-    def _note_swap_refusal(self, ra, rb) -> None:
-        """Attribute a refused swap to whichever HALF of it was refused.
-
-        Asking only about `ra` loses the case where the partner's claims are
-        what refused: `by_site` showed the swap and `by_rule` stayed empty,
-        which reads as a refusal with no reason. Both halves are checked
-        because either can be the one that failed, and both can.
-        """
-        pa, pb = self.parts[ra], self.parts[rb]
-        self.intent_rejected_by_site['swap'] = (
-            self.intent_rejected_by_site.get('swap', 0) + 1)
-        for who, (x, y, rot), cur in ((ra, (pb.x, pb.y, pb.rot), pa.rot),
-                                      (rb, (pa.x, pa.y, pa.rot), pb.rot)):
-            for rule, _n, _c, _u in self.intent_blockers(who, x, y, rot):
-                self.intent_rejected[rule] = self.intent_rejected.get(rule, 0) + 1
-            # #1117: the declared-rotation half has no intent_blockers rule.
-            if not _declared_admits(self.declared_rotations.get(who), rot,
-                                    cur):
-                self.intent_rejected['rotation'] = (
-                    self.intent_rejected.get('rotation', 0) + 1)
-        if self._tether_active:
-            # #1043: both halves at once, since a tether between the two (two
-            # caps on one pin's rail) reads both poses.
-            for rule, _n, _c, _u in self.tether_failures(
-                    {ra: (pb.x, pb.y, pb.rot), rb: (pa.x, pa.y, pa.rot)}):
-                self.intent_rejected[rule] = self.intent_rejected.get(rule, 0) + 1
-
     #: #1113: the check that refused the candidate `candidate_veto` is
     #: asking about, filled by `_veto` on candidate_valid's rejection paths.
     #: None outside a `candidate_veto` call, so the labels cost one attribute
@@ -2642,8 +1927,8 @@ class QuenchState:
         rects = part.rects(x, y, rot)
         rect = rects[0]
         # #1182: the intent and the board ask the GRADE ladder (what the
-        # floorplan grade reads); the neighbour layers below ask `rect`, which
-        # is occupancy under body_model. One object unarmed.
+        # floorplan grade reads); the neighbour layers below ask `rect`, the
+        # occupancy. One object for a part without a body.
         grects = part.grade_rects(x, y, rot)
         grect = grects[0]
         # DECLARED INTENT (#702) -- FIRST, and a `return`, not `legal = False`.
@@ -2661,7 +1946,11 @@ class QuenchState:
         # be silently overturned there. Nothing that can return True may ever
         # be inserted above this line.
         if self._intent_active and not self.intent_ok(ref, x, y, rot, grects):
-            self._note_intent_refusal(ref, 'candidate_valid', grects)
+            if self._why is not None:
+                # #1113: labelled by the first claim the pose breaks.
+                b = next(iter(self.intent_blockers(ref, None, None, None,
+                                                   grects)), None)
+                self._veto('intent', b and f"{b[0]}:{b[1]}")
             return False
         legal = not (grect[0] < self.usable[0] or grect[1] < self.usable[1]
                      or grect[2] > self.usable[2] or grect[3] > self.usable[3])
@@ -2698,10 +1987,7 @@ class QuenchState:
             # already overlap, so it admits anything.
             mine = part.padbox(x, y, rot)
             if mine is not None:
-                if self._neighbors is not None and ref in self._neighbors:
-                    others = ((o, self.parts[o]) for o in self._neighbors[ref])
-                else:
-                    others = self.parts.items()
+                others = self.parts.items()
                 ctx = self.legality_ctx
                 clr = self.clearance
                 drilled = self._drilled_refs()
@@ -2750,10 +2036,7 @@ class QuenchState:
                 legal = False
         elif legal:
             clr = self.clearance
-            if self._neighbors is not None and ref in self._neighbors:
-                others = ((o, self.parts[o]) for o in self._neighbors[ref])
-            else:
-                others = self._sweep_others(rects, clr)
+            others = self._sweep_others(rects, clr)
             tht = part.has_tht
             skip_containers = (ref in self.container_refs)
             for other_ref, other in others:
@@ -2778,10 +2061,9 @@ class QuenchState:
                 # diagonally by (0.2, 0.2) at clearance 0.25 fail every axis while
                 # rect_gap is hypot(0.2,0.2)=0.283, i.e. legal. Using the axis
                 # test as the answer made candidate_valid REJECT poses that
-                # violation_parts (:577) and _halo_pair_penalty (:447) both score
-                # as legal -- so violation()==0 did not imply the hard gate
-                # passes, and the unfreeze branch could walk a part into a pose
-                # the ordinary gate forbids.
+                # violation_parts scores as legal -- so a zero violation did
+                # not imply the hard gate passes, and the unfreeze branch could
+                # walk a part into a pose the ordinary gate forbids.
                 if other.side != part.side:
                     continue
                 r = other.rect()
@@ -2808,10 +2090,9 @@ class QuenchState:
             # BODY layer. A pose that buries this part inside another part's
             # .Fab body is not a trade-off to be priced -- it is illegal, the
             # same verdict reconstruct._pair_conflicts already returns for the
-            # assign/exchange ILP. Without it here, `legalize` and every
-            # quench pass could re-seat a charged part straight back inside
-            # the body it was charged for, and _try_place's clearance ladder
-            # (full, full/2, 0.02) makes such a seat MORE reachable, not less.
+            # assign/exchange ILP. Without it here, a seat search could put a
+            # charged part straight back inside the body it was charged
+            # for.
             #
             # FAB currency, and only fab. The courtyard would be a false-veto
             # machine: four healthy corpus boards ship frac-1.0 COURTYARD
@@ -2842,13 +2123,7 @@ class QuenchState:
                 ref, x, y, rot, self._pad_neighbors(ref), exclude=exclude,
                 why=self._why)
         if legal:
-            # #1043: the tether conjunct LAST, at every `return True`, not
-            # beside the #702 check above. It is the one conjunct that poses
-            # footprints and walks pad pairs, so it runs only on a pose every
-            # cheaper test already admitted. It is still a conjunct on the
-            # escape branch below: a part coming home from off the board may
-            # not strand its caps on the way.
-            return self._tether_gate(ref, x, y, rot)
+            return True
         # Only now, on a rejected candidate, is the incumbent's legality worth
         # computing -- and it is cached, because it is the same answer for every
         # candidate of this part until something moves. Without the cache this
@@ -2905,47 +2180,31 @@ class QuenchState:
                 ref, x, y, rot, self._pad_neighbors(ref), exclude=exclude,
                 why=self._why):
             return False
-        return self._tether_gate(ref, x, y, rot)
-
-    def swap_intent_ok(self, ra, rb) -> bool:
-        """May these two parts exchange poses, declared-intent-wise? (#702)
-
-        The swap phase does not call `candidate_valid` on ANY path, and that is
-        deliberate: a swap preserves the OCCUPIED SPACE, so the geometry every
-        other part sees is unchanged. That argument is true of clearance and
-        FALSE of a claim that binds a REF -- exchanging two identical decaps
-        moves A to B's pose, where B's zone, B's keep-out bindings and B's
-        exclusive-zone exemptions applied, not A's. Occupied space cannot see
-        that, so this is its own conjunct rather than a relaxation of one.
-
-        Each part's OWN claims at its PARTNER's pose, each against its OWN
-        incumbent. Atomic: both halves must hold and nothing is applied, so
-        there is no ordering hazard between them.
-        """
-        pa, pb = self.parts[ra], self.parts[rb]
-        # #1117: a declared ROTATION binds a ref the same way. The swap hands
-        # each part the other's angle, and the #893 pin lived only in the
-        # nudge's candidate list, so two parts of one footprint declared at
-        # different angles traded them and the seed graded clean (there is
-        # no rule_rotation to catch it).
-        if self.declared_rotations and not (
-                _declared_admits(self.declared_rotations.get(ra), pb.rot,
-                                 pa.rot)
-                and _declared_admits(self.declared_rotations.get(rb), pa.rot,
-                                     pb.rot)):
-            return False
-        return (self.intent_ok(ra, pb.x, pb.y, pb.rot)
-                and self.intent_ok(rb, pa.x, pa.y, pa.rot)
-                and (not self._tether_active
-                     or self.tether_ok({ra: (pb.x, pb.y, pb.rot),
-                                        rb: (pa.x, pa.y, pa.rot)})))
+        return True
 
     # ----- #1043 tethers ----------------------------------------------------
+    # The part-vs-PART claims (`decap_distance`, `decap_pin_distance`,
+    # `proximity`), which is why they are not folded into `_intent_spec`:
+    # that channel's terms are part-vs-declared-geometry, and its incumbent
+    # cache (`_incumbent_intent`) is keyed by the moving ref on exactly that
+    # assumption. A tether term reads the poses of every ref it names, so its
+    # incumbent is cached PER TERM and a move of any of them invalidates it.
+    #
+    # The pairings are elected ONCE, by `floorplan.tether_pairings` -- the
+    # grader's own election on the board as it stands; a decap term re-runs
+    # the cap's election per pose over the chips on its rail, because the
+    # grade re-elects -- and every value is measured by CALLING the grader's
+    # functions on footprints posed at the live (or candidate) poses:
+    # `groups.elect_live`, `floorplan.nearest_rail_cap`,
+    # `floorplan.proximity_reaches`.
+    #
+    # These methods run on a `TetherGateView` (#1067), which binds them and
+    # carries the state they read; a QuenchState gates no tethers itself.
 
     def _build_tethers(self) -> None:
         """Elect the pairings once and freeze them as the GATE's
         `_TetherTerm`s (`tether_terms_for`, with locked terms dropped)."""
-        terms = self.tether_terms_for(self.tethers, keep_locked=False)
+        terms = self.tether_terms_for(self.tethers)
         by_ref: Dict[str, List[int]] = {}
         for i, t in enumerate(terms):
             for r in set(t.refs):
@@ -2953,17 +2212,12 @@ class QuenchState:
         self._tether_terms = terms
         self._tethers_of = {r: tuple(v) for r, v in by_ref.items()}
 
-    def tether_terms_for(self, tethers: Dict, *, keep_locked: bool
-                         ) -> List[_TetherTerm]:
+    def tether_terms_for(self, tethers: Dict) -> List[_TetherTerm]:
         """The `_TetherTerm`s `tethers` (`floorplan.tether_gate_spec`) elects
-        on the board as it stands. Assigns NOTHING on the state, so a
-        measurement-only caller (`IntentProbe`, #1068) can build them without
-        arming `_tether_gate`.
+        on the board as it stands. Assigns NOTHING on the state.
 
-        `keep_locked=False` is the gate's choice: a term none of whose refs
-        can move is dropped, since no move of this engine changes it and it
-        cannot refuse anything. A MEASUREMENT keeps it (`True`), because the
-        grade still counts it. A proximity term is expanded to one per REACH
+        A term none of whose refs can move is dropped, since no move of this
+        engine changes it and it cannot refuse anything. A proximity term is expanded to one per REACH
         the rule reports (per declared subject pad, or one for the pair),
         counted on the board as it stands.
         """
@@ -2973,9 +2227,8 @@ class QuenchState:
         terms: List[_TetherTerm] = []
         for row in rows:
             refs = tuple(row['refs'])
-            if not keep_locked and not any(
-                    r in self.parts and not self.parts[r].locked
-                    for r in refs):
+            if not any(r in self.parts and not self.parts[r].locked
+                       for r in refs):
                 continue
             rule, name, lim = row['rule'], row['name'], float(row['limit'])
             if rule == 'decap_distance':
@@ -3053,28 +2306,9 @@ class QuenchState:
         """
         return self._tether_measure(self._tether_terms[i], i, override)
 
-    def tether_graded_value(self, t: _TetherTerm) -> float:
-        """Term `t` at the LIVE poses, exactly, as the GRADE reads it (#1068):
-        the measurement `IntentProbe` counts, never the gate's. No cache is
-        read or written (the gate's caches are keyed by ITS term index), and
-        a decap pair the live election puts beyond the search radius reads 0,
-        because the grade calls it `decap_ungraded` (a warn, or per cap an
-        error under a --decaps-from intent, #1142) however it was
-        elected at build -- the gate deliberately keeps measuring that pair,
-        which is stricter than the grade and therefore not a count of it."""
-        return self._tether_measure(t, None, None, grade_view=True)
-
-    def tether_gate_view_value(self, t: _TetherTerm) -> float:
-        """Term `t` at the LIVE poses, exactly, as the GATE reads it: a pair
-        graded at build stays measured past the search radius, because
-        leaving the radius is not how a cap may stop being too far (#1043).
-        What `IntentProbe`'s LICENCE and prune vector read (#1068); its COUNT
-        reads `tether_graded_value`. No cache is read or written."""
-        return self._tether_measure(t, None, None, grade_view=False)
-
-    def _tether_measure(self, t: _TetherTerm, i: Optional[int],
-                        override=None, grade_view: bool = False) -> float:
-        """`_tether_value`'s body, for term `t`. `i` None: no cache."""
+    def _tether_measure(self, t: _TetherTerm, i: int,
+                        override=None) -> float:
+        """`_tether_value`'s body, for term `t`, the gate's term `i`."""
         _fp, _groups = _FP_GROUPS or _load_fp_groups()
         # `override` is one or two refs on every path but a group move, so
         # membership is asked of IT, never by walking a term's (long) rail.
@@ -3086,8 +2320,7 @@ class QuenchState:
             # (run 32: C26, 7.20mm from U15, walked to 3.07mm from U36), and
             # a frozen pair would read that move as clean.
             cap, rail = t.data['cap'], t.data['rail']
-            if (cap not in moving and moving and not self._exact_tethers
-                    and i is not None):
+            if cap not in moving and moving:
                 # The cap stays: the chips that do not move are one fixed
                 # minimum. If it is within the limit already, no chip's move
                 # can take the election past it (same bound as the pin term).
@@ -3102,7 +2335,7 @@ class QuenchState:
                     self._tgap[key] = static
                 if static is not None and static <= t.threshold + legality.EPS:
                     return static
-            if any(r in t.data['rail_set'] for r in moving) or i is None:
+            if any(r in t.data['rail_set'] for r in moving):
                 cands = [(r, self._chip_bounds(r, override)) for r in rail]
             else:
                 # No chip on the rail moves: their live bounds are the same
@@ -3114,8 +2347,7 @@ class QuenchState:
             _ic, d = _groups.elect_live(self._posed_fp(cap, override), cands)
             if d is None:
                 return 0.0
-            if ((grade_view or not (t.data['graded']
-                                    or t.data.get('stranded_error')))
+            if (not (t.data['graded'] or t.data.get('stranded_error'))
                     and d > t.data['radius'] + legality.EPS):
                 # Outside the radius the grade calls it `decap_ungraded`
                 # (warn): not a finding this term counts. INSIDE it is graded,
@@ -3138,21 +2370,18 @@ class QuenchState:
                 pin = self._posed_fp(ic, override).pads[t.data['pad_index']]
                 got = _fp.nearest_rail_cap(
                     pin, (self._posed_fp(c, override) for c in caps),
-                    stop_at=(None if self._exact_tethers or i is None
-                             else t.threshold + legality.EPS))
+                    stop_at=t.threshold + legality.EPS)
                 return got[0] if got is not None else 0.0
             live = tuple(sorted(c for c in moving if c in t.data['caps_set']))
             key = (i, live)
-            static = self._tgap.get(key) if i is not None else None
+            static = self._tgap.get(key)
             if static is None:
                 pin = self._posed_fp(ic).pads[t.data['pad_index']]
                 static = _fp.nearest_rail_cap(
                     pin, [self._posed_fp(c) for c in caps if c not in moving])
-                if i is not None:
-                    self._tgap[key] = static
+                self._tgap[key] = static
             best = static[0] if static is not None else None
-            if (best is not None and best <= t.threshold + legality.EPS
-                    and not self._exact_tethers):
+            if best is not None and best <= t.threshold + legality.EPS:
                 # A cap that does not move already satisfies the pin, and the
                 # term is a MINIMUM, so no pose of the moving cap can take it
                 # past the limit. Returned without measuring the moving cap:
@@ -3231,65 +2460,9 @@ class QuenchState:
             return True
         return next(self._iter_tether_failures(override), None) is None
 
-    def _tether_gate(self, ref, x, y, rot, site='candidate_valid') -> bool:
-        """`candidate_valid`'s tether conjunct, tallied like `intent_ok`'s."""
-        if not self._tether_active or ref not in self._tethers_of:
-            return True
-        # ONE full evaluation: an admitted pose needs every term anyway, and
-        # a refused one needs every blocking term for the by-rule tally, so
-        # stopping at the first failure would only buy a second pass.
-        fails = self.tether_failures({ref: (x, y, rot)})
-        if not fails:
-            return True
-        if self._why is not None:
-            self._veto('tether', f"{fails[0][0]}:{fails[0][1]}")
-        tally = self.intent_rejected_by_site
-        tally[site] = tally.get(site, 0) + 1
-        for rule, _n, _c, _u in fails:
-            self.intent_rejected[rule] = self.intent_rejected.get(rule, 0) + 1
-        return False
-
     def _pad_neighbors(self, ref):
-        """Neighbor refs for the pad gate: the pruned list when built, else
-        everyone. The pruning boxes are widened with pad/hole extents in
-        build_neighbor_lists, so the list stays a superset of interacting
-        pairs."""
-        if self._neighbors is not None and ref in self._neighbors:
-            return self._neighbors[ref]
+        """Neighbor refs for the pad gate: everyone else."""
         return [o for o in self.parts if o != ref]
-
-    def swap_pads_ok(self, ra, rb):
-        """May two parts exchange poses, pad/hole-wise? The exchange preserves
-        courtyard occupancy but NOT nets -- identical copper, exchanged net
-        assignments can land a pad inside a foreign (or locked) part's
-        clearance that the old net shared. Each part is tested at its partner's
-        pose against its own neighbors, plus the pair itself with both at
-        their new poses."""
-        if self.legality_ctx is None:
-            return True
-        pa, pb = self.parts[ra], self.parts[rb]
-        pose_a = (pb.x, pb.y, pb.rot)
-        pose_b = (pa.x, pa.y, pa.rot)
-        if not self.legality_ctx.pads_ok(ra, *pose_a,
-                                         self._pad_neighbors(ra),
-                                         exclude={rb}):
-            return False
-        if not self.legality_ctx.pads_ok(rb, *pose_b,
-                                         self._pad_neighbors(rb),
-                                         exclude={ra}):
-            return False
-        cur = self.legality_ctx.pair_shortfall(ra, rb, pose_a=pose_a,
-                                               pose_b=pose_b)
-        base = self.legality_ctx.seed_baseline(ra, rb)
-        if cur.pad > base.pad + EPS_IMPROVE:
-            return False
-        if cur.pad_overlap and not base.pad_overlap:
-            return False
-        # #1266: pads on the other part's graphic copper, on their own licence
-        if cur.gpad > base.gpad + EPS_IMPROVE or (cur.gstack
-                                                  and not base.gstack):
-            return False
-        return cur.hole <= base.hole + EPS_IMPROVE
 
     def _incumbent_violation(self, ref, exclude=None):
         """The incumbent pose's violation, cached per (ref, exclude).
@@ -3366,7 +2539,7 @@ class QuenchState:
         """Cached: the Edge.Cuts edges this part's reachable disk can touch.
         Empty means the exact ring test is skippable for every pose it can take."""
         part = self.parts[ref]
-        travel = 0.0 if part.locked else self._travel_budget
+        travel = 0.0 if part.locked else float('inf')
         # center= the pose ORIGIN: a part ROTATES about it, so an off-centre
         # courtyard's rect swings and the seed-rect-centred disk can miss an edge.
         return self.edge_gate.edges_near(
@@ -3397,57 +2570,7 @@ class QuenchState:
             self._owned_rings_cache[ref] = owned
         return owned
 
-    def _edges_near_halo(self, ref) -> list:
-        """Like _edges_near but sized to the SOFT edge_halo radius. Inflating
-        `travel` by edge_halo is the conservative way to widen the gate's
-        margin-based reach without a second reach parameter."""
-        part = self.parts[ref]
-        travel = 0.0 if part.locked else self._travel_budget
-        return self.edge_gate.edges_near(
-            (ref, 'halo'), part.rect(part.seed_x, part.seed_y, part.orig_rot),
-            travel + self.edge_halo, center=(part.seed_x, part.seed_y))
-
-    def _may_reach_edge(self, ref) -> bool:
-        return bool(self._edges_near(ref))
-
-    def _weighted_length(self, arr: np.ndarray) -> float:
-        if len(arr) == 0:
-            return 0.0
-        lengths = np.hypot(arr[:, 2] - arr[:, 0], arr[:, 3] - arr[:, 1])
-        if self.net_weights:
-            w = np.array([self.net_weights.get(int(n), 1.0)
-                          for n in arr[:, 4]])
-            lengths = lengths * w
-        return float(np.sum(lengths))
-
-    def nets_cost(self, net_airwires_subset: Dict[int, List],
-                  other_airwires: np.ndarray):
-        """Length + crossing cost of the given nets' airwires, counting
-        crossings against `other_airwires` and among themselves.
-
-        Returns (cost, crossings). The cost prices each crossing at the larger
-        of the two nets' weights (#458), so a weighted net's crossings, not
-        just its far cheaper length, carry the weight; `crossings` stays the
-        raw unweighted count for reporting."""
-        own = []
-        for lst in net_airwires_subset.values():
-            own.extend(lst)
-        own_arr = _aw_array(own)
-        length = self._weighted_length(own_arr)
-        n_out, w_out = _count_crossings_np(own_arr, other_airwires, self._net_w)
-        n_in, w_in = _count_crossings_within(own_arr, self._net_w)
-        cost = (self.length_weight * length
-                + self.crossing_penalty * (w_out + w_in))
-        if self._corridor_boxes:
-            # Only the SUBSET's chords: `other_airwires` is fixed across the
-            # candidate poses this cost ranks, so its cut is a constant that
-            # cancels in the argmin -- the same reason its length is not summed
-            # here either.
-            cost += self.corridor_weight * _corridor_cut_np(
-                own_arr, self._corridor_boxes)
-        return cost, n_out + n_in
-
-    # ----- full cost (for reporting) ---------------------------------------
+    # ----- bodies and reporting ---------------------------------------------
 
     def fab_rect(self, ref, x=None, y=None, rot=None):
         """The part's .Fab BODY rect at a pose, or None when its footprint
@@ -3562,10 +2685,7 @@ class QuenchState:
         if ra is None:
             return False
         part = self.parts[ref]
-        if self._neighbors is not None and ref in self._neighbors:
-            others = [(o, self.parts[o]) for o in self._neighbors[ref]]
-        else:
-            others = list(self.parts.items())
+        others = list(self.parts.items())
         mine = None
         for other_ref, other in others:
             if other_ref == ref or (exclude and other_ref in exclude):
@@ -3733,10 +2853,7 @@ class QuenchState:
         if ra is None:
             return False
         part = self.parts[ref]
-        if self._neighbors is not None and ref in self._neighbors:
-            others = [(o, self.parts[o]) for o in self._neighbors[ref]]
-        else:
-            others = list(self.parts.items())
+        others = list(self.parts.items())
         for other_ref, other in others:
             if other_ref == ref or (exclude and other_ref in exclude):
                 continue
@@ -3755,67 +2872,22 @@ class QuenchState:
                 return True
         return False
 
-    def total_cost(self):
+    def wire_metrics(self):
+        """`{'length', 'crossings', 'hpwl'}` of the current placement: the
+        airwire MST length (mm), the crossing count among those airwires,
+        and `hpwl`. What render_placement's metrics strip and its JSON
+        report; nothing optimises on them here."""
         all_aw = _aw_array([aw for lst in self.net_airwires.values() for aw in lst])
-        length = self._weighted_length(all_aw)
-        # `crossings` stays the raw unweighted count so the pass banner and
-        # any count-based expectation are unchanged; `total` is the objective
-        # the quench actually minimizes, which is weighted (#458), matching
-        # `length`, which has always been weighted.
-        crossings, w_crossings = _count_crossings_within(all_aw, self._net_w)
-        halo = 0.0
-        edge = 0.0
-        align = 0.0
-        orient = 0.0
-        refs = list(self.parts)
-        peers = self._peers
-        for i, ra in enumerate(refs):
-            pa = self.parts[ra]
-            rect_a = pa.rect()
-            edge += self._edge_penalty(rect_a, ra)
-            orient += self._orient_cost(ra)
-            near = peers.get(ra) if peers else None
-            for rb in refs[i + 1:]:
-                pb = self.parts[rb]
-                halo += self._halo_pair_penalty(pa, rect_a, pb, pb.rect())
-                # #548. Counted over UNORDERED pairs here, matching halo, so the
-                # report shows each physical pair once. part_geometry_cost sums
-                # one part's pairs from that part's side, which is the factor of
-                # 2 the evaluators need and which cancels between candidates.
-                if near and rb in near:
-                    align += self._align_pair_penalty(pa, rect_a, pb, pb.rect())
-        cut = (_corridor_cut_np(all_aw, self._corridor_boxes)
-               if self._corridor_boxes else 0.0)
-        # #893. Counted over UNORDERED pairs, like `halo` and `align` above and
-        # for the same reason: `ref_inversions` sums a symmetric PAIR quantity
-        # from one part's side, so summing it over every ref would count each
-        # physical pair twice. `part_geometry_cost` does sum from one side --
-        # that is the factor of 2 the evaluators need, and it cancels between
-        # candidates -- but a REPORT must show each pair once.
-        facing = (self.facing_weight
-                  * sum(m['inversions']
-                        for m in pair_inversions(self).values())
-                  if self.facing_weight > 0.0 else 0.0)
-        total = (self.length_weight * length
-                 + self.crossing_penalty * w_crossings + halo + edge
-                 + align + orient + facing + self.corridor_weight * cut)
-        return {'total': total, 'length': length, 'crossings': crossings,
-                'halo': halo, 'edge': edge, 'hpwl': self.hpwl(),
-                'align': align, 'orient': orient, 'facing': facing,
-                'corridor_cut': cut}
+        length = (float(np.sum(np.hypot(all_aw[:, 2] - all_aw[:, 0],
+                                        all_aw[:, 3] - all_aw[:, 1])))
+                  if len(all_aw) else 0.0)
+        crossings, _w = _count_crossings_within(all_aw)
+        return {'length': length, 'crossings': crossings, 'hpwl': self.hpwl()}
 
-    def hpwl(self, nets=None):
+    def hpwl(self):
         """Half-perimeter wirelength: sum over nets of the pad bbox's width plus
         height (mm). The classic placement-quality proxy, and one of the columns
         a placement scorecard wants (#411).
-
-        `nets` restricts the sum to a net-id subset -- what
-        `seeder.reseat_scope` needs to price the wirelength of the nets ITS
-        scope touches (#698). `None`, the default, is every net and is the
-        loop this method has always run, so `legality_metrics` and therefore
-        `reconstruct.measure`'s `hpwl` term are bit-identical. One optional
-        argument rather than a second HPWL in `seeder.py`: two implementations
-        of one number is how they come to disagree.
 
         Its value here is that it is airwire-ORDER-INVARIANT by construction: it
         reads only the extremes of each net's pad positions, so unlike the MST
@@ -3827,10 +2899,7 @@ class QuenchState:
         ever reappears.)
         """
         total = 0.0
-        items = (self.net_refs.items() if nets is None else
-                 [(n, self.net_refs[n]) for n in sorted(nets)
-                  if n in self.net_refs])
-        for net_id, refs in items:
+        for net_id, refs in self.net_refs.items():
             xs, ys = [], []
             for ref in refs:
                 for gx, gy, n in self.parts[ref].pad_globals():
@@ -3954,198 +3023,8 @@ class QuenchState:
         part.x, part.y, part.rot = x, y, rot
         self._inc_violation.clear()
         self._inc_intent.clear()
-        self._inc_tval.clear()
-        self._tgap.clear()
-        # #548: a move changes which pads other parts see, so every
-        # net anchor computed against this part is now stale.
-        self._anchors.clear()
         for net_id in part.nets:
             self.net_airwires[net_id] = self._build_net_airwires(net_id)
-
-    def apply_group_move(self, refs, dx, dy):
-        """Translate a whole block rigidly by (dx, dy) (#459).
-
-        Every member's pose is set FIRST, then each affected net is rebuilt once.
-        Calling apply_move per member would be correct but rebuilds a shared net
-        once per member that touches it, which on a 20-part block is most of the
-        cost of evaluating the move again.
-        """
-        nets = set()
-        for ref in refs:
-            part = self.parts[ref]
-            part.x += dx
-            part.y += dy
-            nets.update(part.nets)
-        self._inc_violation.clear()
-        self._inc_intent.clear()
-        self._inc_tval.clear()
-        self._tgap.clear()
-        # #548: a move changes which pads other parts see, so every
-        # net anchor computed against this part is now stale.
-        self._anchors.clear()
-        for net_id in nets:
-            self.net_airwires[net_id] = self._build_net_airwires(net_id)
-
-    def group_move_valid(self, refs, dx, dy):
-        """Is a rigid translate of `refs` by (dx, dy) legal?
-
-        Intra-group pairs are EXCLUDED. Under a rigid translate the block's
-        internal geometry is invariant, so those pairs contribute exactly what
-        they did before the move -- but candidate_valid re-tests every pair, and
-        on a real board members routinely sit at sub-clearance courtyard gaps
-        already (watchy seeds 81 of 82 parts in violation), so without the
-        exclusion a block would veto its own every candidate. The swap phase uses
-        `exclude` in exactly this way.
-
-        Each member must also stay within its own seed cap, which is what keeps
-        build_neighbor_lists' pruning exact and the outline gate's cached reach
-        valid -- see the group phase in quench().
-        """
-        others = set(refs)
-        if self._tether_active:
-            # #1043: a tether between two members is invariant under the
-            # shift, so each member's terms are read with the WHOLE block at
-            # its shifted pose -- otherwise an IC translating with its caps
-            # would be refused for "leaving" caps that travel with it.
-            self._tether_override = {
-                r: (self.parts[r].x + dx, self.parts[r].y + dy,
-                    self.parts[r].rot) for r in refs}
-        try:
-            for ref in refs:
-                part = self.parts[ref]
-                if not self.candidate_valid(ref, part.x + dx, part.y + dy,
-                                            part.rot, exclude=others):
-                    return False
-            return True
-        finally:
-            self._tether_override = None
-
-    def build_neighbor_lists(self, travel_budget):
-        """Per-movable-part pruned neighbour lists (perf, mirrors the
-        fanout_clearance pattern from #213 profiling). A movable part's live
-        position stays within travel_budget of its seed (nudge candidates are
-        radius-checked against the seed; swaps are capped by swap_cap <=
-        max_displacement), and rect() only ever reads bounds_by_rot, so the
-        union-of-rotations box at the seed inflated by the budget contains
-        every rect the part can ever occupy. Any pair whose per-axis seed gap
-        exceeds both budgets plus the largest interaction reach (hard
-        clearance / summed halos / either part's largest PAD requirement) can
-        NEVER interact -- excluding it is exact for candidate_valid AND
-        part_geometry_cost, not an approximation.
-
-        The pad term is what #697 added: a pad's required clearance can exceed
-        the hard clearance (a fiducial keep-clear, a net class, a .kicad_dru
-        rule), and a reach that ignored it would quietly make this prune LOSSY
-        for the pad gate -- dropping exactly the pairs that gate exists to
-        catch. `PartPads.max_floor` is an upper bound per part, so folding it in
-        keeps the claim above literally true; it is 0.0 on a board that
-        declares nothing.
-
-        Exactness survives the side rule unchanged: the side filter only ever
-        REMOVES pairs from consideration, so an XY-only prune stays a superset of
-        what the checkers consult. It is deliberately not folded in here -- the
-        courtyard box is the pruning box, and a same-footprint swap must keep the
-        pair whether or not the pose it lands on shares a side."""
-        self._travel_budget = travel_budget
-        # A swap can hand a part any rotation currently held by a movable
-        # same-footprint partner (the swap path adds the bounds entry lazily,
-        # after this build), so each part's union box must cover its whole
-        # group's rotation set, not just its own bounds_by_rot entries. Since
-        # _Part records the full 90-degree lattice of a non-orthogonal seed,
-        # that union is exactly {seed angle + 90k} over every movable part of
-        # the group, which is the closure of what a swap can hand over and a
-        # nudge can then rotate within.
-        group_rots: Dict[str, set] = {}
-        for p in self.parts.values():
-            if not p.locked:
-                group_rots.setdefault(p.footprint_name, set()).update(
-                    p.bounds_by_rot)
-        # Pad/hole extents must also be bounded by the pruning boxes, or the
-        # pad gate's neighbor lists silently become lossy for parts whose pads
-        # overhang their courtyard (THT connectors are the common case).
-        def _pad_ext_boxes(ref, rots):
-            if self.legality_ctx is None:
-                return []
-            pp = self.legality_ctx.parts.get(ref)
-            if pp is None:
-                return []
-            # #1266: and the part's footprint graphic copper, which
-            # `pair_shortfall` charges and which can reach past every pad
-            # (esp_prog U2's tab runs 4 mm beyond its pins).
-            gr = self.legality_ctx.graphics.get(ref)
-            out = []
-            for r in rots:
-                e = pp.extent_local(r)
-                if e is not None:
-                    out.append(e)
-                g = gr.extent_local(r) if gr is not None else None
-                if g is not None:
-                    out.append(g)
-            return out
-
-        geom = {}
-        for ref, p in self.parts.items():
-            if p.locked:
-                lr = p.rect()
-                tr = p.tht_rect()
-                box = (lr if tr is None else
-                       (min(lr[0], tr[0]), min(lr[1], tr[1]),
-                        max(lr[2], tr[2]), max(lr[3], tr[3])))
-                if self.legality_ctx is not None:
-                    pp = self.legality_ctx.parts.get(ref)
-                    pe = pp.extent(p.x, p.y, p.rot) if pp is not None else None
-                    if pe is not None:
-                        box = (min(box[0], pe[0]), min(box[1], pe[1]),
-                               max(box[2], pe[2]), max(box[3], pe[3]))
-                    gr = self.legality_ctx.graphics.get(ref)   # #1266
-                    ge = gr.extent(p.x, p.y, p.rot) if gr is not None else None
-                    if ge is not None:
-                        box = (min(box[0], ge[0]), min(box[1], ge[1]),
-                               max(box[2], ge[2]), max(box[3], ge[3]))
-                geom[ref] = (box, 0.0)
-            else:
-                boxes = [p.bounds_by_rot[r] if r in p.bounds_by_rot
-                         else _rotate_local_bounds(*p.bounds_by_rot[0.0], r)
-                         for r in group_rots[p.footprint_name]]
-                # A THT part also presents its lead field on the far side; that
-                # box is normally inside the courtyard, but a badly drawn
-                # courtyard can be smaller, and the pruning box must bound EVERY
-                # rect the pair tests can ask about or the prune stops being exact.
-                if p.tht_by_rot is not None:
-                    boxes += [p.tht_by_rot[r] if r in p.tht_by_rot
-                              else _rotate_local_bounds(*p.tht_by_rot[0.0], r)
-                              for r in group_rots[p.footprint_name]]
-                boxes += _pad_ext_boxes(ref, group_rots[p.footprint_name])
-                u0 = min(b[0] for b in boxes)
-                u1 = min(b[1] for b in boxes)
-                u2 = max(b[2] for b in boxes)
-                u3 = max(b[3] for b in boxes)
-                geom[ref] = ((p.seed_x + u0, p.seed_y + u1,
-                              p.seed_x + u2, p.seed_y + u3), travel_budget)
-        self._neighbors = {}
-        for ref, p in self.parts.items():
-            if p.locked:
-                continue
-            ra, ba = geom[ref]
-            lst = []
-            for oref, (rb, bb) in geom.items():
-                if oref == ref:
-                    continue
-                reach = self.clearance
-                if self.legality_ctx is not None:
-                    pa = self.legality_ctx.parts.get(ref)
-                    pb = self.legality_ctx.parts.get(oref)
-                    if pa is not None and pa.max_floor > reach:
-                        reach = pa.max_floor
-                    if pb is not None and pb.max_floor > reach:
-                        reach = pb.max_floor
-                m = ba + bb + max(reach,
-                                  p.halo + self.parts[oref].halo) + 1e-9
-                if (ra[2] + m >= rb[0] and rb[2] + m >= ra[0]
-                        and ra[3] + m >= rb[1] and rb[3] + m >= ra[1]):
-                    lst.append(oref)
-            self._neighbors[ref] = lst
-
 
 class TetherGateView:
     """QuenchState's #1043 tether gate on parts that are not a QuenchState
@@ -4153,22 +3032,20 @@ class TetherGateView:
 
     The methods ARE QuenchState's -- bound here as class attributes, not
     copied -- so a candidate is judged by the same measurement and the same
-    per-claim rule the quench applies: past its limit AND worse than the live
-    board refuses (`tether_failures` / `tether_ok`). `parts` maps each MOVABLE
+    per-claim rule everywhere: past its limit AND worse than the live board
+    refuses (`tether_failures` / `tether_ok`). `parts` maps each MOVABLE
     ref to an object with `x`, `y`, `rot` and `locked`; every other part is
     read at its file pose, which is right for an engine that moves only those
-    parts. `note_move()` must follow every applied move: it clears the two
-    caches QuenchState's `apply_move` clears.
+    parts. `note_move()` must follow every applied move: it clears the
+    incumbent values and the static partial minima.
     """
 
-    _exact_tethers = False
     _build_tethers = QuenchState._build_tethers
     tether_terms_for = QuenchState.tether_terms_for
     _pose_of = QuenchState._pose_of
     _posed_fp = QuenchState._posed_fp
     _chip_bounds = QuenchState._chip_bounds
     _tether_value = QuenchState._tether_value
-    tether_graded_value = QuenchState.tether_graded_value
     _tether_measure = QuenchState._tether_measure
     _incumbent_tether = QuenchState._incumbent_tether
     tether_failures = QuenchState.tether_failures
@@ -4194,7 +3071,7 @@ class TetherGateView:
 
     def note_move(self):
         """A part in `parts` moved: the incumbent values and the static
-        partial minima are stale (QuenchState.apply_move's two clears)."""
+        partial minima are stale."""
         self._inc_tval.clear()
         self._tgap.clear()
 
@@ -4210,119 +3087,4 @@ def _load_fp_groups():
     from . import floorplan, groups
     _FP_GROUPS = (floorplan, groups)
     return _FP_GROUPS
-
-
-def _candidate_positions(part: _Part, max_disp: float, step: float,
-                         lattice: float):
-    """Grid of candidate centers within max_disp of the seed position.
-
-    The snap is on the OFFSET, not on the absolute position, and that
-    distinction is the whole of #708. `seed_x + ix*step` already carries
-    whatever phase the designer laid the board out on; snapping the SUM to a
-    lattice through board ORIGIN discards it, because seed_x is not generally a
-    multiple of anything. Snapping the offset instead inherits the seed's
-    phase, so a part on a 0.3175mm (12.5 mil) lattice is offered only poses on
-    that same lattice.
-
-    Two measurements behind this, both in `tests/measure_708_lattice.py`:
-
-      * the old absolute snap removed ZERO candidates at every step the tool
-        ships -- it was a pure translation of the whole set by the seed's
-        residue -- so nothing is lost by dropping it;
-      * snapping the offset to the RASTER would not be enough. At step=1.0 the
-        raster offsets are {0, +/-1.0, +/-2.0, ...} and 1.0 is not a multiple
-        of 0.3175, so only the zero offset lands back on the board's lattice.
-        Snapping to the lattice gives {0, +/-0.9525, +/-1.905, ...} and every
-        candidate stays on the seed's coset of it.
-
-    Reach is comparable but NOT uniformly better, and the honest bound is worth
-    stating: sweeping max_disp 0.5..19.5 at step=1.0 on a 0.3175 lattice, 12
-    values gain candidates, 17 tie and 10 LOSE -- worst 81 -> 69 at
-    max_disp=5.0, because an offset the raster admitted at exactly the cap can
-    snap UP past it. That is the price of the exact cap below, paid knowingly.
-    At the shipped default (10.0 / 1.0) it is 317 -> 325.
-
-    `lattice` is the board's own pitch when one can be read off it and the
-    `grid_step` raster otherwise, so a board with no inferable lattice keeps
-    exactly the offsets it has always had.
-
-    The radius test runs AFTER the snap, so `max_disp` is an exact cap rather
-    than one overshot by up to lattice*sqrt(2)/2.
-    """
-    seen = set()
-    out = []
-    n = int(max_disp / step)
-    for ix in range(-n, n + 1):
-        for iy in range(-n, n + 1):
-            dx = snap_to_grid(ix * step, lattice)
-            dy = snap_to_grid(iy * step, lattice)
-            if math.hypot(dx, dy) > max_disp + 1e-9:
-                continue
-            cx = part.seed_x + dx
-            cy = part.seed_y + dy
-            key = (round(cx, 4), round(cy, 4))
-            if key not in seen:
-                seen.add(key)
-                out.append((cx, cy))
-    return out
-
-
-def _candidate_rotations(part: _Part, allow_rotations: bool,
-                         declared=None) -> List[float]:
-    """Rotation candidates for a nudge move.
-
-    The 90-degree lattice through the part's CURRENT angle, plus the lattice
-    through its seed angle when a swap has moved it off that one. Two
-    consequences beyond the old "the four axis rotations, but only if the seed
-    is orthogonal" rule: a part placed at 45 degrees can rotate at all, to
-    135/225/315, staying on its own lattice rather than being snapped onto the
-    axes; and the current pose is always among the candidates, so such a part
-    can be MOVED while KEEPING its angle.
-
-    Generated in ROTATIONS order from a base of rot % 90, so for any part
-    sitting at a multiple of 90, which is every part on a board with only
-    orthogonal footprint rotations, this returns exactly ROTATIONS: same
-    values, same order. The order is load-bearing, not style: the caller keeps
-    the FIRST strict minimum, so a reordered list would silently change which
-    pose wins a tie. Do not rewrite this as a set.
-    """
-    if not allow_rotations:
-        return [part.rot]
-    if declared is not None:
-        # #893. A DECLARED rotation outranks the lattice. `[angle]` for a
-        # decision -- the move loop then has no rotation to choose and the
-        # part keeps the angle the seeder was told to give it -- and the
-        # author's SET, order preserved, for `rotation_candidates`. This is
-        # what makes the declaration survive `place_seed -> place_optimize`;
-        # without it the intent was honoured once and undone by the next step,
-        # which is weaker than the locking it replaced.
-        rot, cands = declared
-        if rot is not None:
-            return [rot % 360]
-        return [c % 360 for c in cands]
-    bases = [part.rot % 90]
-    if part.orig_rot % 90 != bases[0]:
-        bases.append(part.orig_rot % 90)
-    return [(b + r) % 360 for b in bases for r in ROTATIONS]
-
-
-def _same_angle(a, b) -> bool:
-    return abs((a - b + 180.0) % 360.0 - 180.0) < 1e-6
-
-
-def _declared_admits(declared, rot, current=None) -> bool:
-    """Whether a declared rotation claim (#893; `(rotation, candidates)`, or
-    None for no claim) admits the angle `rot` -- the swap phase's half of the
-    pin `_candidate_rotations` puts on the nudge (#1117). A part handed its
-    `current` angle is never refused: a swap that changes no angle cannot
-    make a declaration worse. An earlier version of this gate refused it --
-    even under `--no-rotate`, where no move can turn anything -- and lost a
-    16 mm wirelength win (#1117's second verifier)."""
-    if declared is None:
-        return True
-    if current is not None and _same_angle(rot, current):
-        return True
-    return any(_same_angle(rot, a)
-               for a in _candidate_rotations(None, True, declared))
-
 

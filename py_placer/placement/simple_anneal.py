@@ -72,9 +72,6 @@ def _place(st, ref, x, y, rot):
     part.x, part.y, part.rot = x, y, rot
     st._inc_violation.clear()
     st._inc_intent.clear()
-    st._inc_tval.clear()
-    st._tgap.clear()
-    st._anchors.clear()
 
 
 def _turn(x, y, q):

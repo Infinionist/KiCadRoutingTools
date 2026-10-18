@@ -29,15 +29,10 @@ These are lower bounds on what ANY router must pay, which is what makes them
 safe to rank poses by -- unlike a correlational proxy, improving them cannot be
 gamed by the optimizer.
 
-They join ``quench.total_cost`` ONLY under an explicit non-zero
-``facing_weight``, whose default is 0.0 (#893). Before that they joined it
-never, and the reason is still the operative one for the default: adding
-proxies to an objective measured as a negative result. Being a lower bound rather than a correlational
-proxy is an argument for trying it, not a measurement that it helps -- so the
-weight exists to MEASURE the question and
-``tests/test_placement_ab.py`` exists to decide it. The consumers are pose
-ranking (pose_score components), the operator reading a report, and
-``QuenchState._facing_cost`` when it is armed.
+They are REPORTED, not optimised: being a lower bound rather than a
+correlational proxy is an argument for trying them in an objective, not a
+measurement that it helps. The consumer is the operator reading a report
+(`board_context`'s pair rows).
 """
 from __future__ import annotations
 

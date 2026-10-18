@@ -230,8 +230,7 @@ def _cap_clearance_not_finite(ns, cwd):
 
 
 def _cap_intent_unreadable(ns, cwd):
-    if not getattr(ns, 'intent', None) or getattr(ns, 'suggest_locks', False) \
-            or not _can_see(cwd):
+    if not getattr(ns, 'intent', None) or not _can_see(cwd):
         return None
     from placement import floorplan
     here = os.getcwd()

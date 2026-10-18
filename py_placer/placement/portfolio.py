@@ -12,8 +12,6 @@ import os
 import shutil
 from typing import Optional, Sequence, Set
 
-EPS = 1e-6
-
 
 # --------------------------------------------------------------------------
 # board / state plumbing
@@ -43,9 +41,8 @@ def copy_siblings(src_board: str, dst_board: str) -> None:
             continue
         # IN PLACE the sibling is already its own destination. `copyfile`
         # raises SameFileError there (PermissionError via copy2 on Windows),
-        # and every in-place run crashed AFTER writing its board: place_seed
-        # --repair/--reseat with nothing to move and the seed path,
-        # place_optimize X X, beautify_labels X X. `samefile`, not an abspath
+        # and every in-place run crashed AFTER writing its board (e.g.
+        # beautify_labels X X). `samefile`, not an abspath
         # compare, so a case-only spelling on a case-insensitive disk counts.
         if os.path.exists(d) and os.path.samefile(s, d):
             continue
