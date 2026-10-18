@@ -56,16 +56,6 @@ import time
 from kicad_parser import parse_kicad_pcb  # noqa: E402
 
 
-def _is_ground(name):
-    """A ground or return net, by name: GND or VSS anywhere in it. Wider than
-    `net_queries.is_ground_net_name` on purpose, which leaves out VSS and
-    names that only end in GND for the routing tools' sake: here `LV_GND`,
-    `VSSA` and `VSS_PA` are grounds too (a decap's other pad, a pour, not a
-    channel), and a single-pad `unconnected-(J1-GND-Pad6)` is never priced."""
-    u = (name or '').upper()
-    return 'GND' in u or 'VSS' in u
-
-
 def face_targets(intent, blocks, doc, pcb):
     """`(sides, conflicts)`: the face each part must be on -- every face the
     intent declares (`floorplan.declared_side_claims`) and each group's
@@ -116,7 +106,7 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
     from list_nets import board_floor_knobs
     from placement import floorplan as fp
     from placement.grouping import (BoardView, claim_rows, decap_conflicts,
-                                    fold_followers, group_of)
+                                    fold_followers, group_of, is_ground)
     from placement.simple import Model
     notes = []
     clearance, edge, _ = board_floor_knobs(board)
@@ -161,49 +151,37 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
         if legs:
             claims.append((s, p, legs))
     # decaps: each cap from a supply rail to ground, matched to that rail's
-    # supply pins (`simple.Model._sites`) -- not a claimed part, and not a cap
-    # whose IC is in another group (an RC cap beside its button, not a decap)
+    # supply pins (`simple.Model._sites`) by the rule check_groups reports by
+    # (`BoardView.decaps`) -- not a claimed part, and not a cap whose IC is in
+    # another group (an RC cap beside its button, not a decap)
     view = BoardView(pcb)
     exempt = {str(c['ref']) for c in rows} | {
         c['cap'] for c in decap_conflicts(doc, view)}
-    supply = {}
-    for ic, rec in fp.supply_pins(pcb).items():
-        for pad, net in rec.get('pins') or ():
-            nid = getattr(pad, 'net_id', None) or (net if isinstance(net, int) else None)
-            if nid and not _is_ground(pcb.nets[nid].name):
-                supply.setdefault(nid, []).append((ic, str(pad.pad_number)))
+    supply = view.supply_pins()
     # a decap serves its own group's IC when the group has one on its rail:
-    # an LDO's output cap belongs at the LDO, not at the MCU's VDD pin. Its
-    # other pad is on ground: a cap from a rail to anything else (a
-    # converter's feed-forward cap, rail to FB) is not decoupling anything
+    # an LDO's output cap belongs at the LDO, not at the MCU's VDD pin
     gof = group_of(doc)
     decaps, decap_pins = [], {}
-    for nid, caps in fp._decap_caps_by_net(pcb).items():
-        if nid in supply:
-            for cap in caps:
-                r = cap.reference
-                other = {p.net_id for p in cap.pads if p.net_id > 0} - {nid}
-                if not any(_is_ground(pcb.nets[n].name) for n in other):
-                    continue
-                if r in state.parts and r not in exempt:
-                    decaps.append((r, nid))
-                    own = [q for q in supply[nid] if gof.get(q[0]) == gof.get(r)]
-                    if own:
-                        decap_pins[r] = own
-    for r, nid in sorted(set(decaps)):
+    for r, nid in sorted(view.decaps().items()):
+        if r in state.parts and r not in exempt:
+            decaps.append((r, nid))
+            own = [q for q in supply[nid] if gof.get(q[0]) == gof.get(r)]
+            if own:
+                decap_pins[r] = own
+    for r, nid in decaps:
         pins = decap_pins.get(r) or supply[nid]
         notes.append(f"decap {r} on {pcb.nets[nid].name} serves "
                      + ', '.join(sorted({ic for ic, _n in pins}))
                      + ("" if r in decap_pins else " (no IC of its group is on its rail)"))
     # congestion counts every net that is routed as tracks: all but ground,
     # which is poured as a plane
-    cnets = sorted(n for n in state.net_refs if n and not _is_ground(pcb.nets[n].name))
+    cnets = sorted(n for n in state.net_refs if n and not is_ground(pcb.nets[n].name))
     model = Model(state, pcb, rails=view.rails, claims=claims,
-                  decaps=sorted(set(decaps)), supply=supply, decap_pins=decap_pins,
+                  decaps=decaps, supply=supply, decap_pins=decap_pins,
                   groups=groups, congestion_weight=args.congestion_weight,
                   track_pitch=args.track_pitch, congestion_nets=cnets,
                   rail_weight=args.rail_weight,
-                  ground_nets={n for n in view.rails if _is_ground(pcb.nets[n].name)},
+                  ground_nets={n for n in view.rails if is_ground(pcb.nets[n].name)},
                   ground_weight=args.ground_weight, pad_weight=args.pad_weight,
                   crossing_weight=args.crossing_weight, claim_weight=args.claim_weight,
                   decap_weight=args.decap_weight, group_weight=args.group_weight,

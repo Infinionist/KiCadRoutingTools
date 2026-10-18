@@ -138,6 +138,17 @@ def _cu_pads(fp):
             and any(str(l).endswith('.Cu') for l in (p.layers or ()))]
 
 
+def is_ground(name) -> bool:
+    """A ground or return net, by name: GND or VSS anywhere in it -- the
+    decap rule's ground (`BoardView.decaps`), and place_simple's. Wider than
+    `net_queries.is_ground_net_name` on purpose, which leaves out VSS and
+    names that only end in GND for the routing tools' sake: here `LV_GND`,
+    `VSSA` and `VSS_PA` are grounds too (a decap's other pad, a pour, not a
+    channel), and a single-pad `unconnected-(J1-GND-Pad6)` is never priced."""
+    u = (name or '').upper()
+    return 'GND' in u or 'VSS' in u
+
+
 #: Roles (`roles.infer_role`) whose supply pins own no decap.
 CONNECTOR_ROLES = frozenset({'connector', 'pin header', 'usb receptacle', 'edge receptacle'})
 
@@ -163,13 +174,14 @@ class BoardView:
         self.name_of = lambda nid: getattr(nets.get(nid), 'name', '') or ''
         self.rails = rail_net_ids(self.owners, self.name_of, len(self.parts))
         self._supply = None
+        self._decaps = None
 
-    def supply_owners(self) -> Dict[int, Set[str]]:
-        """{net id: the chips with a supply pin on it} -- the chips and pins
+    def supply_pins(self) -> Dict[int, List[Tuple[str, str]]]:
+        """{rail net id: [(chip, pad number)]} -- the supply pins
         `floorplan.supply_pins` finds by shape and pin type, function or rail
-        name, the ones place_simple matches its decaps to -- less connectors:
-        a cap on a connector's power pin is a bulk cap where power enters,
-        placed with its group, not a decap pulled to that pin."""
+        name, on every net but ground, less connectors': a cap on a
+        connector's power pin is a bulk cap where power enters, placed with
+        its group, not a decap pulled to that pin."""
         if self._supply is None:
             from placement.floorplan import supply_pins
             from placement.roles import infer_role
@@ -177,10 +189,33 @@ class BoardView:
             for ic, rec in supply_pins(self.pcb).items():
                 if infer_role(self.pcb.footprints.get(ic), ic, None)['role'] in CONNECTOR_ROLES:
                     continue
-                for pad, _net in rec.get('pins') or ():
-                    if getattr(pad, 'net_id', 0):
-                        self._supply.setdefault(pad.net_id, set()).add(ic)
+                for pad, net in rec.get('pins') or ():
+                    nid = getattr(pad, 'net_id', None) or (net if isinstance(net, int) else None)
+                    if nid and not is_ground(self.name_of(nid)):
+                        self._supply.setdefault(nid, []).append((ic, str(pad.pad_number)))
         return self._supply
+
+    def decaps(self) -> Dict[str, int]:
+        """{cap: its rail net id} -- every decap by the electrical rule, the
+        ONE rule place_simple prices and check_groups reports by: a cap
+        (`groups.is_decoupling_cap`) from ground (`is_ground`) to a rail
+        another chip has a supply pin on (`supply_pins`). A cap from a rail to
+        anything else (a converter's feed-forward cap, rail to FB) decouples
+        nothing. Electrical only: it asks nothing of where the parts are, so
+        it answers on a pile too."""
+        if self._decaps is None:
+            from placement.groups import is_decoupling_cap
+            supply = self.supply_pins()
+            self._decaps = {}
+            for ref, fp in sorted(self.parts.items()):
+                if not is_decoupling_cap(fp, ref):
+                    continue
+                nets = {p.net_id for p in fp.pads if p.net_id > 0}
+                rail = [n for n in nets if not is_ground(self.name_of(n))]
+                if (len(rail) == 1 and len(nets) == 2
+                        and any(ic != ref for ic, _p in supply.get(rail[0], ()))):
+                    self._decaps[ref] = rail[0]
+        return self._decaps
 
     def pad_count(self, ref: str) -> int:
         return len(_cu_pads(self.parts[ref]))
@@ -197,21 +232,12 @@ def group_of(doc: Dict) -> Dict[str, str]:
 
 
 def cap_owners(view: BoardView, cap: str):
-    """`(net name, [owner refs])` when `cap` is a decap by the electrical
-    rule -- a 2-pad C with one pad on ground and one on a net a chip other
-    than a connector has a supply pin on (`BoardView.supply_owners`) -- else
-    None. Electrical only:
-    it asks nothing of where the parts are, so it answers on a pile too."""
-    from net_queries import is_ground_net_name
-    if not cap.upper().startswith('C') or view.pad_count(cap) != 2:
+    """`(net name, [owner refs])` when `cap` is a decap (`BoardView.decaps`):
+    its rail and the chips with a supply pin on it -- else None."""
+    nid = view.decaps().get(cap)
+    if nid is None:
         return None
-    nets = view.nets_of.get(cap, set())
-    gnd = [n for n in nets if is_ground_net_name(view.name_of(n))]
-    other = [n for n in nets if n not in gnd]
-    if not gnd or len(other) != 1:
-        return None
-    owners = sorted(o for o in view.supply_owners().get(other[0], ()) if o != cap)
-    return (view.name_of(other[0]), owners) if owners else None
+    return view.name_of(nid), sorted({ic for ic, _p in view.supply_pins()[nid]} - {cap})
 
 
 def decap_conflicts(doc: Dict, view: BoardView) -> List[Dict]:

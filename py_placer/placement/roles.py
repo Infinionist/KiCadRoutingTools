@@ -34,6 +34,15 @@ _ROLE_FP = (
     ('regulator', ('sot89', 'sot223', 'to252', 'dpak')),
 )
 
+#: Connector rows above. A hit for one of these found only in a footprint's
+#: LIBRARY nickname does not outrank an IC's reference prefix: a board's own
+#: library groups parts by where they are used, and fusb302_pd_dev files its
+#: buck converter U2 as `usb-c:TI-RNX0012A-VQFN-HR`. Over the 478 corpus
+#: boards that rule changes that one part; reading the library nickname not
+#: at all would change 19 others for the worse (a crystal's `Crystal-FP:`
+#: library, `Mlab_Pin_Headers:Straight_2x03`).
+_CONNECTOR_FP_ROLES = ('usb receptacle', 'pin header')
+
 #: The two package rows above hold parts of BOTH kinds -- a 78L05 and a
 #: BC237 are both TO-92, a BCX56 and an ME6210 are both SOT-89 -- so a hit
 #: there is read through the part's own pins first (`_package_role`).
@@ -159,9 +168,13 @@ def infer_role(fp, ref: str, cls_name: Optional[str]) -> Dict[str, object]:
         return {'role': cls_name.replace('_', ' '), 'source': 'part_class',
                 'evidence': [f'placement.part_class says {cls_name}']}
     flat = _norm(name)
+    own = _norm(name.split(':', 1)[1]) if ':' in name else flat
     for role, keys in _ROLE_FP:
         hit = next((k for k in keys if k in flat), None)
         if not hit:
+            continue
+        if (role in _CONNECTOR_FP_ROLES and hit not in own
+                and _ROLE_PREFIX.get(pref) == 'integrated circuit'):
             continue
         if role in _SHARED_PACKAGE_ROLES:
             got = _package_role(fp, role, hit, pref)
