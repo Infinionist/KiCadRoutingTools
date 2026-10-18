@@ -124,6 +124,16 @@ def copy_pro(src_board, dst_board):
         print(f'  project floor NOT stamped: {e}', flush=True)
 
 
+def _drop_tie_siblings(tmp):
+    # the writer seeds a temp board's siblings beside it (#1286); the shipped board keeps its own
+    from copy_board import SIBLING_EXTS
+    for ext in SIBLING_EXTS:
+        try:
+            os.unlink(tmp[:-len('.kicad_pcb')] + ext)
+        except OSError:
+            pass
+
+
 ROUNDS = int(awx_settings.get('SRC_ROUNDS', '8'))   # realized source rounds (feasibility bans need re-plans); 0 = the teeth as they stand
 DST_ITERS = 8  # destination select -> fan out -> audit -> ban -> re-select
 
@@ -1561,6 +1571,7 @@ def joint_destination(out_path, names, choice, dref, byname, board, banned, log=
             add_tracks_and_vias_to_pcb(out_path, tmp, [], ties, [],
                                        net_id_to_name={i: n.name for i, n in pcb_t.nets.items()})
             os.replace(tmp, out_path)
+            _drop_tie_siblings(tmp)
             ship_vias.stamp(out_path, 'fanout ties', log)
             log(f'  joint destination: {len(ties)} tie via(s) for pads under balls')
     except Exception as e:      # a tie must not lose the board
@@ -2071,6 +2082,7 @@ def fanout_destination(out_path, names, choice, dst_pad, dref, byname, board,
             add_tracks_and_vias_to_pcb(out_path, tmp, [], ties, [],
                                        net_id_to_name={i: n.name for i, n in pcb_f.nets.items()})
             os.replace(tmp, out_path)
+            _drop_tie_siblings(tmp)
             ship_vias.stamp(out_path, 'fanout ties', print)
     except Exception as e:      # a tie must not lose the board
         print(f'  tie vias NOT added: {e}')

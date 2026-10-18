@@ -1898,31 +1898,49 @@ def apply_routed_floors(board_pcb: str, clearance=None, hole_clearance=None,
     return changes
 
 
+def carry_input_siblings(output_pcb: str, input_pcb=None, skip=()) -> list:
+    """Copy each of the input board's siblings (``copy_board.SIBLING_EXTS``,
+    less ``skip``) beside the output board, unless the output already has
+    one. An existing output sibling is never overwritten. Each copy is atomic
+    (tmp + ``os.replace``). Returns the paths written."""
+    import shutil
+    if not (output_pcb and input_pcb):
+        return []
+    from copy_board import SIBLING_EXTS
+    in_base = os.path.splitext(input_pcb)[0]
+    out_base = os.path.splitext(output_pcb)[0]
+    written = []
+    for ext in SIBLING_EXTS:
+        if ext in skip:
+            continue
+        src, dst = in_base + ext, out_base + ext
+        if os.path.isfile(src) and not os.path.isfile(dst) \
+                and os.path.abspath(src) != os.path.abspath(dst):
+            tmp = dst + '.tmp'
+            shutil.copyfile(src, tmp)
+            os.replace(tmp, dst)
+            written.append(dst)
+    return written
+
+
 def seed_project_for_output(output_pcb: str, input_pcb=None):
-    """Carry the input board's sibling ``.kicad_pro`` over to the output path
-    BEFORE the board file is written (#513 item 12). The full floor writeback
+    """Carry the input board's siblings over to the output path BEFORE the
+    board file is written (#513 item 12, #1286). The full floor writeback
     (``fix_project_for_output``) must run after the board exists because it scans
     the written copper -- so a mid-run kill in that window used to leave a
     valid board with NO sibling project, and the next step silently fell back
     to stock netclass floors (the #441/#338 class; peaksat_obc_adcs, twice).
     Seeding the input's project first means the window leaves the INPUT's
-    floors -- slightly stale at worst, never the stock fallback. Idempotent:
-    an existing output project is never touched. Returns the seeded path or
-    None."""
-    import shutil
-    if not output_pcb:
-        return None
-    out_pro = find_project(output_pcb)
-    if os.path.isfile(out_pro):
-        return None
-    in_pro = find_project(input_pcb) if input_pcb else None
-    if not (in_pro and os.path.isfile(in_pro)
-            and os.path.abspath(in_pro) != os.path.abspath(out_pro)):
-        return None
-    tmp = out_pro + '.tmp'
-    shutil.copyfile(in_pro, tmp)
-    os.replace(tmp, out_pro)
-    return out_pro
+    floors -- slightly stale at worst, never the stock fallback.
+
+    Every sibling is seeded here, not only the ``.kicad_pro``, because this is
+    the one carry every routing writer makes. The writeback is skipped under
+    ``--no-fix-drc-settings``, and when the ``.kicad_dru`` was carried only
+    there, such an output reached kicad-cli without the board's custom rules:
+    a pad pair legal under its 0.16 mm rule was graded a clearance violation
+    on 12 of 13 single-net re-routes (#1286). Idempotent: an existing output
+    sibling is never touched. Returns the paths seeded."""
+    return carry_input_siblings(output_pcb, input_pcb)
 
 
 def fanout_written_floors(kind, tracks, vias):
@@ -2039,18 +2057,10 @@ def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
     # every grader resolves them from the OUTPUT board's sibling), the
     # .design-brief.json (#711: the declared intent, without which the next
     # grade infers every edge from the current pose, #1190) and the .kicad_prl.
-    # Never overwrite an existing output sibling.
-    if input_pcb:
-        from copy_board import SIBLING_EXTS
-        in_base = os.path.splitext(input_pcb)[0]
-        out_base = os.path.splitext(output_pcb)[0]
-        for ext in SIBLING_EXTS:
-            if ext == ".kicad_pro":
-                continue                                  # handled above
-            src, dst = in_base + ext, out_base + ext
-            if os.path.isfile(src) and not os.path.isfile(dst) \
-                    and os.path.abspath(src) != os.path.abspath(dst):
-                shutil.copyfile(src, dst)
+    # Never overwrite an existing output sibling. A routing writer has already
+    # seeded them (seed_project_for_output); this covers a caller that did not
+    # write the board through one.
+    carry_input_siblings(output_pcb, input_pcb, skip=(".kicad_pro",))
 
     # The records (origin, protected nets, ...) as the board holds them: the
     # newer of the project's copy and the board file's, which is where a GUI

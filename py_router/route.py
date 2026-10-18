@@ -4810,8 +4810,12 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 oracle_check = 'failed'
                 print(f"  (oracle summary check failed: {_oe})")
             finally:
+                # ...and every sibling write_routed_output seeded beside it
+                # (copy_board's shared SIBLING_EXTS, #1286).
+                from copy_board import SIBLING_EXTS as _sib_o
                 for _p in ((_staged,) if _staged else ()):
-                    for _s in (_p, os.path.splitext(_p)[0] + '.kicad_pro'):
+                    for _s in (_p,) + tuple(os.path.splitext(_p)[0] + _e
+                                            for _e in _sib_o):
                         try:
                             os.unlink(_s)
                         except OSError:
@@ -5814,6 +5818,14 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                     _os666.close(_fd666)
                     if _aw666(output_file, _tmp666, _tr666, _vi666):
                         _sh666.move(_tmp666, output_file)
+                    # The writer seeded the temp board's siblings from the
+                    # output's; the output keeps its own (#1286).
+                    from copy_board import SIBLING_EXTS as _sib666
+                    for _e in _sib666:
+                        try:
+                            _os666.unlink(_os666.path.splitext(_tmp666)[0] + _e)
+                        except OSError:
+                            pass
             except Exception as _e666:
                 print(f"  (write-divergence repair unavailable: {_e666})")
             # #666/IO_9 scoped cap move (CLI file mode, like the reaudit):
