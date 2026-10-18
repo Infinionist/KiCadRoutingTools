@@ -17,13 +17,15 @@
    part starts at a random place on the board. The intent's keep-outs and
    zones bind every part through the anneal's overlap term.
 3. ANNEAL: one cost (`placement/simple.py`) -- signal and rail trees,
-   crossings, claims, decaps at their own group's supply pins, each group's
-   gap tree, the halo between unwired neighbours, airwires over foreign
-   pads, routing congestion -- lowered by simulated annealing
-   (`placement/simple_anneal.py`), MOVES_PER_PART moves per movable part
-   from `--seed`, so the same board, inputs and seed give the same
-   placement. On ch32v003_usb (22 movable parts) the whole run takes about
-   4.3 s.
+   crossings, claims, decaps spread over their own group's supply pins,
+   each group's gap tree, the halo in front of fine-pitch parts' pads,
+   airwires over foreign pads, routing congestion -- lowered by simulated
+   annealing (`placement/simple_anneal.py`), MOVES_PER_PART moves per
+   movable part from `--seed`, so the same board, inputs and seed give the
+   same placement. A run that leaves a part with no legal pose (a big part
+   wedged between fixed ones on a full board) is run again from a fresh
+   start, up to RESTARTS times, the first legal placement kept. On
+   ch32v003_usb (22 movable parts) the whole run takes about 4.3 s.
 
 Exit codes: 0 placed, 2 unreadable input or a face the board cannot take
 (two declarations disagree, or a KiCad-locked part is declared on the other
@@ -39,6 +41,8 @@ import _path  # noqa: F401  (py_placer -> py_router/py_tools on sys.path)
 #: ch32v003_usb (22 movable parts) anneals in about 4 s. More moves still pay
 #: (`--moves`); fewer leave the run cooling too fast.
 MOVES_PER_PART = 500
+#: Further anneals, each from a fresh start, when one leaves parts illegal.
+RESTARTS = 2
 
 import argparse
 import json
@@ -197,7 +201,8 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
                   ground_weight=args.ground_weight, pad_weight=args.pad_weight,
                   crossing_weight=args.crossing_weight, claim_weight=args.claim_weight,
                   decap_weight=args.decap_weight, group_weight=args.group_weight,
-                  hints=hints(doc, state, movable, args))
+                  hints=hints(doc, state, movable, args),
+                  halo_base=args.halo_base, halo_coef=args.halo_coef)
     return state, model, movable, notes
 
 
@@ -238,11 +243,12 @@ def main(argv=None):
                     help="per mm a group with an `edge` is from that board edge "
                          "(default 2)")
     ap.add_argument('--halo-base', type=float, default=0.0,
-                    help='mm of halo every part keeps (default 0)')
-    ap.add_argument('--halo-coef', type=float, default=0.2,
-                    help='mm of halo per sqrt(pin count) (default 0.2)')
+                    help='mm of halo in front of every side a fine-pitch part\'s pads '
+                         'face (default 0)')
+    ap.add_argument('--halo-coef', type=float, default=0.25,
+                    help='mm of halo per net leaving by a side (default 0.25)')
     ap.add_argument('--halo-weight', type=float, default=10.0,
-                    help='cost per mm^2 of an unwired pair\'s halo shortfall (default 10)')
+                    help='cost per mm^2 of a halo shortfall (default 10)')
     ap.add_argument('--rail-weight', type=float, default=0.3,
                     help='per mm of a supply rail\'s tree: less than a signal\'s 1, '
                          'being wide or poured, but not nothing (default 0.3)')
@@ -344,16 +350,34 @@ def main(argv=None):
     for name, members in model.groups:
         print(f"  group {name}: {', '.join(members)}")
     t1 = time.time()
-    simple_anneal.scatter(model, movable, seed=a.seed)
     moves = a.moves or MOVES_PER_PART * len(movable)
-    res = simple_anneal.anneal(model, movable, moves=moves, seed=a.seed,
-                               log=lambda s: print(f"  {s}"))
-    final = model.total()
-    t2 = time.time()
+
     def ok(r):
         p = state.parts[r]
         return (legal(state, r, p.x, p.y, p.rot)
                 and state.intent_clear(r, p.grade_rects(p.x, p.y, p.rot)))
+    kept = None             # (illegal count, poses, res) of the best run yet
+    for k in range(RESTARTS + 1):
+        # a restart's own stream, distinct from every other seed's first run
+        seed = a.seed if k == 0 else (a.seed + 1) * 1000003 + k
+        simple_anneal.scatter(model, movable, seed=seed)
+        res = simple_anneal.anneal(model, movable, moves=moves, seed=seed,
+                                   log=lambda s: print(f"  {s}"))
+        illegal = [r for r in movable if not ok(r)]
+        if kept is None or len(illegal) < kept[0]:
+            kept = (len(illegal), {r: (state.parts[r].x, state.parts[r].y, state.parts[r].rot)
+                                   for r in movable}, res)
+        if not illegal:
+            break
+        print(f"  NOTE: run {k + 1} left no legal pose for {', '.join(illegal)}"
+              + ("; annealing again from a fresh start" if k < RESTARTS else ""))
+    _n, poses, res = kept
+    for r, pose in poses.items():
+        state.parts[r].ensure_rotation(pose[2])
+        state.apply_move(r, *pose)
+    model.reprice_all()
+    final = model.total()
+    t2 = time.time()
     illegal = [r for r in movable if not ok(r)]
     print(f"place_simple: annealed {res['moves']} moves in {t2 - t1:.1f} s; {_line(final)}")
     if res['reseated']:
@@ -371,7 +395,7 @@ def main(argv=None):
         shutil.rmtree(tmp, ignore_errors=True)
     final.pop('per_group', None)
     final.pop('per_hint', None)
-    report = {'final': final, 'moves': res['moves'], 'seed': a.seed,
+    report = {'final': final, 'moves': res['moves'], 'seed': a.seed, 'runs': k + 1,
               'declared': sorted(f['reference'] for f in flips),
               'reseated': res['reseated'], 'illegal': illegal, 'notes': notes,
               'groups': model.groups, 'stats': res['stats'],

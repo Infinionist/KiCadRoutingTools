@@ -34,10 +34,13 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb placed.kicad_pcb \
 - **The objective** (`simple.py`): each signal net's Manhattan spanning tree
   over its pads; rails at 0.3 and ground at 0.02 of a signal per mm;
   crossings among the signal trees (x2); claims; each decap's distance to the
-  supply pin of its own group's IC (x2); group gap trees (x5); the groups
-  file's `near` / `apart` / `edge` hints; a halo between unwired neighbours;
-  tree edges over foreign pads (x2, a through-hole pad twice); RUDY
-  congestion on a 0.5 mm grid (x5). Every weight is a flag.
+  supply-pin site of its own group's IC it is matched to, a rail's decaps
+  spread one to a site (x2); group gap trees (x5); the groups file's `near` /
+  `apart` / `edge` hints; a halo in front of a fine-pitch part's pads (a QFN,
+  QFP, BGA or fine-pitch connector: 0.25 mm per net leaving a side, which
+  anything but a small part wired to it keeps out of); tree edges over
+  foreign pads (x2, a through-hole pad twice); RUDY congestion on a 0.5 mm
+  grid (x5). Every weight is a flag.
 - **The anneal** (`simple_anneal.py`): every movable part starts at a random
   place on the board; moves shift, turn, swap, jump to a wiring target, dock
   against a partner, and shift, turn or swap whole groups; a move never

@@ -9,19 +9,32 @@ this cost by simulated annealing; `place_simple.py` is the CLI.
          + rail_weight / ground_weight x each rail's MST (below)
          + crossing_weight x crossings among the signal trees' edges
          + claim_weight x each claimed pad's distance to its partner's pad
-         + decap_weight x each decap's distance to the nearest supply pin
-           of its rail on an IC of its own group (any IC's when its group
-           has none)
+         + decap_weight x each decap's distance to the supply-pin site it
+           is matched to: the decaps of one rail and one set of pins (its own
+           group's IC's, any IC's when its group has none) are matched to
+           that rail's pin SITES (pins of one IC within SITE_MM of each
+           other) at the least total distance, a site taking one decap
+           before any takes two -- so they spread over the pins rather than
+           crowding the nearest
          + group_weight x each group's spanning tree over its members'
            courtyards, an edge priced by the gap between the two courtyards
            -- nothing while the group is one contiguous piece, whatever its
            shape
-         + the halo: each pair of parts sharing a side and NO signal net,
-           closer than the sum of their halos (base + coef x sqrt(pins)),
-           pays halo_weight x the shortfall squared (QuenchState's own
-           `_halo_pair_penalty`) -- strong when too close, nothing once far
-           enough. A wired pair (a decap at its pin, a crystal at its IC, a
-           series resistor) is meant to touch and pays nothing.
+         + the halo, in front of fine-pitch parts' pads only: a part with
+           HALO_MIN_PADS pads or more at a pitch of HALO_PITCH_MM or less (a
+           QFN, a QFP, a BGA, a fine-pitch connector) keeps, on each side its
+           pads face (`pad_fronts`), a strip `base + coef x the nets that
+           leave by it` deep (ground, dropping a via to its plane, leaves
+           none), spanning those pads, for its tracks to fan out in; a
+           part sharing a board side and NO signal net with it, where
+           a strip reaches it, pays halo_weight x the shortfall squared on
+           the axis that separates the two best. Everything else packs as
+           tight as legality lets it, and a part off the end of a pad row (a
+           chip's corner) pays nothing. A small part wired to it (a decap at
+           its pin, a crystal at its oscillator pins: HALO_SMALL_PADS pads or
+           fewer) is meant to touch and pays nothing; a bigger one wired to
+           it (a header its signals go to) leaves the fan-out room all the
+           same.
          + pad_weight x each tree edge's crossings of foreign pads: a pad of
            a part other than the edge's two ends, grown by the clearance, a
            through-hole pad counting twice (it blocks both layers)
@@ -56,6 +69,7 @@ import sys as _sys
 from typing import Dict, List, Sequence, Set, Tuple
 
 import numpy as np
+from scipy.optimize import linear_sum_assignment
 
 _sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..',
                                                  'rust_router')))
@@ -64,6 +78,88 @@ import grid_router  # noqa: E402  the kernels: mst_l1, seg_rect_hits, seg_crossi
 ROTS = (0.0, 90.0, 180.0, 270.0)
 #: mm two groups the groups file keeps `apart` must leave between them.
 APART_MM = 3.0
+#: mm between two supply pins of one IC that make them one decap site.
+SITE_MM = 1.5
+#: a part keeps a halo only when it is fine pitch with many pins (a QFN,
+#: a QFP, a BGA, a fine-pitch connector): at least this many connected pads
+HALO_MIN_PADS = 8
+#: ... at a pad pitch (the median distance from a pad to its nearest
+#: neighbour) of at most this many mm
+HALO_PITCH_MM = 1.0
+#: mm a halo strip reaches past the end pads of its side
+FAN_MM = 0.25
+#: a part with at most this many pads, wired to a fine-pitch part, may sit
+#: in its halo (a decap at its pin, a crystal at its oscillator pins)
+HALO_SMALL_PADS = 4
+
+
+def pad_pitch(offs: Sequence[Tuple[float, float]]) -> float:
+    """The median distance from each pad to its nearest neighbour; inf
+    for fewer than two pads."""
+    if len(offs) < 2:
+        return float('inf')
+    P = np.asarray(offs, dtype=float)
+    D = np.hypot(P[:, None, 0] - P[None, :, 0], P[:, None, 1] - P[None, :, 1])
+    np.fill_diagonal(D, np.inf)
+    return float(np.median(D.min(axis=1)))
+
+
+def pad_fronts(pads: Sequence[Tuple[float, float, int]], coef: float, base: float = 0.0,
+               skip=frozenset()):
+    """The sides of a part its pads face, from its pads' `(dx, dy, net)`,
+    offsets from the part's origin in the board frame: for W, E, N, S (-x,
+    +x, -y, +y), `(h, lo, hi)` -- the halo depth in front of that side,
+    `base + coef x the nets that leave by it` (each a track, and tracks
+    turning along a side stack one pitch deep each: a net on several pads
+    is one track, a net in `skip` -- ground, dropping a via to its plane --
+    none), and the span of its facing pads along it (y for W and E, x for N
+    and S, as offsets, FAN_MM past the end pads) -- or None for a side no
+    such net leaves by.
+
+    A pad faces the side its offset from the pads' centre points to, each
+    axis scaled by the pads' half-extent: a two-pad part faces along the
+    line through its pads, a chip's pin rows face out. A pad in the inner
+    half (an exposed pad, an inner ball) faces nothing. A corner pad faces
+    the side whose line of pads (its row or column) is longer, both on a
+    tie. A single line of three or more pads (a pin header) faces both
+    sides across the line."""
+    eps = 0.05
+    face: List[List[Tuple[float, float, int]]] = [[], [], [], []]
+    if pads:
+        xs, ys = [p[0] for p in pads], [p[1] for p in pads]
+        cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+        hw, hh = (max(xs) - min(xs)) / 2.0, (max(ys) - min(ys)) / 2.0
+        if len(pads) >= 3 and hh < eps <= hw:
+            face[2] = face[3] = list(pads)
+        elif len(pads) >= 3 and hw < eps <= hh:
+            face[0] = face[1] = list(pads)
+        else:
+            for x, y, n in pads:
+                u = (x - cx) / hw if hw >= eps else 0.0
+                v = (y - cy) / hh if hh >= eps else 0.0
+                if max(abs(u), abs(v)) < 0.5:
+                    continue
+                sx, sy = (0 if u < 0 else 1), (2 if v < 0 else 3)
+                if abs(u) > abs(v) + eps:
+                    face[sx].append((x, y, n))
+                elif abs(v) > abs(u) + eps:
+                    face[sy].append((x, y, n))
+                else:
+                    col = sum(1 for q in pads if abs(q[0] - x) < eps)
+                    row = sum(1 for q in pads if abs(q[1] - y) < eps)
+                    if col >= row:
+                        face[sx].append((x, y, n))
+                    if row >= col:
+                        face[sy].append((x, y, n))
+    out = []
+    for k, f in enumerate(face):
+        nets = {q[2] for q in f} - set(skip)
+        if not nets:
+            out.append(None)
+            continue
+        along = [q[1] for q in f] if k < 2 else [q[0] for q in f]
+        out.append((base + coef * len(nets), min(along) - FAN_MM, max(along) + FAN_MM))
+    return tuple(out)
 
 
 # --------------------------------------------------------------------------
@@ -291,8 +387,9 @@ class Model:
                  track_pitch: float = 0.33, cell: float = 0.5,
                  congestion_nets=None, rail_weight: float = 0.0,
                  ground_nets=(), ground_weight: float = 0.0, pad_weight: float = 0.0,
-                 hints: Sequence[Dict] = ()):
+                 hints: Sequence[Dict] = (), halo_base: float = 0.0, halo_coef: float = 0.25):
         self.state, self.pcb = state, pcb
+        self.halo_base, self.halo_coef = halo_base, halo_coef
         self.hints = [h for h in hints if h['weight'] > 0]
         self.inner = tuple(state.usable)
         self.cw, self.kw, self.dw, self.gw = (crossing_weight, claim_weight,
@@ -319,6 +416,19 @@ class Model:
         self.supply = supply            # rail net -> [(ic ref, pad number)]
         self.decap_pins = decap_pins    # cap -> the supply pins it serves
         self.groups = groups            # [(name, [members])], two or more each
+        self._pidx: Dict[Tuple[str, str], List[int]] = {}
+        self._fr: Dict = {}
+        self._sites()
+        # the parts that keep a halo (fine pitch, many pins), and how far
+        # each one's reaches: its deepest front, the same at every turn (the
+        # prefilter for pairs worth pricing)
+        self._fine, self._reach = set(), {}
+        for r, part in state.parts.items():
+            offs = [(x - part.x, y - part.y) for x, y, _n in part.pad_globals()]
+            if len(offs) >= HALO_MIN_PADS and pad_pitch(offs) <= HALO_PITCH_MM + 1e-6:
+                self._fine.add(r)
+            fr = self.fronts(r)
+            self._reach[r] = max((f[0] for f in fr if f), default=0.0)
         self.net_len: Dict[int, float] = {}
         self.net_edges: Dict[int, np.ndarray] = {}
         self.reprice_all()
@@ -346,13 +456,15 @@ class Model:
         return pts
 
     def _pad_xy(self, ref, num):
-        part = self.state.parts[ref]
-        fp = self.pcb.footprints[ref]
-        # pad_globals keeps pad order of the footprint's connected pads
-        pg = part.pad_globals()
-        conn = [p for p in fp.pads if p.net_id > 0]
-        return [(pg[i][0], pg[i][1]) for i, p in enumerate(conn)
-                if str(p.pad_number) == str(num) and i < len(pg)]
+        key = (ref, str(num))
+        idx = self._pidx.get(key)
+        if idx is None:
+            # pad_globals keeps pad order of the footprint's connected pads
+            conn = [p for p in self.pcb.footprints[ref].pads if p.net_id > 0]
+            idx = self._pidx[key] = [i for i, p in enumerate(conn)
+                                     if str(p.pad_number) == str(num)]
+        pg = self.state.parts[ref].pad_globals()
+        return [(pg[i][0], pg[i][1]) for i in idx if i < len(pg)]
 
     # -- terms --------------------------------------------------------------
     def _pid(self, ref):
@@ -393,12 +505,73 @@ class Model:
         """The supply pins `cap` decouples: its group's, else its rail's."""
         return self.decap_pins.get(cap) or self.supply.get(net, ())
 
+    def _sites(self):
+        """The decap clusters, `[(net, caps, sites)]`: the decaps of one
+        rail that serve one set of pins, and those pins' SITES -- a site the
+        pins of one IC within SITE_MM of each other, chained (measured once:
+        an IC is rigid)."""
+        by: Dict = {}
+        for cap, net in self.decaps:
+            by.setdefault((net, tuple(sorted(self.pins_for(cap, net)))), []).append(cap)
+        self.clusters = []
+        for (net, pins), caps in sorted(by.items()):
+            up = list(range(len(pins)))
+
+            def root(i):
+                while up[i] != i:
+                    up[i] = up[up[i]]
+                    i = up[i]
+                return i
+            xy = [self._pad_xy(ic, num) for ic, num in pins]
+            for i in range(len(pins)):
+                for j in range(i):
+                    if pins[i][0] == pins[j][0] and any(
+                            math.dist(p, q) <= SITE_MM for p in xy[i] for q in xy[j]):
+                        up[root(i)] = root(j)
+            sites: Dict[int, List] = {}
+            for i, pin in enumerate(pins):
+                sites.setdefault(root(i), []).append(pin)
+            self.clusters.append((net, sorted(caps), [sites[k] for k in sorted(sites)]))
+        self._cluster_of = {c: k for k, (_n, caps, _s) in enumerate(self.clusters) for c in caps}
+
+    def cluster_match(self, k):
+        """Cluster `k`'s decaps matched to its sites at the least total
+        distance (a cap's rail pad to the site's nearest pin), every site
+        taking one decap before any takes two: `(cost, {cap: site index})`."""
+        net, caps, sites = self.clusters[k]
+        if not sites:
+            return 0.0, {}
+        D = np.zeros((len(caps), len(sites)))
+        pts = [[q for ic, num in site for q in self._pad_xy(ic, num)] for site in sites]
+        for i, cap in enumerate(caps):
+            mine = [(x, y) for x, y, nn in self._pads(cap) if nn == net]
+            if mine:
+                for j, P in enumerate(pts):
+                    if P:
+                        D[i, j] = min(math.dist(mine[0], q) for q in P)
+        if len(caps) == 1:
+            j = int(np.argmin(D[0]))
+            return float(D[0, j]), {caps[0]: j}
+        ns = len(sites)
+        # a site's second decap costs 1e6 more than its first, so a matching
+        # of least cost fills every site before doubling any
+        C = np.hstack([D + 1e6 * t for t in range(-(-len(caps) // ns))])
+        ri, ci = linear_sum_assignment(C)
+        return float(D[ri, ci % ns].sum()), {caps[i]: int(c % ns) for i, c in zip(ri, ci)}
+
+    def cluster_cost(self, k):
+        return self.cluster_match(k)[0]
+
     def decap_cost(self, cap, net):
-        pins = [q for ic, num in self.pins_for(cap, net) for q in self._pad_xy(ic, num)]
-        mine = [(x, y) for x, y, nn in self._pads(cap) if nn == net]
-        if not pins or not mine:
+        """`cap`'s distance to the site it is matched to."""
+        k = self._cluster_of.get(cap)
+        if k is None:
             return 0.0
-        return min(math.dist(mine[0], q) for q in pins)
+        _c, match = self.cluster_match(k)
+        site = self.clusters[k][2][match[cap]]
+        mine = [(x, y) for x, y, nn in self._pads(cap) if nn == net]
+        pts = [q for ic, num in site for q in self._pad_xy(ic, num)]
+        return min(math.dist(mine[0], q) for q in pts) if mine and pts else 0.0
 
     def group_cost(self, members):
         """The group's gap tree: 0 while its courtyards form one piece."""
@@ -447,14 +620,56 @@ class Model:
                 return True
         return False
 
+    def fronts(self, ref):
+        """`pad_fronts` of `ref` at its live turn; none for a part that is
+        not fine pitch with many pins."""
+        if ref not in self._fine:
+            return (None, None, None, None)
+        part = self.state.parts[ref]
+        key = (ref, part.rot)
+        fr = self._fr.get(key)
+        if fr is None:
+            fr = self._fr[key] = pad_fronts(
+                [(x - part.x, y - part.y, n) for x, y, n in part.pad_globals()],
+                self.halo_coef, self.halo_base, self.ground)
+        return fr
+
     def halo_pair(self, a, b):
+        """The pair's halo: on each axis, the depth of the fronts facing
+        across it whose span reaches the other part, less the gap there;
+        the smaller of the two shortfalls (the axis that separates them
+        best), squared, times the halo weight. Nothing when no front of
+        either reaches the other."""
         st = self.state
-        if st.parts[a].locked and st.parts[b].locked:
-            return 0.0      # two fixed parts: nothing to move, overlap by design
-        if self.wired(a, b):
-            return 0.0
         pa, pb = st.parts[a], st.parts[b]
-        return st._halo_pair_penalty(pa, pa.rect(), pb, pb.rect())
+        if pa.locked and pb.locked:
+            return 0.0      # two fixed parts: nothing to move, overlap by design
+        if a in st.container_refs or b in st.container_refs:
+            return 0.0      # a container is a frame, not a body
+        if not set(pa.sides) & set(pb.sides):
+            return 0.0      # on opposite faces, neither drilled
+        if min(pa.pin_count, pb.pin_count) <= HALO_SMALL_PADS and self.wired(a, b):
+            return 0.0
+        ra, rb = pa.rect(), pb.rect()
+        fa, fb = self.fronts(a), self.fronts(b)
+        short, any_need = float('inf'), False
+        # x: the W/E fronts, spanning y from the part's y; y: N/S, spanning x
+        for lo, hi, olo, ohi, ca, cb, k in ((0, 2, 1, 3, pa.y, pb.y, 0),
+                                            (1, 3, 0, 2, pa.x, pb.x, 2)):
+            if ra[lo] + ra[hi] <= rb[lo] + rb[hi]:      # a first on this axis
+                gap, sa, sb = rb[lo] - ra[hi], fa[k + 1], fb[k]
+            else:
+                gap, sa, sb = ra[lo] - rb[hi], fa[k], fb[k + 1]
+            need = 0.0
+            if sa is not None and sa[1] + ca < rb[ohi] and sa[2] + ca > rb[olo]:
+                need += sa[0]
+            if sb is not None and sb[1] + cb < ra[ohi] and sb[2] + cb > ra[olo]:
+                need += sb[0]
+            any_need = any_need or need > 0
+            short = min(short, need - gap)
+        if not any_need or short <= 0:
+            return 0.0
+        return st.halo_weight * short * short
 
     def halo_cost(self, refs=None):
         """The halo penalty over every unwired pair of parts with one in
@@ -466,11 +681,11 @@ class Model:
         rect = {r: st.parts[r].rect() for r in names}
         total = 0.0
         for a in mine:
-            ra, ha = rect[a], st.parts[a].halo
+            ra, ha = rect[a], self._reach[a]
             for b in names:
                 if b == a or (b in mset and b < a):
                     continue
-                rb, need = rect[b], ha + st.parts[b].halo
+                rb, need = rect[b], ha + self._reach[b]
                 # farther apart than both halos on some axis: nothing to pay
                 if (ra[2] + need <= rb[0] or rb[2] + need <= ra[0]
                         or ra[3] + need <= rb[1] or rb[3] + need <= ra[1]):
@@ -700,7 +915,7 @@ class Model:
             if len(E):
                 allE.append(E)
         claims = sum(self.claim_cost(c) for c in self.claims)
-        dec = sum(self.decap_cost(c, n) for c, n in self.decaps)
+        dec = sum(self.cluster_cost(k) for k in range(len(self.clusters)))
         per_group = {name: self.group_cost(m) for name, m in self.groups}
         grp = sum(per_group.values())
         per_hint = {h['key']: self.hint_cost(h) for h in self.hints}
@@ -858,7 +1073,7 @@ class Model:
         self._PO = np.zeros(0, dtype=int)
         self._prow: Dict = {}
         names = self._names()
-        self._maxhalo = max((st.parts[r].halo for r in names), default=0.0)
+        self._maxhalo = max((self._reach[r] for r in names), default=0.0)
         for r in names:
             self._index_part(r)
         for n in self.nets:
@@ -869,9 +1084,9 @@ class Model:
         for c in self.claims:
             for r in {c[0], c[1]}:
                 self._claims_by.setdefault(r, []).append(c)
-        for cap, net in self.decaps:
-            for r in {cap} | {ic for ic, _num in self.pins_for(cap, net)}:
-                self._decaps_by.setdefault(r, []).append((cap, net))
+        for k, (_net, caps, sites) in enumerate(self.clusters):
+            for r in set(caps) | {ic for site in sites for ic, _num in site}:
+                self._decaps_by.setdefault(r, []).append(k)
         for name, m in self.groups:
             for r in m:
                 self._groups_by.setdefault(r, []).append((name, m))
@@ -918,7 +1133,7 @@ class Model:
         """`halo_pair` behind the rect prefilter `_local_halo` uses."""
         st = self.state
         ra, rb = st.parts[a].rect(), st.parts[b].rect()
-        need = st.parts[a].halo + st.parts[b].halo
+        need = self._reach[a] + self._reach[b]
         if (ra[2] + need <= rb[0] or rb[2] + need <= ra[0]
                 or ra[3] + need <= rb[1] or rb[3] + need <= ra[1]):
             return 0.0
@@ -1060,7 +1275,7 @@ class Model:
         R = sorted(refs)
         T = [n for n in nets if n in self.signal]
         claims = sum(self.claim_cost(c) for c in cl)
-        dec = sum(self.decap_cost(c, n) for c, n in dc)
+        dec = sum(self.cluster_cost(k) for k in dc)
         if not reprice:
             self._cong_pending = None
             self._pend = None
@@ -1165,7 +1380,7 @@ class Model:
         rset = set(R)
         out: Dict = {}
         for a in R:
-            ra, ha = st.parts[a].rect(), st.parts[a].halo
+            ra, ha = st.parts[a].rect(), self._reach[a]
             m = ha + self._maxhalo
             for b in self._ixp.query((ra[0] - m, ra[1] - m, ra[2] + m, ra[3] + m)) | (rset - {a}):
                 if b == a or (b in rset and b < a):
@@ -1232,10 +1447,8 @@ def blame(model) -> Dict[str, Dict[str, float]]:
             out[members[j]]['group'] += model.gw * g / 2.0
     names = sorted(st.parts)
     for i, a in enumerate(names):
-        pa = st.parts[a]
         for b in names[i + 1:]:
-            pb = st.parts[b]
-            h = st._halo_pair_penalty(pa, pa.rect(), pb, pb.rect())
+            h = model.halo_pair(a, b)
             if h:
                 out[a]['halo'] += h / 2.0
                 out[b]['halo'] += h / 2.0
@@ -1272,13 +1485,14 @@ def target(model, ref, placed):
             if pts:
                 t = (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
             break
-    if t is None:
-        for cap, net in model.decaps:
-            if cap == ref:
-                pins = [q for ic, num in model.pins_for(cap, net) if ic in placed
-                        for q in model._pad_xy(ic, num)]
-                if pins:
-                    t = min(pins, key=lambda q: math.dist(q, (st.parts[ref].x, st.parts[ref].y)))
+    k = model._cluster_of.get(ref)
+    if t is None and k is not None:     # a decap: the site it is matched to
+        _c, match = model.cluster_match(k)
+        sites = model.clusters[k][2]
+        for site in [sites[match[ref]]] + sites:
+            pins = [q for ic, num in site if ic in placed for q in model._pad_xy(ic, num)]
+            if pins:
+                t = min(pins, key=lambda q: math.dist(q, (st.parts[ref].x, st.parts[ref].y)))
                 break
     if t is None:
         t = _wiring_target(st, ref, placed)

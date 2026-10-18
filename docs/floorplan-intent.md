@@ -846,7 +846,7 @@ reading.
 | `must_lock` | yes | — | it is a claim about the FILE; no pose satisfies or violates it. `place_simple` holds the parts the file locks |
 | `assembly_side` | yes | — | no move carries a side; a part changes face only by a declaration (the `zone_side` row). **warn** by default so it cannot become a permanent red mark |
 | `envelope` | yes | — | a claim about the intent FILE against the board, not about any pose |
-| `decap_distance`, `decap_pin_distance` | yes | — | its decap term pulls each cap toward the nearest supply pin of its rail on an IC of its own group (any IC's when the group has none), whatever the limit. `place_fanout_clearance --intent` (and the GUI fanout tab, which shares its engine) holds both limits on the caps it moves (#1067), measured by CALLING the grader's own distances (`groups.elect_live`, `floorplan.nearest_rail_cap`) |
+| `decap_distance`, `decap_pin_distance` | yes | — | its decap term pulls each cap toward a supply pin of its rail on an IC of its own group (any IC's when the group has none), the rail's caps matched one to a pin site, whatever the limit. `place_fanout_clearance --intent` (and the GUI fanout tab, which shares its engine) holds both limits on the caps it moves (#1067), measured by CALLING the grader's own distances (`groups.elect_live`, `floorplan.nearest_rail_cap`) |
 | `decap_ungraded`, `decap_pin_uncovered`, `decap_pin_distance_inferred` | yes | — | `decap_ungraded` and `decap_pin_uncovered` are claims about what the GRADE covers rather than about any pose, and `decap_pin_distance_inferred` is a WARN about a pin inferred from a net name. A cap a `--decaps-from` reference holds (#1142) leaving the radius is counted by `place_fanout_clearance --intent` as a decap claim made worse when it picks the arm to keep |
 | `legality` | yes | — | a whole-board aggregate against a BUDGET. The anneal keeps only an overlap-free state as its best, and the legality check holds every part clear of its neighbours |
 | `replicate` | yes | — | `place_pose replicate --intent` applies the declaration; an anneal after it may move a copied part, and the grade then reports it |
@@ -1742,9 +1742,9 @@ beyond-cap, where last and farthest are the same cap.
 
 ### What reads the declared limit
 
-`place_simple` does not: its decap term pulls each cap toward the nearest
-supply pin of its rail on an IC of its own group (any IC's when the group has
-none), whatever the limit. `place_fanout_clearance --intent` (and the GUI
+`place_simple` does not: its decap term pulls each cap toward a supply pin
+of its rail on an IC of its own group (any IC's when the group has none), the
+rail's caps matched one to a pin site, whatever the limit. `place_fanout_clearance --intent` (and the GUI
 fanout tab, which shares its engine) does: at error severity,
 `max_distance_mm` and `max_pin_distance_mm` are held on every cap it moves --
 no move may take a claim past its limit and further than the board as it

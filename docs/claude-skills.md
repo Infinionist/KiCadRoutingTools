@@ -132,7 +132,7 @@ what runs here is what the buttons run.
 
 Placement by function, the way a designer lays a board out:
 - **Grouping.** The agent sorts the parts into functional groups (power entry and conditioning, the core and its clock, each interface, the user interface), reading pin functions and datasheets, and records why. `py_tools/check_groups.py` checks the result; `near` / `apart` / `edge` / `side` hints steer where groups go.
-- **Placement.** `py_placer/place_simple.py` keeps each group in one piece and arranges the pieces by one objective (wire, crossings, decaps at their own IC, the hints, spacing, congestion), annealed from a random start; the same seed gives the same placement.
+- **Placement.** `py_placer/place_simple.py` keeps each group in one piece and arranges the pieces by one objective (wire, crossings, decaps spread over their own IC's supply pins, the hints, fan-out room in front of fine-pitch parts, congestion), annealed from a random start; the same seed gives the same placement.
 - **Review.** A fast route (`route.py --quick-pass`) and `py_tools/route_review.py` show what the placement costs the router; the agent changes the groups, hints or intent claims and places again, keeping the board that routes best.
 - **Routing (full mode).** The kept placement is routed with the full chain, graded, and checked by one independent verifier; the board comes back with REPORT.md. `scripts/grade.py` and `scripts/measure.py` grade the board and split the wall clock independently of the agent's own claims, and `scripts/make_unplaced.py` builds an all-off-the-board input for from-scratch runs.
 
