@@ -360,6 +360,7 @@ class Model:
             self._reach[r] = max((f[0] for f in fr if f), default=0.0)
         self.net_len: Dict[int, float] = {}
         self.net_edges: Dict[int, np.ndarray] = {}
+        self._moving = frozenset()
         self.reprice_all()
 
     def reprice_all(self):
@@ -566,7 +567,41 @@ class Model:
 
     def group_cost(self, members):
         """The group's gap tree: 0 while its courtyards form one piece."""
-        return gap_tree([self.state.parts[r].rect() for r in members])[0]
+        return gap_tree(self._rects(members))[0]
+
+    def _rects(self, refs, moving=None):
+        """`[part.rect()]` of `refs` as a k x 4 array: the committed rows
+        kept per list (`_rc`, written by `_rects_commit`), the rows of
+        `moving` (every part a priced move put at a new pose) read live."""
+        rc = self.__dict__.setdefault('_rc', {})
+        key = id(refs)
+        got = rc.get(key)
+        P = self.state.parts
+        if got is None or got[0] is not refs:
+            arr = np.asarray([P[r].rect() for r in refs], dtype=float).reshape(-1, 4)
+            idx = {}
+            for i, r in enumerate(refs):
+                idx.setdefault(r, []).append(i)
+            got = rc[key] = (refs, arr, idx)
+            if moving is None:
+                return arr
+        _refs, arr, idx = got
+        mv = self._moving if moving is None else moving
+        live = [(i, r) for r in mv for i in idx.get(r, ())]
+        if not live:
+            return arr
+        arr = arr.copy()
+        for i, r in live:
+            arr[i] = P[r].rect()
+        return arr
+
+    def _rects_commit(self, refs):
+        """The committed rows of every cached list holding one of `refs`."""
+        P = self.state.parts
+        for _key, (_refs, arr, idx) in self.__dict__.get('_rc', {}).items():
+            for r in refs:
+                for i in idx.get(r, ()):
+                    arr[i] = P[r].rect()
 
     def hint_cost(self, h):
         """A groups-file hint, weighted. `near`: the gap between the two
@@ -603,7 +638,7 @@ class Model:
             best, wit = rect_gap(P[seed[0]].rect(), P[seed[1]].rect()), seed
         if not A or not B:
             return best, wit
-        G = _gaps(np.asarray([P[a].rect() for a in A]), np.asarray([P[b].rect() for b in B]))
+        G = _gaps(self._rects(A), self._rects(B))
         k = int(G.argmin())
         if G.flat[k] < best:        # the first pair at the least gap
             best, wit = float(G.flat[k]), (A[k // len(B)], B[k % len(B)])
@@ -632,7 +667,7 @@ class Model:
             mine = [d for d in side if d in moving]
             if not mine or not other:
                 continue
-            G = _gaps(np.asarray([P[d].rect() for d in mine]), np.asarray([P[c].rect() for c in other]))
+            G = _gaps(np.asarray([P[d].rect() for d in mine]), self._rects(other))
             k = int(G.argmin())
             if G.flat[k] < gap:
                 d, c = mine[k // len(other)], other[k % len(other)]
@@ -1098,6 +1133,7 @@ class Model:
             for r in set(h['a']) | set(h['b'] or ()):
                 self._hints_by.setdefault(r, []).append(h)
         self._synced = True
+        self._rc = {}
         self._build_breakdowns()
 
     # -- the committed state's breakdowns: a move's "before" is read from these
@@ -1115,6 +1151,8 @@ class Model:
                     self._hnb[a].add(b)
                     self._hnb[b].add(a)
         self._gc = {name: self.group_cost(m) for name, m in self.groups}
+        self._clc = {id(c): self.claim_cost(c) for c in self.claims}
+        self._dcc = {k: self.cluster_cost(k) for k in range(len(self.clusters))}
         self._hw = {h['key']: self._hint_full(h) for h in self.hints}
         self._hc = {h['key']: self._hint_value(h, self._hw[h['key']][0]) for h in self.hints}
         self._xc = {n: {} for n in self.nets}
@@ -1194,6 +1232,7 @@ class Model:
             self._commit_breakdowns(pend)
         for r in refs:
             self._index_part(r)
+        self._rects_commit(refs)
         if any(n in self.signal for n in nets):
             self._cedges = self._edges_of(self.nets)
 
@@ -1210,6 +1249,8 @@ class Model:
                 self._hnb.setdefault(a, set()).add(b)
                 self._hnb.setdefault(b, set()).add(a)
         self._gc.update(pend['groups'])
+        self._clc.update(pend['claims'])
+        self._dcc.update(pend['decaps'])
         self._hc.update(pend['hints'])
         self._hw.update(pend['hint_w'])
         for t in T:                                     # crossings: T's rows anew
@@ -1254,9 +1295,9 @@ class Model:
         nets, cl, dc, gr, hs = touched or self.touched(refs)
         R = sorted(refs)
         T = [n for n in nets if n in self.signal]
-        claims = sum(self.claim_cost(c) for c in cl)
-        dec = sum(self.cluster_cost(k) for k in dc)
         if not reprice:
+            claims = sum(self._clc[id(c)] for c in cl)
+            dec = sum(self._dcc[k] for k in dc)
             self._cong_pending = None
             self._pend = None
             wire = sum(self.wire_weight(n) * self.net_len[n] for n in nets)
@@ -1279,6 +1320,11 @@ class Model:
             return (wire + self.cw * cross + self.kw * claims + self.dw * dec
                     + self.gw * grp + hint + halo + self.qw * self.congestion()
                     + self.pw_pad * pads)
+        ccl = {id(c): self.claim_cost(c) for c in cl}
+        cdc = {k: self.cluster_cost(k) for k in dc}
+        claims = sum(ccl[id(c)] for c in cl)
+        dec = sum(cdc[k] for k in dc)
+        self._moving = frozenset(R)
         for n in nets:
             self._price_net(n, R)
         if self.qw > 0:
@@ -1287,7 +1333,7 @@ class Model:
             else:
                 self._cong_price(refs)
         wire = sum(self.wire_weight(n) * self.net_len[n] for n in nets)
-        pend = {'R': R, 'T': T}
+        pend = {'R': R, 'T': T, 'claims': ccl, 'decaps': cdc}
         cross, pend['cross'] = self._local_crossings_bd(T)
         groups = {name: self.group_cost(m) for name, m in zip(self._group_names(gr), gr)}
         pend['groups'] = groups
@@ -1302,6 +1348,7 @@ class Model:
             pend['pads'], pads = {}, 0.0
         pend['halo'] = self._local_halo_bd(R)
         self._pend = pend
+        self._moving = frozenset()
         return (wire + self.cw * cross + self.kw * claims + self.dw * dec
                 + self.gw * sum(groups.values()) + sum(pend['hints'].values())
                 + sum(pend['halo'].values()) + self.qw * self.congestion()

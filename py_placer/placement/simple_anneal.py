@@ -356,14 +356,26 @@ class Annealer:
             st.parts[r].ensure_rotation(rot)
         t = model.touched(refs)
         base, ob = model.local(refs, t, reprice=False), self.overlap(refs)
-        snap = model.snapshot(t, refs)
         was = {r: self.pose(r) for r in refs}
         for r in refs:
             _place(st, r, *new[r])
         do = self.overlap(refs) - ob
+        # the moved parts' cost after the move is never below 0, so the move
+        # changes the cost by at least lam x do - base: when that is already
+        # uphill, the rule's one draw is made now, and a draw that refuses
+        # even that change refuses the move unpriced -- the same draw, the
+        # same answer as pricing it would give
+        u, lb = None, self.lam * do - base
+        if lb > 0 and T > 0:
+            u = self.rng.random()
+            if u >= math.exp(-lb / T):
+                for r in refs:
+                    _place(st, r, *was[r])
+                return False, lb, do
+        snap = model.snapshot(t, refs)
         dc = model.local(refs, t) - base
         delta = dc + self.lam * do
-        if delta <= 0 or (T > 0 and self.rng.random() < math.exp(-delta / T)):
+        if delta <= 0 or (T > 0 and (self.rng.random() if u is None else u) < math.exp(-delta / T)):
             model.commit(refs, t[0])
             return True, dc, do
         for r in refs:
