@@ -56,6 +56,11 @@ from kicad_parser import parse_kicad_pcb  # noqa: E402
 
 
 def _is_ground(name):
+    """A ground or return net, by name: GND or VSS anywhere in it. Wider than
+    `net_queries.is_ground_net_name` on purpose, which leaves out VSS and
+    names that only end in GND for the routing tools' sake: here `LV_GND`,
+    `VSSA` and `VSS_PA` are grounds too (a decap's other pad, a pour, not a
+    channel), and a single-pad `unconnected-(J1-GND-Pad6)` is never priced."""
     u = (name or '').upper()
     return 'GND' in u or 'VSS' in u
 
