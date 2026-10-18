@@ -1,8 +1,9 @@
 # Floorplan intent, graded (#549)
 
-Placement in this toolchain is judged by `crossings` and `hpwl`. Both are
-indifferent between a sensible layout and a scattered one with the same
-wirelength — and a render only moves the judgement from a number to a vibe.
+A placement in this toolchain is judged by routing it. Before it is routed,
+its own numbers (`crossings`, `hpwl`, the placer's cost) are indifferent
+between a sensible layout and a scattered one with the same wirelength — and
+a render only moves the judgement from a number to a vibe.
 Nothing declares where parts *belong*, so nothing can check whether they went
 there.
 
@@ -1189,8 +1190,7 @@ A plan that declares no `legality_budget` gets WARNs only from the area rows.
 Nothing bounds its overlap, so no area bound is sound.
 
 **Callers.**
-- `check_floorplan --plan-only` reports every plan ERROR (the retired placement
-  driver's P1 stage refused on them).
+- `check_floorplan --plan-only` reports every plan ERROR.
 - `place_pose --intent` refuses, at exit 4, a single pose that leaves a moved
   part further outside its block's zone than it was, when that
   `zone_containment` finding is an ERROR.

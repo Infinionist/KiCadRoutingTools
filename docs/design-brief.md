@@ -33,8 +33,9 @@ OFF arm, without which there is no way to measure what declaring changed.
 ## It is a compiler, not a second constraint system
 
 Everything a brief declares becomes an intent entry that the existing rules
-already grade and the existing seat search already honours — ordinarily an
-`edge_connectors[]` or a `keepouts[]` one. Provenance rides in
+already grade, and that `place_simple` reads wherever it reads the intent
+("Which rules the placer can see" in [floorplan-intent.md](floorplan-intent.md))
+— ordinarily an `edge_connectors[]` or a `keepouts[]` one. Provenance rides in
 `source: "brief"` and `context`, both of which
 [the intent schema](floorplan-intent.md) already accepts.
 
@@ -166,10 +167,10 @@ apart everywhere:
 | **not declared** | the key is absent | `brief_absent` — nobody looked |
 
 `edge: "unknown"` compiles to an entry with **no** `edge` key, and that path is
-already correct everywhere: the seeder's stage 1 skips edge-less entries, the
-repair path refuses honestly, and `emit_intent` refuses to name an edge for an
-implausible pose. "I do not know" reaches machinery that knows what to do
-with it.
+already correct everywhere: the edge rule skips its wrong-edge conjunct for
+an edge-less entry, the placer reads no edge (only an entry's `side`), and
+`emit_intent` refuses to name an edge for an implausible pose. "I do not
+know" reaches machinery that knows what to do with it.
 
 When no brief is found the tool says so, and says what is filling the gap:
 
@@ -337,10 +338,8 @@ rather than only the refusal:
   other.
 
 A **duplicate `ref`** is refused too. Two rows for one part is two claims with
-no rule for which wins, and the three consumers disagree about it in three
-different ways: the grade charges *both*, the repair dispatch keeps the *last*,
-and the seeder's even distribution shifts *every other connector on that edge*.
-`blocks` already refuses a duplicate name for the same reason.
+no rule for which wins, and the grade would charge *both*. `blocks` already
+refuses a duplicate name for the same reason.
 
 ## `fixed[]` is carried, a `pose` compiles, and it is never `must_lock`
 
@@ -358,11 +357,11 @@ which is reported as a declared unknown. The row compiles to an intent
 `fixed_poses[]` entry with `basis: "declared"` and `min_reader` 7, which the
 grade anchors exactly as it anchors a `mechanical.json` pose (the
 `fixed_poses[]` section of [floorplan-intent.md](floorplan-intent.md)) and
-the seeder's stage 0 SEATS: exactly at that pose, refused with its reasons and
-never nudged when the pose is illegal, and stamped `(locked yes)`. Its
+`place_simple` SEATS: written exactly at that pose before anything is placed,
+never searched or nudged, and held there for the whole anneal. Its
 clause id is `fixed[REF].pose`, graded by that anchor. A ref with a pose that
 is also a declared `interfaces[]` row is refused by name: the interface
-compiles to an edge connector the seeder seats at its band, and a pose seats it
+compiles to an edge connector graded at its band, and a pose fixes it
 exactly. A row with a pose may also carry `accept_courtyard_overlap: [refs]`
 (#1060), passed through to the intent entry as written -- a named waiver of
 COURTYARD overlap only, with a required `why`, for a human pose that overlaps a
@@ -398,11 +397,9 @@ later tool can see it; only a `pose` reaches an engine, through `fixed_poses[]`.
 The same row the intent's `arrays[]` carries, plus the prose slot
 `requirement` -- validated by the INTENT's own loader, so a row the brief
 accepts is a row the compiled intent loads. It compiles 1:1, with `min_reader`
-7, is graded by `array_formation`, and is seated by the seeder as one row
-where stage 2.45 finds a pose for it -- else member by member, named in
-`array_unseated` -- and moves in the quench as a rigid group while it is a
-formed row (an unformed one is not held: `rigid.unformed`; a member leaves
-only by a disclosed release). Which rows to declare is the
+7, and is graded by `array_formation`. No placement tool reads it: to keep a
+row's parts together while placing, put them in one group of the groups
+file. Which rows to declare is the
 author's decision: `check_floorplan --suggest-arrays` lists candidates with
 their evidence, and the ones it `declined` with why. `serves` and `order` may be
 `"unknown"` (the author looked and does not know), `rotation` too; each is
@@ -432,7 +429,7 @@ must gain no ERROR from it:
 | `mount_mode: edge_mount` | `max_setback_mm` 0.75, on the drawn body (the courtyard when the library drew no fab or silk outline) | `derived_default` -- two shipping edge-mount bodies sit past the receptacle seat's 0.5 mm: tigard J7 at 0.60, rp2350 J3 at 0.614. As built the seat binds on neither, because each courtyard reaches the edge and the seat is asked only of a part whose courtyard sits a margin inside; 0.75 admits those bodies wherever it does bind |
 | `mount_mode: through_edge` | the same `max_setback_mm` 0.75: the part reaches the edge, read on the drawn body when the entry is an edge receptacle (the class `user_facing`, the emitter's classifier or a declared edge assigns) and on the courtyard otherwise. How far PAST it is `overhang_mm`, declared or emitted, never derived -- an overhang floor of 0 is vacuous (a body inside the board reads 0 overhang), and writing one replaced the emitted `overhang_mm` and dropped its `max` | `derived_default` |
 | `mount_mode: top_mount` / `bottom_mount` | an exemption, reported `carried`: NOT held to the edge-receptacle seat; its declared edge and overhang still grade it, and nothing measures the mount itself | declared -- `user_facing` made 8 vertical headers edge receptacles and failed them all on the as-built boards |
-| `cable_entry: perpendicular_top` / `_bottom`, with `product.user_top_side` | `side`: the face the cable plugs into, graded as `edge_connector_side` | declared; a fixed **WARN** an intent cannot raise, read by no seat search, quench or repair |
+| `cable_entry: perpendicular_top` / `_bottom`, with `product.user_top_side` | `side`: the face the cable plugs into, graded as `edge_connector_side` | declared; a fixed **WARN** an intent cannot raise; `place_simple` applies the face before it places |
 | `cable_entry: in_plane` | reported `carried`: the declared `edge` is already a clause and in-plane adds none; with `edge: "unknown"` it is reported unmeasured | declared |
 | `cable_envelope_mm: {depth}` (in-plane) or `{clear}` (perpendicular) | a `cable:<REF>` keep-out -- a band `depth` in from the edge across the body, or the body plus `clear` on the cable's face -- ONLY for a FILE-locked part (off an unlocked one it would move with every seed), and for an in-plane band only when the body reaches within `depth` of its declared edge. A `cable:<REF>` keep-out the brief declares itself wins | declared |
 
@@ -576,7 +573,7 @@ independent hand-written copies of it before this change — some of them the
 narrower `('.kicad_pro', '.kicad_dru')` form (`ai_gui.py`, `check_join.py`,
 `placement_run.py`) — and the one the placement CLIs actually
 go through, `placement/portfolio.copy_siblings`, was not the one anybody would
-think to edit. `tests/test_711_sibling_lists.py` refuses a tenth.
+think to edit.
 
 Stranding it does not fail: it silently reverts the next step to inferring what
 the sibling declared, which is the whole class of bug `.kicad_pro` and

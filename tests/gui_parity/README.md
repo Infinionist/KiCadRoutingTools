@@ -230,9 +230,8 @@ Those checks only see a flag that a manifest uses AND a table here names, so
 `route.py --bus` replayed with bus mode OFF and nothing noticed. The gate's
 `check_flag_coverage` therefore enumerates EVERY flag the argparse of each
 `FLAG_COVERAGE` tool accepts -- route.py, route_diff.py, route_planes.py and
-bga_fanout.py -- from `krt_capabilities.script_flags` (held exact by
-`tests/test_798_registrar_flags.py`), and requires each one to reach a
-control that tool's plan action can set, or to be listed for that tool as
+bga_fanout.py -- from `krt_capabilities.script_flags`, and requires each one
+to reach a control that tool's plan action can set, or to be listed for that tool as
 CLI-only or as a known gap with the reason. It also fails a reached control
 that `reset_params_to_defaults` does not restore, since a plan step that sets
 it would leak it into every later step. Its run_all half, with the negative
@@ -350,7 +349,7 @@ params and exit 1.
 ## Declared cap rotations (test_1122_cap_rotation_gui.py)
 
 Needs KiCad's python (wx + pcbnew); re-execs into it automatically, and
-exits 2 without it (a killer gate for `tests/mutate_1120_1121_1122.py`).
+exits 2 without it.
 
     python3 tests/gui_parity/test_1122_cap_rotation_gui.py
 

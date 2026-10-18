@@ -366,11 +366,10 @@ Validate routed boards against the *real* spec, with the right checker — most
     a NEW BASELINE ERA that voids cross-wave numeric comparisons -- a reason
     that does NOT apply to the pass/fail suite, which compares no numbers
     across runs.
-    **Two other `run_all` self-skips are NOT about KiCad at all**:
-    `test_887_run24_regression` and `test_run8_starved_face_gate` want
-    recorded artifacts under `wk/`, which is gitignored (0 files tracked),
-    so they self-skip on ANY clean clone -- verified locally WITH KiCad
-    present. No image change moves them.
+    **One other `run_all` self-skip is NOT about KiCad at all**:
+    `test_887_run24_regression` wants recorded artifacts under `wk/`, which
+    is gitignored (0 files tracked), so it self-skips on ANY clean clone --
+    verified locally WITH KiCad present. No image change moves it.
   - The image is a clean checkout of HEAD, so it is reproducible and you can
     keep editing while it runs; `KICAD_SWEEP_DIRTY=1` ships the working tree
     instead and stamps the provenance `+dirty` (use it to run the suite over
@@ -551,9 +550,9 @@ through there too.
   `SaveBoard()`, as canonical trees: numbers to integer nanometres (so the
   tolerance is exactly zero, not a float epsilon), `at` angles folded, children
   sorted, and the uuid multiset asserted rather than normalised away. **Exits 2
-  when pcbnew is absent and does NOT self-skip** — `tests/mutate_714.py` uses
-  it as a killer gate, and a killer gate that exits 0 reports every row it
-  guards as SURVIVED. Run it whenever you touch `placement/writer.py`'s flip
+  when pcbnew is absent and does NOT self-skip**: it is the flip's acceptance
+  gate, and a gate that exits 0 without running reads as a pass. Run it
+  whenever you touch `placement/writer.py`'s flip
   path or `kicad_parser.flip_layer_token`; ~2 min. Its wx-free siblings are
   `tests/test_714_{mirror_discriminates,side_self_consistency,flip_roundtrip,
   refusals,identity_write_unchanged}.py`, which `run_all.py` does collect.

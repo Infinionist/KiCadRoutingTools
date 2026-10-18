@@ -508,8 +508,8 @@ six others.
   protection, the user interface); `place_simple` keeps each group in one piece,
   whatever shape the free space gives it, and arranges the pieces by one objective.
   - *Measured on a route:* a 25-part 2-layer board (6 groups) from a scatter, routed by
-    its recorded chain: 0 blocking on every seed tried, 24-54 vias against the human's
-    36 -- the seed spread is the larger effect, so place more than one seed.
+    its recorded chain over seeds 0-7: 0 blocking on every seed, 32-52 vias against the human's 36 -- the seed
+    spread is the larger effect, so place more than one seed.
   - *Apply:* five to eight groups suit a small board; more than about twelve leave
     each group too few parts to be a piece.
 - **Keep each functional group compact and on one face.**

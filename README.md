@@ -413,7 +413,7 @@ python py_router/route.py kicad_files/input.kicad_pcb kicad_files/output.kicad_p
 python py_router/route.py kicad_files/input.kicad_pcb kicad_files/output.kicad_pcb --nets "*" "!GND" "!VCC"
 
 # Route one placement BLOCK -- a schematic sheet, a KiCad group, an IC and its decaps
-# (see "Placement blocks" below for what --group-by can infer, and --list-groups)
+# (see "Placement blocks" in py_placer/placement/README.md for what --group-by can infer, and --list-groups)
 python py_router/route.py kicad_files/input.kicad_pcb kicad_files/output.kicad_pcb \
   --group-by sheet --list-groups                      # what blocks exist?
 python py_router/route.py kicad_files/input.kicad_pcb kicad_files/output.kicad_pcb \
@@ -521,7 +521,8 @@ python3 py_tools/board_brief.py board.kicad_pcb
 
 Toggles for `--borders` / `--labels` / `--ratsnest` / `--arrows` / `--ghosts`;
 `--per-side` gives F and B panels rather than one flattened projection.
-The render is triage -- the verdict is the caption's `crossings` / `hpwl`.
+The render is triage, and so are the caption's `crossings` / `hpwl`: a
+placement is judged by routing it.
 
 ### 4. Verify Results
 
@@ -704,16 +705,26 @@ KiCadRoutingTools/
 │   ├── bga_fanout/               # BGA fanout package (escape, reroute, layer balance, under-pad escape, ...)
 │   ├── qfn_fanout.py             # QFN/QFP fanout CLI wrapper
 │   ├── qfn_fanout/               # QFN/QFP fanout package (layout, geometry, types)
-│   ├── placement/                # Component placement package
-│   │   ├── quench.py             # Placement optimizer
+│   └── ...                       # plus the rest of the engine modules — see Module Overview below
+│
+├── py_placer/                # Placement CLIs and the placement package
+│   ├── place_simple.py           # The placer: functional groups, one objective, annealed
+│   ├── place_pose.py             # Set, turn, face, lock or replicate parts by hand (#892)
+│   ├── place_fanout_clearance.py # Move decoupling caps off fanout vias (#130)
+│   ├── converge.py               # Rank a part's poses; the milestone ledger
+│   ├── placement/                # Component placement package — see py_placer/placement/README.md
+│   │   ├── simple.py             # The placer's cost model
+│   │   ├── simple_anneal.py      # The placer's simulated annealing
+│   │   ├── quench.py             # QuenchState: the parts, their poses and the board
+│   │   ├── grouping.py           # The groups file
+│   │   ├── legality.py           # Placement legality checks
+│   │   ├── floorplan.py          # Floorplan intent and its grade
+│   │   ├── body.py               # THE footprint body model (#896)
 │   │   ├── fanout_clearance.py   # Fanout clearance evaluation
 │   │   ├── parser.py             # Courtyard boundary extraction
 │   │   ├── writer.py             # Footprint position modification
-│   │   ├── groups.py             # Group-move support
-│   │   ├── body.py               # THE footprint body model (#896)
-│   │   ├── legality.py           # Placement legality checks
-│   │   └── utility.py            # Shared placement utilities
-│   └── ...                       # plus the rest of the engine modules — see Module Overview below
+│   │   └── ...
+│   └── ...
 │
 ├── py_tools/                 # Leaf diagnostic / analysis tools
 │   ├── check_impedance.py        # Verify impedance-controlled widths/gaps
@@ -726,6 +737,15 @@ KiCadRoutingTools/
 │   ├── extract_pcb_geometry.py   # Geometry extraction
 │   ├── clean_ignored.py          # Remove ignored copper
 │   ├── analyze_power_paths.py    # Power-path analysis (backs /analyze-power-nets)
+│   ├── board_brief.py            # What a board looks like to whatever places it
+│   ├── board_context.py          # Every part's value, pins, nets and role
+│   ├── check_groups.py           # Check a groups file against its board
+│   ├── check_floorplan.py        # Grade a board against its floorplan intent
+│   ├── check_assembly.py         # Is a placement buildable?
+│   ├── render_placement.py       # PNG stills of a placement, with its legality
+│   ├── route_review.py           # What to move after a route
+│   ├── render_nets.py            # Chosen nets' copper on several boards side by side
+│   ├── board_score.py            # One score for a board: blocking, then quality
 │   └── _path.py                  # sys.path bootstrap so the tools import py_router
 │
 ├── tests/                    # Integration tests

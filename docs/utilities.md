@@ -182,12 +182,16 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb placed.kicad_pcb \
   region or shape; its gap tree is a cost term that keeps it in one piece.
   The hints are soft terms; the intent's keep-outs and zones bind every part
   through the anneal's overlap term. Every weight is a flag (`--help`).
+  A run that leaves a part with no legal pose is annealed again from a fresh
+  start, up to two more times; the first legal placement is kept.
 - **Deterministic.** The same board, inputs and `--seed` give the same
   placement. Seeds differ more than most input changes, so place several and
   judge them by routing.
 - **Output.** The placed board with its siblings, a `JSON_SUMMARY:` line
   (final cost, moves, seed, parts moved to a legal pose after the anneal,
-  parts left illegal, seconds) and, with `--json`, the full report.
+  parts left illegal, seconds) and, with `--json`, the full report (adding
+  `runs`, the anneals it took, each move kind's tried and kept counts, the
+  groups and the notes).
 
 Exit 0 placed; 2 unreadable input, or a face or pose the inputs contradict
 (two declarations disagree, or a KiCad-locked part is declared on the other

@@ -16,10 +16,10 @@ Invocation: `/plan-pcb-placement <mode> <board.kicad_pcb> [intent.json]`,
 where mode is `place` or `full`. With no mode, use `full`.
 
 **Measured basis.** A 25-part 2-layer board with 3 fixed connectors, from a
-scatter, routed by its recorded chain: 0 blocking on every seed, 24-54 vias
-(the human layout: 36), 272-332 mm of copper (the human: 275). Placing takes
-about 4 s; the seed spread is larger than most changes, so place more than
-one seed and judge by routing.
+scatter, routed by its recorded chain over seeds 0-7: 0 blocking on every
+seed, 32-52 vias (the human layout: 36), 255-331 mm of copper (the human:
+275). Placing takes about 4 s; the seed spread is larger than most changes,
+so place more than one seed and judge by routing.
 
 ## 1. The goal, per mode
 
@@ -174,9 +174,11 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb wk/<run>/s0.k
   About 500 moves per movable part (`--moves`), roughly 4 s for 25 parts.
 - **Place seeds 0-3** (or more when the board is small): seeds differ more
   than most input changes.
-- Exit 4 names parts left illegal; exit 2 a face or pose the inputs
-  contradict. Read the `cost` line: `hints` and `groups` say which group or
-  hint the result could not satisfy.
+- A run that leaves a part with no legal pose anneals again from a fresh
+  start, up to two more times (`runs` in the `--json` report). Exit 4 names
+  parts still left illegal; exit 2 a face or pose the inputs contradict.
+  Read the `cost` line: `hints` and `groups` say which group or hint the
+  result could not satisfy.
 - **Check and LOOK:**
   `python3 -X utf8 py_tools/check_assembly.py <placed> --baseline wk/<run>/fixed.kicad_pcb`
   (read `buildable`) and

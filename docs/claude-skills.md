@@ -38,7 +38,8 @@ The skills' RESULT/plan output contracts are tuned on Claude models; smaller mod
   <img src="claude_tab.png" alt="AI tab: planned steps, controls, and live transcript" width="700">
 </p>
 
-All eight skills are reachable from the plugin's routing dialog (the GUI spawns
+Nine of the ten skills are reachable from the plugin's routing dialog (all but
+`/stress-test-router`; the GUI spawns
 the selected agent CLI - Claude Code or opencode, per the AI tab's **Backend**
 dropdown - headless with the working directory set to the plugin root, streams a
 live transcript, and parses a machine-readable `RESULT=` last line back into

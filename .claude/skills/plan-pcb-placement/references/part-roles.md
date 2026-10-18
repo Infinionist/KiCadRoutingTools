@@ -81,8 +81,8 @@ it was, how to tell, and the board.
 
 ## Caps and resistors whose role is their nets
 
-- **An RC reset cap is not a decap.** On ch32v003_usb, C6 (100 nF on PD7/NRST) was
-  claimed by the seeder's decap stage as U3's decap.
+- **An RC reset cap is not a decap.** On ch32v003_usb, an earlier seeder's decap stage
+  claimed C6 (100 nF on PD7/NRST) as U3's decap.
   - *Group:* the reset circuit, at the NRST pin or with the reset button.
 - **Bulk caps (10 µF and up, electrolytic or tantalum)** belong at the regulator or
   the power entry, not at an IC's supply pin.
@@ -111,7 +111,7 @@ it was, how to tell, and the board.
   beside the USB-C receptacle. Put the power group by the connector's POWER pins and
   the signal group by its signal pins.
 - **Test points** (TP*, or a "TestPoint_01x02" referenced J4 on ch32v003_usb, which
-  has no courtyard) go with the net they probe. They take no region of their own.
+  has no courtyard) go with the net they probe. They need no group of their own.
 - **Buttons.** The part classifier calls any footprint named switch, button or tact
   `edge_actuator`, by name alone, and that class makes no edge claim. A top-actuated
   tact switch (Omron B3U-1000P) can sit anywhere; a side-actuated one (B3U-3000P)

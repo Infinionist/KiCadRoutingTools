@@ -16,8 +16,12 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb placed.kicad_pcb \
     --groups groups.json --intent intent.json [--seed 0] [--json report.json]
 ```
 
-- **Inputs.** The groups file (`py_tools/check_groups.py` checks it; the
-  format is in `grouping.py`) and the emitted intent
+- **Inputs.** The groups file (`py_tools/check_groups.py` checks it;
+  `grouping.load_groups` reads it): `{"schema": 1, "groups": [...]}`, each
+  group a `name` and its `refs` (fixed parts may be listed), with optional
+  `role`, `anchor`, `why`, `side` (`F`/`B`), `edge` (`N`/`S`/`E`/`W`) and
+  `near` / `apart` (lists of other groups' names); every movable part in
+  exactly one group. And the emitted intent
   (`check_floorplan --emit-intent`): its `proximity[]` claims, keep-outs,
   zones, declared faces and `fixed_poses[]`.
 - **What stays put.** Parts the board locks (`(locked yes)`) and parts the
@@ -36,19 +40,25 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb placed.kicad_pcb \
   crossings among the signal trees (x2); claims; each decap's distance to the
   supply-pin site of its own group's IC it is matched to, a rail's decaps
   spread one to a site (x2); group gap trees (x5); the groups file's `near` /
-  `apart` / `edge` hints; a halo in front of a fine-pitch part's pads (a QFN,
-  QFP, BGA or fine-pitch connector: 0.25 mm per net leaving a side, which
-  anything but a small part wired to it keeps out of); tree edges over
-  foreign pads (x2, a through-hole pad twice); RUDY congestion on a 0.5 mm
-  grid (x5). Every weight is a flag.
+  `apart` / `edge` hints; a halo in front of a fine-pitch part's pads (8 or
+  more connected pads at a median pitch of 1.0 mm or less: a QFN, QFP, BGA
+  or fine-pitch connector), a strip 0.25 mm deep per non-ground net leaving
+  each side its pads face, which a part on the same face pays to enter
+  unless it is a small part (4 pads or fewer) wired to the chip; a chip's
+  corners stay free; tree edges over foreign pads (x2, a through-hole pad
+  twice); RUDY congestion on a 0.5 mm grid (x5). Every weight is a flag.
 - **The anneal** (`simple_anneal.py`): every movable part starts at a random
   place on the board; moves shift, turn, swap, jump to a wiring target, dock
-  against a partner, and shift, turn or swap whole groups; a move never
+  against a partner, shift, turn or swap whole groups, and escape (an
+  overlapping part to the least-overlap of 48 random poses); a move never
   leaves the board. An overlap penalty (courtyards, the outline, the intent's
   keep-outs and zones) rises from soft to hard over the run, only an
   overlap-free state can become the best, and the best is held to the exact
   pad legality (`seeder.pose_ok`), a part failing it moved to the nearest
-  legal pose (exit 4 names any left illegal).
+  legal pose. A run that still leaves a part with no legal pose is annealed
+  again from a fresh start, up to two more times (`RESTARTS`); the first
+  legal placement is kept, else the run that left the fewest parts illegal
+  (the report's `runs` counts the anneals), and exit 4 names those parts.
 - **Local pricing.** A move re-prices only the moved parts and the nets they
   are on, against the committed state near them (`simple.SpatialIndex`),
   with the "before" read from cached breakdowns; the inner loops are Rust
@@ -369,10 +379,10 @@ unplacedness, which is why this does not live in `legality.py`.
 
 ## Floorplan intent (`floorplan.py`, #549)
 
-Everything above judges a placement by `crossings` and `hpwl`, and both are
-indifferent between a sensible layout and a scattered one with the same
-wirelength. Nothing declares where parts *belong*, so nothing can check whether
-they went there.
+A placement is judged by routing it. Before it is routed, its own numbers
+(`crossings`, `hpwl`, the placer's cost) are indifferent between a sensible
+layout and a scattered one with the same wirelength. Nothing declares where
+parts *belong*, so nothing can check whether they went there.
 
 `check_floorplan.py` closes that: declare the floorplan, grade the board against
 it, exit non-zero with the number that broke.
@@ -464,14 +474,15 @@ python3 py_tools/render_placement.py board.kicad_pcb --list-groups --group-by sh
 python3 py_tools/render_placement.py board.kicad_pcb --zoom-group sheet:58d913ec --per-side -o out/
 ```
 
-**The render is triage, not a verdict.** The verdict is the caption's numbers.
-Do not judge a placement by how much moved -- "lots moved, looks broken" and
-"barely moved, looks safe" are both wrong.
+**The render is triage, not a verdict.** The caption's numbers say what is
+illegal; a placement is judged by routing it. Do not judge a placement by how
+much moved -- "lots moved, looks broken" and "barely moved, looks safe" are
+both wrong.
 
 ### What it renders
 
 Every panel below is `render_placement.py` output, and every one carries a
-metrics caption — the render is triage, the caption is the verdict.
+metrics caption — the render is triage, the caption carries the numbers.
 
 **The placement diff, drawn.** `--before` turns on the dashed seed rects and the
 displacement arrows, so "what moved and how far" is the picture rather than a
@@ -481,7 +492,7 @@ diff of two files. 22 parts here; `C4` travelled 95.65 mm.
 python3 py_tools/render_placement.py placed.kicad_pcb --before seed.kicad_pcb -o delta.png
 ```
 
-![placement delta](../docs/placement-delta.png)
+![placement delta](../../docs/placement-delta.png)
 
 **Per-side panels.** Placement lives on two sides, so `--per-side` emits one
 panel per side instead of one flattened projection. Parts on the side you asked
@@ -496,7 +507,7 @@ python3 py_tools/render_placement.py board.kicad_pcb --before seed.kicad_pcb --p
 
 | front | back |
 |---|---|
-| ![front](../docs/placement-side-F.png) | ![back](../docs/placement-side-B.png) |
+| ![front](../../docs/placement-side-F.png) | ![back](../../docs/placement-side-B.png) |
 
 **Zoom to one placement block.** `--zoom-group` takes the same block names as
 `route.py --group` — `--list-groups` prints them with their part and net counts.
@@ -506,31 +517,31 @@ python3 py_tools/render_placement.py board.kicad_pcb --list-groups --group-by sh
 python3 py_tools/render_placement.py board.kicad_pcb --zoom-group 58d913ec --group-by sheet -o blk.png
 ```
 
-![group zoom](../docs/placement-group-zoom.png)
+![group zoom](../../docs/placement-group-zoom.png)
 
 **An unplaced board.** The placement CLIs refuse this one (exit 3); the renderer
 warns and draws it anyway, framed to the PARTS rather than the outline — a pile
 at the origin would otherwise render as a dot in the corner of an empty board.
 13 footprints at 1 distinct position, and `overlap 792 mm²` gives it away.
 
-![unplaced](../docs/placement-unplaced.png)
+![unplaced](../../docs/placement-unplaced.png)
 
 **Reference designators.** On by default, and sized to the PART rather than to
 the image — scaling by image height alone gives an 8px label at any zoom:
 drawn, technically present, and unreadable. A part too small to letter is
 skipped, and its arrow carries the meaning instead.
 
-![labels](../docs/placement-labels.png)
+![labels](../../docs/placement-labels.png)
 
 **Every toggle, on one board.** The same 13-part delta, one flag at a time:
 
-![toggles](../docs/placement-toggles.png)
+![toggles](../../docs/placement-toggles.png)
 
 `--no-delta-first` looks unchanged there for a real reason: 12 of the 13 parts
 moved, so there is no context left to dim. It matters on a board where the delta
 is a genuine subset — which is also where `--ratsnest-all` earns its keep:
 
-![ratsnest](../docs/placement-ratsnest.png)
+![ratsnest](../../docs/placement-ratsnest.png)
 
 By default only the moved and attributed nets are drawn. `--ratsnest-all` is the
 deliberate hairball switch: on a dense board it reproduces exactly the
@@ -547,7 +558,7 @@ comes up.
 python3 py_tools/render_placement.py board.kicad_pcb --before seed.kicad_pcb     --ratsnest-nets '/CLK*' '/DATA*' '!*_N' -o clk.png
 ```
 
-![named nets](../docs/placement-ratsnest-nets.png)
+![named nets](../../docs/placement-ratsnest-nets.png)
 
 The matching goes through `net_queries.matches_net_filter` — the same helper
 `route.py --nets` and the plan executor use — so a pattern means here exactly
@@ -566,7 +577,10 @@ than rendering an empty ratsnest, which would read as "this net has no airwires"
 | `grouping.py` | The groups file: its schema, the board's rails, cohesion and decap checks, and folding a crystal into its IC's group (`check_groups.py`) |
 | `crystals.py` | Crystal claims: each passive crystal (`emc_roles`) within `LEG_MM` of its IC's oscillator pins and each load cap within `CAP_MM` of the crystal pad on its net, as `proximity[]` rows -- the human corpus's 75th percentiles (`tests/stress/placement_survey.py`) |
 | `seeder.py` | The seat predicate `pose_ok`, the wiring target, the fixed-pose checks and the `(locked yes)` stamps |
-| `../group_routing.py` | Block → net scoping, and the undo, for `route.py` (#459) |
+| `pose_ops.py` | The engine half of `place_pose.py` (#892): resolve, write, re-grade and snap one arrangement |
+| `replicate.py` | The engine half of `place_pose replicate` (#1211): one sheet channel copied onto its sibling instances |
+| `portfolio.py` | `copy_siblings` (a written board's sibling files) and `ignore_net_ids` |
+| `../../py_router/group_routing.py` | Block → net scoping, and the undo, for `route.py` (#459) |
 | `fanout_clearance.py` | Post-fanout decoupling-cap clearance repair (#130) |
 | `groups.py` | Placement blocks: which parts belong together by source (#459), and decap owners |
 | `routability.py` | Block displacement, corridors, net affinity — the geometry behind `floorplan.grade`'s health block |
@@ -574,6 +588,11 @@ than rendering an empty ratsnest, which would read as "this net has no airwires"
 | `reachability.py` | Whether a pose is reachable at all (`check_reachability.py`) |
 | `labels.py` | Reference-designator silkscreen geometry (`beautify_labels`, #481) |
 | `floorplan.py` | Floorplan intent: declare where things are supposed to go, then grade it (#549). A checker; it authors no geometry |
+| `design_brief.py` | The design brief (#711): what a board is for, compiled into the intent (`docs/design-brief.md`) |
+| `reconcile.py` | Reconciles every ref two channels declare, and reads `mechanical.json` into grade-only anchors (#959) |
+| `arrays.py` | Declared `arrays[]`: the formation predicate and the pin order (#1051) |
+| `edge_facing.py` | Connected pads on a row facing the outline with nothing beyond it (`placement_score`'s `edge_facing`) |
+| `pin_rows.py` | Whether a track can cross a through-hole pin row (#1196) |
 | `escape.py` | Per-face escape-lane ledger: can the nets on this part's face get OUT? |
 | `pair_order.py` | Pin-order inversions between connected part pairs. A LOWER BOUND, not a proxy |
 | `part_class.py` | What determines a part's position — a pose-INDEPENDENT class |
@@ -657,8 +676,7 @@ nothing moves, the body is the board's: `quench.locked_body_locals` gives
 each locked part whose occupancy comes from a `.Fab` body (no silk outline,
 no marking, no container) that occupancy as its seat rect. On ulx3s the
 ESP32 module U9, locked, draws a fab body 4 mm past its pads at the antenna
-end, and six parts seated there had made every grouped candidate NOT
-BUILDABLE.
+end, and six parts seated there had made the placement NOT BUILDABLE.
 
 **A silk-sourced body never GATES**, structurally rather than by a census
 coming out clean. On the shipped esp_prog, U2's OLIMEX SOT89 draws four corner
@@ -774,8 +792,8 @@ diagonal text, no parallel line, a line within `FACE_MIN_OFFSET_MM` of the
 pad centre, a rival line on another face less than `MARKER_NEARER_RATIO`
 times and `MARKER_NEARER_MM` farther, and two markers that disagree. It
 never names a face alone: agreeing, it makes the body's face STRONG (basis
-`+marker`); contradicting, it makes it abstain, never fail. Calibrated by
-`tests/measure_1245_edge_marker.py` on KiCad 10's 154 marked stock
+`+marker`); contradicting, it makes it abstain, never fail. Calibrated on
+KiCad 10's 154 marked stock
 footprints: 73 of 73 strong body faces agree, 75 weak ones agree, one weak
 one is vetoed (the RaspberryPi Pico W module's RF-edge marker), and no
 reading moves when the footprints are saved at 90, 180 or 270. The three
@@ -788,8 +806,8 @@ kept, and the wrong weak face above misleads the grade too -- and the grade
 reports the
 first two. `board_context`'s "Mating face" reads the same primitive. B-side parts need
 no extra mirror: the board file stores their local coordinates mirrored
-already. Census: `tests/measure_1155_mating_census.py` -- every decisive
-receptacle on the tracked and fa10 designer boards faces the edge it sits on.
+already. Census: every decisive receptacle on the tracked and fa10 designer
+boards faces the edge it sits on.
 
 ## Legality model (`legality.py`, #456)
 
@@ -820,8 +838,7 @@ any grader cannot disagree:
   waived `container_class`, locked or not. A pin frame's rect pairs leave the
   courtyard channel and its drilled HOLES are graded instead, kind
   `pin_in_courtyard` (KiCad's `pth_inside_courtyard`): check_assembly's
-  eighth conjunct, absolute; `tests/measure_1212_kicad_pins.py` cross-checks
-  it against kicad-cli. The seat predicate (`container_pin` veto) and the
+  eighth conjunct, absolute. The seat predicate (`container_pin` veto) and the
   fixed-pose checks ask `CourtyardCensus.pin_hits`, the grader's own function.
 - **Board containment** measures against the real Edge.Cuts rings, not an inset
   of the axis-aligned `board_bounds`, so parts are not nudged into an L-shaped
@@ -848,15 +865,6 @@ any grader cannot disagree:
   (OoB) report the same geometry the optimizer gates on;
   `QuenchState.legality_metrics()` returns both for a live placement. All zero
   means fully legal. Intended for the placement scorecard in #411/#110.
-
-**Cost on two-sided boards.** Side-awareness removes a large number of false
-collisions, so many candidate poses that used to be rejected outright now reach
-the cost function. On `glasgow_revC` (172 front / 92 back parts) a bounded 40-part
-pass makes **3.4× more airwire cost evaluations** than before (9.3k → 31.4k
-`_count_crossings_np` calls) and takes correspondingly longer. Nothing per-call
-got slower — the optimizer is searching the space it was previously, wrongly,
-skipping. Small boards are unaffected or faster (`watchy`: 69 s against 109 s
-before).
 
 Courtyard extraction (`parser.py`) reads `fp_line`/`fp_rect`/`fp_arc`/
 `fp_circle`/`fp_poly` per side. A footprint with no courtyard on any layer falls

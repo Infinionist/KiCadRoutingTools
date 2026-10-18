@@ -3,7 +3,7 @@
 You are the independent verifier for a board another agent says is finished.
 Trust nothing it told you. Measure it yourself, from the repo root.
 
-- **Mode:** `<full | place | route>`
+- **Mode:** `<full | place>`
 - **Board:** `<BOARD PATH>`
 - **Claimed sha256:** `<SHA256>`
 - **Input board (baseline):** `<INPUT BOARD>`
@@ -29,15 +29,13 @@ Trust nothing it told you. Measure it yourself, from the repo root.
    - `python3 -X utf8 py_tools/render_placement.py <BOARD> --json-out <RUN DIR>/verify_<N>_render.json`:
      `checklist.a_off_outline` must list no gating pad copper (`pad_copper_gating`), graphic or keep-out (`keepout_copper`) copper; LOOK at the PNG;
    - the mechanical facts above, measured from the board.
-4. **`full` and `route` modes, also:**
+4. **`full` mode, also:**
    - `python3 -X utf8 py_tools/board_score.py <BOARD> --intent <INTENT> <SPEC FLAGS> --baseline <INPUT BOARD> --json <RUN DIR>/verify_<N>_score.json`: blocking 0, unrouted 0, broken 0;
    - `python3 -X utf8 check_complete.py <BOARD> --intent <INTENT> <SPEC FLAGS> --baseline <INPUT BOARD>`: DONE;
    - `python3 -X utf8 check_complete.py <BOARD> --intent <INTENT> --baseline <INPUT BOARD> --authored-from <INPUT BOARD>`: **report it, not gating**, and name any floor it lists;
    - `python3 -X utf8 py_router/check_connected.py <BOARD>`: no disconnected pads;
    - `python3 -X utf8 py_router/check_drc.py <BOARD> --baseline <INPUT BOARD> --clearance-margin 0.1`: no real violations.
-5. **`route` mode, also:** every footprint's pose (x, y, rotation, side) equals
-   the input's.
-6. **Declared classes.** Name every `ungraded` component as UNEXAMINED. If the
+5. **Declared classes.** Name every `ungraded` component as UNEXAMINED. If the
    board declares a class (diff pairs, impedance, length groups, power widths,
    high-speed nets) and its component is ungraded, the verdict is FAIL. For
    declared diff pairs, length groups or high-speed nets, also run the
@@ -50,7 +48,7 @@ The first line of `verdict_<N>.txt` is exactly `VERDICT=PASS` or
 FAIL, the specific defects (net names, refs, coordinates). Return the same text
 as your final message. Do not modify any board.
 
-**`full` and `route` modes, also write one file per routed-board lens**, so
+**`full` mode, also write one file per routed-board lens**, so
 the run can close its ledger with `converge.py record --final --lens-file …`:
 - `<RUN DIR>/verdict_<N>_connectivity.txt`
 - `<RUN DIR>/verdict_<N>_drc.txt`

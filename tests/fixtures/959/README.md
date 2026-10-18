@@ -16,4 +16,4 @@ What the run's own record says about these files:
 
 - The pile's decap census was measured ON THE PILE: `max_mm 0.0`, population 4, tethers 3, one cap (C1) beyond the radius. A strict `--declare-decaps` there derives a 0.0 limit.
 - `zone_plan_r1.json` escapes the reference `Ref*` as `Ref[*]`, so run 29 never hit the fnmatch trap where `Ref*` also matches `Ref*~2`.
-- The two `intent_zone_overlap` findings reported at lap 5 came from a later draft of the second plan, which the run amended within a minute. `zone_plan_r2_lap5.json` is that draft, and `tests/test_959_plan_check.py` shows both overlaps are satisfiable (WARNs since #959).
+- The two `intent_zone_overlap` findings reported at lap 5 came from a later draft of the second plan, which the run amended within a minute. `zone_plan_r2_lap5.json` is that draft; both overlaps are satisfiable (WARNs since #959).

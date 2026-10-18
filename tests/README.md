@@ -78,10 +78,10 @@ Three things to know before you trust its output:
   run a pcbnew/wx half under KiCad's python and self-skip without one
   (2026-10-16, found reviewing #1272: such a half used to print a skip and
   pass, so it ran nowhere): `test_505_min_connection_clamp`,
-  `test_505_gui_half_runs` and `test_engine_kwarg_parity_launch`. The other two,
-  `test_887_run24_regression` and `test_run8_starved_face_gate`, want recorded
-  artifacts under `wk/` -- gitignored, 0 files tracked -- so they self-skip on
-  ANY clean clone, with or without KiCad. Verified 2026-09-20 by running all
+  `test_505_gui_half_runs` and `test_engine_kwarg_parity_launch`. One more,
+  `test_887_run24_regression`, wants recorded artifacts under `wk/` --
+  gitignored, 0 files tracked -- so it self-skips on ANY clean clone, with or
+  without KiCad. Verified 2026-09-20 by running all
   four locally WITH KiCad present.
 
 The image is a clean checkout of HEAD (reproducible, and you can keep editing
@@ -97,7 +97,7 @@ are listed here because each is a trap that will come back:
 |---|---|
 | a git **index** | `run_utils.corpus_boards()` asks `git ls-files`, and `git archive` ships no `.git`, so it returned `[]` and 9 corpus-walking tests graded an EMPTY corpus instead of skipping |
 | `Pillow` | `startup_checks.check_render_dependencies` raised; 3 render tests died |
-| `pytest` | 2 tests imported it for fixtures (a test-only dep, correctly absent from `requirements.txt`). No test needs it now, so the image no longer installs it, and `test_718_static_test_hygiene.py` refuses a test file that imports pytest or that only pytest can run |
+| `pytest` | 2 tests imported it for fixtures (a test-only dep, correctly absent from `requirements.txt`). No test needs it now, so the image no longer installs it |
 | the right **Python version** | 2 tests behave differently on 3.12 vs 3.13+ |
 
 Three of those deserve spelling out:
@@ -113,12 +113,8 @@ Three of those deserve spelling out:
   corpus fails the build instead of quietly shrinking what the tests grade.
 - **The container's Python matches the interpreter you launched with.** This
   repo has already had a Python upgrade change *routing results* (`math.fsum`),
-  so grading on a different one is not grading your code. It also moves tests:
-  `test_run8_write_order` passes on 3.13+ and fails on 3.12 -- and the pass is
-  VACUOUS either way, because its assertion (`'early line' in the log`) is
-  satisfied by 3.13's traceback echoing the `python -c` source rather than by
-  the program running. Override with `KICAD_SUITE_PYTHON=3.12` if Modal has no
-  image for yours.
+  so grading on a different one is not grading your code. Override with
+  `KICAD_SUITE_PYTHON=3.12` if Modal has no image for yours.
 
 The moral, which cost a full red run to learn: **when a cloud suite fails tests
 that pass locally, suspect the image before the code.**
