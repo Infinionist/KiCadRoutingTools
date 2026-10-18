@@ -15,22 +15,22 @@ both parts the whole route does not admit, with why. --find names them and stops
 order instead, each with its own fanout (MODE: joint, escape or plain) and routing layers (LAYERS, ROUTE_LAYERS) --
 a bus to a row part among them (its pads escape straight out of their rows: escape_moves.row_part); an escape bus on
 an array an earlier bus was routed through plans that array whole with it, its ends on the board as it was before
-(route_buses: ESCAPE_JOINT, ESCAPE_JOINT_ENDS). A plain or joint bus from such an array may keep the escapes that
-bus's step laid it there, opted in (SOURCE_SHARED=REF). DEST may name several parts, SRC:U4+U3: ONE SOURCE, SEVERAL
-ENDS, the buses to them one plain bus planned and laid whole -- the whole route's trunk runs to the first, and each
-other's lanes leave it on a branch (whole_frame), crossing the others on the trunk alone.
+(route_buses: ESCAPE_JOINT, ESCAPE_JOINT_ENDS). A plain bus from such an array keeps the escapes that bus's step
+laid it there, a joint one when named (SOURCE_SHARED, keeps_source_escapes). DEST may name several parts,
+SRC:U4+U3: ONE SOURCE, SEVERAL ENDS, the buses to them one plain bus planned and laid whole -- the whole route's trunk
+runs to the first, and each other's lanes leave it on a branch (whole_frame), crossing the others on the trunk alone.
 
 route_bus() takes a board as the chain hands it on and writes it back with the bus laid, in the board's own frame,
 at the chain's sizes (resolve_rules: the routing CLIs' flags, an omitted one resolved as route.py resolves it):
 
-1. The bus: every net between SRC and DEST the ladder admits (make_bench.pair_nets) -- and, opted in (BUS_PULLED),
-   every one a PULL alone keeps out (pulled_nets: its other pads on two-pad parts to a plane's net), laid as a lane,
-   its pull pads off its net for the step and back on it in OUT, the pull the rest of the chain's to connect.
+1. The bus: every net between SRC and DEST the ladder admits (make_bench.pair_nets) -- and every one a PULL or a
+   TERMINATION alone keeps out (pulled_nets: its other pads on parts to a rail, or across a pair), laid as a lane,
+   its stub pads off its net for the step and back on it in OUT, the stub the rest of the chain's to connect.
    Refused: a pair through a termination part between the arrays (the whole route lays no waypoint); a net whose
    name's last part is another net's too (name_clashes: the whole route names a net by it); and a pair leg whose
    partner is refused or is no lane between the arrays (half_pairs: a pair is laid whole or not at all). The bus's
    copper, if any, is stripped: the step lays both ends of every lane.
-2. SRC is fanned out for them (make_bench.fanout_source) -- opted in (SOURCE_SHARED=REF, REF the source), the
+2. SRC is fanned out for them (make_bench.fanout_source) -- on a plain bus by default (keeps_source_escapes), the
    escapes an earlier step's plan laid them there kept instead (escape_blocks) --, the project floor stamped, and the
    ladder written: the plan's rivers, largest first.
 3. The board is turned into the flow frame (flow_frame.py): the quarter turn that points the pair's source-to-
@@ -190,9 +190,9 @@ def route_buses(board, out, buses=None, k=None, rounds=3, inproc=False, log=prin
 
     A SHARED ARRAY: an escape bus on an array an earlier bus was handed on through has that array planned whole with
     it each round (ESCAPE_JOINT), its ends chosen on the board as it was before the first such earlier bus
-    (ESCAPE_JOINT_ENDS) -- the zynq's U1: the DDR3 bus (joint), then the AD9364's LVDS (escape) round it. A plain or
-    joint bus from such an array may keep the escapes the earlier step's plan laid its balls there, opted in by the
-    environment (SOURCE_SHARED=REF) -- the zynq's USB bus from U1 to its QFN"""
+    (ESCAPE_JOINT_ENDS) -- the zynq's U1: the DDR3 bus (joint), then the AD9364's LVDS (escape) round it. A plain bus
+    from such an array keeps the escapes the earlier step's plan laid its balls there, a joint one when the environment
+    names its source (SOURCE_SHARED: keeps_source_escapes) -- the zynq's USB bus from U1 to its QFN"""
     from kicad_parser import parse_kicad_pcb
     from copy_board import copy_board
     from flow_frame import dest_refs as _ff_dest_refs
@@ -281,17 +281,15 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
     for d in dests:
         log(f'  {len(mb.pair_nets(pcb, src, d))} nets between {src} and {d}')
     import awx_settings
-    # BUS_PULLED (opt-in): 1 every bus, or the buses named SRC-DEST, comma separated -- their pulled nets laid as lanes
-    # (pulled_nets), each a place in the bus's order: the zynq's USB and Ethernet buses take theirs (OTG_RESETN; ETH_MDIO,
-    # ETH_RXCTL, ETH_RXD0-3)
-    _bp = (awx_settings.get('BUS_PULLED') or '').strip()
-    pulled = ({k_: v_ for d in dests for k_, v_ in pulled_nets(pcb, src, d, names).items()}
-              if _bp == '1' or f'{src}-{dest}' in _bp.split(',') else {})
+    # the nets a pull or a termination alone keeps out (pulled_nets) laid as lanes, each a place in the bus's order: a
+    # fly-by DDR3 bus's address and command nets, terminated to its Vtt past the memory, are as much the bus's as its
+    # data -- left to the router after it, sdi_mipi_conv's lost 12 of 26 round the lanes laid before them
+    pulled = {k_: v_ for d in dests for k_, v_ in pulled_nets(pcb, src, d, names).items()}
     if pulled:
         names = sorted(set(names) | set(pulled))
-        log(f'  {len(pulled)} more with a PULL beside their two ends, laid as lanes, the pull left to the rest of the '
-            f'chain: ' + ', '.join(f'{n.split("/")[-1]} ({", ".join(p.component_ref for p in v)})'
-                                   for n, v in sorted(pulled.items())))
+        log(f'  {len(pulled)} more with a PULL or a TERMINATION beside their two ends, laid as lanes, the stub left to the '
+            f'rest of the chain: ' + ', '.join(f'{n.split("/")[-1]} ({", ".join(p.component_ref for p in v)})'
+                                               for n, v in sorted(pulled.items())))
     wps = {leg: part for d in dests for leg, part in waypoint_pairs(pcb, names, src, d).items()}
     refused = {leg: f'passes through {part}, a termination part between the arrays: the whole route lays no waypoint'
                for leg, part in wps.items()}
@@ -314,13 +312,12 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
         log('  refused, left to the rest of the chain with their pair: '
             + '; '.join(f'{leg}: {why}' for leg, why in sorted(halves.items())))
     txt = open(board, encoding='utf-8').read()
-    # SOURCE_SHARED=REF (opt-in): the source an earlier bus was routed through, whose step planned every ball of it
-    # whole -- the bus's escapes there are that plan's, chosen with every other ball's, and stay as its teeth; a
-    # bus-only fanout of a full array (make_bench.fanout_source) sent zynq U1's OTG_DATA6, NXT and STP out of the
-    # south face, into the LVDS bus's lanes, where the plan had them east toward U4. Opted in per bus: that plan chose
-    # the escapes for its own bus, and sends some of another bus's balls away from it (the Ethernet bus's, south)
+    # the escapes an earlier step laid the bus's balls at its source (keeps_source_escapes): that step planned every
+    # ball of the array whole, each escape chosen with every other ball's, and they stay as the bus's teeth -- fanned
+    # out again for the bus alone, a full array sends a ball out by any face with room: zynq U1's ETH_RXCTL and
+    # ETH_RXD2 out of the south face into the LVDS bus's escapes, its OTG_DATA6, NXT and STP into the LVDS lanes
     kept = []
-    if not escape and src in (awx_settings.get('SOURCE_SHARED') or '').split(','):
+    if keeps_source_escapes(src, escape, joint_fanout, awx_settings.get('SOURCE_SHARED')):
         kept = escape_blocks(txt, pcb, src, names)
     txt, n_cut = mb.strip_pair_copper(txt, pcb, names)
     if kept:
@@ -497,6 +494,15 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
     cut = [n for n in ladder[:K] if n not in nets]
     log(f'  the run: K={K} of the ladder\'s {len(ladder)} nets'
         + (f' -- {len(nets)} nets: {", ".join(cut)} left out with their pair\'s other leg' if cut else ''))
+    joint_left = set()          # (bus nets the run leaves out, planned as the arrays' others: full names)
+    if spec is not None:
+        added = others_left_out(spec, pcb, names, nets)
+        if added:
+            joint_left = {n for _r, n in added}
+            with open(os.path.join(work, 'joint.json'), 'w', encoding='utf-8') as f:
+                json.dump(spec, f, indent=1)
+            log(f'  joint fanout: the bus nets the run leaves out planned as the arrays\' others: '
+                + ', '.join(f'{r_}:{short_name(n)}' for r_, n in added))
 
     # 3. the flow frame
     with contextlib.redirect_stdout(sys.stderr):
@@ -579,6 +585,10 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
         if not nets:
             return finish(1, f'the whole route connected none of the bus (exit {rc})', grade)
     back = [n for n in names if short(n) not in set(nets)]
+    kept_ = escapes_kept(pcb, back, joint_left)
+    back = [n for n in back if n not in kept_]
+    if kept_:
+        log(f'  their escapes kept, the joint plan\'s: {", ".join(short(n) for n in kept_)}')
     if back:
         left_ = put_back(routed_pcb, board, pcb, back)
         log(f'  put back as they came: {", ".join(sorted(short(n) for n in back))}'
@@ -725,6 +735,34 @@ def array_others(pcb, ref, names):
     bus = {short_name(n) for n in names}
     return sorted({p.net_name for p in pcb.footprints[ref].pads
                    if p.net_id and p.net_name and p.net_id not in zone_ids and short_name(p.net_name) not in bus})
+
+
+def others_left_out(spec, pcb, names, run):
+    """the joint fanout's `spec` ({'arrays': [{'ref', 'others', 'drops'}]}) with each bus net of `names` (full) the run
+    `run` (short names) leaves out among the others of every array it has a ball of on `pcb` -- a zone net's balls
+    are the plane drops'; [(ref, net)] added. A net the run leaves out -- its ball dropped by the source fanout, beyond
+    --k, its pair cut -- is no lane, but its balls are still the arrays': each round's joint plan escapes them with the
+    other nets', for the rest of the chain (sdi_mipi_conv's DDR3_A2, U11.L11, neither the bus's nor another net's, was
+    planned by no round, and route.py found no way out of the field the bus left it)"""
+    run_s = {short_name(n) for n in run}
+    zone_ids = {z.net_id for z in (pcb.zones or []) if z.net_id}
+    left = sorted({n for n in names if short_name(n) not in run_s})
+    added = []
+    for ar in spec['arrays']:
+        have = {p.net_name for p in pcb.footprints[ar['ref']].pads if p.net_id and p.net_id not in zone_ids}
+        new = [n for n in left if n in have and n not in ar['others']]
+        ar['others'] = sorted(set(ar['others']) | set(new))
+        added += [(ar['ref'], n) for n in new]
+    return added
+
+
+def escapes_kept(pcb, back, left):
+    """the nets of `back` (full names: the step's copper to take off) in `left` (others_left_out's) with no copper of
+    their own on `pcb`, the board as it came -- the joint plan escaped their balls as every other net's, and those
+    escapes stay with the board; a net with copper of its own is put back as it came"""
+    own = {s.net_id for s in pcb.segments} | {v.net_id for v in pcb.vias}
+    ids = {n.name: i for i, n in pcb.nets.items()}
+    return sorted(n for n in back if n in left and ids.get(n) not in own)
 
 
 def changed_nets(board, routed, names):
@@ -875,6 +913,8 @@ def _rules_dict(r):
 MIN_BUS_NETS = 8
 # a net on both of a bus's parts and on no more parts than this is named as left to the router (more: a rail)
 LEFT_PARTS = 6
+# a pull's or a termination's part has no more pads than this (pulled_nets: an eight-element resistor array)
+STUB_PADS = 16
 
 
 def is_array(fp):
@@ -975,6 +1015,22 @@ def half_pairs(pcb, names):
     return out
 
 
+def keeps_source_escapes(src, escape, joint_fanout, setting):
+    """Whether a bus keeps the escapes an earlier step laid its nets at its source `src` (escape_blocks) as its teeth,
+    the balls without one fanned out: a PLAIN bus by default (`setting`, SOURCE_SHARED, unset) -- where no earlier step
+    laid any, nothing is kept and the source is fanned out as ever; SOURCE_SHARED=0 none; SOURCE_SHARED=REF,.. a plain or
+    a joint bus from those sources; an ESCAPE bus never (its field is planned whole each round). On the zynq's six-rail
+    board, after its DDR3 and LVDS buses: the Ethernet bus 14 of 14 lanes kept against 12 fanned out again, the two-end
+    USB and Ethernet bus 24 of 26 against 22, the USB bus 10 of 12 either way"""
+    if escape:
+        return False
+    if setting is None or not str(setting).strip():
+        return not joint_fanout
+    if str(setting).strip() == '0':
+        return False
+    return src in str(setting).split(',')
+
+
 def escape_blocks(txt, pcb, ref, names, grow=1.5):
     """The segment and via blocks of the nets `names` (full names) inside `ref`'s box of pads grown `grow` mm, in
     either net dialect: the escapes an earlier fanout laid them at that array (SOURCE_SHARED)"""
@@ -995,31 +1051,41 @@ def escape_blocks(txt, pcb, ref, names, grow=1.5):
 
 
 def pulled_nets(pcb, src, dest, names):
-    """{net name: [its pull pads]} for the nets between `src` and `dest` that a PULL alone keeps out of `names`
-    (make_bench.pair_nets): one pad on each of the two parts, and every other pad a two-pad part's whose other pad is a
-    plane's net (one that owns a zone) -- a pull-up or -down to a rail, a termination to ground: the zynq's Ethernet
-    PHY's strap pins ETH_RXD0-3, ETH_RXCTL and ETH_MDIO (R34-R45), and the USB PHY's OTG_RESETN (R33, C121). A lane
-    between the two parts is the net's run; its pull is a stub off it, the router's"""
+    """{net name: [its stub pads]} for the nets between `src` and `dest` that a PULL or a TERMINATION alone keeps out of
+    `names` (make_bench.pair_nets): one pad on each of the two parts, and every other pad on a part (STUB_PADS pads at
+    most, neither end) whose every pad that carries a net is a RAIL's or such a net's -- with a rail among them, or two
+    such nets (a termination across a pair). A rail: a plane's net (one that owns a zone), or a net on more parts than
+    LEFT_PARTS (a termination voltage). So a pull-up or -down to a rail -- the zynq's Ethernet PHY's strap pins ETH_RXD0-3,
+    ETH_RXCTL and ETH_MDIO (R34-R45), the USB PHY's OTG_RESETN (R33, C121) -- a resistor array terminating a fly-by bus
+    to its Vtt (sdi_mipi_conv's DDR3 address and command nets, R44-R50 under U12) and the termination across a clock
+    pair (its CK, R43). A lane between the two parts is the net's run; its pull or termination a stub off it, the
+    router's"""
     zone_ids = {z.net_id for z in (pcb.zones or []) if z.net_id}
+    rails = zone_ids | {i for i, n in pcb.nets.items() if len({p.component_ref for p in n.pads}) > LEFT_PARTS}
     have = set(names)
-    out = {}
+    cand = {}
     for net in pcb.nets.values():
-        if not net.name or net.name in have or net.net_id in zone_ids:
+        if not net.name or net.name in have or net.net_id in rails:
             continue
         on = collections.Counter(p.component_ref for p in net.pads)
         rest = [p for p in net.pads if p.component_ref not in (src, dest)]
-        if on.get(src) != 1 or on.get(dest) != 1 or not rest:
-            continue
-        ok = True
-        for p in rest:
-            fp_ = pcb.footprints.get(p.component_ref)
-            others = [q for q in (fp_.pads if fp_ else ()) if q is not p]
-            if fp_ is None or len(fp_.pads) != 2 or others[0].net_id not in zone_ids:
-                ok = False
-                break
-        if ok:
-            out[net.name] = rest
-    return out
+        if on.get(src) == 1 and on.get(dest) == 1 and rest:
+            cand[net.net_id] = rest
+
+    import pairs as _pairs
+    short = lambda i: pcb.nets[i].name.split('/')[-1]
+
+    def stub_part(ref):
+        fp_ = pcb.footprints.get(ref)
+        if fp_ is None or ref in (src, dest) or len(fp_.pads) > STUB_PADS:
+            return False
+        ns = {p.net_id for p in fp_.pads if p.net_id}
+        if not ns or not ns <= rails | set(cand):
+            return False
+        legs = ns & set(cand)
+        return bool(ns & rails) or (len(legs) == 2 and bool(_pairs.pair_names(sorted(short(i) for i in legs),
+                                                                              admit_all=True)))
+    return {pcb.nets[i].name: rest for i, rest in cand.items() if all(stub_part(p.component_ref) for p in rest)}
 
 
 def _pad_block(fp_text, number, with_net):
@@ -1140,7 +1206,8 @@ def main():
                          'and may name several parts, U4+U3 (one source, several ends: a plain bus, its trunk to the '
                          'first, a branch off it to each other). An escape bus on an array an earlier bus was routed '
                          'through plans that array whole with it, its ends on the board as it was before that bus; a '
-                         'plain or joint one may keep the escapes that bus\'s step laid it there (SOURCE_SHARED)')
+                         'plain one keeps the escapes that bus\'s step laid it there (SOURCE_SHARED=0: none; '
+                         '=REF,..: a plain or joint bus from those sources)')
     ap.add_argument('--k', type=int, help="the ladder's first K nets (default: the whole ladder)")
     ap.add_argument('--rounds', type=int, default=3, help='fanout rounds (default 3)')
     ap.add_argument('--inproc', action='store_true', help='every stage in this process rather than each in its own')

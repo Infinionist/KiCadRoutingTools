@@ -21,7 +21,12 @@ at U1's teeth -- in every round after the first, on the Mac as on Linux, and in 
    one capacity group, the run colouring's clauses) walked SETS of ball and layer names, in the string hash's order,
    and CP-SAT's answer follows the order its rows come in -- zynq U1's realize, the same ask under two hash seeds,
    laid 26 of its 47 teeth the same. Pinned on a generated four-copper bus: the plan's every model, fingerprinted as it
-   is solved, and its answer, under two PYTHONHASHSEEDs in processes of their own.
+   is solved, and its answer, under two PYTHONHASHSEEDs in processes of their own;
+4. a later round carries the array's other balls' pieces from the round before (joint_escape.carry) onto its board,
+   checked against other nets' copper only -- so a piece the board already had read clear and was laid again on itself
+   (sdi_mipi_conv's DDR3 bus after the SDI bus on the shared U11: 168 vias stacked on their own copies). Pinned on the
+   generated bus with three balls dog-boned: carried onto the bare board each piece is laid once, onto the fanned board
+   none again.
 """
 import contextlib
 import hashlib
@@ -226,6 +231,44 @@ def check_plan_reproducible(tmp):
     check(a['plan'] == b['plan'], f'the plan is the same under both seeds ({a["plan"]} / {b["plan"]})')
 
 
+def check_carry_once(tmp):
+    print('4. a later round carries the array\'s other balls\' pieces onto its board once, never onto a copy of their own')
+    raw = synth_board(tmp)
+    with contextlib.redirect_stdout(io.StringIO()):
+        pcb = parse_kicad_pcb(raw)
+    balls = sorted((p for p in pcb.footprints['SU1'].pads if p.net_id), key=lambda p: p.pad_number)[:3]
+    if len(balls) < 3:
+        raise SystemExit(f'BROKEN TEST: the generated bus has {len(balls)} netted balls at SU1')
+    # each ball's piece: a 0.4 mm dog-bone leg on F to a via, as a joint field lays an other net's ball
+    tracks = [{'start': (p.global_x, p.global_y), 'end': (p.global_x + 0.4, p.global_y + 0.4), 'width': 0.12,
+               'layer': 'F.Cu', 'net_id': p.net_id} for p in balls]
+    vias = [{'x': p.global_x + 0.4, 'y': p.global_y + 0.4, 'size': 0.45, 'drill': 0.2, 'layers': ['F.Cu', 'B.Cu'],
+             'net_id': p.net_id} for p in balls]
+    fanned = os.path.join(tmp, 'fanned.kicad_pcb')
+    from kicad_writer import add_tracks_and_vias_to_pcb
+    with contextlib.redirect_stdout(io.StringIO()):
+        add_tracks_and_vias_to_pcb(raw, fanned, tracks, vias, [],
+                                   net_id_to_name={i: n.name for i, n in pcb.nets.items()})
+    others = [p.net_name for p in balls]
+
+    def counts(path):
+        with contextlib.redirect_stdout(io.StringIO()):
+            b = parse_kicad_pcb(path)
+        return len(b.segments), len(b.vias)
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        _a, kept_bare, _m = je.carry(fanned, raw, os.path.join(tmp, 'onto_bare.kicad_pcb'), 'SU1', others, [])
+        _a, kept_self, _m = je.carry(fanned, fanned, os.path.join(tmp, 'onto_self.kicad_pcb'), 'SU1', others, [])
+    # (the case reaches what it pins: every piece stands, on both boards)
+    if kept_bare != len(balls) or kept_self != len(balls):
+        raise SystemExit(f'BROKEN TEST: {kept_bare} / {kept_self} of {len(balls)} pieces stand -- the case no longer '
+                         f'reaches the lay')
+    check(counts(os.path.join(tmp, 'onto_bare.kicad_pcb')) == (len(balls), len(balls)),
+          f'onto the bare board, each piece laid once: {counts(os.path.join(tmp, "onto_bare.kicad_pcb"))}')
+    check(counts(os.path.join(tmp, 'onto_self.kicad_pcb')) == counts(fanned),
+          f'onto a board that has them, none laid again: {counts(os.path.join(tmp, "onto_self.kicad_pcb"))} '
+          f'vs {counts(fanned)}')
+
+
 def _pad_xy(board, names):
     with contextlib.redirect_stdout(io.StringIO()):
         pcb = parse_kicad_pcb(board)
@@ -245,6 +288,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         check_source_board_named(tmp)
         check_bus_replanned(tmp)
+        check_carry_once(tmp)
         try:
             import ortools  # noqa: F401  (check 3's joint plan is a CP-SAT solve)
         except ImportError as exc:
@@ -252,7 +296,7 @@ def main():
                 for f in BAD:
                     print(f'  FAIL: {f}')
                 sys.exit(1)
-            print('SKIP: check 3 needs ortools (%s); checks 1 and 2 passed' % exc)
+            print('SKIP: check 3 needs ortools (%s); checks 1, 2 and 4 passed' % exc)
             sys.exit(77)
         check_plan_reproducible(tmp)
     if BAD:
@@ -260,7 +304,7 @@ def main():
             print(f'  FAIL: {f}')
         sys.exit(1)
     print('PASS: the next round starts from the source the round realized; a source re-fan plans every pair whole; '
-          'the joint plan is the same in every process')
+          'the joint plan is the same in every process; a carried piece is laid once')
 
 
 if __name__ == '__main__':

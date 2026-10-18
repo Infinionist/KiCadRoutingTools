@@ -529,21 +529,8 @@ class Ends:
         # its lane, its layer and ANY leg's exit's distance to the end's points as laid (fb_weights), so a pair cannot
         # leave the price by moving one leg and keeping the other where it was found crowded; two items naming one
         # option add
-        self.fb_avoid, self.fb_pairs = collections.defaultdict(dict), []
-
-        def matches(it):
-            if it['lane'] not in self.legs_of:
-                return {}
-            return fb_weights(self.T[it['lane']] if it['end'] == 0 else self.B[it['lane']], it)
         fb = st.get('feedback') or {}
-        for it in fb.get('avoid', ()):
-            w_ = self.fb_avoid[(it['lane'], it['end'])]
-            for i, w in matches(it).items():
-                w_[i] = w_.get(i, 0.0) + w
-        for a_, b_ in fb.get('pairs', ()):
-            ma, mb = matches(a_), matches(b_)
-            if ma and mb and a_['end'] == b_['end']:
-                self.fb_pairs.append((a_['lane'], b_['lane'], a_['end'], ma, mb))
+        self.fb_avoid, self.fb_pairs = fb_tables(fb, self.T, self.B)
         # ...and the lanes the whole solve could not keep to two vias on an earlier round's ends ('over': whole_route,
         # an unproved plan's nets over two): each counted over by at least that much on every option, so the ends no
         # longer pay vias for a promise the solve could not keep (K51: ends at 92 vias promising SCK at two, chosen over
@@ -2922,6 +2909,32 @@ def front_span(pcb, nid, m, kids):
 def _fb_nl():
     import route_layers
     return len(route_layers.layers())
+
+
+def fb_tables(fb, T, B):
+    """(avoid {(lane, end): {option: weight}}, pairs [(lane, lane, end, weights, weights)]): the feedback `fb`
+    (whole_feedback's) on the lanes' tooth options `T` and berth options `B` ({lane: options}), each item weighed by
+    place (fb_weights), a pair of items when both name options of one end. An item for a lane with no options here --
+    its ends chosen again on a field where the lane had none: sdi_mipi_conv's SDI_D13, laid in round 1 from the joint
+    field's escape, no tooth move on round 2's dog-boned field -- prices nothing and keys nothing (a key the state has
+    no lane for stopped the score)"""
+    avoid, pairs = {}, []
+
+    def matches(it):
+        if it['lane'] not in T:
+            return {}
+        return fb_weights(T[it['lane']] if it['end'] == 0 else B[it['lane']], it)
+    for it in fb.get('avoid', ()):
+        if it['lane'] not in T:
+            continue
+        w_ = avoid.setdefault((it['lane'], it['end']), {})
+        for i, w in matches(it).items():
+            w_[i] = w_.get(i, 0.0) + w
+    for a_, b_ in fb.get('pairs', ()):
+        ma, mb = matches(a_), matches(b_)
+        if ma and mb and a_['end'] == b_['end']:
+            pairs.append((a_['lane'], b_['lane'], a_['end'], ma, mb))
+    return avoid, pairs
 
 
 def fb_weights(opts, item):

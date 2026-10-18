@@ -1180,6 +1180,44 @@ def stage_env(env):
     return env
 
 
+def no_ends(bench, nets, dest):
+    """the nets of `nets` the solve cannot read both ends of on BENCH: a net the fanout's plan sidecar runs (its 'nets')
+    and laid no end for (its 'ends'), and one it does not name with no free stub end at each part (braid.endpoints,
+    which the solve's setup asserts on). A fanout can choose a lane no escape -- sdi_mipi_conv's SDI_D18 once the DDR3
+    bus and its terminations took U11's field, its ball a via in pad and no stub -- and the round's solve, and every
+    last resort after it, then died on that one lane. A lane its fanout ran and did not lay stands on the field's
+    dog-bone, inside the array, not on a tooth: its neighbours SDI_D13 and SDI_D19 there, on the source's far face,
+    which the solve's frame refuses (whole_frame.FarFace) -- for the round's every lane"""
+    if PYR not in sys.path:
+        sys.path.insert(0, PYR)
+    from kicad_parser import parse_kicad_pcb
+    import braid as te
+    pj = os.path.splitext(bench)[0] + '.plan.json'
+    sc = json.load(open(pj)) if os.path.isfile(pj) else {}
+    planned, ran = set(sc.get('ends') or {}), set(sc.get('nets') or ())
+    bad = {n for n in nets if n in ran and n not in planned}
+    rest = [n for n in nets if n not in planned and n not in ran]
+    if rest:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            pcb = parse_kicad_pcb(bench)
+        bn = {n_.name.split('/')[-1]: (i, n_) for i, n_ in pcb.nets.items()}
+        for n in rest:
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    te.endpoints(pcb, [n], bn, dest_ref=dest)
+            except (AssertionError, KeyError):
+                bad.add(n)
+    return [n for n in nets if n in bad]
+
+
+def with_ends(bench, nets, dest, lanes):
+    """(`nets` less the whole lanes -- `lanes` {lane: its nets}, a pair's legs together -- one of whose nets has no end
+    on BENCH (no_ends), the nets with none, the legs left out with them): what a round can solve, the rest open"""
+    bad = set(no_ends(bench, nets, dest))
+    out = bad | {n for lg in lanes.values() if bad.intersection(lg) for n in lg}
+    return [n for n in nets if n not in out], sorted(bad), sorted(out - bad)
+
+
 def footprint_poses(board):
     """{reference: [x, y, rotation]} of each footprint on `board` whose reference no other carries"""
     from kicad_parser import parse_kicad_pcb
@@ -1297,6 +1335,15 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
         legs = {l_ for pr in prs.values() for l_ in pr}
         return {**{n: (n,) for n in nets_all if n not in legs}, **{b: tuple(pr) for b, pr in prs.items()}}
 
+    def solvable(bench, nets):
+        """`nets` less the lanes with no end on BENCH (with_ends), those named: the round's solve and lay take the
+        rest, and the lanes left out count open"""
+        keep, bad, mates = with_ends(bench, nets, dest, lane_legs())
+        if bad:
+            say(f"  no end on {os.path.basename(bench)} for {', '.join(bad)} -- left out of the solve, open"
+                + (f" (with {', '.join(mates)})" if mates else ''))
+        return keep
+
     def last_resort(r):
         """THE LAST RESORT, when no round laid anything: a PARTIAL plan on the last ends a fanout laid -- the solve,
         its loop and the route all at once on the lanes LESS those the rounds named (whole_feedback --name: open, else
@@ -1331,7 +1378,9 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
             dj = os.path.join(o, f'partial{j}')
             os.makedirs(dj, exist_ok=True)
             keep = {n for ln, lg in legs.items() if ln not in dr for n in lg}
-            sub = [n for n in nets_all if n in keep]
+            sub = solvable(bench, [n for n in nets_all if n in keep])
+            if not sub:
+                continue
             say(f"=== the last resort {j}: a partial plan on {os.path.relpath(bench, o)}, {len(dr)} of {len(legs)} "
                 f"lanes left out: {', '.join(dr)}")
             env_ = {**env, 'BENCH': bench, 'NETS': ','.join(sub), 'DEST': dest}
@@ -1471,7 +1520,8 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
                 log_path=os.path.join(d, 'hold.log'))
             for ln in grep(os.path.join(d, 'hold.log'), r'joint fanout of'):
                 say(ln[:220])
-        env.update(BENCH=bench, NETS=NETS, DEST=dest)
+        sub = solvable(bench, nets_all)
+        env.update(BENCH=bench, NETS=','.join(sub), DEST=dest)
         solve = os.path.join(d, 'solve.json')
         # (a round never ends with nothing: its solve keeps a plan it cannot prove -- whole_solve SOLVE_UNPROVED -- and
         # the round lays it; the loop's own re-solves still take only a proved one)
@@ -1511,9 +1561,9 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
                 say(f"  the loop did not pass -- laid from the plan it held: "
                     f"{os.path.relpath(plan, d) if plan else 'none'}")
             try_ = rc != 0 and plan is not None and lay_tries() > 1
-            res = lay(r, d, plan, plan_bench(loopd, plan, bench), quiet=try_) if plan else None
+            res = lay(r, d, plan, plan_bench(loopd, plan, bench), sub, quiet=try_) if plan else None
             if try_:
-                res = lay_rounds(loopd, d, env, res, lambda hp, tag: lay(r, d, hp, plan_bench(loopd, hp, bench),
+                res = lay_rounds(loopd, d, env, res, lambda hp, tag: lay(r, d, hp, plan_bench(loopd, hp, bench), sub,
                                                                           tag=tag, quiet=True), say, plan=plan)
                 if res is not None:
                     say(res['grade'])
