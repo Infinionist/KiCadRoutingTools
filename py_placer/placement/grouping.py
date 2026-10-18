@@ -137,6 +137,10 @@ def _cu_pads(fp):
             and any(str(l).endswith('.Cu') for l in (p.layers or ()))]
 
 
+#: Roles (`roles.infer_role`) whose supply pins own no decap.
+CONNECTOR_ROLES = frozenset({'connector', 'pin header', 'usb receptacle', 'edge receptacle'})
+
+
 class BoardView:
     """What grouping needs from a parsed board: who carries copper, who is
     locked, which refs share which nets, and which nets are rails."""
@@ -157,6 +161,25 @@ class BoardView:
         nets = pcb.nets or {}
         self.name_of = lambda nid: getattr(nets.get(nid), 'name', '') or ''
         self.rails = rail_net_ids(self.owners, self.name_of, len(self.parts))
+        self._supply = None
+
+    def supply_owners(self) -> Dict[int, Set[str]]:
+        """{net id: the chips with a supply pin on it} -- the chips and pins
+        `floorplan.supply_pins` finds by shape and pin type, function or rail
+        name, the ones place_simple matches its decaps to -- less connectors:
+        a cap on a connector's power pin is a bulk cap where power enters,
+        placed with its group, not a decap pulled to that pin."""
+        if self._supply is None:
+            from placement.floorplan import supply_pins
+            from placement.roles import infer_role
+            self._supply = {}
+            for ic, rec in supply_pins(self.pcb).items():
+                if infer_role(self.pcb.footprints.get(ic), ic, None)['role'] in CONNECTOR_ROLES:
+                    continue
+                for pad, _net in rec.get('pins') or ():
+                    if getattr(pad, 'net_id', 0):
+                        self._supply.setdefault(pad.net_id, set()).add(ic)
+        return self._supply
 
     def pad_count(self, ref: str) -> int:
         return len(_cu_pads(self.parts[ref]))
@@ -174,9 +197,10 @@ def group_of(doc: Dict) -> Dict[str, str]:
 
 def cap_owners(view: BoardView, cap: str):
     """`(net name, [owner refs])` when `cap` is a decap by the electrical
-    rule -- a 2-pad C with one pad on ground and one on a net a U-prefixed
-    part of 3+ copper pads carries -- else None. Electrical only: it asks
-    nothing of where the parts are, so it answers on a pile too."""
+    rule -- a 2-pad C with one pad on ground and one on a net a chip other
+    than a connector has a supply pin on (`BoardView.supply_owners`) -- else
+    None. Electrical only:
+    it asks nothing of where the parts are, so it answers on a pile too."""
     from net_queries import is_ground_net_name
     if not cap.upper().startswith('C') or view.pad_count(cap) != 2:
         return None
@@ -185,9 +209,7 @@ def cap_owners(view: BoardView, cap: str):
     other = [n for n in nets if n not in gnd]
     if not gnd or len(other) != 1:
         return None
-    owners = sorted(o for o in view.owners.get(other[0], ())
-                    if o != cap and o.upper().startswith('U')
-                    and view.pad_count(o) >= 3)
+    owners = sorted(o for o in view.supply_owners().get(other[0], ()) if o != cap)
     return (view.name_of(other[0]), owners) if owners else None
 
 

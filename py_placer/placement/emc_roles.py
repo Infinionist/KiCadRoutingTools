@@ -352,9 +352,12 @@ def _converters(b: _Board, out: List[Dict]) -> None:
 
 def _signal_pads(b: _Board, x) -> List:
     """A crystal-role part's SIGNAL pads: on a non-ground net that reaches
-    another part. A passive crystal has two, on two nets (its load nets)."""
+    another part, and not a supply pin (an oscillator's VDD is on a rail, not
+    a load net). A passive crystal has two, on two nets (its load nets)."""
+    from net_queries import is_power_pin
     return [p for p in b.copper[x] if p.net_id > 0
             and not b.ground(p.net_id)
+            and not is_power_pin(p.pinfunction or '', p.pintype or '')
             and b.net_parts.get(p.net_id, set()) - {x}]
 
 
