@@ -1,11 +1,14 @@
-//! Placement kernels: the quench's airwire crossing test and its minimum
-//! spanning tree, as `py_placer/placement/quench.py` computes them, done in
-//! Rust because the quench calls them for every candidate pose.
+//! Placement kernels: the airwire trees, crossings, foreign-pad hits, group
+//! gaps and congestion that `py_placer/placement/quench.py` and
+//! `simple.py` price for every candidate pose, done in Rust because they run
+//! once per move.
 //!
-//! Both are the Python computations they replace, operation for operation:
-//! the same float expressions in the same order (Rust does not fuse a
-//! multiply into an add), the same tie rules, the same pair order. A placement
-//! is therefore the same with them as it was without them.
+//! Each computes what its docstring's Python names, with the same tie rules.
+//! The trees and gap trees keep the Python's float expressions in order;
+//! the crossing and pad-hit kernels skip pairs whose boxes cannot meet, and
+//! the congestion kernels (`net_box`, `pad_use`, `cong_delta`) sum a move's
+//! change over the cells it reaches rather than the whole window, so their
+//! totals can differ from a Python sum in the last bits.
 
 use std::collections::{HashMap, HashSet};
 
@@ -182,10 +185,10 @@ pub fn mst_prim(xs: PyReadonlyArray1<f64>, ys: PyReadonlyArray1<f64>) -> Vec<(i6
 // ---------------------------------------------------------------------------
 // The simple path's model (`py_placer/placement/simple.py`), priced for every
 // move of its annealer: a net's Manhattan tree, a group's gap tree, tree edges
-// against pads and against each other, and the congestion window. Each gives
-// the values the Python code it replaced gave, bit for bit: the same float
-// operations in the same order, the same tie rules, numpy's own semantics
-// where numpy computed it (its min/max on signed zeros, its pairwise sum).
+// against pads and against each other, and congestion. The trees keep the
+// Python's float operations in order, its tie rules and numpy's own semantics
+// where numpy computed it (its min/max on signed zeros); the module header
+// says which kernels sum in another order.
 
 /// `simple.mst_l1`: the Manhattan minimum spanning tree of (xs, ys) by Prim
 /// from point 0 -- the lowest index among equal keys, a key lowered only by
@@ -328,7 +331,16 @@ pub fn mst_l1_tree<'py>(
     let mut ev: Vec<f64> = Vec::new();
     let mut nv: Vec<i64> = Vec::new();
     let mut total = 0.0f64;
-    if n >= 2 {
+    if n > SPARSE_MST_MIN {
+        // a big net (a ground with hundreds of pads): Kruskal over each
+        // point's nearest neighbour per octant, O(n log n) where Prim is O(n^2)
+        let (xv, yv) = (xs.to_vec(), ys.to_vec());
+        for (w, a, b) in manhattan_mst(&xv, &yv) {
+            total += w;
+            ev.extend_from_slice(&[xv[a], yv[a], xv[b], yv[b]]);
+            nv.extend_from_slice(&[own[a], own[b]]);
+        }
+    } else if n >= 2 {
         let dist = |i: usize, j: usize| -> f64 { (xs[i] - xs[j]).abs() + (ys[i] - ys[j]).abs() };
         let mut done = vec![false; n];
         let mut frm = vec![0usize; n];
@@ -404,10 +416,22 @@ pub fn seg_cross_counts(
     if let (Some(o), Some(ol)) = (o, olab) {
         let o = o.as_array();
         let ol = ol.as_array();
-        for i in 0..m.nrows() {
-            let ri = row(&m, i);
-            for j in 0..o.nrows() {
-                if !skip.contains(&ol[j]) && proper_cross(ri, row(&o, j)) {
+        // two segments whose boxes do not overlap cannot cross properly: each
+        // `o` row is tested against the union box of `m`, then row by row
+        let mb: Vec<[f64; 4]> = (0..m.nrows()).map(|i| seg_box(row(&m, i))).collect();
+        let ub = mb.iter().fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY],
+                                |u, b| [u[0].min(b[0]), u[1].min(b[1]), u[2].max(b[2]), u[3].max(b[3])]);
+        for j in 0..o.nrows() {
+            if skip.contains(&ol[j]) {
+                continue;
+            }
+            let rj = row(&o, j);
+            let bj = seg_box(rj);
+            if !boxes_meet(&ub, &bj) {
+                continue;
+            }
+            for i in 0..m.nrows() {
+                if boxes_meet(&mb[i], &bj) && proper_cross(row(&m, i), rj) {
                     add(ml[i], ol[j], &mut out);
                 }
             }
@@ -422,6 +446,18 @@ pub fn seg_cross_counts(
         }
     }
     (total, out)
+}
+
+/// A segment's box (x0, y0, x1, y1 as min x, min y, max x, max y).
+#[inline]
+fn seg_box(a: [f64; 4]) -> [f64; 4] {
+    [a[0].min(a[2]), a[1].min(a[3]), a[0].max(a[2]), a[1].max(a[3])]
+}
+
+/// Two closed boxes (min x, min y, max x, max y) share a point.
+#[inline]
+fn boxes_meet(a: &[f64; 4], b: &[f64; 4]) -> bool {
+    a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
 }
 
 /// `simple.Model._pad_breakdown`: the segments' hits on rects (the
@@ -456,19 +492,26 @@ pub fn pad_hit_sums(
     let po = owners.as_array();
     let mut out: Vec<(i64, i64, f64)> = Vec::new();
     let mut at: HashMap<(i64, i64), usize> = HashMap::new();
-    for i in 0..s.nrows() {
-        if skip_n.contains(&labs[i]) {
-            continue;
-        }
+    // the segments kept, and the rects their union box meets (NaN rows,
+    // which `_index_part` leaves for rows a part no longer has, meet none)
+    let segs: Vec<usize> = (0..s.nrows()).filter(|&i| !skip_n.contains(&labs[i])).collect();
+    let mut ub = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    for &i in &segs {
+        let b = seg_box([s[[i, 0]], s[[i, 1]], s[[i, 2]], s[[i, 3]]]);
+        ub = [ub[0].min(b[0]), ub[1].min(b[1]), ub[2].max(b[2]), ub[3].max(b[3])];
+    }
+    let rects: Vec<usize> = (0..p.nrows())
+        .filter(|&j| {
+            !skip_o.contains(&po[j]) && boxes_meet(&ub, &[p[[j, 0]], p[[j, 1]], p[[j, 2]], p[[j, 3]]])
+        })
+        .collect();
+    for &i in &segs {
         let (x0, y0, x1, y1) = (s[[i, 0]], s[[i, 1]], s[[i, 2]], s[[i, 3]]);
         let (sx0, sx1) = (np_min(x0, x1), np_max(x0, x1));
         let (sy0, sy1) = (np_min(y0, y1), np_max(y0, y1));
         let dx = x1 - x0;
         let dy = y1 - y0;
-        for j in 0..p.nrows() {
-            if skip_o.contains(&po[j]) {
-                continue;
-            }
+        for &j in &rects {
             let (px0, py0, px1, py1) = (p[[j, 0]], p[[j, 1]], p[[j, 2]], p[[j, 3]]);
             if !(sx0 <= px1 && sx1 >= px0 && sy0 <= py1 && sy1 >= py0) {
                 continue;
@@ -519,62 +562,6 @@ fn clip0(x: f64) -> f64 {
     }
 }
 
-/// numpy's pairwise float64 sum (`DOUBLE_pairwise_sum`): fewer than 8 values
-/// added in order; up to 128 in eight running sums joined as
-/// ((r0 + r1) + (r2 + r3)) + ((r4 + r5) + (r6 + r7)) and the remainder added
-/// after; more, split at half rounded down to a multiple of 8.
-fn pairwise_sum(a: &[f64]) -> f64 {
-    let n = a.len();
-    if n < 8 {
-        let mut res = 0.0f64;
-        for v in a {
-            res += *v;
-        }
-        res
-    } else if n <= 128 {
-        let mut r = [a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]];
-        let mut i = 8;
-        while i < n - (n % 8) {
-            for k in 0..8 {
-                r[k] += a[i + k];
-            }
-            i += 8;
-        }
-        let mut res = ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]));
-        while i < n {
-            res += a[i];
-            i += 1;
-        }
-        res
-    } else {
-        let mut n2 = n / 2;
-        n2 -= n2 % 8;
-        pairwise_sum(&a[..n2]) + pairwise_sum(&a[n2..])
-    }
-}
-
-/// `simple.Model._over2_on`: capacity per cell, cap = 0 then for each layer
-/// cap += clip(cell2 - use, 0); overflow = clip(demand - cap / pitch, 0); the
-/// overflow squared summed row by row as numpy's `.sum()` does.
-#[pyfunction]
-pub fn over2(dw: PyReadonlyArray2<f64>, uses: Vec<PyReadonlyArray2<f64>>, cell2: f64, pitch: f64) -> f64 {
-    let d = dw.as_array();
-    let us: Vec<_> = uses.iter().map(|u| u.as_array()).collect();
-    let (h, w) = (d.nrows(), d.ncols());
-    let mut sq: Vec<f64> = Vec::with_capacity(h * w);
-    for i in 0..h {
-        for j in 0..w {
-            let mut cap = 0.0f64;
-            for u in &us {
-                cap += clip0(cell2 - u[[i, j]]);
-            }
-            let o = clip0(d[[i, j]] - cap / pitch);
-            sq.push(o * o);
-        }
-    }
-    pairwise_sum(&sq)
-}
-
 /// numpy's `np.minimum` / `np.maximum` on two floats: a NaN wins, and -0.0
 /// is less than +0.0.
 #[inline]
@@ -597,65 +584,6 @@ fn npy_max(a: f64, b: f64) -> f64 {
     } else {
         b
     }
-}
-
-/// `simple.Model._net_demand` from a priced tree: the edges' box grown by `h`
-/// (x from columns 0 and 2, y from 1 and 3: numpy `min()` of each column,
-/// then Python's `min` of the two), its grid window as `_win` clips it, and
-/// the block outer(cy, cx) * (length / box area), cx and cy each cell's
-/// overlap with the box (`ex`, `ey` the grid lines). None when the tree is
-/// empty or the window is.
-#[pyfunction]
-#[allow(clippy::too_many_arguments)]
-pub fn net_demand<'py>(
-    py: Python<'py>,
-    e: PyReadonlyArray2<'py, f64>,
-    length: f64,
-    h: f64,
-    ex: PyReadonlyArray1<'py, f64>,
-    ey: PyReadonlyArray1<'py, f64>,
-    gx0: f64,
-    gy0: f64,
-    cell: f64,
-    nx: i64,
-    ny: i64,
-) -> Option<(i64, i64, i64, i64, Bound<'py, PyArray2<f64>>)> {
-    let e = e.as_array();
-    let ex = ex.as_array();
-    let ey = ey.as_array();
-    let m = e.nrows();
-    if m == 0 {
-        return None;
-    }
-    let colmin = |c: usize| (1..m).fold(e[[0, c]], |acc, i| npy_min(acc, e[[i, c]]));
-    let colmax = |c: usize| (1..m).fold(e[[0, c]], |acc, i| npy_max(acc, e[[i, c]]));
-    let x0 = py_min(colmin(0), colmin(2)) - h;
-    let x1 = py_max(colmax(0), colmax(2)) + h;
-    let y0 = py_min(colmin(1), colmin(3)) - h;
-    let y1 = py_max(colmax(1), colmax(3)) + h;
-    let clamp = |v: f64, hi: i64| -> i64 { (v as i64).clamp(0, hi) };
-    let j0 = clamp(((x0 - gx0) / cell).floor(), nx);
-    let j1 = clamp(((x1 - gx0) / cell).floor() + 1.0, nx);
-    let i0 = clamp(((y0 - gy0) / cell).floor(), ny);
-    let i1 = clamp(((y1 - gy0) / cell).floor() + 1.0, ny);
-    if i1 <= i0 || j1 <= j0 {
-        return None;
-    }
-    let cx: Vec<f64> = (j0..j1)
-        .map(|j| clip0(npy_min(ex[(j + 1) as usize], x1) - npy_max(ex[j as usize], x0)))
-        .collect();
-    let cy: Vec<f64> = (i0..i1)
-        .map(|i| clip0(npy_min(ey[(i + 1) as usize], y1) - npy_max(ey[i as usize], y0)))
-        .collect();
-    let s = length / ((x1 - x0) * (y1 - y0));
-    let mut b: Vec<f64> = Vec::with_capacity(cx.len() * cy.len());
-    for yv in &cy {
-        for xv in &cx {
-            b.push((yv * xv) * s);
-        }
-    }
-    let blk = Array2::from_shape_vec((cy.len(), cx.len()), b).expect("block");
-    Some((i0, i1, j0, j1, blk.into_pyarray(py)))
 }
 
 /// `simple.Model._seg_hits`: every (segment i, rect j) that touch -- a bounding
@@ -826,4 +754,314 @@ pub fn seg_cross_pairs<'py>(
         }
     }
     (ii.into_pyarray(py), jj.into_pyarray(py))
+}
+
+/// The window `_win` clips the box [x0, x1] x [y0, y1] to, and each cell's
+/// overlap with the box along x (`cx`) and y (`cy`), `ex` / `ey` the grid
+/// lines. None when the window is empty.
+#[allow(clippy::too_many_arguments)]
+fn box_cover(
+    x0: f64,
+    x1: f64,
+    y0: f64,
+    y1: f64,
+    ex: &numpy::ndarray::ArrayView1<f64>,
+    ey: &numpy::ndarray::ArrayView1<f64>,
+    gx0: f64,
+    gy0: f64,
+    cell: f64,
+    nx: i64,
+    ny: i64,
+) -> Option<(i64, i64, i64, i64, Vec<f64>, Vec<f64>)> {
+    let clamp = |v: f64, hi: i64| -> i64 { (v as i64).clamp(0, hi) };
+    let j0 = clamp(((x0 - gx0) / cell).floor(), nx);
+    let j1 = clamp(((x1 - gx0) / cell).floor() + 1.0, nx);
+    let i0 = clamp(((y0 - gy0) / cell).floor(), ny);
+    let i1 = clamp(((y1 - gy0) / cell).floor() + 1.0, ny);
+    if i1 <= i0 || j1 <= j0 {
+        return None;
+    }
+    let cx: Vec<f64> = (j0..j1)
+        .map(|j| clip0(npy_min(ex[(j + 1) as usize], x1) - npy_max(ex[j as usize], x0)))
+        .collect();
+    let cy: Vec<f64> = (i0..i1)
+        .map(|i| clip0(npy_min(ey[(i + 1) as usize], y1) - npy_max(ey[i as usize], y0)))
+        .collect();
+    Some((i0, i1, j0, j1, cy, cx))
+}
+
+/// `simple.Model._net_demand` as its two factors: a tree's share of the
+/// demand is s * outer(cy, cx) over the window (i0, i1, j0, j1) -- the
+/// edges' box grown by `h`, each cell's overlap with it along y and x, and
+/// s = length / box area. None when the tree or the window is empty.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
+pub fn net_box<'py>(
+    py: Python<'py>,
+    e: PyReadonlyArray2<'py, f64>,
+    length: f64,
+    h: f64,
+    ex: PyReadonlyArray1<'py, f64>,
+    ey: PyReadonlyArray1<'py, f64>,
+    gx0: f64,
+    gy0: f64,
+    cell: f64,
+    nx: i64,
+    ny: i64,
+) -> Option<(i64, i64, i64, i64, Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>, f64)> {
+    let e = e.as_array();
+    let m = e.nrows();
+    if m == 0 {
+        return None;
+    }
+    let colmin = |c: usize| (1..m).fold(e[[0, c]], |acc, i| npy_min(acc, e[[i, c]]));
+    let colmax = |c: usize| (1..m).fold(e[[0, c]], |acc, i| npy_max(acc, e[[i, c]]));
+    let x0 = py_min(colmin(0), colmin(2)) - h;
+    let x1 = py_max(colmax(0), colmax(2)) + h;
+    let y0 = py_min(colmin(1), colmin(3)) - h;
+    let y1 = py_max(colmax(1), colmax(3)) + h;
+    let (i0, i1, j0, j1, cy, cx) = box_cover(x0, x1, y0, y1, &ex.as_array(), &ey.as_array(), gx0, gy0, cell, nx, ny)?;
+    let s = length / ((x1 - x0) * (y1 - y0));
+    Some((i0, i1, j0, j1, cy.into_pyarray(py), cx.into_pyarray(py), s))
+}
+
+/// `simple.Model._part_use`: a part's pad rects `a` (rows x0, x1, y0, y1,
+/// already grown) and `on` (row p, column L: pad p is on layer L), as the
+/// union window of the rects and, per layer some pad is on, the sum over its
+/// pads of outer(cy, cx) over that window. None when the window is empty.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
+pub fn pad_use<'py>(
+    py: Python<'py>,
+    a: PyReadonlyArray2<'py, f64>,
+    on: PyReadonlyArray2<'py, bool>,
+    ex: PyReadonlyArray1<'py, f64>,
+    ey: PyReadonlyArray1<'py, f64>,
+    gx0: f64,
+    gy0: f64,
+    cell: f64,
+    nx: i64,
+    ny: i64,
+) -> Option<(i64, i64, i64, i64, Vec<(i64, Bound<'py, PyArray2<f64>>)>)> {
+    let a = a.as_array();
+    let on = on.as_array();
+    let k = a.nrows();
+    if k == 0 {
+        return None;
+    }
+    let ex = ex.as_array();
+    let ey = ey.as_array();
+    let fold = |c: usize, f: fn(f64, f64) -> f64| (1..k).fold(a[[0, c]], |acc, i| f(acc, a[[i, c]]));
+    let (wx0, wx1, wy0, wy1) = (fold(0, f64::min), fold(1, f64::max), fold(2, f64::min), fold(3, f64::max));
+    let (i0, i1, j0, j1, _cy, _cx) = box_cover(wx0, wx1, wy0, wy1, &ex, &ey, gx0, gy0, cell, nx, ny)?;
+    let (h, w) = ((i1 - i0) as usize, (j1 - j0) as usize);
+    let nl = on.ncols();
+    let mut blocks: Vec<Option<Vec<f64>>> = vec![None; nl];
+    for p in 0..k {
+        let (x0, x1, y0, y1) = (a[[p, 0]], a[[p, 1]], a[[p, 2]], a[[p, 3]]);
+        let cx: Vec<f64> = (j0..j1)
+            .map(|j| clip0(npy_min(ex[(j + 1) as usize], x1) - npy_max(ex[j as usize], x0)))
+            .collect();
+        let cy: Vec<f64> = (i0..i1)
+            .map(|i| clip0(npy_min(ey[(i + 1) as usize], y1) - npy_max(ey[i as usize], y0)))
+            .collect();
+        for l in 0..nl {
+            if !on[[p, l]] {
+                continue;
+            }
+            let b = blocks[l].get_or_insert_with(|| vec![0.0; h * w]);
+            for (r, yv) in cy.iter().enumerate() {
+                if *yv == 0.0 {
+                    continue;
+                }
+                let row = &mut b[r * w..(r + 1) * w];
+                for (q, xv) in cx.iter().enumerate() {
+                    row[q] += yv * xv;
+                }
+            }
+        }
+    }
+    let out = blocks
+        .into_iter()
+        .enumerate()
+        .filter_map(|(l, b)| {
+            b.map(|b| (l as i64, Array2::from_shape_vec((h, w), b).expect("block").into_pyarray(py)))
+        })
+        .collect();
+    Some((i0, i1, j0, j1, out))
+}
+
+/// `simple.Model._cong_price`: the change a move makes to the overflow total
+/// sum(clip(demand - capacity / pitch, 0)^2) over the window (i0, i1, j0,
+/// j1). `d` is the committed demand and `c` the committed capacity per cell
+/// (over the layers, clip(cell2 - use, 0) summed), `uses` the committed use
+/// per layer. Each demand term (s, i0, j0, cy, cx) adds s * cy[a] * cx[b] at
+/// cell (i0 + a, j0 + b); each use term (layer, sign, i0, j0, block) adds
+/// sign * block to that layer's use, and the capacity under the use terms is
+/// recomputed. Only cells a term reaches are visited.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
+pub fn cong_delta(
+    d: PyReadonlyArray2<f64>,
+    c: PyReadonlyArray2<f64>,
+    uses: Vec<PyReadonlyArray2<f64>>,
+    win: (usize, usize, usize, usize),
+    dem: Vec<(f64, usize, usize, PyReadonlyArray1<f64>, PyReadonlyArray1<f64>)>,
+    usev: Vec<(usize, f64, usize, usize, PyReadonlyArray2<f64>)>,
+    cell2: f64,
+    pitch: f64,
+) -> f64 {
+    let d = d.as_array();
+    let c = c.as_array();
+    let (i0, i1, j0, j1) = win;
+    if i1 <= i0 || j1 <= j0 {
+        return 0.0;
+    }
+    let (h, w) = (i1 - i0, j1 - j0);
+    let mut db = vec![0.0f64; h * w];
+    for (s, ti0, tj0, cy, cx) in &dem {
+        let cy = cy.as_array();
+        let cx = cx.as_array();
+        for (a, yv) in cy.iter().enumerate() {
+            let ya = s * yv;
+            if ya == 0.0 {
+                continue;
+            }
+            let r = ti0 + a - i0;
+            let row = &mut db[r * w + (tj0 - j0)..r * w + (tj0 - j0) + cx.len()];
+            for (q, xv) in cx.iter().enumerate() {
+                row[q] += ya * xv;
+            }
+        }
+    }
+    // the use terms' union box, its new use per layer, then its capacity
+    let (mut ui0, mut ui1, mut uj0, mut uj1) = (usize::MAX, 0usize, usize::MAX, 0usize);
+    for (_l, _s, ti0, tj0, b) in &usev {
+        let b = b.as_array();
+        ui0 = ui0.min(*ti0);
+        uj0 = uj0.min(*tj0);
+        ui1 = ui1.max(ti0 + b.nrows());
+        uj1 = uj1.max(tj0 + b.ncols());
+    }
+    let mut cap_u: Vec<f64> = Vec::new();
+    let (uh, uw) = if ui1 > ui0 && uj1 > uj0 { (ui1 - ui0, uj1 - uj0) } else { (0, 0) };
+    if uh > 0 {
+        let nl = uses.len();
+        let mut du = vec![0.0f64; nl * uh * uw];
+        for (l, s, ti0, tj0, b) in &usev {
+            let b = b.as_array();
+            for r in 0..b.nrows() {
+                for q in 0..b.ncols() {
+                    du[l * uh * uw + (ti0 - ui0 + r) * uw + (tj0 - uj0 + q)] += s * b[[r, q]];
+                }
+            }
+        }
+        let us: Vec<_> = uses.iter().map(|u| u.as_array()).collect();
+        cap_u = vec![0.0f64; uh * uw];
+        for r in 0..uh {
+            for q in 0..uw {
+                let mut cap = 0.0f64;
+                for (l, u) in us.iter().enumerate() {
+                    cap += clip0(cell2 - (u[[ui0 + r, uj0 + q]] + du[l * uh * uw + r * uw + q]));
+                }
+                cap_u[r * uw + q] = cap;
+            }
+        }
+    }
+    let mut acc = 0.0f64;
+    for r in 0..h {
+        let gi = i0 + r;
+        let in_r = uh > 0 && gi >= ui0 && gi < ui1;
+        for q in 0..w {
+            let gj = j0 + q;
+            let dd = db[r * w + q];
+            let in_u = in_r && gj >= uj0 && gj < uj1;
+            if dd == 0.0 && !in_u {
+                continue;
+            }
+            let dold = d[[gi, gj]];
+            let cold = c[[gi, gj]];
+            let cnew = if in_u { cap_u[(gi - ui0) * uw + (gj - uj0)] } else { cold };
+            let oo = clip0(dold - cold / pitch);
+            let on = clip0(dold + dd - cnew / pitch);
+            acc += on * on - oo * oo;
+        }
+    }
+    acc
+}
+
+/// Above this many points `mst_l1_tree` builds its tree from octant
+/// neighbours rather than by Prim: the same length, other ties.
+const SPARSE_MST_MIN: usize = 160;
+
+/// f64 to a key that sorts as the float does (no NaN expected).
+#[inline]
+fn ord_key(v: f64) -> u64 {
+    let b = v.to_bits();
+    if b >> 63 == 1 {
+        !b
+    } else {
+        b | (1u64 << 63)
+    }
+}
+
+/// The Manhattan minimum spanning tree of (xs, ys) as (length, a, b) edges:
+/// every point's nearest neighbour in each of the eight octants by a sweep
+/// (the candidate set contains a minimum spanning tree), then Kruskal over
+/// them, lighter first, ties by index.
+fn manhattan_mst(xs: &[f64], ys: &[f64]) -> Vec<(f64, usize, usize)> {
+    use std::collections::BTreeMap;
+    let n = xs.len();
+    let (mut px, mut py) = (xs.to_vec(), ys.to_vec());
+    let mut id: Vec<usize> = (0..n).collect();
+    let mut cand: Vec<(f64, usize, usize)> = Vec::new();
+    for k in 0..4 {
+        id.sort_by(|&i, &j| (px[i] + py[i]).partial_cmp(&(px[j] + py[j])).unwrap().then(i.cmp(&j)));
+        let mut sweep: BTreeMap<(u64, usize), usize> = BTreeMap::new();
+        for &i in &id {
+            let mut gone = Vec::new();
+            for (&key, &j) in sweep.range((ord_key(-py[i]), 0usize)..) {
+                if py[i] - py[j] > px[i] - px[j] {
+                    break;
+                }
+                cand.push(((xs[i] - xs[j]).abs() + (ys[i] - ys[j]).abs(), i.min(j), i.max(j)));
+                gone.push(key);
+            }
+            for key in gone {
+                sweep.remove(&key);
+            }
+            sweep.insert((ord_key(-py[i]), i), i);
+        }
+        for p in 0..n {
+            if k & 1 == 1 {
+                px[p] = -px[p];
+            } else {
+                std::mem::swap(&mut px[p], &mut py[p]);
+            }
+        }
+    }
+    cand.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(p: &mut Vec<usize>, mut x: usize) -> usize {
+        while p[x] != x {
+            p[x] = p[p[x]];
+            x = p[x];
+        }
+        x
+    }
+    let mut out = Vec::with_capacity(n.saturating_sub(1));
+    for (w, a, b) in cand {
+        let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
+        if ra != rb {
+            parent[ra] = rb;
+            out.push((w, a, b));
+            if out.len() + 1 == n {
+                break;
+            }
+        }
+    }
+    out
 }

@@ -2,7 +2,7 @@
 
 High-performance A* grid router implemented in Rust with Python bindings via PyO3.
 
-**Current Version: 0.23.4**
+**Current Version: 0.23.5**
 
 > **Release note:** the 0.20.0 per-platform binaries are published as of
 > [v0.20.0](https://github.com/drandyhaas/KiCadRoutingTools/releases/tag/v0.20.0),
@@ -310,6 +310,22 @@ src/
 - **Costs**: ORTHO_COST=1000, DIAG_COST=1414 (sqrt(2) * 1000), DEFAULT_TURN_COST=1000
 
 ## Version History
+
+### 0.23.5 (2026-10-18)
+- **Congestion priced where a move reaches** (`placement_kernels.rs`):
+  `net_box(...)` gives a net's congestion share as its two factors (the
+  cells' overlap with its box along y and x, and its length over the box's
+  area), `pad_use(a, on, ...)` a part's pad copper per layer, and
+  `cong_delta(d, c, uses, win, dem, usev, cell2, pitch)` the change a move
+  makes to the overflow total, summed over the cells its terms reach. They
+  replace `over2` and `net_demand`.
+- `pad_hit_sums` and `seg_cross_counts` test each rect or committed edge
+  against the union box of the moving segments before testing pairs, and
+  `seg_cross_counts` skips pairs whose boxes do not meet.
+- `mst_l1_tree` builds the tree of a net with more than 160 points (a
+  ground with hundreds of pads) by Kruskal over each point's nearest
+  neighbour per octant, O(n log n) where Prim is O(n^2): the same length,
+  other ties (1200 points: 0.56 ms against 2.2 ms).
 
 ### 0.23.4 (2026-10-18)
 - **More simple-path kernels** (`placement_kernels.rs`), so a move of the

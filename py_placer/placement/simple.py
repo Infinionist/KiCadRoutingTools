@@ -74,7 +74,7 @@ from scipy.optimize import linear_sum_assignment
 
 _sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..',
                                                  'rust_router')))
-import grid_router  # noqa: E402  the kernels: mst_l1, gap_tree, seg_rect_hits, seg_crossings (0.23.4)
+import grid_router  # noqa: E402  the placement kernels (rust_router/src/placement_kernels.rs)
 
 ROTS = (0.0, 90.0, 180.0, 270.0)
 #: mm two groups the groups file keeps `apart` must leave between them.
@@ -187,6 +187,13 @@ def rect_gap(a, b) -> float:
     or overlap."""
     return (max(0.0, max(a[0], b[0]) - min(a[2], b[2]))
             + max(0.0, max(a[1], b[1]) - min(a[3], b[3])))
+
+
+def _gaps(A: np.ndarray, B: np.ndarray) -> np.ndarray:
+    """`rect_gap` of every row of A (k x 4) with every row of B (m x 4), k x m."""
+    gx = np.maximum(A[:, None, 0], B[None, :, 0]) - np.minimum(A[:, None, 2], B[None, :, 2])
+    gy = np.maximum(A[:, None, 1], B[None, :, 1]) - np.minimum(A[:, None, 3], B[None, :, 3])
+    return np.maximum(gx, 0.0) + np.maximum(gy, 0.0)
 
 
 def _at_add(at, p, order, ref):
@@ -613,33 +620,15 @@ class Model:
             side = self._edge_side(h)
             return min((side(P[r].rect()), (r,)) for r in h['a'])
         A, B = h['a'], h['b']
-        rb = {b: P[b].rect() for b in B}
         best, wit = math.inf, None
         if seed is not None:
-            best, wit = rect_gap(P[seed[0]].rect(), rb[seed[1]]), seed
-        if len(A) * len(B) <= 64:
-            for a in A:
-                ra = P[a].rect()
-                for b in B:
-                    g = rect_gap(ra, rb[b])
-                    if g < best:
-                        best, wit = g, (a, b)
+            best, wit = rect_gap(P[seed[0]].rect(), P[seed[1]].rect()), seed
+        if not A or not B:
             return best, wit
-        ix = SpatialIndex()
-        for b, q in rb.items():
-            ix.insert(b, q)
-        c, nb = ix.cell, len(B)
-        for a in A:
-            ra = P[a].rect()
-            if wit is None:
-                best, wit = rect_gap(ra, rb[B[0]]), (a, B[0])
-            cells = (((ra[2] - ra[0]) + 2 * best) / c + 2) * (((ra[3] - ra[1]) + 2 * best) / c + 2)
-            near = B if cells > nb else ix.query(
-                (ra[0] - best, ra[1] - best, ra[2] + best, ra[3] + best))
-            for b in near:
-                g = rect_gap(ra, rb[b])
-                if g < best:
-                    best, wit = g, (a, b)
+        G = _gaps(np.asarray([P[a].rect() for a in A]), np.asarray([P[b].rect() for b in B]))
+        k = int(G.argmin())
+        if G.flat[k] < best:        # the first pair at the least gap
+            best, wit = float(G.flat[k]), (A[k // len(B)], B[k % len(B)])
         return best, wit
 
     def _hint_local(self, h, moving):
@@ -661,22 +650,15 @@ class Model:
                     if s < gap:
                         gap, wit = s, (r,)
             return gap, wit
-        sets = self._hsets[h['key']]
-        for d in sorted(moving):
-            if d in sets[0]:
-                other, a_side = sets[1], True
-            elif d in sets[1]:
-                other, a_side = sets[0], False
-            else:
+        for side, other, a_side in ((h['a'], h['b'], True), (h['b'], h['a'], False)):
+            mine = [d for d in side if d in moving]
+            if not mine or not other:
                 continue
-            rd = P[d].rect()
-            cand = {c for c in self._ixp.query((rd[0] - gap, rd[1] - gap, rd[2] + gap, rd[3] + gap))
-                    if c in other and c not in moving}
-            cand |= {c for c in moving if c in other}
-            for c in sorted(cand):
-                g = rect_gap(rd, P[c].rect())
-                if g < gap:
-                    gap, wit = g, ((d, c) if a_side else (c, d))
+            G = _gaps(np.asarray([P[d].rect() for d in mine]), np.asarray([P[c].rect() for c in other]))
+            k = int(G.argmin())
+            if G.flat[k] < gap:
+                d, c = mine[k // len(other)], other[k % len(other)]
+                gap, wit = float(G.flat[k]), ((d, c) if a_side else (c, d))
         return gap, wit
 
     def wired(self, a, b):
@@ -813,14 +795,16 @@ class Model:
         return i0, i1, j0, j1
 
     def _net_demand(self, n):
-        """Net `n`'s share of `demand` as `(i0, i1, j0, j1, block)`, the block
-        covering only the cells its box touches; None (fewer than two pads)."""
+        """Net `n`'s share of `demand` as `(i0, i1, j0, j1, cy, cx, s)`: s *
+        outer(cy, cx) over the cells its box touches, cy and cx each cell's
+        overlap with the box, s its tree's length over the box's area; None
+        (fewer than two pads)."""
         h = self.pitch / 2.0
         E = self.net_edges.get(n)
         if E is not None:       # the tree the wire term just priced: its
             ex, ey = self._grid_edges()     # edges span its points' box exactly
-            return grid_router.net_demand(np.ascontiguousarray(E, dtype=float), self.net_len[n], h,
-                                          ex, ey, self._gx0, self._gy0, self.cell, self._nx, self._ny)
+            return grid_router.net_box(np.ascontiguousarray(E, dtype=float), self.net_len[n], h,
+                                       ex, ey, self._gx0, self._gy0, self.cell, self._nx, self._ny)
         pts = sorted(set(self._net_points(n)))
         if len(pts) < 2:
             return None
@@ -833,7 +817,12 @@ class Model:
         ex, ey = self._grid_edges()
         cx = np.clip(np.minimum(ex[j0 + 1:j1 + 1], x1) - np.maximum(ex[j0:j1], x0), 0.0, None)
         cy = np.clip(np.minimum(ey[i0 + 1:i1 + 1], y1) - np.maximum(ey[i0:i1], y0), 0.0, None)
-        return (i0, i1, j0, j1, np.outer(cy, cx) * (L / ((x1 - x0) * (y1 - y0))))
+        return (i0, i1, j0, j1, cy, cx, L / ((x1 - x0) * (y1 - y0)))
+
+    @staticmethod
+    def _dem_block(v):
+        """A `_net_demand` value as its block."""
+        return np.outer(v[4], v[5]) * v[6]
 
     def _part_use(self, ref):
         """`ref`'s pad copper (grown by half the clearance) per copper layer,
@@ -845,48 +834,48 @@ class Model:
             return {}
         A = np.asarray([(px - sx / 2 - h, px + sx / 2 + h, py - sy / 2 - h, py + sy / 2 + h)
                         for px, py, sx, sy, _l in shapes])
-        i0, i1, j0, j1 = self._win(A[:, 0].min(), A[:, 1].max(), A[:, 2].min(), A[:, 3].max())
-        if i1 <= i0 or j1 <= j0:
-            return {}
+        on = np.asarray([[layer in l or '*.Cu' in l for layer in self.layers]
+                         for *_r, l in shapes], dtype=bool)
         ex, ey = self._grid_edges()
-        cx = np.clip(np.minimum(ex[None, j0 + 1:j1 + 1], A[:, 1:2])
-                     - np.maximum(ex[None, j0:j1], A[:, 0:1]), 0.0, None)
-        cy = np.clip(np.minimum(ey[None, i0 + 1:i1 + 1], A[:, 3:4])
-                     - np.maximum(ey[None, i0:i1], A[:, 2:3]), 0.0, None)
-        out = {}
-        for layer in self.layers:
-            on = np.asarray([layer in l or '*.Cu' in l for *_r, l in shapes])
-            if on.any():
-                out[layer] = (i0, i1, j0, j1, cy[on].T @ cx[on])
-        return out
+        got = grid_router.pad_use(A, on, ex, ey, self._gx0, self._gy0, self.cell, self._nx, self._ny)
+        if got is None:
+            return {}
+        i0, i1, j0, j1, blocks = got
+        return {self.layers[L]: (i0, i1, j0, j1, blk) for L, blk in blocks}
 
     def _over2(self, i0, i1, j0, j1):
         """Overflow squared summed over grid window [i0:i1, j0:j1]."""
         if i1 <= i0 or j1 <= j0:
             return 0.0
-        cap = np.zeros((i1 - i0, j1 - j0))
-        for L in self.layers:
-            cap += np.clip(self.cell * self.cell - self._U[L][i0:i1, j0:j1], 0.0, None)
-        over = np.clip(self._D[i0:i1, j0:j1] - cap / self.pitch, 0.0, None)
+        over = np.clip(self._D[i0:i1, j0:j1] - self._capacity(i0, i1, j0, j1) / self.pitch, 0.0, None)
         return float((over * over).sum())
 
     def _cong_init(self):
         """Every net's demand and every part's pad use, from scratch, their
-        sums, and the overflow total -- what a move then corrects window by
-        window (`_cong_price`, `_cong_commit`)."""
+        sums, the capacity they leave each cell, and the overflow total --
+        what a move then corrects (`_cong_price`, `_cong_commit`)."""
         self._cset = set(self.cnets)
         self._dem = {n: self._net_demand(n) for n in self.cnets}
         self._use = {r: self._part_use(r) for r in sorted(self.state.parts)}
         self._D = np.zeros((self._ny, self._nx))
         for v in self._dem.values():
             if v is not None:
-                self._D[v[0]:v[1], v[2]:v[3]] += v[4]
+                self._D[v[0]:v[1], v[2]:v[3]] += self._dem_block(v)
         self._U = {L: np.zeros((self._ny, self._nx)) for L in self.layers}
         for u in self._use.values():
             for L, (i0, i1, j0, j1, blk) in u.items():
                 self._U[L][i0:i1, j0:j1] += blk
+        self._C = self._capacity(0, self._ny, 0, self._nx)
         self._S = self._over2(0, self._ny, 0, self._nx)
         self._cong_pending = None
+
+    def _capacity(self, i0, i1, j0, j1):
+        """Over grid window [i0:i1, j0:j1], the area each cell has left for
+        tracks: clip(cell area - pad use, 0) summed over the layers."""
+        cap = np.zeros((i1 - i0, j1 - j0))
+        for L in self.layers:
+            cap += np.clip(self.cell * self.cell - self._U[L][i0:i1, j0:j1], 0.0, None)
+        return cap
 
     def _cong_nets(self, refs):
         st = self.state
@@ -895,63 +884,63 @@ class Model:
     def _cong_price(self, refs):
         """Price the congestion a move of `refs` makes, without touching the
         grids: the demand of the nets `refs` are on and the pad use of `refs`
-        re-priced, swapped into COPIES of the window they touch, the overflow
-        total corrected there. The change is kept as pending, written by
-        `_cong_commit` if the move is kept and dropped if it is not -- a
-        refused move (most of them) costs one pass and no restore."""
-        dem = []
-        for n in self._cong_nets(refs):
-            dem.append((n, self._dem[n], self._net_demand(n)))
+        re-priced, and the overflow total corrected over the cells they reach
+        (the Rust kernel `grid_router.cong_delta`). The change is kept as
+        pending, written by `_cong_commit` if the move is kept and dropped if
+        it is not -- a refused move (most of them) writes nothing."""
+        dem = [(n, self._dem[n], self._net_demand(n)) for n in self._cong_nets(refs)]
         use = [(r, self._use[r], self._part_use(r)) for r in refs]
         wins = [v[:4] for _n, old, new in dem for v in (old, new) if v is not None]
         wins += [b[:4] for _r, old, new in use for u in (old, new) for b in u.values()]
         if not wins:
-            self._cong_pending = (dem, use, None, None, None, self._S)
+            self._cong_pending = (dem, use, self._S)
             return self._S
-        i0 = min(w[0] for w in wins)
-        i1 = max(w[1] for w in wins)
-        j0 = min(w[2] for w in wins)
-        j1 = max(w[3] for w in wins)
-        # the committed window as views; copies only of what the move changes
-        Uv = {L: self._U[L][i0:i1, j0:j1] for L in self.layers}
-        before = self._over2_on(self._D[i0:i1, j0:j1], Uv)
-        Dw = self._D[i0:i1, j0:j1].copy()
-        hit = {L for _r, old, new in use for u in (old, new) for L in u}
-        Uw = {L: (Uv[L].copy() if L in hit else Uv[L]) for L in self.layers}
+        win = (min(w[0] for w in wins), max(w[1] for w in wins),
+               min(w[2] for w in wins), max(w[3] for w in wins))
+        dterms = []
         for _n, old, new in dem:
-            if old is not None:
-                Dw[old[0] - i0:old[1] - i0, old[2] - j0:old[3] - j0] -= old[4]
-            if new is not None:
-                Dw[new[0] - i0:new[1] - i0, new[2] - j0:new[3] - j0] += new[4]
-        for _r, old, new in use:
-            for L, (a0, a1, b0, b1, blk) in old.items():
-                Uw[L][a0 - i0:a1 - i0, b0 - j0:b1 - j0] -= blk
-            for L, (a0, a1, b0, b1, blk) in new.items():
-                Uw[L][a0 - i0:a1 - i0, b0 - j0:b1 - j0] += blk
-        S = self._S + self._over2_on(Dw, Uw) - before
-        self._cong_pending = (dem, use, (i0, i1, j0, j1), Dw, {L: Uw[L] for L in hit}, S)
+            if (old is not None and new is not None and old[:4] == new[:4]
+                    and np.array_equal(old[4], new[4]) and np.array_equal(old[5], new[5])):
+                if new[6] != old[6]:    # the same box: only its density changes
+                    dterms.append((new[6] - old[6], new[0], new[2], new[4], new[5]))
+                continue
+            dterms += [(sign * v[6], v[0], v[2], v[4], v[5])
+                       for sign, v in ((-1.0, old), (1.0, new)) if v is not None]
+        li = {L: k for k, L in enumerate(self.layers)}
+        uterms = [(li[L], sign, b[0], b[2], b[4]) for _r, old, new in use
+                  for sign, u in ((-1.0, old), (1.0, new)) for L, b in u.items()]
+        S = self._S + grid_router.cong_delta(self._D, self._C, [self._U[L] for L in self.layers],
+                                             win, dterms, uterms, self.cell * self.cell, self.pitch)
+        self._cong_pending = (dem, use, S)
         return S
 
-    def _over2_on(self, Dw, Uw):
-        """`_over2` on a window (copies or views): the Rust kernel
-        `grid_router.over2`."""
-        return grid_router.over2(Dw, [Uw[L] for L in self.layers], self.cell * self.cell, self.pitch)
-
     def _cong_commit(self):
-        """Write the pending congestion of the move just kept."""
+        """Write the pending congestion of the move just kept: its nets'
+        demand and its parts' pad use into the grids, and the capacity again
+        under the pad use it changed."""
         pend = getattr(self, '_cong_pending', None)
         if pend is None:
             return
-        dem, use, win, Dw, Uw, S = pend
-        for n, _old, new in dem:
+        dem, use, S = pend
+        for n, old, new in dem:
+            for sign, v in ((-1.0, old), (1.0, new)):
+                if v is not None:
+                    self._D[v[0]:v[1], v[2]:v[3]] += sign * self._dem_block(v)
             self._dem[n] = new
-        for r, _old, new in use:
+        boxes = []
+        for r, old, new in use:
+            for sign, u in ((-1.0, old), (1.0, new)):
+                for L, (i0, i1, j0, j1, blk) in u.items():
+                    if sign < 0:
+                        self._U[L][i0:i1, j0:j1] -= blk
+                    else:
+                        self._U[L][i0:i1, j0:j1] += blk
+                    boxes.append((i0, i1, j0, j1))
             self._use[r] = new
-        if win is not None:
-            i0, i1, j0, j1 = win
-            self._D[i0:i1, j0:j1] = Dw
-            for L, w in Uw.items():         # the layers the move changed
-                self._U[L][i0:i1, j0:j1] = w
+        if boxes:
+            i0, i1 = min(b[0] for b in boxes), max(b[1] for b in boxes)
+            j0, j1 = min(b[2] for b in boxes), max(b[3] for b in boxes)
+            self._C[i0:i1, j0:j1] = self._capacity(i0, i1, j0, j1)
         self._S = S
         self._cong_pending = None
 
@@ -963,7 +952,7 @@ class Model:
         if getattr(self, '_D', None) is None:
             self._cong_init()
         pend = getattr(self, '_cong_pending', None)
-        return pend[5] if pend is not None else self._S
+        return pend[2] if pend is not None else self._S
 
     def snapshot(self, touched, refs):
         """What pricing a move of `refs` changes, to put back if the move is
@@ -1163,7 +1152,6 @@ class Model:
         self._gc = {name: self.group_cost(m) for name, m in self.groups}
         self._hw = {h['key']: self._hint_full(h) for h in self.hints}
         self._hc = {h['key']: self._hint_value(h, self._hw[h['key']][0]) for h in self.hints}
-        self._hsets = {h['key']: (set(h['a']), set(h['b'] or ())) for h in self.hints}
         self._xc = {n: {} for n in self.nets}
         E, ends, labs = self._edges_of(self.nets)
         if len(E):

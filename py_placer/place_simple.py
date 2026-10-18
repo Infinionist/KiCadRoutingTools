@@ -268,7 +268,7 @@ def _many_seeds(ap, a):
         cmd = ([sys.executable, '-X', 'utf8', os.path.abspath(__file__), a.board, out]
                + passed + ['--seed', str(s)] + (['--json', js] if js else []))
         runs.append((s, out, cmd))
-    print(f"place_simple: seeds {', '.join(map(str, seeds))}, {jobs} at a time")
+    print(f"place_simple: seeds {', '.join(map(str, seeds))} ({jobs} at a time)")
     live, done = [], {}
     pending = list(runs)
     while pending or live:

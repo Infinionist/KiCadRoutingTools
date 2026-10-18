@@ -78,7 +78,7 @@ What to read in the output:
   judgement to look at, not a mistake by itself).
 - **`place_simple --seeds 0-3`** runs one process per seed (`--jobs N`
   limits how many at once; the default is one per seed, at most 4) and prints
-  one line per seed: `seed 0: cost 3289.4, 38000 moves in 24.1 s ->
+  one line per seed: `seed 0: cost 2897.5, 38000 moves in 14.7 s ->
   wk/tig/r1/s0.kicad_pcb`. Each seed's own log goes beside its board
   (`s0.log`): the movable and fixed parts, the groups after folding, one cost
   line per stage of the anneal, the final cost broken down by term, and a
@@ -92,7 +92,7 @@ What to read in the output:
 - **`render_placement`** writes one PNG per board side (`s0_F.png`,
   `s0_B.png` when the board has back-side parts).
 
-On tigard each seed anneals its 76 movable parts in about 25 s, and the four
+On tigard each seed anneals its 76 movable parts in about 15 s, and the four
 run at once. The same board, inputs and seed always give the same placement.
 Seeds differ more than most changes to the inputs, so place several and keep
 the one that routes best ([Judging seeds by routing](#judging-seeds-by-routing)).
@@ -187,10 +187,12 @@ tight as legality lets it.
 
 ![U3 with its decaps on its supply pins](../../docs/placement-tigard-qfn.png)
 
-*`render_placement wk/tig/r1/s0.kicad_pcb --side F --view 38,46,60,67
---ratsnest-nets '+3V3'`: tigard's FT2232H (U3) with its +3V3 decaps (C14-C17,
-C19, C20) on its supply pins, spread round all four sides, the +3V3 tree in
-green; the other parts keep back from its pad rows, leaving the fan-out room.*
+*`render_placement wk/tig/r1/s0.kicad_pcb --side F --view 43,37,71,61
+--ratsnest-nets '+3V3'`: tigard's FT2232H (U3) with five +3V3 decaps (C14,
+C16-C19) on its supply pins, spread round three sides, and the rail's other
+two (C15, C20) by the 93LC46 EEPROM U4, the core group's other IC on +3V3; the
++3V3 tree in green. The other parts keep back from U3's pad rows, leaving the
+fan-out room.*
 
 **The anneal.** Every unlocked part starts at a random place on the board.
 Moves shift, turn, swap, dock a part against a partner pad, jump a part to its

@@ -29,6 +29,11 @@ Moves, each priced by `Model.local` against the committed state near it:
     escape  a part that overlaps something, to the least-overlap pose of
             ESCAPE_TRIES drawn at random over the board
 
+Group turns and swaps are drawn only in the first quarter of the run
+(`BIG_UNTIL`): they move a whole group far at once, and on every board
+measured none was kept after the first fifth, while each one costs its
+group's size in single moves to price.
+
 A move never leaves the board: the parts it moves are translated together
 until their courtyards are inside the board less its edge margin. A part
 pushed off the board behind a fixed one (a header on the edge) could
@@ -55,6 +60,8 @@ from placement.simple import ROTS, legal, nearest_legal, target
 
 MOVES = {'shift': 0.40, 'turn': 0.15, 'swap': 0.10, 'jump': 0.10, 'dock': 0.10,
          'gshift': 0.12, 'gturn': 0.08, 'gswap': 0.05, 'escape': 0.05}
+BIG_GROUP_MOVES = ('gturn', 'gswap')
+BIG_UNTIL = 0.25    # the share of the run group turns and swaps are drawn in
 ESCAPE_TRIES = 48   # random poses an escape move draws, keeping the least overlap
 CLEAN = 1e-3        # mm2 of overlap that counts as none
 ACCEPT = 0.1        # the start: the median cost change taken uphill this often
@@ -111,8 +118,11 @@ class Annealer:
         self.span = max(self.inner[2] - self.inner[0], self.inner[3] - self.inner[1])
         self.half = st.clearance / 2.0
         self.names = sorted(st.parts)
-        sides = {r: set(st.parts[r].sides) for r in self.names}
-        self.share = {(a, b): bool(sides[a] & sides[b]) for a in self.names for b in self.names}
+        self.everyone = frozenset(st.parts)
+        # each part's faces as a bit mask: two parts can overlap when theirs meet
+        bit = {}
+        self.faces = {r: sum(1 << bit.setdefault(f, len(bit)) for f in set(st.parts[r].sides))
+                      for r in self.names}
         self.lam = LAM_START
 
     # -- poses -----------------------------------------------------------------
@@ -169,7 +179,7 @@ class Annealer:
                 near = sorted(self.model._ixp.query((A[0] - h, A[1] - h, A[2] + h, A[3] + h))
                               | (mset - {a}))
             for b in near:
-                if b == a or (b in mset and b < a) or not self.share[(a, b)]:
+                if b == a or (b in mset and b < a) or not self.faces[a] & self.faces[b]:
                     continue
                 B = grown.get(b) or grown.setdefault(b, self._grown(b))
                 ox = min(A[2], B[2]) - max(A[0], B[0])
@@ -234,7 +244,7 @@ class Annealer:
             return {r: self.pose(o), o: self.pose(r)}
         if kind == 'jump':
             r = rng.choice(self.mov)
-            tx, ty = target(self.model, r, {q for q in st.parts if q != r})
+            tx, ty = target(self.model, r, self.everyone)
             p = st.parts[r]
             rot = rng.choice(ROTS)
             p.ensure_rotation(rot)
@@ -437,6 +447,7 @@ def anneal(model, movable: List[str], *, moves: int = 11000, seconds: float = 0.
     stats = {k: [0, 0] for k in kinds}
     reach0 = a.span / 6.0
     window = [0, 0]             # moves tried, kept, since the last log line
+    late = int(BIG_UNTIL * moves)       # from here no group turns or swaps
     capped = False
     done = 0            # moves executed (a `seconds` cap stops the loop early)
     t_loop = time.time()
@@ -449,6 +460,8 @@ def anneal(model, movable: List[str], *, moves: int = 11000, seconds: float = 0.
         T = t0 * (T_END / t0) ** frac
         a.lam = LAM_START * (LAM_END / LAM_START) ** frac
         reach = max(0.1, reach0 * (1.0 - frac) ** 2)
+        if k == late:
+            wts = [0.0 if kk in BIG_GROUP_MOVES else w for kk, w in zip(kinds, wts)]
         kind = a.rng.choices(kinds, wts)[0]
         new = a.propose(kind, reach)
         stats[kind][0] += 1
