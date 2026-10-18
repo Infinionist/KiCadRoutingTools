@@ -37,6 +37,15 @@ from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
 
 EPS = 1e-6
 
+#: How far past the `usable` box or into the edge margin a rect may sit and
+#: still count as on it, mm: float rounding, never geometry. A courtyard
+#: clamped flush to `usable` lands an ulp either side of it (noahfc: 94.2 -
+#: (94.2 - 0.55) = 0.5499999999999972 against a 0.55 margin), so every seat
+#: test of the board -- `seeder.pose_ok`'s outline conjunct and
+#: `QuenchState.candidate_valid`'s bbox and outline tests -- allows this much,
+#: or one test passes a pose another refuses.
+BOARD_TOL = 1e-9
+
 # Run-6: a part covering at least this fraction of the board bbox MAY be a
 # CONTAINER (a module-outline footprint hosting the design -- a frame, not a
 # body). Calibration: rp2350_fpga_eensy U8 = 1.13x board area; the largest
@@ -896,44 +905,55 @@ class BoardOutlineGate:
         self._near: Dict[object, list] = {}
         self._edges = None
         self._safe = None     # `_rect_safe`'s grid, built on first use
+        self._sides_safe = None   # `rect_bbox_decides`'s, likewise
 
     #: The cell size of `_rect_safe`'s grid, mm.
     SAFE_CELL_MM = 0.25
 
-    def _build_safe(self):
+    def _build_safe(self, sides: bool = True):
         """A grid of cells that lie wholly inside an outer ring, outside
         every cutout, and more than `margin` from every ring edge (outer,
         cutout and milled alike), with its prefix sum. A rect covering only
         such cells has every corner on the board, no edge within the margin
         of any ring edge and no ring inside it, so both exact tests answer
         it with their bbox term alone (`rect_blocked` False). Conservative by
-        construction; when it cannot be built, nothing is answered by it."""
-        self._safe = False
+        construction; when it cannot be built, nothing is answered by it
+        (False).
+
+        `sides` False leaves the edges lying ON the bounding box -- the
+        board's straight sides -- out of the bands, for `rect_bbox_decides`:
+        what such an edge charges a rect, the bbox inset charges too."""
         try:
             import numpy as np
             import shapely
             from shapely.geometry import LineString, Polygon
             from shapely.ops import unary_union
         except ImportError:
-            return
+            return False
         if not self.outer or self.bounds is None:
-            return
+            return False
         outers = [self.outer] if isinstance(self.outer[0], tuple) else self.outer
         eps = 1e-3
+        bx0, by0, bx1, by1 = self.bounds
+
+        def on_side(a, b, c, d):
+            """Both ends on one side of the bounding box."""
+            return (any(abs(a - v) <= 1e-9 and abs(c - v) <= 1e-9 for v in (bx0, bx1))
+                    or any(abs(b - v) <= 1e-9 and abs(d - v) <= 1e-9 for v in (by0, by1)))
         try:
             region = unary_union([Polygon(o) for o in outers if len(o) >= 3])
             if self.cutouts:
                 region = region.difference(unary_union(
                     [Polygon(c) for c in self.cutouts if len(c) >= 3]))
             bands = [LineString([(a, b), (c, d)]).buffer(self.margin + eps)
-                     for (a, b, c, d) in self.edges() if (a, b) != (c, d)]
+                     for (a, b, c, d) in self.edges()
+                     if (a, b) != (c, d) and (sides or not on_side(a, b, c, d))]
             if bands:
                 region = region.difference(unary_union(bands))
             g = self.SAFE_CELL_MM
             inner = region.buffer(-(g * math.sqrt(0.5) + eps))
         except Exception:
-            return
-        bx0, by0, bx1, by1 = self.bounds
+            return False
         nx = max(1, int(math.ceil((bx1 - bx0) / g)))
         ny = max(1, int(math.ceil((by1 - by0) / g)))
         xs = bx0 + (np.arange(nx) + 0.5) * g
@@ -942,16 +962,14 @@ class BoardOutlineGate:
         ok = shapely.contains_xy(inner, X, Y).astype(np.int64)
         ps = np.zeros((ny + 1, nx + 1), dtype=np.int64)
         ps[1:, 1:] = ok.cumsum(0).cumsum(1)
-        self._safe = (bx0, by0, g, nx, ny, ps)
+        return (bx0, by0, g, nx, ny, ps)
 
-    def _rect_safe(self, rect) -> bool:
-        """True when `rect` covers only cells of `_build_safe`'s grid, so
-        the exact tests would find nothing past the bbox term."""
-        if self._safe is None:
-            self._build_safe()
-        if not self._safe:
+    @staticmethod
+    def _grid_covers(grid, rect) -> bool:
+        """True when `rect` covers only cells `grid` (`_build_safe`) marks."""
+        if not grid:
             return False
-        ox, oy, g, nx, ny, ps = self._safe
+        ox, oy, g, nx, ny, ps = grid
         j0 = int((rect[0] - ox) // g)
         j1 = int((rect[2] - ox) // g)
         i0 = int((rect[1] - oy) // g)
@@ -960,6 +978,31 @@ class BoardOutlineGate:
             return False
         n = (ps[i1 + 1, j1 + 1] - ps[i0, j1 + 1] - ps[i1 + 1, j0] + ps[i0, j0])
         return n == (i1 - i0 + 1) * (j1 - j0 + 1)
+
+    def _rect_safe(self, rect) -> bool:
+        """True when `rect` covers only cells of `_build_safe`'s grid, so
+        the exact tests would find nothing past the bbox term."""
+        if self._safe is None:
+            self._safe = self._build_safe()
+        return self._grid_covers(self._safe, rect)
+
+    def rect_bbox_decides(self, rect) -> bool:
+        """True when the bbox inset alone decides `rect`: it covers only
+        cells of the board more than the margin from every ring edge that
+        does not lie on the bounding box -- a cutout's, a milled ring's, a
+        notch's, a rounded corner's. Only the straight sides can charge such
+        a rect: inside `usable` its `rect_outside_amount` is 0 (to rounding),
+        and past it every term is a side's, which the bbox inset measures
+        already -- so a caller pricing the bbox itself may skip the exact
+        test.
+
+        `_rect_safe`'s grid with the board's straight sides left out of its
+        bands, so that a rect along a side -- where an anneal puts many of
+        the parts it tests -- is answered by the grid rather than by a walk
+        of every ring edge. False whenever the grid cannot be built."""
+        if self._sides_safe is None:
+            self._sides_safe = self._build_safe(sides=False)
+        return self._grid_covers(self._sides_safe, rect)
 
     def edges(self):
         """Every ring edge as (x1, y1, x2, y2), built once."""
@@ -1125,9 +1168,12 @@ class BoardOutlineGate:
         return out
 
     # -- level 3: the exact tests
-    def rect_blocked(self, rect, edges=None, skip_rings=None) -> bool:
+    def rect_blocked(self, rect, edges=None, skip_rings=None,
+                     tol: float = 0.0) -> bool:
         """True when a rect leaves the real outline, enters a cutout, or comes
-        within the edge margin of either.
+        within the edge margin of either -- by more than `tol` (`BOARD_TOL`
+        for a seat gate: a rect flush with the margin is on it, whichever way
+        its last ulp rounds).
 
         `edges` restricts the distance test to a pre-filtered edge list from
         `edges_near`; omitted, every ring edge is measured.
@@ -1164,7 +1210,7 @@ class BoardOutlineGate:
                                  (x1, y1, x0, y1), (x0, y1, x0, y0)):
             for (ex1, ey1, ex2, ey2) in near:
                 if _seg_seg_dist_coords(ax, ay, bx, by,
-                                        ex1, ey1, ex2, ey2) < self.margin:
+                                        ex1, ey1, ex2, ey2) < self.margin - tol:
                     return True
         # An interior ring FULLY INSIDE the rect evades both tests above -- no
         # corner is off-board and no rect edge comes near a ring edge (#628).
@@ -5148,12 +5194,35 @@ class LegalityContext:
     def keepout_amount(self, ref: str, x: float, y: float,
                        rot: float) -> float:
         """This part's worst ILLEGAL keep-out pad reach at a pose (#1031), in
-        mm -- `RuleAreaKeepouts.part_amount`, the gates' own currency."""
+        mm -- `RuleAreaKeepouts.part_amount`, the gates' own currency. A part
+        whose copper cannot reach an area (`RuleAreaKeepouts.may_reach`) is
+        0 without the per-pad walk."""
         pp = self.parts.get(ref)
-        if pp is None or self.keepouts is None:
+        if pp is None or self.keepouts is None or not self.keepouts.active:
+            return 0.0
+        if not self.keepouts.may_reach(pp.extent(x, y, rot)):
             return 0.0
         return self.keepouts.part_amount(ref, pp.pad_rects(x, y, rot),
                                          pp._delta_key(rot))
+
+    def keepout_excess(self, ref: str, x: float, y: float,
+                       rot: float) -> float:
+        """How far past what `keepout_ok` admits this pose reaches into a
+        rule-area keep-out band, in mm: 0.0 exactly when it admits it, else
+        the reach beyond the seed's (#1031) -- what a search prices so that
+        it sees the band the gate refuses."""
+        if self.keepouts is None or ref not in self.parts:
+            return 0.0
+        cur = self.keepout_amount(ref, x, y, rot)
+        if cur <= EPS:
+            return 0.0
+        base = self._keepout_seed.get(ref)
+        if base is None:
+            # a pile seed is not a license (run-19), same as seed_baseline
+            base = (self.keepout_amount(ref, *self.seed_of(ref))
+                    if self._seed_licensed(ref) else 0.0)
+            self._keepout_seed[ref] = base
+        return 0.0 if cur <= base + EPS else cur - base
 
     def keepout_ok(self, ref: str, x: float, y: float, rot: float) -> bool:
         """No worse than the SEED on the rule-area keep-out term (#1031).
@@ -5162,18 +5231,7 @@ class LegalityContext:
         seats in a band may move within it or out of it, and a part that was
         clear may not move in. Absolute would freeze a damaged part in place.
         """
-        if self.keepouts is None or ref not in self.parts:
-            return True
-        cur = self.keepout_amount(ref, x, y, rot)
-        if cur <= EPS:
-            return True
-        base = self._keepout_seed.get(ref)
-        if base is None:
-            # a pile seed is not a license (run-19), same as seed_baseline
-            base = (self.keepout_amount(ref, *self.seed_of(ref))
-                    if self._seed_licensed(ref) else 0.0)
-            self._keepout_seed[ref] = base
-        return cur <= base + EPS
+        return self.keepout_excess(ref, x, y, rot) == 0.0
 
     def pad_oob_amount(self, ref: str, x: float, y: float, rot: float,
                        exact: bool = True, edges=None) -> float:
@@ -6756,6 +6814,23 @@ class RuleAreaKeepouts:
                 if amt > EPS:
                     out.append((p, tht[0], amt, 'tht'))
         return out
+
+    def may_reach(self, rect) -> bool:
+        """Can any area reach a landing on copper inside `rect` (a part's pad
+        extent, `PartPads.extent`)? False when `rect` misses every area's
+        bbox by more than `_near`'s own margin, so `_near` would answer False
+        for each of its pads and `part_amount` would be 0 -- exactly, not as
+        an estimate. None (a part with no copper) is False."""
+        if rect is None or not self.active:
+            return False
+        m = self.band + self.grid_step
+        x0, y0, x1, y1 = rect[:4]
+        for a in self.areas:
+            bx = a['bbox']
+            if not (x1 < bx[0] - m or x0 > bx[2] + m
+                    or y1 < bx[1] - m or y0 > bx[3] + m):
+                return True
+        return False
 
     def part_amount(self, ref: str, rects, delta: float = 0.0) -> float:
         """The part's WORST illegal pad reach, in mm (0 when none).

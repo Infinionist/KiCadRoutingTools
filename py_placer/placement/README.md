@@ -199,8 +199,9 @@ fan-out room.*
 Moves shift, turn, swap, dock a part against a partner pad, jump a part to its
 wiring target, and move, turn or swap whole groups. A move is kept when it
 lowers the cost, or uphill with a probability that falls as the run cools. An
-overlap penalty (courtyards, the board edge, the intent's keep-outs and zones)
-rises from soft to hard over the run, so parts may pass through each other
+overlap penalty (courtyards, the board's real outline with its cutouts and
+notches, the intent's keep-outs and zones, and the board's rule-area keep-out
+bands) rises from soft to hard over the run, so parts may pass through each other
 early and a group can cross a crowded board. The run is 500 moves per movable
 part (`--moves` sets the total) from `--seed`. At the end every part is checked
 by the exact legality gate, and a part that fails it moves to the nearest legal

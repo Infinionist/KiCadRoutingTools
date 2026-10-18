@@ -1924,8 +1924,12 @@ class QuenchState:
                                                    grects)), None)
                 self._veto('intent', b and f"{b[0]}:{b[1]}")
             return False
-        legal = not (grect[0] < self.usable[0] or grect[1] < self.usable[1]
-                     or grect[2] > self.usable[2] or grect[3] > self.usable[3])
+        # The board, to `legality.BOARD_TOL`: the rounding `seeder.pose_ok`
+        # allows the same rect, so a courtyard flush with `usable` is on the
+        # board here too, whichever way its last ulp went.
+        u, tol = self.usable, legality.BOARD_TOL
+        legal = not (grect[0] < u[0] - tol or grect[1] < u[1] - tol
+                     or grect[2] > u[2] + tol or grect[3] > u[3] + tol)
         if not legal and self._why is not None:
             self._veto('board_bbox')
         # Real outline / cutout gate, three-level short-circuit: board-level
@@ -1934,7 +1938,8 @@ class QuenchState:
         if legal and self.edge_gate.active:
             near = self._edges_near(ref)
             if near and self.edge_gate.rect_blocked(
-                    grect, edges=near, skip_rings=self._owned_rings(ref)):
+                    grect, edges=near, skip_rings=self._owned_rings(ref),
+                    tol=tol):
                 legal = False
                 if self._why is not None:
                     self._veto('outline')

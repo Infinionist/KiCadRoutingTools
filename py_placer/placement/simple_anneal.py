@@ -5,8 +5,9 @@ spanning tree, crossings among those trees, claims, decaps, each group's gap
 tree, the halo, foreign-pad hits and congestion -- plus, while it runs, an
 OVERLAP penalty: the area where two parts' courtyards, each grown by half
 the clearance, intersect on a face they share, how far a courtyard is
-outside the board less its edge margin, and how far a part breaks the
-intent's keep-outs and zones. Its weight rises from
+outside the board less its edge margin -- the real outline, cutouts and
+notches too -- and how far a part breaks the intent's keep-outs and zones
+and the board's rule-area keep-outs. Its weight rises from
 `LAM_START` to `LAM_END` as the run cools, so parts may pass through each
 other early and a group can cross a crowded board; only an overlap-free
 state can become the best one,
@@ -56,6 +57,7 @@ import random
 import time
 from typing import Dict, List, Tuple
 
+from placement.legality import BOARD_TOL
 from placement.simple import ROTS, legal, nearest_legal, target
 
 MOVES = {'shift': 0.40, 'turn': 0.15, 'swap': 0.10, 'jump': 0.10, 'dock': 0.10,
@@ -64,6 +66,7 @@ BIG_GROUP_MOVES = ('gturn', 'gswap')
 BIG_UNTIL = 0.25    # the share of the run group turns and swaps are drawn in
 ESCAPE_TRIES = 48   # random poses an escape move draws, keeping the least overlap
 CLEAN = 1e-3        # mm2 of overlap that counts as none
+FLOOR = 2 * CLEAN   # the least an outline or keep-out-band breach costs: never clean
 ACCEPT = 0.1        # the start: the median cost change taken uphill this often
 T_END = 0.02
 LAM_START, LAM_END = 1.0, 10000.0
@@ -115,6 +118,13 @@ class Annealer:
         # (`QuenchState.usable`: the larger of the clearance and the edge
         # clearance), so a pose inside it is never refused for the edge
         self.inner = tuple(st.usable)
+        # ... and the two board terms the bbox cannot hold: the real outline
+        # (a cutout, a notch: `edge_gate`, None when the bbox is exact) and
+        # the rule-area keep-out bands (`legality_ctx.keepouts`, #1031)
+        self.gate = st.edge_gate if st.edge_gate.active else None
+        ctx = st.legality_ctx
+        self.bands = (ctx if ctx is not None and ctx.keepouts is not None
+                      and ctx.keepouts.active else None)
         self.span = max(self.inner[2] - self.inner[0], self.inner[3] - self.inner[1])
         self.half = st.clearance / 2.0
         self.names = sorted(st.parts)
@@ -144,12 +154,39 @@ class Annealer:
         """How far `r`'s courtyard is off the board, as an area: its overhang
         past each side times its size along that side -- the area off while
         it straddles one side, and growing the further off it is, so a part
-        wholly off the board is still pulled back."""
+        wholly off the board is still pulled back.
+
+        Where the outline is not its bbox, plus the real outline's own
+        measure (`rect_outside_amount`, what `seeder.pose_ok` refuses on)
+        times the courtyard's half-perimeter, and never less than `FLOOR`:
+        a pose the gate refuses is never clean. Only a courtyard near a
+        cutout, a notch or a rounded corner pays for it; the rest are
+        answered by the gate's grid (`rect_bbox_decides`)."""
         c = self.st.parts[r].rect()
         i = self.inner
         w, hh = c[2] - c[0], c[3] - c[1]
-        return (hh * (max(0.0, i[0] - c[0]) + max(0.0, c[2] - i[2]))
-                + w * (max(0.0, i[1] - c[1]) + max(0.0, c[3] - i[3])))
+        v = (hh * (max(0.0, i[0] - c[0]) + max(0.0, c[2] - i[2]))
+             + w * (max(0.0, i[1] - c[1]) + max(0.0, c[3] - i[3])))
+        g = self.gate
+        if g is not None and not g.rect_bbox_decides(c):
+            amt = g.rect_outside_amount(c)
+            if amt > BOARD_TOL:
+                v += max(FLOOR, amt * (w + hh))
+        return v
+
+    def _bands(self, r):
+        """How far `r`'s pads reach into the board's rule-area keep-out
+        bands past what the gate admits (`keepout_excess`, #1031), times its
+        courtyard's half-perimeter, and never less than `FLOOR`; 0 on a board
+        without such a keep-out, or for a part whose copper cannot reach one."""
+        if self.bands is None:
+            return 0.0
+        p = self.st.parts[r]
+        ex = self.bands.keepout_excess(r, p.x, p.y, p.rot)
+        if ex <= 0.0:
+            return 0.0
+        c = p.rect()
+        return max(FLOOR, ex * ((c[2] - c[0]) + (c[3] - c[1])))
 
     def _intent(self, r):
         """How far `r` breaks the intent's claims on it -- keep-outs and
@@ -165,10 +202,10 @@ class Annealer:
     def overlap(self, refs=None) -> float:
         """Overlap (mm2) of every pair with a part in `refs` (all pairs when
         None), each pair once, plus those parts' distance off the board and
-        into what the intent keeps them out of."""
+        into what the intent and the board's rule areas keep them out of."""
         mine = self.mov if refs is None else sorted(refs)
         mset = set(mine)
-        total = sum(self._outside(r) + self._intent(r) for r in mine)
+        total = sum(self._outside(r) + self._intent(r) + self._bands(r) for r in mine)
         grown = {}
         h = self.half
         for a in mine:

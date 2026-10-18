@@ -59,7 +59,10 @@ def pose_ok(state, ref: str, x: float, y: float, rot: float,
     # The grade ladder (#1182): board, keep-out and exclusive zone are the
     # floorplan grade's questions; `candidate_valid` asks the neighbours.
     r, tht = part.grade_rects(x, y, rot)
-    if state.edge_gate.rect_outside_amount(r) > 1e-9:
+    # `BOARD_TOL`: rounding, the same allowance candidate_valid's own board
+    # tests make, so the two never split on a courtyard flush with the edge.
+    from .legality import BOARD_TOL
+    if state.edge_gate.rect_outside_amount(r) > BOARD_TOL:
         return False
     # #1257: the pad copper, for the few parts the courtyard test above cannot
     # vouch for -- a cached float compare for every other one. 1e-6 is the
