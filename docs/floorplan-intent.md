@@ -1,4 +1,4 @@
-# Floorplan intent, graded (#549)
+# Floorplan intent, graded
 
 A placement in this toolchain is judged by routing it. Before it is routed,
 its own numbers (`crossings`, `hpwl`, the placer's cost) are indifferent
@@ -35,7 +35,7 @@ it:
    than it was is refused at exit 4, and `place_pose replicate --intent` (no
    `--from` / `--to`) applies the intent's `replicate[]` rows.
 3. **`place_fanout_clearance --intent` holds its decap limits** and the
-   rotations it declares for caps (#1067, #1122).
+   rotations it declares for caps.
 
 See `placement/README.md` for all of them.
 
@@ -136,30 +136,30 @@ source, suspect, suspect_reason
 | top level | `schema`, `kind`, `board`, `units`, `min_reader`, `envelope`, `defaults`, `blocks`, `keepouts`, `edge_connectors`, `decaps`, `must_lock`, `legality_budget`, `health`, `severity`, `overlap_waivers`, `assembly`, `proximity`, `dispositions`, `arrays`, `fixed_poses`, `context` |
 | `envelope` | `rect`, `tolerance_mm` |
 | `defaults` | `zone_tolerance_mm` |
-| `blocks[]` | `name`, `group`, `refs`, `zone`, `side`, `exclusive`, `tolerance_mm`, `rotation`, `rotation_candidates`, `rigid` (#1052: `true` declares the block one piece; needs `min_reader` 7; no placement tool reads it), `note`, `context` |
+| `blocks[]` | `name`, `group`, `refs`, `zone`, `side`, `exclusive`, `tolerance_mm`, `rotation`, `rotation_candidates`, `rigid` (`true` declares the block one piece; needs `min_reader` 7; no placement tool reads it), `note`, `context` |
 | `keepouts[]` | `name`, `rect`, `circle`, `sides`, `allow`, `note`, `context` |
-| `edge_connectors[]` | `ref`, `edge`, `overhang_mm`, `max_setback_mm`, `center_on_edge`, `along_edge_band`, `side` (#959: `F`/`B`, the connector's face, graded as the advisory `edge_connector_side`; needs `min_reader` 6), `class`, `note`, `context`, and the emitter-written `source`, `suspect`, `suspect_reason`, `overhang_capped`, `observed_overhang_mm` |
+| `edge_connectors[]` | `ref`, `edge`, `overhang_mm`, `max_setback_mm`, `center_on_edge`, `along_edge_band`, `side` (`F`/`B`, the connector's face, graded as the advisory `edge_connector_side`; needs `min_reader` 6), `class`, `note`, `context`, and the emitter-written `source`, `suspect`, `suspect_reason`, `overhang_capped`, `observed_overhang_mm` |
 | `edge_connectors[].overhang_mm` | `min`, `max` |
 | `edge_connectors[].center_on_edge` | `tolerance_mm` (required — see below) |
 | `edge_connectors[].along_edge_band` | `from`, `to` |
-| `decaps` | `max_distance_mm`, `exempt`, `search_radius_mm`, `max_pin_distance_mm`, `pin_functions`, `same_side`, and the `--decaps-from`-written `within_radius_refs` / `within_radius_mm` (#1142: the caps the reference keeps within that radius of their chip, each held to it per cap; the two come together, need `max_distance_mm`, must match `search_radius_mm`, and need `min_reader` 8) |
-| `assembly` | `sides` (`"F"`, `"B"` or `"both"`), `body_edge_mm` (#1255: the least distance in mm a component body may sit from the board edge, which arms check_assembly's `body_edge_band` gate; needs `min_reader` 9), `why`, `context` |
+| `decaps` | `max_distance_mm`, `exempt`, `search_radius_mm`, `max_pin_distance_mm`, `pin_functions`, `same_side`, and the `--decaps-from`-written `within_radius_refs` / `within_radius_mm` (the caps the reference keeps within that radius of their chip, each held to it per cap; the two come together, need `max_distance_mm`, must match `search_radius_mm`, and need `min_reader` 8) |
+| `assembly` | `sides` (`"F"`, `"B"` or `"both"`), `body_edge_mm` (the least distance in mm a component body may sit from the board edge, which arms check_assembly's `body_edge_band` gate; needs `min_reader` 9), `why`, `context` |
 | `proximity[]` | `ref`, `near`, `max_mm`, `basis` (`"pad_edge"` or `"body"`), `pads`, `note`, `context`, and the compiler-written `source` |
-| `keep_away[]` | `rule` (ONE rule in route.py's `--keep-away` syntax, `AGGRESSOR:VICTIM:GAP`), `note`, `context`, and the compiler-written `source` (#1253; see "`keep_away[]`" below; needs `min_reader` 10) |
-| `replicate[]` | `from` (a sheet instance: its name or path, as `place_pose replicate --from` takes it), `to` (a list of them), `anchor`, `allow_net_mismatch` (`REF.PAD` entries), `only` or `skip` (refs; not both), `search_mm`, `tolerance_mm`, `why`, `note`, `context`, `source` (#1211; see "`replicate[]`" below; needs `min_reader` 11) |
-| `arrays[]` | `name`, `members` (an ORDERED list of literal refs, at least two), `serves` (a ref, or `"unknown"`), `order` (`"pin"`, `"declared"` or `"unknown"`), `rotation` (degrees, `"shared"` or `"unknown"`), `pitch_mm` (`"auto"` or mm), `axis` (`"auto"`, `"x"` or `"y"`), `allow_mixed`, `why`, `note`, `context`, and the compiler-written `source` (#1051; see "Arrays" below; needs `min_reader` 7) |
-| `fixed_poses[]` | `ref`, `x`, `y`, `rot` (degrees or `"unknown"`), `side` (`"F"`, `"B"` or `"unknown"`), `basis` (`"declared"`, `"mechanical"` or `"derived_default"`), `why`, `context`, `accept_courtyard_overlap` (a list of literal refs, #1060) (#1054; see "Fixed poses" below; needs `min_reader` 7) |
+| `keep_away[]` | `rule` (ONE rule in route.py's `--keep-away` syntax, `AGGRESSOR:VICTIM:GAP`), `note`, `context`, and the compiler-written `source` (see "`keep_away[]`" below; needs `min_reader` 10) |
+| `replicate[]` | `from` (a sheet instance: its name or path, as `place_pose replicate --from` takes it), `to` (a list of them), `anchor`, `allow_net_mismatch` (`REF.PAD` entries), `only` or `skip` (refs; not both), `search_mm`, `tolerance_mm`, `why`, `note`, `context`, `source` (see "`replicate[]`" below; needs `min_reader` 11) |
+| `arrays[]` | `name`, `members` (an ORDERED list of literal refs, at least two), `serves` (a ref, or `"unknown"`), `order` (`"pin"`, `"declared"` or `"unknown"`), `rotation` (degrees, `"shared"` or `"unknown"`), `pitch_mm` (`"auto"` or mm), `axis` (`"auto"`, `"x"` or `"y"`), `allow_mixed`, `why`, `note`, `context`, and the compiler-written `source` (see "Arrays" below; needs `min_reader` 7) |
+| `fixed_poses[]` | `ref`, `x`, `y`, `rot` (degrees or `"unknown"`), `side` (`"F"`, `"B"` or `"unknown"`), `basis` (`"declared"`, `"mechanical"` or `"derived_default"`), `why`, `context`, `accept_courtyard_overlap` (a list of literal refs) (see "Fixed poses" below; needs `min_reader` 7) |
 | `legality_budget` | `overlap_area`, `oob_count`, `oob_amount` (`oob_area` refused — see below) |
 | `health` | `bus_corridors`, `classes`, `block_displacement_mm`, `ignore_net_ids`, `max_fanout`, `zoned_blocks`, `affinity_exempt_nets`, `affinity_exempt_net_ids`, `plane_layers` |
 | `health.bus_corridors[]` | `name`, `nets`, `width_mm` |
 | `severity` | any of the 44 rule names below |
 | `overlap_waivers[]` | `pair`, `reason`, `context` |
-| `dispositions` | `rules`, `withheld`, `refs`, `contradictions` -- each `{key: why}`, a non-empty written reason (#959; see "The rule roster" below) |
+| `dispositions` | `rules`, `withheld`, `refs`, `contradictions` -- each `{key: why}`, a non-empty written reason (see "The rule roster" below) |
 | `must_lock` | a list of reference globs (no nested keys) |
 
 `blocks[].rotation` and `rotation_candidates` are read by
 `place_fanout_clearance --intent`, which never turns a cap away from the angle
-its block declares and turns one with candidates only within them (#1122), and
+its block declares and turns one with candidates only within them, and
 by the grade's `array_conflict`. `place_simple` does not read them.
 
 `severity` keys are checked too. The settable names are the fifteen rules —
@@ -168,26 +168,26 @@ by the grade's `array_conflict`. `place_simple` does not read them.
 `proximity`, `must_lock`, `legality`, `pins_to_edge`, `array_formation` — plus the ten
 findings raised outside the rule loop: `intent_zone_outside_envelope`, `intent_zone_overlap`,
 `block_unresolved`, `intent_zone_in_keepout`, `keepout_allow_unresolved`,
-`array_unresolved`, `array_conflict` (#1051), `fixed_pose_unresolved` (#1054),
-`fixed_pose_overlap_waived` (#1060, **warn** by default),
-`mechanical_drift` (#959, raised only when a `mechanical.json` is read, and
+`array_unresolved`, `array_conflict`, `fixed_pose_unresolved`,
+`fixed_pose_overlap_waived` (**warn** by default),
+`mechanical_drift` (raised only when a `mechanical.json` is read, and
 settable to `error` only -- `warn` is refused, since the pose is a recorded
 fact),
-the twelve `plan_check` findings (#959: `plan_zone_exclusive_unsatisfiable`,
+the twelve `plan_check` findings (`plan_zone_exclusive_unsatisfiable`,
 `block_glob_literal`, `plan_fixed_outside_zone`, `plan_fixed_pose_conflict`,
 `plan_zone_overfull`,
 `plan_zone_crowded`, `plan_edge_overfull`, `plan_edge_crowded`,
 `plan_board_overfull`, `plan_board_crowded`, `plan_fixed_overlap`,
-`plan_fixed_overlap_budget`), `edge_connector_side` (#959, settable to `warn`
+`plan_fixed_overlap_budget`), `edge_connector_side` (settable to `warn`
 only -- `error` is refused, because the rule is advisory by design),
 plus three more raised BESIDE a rule's own name —
-`decap_pin_distance_inferred` and `decap_pin_uncovered` (#705), and
-`proximity_unresolved` (#902). One measurement can support several claims, and
+`decap_pin_distance_inferred` and `decap_pin_uncovered`, and
+`proximity_unresolved`. One measurement can support several claims, and
 an author must be able to set their severities apart: a pin inferred from a net
 name and a pin the pad declares are not the same evidence, and a proximity
 claim naming a part the board does not have is a different finding from one
 whose parts are simply too far apart — a DNP-variant board can demote the first
-without demoting the second. `assembly_side` (#837), `decap_ungraded`,
+without demoting the second. `assembly_side`, `decap_ungraded`,
 `decap_pin_distance_inferred` and `decap_pin_uncovered` default to
 **warn**; all but those and the last of the five default to **error**;
 `keepout_allow_unresolved` defaults to **warn** and is upgraded by writing
@@ -208,20 +208,17 @@ claim is what it is:
                "rejected_alternative": "north, blocked by the display window" } }
 ```
 
-It is open for the same reason everything else is strict. With nowhere to put
-reasoning, it drifts into the graded keys — a recorded run had
-`edge_connectors[]` entries carrying `band_basis`, `why`, `why_not_repaired`
-and `rejected_alternative`, which every consumer ignored. `note` is not the
-place either: it is grepped for the substring `SUSPECT`, so appending prose to
+It is open for the same reason everything else is strict: with nowhere to
+put reasoning, it drifts into the graded keys, where every consumer ignores
+it. `note` is not the place either: it is grepped for the substring `SUSPECT`, so appending prose to
 it can change behaviour. A `context` value must still be an object; the keys
 inside it are yours.
 
 The exceptions are all on `edge_connectors[]` entries:
-- `context.mount_mode: edge_mount` makes the seat read the drawn body (#961).
-- Since #959, `top_mount` / `bottom_mount` there exempts the part from the
-  edge-receptacle seat. That is the plan choosing its own clause, exactly as
-  dropping `class` would be. With a design brief, a plan and brief that
-  disagree about a vertical mount drift.
+- `context.mount_mode: edge_mount` makes the seat read the drawn body.
+- `context.mount_mode: top_mount` / `bottom_mount` exempts the part from the
+  edge-receptacle seat. With a design brief, a plan and brief that disagree
+  about a vertical mount drift.
 - `context.compiled_from` is read by drift attribution.
 
 The top-level `context.basis` labels numbers and changes no verdict.
@@ -260,58 +257,24 @@ Those are what `min_reader` is for, and the file's author is the only one who
 can know it applies. `READER_VERSION` bumps in the commit that makes such a
 change, and files depending on it declare `min_reader`.
 
-**Reader 2 arrived with [#712](https://github.com/drandyhaas/KiCadRoutingTools/issues/712):**
-`edge_connectors[].center_on_edge` and `.along_edge_band`. By the paragraph
-above the bump was not needed for *safety* — a reader-1 build refuses the file
-outright with `unknown key(s) center_on_edge`, which is loud and automatic. It
-was needed because `READER_VERSION` is the number an author copies into
-`min_reader`, and at `1` a document could have claimed a reader-1 build acts on
-a claim it has never heard of. That would be a false statement in the one field
-whose only job is to be true.
+Each `min_reader` level and the keys it covers:
 
-**Reader 3 arrived with [#837](https://github.com/drandyhaas/KiCadRoutingTools/issues/837):**
-`assembly.sides`. Same reasoning as 2 for the bump itself, and it changes two
-verdicts rather than one — `assembly_side` violations, and
-`options.grow_board`'s utilisation, which credits the back face's area to every
-board and had no way to be told the board is built on one side.
+| `min_reader` | keys |
+|---|---|
+| 2 | `edge_connectors[].center_on_edge`, `edge_connectors[].along_edge_band` |
+| 3 | `assembly.sides` |
+| 4 | `proximity[]` |
+| 5 | `blocks[].rotation`, `blocks[].rotation_candidates` |
+| 6 | `edge_connectors[].side` |
+| 7 | `arrays[]`, `fixed_poses[]`, `blocks[].rigid` |
+| 8 | `decaps.within_radius_refs`, `decaps.within_radius_mm` |
+| 9 | `assembly.body_edge_mm` |
+| 10 | `keep_away[]` |
+| 11 | `replicate[]` |
 
-**Reader 7 arrived with [#1051](https://github.com/drandyhaas/KiCadRoutingTools/issues/1051),
-[#1052](https://github.com/drandyhaas/KiCadRoutingTools/issues/1052) and
-[#1054](https://github.com/drandyhaas/KiCadRoutingTools/issues/1054):**
-`arrays[]`, `fixed_poses[]` and `blocks[].rigid`, in one bump because they
-arrived together. `arrays[]` arms `array_formation`, a `fixed_poses[]` entry
-is graded by an anchor compiled from it and seated by `place_simple`, and
-`rigid` declares a block one piece. The design brief compiles `arrays` and
-`fixed[].pose` with `min_reader` 7.
+The emitter and the design-brief compiler stamp the level their output needs.
 
-**Reader 8 arrived with [#1142](https://github.com/drandyhaas/KiCadRoutingTools/issues/1142):**
-`decaps.within_radius_refs` and `decaps.within_radius_mm`, which
-`--decaps-from` writes. They list the caps the reference keeps within the
-tether search radius of their chip, and the radius that was read at. A listed
-cap the graded board leaves beyond the radius is a `decap_ungraded` ERROR, per
-cap. It changes the exit code, so the intent is stamped `min_reader` 8, and an
-older build refuses both keys by name.
-
-**Reader 9 arrived with [#1255](https://github.com/drandyhaas/KiCadRoutingTools/issues/1255):**
-`assembly.body_edge_mm`, the least distance a component body may sit from the
-board edge. Declared, it turns check_assembly's `body_edge_band` census from
-report-only into a `not_buildable` conjunct, so it changes the exit code. An
-older build refuses the key by name. The design brief compiles its
-`assembly.body_edge_mm` with `min_reader` 9.
-
-**Reader 10 arrived with [#1253](https://github.com/drandyhaas/KiCadRoutingTools/issues/1253):**
-`keep_away[]`. It grades at **warn** by default, so it changes the exit code
-only when `severity` promotes it, and that it can is what the bump is for. An
-older build refuses the key by name. The design brief compiles its
-`keep_away` with `min_reader` 10.
-
-**Reader 11 arrived with [#1211](https://github.com/drandyhaas/KiCadRoutingTools/issues/1211):**
-`replicate[]`. `place_pose replicate --intent` acts on it (it copies the
-declared channels) and the grade measures it at **warn** by default, which
-`severity` may promote, so the bump is mandated. An older build refuses the
-key by name.
-
-### Arrays: parts that form one row (#1051)
+### Arrays: parts that form one row
 
 ```jsonc
 "arrays": [{"name": "rn_bus_a", "members": ["RN1", "RN2", "RN3", "RN4"],
@@ -361,7 +324,7 @@ No placement tool reads `arrays[]`: `place_simple` neither seats a row whole
 nor holds one together, so a declared row is graded only. To keep a row's
 parts together while placing, put them in one group of the groups file.
 
-### Fixed poses: a pose to seat, not only to grade (#1054)
+### Fixed poses: a pose to seat, not only to grade
 
 A `fixed_poses[]` entry is an exact pose a part is to be placed at, with
 `basis` saying whose fact it is: `declared` (the design brief's
@@ -384,9 +347,9 @@ like `mech:`.
 
 A `mechanical` entry sitting AT its declared pose, on its declared face, whose
 courtyard the census counts off the outline while every pad and its footprint
-graphic copper (#962) are on the board at zero margin, leaves
+graphic copper are on the board at zero margin, leaves
 `legality_budget`'s `oob_count` and `oob_amount` the way a declared edge
-connector inside its overhang band does (#961). `oob_count_exempt` counts
+connector inside its overhang band does. `oob_count_exempt` counts
 both kinds; a `legality` finding's `measured` carries the reduced amount
 beside `oob_amount_raw`. Off its pose, on the other face, or with pad or
 graphic copper past the outline, it stays counted. A `declared` entry is never
@@ -409,14 +372,14 @@ courtyards the way KiCad's DRC judges them: an overlap is illegal,
 courtyards that abut (gap 0) are not, so a human's edge-to-edge rows can be
 declared. Pad and hole clearance keep their normal rules, ABSOLUTE, and two
 parts' pads may not stack on each other whatever their nets. **A board whose own project sets
-`courtyards_overlap` to `ignore` (#1101)** is not refused a courtyard overlap
-at all: KiCad checks none, and check_assembly grades it that way (#1095).
+`courtyards_overlap` to `ignore`** is not refused a courtyard overlap
+at all: KiCad checks none, and check_assembly grades it that way.
 Holes stay refused hole to hole, and the emitter writes no `overlap_area`
 budget. A pair that clashes is named with its measurement ("courtyard
 overlaps FID8 by 1.15x1.15mm"). An entry whose declared side is not the
 part's face on the board is not judged there.
 
-**A named courtyard waiver (#1060).** A human pose can overlap another part's
+**A named courtyard waiver.** A human pose can overlap another part's
 courtyard and still be the design -- glasgow's U30 overlaps FID8 by
 1.15 x 1.15 mm, which kicad-cli's DRC reports as `courtyards_overlap`.
 `accept_courtyard_overlap: ["FID8"]` on the entry, with a
@@ -439,9 +402,9 @@ overlap: the pair's area still counts in `legality.overlap_area` and in
 carries exactly the finding KiCad's DRC reports -- declare the budget to fit
 it.
 
-**A shared ORIGIN is a stack only when something physical is shared
-(#1204).** check_assembly's COINCIDENT ORIGINS conjunct (run 19: three parts
-at one point whose rotated pads interleaved, so no pad intersected) groups
+**A shared ORIGIN is a stack only when something physical is shared.**
+check_assembly's COINCIDENT ORIGINS conjunct, which catches parts stacked at
+one point whose rotated pads interleave so that no pad intersects, groups
 parts whose origins agree to 1 um. An origin is a library's datum, so within
 such a group a pair counts only when, on a face both occupy, their COPPER pad
 boxes overlap (a plated barrel is on both faces), an NPTH hole of one lies on
@@ -455,45 +418,35 @@ courtyard pair is. Both kinds are listed, never silently, in
 `coincident_origins_exempt` (`why` `apart` or `waived`). board_score reads the
 same JSON.
 
-**Courtyards are graded as drawn, at the project's own severity (#1094,
-#1095).** The courtyard and fab channels keep the part rects as their broad
-phase and measure an overlapping pair on the DRAWN outlines (courtyard united
-pad by pad with the copper -- a custom pad's parsed primitives, not its box,
-since #1123; a pad on no copper layer, such as a paste-only aperture, is not
-copper and is not united, since #1128 -- and since #1143 it is not a pad to the
-placement measures either: the occupancy rect, the pads rung, the assembly
-census, `pad_area_balance`, the escape pitch, the chip bounds the decap
-election measures to, `proximity` pads and the rest of the sites
-`tests/measure_1143_paste_only_sites.py` lists, through
-`kicad_parser.pad_is_aperture_only`, which keeps NPTH and drilled pads. Two
-kinds of reader are left on purpose. The MOVERS -- `QuenchState`'s zero-pad
-branch, `reconcile.anchor_blocks`, the `mechanical_drift` default,
-`stale_dispositions` and the agent grade's poses -- keep a part whose only
-pads are apertures MOVABLE, because a placer seats such a logo by its
-courtyard. The router's own readers
-(`detect_package_type`, `detect_bga_pitch`) are routing), which is what
-KiCad measures: KiCad's StickHub
-demo, 39 parts at +-45/+-135 degrees, went from 74 phantom courtyard-blocking
-pairs and 6 phantom containments to 0. The fixed-pose check above calls the
-same measure. A board whose own `.kicad_pro` sets `courtyards_overlap` to
-`ignore` gets every courtyard pair its intent does not already waive labelled
-`project_severity_ignore`, never gating (KiCad runs no courtyard check then).
-`warning` is graded as error, since KiCad still reports it and
-`fix_kicad_drc_settings --relax-severities` writes exactly that demotion. An
-`ignore` carrying every category this repo's pre-#856 route steps wrote is
-taken as the tool's, not the author's, and graded at error; a
-`kicad_routing_tools.saved_severities` record is the author's value. None of
-this touches the fab containment channel, which is not KiCad's courtyard
-rule. `check_assembly --ignore-project-severity` is the OFF arm.
+**Courtyards are graded as drawn, at the project's own severity.** The
+courtyard and fab channels keep the part rects as their broad phase and
+measure an overlapping pair on the DRAWN outlines: the courtyard united pad by
+pad with the copper, a custom pad by its parsed primitives rather than its
+box. A pad on no copper layer, such as a paste-only aperture, is not copper:
+it is not united, and the placement measures do not count it as a pad either
+(`kicad_parser.pad_is_aperture_only`, which keeps NPTH and drilled pads). The
+movers -- `QuenchState`'s zero-pad branch, `reconcile.anchor_blocks`, the
+`mechanical_drift` default and `stale_dispositions` -- still treat a part whose
+only pads are apertures as movable, because such a logo is seated by its
+courtyard. The fixed-pose check above calls the same measure. A board whose
+own `.kicad_pro` sets `courtyards_overlap` to `ignore` gets every courtyard
+pair its intent does not already waive labelled `project_severity_ignore`,
+never gating (KiCad runs no courtyard check then). `warning` is graded as
+error, since KiCad still reports it and `fix_kicad_drc_settings
+--relax-severities` writes exactly that demotion. An `ignore` carrying every
+category older route steps of this repo wrote is taken as the tool's, not the
+author's, and graded at error; a `kicad_routing_tools.saved_severities` record
+is the author's value. None of this touches the fab containment channel,
+which is not KiCad's courtyard rule. `check_assembly
+--ignore-project-severity` is the OFF arm.
 
-### WHICH WAY it opens: the facing conjunct (#1155)
+### WHICH WAY it opens: the facing conjunct
 
 The nearest-edge identity reads where a part SITS, and a connector seated
 backwards sits nearest its declared edge whenever the back of its shell
-grazes it: sonde_xilinx's J2, a DSUB-9 edge-mount declared east, was seated
-with its 18 mm shell over the board and its opening pointing inward, and it
-passed this rule, board_context, check_assembly and board_score. The facing
-conjunct reads which way the body leaves its pad row -- a horizontal
+grazes it -- a DSUB-9 declared east, seated with its 18 mm shell over the
+board and its opening pointing inward, passes the nearest-edge identity. The
+facing conjunct reads which way the body leaves its pad row -- a horizontal
 connector solders at the back and extends forward to its opening -- through
 `floorplan.edge_facing` (`placement/mating.py` has the measurement):
 
@@ -505,8 +458,7 @@ points west, not out of the east edge
 
 - **Who is graded:** an entry whose `context.mount_mode` is `edge_mount` or
   `through_edge`; else a declared `class: edge_receptacle`; else, with no
-  class declared, a part `part_class` infers as a receptacle (#1155's J2
-  carried none). A vertical mount, `connector_affinity` and the actuators
+  class declared, a part `part_class` infers as a receptacle. A vertical mount, `connector_affinity` and the actuators
   are exempt -- a connector the board merely keeps near an edge need not
   open out of it (StickHub J5 opens east from a corner of the north edge),
   and a switch's plastic says nothing about which way it is pressed.
@@ -516,17 +468,17 @@ points west, not out of the east edge
   face between 0.9 and 1.4 mm, among 60+ correct USB faces in the same range.
   Such a wrong weak face is not caught: a jack whose wrong weak face points
   at the edge opens into the board, and this conjunct reads it as a pass --
-  unless the footprint says otherwise (#1245, below). Those three stock
+  unless the footprint's marker says otherwise (below). Those three stock
   jacks draw no marker, so for them it stands.
-- **The footprint's "PCB Edge" marker confirms or vetoes the face (#1245).**
+- **The footprint's "PCB Edge" marker confirms or vetoes the face.**
   Many footprints draw a "PCB Edge" / "Board edge" text beside a line where
   the board edge goes. `mating.marker_face_local` reads that LINE (parallel
   to the text, nearest it, not on a courtyard or copper layer; the face is
   the side away from the pads) -- not the text's position, which sits at an
   end of the line. A marker that agrees with the body's face makes it STRONG
-  (`basis` gains `+marker`: esp_prog USB1 and orangecrab J3, 1.05 and
-  0.63 mm, now fail at ERROR when turned away); one that contradicts it makes
-  the face abstain, never fail; no marker leaves the reading as it was. It
+  (`basis` gains `+marker`, so esp_prog's USB1 and orangecrab's J3, at 1.05
+  and 0.63 mm, fail at ERROR when turned away); one that contradicts it makes
+  the face abstain, never fail; with no marker, the body's reading stands. It
   never names a face the body does not. Calibrated on KiCad 10's 154 marked
   stock footprints, it agrees with all 73 strong body faces, at every
   quarter turn.
@@ -537,8 +489,9 @@ points west, not out of the east edge
   offset_mm, strong, policy, reason, disposition}`) and the text line ends
   `; facing west [courtyard+fab+marker, strong] FAIL`. The violation's `measured`
   has no `edge` key: the nearest-edge violation owns that one.
-- **Unchanged:** the nearest-edge identity, `edge_seat_rect` and the default
-  bands. `check_assembly` evaluates no intent clause, so a
+- The facing conjunct leaves the nearest-edge identity, `edge_seat_rect` and
+  the default bands as they are. `check_assembly` evaluates no intent clause,
+  so a
   reversed connector reaches `board_score` through this ERROR's floorplan
   count, not through the assembly verdict.
 
@@ -548,9 +501,9 @@ points west, not out of the east edge
 facing and a setback. All four are satisfied *anywhere along* the edge — so a receptacle
 well off the centre of its edge grades exactly as well as a centred one. On a
 stick-shaped board where the PCB is the plug body, that is the difference
-between a product and something a human rejects on sight. Measured on this
-repo's own `esp_prog`: USB1 sits **1.75 mm off the centre of its 14.50 mm east
-edge**, 12.07 %, and no conjunct could say so.
+between a product and something a human rejects on sight. On this repo's
+`esp_prog`, USB1 sits **1.75 mm off the centre of its 14.50 mm east edge**
+(12.07 %); these two keys are how an intent says whether that is acceptable.
 
 ```jsonc
 { "ref": "USB1", "edge": "east", "center_on_edge": { "tolerance_mm": 0.5 } }
@@ -574,8 +527,7 @@ three. The author supplies the number or there is no claim.
 **The offset is measured on every entry that names an `edge`, declared or not**,
 and reported as `edge_seating` in `--json` and in the text output — mm and
 percent of the span. Only a *declared* `center_on_edge` / `along_edge_band`
-produces a violation. An `--emit-intent` document never carries either field,
-so every intent written before this change grades identically.
+produces a violation. An `--emit-intent` document never carries either field.
 
 **The span comes from the outline ring, and abstains rather than guess.** The
 edge's span is resolved from the board's own Edge.Cuts ring when one parsed —
@@ -583,60 +535,33 @@ the contiguous run lying on that side. Only when there are no rings *and* the
 outline is a simple rectangle (where the bounding box **is** the outline
 exactly) is the bbox used. Anything else abstains with the reason, in the same
 "declared value(s) NOT DERIVABLE — not graded, not passed" channel as a
-withheld budget. The measurement that forced this: on `interf_u_unrouted_placed`
-the bbox south edge spans 115.57 mm while the board's real south edge spans
-81.28 mm, and `BUS1` — which sits *exactly* on the real centre — reads
-**5.715 mm off** against the bounding box. A silently wrong centring number is
-worse than none. Note the converse, also measured: `watchy` is not a simple
-rectangle, yet its east and west ring spans are identical to the bbox on all 13
-of its entries, so abstaining per *board* rather than per *edge* would throw
-away 13 correct measurements.
+withheld budget. On `interf_u_unrouted_placed`, for example, the bounding
+box's south edge spans 115.57 mm while the board's real south edge spans
+81.28 mm, so `BUS1`, centred on the real edge, would read 5.715 mm off against
+the box. It abstains per edge, not per board.
 
-### The overhang band is graded on the drawn body (#961)
+### The overhang band is graded on the drawn body
 
-`overhang_mm` used to be graded on `rect_outside_amount(courtyard)`, which is
-a clearance shortfall at the gate's margin (`margin − gap` inside the board,
-`overhang + margin` outside), not an overhang. On esp_prog, USB1 moved 1.45 mm
-west has its drawn body 1.45 mm over the edge. The old reading was 0.10 at
-margin 0.25 and 0.40 at 0.55, so the same board passed `{min 0.05, max 0.20}`
-at one margin and failed it at the other.
+`overhang_mm` is graded on the **drawn body's overhang past the outline, at
+zero margin**, whenever that body can be measured: a declared `edge`, a closed
+convex Fab outline (SilkS when the part draws nothing on Fab, or when its Fab
+drawing is a marking such as a pin-1 dot -- the same
+`body.fab_cannot_be_body` decision the facing grade reads) and a rectangular
+Edge.Cuts outline. A zero `min` is therefore nonbinding and a positive `min`
+is a real conjunct. The graded number is summed over every side the body
+crosses, so a corner part counts both sides; for a body that crosses only its
+declared edge, it is exactly that edge's overhang.
 
-The band is now graded on the **drawn body's overhang past the outline, at
-zero margin**, whenever that body can be measured. That means a declared
-`edge`, a closed convex Fab outline (SilkS when the part draws nothing on
-Fab, or when its Fab drawing is a marking such as a pin-1 dot -- the same
-`body.fab_cannot_be_body` decision the facing grade reads, #1243) and a
-rectangular Edge.Cuts outline. A zero `min` is therefore
-nonbinding and a positive `min` is a real conjunct. Like the occupancy reading
-it replaces, the graded number is summed over every side the body crosses, so
-a corner part counts both sides. For a body that crosses only its declared
-edge, it is exactly that edge's overhang.
-
-When no body can be measured, the band is graded exactly as before, on the
-occupancy reading. Unmeasurable cases include a courtyard-only part, an arc
-in the Fab drawing, a non-rectangular outline, an entry with no `edge`, and a
+When no body can be measured, the band is graded on the occupancy reading
+instead: the courtyard's (or, with none, the pad box's) clearance shortfall at
+the gate's margin. Unmeasurable cases include a courtyard-only part, an arc in
+the Fab drawing, a non-rectangular outline, an entry with no `edge`, and a
 drawn envelope that does not enclose the centroid of its own pads (a pin-1
-marker is not a body).
-
-**The copper rule above follows the body**, so identical geometry can be
-graded two ways: a violation when the library drew a body, and the old band
-arithmetic when it did not. The reason is not that the legacy reading sees
-the copper — it sees it only when the occupancy rect it measures (the
-courtyard, or the pad box when the part draws no courtyard) happens to
-enclose the pads. The reason is that the legacy path grades **exactly** as it
-did before #961, deliberately, so that this change cannot move a board it
-cannot measure. The gap that leaves is real: on the legacy reading nothing
-grades pad copper against the outline at all, so a part whose courtyard does
-not enclose its pads can carry copper past the edge unnamed, on `main` and on
-this branch alike. `check_drc --check-pad-edge` is the channel that names it.
-(ulx3s `AUDIO1` is the shape of the first half — an open Fab outline, so its
-body is unmeasured and it takes the legacy path — though its own copper sits
-0.28 mm inside the outline, 0.27 mm short of that board's 0.55 mm floor,
-which is a clearance question rather than a containment one.)
-Nothing is withheld or abstained, and the basis says which reading was used.
-The seat conjunct's "no overhang" gate, the nearest-edge identity, the class
-setback defaults and the `connector_affinity` warning are **unchanged**.
-`_Ctx.oob_exempt` grades the band in the same currency as the rule.
+marker is not a body). On that path nothing here grades pad copper against the
+outline, so a part whose courtyard does not enclose its pads can carry copper
+past the edge unnamed; `check_drc --check-pad-edge` is the channel that names
+it. The basis says which reading was used, and `_Ctx.oob_exempt` grades the
+band in the same currency as the rule.
 
 Every declared connector on the board gets a row in `edge_connector_evidence`
 (`--json`), including passing ones. Each row carries:
@@ -654,9 +579,7 @@ Every declared connector on the board gets a row in `edge_connector_evidence`
   `outside_mm` half is not. On the body path, a part whose pad copper leaves
   the **outline** (zero margin, castellated pads excepted) is a violation,
   and `oob_exempt` will not exempt it, because a band licenses the body and
-  never copper. The occupancy reading this replaced carried that copper
-  implicitly, so without the rule a part with its pads off the board would
-  grade clean where it used to fail.
+  never copper.
 
 The same keys are added to the entry's `edge_seating` row when one exists.
 
@@ -678,26 +601,20 @@ exact failure this tool exists to prevent, so it is reported as
 
 ### An `allow` that exempts nothing is a warning
 
-`allow` is a glob tuple, matched with `fnmatch` against every reference. Nothing
-used to check that a pattern matched anything, so this
+`allow` is a glob tuple, matched with `fnmatch` against every reference. A
+pattern that matches nothing exempts nothing:
 
 ```jsonc
 { "name": "mount-NW", "rect": [0, 0, 6, 6], "allow": ["MH01"] }
 ```
 
-on a board whose mounting hole is `MH1` exempted **nothing**. `place_simple`
+on a board whose mounting hole is `MH1` exempts **nothing**. `place_simple`
 consults the same resolver (`keepouts_for_ref`, through `QuenchState`), so the
-typo does not merely fail to excuse the part — unless that part is fixed (the
+typo does not merely fail to excuse the part -- unless that part is fixed (the
 file locks it, or `fixed_poses[]` seats it), `place_simple` **pushes the part
-the keep-out was drawn around out of it**.
-
-Measured on `splitflap_driver`, before the finding existed, in the two states an
-intent is read in:
-
-| the keep-out covers | what the author saw |
-|---|---|
-| the part it names | `[ERROR] keepout: H1 (F) is inside keep-out 'mount-NW'` — about the part, never the exemption. The failing pattern reached the JSON in `expected.allow` and the printed text never |
-| empty space (the state a board is in *before* placement, which is when an intent is authored) | `violations 0, errors 0, pass true`, exit 0 — nothing at all |
+the keep-out was drawn around out of it**. Before placement the keep-out
+covers empty space and grades clean, so this warning is the only sign of the
+typo.
 
 Reported at **warn**, not error: a spec written before a refdes renumber is a
 real case, and it should be loud without being fatal. Per **pattern**, not per
@@ -712,8 +629,8 @@ anyway (wrong side) is not a typo.
 on a shared side, ANY net, which check_assembly grades NOT BUILDABLE -- with
 up to five pairs, and carries the count as `pad_stack_count` in its
 `JSON_SUMMARY` (`--json` has the rows under `pad_stacks`). Each stack is
-confirmed on the pads' outlines, by check_assembly's own `legality.pad_intersection_pairs`
-(#1064), and its area is that channel's pad-rectangle overlap,
+confirmed on the pads' outlines, by check_assembly's own `legality.pad_intersection_pairs`,
+and its area is that channel's pad-rectangle overlap,
 and it is never a violation: a floorplan PASS still says nothing about it, and
 the line is there so a reader of the grade cannot miss it. The
 `pad_intersection_pairs` key beside it is a different number -- a
@@ -734,15 +651,14 @@ for it, and the reason is printed:
 
 ### The rule roster
 
-A skip reason nobody has to act on was printed on every lap of run 29. There were
-22 grades, and 6 of the 14 rules never ran. The roster (#959) turns each dark rule
-into a question the plan answers. It is printed by the grade, by `--emit-intent`
+A skip reason is easy to read past. The roster turns each dark rule into a
+question the plan answers. It is printed by the grade, by `--emit-intent`
 and by `--plan-only`. `--json` carries it as `rule_roster`, and `JSON_SUMMARY`
 carries `rules_dark_undispositioned`.
 
 `check_floorplan --plan-only`'s rule roster names a rule as OWING an answer when
-it meets all five of these conditions (the retired placement driver's P1 stage
-refused the plan on it; nothing refuses a run on it now, so read the roster):
+it meets all five of these conditions (nothing refuses a run on it, so read the
+roster):
 
 1. The rule is dark, meaning the plan does not arm it.
 2. It is not a **policy** rule. `proximity`, `zone_exclusive` and
@@ -761,8 +677,7 @@ the budget the plan actually declares, not off the plan's
 
 A rule the **design brief** declares is answered in one place only, the
 brief-clause check (`check_floorplan`'s DRIFT report). It names a plan that drops
-or contradicts a brief clause, by clause id; the retired P1 stage refused on it
-and took `--waive brief-clause:<id>:<why>` as the answer. The roster
+or contradicts a brief clause, by clause id. The roster
 reports such a rule as `uncovered` and asks nothing more.
 
 `check_floorplan --json` also writes a `declaration_ledger`. It has one row per
@@ -789,45 +704,41 @@ status from this list:
 | rule | fires when | measured with |
 |---|---|---|
 | `envelope` | the declared envelope is not the board's outline | `board_bounds` |
-| `zone_containment` | a member's courtyard leaves its block's zone. A zone side is OPEN for an edge-claim member when that side lies on the outline (within 0.01 mm) and the member's claim names that edge with an `overhang_mm.max` ([#1174](https://github.com/drandyhaas/KiCadRoutingTools/issues/1174)): the edge rule bounds how far past the edge it may go, so the zone does not eject it for going there. Its PADS stay graded there, against the board's own side and at zero whatever the zone's tolerance: pad copper past it is the error (`measured.pads_graded`), since a soldered pad cannot overhang; castellated pads are left out, as the edge rule leaves them out | `GradedPart.rect`. **Priced, not only graded** — `place_simple`'s anneal charges how far a member is outside its block's zone, exclusive or not, through the same `zone_escape` this rule calls with the same open sides (its moves keep every courtyard on the board, so an open side changes nothing there); the feasibility check and the plan check call it with the same open sides (`zone_open_sides`); `place_pose --intent` refuses a pose that leaves a part further outside |
+| `zone_containment` | a member's courtyard leaves its block's zone. A zone side is OPEN for an edge-claim member when that side lies on the outline (within 0.01 mm) and the member's claim names that edge with an `overhang_mm.max`: the edge rule bounds how far past the edge it may go, so the zone does not eject it for going there. Its PADS stay graded there, against the board's own side and at zero whatever the zone's tolerance: pad copper past it is the error (`measured.pads_graded`), since a soldered pad cannot overhang; castellated pads are left out, as the edge rule leaves them out | `GradedPart.rect`. **Priced, not only graded** — `place_simple`'s anneal charges how far a member is outside its block's zone, exclusive or not, through the same `zone_escape` this rule calls with the same open sides (its moves keep every courtyard on the board, so an open side changes nothing there); the feasibility check and the plan check call it with the same open sides (`zone_open_sides`); `place_pose --intent` refuses a pose that leaves a part further outside |
 | `zone_side` | a member is on the other face | `legality.footprint_side` |
-| `assembly_side` | a part sits on a face the board's declared assembly policy does not populate. **warn** by default (#837): no placement tool reads the policy, and a part changes face only by a face declaration (`place_simple` applies `blocks[].side` and the rest before it places), so an error would be a red mark until someone declares the faces | `legality.assembly_census`, body face — the pad-bearing population, so a zero-pad graphic on the back is not a part (and since #1143 a part whose only pads are paste/mask apertures is zero-pad too) |
-| `zone_exclusive` | a non-member intrudes on a reserved zone | `rect_overlap_area`, **courtyard only** — a through-hole stranger's leads may cross a reserved zone, unlike a keep-out's. **Priced and enforced** — `place_simple`'s anneal charges a stranger's courtyard area inside the zone, and its final legality check (`seeder.pose_ok`, through `QuenchState.exclusive_clear`) refuses a stranger's pose inside it and moves the part to the nearest legal pose ([#797](https://github.com/drandyhaas/KiCadRoutingTools/issues/797)) |
-| `keepout` | any part enters a keep-out, unless in `allow` | courtyard **and** through-hole rect. **Priced and enforced, not only graded** — `place_simple`'s anneal charges the area inside a keep-out, and its final legality check (`seeder.pose_ok`, [#701](https://github.com/drandyhaas/KiCadRoutingTools/issues/701)) refuses such a pose, both through the same `keepout_hit` this rule calls |
-| `edge_connector` | overhang outside `[min,max]`; the wrong edge; a graded receptacle whose mating face points away from its declared edge (**error** on a strong face, **warn** on a weak one, #1155); on the body path, pad copper past the OUTLINE (castellated pads excepted); a `connector_affinity` entry seated more than 3 mm from every edge fires at **warn** whatever the configured severity | the band: the drawn body's overhang past the outline, summed over the sides it crosses (`body_outside_mm`, `connector_geometry`, #961), else `BoardOutlineGate.rect_outside_amount`; the seat: `edge_clearance` |
+| `assembly_side` | a part sits on a face the board's declared assembly policy does not populate. **warn** by default: no placement tool reads the policy, and a part changes face only by a face declaration (`place_simple` applies `blocks[].side` and the rest before it places), so an error would be a red mark until someone declares the faces | `legality.assembly_census`, body face — the pad-bearing population, so a zero-pad graphic on the back is not a part (a part whose only pads are paste/mask apertures is zero-pad too) |
+| `zone_exclusive` | a non-member intrudes on a reserved zone | `rect_overlap_area`, **courtyard only** — a through-hole stranger's leads may cross a reserved zone, unlike a keep-out's. **Priced and enforced** — `place_simple`'s anneal charges a stranger's courtyard area inside the zone, and its final legality check (`seeder.pose_ok`, through `QuenchState.exclusive_clear`) refuses a stranger's pose inside it and moves the part to the nearest legal pose |
+| `keepout` | any part enters a keep-out, unless in `allow` | courtyard **and** through-hole rect. **Priced and enforced, not only graded** — `place_simple`'s anneal charges the area inside a keep-out, and its final legality check (`seeder.pose_ok`) refuses such a pose, both through the same `keepout_hit` this rule calls |
+| `edge_connector` | overhang outside `[min,max]`; the wrong edge; a graded receptacle whose mating face points away from its declared edge (**error** on a strong face, **warn** on a weak one); on the body path, pad copper past the OUTLINE (castellated pads excepted); a `connector_affinity` entry seated more than 3 mm from every edge fires at **warn** whatever the configured severity | the band: the drawn body's overhang past the outline, summed over the sides it crosses (`body_outside_mm`, `connector_geometry`), else `BoardOutlineGate.rect_outside_amount`; the seat: `edge_clearance` |
 | `decap_distance` | a decoupling cap is too far from its own IC | `groups.decap_populations` (`near`) |
-| `decap_ungraded` | a cap in scope lies BEYOND the tether search radius, so `decap_distance` never measured it against the declared limit — a claim about COVERAGE, not compliance. **warn** by default ([#794](https://github.com/drandyhaas/KiCadRoutingTools/issues/794)). **ERROR, per cap, for a cap in `decaps.within_radius_refs`** ([#1142](https://github.com/drandyhaas/KiCadRoutingTools/issues/1142)): one the `--decaps-from` reference keeps inside the radius, so leaving it beyond strands a decoupler. An explicit `severity.decap_ungraded` wins either way | `groups.decap_populations` (`beyond`) |
-| `decap_pin_distance` | a DECLARED supply pin is further than `max_pin_distance_mm` from the nearest decoupling cap on its own rail, pad edge to pad edge ([#705](https://github.com/drandyhaas/KiCadRoutingTools/issues/705)) | `floorplan.supply_pins`, `legality.pad_rect` + `rect_gap` |
+| `decap_ungraded` | a cap in scope lies BEYOND the tether search radius, so `decap_distance` never measured it against the declared limit — a claim about COVERAGE, not compliance. **warn** by default. **ERROR, per cap, for a cap in `decaps.within_radius_refs`**: one the `--decaps-from` reference keeps inside the radius, so leaving it beyond strands a decoupler. An explicit `severity.decap_ungraded` wins either way | `groups.decap_populations` (`beyond`) |
+| `decap_pin_distance` | a DECLARED supply pin is further than `max_pin_distance_mm` from the nearest decoupling cap on its own rail, pad edge to pad edge | `floorplan.supply_pins`, `legality.pad_rect` + `rect_gap` |
 | `decap_pin_distance_inferred` | the same measurement for a pin inferred from a net NAME rather than from a `pintype` or `pinfunction`. **warn** by default, because the pin set is the inference | same |
 | `decap_pin_uncovered` | a declared supply pin's rail carries no decoupling cap at all, anywhere. A design fact, not a placement failure, so **warn** and per (IC, rail) rather than per pin | same |
-| `proximity` | two DECLARED parts are further apart than `max_mm` ([#902](https://github.com/drandyhaas/KiCadRoutingTools/issues/902)). Per SUBJECT pad when the claim names `pads`, once per pair when it does not | `legality.pad_rect` + `rect_gap`, or `placement.body`'s DRAWN body for `basis: "body"` |
+| `proximity` | two DECLARED parts are further apart than `max_mm`. Per SUBJECT pad when the claim names `pads`, once per pair when it does not | `legality.pad_rect` + `rect_gap`, or `placement.body`'s DRAWN body for `basis: "body"` |
 | `proximity_unresolved` | a proximity claim names a ref, or a pad number, this board does not have. A separate NAME so a DNP-variant board can demote it without demoting the distance claim | same |
-| `keep_away` | a pad of one DECLARED net group sits closer than GAP to a pad of the other, on two different parts ([#1253](https://github.com/drandyhaas/KiCadRoutingTools/issues/1253)). One finding per part pair, at its closest pads, naming each pad's side. **warn** by default; `severity` may promote it | `legality.pad_rect` + `rect_gap` (plan view), sides resolved by the router's `keep_away.resolve_rule_sides` |
+| `keep_away` | a pad of one DECLARED net group sits closer than GAP to a pad of the other, on two different parts. One finding per part pair, at its closest pads, naming each pad's side. **warn** by default; `severity` may promote it | `legality.pad_rect` + `rect_gap` (plan view), sides resolved by the router's `keep_away.resolve_rule_sides` |
 | `keep_away_unresolved` | a keep-away rule has a side that matches no net on this board (**warn** by default) | same |
-| `replicate` | a declared copy target is not laid out as a translated copy of its source instance ([#1211](https://github.com/drandyhaas/KiCadRoutingTools/issues/1211)): a part further than `tolerance_mm` (default 0.05) from the best translation, or rotated, or on the other side. One finding per target, naming the worst parts. **warn** by default; `severity` may promote it | `replicate.measure_declared`: parts matched by schematic symbol as `place_pose replicate` matches them, offsets fitted by their median |
+| `replicate` | a declared copy target is not laid out as a translated copy of its source instance: a part further than `tolerance_mm` (default 0.05) from the best translation, or rotated, or on the other side. One finding per target, naming the worst parts. **warn** by default; `severity` may promote it | `replicate.measure_declared`: parts matched by schematic symbol as `place_pose replicate` matches them, offsets fitted by their median |
 | `replicate_unresolved` | a declaration the board cannot resolve -- an unknown or ambiguous sheet, instances not wired alike, a waiver naming no pad -- with `place_pose replicate`'s own reason (**warn** by default) | same |
 | `must_lock` | a declared-critical part is not locked in the file | `parser.extract_locked_refs` |
-| `legality` | overlap or off-board parts exceed a budget. An overlap finding's `measured` carries `overlap_area` (the outline reading the budget grades), `overlap_area_rect`, the worst 50 `pairs` (`[a, b, rect, exact]`) with `pairs_total`, and `excluded` -- the containers, pad-less logos and silk-only parts the budget does not see (a silk body never gates, #896); `legality.overlap_area_excluded` counts them on every grade | overlap: `legality.courtyard_overlap_pairs` (check_assembly's drawn outlines, #1162); off-board: `QuenchState.legality_metrics` |
+| `legality` | overlap or off-board parts exceed a budget. An overlap finding's `measured` carries `overlap_area` (the outline reading the budget grades), `overlap_area_rect`, the worst 50 `pairs` (`[a, b, rect, exact]`) with `pairs_total`, and `excluded` -- the containers, pad-less logos and silk-only parts the budget does not see (a silk body never gates); `legality.overlap_area_excluded` counts them on every grade | overlap: `legality.courtyard_overlap_pairs` (check_assembly's drawn outlines); off-board: `QuenchState.legality_metrics` |
 | `block_unresolved` | a block matched no footprint | — |
 | `intent_zone_in_keepout` | a declared zone is contradicted by a keep-out that binds its members: covered entirely (reported per block), or left with no pose for a member at any rotation (per member) | `zone_covered_by_keepout`, then `zone_pose_feasibility` |
 | `keepout_allow_unresolved` | a keep-out's `allow` pattern matches no footprint (**warn** by default) | `allow_pattern_matches`, the resolver's own matcher |
 | `intent_zone_outside_envelope` | the intent contradicts itself (no board needed) | — |
-| `intent_zone_overlap` | two zones overlap on one face -- a **warn** since #959: a member of either may sit in the shared area, and run 29's own board satisfied two such pairs | — |
-| `plan_zone_exclusive_unsatisfiable` | a member has no pose in its own zone that stays out of a stranger's EXCLUSIVE zone -- the one overlap no placement can satisfy (#959) | `zone_pose_feasibility` with the exclusive zone as a keep-out |
-| `array_formation` | a declared array is not ONE formed row: off a common axis, out of the expected order (either direction), at more than one rotation or not the declared one, or at uneven (or not the declared) pitch. A policy rule, dark when nothing is declared ([#1051](https://github.com/drandyhaas/KiCadRoutingTools/issues/1051)) | `arrays.formation` over the courtyard centres (`GradedPart.rect`) and board rotations; the order from `arrays.pin_order` |
+| `intent_zone_overlap` | two zones overlap on one face -- a **warn**: a member of either may sit in the shared area | — |
+| `plan_zone_exclusive_unsatisfiable` | a member has no pose in its own zone that stays out of a stranger's EXCLUSIVE zone -- the one overlap no placement can satisfy | `zone_pose_feasibility` with the exclusive zone as a keep-out |
+| `array_formation` | a declared array is not ONE formed row: off a common axis, out of the expected order (either direction), at more than one rotation or not the declared one, or at uneven (or not the declared) pitch. A policy rule, dark when nothing is declared | `arrays.formation` over the courtyard centres (`GradedPart.rect`) and board rotations; the order from `arrays.pin_order` |
 | `array_unresolved` | an array names a member, or a `serves` part, this board does not have | — |
 | `array_conflict` | an array cannot be formed as declared: a member locked in the file, mixed footprints without `allow_mixed`, a block rotation contradicting the row's, members split across zoned blocks | `rotations_for_ref`, `resolve_blocks` |
-| `fixed_pose_unresolved` | a `fixed_poses[]` ref is not on this board (**error**), or the anchor cannot grade it (**warn**, with the reason) ([#1054](https://github.com/drandyhaas/KiCadRoutingTools/issues/1054)); a part off its fixed pose is reported as `zone_containment` on the anchor block `fixed:<ref>`. Also an `accept_courtyard_overlap` ref the board does not have (**error**, #1060) | `reconcile.anchor_blocks` |
-| `fixed_pose_overlap_waived` | a `fixed_poses[].accept_courtyard_overlap` pair, with its measured courtyard overlap on this board, or with none (a stale waiver) (**warn**, [#1060](https://github.com/drandyhaas/KiCadRoutingTools/issues/1060)) | `legality.pair_overlap_area` |
+| `fixed_pose_unresolved` | a `fixed_poses[]` ref is not on this board (**error**), or the anchor cannot grade it (**warn**, with the reason); a part off its fixed pose is reported as `zone_containment` on the anchor block `fixed:<ref>`. Also an `accept_courtyard_overlap` ref the board does not have (**error**) | `reconcile.anchor_blocks` |
+| `fixed_pose_overlap_waived` | a `fixed_poses[].accept_courtyard_overlap` pair, with its measured courtyard overlap on this board, or with none (a stale waiver) (**warn**) | `legality.pair_overlap_area` |
 
-Every one of them measures with the geometry the **placer itself gates on**.
-A grader with its own idea of what "legal" means grades the reimplementation
-rather than the board — so where re-deriving was plausible, a test asserts the
-two agree exactly (all 39 of ulx3s's NON-ZERO cap distances identical to
-the grouper's — of 53 tethers; the other 14 clamp to 0 inside their IC's
-bounding box and a 0 mm limit does not flag them — and all five legality
-numbers identical to `QuenchState`'s). The count read **34** here until #705
-re-derived it; the test never asserted a number, so nothing caught it.
+Where a rule and a placement tool measure the same quantity (zones,
+keep-outs, the legality numbers), they call the same function, so a pose the
+tool accepts is one the grade accepts. A grader with its own idea of what
+"legal" means would grade the reimplementation rather than the board.
 
 ### Which rules the placer can see
 
@@ -840,18 +751,18 @@ reading.
 | `zone_containment` | yes | **priced**: the anneal's overlap term charges a member for how far it is outside its block's zone, past the zone's tolerance; a member still outside at the end is named, and the run exits 4 | — |
 | `zone_exclusive` | yes | **priced and enforced**: a stranger's courtyard area inside the zone is in the anneal's overlap term, and the exact legality check (`simple.legal`, which is `seeder.pose_ok`) refuses such a pose at the end | — |
 | `keepout` | yes | **priced and enforced**: the area inside a keep-out is in the anneal's overlap term, and the legality check refuses such a pose | — |
-| `zone_side` | yes | **applied before placing**: a member on the other face is flipped at its pose (the writer's #714 flip) | — |
+| `zone_side` | yes | **applied before placing**: a member on the other face is flipped at its pose (the writer's flip) | — |
 | `fixed_poses[]` (anchor `fixed:<ref>`) | yes, as `zone_containment` on the anchor | **seated and held**: written at the declared pose before placing, and fixed for the whole anneal | — |
 | `proximity` | yes | **priced**: each claimed pad's distance to its partner's nearest pad (pad centres, whatever the `basis`) is a term of the objective, and a claimed part's `jump` move aims at its partner's pads | the term is a distance to lower, not `max_mm`: a claim past its limit is reported by the grade only |
 | `edge_connector` | yes | only `side`, applied before placing | an edge seat is a bound on being OFF the board, and every move keeps the courtyards on it. Lock a connector at its edge pose in the file, or declare that pose in `fixed_poses[]` |
 | `must_lock` | yes | — | it is a claim about the FILE; no pose satisfies or violates it. `place_simple` holds the parts the file locks |
 | `assembly_side` | yes | — | no move carries a side; a part changes face only by a declaration (the `zone_side` row). **warn** by default so it cannot become a permanent red mark |
 | `envelope` | yes | — | a claim about the intent FILE against the board, not about any pose |
-| `decap_distance`, `decap_pin_distance` | yes | — | its decap term pulls each cap toward a supply pin of its rail on an IC of its own group (any IC's when the group has none), the rail's caps matched one to a pin site, whatever the limit. `place_fanout_clearance --intent` (and the GUI fanout tab, which shares its engine) holds both limits on the caps it moves (#1067), measured by CALLING the grader's own distances (`groups.elect_live`, `floorplan.nearest_rail_cap`) |
-| `decap_ungraded`, `decap_pin_uncovered`, `decap_pin_distance_inferred` | yes | — | `decap_ungraded` and `decap_pin_uncovered` are claims about what the GRADE covers rather than about any pose, and `decap_pin_distance_inferred` is a WARN about a pin inferred from a net name. A cap a `--decaps-from` reference holds (#1142) leaving the radius is counted by `place_fanout_clearance --intent` as a decap claim made worse when it picks the arm to keep |
+| `decap_distance`, `decap_pin_distance` | yes | — | its decap term pulls each cap toward a supply pin of its rail on an IC of its own group (any IC's when the group has none), the rail's caps matched one to a pin site, whatever the limit. `place_fanout_clearance --intent` (and the GUI fanout tab, which shares its engine) holds both limits on the caps it moves, measured by CALLING the grader's own distances (`groups.elect_live`, `floorplan.nearest_rail_cap`) |
+| `decap_ungraded`, `decap_pin_uncovered`, `decap_pin_distance_inferred` | yes | — | `decap_ungraded` and `decap_pin_uncovered` are claims about what the GRADE covers rather than about any pose, and `decap_pin_distance_inferred` is a WARN about a pin inferred from a net name. A cap a `--decaps-from` reference holds leaving the radius is counted by `place_fanout_clearance --intent` as a decap claim made worse when it picks the arm to keep |
 | `legality` | yes | — | a whole-board aggregate against a BUDGET. The anneal keeps only an overlap-free state as its best, and the legality check holds every part clear of its neighbours |
 | `replicate` | yes | — | `place_pose replicate --intent` applies the declaration; an anneal after it may move a copied part, and the grade then reports it |
-| `keep_away` | yes | — | grade only (#1253); the routers price it once there are tracks |
+| `keep_away` | yes | — | grade only; the routers price it once there are tracks |
 | `pins_to_edge` | yes | — | always-WARN advice for a reviewer |
 | `array_formation` | yes | — | graded only. A group in the groups file keeps its parts together, not in a row |
 
@@ -871,7 +782,7 @@ moves a part must not act on a claim it cannot attribute. `rule_zone_exclusive`
 carries the same filter, so a pose the check accepts is a pose the grade
 accepts.
 
-### `assembly.sides`: which faces the fab will populate (#837)
+### `assembly.sides`: which faces the fab will populate
 
 A board-level fab claim, not a per-block one. `blocks[].side` says where one
 subsystem belongs; this says how many reflow passes the board gets.
@@ -889,12 +800,8 @@ Two things read it:
 
 * **`rule_assembly_side`** flags a part on a face the policy does not populate.
   It **warns** by default, deliberately: no placement tool reads the policy —
-  the writer's flip
-  ([#714](https://github.com/drandyhaas/KiCadRoutingTools/issues/714)) moves
-  a part between faces only where a face declaration names it, and no move in
-  the anneal carries a side
-  ([#836](https://github.com/drandyhaas/KiCadRoutingTools/issues/836)) — so an
-  error would be a red mark until someone declares the faces. An author who
+  the writer's flip moves a part between faces only where a face declaration
+  names it, and no move in the anneal carries a side — so an error would be a red mark until someone declares the faces. An author who
   wants the hard gate writes `"severity": {"assembly_side": "error"}` and
   means it.
 * **`options.grow_board`** charges the parts against one face instead of the
@@ -913,7 +820,7 @@ the pad-bearing population: `glasgow_revC` declared `F` reports **92**, not the
 94 blocks on its back, because two of those blocks carry no pads. The census in
 `check_assembly.py` prints the same numbers and declares its basis.
 
-### `assembly.body_edge_mm`: how close a body may sit to the edge (#1255)
+### `assembly.body_edge_mm`: how close a body may sit to the edge
 
 This is an assembler's rule, and the board file cannot say it. JLCPCB's assembly
 terms ask for at least 2.5 mm between a component body and the board edge.
@@ -950,7 +857,7 @@ check_assembly as its grader. The design brief declares it as
 `body_edge_mm` rather than "...band", so it cannot be confused with
 `edge_connectors[].along_edge_band`, which is a position along an edge.
 
-### `keep_away[]`: two net groups apart, before any track exists (#1253)
+### `keep_away[]`: two net groups apart, before any track exists
 
 ```jsonc
 "keep_away": [{ "rule": "Net-(D5-A):/32K_P,/32K_N:1" }]
@@ -959,7 +866,7 @@ check_assembly as its grader. The design brief declares it as
 A rule is route.py's own `--keep-away` rule, `AGGRESSOR:VICTIM:GAP`, with net
 patterns and `class=` terms, parsed by the router's `parse_keep_away_rules`
 and resolved by its own resolver. One rule per row. The routing keep-away
-(#1146) measures tracks, so on a placed, unrouted board it checks nothing;
+measures tracks, so on a placed, unrouted board it checks nothing;
 this rule measures the pads the placement put down. Per rule, it measures
 every aggressor pad against every victim pad, pad edge to pad edge
 (`legality.pad_rect` + `rect_gap`, the currency of `proximity`'s `pad_edge`
@@ -1007,7 +914,7 @@ router reads and what it declares), and JSON_SUMMARY counts them as
 beside the board is caught the same way, at `--emit-intent` too. No
 placement tool reads the key either (see "Which rules the placer can see").
 
-### `replicate[]`: sibling sheet instances laid out alike (#1211)
+### `replicate[]`: sibling sheet instances laid out alike
 
 ```jsonc
 "replicate": [{ "from": "CH1", "to": ["CH2", "CH3", "CH4"], "anchor": "J1",
@@ -1062,30 +969,25 @@ walked through from the back.
 A drilled part's body is on one face and its leads come out on the other, so
 every per-face instrument has to decide what the far face costs. They do not all
 answer the same way, and that is deliberate — they are not all asking the same
-question. Written down here because until
-[#878](https://github.com/drandyhaas/KiCadRoutingTools/issues/878) the only
-place any of it was recorded was a code comment, and that comment was wrong
-about one of them.
+question.
 
 | instrument | its question | near face | far face |
 |---|---|---|---|
 | `legality.rect_on` | may these two parts overlap? | courtyard | **drilled-pad rect** |
-| `options.grow_board`, undeclared | does the area fit on the busier face? | courtyard | **drilled-pad rect** (#878) |
+| `options.grow_board`, undeclared | does the area fit on the busier face? | courtyard | **drilled-pad rect** |
 | `options.grow_board`, declared `F`/`B` | does every part fit on the one populated face? | courtyard | **nothing** — see below |
 | `floorplan.rule_assembly_side` | how many reflow passes? | body face only | **nothing** |
 
 `grow_board` charges the far face **only when no face is declared**. Under a
 declared `F`/`B` the number is `sum` over the populated dict — each part exactly
 once, on the one face the fab builds — and a part's leads come out on the face
-nobody populates, where they compete with nothing. Charging them there would be
-the same area twice; measured, it would double-charge 10 of the 15 one-face
-boards. The `NOT MODELLED` line on such a run says so explicitly.
+nobody populates, where they compete with nothing. Charging them there would
+count the same area twice. The `NOT MODELLED` line on such a run says so explicitly.
 
 `rule_assembly_side` charges nothing because a through-hole part on the front
 demands wave or hand soldering, not a second reflow pass.
 
-**`floorplan.rule_keepout` is not a fourth model**, though #878's own table listed
-it as one. It uses `part.sides` only to decide *which* keep-outs bind, then hands
+**`floorplan.rule_keepout` is not a fourth model.** It uses `part.sides` only to decide *which* keep-outs bind, then hands
 `keepout_hit` both rects and takes a `max` over them, consulting no face at all.
 
 `splitflap_driver` is the board where the answers are visibly different: 65
@@ -1095,14 +997,11 @@ two-sided, and `rule_assembly_side` calls it `F`.
 
 ### A zone a keep-out leaves no room in is refused
 
-[#702](https://github.com/drandyhaas/KiCadRoutingTools/issues/702) refuses an
-intent whose keep-out covers a declared zone **entirely**. The question
-underneath is *does the zone minus the binding keep-outs still hold this part at
-some rotation*, and the two coincide only at total coverage. Measured before
-[#799](https://github.com/drandyhaas/KiCadRoutingTools/issues/799): zone
-`[10,10,20,20]` at `tolerance_mm: 0` against a keep-out `[10,10,19.9,20]` — 99%
-of it — raised nothing while the member had **zero** satisfying poses, and two
-keep-outs covering half each were missed the same way.
+An intent is refused where its keep-outs leave a member of a zoned block no
+room: the question is *does the zone minus the binding keep-outs still hold
+this part at some rotation*. A zone `[10,10,20,20]` at `tolerance_mm: 0`
+under a keep-out `[10,10,19.9,20]` is refused, and so are two keep-outs that
+cover half of it each.
 
 It has to be refused where it is authored because no placement can satisfy
 it: in `place_simple`'s anneal such a member pays the keep-out term inside its
@@ -1110,7 +1009,7 @@ zone and the containment term outside it, and no pose clears both.
 
 Reported **per member**, since the answer differs per member: a 2×2 part and an
 8×8 part in the same zone under the same keep-out disagree. Total coverage is
-still reported once per block, with its original message.
+reported once per block.
 
 What the check does **not** claim: it models the zone and the intent's own
 keep-outs, and deliberately not the board outline, clearance or neighbours.
@@ -1121,7 +1020,7 @@ consequences are disclosed rather than hidden:
   free area (`keepout_hit` returns a marker for a disc and says so), so a
   refusal resting on one would be unsound. When the rects alone still refuse,
   the refusal stands; only when dropping the discs would have found a pose is
-  the answer undecided. Total disc coverage is still caught exactly, as before.
+  the answer undecided. Total disc coverage is caught exactly.
 - **a part with no courtyard is modelled by its pad bbox**, which is smaller, so
   the check under-reports rather than over-reports on such a part.
 
@@ -1141,12 +1040,10 @@ docstring calls itself *"a lower bound on a notched one"*. A part sitting
 entirely inside a milled slot scores `oob_count=1, oob_amount>0, oob_area=0.0`.
 Refused loudly rather than ignored, so the reason reaches whoever wrote it.
 
-## The plan, checked before any pose (`--plan-only`, #959)
+## The plan, checked before any pose (`--plan-only`)
 
-Run 29 found its zone plan's errors at lap 5: the only check that could see
-them ran inside `grade`, after a placement had been written.
 `floorplan.plan_check` checks the plan against itself and the board without a
-pose for any movable part:
+pose for any movable part, so a plan's errors show before anything is placed:
 
 ```bash
 python3 py_tools/check_floorplan.py board.kicad_pcb --intent plan.json --plan-only
@@ -1165,11 +1062,11 @@ plan. The WARN is the same quantity with a margin.
 | `intent_zone_in_keepout` | as `grade` raises it | |
 | `block_glob_literal` | a real reference used as a glob over-matches a block into a second, disjoint zone | a stray over-match with no such conflict is a WARN; one the same list also names (an intended over-match) is no finding |
 | `plan_fixed_outside_zone` | a FILE-locked member is already outside its zone; or (WARN) a `fixed_poses[]` entry's declared pose is outside its own block's zone | |
-| `plan_zone_overfull` / `_crowded` | per face, the members' areas exceed the zone by more than the declared `legality_budget.overlap_area`. Fitting area A into zone Z forces at least A - Z of courtyard overlap; the ERROR sums the members' graded OUTLINES and far-side clusters (the geometry the budget is measured on, #1162), the WARN their rects. `measured.zones[]` carries both (`members_outline_area_mm2`, `members_area_mm2`) | the WARN applies without a budget, on a project that waives courtyard overlap, or past a crowding margin |
+| `plan_zone_overfull` / `_crowded` | per face, the members' areas exceed the zone by more than the declared `legality_budget.overlap_area`. Fitting area A into zone Z forces at least A - Z of courtyard overlap; the ERROR sums the members' graded OUTLINES and far-side clusters (the geometry the budget is measured on), the WARN their rects. `measured.zones[]` carries both (`members_outline_area_mm2`, `members_area_mm2`) | the WARN applies without a budget, on a project that waives courtyard overlap, or past a crowding margin |
 | `plan_edge_overfull` / `_crowded` | one edge-claimed part's pad extent, at its best 90-degree turn, is longer than its edge | summed extents are a WARN, because flanges overhang corners |
 | `plan_board_overfull` / `_crowded` | the parts' graded outlines, per face (the face the intent declares for a part, below), force more overlap against `options.grow_board`'s usable area (clearance 0) than the budget allows, with `oob_count` declared 0; `measured.outline_area_per_face_mm2`, and the rect reading as `forced_overlap_rect_mm2` | |
 | `plan_fixed_overlap_budget` / `plan_fixed_overlap` | the FILE-locked pairs alone exceed the overlap budget | each such pair is a WARN |
-| `plan_fixed_pose_conflict` | two `fixed_poses[]` entries whose declared poses conflict under the fixed-pose courtyard, pad and hole check ("Fixed poses" above; `seeder.fixed_pose_pair_conflicts`; a #1060 courtyard waiver is honoured; an entry whose declared side differs from the board is not judged) | |
+| `plan_fixed_pose_conflict` | two `fixed_poses[]` entries whose declared poses conflict under the fixed-pose courtyard, pad and hole check ("Fixed poses" above; `seeder.fixed_pose_pair_conflicts`; an `accept_courtyard_overlap` waiver is honoured; an entry whose declared side differs from the board is not judged) | |
 
 **The face a part is priced on** by the zone and board rows is the one the
 intent DECLARES for it -- `blocks[].side`, `edge_connectors[].side`,
@@ -1177,7 +1074,7 @@ intent DECLARES for it -- `blocks[].side`, `edge_connectors[].side`,
 else the face it is on in the board. A pile has every part on F.Cu; the plan
 is priced as it will be placed once those faces are applied, which is what
 `place_simple` does first: it mirrors every part whose declared face differs
-(these three, and the groups file's `side`), at its pose (#714's flip). It
+(these three, and the groups file's `side`), at its pose (the writer's flip). It
 refuses, writing nothing, a ref two declarations put on different faces and a
 KiCad-locked part the intent puts on the other face (exit 2).
 
@@ -1195,24 +1092,23 @@ Nothing bounds its overlap, so no area bound is sound.
   part further outside its block's zone than it was, when that
   `zone_containment` finding is an ERROR.
 
-## `mechanical.json`: recorded facts, reconciled and anchored (#959)
+## `mechanical.json`: recorded facts, reconciled and anchored
 
 A `mechanical.json` beside the board records the parts whose pose the
-enclosure fixes, with the board's floors. Before #959 nothing read it. It
-said USB1 was west, the brief said east, and `contradictions` was `[]`.
+enclosure fixes, with the board's floors.
 
 `check_floorplan` and `board_brief` (and so `/plan-pcb-placement`, through
-`--emit-intent`) now discover it beside the board. `--mechanical PATH` names another file, and `--no-mechanical` is the
-OFF arm. Two shapes are read, the staged `refs` map and the declaration
-form `{interfaces, fixed, project}`. Anything else exits 2.
+`--emit-intent`) discover it beside the board. `--mechanical PATH` names
+another file, and `--no-mechanical` is the OFF arm. The file is read in the
+declaration form `{interfaces, fixed, project}`; anything else exits 2.
 
 **Every value keeps its authority**, and the authority says who stands behind
 it, never what the value calls itself:
 
 | authority | the value |
 |---|---|
-| `declared` | matches the compiled design brief. Under an unaided regime, where the run writes the brief, it counts as declared only when the manifest recorded the brief's sha at staging; otherwise the brief is the run's own reading, a `hypothesis` |
-| `recorded_fact` | existed before the run: the outline, an existing `.kicad_pro`, the staged locks under a regime manifest, and a `mechanical.json`. Only a manifest that recorded a sha for this very file and finds different bytes makes it a `hypothesis`; with no manifest, a manifest naming another file, or one that recorded no sha, it stays `recorded_fact` and its provenance is reported `unverified` |
+| `declared` | matches the compiled design brief |
+| `recorded_fact` | existed before the run: the outline, an existing `.kicad_pro`, and a `mechanical.json` |
 | `hypothesis` | anything the run wrote: zone plans, `--intent` files, locks added during the run |
 | `inferred` | re-derived from the board |
 | `assumption` | a staging default (a floor fixed at staging) or a code default dimension |
@@ -1243,7 +1139,7 @@ grader's own rect at the declared pose, rounded outward, and is graded by
 - The anchor itself does not check a lock. Each such ref that carries pads
   must be FILE-locked at its pose, or named -- unlocked, at that
   pose -- by the plan's `fixed_poses[]`, which `place_simple` seats there and
-  holds (#1054). `--emit-intent` compiles such an entry for every anchored
+  holds. `--emit-intent` compiles such an entry for every anchored
   ref no edge connector, `must_lock` pattern or brief pose already claims
   (`context.mechanical.fixed_poses` / `fixed_skipped`). A file-locked part is
   placed already, and its anchor is only graded.
@@ -1252,9 +1148,6 @@ grader's own rect at the declared pose, rounded outward, and is graded by
   drift of a pad-less ref, which has no anchor -- and a plan's `severity` map
   cannot demote that ERROR, only promote the WARN it gives a move the anchor
   already reports.
-- Under an unaided regime, the recorded file cannot be dropped: `--no-mechanical`,
-  another path, a rewrite or a deletion each exit 2. A run directory that was
-  moved still finds its sha-matching file beside the manifest.
 
 ## A board whose outline did not parse is refused, not graded
 
@@ -1270,19 +1163,12 @@ parser's own simple-rectangle short-circuit to tell the three "no rings" cases
 apart, because a plain axis-aligned rectangular board **is** its bounding box
 exactly — refusing that would refuse most of the corpus.
 
-The case that motivated it is [#550](https://github.com/drandyhaas/KiCadRoutingTools/issues/550):
-`extract_board_bounds` reads neither board-level `gr_circle` nor `gr_curve`, so a
-round board reports `board_bounds: None` while its 64-point ring parses fine.
-
 ## `--health`: what tells you the floorplan is wrong
 
 Separate from the rules, and advisory. An intent violation says *"this is not the
 floorplan you declared"*; a health signal says *"this floorplan will fight the
-router whatever you declared"*. That is
-[discussion #407](https://github.com/drandyhaas/KiCadRoutingTools/discussions/407)'s
-question — *knowing when to stop routing and go move something* — whose two scars
-were a magnetics block 80 mm from both its own endpoints, and ~22 nets no knob
-could fix because the answer was re-floorplanning a quadrant.
+router whatever you declared"*: it is for *knowing when to stop routing and go
+move something*.
 
 ```jsonc
 "health": {
@@ -1294,21 +1180,19 @@ could fix because the answer was re-floorplanning a quadrant.
 
 | signal | computable | what it means |
 |---|---|---|
-| **block displacement** | from geometry alone | the block's own pad centroid vs the centroid of everything it connects to. This is #459's "connectivity-centroid displacement" |
+| **block displacement** | from geometry alone | the block's own pad centroid vs the centroid of everything it connects to |
 | **bus crossings** | pre-route, but the corridor is a **model** | a straight rectangle between the bus's two pad clusters; its long sides are fed to the crossing kernel `quench._count_crossings_np`. A screening signal, not a verdict — real routes bend |
 | **convergence** | only with declared `classes` | which critical classes crowd one corridor. Placement has no net-class notion and "critical" is design intent, not a fact in the file, so **it is skipped rather than guessed** |
 | **net affinity** | from geometry alone | the per-PART inverse of block displacement: which single part carries a net its own block sits away from. See below |
 | **escape lanes** | from geometry alone | per fine-pitch part, per face: lanes that fit against nets that must leave. Needs no declaration. See below |
-| **blocked-cell share** | **not pre-route at all** | needs #409's blocker JSON, which only exists after a routing attempt. Reported as skipped, with that reason |
+| **blocked-cell share** | **not pre-route at all** | needs the router's blocker JSON, which only exists after a routing attempt. Reported as skipped, with that reason |
 
 ### `net_affinity`: the member a block metric averages away
 
 Block displacement is an average over a block's members, so it is quiet when
-*one* member is the problem. Measured on a real board: a series resistor zoned
-into a far-edge block carried **85.7% of a critical bus net's routed length**,
-forcing ten drop-vias and eight reference-plane voids. The block it sat in was
-flagged as displaced; the resistor was not, and four runs went by before a
-human found it.
+*one* member is the problem: a series resistor zoned into a far-edge block can
+carry most of a bus net's routed length while its block's average looks
+merely displaced. This signal names the part.
 
 Reported per (part, net), ranked, advisory. Two numbers reach `JSON_SUMMARY`:
 `health_net_affinity_offenders` (rows that dominate a net *and* pierce a
@@ -1363,9 +1247,7 @@ For each fine-pitch part, per face: lanes **supplied** (the face's usable span
 divided by one track plus one clearance, at the board's own floor) against lanes
 **demanded** (nets that must leave through it). A face in deficit is a *binding
 constraint* — net ordering only chooses which nets strand there, never how many.
-Runs have been spent on ordering experiments against a face this settles in
-seconds. "Fine-pitch" is the absolute pitch test **or** the board's own rules
-(#1196): no track of the board's width passes between two adjacent pads at its
+"Fine-pitch" is the absolute pitch test **or** the board's own rules: no track of the board's width passes between two adjacent pads at its
 clearance, or two vias cannot sit side by side at the pad pitch — so a SOIC on
 a board asking for track 0.3 / clearance 0.3 is measured, where the absolute
 0.6 / 0.8 mm pitches never looked at it.
@@ -1385,20 +1267,18 @@ Three things keep it honest:
   difference between a signal and an action. A neighbour is charged only if it
   shares a board face with the part (a drilled part occupies both) and is not a
   container — a module outline covering half the board, which the part sits
-  inside rather than beside (#835). Before that, ulx3s reported six faces in
-  deficit and every one of them was charged to copper on the other side. What
-  a charged neighbour CONTRIBUTES is its pad copper (#841) — not its
-  courtyard, which is an assembly keep-out a track may legally run under, and
+  inside rather than beside. What a charged neighbour CONTRIBUTES is its pad
+  copper — not its courtyard, which is an assembly keep-out a track may legally run under, and
   not the bbox of its pad centres, which gives a two-terminal passive a
   zero-width body.
 - **Interior pads count toward no face** and are reported separately. A boxed-in
   pad does not escape sideways at any pitch; it needs a via. Rolling it into a
   face's demand would blame the face for a fanout problem.
 
-#### The layer term (#700)
+#### The layer term
 
-`supply` and `deficit` are **own-layer**, and stay that way. Beside them the
-ledger now reports what the other signal layers could take:
+`supply` and `deficit` are **own-layer**. Beside them the ledger reports what
+the other signal layers could take:
 
     supply_other_max = min(via_slots, (signal_layers - 1) x lanes along the face)
     deficit_floor    = max(0, demand - supply - supply_other_max)
@@ -1413,16 +1293,11 @@ ledger now reports what the other signal layers could take:
   at once — on every in-repo board the answer at 2 signal layers equals the
   answer at 6. Reported as `via_slots`, that is a finding with an action (via
   geometry, underpad fanout, freeing span); hidden inside the `min()` it would
-  be a number that mysteriously ignores the stackup, which is the complaint
-  #700 was filed about one level up.
+  be a number that mysteriously ignores the stackup.
 - **`via_slots` is measured on the face's full span, unobstructed**, while
-  `supply` on the same row is not. Deliberate, and the reason has changed
-  twice: it was that `blocked_mm` was side-blind and container-blind (#835
-  fixed both), then that it modelled a neighbour by the bbox of its pad
-  CENTRES (#841 fixed that). What remains is the asymmetry itself — `supply`
-  is a floor and `via_slots` a ceiling, and feeding a `blocked_mm` that is too
-  large into an upper bound would silently turn it into a lower one, which is
-  outside this term's contract in a way over-stating is not.
+  `supply` on the same row is not. Deliberate: `supply` is a floor and
+  `via_slots` a ceiling, and feeding a `blocked_mm` that is too large into an
+  upper bound would silently turn it into a lower one.
 - **`signal_layers` is observed or declared, never guessed.** A copper layer
   counts as a plane when a named-net, board-level zone covers most of the board.
   Placement runs *before* the pours exist, so on a board being placed the answer
@@ -1443,13 +1318,6 @@ A worked pairing wants two signals computed from different quantities naming
 the same part: an escape face in deficit whose `blockers` names a neighbour,
 and `net_affinity` reporting that same neighbour carrying most of the nets on
 that face. That is the case worth acting on.
-
-The example this section used to give was ulx3s `U9 west: supply 6 < demand 14`,
-`15.35mm of that face is taken by SD1`. **It was an artifact and is kept here
-as one:** U9 is on B.Cu and SD1 on F.Cu, so each was charged the other's whole
-body across the board, and #835 removed the charge entirely: the two now
-charge each other nowhere. A blocker list is only an action list if the names
-are real.
 
 ## What `--emit-intent` does and does not claim
 
@@ -1476,18 +1344,15 @@ An edge part whose STRONG mating face points at another edge than the one it
 sits nearest -- the opposite edge (seated reversed) or one at right angles
 (opening along its edge) -- is not given that edge by the emitter: the entry
 keeps its ref and band, drops `edge`, is flagged `suspect`, and its `note`
-says which of the two it measured (#1155).
+says which of the two it measured.
 Declaring it would bless the very pose the facing conjunct fails. On the 22
 tracked boards and the fa10 designer boards it never fires. Declaring the
 edge such a part belongs on puts it back under the facing conjunct.
 
 Emitted zones are rounded to 3 decimals and clamped inside the envelope,
-which is written at 4 (#1174) -- a zone rounded past its envelope failed
-`validate_intent` at tolerance 0 on the board it came from (CM5_MINIMA_3:
-its x-min 75.0504 rounded to 75.05, 0.4 um outside the 4-decimal envelope).
-An overhanging edge member is no longer clamped OUT of its block's
-zone either: the zone side on its edge is open (above), so rp2350's J1 no
-longer reads 1.93 mm outside a zone the emitter drew around it.
+which is written at 4, so a zone never rounds past its own envelope. An
+overhanging edge member is not clamped out of its block's zone: the zone side
+on its edge is open (above).
 
 With `--declare-classes`, connector-family parts that claim no edge (headers,
 JST, terminal blocks; `part_class` calls them `connector_affinity`) are also
@@ -1529,11 +1394,8 @@ reason names the withholding rather than saying only "the intent declares no
 legality_budget". Declaring the key by hand overrides the note: a declared
 budget is graded.
 
-**And it is not a pass in the machine channel either, since #713.** The human
-line used to read `PASS: N rule(s) ran, no violations` twenty-six lines above
-`NOT DERIVABLE -- not graded, not passed`, with `pass: true` and exit 0 --
-measured on 5 of the 22 tracked boards in the default emit-then-grade round
-trip. A grade that left a declared channel unmeasured now reports
+**And it is not a pass in the machine channel either.** A grade that left a
+declared channel unmeasured reports
 `complete: false`, `not_graded: {channel: count}`, `pass: false`, prints
 `INCOMPLETE` instead of `PASS`, and exits 4. `--exit-zero` suppresses the code
 without changing the verdict, exactly as it does for violations.
@@ -1554,18 +1416,17 @@ reason exactly as `overlap_area` reaches `legality`'s. A key that is in
 derivable, blamed on no rule — rather than being dropped, so a typo'd
 withholding note is visible instead of silent.
 
-## `--declare-decaps`: a decap limit read off the board (#704)
+## `--declare-decaps`: a decap limit read off the board
 
-`emit_intent` wrote `decaps: {}` as a constant, so `rule_decap_distance` could
-never fire on an auto-emitted intent. With `--declare-decaps` it derives
-`max_distance_mm` from the board's own tethers.
+`--declare-decaps` derives `decaps.max_distance_mm` from the board's own
+tethers, which arms `decap_distance` on an emitted intent.
 
-**`--decaps-from <placed board>` (#1099)** derives the same number from a
+**`--decaps-from <placed board>`** derives the same number from a
 PLACED REFERENCE of the same design instead -- a human layout, an earlier
 placement -- which is the only way to arm the rule on a pile, where there is
 nothing to read. Same derivation and withholding; the basis is
 `reference:<file>`, in the census and in `context.basis`. The intent NAMES the
-reference and never points at it (#1175): `context.decap_census.reference_board`
+reference and never points at it: `context.decap_census.reference_board`
 is the file's basename, `reference_board_sha256` identifies its bytes, and a
 withholding reason names the basename too. The reference is usually a human
 layout, and a run that grades against an intent carrying its path is one Read
@@ -1573,39 +1434,34 @@ away from the placement it must not match. It withholds when
 the two boards share, under the same reference and footprint, under 90% of
 EITHER board's pad-bearing parts (another design: a small board of generic
 passives shares most of ITS parts with almost any large one), and when the
-reference is itself a pile -- `PlacementState.pile`, the one pile test
-(#1109). A placed reference with a few parts sharing an origin is NOT a pile
-(#1178): rp2350_fpga_eensy_prePlane's J2, a Tag-Connect on B.Cu, sits over
+reference is itself a pile -- `PlacementState.pile`, the one pile test. A
+placed reference with a few parts sharing an origin is NOT a pile: rp2350_fpga_eensy_prePlane's J2, a Tag-Connect on B.Cu, sits over
 U3 on F.Cu by design, and a CM5 module footprint's two halves share one
 origin. It is read as placed, and the shared ones are named in
 `context.decap_census.reference_stacked_refs`. The limit is still read off
 every part, because the reference must grade clean against its own number.
-StickHub's human board gives 2.18 mm from 38 tethers; run 36, with no limit
-armed, left the hub's decaps 2.1-9.8 mm from their pins. Since #1102 it also
+StickHub's human board, for example, gives 2.18 mm from 38 tethers. It also
 derives the PIN limit, `max_pin_distance_mm` (see "The emitter derives no pin
-limit" below for why only from a reference). Since #1142 it also lists the caps
+limit" below for why only from a reference), and lists the caps
 the reference keeps within the search radius (`within_radius_refs`, with the
 radius in `within_radius_mm`): each of them is held to that radius, PER CAP.
 Leaving a listed cap beyond it is a `decap_ungraded` ERROR, while a cap the
 reference itself keeps beyond (likelier a bulk or filter cap) stays a WARN --
-and so does a cap the reference LACKS or carries under another footprint,
-which #1102's board-wide promotion would have made an ERROR. "Held" means only
+and so does a cap the reference lacks or carries under another footprint. "Held" means only
 that the reference put the cap within 5 mm of its chip: against a machine
 placement used as the reference, that can include a bulk cap.
 A board graded on its own `--decaps-from` intent has 0 such
-errors -- true by construction (a held cap is in the same `decap_populations`
-near set the grade reads), and measured on every corpus board and demo with a
-tether limit.
+errors -- true by construction: a held cap is in the same `decap_populations`
+near set the grade reads.
 
-**Three states since #959**, selected by `--no-declare-decaps`,
+**Three states**, selected by `--no-declare-decaps`,
 `--declare-decaps` (strict) and `--auto-declare-decaps`. The default,
 `check_floorplan.DECLARE_DECAPS_DEFAULT`, is `off`.
 
 - **`auto`** derives only off a PLACED board. It keys on
-  `PlacementState.pile` (#1178). Run 29's pile read
-  `partially_unplaced` with a duplicate fraction of 0.833, and strict wrote a
-  limit of 0.0 there; `pile`'s heap arm catches it, and does not discard a
-  placed board over one pair of parts that share an origin by design. When auto withholds, it records why in
+  `PlacementState.pile`, so a heap of parts is never read as a placement,
+  while a placed board with a pair of parts that share an origin by design
+  still counts as placed. When auto withholds, it records why in
   `context.decap_census.auto_withheld`, never in `budget_withheld`, so an
   auto emit moves no exit code.
 - **The number is labelled** `observed_baseline` in `context.basis`, alongside
@@ -1650,19 +1506,14 @@ rather than found on the board.
 
 `_ceil4`, not `round`, and derived from the **unrounded** max: `round(v, 4)`
 can land below the measured value, so the document would fail against the very
-board it was written from. That bites on 3 of the 9 tracked boards
-(splitflap_driver 3.4617228369700497 → 3.4617, ulx3s 4.714904558949195 →
-4.7149, glasgow_revC 4.786912496589008 → 4.7869). `context.decap_census`
+board it was written from (splitflap_driver's 3.4617228 rounds to 3.4617).
+`context.decap_census`
 therefore carries `max_mm` unrounded and `max_mm_display` for the reader.
 
-### When it is withheld, and why the issue's own guard could not be used
+### When it is withheld
 
-The obvious guard — withhold when the emitting board already violates the
-number — is **unreachable**: `ceil(max(observed))` is ≥ every observed value by
-construction, so it would be a branch that never executes, which is worse than
-absent because it reads like a guard.
-
-The reachable analogue is **censoring**. `groups.decap_tethers` drops any cap
+A limit read off the board can never be violated by that board, so that is not
+the test. The test is **censoring**. `groups.decap_tethers` drops any cap
 further than `DECAP_RADIUS_MM` (5 mm) from a chip carrying its rail, so the
 observed distribution is censored and a limit read off the survivors can bless
 a board whose caps have left decoupling range. Measured over the tracked
@@ -1684,11 +1535,6 @@ are **no** tethers, **fewer than `DECAP_MIN_SAMPLE` (3)** — a max over one
 sample is a coordinate, not a limit — or **more than `DECAP_MAX_CENSORED`
 (0.25)** of the rail-sharing caps lie beyond the radius.
 
-A rejected alternative, recorded so it is not re-proposed: withhold when
-`max > K × p75` (the max is a tail outlier over its own body). Built and
-measured, and it does **not** separate — healthy splitflap_driver scores 2.46
-and mid-repair `tigard_placed` 2.22.
-
 ### What the census discloses that the rule cannot see
 
 `context.decap_census` is written on **every** emission, with or without the
@@ -1697,48 +1543,22 @@ flag, so a reader of the document can tell "no cap is far from its IC" from
 counts, the max and median, and — the point of it — `beyond_radius`,
 `beyond_radius_refs` and `worst_beyond_mm`.
 
-That last group was a **known, unfixed hole** until
-[#794](https://github.com/drandyhaas/KiCadRoutingTools/issues/794): the emitter
-and the rule both call `decap_tethers` at the same 5 mm truncation, so
-`splitflap_driver` emitted a limit of 3.4618 while a rail-sharing cap sat
-**19.30 mm** from its IC, invisible to both. `rules_run` went up; that cap was
-still ungraded.
-
-`decap_ungraded` closes it, and **not by widening the radius** — that path is
-closed by measurement. Widen the rule alone and the emitter's `ceil(max)` no
-longer covers the newly visible caps, so the round trip stops grading clean on
-its own board; widen both and splitflap's limit goes 3.4618 → 19.30 and ulx3s's
-4.7149 → 12.24, which is a limit that says nothing. So the caps beyond the
-horizon get their own finding, at **warn**, whose claim is COVERAGE rather than
+The emitter and the rule both measure tethers at the same 5 mm truncation, so
+a cap farther than that from its IC is invisible to `decap_distance`.
+`decap_ungraded` reports those caps at **warn**, as a COVERAGE claim rather than
 compliance: *your limit was derived from the caps inside the radius, so it says
-nothing about this one.* Ten tracked boards emit 32 such findings; none becomes
-an error, and `board_score`'s `blocking` is unmoved.
+nothing about this one.* Widening the radius would not help: the emitter's
+`ceil(max)` would no longer cover the newly visible caps, so the round trip
+would stop grading clean on its own board, and widening both would turn
+splitflap's limit from 3.4618 into 19.30 mm, a limit that says nothing.
 
-It names the IC with no hedge. The comment that used to stand in
-`decap_census` claimed the unbounded pass was "a second measurement rather
-than a superset" because the election could pick a different chip without the
-prune — that was never true of the code (the radius only ever applied *after*
-the argmin), and since #794 the radius does not reach the election at all.
-Measured: 0 of 357 tethers re-elect.
+The radius does not reach the election: the IC a cap is graded against is the
+same with or without it.
 
 A board whose limit is WITHHELD cannot arm either decap rule, so the horizon
 reaches it through the abstention channel instead: `_WITHHELD_RULE` maps the
 key to **both** rules, and the withholding reason names the beyond count and
-the worst distance. That reason now carries the horizon on the
-`DECAP_MIN_SAMPLE` arm too, not only the zero-tether one — without it
-`interf_u_unrouted`, withheld for having one sample while carrying four caps
-beyond the radius and a 19.82 mm worst, abstained with a note that said nothing
-about them.
-
-**`worst_beyond_mm` used to understate.** It read the last element of a list
-sorted by cap REFERENCE, so it reported the alphabetically last beyond-cap
-rather than the farthest — on 7 of the 14 boards that have any: kit-dev 10.80
-where the truth is 22.89, interf_u 8.39 where it is 19.82, flat_hierarchy 6.44
-where it is 18.42. The number appears in `--declare-decaps` stdout, in the
-withholding reason and in the censoring table below, so all three understated
-the thing the census exists to disclose. It survived because splitflap_driver —
-the board every other census arm is written against — has exactly ONE
-beyond-cap, where last and farthest are the same cap.
+the worst distance, on every withholding arm.
 
 ### What reads the declared limit
 
@@ -1748,8 +1568,8 @@ rail's caps matched one to a pin site, whatever the limit. `place_fanout_clearan
 fanout tab, which shares its engine) does: at error severity,
 `max_distance_mm` and `max_pin_distance_mm` are held on every cap it moves --
 no move may take a claim past its limit and further than the board as it
-stands, unless no clear pose keeps it, and then the claim it broke is named
-(#1067). The key is opt-in, default off, and on its own flag rather than
+stands, unless no clear pose keeps it, and then the claim it broke is named.
+The key is opt-in, default off, and on its own flag rather than
 folded into `--declare-classes`.
 
 The census (`context.decap_census`) splits the caps it scopes. Measured:
@@ -1771,7 +1591,7 @@ The gap is two other things, and the census reports them separately
 can check that the three arms are the whole scope):
 
 * **beyond the 5 mm radius** — a real grading hole, and `decap_ungraded`'s
-  business since #794;
+  business;
 * **no chip carries the cap's rail at all.** Ten of ulx3s's seventeen: `C3 C4
   C22` on `/power/P1V1`, `C7 C8 C24` on `/power/P3V3`, `C11 C12 C23` on
   `/power/P2V5`, `C14` on `/power/SHUT`. Those rails are owned only by two-pad
@@ -1779,19 +1599,16 @@ can check that the three arms are the whole scope):
   bulk and filter caps upstream of an LC network, not decouplers. **The grader
   is right to ignore all ten**; there is no IC for them to be far from.
 
-## Grading the pin, not the package (#705)
+## Grading the pin, not the package
 
 `decap_distance` measures the cap's **centroid** to the IC's pad bounding box
 inflated 0.5 mm, clamped to 0 inside. The requirement it stands in for is about
 the **pin**: a 100 nF sitting 1.7 mm from a QFN and 9 mm from the IOVDD pin it
-decouples satisfies that rule and fails the spec. A downstream project using
-this toolchain hit exactly that and wrote its own checker.
+decouples satisfies that rule and fails the spec.
 
-`decaps.max_pin_distance_mm` grades the pin. It is **opt-in with no default** —
-at 3 mm the tracked corpus produces **127** findings — 44 declared, 77 inferred,
-6 uncovered — with the worst gaps at 37.47 mm (`interf_u_unrouted_placed`),
-34.08 mm (`interf_u_unrouted`) and 30.77 mm (`flat_hierarchy`), so a shipped
-default would flood every board on day one.
+`decaps.max_pin_distance_mm` grades the pin. It is **opt-in with no default**:
+at 3 mm the tracked corpus produces 127 findings, the worst 37 mm, so any
+shipped default would flood every board.
 
 **The invariant.** Compute a SUPERSET of the caps that could serve a pin, and
 violate only when the MINIMUM over that superset exceeds the limit. Every cap
@@ -1813,7 +1630,7 @@ is.
 
 Three channels, tried **per chip**, and keyed on whether the channel YIELDS
 pins rather than on whether its field is populated -- plus channel 0 for a
-supply owner (#1249):
+supply owner:
 
 | # | channel | test |
 |---|---|---|
@@ -1822,29 +1639,26 @@ supply owner (#1249):
 | 2 | `pinfunction` | exact or prefix match against `decaps.pin_functions`, else the built-in table |
 | 3 | rail net | the net NAME looks like a rail **and** already carries a decoupling cap |
 
-**Who owns caps (#1249).** The parts asked about are the cap owners
+**Who owns caps.** The parts asked about are the cap owners
 `groups.chip_refs` names -- the same set the tether election and
 `QuenchState`'s tether terms read. An owner is an IC by shape (four
 or more copper pads, not a single row), or a **supply owner**: a part with at
 least three copper pads and no `part_class` that has a pad typed `power_out`,
 or that `board_context`'s role table calls a `regulator`
 (`placement/roles.py`), or that has exactly three copper pads on three nets --
-one ground, and two that each carry a decoupling cap. Before it, a 3-pad
-SOT-89 or TO-92 regulator was never an owner: esp_prog's C3 (the ME6210's VOUT
-cap, 1.12 mm from that pin) was graded against U1 at 2.125 mm, its VIN cap C1
-against USB1 at 17.24 mm, and complex_hierarchy's C102 / C104 against parts
-35 and 33 mm away. Now they elect U2 (1.53 / 5.17 mm) and U101 (12.36 / 11.49
-mm). No one signal covers both boards -- U2 carries no pintype, U101's
+one ground, and two that each carry a decoupling cap. So a 3-pad SOT-89 or
+TO-92 regulator owns its caps: esp_prog's C3 and C1 (the ME6210's VOUT and VIN
+caps) elect U2, and complex_hierarchy's C102 / C104 elect U101. No one signal
+covers both boards -- U2 carries no pintype, U101's
 footprint name says only `TO-92` -- hence three. The three-pad shape also
 admits kit-dev LV101, a DS1818 reset supervisor whose VCC and RST nets are
-both capped; it changes none of that board's 53 elections. Channel 0 exists
+both capped. Channel 0 exists
 because a regulator's VIN and VOUT are supply pins by ROLE: U2 has no pintype
 and its VIN net is `Net-(C1-Pad1)`, which channel 3 never reads as a rail, and
 U101's VI is typed `input`. It yields only for an owner a `power_out` pad or
 the role table calls a regulator (`groups.regulator_owners`) -- the shape alone
 says a part owns caps, not which pins are supply pins, so LV101 keeps the
-ladder (its +3.3V pin, not RST) -- every IC's ladder is unchanged, and its
-findings are `decap_pin_distance` (error), like channels 1-2.
+ladder (its +3.3V pin, not RST) -- and its findings are `decap_pin_distance` (error), like channels 1-2.
 
 **Per chip**, because on the 85 corpus chips where channels 1 and 2 both yield
 they disagree about the pin SET on 31 (36%) — the order materially decides the
@@ -1891,14 +1705,12 @@ and zero capacitors, which per-pin would be 98 findings saying one thing.
 
 ### When the board cannot answer, the rule abstains
 
-`_wants` reads only the intent; nothing read the board. A rule the intent asked
-for and the board cannot answer used to land in `rules_run` and print "N rule(s)
-ran, no violations" — which makes `--require-rules` *easier* to satisfy, the
-vacuous pass that flag exists to catch, arriving through the mechanism that
-implements it. A per-rule `_ARM` table now runs after `_wants` and feeds the same
-`rules_skipped` dict, with a reason that names the pad census:
-`orangecrab_ext_pll` has 28 candidate ICs and zero supply pins on any channel,
-and says so.
+A rule the intent asks for but the board cannot answer is not counted as run.
+A per-rule `_ARM` table, run after `_wants` (which reads only the intent),
+puts it in `rules_skipped` with a reason that names the pad census. Counting
+it as run would make `--require-rules` *easier* to satisfy -- the vacuous pass
+that flag exists to catch. `orangecrab_ext_pll`, for example, has 28 candidate
+ICs and zero supply pins on any channel, and says so.
 
 This is deliberately **not** the `budget_abstained` channel, which means "the
 emitter could not derive this key" — a property of the intent, computed with no
@@ -1910,9 +1722,8 @@ board. This is the opposite, and overloading one key with both would make
 Default **false**, and it must be: 43% of corpus decap tethers (152 of 357) put
 the cap on the opposite side from its IC — glasgow_revC 61 of 87, orangecrab 44
 of 74 — because a decap directly under its pin on the back side, connected by a
-via, is standard practice. On the very board #705 offers as its proof that the
-rule is safe, `glasgow_revC` U30 is on F.Cu with **all 15** of its tethered
-decaps on B.Cu.
+via, is standard practice. On `glasgow_revC`, U30 is on F.Cu with **all 15**
+of its tethered decaps on B.Cu.
 
 `same_side: true` is therefore not an electrical assertion but a **fab** one:
 the author is saying the back side is not available — single-sided assembly, a
@@ -1943,7 +1754,7 @@ authored, never inferred, and no emitter path can set it.
   structurally untestable here — disclosed rather than fixed with a tenth
   power/ground predicate.
 
-### The emitter derives no pin limit, and `min_reader` does not move
+### The emitter derives no pin limit from the board itself
 
 `ceil(max)` over pin gaps is censored by construction — an uncovered pin
 contributes no distance, so the max is taken over survivors, which is the exact
@@ -1951,28 +1762,14 @@ censoring failure `--declare-decaps` spends a table on — and a limit derived
 from a board and then graded against that board is vacuous. The distribution
 goes to `context.decap_census` instead, which has no key set to grow.
 
-**Except from a reference (#1102).** `--decaps-from <placed board>` derives
+**Except from a reference.** `--decaps-from <placed board>` derives
 `max_pin_distance_mm` from the REFERENCE, where neither objection holds: it is
 not the board being graded, and the derivation is withheld when more than 25%
 of the reference's supply pins have no cap on their net (the censoring case) or
-fewer than 3 are covered. #1102 also promoted `decap_ungraded` to error, but
-only board-wide and only when the reference kept EVERY rail cap inside the
-5 mm tether radius; since #1142 the promotion is per cap, through
-`decaps.within_radius_refs` (above), so a cap stranded beyond the radius is
-named even when the reference has bulk caps of its own out there. Run 37
-(StickHub) stranded C3, C7, C12 at 7.8-10.2 mm with no error; with the human
-board as reference it gets 10 pin errors and C3, C7, C12 and C21 by name, and
-the human board grades clean against its own limits (1.7716 mm pins,
-2.1828 mm tethers).
-
-#705's pin keys did not move `READER_VERSION` (it was 1 then):
-`_reject_unknown` already refuses an unknown `decaps` key loudly and
-automatically, and `min_reader` exists for what refusal *cannot* see -- a
-widened value set, a changed meaning, a changed default. The rule in
-`floorplan.py` has since been applied to every declarable field that changes a
-verdict, so the number an author copies into `min_reader` names a build that
-acts on the claim. #1142's `within_radius_refs` took it to 8 (see "Reader 8"
-above).
+fewer than 3 are covered. `decap_ungraded` is promoted to error per cap,
+through `decaps.within_radius_refs` (above), so a cap stranded beyond the
+radius is named even when the reference has bulk caps of its own out there.
+The reference grades clean against its own limits.
 
 ### `keepouts` stays empty, and says so
 
@@ -1983,14 +1780,13 @@ reader unable to tell *"none declared"* from *"not considered"*, so
 `context.keepouts_note` states which one it is. At grade time the same
 distinction is already carried by `rules_skipped` and by `--require-rules`.
 
-### A PCB-edge plug's mating region is a keep-out nobody has to declare (#1098)
+### A PCB-edge plug's mating region is a keep-out nobody has to declare
 
 One keep-out CAN be read off a board, because the footprint states it: the
 tongue of a plug made of board copper (a PCB-trace USB plug, a card edge),
-which has to enter a socket with nothing on either face. Run 36 put 8
-back-side parts on StickHub's USB-A tongue and every instrument passed it:
-the plug is SMD fingers with a courtyard on F.CrtYd only, and courtyards are
-per side.
+which has to enter a socket with nothing on either face. Such a plug is SMD
+fingers with a courtyard on F.CrtYd only, and courtyards are per side, so no
+courtyard check sees a part on the back of the tongue.
 
 `floorplan.derived_mating_keepouts` derives one keep-out per plug, applied at
 the consumers rather than written into the intent:
@@ -2006,7 +1802,7 @@ the consumers rather than written into the intent:
   it, and by `place_pose`, which refuses to move it unless it is named in
   `unlock`, since the region moves with it.
   A plug in the staging pile or hanging across an edge is free to move, and
-  #1096's gate reports its off-board copper;
+  the off-board copper gate reports its copper;
 - **the region is** that courtyard's board rect inset by 0.25 mm, on BOTH
   faces, allowing the plug itself and every part with no copper pad (a slot
   such as StickHub's H1). The inset keeps a neighbour's courtyard margin that
@@ -2023,6 +1819,3 @@ the consumers rather than written into the intent:
   consumer handed the intent, `check_assembly --intent` and `place_pose
   --intent` included (`floorplan.mating_keepouts`). The plug it names is
   locked by the same seated test.
-
-StickHub's human board has no part in the region; run 36's final board has
-exactly the 8.

@@ -86,7 +86,7 @@ Fast, grid-based A\* routing with a native Rust core (~10× faster than pure Pyt
 - [Bus routing](docs/bus-routing.md), plus [guide corridors and keep-out zones](docs/configuration.md) drawn on a User layer
 
 **Placement, fanout & optimization**
-- [Placement by function](py_placer/placement/README.md): parts sorted into functional groups, one objective annealed (`place_simple.py`) over several seeds, a fast route of each to keep the best, and optional review rounds that change the groups and place again (`/plan-pcb-placement`)
+- [Placement by function](py_placer/placement/README.md): parts sorted into functional groups, one objective annealed (`place_simple.py`) over several seeds, a fast route of each to keep the best, and, until a fast route is clean, review rounds that change the groups and place again (`/plan-pcb-placement`)
 - [The design brief](docs/design-brief.md) — state what the board is FOR, in a sibling the toolchain reads: which connectors are user-facing, which edge each belongs on and where along it
 - [Floorplan intent, graded](docs/floorplan-intent.md) — declare where parts belong and check the board against it, so "the render looks fine" stops being a verdict
 - BGA / QFN fanout with decoupling-cap placement cleanup, Hungarian target-swap, and schematic sync
@@ -187,7 +187,7 @@ Other useful skills:
 > /recommend-stackup kicad_files/my_board.kicad_pcb          # Stackup advice for impedance/time-matching accuracy
 > /diagnose-routing-failures my_board.kicad_pcb /tmp/route_output.txt  # Root-cause failed routes, get a retry command
 > /review-routed-board my_board_routed.kicad_pcb             # Post-route QA: DRC, connectivity, length match, GND vias
-> /plan-pcb-placement full kicad_files/my_board.kicad_pcb    # Group, place, fast-route, re-place, then route end to end
+> /plan-pcb-placement full kicad_files/my_board.kicad_pcb    # Group, place seeds, fast-route, review until clean, then route end to end
 ```
 
 See [Claude Skills](docs/claude-skills.md) for what each skill does and how they fit together.
@@ -334,7 +334,7 @@ python package_pcm.py --binary-dir ./path/to/release/artifacts
 **Fanout Tab:**
 - BGA fanout with exit margin, escape direction, differential pair support
 - Under-pad escape option for dense, fully-populated BGAs the channel router can't escape (issue #122) — see [BGA Fanout](py_router/bga_fanout/README.md#escape-methods)
-- "Optimize decoupling cap placement" option (off by default) — after fanout, nudges decoupling caps off foreign-net fanout vias and toward same-net balls (issue #130) — see [Placement](py_placer/placement/README.md#place_fanout_clearancepy--decoupling-cap-clearance-repair-issue-130)
+- "Optimize decoupling cap placement" option (off by default) — after fanout, nudges decoupling caps off foreign-net fanout vias and toward same-net balls — see [Decap Clearance Repair](docs/utilities.md#decap-clearance-repair-place_fanout_clearancepy)
 - QFN fanout with extension length configuration
 - Net selection for fanout operations
 
@@ -503,7 +503,7 @@ python py_router/repair_planes.py kicad_files/input.kicad_pcb kicad_files/output
     --track-width 0.5 --clearance 0.2
 ```
 
-### 3c. Review a Placement (issue #431)
+### 3c. Review a Placement
 
 Placement deltas are invisible in a board file; render them instead.
 
@@ -709,8 +709,8 @@ KiCadRoutingTools/
 │
 ├── py_placer/                # Placement CLIs and the placement package
 │   ├── place_simple.py           # The placer: functional groups, one objective, annealed
-│   ├── place_pose.py             # Set, turn, face, lock or replicate parts by hand (#892)
-│   ├── place_fanout_clearance.py # Move decoupling caps off fanout vias (#130)
+│   ├── place_pose.py             # Set, turn, face, lock or replicate parts by hand
+│   ├── place_fanout_clearance.py # Move decoupling caps off fanout vias
 │   ├── converge.py               # The milestone ledger: record, where, verdict
 │   ├── placement/                # Component placement package — see py_placer/placement/README.md
 │   │   ├── simple.py             # The placer's cost model
@@ -785,7 +785,7 @@ KiCadRoutingTools/
     ├── recommend-stackup/    # Stackup review/recommendation skill
     ├── recommend-plane-mappings/  # Net-to-plane-layer assignment skill
     ├── diagnose-routing-failures/  # Failure root-cause and retry skill
-    ├── plan-pcb-placement/   # Place by function, fast-route, re-place, then route; one verifier, report
+    ├── plan-pcb-placement/   # Place by function, fast-route seeds, review until clean, route; one verifier, report
     ├── review-routed-board/  # Post-route QA and sign-off skill
     └── stress-test-router/   # Batch stress-test on real-world boards + issue filing (dev/QA)
 ```
@@ -902,9 +902,9 @@ Every tool prints its full option list with `--help`, and **[docs/configuration.
 | `route_planes.py` | Power/ground plane via connections | [Plane Routing](docs/route-plane.md) |
 | `repair_planes.py` | Plane region repair + pad taps | [Plane Routing](docs/route-plane.md) |
 | `bga_fanout.py` / `qfn_fanout.py` | BGA / QFN escape fanout | [BGA](py_router/bga_fanout/README.md) · [QFN](py_router/qfn_fanout/README.md) · [Utilities](docs/utilities.md) |
-| `place_fanout_clearance.py` | Move decoupling caps off fanout vias | [Utilities](docs/utilities.md) |
+| `place_fanout_clearance.py` | Move decoupling caps off fanout vias | [Utilities](docs/utilities.md#decap-clearance-repair-place_fanout_clearancepy) |
 | `place_simple.py` | Place a board by its functional groups | [Placement](py_placer/placement/README.md) |
-| `board_brief.py` | Assemble what a placement author needs to read, in one artifact | [Design Brief](docs/design-brief.md) |
+| `board_brief.py` | Assemble what a placement author needs to read, in one artifact | [Utilities](docs/utilities.md#board-brief-board_briefpy) · [Design Brief](docs/design-brief.md) |
 | `check_floorplan.py` | Grade a board against a declared floorplan intent | [Floorplan Intent](docs/floorplan-intent.md) |
 | `check_*.py` | DRC / connectivity / hygiene / pad checks | [Utilities](docs/utilities.md) |
 | `route_render.py` | PNG still of a board from its geometry | [Utilities](docs/utilities.md#board-renderer-route_renderpy) |

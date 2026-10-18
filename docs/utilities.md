@@ -160,10 +160,12 @@ for inspection in KiCad. Exit 0 clean, 1 violations, 2 usage errors.
 
 Places a board by function: the parts sorted into groups, one objective,
 lowered by simulated annealing, and exact pad legality at the end. It is the
-placer the `plan-pcb-placement` skill runs: write a groups file, place several
-seeds, fast-route each (`route.py --quick-pass`), keep the best, then route it
-in full. With `--rounds N` the skill also reviews the best with
-`route_review.py`, changes the groups, hints or claims and places again.
+placer the `plan-pcb-placement` skill runs in rounds. A round places seeds 0-3,
+fast-routes each (`route.py --quick-pass`) and keeps the best. The run stops at
+the first round whose best fast route has no blocking net; otherwise the skill
+reviews the best with `route_review.py`, changes the groups, hints or claims
+and places again, up to `--rounds N` rounds in all (default 3). The kept board
+is then routed in full.
 
 ```bash
 python3 -X utf8 py_placer/place_simple.py board.kicad_pcb placed.kicad_pcb \
@@ -179,7 +181,8 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb placed.kicad_pcb \
   intent seats at a declared pose, written there first. Faces the intent or a
   group's `side` declares are applied first, by the writer's flip.
 - **What moves.** Every other part starts at a random place on the board and
-  is annealed: about 500 moves per movable part (`--moves`). A group gets no
+  is annealed: 500 moves per movable part by default (`--moves` sets the
+  total instead). A group gets no
   region or shape; its gap tree is a cost term that keeps it in one piece.
   The hints are soft terms; the intent's keep-outs and zones bind every part
   through the anneal's overlap term. Every weight is a flag (`--help`).
@@ -200,10 +203,37 @@ face or at another pose), nothing written; 4 placed, with parts left illegal
 (named on the console). The objective's terms and the anneal's moves are in
 `py_placer/placement/README.md` ("place_simple.py").
 
+## Groups Checker (`check_groups.py`)
+
+Checks a groups file against its board before `place_simple.py` places it.
+Which parts belong together is a judgement (the `plan-pcb-placement` skill
+makes it); this measures the judgement before any part moves.
+
+```bash
+python3 -X utf8 py_tools/check_groups.py board.kicad_pcb --groups groups.json
+python3 -X utf8 py_tools/check_groups.py board.kicad_pcb --groups groups.json --json report.json
+```
+
+- **ERROR** (exit 4): a movable part in no group, a part in two groups, a ref
+  the board does not have, a group with no part on the board.
+- **WARN**: a part with more signal links to another group than to its own
+  (rails are left out), and a decap whose IC is in another group while no IC
+  of its own group carries its rail -- `place_simple` then leaves it out of
+  the decap term, which is right for a load or RC cap and wrong for a real
+  decap.
+- **Reported**: bridges (two-pad parts linking two groups), the inter-group
+  signal-link matrix and the rails.
+- **Crystals**: each passive crystal with its IC and load caps.
+  `place_simple` folds them into their IC's group and claims the crystal at
+  the oscillator pins, so a load cap is no decap conflict (`--no-crystals`
+  checks as if no claim were written).
+
+Exit 0 placeable (warnings allowed); 2 unreadable input; 4 errors.
+
 ## Pose Setter (`place_pose.py`)
 
-Applies a pose the MODEL chose, and lets the engine grade it (#892), so a
-rotation or a lock is a registered lever rather than a hand script around
+Applies a pose the MODEL chose, and lets the engine grade it, so a rotation or
+a lock is a registered lever rather than a hand script around
 `placement.writer`.
 
 ```bash
@@ -221,8 +251,8 @@ Several verbs in one call describe ONE arrangement: every op is resolved
 against the INPUT board and written in a single pass, so no op sees another's
 effect, and the arrangement is graded at the exact points given -- so a snap
 needs a call with ONE pose op: `--near` beside a second pose op is refused at
-exit 2 before anything is graded (#1194; issue one `set REF --near X Y` per
-call, lock/unlock may ride along), and `--snap` there is skipped and says so.
+exit 2 before anything is graded (issue one `set REF --near X Y` per
+call; lock/unlock may ride along), and `--snap` there is skipped and says so.
 `set` takes exact coordinates positionally; `--near X Y` is the same
 point read as approximate and implies `--snap`, which takes the nearest legal
 pose within `--radius` (ranked nearest first by `pose_score`, then RE-GRADED here — the
@@ -235,37 +265,37 @@ argmin against a box that is not square and a corner pad can change sides
 under a rotation that carries the row.
 
 The verdict is `placement.legality.grade_pad_legality` — the same numbers
-`check_assembly` and `render_placement`'s review sheet print, netclass- and `.kicad_dru`-aware
-(#697) — on the candidate board against the same grade on the input. A
-request is refused when it makes a category worse — the counts (pad conflicts,
-hole conflicts, pads off-board) **and their magnitudes** (`pad_shortfall`,
-`oob_pad_amount`; a count arm alone accepted a part moved from 2.0 mm off the
-board to 204.66 mm off it, measured on `flat_hierarchy`) — plus **pad
-stacks** (#1064): two parts' pad copper overlapping on a shared side, ANY
-net, measured by check_assembly's own `legality.pad_intersection_pairs`
-(`pad_stack_count`, `pad_stack_area` summed over every stacked pad pair, and
-`pad_stack_pairs` as a
-set, so a new stack is refused when the totals tie) — plus **pads on another
-part's footprint graphic copper** (#1266: a drawn SOT-89 tab, an antenna,
-its filled interior included; `graphic_pad_conflicts` short of clearance on
-a net the copper is not, `graphic_pad_stack_count` touching on any net but a
-net tie's own, `graphic_pad_shortfall`, and their `_pairs`, measured by
-`check_drc.footprint_graphic_pad_census`). The pad-conflict grade
-skips same-net pads, so esp_prog's C4 put on Y1's same-net pad (0.0412 mm²)
-used to exit 0 here and read NOT BUILDABLE in check_assembly — and **never for
-damage the board already had**:
-an absolute gate is False for a large share of parts on a real board before
-anything moves, so it would refuse poses no worse than where the part already
-sits, and would make this tool useless on the unplaced pile it exists to
-arrange. The summary carries the two facts under different names: `no_worse`
-is the verdict the verb acts on, `legal` is whether the board is clean at this
-pose. `--strict-legal` refuses unless the result is clean; `--force` writes
-anyway and records `forced`. A KiCad `(locked yes)` refuses a
-direct move — name the ref in `unlock` in the same call if you mean it;
-`--force` deliberately does not open that, and the unlock is verified on the
-staged board before anything is promoted.
+`check_assembly` and `render_placement`'s review sheet print, netclass- and
+`.kicad_dru`-aware — on the candidate board against the same grade on the
+input. A request is refused when it makes a category worse:
 
-With `--intent PATH` (#959) each MOVED part is also graded against that
+- the counts (pad conflicts, hole conflicts, pads off-board) **and their
+  magnitudes** (`pad_shortfall`, `oob_pad_amount`);
+- **pad stacks**: two parts' pad copper overlapping on a shared side, ANY net,
+  measured by check_assembly's own `legality.pad_intersection_pairs`
+  (`pad_stack_count`, `pad_stack_area` summed over every stacked pad pair, and
+  `pad_stack_pairs` as a set, so a new stack is refused when the totals tie).
+  The pad-conflict count skips same-net pads, so this is the category that
+  catches a part set on another part's same-net pad;
+- **pads on another part's footprint graphic copper** (a drawn SOT-89 tab, an
+  antenna, its filled interior included): `graphic_pad_conflicts` short of
+  clearance on a net the copper is not, `graphic_pad_stack_count` touching on
+  any net but a net tie's own, `graphic_pad_shortfall`, and their `_pairs`,
+  measured by `check_drc.footprint_graphic_pad_census`.
+
+A request is **never refused for damage the board already had**: an absolute
+gate is False for a large share of parts on a real board before anything
+moves, so it would refuse poses no worse than where the part already sits, and
+would make this tool useless on the unplaced pile it exists to arrange. The
+summary carries the two facts under different names: `no_worse` is the
+verdict the verb acts on, `legal` is whether the board is clean at this pose.
+`--strict-legal` refuses unless the result is clean; `--force` writes anyway
+and records `forced`. A KiCad `(locked yes)` refuses a direct move — name the
+ref in `unlock` in the same call if you mean it; `--force` deliberately does
+not open that, and the unlock is verified on the staged board before anything
+is promoted.
+
+With `--intent PATH` each MOVED part is also graded against that
 floorplan intent's zones, by the grade's own `zone_containment` rule. A pose
 that leaves a part further outside its block's zone than it was, as an ERROR
 finding, refuses at exit 4, and nothing is written; with the rule demoted to
@@ -273,56 +303,46 @@ warn the pose is written and the row reported. `JSON_SUMMARY.zone_check` names t
 zone and the overrun before and after. The check is relative, like the legality
 verdict: a move from the pile toward its zone is never refused for not
 arriving. `--force` writes anyway and says so. A call that only locks or
-unlocks moves nothing and records `zone_check.skipped`. Run 29's lap-10
-`set Ref* ...` walked a part out of the plan's own zone and was caught only
-after the write. With a plan in hand, pass it.
+unlocks moves nothing and records `zone_check.skipped`. With a plan in hand,
+pass it.
 
-`--snap` is a two-rung ladder, because one rung was not enough: `pose_score`
-ranks first (the poses its gate admits, nearest the aimed point first), then the bare lattice
-around the aimed point, and **every** candidate from either rung is re-graded
-in this verb's own currency before it is written. Measured on
-`flat_hierarchy`: the ranker alone returned zero candidates for
-`set C4 --near 128.0 49.53 --radius 3`, because its gate is the absolute one,
-while 236 poses inside the same radius graded no worse — the nearest 0.354 mm
-away. `snap_census` reports both rungs and `snapped.rung` says which answered.
-The ranker judges the part from its pose on the INPUT board, the baseline the
-re-grade compares with, while it sweeps around the aimed point (#1256): built
-from the staged board, the request was its own baseline, and on esp_prog
-(C1 at a 1.5 mm pad clearance, `set C2 140.06 96.23 --rot 90 --snap
---radius 2`) it ranked 8 poses carrying the very conflict that refused the
-request, all 8 then refused. The input pose is also the incumbent of the
-ranker's off-board escape branch (`QuenchState.incumbent_at`, #1259): measured
-at an off-board request, that branch admitted every pose merely less off the
-board than the request, and on esp_prog `set R3 146.0 101.5 --snap --radius 4`
-ranked 3 such poses and refused all 9 tries; it now ranks 9 and snaps to the
-7th, 3.89 mm away. When the part's INPUT pose is off the board, that branch
-is open, and the poses merely less off the board than the input can fill the
-ranking's first places: with R3 staged at (146.0, 101.5), `set R3 143.4
-102.0 --rot 180 --snap --radius 4` wrote (142.9, 104.75), `legal: false`,
-while a legal pose 0.49 mm nearer the request was never ranked. So the
-ranking with that branch closed goes first, as its own rung
-(`ranked_on_board`, its own `--snap-tries`), ahead of the `ranked` rung,
-which is unchanged; the snap now writes (142.9, 104.25), legal (#1277). A
-pose on two rungs is re-graded once, and when `ranked_on_board` answers, a
-nearer lattice pose must grade no worse than that answer too, or the lattice
-would trade it for pad copper still past the outline. The census counts the
-rung as `ranked_on_board` (null from an input on the board), and the no-snap
-suggestion takes the same order. A ranked pose that only the escape branch
-admits (less off the board than the input, not on it) is labelled `legal:
-false, escape: true` wherever it is reported (`nearest_legal`), and the no-snap suggestion says so in words; `pose_score.rank_poses`
-used to label it `legal: true`. Neither the snap nor the no-snap suggestion ever
-returns the request itself (`requested_dropped`). `input_pose_vetoed` is the
-ranker's verdict on the part's input pose: when it vetoes even that, its
-knobs are stricter than the board, and the refusal says so.
+`--snap` tries candidates from a ladder of rungs, nearest the aimed point
+first, and **every** candidate from any rung is re-graded in this verb's own
+currency before it is written:
+
+1. **`ranked`** -- `pose_score.rank_poses`: the poses its gate admits within
+   `--radius`, nearest the aimed point first. It judges the part from its pose
+   on the INPUT board, the baseline the re-grade compares with, while it
+   sweeps around the aimed point.
+2. **the lattice** -- every pose on a grid around the aimed point. The
+   ranker's gate is absolute, so it can return nothing where the relative
+   re-grade would accept many poses; the lattice reaches those.
+
+When the part's INPUT pose is off the board, the ranker's escape branch is
+open (its incumbent is the input pose, `QuenchState.incumbent_at`) and admits
+poses merely LESS off the board than the input. So the ranking with that
+branch closed goes first, as its own rung (`ranked_on_board`, with its own
+`--snap-tries`), ahead of `ranked`. A pose only the escape branch admits is
+labelled `legal: false, escape: true` wherever it is reported
+(`nearest_legal`), and the no-snap suggestion says so in words. A pose on two
+rungs is re-graded once, and when `ranked_on_board` answers, a nearer lattice
+pose must grade no worse than that answer too, or the lattice would trade it
+for pad copper still past the outline. `snap_census` reports the rungs
+(`ranked_on_board` is null from an input on the board) and `snapped.rung` says
+which answered; the no-snap suggestion takes the same order. Neither the snap
+nor the no-snap suggestion ever returns the request itself
+(`requested_dropped`). `input_pose_vetoed` is the ranker's verdict on the
+part's input pose: when it vetoes even that, its knobs are stricter than the
+board, and the refusal says so.
 When every candidate fails the re-grade, the refusal says what the census
-found instead (#1209) -- `regrade_refused_by` / `regrade_refused_pairs` per
+found instead -- `regrade_refused_by` / `regrade_refused_pairs` per
 category, e.g. `hole_conflicts x4 (H1/TP1)` -- plus the `untried` count
 (raise `--snap-tries`) and the ranker's nearest pose past the bound
 (`nearest_beyond_radius`, raise `--radius`). It never offers back a pose its
 own re-grade refused, and never advises `--snap` to a call that snapped:
 `nearest_legal` on a snap is the pose it wrote, or null.
 
-`replicate` (#1211) copies one placed instance of a hierarchical sheet onto
+`replicate` copies one placed instance of a hierarchical sheet onto
 its sibling instances. Parts are matched by the symbol uuid that ends every
 footprint's `(path ...)`, the correspondence KiCad's "Repeat Layout" uses.
 Each target part takes its source part's rotation and side at the source
@@ -334,7 +354,7 @@ same parts, the same footprints and pads, and nets that correspond one to
 one, with a net on both instances (GND, a rail) mapping to itself. The
 pads are judged against the net map under which the most pad pairs agree,
 chosen over all of them at once (ties go to the pairings met first), so a
-strap names itself rather than the pads wired alike (#1277); a pad that
+strap names itself rather than the pads wired alike; a pad that
 breaks the rule under any map (a shared net renamed, a net against no net)
 takes no part in choosing it. The
 refusal names the refs and pads and spells, for each pad, the waiver
@@ -361,8 +381,8 @@ rule; `--snap` does not apply. `summary.replicate` reports the mapping, the
 offset and the renamed and shared nets, and each moved member lists its new
 conflict pairs and the off-board / edge-band / keep-out findings it newly
 carries (`ops[].new_conflicts`), which is the list to `--skip` from. The
-same copy can be DECLARED in a floorplan intent (`replicate[]`, reader 11,
-see `docs/floorplan-intent.md`): `replicate --intent PATH` with no
+same copy can be DECLARED in a floorplan intent (`replicate[]`, `min_reader`
+11, see `docs/floorplan-intent.md`): `replicate --intent PATH` with no
 `--from`/`--to` applies every declaration as one call, and `check_floorplan`
 grades each target's distance from the source arrangement. `place_simple`
 does not apply them: arrange and lock the source instance, apply the copies,
@@ -370,7 +390,7 @@ lock them, then place the rest. See `py_placer/placement/README.md`.
 
 Knobs come from the board (`list_nets.board_floor_knobs`) unless given — a
 CLI-supplied `--clearance` loosens the verdict on a tool whose job is to
-refuse, so it is disclosed on stderr — and the siblings are carried (#441).
+refuse, so it is disclosed on stderr — and the siblings are carried.
 Exit 0 written; 2 the request does not name a thing on this board (a typo you
 rewrite); 3 the board carries copper (`--allow-routed` to override); 4 well
 formed, and the board said no (a measurement you act on), nothing written —
@@ -381,10 +401,83 @@ a board to summarise. There is no `--allow-unplaced`: this tool has no
 unplaced gate, because arranging a pile one decision at a time is what it is
 for.
 
+## Assembly Checker (`check_assembly.py`)
+
+Is this placement physically buildable? One verdict, `buildable (blocking 0)`
+or `NOT BUILDABLE`, from the body-overlap channel (cross-footprint pad
+intersections, fab and courtyard pairs with their waiver labels) and the pad,
+hole and off-board legality echo.
+
+```bash
+python3 -X utf8 py_tools/check_assembly.py placed.kicad_pcb
+python3 -X utf8 py_tools/check_assembly.py placed.kicad_pcb --baseline start.kicad_pcb --json grade.json
+```
+
+Read `buildable`. It needs no intent. `--baseline` compares with the board the
+placement started from: it reports the advisory pairs that are NEW, and arms
+the gates that only make sense for parts that moved -- a courtyard
+interpenetration past the area and depth floors, a test point left under
+another part's body, a pad on another part's footprint graphic copper.
+Without a baseline those are report-only, because healthy human boards ship
+such pairs by design. Always gating: pad copper off the outline, a pad
+intersection between parts, copper landing on a KiCad-locked part, a stack of
+parts at one origin, a containment, and (when `--intent` declares
+`assembly.body_edge_mm`) a body inside the body-to-edge band. `--intent` also
+reads `overlap_waivers` and a `mating:<ref>` keep-out. Courtyards are graded
+at the project's own `courtyards_overlap` severity unless
+`--ignore-project-severity`.
+
+Exit 0 buildable; 2 usage or load error; 4 not buildable.
+
+## Board Brief (`board_brief.py`)
+
+Everything a placement author needs to read about a board, in one document:
+whether it is a pile, its copper and poured nets, escape-lane deficits and
+who causes them, block displacement, net affinity, part classes, groups, lock
+advice and the design brief and `mechanical.json` it found beside the board.
+It assembles; every number comes from the function that owns it, and
+`sources` names that function per section. A section that cannot run says why
+under `skipped`.
+
+```bash
+python3 -X utf8 py_tools/board_brief.py board.kicad_pcb --json brief.json
+python3 -X utf8 py_tools/board_brief.py board.kicad_pcb --fit 15.5x15.5   # where a part this size fits
+```
+
+Read `pile`, `has_copper` and `poured_nets` on the `JSON_SUMMARY` line first.
+`--requirements TEXT` carries the constraints the board cannot state (an
+enclosure, connector edges) verbatim; the design brief (`--brief`, else the
+sibling `<board>.design-brief.json`) is the structured channel for them.
+
+Exit 0 written; 2 usage or load error; 3 no board outline (nothing to place
+against).
+
+## Board Context Sheet (`board_context.py`)
+
+A per-part sheet a model can reason from: each part's value, package and body
+size, each pad with its net and pin function, which board face its partners
+are on, what each cap decouples, and the pin-order pairs marked `CROSSED`
+(a pair whose order crosses costs a via per net at every rotation).
+
+```bash
+python3 -X utf8 py_tools/board_context.py board.kicad_pcb --md
+python3 -X utf8 py_tools/board_context.py board.kicad_pcb --json -o context.json
+```
+
+The JSON adds `emc_roles`: each converter, crystal, oscillator and ESD array
+its pin functions name, every leg measured pad edge to pad edge, a ready
+`proximity` row with `max_mm` left null for the user to fill, and
+`emc_roles.keep_away`, a proposed keep-away rule per clock with a `brief_row`
+to paste into the design brief. Every derived fact carries its source, and
+"unknown" is printed apart from "not looked at". `--panels DIR` writes one
+cropped PNG per part.
+
+Exit 0 written.
+
 ## Rule-Area Writer (`add_rule_area.py`)
 
-Writes a copper keep-out rule area -- `(zone ... (keepout ...))` -- onto a board
-(#1200). A module's PCB antenna needs one on every layer; the router stamps
+Writes a copper keep-out rule area -- `(zone ... (keepout ...))` -- onto a board.
+A module's PCB antenna needs one on every layer; the router stamps
 a rule area (`obstacle_map.add_rule_area_keepout_obstacles`), placement grades
 it, and KiCad reports copper inside it as `items_not_allowed`.
 
@@ -510,9 +603,10 @@ python3 -X utf8 py_tools/route_review.py routed.kicad_pcb --top 12 --json review
 What to do about each finding is in
 `.claude/skills/plan-pcb-placement/references/placement-lessons.md`. The
 `/plan-pcb-placement` skill (`.claude/skills/plan-pcb-placement/SKILL.md`,
-§3.5) runs it, when given `--rounds` above 1, on the best fast-routed
-candidate (`route.py --quick-pass`) of each round, then changes the groups,
-hints or claims it gives `place_simple` and places again; `render_nets.py` draws a finding's nets beside another
+§3.5) runs it on the best fast-routed candidate (`route.py --quick-pass`) of
+a round whose best fast route still has a blocking net, then changes the
+groups, hints or claims it gives `place_simple` and places again, up to
+`--rounds` rounds; `render_nets.py` draws a finding's nets beside another
 routed board's. Exit 0 reviewed (findings or not), 2 unreadable input.
 
 ## Board Renderer (`route_render.py`)
@@ -1113,6 +1207,45 @@ would extend into a foreign obstacle the fan is shortened instead (issue #149).
 # Generate fanout stubs for all signal nets on U3
 python py_router/qfn_fanout.py board.kicad_pcb fanout.kicad_pcb U3
 ```
+
+## Decap Clearance Repair (`place_fanout_clearance.py`)
+
+The routing chain's step after a BGA fanout: it nudges the decoupling caps
+(and resistors and ferrite beads, `--cap-prefix`) near a ball field off the
+fanout vias and escape copper they now graze, and pulls a cap pad onto a
+same-net ball's via where one is within `--capture-radius`. It is the one
+placement step that writes copper (a via nudge), so it writes the DRC floor
+back to the project like a routing step.
+
+```bash
+python3 -X utf8 py_placer/place_fanout_clearance.py fanned.kicad_pcb cleared.kicad_pcb \
+    --clearance 0.1 --max-displacement 2
+python3 -X utf8 py_placer/place_fanout_clearance.py fanned.kicad_pcb cleared.kicad_pcb \
+    --intent floorplan.json        # hold the intent's decap limits and cap rotations
+```
+
+- **Moves.** A cap moves at most `--max-displacement` (default 2 mm), grown
+  by `--displacement-growth` up to `--max-displacement-cap` (3 mm) when it
+  cannot clear; one that still cannot is reported `Unresolved` for a hand
+  fix. Quarter-turn rotations are tried unless `--no-rotate`;
+  `--beneath-only` moves only the passives under a BGA's package and keeps
+  them there.
+- **Clearance.** Given, `--clearance` is a ceiling: every net class is priced
+  at `min(class, value)` and the output project is clamped to it. Omitted,
+  each pair is priced at its own net-class clearance and the classes are kept.
+- **`--intent`.** The intent's decap limits (`decaps.max_distance_mm`,
+  `decaps.max_pin_distance_mm`, at error severity) are held: no move takes a
+  claim past its limit and further than the board as it stands, unless no
+  clear pose keeps it -- then the cap clears the copper anyway and the broken
+  claim is named. A gated run that broke a claim or left a cap grazing is
+  compared with the same pass without the gate, and the better kept (fewer
+  unresolved grazes, then fewer claims made worse). The intent's declared cap
+  rotations (`blocks[].rotation`, `rotation_candidates`) are held too. The run
+  prints the decap grade before and after. Without `--intent` a cap can move
+  past a decap limit silently.
+
+Exit 0 written (unresolved caps are reported, not failed); 2 unreadable input,
+or two intent blocks declaring one part at different angles.
 
 ## Build Script (`build_router.py`)
 
