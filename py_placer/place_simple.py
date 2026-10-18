@@ -186,8 +186,7 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
                   crossing_weight=args.crossing_weight, claim_weight=args.claim_weight,
                   decap_weight=args.decap_weight, group_weight=args.group_weight,
                   hints=hints(doc, state, movable, args),
-                  halo_base=args.halo_base, halo_coef=args.halo_coef,
-                  halo_weight=args.halo_weight)
+                  halo_coef=args.halo_coef, halo_weight=args.halo_weight)
     return state, model, movable, notes
 
 
@@ -313,9 +312,6 @@ def main(argv=None):
     ap.add_argument('--edge-weight', type=float, default=2.0,
                     help="per mm a group with an `edge` is from that board edge "
                          "(default 2)")
-    ap.add_argument('--halo-base', type=float, default=0.0,
-                    help='mm of halo in front of every side a fine-pitch part\'s pads '
-                         'face (default 0)')
     ap.add_argument('--halo-coef', type=float, default=0.25,
                     help='mm of halo per net leaving by a side (default 0.25)')
     ap.add_argument('--halo-weight', type=float, default=10.0,

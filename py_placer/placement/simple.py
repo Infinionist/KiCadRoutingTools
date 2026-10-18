@@ -105,12 +105,12 @@ def pad_pitch(offs: Sequence[Tuple[float, float]]) -> float:
     return float(np.median(D.min(axis=1)))
 
 
-def pad_fronts(pads: Sequence[Tuple[float, float, int]], coef: float, base: float = 0.0,
+def pad_fronts(pads: Sequence[Tuple[float, float, int]], coef: float,
                skip=frozenset()):
     """The sides of a part its pads face, from its pads' `(dx, dy, net)`,
     offsets from the part's origin in the board frame: for W, E, N, S (-x,
     +x, -y, +y), `(h, lo, hi)` -- the halo depth in front of that side,
-    `base + coef x the nets that leave by it` (each a track, and tracks
+    `coef x the nets that leave by it` (each a track, and tracks
     turning along a side stack one pitch deep each: a net on several pads
     is one track, a net in `skip` -- ground, dropping a via to its plane --
     none), and the span of its facing pads along it (y for W and E, x for N
@@ -159,7 +159,7 @@ def pad_fronts(pads: Sequence[Tuple[float, float, int]], coef: float, base: floa
             out.append(None)
             continue
         along = [q[1] for q in f] if k < 2 else [q[0] for q in f]
-        out.append((base + coef * len(nets), min(along) - FAN_MM, max(along) + FAN_MM))
+        out.append((coef * len(nets), min(along) - FAN_MM, max(along) + FAN_MM))
     return tuple(out)
 
 
@@ -315,10 +315,10 @@ class Model:
                  track_pitch: float = 0.33, cell: float = 0.5,
                  congestion_nets=None, rail_weight: float = 0.0,
                  ground_nets=(), ground_weight: float = 0.0, pad_weight: float = 0.0,
-                 hints: Sequence[Dict] = (), halo_base: float = 0.0, halo_coef: float = 0.25,
+                 hints: Sequence[Dict] = (), halo_coef: float = 0.25,
                  halo_weight: float = 10.0):
         self.state, self.pcb = state, pcb
-        self.halo_base, self.halo_coef, self.halo_weight = halo_base, halo_coef, halo_weight
+        self.halo_coef, self.halo_weight = halo_coef, halo_weight
         self.hints = [h for h in hints if h['weight'] > 0]
         self.inner = tuple(state.usable)
         self.cw, self.kw, self.dw, self.gw = (crossing_weight, claim_weight,
@@ -710,7 +710,7 @@ class Model:
         if fr is None:
             fr = self._fr[key] = pad_fronts(
                 [(x - part.x, y - part.y, n) for x, y, n in part.pad_globals()],
-                self.halo_coef, self.halo_base, self.ground)
+                self.halo_coef, self.ground)
         return fr
 
     def halo_pair(self, a, b):
