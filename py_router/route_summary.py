@@ -645,6 +645,10 @@ def _apply_regrade(merged: Dict, regrade: Dict, summaries: List[Dict]) -> None:
     merged['regrade'] = {k: regrade.get(k) for k in (
         'board', 'graded_nets', 'seconds', 'unowned_broken', 'recovered',
         'broken_by_run')}
+    # Whose fill the pours were graded on, when the re-grade had to ask
+    # KiCad itself (route._regrade_pour_fill).
+    if regrade.get('pour_fill') is not None:
+        merged['regrade']['pour_fill'] = regrade['pour_fill']
 
 
 def merge_route_summaries(log: str) -> Optional[Dict]:

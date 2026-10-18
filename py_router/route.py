@@ -399,12 +399,62 @@ def _emit_summary_min(gate_report: Optional[dict] = None,
         print(f"  WARNING: could not emit JSON_SUMMARY_MIN: {_e}")
 
 
+def _regrade_pour_fill(board, output_file: str,
+                       project_from: Optional[str]) -> Optional[dict]:
+    """Read `board`'s pours through KiCad's own refill of `output_file`, when
+    no pass of this run checked them against it. Returns the record's
+    `pour_fill` entry, or None when the board pours nothing or the plane
+    finalize's oracle already checked the pours.
+
+    The final re-grade's zone credit comes from the raster fill model, which
+    predicts the fill from the copper. The finalize's oracle is the pass that
+    grades the pours on KiCad's fill instead, and --quick-pass skips the
+    finalize, so its tally was the model's word alone. KiCad's filler can
+    pour far less: on KiCad 10.0.0 three foreign vias pinching a pocket at
+    about min_thickness empty a whole plane (see
+    plane_fill_model.IslandFillModel), and fusb302's quick pass shipped GND
+    with no fill at all while reporting 194/194 pads connected; check_connected
+    found 37 missing links on the same file.
+
+    One refill of the written file (the oracle pays the same on a healthy
+    board), staged with the sibling project, else `project_from`'s."""
+    from kicad_parser import pour_zones
+    if not pour_zones(getattr(board, 'zones', None) or []):
+        return None
+    for _s in _SUMMARY_SINK:
+        _o = _s.get('oracle_reconnect') if isinstance(_s, dict) else None
+        if isinstance(_o, dict) and _o.get('available'):
+            return None
+    try:
+        from kicad_exact_fill import refill_islands_ex
+        from plane_fill_model import install_kicad_fill
+        islands, st = refill_islands_ex(output_file, project_from=project_from)
+        if not st.ok:
+            print(f"  Pours graded on the fill model: no KiCad refill "
+                  f"({st.why()})")
+            return {'graded_on': 'fill_model', 'why': st.why()}
+        installed = install_kicad_fill(board, islands or {})
+    except Exception as _e:                                    # noqa: BLE001
+        print(f"  Pours graded on the fill model: KiCad refill failed "
+              f"({type(_e).__name__}: {_e})")
+        return {'graded_on': 'fill_model', 'why': f'{type(_e).__name__}: {_e}'}
+    empty = sorted(f'{n} on {l}' for (n, l), k in installed.items() if k == 0)
+    if empty:
+        print(f"  {RED}KiCad's refill pours NOTHING for {', '.join(empty)}: "
+              f"its pads are graded with no fill there{RESET}")
+    return {'graded_on': 'kicad_refill',
+            'islands': {f'{n} on {l}': k
+                        for (n, l), k in sorted(installed.items())},
+            'poured_nothing': empty}
+
+
 def _final_regrade(pcb_data, output_file: str, return_results: bool,
                    results_data: Optional[dict], write_model,
                    routing_scope: List[str], input_signature,
                    orig_seg_by_net: Dict[int, list],
                    orig_via_by_net: Dict[int, list],
-                   orig_copper=None) -> Optional[dict]:
+                   orig_copper=None,
+                   project_from: Optional[str] = None) -> Optional[dict]:
     """Grade the board this run SHIPS over every net it owns (#1069).
 
     The merged tally used to be the LAST summary's failure state, and each
@@ -431,6 +481,10 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
     it carries when a zone is first consulted, which here is the end of the
     run, so grading the input on pcb_data read a pour this run cut as cut on
     the input too, and the net was never charged.
+
+    The pours of the written board are read through KiCad's own fill when no
+    pass of this run checked them against it (`_regrade_pour_fill`): the
+    plane finalize's oracle is that check, and --quick-pass skips it.
 
     Prints the record as `JSON_REGRADE:` (merge_route_summaries reads it from
     the log), stores it for --json-out and JSON_SUMMARY_MIN, prints a
@@ -459,6 +513,8 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
         segs_by_net = vias_by_net = None
         final_segs, final_vias = board.segments, board.vias
         label = 'file'
+    _pour_fill = (_regrade_pour_fill(board, output_file, project_from)
+                  if label == 'file' else None)
     name_of = {nid: n.name for nid, n in board.nets.items()}
     id_of = {n: nid for nid, n in name_of.items()}
     named = named_nets(list(_SUMMARY_SINK))
@@ -520,6 +576,8 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
                 grades.get(n, {}).get('failed_pads') or ()):
             _by_run.append(n)
     record['broken_by_run'] = _by_run
+    if _pour_fill is not None:
+        record['pour_fill'] = _pour_fill
     # Round-trip so the in-process document equals what the log parses back.
     record = json.loads(json.dumps(record))
     print(f"JSON_REGRADE: {json.dumps(record)}")
@@ -7607,7 +7665,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 locals().get('results_data'), _gui_write_model,
                 [_n for _n, _i in single_ended_nets], _input_sig1069,
                 _orig_seg_by_net, _orig_via_by_net,
-                orig_copper=_orig_copper_values)
+                orig_copper=_orig_copper_values,
+                project_from=input_file)
             if _rg1069 is not None:
                 successful = _rg1069['successful']
                 failed = _rg1069['failed']

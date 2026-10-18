@@ -606,6 +606,137 @@ class ZoneFillModel:
         return (float(px[k]), float(py[k]), d)
 
 
+class IslandFillModel(ZoneFillModel):
+    """ZoneFillModel's queries, answered from KiCad's OWN fill of the zone.
+
+    The raster model predicts the fill from the copper; this one is handed
+    the fill -- the (net, layer) islands of a KiCad refill
+    (`kicad_exact_fill.refill_islands_ex`) -- and labels every cell inside
+    island k with k. Each island is one connected polygon (KiCad's fracture
+    output), so a corridor thinner than a cell cannot split it the way it
+    can split a raster component. Same grid, same `query_component` probe,
+    so a grader reading it keeps its own union-find and changes only whose
+    fill it believes.
+
+    Own-net pads the fill touches are painted with the island's label: a
+    thermal relief's spokes end on the pad's edge, so the pad's centre --
+    the point a grader asks about -- lies outside the filled polygon. A pad
+    touches when a fill cell's centre is within one cell of its edge, which
+    is less than any zone clearance a pad kept apart from the fill has.
+
+    Why it exists: KiCad's filler can pour much less than the copper
+    predicts, and no raster model can know it. Measured on KiCad 10.0.0:
+    three foreign vias whose knockouts pinch a small pocket of the pour
+    (fusb302 at (153.25, 87.85), (153.9, 87.5), (154.1, 87.95); tigard at
+    (52.55, 62.85), (53.1, 62.95), (52.8, 63.6)) make the refill pour
+    NOTHING for the whole zone, island removal off or on. On fusb302,
+    stripped to its outline and pours, the zone pours 1380 mm^2 with any
+    one of the three vias removed, with the zone clearance 0.15 or 0.16
+    instead of 0.1524, or with min_thickness 0.08 or 0.12 instead of 0.1.
+    The raster model fills the plane and grades every pad on it connected.
+    """
+
+    def __init__(self, pcb_data, zone, islands):
+        self.ok = False
+        mth = zone.min_thickness if zone.min_thickness is not None \
+            else defaults.PLANE_MIN_THICKNESS
+        cell = min(0.08, max(0.04, mth / 2.0))
+        xs = [p[0] for p in zone.polygon]
+        ys = [p[1] for p in zone.polygon]
+        if not xs:
+            return
+        x0, y0 = min(xs) - cell, min(ys) - cell
+        nx = int((max(xs) - x0) / cell) + 2
+        ny = int((max(ys) - y0) / cell) + 2
+        if nx <= 2 or ny <= 2 or nx * ny > 30_000_000:
+            return
+        self.x0, self.y0, self.cell = x0, y0, cell
+        self.nx, self.ny = nx, ny
+        cxs = x0 + (np.arange(nx) + 0.5) * cell
+        cys = y0 + (np.arange(ny) + 0.5) * cell
+        labels = np.zeros((nx, ny), dtype=np.int32)
+        from obstacle_map import _scanline_inside_rows
+        n = 0
+        for poly in islands or ():
+            if len(poly) < 3:
+                continue
+            n += 1
+            a = np.asarray(poly, dtype=np.float64)
+            i0 = max(0, int((a[:, 0].min() - x0) / cell))
+            i1 = min(nx, int((a[:, 0].max() - x0) / cell) + 2)
+            j0 = max(0, int((a[:, 1].min() - y0) / cell))
+            j1 = min(ny, int((a[:, 1].max() - y0) / cell) + 2)
+            if i0 >= i1 or j0 >= j1:
+                continue
+            inside = _scanline_inside_rows(
+                cxs[i0:i1], cys[j0:j1], a[:, 0], a[:, 1],
+                np.roll(a[:, 0], -1), np.roll(a[:, 1], -1)).T
+            sub = labels[i0:i1, j0:j1]
+            sub[inside & (sub == 0)] = n
+        self._n = n
+        if n:
+            from net_queries import expand_pad_layers
+            from kicad_parser import pad_is_plated_through
+            cu = list(getattr(pcb_data.board_info, 'copper_layers', None)
+                      or [zone.layer])
+            for p in (pcb_data.pads_by_net or {}).get(zone.net_id, []) or []:
+                if getattr(p, 'pad_type', '') == 'np_thru_hole':
+                    continue
+                if not (pad_is_plated_through(p)
+                        or zone.layer in expand_pad_layers(p.layers or [], cu)):
+                    continue
+                hx, hy = p.size_x / 2.0, p.size_y / 2.0
+                wi0 = max(0, int((p.global_x - hx - cell - x0) / cell))
+                wi1 = min(nx, int((p.global_x + hx + cell - x0) / cell) + 1)
+                wj0 = max(0, int((p.global_y - hy - cell - y0) / cell))
+                wj1 = min(ny, int((p.global_y + hy + cell - y0) / cell) + 1)
+                if wi0 >= wi1 or wj0 >= wj1:
+                    continue
+                # Distance from each cell centre to the pad's rectangle: 0
+                # on the pad, a fill cell within one cell of its edge is a
+                # spoke (or solid fill) landing on it.
+                ex = np.maximum(np.abs(cxs[wi0:wi1] - p.global_x) - hx, 0.0)
+                ey = np.maximum(np.abs(cys[wj0:wj1] - p.global_y) - hy, 0.0)
+                d2 = ex[:, None] ** 2 + ey[None, :] ** 2
+                win = labels[wi0:wi1, wj0:wj1]
+                hit = win[(win > 0) & (d2 <= cell * cell)]
+                if hit.size == 0:
+                    continue
+                on_pad = (d2 == 0.0) & (win == 0)
+                win[on_pad] = int(hit.min())
+        self.labels = labels
+        self.ok = True
+
+
+def install_kicad_fill(pcb_data, islands):
+    """Make every fill-model reader of `pcb_data` read KiCad's own fill.
+
+    `islands` is `refill_islands_ex`'s {(net name, layer): [polygon, ...]};
+    a pour zone whose (net, layer) is absent poured nothing. Each zone's
+    model in `pcb_data`'s cache becomes an IslandFillModel, so
+    `check_net_connectivity(..., pcb_data=pcb_data)` and everything built on
+    it (improvement_gate.grade_nets) grade the pour KiCad ships. Not
+    registered for the zone-object lookup: only readers of this board see it.
+
+    Returns {(net name, layer): island count} for the zones it installed."""
+    cache = getattr(pcb_data, _CACHE_ATTR, None)
+    if cache is None:
+        cache = {}
+        setattr(pcb_data, _CACHE_ATTR, cache)
+    out = {}
+    for z in getattr(pcb_data, 'zones', None) or []:
+        net = (pcb_data.nets or {}).get(z.net_id)
+        name = getattr(net, 'name', None)
+        if not z.net_id or not name or not z.polygon:
+            continue
+        polys = (islands or {}).get((name, z.layer), [])
+        m = IslandFillModel(pcb_data, z, polys)
+        if m.ok:
+            cache[(z.net_id, z.layer, id(z))] = m
+            out[(name, z.layer)] = len(polys)
+    return out
+
+
 def set_board_net_clearances(pcb_data, net_clearances):
     """Publish the per-net class clearance map every fill model for this board
     should stamp at (#483 item 5).
