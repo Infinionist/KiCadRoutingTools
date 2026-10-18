@@ -160,9 +160,10 @@ for inspection in KiCad. Exit 0 clean, 1 violations, 2 usage errors.
 
 Places a board by function: the parts sorted into groups, one objective,
 lowered by simulated annealing, and exact pad legality at the end. It is the
-placer the `plan-pcb-placement` skill runs: write a groups file, place, fast
-route (`route.py --quick-pass`), review with `route_review.py`, change the
-groups, hints or claims, place again, then route the best board in full.
+placer the `plan-pcb-placement` skill runs: write a groups file, place several
+seeds, fast-route each (`route.py --quick-pass`), keep the best, then route it
+in full. With `--rounds N` the skill also reviews the best with
+`route_review.py`, changes the groups, hints or claims and places again.
 
 ```bash
 python3 -X utf8 py_placer/place_simple.py board.kicad_pcb placed.kicad_pcb \
@@ -569,9 +570,9 @@ python3 -X utf8 py_tools/route_review.py routed.kicad_pcb --top 12 --json review
 What to do about each finding is in
 `.claude/skills/plan-pcb-placement/references/placement-lessons.md`. The
 `/plan-pcb-placement` skill (`.claude/skills/plan-pcb-placement/SKILL.md`,
-§3.5) runs it on the best fast-routed candidate (`route.py --quick-pass`) of
-each round, then changes the groups, hints or claims it gives `place_simple`
-and places again; `render_nets.py` draws a finding's nets beside another
+§3.5) runs it, when given `--rounds` above 1, on the best fast-routed
+candidate (`route.py --quick-pass`) of each round, then changes the groups,
+hints or claims it gives `place_simple` and places again; `render_nets.py` draws a finding's nets beside another
 routed board's. Exit 0 reviewed (findings or not), 2 unreadable input.
 
 ## Board Renderer (`route_render.py`)

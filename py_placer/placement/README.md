@@ -6,8 +6,9 @@ legality at the end. `place_simple.py` is the placer; the rest of this module
 is the state it works on (`quench.QuenchState`), the legality model every
 tool shares, the floorplan intent and its grade, the pose tools, and the
 fanout-time decoupling-cap repair the routing chain runs. The workflow --
-group, place, fast-route, review, change the inputs, place again, route --
-is the `plan-pcb-placement` skill (`.claude/skills/plan-pcb-placement/`).
+group, place several seeds, fast-route each, keep the best, route; with
+`--rounds N` also review, change the inputs and place again -- is the
+`plan-pcb-placement` skill (`.claude/skills/plan-pcb-placement/`).
 
 ## place_simple.py — groups, one objective, annealed
 

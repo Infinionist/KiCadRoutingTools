@@ -1,6 +1,6 @@
 ---
 name: plan-pcb-placement
-description: Places a KiCad board by function, and in full mode routes and verifies it. The agent sorts the parts into functional groups, place_simple.py anneals one objective, a fast route shows what the placement got wrong, the agent changes the groups, hints or claims and places again, and the best board is routed end to end; one independent verifier grades it, and the board comes back with REPORT.md. Modes are place and full (place + route). Use it to place, arrange, re-place or optimise components, handle an unplaced board or parts piled off the outline, place and route from scratch, or run the GUI's Place / Place + Route. It never changes the outline. To route a placed board without moving parts, use plan-pcb-routing; for sign-off QA, review-routed-board.
+description: Places a KiCad board by function, and in full mode routes and verifies it. The agent sorts the parts into functional groups, place_simple.py anneals one objective over several seeds, a fast route of each keeps the best, and in full mode that board is routed end to end; with --rounds above 1 the agent also reviews the best fast route, changes the groups, hints or claims and places again. One independent verifier grades the result, and the board comes back with REPORT.md. Modes are place and full (place + route). Use it to place, arrange, re-place or optimise components, handle an unplaced board or parts piled off the outline, place and route from scratch, or run the GUI's Place / Place + Route. It never changes the outline. To route a placed board without moving parts, use plan-pcb-routing; for sign-off QA, review-routed-board.
 ---
 
 # Plan PCB placement
@@ -9,17 +9,23 @@ A human lays a board out by function: the USB connector with its resistors
 right behind it, the regulator and its caps between the power entry and the
 loads, the MCU with its crystal on its oscillator pins, the LEDs and the
 button along an edge. This skill places that way. You decide what belongs
-together; `py_placer/place_simple.py` arranges it; a fast route shows what the
-arrangement costs; you change what you gave it and place again.
+together; `py_placer/place_simple.py` arranges it over several seeds; a fast
+route of each keeps the best. With more than one round, you then change what
+you gave it and place again.
 
-Invocation: `/plan-pcb-placement <mode> <board.kicad_pcb> [intent.json]`,
-where mode is `place` or `full`. With no mode, use `full`.
+Invocation: `/plan-pcb-placement <mode> <board.kicad_pcb> [intent.json] [--rounds N]`,
+where mode is `place` or `full`. With no mode, use `full`. `--rounds N` caps
+the placement rounds (§3.5); the default is 1: place the seeds, fast-route
+each, keep the best, with no review and no input changes.
 
 **Measured basis.** A 25-part 2-layer board with 3 fixed connectors, from a
 scatter, routed by its recorded chain over seeds 0-7: 0 blocking on every
 seed, 32-52 vias (the human layout: 36), 255-331 mm of copper (the human:
 275). Placing takes about 4 s; the seed spread is larger than most changes,
-so place more than one seed and judge by routing.
+so place more than one seed and judge by routing. On two denser boards
+(noahfc, fusb302_pd_dev) one round routed 69 and 96 vias (the human layouts:
+78 and 70) in 3-4 min of machine time; review rounds took fusb302_pd_dev to
+86 vias at about three times the time, and found nothing on noahfc.
 
 ## 1. The goal, per mode
 
@@ -188,9 +194,14 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb wk/<run>/s0.k
   parts on the side of the chip where their pins are, connectors' partners
   right behind them.
 
-### 3.5 Fast route, review, change the inputs, place again
+### 3.5 Fast-route the seeds; with `--rounds` above 1, review and place again
 
-This is the loop that finds what the objective misses.
+A round is: place the seeds (§3.4), fast-route each, keep the best. The
+default is ONE round, steps 1-2 below. With `--rounds N`, rounds 2 to N are
+the review loop (steps 3-6) that finds what the objective misses.
+`--rounds` bounds the rounds spent improving a board that is already DONE:
+when no seed of the first round is DONE, review and place again until one is,
+bounded by §5's "If DONE will not come" rule.
 
 1. **Fast-route each candidate** with the board's routing chain (the recipe
    is `plan-pcb-routing`'s: planes, fanout, the decap clearance step,
@@ -201,7 +212,8 @@ This is the loop that finds what the objective misses.
    SAME chain for every candidate, so they compare. Never ship a quick-pass
    board.
 2. **Score each** with `py_tools/board_score.py <routed> --baseline <placed> --json <out>`
-   and keep the best by blocking, then vias, copper_mm, segments.
+   and keep the best by blocking, then vias, copper_mm, segments. **With one
+   round, stop here**: that board is the placement.
 3. **Review the best:**
    ```bash
    python3 -X utf8 py_tools/route_review.py <routed.kicad_pcb> --json wk/<run>/review.json
@@ -229,8 +241,8 @@ This is the loop that finds what the objective misses.
 5. **Place again** with the same seeds, fast-route, score, and keep the
    better board. An input change reshuffles the whole anneal, so judge it on
    every seed, not only the net you aimed at.
-6. **Stop** when two rounds in a row improve nothing, or after five rounds.
-   Record each round in the ledger (§5.6).
+6. **Stop** when two rounds in a row improve nothing, or after `--rounds`
+   rounds. Record each round in the ledger (§5.6).
 
 In `place` mode the best fast-routed placement is the result. Touch it up
 with `place_pose` if the review names a turned part, then check it again
@@ -302,8 +314,8 @@ flag. If DONE does not come, classify the failure (§4) before you re-place.
    - **First reach DONE**; nothing else before it.
    - **Watch long jobs.** Never leave a background job unwatched for more than
      20 minutes.
-   - **After DONE, optimise in bounded rounds** (§3.5's loop). Stop when two
-     consecutive rounds each cut vias by less than 5 %.
+   - **After DONE, optimise only within `--rounds`** (§3.5): none by
+     default; with `--rounds N`, by §3.5's stop rule.
    - **If DONE will not come:** after three consecutive DIFFERENT approaches
      that each fail to lower `unrouted` + `broken` (then the rest of
      `blocking`), measured, stop and ship the best board with every remaining
