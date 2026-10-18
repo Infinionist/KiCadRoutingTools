@@ -86,7 +86,8 @@ What to read in the output:
   `moves`, `seed`, `runs`, `reseated`, `illegal`, the `groups` as placed,
   `seconds`). A seed is the same placement whether it runs alone (`--seed 0`)
   or in a batch. Exit 0 placed; 4 placed with parts left without a legal pose
-  (named); 2 unreadable input, or a face or pose two declarations disagree on;
+  or at a declared pose that is not legal (named); 2 unreadable input, a part
+  in two groups, or a face or pose two declarations disagree on;
   with `--seeds`, the worst seed's code.
 - **`check_assembly`** says `buildable` or not, with every reason.
 - **`render_placement`** writes one PNG per board side (`s0_F.png`,

@@ -27,9 +27,10 @@
    start, up to RESTARTS times, the first legal placement kept. On
    ch32v003_usb (22 movable parts) the whole run takes about 2.5 s.
 
-Exit codes: 0 placed, 2 unreadable input or a face the board cannot take
-(two declarations disagree, or a KiCad-locked part is declared on the other
-face or at another pose), 4 placed with parts left illegal.
+Exit codes: 0 placed, 2 unreadable input, a part in two groups, or a face the
+board cannot take (two declarations disagree, or a KiCad-locked part is
+declared on the other face or at another pose), 4 placed with parts left
+illegal (a declared pose that is not legal among them).
 """
 #: #937 registry: which door(s) show this tool, and whether it changes
 #: the board. Read by krt_registry.py -- by AST, never imported.
@@ -389,6 +390,17 @@ def main(argv=None):
     except (GroupsError, OSError, ValueError) as ex:
         print(f"place_simple: {ex}", file=sys.stderr)
         return 2
+    first, twice = {}, {}
+    for g in doc['groups']:
+        for r in g['refs']:
+            if first.setdefault(r, g['name']) != g['name']:
+                twice.setdefault(r, [first[r]]).append(g['name'])
+    if twice:
+        print("place_simple: in two groups: " + '; '.join(
+            f"{r} ({', '.join(gs)})" for r, gs in sorted(twice.items()))
+            + ". check_groups names every problem in the file. Nothing was written.",
+            file=sys.stderr)
+        return 2
     sources = parse_sources('auto')
     blocks, _problems = floorplan.resolve_blocks(intent, pcb, sources)
     # FACES first: the parts a declaration puts on the other face are
@@ -406,7 +418,8 @@ def main(argv=None):
     pre = {}
     for r, f in sorted(fixed.items()):
         foot = pcb.footprints[r]
-        rot = float(f['rot']) if f.get('rot') is not None else (foot.rotation or 0.0)
+        rot = (float(f['rot']) if f.get('rot') not in (None, 'unknown')
+               else (foot.rotation or 0.0))
         if (abs(float(f['x']) - foot.x) > 1e-6 or abs(float(f['y']) - foot.y) > 1e-6
                 or abs((rot - (foot.rotation or 0.0) + 180.0) % 360.0 - 180.0) > 1e-6):
             pre[r] = {'reference': r, 'new_x': float(f['x']), 'new_y': float(f['y']),
@@ -449,6 +462,29 @@ def main(argv=None):
           f"{', '.join(sorted(r for r in state.parts if r not in movable)) or 'none'}")
     for name, members in model.groups:
         print(f"  group {name}: {', '.join(members)}")
+    # a declared pose is a mechanical fact, checked and never nudged (#1054),
+    # against every part that stays where it is
+    from placement.seeder import _fixed_pose_check
+    waived = frozenset(frozenset(p) for p in intent.courtyard_waiver_pairs())
+    stay = {r: (p.x, p.y, p.rot) for r, p in state.parts.items() if r not in movable}
+    refused = {}
+    for r in sorted(set(fixed) & set(state.parts)):
+        how, reasons, _c = _fixed_pose_check(
+            state, r, stay[r], {o: q for o, q in stay.items() if o != r}, waived=waived)
+        if how is None:
+            refused[r] = reasons
+            print(f"  WARNING: {r}'s declared pose is not legal: {'; '.join(reasons)}")
+    # a part too big for the usable box at either quarter turn ends outside
+    # it whatever the anneal does, so a fresh start cannot help it
+    ux0, uy0, ux1, uy1 = state.usable
+    too_big = set()
+    for r in movable:
+        x0, y0, x1, y1 = state.parts[r].rect()
+        w, h = x1 - x0, y1 - y0
+        if not ((w <= ux1 - ux0 and h <= uy1 - uy0) or (h <= ux1 - ux0 and w <= uy1 - uy0)):
+            too_big.add(r)
+            print(f"  WARNING: {r} ({w:.2f} x {h:.2f} mm) does not fit in the usable area "
+                  f"({ux1 - ux0:.2f} x {uy1 - uy0:.2f} mm) at either quarter turn")
     t1 = time.time()
     moves = a.moves or MOVES_PER_PART * len(movable)
 
@@ -457,7 +493,10 @@ def main(argv=None):
         return (legal(state, r, p.x, p.y, p.rot)
                 and state.intent_clear(r, p.grade_rects(p.x, p.y, p.rot)))
     kept = None             # (illegal count, poses, res) of the best run yet
-    for k in range(RESTARTS + 1):
+    if not movable:
+        print("place_simple: nothing to place; the board is written as it is")
+        k, kept = -1, (0, {}, {'moves': 0, 'reseated': [], 'stats': {}})
+    for k in range(RESTARTS + 1 if movable else 0):
         # a restart's own stream, distinct from every other seed's first run
         seed = a.seed if k == 0 else (a.seed + 1) * 1000003 + k
         simple_anneal.scatter(model, movable, seed=seed)
@@ -467,7 +506,7 @@ def main(argv=None):
         if kept is None or len(illegal) < kept[0]:
             kept = (len(illegal), {r: (state.parts[r].x, state.parts[r].y, state.parts[r].rot)
                                    for r in movable}, res)
-        if not illegal:
+        if set(illegal) <= too_big:
             break
         print(f"  NOTE: run {k + 1} left no legal pose for {', '.join(illegal)}"
               + ("; annealing again from a fresh start" if k < RESTARTS else ""))
@@ -478,7 +517,7 @@ def main(argv=None):
     model.reprice_all()
     final = model.total()
     t2 = time.time()
-    illegal = [r for r in movable if not ok(r)]
+    illegal = [r for r in movable if not ok(r)] + sorted(refused)
     print(f"place_simple: annealed {res['moves']} moves in {t2 - t1:.1f} s; {_line(final)}")
     if res['reseated']:
         print(f"  NOTE: moved to the nearest legal pose after the anneal: {', '.join(res['reseated'])}")

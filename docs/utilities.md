@@ -205,10 +205,11 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 'r1/s{seed}.kicad_pcb'
   `runs`, the anneals it took, each move kind's tried and kept counts, the
   groups and the notes).
 
-Exit 0 placed; 2 unreadable input, or a face or pose the inputs contradict
-(two declarations disagree, or a KiCad-locked part is declared on the other
-face or at another pose), nothing written; 4 placed, with parts left illegal
-(named on the console). The objective's terms and the anneal's moves are in
+Exit 0 placed; 2 unreadable input, a part in two groups, or a face or pose
+the inputs contradict (two declarations disagree, or a KiCad-locked part is
+declared on the other face or at another pose), nothing written; 4 placed,
+with parts left illegal, a declared pose that is not legal among them (named
+on the console). The objective's terms and the anneal's moves are in
 `py_placer/placement/README.md` ("The objective").
 
 ## Groups Checker (`check_groups.py`)

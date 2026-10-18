@@ -5,9 +5,10 @@ and what the board says about it.
 (`placement/simple.py`). The groups are a judgement -- power
 input and its conditioning, the core and its clock, an interface and its
 protection -- made by an agent reading the parts, their pin functions and their
-datasheets. This module does not make that judgement. It loads the file,
-refuses one that cannot be placed (a part in no group, a part in two), and
-measures what the judgement implies so the agent can check it:
+datasheets. This module does not make that judgement. It loads the file
+(`analyze` reports a part in no group or in two as an error, and place_simple
+refuses a part in two), and measures what the judgement implies so the agent
+can check it:
 
   * cohesion: per part, its SIGNAL links to its own group and to every other
     group. Ground and board-wide rails are left out (`rail_net_ids`): on a
