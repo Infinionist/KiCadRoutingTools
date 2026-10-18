@@ -666,10 +666,8 @@ def main():
                        else '  baseline\'s own (no member moved)')
             print(f"    {q.a} <-> {q.b}  {q.area_mm2}mm2  depth "
                   f"{q.depth_mm}mm  side {q.side}{_mv}")
-        print(f"    Run-23 shipped J4 0.90mm inside U6 as `buildable` "
-              f"because courtyard overlap was advisory everywhere. A "
-              f"deliberate overlap is accepted by naming the pair in the "
-              f"intent's `overlap_waivers`, where the acceptance is visible.")
+        print("    A deliberate overlap is accepted by naming the pair in the "
+              "intent's `overlap_waivers`, where the acceptance is visible.")
 
     # #1250: a TEST POINT whose pad copper lies under another part's drawn
     # body -- no probe or bed-of-nails pin can reach it. The marker waiver
