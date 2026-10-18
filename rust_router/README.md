@@ -2,7 +2,7 @@
 
 High-performance A* grid router implemented in Rust with Python bindings via PyO3.
 
-**Current Version: 0.23.5**
+**Current Version: 0.23.6**
 
 > **Release note:** the 0.20.0 per-platform binaries are published as of
 > [v0.20.0](https://github.com/drandyhaas/KiCadRoutingTools/releases/tag/v0.20.0),
@@ -310,6 +310,20 @@ src/
 - **Costs**: ORTHO_COST=1000, DIAG_COST=1414 (sqrt(2) * 1000), DEFAULT_TURN_COST=1000
 
 ## Version History
+
+### 0.23.6 (2026-10-18)
+- **The simple path's overlap in Rust** (`placement_kernels.rs`):
+  `overlap_sum(total, h, mine, live, crects, faces)` adds the overlap of the
+  moving parts against every other part (their committed rects, grown by
+  half the courtyard gap, faces that meet only) to `total`, in the order the
+  Python loop added it, so the same value to the bit.
+- `mst_l1_tree` builds the tree of a net with more than 160 points by an
+  octant sweep over a Fenwick tree instead of a BTreeMap, candidates sorted
+  on their lengths' bits: the same lengths summed in the same ascending
+  order, so the same total to the bit, 2.8x faster at 340 points (111 to
+  40 us).
+- `pad_hit_sums` also drops the segments that miss the rects' union box, and
+  buckets the rects on a grid when there are many pairs: the same tallies.
 
 ### 0.23.5 (2026-10-18)
 - **Congestion priced where a move reaches** (`placement_kernels.rs`):

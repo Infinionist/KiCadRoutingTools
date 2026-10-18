@@ -1104,6 +1104,9 @@ class Model:
         A caller that keeps a move tells it (`commit`); one that moves parts
         some other way calls this, as `total` does."""
         self._ixp = SpatialIndex()
+        self._ixh = SpatialIndex()      # the parts with a halo alone
+        # each part's committed rect, row = `_pid` (the anneal's overlap)
+        self._CR = np.zeros((len(self.state.parts), 4))
         self._npads = {}
         # pads as flat rows, an index key -> row (rows of a part are reused)
         self._PR = np.zeros((0, 4))
@@ -1112,10 +1115,13 @@ class Model:
         self._PO = np.zeros(0, dtype=int)
         self._prow: Dict = {}
         names = self._names()
+        # the parts with a halo (a pair can cost only when one of its two
+        # has one, `halo_pair`), and the deepest halo
+        self._halo_parts = {r for r in names if self._reach[r] > 0}
         self._maxhalo = max((self._reach[r] for r in names), default=0.0)
         for r in names:
             self._index_part(r)
-        self._cedges = self._edges_of(self.nets)
+        self._cedge_build()
         self._claims_by: Dict[str, List] = {}
         self._decaps_by: Dict[str, List] = {}
         self._groups_by: Dict[str, List] = {}
@@ -1143,8 +1149,11 @@ class Model:
         (net, part)."""
         names = self._names()
         self._hp, self._hnb = {}, {r: set() for r in names}
+        H = self._halo_parts
         for i, a in enumerate(names):
             for b in names[i + 1:]:
+                if a not in H and b not in H:
+                    continue        # neither has a halo: nothing to pay
                 v = self.halo_pair_fast(a, b)
                 if v:
                     self._hp[(a, b)] = v
@@ -1197,8 +1206,13 @@ class Model:
 
     def _index_part(self, r):
         st = self.state
+        rect = st.parts[r].rect()
+        self._CR[self._pid(r)] = rect
         self._ixp.remove(r)
-        self._ixp.insert(r, st.parts[r].rect())
+        self._ixp.insert(r, rect)
+        if r in self._halo_parts:
+            self._ixh.remove(r)
+            self._ixh.insert(r, rect)
         rects, wts, nets, pids = self._pad_rows(r)
         k = len(rects)
         base = self._prow.get((r, 0))
@@ -1233,8 +1247,60 @@ class Model:
         for r in refs:
             self._index_part(r)
         self._rects_commit(refs)
-        if any(n in self.signal for n in nets):
-            self._cedges = self._edges_of(self.nets)
+        self._cedge_update([n for n in nets if n in self.signal])
+
+    def _cedge_build(self):
+        """Every signal net's committed tree edges in one buffer, a slot of
+        rows per net (`_cslot`: net -> (first row, rows)), and `_cedges` the
+        used part of it as `(edges, ends, nets)` -- what a move is priced
+        against. A row a net does not fill is NaN with net -1, which no test
+        meets."""
+        k = {n: len(self.net_edges[n]) for n in self.nets}
+        used = sum(k.values())
+        cap = used + max(64, used // 4)
+        E = np.full((cap, 4), np.nan)
+        ends = np.full((cap, 2), -1, dtype=np.int64)
+        labs = np.full(cap, -1, dtype=np.int64)
+        slot, at = {}, 0
+        for n in self.nets:
+            m = k[n]
+            if m:
+                E[at:at + m] = self.net_edges[n]
+                ends[at:at + m] = self.net_ends[n]
+                labs[at:at + m] = n
+            slot[n] = (at, m)
+            at += m
+        self._cbuf, self._cslot, self._cused = (E, ends, labs), slot, at
+        self._cedges = (E[:at], ends[:at], labs[:at])
+
+    def _cedge_update(self, nets):
+        """The kept trees of `nets` into their slots: in place when a tree
+        fits its slot (its spare rows NaN), else in a new slot at the end (the
+        old one NaN), the buffer rebuilt when it is full -- a kept move
+        writes its own nets' rows, not every net's."""
+        E, ends, labs = self._cbuf
+        for n in nets:
+            s, m = self._cslot[n]
+            new = self.net_edges[n]
+            k = len(new)
+            if k > m:
+                E[s:s + m] = np.nan
+                ends[s:s + m] = -1
+                labs[s:s + m] = -1
+                if self._cused + k > len(labs):
+                    return self._cedge_build()      # every tree as it now is
+                s, m = self._cused, k
+                self._cused += k
+                self._cslot[n] = (s, m)
+                self._cedges = (E[:self._cused], ends[:self._cused], labs[:self._cused])
+            if k:
+                E[s:s + k] = new
+                ends[s:s + k] = self.net_ends[n]
+                labs[s:s + k] = n
+            if k < m:
+                E[s + k:s + m] = np.nan
+                ends[s + k:s + m] = -1
+                labs[s + k:s + m] = -1
 
     def _commit_breakdowns(self, pend):
         R, T = pend['R'], pend['T']
@@ -1311,8 +1377,8 @@ class Model:
             pads = sum(w for t in T for w in self._pn.get(t, {}).values())
             pads += sum(w for pid in Rp for n, w in self._po.get(pid, {}).items() if n not in tset)
             halo = 0.0
-            for r in R:
-                for b in self._hnb.get(r, ()):
+            for r in R:     # in the order `_local_halo_bd` sums them, not a set's
+                for b in sorted(self._hnb.get(r, ())):
                     if b not in rset or b > r:
                         halo += self._hp[(r, b) if r < b else (b, r)]
             grp = sum(self._gc[name] for name in self._group_names(gr))
@@ -1368,8 +1434,7 @@ class Model:
         M = np.ascontiguousarray(np.vstack([self.net_edges[n] for n in T]), dtype=float)
         lab = np.concatenate([np.full(len(self.net_edges[n]), n) for n in T]).astype(np.int64)
         O, _ends, olab = self._cedges
-        total, rows = grid_router.seg_cross_counts(M, lab, np.ascontiguousarray(O, dtype=float),
-                                                   olab.astype(np.int64), np.asarray(T, dtype=np.int64))
+        total, rows = grid_router.seg_cross_counts(M, lab, O, olab, np.asarray(T, dtype=np.int64))
         return total, {(a, b): c for a, b, c in rows}
 
     def _local_pads_bd(self, T, R):
@@ -1411,8 +1476,19 @@ class Model:
         out: Dict = {}
         for a in R:
             ra, ha = st.parts[a].rect(), self._reach[a]
+            # a pair costs only when a front of one of the two reaches the
+            # other: the parts with a halo within the deepest halo, and, when
+            # a has one, any part within its reach; of the other movers (the
+            # index holds their old rects), those with a halo, or all of them
+            # when a has one
             m = ha + self._maxhalo
-            for b in self._ixp.query((ra[0] - m, ra[1] - m, ra[2] + m, ra[3] + m)) | (rset - {a}):
+            near = self._ixh.query((ra[0] - m, ra[1] - m, ra[2] + m, ra[3] + m))
+            if ha > 0:
+                near |= self._ixp.query((ra[0] - ha, ra[1] - ha, ra[2] + ha, ra[3] + ha))
+                near |= rset - {a}
+            else:
+                near |= (rset & self._halo_parts) - {a}
+            for b in sorted(near):
                 if b == a or (b in rset and b < a):
                     continue
                 v = self.halo_pair_fast(a, b)

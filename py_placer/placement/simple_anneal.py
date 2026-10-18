@@ -57,6 +57,9 @@ import random
 import time
 from typing import Dict, List, Tuple
 
+import numpy as np
+
+from placement import simple
 from placement.legality import BOARD_TOL
 from placement.simple import ROTS, legal, nearest_legal, target
 
@@ -133,6 +136,7 @@ class Annealer:
         bit = {}
         self.faces = {r: sum(1 << bit.setdefault(f, len(bit)) for f in set(st.parts[r].sides))
                       for r in self.names}
+        self.face_ids = np.asarray([self.faces[r] for r in self.names], dtype=np.int64)
         self.lam = LAM_START
 
     # -- poses -----------------------------------------------------------------
@@ -202,20 +206,24 @@ class Annealer:
     def overlap(self, refs=None) -> float:
         """Overlap (mm2) of every pair with a part in `refs` (all pairs when
         None), each pair once, plus those parts' distance off the board and
-        into what the intent and the board's rule areas keep them out of."""
+        into what the intent and the board's rule areas keep them out of. With
+        `refs`, the pairs are summed in Rust (`grid_router.overlap_sum`): the
+        moving parts at their live poses, every other part at its committed
+        rect (`Model._CR`)."""
         mine = self.mov if refs is None else sorted(refs)
-        mset = set(mine)
         total = sum(self._outside(r) + self._intent(r) + self._bands(r) for r in mine)
-        grown = {}
         h = self.half
+        if refs is not None:
+            P, pid = self.st.parts, self.model._pid
+            return simple.grid_router.overlap_sum(
+                total, h, [pid(r) for r in mine],
+                np.asarray([P[r].rect() for r in mine], dtype=float).reshape(-1, 4),
+                self.model._CR, self.face_ids)
+        mset = set(mine)
+        grown = {}
         for a in mine:
             A = grown.get(a) or grown.setdefault(a, self._grown(a))
-            if refs is None:
-                near = self.names
-            else:       # the committed parts near it, and the other movers
-                near = sorted(self.model._ixp.query((A[0] - h, A[1] - h, A[2] + h, A[3] + h))
-                              | (mset - {a}))
-            for b in near:
+            for b in self.names:
                 if b == a or (b in mset and b < a) or not self.faces[a] & self.faces[b]:
                     continue
                 B = grown.get(b) or grown.setdefault(b, self._grown(b))

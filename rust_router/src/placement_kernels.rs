@@ -448,6 +448,74 @@ pub fn seg_cross_counts(
     (total, out)
 }
 
+/// Above this many segment x rect pairs (and `GRID_MIN` rects) `pad_hit_sums`
+/// buckets the rects in a `Grid`.
+const GRID_PAIRS: usize = 4096;
+const GRID_MIN: usize = 32;
+
+/// Boxes bucketed on a uniform grid over their union box `ub`, about one per
+/// cell: `gather` gives the boxes whose buckets a query box meets -- every box
+/// it can meet -- each once, in ascending order.
+struct Grid {
+    x0: f64,
+    y0: f64,
+    cw: f64,
+    ch: f64,
+    g: usize,
+    cells: Vec<Vec<usize>>,
+}
+
+impl Grid {
+    fn new(ub: [f64; 4], boxes: impl Iterator<Item = [f64; 4]>) -> Grid {
+        let boxes: Vec<[f64; 4]> = boxes.collect();
+        let g = ((boxes.len() as f64).sqrt().ceil() as usize).clamp(1, 64);
+        let cw = ((ub[2] - ub[0]) / g as f64).max(1e-9);
+        let ch = ((ub[3] - ub[1]) / g as f64).max(1e-9);
+        let mut grid = Grid { x0: ub[0], y0: ub[1], cw, ch, g, cells: vec![Vec::new(); g * g] };
+        for (k, b) in boxes.iter().enumerate() {
+            if let Some((c0, c1, r0, r1)) = grid.span(*b) {
+                for r in r0..=r1 {
+                    for c in c0..=c1 {
+                        grid.cells[r * g + c].push(k);
+                    }
+                }
+            }
+        }
+        grid
+    }
+
+    /// The columns and rows of buckets box `b` meets, clamped to the grid;
+    /// None for a box with a NaN side, which meets nothing.
+    fn span(&self, b: [f64; 4]) -> Option<(usize, usize, usize, usize)> {
+        if b.iter().any(|v| v.is_nan()) {
+            return None;
+        }
+        let top = (self.g - 1) as f64;
+        let ix = |v: f64, o: f64, w: f64| ((v - o) / w).floor().clamp(0.0, top) as usize;
+        Some((ix(b[0], self.x0, self.cw), ix(b[2], self.x0, self.cw), ix(b[1], self.y0, self.ch),
+              ix(b[3], self.y0, self.ch)))
+    }
+
+    /// Into `out`, ascending: the boxes in the buckets `b` meets, each once
+    /// (`stamp[k] == tag` marks one already taken for this query).
+    fn gather(&self, b: [f64; 4], tag: usize, stamp: &mut [usize], out: &mut Vec<usize>) {
+        out.clear();
+        if let Some((c0, c1, r0, r1)) = self.span(b) {
+            for r in r0..=r1 {
+                for c in c0..=c1 {
+                    for &k in &self.cells[r * self.g + c] {
+                        if stamp[k] != tag {
+                            stamp[k] = tag;
+                            out.push(k);
+                        }
+                    }
+                }
+            }
+        }
+        out.sort_unstable();
+    }
+}
+
 /// A segment's box (x0, y0, x1, y1 as min x, min y, max x, max y).
 #[inline]
 fn seg_box(a: [f64; 4]) -> [f64; 4] {
@@ -505,13 +573,41 @@ pub fn pad_hit_sums(
             !skip_o.contains(&po[j]) && boxes_meet(&ub, &[p[[j, 0]], p[[j, 1]], p[[j, 2]], p[[j, 3]]])
         })
         .collect();
+    // ... and the segments the rects' union box meets: one missing it misses
+    // every rect
+    let mut rb = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    for &j in &rects {
+        rb = [rb[0].min(p[[j, 0]]), rb[1].min(p[[j, 1]]), rb[2].max(p[[j, 2]]), rb[3].max(p[[j, 3]])];
+    }
+    let segs: Vec<usize> = segs
+        .into_iter()
+        .filter(|&i| boxes_meet(&rb, &seg_box([s[[i, 0]], s[[i, 1]], s[[i, 2]], s[[i, 3]]])))
+        .collect();
+    // many pairs: the rects bucketed, each segment testing those in the
+    // buckets its box meets, in their order
+    let grid = if segs.len() * rects.len() > GRID_PAIRS && rects.len() > GRID_MIN {
+        Some(Grid::new(rb, rects.iter().map(|&j| [p[[j, 0]], p[[j, 1]], p[[j, 2]], p[[j, 3]]])))
+    } else {
+        None
+    };
+    let mut stamp = vec![usize::MAX; rects.len()];
+    let mut cand: Vec<usize> = Vec::new();
+    let all: Vec<usize> = (0..rects.len()).collect();
     for &i in &segs {
         let (x0, y0, x1, y1) = (s[[i, 0]], s[[i, 1]], s[[i, 2]], s[[i, 3]]);
         let (sx0, sx1) = (np_min(x0, x1), np_max(x0, x1));
         let (sy0, sy1) = (np_min(y0, y1), np_max(y0, y1));
         let dx = x1 - x0;
         let dy = y1 - y0;
-        for &j in &rects {
+        let local: &[usize] = match &grid {
+            Some(g) => {
+                g.gather(seg_box([x0, y0, x1, y1]), i, &mut stamp, &mut cand);
+                &cand
+            }
+            None => &all,
+        };
+        for &jl in local {
+            let j = rects[jl];
             let (px0, py0, px1, py1) = (p[[j, 0]], p[[j, 1]], p[[j, 2]], p[[j, 3]]);
             if !(sx0 <= px1 && sx1 >= px0 && sy0 <= py1 && sy1 >= py0) {
                 continue;
@@ -1008,60 +1104,192 @@ fn ord_key(v: f64) -> u64 {
     }
 }
 
-/// The Manhattan minimum spanning tree of (xs, ys) as (length, a, b) edges:
-/// every point's nearest neighbour in each of the eight octants by a sweep
-/// (the candidate set contains a minimum spanning tree), then Kruskal over
-/// them, lighter first, ties by index.
+/// The Manhattan minimum spanning tree of (xs, ys) as (length, a, b) edges,
+/// lighter first: each point's nearest neighbour in four octants (the other
+/// four are the same edges seen from the far end) by a Fenwick-tree sweep --
+/// the candidate set contains a minimum spanning tree -- then Kruskal over
+/// them. Any minimum spanning tree has the same weights, so the lengths it
+/// gives, summed in this order, are the same to the bit whichever of two
+/// equal edges it keeps. Points must be distinct.
 fn manhattan_mst(xs: &[f64], ys: &[f64]) -> Vec<(f64, usize, usize)> {
-    use std::collections::BTreeMap;
     let n = xs.len();
-    let (mut px, mut py) = (xs.to_vec(), ys.to_vec());
-    let mut id: Vec<usize> = (0..n).collect();
-    let mut cand: Vec<(f64, usize, usize)> = Vec::new();
-    for k in 0..4 {
-        id.sort_by(|&i, &j| (px[i] + py[i]).partial_cmp(&(px[j] + py[j])).unwrap().then(i.cmp(&j)));
-        let mut sweep: BTreeMap<(u64, usize), usize> = BTreeMap::new();
-        for &i in &id {
-            let mut gone = Vec::new();
-            for (&key, &j) in sweep.range((ord_key(-py[i]), 0usize)..) {
-                if py[i] - py[j] > px[i] - px[j] {
-                    break;
-                }
-                cand.push(((xs[i] - xs[j]).abs() + (ys[i] - ys[j]).abs(), i.min(j), i.max(j)));
-                gone.push(key);
+    if n < 2 {
+        return Vec::new();
+    }
+    // each coordinate's rank, equal values one rank
+    let rank_of = |v: &[f64]| -> (Vec<usize>, usize) {
+        let mut o: Vec<(u64, u32)> = (0..n).map(|p| (ord_key(v[p]), p as u32)).collect();
+        o.sort_unstable();
+        let mut rank = vec![0usize; n];
+        let mut r = 0usize;
+        for k in 0..n {
+            if k > 0 && o[k].0 != o[k - 1].0 {
+                r += 1;
             }
-            for key in gone {
-                sweep.remove(&key);
-            }
-            sweep.insert((ord_key(-py[i]), i), i);
+            rank[o[k].1 as usize] = r;
         }
-        for p in 0..n {
-            if k & 1 == 1 {
-                px[p] = -px[p];
-            } else {
-                std::mem::swap(&mut px[p], &mut py[p]);
+        (rank, r + 1)
+    };
+    let (rx, mx) = rank_of(xs);
+    let (ry, my) = rank_of(ys);
+    // the sweep in the frame (px, py) = (x, y), (y, x), (-x, y), (y, -x): the
+    // points in decreasing py - px (ties: decreasing px), each asking the
+    // points already met with px no less than its own for the least px + py
+    // -- its nearest in the octant dx >= 0, dy >= dx. Frames 1 and 3 take
+    // frames 0 and 2's orders reversed, each run of equal keys put back.
+    let dif: Vec<f64> = (0..n).map(|p| ys[p] - xs[p]).collect();
+    let sum: Vec<f64> = (0..n).map(|p| xs[p] + ys[p]).collect();
+    let sorted = |key: &Vec<f64>, asc_x: bool| -> Vec<u32> {
+        let mut k: Vec<(u64, u64, u32)> = (0..n)
+            .map(|p| (!ord_key(key[p]), if asc_x { ord_key(xs[p]) } else { !ord_key(xs[p]) }, p as u32))
+            .collect();
+        k.sort_unstable();
+        k.iter().map(|e| e.2).collect()
+    };
+    let flip = |o: &Vec<u32>, key: &Vec<f64>| -> Vec<u32> {
+        let mut r: Vec<u32> = o.iter().rev().copied().collect();
+        let mut s = 0;
+        while s < n {
+            let mut e = s + 1;
+            while e < n && key[r[e] as usize] == key[r[s] as usize] {
+                e += 1;
+            }
+            r[s..e].reverse();
+            s = e;
+        }
+        r
+    };
+    let o0 = sorted(&dif, false);
+    let o2 = sorted(&sum, true);
+    let o1 = flip(&o0, &dif);
+    let o3 = flip(&o2, &sum);
+    let mut cand: Vec<(u64, u32, u32)> = Vec::with_capacity(4 * n);
+    let mut bv = vec![f64::INFINITY; n + 1];
+    let mut bi = vec![u32::MAX; n + 1];
+    for t in 0..4 {
+        let (order, m) = match t {
+            0 => (&o0, mx),
+            1 => (&o1, my),
+            2 => (&o2, mx),
+            _ => (&o3, my),
+        };
+        for k in 0..=m {
+            bv[k] = f64::INFINITY;
+            bi[k] = u32::MAX;
+        }
+        for &i in order.iter() {
+            let i = i as usize;
+            // the Fenwick slot: m - rank(px), so a prefix is px no less
+            let (slot, v) = match t {
+                0 => (m - rx[i], xs[i] + ys[i]),
+                1 => (m - ry[i], ys[i] + xs[i]),
+                2 => (rx[i] + 1, -xs[i] + ys[i]),
+                _ => (m - ry[i], ys[i] + -xs[i]),
+            };
+            let mut k = slot;
+            let (mut best, mut who) = (f64::INFINITY, u32::MAX);
+            while k > 0 {
+                if bv[k] < best {
+                    best = bv[k];
+                    who = bi[k];
+                }
+                k &= k - 1;
+            }
+            if who != u32::MAX {
+                let j = who as usize;
+                let w = (xs[i] - xs[j]).abs() + (ys[i] - ys[j]).abs();
+                cand.push((w.to_bits(), i.min(j) as u32, i.max(j) as u32));
+            }
+            let mut k = slot;
+            while k <= m {
+                if v < bv[k] {
+                    bv[k] = v;
+                    bi[k] = i as u32;
+                }
+                k += k & k.wrapping_neg();
             }
         }
     }
-    cand.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
-    let mut parent: Vec<usize> = (0..n).collect();
-    fn find(p: &mut Vec<usize>, mut x: usize) -> usize {
-        while p[x] != x {
-            p[x] = p[p[x]];
-            x = p[x];
+    // a length is never negative, so its bits sort as it does
+    cand.sort_unstable_by_key(|e| e.0);
+    let mut parent: Vec<u32> = (0..n as u32).collect();
+    let find = |p: &mut Vec<u32>, mut x: u32| -> u32 {
+        while p[x as usize] != x {
+            let g = p[p[x as usize] as usize];
+            p[x as usize] = g;
+            x = g;
         }
         x
-    }
-    let mut out = Vec::with_capacity(n.saturating_sub(1));
+    };
+    let mut out = Vec::with_capacity(n - 1);
     for (w, a, b) in cand {
         let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
         if ra != rb {
-            parent[ra] = rb;
-            out.push((w, a, b));
+            parent[ra as usize] = rb;
+            out.push((f64::from_bits(w), a as usize, b as usize));
             if out.len() + 1 == n {
                 break;
             }
         }
     }
     out
+}
+
+/// `simple_anneal.Annealer.overlap(refs)`'s pair sum: from `total` (the
+/// moving parts' off-board and intent terms), for each moving part `a` (ids
+/// `mine`, ascending, with live rects `live`) and every other part `b` in id
+/// order -- a moving one only when its id is above `a`'s -- sharing a face
+/// (`faces[a] & faces[b]`), the area where the two courtyards grown by `h`
+/// overlap, added in that order. Parts not moving are read at their
+/// committed rects (`crects`, row = id). Every part is looked at, so the
+/// pairs a spatial index would offer are among them: the same sum.
+#[pyfunction]
+pub fn overlap_sum(
+    total: f64,
+    h: f64,
+    mine: Vec<i64>,
+    live: PyReadonlyArray2<f64>,
+    crects: PyReadonlyArray2<f64>,
+    faces: PyReadonlyArray1<i64>,
+) -> f64 {
+    let live = live.as_array();
+    let cr = crects.as_array();
+    let faces = faces.as_array();
+    let n = cr.nrows();
+    let grow = |c: [f64; 4]| [c[0] - h, c[1] - h, c[2] + h, c[3] + h];
+    let mut slot = vec![usize::MAX; n];
+    for (k, &p) in mine.iter().enumerate() {
+        slot[p as usize] = k;
+    }
+    let rect = |b: usize| -> [f64; 4] {
+        match slot[b] {
+            usize::MAX => grow([cr[[b, 0]], cr[[b, 1]], cr[[b, 2]], cr[[b, 3]]]),
+            k => grow([live[[k, 0]], live[[k, 1]], live[[k, 2]], live[[k, 3]]]),
+        }
+    };
+    // Python's min / max on two floats: the first unless the second is
+    // strictly smaller / larger
+    let pmin = |x: f64, y: f64| if y < x { y } else { x };
+    let pmax = |x: f64, y: f64| if y > x { y } else { x };
+    let mut acc = total;
+    for &a in &mine {
+        let a = a as usize;
+        let ra = rect(a);
+        let fa = faces[a];
+        for b in 0..n {
+            if b == a || (slot[b] != usize::MAX && b < a) || fa & faces[b] == 0 {
+                continue;
+            }
+            let rb = rect(b);
+            let ox = pmin(ra[2], rb[2]) - pmax(ra[0], rb[0]);
+            if !(ox > 0.0) {
+                continue;
+            }
+            let oy = pmin(ra[3], rb[3]) - pmax(ra[1], rb[1]);
+            if oy > 0.0 {
+                acc += ox * oy;
+            }
+        }
+    }
+    acc
 }
