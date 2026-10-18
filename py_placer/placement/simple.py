@@ -26,9 +26,9 @@ this cost by simulated annealing; `place_simple.py` is the CLI.
            pads face (`pad_fronts`), a strip `base + coef x the nets that
            leave by it` deep (ground, dropping a via to its plane, leaves
            none), spanning those pads, for its tracks to fan out in; a
-           part sharing a board side and NO signal net with it, where
-           a strip reaches it, pays halo_weight x the shortfall squared on
-           the axis that separates the two best. Everything else packs as
+           part sharing a board side with it, where a strip reaches it,
+           pays halo_weight x the shortfall squared on the axis that
+           separates the two best. Everything else packs as
            tight as legality lets it, and a part off the end of a pad row (a
            chip's corner) pays nothing. A small part wired to it (a decap at
            its pin, a crystal at its oscillator pins: HALO_SMALL_PADS pads or
@@ -672,7 +672,7 @@ class Model:
         return st.halo_weight * short * short
 
     def halo_cost(self, refs=None):
-        """The halo penalty over every unwired pair of parts with one in
+        """The halo penalty over every pair of parts with one in
         `refs` (every pair when None), each pair once."""
         st = self.state
         names = sorted(st.parts)

@@ -26,8 +26,8 @@ Moves, each priced by `Model.local` against the committed state near it:
     gshift  a group's movable members by the same step
     gturn   a group's movable members turned together about their centre
     gswap   two groups with no fixed member exchange places
-    escape  a part that overlaps something, to the least-overlap pose of a
-            few drawn at random over the board
+    escape  a part that overlaps something, to the least-overlap pose of
+            ESCAPE_TRIES drawn at random over the board
 
 A move never leaves the board: the parts it moves are translated together
 until their courtyards are inside the board less its edge margin. A part

@@ -159,9 +159,9 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
                 legs.append((str(q.pad_number), pp))
         if legs:
             claims.append((s, p, legs))
-    # decaps: each cap on a supply rail, to that rail's nearest supply pin --
-    # not a claimed part, and not a cap whose IC is in another group (an RC
-    # cap beside its button, not a decap)
+    # decaps: each cap from a supply rail to ground, matched to that rail's
+    # supply pins (`simple.Model._sites`) -- not a claimed part, and not a cap
+    # whose IC is in another group (an RC cap beside its button, not a decap)
     view = BoardView(pcb)
     exempt = {str(c['ref']) for c in rows} | {
         c['cap'] for c in decap_conflicts(doc, view)}
@@ -172,13 +172,18 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
             if nid and not _is_ground(pcb.nets[nid].name):
                 supply.setdefault(nid, []).append((ic, str(pad.pad_number)))
     # a decap serves its own group's IC when the group has one on its rail:
-    # an LDO's output cap belongs at the LDO, not at the MCU's VDD pin
+    # an LDO's output cap belongs at the LDO, not at the MCU's VDD pin. Its
+    # other pad is on ground: a cap from a rail to anything else (a
+    # converter's feed-forward cap, rail to FB) is not decoupling anything
     gof = group_of(doc)
     decaps, decap_pins = [], {}
     for nid, caps in fp._decap_caps_by_net(pcb).items():
         if nid in supply:
             for cap in caps:
                 r = cap.reference
+                other = {p.net_id for p in cap.pads if p.net_id > 0} - {nid}
+                if not any(_is_ground(pcb.nets[n].name) for n in other):
+                    continue
                 if r in state.parts and r not in exempt:
                     decaps.append((r, nid))
                     own = [q for q in supply[nid] if gof.get(q[0]) == gof.get(r)]
@@ -229,7 +234,8 @@ def main(argv=None):
     ap.add_argument('--claim-weight', type=float, default=1.0,
                     help='per mm of a claimed pad to its partner pad (default 1)')
     ap.add_argument('--decap-weight', type=float, default=2.0,
-                    help='per mm of a decap to its supply pin (default 2)')
+                    help='per mm of a decap to the supply-pin site it is matched to '
+                         '(default 2)')
     ap.add_argument('--group-weight', type=float, default=5.0,
                     help='per mm of gap in a group\'s tree over its members\' '
                          'courtyards (default 5)')
