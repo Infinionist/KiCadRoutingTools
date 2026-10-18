@@ -20,15 +20,6 @@ the most placement rounds (§3.5), default 3. The run stops at the first round
 whose best seed's fast route has no blocking net, so a board that routes
 clean after one round gets no review and no input changes.
 
-**Measured basis.** A 25-part 2-layer board with 3 fixed connectors, from a
-scatter, routed by its recorded chain over seeds 0-7: 0 blocking on every
-seed, 32-52 vias (the human layout: 36), 255-331 mm of copper (the human:
-275). Placing takes about 4 s; the seed spread is larger than most changes,
-so place more than one seed and judge by routing. On two denser boards
-(noahfc, fusb302_pd_dev) one round routed 69 and 96 vias (the human layouts:
-78 and 70) in 3-4 min of machine time; review rounds took fusb302_pd_dev to
-86 vias at about three times the time, and found nothing on noahfc.
-
 ## 1. The goal, per mode
 
 | mode | input | DONE means | better, once DONE |
@@ -180,8 +171,10 @@ python3 -X utf8 py_tools/check_groups.py wk/<run>/fixed.kicad_pcb --groups wk/<r
     --intent wk/<run>/intent.json
 ```
 
-It reads the groups the way `place_simple` will: the intent's seated parts
-are fixed, and claimed parts follow their partner. Fix every ERROR (a part
+It reads the intent the way `place_simple` will: seated parts are fixed,
+and it names each claimed part that will follow its partner into the
+partner's group. The groups it lists and checks are the file as written, so
+a follower still shows in the group you gave it. Fix every ERROR (a part
 in no group or in two, a ref not on the board) and
 read every WARN: a part with more signal links to another group may belong
 there; a decap "exempt" because no IC of its group carries its rail is right
@@ -196,7 +189,7 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/r1/
 ```
 
 - **The seeds run in parallel, then the fast routes one at a time.** `--seeds`
-  starts one process per seed (`--jobs N` caps how many at once, default 4),
+  starts one process per seed (`--jobs N` caps how many at once; default one per seed, at most 4),
   each giving exactly the placement a `--seed` run would, its log beside its
   board as `s<S>.log`; one placement process takes about 120 MB. A route
   takes about 1.3 GB, so on a machine with 2 GB to spare never run
@@ -205,7 +198,7 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/r1/
 - Every part not locked or seated by the intent starts at a random place and
   is annealed; the same board, inputs and seed give the same placement.
   The run is 500 moves per movable part by default (`--moves N` sets the
-  total), roughly 4 s for 25 parts.
+  total), roughly 2 s for 25 parts.
 - **Place seeds 0-3** (or more when the board is small): seeds differ more
   than most input changes. Exit 4 if any seed left a part illegal, 2 if any
   failed outright.

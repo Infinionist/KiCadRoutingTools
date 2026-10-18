@@ -76,7 +76,7 @@ class PlacementState:
     #: The subset of `stacked_refs` that is not explicable as deliberate
     #: co-location -- i.e. neither on a side the others cannot reach (a DRILLED
     #: part reaches both) nor a marker class. Being LOCKED is deliberately not
-    #: an excuse; see the NOTE in `_suspect_in`. `partially_unplaced` keys on
+    #: an excuse; see the NOTE in `stack_suspects`. `partially_unplaced` keys on
     #: THIS, not on `stacked_refs`.
     stacked_suspect_refs: List[str] = field(default_factory=list)
     segments: int = 0
@@ -195,10 +195,8 @@ def assess_placement(pcb_data, pcb_file: Optional[str] = None,
     #   * a MARKER class (fiducial / mount_hole / testpoint) is co-located by
     #     design. legality._MARKER waives exactly this set for assembly.
     #
-    # A third filter, "every part in the group is LOCKED", was tried and
-    # REMOVED -- see the NOTE in _suspect_in. It is named here because the
-    # field docstring and the operator-facing reason string both used to
-    # advertise it, which is worse than not having it.
+    # "Every part in the group is LOCKED" is deliberately NOT a filter: see
+    # the NOTE in `stack_suspects`.
     #
     # The strong signal (s1) keeps every ref, because a genuine pile-up buries
     # markers and locks along with everything else; only the weak
@@ -519,8 +517,7 @@ def stack_suspects(refs_at_one_spot, sides_of, is_marker,
         # pile-up the tools CREATED would have been invisible to the check
         # meant to catch pile-ups. Markers are the real discriminator: a
         # fiducial and a mounting hole are different physical things and
-        # share a coordinate by design. Costs nothing on the corpus: every
-        # board that changed was already suppressed by side or by class.
+        # share a coordinate by design.
         out.update(group)
     return sorted(out)      # a through part appears in both side-groups
 

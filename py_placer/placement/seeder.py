@@ -724,7 +724,7 @@ def stamp_unlocked(board_file: str, refs: Sequence[str]) -> int:
     VIAS are copper, read by a different rule (#521), and are not footprint
     blocks, so nothing here can reach them.
     """
-    from kicad_parser import footprint_head_flags, iter_footprint_blocks
+    from kicad_parser import iter_footprint_blocks
     with open(board_file, 'r', encoding='utf-8') as f:
         content = f.read()
     want = set(refs)

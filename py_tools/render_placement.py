@@ -62,8 +62,7 @@ from kicad_parser import parse_kicad_pcb
 # because `board_context.py` and the stress predictors import it for
 # `PlacementModel` / `legality_findings` and draw nothing.
 #
-# Every name survives, because callers read them by name --
-# `tests/test_431_render_placement.py:293-294` reads `C_AIR_PICK` that way.
+# Every name survives, because callers read them by name.
 # The second block that used to sit MID-FILE (C_CONFLICT / C_HOLE /
 # C_COURT_OVL, declared after `draw_courtyards`) is folded in here: there was
 # no reason for a palette to be in two places except that nobody owned it.

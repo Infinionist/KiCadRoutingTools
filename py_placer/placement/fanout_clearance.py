@@ -513,7 +513,7 @@ _point_to_seg_dist = point_to_seg_dist
 # graze_penalty) dominates everything, then pulling pads onto same-net balls,
 # then a mild displacement regularizer (so caps that are already fine and far
 # from a same-net ball stay put). Cap-cap / locked-part overlap is a HARD
-# constraint (see hard_blocked), not weighted.
+# constraint (cost() is inf there), not weighted.
 VIA_WEIGHT = 50.0
 ATTRACT_WEIGHT = 1.0
 DISPLACEMENT_WEIGHT = 0.3
@@ -1362,7 +1362,7 @@ class _Repair:
         # max_displacement_cap from its seed, so anything whose seed gap already
         # exceeds that (plus the relevant spans / clearance) can NEVER constrain
         # it -- excluding it is exact, not an approximation. This turns the
-        # per-candidate hard_blocked / penalty loops from O(all parts) into
+        # per-candidate gate / penalty loops from O(all parts) into
         # O(handful), the dominant cost on dense boards (#213 profiling).
         # #725: same identity-keyed map for foreign pads -- a pad's floor
         # depends on its own `(clearance ...)` and its copper layers, neither of
@@ -3029,31 +3029,6 @@ class _Repair:
         if self._tethers is not None:
             self._tethers.note_move()
 
-    def hard_blocked(self, ref, cap, x, y, rot):
-        """True if a placement leaves the board or introduces/worsens a
-        same-side courtyard overlap (with a locked part OR another movable
-        cap) beyond its baseline, or worsens a foreign track/pad graze past
-        its seed baseline. Caps may never overlap each other's footprints,
-        so any new cap-cap overlap is rejected outright."""
-        if self._blocked_geom(ref, cap, x, y, rot):
-            return True
-        # #441 per-net: no NEW/worse overlap with ANY foreign-net track -- forbid
-        # penetrating a net that was clear at the seed even if the summed shortfall
-        # drops (the zynq GND<->NetR2_2 butterfly). Same for foreign component pads.
-        if self._worsens_any_net(self._seg_shortfalls(ref, cap, x, y, rot),
-                                 self.base_seg.get(ref, {})):
-            return True
-        if self._worsens_any_net(self._pad_shortfalls(ref, cap, x, y, rot),
-                                 self.base_pad.get(ref, {})):
-            return True
-        # #445: same per-net gate for existing VIAS -- via_penalty alone is a
-        # weighted objective, and a big track-graze relief could pay for
-        # dropping a pad onto a via (zynq_ad9364 R2 onto DDR3_VREF).
-        if self._worsens_any_net(self._via_shortfalls(ref, cap, x, y, rot),
-                                 self.base_via.get(ref, {})):
-            return True
-        return self._tether_refuses(ref, x, y, rot)    # #1067
-
     def graze_penalty(self, ref, cap, x, y, rot):
         """Total foreign-copper clearance shortfall for a placement: via
         (#130) + same-side track (#278 PAD-SEGMENT) + component pad (#275
@@ -3071,7 +3046,7 @@ class _Repair:
         seg_by_net = self._seg_shortfalls(ref, cap, x, y, rot)
         pad_by_net = self._pad_shortfalls(ref, cap, x, y, rot)
         via_by_net = self._via_shortfalls(ref, cap, x, y, rot)
-        # #441/#445 per-net accept gate (mirror hard_blocked): reject a move
+        # #441/#445 per-net accept gate: reject a move
         # that penetrates any foreign net -- track, pad, or VIA -- beyond its
         # seed, even if the total improves.
         if (self._worsens_any_net(seg_by_net, self.base_seg.get(ref, {}))
@@ -3883,8 +3858,8 @@ def _repair_one_arm(pcb_data: PCBData, pcb_file: str,
             st.refresh_cap_vias()
             # base_seg / base_pad / base_via are deliberately NOT re-seeded --
             # exactly as base_via is left alone by the line above, though via
-            # positions changed there too. They are read only by cost() /
-            # hard_blocked, neither of which runs past this point; and a
+            # positions changed there too. They are read only by cost(),
+            # which does not run past this point; and a
             # baseline means "the state at the SEED", which copper this pass
             # CREATED is not part of. Folding it in would license a later move
             # to sit on the pass's own connector for free -- the #441

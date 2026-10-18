@@ -191,8 +191,7 @@ def _floors(pcb_file):
 # STALE ON THE PLACED SIDE, and dated rather than quietly re-typed. #841
 # changed what a neighbour contributes from the bbox of its pad CENTRES to its
 # pad COPPER, so every PLACED number above moved: ulx3s 0 -> 5,
-# kit-dev-coldfire 0 -> 8, watchy 25 -> 55 (regenerate with
-# `tests/measure_834_835_side_awareness.py --table B`). The PILED halves are
+# kit-dev-coldfire 0 -> 8, watchy 25 -> 55. The PILED halves are
 # from a recorded run against a staged pile that no committed script rebuilds,
 # so they are not re-derived here. The direction is unaffected -- a pile still
 # collapses every supply to 0 -- and it is the direction the block is about.
@@ -1186,8 +1185,8 @@ def main(argv=None):
          'nets': brief['board'].get('nets'),
          'unplaced': (brief.get('state') or {}).get('unplaced'),
          'pile': (brief.get('state') or {}).get('pile'),
-         # #1115: the placement skill picks its mode from `pile` and
-         # `has_copper`; this line carried only the first, so the second was
+         # #1115: the placement skill reads `pile` and `has_copper`
+         # here; this line carried only the first, so the second was
          # readable only from a --json file the skill's command never wrote.
          'has_copper': (brief.get('state') or {}).get('has_copper'),
          # #1197: `has_copper` is False on a board whose only copper is a

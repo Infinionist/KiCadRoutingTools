@@ -25,7 +25,7 @@
    same placement. A run that leaves a part with no legal pose (a big part
    wedged between fixed ones on a full board) is run again from a fresh
    start, up to RESTARTS times, the first legal placement kept. On
-   ch32v003_usb (22 movable parts) the whole run takes about 4.3 s.
+   ch32v003_usb (22 movable parts) the whole run takes about 2.5 s.
 
 Exit codes: 0 placed, 2 unreadable input or a face the board cannot take
 (two declarations disagree, or a KiCad-locked part is declared on the other
@@ -38,7 +38,7 @@ KRT_TOOL = {'scope': ['placement', 'combined'], 'kind': 'actor'}
 import _path  # noqa: F401  (py_placer -> py_router/py_tools on sys.path)
 
 #: The anneal's default length per movable part, set by the time budget:
-#: ch32v003_usb (22 movable parts) anneals in about 4 s. More moves still pay
+#: ch32v003_usb (22 movable parts) anneals in about 2 s. More moves still pay
 #: (`--moves`); fewer leave the run cooling too fast.
 MOVES_PER_PART = 500
 #: Further anneals, each from a fresh start, when one leaves parts illegal.

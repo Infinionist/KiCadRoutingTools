@@ -78,9 +78,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: "completing" the table. `blocking` sums NINE components; the routed-board
 #: lenses cover eight of them. `assembly` is graded by the verifier brief's
 #: every-mode `check_assembly` step, in its overall VERDICT line rather than a
-#: lens file (the retired staged skill's boundary verifier answered it as
-#: `VERDICT=...:check=<1-5>` -- a different grammar that `_LENS_RE` refuses on
-#: purpose). Mapping it onto one of these three would make a routed-board lens
+#: lens file. Mapping it onto one of these three would make a routed-board lens
 #: answerable for a check nobody asked it to run.
 #: `tests/test_904_lens_components_cover_blocking.py` re-derives the nine names
 #: from board_score.py's own source and fails when a new one has no home here.
@@ -96,7 +94,7 @@ _LENS_RE = r'^VERDICT=(PASS|FAIL):lens=([A-Za-z0-9_-]+)'
 #: Stop conditions a `--final --kind completion` row may carry when a lens
 #: FAILED. Two vocabularies, both of record: the stop NUMBERS (2 budget
 #: spent, 3 plateau, 4 measured-unfixable) and the verdict NAMES as `verdict`
-#: prints them (the retired loop_driver's L5 interpolated them). '3' and STUCK
+#: prints them. '3' and STUCK
 #: are the same stop (#1202: STUCK passed while its number was refused).
 #: DONE-EXHAUSTED is deliberately absent -- with a FAIL lens it is a
 #: contradiction, refused above the membership check.
@@ -107,14 +105,13 @@ FAIL_COMPATIBLE_STOPS = ('2', '3', '4', 'STUCK', 'BUDGET')
 #: of prose into rows 29/30 of run 25 while the orchestrator's `4 (this half):
 #: ...` was refused twice at close-out. One record, two rules, depending on a
 #: lens. The numbers are the stop conditions (1 done, 2 budget spent, 3
-#: plateau, 4 measured-unfixable; this tuple is their definition since the
-#: staged skill's convergence.md was retired); the names are what `verdict`
+#: plateau, 4 measured-unfixable; this tuple is their definition); the names
+#: are what `verdict`
 #: prints. FAIL_COMPATIBLE_STOPS is the subset legal beside a FAIL lens.
 STOP_TOKENS = ('1', '2', '3', '4', 'DONE-EXHAUSTED', 'STUCK', 'BUDGET')
 
-#: The three re-entry shapes, named once. The same three words the retired
-#: loop_driver's L4 demanded, and `--shape` records which one a lap acted
-#: on. Spelled as a constant since #963 required one on a classification
+#: The three re-entry shapes, named once; `--shape` records which one a lap
+#: acted on. Spelled as a constant since #963 required one on a classification
 #: row: the refusal and the argparse choices must be the same list, or the
 #: message can name a word the parser refuses.
 SHAPES = ('parameter', 'placement', 'floorplan')
@@ -238,8 +235,7 @@ def score_board_binding(board, payload, board_sha=None):
 
     WHAT THIS DOES NOT COVER, said here rather than implied: it is the only
     implementation in `converge.py`, the one file
-    `tests/test_963_one_binding_predicate.py` scans (the retired
-    `loop_driver.py` was the other). There is a sibling
+    `tests/test_963_one_binding_predicate.py` scans. There is a sibling
     of the same shape in `py_tools/render_placement.py` (~:570, ~:641-651),
     hand-rolled on `hashlib` and degrading the same way, which #963 does not
     touch and no gate here can see.
@@ -288,9 +284,8 @@ def read_lens_file(path):
     """(line, lineno) -- the FIRST line of `path` that begins `VERDICT=`.
 
     The verifier brief (.claude/skills/plan-pcb-placement/references/verifier.md)
-    requires every verifier to write its verdict to disk, as its retired
-    predecessor did since run 23 ("a reply is a notification and notifications
-    get lost"). Nothing read those files: the line was retyped into the
+    requires every verifier to write its verdict to disk ("a reply is a
+    notification and notifications get lost"). Nothing read those files: the line was retyped into the
     ledger from a reply, so it recorded a CLAIM ABOUT THE RUN where it could
     have recorded a claim about a file. This is the reader.
 
@@ -330,11 +325,10 @@ def read_lens_file(path):
 def lens_name(raw):
     """The lens a VERDICT= line speaks about, lower-cased, or None.
 
-    ONE definition, because there were three: this file's grammar check, its
-    --final lens-set loop (which re-inlined the pattern as a literal beside an
-    `__import__('re')`), and the retired loop_driver._cross_check's own
-    copy. Three regexes for one grammar is three places for a
-    `lens=Connectivity` to be handled differently.
+    ONE definition, because this file's grammar check and its --final
+    lens-set loop (which re-inlined the pattern as a literal beside an
+    `__import__('re')`) each had one: two regexes for one grammar are two
+    places for a `lens=Connectivity` to be handled differently.
 
     CASE-FOLDED. `_LENS_RE` accepts [A-Za-z0-9_-]+ and every table keyed by a
     lens name here is lower-case, so `lens=Connectivity` used to pass the
@@ -681,8 +675,7 @@ def cmd_record(a):
                 f"recorded beside it say otherwise. Measured (run 17): a "
                 f"--final row carried VERDICT=PASS:lens=connectivity on 32 "
                 f"unrouted nets and 47 broken joins, and the route log held no "
-                f"VERDICT= line at all -- no verifier had run. That row passed "
-                f"the staged driver's L3, L4 and L5 untested.\n\n"
+                f"VERDICT= line at all -- no verifier had run.\n\n"
                 f"Either fix the board and re-score it, or record what the "
                 f"verifier actually found, a --lens-file whose line reads:\n"
                 f"  VERDICT=FAIL:lens={_contra[0][0]};finding=<what is "
@@ -807,9 +800,7 @@ def cmd_record(a):
     # the re-route took BLOCKING 2 -> 0.
     #
     # BOUND TO THE ROW THAT MAKES THE CLAIM, not to the stage that prints it:
-    # run 29's close-out was written without the (since retired) staged
-    # driver's L5 advice carrying at all, so a gate in a driver would have been
-    # another thing to walk past.
+    # a gate in a driver is another thing to walk past.
     if a.final and _stop_token in UNFIXABLE_STOPS:
         _prior = Ledger(a.ledger).entries() if os.path.isfile(a.ledger) else []
         _cls = _classification_state(_prior)
@@ -861,9 +852,8 @@ def cmd_record(a):
     _failed = [v for v in _lenses if v.strip().startswith('VERDICT=FAIL')]
     # TWO STOP VOCABULARIES ARE OF RECORD, and both must be acceptable as
     # printed: a close-out may carry the stop NUMBERS (1-4) or the verdict
-    # NAMES this tool's own `verdict` subcommand prints. The retired
-    # loop_driver's L5 command was refused verbatim here for exactly that
-    # gap -- a FAIL lens is the NORMAL case on the STUCK/BUDGET paths.
+    # NAMES this tool's own `verdict` subcommand prints: a FAIL lens is the
+    # NORMAL case on the STUCK/BUDGET paths.
     # DONE-EXHAUSTED is the exception: done-and-measured-done IS the
     # all-lenses-pass claim.
     # The extracted TOKEN, so `4 (this half): <reason>` is judged as a 4.
@@ -1032,10 +1022,10 @@ def cmd_record(a):
                     f"  blocking {(_pacc.get('score') or {}).get('blocking')} "
                     f"-> {_score_doc.get('blocking')}, but the components that "
                     f"differ are: {_hint}\n\n"
-                    + (f"Routing accepts a lap on STRICT improvement of "
-                       f"`blocking`, so " if _half == 'routing' else
-                       f"This half's laps are ranked by `blocking` and the "
-                       f"plateau test compares them, so ") +
+                    + ("Routing accepts a lap on STRICT improvement of "
+                       "`blocking`, so " if _half == 'routing' else
+                       "This half's laps are ranked by `blocking` and the "
+                       "plateau test compares them, so ") +
                     f"a lap that quietly measures one component "
                     f"less enters the ledger as progress and the history "
                     f"acquires a false monotone trend. Measured (run 17): two "
@@ -1300,15 +1290,14 @@ def _classification_state(rows):
     `None` when the ledger holds no `kind: classification` row AT ALL, which is
     not the same as "no laps since one" and is the difference that decides
     whether this catches anything. Run 29 recorded ZERO classification rows
-    across 439 commands while the (since retired) staged driver's L5 printed
-    the `--stage L3` command three times, so a predicate phrased only as "laps
+    across 439 commands, so a predicate phrased only as "laps
     since the last classification" is vacuously satisfied on exactly the run
     it was written for. A caller must
     handle `None` explicitly; `verdict` publishes each half's total `laps`
     beside this, which is the count that applies then.
 
-    `laps_since` is published for BOTH halves, and only ROUTING was gated on
-    -- by the refusal in the retired loop_driver's L5. A placement lap
+    `laps_since` is published for BOTH halves, and a gate on it belongs to
+    ROUTING only. A placement lap
     recorded after `shape=placement` is the classification being ACTED ON,
     not invalidated: gating on it would refuse the loop for doing what the
     decision said. That sentence is the whole reason both numbers are here
@@ -1370,9 +1359,8 @@ def _half_state(rows, half, flat, board_sha=None):
     flag at all.
 
     THE COUNTER COUNTS REJECTED LAPS TOO, and that is the fix for a gate that
-    could not be satisfied. It used to count accepted rows only, while the
-    retired loop_driver's L5 closing paragraph instructed "Record the lap you
-    are about to run, accepted or rejected. A rejected lap is data" -- so
+    could not be satisfied. It used to count accepted rows only, while every
+    lap is recorded, accepted or rejected ("a rejected lap is data") -- so
     recording a rejected lap could not satisfy the gate it was offered for.
     Worse, routing accepts a lap only on STRICT improvement, so a half that is
     genuinely exhausted has no honest accepted lap left to produce: the gate
@@ -1636,9 +1624,8 @@ def cmd_verdict(a):
         # ledger execution falls past `elif blocking == 0` into the terminal
         # branch and prints `STUCK: blocking == None and neither half
         # improved`, which reads as a measurement of a board nothing measured.
-        # NO-SCORE says what actually happened, and a reader (the retired
-        # loop_driver's L5 was one) routes that verdict back to re-scoring
-        # instead of the ship ceremony.
+        # NO-SCORE says what actually happened, and a reader routes that
+        # verdict back to re-scoring instead of the ship ceremony.
         #
         # _score_key returns None for THREE distinct documents and they are
         # not the same fact, so none of them borrows another's sentence -- and
@@ -1795,7 +1782,7 @@ def cmd_verdict(a):
                                      (st[h].get('unjudged_iterations') or []))
                            or 'not numbered')
                         + ' -- and a lap that '
-                        f'measured nothing is evidence in neither direction'),
+                        'measured nothing is evidence in neither direction'),
                        'incommensurable': (
                         f'they were not graded over the same components '
                         f'({st[h].get("incommensurable")})'),

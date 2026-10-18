@@ -3,12 +3,14 @@
 
     python3 -X utf8 .claude/skills/plan-pcb-placement/scripts/grade.py BOARD \
         --baseline INPUT.kicad_pcb [--intent INTENT.json] [--mode full|place] \
-        [--label NAME] [--out-dir DIR]
+        [--label NAME] [--out-dir DIR] [--spec NAME=VALUE ...]
 
 Runs the graders the skill's verifier runs, at the board's own .kicad_pro
 floor, and writes `<out-dir>/grade_<label>.json` with the headline numbers
-and each tool's exit code. Grade every arm of a comparison with this same
-script at the same commit, or the numbers do not compare.
+and each tool's exit code. `--spec` passes a spec flag the board declares
+(e.g. `net-min-widths=widths.json`) to board_score and check_complete.
+Grade every arm of a comparison with this same script at the same commit,
+or the numbers do not compare.
 
 Exit 0 when the mode's DONE conditions all hold, 4 when they do not, 2 on
 usage.

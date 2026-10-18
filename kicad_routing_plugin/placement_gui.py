@@ -4,9 +4,10 @@ KiCad Routing Tools - Placement sub-tab (AI tab notebook).
 Two Claude-Code-driven actions ("Place" via /plan-pcb-placement place, "Place +
 Route" via /plan-pcb-placement full, both with the skill's --rounds N) plus
 the non-AI "Beautify Labels" action. The layout follows the Routing sub-tab:
-a large pane on the left (here the run preview, with the labels options
-under it), the "AI" control column on the right, then the progress gauge, a
-status row and the transcript across the full width.
+a large pane on the left (here the run's candidates table and the preview,
+with the labels options under them), the "AI" control column on the right,
+then the progress gauge, a status row and the transcript across the full
+width.
 
 The AI runs are headless, write into a persistent workdir
 (placement_run.create_workdir), take minutes to hours, and are observed from
@@ -16,10 +17,10 @@ line, and renders a preview frame of each new board while the run is going.
 At the end REPORT.md and the run folder are surfaced in the tab and the
 result can be explicitly applied back to the live board.
 
-Claude Code is REQUIRED for the two AI actions: they are pinned to the Claude
-backend regardless of the AI tab's backend selection (the opencode analysis
-agent denies edits, and these skills must write), and the buttons are disabled
-with an install hint when the CLI is missing.
+Claude Code is REQUIRED for the two AI actions: the tab's own backend
+dropdown lists every harness but only lets Claude Code be chosen (the opencode
+analysis agent denies edits, and these skills must write), and the buttons are
+disabled with an install hint when the CLI is missing.
 """
 
 import os

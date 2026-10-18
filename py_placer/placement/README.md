@@ -236,7 +236,7 @@ python3 -X utf8 py_router/route_planes.py $R/s$s.kicad_pcb $W/planes.kicad_pcb \
     --nets GND +3V3 --plane-layers In1.Cu In2.Cu --clearance-ceiling 0.15
 python3 -X utf8 py_router/qfn_fanout.py $W/planes.kicad_pcb --component U3 \
     --nets '*' '!GND' '!+3V3' --output $W/fanout.kicad_pcb
-python3 -X utf8 py_router/place_fanout_clearance.py $W/fanout.kicad_pcb $W/caps.kicad_pcb --clearance 0.1
+python3 -X utf8 py_placer/place_fanout_clearance.py $W/fanout.kicad_pcb $W/caps.kicad_pcb --clearance 0.1
 python3 -X utf8 py_router/route_diff.py $W/caps.kicad_pcb $W/diff.kicad_pcb \
     --nets /USB_DP /USB_DN --track-width 0.1 --diff-pair-gap 0.1 --clearance-ceiling 0.1 --no-gnd-vias
 python3 -X utf8 py_router/route.py $W/diff.kicad_pcb $W/route.kicad_pcb \
@@ -387,7 +387,9 @@ cap and the escape routing do not collide. See
 | `options.py` | When a board cannot hold its parts: the utilisation numbers (`grow_board`) |
 | `pin_rows.py` | `is_through_hole_part` |
 | `cli_gates.py` | The CLI arguments the placement tools share |
-| `portfolio.py`, `utility.py` | Sibling-file copying, net filters, small helpers |
+| `portfolio.py`, `utility.py` | Sibling-file copying, small helpers |
+| `reconstruct.py` | Part tiers and mounting-hole pattern fits, for `emit_intent` and `lock_advisor` |
+| `../converge.py`, `../board_store.py` | The skill's run ledger and the content-addressed board store beside it |
 | `../../py_tools/render_placement.py` | The placement renderer |
 
 ## Legality model

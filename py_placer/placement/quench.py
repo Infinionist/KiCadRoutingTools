@@ -572,7 +572,7 @@ def _count_crossings_within(a: np.ndarray,
 #: nothing. Recorded where each lock is applied, the first cause winning; a
 #: part absent from the map entered free.
 LOCK_FILE = 'locked in the board file'
-LOCK_CALLER = 'locked by the caller (--lock or the intent)'
+LOCK_CALLER = "locked by the caller (the intent's fixed_poses[])"
 LOCK_OUTLINE = 'draws the board outline (#829)'
 LOCK_PADLESS = 'has no pad: a static obstacle by its courtyard'
 LOCK_SEATED_PLUG = 'a PCB-edge plug seated at its edge (#1098)'
@@ -1464,39 +1464,26 @@ class QuenchState:
 
     # ----- airwire helpers -------------------------------------------------
 
-    def _net_points(self, net_id, override_ref=None, override_pads=None,
-                    overrides=None):
-        """A net's pad points, with any number of parts held at a HYPOTHETICAL
-        pose (#459).
-
-        `overrides` is {ref: pad_globals}; `override_ref`/`override_pads` are the
-        single-part spelling every existing caller uses. A rigid block move has
-        to override N parts at once, and the swap phase already needed two --
-        which it solved by hand-inlining a second copy of this loop, with a
-        comment warning that the two must not drift apart. This is that one
-        implementation.
+    def _net_points(self, net_id, override_ref=None, override_pads=None):
+        """A net's pad points, with `override_ref` held at a HYPOTHETICAL
+        pose whose pad globals are `override_pads` (#459).
 
         The `for ref in self.net_refs[net_id]` iteration is load-bearing:
         net_refs is a SORTED list and this order becomes the point order handed
         to compute_mst_edges, whose tie-break is first-index-wins. Changing it
         makes quench output vary across processes again (#457).
         """
-        if overrides is None:
-            overrides = ({override_ref: override_pads}
-                         if override_ref is not None else {})
         pts = []
         for ref in self.net_refs[net_id]:
-            pads = overrides.get(ref)
+            pads = override_pads if ref == override_ref else None
             if pads is None:
                 pads = self.parts[ref].pad_globals()
             pts.extend((gx, gy) for gx, gy, n in pads if n == net_id)
         return pts
 
-    def _build_net_airwires(self, net_id, override_ref=None, override_pads=None,
-                            overrides=None):
+    def _build_net_airwires(self, net_id, override_ref=None, override_pads=None):
         return _airwires_for_points(
-            self._net_points(net_id, override_ref, override_pads, overrides),
-            net_id)
+            self._net_points(net_id, override_ref, override_pads), net_id)
 
     # ----- legality -------------------------------------------------------
 

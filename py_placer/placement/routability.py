@@ -351,7 +351,6 @@ def corridor_cut_mm(state, corridor: Corridor,
     without changing the toll.
     """
     from .quench import _CorridorBox, _aw_array, _corridor_cut_np
-    import numpy as np
     n = corridor.length_mm
     if n < 1e-9 or corridor.width_mm <= 0.0:
         return 0.0

@@ -23,56 +23,6 @@ GRID_TOL = 0.05          # pattern-fit residual tolerance (one routing grid)
 
 
 # --------------------------------------------------------------------------
-# measurement
-# --------------------------------------------------------------------------
-
-def _bbox_outside(ext, b) -> float:
-    """Per-axis overshoot of the raw board bbox at ZERO margin. Exact on a
-    rectangular outline; a consistent lower bound on a notched one."""
-    return (max(0.0, b[0] - ext[0]) + max(0.0, ext[2] - b[2])
-            + max(0.0, b[1] - ext[1]) + max(0.0, ext[3] - b[3]))
-
-
-def pad_oob_amount(state, edge_bands=None) -> float:
-    """Summed pad/hole-extent off-board amount over all parts (zero margin).
-
-    Run-4 F2: a ref declared in ``edge_bands`` ({ref: band_max_mm}, from the
-    intent's edge_connectors) charges only the EXCESS past its band -- its
-    declared overhang is by design, and without the allowance the gate tuple
-    itself would revert a correct edge-homecoming (the move RAISES board-wide
-    oob exactly by the legitimate overhang).
-
-    Run-7 finding: this used to measure against the board's BOUNDING RECTANGLE
-    while every other instrument used the real Edge.Cuts outline. On a
-    non-rectangular board the two disagree completely -- a candidate that swept
-    nine parts into a notch measured `oob 0.0` here and 14.29mm everywhere
-    else, so the gate accepted an evacuation it was built to reject. The
-    legality context already owns the outline-aware measurement (rings,
-    cutouts, notches); use it, and keep the bbox form only as the fallback for
-    a state that has no context.
-    """
-    oob = 0.0
-    if state.legality_ctx is None:
-        return oob
-    bands = edge_bands or {}
-    ctx = state.legality_ctx
-    outline_aware = getattr(ctx, 'gate', None) is not None
-    for ref, pp in ctx.parts.items():
-        p = state.parts.get(ref)
-        if p is None:
-            continue
-        if outline_aware:
-            amt = ctx.pad_oob_amount(ref, p.x, p.y, p.rot, exact=True)
-        else:
-            ext = pp.extent(p.x, p.y, p.rot)
-            if ext is None:
-                continue
-            amt = _bbox_outside(ext, state.board)
-        oob += max(0.0, amt - bands.get(ref, 0.0))
-    return oob
-
-
-# --------------------------------------------------------------------------
 # classify
 # --------------------------------------------------------------------------
 
@@ -411,8 +361,7 @@ def fit_family_orbits(state, tiers=None, *,
     offered it a 5.2 mm move.
 
     THE GUARDS ARE THE DESIGN. Un-guarded this is the shape that got
-    `airwire_cluster_vectors` refuted (`:1045`,
-    `tests/test_run8_airwire_refuted.py`), so the firing rate on the 33 HEALTHY
+    `airwire_cluster_vectors` refuted, so the firing rate on the 33 HEALTHY
     in-repo corpus boards was measured guard by guard BEFORE shipping any of
     it, and `tests/test_orbit_fit_noop.py` pins the whole matrix:
 

@@ -209,7 +209,7 @@ Exit 0 placed; 2 unreadable input, or a face or pose the inputs contradict
 (two declarations disagree, or a KiCad-locked part is declared on the other
 face or at another pose), nothing written; 4 placed, with parts left illegal
 (named on the console). The objective's terms and the anneal's moves are in
-`py_placer/placement/README.md` ("place_simple.py").
+`py_placer/placement/README.md` ("The objective").
 
 ## Groups Checker (`check_groups.py`)
 
@@ -219,6 +219,7 @@ makes it); this measures the judgement before any part moves.
 
 ```bash
 python3 -X utf8 py_tools/check_groups.py board.kicad_pcb --groups groups.json
+python3 -X utf8 py_tools/check_groups.py board.kicad_pcb --groups groups.json --intent intent.json
 python3 -X utf8 py_tools/check_groups.py board.kicad_pcb --groups groups.json --json report.json
 ```
 

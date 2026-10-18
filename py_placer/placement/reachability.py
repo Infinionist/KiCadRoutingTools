@@ -45,8 +45,8 @@ from __future__ import annotations
 
 import math
 import os
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 

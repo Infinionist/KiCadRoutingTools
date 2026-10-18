@@ -636,7 +636,6 @@
 "test_run8_custom_pad_credit.py": 0.2,
 "test_run8_fab_floor_disclosure.py": 0.5,
 "test_run8_lock_displacement.py": 0.5,
-"test_run8_oob_outline.py": 0.5,
 "test_run8_orphan_pads.py": 0.0,
 "test_run8_skill_instruction_quality.py": 0.1,
 "test_run8_skills_generic.py": 0.1,

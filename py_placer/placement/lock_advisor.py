@@ -497,7 +497,7 @@ def advise_locks(pcb_data, pcb_file: Optional[str] = None, *,
                 "[DEMOTED: edge-receptacle class in an IMPLAUSIBLE pose -- "
                 f"no overhang and {ev.get('edge_clearance_mm', '?')} mm off "
                 f"every edge (seat tol {SEAT_TOL_MM:g}). A lock is not a "
-                "placement: reconstruct/repair this part to an edge before "
+                "placement: seat this part at its edge (place_pose or a declared edge) before "
                 "freezing it.]")
 
         locked = ref in kicad_locked

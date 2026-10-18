@@ -5184,8 +5184,7 @@ def rule_decap_distance(ctx) -> Iterator[Violation]:
     exempt = tuple(spec.get('exempt') or ())
     radius = float(spec.get('search_radius_mm', groups_mod.DECAP_RADIUS_MM))
     # Read through `_Ctx` so this rule and `decap_ungraded` divide ONE
-    # election. `near` is byte-identical to `decap_tethers(radius)` and
-    # `tests/test_792_decap_predicate.py` asserts that on every tracked board.
+    # election. `near` is byte-identical to `decap_tethers(radius)`.
     tethers, _beyond, _orphans = ctx.decap_populations(radius)
     sup = ctx.superseded()
     observed = (ctx.intent.basis or {}).get(
@@ -5392,7 +5391,7 @@ def rule_decap_ungraded(ctx) -> Iterator[Violation]:
     radius-free (`groups._elect_tethers`): `beyond` carries the same owner and
     the same distance `decap_distance` would have reported at a wider radius.
     The comment that used to sit in `decap_census` claimed otherwise; it was
-    wrong, and `test_792_decap_predicate` now pins the true relation.
+    wrong.
 
     WARN by default, and `severity_of(..., default=WARN)` rather than
     `ctx.sev`, which hard-defaults to ERROR -- the same load-bearing bypass
@@ -8678,8 +8677,7 @@ def decap_census(pcb_data, radius: float = None) -> Dict:
     # appeared AFTER the argmin, and the chip list is built before any cap
     # is considered. Measured, 0 of 357 tethers re-elect. Since #794 the
     # radius does not reach the election at all, so it is a property of the
-    # code shape rather than a fact about a corpus -- pinned by
-    # `tests/test_792_decap_predicate.py`.
+    # code shape rather than a fact about a corpus.
     near, beyond, orphans = groups_mod.decap_populations(pcb_data, radius=r)
     dists = sorted(d for caps in near.values() for _c, d in caps)
     n = len(dists)
@@ -8972,8 +8970,7 @@ def emit_intent(pcb_data, pcb_file: str, *,
                 declare_classes: bool = False,
                 derive_decaps='off', brief_fragment=None,
                 decaps_from: Optional[str] = None,
-                derive_arrays='off', rigid_blocks: Sequence[str] = ()
-                ) -> Dict:
+                derive_arrays='off') -> Dict:
     """A starter intent READ OFF the board, for a human or a model to edit.
 
     Everything here describes what the board already is. The envelope is
@@ -8996,9 +8993,7 @@ def emit_intent(pcb_data, pcb_file: str, *,
     emitter's pose-inferred zones and edge entries, so the no-human-layout-
     leak guarantee is the detector's, and the written rows carry a little
     of the board's current arrangement -- disclosed member by member in
-    `context.arrays_dropped` / `arrays_edge_released`. `rigid_blocks` names emitted blocks to mark `rigid: true`
-    -- the opt-in path the placement A/B harness selects, since it forbids
-    hand-written intents.
+    `context.arrays_dropped` / `arrays_edge_released`.
     """
     from .quench import QuenchState
     import routing_defaults as defaults
@@ -9350,7 +9345,7 @@ def emit_intent(pcb_data, pcb_file: str, *,
                 entry['note'] = (
                     f'edge-receptacle class in an implausible pose '
                     f'({clr:.2f} mm from the nearest edge, no overhang): '
-                    f'no edge declared -- reconstruct/repair must derive it')
+                    f'no edge declared -- declare one, or seat it with place_pose')
             conns.append(entry)
     # #1155: ONE pass over every edge this emitter observed (both branches
     # above read it off `_nearest_edge`), before a brief is compiled in -- an
@@ -9777,21 +9772,6 @@ def emit_intent(pcb_data, pcb_file: str, *,
         if dropped:
             doc['context']['arrays_dropped'] = dropped
         doc['min_reader'] = max(int(doc.get('min_reader') or 0), 7)
-    # #1052: the A/B emitter path for `blocks[].rigid` -- the harness names
-    # emitted blocks to opt in, because a hand-written intent is forbidden
-    # there. Absent by default, so a default emission is unchanged.
-    if rigid_blocks:
-        names = {b['name'] for b in blocks}
-        unknown = sorted(set(rigid_blocks) - names)
-        if unknown:
-            raise ValueError(
-                f"rigid_blocks names {', '.join(unknown)}, which this board "
-                f"does not emit as blocks. Emitted: "
-                f"{', '.join(sorted(names)) or 'none'}")
-        for b in blocks:
-            if b['name'] in rigid_blocks:
-                b['rigid'] = True
-        doc['min_reader'] = max(int(doc.get('min_reader') or 0), 7)
     # #1142: a reader-7 build would refuse the held list by name anyway; the
     # stamp says which build can act on it.
     if 'within_radius_refs' in (doc.get('decaps') or {}):
@@ -10008,9 +9988,9 @@ def format_text(r: GradeResult) -> str:
             if e.get('along_edge_offset_mm') is not None]
     if rows:
         rows.sort(key=lambda e: -abs(float(e['along_edge_offset_mm'])))
-        lines.append(f"  along-edge seating (measured, not a verdict -- a "
-                     f"violation needs a declared center_on_edge or "
-                     f"along_edge_band):")
+        lines.append("  along-edge seating (measured, not a verdict -- a "
+                     "violation needs a declared center_on_edge or "
+                     "along_edge_band):")
         for e in rows[:5]:
             mark = ' DECLARED' if e.get('declared') else ''
             lines.append(f"    {e['ref']} {e['edge']}: "

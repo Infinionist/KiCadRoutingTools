@@ -2598,32 +2598,6 @@ class CourtyardCensus:
         return self._select(parts, body_overlap_pairs(list(parts.values())),
                             moved, self._pin_pairs(parts, poses))
 
-    def grade_ref(self, ref: str, pose, poses: Optional[Dict[str, tuple]]
-                  = None, *, moved=None) -> CourtyardGrade:
-        """`grade` restricted to the pairs `ref` is a member of, with `ref`
-        at `pose`: O(parts) instead of O(parts^2), for a caller asking about
-        one candidate seat. Every pair it returns is the pair `grade` would
-        return at the same poses (same pair function, same order of
-        members, same waivers and floors); it only omits pairs `ref` is
-        not in."""
-        poses = dict(poses or {})
-        poses[ref] = tuple(pose)
-        parts = {r: self.graded_part(r, poses.get(r)) for r in self.lbs}
-        me = parts.get(ref)
-        raw = []
-        if me is not None:
-            seen_me = False
-            for r, gp in parts.items():
-                if r == ref:
-                    seen_me = True
-                    continue
-                p = (courtyard_pair(gp, me) if not seen_me
-                     else courtyard_pair(me, gp))
-                if p is not None:
-                    raw.append(p)
-        return self._select(parts, raw, moved,
-                            self._pin_pairs(parts, poses, members={ref}))
-
     def _frame_holes(self, frame: str, pose=None) -> list:
         """[(pin, hole shape, its bounds, 'pth' | 'npth')] of a pin
         frame's DRILLED pads at `pose`: the drill, a circle or a milled slot
@@ -4876,9 +4850,9 @@ class LegalityContext:
         a keep-out band depth (`keepout_ok`)? Only when the seed is ON the
         board. A pile is no licence (run-19's rule, `_degenerate_refs`), and a
         pile need not be one point: make_unplaced's row at 0.82 mm pitch put
-        esp_prog U2's 4.7 mm tab over twelve neighbours, and the seeder then
-        seated Y1 on it, licensed; and on ulx3s's pile R30 and U10 staged
-        with their pads stacked, so the seeder seated them stacked again
+        esp_prog U2's 4.7 mm tab over twelve neighbours, which would license
+        a part seated on it; and on ulx3s's pile R30 and U10 staged with
+        their pads stacked, which would license seating them stacked again
         (same net, 0.25 mm short), which check_assembly blocks."""
         v = self._seed_licence.get(ref)
         if v is None:
@@ -6115,11 +6089,8 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
         # and 0.17mm) no pad crosses the real outline at all.
         #
         # BOTH TRAVEL; neither replaces the other. The coarse one keeps its
-        # meaning and its consumers: the retired loop_driver's L2 gate was
-        # justified over 119 graded rows, where it refused 24 boards of which
-        # 12 are refusals `blocking` does not make, and the two censuses are
-        # disjoint by construction -- a part off the outline collides with
-        # nothing. What this one adds is WHICH PADS, so a refusal is
+        # meaning and its consumers, and the two censuses are disjoint by
+        # construction -- a part off the outline collides with nothing. What this one adds is WHICH PADS, so a refusal is
         # actionable and a coarse hit with an empty precise list reads as the
         # artifact it is instead of as a silent defect.
         pad_gate = BoardOutlineGate(board_info, 0.0)
@@ -6244,8 +6215,7 @@ def grade_pad_legality(pcb_data, clearance: float, exact: bool = True,
             # ROWS -- which are one placement, not seven: the human-authored
             # board plus six perturbations that did not move it, where SW1..SW4
             # sit 0.1696mm inside the inflated outline and no pad crosses the
-            # real one. The number is not wrong; it is a different question,
-            # and it is the one the retired loop_driver's L2 gate refused on.
+            # real one. The number is not wrong; it is a different question.
             'oob_pad_basis': ('part pad AABB vs outline inflated by the '
                               'grading clearance (NOT the per-pad outline '
                               'measure; see render_placement '

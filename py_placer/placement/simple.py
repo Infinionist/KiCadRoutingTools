@@ -243,16 +243,13 @@ def _orient(ax, ay, bx, by, cx, cy):
     return np.sign((bx - ax) * (cy - ay) - (by - ay) * (cx - ax))
 
 
-def crossings(A: np.ndarray, B: np.ndarray, same: bool = False) -> int:
-    """Proper crossings between segment arrays A (n x 4) and B (m x 4);
-    `same` counts each pair of one array once (i < j). The Rust kernel
-    `grid_router.seg_crossings`."""
+def crossings(A: np.ndarray, B: np.ndarray) -> int:
+    """Proper crossings between segment arrays A (n x 4) and B (m x 4), in
+    the Rust kernel `grid_router.seg_crossings`."""
     if len(A) == 0 or len(B) == 0:
         return 0
-    A = np.ascontiguousarray(A, dtype=float)
-    if same:
-        return int(grid_router.seg_crossings(A))
-    return int(grid_router.seg_crossings(A, np.ascontiguousarray(B, dtype=float)))
+    return int(grid_router.seg_crossings(np.ascontiguousarray(A, dtype=float),
+                                         np.ascontiguousarray(B, dtype=float)))
 
 
 # --------------------------------------------------------------------------
@@ -285,25 +282,6 @@ class SpatialIndex:
             b = self.buckets.get(k)
             if b is not None:
                 b.discard(key)
-
-    def query_many(self, rects) -> Set:
-        """`query` over several rects at once: each bucket merged once."""
-        c = self.cell
-        cells = set()
-        for r in rects:
-            i0, i1 = int(math.floor(r[0] / c)), int(math.floor(r[2] / c))
-            j0, j1 = int(math.floor(r[1] / c)), int(math.floor(r[3] / c))
-            if i0 == i1 and j0 == j1:
-                cells.add((i0, j0))
-            else:
-                cells.update((i, j) for i in range(i0, i1 + 1) for j in range(j0, j1 + 1))
-        out: Set = set()
-        get = self.buckets.get
-        for k in cells:
-            b = get(k)
-            if b:
-                out |= b
-        return out
 
     def query(self, rect) -> Set:
         c = self.cell
@@ -737,19 +715,16 @@ class Model:
             return 0.0
         return self.halo_weight * short * short
 
-    def halo_cost(self, refs=None):
-        """The halo penalty over every pair of parts with one in
-        `refs` (every pair when None), each pair once."""
+    def halo_cost(self):
+        """The halo penalty over every pair of parts, each pair once."""
         st = self.state
         names = sorted(st.parts)
-        mine = names if refs is None else sorted(refs)
-        mset = set(mine)
         rect = {r: st.parts[r].rect() for r in names}
         total = 0.0
-        for a in mine:
+        for a in names:
             ra, ha = rect[a], self._reach[a]
             for b in names:
-                if b == a or (b in mset and b < a):
+                if b <= a:
                     continue
                 rb, need = rect[b], ha + self._reach[b]
                 # farther apart than both halos on some axis: nothing to pay
@@ -998,7 +973,6 @@ class Model:
                 'cost': (wire + self.cw * cross + self.kw * claims + self.dw * dec
                          + self.gw * grp + hint + halo + self.qw * cong + self.pw_pad * pads)}
 
-    # -- local pricing of a set of moved parts --------------------------------
     # -- airwires over foreign pads -------------------------------------------
     def _pad_rows(self, ref):
         """`(rects k x 4 grown by the clearance, weights, nets, owner ids)` of
@@ -1081,18 +1055,9 @@ class Model:
         foreign = (labs[i] != pnets[j]) & (ends[i, 0] != owners[j]) & (ends[i, 1] != owners[j])
         return float(wts[j][foreign].sum())
 
-    def pad_crossings(self, nets=None, refs=None):
-        """Weighted foreign-pad hits: every signal edge on every pad (both
-        None), or what `nets` and `refs` can change -- `nets`' edges on every
-        pad, plus every other net's edges on the pads of `refs`."""
-        if nets is None and refs is None:
-            return self._pad_hits(self._all_edges(), self._all_pads())
-        mine = [n for n in (nets or ()) if n in self.signal]
-        E, ends, labs = self._all_edges()
-        keep = ~np.isin(labs, mine)
-        total = self._pad_hits(self._edges_of(mine), self._all_pads())
-        return total + self._pad_hits((E[keep], ends[keep], labs[keep]),
-                                      self._pads_of(sorted(refs or ())))
+    def pad_crossings(self):
+        """Weighted foreign-pad hits: every signal edge on every pad."""
+        return self._pad_hits(self._all_edges(), self._all_pads())
 
     def _names(self):
         return sorted(self.state.parts)
@@ -1169,7 +1134,8 @@ class Model:
         self._pend = None
 
     def halo_pair_fast(self, a, b):
-        """`halo_pair` behind the rect prefilter `_local_halo` uses."""
+        """`halo_pair`, or 0 at once when the two rects are farther apart
+        than their reaches."""
         st = self.state
         ra, rb = st.parts[a].rect(), st.parts[b].rect()
         need = self._reach[a] + self._reach[b]
@@ -1267,6 +1233,7 @@ class Model:
             self._po.setdefault(pid, {})[n] = self._po.get(pid, {}).get(n, 0.0) + w
         self._pend = None
 
+    # -- local pricing of a set of moved parts --------------------------------
     def touched(self, refs):
         if not getattr(self, '_synced', False):
             self.sync()
@@ -1345,8 +1312,8 @@ class Model:
         return [names[id(m)] for m in gr]
 
     def _local_crossings_bd(self, T):
-        """`_local_crossings`, with its breakdown {(net, net): count}: the
-        edges of `T` against every committed edge of another net and among
+        """The crossings of `T`'s edges and their breakdown {(net, net):
+        count}: against every committed edge of another net and among
         themselves, in the Rust kernel `grid_router.seg_cross_counts`."""
         T = [n for n in T if len(self.net_edges[n])]
         if not T:
@@ -1359,10 +1326,11 @@ class Model:
         return total, {(a, b): c for a, b, c in rows}
 
     def _local_pads_bd(self, T, R):
-        """`_local_pads` as a breakdown {(net, owner pid): weight}: the edges
-        of `T` over every committed pad but those of `R`, and over `R`'s pads
-        where they are now; and every committed edge of another net over
-        `R`'s pads (the Rust kernel `grid_router.pad_hit_sums`)."""
+        """A move's airwires over foreign pads as a breakdown {(net, owner
+        pid): weight}: the edges of `T` over every committed pad but those of
+        `R`, and over `R`'s pads where they are now; and every committed edge
+        of another net over `R`'s pads (the Rust kernel
+        `grid_router.pad_hit_sums`)."""
         c = np.ascontiguousarray
         mine = self._pads_of(R)
         mine = (c(mine[0], dtype=float), c(mine[1], dtype=float),
@@ -1389,7 +1357,8 @@ class Model:
         return out
 
     def _local_halo_bd(self, R):
-        """`_local_halo` as a breakdown {(a, b): value}, nonzero pairs only."""
+        """The halo of `R`'s parts against their neighbours as a breakdown
+        {(a, b): value}, nonzero pairs only."""
         st = self.state
         rset = set(R)
         out: Dict = {}

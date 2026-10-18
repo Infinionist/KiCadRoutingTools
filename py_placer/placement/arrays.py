@@ -741,10 +741,8 @@ def _pin_runs(pcb, refs: List[str], rails=frozenset(),
         # bank between two big parts (glasgow's 17 SN74LVC1T45 between U30
         # and the IO side), which humans lay as multi-row blocks near the
         # far part -- a shape `arrays[]` cannot express (one row per
-        # entry; multi-row blocks are not supported). Seeding it as one
-        # row at the host measured WORSE on glasgow (phase-3 verifier:
-        # crossings and hpwl both rose), so it is declined with the
-        # reason, and a reader may still declare it by hand.
+        # entry; multi-row blocks are not supported), so it is declined
+        # with the reason, and a reader may still declare it by hand.
         other = _bridge_partner(fps, links, host, ordered, floor)
         if other is not None:
             if declined is not None:

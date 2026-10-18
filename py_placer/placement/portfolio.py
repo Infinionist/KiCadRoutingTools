@@ -1,31 +1,13 @@
-"""Sibling copies of a written board, and the nets a placement ignores.
+"""Sibling copies of a written board.
 
 `copy_siblings` copies a board's sibling files (`.kicad_pro`, `.kicad_dru`,
 the design brief, ...) next to a board a placement tool wrote, so the next
-step reads the same DRC floor and declarations (#441); `ignore_net_ids`
-resolves `--ignore-nets` patterns to net ids.
+step reads the same DRC floor and declarations (#441).
 """
 from __future__ import annotations
 
-import fnmatch
 import os
 import shutil
-from typing import Optional, Sequence, Set
-
-
-# --------------------------------------------------------------------------
-# board / state plumbing
-# --------------------------------------------------------------------------
-
-
-def ignore_net_ids(pcb_data, patterns: Optional[Sequence[str]]) -> Set[int]:
-    """Net ids matching the --ignore-nets patterns (plane-routed rails)."""
-    ids: Set[int] = set()
-    if patterns:
-        for net_id, net in pcb_data.nets.items():
-            if any(fnmatch.fnmatchcase(net.name, p) for p in patterns):
-                ids.add(net_id)
-    return ids
 
 
 def copy_siblings(src_board: str, dst_board: str) -> None:
@@ -47,25 +29,3 @@ def copy_siblings(src_board: str, dst_board: str) -> None:
         if os.path.exists(d) and os.path.samefile(s, d):
             continue
         shutil.copyfile(s, d)
-
-
-# --------------------------------------------------------------------------
-# perturbation strategies
-# --------------------------------------------------------------------------
-# Each strategy PROPOSES poses on the oracle state, validating with
-# candidate_valid and applying accepted moves as it goes -- so a later part is
-# tested against its already-perturbed peers, and the emitted set is legal as a
-# WHOLE, not merely pairwise against the original board. The caller owns the
-# snapshot/restore bracket.
-
-
-# --------------------------------------------------------------------------
-# generation
-# --------------------------------------------------------------------------
-
-
-# --------------------------------------------------------------------------
-# scoring, ranking, diversity
-# --------------------------------------------------------------------------
-
-

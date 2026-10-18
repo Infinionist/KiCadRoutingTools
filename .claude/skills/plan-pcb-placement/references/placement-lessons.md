@@ -506,11 +506,9 @@ six others.
   (power entry and its conditioning, the core and its clock, an interface and its
   protection, the user interface); `place_simple` keeps each group in one piece,
   whatever shape the free space gives it, and arranges the pieces by one objective.
-  - *Measured on a route:* a 25-part 2-layer board (6 groups) from a scatter, routed by
-    its recorded chain over seeds 0-7: 0 blocking on every seed, 32-52 vias against the human's 36 -- the seed
-    spread is the larger effect, so place more than one seed.
   - *Apply:* five to eight groups suit a small board; more than about twelve leave
-    each group too few parts to be a piece.
+    each group too few parts to be a piece. Place more than one seed: seeds differ
+    more than most changes to the groups.
 - **Keep each functional group compact and on one face.**
   - *Humans:* on 94 boards whose hierarchical sheets label the parts, a part's nearest
     labelled neighbour is in its own sheet 93% of the time, against 37% with the labels

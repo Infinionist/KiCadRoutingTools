@@ -683,8 +683,8 @@ def _keep_away(b: _Board, roles: List[Dict], notes: List[str]
             cand += c['nets']
         what = {'crystal': 'crystal', 'oscillator': 'oscillator'}.get(
             c['role'], 'crystal or oscillator')
-        why = (f"proposed by board_context emc_roles (#1253): switch "
-               f"node(s) "
+        why = ("proposed by board_context emc_roles (#1253): switch "
+               "node(s) "
                + ', '.join(f"{s['net']} ({s['part']})" for s in agg)
                + f" kept away from {what} {c['part']}'s clock net(s) "
                f"{', '.join(c['nets'])}. The {KEEP_AWAY_GAP_MM:g} mm gap is "

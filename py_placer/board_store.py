@@ -24,8 +24,7 @@ from typing import Dict, List, Optional
 # floor and the net classes, the rules file carries custom DRC. A store that
 # keeps only the .kicad_pcb hands back a board that grades differently.
 # ONE list, imported (#711). Every hand-written copy of this tuple is a
-# place a new sibling gets stranded; there were nine of them, and
-# tests/test_711_sibling_lists.py now refuses a tenth.
+# place a new sibling gets stranded; there were nine of them.
 from copy_board import SIBLING_EXTS as SIBLING_EXT  # noqa: E402
 
 

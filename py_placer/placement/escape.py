@@ -805,17 +805,17 @@ def face_of(pad, rect, pitch, pad_box=None,
     a new error, and `interior_pads` is provably NON-INCREASING against the
     rule before it.
 
-    Replacing the box test instead was measured and is worse. `tol` is not
-    noise: it is the depth below which the corridor's straight-shadow model
-    does not apply, because a track leaving a pad turns before it has
-    travelled that far. Drop it and orangecrab_ext_pll U10 and
-    rp2350_fpga_eensy_prePlane U4 each GAIN an interior pad -- both a 0.325mm
-    part with 5 copper pads, whose central GND pad (0.58 x 0.58 at 45 degrees,
-    so an 0.8202mm axis-aligned extent, which is what this test measures) sits
-    0.0699mm from the copper box on west and east, plainly on the boundary,
-    and whose axis-aligned corridor is nevertheless closed by its flanking
-    pads once they are inflated by clearance. (That divergence is basis-dependent and invisible at clearance
-    0.09, where the two rules agree exactly; it appears at 0.20.)
+    The box test stays because `tol` is not noise: it is the depth below
+    which the corridor's straight-shadow model does not apply, because a
+    track leaving a pad turns before it has travelled that far. Without it
+    orangecrab_ext_pll U10 and rp2350_fpga_eensy_prePlane U4 would each read
+    an escaping pad as interior -- both a 0.325mm part with 5 copper pads,
+    whose central GND pad (0.58 x 0.58 at 45 degrees, so an 0.8202mm
+    axis-aligned extent, which is what this test measures) sits 0.0699mm from
+    the copper box on west and east, plainly on the boundary, and whose
+    axis-aligned corridor is nevertheless closed by its flanking pads once
+    they are inflated by clearance. (The two rules agree exactly at clearance
+    0.09; they part at 0.20.)
 
     Because the union only ADDS escapes, the corridor is consulted only for
     the pads the box half rejects. That is a PROOF, not an optimisation: when
