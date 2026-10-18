@@ -55,7 +55,7 @@ from placement.simple import ROTS, legal, nearest_legal, target
 
 MOVES = {'shift': 0.40, 'turn': 0.15, 'swap': 0.10, 'jump': 0.10, 'dock': 0.10,
          'gshift': 0.12, 'gturn': 0.08, 'gswap': 0.05, 'escape': 0.05}
-ESCAPE_TRIES = 12   # random poses an escape move draws, keeping the least overlap
+ESCAPE_TRIES = 48   # random poses an escape move draws, keeping the least overlap
 CLEAN = 1e-3        # mm2 of overlap that counts as none
 ACCEPT = 0.1        # the start: the median cost change taken uphill this often
 T_END = 0.02
