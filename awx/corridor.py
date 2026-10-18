@@ -1237,8 +1237,14 @@ def build_wrap_spine(dest_pts: Sequence[Pt], stubs: Sequence[Pt],
     def swept(p):
         d = ang(p) - a0
         return d % (2 * math.pi) if ccw else (-d) % (2 * math.pi)
+    # (a WOUND ring's stubs, `wrap_side`, lie anywhere ahead short of the face the bundle meets, whose far corner is
+    # its bound: a bundle arriving at a slant meets the hull's diagonal face, and its wound stubs on the side face
+    # beyond the far one lie 1.6 pi round -- past one and a half pi the start was backed up to just short of them
+    # and the ring ran straight from the trunk THROUGH the destination, zynq's Ethernet bus's MDC and MDIO to U3)
+    j_b = (k_front * per_edge) if ccw else (((k_front + 1) % 8) * per_edge)
     for _ in range(len(ring)):
-        if all(swept(s) < 1.5 * math.pi for s in stubs):
+        lim = swept(ring[j_b]) if wrap_side else 1.5 * math.pi
+        if all(swept(s) < lim for s in stubs):
             break
         i_f = (i_f - step) % len(ring)
         a0 = ang(ring[i_f])
