@@ -74,7 +74,7 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb placed.kicad_pcb \
 ## place_pose.py — the sanctioned pose setter (issue #892)
 
 The engine's decision-makers all SEARCH; this is the one that takes an order.
-`converge.py poses` ranks legal (x, y, rot) candidates and `grade_pad_legality`
+`pose_score.rank_poses` lists legal (x, y, rot) candidates and `grade_pad_legality`
 grades a pose, but until #892 nothing applied one, so a model's own layout
 decision reached the board through a hand script around `placement.writer`
 (run 25's `pose_assist.py`) — the very thing the provenance regime refuses.
@@ -201,31 +201,7 @@ it. See `docs/utilities.md` for the full contract.
 
 The SEARCH's own pad tests (`legality.pads_ok`) are measured on pad BOXES,
 conservative by design: a box can falsely refuse a pose, never falsely admit
-one. `legality.STACK_EXACT_CONFIRM` (#1127) is an OPT-IN switch, **off by
-default**, that confirms the per-pad sweep's box hits on the pads' own
-outlines before the gate refuses a pose for them. It covers both conjuncts
-the boxes decide:
-
-- the STACK (`PairShortfall.stack`): a box overlap counts only when
-  `_exact_pad_stack`, the check check_assembly's pad_intersection channel
-  makes, finds the outlines intersect;
-- the PAD conjunct (`pad`, `pad_overlap`): a box clearance shortfall is
-  re-measured by check_drc's pad-pad check (`check_pad_pad_overlap`, margin
-  0) at the pair's requirement and charged check_drc's own millimetres, and
-  a different-net overlap is a short only when the outlines intersect.
-
-With it on, `pads_ok` refuses what check_drc and check_assembly grade rather
-than what the boxes suggest (`tests/test_1127_stack_exact_confirm.py`). The
-over-cap extent branch and the NPTH hole channel stay box answers, a part
-that cannot be posed keeps the box's answer, the mode is read once when a
-context is built, and each exact answer is memoised per posed pad pair. An
-exact gate can leave a pair AT its clearance, and check_drc at margin 0 may
-then read it a fraction of a nanometre short: the gate admits within its
-`EPS`, and the board file rounds every pose to whole nanometres. KiCad's own
-DRC does not flag such a pair -- it stores integer nanometres and tolerates
-its DRC epsilon (0.0005 mm) -- so the gate's `EPS` stays as it is.
-
-It is opt-in.
+one.
 
 ## place_fanout_clearance.py — decoupling-cap clearance repair (issue #130)
 
@@ -592,7 +568,7 @@ than rendering an empty ratsnest, which would read as "this net has no airwires"
 | `design_brief.py` | The design brief (#711): what a board is for, compiled into the intent (`docs/design-brief.md`) |
 | `reconcile.py` | Reconciles every ref two channels declare, and reads `mechanical.json` into grade-only anchors (#959) |
 | `arrays.py` | Declared `arrays[]`: the formation predicate and the pin order (#1051) |
-| `edge_facing.py` | Connected pads on a row facing the outline with nothing beyond it (`placement_score`'s `edge_facing`) |
+| `edge_facing.py` | Connected pads on a row facing the outline with nothing beyond it (read by `floorplan`, `mating` and `board_context`) |
 | `pin_rows.py` | Whether a track can cross a through-hole pin row (#1196) |
 | `escape.py` | Per-face escape-lane ledger: can the nets on this part's face get OUT? |
 | `pair_order.py` | Pin-order inversions between connected part pairs. A LOWER BOUND, not a proxy |
@@ -753,8 +729,7 @@ citation). check_assembly and render_placement report the census, and it gates
 only when the band is declared. All five human boards measured break 2.5 mm
 (splitflap 10 of 58 parts, esp_prog 7 of 15, glasgow 4 of 232, watchy 10 of 70,
 ulx3s 9 of 210), and JLC adds edge rails when the file has none. It is the
-grader's census only: the quench's soft `edge_halo` (2.0 mm) does not read a
-declared band.
+grader's census only: the placer does not read a declared band.
 
 ## Mating face (`mating.py`, #1155)
 

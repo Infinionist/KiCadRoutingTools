@@ -202,10 +202,9 @@ face or at another pose), nothing written; 4 placed, with parts left illegal
 
 ## Pose Setter (`place_pose.py`)
 
-Applies a pose the MODEL chose, and lets the engine grade it (#892). The
-ranking half already existed (`converge.py poses` over `pose_score.rank_poses`);
-this is the verb that applies one, so a rotation or a lock is a registered
-lever rather than a hand script around `placement.writer`.
+Applies a pose the MODEL chose, and lets the engine grade it (#892), so a
+rotation or a lock is a registered lever rather than a hand script around
+`placement.writer`.
 
 ```bash
 python py_placer/place_pose.py BOARD OUT set U1 129.9 98.3 --rot 270
@@ -225,8 +224,8 @@ needs a call with ONE pose op: `--near` beside a second pose op is refused at
 exit 2 before anything is graded (#1194; issue one `set REF --near X Y` per
 call, lock/unlock may ride along), and `--snap` there is skipped and says so.
 `set` takes exact coordinates positionally; `--near X Y` is the same
-point read as approximate and implies `--snap`, which takes the best legal
-pose within `--radius` (ranked by `pose_score`, then RE-GRADED here — the
+point read as approximate and implies `--snap`, which takes the nearest legal
+pose within `--radius` (ranked nearest first by `pose_score`, then RE-GRADED here — the
 ranker's legality is an AABB gate and this verb's verdict is exact geometry,
 so a candidate is verified, never trusted). `face REF FACE PARTNER` names a
 pad row by the face it is on NOW and turns the part until that row points at
@@ -279,7 +278,7 @@ unlocks moves nothing and records `zone_check.skipped`. Run 29's lap-10
 after the write. With a plan in hand, pass it.
 
 `--snap` is a two-rung ladder, because one rung was not enough: `pose_score`
-ranks first (it knows about wirelength and crossings), then the bare lattice
+ranks first (the poses its gate admits, nearest the aimed point first), then the bare lattice
 around the aimed point, and **every** candidate from either rung is re-graded
 in this verb's own currency before it is written. Measured on
 `flat_hierarchy`: the ranker alone returned zero candidates for
@@ -298,7 +297,7 @@ board than the request, and on esp_prog `set R3 146.0 101.5 --snap --radius 4`
 ranked 3 such poses and refused all 9 tries; it now ranks 9 and snaps to the
 7th, 3.89 mm away. When the part's INPUT pose is off the board, that branch
 is open, and the poses merely less off the board than the input can fill the
-ranking's cheapest places: with R3 staged at (146.0, 101.5), `set R3 143.4
+ranking's first places: with R3 staged at (146.0, 101.5), `set R3 143.4
 102.0 --rot 180 --snap --radius 4` wrote (142.9, 104.75), `legal: false`,
 while a legal pose 0.49 mm nearer the request was never ranked. So the
 ranking with that branch closed goes first, as its own rung
@@ -310,8 +309,7 @@ would trade it for pad copper still past the outline. The census counts the
 rung as `ranked_on_board` (null from an input on the board), and the no-snap
 suggestion takes the same order. A ranked pose that only the escape branch
 admits (less off the board than the input, not on it) is labelled `legal:
-false, escape: true` wherever it is reported (`nearest_legal`, `converge.py
-poses`), and the no-snap suggestion says so in words; `pose_score.rank_poses`
+false, escape: true` wherever it is reported (`nearest_legal`), and the no-snap suggestion says so in words; `pose_score.rank_poses`
 used to label it `legal: true`. Neither the snap nor the no-snap suggestion ever
 returns the request itself (`requested_dropped`). `input_pose_vetoed` is the
 ranker's verdict on the part's input pose: when it vetoes even that, its
@@ -405,64 +403,6 @@ footprints stay allowed by default). A board-level rule area of the same
 `--name` is replaced, so the command is idempotent; the output gets the
 input's siblings. Exit 0 written, 2 for a usage error, a `--ref` the board
 does not have, or a layer it does not have.
-
-## Placement Quality Terms (`placement_score.py`)
-
-Six terms a COPPER-FREE placement lap can be ranked by, because nothing else
-can rank one: `blocking` on such a board is the unrouted count (the routing
-half's number, identical on every lap) and `quality` is `(0, 0.0, 0)` for every
-placement of every board.
-
-```bash
-python3 -X utf8 py_placer/placement_score.py board.kicad_pcb --json wk/terms.json
-python3 -X utf8 py_placer/placement_score.py board.kicad_pcb --intent floorplan.json
-python3 -X utf8 py_placer/placement_score.py board.kicad_pcb --length-groups groups.json
-```
-
-| term | what it measures |
-|---|---|
-| `pair_length` | worst span of a declared differential pair, mm. A pair two parts carry whole: the straight pad-centre span. A pair through per-leg series parts (AC caps, USB series resistors), composed by the router's own junction rule (`diff_xnet.find_ac_coupled_xnets`): the longer leg's pad-centre polyline through the series pads, with both legs and \|P−N\| in `pairs[]` as numbers, not a verdict (#1251). A pair neither covers is named in `not_measured` with why; the `basis` names the rule and the measured rows |
-| `pin_order_crossings` | part pairs whose pad order CROSSES, so a router must pay a via or a detour |
-| `cluster_to_pin` | worst distance from a passive to the pin it serves, mm — declared `proximity` claims first, the decap election for the rest |
-| `plane_cut_proxy` | length of each net's chord lying INSIDE a locked part's body, summed. Two-layer boards only; ground and rails excluded |
-| `balance` | pad-area first moment along the board's long axis, as a fraction of span. Copper pads only: NPTH and paste/mask-aperture pads are excluded, and the term names that population as its `basis` (#1143), so a lap scored before #1143 is reported `not-comparable` against one scored after it rather than as a move |
-| `edge_facing` | connected pads on a row that faces the board outline with nothing beyond it, over parts with 3+ connected pads; edge connectors excluded |
-
-**There is no aggregate and no weight.** Laps are compared by `compare_terms`,
-which is PARETO: `better` only when no measured term regressed, `mixed` naming
-both sides when two terms trade. A term that could not be measured reports
-`ran: false` with a reason and `value: null` — never 0.
-
-Each term publishes a `basis` when its population is not fixed by the board
-(which parts are locked, which claims were declared). When that basis moves
-between laps the term is **not judged**: a total over a different population is
-not a larger or smaller version of the first.
-
-**`--length-groups FILE`** (the `board_score` / `check_complete` format,
-`{"G": {"nets": [...], "tolerance_mm": t, "mode": "pin_pair"}}`) fills a
-REPORT-ONLY `length_groups` section (#1252) that is **not a term**: it is not in
-`TERM_ORDER`, so `compare_terms` and the lap ledger never read it. Per group it
-reports each member's length FLOOR and its basis -- `2-part`, the octilinear
-distance of the closest pad pair across the two parts; `multipoint`, of the
-farthest pad pair on different parts -- the longest floor and its net, the
-spread, `copper_to_add_mm` = Σ(longest − own floor), and the longest floor in
-ps on an outer and an inner layer (`impedance.get_layer_ps_per_mm`).
-`tolerance_mm` is printed beside the spread with no pass/fail: a floor spread
-is not a routed spread, because meanders can always add copper. Each floor
-includes the member's pad-to-die length (`(die_length ...)`, #1248) on the
-pads `board_score` adds it for (`net_queries.net_match_pad_to_die`: every pad,
-or the first two in `pin_pair` mode), and the ps figure the same pads'
-`die_delay`; a group whose pads declare either names it in `pad_to_die_mm` /
-`pad_to_die_ps`. `cannot_see` lists what a floor misses (detours, layers and
-vias, meander room, fly-by/T topologies and pad-edge entry). A group with fewer than
-two of its nets on the board is `ran: false` with a reason; a path that is not
-a readable file of that shape exits 2 (where `board_score` reads it as
-ungraded).
-
-`board_score.py --placement-terms` embeds this document at a top-level
-`placement` key, report-only — it never enters `blocking` and never changes the
-exit code. `converge status` prints each lap's terms and its movement against
-the row it was recorded against.
 
 ## Connectivity Checker (`check_connected.py`)
 

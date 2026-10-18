@@ -2808,7 +2808,7 @@ run, and the classification table below reads BOTH. The *ledger* and the
      and `status` are not clocks either — see the key notes above.
   2. **Check the row count after every `converge.py record`.** The 126 is the
      shell's, so a caller that does not re-count sees no error and the lap is
-     gone. Prefer `--score-file` over `--score "$(cat …)"`.
+     gone. Pass the score as `--score-file`.
 
   When a step you launched is genuinely long, do not sit on it: the delegation
   half of this rule — never leave a background job unwatched for long, and kill

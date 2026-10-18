@@ -1779,10 +1779,6 @@ can check that the three arms are the whole scope):
   bulk and filter caps upstream of an LC network, not decouplers. **The grader
   is right to ignore all ten**; there is no IC for them to be far from.
 
-The census's `seeder_pin_scope` is the caps that **elect a tether at any
-distance**, graded plus beyond the radius (60 of ulx3s's 70): the population
-a supply pin can be found for, which leaves out exactly the second bullet.
-
 ## Grading the pin, not the package (#705)
 
 `decap_distance` measures the cap's **centroid** to the IC's pad bounding box

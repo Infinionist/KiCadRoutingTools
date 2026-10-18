@@ -711,7 +711,7 @@ KiCadRoutingTools/
 │   ├── place_simple.py           # The placer: functional groups, one objective, annealed
 │   ├── place_pose.py             # Set, turn, face, lock or replicate parts by hand (#892)
 │   ├── place_fanout_clearance.py # Move decoupling caps off fanout vias (#130)
-│   ├── converge.py               # Rank a part's poses; the milestone ledger
+│   ├── converge.py               # The milestone ledger: record, where, verdict
 │   ├── placement/                # Component placement package — see py_placer/placement/README.md
 │   │   ├── simple.py             # The placer's cost model
 │   │   ├── simple_anneal.py      # The placer's simulated annealing
