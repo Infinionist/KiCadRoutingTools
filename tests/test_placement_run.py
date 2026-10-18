@@ -2,8 +2,9 @@
 
 Headless tests (no wx, no CLI, no pcbnew): workdir creation/staging, the
 instruction + RESULT= contracts, the monitor's pollers (ledger tail, board
-artifacts, stage derivation), the scavenge fallback, and the build_cmd
-allowed_tools/add_dirs extension the placement runs depend on.
+artifacts, the candidates table's scan, stage derivation), the scavenge
+fallback, and the build_cmd allowed_tools/add_dirs extension the placement
+runs depend on.
 """
 import json
 import os
@@ -23,10 +24,12 @@ import ai_backend  # noqa: E402
 import placement_run  # noqa: E402
 from placement_run import (  # noqa: E402
     PLACEMENT_ALLOWED_TOOLS, PLACEMENT_RESULT_SCHEMA, PLACEMENT_SKILL_MODES,
-    PLACEMENT_SKILLS, RUN_MARKER, RUNS_DIRNAME, build_placement_instructions,
-    build_placement_prompt, create_workdir, derive_stage, format_prune_note,
-    list_board_artifacts, newest_stable_board, parse_placement_result,
-    prune_runs, read_ledger_tail, scan_workdir_outputs, stage_inputs,
+    PLACEMENT_SKILLS, RUN_MARKER, RUNS_DIRNAME, active_candidates,
+    build_placement_instructions, build_placement_prompt, create_workdir,
+    derive_stage, format_prune_note, list_board_artifacts, mark_kept,
+    newest_run_board, newest_stable_board, parse_placement_result,
+    prune_runs, read_ledger_tail, scan_candidates, scan_workdir_outputs,
+    stage_inputs,
 )
 
 FAILURES = []
@@ -467,30 +470,138 @@ check("missing ledger tolerated", rows4 == [] and off4 == 0)
 
 # ------------------------------------------------------------ derive_stage
 
-# The staged drivers and their --stage ids are retired, so the transcript no
-# longer names a stage: the newest ledger row wins, then the artifact name.
+# The newest recognised tool command says what the run is doing now, the
+# newest ledger row its last milestone (both shown when both exist); without
+# either, the newest board's name (relative to the workdir) answers.
 tail = ["  -> Bash: python3 .../placement_driver.py --stage P4 --board x",
         "     [ok] stage emitted"]
 row = {"iteration": 7, "kind": "reseat", "lever": "COL4"}
-check("ledger row wins over a stage-like transcript and an artifact",
-      derive_stage(tail, row, "loop_round3.kicad_pcb") == "lap 7: reseat/COL4")
-check("a stage-like transcript alone is not a stage any more",
+check("ledger row wins over an unrecognised command and an artifact",
+      derive_stage(tail, row, "r1/s3.kicad_pcb") == "lap 7: reseat/COL4")
+check("a stage-like transcript alone is not a stage",
       derive_stage(["Bash: loop_driver.py --stage L2"], None, None)
       == "working...")
-check("artifact wins over a stage-like transcript when no row exists",
-      derive_stage(tail, None, "loop_round3.kicad_pcb") == "placing round 3")
+check("artifact wins over an unrecognised command when no row exists",
+      derive_stage(tail, None, "r2/s3.kicad_pcb") == "round 2: seed 3 placed")
 check("the old STAGE_LABELS table is gone",
       not hasattr(placement_run, "STAGE_LABELS"))
+check("placing a round's seed",
+      derive_stage(["python3 py_placer/place_simple.py wk/fixed.kicad_pcb "
+                    "wk/r2/s3.kicad_pcb --seed 3 --json wk/r2/s3.json"],
+                   None, None) == "round 2: placing seed 3")
+check("fast-routing a round's seed, with the last milestone",
+      derive_stage(["cd wk/r2/s1_route && python3 py_router/route.py a.kicad_pcb "
+                    "b.kicad_pcb --nets '*' --quick-pass"], row, None)
+      == "round 2: fast-routing seed 1 (lap 7: reseat/COL4)")
+check("scoring a round's seed",
+      derive_stage(["python3 py_tools/board_score.py wk/r1/s2_fast.kicad_pcb "
+                    "--baseline wk/r1/s2.kicad_pcb --json x"], None, None)
+      == "round 1: scoring seed 2")
+check("the parallel form names the round and its seeds",
+      derive_stage(["python3 py_placer/place_simple.py wk/fixed.kicad_pcb "
+                    "wk/r1/s{seed}.kicad_pcb --seeds 0-3 --jobs 4 "
+                    "--json wk/r1/s{seed}.json"], None, None)
+      == "round 1: placing seeds 0-3")
+check("a seed outside a round folder still names the seed",
+      derive_stage(["python3 py_placer/place_simple.py a b --seed 2"], None,
+                   None) == "placing seed 2")
 
 check("ledger row formatted",
       derive_stage([], row, None) == "lap 7: reseat/COL4")
-check("artifact heuristic route log",
-      derive_stage([], None, "loop_round2_route.log") == "routing round 2")
-check("artifact heuristic placing",
-      derive_stage([], None, "loop_round5.kicad_pcb") == "placing round 5")
-check("artifact heuristic lap board",
-      derive_stage([], None, "lap3.kicad_pcb") == "lap 3")
+check("artifact heuristic fast-routed seed",
+      derive_stage([], None, "r1/s0_fast.kicad_pcb")
+      == "round 1: seed 0 fast-routed")
+check("artifact heuristic fixed board",
+      derive_stage([], None, "fixed.kicad_pcb") == "fixed parts locked")
+check("artifact heuristic final board",
+      derive_stage([], None, "final.kicad_pcb") == "final board written")
 check("fallback", derive_stage([], None, None) == "working...")
+
+# -------------------------------------------------------------- candidates
+
+cand_wk = os.path.join(TMP, "candidates")
+
+
+def cput(rel, content="(kicad_pcb)\n", mtime=None):
+    p = os.path.join(cand_wk, rel)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    open(p, "w").write(content)
+    if mtime is not None:
+        os.utime(p, (mtime, mtime))
+    return p
+
+
+def cscore(rel, blocking, vias, copper, segments):
+    cput(rel, json.dumps({"blocking": blocking, "quality": {
+        "vias": vias, "copper_mm": copper, "segments": segments}}))
+
+
+# Round 1: s0 scored with blocking nets, s1 scored clean (best), s2 placed
+# and routing, s3's board written but its report not yet. Round 2: s0 clean.
+for s in (0, 1, 2):
+    cput(f"r1/s{s}.kicad_pcb", f"(kicad_pcb r1 s{s})\n")
+    cput(f"r1/s{s}.json", "{}")
+cput("r1/s3.kicad_pcb", "(kicad_pcb r1 s3)\n")
+for s in (0, 1):
+    cput(f"r1/s{s}_fast.kicad_pcb", f"(kicad_pcb r1 s{s} fast)\n")
+cscore("r1/s0_fast.score.json", 2, 40, 300.0, 200)
+cscore("r1/s1_fast.score.json", 0, 44, 310.0, 210)
+cput("r1/s0_route/step4_route.kicad_pcb")          # working files: no row
+cput("r2/s0.kicad_pcb", "(kicad_pcb r2 s0)\n")
+cput("r2/s0.json", "{}")
+_later = os.path.getmtime(os.path.join(cand_wk, "r2", "s0.json")) + 60
+cput("r2/s0_fast.kicad_pcb", "(kicad_pcb r2 s0 fast)\n", mtime=_later)
+cscore("r2/s0_fast.score.json", 0, 30, 280.0, 190)
+
+rows_c = scan_candidates(cand_wk)
+by = {(r["round"], r["seed"]): r for r in rows_c}
+check("one row per seed per round, in order",
+      [(r["round"], r["seed"]) for r in rows_c]
+      == [(1, 0), (1, 1), (1, 2), (1, 3), (2, 0)], str(list(by)))
+check("scored row with blocking nets", by[(1, 0)]["status"] == "routed"
+      and by[(1, 0)]["vias"] == 40 and by[(1, 0)]["copper_mm"] == 300.0)
+check("best of round 1 is the clean seed", by[(1, 1)]["status"] == "best")
+check("placed, not yet scored", by[(1, 2)]["status"] == "routing"
+      and by[(1, 2)]["fast"] is None and by[(1, 2)]["blocking"] is None)
+check("board without its report is still placing",
+      by[(1, 3)]["status"] == "placing")
+check("the round folder's route dir adds no row", (1, 4) not in by)
+rows_a = scan_candidates(cand_wk, active=[(2, 1)])
+check("the seed being placed shows before its board exists",
+      any(r["round"] == 2 and r["seed"] == 1 and r["status"] == "placing"
+          for r in rows_a))
+check("active_candidates reads the newest place_simple command",
+      active_candidates(["python3 py_placer/place_simple.py f wk/r1/s0.kicad_pcb",
+                         "python3 py_placer/place_simple.py f wk/r3/s1.kicad_pcb"])
+      == [(3, 1)])
+check("the parallel form names every seed it places",
+      active_candidates(["python3 py_placer/place_simple.py f "
+                         "wk/r2/s{seed}.kicad_pcb --seeds 0-3 --jobs 4 "
+                         "--json wk/r2/s{seed}.json"])
+      == [(2, 0), (2, 1), (2, 2), (2, 3)])
+check("no place_simple command, no active candidate",
+      active_candidates(["python3 py_tools/board_score.py x"]) == [])
+check("newest board, relative to the workdir",
+      newest_run_board(cand_wk) == "r2/s0_fast.kicad_pcb",
+      str(newest_run_board(cand_wk)))
+
+# KEPT: the final board is matched to a candidate by content; a final board
+# that is no candidate's falls back to the best scored row of the run.
+shutil.copyfile(os.path.join(cand_wk, "r1", "s1.kicad_pcb"),
+                os.path.join(cand_wk, "final.kicad_pcb"))
+kept = mark_kept(scan_candidates(cand_wk), cand_wk)
+check("final.kicad_pcb matched to its candidate by sha256",
+      kept is not None and (kept["round"], kept["seed"]) == (1, 1)
+      and kept["status"] == "KEPT")
+cput("final.kicad_pcb", "(kicad_pcb touched up)\n")
+kept2 = mark_kept(scan_candidates(cand_wk), cand_wk)
+check("an unmatched final falls back to the run's best scored row",
+      (kept2["round"], kept2["seed"]) == (2, 0), str(kept2))
+os.remove(os.path.join(cand_wk, "final.kicad_pcb"))
+scav_c = scan_workdir_outputs(cand_wk)
+check("scavenge without final takes the best candidate's PLACEMENT",
+      scav_c["board"] == os.path.join(cand_wk, "r2", "s0.kicad_pcb"),
+      str(scav_c["board"]))
 
 # ---------------------------------------------------------------- scavenge
 

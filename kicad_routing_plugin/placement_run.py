@@ -3,8 +3,9 @@ KiCad Routing Tools - headless placement-run contracts (Placement tab).
 
 The Placement tab drives Claude Code headless with the /plan-pcb-placement skill,
 in its `place` or `full` mode. Unlike the "Ask AI" analysis skills,
-those runs WRITE (lap boards, a converge ledger, renders, REPORT.md), take
-minutes to hours, and must be observable from the outside while they run.
+those runs WRITE (the groups file, the intent, one placed board per seed,
+fast-routed boards, a converge ledger, REPORT.md), take minutes to hours, and
+must be observable from the outside while they run.
 
 This module holds everything about such a run that is not wx: the workdir
 layout, the instruction/RESULT contracts, and the read-only pollers the GUI's
@@ -13,6 +14,7 @@ artifacts, stage derivation). Intentionally wx-free so tests can import it
 headless, mirroring ai_backend.py.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -368,9 +370,12 @@ def build_placement_instructions(workdir, mode, extra=""):
     wd = _fwd(workdir)
     lines = [
         "Work headless and unattended; never wait for user input.",
-        f"Use {wd} as the working directory for ALL artifacts (ledger, lap "
-        "boards, renders, scores, REPORT.md, journal.md). Keep the "
-        f"converge ledger at {wd}/ledger.jsonl.",
+        f"Use {wd} as the working directory for ALL artifacts (groups.json, "
+        "the intent, scores, renders, REPORT.md). Keep each round's "
+        f"candidates in {wd}/r<N>/ with the skill's names (s<S>.kicad_pcb, "
+        "s<S>.json, s<S>_route/, s<S>_fast.kicad_pcb, s<S>_fast.score.json): "
+        "this GUI's candidates table reads them. Keep the converge ledger at "
+        f"{wd}/ledger.jsonl.",
         f"Do not modify any file outside {wd}, and never edit "
         "input.kicad_pcb in place.",
         DATASHEET_SENTENCE,
@@ -390,10 +395,12 @@ def build_placement_instructions(workdir, mode, extra=""):
         "If a gate refuses (for example the board already carries routed "
         'copper), stop and report status "refused" instead of stripping '
         "copper.",
-        # The GUI's progress line is the newest ledger row, so the skill's
-        # milestone rows are what the user sees while the run works.
+        # The GUI's progress line names the newest tool command and the
+        # newest ledger row, so the milestone rows are what the user sees as
+        # the run's progress between commands.
         "Record every milestone board in that ledger as you go (the skill's "
-        "`converge.py record` step): it is the only progress this GUI shows.",
+        "`converge.py record` step): this GUI shows the newest row as the "
+        "run's progress.",
     ]
     if extra and extra.strip():
         lines.append(extra.strip())
@@ -402,11 +409,20 @@ def build_placement_instructions(workdir, mode, extra=""):
     return " ".join(lines)
 
 
-def build_placement_prompt(backend, workdir, staged_board, mode, extra=""):
-    """The full skill prompt for a placement run (via backend.skill_prompt)."""
+def build_placement_prompt(backend, workdir, staged_board, mode, extra="",
+                           rounds=None):
+    """The full skill prompt for a placement run (via backend.skill_prompt).
+
+    `rounds` is the skill's `--rounds N`: the most placement rounds. A round
+    places seeds 0-3, fast-routes each and keeps the best; the skill stops at
+    the first round whose best fast route has no blocking net. None leaves
+    the skill's own default.
+    """
+    args = f"{PLACEMENT_SKILL_MODES[mode]} {_fwd(staged_board)}"
+    if rounds:
+        args += f" --rounds {int(rounds)}"
     return backend.skill_prompt(
-        PLACEMENT_SKILLS[mode],
-        f"{PLACEMENT_SKILL_MODES[mode]} {_fwd(staged_board)}",
+        PLACEMENT_SKILLS[mode], args,
         build_placement_instructions(workdir, mode, extra))
 
 
@@ -464,9 +480,8 @@ def parse_placement_result(value):
 def list_board_artifacts(workdir):
     """Top-level *.kicad_pcb files -> [(path, mtime, size)], oldest first.
 
-    Deliberately not recursive: the converge boards/<sha> CAS store and
-    attempt archives churn far too much to preview; the interesting boards
-    (input, lap*, loop_round*, placed, final) land at the top level.
+    Not recursive: the rounds' candidates live in r<N>/ (scan_candidates),
+    and the converge boards/<sha> store churns too much to look at.
     """
     out = []
     try:
@@ -498,6 +513,201 @@ def newest_stable_board(artifacts, prev_artifacts):
         if size > 0 and prev_sizes.get(path) == size:
             return path
     return None
+
+
+# ------------------------------------------------------------ candidates
+#
+# The skill keeps each round in <workdir>/r<N>/ (SKILL.md section 2):
+#   s<S>.kicad_pcb + s<S>.json     seed S's placement and place_simple report
+#   s<S>_route/                    the fast route's working files
+#   s<S>_fast.kicad_pcb            the fast-routed board
+#   s<S>_fast.score.json           its board_score (blocking, quality{...})
+# and writes the kept board to <workdir>/final.kicad_pcb.
+
+_ROUND_DIR_RE = re.compile(r"^r(\d+)$")
+_SEED_FILE_RE = re.compile(r"^s(\d+)(?:\.|_)")
+
+
+def _read_score(path):
+    """(blocking, vias, copper_mm, segments) from a board_score JSON, or None."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+        q = doc.get("quality") or {}
+        return (int(doc["blocking"]), int(q["vias"]), float(q["copper_mm"]),
+                int(q["segments"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def candidate_key(row):
+    """How the skill ranks candidates: blocking, then vias, copper, segments."""
+    return (row["blocking"], row["vias"], row["copper_mm"], row["segments"])
+
+
+def scan_candidates(workdir, active=None):
+    """One row per seed per round, from <workdir>/r<N>/ -> [row], by round
+    then seed.
+
+    row: {round, seed, placed, fast, blocking, vias, copper_mm, segments,
+    status, mtime}. `placed`/`fast` are the board paths or None; the metrics
+    are None until the fast route is scored. status: "placing" (no finished
+    placement yet), "routing" (placed, no score yet), "routed" (scored, with
+    blocking nets), "clean" (scored, blocking 0), "best" (the best scored
+    row of its round). `active` = the (round, seed) pairs the run is placing
+    right now (`active_candidates`), shown as "placing" before their boards
+    exist.
+    """
+    rows = {}
+    try:
+        names = os.listdir(workdir)
+    except OSError:
+        names = []
+    for name in names:
+        m = _ROUND_DIR_RE.match(name)
+        rdir = os.path.join(workdir, name)
+        if not m or not os.path.isdir(rdir):
+            continue
+        n = int(m.group(1))
+        try:
+            files = os.listdir(rdir)
+        except OSError:
+            continue
+        for s in sorted({int(sm.group(1)) for sm in map(_SEED_FILE_RE.match, files) if sm}):
+            def p(suffix):
+                path = os.path.join(rdir, f"s{s}{suffix}")
+                return path if os.path.isfile(path) else None
+            placed, report, fast = p(".kicad_pcb"), p(".json"), p("_fast.kicad_pcb")
+            score_path = p("_fast.score.json")
+            score = _read_score(score_path) if score_path else None
+            mtime = max((_mtime(x) for x in (placed, report, fast, score_path) if x),
+                        default=0.0)
+            row = {"round": n, "seed": s, "placed": placed, "fast": fast,
+                   "blocking": None, "vias": None, "copper_mm": None,
+                   "segments": None, "mtime": mtime}
+            if score is not None:
+                (row["blocking"], row["vias"], row["copper_mm"],
+                 row["segments"]) = score
+                row["status"] = "clean" if score[0] == 0 else "routed"
+            elif placed and report:
+                row["status"] = "routing"
+            else:
+                row["status"] = "placing"
+            rows[(n, s)] = row
+    for n, s in active or ():
+        if (n, s) not in rows:
+            rows[(n, s)] = {"round": n, "seed": s, "placed": None,
+                            "fast": None, "blocking": None, "vias": None,
+                            "copper_mm": None, "segments": None,
+                            "status": "placing", "mtime": time.time()}
+    out = [rows[k] for k in sorted(rows)]
+    for n in {r["round"] for r in out}:
+        scored = [r for r in out if r["round"] == n and r["blocking"] is not None]
+        if scored:
+            min(scored, key=candidate_key)["status"] = "best"
+    return out
+
+
+def _mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
+def _sha256(path):
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
+def mark_kept(rows, workdir, board=None):
+    """Mark the candidate the run kept as "KEPT" and return it (or None).
+
+    The kept board (`board`, else <workdir>/final.kicad_pcb) is matched to a
+    candidate by the sha256 of its placement or fast-routed board. A kept
+    board that is neither -- touched up with place_pose, or routed in full --
+    falls back to the best scored row over all rounds, the one the skill's
+    ranking keeps.
+    """
+    target = board if board and os.path.isfile(board) else \
+        os.path.join(workdir, "final.kicad_pcb")
+    kept = None
+    want = _sha256(target) if os.path.isfile(target) else None
+    if want:
+        for row in rows:
+            if any(p and _sha256(p) == want for p in (row["placed"], row["fast"])):
+                kept = row
+    if kept is None:
+        scored = [r for r in rows if r["blocking"] is not None]
+        kept = min(scored, key=candidate_key) if scored else None
+    if kept is not None:
+        kept["status"] = "KEPT"
+    return kept
+
+
+_ACTIVE_RE = re.compile(r"\br(\d+)[/\\]s(\d+|\{seed\})\.kicad_pcb\b")
+_SEEDS_RE = re.compile(r"--seeds[ =]([\d,\-]+)")
+
+
+def _seed_spec(spec):
+    """'0-3' / '0,2,5' / '0-2,5' -> [seeds]."""
+    out = []
+    for part in spec.split(","):
+        lo, _, hi = part.partition("-")
+        if lo.isdigit() and (not hi or hi.isdigit()):
+            out.extend(range(int(lo), int(hi or lo) + 1))
+    return out
+
+
+def active_candidates(transcript_tail):
+    """[(round, seed)] the newest place_simple command is writing: one seed
+    (`r<N>/s<S>.kicad_pcb`), or every seed of the parallel form
+    (`r<N>/s{seed}.kicad_pcb --seeds 0-3`). [] when it names no round."""
+    for line in reversed(list(transcript_tail or ())):
+        if "place_simple.py" in line:
+            m = _ACTIVE_RE.search(line)
+            if not m:
+                return []
+            n = int(m.group(1))
+            if m.group(2).isdigit():
+                return [(n, int(m.group(2)))]
+            seeds = _SEEDS_RE.search(line)
+            return [(n, s) for s in _seed_spec(seeds.group(1))] if seeds else []
+    return []
+
+
+def newest_run_board(workdir):
+    """The newest board of the run, top level or a round's, as a path
+    relative to the workdir with forward slashes (for derive_stage)."""
+    best = (0.0, None)
+    for rel in _run_boards(workdir):
+        mt = _mtime(os.path.join(workdir, rel))
+        if mt >= best[0]:
+            best = (mt, rel)
+    return best[1]
+
+
+def _run_boards(workdir):
+    try:
+        names = os.listdir(workdir)
+    except OSError:
+        return
+    for name in names:
+        if name.endswith(".kicad_pcb"):
+            yield name
+        elif _ROUND_DIR_RE.match(name) and os.path.isdir(os.path.join(workdir, name)):
+            try:
+                for sub in os.listdir(os.path.join(workdir, name)):
+                    if sub.endswith(".kicad_pcb"):
+                        yield f"{name}/{sub}"
+            except OSError:
+                pass
 
 
 def read_ledger_tail(ledger_path, offset):
@@ -532,13 +742,49 @@ def read_ledger_tail(ledger_path, offset):
     return rows, offset + end + 1
 
 
+# What the newest board file says the run reached (newest_run_board names
+# it relative to the workdir): the locked input, a round's placement or fast
+# route, the final board.
 _ARTIFACT_STAGES = (
-    (re.compile(r"loop_round(\d+)_route\.log$"), "routing round {0}"),
-    (re.compile(r"loop_round(\d+)_routed\.kicad_pcb$"), "routing round {0}"),
-    (re.compile(r"loop_round(\d+)\.kicad_pcb$"), "placing round {0}"),
-    (re.compile(r"render_lap(\d+)"), "rendering lap {0}"),
-    (re.compile(r"^score.*\.json$"), "scoring the board"),
-    (re.compile(r"^lap(\d+)\.kicad_pcb$"), "lap {0}"),
+    (re.compile(r"^r(\d+)/s(\d+)_fast\.kicad_pcb$"), "round {0}: seed {1} fast-routed"),
+    (re.compile(r"^r(\d+)/s(\d+)\.kicad_pcb$"), "round {0}: seed {1} placed"),
+    (re.compile(r"^fixed\.kicad_pcb$"), "fixed parts locked"),
+    (re.compile(r"^final\.kicad_pcb$"), "final board written"),
+    (re.compile(r"route", re.I), "routing"),
+    (re.compile(r"(?:^|_)s(\d+)\.kicad_pcb$"), "placed seed {0}"),
+)
+
+# What the newest tool command says the run is doing NOW. Matched against the
+# transcript tail newest-first; the first command that matches names the
+# activity. Order matters: a specific pattern before its general one. `RS` is
+# a round folder's seed: r<N>/s<S>.
+_RS = r"\br(\d+)[/\\]s(\d+)"
+_COMMAND_STAGES = (
+    # The parallel form: --seeds 0-3 into r<N>/s{seed}.kicad_pcb.
+    (re.compile(r"place_simple\.py\b(?=.*--seeds[ =]([\d,\-]+))"
+                r"(?=.*\br(\d+)[/\\]s\{seed\})"), "round {1}: placing seeds {0}"),
+    (re.compile(r"place_simple\.py\b.*?--seeds[ =]([\d,\-]+)"), "placing seeds {0}"),
+    (re.compile(r"place_simple\.py\b.*?" + _RS + r"\.kicad_pcb"),
+     "round {0}: placing seed {1}"),
+    (re.compile(r"place_simple\.py\b.*?--seed[ =](\d+)"), "placing seed {0}"),
+    (re.compile(r"place_simple\.py\b"), "placing"),
+    (re.compile(r"board_score\.py\b.*?" + _RS + r"_fast"), "round {0}: scoring seed {1}"),
+    (re.compile(r"route_review\.py\b.*?" + _RS), "round {0}: reviewing seed {1}"),
+    (re.compile(r"route_review\.py\b"), "reviewing the fast route"),
+    (re.compile(_RS + r"_(?:route|fast)\b"), "round {0}: fast-routing seed {1}"),
+    (re.compile(r"\broute\.py\b.*--quick-pass"), "fast-routing"),
+    (re.compile(r"\b(?:route|route_planes|route_diff|bga_fanout|qfn_fanout|"
+                r"place_fanout_clearance)\.py\b"), "routing"),
+    (re.compile(r"board_score\.py\b"), "scoring"),
+    (re.compile(r"check_groups\.py\b"), "checking the groups"),
+    (re.compile(r"check_floorplan\.py\b.*--emit-intent"), "writing the intent"),
+    (re.compile(r"check_floorplan\.py\b"), "checking the floorplan"),
+    (re.compile(r"check_assembly\.py\b"), "checking assembly"),
+    (re.compile(r"\b(?:board_brief|board_context)\.py\b"), "reading the board"),
+    (re.compile(r"place_pose\.py\b"), "setting poses"),
+    (re.compile(r"render_(?:placement|nets)\.py\b"), "rendering"),
+    (re.compile(r"converge\.py\s+record\b"), "recording a milestone"),
+    (re.compile(r"check_complete\.py\b"), "checking completion"),
 )
 
 
@@ -572,18 +818,35 @@ def _row_label(row):
         return "(no lever recorded)"
 
 
+def _command_stage(transcript_tail):
+    """The activity the newest recognised tool command names, or None."""
+    for line in reversed(list(transcript_tail or ())):
+        for rx, fmt in _COMMAND_STAGES:
+            m = rx.search(line)
+            if m:
+                return fmt.format(*m.groups())
+    return None
+
+
 def derive_stage(transcript_tail, ledger_row, newest_artifact_name):
     """Best human answer to "what is it doing right now".
 
-    Priority: the newest converge ledger row (the skill records a row per
-    milestone) -> artifact-name heuristics -> a generic fallback.
-    `transcript_tail` is kept in the signature for the caller; there is no
-    staged driver whose `--stage` ids it could name any more.
+    The newest recognised tool command in the transcript says what the run is
+    doing now (`placing seed 2`, `fast-routing`); the newest converge ledger
+    row says the last milestone it recorded. Both are shown when both exist,
+    the activity first. Without either, the newest board file's name answers,
+    then a generic fallback.
     """
+    activity = _command_stage(transcript_tail)
+    milestone = None
     if ledger_row:
         lap = ledger_row.get("iteration")
         kind = ledger_row.get("kind") or "?"
-        return f"lap {lap}: {kind}/{_row_label(ledger_row)}"
+        milestone = f"lap {lap}: {kind}/{_row_label(ledger_row)}"
+    if activity and milestone:
+        return f"{activity} ({milestone})"
+    if activity or milestone:
+        return activity or milestone
     if newest_artifact_name:
         for rx, fmt in _ARTIFACT_STAGES:
             m = rx.search(newest_artifact_name)
@@ -596,7 +859,8 @@ def scan_workdir_outputs(workdir):
     """Fallback outputs when the RESULT= line is missing or unusable.
 
     Scavenges what the run left behind: the declared final board (else the
-    newest stable non-input board) and REPORT.md. Same dict shape as
+    best scored candidate's placement, else the newest top-level non-input
+    board) and REPORT.md. Same dict shape as
     parse_placement_result, with
     status "scavenged" so callers can say so.
     """
@@ -604,9 +868,13 @@ def scan_workdir_outputs(workdir):
                  if os.path.basename(t[0]) != "input.kicad_pcb"]
     board = os.path.join(workdir, "final.kicad_pcb")
     if not os.path.isfile(board):
-        # No newer scan to compare sizes against - the run is over, so any
-        # remaining file is as stable as it will ever get.
-        board = newest_stable_board(artifacts, artifacts)
+        # The best scored candidate's PLACEMENT (never its quick-pass board),
+        # else the newest top-level board. No newer scan to compare sizes
+        # against - the run is over, so any file is as stable as it gets.
+        scored = [r for r in scan_candidates(workdir)
+                  if r["blocking"] is not None and r["placed"]]
+        board = (min(scored, key=candidate_key)["placed"] if scored
+                 else newest_stable_board(artifacts, artifacts))
     report = os.path.join(workdir, "REPORT.md")
     if not os.path.isfile(report):
         report = None

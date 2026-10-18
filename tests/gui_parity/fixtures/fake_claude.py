@@ -4,11 +4,12 @@
 Receives the EXACT argv ClaudeBackend.build_cmd produced (the test prepends
 this script to it), asserts the placement-run contract (write-capable
 allowlist, --add-dir, a /plan-pcb-placement prompt), then plays a canned run:
-stream-json init + a milestone `converge.py record` tool line, a lap board +
-ledger row (left to sit long enough for the monitor's size-stable artifact
-scan to render a preview; the row is what the tab's stage line shows now that
-there is no staged driver), then REPORT.md, final.kicad_pcb, and a
-terminal result event ending with a valid RESULT= line.
+stream-json init, round 1's seed 0 in the skill's layout (r1/s0.kicad_pcb +
+s0.json, the fast-routed r1/s0_fast.kicad_pcb and its s0_fast.score.json),
+a milestone `converge.py record` tool line + ledger row, left to sit long
+enough for the monitor to fill the candidates table and render the row's
+preview, then REPORT.md, final.kicad_pcb (the kept seed), and a terminal
+result event ending with a valid RESULT= line.
 """
 import json
 import os
@@ -60,31 +61,46 @@ def main():
     emit({"type": "system", "subtype": "init", "model": "fake-model",
           "claude_code_version": "0.0-test", "cwd": workdir,
           "skills": ["plan-pcb-placement"]})
+    # Round 1, seed 0, in the skill's run layout (SKILL.md section 2).
+    emit({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "Bash",
+         "input": {"description": "Place seed 0",
+                   "command": "python3 -X utf8 py_placer/place_simple.py "
+                              "fixed.kicad_pcb r1/s0.kicad_pcb --seed 0 "
+                              "--json r1/s0.json"}}]}})
+    r1 = os.path.join(workdir, "r1")
+    os.makedirs(r1, exist_ok=True)
+    shutil.copyfile(staged, os.path.join(r1, "s0.kicad_pcb"))
+    with open(os.path.join(r1, "s0.json"), "w") as f:
+        json.dump({"final": {"cost": 1.0}, "illegal": []}, f)
+    shutil.copyfile(staged, os.path.join(r1, "s0_fast.kicad_pcb"))
+    with open(os.path.join(r1, "s0_fast.score.json"), "w") as f:
+        json.dump({"blocking": 0, "quality": {
+            "vias": 12, "copper_mm": 345.6, "segments": 210}}, f)
+
     # Both keys, like real Claude Code events. The skill records each
     # milestone in the converge ledger, and the ledger row written below is
-    # what the tab's stage line derives from.
+    # the stage line's last milestone.
     emit({"type": "assistant", "message": {"content": [
         {"type": "tool_use", "name": "Bash",
          "input": {"description": "Record the milestone board",
                    "command": "python3 -X utf8 py_placer/converge.py record "
-                              "--ledger ledger.jsonl --board lap1.kicad_pcb "
+                              "--ledger ledger.jsonl --board r1/s0.kicad_pcb "
                               "--kind quench --lever nudge"}}]}})
 
-    # A lap board + a ledger row appear mid-run; then sit quietly long enough
-    # for the monitor (1 s ticks, artifact scan every 2nd tick, two same-size
-    # scans required) to notice and render a preview frame.
-    shutil.copyfile(staged, os.path.join(workdir, "lap1.kicad_pcb"))
+    # Then sit quietly long enough for the monitor (1 s ticks, candidates
+    # rescanned every 2nd tick) to fill the table and render the preview.
     with open(os.path.join(workdir, "ledger.jsonl"), "a") as f:
         f.write(json.dumps({"iteration": 1, "kind": "quench",
                             "lever": "nudge"}) + "\n")
     emit({"type": "assistant", "message": {"content": [
-        {"type": "text", "text": "Lap 1 recorded."}]}})
+        {"type": "text", "text": "Round 1 seed 0 recorded."}]}})
     time.sleep(8)
 
     with open(os.path.join(workdir, "REPORT.md"), "w") as f:
         f.write("# Fake placement report\n\nblocking 0 -> 0 (canned).\n")
     final = os.path.join(workdir, "final.kicad_pcb")
-    shutil.copyfile(staged, final)
+    shutil.copyfile(os.path.join(r1, "s0.kicad_pcb"), final)   # the kept seed
 
     result = json.dumps({
         "status": "complete", "board": final.replace("\\", "/"),

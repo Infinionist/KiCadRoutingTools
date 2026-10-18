@@ -2,14 +2,19 @@
 KiCad Routing Tools - Placement sub-tab (AI tab notebook).
 
 Two Claude-Code-driven actions ("Place" via /plan-pcb-placement place, "Place +
-Route" via /plan-pcb-placement full) plus the non-AI "Beautify Labels"
-action (issue #481). The AI runs are headless, write into a persistent
-workdir (placement_run.create_workdir), take minutes to hours, and are
-observed from outside: a 1 s monitor timer merges the stream-json transcript,
-the converge ledger tail, and newly-appearing board artifacts into an
-elapsed/stage status line, and renders preview frames from new boards while
-the run is going. At the end REPORT.md and the run folder are surfaced in the tab
-and the result can be explicitly applied back to the live board.
+Route" via /plan-pcb-placement full, both with the skill's --rounds N) plus
+the non-AI "Beautify Labels" action. The layout follows the Routing sub-tab:
+a large pane on the left (here the run preview, with the labels options
+under it), the "AI" control column on the right, then the progress gauge, a
+status row and the transcript across the full width.
+
+The AI runs are headless, write into a persistent workdir
+(placement_run.create_workdir), take minutes to hours, and are observed from
+outside: a 1 s monitor timer turns the newest tool command, the converge
+ledger tail and newly-appearing board files into an elapsed/stage status
+line, and renders a preview frame of each new board while the run is going.
+At the end REPORT.md and the run folder are surfaced in the tab and the
+result can be explicitly applied back to the live board.
 
 Claude Code is REQUIRED for the two AI actions: they are pinned to the Claude
 backend regardless of the AI tab's backend selection (the opencode analysis
@@ -18,7 +23,6 @@ with an install hint when the CLI is missing.
 """
 
 import os
-import re
 import sys
 import threading
 import time
@@ -27,12 +31,12 @@ from collections import deque
 import wx
 
 from .ai_backend import BACKENDS, BACKEND_IDS
-from . import placement_run
 from .placement_run import (
     KEEP_RUNS, PLACEMENT_ALLOWED_TOOLS, PLACEMENT_SUPPORTED_BACKENDS,
-    build_placement_prompt, create_workdir, derive_stage, format_prune_note,
-    list_board_artifacts, newest_stable_board, parse_placement_result,
-    prune_runs, read_ledger_tail, scan_workdir_outputs, stage_inputs,
+    active_candidates, build_placement_prompt, create_workdir, derive_stage,
+    format_prune_note, mark_kept, newest_run_board, parse_placement_result,
+    prune_runs, read_ledger_tail, scan_candidates, scan_workdir_outputs,
+    stage_inputs,
 )
 
 # Same path setup as ai_gui/swig_gui: the engine modules live in py_router/,
@@ -51,6 +55,10 @@ MODE_LABELS = {"place": "Place", "place_route": "Place + Route"}
 
 # "Default" combo entry = don't pass the model/effort flag (ai_gui convention).
 DEFAULT_CHOICE = "Default"
+
+# The skill's --rounds default (.claude/skills/plan-pcb-placement/SKILL.md):
+# the most placement rounds; a run stops at the first clean fast route.
+DEFAULT_ROUNDS = 3
 
 # Transcript control cap: an hours-long stream-json run grows without bound;
 # when the text exceeds the cap the oldest quarter is dropped.
@@ -76,7 +84,8 @@ def _fmt_elapsed(seconds):
 
 
 class LabelsOptionsPanel(wx.Panel):
-    """Options for Beautify Labels (#481).
+    """Options for Beautify Labels: two rows of label/control pairs with the
+    two checkboxes beside them, a strip under the run preview.
 
     Control attribute names deliberately equal the future plan-step param
     names (label_size, label_orientation, ...) - the AI plan executor applies
@@ -85,12 +94,11 @@ class LabelsOptionsPanel(wx.Panel):
 
     def __init__(self, parent):
         super().__init__(parent)
-        grid = wx.FlexGridSizer(cols=2, vgap=3, hgap=6)
-        grid.AddGrowableCol(1)
+        grid = wx.FlexGridSizer(cols=6, vgap=4, hgap=6)
 
         def row(label, ctrl, tooltip):
             grid.Add(wx.StaticText(self, label=label), 0,
-                     wx.ALIGN_CENTER_VERTICAL)
+                     wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 4)
             ctrl.SetToolTip(tooltip)
             grid.Add(ctrl, 0, wx.EXPAND)
             return ctrl
@@ -109,7 +117,7 @@ class LabelsOptionsPanel(wx.Panel):
             "Shrink floor when the uniform size does not fit; equal to the "
             "text size disables shrinking.")
         self.label_orientation = row(
-            "Orientation:", wx.Choice(self, choices=["horizontal", "vertical"], size=(78, -1)),
+            "Orientation:", wx.Choice(self, choices=["horizontal", "vertical"], size=(118, -1)),
             "Preferred label direction; the other direction is a fallback "
             "when the preferred one does not fit.")
         self.label_orientation.SetSelection(0)
@@ -123,10 +131,12 @@ class LabelsOptionsPanel(wx.Panel):
         self.label_skip_locked = wx.CheckBox(self, label="Skip locked parts")
         self.label_skip_locked.SetToolTip(
             "Leave the labels of KiCad-locked footprints untouched.")
-        sizer = wx.BoxSizer(wx.VERTICAL)
-        sizer.Add(grid, 0, wx.EXPAND)
-        sizer.Add(self.label_include_hidden, 0, wx.TOP, 3)
-        sizer.Add(self.label_skip_locked, 0, wx.TOP, 3)
+        checks = wx.BoxSizer(wx.VERTICAL)
+        checks.Add(self.label_include_hidden, 0, wx.BOTTOM, 4)
+        checks.Add(self.label_skip_locked, 0)
+        sizer = wx.BoxSizer(wx.HORIZONTAL)
+        sizer.Add(grid, 0, wx.ALIGN_CENTER_VERTICAL)
+        sizer.Add(checks, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 16)
         self.SetSizer(sizer)
 
     def get_config(self):
@@ -168,151 +178,80 @@ class LabelsOptionsPanel(wx.Panel):
                          'include_hidden': False, 'skip_locked': False})
 
 
-class FramePreviewPanel(wx.Panel):
-    """Board preview: live frames during a run, a scrubber afterwards."""
+class BoardPreview(wx.Panel):
+    """One board's render, fitted to the pane, with a caption under it.
 
-    PLAY_MS = 500
+    The bitmap is placed by hand, not by a sizer: a sizer would let the
+    image's size feed back into the pane's, and every fit would resize the
+    pane and ask for the next fit.
+    """
 
     def __init__(self, parent):
         super().__init__(parent)
-        self._frames = []       # PNG paths, oldest first
-        self._index = -1
-        self._report = None
-        self._workdir = None
-        self._play_timer = wx.Timer(self)
-        self.Bind(wx.EVT_TIMER, self._on_play_tick, self._play_timer)
-
+        self._png = None
+        self._fit_size = None
         sizer = wx.BoxSizer(wx.VERTICAL)
-        # The frame area gets the LISTBOX colour and a sunken border so it
-        # reads as an inset panel, the way the Routing tab's Planned Steps
-        # does. That box is a wx.CheckListBox, which paints its own dark
-        # background; a StaticBitmap with no image paints nothing, so before
-        # a run the whole pane was flat dialog grey with no visible frame.
+        # An inset panel in the LISTBOX colour, so the empty pane reads as a
+        # frame the way the candidates list beside it does.
         self.frame_panel = wx.Panel(self, style=wx.BORDER_SUNKEN)
         self.frame_panel.SetBackgroundColour(
             wx.SystemSettings.GetColour(wx.SYS_COLOUR_LISTBOX))
-        _fp = wx.BoxSizer(wx.VERTICAL)
+        self.frame_panel.SetMinSize((240, 180))
         self.bitmap = wx.StaticBitmap(self.frame_panel)
-        _fp.Add(self.bitmap, 1, wx.EXPAND)
-        self.frame_panel.SetSizer(_fp)
-        self.frame_panel.SetMinSize((480, 360))
-        sizer.Add(self.frame_panel, 1, wx.EXPAND | wx.ALL, 2)
+        sizer.Add(self.frame_panel, 1, wx.EXPAND)
         self.caption = wx.StaticText(self, label="No run yet.")
-        sizer.Add(self.caption, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 4)
-
-        btns = wx.BoxSizer(wx.HORIZONTAL)
-        self.prev_btn = wx.Button(self, label="<", size=(32, -1))
-        self.play_btn = wx.Button(self, label="Play", size=(56, -1))
-        self.next_btn = wx.Button(self, label=">", size=(32, -1))
-        self.open_report_btn = wx.Button(self, label="Open Report")
-        self.open_workdir_btn = wx.Button(self, label="Open Folder")
-        for b in (self.prev_btn, self.play_btn, self.next_btn):
-            btns.Add(b, 0, wx.RIGHT, 3)
-        btns.AddStretchSpacer()
-        for b in (self.open_report_btn, self.open_workdir_btn):
-            btns.Add(b, 0, wx.LEFT, 3)
-        sizer.Add(btns, 0, wx.EXPAND | wx.ALL, 3)
+        sizer.Add(self.caption, 0, wx.EXPAND | wx.TOP, 4)
         self.SetSizer(sizer)
-
-        self.prev_btn.Bind(wx.EVT_BUTTON, lambda e: self._step(-1))
-        self.next_btn.Bind(wx.EVT_BUTTON, lambda e: self._step(+1))
-        self.play_btn.Bind(wx.EVT_BUTTON, self._on_play)
-        self.open_report_btn.Bind(wx.EVT_BUTTON, lambda e: self._launch(self._report))
-        self.open_workdir_btn.Bind(wx.EVT_BUTTON, lambda e: self._launch(self._workdir))
-        self._refresh_buttons()
-
-    # ------------------------------------------------------------- frames
+        self.frame_panel.Bind(wx.EVT_SIZE, self._on_size)
 
     def show_png(self, path, caption=None):
-        """Display one PNG scaled to the panel (aspect preserved)."""
+        """Display one PNG scaled to the pane (aspect preserved)."""
         try:
             img = wx.Image(path, wx.BITMAP_TYPE_PNG)
             if not img.IsOk():
                 return False
         except Exception:
             return False
-        # Scale against the FRAME's client area, not the StaticBitmap:
-        # the bitmap is now a child of the inset panel and reports 0x0
-        # until it holds an image.
+        self._png = path
         w, h = self.frame_panel.GetClientSize()
-        w = max(w, 200)
-        h = max(h, 150)
+        self._fit_size = (w, h)
+        w, h = max(w - 6, 60), max(h - 6, 45)
         iw, ih = img.GetWidth(), img.GetHeight()
         scale = min(w / iw, h / ih)
+        bw, bh = max(1, int(iw * scale)), max(1, int(ih * scale))
         # IMAGE_QUALITY_NORMAL: HIGH is very slow (about_tab precedent).
-        img = img.Scale(max(1, int(iw * scale)), max(1, int(ih * scale)),
-                        wx.IMAGE_QUALITY_NORMAL)
+        img = img.Scale(bw, bh, wx.IMAGE_QUALITY_NORMAL)
         self.bitmap.SetBitmap(wx.Bitmap(img))
+        self.bitmap.SetSize((bw, bh))
+        self.bitmap.SetPosition(((w + 6 - bw) // 2, (h + 6 - bh) // 2))
         if caption is not None:
             self.caption.SetLabel(caption)
-        self.frame_panel.Layout()
-        self.Layout()
         return True
 
-    def add_frame(self, path, caption=None):
-        """A new live frame: append and jump to it."""
-        if path not in self._frames:
-            self._frames.append(path)
-        self._index = len(self._frames) - 1
-        self.show_png(path, caption)
-        self._refresh_buttons()
+    def clear(self, caption=""):
+        self._png = None
+        self.bitmap.SetBitmap(wx.NullBitmap)
+        self.caption.SetLabel(caption)
 
-    def set_frames(self, paths):
-        """Post-run scrubber source; shows the newest frame."""
-        self._frames = [p for p in paths if os.path.isfile(p)]
-        self._index = len(self._frames) - 1
-        if self._index >= 0:
-            self.show_png(self._frames[self._index],
-                          os.path.basename(self._frames[self._index]))
-        self._refresh_buttons()
+    def _on_size(self, event):
+        event.Skip()
+        if self._png and tuple(event.GetSize()) != self._fit_size:
+            wx.CallAfter(self._refit)
 
-    def set_outputs(self, report=None, workdir=None):
-        self._report = report if report and os.path.isfile(report) else None
-        self._workdir = workdir if workdir and os.path.isdir(workdir) else None
-        self._refresh_buttons()
-
-    def shutdown(self):
-        self._play_timer.Stop()
-
-    # ------------------------------------------------------------ internal
-
-    def _refresh_buttons(self):
-        has = len(self._frames) > 1
-        self.prev_btn.Enable(has)
-        self.next_btn.Enable(has)
-        self.play_btn.Enable(has)
-        self.open_report_btn.Enable(self._report is not None)
-        self.open_workdir_btn.Enable(self._workdir is not None)
-
-    def _step(self, delta):
-        if not self._frames:
-            return
-        self._index = (self._index + delta) % len(self._frames)
-        self.show_png(self._frames[self._index],
-                      os.path.basename(self._frames[self._index]))
-
-    def _on_play(self, event):
-        if self._play_timer.IsRunning():
-            self._play_timer.Stop()
-            self.play_btn.SetLabel("Play")
-        elif self._frames:
-            self._play_timer.Start(self.PLAY_MS)
-            self.play_btn.SetLabel("Stop")
-
-    def _on_play_tick(self, event):
-        self._step(+1)
-
-    def _launch(self, path):
-        if path:
-            wx.LaunchDefaultApplication(path)
+    def _refit(self):
+        if self and self._png and \
+                tuple(self.frame_panel.GetClientSize()) != self._fit_size:
+            self.show_png(self._png)
 
 
 class PlacementRunMonitor:
-    """Polls a placement run's workdir + transcript into status/preview.
+    """Polls a placement run's workdir + transcript into the status line and
+    the candidates table.
 
-    One 1000 ms wx.Timer owned by the tab; the artifact scan runs every
-    second tick. Preview rendering happens on ONE daemon thread at a time
-    (skip-to-newest by construction: the next scan picks whatever is newest).
+    One 1000 ms wx.Timer owned by the tab. Every second tick it rescans the
+    run's rounds (stat + small JSON reads: placement_run.scan_candidates)
+    and the newest board; every tick it reads the converge ledger's new rows
+    and rewrites the status line.
     """
 
     TICK_MS = 1000
@@ -330,12 +269,7 @@ class PlacementRunMonitor:
         self._last_event = time.monotonic()
         self._ledger_offset = 0
         self._last_ledger_row = None
-        self._artifacts = []
-        self._last_rendered = None   # (path, mtime) of the last render
-        self._render_busy = False
-        self._final_pending = None   # board queued while a render is in flight
-        self._preview_dir = os.path.join(workdir, "_gui_preview")
-        self._preview_ok = True
+        self._newest = None
 
     def start(self):
         self._timer.Start(self.TICK_MS)
@@ -350,8 +284,6 @@ class PlacementRunMonitor:
                 self._transcript_tail.append(line)
         self._last_event = time.monotonic()
 
-    # ------------------------------------------------------------ internal
-
     def _on_tick(self, event):
         tab = self.tab
         if not tab:
@@ -359,17 +291,15 @@ class PlacementRunMonitor:
             return
         self._ticks += 1
         if self._ticks % 2 == 0:
-            arts = list_board_artifacts(self.workdir)
-            # Compare against the PREVIOUS scan (self._artifacts) - a board
-            # is previewable one scan (~2 s) after its size stops changing.
-            self._maybe_render(newest_stable_board(arts, self._artifacts))
-            self._artifacts = arts
+            tab.refresh_candidates(
+                active=active_candidates(self._transcript_tail))
+            self._newest = newest_run_board(self.workdir)
         rows, self._ledger_offset = read_ledger_tail(
             os.path.join(self.workdir, "ledger.jsonl"), self._ledger_offset)
         if rows:
             self._last_ledger_row = rows[-1]
-        newest = os.path.basename(self._artifacts[-1][0]) if self._artifacts else None
-        stage = derive_stage(self._transcript_tail, self._last_ledger_row, newest)
+        stage = derive_stage(self._transcript_tail, self._last_ledger_row,
+                             self._newest)
         status = (f"{MODE_LABELS.get(self.mode, self.mode)} — "
                   f"{_fmt_elapsed(time.monotonic() - self._start)} — {stage}")
         quiet = time.monotonic() - self._last_event
@@ -378,55 +308,48 @@ class PlacementRunMonitor:
         tab.set_status(status)
         tab.progress_bar.Pulse()
 
-    def _maybe_render(self, board_path, final=False):
-        if not board_path or not self._preview_ok:
-            return
-        # Keyed on (path, mtime): fixed-name artifacts (placed.kicad_pcb is
-        # rewritten every loop cycle) must re-render when their content does.
-        key = (board_path, _safe_mtime(board_path))
-        if key == self._last_rendered:
-            return
-        if self._render_busy:
-            if final:
-                self._final_pending = board_path  # rendered when the slot frees
-            return
-        self._render_busy = True
-        self._last_rendered = key
-        threading.Thread(target=self._render_work, args=(board_path,),
-                         daemon=True).start()
 
-    def _render_work(self, board_path):
-        png = None
-        try:
-            from route_render import render_board_file
-            os.makedirs(self._preview_dir, exist_ok=True)
-            stem = os.path.splitext(os.path.basename(board_path))[0]
-            out = os.path.join(self._preview_dir, stem + ".png")
-            png = render_board_file(board_path, out, size=900, quiet=True)
-        except ImportError:
-            self._preview_ok = False  # Pillow/renderer missing: previews off
-        except Exception:
-            png = None  # torn/unparseable board mid-write: skip silently
-        wx.CallAfter(self._render_done, board_path, png)
+# The candidates table: (heading, width) per column.
+_CAND_COLUMNS = (("Round", 52), ("Seed", 44), ("Blocking", 66), ("Vias", 48),
+                 ("Copper (mm)", 88), ("Segments", 72), ("Status", 64))
 
-    def _render_done(self, board_path, png):
-        self._render_busy = False
-        tab = self.tab
-        if not tab:
-            return
-        if not self._preview_ok:
-            tab.preview.caption.SetLabel(
-                "live preview unavailable (renderer/Pillow not importable)")
-            return
-        if png and os.path.isfile(png):
-            tab.preview.add_frame(png, os.path.basename(board_path))
-        else:
-            # Failed render (e.g. torn-but-size-stable read): un-blacklist so
-            # the completed file gets another chance on a later scan.
-            self._last_rendered = None
-        if self._final_pending:
-            pending, self._final_pending = self._final_pending, None
-            self._maybe_render(pending, final=True)
+
+def _cand_cells(row):
+    """One candidates-table row's cell texts, in _CAND_COLUMNS order."""
+    def num(v, fmt="{}"):
+        return "" if v is None else fmt.format(v)
+    return (str(row["round"]), str(row["seed"]), num(row["blocking"]),
+            num(row["vias"]), num(row["copper_mm"], "{:.0f}"),
+            num(row["segments"]), row["status"])
+
+
+def _cand_caption(row):
+    """The preview caption for a candidate."""
+    head = f"round {row['round']}, seed {row['seed']}"
+    if row["blocking"] is not None:
+        text = (f"{head} — fast route: {row['blocking']} blocking, "
+                f"{row['vias']} vias, {row['copper_mm']:.0f} mm")
+    elif row["placed"]:
+        text = f"{head} — placed; fast route pending"
+    else:
+        text = f"{head} — placing"
+    tag = {"KEPT": "kept", "best": "best of its round"}.get(row["status"])
+    return f"{text} ({tag})" if tag else text
+
+
+class _StatusField(wx.TextCtrl):
+    """The status row's read-only field (the Routing tab's "Parsed result"
+    box). Label-style accessors so callers set and read it like the
+    StaticText it replaces."""
+
+    def __init__(self, parent, text=""):
+        super().__init__(parent, value=text, style=wx.TE_READONLY)
+
+    def SetLabel(self, text):
+        self.ChangeValue(text)
+
+    def GetLabel(self):
+        return self.GetValue()
 
 
 class PlacementTab(wx.Panel):
@@ -464,6 +387,15 @@ class PlacementTab(wx.Panel):
         self._mode = None
         self._pending_result = None
         self.last_workdir = ""
+        self._report = None            # the run's REPORT.md, when it exists
+        self._run_dir = None           # the run's folder, when it exists
+        self._cand_rows = []           # placement_run.scan_candidates rows
+        self._user_picked = False      # a click stops the auto-selection
+        self._selecting = False        # programmatic selection in progress
+        self._sel_key = None           # (round, seed) shown in the preview
+        self._shown = None             # (png, png mtime, caption) on screen
+        self._render_busy = False
+        self._render_next = None       # (board, png) queued behind a render
 
         self._create_ui()
         self._refresh_cli_status()
@@ -472,143 +404,189 @@ class PlacementTab(wx.Panel):
     # ----------------------------------------------------------------- UI
 
     def _create_ui(self):
+        """The Routing sub-tab's layout (ai_gui.AITab._create_ui): a large
+        pane on the left, the "AI" control column on the right, then the
+        gauge, a status row and the transcript across the full width."""
         sizer = wx.BoxSizer(wx.VERTICAL)
         top = wx.BoxSizer(wx.HORIZONTAL)
 
-        preview_box = wx.StaticBox(self, label="Run Preview")
-        preview_sizer = wx.StaticBoxSizer(preview_box, wx.VERTICAL)
-        self.preview = FramePreviewPanel(self)
-        preview_sizer.Add(self.preview, 1, wx.EXPAND | wx.ALL, 2)
-        top.Add(preview_sizer, 1, wx.EXPAND | wx.RIGHT, 8)
+        # Left: the run's candidates (where the Routing tab lists its planned
+        # steps) with the selected one's board beside them, and the Beautify
+        # Labels options as a strip under both.
+        left = wx.BoxSizer(wx.VERTICAL)
+        cand_box = wx.StaticBox(self, label="Candidates")
+        cand_sizer = wx.StaticBoxSizer(cand_box, wx.HORIZONTAL)
+        self.cand_list = wx.ListCtrl(
+            self, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
+        for i, (name, width) in enumerate(_CAND_COLUMNS):
+            self.cand_list.InsertColumn(
+                i, name, wx.LIST_FORMAT_LEFT if i == len(_CAND_COLUMNS) - 1
+                else wx.LIST_FORMAT_RIGHT, width)
+        self.cand_list.SetToolTip(
+            "One row per seed per round: its fast route's blocking nets, vias, "
+            "copper and segments. 'best' is the best of its round, 'clean' a "
+            "fast route with no blocking net, 'KEPT' the board the run "
+            "returned. Select a row to see its board.")
+        self.cand_list.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_cand_selected)
+        cand_sizer.Add(self.cand_list, 1, wx.EXPAND | wx.ALL, 3)
+        self.preview = BoardPreview(self)
+        cand_sizer.Add(self.preview, 1, wx.EXPAND | wx.ALL, 3)
+        left.Add(cand_sizer, 1, wx.EXPAND)
 
-        # #GUI: the right column SCROLLS. Both boxes sit at proportion 0,
-        # so the column demands its full natural height; without a scroller
-        # a short dialog clipped the last rows of the Beautify Labels box
-        # (the 'Skip locked parts' checkbox vanished under the action
-        # button). Matches the Routing tab's shape -- fixed-width control
-        # column beside a proportion-1 left pane -- but survives being
-        # taller than the frame.
-        sw = wx.ScrolledWindow(self, style=wx.VSCROLL)
-        sw.SetScrollRate(0, 8)
-        self.right_scroll = sw
-        right = wx.BoxSizer(wx.VERTICAL)
+        labels_box = wx.StaticBox(self, label="Beautify Labels (no AI)")
+        labels_sizer = wx.StaticBoxSizer(labels_box, wx.HORIZONTAL)
+        self.labels_options = LabelsOptionsPanel(self)
+        labels_sizer.Add(self.labels_options, 0,
+                         wx.ALIGN_CENTER_VERTICAL | wx.ALL, 3)
+        labels_sizer.AddStretchSpacer(1)
+        self.action_btn = wx.Button(self, label="Beautify Labels")
+        self.action_btn.SetToolTip(
+            "Uniform, non-overlapping reference-designator silkscreen. "
+            "Moves and restyles only the labels, never the parts.")
+        labels_sizer.Add(self.action_btn, 0,
+                         wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+        left.Add(labels_sizer, 0, wx.EXPAND | wx.TOP, 6)
+        top.Add(left, 1, wx.EXPAND | wx.RIGHT, 8)
 
-        ai_box = wx.StaticBox(sw, label="AI")
-        ai_sizer = wx.StaticBoxSizer(ai_box, wx.VERTICAL)
-
-        # STACKED selectors in a 2-column grid -- ai_gui's sel_grid exactly.
+        # Right: the "AI" column, built the way the Routing tab builds its.
+        ctrl_box = wx.StaticBox(self, label="AI")
+        ctrl_sizer = wx.StaticBoxSizer(ctrl_box, wx.VERTICAL)
         sel_grid = wx.FlexGridSizer(cols=2, hgap=5, vgap=5)
         sel_grid.AddGrowableCol(1)
-        sel_grid.Add(wx.StaticText(sw, label="Backend:"), 0,
+        sel_grid.Add(wx.StaticText(self, label="Backend:"), 0,
                      wx.ALIGN_CENTER_VERTICAL)
-        # Plain labels, exactly like the Routing tab's backend choice. The
-        # "(coming soon)" suffix widened this Choice to 184px against Routing's
-        # ~110, and since it is the widest child it set the WHOLE column's
-        # width (297 vs ~230). The same information is in the tooltip below,
-        # and _on_backend_choice refuses an unsupported pick anyway, so the
-        # suffix was costing layout without carrying its weight.
         self.backend_choice = wx.Choice(
-            sw, choices=[BACKENDS[bid].label for bid in BACKEND_IDS])
+            self, choices=[BACKENDS[bid].label for bid in BACKEND_IDS])
         self.backend_choice.SetSelection(BACKEND_IDS.index(self.backend.id))
         self.backend_choice.SetToolTip(
-            "Harness that runs the /plan-pcb-placement skill. Only Claude Code is "
-            "supported today (placement runs must WRITE, and the other "
-            "harnesses' agents deny edits); more harnesses later.")
+            "Harness that runs the /plan-pcb-placement skill. Only Claude Code "
+            "can run it (placement runs must WRITE, and the other harnesses' "
+            "agents deny edits); picking another one reverts.")
         self.backend_choice.Bind(wx.EVT_CHOICE, self._on_backend_choice)
         sel_grid.Add(self.backend_choice, 0, wx.EXPAND)
-        sel_grid.Add(wx.StaticText(sw, label="Model:"), 0,
+        sel_grid.Add(wx.StaticText(self, label="Model:"), 0,
                      wx.ALIGN_CENTER_VERTICAL)
-        self.model_choice = wx.ComboBox(sw, value=DEFAULT_CHOICE, choices=[])
+        self.model_choice = wx.ComboBox(self, value=DEFAULT_CHOICE, choices=[])
         sel_grid.Add(self.model_choice, 0, wx.EXPAND)
-        sel_grid.Add(wx.StaticText(sw, label="Effort:"), 0,
+        sel_grid.Add(wx.StaticText(self, label="Effort:"), 0,
                      wx.ALIGN_CENTER_VERTICAL)
-        self.effort_choice = wx.ComboBox(sw, value=DEFAULT_CHOICE, choices=[])
+        self.effort_choice = wx.ComboBox(self, value=DEFAULT_CHOICE, choices=[])
         sel_grid.Add(self.effort_choice, 0, wx.EXPAND)
-        ai_sizer.Add(sel_grid, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+        sel_grid.Add(wx.StaticText(self, label="Rounds:"), 0,
+                     wx.ALIGN_CENTER_VERTICAL)
+        self.rounds_ctrl = wx.SpinCtrl(self, min=1, max=10,
+                                       initial=DEFAULT_ROUNDS)
+        self.rounds_ctrl.SetToolTip(
+            "The most placement rounds (the skill's --rounds). A round places "
+            "seeds 0-3, fast-routes each and keeps the best; the run stops at "
+            "the first round whose best fast route has no blocking net, else "
+            "the agent reviews it, changes the groups, hints or claims and "
+            "places again.")
+        sel_grid.Add(self.rounds_ctrl, 0, wx.EXPAND)
+        ctrl_sizer.Add(sel_grid, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
         # No combo population here: __init__ calls _refresh_cli_status() once
-        # AFTER _create_ui, like the Routing tab. Doing it mid-construction
-        # now touches place_btn, which does not exist yet.
+        # AFTER _create_ui, like the Routing tab.
 
-        ai_sizer.Add(wx.StaticText(sw, label="Extra instructions:"), 0,
-                     wx.LEFT | wx.TOP, 5)
+        ctrl_sizer.Add(wx.StaticText(self, label="Extra instructions:"), 0,
+                       wx.LEFT | wx.RIGHT | wx.TOP, 5)
         self.extra_instructions = wx.TextCtrl(
-            sw, style=wx.TE_MULTILINE, size=(-1, 40))
+            self, style=wx.TE_MULTILINE, size=(-1, 54))
         self.extra_instructions.SetToolTip(
             "Optional extra instructions passed to the agent (constraints, "
             "focus areas, budget hints).")
-        ai_sizer.Add(self.extra_instructions, 0,
-                     wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+        ctrl_sizer.Add(self.extra_instructions, 0,
+                       wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
 
-        self.place_btn = wx.Button(sw, label="Place (AI)")
+        ctrl_sizer.AddSpacer(6)
+        ctrl_sizer.Add(wx.StaticLine(self), 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 5)
+        ctrl_sizer.AddSpacer(6)
+
+        # The runs, with their Cancel right under them (Routing: Plan/Cancel).
+        self.place_btn = wx.Button(self, label="Place (AI)")
         self.place_btn.SetToolTip(
             "Claude Code runs /plan-pcb-placement place headless on a "
-            "snapshot of this board. Runs minutes to hours; artifacts land "
-            "in a krt_placement folder next to the board file, which keeps "
-            f"this board's newest {KEEP_RUNS} runs.")
-        ai_sizer.Add(self.place_btn, 0,
-                     wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
-        self.place_route_btn = wx.Button(sw, label="Place + Route (AI)")
+            "snapshot of this board: it groups the parts, places seeds 0-3 "
+            "and keeps the one whose fast route is best, reviewing and "
+            "placing again up to Rounds rounds while none routes clean. "
+            "Artifacts land in a krt_placement folder next to the board file, "
+            f"which keeps this board's newest {KEEP_RUNS} runs.")
+        ctrl_sizer.Add(self.place_btn, 0,
+                       wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+        self.place_route_btn = wx.Button(self, label="Place + Route (AI)")
         self.place_route_btn.SetToolTip(
-            "Claude Code runs /plan-pcb-placement full headless (it places, "
-            "fast-routes and re-places, then routes the best). Runs "
-            "minutes to hours; artifacts land in a krt_placement folder "
-            f"next to the board file, which keeps this board's newest "
+            "Claude Code runs /plan-pcb-placement full headless: the same "
+            "placement rounds as Place, then the kept placement is routed "
+            "with the full chain and graded. Artifacts land in a krt_placement "
+            f"folder next to the board file, which keeps this board's newest "
             f"{KEEP_RUNS} runs.")
-        ai_sizer.Add(self.place_route_btn, 0,
-                     wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
-        right.Add(ai_sizer, 0, wx.EXPAND | wx.BOTTOM, 6)
+        ctrl_sizer.Add(self.place_route_btn, 0,
+                       wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+        self.stop_btn = wx.Button(self, label="Cancel")
+        self.stop_btn.SetToolTip(
+            "Cancel the running placement or label job; a placement run's "
+            "partial artifacts are kept in its folder.")
+        self.stop_btn.Disable()
+        ctrl_sizer.Add(self.stop_btn, 0,
+                       wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
 
-        labels_box = wx.StaticBox(sw, label="Beautify Labels (no AI)")
-        labels_sizer = wx.StaticBoxSizer(labels_box, wx.VERTICAL)
-        self.labels_options = LabelsOptionsPanel(sw)
-        labels_sizer.Add(self.labels_options, 0, wx.EXPAND | wx.ALL, 3)
-        self.action_btn = wx.Button(sw, label="Beautify Labels")
-        self.action_btn.SetToolTip(
-            "Uniform, non-overlapping reference-designator silkscreen "
-            "(#481). Moves/restyles only the labels, never the parts.")
-        labels_sizer.Add(self.action_btn, 0, wx.EXPAND | wx.ALL, 3)
-        right.Add(labels_sizer, 0, wx.EXPAND | wx.BOTTOM, 6)
+        ctrl_sizer.Add(wx.StaticLine(self), 0,
+                       wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
 
-        sw.SetSizer(right)
-        right.Fit(sw)
-        sw.SetMinSize((sw.GetBestSize().width + 20, 260))
-        top.Add(sw, 0, wx.EXPAND)
-        sizer.Add(top, 1, wx.EXPAND | wx.ALL, 5)
-
-        # Status spans the FULL dialog width (not the narrow right column):
-        # run statuses (elapsed + stage + summary) are long, and the column
-        # both clipped them and ran out of height for the buttons below.
-        # Apply/Close live here too - they are run-level controls, and moving
-        # them out keeps the right column short enough to never clip.
-        status_box = wx.StaticBox(self, label="Status")
-        status_sizer = wx.StaticBoxSizer(status_box, wx.VERTICAL)
-        status_row = wx.BoxSizer(wx.HORIZONTAL)
-        self.status_text = wx.StaticText(self, label="Ready")
-        # Two lines reserved so a rare wrap doesn't re-flow the page.
-        self.status_text.SetMinSize(
-            (-1, self.status_text.GetCharHeight() * 2 + 4))
-        status_row.Add(self.status_text, 1, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 3)
+        # After a run (Routing: Review / Diagnose).
         self.apply_btn = wx.Button(self, label="Apply Result to Board")
         self.apply_btn.Enable(False)
         self.apply_btn.SetToolTip(
             "Apply the finished run's board back to the live board "
             "(footprint poses; Place + Route also replaces all tracks/vias). "
             "Asks for confirmation first.")
-        self.cancel_btn = wx.Button(self, label="Close")
-        status_row.Add(self.apply_btn, 0, wx.ALL, 3)
-        status_row.Add(self.cancel_btn, 0, wx.ALL, 3)
-        status_sizer.Add(status_row, 0, wx.EXPAND)
-        self.progress_bar = wx.Gauge(self, range=100)
-        status_sizer.Add(self.progress_bar, 0, wx.EXPAND | wx.ALL, 3)
-        sizer.Add(status_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 5)
+        ctrl_sizer.Add(self.apply_btn, 0,
+                       wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
 
+        ctrl_sizer.AddStretchSpacer(1)
+        ctrl_sizer.AddSpacer(6)
+        ctrl_sizer.Add(wx.StaticLine(self), 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 5)
+        ctrl_sizer.AddSpacer(6)
+        self.close_btn = wx.Button(self, label="Close")
+        self.close_btn.SetToolTip("Close dialog")
+        ctrl_sizer.Add(self.close_btn, 0,
+                       wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+        # The GUI gates read the close button under its old name.
+        self.cancel_btn = self.close_btn
+        top.Add(ctrl_sizer, 0, wx.EXPAND)
+        sizer.Add(top, 1, wx.EXPAND | wx.ALL, 8)
+
+        # Gauge, full width (Routing: the activity row).
+        self.progress_bar = wx.Gauge(self, range=100)
+        sizer.Add(self.progress_bar, 0,
+                  wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+
+        # Status row (Routing: "Parsed result:" with Save / Load).
+        status_row = wx.BoxSizer(wx.HORIZONTAL)
+        status_row.Add(wx.StaticText(self, label="Status:"), 0,
+                       wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        self.status_text = _StatusField(self, "Ready")
+        status_row.Add(self.status_text, 1, wx.EXPAND)
+        self.open_report_btn = wx.Button(self, label="Open Report")
+        self.open_report_btn.SetToolTip("Open the run's REPORT.md")
+        self.open_workdir_btn = wx.Button(self, label="Open Folder")
+        self.open_workdir_btn.SetToolTip("Open the run's working folder")
+        status_row.Add(self.open_report_btn, 0, wx.LEFT, 5)
+        status_row.Add(self.open_workdir_btn, 0, wx.LEFT, 5)
+        self.open_report_btn.Bind(
+            wx.EVT_BUTTON, lambda e: self._launch(self._report))
+        self.open_workdir_btn.Bind(
+            wx.EVT_BUTTON, lambda e: self._launch(self._run_dir))
+        self._set_outputs()
+        sizer.Add(status_row, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
+
+        # Transcript across the full width at the bottom.
         self.transcript_ctrl = wx.TextCtrl(
             self, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH2)
         self.transcript_ctrl.SetFont(
-            wx.Font(9, wx.FONTFAMILY_TELETYPE, wx.FONTSTYLE_NORMAL,
+            wx.Font(10, wx.FONTFAMILY_TELETYPE, wx.FONTSTYLE_NORMAL,
                     wx.FONTWEIGHT_NORMAL))
-        self.transcript_ctrl.SetMinSize((-1, 140))
-        sizer.Add(self.transcript_ctrl, 0, wx.EXPAND | wx.ALL, 5)
+        sizer.Add(self.transcript_ctrl, 1,
+                  wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 8)
         self.SetSizer(sizer)
 
         self.place_btn.Bind(wx.EVT_BUTTON, lambda e: self._start_ai_run("place"))
@@ -616,17 +594,24 @@ class PlacementTab(wx.Panel):
                                   lambda e: self._start_ai_run("place_route"))
         self.action_btn.Bind(wx.EVT_BUTTON, self._on_action)
         self.apply_btn.Bind(wx.EVT_BUTTON, self._on_apply)
-        self.cancel_btn.Bind(wx.EVT_BUTTON, self._on_cancel_or_close)
+        self.stop_btn.Bind(wx.EVT_BUTTON, self._on_stop)
+        self.close_btn.Bind(wx.EVT_BUTTON, self._on_close)
 
     def set_status(self, text):
-        """Set the status line, wrapped to the tab's current width.
-
-        StaticText does not wrap on its own; the box is full-width so this
-        only matters for unusually long summaries.
-        """
+        """Show the run's status line; the full text is also the tooltip, for
+        a line longer than the field."""
         self.status_text.SetLabel(text)
-        self.status_text.Wrap(max(500, self.GetClientSize()[0] - 60))
-        self.Layout()
+        self.status_text.SetToolTip(text)
+
+    def get_rounds_value(self):
+        """The skill's --rounds for the next run."""
+        return self.rounds_ctrl.GetValue()
+
+    def set_rounds_value(self, value):
+        try:
+            self.rounds_ctrl.SetValue(max(1, min(10, int(value))))
+        except (TypeError, ValueError):
+            pass  # a malformed saved value must not break dialog restore
 
     def _populate_ai_combos(self):
         """Kept as the old entry point; the refresh owns the combos now
@@ -738,11 +723,12 @@ class PlacementTab(wx.Panel):
         self._pending_result = None
         # This run's frames and outputs only: the previous run's files may be
         # pruned (KEEP_RUNS) the moment this one launches.
-        self.preview.set_frames([])
-        self.preview.set_outputs()
+        self._clear_candidates()
+        self._set_outputs()
+        rounds = self.get_rounds_value()
         prompt = build_placement_prompt(
             self.backend, workdir, staged, mode,
-            extra=self.extra_instructions.GetValue())
+            extra=self.extra_instructions.GetValue(), rounds=rounds)
 
         model = self.get_model_value()
         effort = self.get_effort_value()
@@ -752,7 +738,8 @@ class PlacementTab(wx.Panel):
         self.set_status(f"{label} — starting Claude Code...")
         self._append_transcript(
             f"=== {label} run ===\nworkdir: {workdir}\n"
-            f"model: {model or 'default'}  effort: {effort or 'default'}\n\n")
+            f"model: {model or 'default'}  effort: {effort or 'default'}  "
+            f"rounds: {rounds}\n\n")
         self.append_log(f"Placement: {label} run started, workdir {workdir}\n")
 
         self._runner = AISkillRunner(cli, self._on_transcript,
@@ -813,7 +800,7 @@ class PlacementTab(wx.Panel):
         self.action_btn.Enable(not running)
         self.apply_btn.Enable(not running and self._pending_result is not None
                               and self._pending_result.get("board") is not None)
-        self.cancel_btn.SetLabel("Cancel" if running else "Close")
+        self.stop_btn.Enable(running)
 
     def _append_transcript(self, text):
         ctrl = self.transcript_ctrl
@@ -900,27 +887,147 @@ class PlacementTab(wx.Panel):
             report = outputs.get("report")
             if report:
                 self._load_report(report)
-            self.preview.set_outputs(report=report, workdir=workdir)
-            frames = []
-            preview_dir = os.path.join(workdir, "_gui_preview") if workdir else None
-            if preview_dir and os.path.isdir(preview_dir):
-                frames = sorted(
-                    (os.path.join(preview_dir, n)
-                     for n in os.listdir(preview_dir) if n.endswith(".png")),
-                    key=_safe_mtime)
-            self.preview.set_frames(frames)
-            board = outputs.get("board")
-            if board and self._monitor is not None:
-                # One final frame of the result board itself (queued behind
-                # any render still in flight).
-                self._monitor._maybe_render(board, final=True)
+            self._set_outputs(report=report, workdir=workdir)
             for key in ("board", "report"):
                 if outputs.get(key):
                     self._append_transcript(f"{key}: {outputs[key]}\n")
                     self.append_log(f"Placement {key}: {outputs[key]}\n")
         self._monitor = None
+        self.refresh_candidates(kept_board=(outputs or {}).get("board"),
+                                final=True)
         self.set_status(status)
         self._set_running_ui(False)
+
+    # ------------------------------------------------------- candidates
+
+    def _set_outputs(self, report=None, workdir=None):
+        """Arm Open Report / Open Folder for the run's report and folder."""
+        self._report = report if report and os.path.isfile(report) else None
+        self._run_dir = workdir if workdir and os.path.isdir(workdir) else None
+        self.open_report_btn.Enable(self._report is not None)
+        self.open_workdir_btn.Enable(self._run_dir is not None)
+
+    @staticmethod
+    def _launch(path):
+        if path:
+            wx.LaunchDefaultApplication(path)
+
+    def _clear_candidates(self):
+        self._cand_rows = []
+        self._user_picked = False
+        self._sel_key = None
+        self._shown = None
+        self.cand_list.DeleteAllItems()
+        self.preview.clear("No candidates yet.")
+
+    def refresh_candidates(self, active=None, kept_board=None, final=False):
+        """Rescan the run's rounds into the table (monitor tick; run end).
+
+        During a run the newest row is selected until the user clicks one;
+        at the end the row the run kept is marked KEPT and selected.
+        """
+        workdir = self.last_workdir
+        if not workdir or not os.path.isdir(workdir):
+            return
+        rows = scan_candidates(workdir, active=None if final else active)
+        kept = mark_kept(rows, workdir, kept_board) if final else None
+        keys = [(r["round"], r["seed"]) for r in rows]
+        if keys != [(r["round"], r["seed"]) for r in self._cand_rows]:
+            self.cand_list.DeleteAllItems()
+            for i, _k in enumerate(keys):
+                self.cand_list.InsertItem(i, "")
+        for i, row in enumerate(rows):
+            for col, text in enumerate(_cand_cells(row)):
+                if self.cand_list.GetItemText(i, col) != text:
+                    self.cand_list.SetItem(i, col, text)
+        self._cand_rows = rows
+        if kept is not None:
+            pick = (kept["round"], kept["seed"])
+        elif not self._user_picked and rows:
+            newest = max(rows, key=lambda r: (r["mtime"], r["round"], r["seed"]))
+            pick = (newest["round"], newest["seed"])
+        else:
+            pick = self._sel_key
+        if pick in keys:
+            i = keys.index(pick)
+            if self.cand_list.GetFirstSelected() != i:
+                self._selecting = True
+                try:
+                    self.cand_list.Select(i)
+                    self.cand_list.EnsureVisible(i)
+                finally:
+                    self._selecting = False
+            self._sel_key = pick
+        self._show_selected()
+
+    def _on_cand_selected(self, event):
+        i = event.GetIndex()
+        if 0 <= i < len(self._cand_rows):
+            if not self._selecting:
+                self._user_picked = True
+            row = self._cand_rows[i]
+            self._sel_key = (row["round"], row["seed"])
+            self._show_selected()
+
+    def _show_selected(self):
+        """Show the selected row's fast-routed board (else its placement)."""
+        row = next((r for r in self._cand_rows
+                    if (r["round"], r["seed"]) == self._sel_key), None)
+        if row is None:
+            return
+        caption = _cand_caption(row)
+        board = row["fast"] or row["placed"]
+        if board is None:
+            self._shown = None
+            self.preview.clear(caption)
+            return
+        png = os.path.join(
+            self.last_workdir, "_gui_preview",
+            f"r{row['round']}_s{row['seed']}{'_fast' if row['fast'] else ''}.png")
+        if os.path.isfile(png) and _safe_mtime(png) >= _safe_mtime(board):
+            shown = (png, _safe_mtime(png), caption)
+            if shown != self._shown:
+                self._shown = shown
+                self.preview.show_png(png, caption)
+            return
+        self.preview.caption.SetLabel(caption + " (rendering...)")
+        self._request_render(board, png)
+
+    def _request_render(self, board, png):
+        """Render one board on ONE daemon thread at a time; the newest
+        request waits behind a render in flight."""
+        if self._render_busy:
+            self._render_next = (board, png)
+            return
+        self._render_busy = True
+        threading.Thread(target=self._render_work, args=(board, png),
+                         daemon=True).start()
+
+    def _render_work(self, board, png):
+        ok = False
+        try:
+            from route_render import render_board_file
+            os.makedirs(os.path.dirname(png), exist_ok=True)
+            ok = bool(render_board_file(board, png, size=900, quiet=True))
+        except ImportError:
+            ok = None   # Pillow/renderer missing: previews off
+        except Exception:
+            ok = False  # torn or unparseable board mid-write: retried later
+        wx.CallAfter(self._render_done, ok)
+
+    def _render_done(self, ok):
+        if not self:
+            return
+        self._render_busy = False
+        if ok is None:
+            self.preview.caption.SetLabel(
+                "preview unavailable (renderer/Pillow not importable)")
+            return
+        nxt, self._render_next = self._render_next, None
+        if nxt is not None:
+            self._request_render(*nxt)
+        else:
+            self._show_selected()
 
     def _load_report(self, report_path):
         try:
@@ -1277,13 +1384,14 @@ class PlacementTab(wx.Panel):
             from placement.labels import beautify_labels, LabelConfig  # noqa: F401
         except ImportError:
             self.set_status(
-                "Label engine not available yet (issue #481).")
+                "Beautify Labels: the label engine (placement.labels) could "
+                "not be imported.")
             return
         if self.sync_pcb_data_callback:
             self.sync_pcb_data_callback()
         self._cancel_requested = False
         self.action_btn.Disable()
-        self.cancel_btn.SetLabel("Cancel")
+        self.stop_btn.Enable()
         self.set_status("Beautifying labels...")
         config = self.labels_options.get_config()
         self._routing_thread = threading.Thread(
@@ -1341,7 +1449,7 @@ class PlacementTab(wx.Panel):
         self._routing_thread = None
         self.progress_bar.SetValue(0)
         self.action_btn.Enable()
-        self.cancel_btn.SetLabel("Close")
+        self.stop_btn.Disable()
         if self._cancel_requested:
             self.set_status("Beautify cancelled.")
             return
@@ -1421,19 +1529,28 @@ class PlacementTab(wx.Panel):
 
     # -------------------------------------------------------- cancel/close
 
-    def _on_cancel_or_close(self, event):
+    def _on_stop(self, event):
+        """Cancel the running placement run or label job (Routing: Cancel)."""
         if self._runner is not None and self._runner.is_running():
             self._runner.cancel()
             self.set_status(
                 "Cancelling — partial artifacts are kept in the workdir...")
-            return
-        if self._routing_thread is not None and self._routing_thread.is_alive():
+        elif self._routing_thread is not None and self._routing_thread.is_alive():
             self._cancel_requested = True
             self.set_status("Cancelling...")
+        self.stop_btn.Disable()
+
+    def _on_close(self, event):
+        """Close the dialog like the other tabs. A placement run in progress
+        is cancelled by the close (shutdown), so ask first."""
+        if self._busy() and wx.MessageBox(
+                "A placement job is still running. Closing the dialog cancels "
+                "it (a run's partial artifacts are kept in its folder).\n\n"
+                "Close anyway?", "Placement",
+                wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING) != wx.YES:
             return
-        # Nothing running: close the dialog like the other tabs.
         top = wx.GetTopLevelParent(self)
-        if isinstance(top, wx.Dialog):
+        if isinstance(top, wx.Dialog) and top.IsModal():
             top.EndModal(wx.ID_CANCEL)
         else:
             top.Close()
@@ -1450,23 +1567,17 @@ class PlacementTab(wx.Panel):
         if self._monitor is not None:
             self._monitor.stop()
         self._cancel_requested = True
-        self.preview.shutdown()
 
     # ------------------------------------------------- session restore
 
     def restore_last_workdir(self, workdir):
-        """Re-surface a previous session's artifacts (settings restore)."""
+        """Re-surface a previous session's run (settings restore)."""
         if not workdir or not os.path.isdir(workdir):
             return
         self.last_workdir = workdir
         outputs = scan_workdir_outputs(workdir)
-        self.preview.set_outputs(report=outputs.get("report"), workdir=workdir)
-        preview_dir = os.path.join(workdir, "_gui_preview")
-        if os.path.isdir(preview_dir):
-            self.preview.set_frames(sorted(
-                (os.path.join(preview_dir, n) for n in os.listdir(preview_dir)
-                 if n.endswith(".png")),
-                key=_safe_mtime))
+        self._set_outputs(report=outputs.get("report"), workdir=workdir)
+        self.refresh_candidates(kept_board=outputs.get("board"), final=True)
         if outputs.get("board"):
             self._pending_result = outputs
             self._mode = ("place_route"
