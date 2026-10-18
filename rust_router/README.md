@@ -2,7 +2,7 @@
 
 High-performance A* grid router implemented in Rust with Python bindings via PyO3.
 
-**Current Version: 0.23.3**
+**Current Version: 0.23.4**
 
 > **Release note:** the 0.20.0 per-platform binaries are published as of
 > [v0.20.0](https://github.com/drandyhaas/KiCadRoutingTools/releases/tag/v0.20.0),
@@ -310,6 +310,19 @@ src/
 - **Costs**: ORTHO_COST=1000, DIAG_COST=1414 (sqrt(2) * 1000), DEFAULT_TURN_COST=1000
 
 ## Version History
+
+### 0.23.4 (2026-10-18)
+- **More simple-path kernels** (`placement_kernels.rs`), so a move of the
+  annealer in `py_placer/placement/simple_anneal.py` is priced mostly in Rust:
+  `gap_tree(rects)`, a group's Prim tree over courtyard gaps;
+  `mst_l1_tree(xs, ys, owners)`, a net's Manhattan tree over its sorted pad
+  positions, returning its edges and end parts as arrays;
+  `seg_cross_counts(m, mlab, o=None, olab=None, skip=None)`, crossings
+  tallied per pair of nets; `pad_hit_sums(...)`, tree edges over foreign pads
+  summed per (net, owner); `over2(dw, uses, cell2, pitch)`, a congestion
+  window's overflow squared, summed as numpy's pairwise sum does; and
+  `net_demand(...)`, a net's congestion block. Each gives the values the
+  Python code it replaced gave, bit for bit, so a placement is unchanged.
 
 ### 0.23.3 (2026-10-17)
 - **Simple-path kernels** (`placement_kernels.rs`) for the annealer in

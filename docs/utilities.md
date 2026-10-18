@@ -170,6 +170,9 @@ is then routed in full.
 ```bash
 python3 -X utf8 py_placer/place_simple.py board.kicad_pcb placed.kicad_pcb \
     --groups groups.json --intent intent.json [--seed 0] [--json report.json]
+# several seeds at once, one process each:
+python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 'r1/s{seed}.kicad_pcb' \
+    --groups groups.json --intent intent.json --seeds 0-3 [--jobs 4] --json 'r1/s{seed}.json'
 ```
 
 - **Inputs.** `--groups` is the groups file (`py_tools/check_groups.py`
@@ -191,6 +194,11 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb placed.kicad_pcb \
 - **Deterministic.** The same board, inputs and `--seed` give the same
   placement. Seeds differ more than most input changes, so place several and
   judge them by routing.
+- **Several seeds.** `--seeds 0-3` (or `0,1,2,3`) runs each seed as its own
+  `--seed` process, `--jobs` at a time (default one per seed, at most 4), with
+  `{seed}` in OUT and `--json` and each seed's log beside its board as
+  `.log`; it prints one line per seed and exits 2 if any seed failed, else 4
+  if any left parts illegal, else 0. One process takes about 120 MB.
 - **Output.** The placed board with its siblings, a `JSON_SUMMARY:` line
   (final cost, moves, seed, parts moved to a legal pose after the anneal,
   parts left illegal, seconds) and, with `--json`, the full report (adding

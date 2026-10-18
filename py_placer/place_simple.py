@@ -217,6 +217,91 @@ def _line(t):
             + f", hints {t['hints']:.1f}" + (f": {hints}" if hints else "") + ")")
 
 
+def _seed_list(spec):
+    """'0-3' or '0,1,2,3' (or a mix: '0-2,7') -> [0, 1, 2, 3]."""
+    out = []
+    for part in str(spec).split(','):
+        part = part.strip()
+        if '-' in part:
+            lo, hi = part.split('-', 1)
+            out += list(range(int(lo), int(hi) + 1))
+        elif part:
+            out.append(int(part))
+    return out
+
+
+def _many_seeds(ap, a):
+    """`--seeds`: each seed a `--seed` run of this script in its own process,
+    `--jobs` at a time, every other option passed through as parsed. Exit 2
+    if any seed failed outright, else 4 if any left parts illegal, else 0."""
+    import subprocess
+    try:
+        seeds = _seed_list(a.seeds)
+    except ValueError:
+        print(f"place_simple: --seeds {a.seeds!r} is not a list like 0-3 or 0,1,2,3",
+              file=sys.stderr)
+        return 2
+    if not seeds or len(set(seeds)) != len(seeds):
+        print(f"place_simple: --seeds {a.seeds!r} names no seed or one twice", file=sys.stderr)
+        return 2
+    many = len(seeds) > 1
+    if many and ('{seed}' not in a.out or (a.json and '{seed}' not in a.json)):
+        print("place_simple: with several --seeds, OUT (and --json) must carry {seed}",
+              file=sys.stderr)
+        return 2
+    skip = {'help', 'board', 'out', 'seed', 'seeds', 'jobs', 'json'}
+    passed = []
+    for act in ap._actions:
+        if act.dest in skip or not act.option_strings:
+            continue
+        val = getattr(a, act.dest)
+        if val is not None:
+            passed += [act.option_strings[0], str(val)]
+    jobs = max(1, a.jobs or min(len(seeds), 4))
+    runs = []
+    for s in seeds:
+        out = a.out.format(seed=s)
+        js = a.json.format(seed=s) if a.json else None
+        for p in (out, js):
+            if p and os.path.dirname(p):
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+        cmd = ([sys.executable, '-X', 'utf8', os.path.abspath(__file__), a.board, out]
+               + passed + ['--seed', str(s)] + (['--json', js] if js else []))
+        runs.append((s, out, cmd))
+    print(f"place_simple: seeds {', '.join(map(str, seeds))}, {jobs} at a time")
+    live, done = [], {}
+    pending = list(runs)
+    while pending or live:
+        while pending and len(live) < jobs:
+            s, out, cmd = pending.pop(0)
+            log = open(os.path.splitext(out)[0] + '.log', 'w', encoding='utf-8')
+            live.append((s, out, log, subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)))
+        fin = [x for x in live if x[3].poll() is not None]
+        if not fin:
+            time.sleep(0.2)
+            continue
+        s, out, log, proc = fin[0]
+        live.remove(fin[0])
+        rc = proc.returncode
+        log.close()
+        done[s] = rc
+        summary = None
+        with open(os.path.splitext(out)[0] + '.log', encoding='utf-8') as f:
+            for line in f:
+                if line.startswith('JSON_SUMMARY: '):
+                    summary = json.loads(line[len('JSON_SUMMARY: '):])
+        if summary:
+            fin = summary['final']
+            ill = summary.get('illegal') or []
+            print(f"  seed {s}: cost {fin['cost']:.1f}, {summary['moves']} moves in "
+                  f"{summary['seconds']['anneal']} s"
+                  + (f", no legal pose for {', '.join(ill)}" if ill else '') + f" -> {out}")
+        else:
+            print(f"  seed {s}: exit {rc}, no summary (see {os.path.splitext(out)[0]}.log)")
+    rcs = set(done.values())
+    return 2 if rcs - {0, 4} else (4 if 4 in rcs else 0)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('board', help='the board; the parts it locks stay put')
@@ -271,8 +356,18 @@ def main(argv=None):
                          'part)')
     ap.add_argument('--seed', type=int, default=0,
                     help='the random stream: the start and the moves (default 0)')
+    ap.add_argument('--seeds', metavar='LIST',
+                    help='place several seeds in one call, e.g. 0-3 or 0,1,2,3: OUT and '
+                         '--json then carry {seed}, each seed is its own process (the '
+                         'same placement a --seed run gives) and its log goes beside its '
+                         'board as .log')
+    ap.add_argument('--jobs', type=int, default=0,
+                    help='with --seeds, how many seeds run at once (default: one per '
+                         'seed, at most 4)')
     ap.add_argument('--json', help='write the report here')
     a = ap.parse_args(argv)
+    if a.seeds:
+        return _many_seeds(ap, a)
     t0 = time.time()
     from placement import floorplan
     from placement.groups import parse_sources

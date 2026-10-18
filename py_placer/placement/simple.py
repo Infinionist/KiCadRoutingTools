@@ -63,6 +63,7 @@ reference the incremental pricing is checked against.
 """
 from __future__ import annotations
 
+import bisect
 import math
 import os
 import sys as _sys
@@ -73,7 +74,7 @@ from scipy.optimize import linear_sum_assignment
 
 _sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..',
                                                  'rust_router')))
-import grid_router  # noqa: E402  the kernels: mst_l1, seg_rect_hits, seg_crossings (0.23.3)
+import grid_router  # noqa: E402  the kernels: mst_l1, gap_tree, seg_rect_hits, seg_crossings (0.23.4)
 
 ROTS = (0.0, 90.0, 180.0, 270.0)
 #: mm two groups the groups file keeps `apart` must leave between them.
@@ -188,28 +189,47 @@ def rect_gap(a, b) -> float:
             + max(0.0, max(a[1], b[1]) - min(a[3], b[3])))
 
 
+def _at_add(at, p, order, ref):
+    """One more pad of `ref` at position `p` in a net's `at` map (a new list,
+    never the one the map held): `[(order, ref, count)]` sorted, so its first
+    entry is the owner. Returns the owner."""
+    rows = list(at.get(p, ()))
+    for k, (o, r, c) in enumerate(rows):
+        if r == ref:
+            rows[k] = (o, r, c + 1)
+            break
+    else:
+        rows.append((order, ref, 1))
+        rows.sort()
+    at[p] = rows
+    return rows[0][1]
+
+
+def _at_remove(at, p, ref):
+    """One pad of `ref` fewer at `p`; returns the position's owner after, or
+    None when no pad is left there (and `p` leaves the map)."""
+    rows = []
+    for o, r, c in at[p]:
+        if r == ref:
+            if c > 1:
+                rows.append((o, r, c - 1))
+        else:
+            rows.append((o, r, c))
+    if not rows:
+        del at[p]
+        return None
+    at[p] = rows
+    return rows[0][1]
+
+
 def gap_tree(rects) -> Tuple[float, List[Tuple[int, int, float]]]:
     """`(length, edges)` of the minimum spanning tree over `rects`, each edge
-    weighted by `rect_gap`; edges as `(i, j, gap)`."""
-    n = len(rects)
-    if n < 2:
+    weighted by `rect_gap`; edges as `(i, j, gap)`, in Prim's order from
+    `rects[0]`, ties to the lower index. The Rust kernel
+    `grid_router.gap_tree`."""
+    if len(rects) < 2:
         return 0.0, []
-    done = [False] * n
-    best = [rect_gap(rects[0], r) for r in rects]
-    frm = [0] * n
-    done[0] = True
-    total, edges = 0.0, []
-    for _ in range(n - 1):
-        k = min((i for i in range(n) if not done[i]), key=lambda i: best[i])
-        done[k] = True
-        total += best[k]
-        edges.append((frm[k], k, best[k]))
-        for i in range(n):
-            if not done[i]:
-                g = rect_gap(rects[k], rects[i])
-                if g < best[i]:
-                    best[i], frm[i] = g, k
-    return total, edges
+    return grid_router.gap_tree(np.asarray(rects, dtype=float).reshape(-1, 4))
 
 
 def _orient(ax, ay, bx, by, cx, cy):
@@ -292,10 +312,6 @@ class SpatialIndex:
                 if b:
                     out |= b
         return out
-
-
-def _bbox(e):
-    return (min(e[0], e[2]), min(e[1], e[3]), max(e[0], e[2]), max(e[1], e[3]))
 
 
 # --------------------------------------------------------------------------
@@ -401,23 +417,85 @@ class Model:
             ids = self._pids = {r: i for i, r in enumerate(sorted(self.state.parts))}
         return ids[ref]
 
-    def _price_net(self, n):
+    def _price_net(self, n, moved=None):
         """Net `n`'s tree: its length, its edges, and each edge's end parts
-        (as `_pid` ids, for the foreign-pad test)."""
-        st = self.state
-        where = {}
-        for r in st.net_refs.get(n, ()):
-            for x, y, nn in st.parts[r].pad_globals():
-                if nn == n:
-                    where.setdefault((x, y), r)
-        L, E = mst_l1(sorted(where))
+        (as `_pid` ids, for the foreign-pad test). Its points are the net's
+        pad positions in sorted order, each owned by the first part in
+        `net_refs` order with a pad there. They are kept per net (`_wh`) and,
+        given `moved` (the parts a move has put at new poses since the net was
+        last priced), updated from those parts' pads alone, so a net with
+        many parts costs its moved pads to re-gather, not all of them."""
+        wh = getattr(self, '_wh', None)
+        if wh is None:
+            wh = self._wh = {}
+        W = wh.get(n) if moved is not None else None
+        W = self._where_full(n) if W is None else self._where_moved(n, W, moved)
+        wh[n] = W
+        _order, _contrib, _at, _pts, xs, ys, own = W
+        L, E, ends = grid_router.mst_l1_tree(np.array(xs, dtype=float), np.array(ys, dtype=float),
+                                             np.array(own, dtype=np.int64))
         self.net_len[n] = L
-        self.net_edges[n] = np.asarray(E, dtype=float).reshape(-1, 4)
-        ends = getattr(self, 'net_ends', None)
-        if ends is None:
-            ends = self.net_ends = {}
-        ends[n] = np.asarray([(self._pid(where[(e[0], e[1])]), self._pid(where[(e[2], e[3])]))
-                              for e in E], dtype=int).reshape(-1, 2)
+        self.net_edges[n] = E
+        ne = getattr(self, 'net_ends', None)
+        if ne is None:
+            ne = self.net_ends = {}
+        ne[n] = ends
+
+    def _where_full(self, n):
+        """Net `n`'s points from scratch: `(order, contrib, at, pts, xs, ys,
+        own)` -- each part's place in `net_refs`, each part's pad positions on
+        the net, each position's parts as sorted `(order, ref, count)`, the
+        positions sorted, their coordinates, and their owners' ids."""
+        st = self.state
+        refs = st.net_refs.get(n, ())
+        order = {r: i for i, r in enumerate(refs)}
+        contrib, at = {}, {}
+        for r in refs:
+            ps = [(x, y) for x, y, nn in st.parts[r].pad_globals() if nn == n]
+            contrib[r] = ps
+            for p in ps:
+                _at_add(at, p, order[r], r)
+        pts = sorted(at)
+        own = [self._pid(at[p][0][1]) for p in pts]
+        return (order, contrib, at, pts, [p[0] for p in pts], [p[1] for p in pts], own)
+
+    def _where_moved(self, n, W, moved):
+        """`W` with the parts of `moved` on net `n` at their live pads, built
+        as a new value: `W` itself is the committed state a refused move
+        returns to (`snapshot`, `restore`)."""
+        order, contrib, at, pts, xs, ys, own = W
+        st = self.state
+        mv = [r for r in moved if r in order]
+        changes = []
+        for r in mv:
+            new = [(x, y) for x, y, nn in st.parts[r].pad_globals() if nn == n]
+            if new != contrib[r]:
+                changes.append((r, new))
+        if not changes:
+            return W
+        contrib, at = dict(contrib), dict(at)
+        pts, xs, ys, own = list(pts), list(xs), list(ys), list(own)
+        for r, new in changes:
+            for p in contrib[r]:
+                left = _at_remove(at, p, r)
+                i = bisect.bisect_left(pts, p)
+                if left is None:
+                    del pts[i], xs[i], ys[i], own[i]
+                else:
+                    own[i] = self._pid(left)
+            for p in new:
+                fresh = p not in at
+                first = _at_add(at, p, order[r], r)
+                if fresh:
+                    i = bisect.bisect_left(pts, p)
+                    pts.insert(i, p)
+                    xs.insert(i, p[0])
+                    ys.insert(i, p[1])
+                    own.insert(i, self._pid(first))
+                else:
+                    own[bisect.bisect_left(pts, p)] = self._pid(first)
+            contrib[r] = new
+        return (order, contrib, at, pts, xs, ys, own)
 
     def claim_cost(self, c):
         subj, part, legs = c
@@ -510,18 +588,96 @@ class Model:
         groups' nearest courtyards (nothing once they touch). `apart`: how
         far that gap falls short of APART_MM. `edge`: how far the group's
         nearest courtyard is from its board edge, less the edge margin."""
-        P = self.state.parts
-        A = [P[r].rect() for r in h['a']]
+        return self._hint_value(h, self._hint_full(h)[0])
+
+    def _hint_value(self, h, gap):
         if h['kind'] == 'edge':
-            i = self.inner
-            side = {'N': lambda q: q[1] - i[1], 'S': lambda q: i[3] - q[3],
-                    'W': lambda q: q[0] - i[0], 'E': lambda q: i[2] - q[2]}[h['edge']]
-            return h['weight'] * max(0.0, min(side(q) for q in A))
-        B = [P[r].rect() for r in h['b']]
-        gap = min(rect_gap(p, q) for p in A for q in B)
+            return h['weight'] * max(0.0, gap)
         if h['kind'] == 'near':
             return h['weight'] * gap
         return h['weight'] * max(0.0, APART_MM - gap)
+
+    def _edge_side(self, h):
+        i = self.inner
+        return {'N': lambda q: q[1] - i[1], 'S': lambda q: i[3] - q[3],
+                'W': lambda q: q[0] - i[0], 'E': lambda q: i[2] - q[2]}[h['edge']]
+
+    def _hint_full(self, h, seed=None):
+        """`(gap, witness)` at the live poses: an `edge` hint's least side
+        distance and the member at it, or the least gap between the two
+        groups and a pair at it. `seed`, a pair to start from, bounds the
+        search: B sits on a grid and each A part looks no further than the
+        best gap so far (every pair, when there are few)."""
+        P = self.state.parts
+        if h['kind'] == 'edge':
+            side = self._edge_side(h)
+            return min((side(P[r].rect()), (r,)) for r in h['a'])
+        A, B = h['a'], h['b']
+        rb = {b: P[b].rect() for b in B}
+        best, wit = math.inf, None
+        if seed is not None:
+            best, wit = rect_gap(P[seed[0]].rect(), rb[seed[1]]), seed
+        if len(A) * len(B) <= 64:
+            for a in A:
+                ra = P[a].rect()
+                for b in B:
+                    g = rect_gap(ra, rb[b])
+                    if g < best:
+                        best, wit = g, (a, b)
+            return best, wit
+        ix = SpatialIndex()
+        for b, q in rb.items():
+            ix.insert(b, q)
+        c, nb = ix.cell, len(B)
+        for a in A:
+            ra = P[a].rect()
+            if wit is None:
+                best, wit = rect_gap(ra, rb[B[0]]), (a, B[0])
+            cells = (((ra[2] - ra[0]) + 2 * best) / c + 2) * (((ra[3] - ra[1]) + 2 * best) / c + 2)
+            near = B if cells > nb else ix.query(
+                (ra[0] - best, ra[1] - best, ra[2] + best, ra[3] + best))
+            for b in near:
+                g = rect_gap(ra, rb[b])
+                if g < best:
+                    best, wit = g, (a, b)
+        return best, wit
+
+    def _hint_local(self, h, moving):
+        """`(gap, witness)` with `moving` at their live poses and every other
+        part where it is committed: the committed gap and its witness stand
+        unless the witness moved, and only the moving parts' own pairs can
+        lower it, so only they are looked at -- through the committed index,
+        no further away than the committed gap. A witness that moved needs
+        the full search."""
+        gap, wit = self._hw[h['key']]
+        if any(r in moving for r in wit):
+            return self._hint_full(h, wit if h['kind'] != 'edge' else None)
+        P = self.state.parts
+        if h['kind'] == 'edge':
+            side = self._edge_side(h)
+            for r in h['a']:
+                if r in moving:
+                    s = side(P[r].rect())
+                    if s < gap:
+                        gap, wit = s, (r,)
+            return gap, wit
+        sets = self._hsets[h['key']]
+        for d in sorted(moving):
+            if d in sets[0]:
+                other, a_side = sets[1], True
+            elif d in sets[1]:
+                other, a_side = sets[0], False
+            else:
+                continue
+            rd = P[d].rect()
+            cand = {c for c in self._ixp.query((rd[0] - gap, rd[1] - gap, rd[2] + gap, rd[3] + gap))
+                    if c in other and c not in moving}
+            cand |= {c for c in moving if c in other}
+            for c in sorted(cand):
+                g = rect_gap(rd, P[c].rect())
+                if g < gap:
+                    gap, wit = g, ((d, c) if a_side else (c, d))
+        return gap, wit
 
     def wired(self, a, b):
         """Are parts `a` and `b` meant to touch: a shared signal net, or a
@@ -662,18 +818,15 @@ class Model:
         h = self.pitch / 2.0
         E = self.net_edges.get(n)
         if E is not None:       # the tree the wire term just priced: its
-            if not len(E):      # edges span its points' box exactly
-                return None
-            L = self.net_len[n]
-            x0, x1 = float(min(E[:, 0].min(), E[:, 2].min())) - h, float(max(E[:, 0].max(), E[:, 2].max())) + h
-            y0, y1 = float(min(E[:, 1].min(), E[:, 3].min())) - h, float(max(E[:, 1].max(), E[:, 3].max())) + h
-        else:
-            pts = sorted(set(self._net_points(n)))
-            if len(pts) < 2:
-                return None
-            L = mst_l1(pts)[0]
-            xs, ys = [p[0] for p in pts], [p[1] for p in pts]
-            x0, x1, y0, y1 = min(xs) - h, max(xs) + h, min(ys) - h, max(ys) + h
+            ex, ey = self._grid_edges()     # edges span its points' box exactly
+            return grid_router.net_demand(np.ascontiguousarray(E, dtype=float), self.net_len[n], h,
+                                          ex, ey, self._gx0, self._gy0, self.cell, self._nx, self._ny)
+        pts = sorted(set(self._net_points(n)))
+        if len(pts) < 2:
+            return None
+        L = mst_l1(pts)[0]
+        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+        x0, x1, y0, y1 = min(xs) - h, max(xs) + h, min(ys) - h, max(ys) + h
         i0, i1, j0, j1 = self._win(x0, x1, y0, y1)
         if i1 <= i0 or j1 <= j0:
             return None
@@ -759,9 +912,12 @@ class Model:
         i1 = max(w[1] for w in wins)
         j0 = min(w[2] for w in wins)
         j1 = max(w[3] for w in wins)
+        # the committed window as views; copies only of what the move changes
+        Uv = {L: self._U[L][i0:i1, j0:j1] for L in self.layers}
+        before = self._over2_on(self._D[i0:i1, j0:j1], Uv)
         Dw = self._D[i0:i1, j0:j1].copy()
-        Uw = {L: self._U[L][i0:i1, j0:j1].copy() for L in self.layers}
-        before = self._over2_on(Dw, Uw)
+        hit = {L for _r, old, new in use for u in (old, new) for L in u}
+        Uw = {L: (Uv[L].copy() if L in hit else Uv[L]) for L in self.layers}
         for _n, old, new in dem:
             if old is not None:
                 Dw[old[0] - i0:old[1] - i0, old[2] - j0:old[3] - j0] -= old[4]
@@ -773,15 +929,13 @@ class Model:
             for L, (a0, a1, b0, b1, blk) in new.items():
                 Uw[L][a0 - i0:a1 - i0, b0 - j0:b1 - j0] += blk
         S = self._S + self._over2_on(Dw, Uw) - before
-        self._cong_pending = (dem, use, (i0, i1, j0, j1), Dw, Uw, S)
+        self._cong_pending = (dem, use, (i0, i1, j0, j1), Dw, {L: Uw[L] for L in hit}, S)
         return S
 
     def _over2_on(self, Dw, Uw):
-        cap = np.zeros(Dw.shape)
-        for L in self.layers:
-            cap += np.clip(self.cell * self.cell - Uw[L], 0.0, None)
-        over = np.clip(Dw - cap / self.pitch, 0.0, None)
-        return float((over * over).sum())
+        """`_over2` on a window (copies or views): the Rust kernel
+        `grid_router.over2`."""
+        return grid_router.over2(Dw, [Uw[L] for L in self.layers], self.cell * self.cell, self.pitch)
 
     def _cong_commit(self):
         """Write the pending congestion of the move just kept."""
@@ -796,8 +950,8 @@ class Model:
         if win is not None:
             i0, i1, j0, j1 = win
             self._D[i0:i1, j0:j1] = Dw
-            for L in self.layers:
-                self._U[L][i0:i1, j0:j1] = Uw[L]
+            for L, w in Uw.items():         # the layers the move changed
+                self._U[L][i0:i1, j0:j1] = w
         self._S = S
         self._cong_pending = None
 
@@ -814,12 +968,15 @@ class Model:
     def snapshot(self, touched, refs):
         """What pricing a move of `refs` changes, to put back if the move is
         refused: the touched nets' trees (congestion is only pending)."""
-        return {'nets': {n: (self.net_len[n], self.net_edges[n], self.net_ends[n])
+        wh = getattr(self, '_wh', {})
+        return {'nets': {n: (self.net_len[n], self.net_edges[n], self.net_ends[n], wh.get(n))
                          for n in touched[0]}}
 
     def restore(self, snap):
-        for n, (L, E, ends) in snap['nets'].items():
+        for n, (L, E, ends, W) in snap['nets'].items():
             self.net_len[n], self.net_edges[n], self.net_ends[n] = L, E, ends
+            if W is not None:
+                self._wh[n] = W
         self._cong_pending = None
         self._pend = None
 
@@ -952,12 +1109,13 @@ class Model:
         return sorted(self.state.parts)
 
     def sync(self):
-        """Index the live poses -- parts, pads, signal tree edges -- and the
-        by-part lookups: the COMMITTED state every move is priced against.
+        """Index the live poses -- the parts' rects, every pad row, every
+        signal tree edge (`_cedges`) -- and the by-part lookups: the COMMITTED
+        state every move is priced against.
         A caller that keeps a move tells it (`commit`); one that moves parts
         some other way calls this, as `total` does."""
-        self._ixp, self._ixd, self._ixe = SpatialIndex(), SpatialIndex(), SpatialIndex()
-        self._edge_geo, self._edge_keys, self._npads = {}, {}, {}
+        self._ixp = SpatialIndex()
+        self._npads = {}
         # pads as flat rows, an index key -> row (rows of a part are reused)
         self._PR = np.zeros((0, 4))
         self._PW = np.zeros(0)
@@ -968,8 +1126,7 @@ class Model:
         self._maxhalo = max((self._reach[r] for r in names), default=0.0)
         for r in names:
             self._index_part(r)
-        for n in self.nets:
-            self._index_net(n)
+        self._cedges = self._edges_of(self.nets)
         self._claims_by: Dict[str, List] = {}
         self._decaps_by: Dict[str, List] = {}
         self._groups_by: Dict[str, List] = {}
@@ -1004,7 +1161,9 @@ class Model:
                     self._hnb[a].add(b)
                     self._hnb[b].add(a)
         self._gc = {name: self.group_cost(m) for name, m in self.groups}
-        self._hc = {h['key']: self.hint_cost(h) for h in self.hints}
+        self._hw = {h['key']: self._hint_full(h) for h in self.hints}
+        self._hc = {h['key']: self._hint_value(h, self._hw[h['key']][0]) for h in self.hints}
+        self._hsets = {h['key']: (set(h['a']), set(h['b'] or ())) for h in self.hints}
         self._xc = {n: {} for n in self.nets}
         E, ends, labs = self._edges_of(self.nets)
         if len(E):
@@ -1035,28 +1194,25 @@ class Model:
         """Weighted foreign hits of `edges` on `pads`, as {(net, owner pid): w}."""
         S, ends, labs = edges
         P, wts, pnets, owners = pads
-        out: Dict = {}
         if not len(S) or not len(P):
-            return out
-        i, j = self._seg_hits(S, P)
-        if not len(i):
-            return out
-        f = (labs[i] != pnets[j]) & (ends[i, 0] != owners[j]) & (ends[i, 1] != owners[j])
-        for n, o, w in zip(labs[i][f], owners[j][f], wts[j][f]):
-            key = (int(n), int(o))
-            out[key] = out.get(key, 0.0) + float(w)
-        return out
+            return {}
+        c = np.ascontiguousarray
+        rows = grid_router.pad_hit_sums(c(S, dtype=float), c(ends, dtype=np.int64),
+                                        c(labs, dtype=np.int64), c(P, dtype=float),
+                                        c(wts, dtype=float), c(pnets, dtype=np.int64),
+                                        c(owners, dtype=np.int64))
+        return {(a, b): w for a, b, w in rows}
 
     def _index_part(self, r):
         st = self.state
         self._ixp.remove(r)
         self._ixp.insert(r, st.parts[r].rect())
-        for i in range(self._npads.get(r, 0)):
-            self._ixd.remove((r, i))
         rects, wts, nets, pids = self._pad_rows(r)
         k = len(rects)
         base = self._prow.get((r, 0))
         if base is None or self._npads.get(r, 0) != k:
+            if base is not None:        # rows it no longer has: out of every test
+                self._PR[base:base + self._npads[r]] = np.nan
             base = len(self._PR)
             self._PR = np.vstack([self._PR, rects]) if k else self._PR
             self._PW = np.concatenate([self._PW, wts])
@@ -1068,21 +1224,8 @@ class Model:
             self._PN[base:base + k] = nets
             self._PO[base:base + k] = pids
         for i in range(k):
-            self._ixd.insert(base + i, tuple(rects[i]))
             self._prow[(r, i)] = base + i
         self._npads[r] = k
-
-    def _index_net(self, n):
-        for key in self._edge_keys.get(n, ()):
-            self._ixe.remove(key)
-            self._edge_geo.pop(key, None)
-        keys = []
-        for k, (e, en) in enumerate(zip(self.net_edges[n], self.net_ends[n])):
-            key = (n, k)
-            self._ixe.insert(key, _bbox(e))
-            self._edge_geo[key] = (e[0], e[1], e[2], e[3], en[0], en[1])
-            keys.append(key)
-        self._edge_keys[n] = keys
 
     def commit(self, refs, nets):
         """A move of `refs` was kept: index their new poses and the trees of
@@ -1097,9 +1240,8 @@ class Model:
             self._commit_breakdowns(pend)
         for r in refs:
             self._index_part(r)
-        for n in nets:
-            if n in self.signal:
-                self._index_net(n)
+        if any(n in self.signal for n in nets):
+            self._cedges = self._edges_of(self.nets)
 
     def _commit_breakdowns(self, pend):
         R, T = pend['R'], pend['T']
@@ -1115,6 +1257,7 @@ class Model:
                 self._hnb.setdefault(b, set()).add(a)
         self._gc.update(pend['groups'])
         self._hc.update(pend['hints'])
+        self._hw.update(pend['hint_w'])
         for t in T:                                     # crossings: T's rows anew
             for m in list(self._xc.get(t, {})):
                 self._xc[m].pop(t, None)
@@ -1135,16 +1278,6 @@ class Model:
             self._pn.setdefault(n, {})[pid] = self._pn.get(n, {}).get(pid, 0.0) + w
             self._po.setdefault(pid, {})[n] = self._po.get(pid, {}).get(n, 0.0) + w
         self._pend = None
-
-    def _near_edges(self, rects, skip_nets):
-        """Committed edges near `rects`, not of `skip_nets`: `(segs, ends,
-        nets)`."""
-        cand = self._ixe.query_many(rects)
-        keys = sorted(k for k in cand if k[0] not in skip_nets)
-        if not keys:
-            return np.zeros((0, 4)), np.zeros((0, 2), dtype=int), np.zeros(0, dtype=int)
-        g = np.asarray([self._edge_geo[k] for k in keys], dtype=float)
-        return g[:, :4], g[:, 4:6].astype(int), np.asarray([k[0] for k in keys], dtype=int)
 
     def touched(self, refs):
         if not getattr(self, '_synced', False):
@@ -1192,7 +1325,7 @@ class Model:
                     + self.gw * grp + hint + halo + self.qw * self.congestion()
                     + self.pw_pad * pads)
         for n in nets:
-            self._price_net(n)
+            self._price_net(n, R)
         if self.qw > 0:
             if getattr(self, '_D', None) is None:
                 self._cong_init()
@@ -1203,7 +1336,10 @@ class Model:
         cross, pend['cross'] = self._local_crossings_bd(T)
         groups = {name: self.group_cost(m) for name, m in zip(self._group_names(gr), gr)}
         pend['groups'] = groups
-        pend['hints'] = {h['key']: self.hint_cost(h) for h in hs}
+        moving = set(R)
+        hw = {h['key']: self._hint_local(h, moving) for h in hs}
+        pend['hint_w'] = hw
+        pend['hints'] = {h['key']: self._hint_value(h, hw[h['key']][0]) for h in hs}
         if self.pw_pad > 0:
             pend['pads'] = self._local_pads_bd(T, R)
             pads = sum(pend['pads'].values())
@@ -1221,49 +1357,47 @@ class Model:
         return [names[id(m)] for m in gr]
 
     def _local_crossings_bd(self, T):
-        """`_local_crossings`, with its breakdown {(net, net): count}."""
-        out: Dict = {}
+        """`_local_crossings`, with its breakdown {(net, net): count}: the
+        edges of `T` against every committed edge of another net and among
+        themselves, in the Rust kernel `grid_router.seg_cross_counts`."""
         T = [n for n in T if len(self.net_edges[n])]
         if not T:
-            return 0, out
+            return 0, {}
         M = np.ascontiguousarray(np.vstack([self.net_edges[n] for n in T]), dtype=float)
         lab = np.concatenate([np.full(len(self.net_edges[n]), n) for n in T]).astype(np.int64)
-        O, _e, olab = self._near_edges([_bbox(e) for e in M], set(T))
-        total = 0
-        if len(O):
-            ii, jj = grid_router.seg_cross_pairs(M, np.ascontiguousarray(O, dtype=float))
-            for i, j in zip(ii, jj):
-                key = (int(lab[i]), int(olab[j]))
-                out[key] = out.get(key, 0) + 1
-            total += len(ii)
-        if len(T) > 1:
-            ii, jj = grid_router.seg_cross_pairs(M, None, lab)
-            for i, j in zip(ii, jj):
-                key = (int(lab[i]), int(lab[j]))
-                out[key] = out.get(key, 0) + 1
-            total += len(ii)
-        return total, out
+        O, _ends, olab = self._cedges
+        total, rows = grid_router.seg_cross_counts(M, lab, np.ascontiguousarray(O, dtype=float),
+                                                   olab.astype(np.int64), np.asarray(T, dtype=np.int64))
+        return total, {(a, b): c for a, b, c in rows}
 
     def _local_pads_bd(self, T, R):
-        """`_local_pads` as a breakdown {(net, owner pid): weight}."""
-        rset = set(R)
+        """`_local_pads` as a breakdown {(net, owner pid): weight}: the edges
+        of `T` over every committed pad but those of `R`, and over `R`'s pads
+        where they are now; and every committed edge of another net over
+        `R`'s pads (the Rust kernel `grid_router.pad_hit_sums`)."""
+        c = np.ascontiguousarray
         mine = self._pads_of(R)
+        mine = (c(mine[0], dtype=float), c(mine[1], dtype=float),
+                c(mine[2], dtype=np.int64), c(mine[3], dtype=np.int64))
         S = self._edges_of(T)
         out: Dict = {}
+
+        def add(rows):
+            for a, b, w in rows:
+                out[(a, b)] = out.get((a, b), 0.0) + w
         if len(S[0]):
-            rows = np.fromiter(self._ixd.query_many([_bbox(e) for e in S[0]]), dtype=int)
-            if len(rows):
-                rows.sort()
-                rows = rows[~np.isin(self._PO[rows], [self._pid(r) for r in rset])]
-            pads = mine if not len(rows) else (
-                np.concatenate([self._PR[rows], mine[0]]), np.concatenate([self._PW[rows], mine[1]]),
-                np.concatenate([self._PN[rows], mine[2]]), np.concatenate([self._PO[rows], mine[3]]))
-            for k, w in self._pad_breakdown(S, pads).items():
-                out[k] = out.get(k, 0.0) + w
+            S = (c(S[0], dtype=float), c(S[1], dtype=np.int64), c(S[2], dtype=np.int64))
+            add(grid_router.pad_hit_sums(
+                *S, c(self._PR, dtype=float), c(self._PW, dtype=float),
+                c(self._PN, dtype=np.int64), c(self._PO, dtype=np.int64),
+                skip_owners=np.asarray([self._pid(r) for r in R], dtype=np.int64)))
+            if len(mine[0]):
+                add(grid_router.pad_hit_sums(*S, *mine))
         if len(mine[0]):
-            near = self._near_edges([tuple(r) for r in mine[0]], set(T))
-            for k, w in self._pad_breakdown(near, mine).items():
-                out[k] = out.get(k, 0.0) + w
+            E, ends, labs = self._cedges
+            add(grid_router.pad_hit_sums(c(E, dtype=float), c(ends, dtype=np.int64),
+                                         c(labs, dtype=np.int64), *mine,
+                                         skip_nets=np.asarray(list(T), dtype=np.int64)))
         return out
 
     def _local_halo_bd(self, R):

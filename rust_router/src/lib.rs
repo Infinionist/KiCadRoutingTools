@@ -154,6 +154,12 @@ fn grid_router(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(placement_kernels::seg_rect_hits, m)?)?;
     m.add_function(wrap_pyfunction!(placement_kernels::seg_crossings, m)?)?;
     m.add_function(wrap_pyfunction!(placement_kernels::seg_cross_pairs, m)?)?;
+    m.add_function(wrap_pyfunction!(placement_kernels::gap_tree, m)?)?;
+    m.add_function(wrap_pyfunction!(placement_kernels::mst_l1_tree, m)?)?;
+    m.add_function(wrap_pyfunction!(placement_kernels::seg_cross_counts, m)?)?;
+    m.add_function(wrap_pyfunction!(placement_kernels::pad_hit_sums, m)?)?;
+    m.add_function(wrap_pyfunction!(placement_kernels::over2, m)?)?;
+    m.add_function(wrap_pyfunction!(placement_kernels::net_demand, m)?)?;
     m.add_function(wrap_pyfunction!(pair_search::pair_search, m)?)?;
     Ok(())
 }

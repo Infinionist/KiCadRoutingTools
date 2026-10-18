@@ -190,16 +190,25 @@ for a load or RC cap and wrong for a real decap.
 ### 3.4 Place
 
 ```bash
-python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb wk/<run>/r1/s0.kicad_pcb \
-    --groups wk/<run>/groups.json --intent wk/<run>/intent.json --seed 0 --json wk/<run>/r1/s0.json
+python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/r1/s{seed}.kicad_pcb' \
+    --groups wk/<run>/groups.json --intent wk/<run>/intent.json --seeds 0-3 \
+    --json 'wk/<run>/r1/s{seed}.json'
 ```
+
+- **The seeds run in parallel, then the fast routes one at a time.** `--seeds`
+  starts one process per seed (`--jobs N` caps how many at once, default 4),
+  each giving exactly the placement a `--seed` run would, its log beside its
+  board as `s<S>.log`; one placement process takes about 120 MB. A route
+  takes about 1.3 GB, so on a machine with 2 GB to spare never run
+  placements beside a route.
 
 - Every part not locked or seated by the intent starts at a random place and
   is annealed; the same board, inputs and seed give the same placement.
   The run is 500 moves per movable part by default (`--moves N` sets the
   total), roughly 4 s for 25 parts.
 - **Place seeds 0-3** (or more when the board is small): seeds differ more
-  than most input changes.
+  than most input changes. Exit 4 if any seed left a part illegal, 2 if any
+  failed outright.
 - A run that leaves a part with no legal pose anneals again from a fresh
   start, up to two more times (`runs` in the `--json` report). Exit 4 names
   parts still left illegal; exit 2 a face or pose the inputs contradict.
