@@ -19,6 +19,11 @@ so a seed's `s<S>_fast.score.json` reads the same either way. Rank seeds by
 blocking, then vias, copper_mm, segments. Never grade a board to ship with
 it: route that one in full and run `board_score`.
 """
+
+#: #937 registry: which door(s) show this tool, and whether it changes
+#: the board. Read by krt_registry.py -- by AST, never imported.
+KRT_TOOL = {'scope': ['placement', 'combined'], 'kind': 'instrument'}
+
 import argparse
 import json
 import os
