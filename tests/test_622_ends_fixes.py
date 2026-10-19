@@ -151,8 +151,11 @@ def main():
     s_fail, s_ok = {'A': (0, 0)}, {'A': (1, 0)}
     parts = {tuple(sorted(s_fail.items())): (1.0, {'exact_failed': True}),
              tuple(sorted(s_ok.items())): (3.0, {'exact_failed': False})}
+    # (best_exact routes the candidates at once, each on a copy: the memo it keys by the lanes, the cut and the prices)
     fake = NS(pool={k: v[0] for k, v in parts.items()},
-              score=lambda s, exact=False: parts[tuple(sorted(s.items()))])
+              score=lambda s, exact=False: parts[tuple(sorted(s.items()))],
+              lanes=[('A', ('A',))], wcut=None, unpriced=None, _memo={}, _parts={},
+              _keep_parts=lambda key, p: None)
     we._fmt = lambda p: str(p)         # (its log line formats a whole parts record; these carry one key)
     got = we.Ends.best_exact(fake, dict(s_fail), log=lambda *a: None)[0]
     if got != s_ok:
