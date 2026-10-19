@@ -139,10 +139,12 @@ python3 py_router/route_movie.py runs_set1/myboard     # the movie only
 ```
 
 The final board is an explicit `final*` board when there is one, else the last
-chain board: `stepN` order in the filename (`step6_route` or
-`board_step6_route`, sub-steps `step2a/2b` ordered correctly), or **write-time
-order** when a chain names outputs semantically (`diff_groupA`, `planes`). The
-movie plays the boards in that same order.
+chain board, in the order the run's `redo_commands.sh` writes the boards. A
+name cannot say it: tigard's chain writes `step2a_diffpairs` before
+`step2_route`. A dir with no manifest falls back to `stepN` order in the
+filename (`step6_route` or `board_step6_route`), or **write-time order** when a
+chain names outputs semantically (`diff_groupA`, `planes`). The movie plays the
+boards in that same order, and ends on the last.
 
 ## Building a board set (source → validate → prep)
 

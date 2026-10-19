@@ -73,6 +73,8 @@ GLIDE = 10          # frames the pile takes to reach the places it is seeded at
 PILE_GAP = 2.0      # mm off the board's edge the pile is drawn, at most
 ZOOM = 12           # frames of a zoom between the board and the judged seeds
 LABEL_PX = 16       # the line under each judged seed's picture
+STEP_HOLD = 0.5     # seconds a step's frame holds
+END_HOLD = 1.0      # seconds on the last frame
 
 
 def _ease(t):
@@ -100,7 +102,7 @@ class Film:
         from placement.grouping import is_ground, load_groups
         self.state, self.model, self.movable, _notes = built
         self.pcb, self.args = pcb, args
-        self.hold = max(1, int(round(self.a.fps)))
+        self.hold = max(1, int(round(STEP_HOLD * self.a.fps)))
         self.r = BoardRenderer(pcb, size=self.a.size, supersample=1, theme=self.a.theme,
                                show_pads=False, show_zones=False)
         th = self.r.theme
@@ -504,38 +506,60 @@ def _route(placed, name, set_, out, quick):
     return json.load(open(sc)) if r.returncode == 0 and os.path.isfile(sc) else None
 
 
+def _seed_list(spec):
+    out = []
+    for part in spec.split(','):
+        lo, _, hi = part.partition('-')
+        out += range(int(lo), int(hi or lo) + 1)
+    return out
+
+
+def _done(work, key):
+    """The score of a route route_placed.py already finished in `work/key`."""
+    p = os.path.join(work, key, 'score.json')
+    return json.load(open(p)) if os.path.isfile(p) else None
+
+
 def run_flow(a, board, out, opts, work):
-    """Place every seed, fast-route the judged ones, route the best in full.
-    Returns (seeds by cost, judged, scores, best, full score) or None."""
+    """Place every seed, fast-route the judged ones, route the best in full,
+    reusing what `work` already holds (a placed seed, a finished route), so a
+    second run only films. Returns (judged, scores, best, full score) or
+    None."""
     name, _, set_ = a.route.partition(':')
+    if a.fresh:
+        shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work, exist_ok=True)
-    print(f"place_movie: placing seeds {a.seeds} ({a.jobs} at a time)")
-    rc = subprocess.run([sys.executable, '-X', 'utf8', os.path.join(HERE, 'place_simple.py'), board,
-                         os.path.join(work, 's{seed}.kicad_pcb'), *opts, '--seeds', a.seeds,
-                         '--jobs', str(a.jobs), '--json', os.path.join(work, 's{seed}.json')]).returncode
-    if rc == 2:
-        return None
-    reps = {}
-    for f in os.listdir(work):
-        if f.startswith('s') and f.endswith('.json') and f[1:-5].isdigit():
-            reps[int(f[1:-5])] = json.load(open(os.path.join(work, f)))
+    seeds = _seed_list(a.seeds)
+    todo = [s for s in seeds if not (os.path.isfile(os.path.join(work, f's{s}.json'))
+                                     and os.path.isfile(os.path.join(work, f's{s}.kicad_pcb')))]
+    if todo:
+        print(f"place_movie: placing seeds {','.join(map(str, todo))} ({a.jobs} at a time)")
+        rc = subprocess.run([sys.executable, '-X', 'utf8', os.path.join(HERE, 'place_simple.py'),
+                             board, os.path.join(work, 's{seed}.kicad_pcb'), *opts,
+                             '--seeds', ','.join(map(str, todo)), '--jobs', str(a.jobs),
+                             '--json', os.path.join(work, 's{seed}.json')]).returncode
+        if rc == 2:
+            return None
+    reps = {s: json.load(open(os.path.join(work, f's{s}.json'))) for s in seeds
+            if os.path.isfile(os.path.join(work, f's{s}.json'))}
     legal = sorted((r['final']['cost'], s) for s, r in reps.items() if not r.get('illegal'))
     judged = [s for _c, s in legal[:a.judge]]
     if not judged:
         print("place_movie: no seed placed every part legally; nothing to route", file=sys.stderr)
         return None
     print(f"place_movie: fast-routing the {len(judged)} cheapest legal seeds: {judged}")
-    with ThreadPoolExecutor(max_workers=max(1, a.jobs)) as pool:
-        got = list(pool.map(lambda s: _route(os.path.join(work, f's{s}.kicad_pcb'), name, set_,
-                                              os.path.join(work, f'fast_s{s}'), True), judged))
+    with ThreadPoolExecutor(max_workers=max(1, a.route_jobs or a.jobs)) as pool:
+        got = list(pool.map(lambda s: _done(work, f'fast_s{s}') or _route(
+            os.path.join(work, f's{s}.kicad_pcb'), name, set_, os.path.join(work, f'fast_s{s}'), True),
+            judged))
     scores = {s: sc for s, sc in zip(judged, got) if sc}
     if not scores:
         print("place_movie: no fast route finished", file=sys.stderr)
         return None
     best = min(scores, key=lambda s: _score_key(scores[s]))
     print(f"place_movie: the best fast route is seed {best}; routing it in full")
-    full = _route(os.path.join(work, f's{best}.kicad_pcb'), name, set_,
-                  os.path.join(work, f'full_s{best}'), False)
+    full = _done(work, f'full_s{best}') or _route(os.path.join(work, f's{best}.kicad_pcb'), name,
+                                                    set_, os.path.join(work, f'full_s{best}'), False)
     if full is None:
         return None
     return judged, scores, best, full
@@ -548,7 +572,8 @@ def _chain(work, key):
     d = os.path.join(work, key)
     first = [os.path.join(d, 'in', f) for f in os.listdir(os.path.join(d, 'in'))
              if f.endswith('.kicad_pcb')][0]
-    boards = [b for b in run_boards(os.path.join(d, 'out'))
+    boards = [b for b in run_boards(os.path.join(d, 'out'),
+                                    os.path.join(d, 'manifest', 'redo_commands.sh'))
               if os.path.basename(b) != os.path.basename(first)]
     return first, boards
 
@@ -576,10 +601,11 @@ def film_routes(a, movie, work, judged, scores, best, full, filmed):
     one boxed and zoomed into, its fast route cleared and its full route."""
     from PIL import Image, ImageDraw
     from kicad_parser import parse_kicad_pcb
-    from route_movie import _board_copper, play_chain, shoot
+    from route_movie import ZONE_TINT, _board_copper, play_chain, shoot
     from route_render import BoardRenderer, load_font
     kw = dict(size=a.size, theme=a.theme)
-    hold = max(1, int(round(a.fps)))
+    rkw = dict(kw, zone_tint=ZONE_TINT)
+    hold = max(1, int(round(STEP_HOLD * a.fps)))
     # 8. the filmed seed's fast route
     first, boards = _chain(work, f'fast_s{filmed}')
     r, live_s, live_v = play_chain(movie, boards, first, prefix='fast route | ',
@@ -598,7 +624,7 @@ def film_routes(a, movie, work, judged, scores, best, full, filmed):
     cells = {}
     for i, s in enumerate(sorted(scores)):
         _f, bs = _chain(work, f'fast_s{s}')
-        rr = BoardRenderer(parse_kicad_pcb(bs[-1]), supersample=1, **kw)
+        rr = BoardRenderer(parse_kicad_pcb(bs[-1]), supersample=1, **rkw)
         img = rr.render()
         if img.size != (W, H):
             img = img.resize((W, H))
@@ -650,7 +676,7 @@ def film_routes(a, movie, work, judged, scores, best, full, filmed):
     # 10. its fast route cleared, net by net, then its full route
     _f, bs = _chain(work, f'fast_s{best}')
     pcb = parse_kicad_pcb(bs[-1])
-    r = BoardRenderer(pcb, supersample=1, **kw)
+    r = BoardRenderer(pcb, supersample=1, **rkw)
     live_s, live_v = _board_copper(pcb)
     nets = sorted({o.net_id for o in list(live_s.values()) + list(live_v.values())})
     step = max(1, math.ceil(len(nets) / 6))
@@ -691,6 +717,13 @@ def main(argv=None):
                          '(default 12)')
     ap.add_argument('--jobs', type=int, default=4,
                     help='with --route, placements and fast routes run at once (default 4)')
+    ap.add_argument('--route-jobs', type=int, default=0,
+                    help='with --route, fast routes run at once, when it should differ from '
+                         '--jobs (a big board\'s route can take 5 GB: 1 runs them one at a time)')
+    ap.add_argument('--fresh', action='store_true',
+                    help='with --route, empty --work first: place and route every seed again '
+                         '(otherwise a placed seed or finished route there is reused, so a '
+                         'second run only films)')
     ap.add_argument('--work', help="with --route, the work directory (default: OUT's name + _work)")
     a, rest = ap.parse_known_args(argv)
     if len(rest) < 2 or rest[0].startswith('-') or rest[1].startswith('-'):
@@ -707,7 +740,7 @@ def main(argv=None):
         rc = place_simple.main(rest)
         if hasattr(film, 'state'):
             film.placed(rc, 1)
-        path = movie.close(hold=2.0)
+        path = movie.close(hold=END_HOLD)
         print(f"place_movie: {path} ({movie.n} frames, {movie.n / a.fps:.0f} s)")
         return rc
     if ':' not in a.route:
@@ -729,7 +762,7 @@ def main(argv=None):
                             '--seed', str(filmed)])
     film.placed(rc, film.hold, handoff=True)
     film_routes(a, movie, work, judged, scores, best, full, filmed)
-    path = movie.close(hold=2.0)
+    path = movie.close(hold=END_HOLD)
     subprocess.run([sys.executable, os.path.join(REPO, 'py_router', 'copy_board.py'),
                     os.path.join(work, f's{best}.kicad_pcb'), out], check=False, capture_output=True)
     print(f"place_movie: {path} ({movie.n} frames, {movie.n / a.fps:.0f} s); "

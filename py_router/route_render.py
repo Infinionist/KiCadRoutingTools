@@ -196,7 +196,7 @@ class BoardRenderer:
                  bg: Optional[Tuple[int, int, int]] = None,
                  layer_alpha: Optional[int] = None,
                  view: Optional[Tuple[float, float, float, float]] = None,
-                 theme=None):
+                 theme=None, zone_tint: float = 0.45):
         # #1011. `theme=None` resolves to the CONFIGURED default
         # (`render_theme.default_theme()`: light since #1081, or
         # $KICAD_RENDER_THEME) -- it used to be hard-wired DARK, which kept
@@ -243,6 +243,10 @@ class BoardRenderer:
         self.context_alpha_frac = 0.28
         self._show_pads = show_pads
         self._show_zones = show_zones
+        #: How much of its layer's colour a pour takes over the board body (0:
+        #: none, 1: all). The movies pass less, so a track over a plane on its
+        #: own layer still reads.
+        self.zone_tint = zone_tint
         self.set_view(view)
 
     def set_canvas(self, width: int, height: int) -> None:
@@ -397,7 +401,8 @@ class BoardRenderer:
         body = self.theme.rgb('board_body')
         for z in zones:
             base = self.palette.get(z.layer, self.theme.rgb('zone_tint'))
-            dim = tuple(int(body[i] * 0.55 + base[i] * 0.45) for i in range(3))
+            k = self.zone_tint
+            dim = tuple(int(body[i] * (1 - k) + base[i] * k) for i in range(3))
             d.polygon([self.tf.pt(x, y) for x, y in z.polygon], fill=dim)
         if mask is not None:
             img.paste(layer, (0, 0), mask)

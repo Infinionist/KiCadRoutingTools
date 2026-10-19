@@ -5,8 +5,9 @@
     python3 py_router/route_movie.py RUNDIR [-o RUNDIR/routing.mp4]
     python3 py_router/route_movie.py a.kicad_pcb b.kicad_pcb ... -o out.mp4
 
-A run dir's boards play in chain order (`stepN` in the name, else the order
-they were written, a `final*` board last), from the chain's input board -- the
+A run dir's boards play in chain order (the order its redo_commands.sh writes
+them; without one, `stepN` in the name, else the order they were written, a
+`final*` board last), from the chain's input board -- the
 first board `redo_commands.sh` reads -- when it can be found. Where a step left
 a `<board>_routetrace.json` (route.py / route_diff.py run with
 KICAD_ROUTE_TRACE=1), its copper plays one router event per frame: new copper
@@ -38,11 +39,12 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 SIZE = 1000         # longest frame side, px
-FPS = 6.0
+FPS = 12.0          # twice the August movie's 6: the same frames, played at double speed
 RIP_HOLD = 2        # frames a rip shows red before it goes
 CHUNKS = 6          # frames for a step's untraced copper
-END_HOLD = 1.5      # seconds on the last frame
-MAX_FRAMES = 2400   # traced events past this share frames (400 s at 6 fps)
+END_HOLD = 0.75     # seconds on the last frame
+MAX_FRAMES = 2400   # traced events past this share frames (200 s at 12 fps)
+ZONE_TINT = 0.2     # a pour's share of its layer's colour (the stills' 0.45 hides a track on it)
 
 
 class MovieWriter:
@@ -150,9 +152,42 @@ def _step_key(path):
     return (int(m.group(1)) if m else 9999, m.group(2) if m else '', b)
 
 
-def run_boards(run_dir):
-    """The run dir's boards in chain order: step-numbered boards by step, then
-    `final*` boards by write time; with no step numbers, write-time order."""
+def chain_order(manifest, run_dir):
+    """The boards `manifest` (a redo_commands.sh) writes, in the order its
+    commands write them, that are in `run_dir` (matched by name: a manifest
+    may name the recording machine's paths). [] when it names none."""
+    out = []
+    for line in open(manifest, encoding='utf-8', errors='replace'):
+        if line.lstrip().startswith('#') or '.kicad_pcb' not in line or '--help' in line:
+            continue
+        try:
+            toks = shlex.split(line)
+        except ValueError:
+            continue
+        flag = next((f for f in ('--output', '-o') if f in toks[:-1]), None)
+        if flag:
+            board = toks[toks.index(flag) + 1]
+        else:
+            pcbs = [t for t in toks if t.endswith('.kicad_pcb') and not t.startswith('-')]
+            board = pcbs[1] if len(pcbs) > 1 else None
+        if board:
+            path = os.path.join(run_dir, os.path.basename(board))
+            if os.path.isfile(path) and path not in out:
+                out.append(path)
+    return out
+
+
+def run_boards(run_dir, manifest=None):
+    """The run dir's boards in chain order: the order the chain's manifest
+    (`manifest`, default the dir's redo_commands.sh) writes them -- a name
+    cannot say it: tigard's chain writes step2a_diffpairs before step2_route.
+    Without a manifest, step-numbered boards by step, then `final*` boards by
+    write time; with no step numbers, write-time order."""
+    manifest = manifest or os.path.join(run_dir, 'redo_commands.sh')
+    if os.path.isfile(manifest):
+        got = chain_order(manifest, run_dir)
+        if got:
+            return got
     all_pcb = glob.glob(os.path.join(run_dir, '*.kicad_pcb'))
     stepped = [p for p in all_pcb if re.search(r'step\s*\d', os.path.basename(p), re.I)]
     by_time = lambda p: (os.path.getmtime(p), os.path.basename(p))  # noqa: E731
@@ -198,7 +233,7 @@ def shoot(movie, r, live_s, live_v, label, hl_s=(), hl_v=(), role='event_new', r
 
 
 def play_chain(movie, boards, first=None, *, size=SIZE, theme='dark', max_frames=MAX_FRAMES,
-               prefix='', first_label='input'):
+               prefix='', first_label='input', zone_tint=ZONE_TINT):
     """Play `boards` (chain order) into `movie` from `first`, the board the
     chain started from (None: its first board's pads and no copper). Each
     caption starts with `prefix`. Returns the last step's (renderer, tracks,
@@ -215,12 +250,13 @@ def play_chain(movie, boards, first=None, *, size=SIZE, theme='dark', max_frames
 
     pcb0 = parse_kicad_pcb(first or boards[0])
     live_s, live_v = _board_copper(pcb0) if first else ({}, {})
-    r = BoardRenderer(pcb0, size=size, supersample=1, theme=theme, show_zones=bool(first))
+    r = BoardRenderer(pcb0, size=size, supersample=1, theme=theme, show_zones=bool(first),
+                      zone_tint=zone_tint)
     draw(r, live_s, live_v, prefix + first_label)
     for board in boards:
         step = prefix + os.path.splitext(os.path.basename(board))[0]
         pcb = parse_kicad_pcb(board)
-        r = BoardRenderer(pcb, size=size, supersample=1, theme=theme)
+        r = BoardRenderer(pcb, size=size, supersample=1, theme=theme, zone_tint=zone_tint)
         layers = list(pcb.board_info.copper_layers)
         events = traces.get(board, {}).get('events', [])
         tlayers = traces.get(board, {}).get('layers') or layers

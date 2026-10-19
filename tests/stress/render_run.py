@@ -23,9 +23,7 @@ Usage:
       FINAL_BOARD final board to snapshot (default: the last step board)
 """
 import argparse
-import glob
 import os
-import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -36,33 +34,13 @@ sys.path.insert(0, os.path.join(_REPO, 'py_placer'))  # #522
 sys.path.insert(0, os.path.join(_REPO, 'py_tools'))  # #522
 
 
-def _step_sort_key(path):
-    # The step number anywhere in the name: chains use both `step6_route` and
-    # `board_step6_route`; sub-steps (step2a/2b) sort by number, then letter.
-    b = os.path.basename(path)
-    m = re.search(r'step\s*(\d+)([a-z]*)', b, re.I)
-    return (int(m.group(1)) if m else 9999, m.group(2) if m else '', b)
-
-
 def final_board_of(run_dir):
     """The run dir's final board: an explicit ``final*`` board when there is
-    one, else the last step board -- step-numbered order when any board is
-    step-numbered, write-time (mtime) order otherwise. None when there is no
-    board at all."""
-    all_pcb = glob.glob(os.path.join(run_dir, '*.kicad_pcb'))
-    stepped = [p for p in all_pcb
-               if re.search(r'step\s*\d', os.path.basename(p), re.I)]
-    if stepped:
-        boards = sorted(stepped, key=_step_sort_key)
-        # A semantically-named final board must not be dropped just because
-        # step-numbered boards exist (#513 item 10).
-        finals = [p for p in all_pcb if p not in stepped
-                  and 'final' in os.path.basename(p).lower()]
-        boards += sorted(finals, key=lambda p: (os.path.getmtime(p),
-                                                os.path.basename(p)))
-    else:
-        boards = sorted(all_pcb, key=lambda p: (os.path.getmtime(p),
-                                                os.path.basename(p)))
+    one, else the chain's last board, in route_movie's chain order (the order
+    redo_commands.sh writes them; without one, step-numbered order, else
+    write-time order). None when there is no board at all."""
+    from route_movie import run_boards
+    boards = run_boards(run_dir)
     final = boards[-1] if boards else None
     for b in boards:                      # an explicit final_board wins
         if 'final' in os.path.basename(b).lower():

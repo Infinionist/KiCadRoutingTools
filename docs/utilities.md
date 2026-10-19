@@ -1071,9 +1071,12 @@ python3 py_router/route_movie.py RUNDIR                       # RUNDIR/routing.m
 python3 py_router/route_movie.py step1.kicad_pcb step2.kicad_pcb final.kicad_pcb -o run.mp4
 ```
 
-- A run dir's boards play in chain order: `stepN` in the name, else the order
-  they were written, a `final*` board last. The first frame is the chain's
-  input board, the first board `redo_commands.sh` reads, when it can be found.
+- A run dir's boards play in chain order -- the order its `redo_commands.sh`
+  writes them (without one: `stepN` in the name, else the order they were
+  written, a `final*` board last) -- and the movie ends on the last. The first
+  frame is the chain's input board, the first board `redo_commands.sh` reads,
+  when it can be found. Pours are drawn faint, so a track over a plane on its
+  own layer still reads.
 - Where a step left a `<board>_routetrace.json`, its copper plays one router
   event per frame: new copper flashes white, restored copper cyan, and ripped
   copper red and dashed before it goes. `route.py` and `route_diff.py` write
@@ -1086,7 +1089,7 @@ python3 py_router/route_movie.py step1.kicad_pcb step2.kicad_pcb final.kicad_pcb
   An `.mp4` needs `ffmpeg` on PATH; without it, or with `-o x.gif`, it is a GIF,
   which holds every frame in memory (the stress harness films only with
   `ffmpeg`).
-- `--size` (default 1000 px), `--fps` (default 6), `--theme` (default `dark`).
+- `--size` (default 1000 px), `--fps` (default 12), `--theme` (default `dark`).
 - `--max-frames` (default 2400) — past that many router events, several share
   a frame.
 
@@ -1142,7 +1145,11 @@ segments) in full. The movie films the cheapest seed's placement, then:
 10. its fast route **cleared**, net by net, and its **full route** played.
 
 OUT is then the best seed's placement; the placed seeds, routes and scores
-are in `--work` (default: OUT's name + `_work`).
+are in `--work` (default: OUT's name + `_work`). A second run reuses them --
+every placed seed and finished route there -- so it only films (`--fresh`
+places and routes again). `--route-jobs` runs the fast
+routes fewer at a time than the placements: a 350-part board's route can take
+5 GB, so `--route-jobs 1` there.
 
 - `--movie` — the movie (default: OUT's name, `.mp4`); a GIF without `ffmpeg`.
 - `--size`, `--fps`, `--theme` — as the routing movie.
