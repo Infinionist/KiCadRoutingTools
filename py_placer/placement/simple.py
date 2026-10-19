@@ -9,6 +9,10 @@ this cost by simulated annealing; `place_simple.py` is the CLI.
          + rail_weight / ground_weight x each rail's MST (below)
          + crossing_weight x crossings among the signal trees' edges
          + claim_weight x each claimed pad's distance to its partner's pad
+         + claim_limit_weight x mm each claimed pad is past its claim's
+           `max_mm`, pad edge to its partner pad as `check_floorplan` grades
+           it (`claim_over`: a crystal leg past 8.1 mm of its pin, a load cap
+           past 2.2 mm of its crystal)
          + decap_weight x each decap's distance to the supply-pin site it
            is matched to: the decaps of one rail and one set of pins (its own
            group's IC's, any IC's when its group has none) are matched to
@@ -211,6 +215,32 @@ def mst_l1(pts: Sequence[Tuple[float, float]]):
     return total, [(pts[i][0], pts[i][1], pts[j][0], pts[j][1]) for i, j in ij]
 
 
+def _turn(x, y, q):
+    """(x, y) turned by q degrees (a multiple of 90), the state's way."""
+    q = int(round(q)) % 360
+    if q == 0:
+        return x, y
+    if q == 90:
+        return y, -x
+    if q == 180:
+        return -x, -y
+    return -y, x
+
+
+def follow(was, now, pose):
+    """Where a part at `pose` goes when it is carried by a move of another
+    part from `was` to `now`: kept at its offset from that part and turned
+    with it (a turn that is no quarter-turn multiple only steps it)."""
+    x0, y0, r0 = was
+    x1, y1, r1 = now
+    cx, cy, crot = pose
+    q = (r1 - r0) % 360.0
+    if abs(q) < 1e-9 or abs(q - 360.0) < 1e-9 or abs(q / 90.0 - round(q / 90.0)) > 1e-9:
+        return (cx + x1 - x0, cy + y1 - y0, crot)
+    tx, ty = _turn(cx - x0, cy - y0, q)
+    return (x1 + tx, y1 + ty, (crot + q) % 360.0)
+
+
 def rect_gap(a, b) -> float:
     """Manhattan gap between two rects `(x0, y0, x1, y1)`; 0 when they touch
     or overlap."""
@@ -345,7 +375,8 @@ class Model:
                  congestion_nets=None, rail_weight: float = 0.0,
                  ground_nets=(), ground_weight: float = 0.0, pad_weight: float = 0.0,
                  hints: Sequence[Dict] = (), halo_coef: float = 0.25,
-                 halo_weight: float = 10.0):
+                 halo_weight: float = 10.0, claim_limits: Sequence = (),
+                 claim_limit_weight: float = 0.0):
         self.state, self.pcb = state, pcb
         self.halo_coef, self.halo_weight = halo_coef, halo_weight
         self.hints = [h for h in hints if h['weight'] > 0]
@@ -370,6 +401,12 @@ class Model:
         self._ny = max(1, int(math.ceil((b[3] - b[1]) / cell)))
         self.layers = list(pcb.board_info.copper_layers or ['F.Cu', 'B.Cu'])
         self.claims = claims            # [(subject, partner, [(spad, ppads)])]
+        # each claim's limit (its `max_mm`, pad edge), where it has one: the
+        # hinge past it is priced at `claim_limit_weight` per mm (`claim_over`)
+        self.klw = claim_limit_weight
+        self._cmax = ({id(c): float(m) for c, m in zip(claims, claim_limits) if m is not None}
+                      if claim_limit_weight > 0 else {})
+        self._phx: Dict = {}
         self.decaps = decaps            # [(cap ref, rail net)]
         self.supply = supply            # rail net -> [(ic ref, pad number)]
         self.decap_pins = decap_pins    # cap -> the supply pins it serves
@@ -523,6 +560,82 @@ class Model:
             if sp and pp:
                 d += min(math.dist(sp[0], q) for q in pp)
         return d
+
+    def _pad_rects(self, ref, num):
+        """The copper rects of `ref`'s connected pads numbered `num` at its live
+        pose, as `legality.pad_rect` gives them: each centre (`_pad_xy`) and
+        its half-extents, which a quarter turn from the board's pose swaps."""
+        key = (ref, str(num))
+        hx = self._phx.get(key)
+        if hx is None:
+            from .legality import pad_half_extents
+            conn = [p for p in self.pcb.footprints[ref].pads if p.net_id > 0]
+            hx = self._phx[key] = [pad_half_extents(p) for p in conn
+                                   if str(p.pad_number) == str(num)]
+        part = self.state.parts[ref]
+        odd = abs((part.rot - part.orig_rot) % 180.0 - 90.0) < 1e-6
+        return [(x - (b if odd else a), y - (a if odd else b),
+                 x + (b if odd else a), y + (a if odd else b))
+                for (x, y), (a, b) in zip(self._pad_xy(ref, num), hx)]
+
+    def claim_over(self, c):
+        """mm past claim `c`'s limit (0 without one), summed over its subject
+        pads: each pad's edge gap to the nearest partner pad on its net, as
+        `floorplan.proximity_reaches` grades a claim that names its pads."""
+        m = self._cmax.get(id(c))
+        if m is None:
+            return 0.0
+        from .legality import rect_gap
+        subj, part, legs = c
+        over = 0.0
+        for spad, ppads in legs:
+            P = [q for p in ppads for q in self._pad_rects(part, p)]
+            if P:
+                for a in self._pad_rects(subj, spad):
+                    over += max(0.0, min(rect_gap(a, b) for b in P) - m)
+        return over
+
+    def claims_broken(self):
+        """How many claims the committed poses put past their limit."""
+        from .legality import EPS
+        return sum(1 for c in self.claims if self._clo.get(id(c), 0.0) > EPS)
+
+    def claim_tethered(self, ref, pose):
+        """The parts whose claim on `ref` a move of `ref` alone to `pose` would
+        put further past its limit: a crystal at the IC whose pins it claims,
+        its series part, its load caps at the crystal -- and theirs in turn,
+        each following `ref` rigidly (`follow`). `simple_anneal` carries them
+        with it. A claim already past its limit is carried too when the move
+        would worsen it: otherwise a crystal stranded with its caps can never
+        come home, since jumping to its pins alone would leave the caps
+        behind (measured on z80_devboard: Y1 116 mm from its RP2040, its two
+        caps beside it)."""
+        if not self._cmax or ref not in getattr(self, '_claims_on', {}):
+            return []
+        from .legality import EPS
+        P = self.state.parts
+        was = (P[ref].x, P[ref].y, P[ref].rot)
+        moved = {ref: tuple(pose)}
+        out, queue = [], [ref]
+        while queue:
+            a = queue.pop(0)
+            for c in self._claims_on.get(a, ()):
+                s = c[0]
+                if s in moved or P[s].locked or id(c) not in self._cmax:
+                    continue
+                keep = {r: (P[r].x, P[r].y, P[r].rot) for r in moved}
+                for r, q in moved.items():
+                    P[r].x, P[r].y, P[r].rot = q
+                try:
+                    worse = self.claim_over(c) > self._clo.get(id(c), 0.0) + EPS
+                finally:
+                    for r, q in keep.items():
+                        P[r].x, P[r].y, P[r].rot = q
+                if worse:
+                    moved[s] = follow(was, moved[ref], (P[s].x, P[s].y, P[s].rot))
+                    out.append(s)
+                    queue.append(s)
+        return out
 
     def pins_for(self, cap, net):
         """The supply pins `cap` decouples: its group's, else its rail's."""
@@ -1113,6 +1226,7 @@ class Model:
             if len(E):
                 allE.append(E)
         claims = sum(self.claim_cost(c) for c in self.claims)
+        cover = sum(self.claim_over(c) for c in self.claims)
         dec = sum(self.cluster_cost(k) for k in range(len(self.clusters)))
         per_group = {name: self.group_cost(m) for name, m in self.groups}
         grp = sum(per_group.values())
@@ -1127,10 +1241,11 @@ class Model:
         return {'wire': wire, 'crossings': cross, 'claims': claims, 'decaps': dec,
                 'groups': grp, 'per_group': per_group, 'hints': hint, 'per_hint': per_hint,
                 'halo': halo, 'congestion': cong, 'pad_hits': pads, 'decap_limits': lim,
-                'decap_broken': self.limits_broken(),
+                'decap_broken': self.limits_broken(), 'claim_limits': cover,
+                'claim_broken': self.claims_broken(),
                 'cost': (wire + self.cw * cross + self.kw * claims + self.dw * dec
                          + self.gw * grp + hint + halo + self.qw * cong + self.pw_pad * pads
-                         + self._lw * lim)}
+                         + self._lw * lim + self.klw * cover)}
 
     # -- the intent's decap limits ---------------------------------------------
     # Each term is a MINIMUM over pairs, as the grade measures it: a supply
@@ -1559,9 +1674,11 @@ class Model:
         self._claims_by: Dict[str, List] = {}
         self._decaps_by: Dict[str, List] = {}
         self._groups_by: Dict[str, List] = {}
+        self._claims_on: Dict[str, List] = {}     # partner -> the claims naming it
         for c in self.claims:
             for r in {c[0], c[1]}:
                 self._claims_by.setdefault(r, []).append(c)
+            self._claims_on.setdefault(c[1], []).append(c)
         for k, (_net, caps, sites) in enumerate(self.clusters):
             for r in set(caps) | {ic for site in sites for ic, _num in site}:
                 self._decaps_by.setdefault(r, []).append(k)
@@ -1595,6 +1712,7 @@ class Model:
                     self._hnb[b].add(a)
         self._gc = {name: self.group_cost(m) for name, m in self.groups}
         self._clc = {id(c): self.claim_cost(c) for c in self.claims}
+        self._clo = {id(c): self.claim_over(c) for c in self.claims}
         self._dcc = {k: self.cluster_cost(k) for k in range(len(self.clusters))}
         self._hw = {h['key']: self._hint_full(h) for h in self.hints}
         self._hc = {h['key']: self._hint_value(h, self._hw[h['key']][0]) for h in self.hints}
@@ -1751,6 +1869,7 @@ class Model:
                 self._hnb.setdefault(b, set()).add(a)
         self._gc.update(pend['groups'])
         self._clc.update(pend['claims'])
+        self._clo.update(pend['claim_over'])
         self._dcc.update(pend['decaps'])
         self._hc.update(pend['hints'])
         self._hw.update(pend['hint_w'])
@@ -1800,6 +1919,7 @@ class Model:
         T = [n for n in nets if n in self.signal]
         if not reprice:
             claims = sum(self._clc[id(c)] for c in cl)
+            cover = sum(self._clo[id(c)] for c in cl)
             dec = sum(self._dcc[k] for k in dc)
             self._cong_pending = None
             self._pend = None
@@ -1823,10 +1943,12 @@ class Model:
             lim = sum(self._over_limit(i, self._lval[i]) for i in ls)
             return (wire + self.cw * cross + self.kw * claims + self.dw * dec
                     + self.gw * grp + hint + halo + self.qw * self.congestion()
-                    + self.pw_pad * pads + self._lw * lim)
+                    + self.pw_pad * pads + self._lw * lim + self.klw * cover)
         ccl = {id(c): self.claim_cost(c) for c in cl}
+        cco = {id(c): self.claim_over(c) for c in cl}
         cdc = {k: self.cluster_cost(k) for k in dc}
         claims = sum(ccl[id(c)] for c in cl)
+        cover = sum(cco.values())
         dec = sum(cdc[k] for k in dc)
         self._moving = frozenset(R)
         for n in nets:
@@ -1837,7 +1959,7 @@ class Model:
             else:
                 self._cong_price(refs)
         wire = sum(self.wire_weight(n) * self.net_len[n] for n in nets)
-        pend = {'R': R, 'T': T, 'claims': ccl, 'decaps': cdc}
+        pend = {'R': R, 'T': T, 'claims': ccl, 'claim_over': cco, 'decaps': cdc}
         cross, pend['cross'] = self._local_crossings_bd(T)
         groups = {name: self.group_cost(m) for name, m in zip(self._group_names(gr), gr)}
         pend['groups'] = groups
@@ -1860,7 +1982,7 @@ class Model:
         return (wire + self.cw * cross + self.kw * claims + self.dw * dec
                 + self.gw * sum(groups.values()) + sum(pend['hints'].values())
                 + sum(pend['halo'].values()) + self.qw * self.congestion()
-                + self.pw_pad * pads + self._lw * lim)
+                + self.pw_pad * pads + self._lw * lim + self.klw * cover)
 
     def _group_names(self, gr):
         names = {id(m): name for name, m in self.groups}
@@ -1988,7 +2110,7 @@ def blame(model) -> Dict[str, Dict[str, float]]:
             for r in (own[i][0], own[i][1], own[j][0], own[j][1]):
                 out[r]['cross'] += model.cw / 4.0
     for c in model.claims:
-        out[c[0]]['claims'] += model.kw * model.claim_cost(c)
+        out[c[0]]['claims'] += model.kw * model.claim_cost(c) + model.klw * model.claim_over(c)
     for cap, n in model.decaps:
         out[cap]['decaps'] += model.dw * model.decap_cost(cap, n)
     for _name, members in model.groups:

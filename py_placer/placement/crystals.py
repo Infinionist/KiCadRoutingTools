@@ -9,10 +9,15 @@ roles imply:
 
 * the crystal: each of its two signal pads within `leg_mm` of the IC pad on
   the same net;
-* each load cap, meaning a two-pad cap with one pad on a load net and the
-  other on ground: its load-net pad within `cap_mm` of the crystal pad on that
-  net. A cap whose other pad is not ground is not a load cap, so it gets no
-  claim.
+* a leg that reaches the IC through a series part (the resistor many
+  reference designs put between XOUT and the crystal: the RP2040's, an
+  STM32's): the crystal pad within `leg_mm` of the series part's pad on its
+  net, and the series part's other pad within `leg_mm` of the IC pin on ITS
+  net -- the two links of that leg;
+* each load cap, meaning a two-pad cap with one pad on a load net (either
+  leg's) and the other on ground: its load-net pad within `cap_mm` of the
+  crystal pad on that net. A cap whose other pad is not ground is not a load
+  cap, so it gets no claim.
 
 The rows are ordinary `proximity[]` claims, so `check_floorplan` grades them
 and `place_simple`'s claim term pulls each subject to its partner: the
@@ -29,7 +34,7 @@ from __future__ import annotations
 import contextlib
 import io
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 #: The farthest crystal leg, pad edge to the IC pad on its net, at the human
 #: corpus's 75th percentile, so three human placements in four meet it
@@ -49,16 +54,42 @@ def _ground(name: str) -> bool:
     return bool(name) and is_ground_net_name(name)
 
 
+def _series_part(pcb, x: str, net: int, ic: str, net_name) -> Optional[Tuple]:
+    """`(part, its pad on `net`, its other pad, the pins of `ic` on that
+    pad's net)` for the two-pad part a crystal leg on `net` reaches `ic`
+    through (a series resistor between XOUT and the crystal), else None. A
+    part whose other pad is on ground is a load cap, not a series part."""
+    for r in sorted(pcb.footprints):
+        if r in (x, ic):
+            continue
+        cu = [p for p in pcb.footprints[r].pads if p.net_id]
+        if len(cu) != 2:
+            continue
+        on = [p for p in cu if p.net_id == net]
+        off = [p for p in cu if p.net_id != net]
+        if len(on) != 1 or len(off) != 1 or _ground(net_name.get(off[0].net_id, '')):
+            continue
+        pins = [q for q in pcb.footprints[ic].pads if q.net_id == off[0].net_id]
+        if pins:
+            return r, on[0], off[0], pins
+    return None
+
+
 def crystal_claims(pcb, leg_mm: float = LEG_MM, cap_mm: float = CAP_MM
                    ) -> Tuple[List[Dict], List[str]]:
-    """`(rows, notes)`: one `proximity[]` row per passive crystal and per load
-    cap, and a line per crystal saying what was found. Reads no pose."""
+    """`(rows, notes)`: one `proximity[]` row per passive crystal, per link of
+    a leg through a series part, and per load cap, and a line per crystal
+    saying what was found. Reads no pose."""
     from .emc_roles import emc_roles
     with contextlib.redirect_stdout(io.StringIO()):
         roles = emc_roles(pcb).get('roles') or []
     net_name = {nid: (n.name or '') for nid, n in pcb.nets.items()}
     rows: List[Dict] = []
     notes: List[str] = []
+    leg_ctx = {'source': 'placement.crystals', 'role': 'crystal',
+               'limit': 'derived_default', 'basis': (
+                   'the farthest crystal leg on the human corpus, '
+                   '75th percentile (placement_survey.py)')}
     for rec in roles:
         if rec.get('role') != 'crystal' or not rec.get('proximity'):
             continue
@@ -67,13 +98,30 @@ def crystal_claims(pcb, leg_mm: float = LEG_MM, cap_mm: float = CAP_MM
         rows.append({
             'ref': x, 'near': ic, 'max_mm': leg_mm, 'basis': 'pad_edge',
             'pads': {x: list(pads[x]), ic: list(pads[ic])},
-            'context': {'source': 'placement.crystals', 'role': 'crystal',
-                        'limit': 'derived_default', 'basis': (
-                            'the farthest crystal leg on the human corpus, '
-                            '75th percentile (placement_survey.py)')}})
+            'context': dict(leg_ctx)})
         xfp = pcb.footprints[x]
         load = {p.net_id: str(p.pad_number) for p in xfp.pads
                 if str(p.pad_number) in set(pads[x]) and p.net_id}
+        # a leg no pin of the IC is on: through a series part, its two links
+        series = []
+        for u in rec.get('unmeasured_legs') or ():
+            xp = next((p for p in xfp.pads if str(p.pad_number) == str(u['pad'])
+                       and p.net_id), None)
+            got = _series_part(pcb, x, xp.net_id, ic, net_name) if xp else None
+            if not got:
+                continue
+            r, rin, rout, pins = got
+            load[xp.net_id] = str(xp.pad_number)
+            ipads = sorted({str(q.pad_number) for q in pins})
+            series.append(f"pad {xp.pad_number} through {r} to {ic} pad {', '.join(ipads)}")
+            rows.append({
+                'ref': x, 'near': r, 'max_mm': leg_mm, 'basis': 'pad_edge',
+                'pads': {x: [str(xp.pad_number)], r: [str(rin.pad_number)]},
+                'context': {**leg_ctx, 'role': 'crystal leg to its series part'}})
+            rows.append({
+                'ref': r, 'near': ic, 'max_mm': leg_mm, 'basis': 'pad_edge',
+                'pads': {r: [str(rout.pad_number)], ic: ipads},
+                'context': {**leg_ctx, 'role': 'crystal series part'}})
         caps = []
         for c in sorted(pcb.footprints):
             if c == x or not _CAP_REF.match(c):
@@ -97,6 +145,7 @@ def crystal_claims(pcb, leg_mm: float = LEG_MM, cap_mm: float = CAP_MM
                                 'the farthest load cap on the human corpus, '
                                 '75th percentile (placement_survey.py)')}})
         notes.append(f"crystal {x} at {ic} pads {', '.join(pads[ic])}"
+                     + ''.join(f"; {s}" for s in series)
                      + (f"; load caps {', '.join(caps)}" if caps
                         else "; no load cap (a cap from a load net to ground)"))
     return rows, notes

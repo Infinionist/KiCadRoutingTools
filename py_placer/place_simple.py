@@ -22,7 +22,8 @@
    (and turns it, when it has no mating face). The intent's keep-outs and
    zones bind every part through the anneal's overlap term.
 3. ANNEAL: one cost (`placement/simple.py`) -- signal and rail trees,
-   crossings, claims, decaps spread over their own group's supply pins,
+   crossings, claims and each claim's `max_mm` limit (a crystal at its
+   pins), decaps spread over their own group's supply pins,
    each group's gap tree, the halo in front of fine-pitch parts' pads,
    airwires over foreign pads, routing congestion, and the intent's decap
    limits where it grades them at error -- lowered by simulated
@@ -144,7 +145,7 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
         members = [r for r in g['refs'] if r in state.parts]
         if len(members) >= 2 and any(r in movable for r in members):
             groups.append((g['name'], members))
-    claims = []
+    claims, limits = [], []
     for c in rows:
         s, p = str(c['ref']), str(c['near'])
         if s not in pcb.footprints or p not in pcb.footprints:
@@ -160,6 +161,8 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
                 legs.append((str(q.pad_number), pp))
         if legs:
             claims.append((s, p, legs))
+            m = c.get('max_mm')
+            limits.append(float(m) if isinstance(m, (int, float)) else None)
     # decaps: each cap from a supply rail to ground, matched to that rail's
     # supply pins (`simple.Model._sites`) by the rule check_groups reports by
     # (`BoardView.decaps`) -- not a claimed part, and not a cap whose IC is in
@@ -202,7 +205,8 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
                   crossing_weight=args.crossing_weight, claim_weight=args.claim_weight,
                   decap_weight=args.decap_weight, group_weight=args.group_weight,
                   hints=hints(doc, state, movable, args),
-                  halo_coef=args.halo_coef, halo_weight=args.halo_weight)
+                  halo_coef=args.halo_coef, halo_weight=args.halo_weight,
+                  claim_limits=limits, claim_limit_weight=args.claim_limit_weight)
     # the unlocked parts the intent declares on an edge, seated there
     model.edge_seats, model.edge_unseated = {}, {}
     if intent is not None:
@@ -227,7 +231,9 @@ def _line(t):
     groups = ', '.join(f"{n} {v:.1f}" for n, v in t['per_group'].items() if v > 0.05)
     hints = ', '.join(f"{n} {v:.1f}" for n, v in t['per_hint'].items() if v > 0.05)
     return (f"cost {t['cost']:.1f} (wire {t['wire']:.1f} mm, {t['crossings']} crossings, "
-            f"claims {t['claims']:.1f}, decaps {t['decaps']:.1f}, "
+            f"claims {t['claims']:.1f}, "
+            + (f"{t['claim_broken']} claim limit(s) broken, " if t.get('claim_broken') else "")
+            + f"decaps {t['decaps']:.1f}, "
             + (f"{t['decap_broken']} decap limit(s) broken, " if t.get('decap_broken') else "")
             + f"halo {t['halo']:.2f}, "
             f"pad hits {t['pad_hits']:.0f}, congestion {t['congestion']:.2f}, "
@@ -333,6 +339,12 @@ def main(argv=None):
                     help='mm of wire one airwire crossing costs (default 2)')
     ap.add_argument('--claim-weight', type=float, default=1.0,
                     help='per mm of a claimed pad to its partner pad (default 1)')
+    ap.add_argument('--claim-limit-weight', type=float, default=10.0,
+                    help="per mm a claimed pad is past its claim's max_mm, pad edge to "
+                         "its partner pad as the grade measures it (a crystal leg past "
+                         "8.1 mm of its IC pin, a load cap past 2.2 mm of its crystal); "
+                         "a move of the partner carries the parts holding their limits "
+                         "at it (default 10; 0 leaves the limits unpriced)")
     ap.add_argument('--decap-weight', type=float, default=2.0,
                     help='per mm of a decap to the supply-pin site it is matched to '
                          '(default 2)')

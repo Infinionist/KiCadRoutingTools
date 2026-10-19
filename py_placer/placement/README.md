@@ -154,7 +154,11 @@ power group to an edge: say `near` its power entry's group.
 **Crystals take care of themselves.** `place_simple` finds each passive crystal
 at its IC's oscillator pins and the load caps on the crystal's nets
 (`crystals.py`), and turns them into proximity claims (unless the intent
-already makes them). Every claim's subject is then moved into the group of the
+already makes them): each crystal leg within 8.1 mm of its pin and each load
+cap within 2.2 mm of the crystal, pad edge to pad edge (three human boards in
+four do at least that well). A leg that reaches its pin through a series
+resistor (the RP2040's XOUT, an STM32's) is claimed link by link: the crystal
+at the resistor, the resistor at the pin. Every claim's subject is then moved into the group of the
 part its claims end at: the load caps follow the crystal and the crystal
 follows the IC. When the moved part is its group's anchor, the rest of that
 group goes with it. In the tigard example Y1, C23 and C24 join `core`, the
@@ -173,6 +177,7 @@ emptied `clock` group is dropped, and `near` entries that named it point at
 | ground | the same tree for ground: a plane, each pad only drops a via | `--ground-weight` (0.02) |
 | crossings | each crossing among the signal trees' edges, in mm of wire | `--crossing-weight` (2) |
 | claims | each claimed pad's distance to its partner's pad, per mm (intent `proximity[]`, crystals) | `--claim-weight` (1) |
+| claim limits | each claimed pad past its claim's `max_mm`, pad edge to the nearest partner pad on its net as `check_floorplan` grades it (a crystal leg past 8.1 mm of its pin, a load cap past 2.2 mm of its crystal), per mm | `--claim-limit-weight` (10) |
 | decaps | each decap's distance to the supply-pin site it is matched to, per mm. A decap is a cap from ground to a rail some chip other than a connector (or the board's own contacts, a part whose pads span half the board) has a supply pin on, or between two rails that each carry a supply pin of one chip (a stacked domain), the rule `check_groups` reports by and `check_floorplan` grades by (`BoardView.decaps`); a chip's supply pins include its pins on a rail named as one, or named as one on a net local to it (`BoardView.rail_pins`). A rail's decaps are matched to its pin sites (an IC's supply pins within 1.5 mm of each other) at the least total distance, every site taking one decap before any takes two, so decaps spread over the pins | `--decap-weight` (2) |
 | group contiguity | the spanning tree over a group's courtyards, priced by the gap between neighbours: zero while the group is one contiguous piece, whatever its shape | `--group-weight` (5) |
 | `near` / `apart` / `edge` | the groups file's hints (above) | `--near-weight` (2), `--apart-weight` (5), `--edge-weight` (2) |
@@ -212,7 +217,10 @@ the caps that hold its decap limits (the cap at a supply pin, a cap the chip is
 nearest to) when moving the chip alone would pull them past their limits: each
 keeps its offset and turns with the chip. Without that the limits glue a chip
 to its caps, and a crystal or an IC that started in the wrong place stays
-there. A move is kept when it
+there. Claims carry the same way: a part's move carries the parts whose claim
+on it the move would put further past its limit -- an IC's crystal, a
+crystal's load caps and series resistor -- so a crystal stranded beside its
+caps comes home with them. A move is kept when it
 lowers the cost, or uphill with a probability that falls as the run cools. An
 overlap penalty (courtyards, the board's real outline with its cutouts and
 notches, the intent's keep-outs and zones, and the board's rule-area keep-out

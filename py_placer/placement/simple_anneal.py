@@ -36,10 +36,12 @@ Moves, each priced by `Model.local` against the committed state near it:
 A shift, turn, jump or dock of a chip carries the caps that hold its decap
 limits (`Model.tethered`: the cap at one of its supply pins, a cap it is the
 nearest rail chip of) when moving the chip alone would pull them past their
-limits: each keeps its offset from the chip and turns with it. Priced at the
-limit, a cap is otherwise glue: on fusb302 a crystal that started across the
-board from its MCU stayed there, since jumping to its pins would have left
-its load cap 25 mm behind.
+limits, and of any part the parts whose claim on it the move would put further
+past its limit (`Model.claim_tethered`: an IC's crystal, a crystal's load caps
+and series resistor): each keeps its offset from the part and turns with it.
+Priced at the limit, a cap is otherwise glue: on fusb302 a crystal that started
+across the board from its MCU stayed there, since jumping to its pins would
+have left its load cap 25 mm behind.
 
 Group turns and swaps are drawn only in the first quarter of the run
 (`BIG_UNTIL`): they move a whole group far at once, and on every board
@@ -84,7 +86,7 @@ from placement import simple
 from placement.legality import BOARD_TOL
 from placement.edge_seat import (SEAT_GAP_MM, legal_on_edge, pack, pad_span, project,
                                  reseat, rot_key)
-from placement.simple import ROTS, legal, nearest_legal, target
+from placement.simple import ROTS, _turn, follow, legal, nearest_legal, target
 
 MOVES = {'shift': 0.40, 'turn': 0.15, 'swap': 0.10, 'jump': 0.10, 'dock': 0.10,
          'gshift': 0.12, 'gturn': 0.08, 'gswap': 0.05, 'escape': 0.05}
@@ -117,18 +119,6 @@ def _place(st, ref, x, y, rot):
 def _half_turn(a, b) -> bool:
     """Whether turns `a` and `b` are half a turn apart."""
     return abs((a - b) % 360.0 - 180.0) < 1e-6
-
-
-def _turn(x, y, q):
-    """(x, y) turned by q degrees (a multiple of 90), the state's way."""
-    q = int(round(q)) % 360
-    if q == 0:
-        return x, y
-    if q == 90:
-        return y, -x
-    if q == 180:
-        return -x, -y
-    return -y, x
 
 
 class Annealer:
@@ -380,22 +370,20 @@ class Annealer:
 
     def _carry(self, new):
         """One part's move `new` with the caps that hold its decap limits
-        (`Model.tethered`) moved as one with it: each at its offset from the
-        part, turned with it."""
-        (r, (x1, y1, rot1)), = new.items()
-        sats = [c for c in self.model.tethered(r, (x1, y1, rot1)) if c in self.movset]
+        (`Model.tethered`) and the parts that hold their claim limits at it
+        (`Model.claim_tethered`: a crystal at its IC, a load cap at its
+        crystal) moved as one with it: each at its offset from the part,
+        turned with it (`simple.follow`)."""
+        (r, pose), = new.items()
+        sats = [c for c in dict.fromkeys(self.model.tethered(r, pose)
+                                          + self.model.claim_tethered(r, pose))
+                if c in self.movset and c != r]
         if not sats:
             return new
-        x0, y0, rot0 = self.pose(r)
-        q = (rot1 - rot0) % 360.0
+        was = self.pose(r)
         out = dict(new)
         for c in sats:
-            cx, cy, crot = self.pose(c)
-            if abs(q) < 1e-9 or abs(q - 360.0) < 1e-9 or abs(q / 90.0 - round(q / 90.0)) > 1e-9:
-                out[c] = (cx + x1 - x0, cy + y1 - y0, crot)     # a step (or an odd turn: stepped only)
-            else:
-                tx, ty = _turn(cx - x0, cy - y0, q)
-                out[c] = (x1 + tx, y1 + ty, (crot + q) % 360.0)
+            out[c] = follow(was, pose, self.pose(c))
         return out
 
     def _move(self, kind, reach):
