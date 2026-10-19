@@ -3577,7 +3577,6 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
     # Resolve the fab-floor minimums for the track-width / via-size checks. Default
     # to the JLC manufacturing floor for the board's copper-layer count (issue #176).
     if check_sizes:
-        from list_nets import fab_floor_min
         copper_layers = getattr(pcb_data.board_info, 'copper_layers', None) or []
         copper_count = len(copper_layers) if copper_layers else 2
         # #857/#530: the PHYSICAL fab floor (the override file, else the

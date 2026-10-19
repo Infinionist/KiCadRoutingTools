@@ -2193,14 +2193,6 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     if keep_input_copper:
         object.__setattr__(config, '_keep_input_copper', True)
 
-    try:
-        config.bus_rip_resistance = float(
-            env_knobs.BUS_RIP_RESISTANCE or config.bus_rip_resistance)
-    except ValueError:
-        pass
-    if config.bus_rip_resistance != 1.0:
-        print(f"Bus rip resistance: {config.bus_rip_resistance}x "
-              f"(bus members deprioritized in the rip ladder)")
     # The SE loop needs the strategy to apply the explicit 'bus' ordering.
     config.ordering_strategy = ordering_strategy
     # #622 victim-priority restore scoping: the endgame sweep fires only in
@@ -2235,8 +2227,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # member's runs are packed against already-committed sibling runs at
     # the copper choke point (add_route_to_pcb_data), BEFORE the route
     # becomes an obstacle -- the vacated lane is free for every LATER net
-    # in this same pass, where the pack_river post-pass frees it only for
-    # the next chain step. Groups precomputed once here.
+    # in this same pass. Groups precomputed once here.
     if env_knobs.PACK_INLINE:
         from pack_river import bus_groups
         _pg658 = bus_groups(pcb_data)
@@ -3080,24 +3071,13 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     if config.same_net_pad_clearance > 0:
         _reconcile_kwargs['same_net_pad_clearance'] = config.same_net_pad_clearance
     _reconcile_kwargs['track_clearances'] = dict(config.track_clearances)
-    # #568: rung-1 via legality is only sound when base copper blocks EVERY
-    # rung, i.e. when the base is frozen into the static keep-out bitmap. The
-    # one remaining path that builds an UNFROZEN base is KICAD_NO_STATIC_BASE
-    # (the vis branch that used to share this hazard is gone with #569), so
-    # disarm the dual stamping there -- pcb_data for the cache path,
-    # set_rung_unsafe for the RAW map mirrors, which see only
-    # (obstacles, config) and cannot read the flag.
-    if env_knobs.NO_STATIC_BASE:
-        pcb_data._via_rung_unsafe = True
-        from obstacle_cache import set_rung_unsafe as _set_rung_unsafe
-        _set_rung_unsafe(True)
     base_obstacles = build_base_obstacle_map(
         pcb_data, config, base_map_exclusions,
         net_clearances=net_clearances,
         # #422: base holds only permanent copper/geometry (target + rippable
         # nets live in the per-net caches on a CLONE); stamp it straight into
         # the static keep-out bitmap so the working clone carries it as bits.
-        static_base=not env_knobs.NO_STATIC_BASE,
+        static_base=True,
         # #556: sub-phase progress so the GUI bar moves during the build
         progress_callback=progress_callback)
 
@@ -4662,8 +4642,6 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # only if the remainder is whole does the reconciliation have nothing
         # to route (it would otherwise weld to copper the late sweep deletes).
         try:
-            if os.environ.get('KICAD_659_DIVERT', '1') == '0':
-                raise RuntimeError('KICAD_659_DIVERT=0')
             from check_connected import net_dead_copper as _ndc659
             _dead_s659, _dead_v659 = _ndc659(
                 pcb_data, _nid, _segs, _vias_by_net.get(_nid, []),

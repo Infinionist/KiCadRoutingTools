@@ -506,53 +506,6 @@ def via_net_name(net_id: int, net_id_to_name: dict) -> Optional[str]:
     return '' if name is None and net_id == 0 else name
 
 
-def prevailing_via_protection(vias) -> Optional[dict]:
-    """The protection spec most of a board's existing vias carry, or None.
-
-    It WAS the default for vias this tool adds (#489 §8, replacing a hardcoded
-    front+back tenting; hackrf_one, whose 498 vias all declare
-    covering/plugging/capping/filling = no, was the motivating case). That
-    default is retired: an added via now emits no token and inherits the
-    board's `(setup ...)` -- over 886 corpus boards a prevailing spec never
-    disagreed with the setup (see via_protection_sexpr). The answer is still
-    correct; nothing in the tree uses it as a default.
-
-    Deterministic: ties break on the canonical spec text, not dict order.
-    """
-    from collections import Counter
-
-    counts = Counter()
-    canonical = {}
-    for via in vias or ():
-        spec = getattr(via, 'tenting_attrs', None)
-        if not spec:
-            continue
-        key = tuple(sorted((t, " ".join((v or '').split())) for t, v in spec.items()))
-        counts[key] += 1
-        canonical[key] = dict(spec)
-    if not counts:
-        return None
-    best = min(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0]
-    return canonical[best]
-
-
-def prevailing_via_protection_in_text(content: str) -> Optional[dict]:
-    """`prevailing_via_protection` for a writer that holds the board TEXT rather
-    than parsed Via objects. Like it, no longer anyone's default."""
-    from kicad_parser import _extract_via_protection_attrs
-
-    class _V:
-        __slots__ = ('tenting_attrs',)
-
-        def __init__(self, spec):
-            self.tenting_attrs = spec
-
-    specs = _extract_via_protection_attrs(content)
-    if not specs:
-        return None
-    return prevailing_via_protection([_V(s) for s in specs.values()])
-
-
 def generate_via_sexpr(x: float, y: float, size: float, drill: float,
                        layers: List[str], net_id: int, free: bool = False,
                        net_name: str = None, tenting_attrs: dict = None,

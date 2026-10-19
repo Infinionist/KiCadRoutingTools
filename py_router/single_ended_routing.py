@@ -62,11 +62,6 @@ def _unblock_debug() -> bool:
 # margin) so routing stays byte-for-byte identical.
 _FOREIGN_PAD_WINDOW = 5.0  # mm
 _LAYER_OF = attrgetter('layer')
-# KICAD_SEG_DIST_EXACT=1 replaces the sampled sweep in _seg_foreign_seg_dist
-# with the exact segment-to-segment distance. Default OFF (2026-09-19): the
-# sweep is main's behaviour, and the exact distance changes copper on every
-# board, so it stays opt-in until a corpus A/B has graded it.
-_SEG_DIST_EXACT = os.environ.get('KICAD_SEG_DIST_EXACT', '0') == '1'
 # The sample-by-foreign sweeps below (_seg_foreign_pad_dist,
 # _seg_foreign_seg_dist) run in ROW CHUNKS so that no matrix exceeds this
 # many elements (512 KB of float64). Every element is computed from its own
@@ -562,35 +557,6 @@ def _seg_foreign_seg_dist(pcb_data, net_id, x1, y1, x2, y2, layer,
                                max(_nc.get(int(f), base_clearance),
                                    _tc.get(int(f), 0.0)) - base_clearance)
                            for f in fnid], dtype=float)
-    if _SEG_DIST_EXACT:
-        # The exact segment-to-segment distance (2026-09-11): the minimum
-        # between two segments is attained at an endpoint of one of them
-        # unless they cross, so four point-to-segment distances over the
-        # M foreign segments replace the (n + 1) x M sampled sweep -- the
-        # sampled minimum was never below the truth by more than the
-        # 0.02 mm step, this one IS the truth (so it can only be tighter).
-        # Profiled: 27,900 calls, 25 s of a 149 s K41 braid at write time.
-        def _p2ab(px, py):
-            pax_ = px - ax; pay_ = py - ay
-            tt_ = np.where(L2 > 0, np.clip((pax_ * abx + pay_ * aby) / safe_L2, 0.0, 1.0), 0.0)
-            return np.hypot(px - (ax + tt_ * abx), py - (ay + tt_ * aby))
-        d = np.minimum(_p2ab(x1, y1), _p2ab(x2, y2))
-        ux, uy = x2 - x1, y2 - y1
-        UL2 = ux * ux + uy * uy
-        if UL2 > 0:
-            for qx, qy in ((ax, ay), (bx, by)):
-                tt_ = np.clip(((qx - x1) * ux + (qy - y1) * uy) / UL2, 0.0, 1.0)
-                d = np.minimum(d, np.hypot(qx - (x1 + tt_ * ux), qy - (y1 + tt_ * uy)))
-            # a proper crossing: distance zero
-            c1 = ux * (ay - y1) - uy * (ax - x1)
-            c2 = ux * (by - y1) - uy * (bx - x1)
-            c3 = abx * (y1 - ay) - aby * (x1 - ax)
-            c4 = abx * (y2 - ay) - aby * (x2 - ax)
-            d = np.where((c1 * c2 < 0) & (c3 * c4 < 0), 0.0, d)
-        dist = d - hw
-        if excess is not None:
-            dist = dist - excess
-        return float(np.min(dist))
     rows = max(1, _SWEEP_CHUNK // ax.size)      # see _SWEEP_CHUNK
     best = math.inf
     for r0 in range(0, sx.size, rows):
@@ -3623,20 +3589,16 @@ def _pour_launch_region_cells(pcb_data, net_id, pad_info, pad_components,
 
     Per straggler, expanding rungs (1/2.5/6/15 mm); candidates = the
     region's fill cells scored dist + fragility (strait/boundary attach
-    pays up to _FRAG_MM; fill deeper than _DEEP_MM is free) plus, when
-    KICAD_POUR_LAUNCH_COPPER=1, the owning component's existing copper
-    cells (no fragility penalty); first rung with any candidate wins,
-    best _NBEST kept.
+    pays up to _FRAG_MM; fill deeper than _DEEP_MM is free) plus the
+    owning component's existing copper cells (no fragility penalty); first
+    rung with any candidate wins, best _NBEST kept.
 
     Returns {component_id: {(gx, gy, layer_idx): (fx, fy)}} for the caller
     to merge into its island-cell map (Phase 1's _island_cells AND Phase
     3's _p3_island_cells -- v2 only fed Phase 1, so the straggler edges
-    Phase 3 routes never saw fill targets at all). Default ON;
-    KICAD_POUR_LAUNCH=0 disables; {} when off or unavailable.
+    Phase 3 routes never saw fill targets at all). {} when unavailable.
     """
     import os as _os
-    if not env_knobs.POUR_LAUNCH:
-        return {}
     # Same-invocation memo: Phase 1 and Phase 3 call this back-to-back with
     # the IDENTICAL pad_components object (main_result carries it), and every
     # rescue reroute of a big plane net repeats the pair -- the scan is pure
@@ -3661,37 +3623,7 @@ def _pour_launch_region_cells(pcb_data, net_id, pad_info, pad_components,
         _FRAG_MM = env_knobs.POUR_LAUNCH_FRAG
     except ValueError:
         _FRAG_MM = 1.0
-    _COPPER_RUNGS = env_knobs.POUR_LAUNCH_COPPER
     _DEEP_MM = 0.5
-    # Content memo behind the one above (2026-10-08): every reroute of a plane
-    # net builds a NEW grouping object, so the identity memo missed on calls
-    # whose inputs were unchanged -- 57 s of zynq_ad9364's route step. The key
-    # is everything the scan reads: the terminals' positions, each one's
-    # component, the layers and grid, and this net's zones with their fill
-    # models. A model is replaced, not mutated, when fills are invalidated, and
-    # the entry holds the zones and models so their ids cannot be reused.
-    # Skipped under POUR_LAUNCH_COPPER, which also reads the caller's island
-    # cells.
-    _ck = _models = None
-    if not _COPPER_RUNGS:
-        try:
-            _zs = [z for z in (pcb_data.zones or []) if z.net_id == net_id
-                   and z.layer in layer_names]
-            _models = [(z, get_zone_model(pcb_data, z)) for z in _zs]
-            _ck = (net_id, tuple(layer_names),
-                   tuple(sorted(vars(coord).items())), _FRAG_MM,
-                   tuple((_i[3], _i[4]) for _i in pad_info),
-                   tuple(pad_components.get(_j, _j)
-                         for _j in range(len(pad_info))),
-                   tuple((id(z), id(m)) for z, m in _models))
-            _lru = getattr(pcb_data, '_pour_launch_lru', None)
-            _hit = _lru.get(_ck) if _lru is not None else None
-            if _hit is not None:
-                _lru.move_to_end(_ck)
-                pcb_data._pour_launch_memo = (_mk, pad_components, _hit[0])
-                return _hit[0]
-        except Exception:
-            _ck = None
     out = {}
     _bare_kept = 0
     try:
@@ -3718,10 +3650,8 @@ def _pour_launch_region_cells(pcb_data, net_id, pad_info, pad_components,
                 _comp = _Ctr(pad_components.get(_i, _i)
                              for _i in _idxs).most_common(1)[0][0]
                 _cells_out = out.setdefault(_comp, {})
-                _copper = []
-                if _COPPER_RUNGS:
-                    _copper = [(_fx, _fy, _k[2]) for _k, (_fx, _fy) in
-                               (island_cells.get(_comp) or {}).items()]
+                _copper = [(_fx, _fy, _k[2]) for _k, (_fx, _fy) in
+                           (island_cells.get(_comp) or {}).items()]
                 _stragglers = [(_info[3], _info[4])
                                for _i, _info in enumerate(pad_info)
                                if pad_components.get(_i, _i) != _comp]
@@ -3773,14 +3703,6 @@ def _pour_launch_region_cells(pcb_data, net_id, pad_info, pad_components,
         print(f"  POUR-LAUNCH: {_bare_kept} bare fill region(s) kept by the "
               f"zone island policy are not yet nodes (deferred)")
     pcb_data._pour_launch_memo = (_mk, pad_components, out)
-    if _ck is not None:
-        from collections import OrderedDict as _OD
-        _lru = getattr(pcb_data, '_pour_launch_lru', None)
-        if _lru is None:
-            _lru = pcb_data._pour_launch_lru = _OD()
-        _lru[_ck] = (out, _models)
-        while len(_lru) > 128:
-            _lru.popitem(last=False)
     return out
 
 
@@ -3806,12 +3728,10 @@ def _pour_launch_pair_anchors(pcb_data, net_id, sources, targets,
     short region-to-region joint connecting the pads through their pours.
 
     Returns (extra_source_rows, extra_target_rows) in the get_net_endpoints
-    row shape (gx, gy, layer_idx, fx, fy). Default ON; KICAD_POUR_LAUNCH=0
-    disables; ([], []) when off, no zones, or unavailable.
+    row shape (gx, gy, layer_idx, fx, fy). ([], []) when there are no
+    zones, or unavailable.
     """
     import os as _os
-    if not env_knobs.POUR_LAUNCH:
-        return [], []
     try:
         from plane_fill_model import get_zone_model
         from plane_fragility import _erode_depth
@@ -4167,60 +4087,58 @@ def _route_multipoint_main_impl(
     # connected is never re-tapped (the old pad-position MST + 0.02mm
     # coincidence filter routed redundant loops between overlap-joined
     # escapes -- butterstick DQ5).
-    # Island-wide launch sets (KICAD_ISLAND_LAUNCH=0 disables): Phase 1 used
-    # to launch each edge from TERMINAL cells only (pad centers / stub free
-    # ends), so a route needing its own via 0.9mm behind the launch point
-    # paid for fresh copper alongside its own stub to physically reach it
-    # (WL_SDIO_D1 retraced its In1 escape with a parallel twin to get to the
-    # ball via). Seeding each component's launch set with ALL of its copper
-    # -- sampled segment points plus the island's vias on every layer, the
-    # same machinery Phase 3 taps already use -- lets the route start at the
-    # best point of the island (e.g. directly at the via on B.Cu), and the
-    # dead-end sweep then retires whatever stub the route no longer uses.
+    # Island-wide launch sets: Phase 1 used to launch each edge from
+    # TERMINAL cells only (pad centers / stub free ends), so a route needing
+    # its own via 0.9mm behind the launch point paid for fresh copper
+    # alongside its own stub to physically reach it (WL_SDIO_D1 retraced its
+    # In1 escape with a parallel twin to get to the ball via). Seeding each
+    # component's launch set with ALL of its copper -- sampled segment points
+    # plus the island's vias on every layer, the same machinery Phase 3 taps
+    # already use -- lets the route start at the best point of the island
+    # (e.g. directly at the via on B.Cu), and the dead-end sweep then retires
+    # whatever stub the route no longer uses.
     from connectivity import get_terminal_component_info
     pad_components, _isl_copper, _segs_by_comp, _vias_by_comp = \
         get_terminal_component_info(pcb_data, net_id, pad_info)
-    _island_cells = None
-    if env_knobs.ISLAND_LAUNCH:
-        _island_cells = {}
-        for _cid, _segs in _segs_by_comp.items():
-            # #545 F9: the island's vias come from the connectivity graph's
-            # own membership (vias_by_component), not a rounded-endpoint-key
-            # equality match -- which missed a via 5um across a 0.01-rounding
-            # bucket boundary (the COINCIDENCE_TOL soft-joint class the
-            # checker grades connected) and every via T-tapped into a
-            # segment's MIDDLE (stitching vias, prior tap junctions). Those
-            # islands' cells existed only on one layer, so the route paid a
-            # fresh via to reach copper the island already spans.
-            _vs = _vias_by_comp.get(_cid, [])
-            _pts = get_all_segment_tap_points(_segs, coord, layer_names,
-                                              vias=_vs)
-            # Keyed by cell, valued by the OWNER float point of that cell --
-            # the conversion below welds the route to the owner of the cell
-            # the router actually launched from (Phase 3's tap_point_map
-            # contract). Discarding the owners and welding to the terminal
-            # anchor drew a 1.5mm any-angle slash from the anchor to a route
-            # that started elsewhere on the island (SDC0_CMD, busstop7).
-            _island_cells[_cid] = {(p[0], p[1], p[2]): (p[3], p[4])
-                                   for p in _pts}
+    _island_cells = {}
+    for _cid, _segs in _segs_by_comp.items():
+        # #545 F9: the island's vias come from the connectivity graph's
+        # own membership (vias_by_component), not a rounded-endpoint-key
+        # equality match -- which missed a via 5um across a 0.01-rounding
+        # bucket boundary (the COINCIDENCE_TOL soft-joint class the
+        # checker grades connected) and every via T-tapped into a
+        # segment's MIDDLE (stitching vias, prior tap junctions). Those
+        # islands' cells existed only on one layer, so the route paid a
+        # fresh via to reach copper the island already spans.
+        _vs = _vias_by_comp.get(_cid, [])
+        _pts = get_all_segment_tap_points(_segs, coord, layer_names,
+                                          vias=_vs)
+        # Keyed by cell, valued by the OWNER float point of that cell --
+        # the conversion below welds the route to the owner of the cell
+        # the router actually launched from (Phase 3's tap_point_map
+        # contract). Discarding the owners and welding to the terminal
+        # anchor drew a 1.5mm any-angle slash from the anchor to a route
+        # that started elsewhere on the island (SDC0_CMD, busstop7).
+        _island_cells[_cid] = {(p[0], p[1], p[2]): (p[3], p[4])
+                               for p in _pts}
 
-        # POUR AS LAUNCH SURFACE (KICAD_POUR_LAUNCH=1), ladder v3: shared
-        # per-region builder (_pour_launch_region_cells); Phase 3 merges the
-        # same cells into ITS map -- v2 fed only this phase-1 map, so the
-        # straggler edges Phase 3 routes never saw fill targets.
-        _pl_cells = _pour_launch_region_cells(
-            pcb_data, net_id, pad_info, pad_components, layer_names, coord,
-            _island_cells)
-        _pl_added = 0
-        for _cid, _cmap in _pl_cells.items():
-            _cells = _island_cells.setdefault(_cid, {})
-            for _k, _v in _cmap.items():
-                if _k not in _cells:
-                    _cells[_k] = _v
-                    _pl_added += 1
-        if _pl_added:
-            print(f"  POUR-LAUNCH v3: +{_pl_added} region-laddered target(s) "
-                  f"across {len(_pl_cells)} component(s) (phase 1)")
+    # POUR AS LAUNCH SURFACE, ladder v3: shared per-region builder
+    # (_pour_launch_region_cells); Phase 3 merges the same cells into ITS
+    # map -- v2 fed only this phase-1 map, so the straggler edges Phase 3
+    # routes never saw fill targets.
+    _pl_cells = _pour_launch_region_cells(
+        pcb_data, net_id, pad_info, pad_components, layer_names, coord,
+        _island_cells)
+    _pl_added = 0
+    for _cid, _cmap in _pl_cells.items():
+        _cells = _island_cells.setdefault(_cid, {})
+        for _k, _v in _cmap.items():
+            if _k not in _cells:
+                _cells[_k] = _v
+                _pl_added += 1
+    if _pl_added:
+        print(f"  POUR-LAUNCH v3: +{_pl_added} region-laddered target(s) "
+              f"across {len(_pl_cells)} component(s) (phase 1)")
     num_components = len(set(pad_components.values()))
     if num_components < len(pad_info):
         print(f"  Existing copper joins {len(pad_info)} terminals into "
@@ -4458,13 +4376,12 @@ def _route_multipoint_main_impl(
         # a legal start/land (its stubs, trunks, and vias on all layers) --
         # the route begins at the island's best point instead of paying
         # duplicate copper to walk back to its own via.
-        if _island_cells is not None:
-            _isl = _island_cells.get(pad_components.get(idx_a, idx_a))
-            if _isl:
-                sources = list({*sources, *_isl})
-            _isl = _island_cells.get(pad_components.get(idx_b, idx_b))
-            if _isl:
-                targets = list({*targets, *_isl})
+        _isl = _island_cells.get(pad_components.get(idx_a, idx_a))
+        if _isl:
+            sources = list({*sources, *_isl})
+        _isl = _island_cells.get(pad_components.get(idx_b, idx_b))
+        if _isl:
+            targets = list({*targets, *_isl})
 
         # #479: a pad centre hard-blocked on every candidate layer (foreign
         # stabilizer-NPTH keep-out over the pad) cannot take the first step;
@@ -4508,18 +4425,14 @@ def _route_multipoint_main_impl(
             'iterations_backward': bwd_iters,
         }
 
-    if path is None and state is not None and not _stub_switch_round \
-            and env_knobs.MULTIPOINT_STUB_SWITCH:
+    if path is None and state is not None and not _stub_switch_round:
         # Stub layer switch retry for the main edge (for a bus member, the
         # corridor-SPANNING edge -- the leg that must route first) when a
         # terminal's escape stub is walled in on its own layer. Move the
         # stubs at the first edges' endpoints to an open layer (the pad via
         # sizes itself down the fab ladder) and re-run Phase 1 once on
         # freshly-derived terminals. Kept only when the retry routes real
-        # main copper; reverted exactly otherwise. Default ON
-        # (KICAD_MULTIPOINT_STUB_SWITCH=0 disables); the original gate-off
-        # defect was the create_routing_state `or []` alias break dropping
-        # the kept switch from the written file, not this retry itself.
+        # main copper; reverted exactly otherwise.
         from stub_layer_switching import (switch_boxed_stub_near,
                                           revert_stub_layer_switch)
         from connectivity import get_multipoint_net_pads
@@ -4660,7 +4573,7 @@ def _route_multipoint_main_impl(
     # island back to the anchor.
     _start_orig = (pad_a[3], pad_a[4], layer_names[pad_a[2]])
     _end_orig = (pad_b[3], pad_b[4], layer_names[pad_b[2]])
-    if _island_cells is not None and path:
+    if path:
         _own = _island_cells.get(pad_components.get(idx_a, idx_a), {}).get(tuple(path[0]))
         if _own is not None:
             _start_orig = (_own[0], _own[1], layer_names[path[0][2]])
@@ -5132,8 +5045,7 @@ def _route_multipoint_taps_impl(
     if _pl_added:
         print(f"  POUR-LAUNCH v3: +{_pl_added} region-laddered target(s) "
               f"across {len(_pl_cells)} component(s) (phase 3)")
-    _p3_use_islands = bool(_p3_island_cells) and (
-        env_knobs.ISLAND_LAUNCH or main_result.get('phase1_exhausted'))
+    _p3_use_islands = bool(_p3_island_cells)
     if _p3_use_islands and main_result.get('phase1_exhausted'):
         _n_cells = sum(len(_m) for _c, _m in _p3_island_cells.items())
         print(f"  Seeding tap sources from the base island's existing "
@@ -5733,15 +5645,14 @@ def _trim_after_fill_via(path, coord, layer_names, pcb_data, net_id):
     cluster). Truncate the path just after that via and weld the end to the
     via's own float point.
 
-    Only fires with pour-launch enabled (default ON; KICAD_POUR_LAUNCH=0
-    disables) and only when the path's end cell
-    resolves to a fill region of this net (i.e. this IS a pour-launch weld);
+    Only fires when the path's end cell resolves to a fill region of this
+    net (i.e. this IS a pour-launch weld);
     the trim keeps the via pair itself, and the same-region requirement
     keeps completion honest (piercing an unrelated island is not arrival).
     Returns (possibly-truncated path, end_original override or None).
     """
     import os as _os
-    if not env_knobs.POUR_LAUNCH or len(path) < 4:
+    if len(path) < 4:
         return path, None
     try:
         from plane_fill_model import get_fill_models

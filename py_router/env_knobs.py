@@ -62,12 +62,8 @@ def refresh() -> None:
     g = globals()
 
     # --- routing behavior switches (default ON, env turns OFF) -------------
-    g['SEAM_REASK'] = _on_default('KICAD_SEAM_REASK', '')          # '' not in _OFF -> on
-    g['ISLAND_LAUNCH'] = _on_default('KICAD_ISLAND_LAUNCH')
-    g['MULTIPOINT_STUB_SWITCH'] = _on_default('KICAD_MULTIPOINT_STUB_SWITCH')
     g['HYBRID_COUPLE'] = _on_default('KICAD_HYBRID_COUPLE', '')
     g['BUS_MULTIPOINT_SPAN'] = _on_default('KICAD_BUS_MULTIPOINT_SPAN')
-    g['BARE_BALL_ZONE_EXEMPT'] = _on_default('KICAD_BARE_BALL_ZONE_EXEMPT')
     g['DIRECT_FIRST'] = _on_default('KICAD_DIRECT_FIRST')
     # In-loop stub-debris trim (default ON, KICAD_STUB_DEBRIS_TRIM=0
     # reverts): when a route commits, immediately prune the unused
@@ -93,23 +89,11 @@ def refresh() -> None:
     # rules.min_hole_clearance 0.25 -> 0.0889. =0 restores the old staleness
     # for A/B.
     g['INRUN_FLOOR_SYNC'] = _s('KICAD_INRUN_FLOOR_SYNC', '1') != '0'
-    # #667 net-tie band pricing (mm-equivalent cost per band cell,
-    # DIFFERENTIAL: the own-pad approach stays free, off-pad corridor
-    # cells are priced). Measured INERT on cynthion at 0.5 and 5.0 --
-    # the residual violations are the no-legal-landing footprint class
-    # (a tab flush inside the partner outline admits NO flag-free tip
-    # position, bisected to 5um), which no cost can steer. Default OFF;
-    # kept for corpus A/B on boards with mid-route plough-throughs.
-    try:
-        g['TIE_BAND_COST'] = float(_s('KICAD_TIE_BAND_COST', '0') or 0)
-    except ValueError:
-        g['TIE_BAND_COST'] = 0.0
     g['NET_RESCUE'] = _s('KICAD_NET_RESCUE', '1') != '0'
     # #658 in-run river packing: pack each routed bus member's runs against
     # already-committed sibling runs at the copper choke point, BEFORE the
     # route becomes an obstacle -- the vacated lane is then free for every
-    # later net in the SAME pass (the pack_river post-pass frees it only
-    # for the next chain step). Experimental; default off pending the
+    # later net in the SAME pass. Experimental; default off pending the
     # multi-board screen.
     g['PACK_INLINE'] = _s('KICAD_PACK_INLINE', '0') != '0'
     # #666 bare-ball escape rung inside the net rescue: a stripped or
@@ -223,15 +207,6 @@ def refresh() -> None:
     # economy. '0' reverts. Default ON.
     g['FANOUT_POUR_TRACK'] = _s('KICAD_FANOUT_POUR_TRACK', '1') != '0'
     g['FANOUT_POUR_TRACK_R'] = float(_s('KICAD_FANOUT_POUR_TRACK_R', '2.0') or 2.0)
-    # #669: '1' makes escape-method 'auto' retry channel drops with DOGBONE
-    # first, then underpad only if dogbone still dropped balls. Default OFF:
-    # the sets1-5 corpus A/B REJECTED it as a default (autodb0/autodb1 arms
-    # at 21b1c0e5: +10 incomplete nets and +59 kicad DRC vs the underpad-only
-    # retry -- dogbone gap vias claim inter-ball streets that recorded chains'
-    # later steps collide with). Explicit --escape-method dogbone remains the
-    # populated-array doctrine; this knob is the opt-in ladder for chains
-    # whose params are chosen for dogbone.
-    g['FANOUT_AUTO_DOGBONE'] = _s('KICAD_FANOUT_AUTO_DOGBONE', '0') == '1'
     # #652 directive 2: rip-swap rescue for terminally dropped fanout balls
     # (evict the nearest committed neighbour escape, re-escape both as a pair
     # at the fab floor; strict-win only). '0' reverts. Default ON.
@@ -294,20 +269,6 @@ def refresh() -> None:
     g['TAP_CROSS_SCAN'] = _truthy('KICAD_TAP_CROSS_SCAN')
     g['OBSTACLE_AUDIT'] = _truthy('KICAD_OBSTACLE_AUDIT')
     g['PLANE_MAP_PARITY'] = _truthy('KICAD_PLANE_MAP_PARITY')
-    # #672 sub-cell sliver trim on PROTECTED (still-being-retried) nets.
-    # The self-pair half of #672 is a correctness fix and is always on;
-    # this half REMOVES COPPER, and measured on orangecrab's recorded
-    # route step (paired, same input board, chains otherwise identical)
-    # it cost a net: RAM_UDQS+ went from routed to failed_single, the
-    # run verdict 9 -> 10, while the self-pair fix alone reproduced the
-    # base copper EXACTLY (6097 segments and 625 vias compared, all
-    # identical).
-    # CORPUS A/B RAN (2026-09-04, sets 1-5 on Modal, 72 boards complete in
-    # both arms, same commit d0278273): real DRC 21 vs 21 -- unchanged --
-    # and unconnected nets 86 -> 87. ONE board moved and it moved the wrong
-    # way (core1106_cam 0 -> 1); no board improved. So it STAYS OFF: the
-    # trim has no measured upside and a measured, if small, cost.
-    g['SLIVER_TRIM'] = _opt_in('KICAD_SLIVER_TRIM')
     # #678 pour-promise DEFENCE (the copper-changing half: the
     # pad-anchored custody weld links and the ship-time promise-scoped
     # oracle weld). OPT-IN, for the reason KICAD_ORACLE_SUMMARY below
@@ -335,7 +296,6 @@ def refresh() -> None:
     # Disclosure is fine to make environment-dependent; copper is not.
     g['POUR_PROMISE_WELD'] = _opt_in('KICAD_POUR_PROMISE_WELD')
     g['SETTLE_DEBUG'] = _truthy('KICAD_SETTLE_DEBUG')
-    g['LEGACY_GATE_ORACLE'] = _truthy('KICAD_LEGACY_GATE_ORACLE')
     # route.py's end-of-run oracle summary check (one staged
     # kicad-cli DRC per run). Now OPT-IN (KICAD_ORACLE_SUMMARY=1), reverted
     # from default-on: it was billed as "strictly additive -- only ADDS
@@ -360,18 +320,14 @@ def refresh() -> None:
     # check for. Opt in and you accept a weaker source knowingly.
     g['RASTER_ORACLE'] = _opt_in('KICAD_RASTER_ORACLE')
     # HOT knobs (measured, not guessed): on splitflap_driver one route reads
-    # KICAD_VIA_RUNG 902 times and KICAD_POUR_LAUNCH 316 -- they sit inside
-    # per-net / per-endpoint loops, which is exactly the "hammers the environ
-    # dict from hot paths" this module exists for. Every other bare-read knob
-    # in the tree measured 1-2 reads per run and is left at its call site.
+    # KICAD_VIA_RUNG 902 times -- these sit inside per-net / per-endpoint
+    # loops, which is exactly the "hammers the environ dict from hot paths"
+    # this module exists for. Every other bare-read knob in the tree
+    # measured 1-2 reads per run and is left at its call site.
     # Parse semantics preserved: VIA_RUNG is a =='2' string test with default
-    # '2' (so '1' or anything else disarms), the POUR_LAUNCH pair are =='1'
-    # tests with default '1' (default ON, any other value disables), and
-    # POUR_LAUNCH_FRAG keeps its `or 0` empty-value rule -- see below for the
-    # one deliberate deviation.
+    # '2' (so '1' or anything else disarms), and POUR_LAUNCH_FRAG keeps its
+    # `or 0` empty-value rule -- see below for the one deliberate deviation.
     g['VIA_RUNG_2'] = os.environ.get('KICAD_VIA_RUNG', '2') == '2'
-    g['POUR_LAUNCH'] = os.environ.get('KICAD_POUR_LAUNCH', '1') == '1'
-    g['POUR_LAUNCH_COPPER'] = os.environ.get('KICAD_POUR_LAUNCH_COPPER', '1') == '1'
     # NOT _f(): the call site was `float(get(name, '1.0') or 0)`, so an
     # EMPTY value means 0.0 (threshold disabled) where _f would hand back the
     # 1.0 default -- silently re-enabling a threshold someone turned off,
@@ -384,7 +340,6 @@ def refresh() -> None:
         g['POUR_LAUNCH_FRAG'] = float(_plf or 0)
     except ValueError:
         g['POUR_LAUNCH_FRAG'] = 1.0
-    g['NO_GATE_ORACLE'] = _truthy('KICAD_NO_GATE_ORACLE')
     g['GATE_DEBUG'] = _truthy('KICAD_GATE_DEBUG')
     g['NO_SWEEP_PLATED'] = _truthy('KICAD_NO_SWEEP_PLATED')
     g['NO_SOFT_JOINT_BRIDGE'] = _truthy('KICAD_NO_SOFT_JOINT_BRIDGE')
@@ -396,7 +351,6 @@ def refresh() -> None:
     # "x,y" via position string ('' = off; consumers test truthiness + parse)
     g['RESCUE_DEBUG_VIA'] = _s('KICAD_RESCUE_DEBUG_VIA')
     g['MEM_PROBE'] = _truthy('KICAD_MEM_PROBE')
-    g['NO_STATIC_BASE'] = _truthy('KICAD_NO_STATIC_BASE')
     g['ALLOW_STAGGERED_BGA'] = _truthy('KICAD_ALLOW_STAGGERED_BGA')
     g['QFN_UNDERPAD_NO_ALT_STAGGER'] = _truthy('QFN_UNDERPAD_NO_ALT_STAGGER')
     # #846 how far --allow-via-in-pad's escape-axis ladder may reach:
@@ -422,9 +376,6 @@ def refresh() -> None:
     # 'all', so a typo cannot silently disable the gate.
     g['QFN_UNDERPAD_ERASED_GATE'] = _s('KICAD_QFN_UNDERPAD_ERASED_GATE',
                                        'all').strip().lower()
-    g['LEGACY_ORACLE'] = _truthy('KICAD_LEGACY_ORACLE')
-    g['NO_EXACT_FILL'] = _truthy('KICAD_NO_EXACT_FILL')
-    g['NO_FILL_NETCLASS'] = _truthy('KICAD_NO_FILL_NETCLASS')  # fill-model A/B
 
     # --- numeric knobs -------------------------------------------------------
     # Rasterization memo budget (MB, shared convention across the capsule/
@@ -434,7 +385,6 @@ def refresh() -> None:
     # there.
     g['RASTER_CACHE_MB'] = _f('KICAD_RASTER_CACHE_MB', 256.0)
     g['BUS_XLAYER_PCT'] = _i('KICAD_BUS_XLAYER_PCT', 35)
-    g['BUS_OFFLANE_MULT'] = _f('KICAD_BUS_OFFLANE_MULT', 1.0)   # off-lane surcharge (1.0 = off)
     # #622 victim-priority restore (ported from bus622-take2 a693919b): a rip
     # victim whose terminal reroute failed AND whose full restore is
     # short-refused gets its channel back -- the squatting nets (routed since
@@ -476,7 +426,6 @@ def refresh() -> None:
     g['SEAM_SE_RATIO'] = _f('KICAD_SEAM_SE_RATIO', 1.3)
     g['SEAM_SE_MAX'] = _i('KICAD_SEAM_SE_MAX', 16)
     g['HYBRID_COUPLE_RADIUS'] = _f('KICAD_HYBRID_COUPLE_RADIUS', 1.0)
-    g['BUS_RIP_RESISTANCE'] = _s('KICAD_BUS_RIP_RESISTANCE', '')  # float-or-empty; consumer parses
     g['CONGESTION_COST'] = _f('KICAD_CONGESTION_COST', 0.0)
     g['CONGESTION_BIN'] = _f('KICAD_CONGESTION_BIN', 1.0)
     g['CONGESTION_THRESHOLD'] = _f('KICAD_CONGESTION_THRESHOLD', 0.30)

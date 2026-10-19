@@ -59,7 +59,7 @@ def _sample_path(path: List[Tuple[int, int, int]], step: int = 1) -> List[Tuple[
     return sampled
 
 from routing_state import RoutingState, record_net_event, record_rip_ancestry, rip_exclude_set
-from bus_detection import detect_bus_groups, get_bus_routing_order, get_attraction_neighbor, bus_attraction_context, bus_stick_config, BusGroup
+from bus_detection import detect_bus_groups, get_bus_routing_order, get_attraction_neighbor, bus_attraction_context, BusGroup
 from memory_debug import get_process_memory_mb, estimate_track_proximity_cache_mb
 from obstacle_map import (
     add_net_stubs_as_obstacles, add_net_vias_as_obstacles, add_net_pads_as_obstacles,
@@ -641,11 +641,9 @@ def route_single_ended_nets(
             single_ended_nets = reordered_nets
             print()
 
-            # Rip-resistance + reroute-attraction transport: the ladder rank
-            # (blocking_analysis) and the reroute loop run far from this
-            # scope, so carry membership on config/state (the
+            # Reroute-attraction transport: the reroute loop runs far from
+            # this scope, so carry membership on state (the
             # corridor_waypoints precedent for config-attached data).
-            config.bus_member_net_ids = bus_net_ids_set
             state.bus_net_to_group = bus_net_to_group
             state.bus_corridors = bus_corridors
             # Net-story recording: each member's group/position/corridor.
@@ -786,17 +784,13 @@ def route_single_ended_nets(
                 attraction_path = (_sample_path(_riv) if _riv is not None
                                    else _sample_path(_gp.rough_paths[net_id]))
                 reverse_direction = False
-        # Off-lane surcharge (the stick): members with a corridor pay
-        # scaled step costs everywhere EXCEPT near the lane, where the
-        # attraction discount compensates -- defection costs real money.
-        cfg_route = bus_stick_config(config, attraction_path)
         # #589 option 2 (KICAD_GLOBAL_PLAN_LAYER=pref): soft discount on the
         # net's plan-assigned layer so corridor cliques pack N layers deep
         # instead of all fighting for the probes' shared favorite layer.
         # Unchanged cfg_route when the plan/knob is off or the net has no
         # assignment.
         from global_plan import plan_layer_config, power_layer_config
-        cfg_route = plan_layer_config(cfg_route, config, net_id)
+        cfg_route = plan_layer_config(config, config, net_id)
         # #658 power discipline: power nets get their own layer economics
         # (off the highways, dive-fast) -- see power_layer_config.
         cfg_route = power_layer_config(cfg_route, config, net_id)
@@ -1338,7 +1332,6 @@ def route_single_ended_nets(
                             retry_attraction_path = plan_attraction_path(
                                 config, net_id, pcb_data)
                             retry_reverse_direction = False
-                        retry_cfg = bus_stick_config(config, retry_attraction_path)
                         # #572: a forced-link net retries its EXACT links
                         # against the post-rip board (same reason as the
                         # initial attempt: derivation is model-blind to the
@@ -1350,17 +1343,17 @@ def route_single_ended_nets(
                         retry_multipoint_pads = get_multipoint_net_pads(pcb_data, net_id, config)
                         if _olinks_r:
                             retry_result = route_oracle_links(
-                                pcb_data, net_id, retry_cfg, retry_obstacles,
+                                pcb_data, net_id, config, retry_obstacles,
                                 _olinks_r,
                                 attraction_path=retry_attraction_path)
                         elif retry_multipoint_pads:
-                            retry_result = route_multipoint_main(pcb_data, net_id, retry_cfg, retry_obstacles, retry_multipoint_pads,
+                            retry_result = route_multipoint_main(pcb_data, net_id, config, retry_obstacles, retry_multipoint_pads,
                                                                  attraction_path=retry_attraction_path, state=state)
                             # Track for Phase 3 completion after length matching
                             if retry_result and not retry_result.get('failed') and retry_result.get('is_multipoint'):
                                 state.pending_multipoint_nets[net_id] = retry_result
                         else:
-                            retry_result = route_net_with_obstacles(pcb_data, net_id, retry_cfg, retry_obstacles,
+                            retry_result = route_net_with_obstacles(pcb_data, net_id, config, retry_obstacles,
                                                                      attraction_path=retry_attraction_path,
                                                                      reverse_direction=retry_reverse_direction)
 

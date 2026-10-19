@@ -31,7 +31,6 @@ from __future__ import annotations
 import math
 import os
 
-import env_knobs
 from typing import Optional
 
 import numpy as np
@@ -130,12 +129,6 @@ class ZoneFillModel:
         # classes, and the Default class is already inside `zc`.
         _nc = net_clearances if net_clearances is not None \
             else (getattr(pcb_data, _NC_ATTR, None) or {})
-        # A/B kill-switches (same affordance as KICAD_NO_GATE_ORACLE): both
-        # fidelity terms below make the model predict LESS fill, and every
-        # consumer keys off that prediction, so being able to flip each one
-        # without a rebuild is how the corpus A/B attributes a delta.
-        if env_knobs.NO_FILL_NETCLASS:
-            _nc = {}
         zc = zone.clearance if zone.clearance is not None \
             else defaults.PLANE_ZONE_CLEARANCE
         mth = zone.min_thickness if zone.min_thickness is not None \

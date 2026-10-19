@@ -198,9 +198,7 @@ the routing pipeline applies both so the model and the output file agree.
 > `check_weird`) skips the pair: a lone sub-cap sliver used to pair with
 > itself, which made `_restore_soft_joint_bridges` put a just-removed dead
 > neighbour back. `sweep_dead_ends` keeps every piece of a net in
-> `protect_net_ids` (nets with unfinished pads keep every landing site, #473);
-> its `sliver_eps` parameter defaults to 0, which leaves that exemption
-> whole.
+> `protect_net_ids` (nets with unfinished pads keep every landing site, #473).
 
 ### File-level post-passes
 

@@ -27,11 +27,6 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'rust_router')))
 import rust_alloc  # noqa: E402,F401  # issue #419: set MIMALLOC_PURGE_DELAY before grid_router loads
 
-# Over-blocking audit F3 A/B kill-switch: 1 restores the pre-fix cache stamps
-# (obstacle net's CONFIGURED width for narrow existing copper + via->track
-# rings). Temporary -- remove once the actual-width fix is validated corpus-wide.
-_LEGACY_CACHE_WIDTH = os.environ.get('KICAD_OBSCACHE_LEGACY_WIDTH', '') in ('1', 'true', 'on')
-
 try:
     from grid_router import GridObstacleMap
 except ImportError:
@@ -833,9 +828,7 @@ def precompute_net_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
         # track_margin already covers. Matches _via_track_expansion_per_layer
         # (obstacle_map), whose docstring calls the wider variant out as
         # double-counting.
-        # KICAD_OBSCACHE_LEGACY_WIDTH=1 restores the pre-fix stamps (A/B only).
-        layer_widths.append(layer_width if _LEGACY_CACHE_WIDTH
-                            else config.route_reserve_width(layer_name))
+        layer_widths.append(config.route_reserve_width(layer_name))
         # #498: a .kicad_dru layer rule REPLACES the net/class value on its layer.
         clr_l = config.layer_clearance(layer_name, obs_clearance)
         # A track-scoped DRU rule RAISES the seg-vs-seg capsule only (#735);
@@ -883,8 +876,8 @@ def precompute_net_obstacles(pcb_data: PCBData, net_id: int, config: GridRouteCo
             continue
         layer_w = config.get_net_track_width(net_id, seg.layer)
         seg_w = seg.width if (getattr(seg, 'width', 0) and seg.width > 0) else layer_w
-        own_half = (max(layer_w, seg_w) if _LEGACY_CACHE_WIDTH else seg_w) / 2
-        if (seg_w <= layer_w) if _LEGACY_CACHE_WIDTH else (seg_w == layer_w):
+        own_half = seg_w / 2
+        if seg_w == layer_w:
             expansion_mm = expansion_mm_by_layer.get(seg.layer, coord.grid_step)
             via_block_mm = via_block_mm_by_layer.get(seg.layer)
         else:

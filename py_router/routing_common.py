@@ -6,7 +6,6 @@ pair routing to avoid code duplication.
 """
 from __future__ import annotations
 
-import os
 import time
 from typing import List, Optional, Tuple, Dict, Set
 
@@ -115,8 +114,7 @@ def setup_bga_exclusion_zones(
             # net whose fanout dropped it. Auto-disable that component's zone.
             # Engine-level (batch_route/batch_route_diff_pairs), so the GUI
             # inherits; board-state-driven, so no sidecar file is load-bearing.
-            import env_knobs
-            if selected_net_ids and env_knobs.BARE_BALL_ZONE_EXEMPT:
+            if selected_net_ids:
                 _sel = set(selected_net_ids)
                 # Only nets that can actually be ROUTED (>=2 pads): a
                 # single-pad net's ball is trivially bare and disabled
@@ -688,7 +686,7 @@ def filter_already_routed(
                       f"and via is KiCad-locked -- its {n} strict fragment(s) "
                       f"are pinned copper, not a route to finish (#1261)")
                 n = 1
-            if n > 1 and os.environ.get('KICAD_659_DIVERT', '1') != '0':
+            if n > 1:
                 from check_connected import net_dead_copper
                 _dead_s, _dead_v = net_dead_copper(
                     pcb_data, net_id, net_segments, net_vias, net_pads,

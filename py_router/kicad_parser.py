@@ -485,24 +485,6 @@ def _via_birth_watch():
     return _VIA_BIRTH_WATCH
 
 
-    def __post_init__(self):
-        # #803 VIA BIRTH WATCH (debug only). KICAD_VIA_BIRTH_WATCH="x,y;x,y"
-        # prints a stack trace for every Via CONSTRUCTED near a watched point,
-        # naming the producer. The obstacle-map probes can only say a cell was
-        # free; this says who put copper there. Off unless the env var is set.
-        _w = _via_birth_watch()
-        if _w:
-            for wx, wy in _w:
-                if abs(self.x - wx) <= 0.05 and abs(self.y - wy) <= 0.05:
-                    import traceback
-                    print(f"[VIABIRTH] via net={self.net_id} "
-                          f"({self.x:.3f},{self.y:.3f}) size={self.size} "
-                          f"drill={self.drill}")
-                    for ln in traceback.format_stack()[-7:-1]:
-                        print("    " + ln.rstrip().replace("\n", " | "))
-                    break
-
-
 @dataclass
 class Via:
     """Represents a via."""
@@ -5799,9 +5781,8 @@ def _extract_via_protection_attrs(content: str) -> Dict[str, Dict[str, str]]:
 
     ``extract_vias`` no longer needs this -- it reads each via's spec from the
     block it already has, so a UUID-LESS via can carry one now. This stays for
-    the callers that hold board TEXT and no parsed vias
-    (``prevailing_via_protection_in_text``, the GUI's #751 fallback), and those
-    genuinely need the uuid key.
+    the callers that hold board TEXT and no parsed vias (the GUI's #751
+    fallback), and those genuinely need the uuid key.
     """
     if not any(('(' + t) in content for t in VIA_PROTECTION_TOKENS):
         return {}

@@ -223,7 +223,6 @@ _PLANE_PARTIAL_RESTORE = env_knobs.PLANE_PARTIAL_RESTORE
 
 # #517 arm 3 (#480): most-constrained-first repair ordering + immediate
 # reconnect of ripped nets (ordering and window-shrinking are one knob).
-# Experiment knob, default off; every branch below is gated on it.
 # 'order-only' keeps the net ordering + two-phase pad schedule but SKIPS the
 # per-pad immediate reconnect: repeated in-process batch_route calls route
 # against a stale world (arm-D spartan6 hit 885 DRC from grazes all over the
@@ -241,14 +240,13 @@ _PLANE_PARTIAL_RESTORE = env_knobs.PLANE_PARTIAL_RESTORE
 # world). Corpus gate (sets 1-5, 75 boards): completion flat, drc -7,
 # rips -58%, refusals -49%, ~15% faster.
 # KICAD_PLANE_REPAIR_ORDERING: 'adaptive' (default) | 'order-only' (no
-# immediate reconnects) | '1'/'full' (always-immediate) | '0'/'off'/'none'
-# (pre-#517 behavior, for A/B).
+# immediate reconnects) | '1'/'full' (always-immediate). Any other value is
+# 'adaptive'.
 _ORDERING_MODE = os.environ.get('KICAD_PLANE_REPAIR_ORDERING', 'adaptive') \
     .strip().lower() or 'adaptive'
-_PLANE_REPAIR_ORDERING = _ORDERING_MODE in ('1', 'full', 'order-only',
-                                            'orderonly', 'adaptive')
 _PLANE_IMMEDIATE_RECONNECT = _ORDERING_MODE in ('1', 'full')
-_PLANE_ADAPTIVE_RECONNECT = _ORDERING_MODE == 'adaptive'
+_PLANE_ADAPTIVE_RECONNECT = _ORDERING_MODE not in ('1', 'full', 'order-only',
+                                                   'orderonly')
 try:
     _PLANE_IMMEDIATE_MAX_PENDING = int(os.environ.get(
         'KICAD_PLANE_IMMEDIATE_MAX_PENDING', '14') or 14)
@@ -331,9 +329,7 @@ def _corridor_coupled_ids(candidate_ids, pending_rip_ids, pcb_data) -> Set[int]:
 # identity-restore of each casualty's ORIGINAL copper before re-routing it
 # (only nets whose corridor is still free restore; the rest re-route as
 # before). Zero measured regressions; dormant under adaptive ordering but
-# covers the flows ordering does not. KICAD_PLANE_RESTORE_FIRST=0 disables.
-_PLANE_RESTORE_FIRST = os.environ.get(
-    'KICAD_PLANE_RESTORE_FIRST', '1').strip().lower() not in ('0', 'off', 'no')
+# covers the flows ordering does not.
 
 # Shared with route_planes (#508 finding 1: its GUI reconnect had neither
 # reconcile mechanism). Re-exported here so existing call sites and
@@ -1355,7 +1351,7 @@ def repair_planes(
     # re-pinched (hex_gateway C201/C205 -- see the reconnect block).
     _round2_ctx: Dict[int, dict] = {}
 
-    if _PLANE_REPAIR_ORDERING and repair_pads and unique_nets:
+    if repair_pads and unique_nets:
         # #517 arm 3 (#480): most-constrained-first NET order -- the net with
         # the most disconnected pads repairs first, while contested space is
         # emptiest. Deterministic: count desc, then net name.
@@ -1570,15 +1566,13 @@ def repair_planes(
                 if plane_oracle.n_floating_items:
                     print(f"    (plane oracle: {plane_oracle.n_floating_items} "
                           f"floating same-net item(s) excluded as tap targets)")
-                # #517 arm 3: under the ordering knob, pads run in two phases:
-                # phase 1 tries every pad WITHOUT rips (free-space claims
-                # first, none of them contested); pads that would need a rip
-                # are deferred to phase 2, where each rip's nets reconnect
-                # IMMEDIATELY after the tap commits, so at most one vacated
-                # corridor is ever open. Default: single phase, rips inline
-                # (allow_rip from the start), exactly the old loop.
-                _pad_queue = [(p, l, not _PLANE_REPAIR_ORDERING)
-                              for (p, l) in unconnected]
+                # #517 arm 3: pads run in two phases: phase 1 tries every
+                # pad WITHOUT rips (free-space claims first, none of them
+                # contested); pads that would need a rip are deferred to
+                # phase 2, where each rip's nets reconnect IMMEDIATELY after
+                # the tap commits, so at most one vacated corridor is ever
+                # open.
+                _pad_queue = [(p, l, False) for (p, l) in unconnected]
                 _deferred_rip: List = []
                 _phase2_immediate = False
                 _phase_rip_ids: List[int] = []  # #540: phase rip history,
@@ -1926,52 +1920,51 @@ def repair_planes(
     # happened, so the in-memory reconnect still runs (return_results). A CLI
     # --dry-run skips it.
     if _casualties and (return_results or not dry_run):
-        if _PLANE_RESTORE_FIRST and _casualties:
-            # #517 arm 4: BEFORE re-routing, try the cheapest reconnect there
-            # is -- put each casualty's ORIGINAL copper back verbatim where its
-            # corridor is still free (the rip cleared space for a tap; if the
-            # tap's copper does not actually conflict with the original run,
-            # nothing ever needed to move). Collision-checked with the shared
-            # #134 primitive; conflicting nets fall through to the re-route
-            # exactly as before. Runs at reconnect time, not end-of-run like
-            # custody, so other casualties' re-routes cannot claim the
-            # corridor first.
-            _rf = {'restored': 0, 'blocked': 0}
-            from rip_up_reroute import _saved_route_collides as _src517
-            for _cid in list(_casualties):
-                if _cid in partial_ids or _cid not in pcb_data.nets:
-                    continue  # partial kept-sets restore via their own channel
-                _osegs4 = [s for s in _orig_segments if s.net_id == _cid]
-                _ovias4 = [v for v in _orig_vias if v.net_id == _cid]
-                if not _osegs4 and not _ovias4:
-                    continue
-                if _src517({'new_segments': _osegs4, 'new_vias': _ovias4},
-                           pcb_data, [_cid], clearance, config=config):
-                    _rf['blocked'] += 1
-                    continue
-                pcb_data.segments.extend(_osegs4)
-                pcb_data.vias.extend(_ovias4)
-                for _po in _osegs4:
-                    _prov_seg(_po.net_id, _po.layer, _po.start_x, _po.start_y,
-                              _po.end_x, _po.end_y, 'restore-first')
-                for _po in _ovias4:
-                    _prov_via(_po.net_id, _po.x, _po.y, 'restore-first')
-                while _cid in ripped_net_ids:
-                    ripped_net_ids.remove(_cid)
-                while _cid in inplace_reconnected_ids:
-                    # Original copper is back verbatim; the writer must keep
-                    # the input text, not strip it (#524 resurrection guard).
-                    inplace_reconnected_ids.remove(_cid)
-                _casualties.remove(_cid)
-                if corridor_ghosts is not None:
-                    corridor_ghosts.drop_net(_cid)
-                _rf['restored'] += 1
-                print(f"  (#517 restore-first: {pcb_data.nets[_cid].name} "
-                      f"identity-restored, corridor still free)")
-            if _rf['restored'] or _rf['blocked']:
-                print(f"  (#517 restore-first: {_rf['restored']} restored "
-                      f"verbatim, {_rf['blocked']} corridor(s) occupied -> "
-                      f"re-route)")
+        # #517 arm 4: BEFORE re-routing, try the cheapest reconnect there
+        # is -- put each casualty's ORIGINAL copper back verbatim where its
+        # corridor is still free (the rip cleared space for a tap; if the
+        # tap's copper does not actually conflict with the original run,
+        # nothing ever needed to move). Collision-checked with the shared
+        # #134 primitive; conflicting nets fall through to the re-route
+        # exactly as before. Runs at reconnect time, not end-of-run like
+        # custody, so other casualties' re-routes cannot claim the
+        # corridor first.
+        _rf = {'restored': 0, 'blocked': 0}
+        from rip_up_reroute import _saved_route_collides as _src517
+        for _cid in list(_casualties):
+            if _cid in partial_ids or _cid not in pcb_data.nets:
+                continue  # partial kept-sets restore via their own channel
+            _osegs4 = [s for s in _orig_segments if s.net_id == _cid]
+            _ovias4 = [v for v in _orig_vias if v.net_id == _cid]
+            if not _osegs4 and not _ovias4:
+                continue
+            if _src517({'new_segments': _osegs4, 'new_vias': _ovias4},
+                       pcb_data, [_cid], clearance, config=config):
+                _rf['blocked'] += 1
+                continue
+            pcb_data.segments.extend(_osegs4)
+            pcb_data.vias.extend(_ovias4)
+            for _po in _osegs4:
+                _prov_seg(_po.net_id, _po.layer, _po.start_x, _po.start_y,
+                          _po.end_x, _po.end_y, 'restore-first')
+            for _po in _ovias4:
+                _prov_via(_po.net_id, _po.x, _po.y, 'restore-first')
+            while _cid in ripped_net_ids:
+                ripped_net_ids.remove(_cid)
+            while _cid in inplace_reconnected_ids:
+                # Original copper is back verbatim; the writer must keep
+                # the input text, not strip it (#524 resurrection guard).
+                inplace_reconnected_ids.remove(_cid)
+            _casualties.remove(_cid)
+            if corridor_ghosts is not None:
+                corridor_ghosts.drop_net(_cid)
+            _rf['restored'] += 1
+            print(f"  (#517 restore-first: {pcb_data.nets[_cid].name} "
+                  f"identity-restored, corridor still free)")
+        if _rf['restored'] or _rf['blocked']:
+            print(f"  (#517 restore-first: {_rf['restored']} restored "
+                  f"verbatim, {_rf['blocked']} corridor(s) occupied -> "
+                  f"re-route)")
 
         _cnames = [pcb_data.nets[n].name for n in _casualties if n in pcb_data.nets]
         if _cnames:
@@ -2558,19 +2551,17 @@ def repair_planes(
                 # decisions -- the top chaos lever in the repair. pcbnew's
                 # ZONE_FILLER is measured-deterministic; exact_unconnected
                 # clusters its fill truth reproducibly.
-                # KICAD_LEGACY_GATE_ORACLE=1 restores kicad-cli for A/B.
-                if not env_knobs.LEGACY_GATE_ORACLE:
-                    try:
-                        from kicad_exact_fill import exact_unconnected
-                        _gnames = [pcb_data.nets[g].name
-                                   for g in unique_nets
-                                   if g in pcb_data.nets]
-                        _links = exact_unconnected(
-                            _tmp.name, _gnames, project_from=input_file)
-                    except Exception as _xe:
-                        print(f"  (exact gate source failed: {_xe}; "
-                              f"falling back to kicad-cli)")
-                        _links = None
+                try:
+                    from kicad_exact_fill import exact_unconnected
+                    _gnames = [pcb_data.nets[g].name
+                               for g in unique_nets
+                               if g in pcb_data.nets]
+                    _links = exact_unconnected(
+                        _tmp.name, _gnames, project_from=input_file)
+                except Exception as _xe:
+                    print(f"  (exact gate source failed: {_xe}; "
+                          f"falling back to kicad-cli)")
+                    _links = None
                 if _links is None:
                     from kicad_oracle import (find_kicad_cli,
                                               kicad_unconnected)
@@ -2614,26 +2605,25 @@ def repair_planes(
             # links for this net, the split is model quantization -- skip.
             # Oracle unavailable (no kicad-cli / DRC failed) => behave as
             # before. One DRC serves all gate nets (cached until a gate
-            # repair adds copper). KICAD_NO_GATE_ORACLE=1 disables for A/B.
-            if not env_knobs.NO_GATE_ORACLE:
-                if _gate_oracle_links[0] is None:
-                    _q = _gate_oracle_query()
-                    _gate_oracle_links[0] = (_GATE_CANCELLED if _q is None
-                                             else _q)
-                _gl = (None if _gate_oracle_links[0] is _GATE_CANCELLED
-                       else _gate_oracle_links[0])
-                if _gl is not False and _gl is not None:
-                    _net_links = [lk for lk in _gl if lk[0] == _nname]
-                    print(f"  [{_nname}] gate oracle: KiCad reports "
-                          f"{len(_net_links)} unconnected link(s) for this "
-                          f"net ({len(_gl)} total)")
-                    if not _net_links:
-                        print(f"  [{_nname}] guaranteed-join gate: checker "
-                              f"finds {_r3.get('num_components')} "
-                              f"component(s), but KiCad reports the net "
-                              f"complete (fill-model quantization) -- "
-                              f"skipping repair")
-                        continue
+            # repair adds copper).
+            if _gate_oracle_links[0] is None:
+                _q = _gate_oracle_query()
+                _gate_oracle_links[0] = (_GATE_CANCELLED if _q is None
+                                         else _q)
+            _gl = (None if _gate_oracle_links[0] is _GATE_CANCELLED
+                   else _gate_oracle_links[0])
+            if _gl is not False and _gl is not None:
+                _net_links = [lk for lk in _gl if lk[0] == _nname]
+                print(f"  [{_nname}] gate oracle: KiCad reports "
+                      f"{len(_net_links)} unconnected link(s) for this "
+                      f"net ({len(_gl)} total)")
+                if not _net_links:
+                    print(f"  [{_nname}] guaranteed-join gate: checker "
+                          f"finds {_r3.get('num_components')} "
+                          f"component(s), but KiCad reports the net "
+                          f"complete (fill-model quantization) -- "
+                          f"skipping repair")
+                    continue
             _ncomp = _r3.get('num_components')
             print(f"\n[{_nname}] guaranteed-join gate: authoritative check "
                   f"finds {_ncomp} component(s) after repair -- routing the "

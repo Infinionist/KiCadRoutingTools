@@ -970,8 +970,7 @@ pcb = parse_kicad_pcb('path/to/file.kicad_pcb')
   redundant: three boards (nanovoltmeter_marge, hexberry_fpga, pedal_404) declare
   `(tenting (front no) (back no))` board-wide and had every added via stamped
   tented — a fab error, hidden because KiCad's FACTORY policy is tented so the
-  two agree on an ordinary board. `prevailing_via_protection` still exists and is
-  still correct; it is just not a default any more. When RE-PLACING a via, also pass
+  two agree on an ordinary board. When RE-PLACING a via, also pass
   `inherit_when_unspecified=True` (#741). An empty spec now emits nothing in
   every case (`kicad_writer.via_protection_sexpr`), so the via keeps inheriting
   the board's `(setup ...)` — what it had, and what the GUI side

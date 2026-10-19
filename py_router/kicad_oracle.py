@@ -53,10 +53,10 @@ ORACLE_DRC_TIMEOUT = 240
 # the issue's own reading of the situation was the opposite of the truth.
 #
 # The issue says a single slow DRC "disables the KiCad oracle for the rest of
-# the run". It did not: the memo's ONLY read sat behind `env_knobs.LEGACY_ORACLE`
-# (KICAD_LEGACY_ORACLE, default off and set by nothing in this repo), so the
-# set was written and never consulted. The live defect was the INVERSE -- the
-# 240 s was re-paid on every round of every oracle leg, which is the pathology
+# the run". It did not: the memo's ONLY read sat behind an escape hatch that
+# was off by default and set by nothing in this repo, so the set was written
+# and never consulted. The live defect was the INVERSE -- the 240 s was
+# re-paid on every round of every oracle leg, which is the pathology
 # the memo had been added to stop. (repair_planes:2316 records the compound
 # form: a repair that cancelled cleanly at 45 s then sat in a KiCad child until
 # an external kill.)
@@ -1876,34 +1876,9 @@ def oracle_reconnect(board_file: str, net_names, config,
     # whatever ran before it in this process.
     _timed_out = set()
     kicad_cli = find_kicad_cli()
-    # Bail iff NOTHING could serve as a link source. The ladder is
-    # exact-fill (pcbnew; tried unless LEGACY_ORACLE) -> kicad-cli -> raster
-    # (opt-in), so kicad-cli being absent only matters when it is the ONLY
-    # rung left.
-    if (kicad_cli is None and env_knobs.LEGACY_ORACLE
-            and not env_knobs.RASTER_ORACLE):
-        # Only bail when kicad-cli really is the only source we could use
-        # (audit finding 7). The DEFAULT source is exact_unconnected ->
-        # pcbnew's ZONE_FILLER, which does not need kicad-cli at all, so this
-        # early return used to throw away a working leg on any machine whose
-        # kicad-cli sits outside the three hard-coded candidates -- a custom
-        # build, nix, an AppImage. Measured: with find_kicad_cli patched to
-        # None, exact_unconnected still returned 2 links on daisho while
-        # oracle_reconnect reported available=False.
-        print("  KiCad-oracle recheck: kicad-cli not found and no other "
-              "source is enabled, skipping")
-        # `reason` (#713 item 3): `available: False` was a bare bool, and the
-        # ONE caller that printed anything about it (repair_planes) blamed
-        # "kicad-cli not found" for every cause. A verdict the run did not get
-        # must say why it did not get it.
-        return {'available': False, 'reason': 'no_link_source',
-                'why': 'kicad-cli not found and no other source is enabled',
-                'rounds': 0, 'links_routed': 0,
-                'links_failed': 0, 'remaining': -1}
-
     # The cross-call skip that used to sit here is gone (#713 item 3). It read
-    # a module-global behind `env_knobs.LEGACY_ORACLE`, which nothing sets, so
-    # it never fired -- while `_fill_cost_key(board_file)`, its LEFT operand,
+    # a module-global behind an escape hatch that nothing set, so it never
+    # fired -- while `_fill_cost_key(board_file)`, its LEFT operand,
     # parsed the whole board on EVERY call to decide a membership test that
     # could not matter. What it was reaching for is now `_timed_out` below:
     # call-scoped, always live, and unable to carry a verdict between boards.
@@ -2035,8 +2010,7 @@ def oracle_reconnect(board_file: str, net_names, config,
             # (this leg is the longest in the chain) after the wrong process.
             progress_callback(0, 0,
                               f"KiCad-oracle: finding missing links via "
-                              f"{'kicad-cli DRC' if env_knobs.LEGACY_ORACLE else 'KiCad zone refill'} "
-                              f"(round {rnd + 1})...")
+                              f"KiCad zone refill (round {rnd + 1})...")
         links = None
         # DETERMINISTIC link source (#490): kicad-cli DRC's threaded
         # connectivity reported three different link sets on one unchanged
@@ -2044,21 +2018,20 @@ def oracle_reconnect(board_file: str, net_names, config,
         # orangecrab's repair graded 103/65/92 across identical-input runs.
         # pcbnew's ZONE_FILLER is measured-deterministic -- exact_unconnected
         # clusters its fill truth reproducibly and anchors each link at the
-        # true nearest approach. KICAD_LEGACY_ORACLE=1 restores kicad-cli.
+        # true nearest approach.
         _links_from_exact = False
-        if not env_knobs.LEGACY_ORACLE:
-            try:
-                from kicad_exact_fill import exact_unconnected
-                links = exact_unconnected(board_file, names,
-                                          project_from=project_from)
-                _links_from_exact = links is not None
-                if links is not None and rnd == 0:
-                    print("  KiCad-oracle recheck: deterministic exact-fill "
-                          "link source (pcbnew refill)")
-            except Exception as _xe:
-                print(f"  (exact link source failed: {_xe}; falling back "
-                      f"to kicad-cli)")
-                links = None
+        try:
+            from kicad_exact_fill import exact_unconnected
+            links = exact_unconnected(board_file, names,
+                                      project_from=project_from)
+            _links_from_exact = links is not None
+            if links is not None and rnd == 0:
+                print("  KiCad-oracle recheck: deterministic exact-fill "
+                      "link source (pcbnew refill)")
+        except Exception as _xe:
+            print(f"  (exact link source failed: {_xe}; falling back "
+                  f"to kicad-cli)")
+            links = None
         # SOURCE UNION (#648): kicad-cli DRC is the DEMAND gate, the exact
         # source the deterministic GEOMETRY. Measured divergences, one in
         # each direction: (a) blindness -- the island-derived source saw 6
@@ -2196,29 +2169,28 @@ def oracle_reconnect(board_file: str, net_names, config,
         def _exact_islands_map():
             if not _exact_cache['fetched']:
                 _exact_cache['fetched'] = True
-                if not env_knobs.NO_EXACT_FILL:
-                    try:
-                        from kicad_exact_fill import refill_islands
-                        print("  KiCad-oracle recheck: fetching exact fill "
-                              "islands (pcbnew refill)...")
-                        # A whole-board pcbnew refill: seconds to minutes on a
-                        # dense board, and it used to run with no status of its
-                        # own (the caller's last per-link label stayed frozen
-                        # on screen for its whole duration).
-                        if progress_callback:
-                            progress_callback(
-                                0, 0, "KiCad-oracle: refilling zones for "
-                                      "exact fill islands...")
-                        _exact_cache['islands'] = refill_islands(
-                            board_file, verbose=verbose)
-                        if _exact_cache['islands'] is not None:
-                            _ni = sum(len(v) for v in
-                                      _exact_cache['islands'].values())
-                            print(f"    exact fill: {_ni} island(s) across "
-                                  f"{len(_exact_cache['islands'])} "
-                                  f"zone-layer(s)")
-                    except Exception as _xe:
-                        print(f"    (exact fill unavailable: {_xe})")
+                try:
+                    from kicad_exact_fill import refill_islands
+                    print("  KiCad-oracle recheck: fetching exact fill "
+                          "islands (pcbnew refill)...")
+                    # A whole-board pcbnew refill: seconds to minutes on a
+                    # dense board, and it used to run with no status of its
+                    # own (the caller's last per-link label stayed frozen
+                    # on screen for its whole duration).
+                    if progress_callback:
+                        progress_callback(
+                            0, 0, "KiCad-oracle: refilling zones for "
+                                  "exact fill islands...")
+                    _exact_cache['islands'] = refill_islands(
+                        board_file, verbose=verbose)
+                    if _exact_cache['islands'] is not None:
+                        _ni = sum(len(v) for v in
+                                  _exact_cache['islands'].values())
+                        print(f"    exact fill: {_ni} island(s) across "
+                              f"{len(_exact_cache['islands'])} "
+                              f"zone-layer(s)")
+                except Exception as _xe:
+                    print(f"    (exact fill unavailable: {_xe})")
             return _exact_cache['islands']
         with open(board_file, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -3361,13 +3333,12 @@ def oracle_reconnect(board_file: str, net_names, config,
     else:
         # ran all rounds; get the final count (same source as the rounds)
         links = None
-        if not env_knobs.LEGACY_ORACLE:
-            try:
-                from kicad_exact_fill import exact_unconnected
-                links = exact_unconnected(board_file, names,
-                                          project_from=project_from)
-            except Exception:
-                links = None
+        try:
+            from kicad_exact_fill import exact_unconnected
+            links = exact_unconnected(board_file, names,
+                                      project_from=project_from)
+        except Exception:
+            links = None
         if links is None:
             links = kicad_unconnected(board_file, kicad_cli,
                                        timed_out=_timed_out)

@@ -1729,90 +1729,10 @@ def _restore_soft_joint_bridges(kept, removed, vias, pads):
     return kept, removed
 
 
-def _prune_sub_cell_slivers(net_id, prunable, vias, pads, zones, eps,
-                            anchor_segments=None, tol=None,
-                            zone_credit_validator=None,
-                            fill_anchor_validator=None, pcb_data=None):
-    """#672: drop a net's dead-end pieces SHORTER THAN ``eps`` -- and only
-    those -- when the net grades no worse without them.
-
-    This is the sliver-only twin of ``_safe_prune_net`` for nets the sweep
-    otherwise leaves untouched (the #473 unfinished-net exemption). The
-    candidate set is every dead end ``prune_dead_end_segments`` reports --
-    an ISOLATED fragment, a spur off a through-path or a T-junction, or a
-    stub off a pad/via -- filtered to length < ``eps``: a stub shorter than
-    one routing cell offers no landing its root does not already offer, so
-    the escape exemption the full sweep's per-commit mode keeps does not
-    apply. A piece whose free end lands on a same-net fill, or that bridges
-    two neighbours (no free end), is never a dead end and so never offered.
-    Locked and graphic copper is never removed. Each round is gated by the
-    authoritative ``check_net_connectivity`` (disconnected-pad count AND
-    component count
-    must not rise, the same two terms the dangling-via drop grades), first
-    as a batch, then per piece when the batch is refused; removing one
-    piece can expose the next, so it iterates to a fixpoint. Returns
-    ``(kept, removed)`` over ``prunable``."""
-    if tol is None:
-        from connectivity import COINCIDENCE_TOL
-        tol = COINCIDENCE_TOL
-    from check_connected import check_net_connectivity
-    anchor = list(anchor_segments or [])
-    _fa = fill_anchor_validator or zone_credit_validator
-
-    def _short(s):
-        return (math.hypot(s.end_x - s.start_x, s.end_y - s.start_y) < eps
-                and not getattr(s, 'graphic', False)
-                and not _locked(s))
-
-    def _grade(segs):
-        r = check_net_connectivity(net_id, anchor + list(segs), vias, pads,
-                                   zones,
-                                   zone_credit_validator=zone_credit_validator,
-                                   pcb_data=pcb_data)
-        return (len(r.get('disconnected_pads') or []),
-                r.get('num_components') or 1)
-
-    kept = list(prunable)
-    removed = []
-    base = None
-    rejected = set()
-    for _ in range(64):
-        _, cands = prune_dead_end_segments(kept, anchor_segments=anchor or None,
-                                           vias=vias, pads=pads, tol=tol,
-                                           keep_terminal_escapes=False,
-                                           fill_anchor=_fa)
-        cands = [c for c in cands if _short(c) and id(c) not in rejected]
-        if not cands:
-            break
-        if base is None:
-            base = _grade(kept)
-        cid = {id(c) for c in cands}
-        trial = [s for s in kept if id(s) not in cid]
-        g = _grade(trial)
-        if g[0] <= base[0] and g[1] <= base[1]:
-            kept = trial
-            removed.extend(cands)
-            continue
-        progress = False
-        for c in cands:
-            trial = [s for s in kept if s is not c]
-            g = _grade(trial)
-            if g[0] <= base[0] and g[1] <= base[1]:
-                kept = trial
-                removed.append(c)
-                progress = True
-            else:
-                rejected.add(id(c))
-        if not progress:
-            break
-    return kept, removed
-
-
 def sweep_dead_ends(results, pcb_data: PCBData, scope_net_ids=None,
                     protect_net_ids=None,
                     tol: float = None,
-                    keep_input_copper: bool = False,
-                    sliver_eps: float = 0.0) -> Tuple[int, int, List[Segment]]:
+                    keep_input_copper: bool = False) -> Tuple[int, int, List[Segment]]:
     """Final whole-net dead-end sweep, after routing has settled (issue #84).
 
     the per-commit self-intersection clean (removed #159) used to fix
@@ -1838,19 +1758,6 @@ def sweep_dead_ends(results, pcb_data: PCBData, scope_net_ids=None,
     ``anchor_segments``) but is never a removal candidate — for chained flows
     whose earlier stages author escape stubs that a later run must still see.
 
-    ``sliver_eps`` (#672) is the one exception to the ``protect_net_ids``
-    exemption: a PROTECTED net still loses a dead-end piece SHORTER THAN
-    ``sliver_eps`` -- an isolated fragment, or a spur off a through-path --
-    when the authoritative connectivity check grades the net no worse without
-    it. The caller passes one routing cell (``config.grid_step``): no A* span
-    is shorter than a cell, so such a piece can only be rip/restore/prune
-    debris, and it is too short to be the landing site the exemption exists
-    to keep (its root, which stays, is). Measured motive: a 0.02mm same-net
-    sliver of a net being retried across an iteration ladder shipped
-    overlapping a foreign track as a real seg-seg violation, because the
-    exemption kept it every step. A piece with no free end (bridging two
-    neighbours, or pad-to-track) or whose free end lands on a fill is never
-    a candidate; a removal the gate refuses is kept. 0 disables the pass.
     Returns ``(segments_removed, vias_removed, original_segments_to_remove)``.
     """
     from collections import defaultdict
@@ -1883,7 +1790,7 @@ def sweep_dead_ends(results, pcb_data: PCBData, scope_net_ids=None,
         # rip gaps -> fragments graded dead -> swept -> next step starts
         # with less copper, repeat).
         _protected = bool(protect_net_ids and net_id in protect_net_ids)
-        if _protected and not (sliver_eps and sliver_eps > 0):
+        if _protected:
             kept_segs_by_net[net_id] = net_segs
             continue
         vias = [v for v in pcb_data.vias if v.net_id == net_id]
@@ -1911,21 +1818,12 @@ def sweep_dead_ends(results, pcb_data: PCBData, scope_net_ids=None,
             # KiCad-locked copper anchors the same way, always (#1261).
             anchor = anchor + [s for s in net_segs if _locked(s)]
             net_segs = [s for s in net_segs if not _locked(s)]
-        if _protected:
-            # #672: the exemption keeps every landing site; a sub-cell
-            # sliver is not one. Everything else on this net stays.
-            kept, removed = _prune_sub_cell_slivers(
-                net_id, net_segs, vias, pads, zones, sliver_eps,
-                anchor_segments=anchor or None, tol=tol,
-                zone_credit_validator=_zcv, fill_anchor_validator=_zfa,
-                pcb_data=pcb_data)
-        else:
-            kept, removed = _safe_prune_net(net_id, net_segs, vias, pads, zones,
-                                            anchor_segments=anchor or None,
-                                            zone_credit_validator=_zcv,
-                                            fill_anchor_validator=_zfa,
-                                            aggressive=True, tol=tol,
-                                            pcb_data=pcb_data)
+        kept, removed = _safe_prune_net(net_id, net_segs, vias, pads, zones,
+                                        anchor_segments=anchor or None,
+                                        zone_credit_validator=_zcv,
+                                        fill_anchor_validator=_zfa,
+                                        aggressive=True, tol=tol,
+                                        pcb_data=pcb_data)
         # #319: never delete a coincident bridge and leave a soft joint.
         kept, removed = _restore_soft_joint_bridges(list(kept) + anchor, removed,
                                                     vias, pads)

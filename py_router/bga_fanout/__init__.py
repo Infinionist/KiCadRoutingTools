@@ -2815,9 +2815,7 @@ def _generate_bga_fanout_core(footprint: Footprint,
         no_inner_top_layer: If True, inner pads cannot use F.Cu (top layer)
         escape_method: 'auto' (default) runs the channel router and, if it drops
             any ball, retries with the under-pad grid escape and keeps whichever
-            escapes more (issue #288). KICAD_FANOUT_AUTO_DOGBONE=1 opts the
-            retry into a dogbone-first ladder instead -- rejected as the
-            default by the #669 sets1-5 corpus A/B (+10 incomplete, +59 DRC).
+            escapes more (issue #288).
             'channel' is the 45-stub + channel router (with
             differential-pair support). 'underpad' is the dense-array grid escape
             (issue #122): every signal ball drops a via in its pad and routes
@@ -4219,14 +4217,8 @@ def _generate_bga_fanout_core(footprint: Footprint,
     # (ecp5_mini HyperRAM 11/14 -> 14/14, icepi_zero ECP5 120/124 ->
     # 124/124). When the channel pass dropped any ball, re-run with underpad
     # and keep whichever escapes strictly more; ties keep the channel result
-    # (surface routing, no via-in-pad). KICAD_FANOUT_AUTO_DOGBONE=1 opts the
-    # retry into a dogbone-first ladder (underpad only if dogbone still
-    # dropped; a dogbone/underpad tie keeps dogbone -- fewer via-in-pad).
-    # The ladder was REJECTED as the default by the #669 sets1-5 corpus A/B
-    # (+10 incomplete nets, +59 kicad DRC vs underpad-only: dogbone gap vias
-    # claim inter-ball streets that chains not authored for dogbone collide
-    # with). Explicit --escape-method dogbone stays the populated-array
-    # doctrine when the chain's params are chosen for it.
+    # (surface routing, no via-in-pad). Explicit --escape-method dogbone is
+    # the populated-array doctrine when the chain's params are chosen for it.
     if failed_nets and escape_method == 'auto':
         def _auto_retry(method):
             return _generate_bga_fanout_core(
@@ -4249,81 +4241,51 @@ def _generate_bga_fanout_core(footprint: Footprint,
                 progress_callback=progress_callback,
                 cancel_check=cancel_check)
 
-        # KICAD_FANOUT_AUTO_DOGBONE=0 reverts to the pre-#669 underpad-only
-        # retry (the corpus A/B control arm).
-        ladder = (['dogbone', 'underpad'] if env_knobs.FANOUT_AUTO_DOGBONE
-                  else ['underpad'])
-        best_label, best = None, None
-        for method in ladder:
-            label = 'Dog-bone' if method == 'dogbone' else 'Under-pad'
-            if best is None:
-                print(f"\n  Channel escape dropped {len(failed_nets)} ball(s) "
-                      f"({', '.join(failed_nets)}) - retrying with the "
-                      f"{label.lower()} escape "
-                      f"(issue{'s #288/#669' if method == 'dogbone' else ' #288'})...")
-                _prog(f"channel escape dropped {len(failed_nets)} ball(s) - "
-                      f"retrying {label.lower()}...")
-            else:
-                # The prior grid escape completed but still dropped balls ->
-                # the next rung gets its shot (underpad can serve arrays with
-                # no legal inter-ball gap site at all).
-                print(f"  {best_label} escape still dropped {len(best[3])} "
-                      f"ball(s) ({', '.join(best[3])}) - also retrying with "
-                      f"the {label.lower()} escape (issue #288)...")
-                _prog(f"{best_label.lower()} still dropped {len(best[3])} "
-                      f"ball(s) - retrying {label.lower()}...")
-            res = _auto_retry(method)
-            # #621: same rule as the escape-priority comparison above -- a
-            # retry the budget cut short reports a short failed list because
-            # untried balls are not failures, so it must not be allowed to
-            # displace a completed result on that basis. cancel_check is
-            # level-triggered (once true it stays true), so checking after
-            # each pass attributes the truncation to the pass it landed in.
-            if cancel_check and cancel_check():
-                # No fall-through print here: the "did not improve (0 dropped)"
-                # line reads as the retry pass having succeeded perfectly,
-                # which is the opposite of what a truncated pass measured.
-                #
-                # The guard prefers the incumbent's copper over a truncated
-                # pass's silence. Measured on ulx3s U1 (cancel ~4s in) by
-                # neutering it: with the guard 26 balls escape (96 segments,
-                # 10 vias); without it the truncated pass wins and 0 do (29
-                # segments, 144 plane barrels). It is WRONG when the completed
-                # engine would itself have discarded the incumbent --
-                # orangecrab_ext_pll U4, where the under-pad pass legitimately
-                # concludes "0/0 signals escaped, 54 already-fanned skipped"
-                # and its EMPTY result wins, so the finished run ships no
-                # signal escape at all (drc total 937, matching this guard
-                # turned OFF) while a cancelled run keeps 22 channel escapes
-                # (1108). A cancelled pass and a legitimately-empty one return
-                # the same ([], []) from here, so the divergence is DISCLOSED,
-                # not guessed.
-                if best is None:
-                    print(f"  {label} escape: cancelled mid-pass -- keeping "
-                          f"the channel result and its {len(failed_nets)} "
-                          f"dropped ball(s); a truncated pass has measured "
-                          f"nothing. Those balls are UNRESCUED, not clearance "
-                          f"failures -- and this copper is kept on the "
-                          f"strength of a comparison that never ran, so a "
-                          f"completed run may legitimately ship less of it.")
-                else:
-                    print(f"  {label} escape: cancelled mid-pass -- "
-                          f"discarding it (a truncated pass has measured "
-                          f"nothing); the completed {best_label.lower()} "
-                          f"result stays in the contest.")
-                break
-            # Strictly-fewer wins; a tie keeps the earlier rung (dogbone over
-            # underpad: fewer via-in-pad).
-            if best is None or len(res[3]) < len(best[3]):
-                best_label, best = label, res
-            if not best[3]:
-                break
-        if best is not None:
-            if len(best[3]) < len(failed_nets):
-                print(f"  {best_label} escape wins: {len(failed_nets)} -> "
-                      f"{len(best[3])} dropped ball(s); using it")
-                return best
-            print(f"  {best_label} escape did not improve ({len(best[3])} "
+        label = 'Under-pad'
+        print(f"\n  Channel escape dropped {len(failed_nets)} ball(s) "
+              f"({', '.join(failed_nets)}) - retrying with the "
+              f"{label.lower()} escape (issue #288)...")
+        _prog(f"channel escape dropped {len(failed_nets)} ball(s) - "
+              f"retrying {label.lower()}...")
+        res = _auto_retry('underpad')
+        # #621: same rule as the escape-priority comparison above -- a
+        # retry the budget cut short reports a short failed list because
+        # untried balls are not failures, so it must not be allowed to
+        # displace a completed result on that basis. cancel_check is
+        # level-triggered (once true it stays true), so checking after
+        # the pass attributes the truncation to it.
+        if cancel_check and cancel_check():
+            # No fall-through print here: the "did not improve (0 dropped)"
+            # line reads as the retry pass having succeeded perfectly,
+            # which is the opposite of what a truncated pass measured.
+            #
+            # The guard prefers the incumbent's copper over a truncated
+            # pass's silence. Measured on ulx3s U1 (cancel ~4s in) by
+            # neutering it: with the guard 26 balls escape (96 segments,
+            # 10 vias); without it the truncated pass wins and 0 do (29
+            # segments, 144 plane barrels). It is WRONG when the completed
+            # engine would itself have discarded the incumbent --
+            # orangecrab_ext_pll U4, where the under-pad pass legitimately
+            # concludes "0/0 signals escaped, 54 already-fanned skipped"
+            # and its EMPTY result wins, so the finished run ships no
+            # signal escape at all (drc total 937, matching this guard
+            # turned OFF) while a cancelled run keeps 22 channel escapes
+            # (1108). A cancelled pass and a legitimately-empty one return
+            # the same ([], []) from here, so the divergence is DISCLOSED,
+            # not guessed.
+            print(f"  {label} escape: cancelled mid-pass -- keeping "
+                  f"the channel result and its {len(failed_nets)} "
+                  f"dropped ball(s); a truncated pass has measured "
+                  f"nothing. Those balls are UNRESCUED, not clearance "
+                  f"failures -- and this copper is kept on the "
+                  f"strength of a comparison that never ran, so a "
+                  f"completed run may legitimately ship less of it.")
+        else:
+            if len(res[3]) < len(failed_nets):
+                print(f"  {label} escape wins: {len(failed_nets)} -> "
+                      f"{len(res[3])} dropped ball(s); using it")
+                return res
+            print(f"  {label} escape did not improve ({len(res[3])} "
                   f"dropped) - keeping the channel result")
 
     # Write-list invariant (#508 findings 6/7): every surviving FanoutRoute
@@ -5052,9 +5014,7 @@ def main():
                              'stub -> staggered gap via, keeping ball-grid positions free of '
                              'barrels on the inner layers (the standard hand-layout escape). '
                              '"auto" = channel first, and if it drops any ball, retry with '
-                             'underpad and keep whichever escapes more (issue #288; '
-                             'KICAD_FANOUT_AUTO_DOGBONE=1 opts the retry into a '
-                             'dogbone-first ladder, rejected as default by the #669 A/B).')
+                             'underpad and keep whichever escapes more (issue #288).')
     parser.add_argument('--plane-net-layers', nargs='+', default=None,
                         metavar='NET:LAYER[,LAYER...]',
                         help="Declare the FUTURE plane plan: "

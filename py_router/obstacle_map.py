@@ -506,11 +506,6 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
     # lifted only during the tied net's own route).
     pcb_data._net_tie_lift = _assemble_net_tie_lifts(
         _tie_corridors, _tie_recorded, layer_map)
-    # #667: the priced band = corridor cells OFF the own pad (the waived
-    # own-pad approach stays free -- the gradient IS the steering).
-    pcb_data._net_tie_price = {
-        nid: sorted(e['cells'] - e.get('safe_cells', set()))
-        for nid, e in _tie_corridors.items()}
     # NOTE (#908): this bake is UNGUARDED, so `prepare_obstacles_inplace`
     # lifts the same rows a second time when a base built for ONE net is then
     # prepared for that net. Left as it is deliberately -- fixing it changes
@@ -607,7 +602,7 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
         # read against -- so the same rule: the record a map is read with must
         # be that map's own.
         _build_records = {_k: getattr(pcb_data, _k, None) for _k in (
-            '_net_tie_lift', '_net_tie_price',
+            '_net_tie_lift',
             '_graphic_own_pad_lift', '_graphic_own_pad_via_lift')}
         try:
             from obstacle_cache import via_rungs as _via_rungs, _small_via_pair
@@ -4220,7 +4215,7 @@ def _compute_net_tie_corridors(pcb_data, config, coord):
                           if hasattr(config, 'get_net_track_width')
                           else config.track_width / 2)
                 entry = corridors.setdefault(
-                    own.net_id, {'cells': set(), 'safe_cells': set(),
+                    own.net_id, {'cells': set(),
                                  'partner_pad_ids': set(),
                                  'partner_net_ids': set()})
                 for partner in partners:
@@ -4310,16 +4305,6 @@ def _compute_net_tie_corridors(pcb_data, config, coord):
                         continue
                     entry['cells'].update(
                         zip(GX.ravel()[ok].tolist(), GY.ravel()[ok].tolist()))
-                    # #667: cells whose CENTER lies on the OWN pad are the
-                    # KiCad-waived approach (contact on the own pad); the
-                    # rest of the corridor is the segment-level hazard band
-                    # the #667 pricing steers away from. Uniform pricing was
-                    # measured INERT (no gradient = no steering).
-                    _on_own = _pad_dist_le_batch(cxm[ok], cym[ok], own, 1e-9)
-                    if _on_own.any():
-                        entry['safe_cells'].update(
-                            zip(GX.ravel()[ok][_on_own].tolist(),
-                                GY.ravel()[ok][_on_own].tolist()))
                     entry['partner_pad_ids'].add(id(partner))
                     entry['partner_net_ids'].add(partner.net_id)
     return {n: e for n, e in corridors.items() if e['cells']}

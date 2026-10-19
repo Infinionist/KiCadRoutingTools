@@ -10,7 +10,6 @@ from collections import OrderedDict
 from typing import List, Set, Dict, Optional, Tuple, TYPE_CHECKING
 import math
 import numpy as np
-import env_knobs
 from routing_config import GridCoord, GridRouteConfig
 from obstacle_map import (
     add_net_stubs_as_obstacles, add_net_vias_as_obstacles, add_net_pads_as_obstacles,
@@ -720,33 +719,6 @@ def prepare_obstacles_inplace(
             for _arr in _lifted:
                 working_obstacles.remove_blocked_cells_batch(_arr)
             _lift_record(_TIE_LIFTED, working_obstacles, net_id, _lifted)
-            # #667: the lifted band is legal CELL-BY-CELL but its copper
-            # can be illegal as a SEGMENT (KiCad's IsNetTieExclusion
-            # waives a (track, partner-pad) pair only when the contact
-            # lies on the OWN pad -- cynthion shipped 3 router-introduced
-            # tie violations per pass through this exact band). Price the
-            # band (radius 1: the cells themselves, no halo) so the A*
-            # prefers the clean own-axis approach the human uses; the
-            # band stays available as a last resort, so connectivity is
-            # never lost (the reject-gate attempt stranded 3 sense nets).
-            # clear_stub_proximity() at prepare/finish brackets this like
-            # every other proximity cost -- no cross-net leak.
-            _tie_cost = env_knobs.TIE_BAND_COST
-            if _tie_cost > 0:
-                # Differential pricing: the OWN-PAD approach (KiCad-waived
-                # contact) stays free; only the off-pad corridor cells are
-                # priced. Uniform pricing over the whole lifted band was
-                # measured INERT on cynthion (no gradient = no steering).
-                _price667 = (getattr(pcb_data, '_net_tie_price', None)
-                             or {}).get(net_id)
-                if _price667 is None:
-                    _pos667 = np.unique(np.concatenate(
-                        [np.asarray(_a)[:, :2] for _a in _lifted]), axis=0)
-                    _price667 = [(int(gx), int(gy)) for gx, gy in _pos667]
-                if _price667:
-                    working_obstacles.add_stub_proximity_costs_batch(
-                        [(int(gx), int(gy)) for gx, gy in _price667], 1,
-                        config.cell_cost(_tie_cost))
 
     # Add stub proximity costs (includes chip pads as pseudo-stubs)
     stub_proximity_net_ids = _stub_proximity_source_ids(

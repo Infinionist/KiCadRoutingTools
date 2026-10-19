@@ -1258,12 +1258,9 @@ def write_placed_output(input_file: str, output_file: str,
                 # Every via in via_moves came OFF this board a few lines up,
                 # so its OWN spec is the whole answer. That much is
                 # plane_io.py:862-866's form -- the rip-up restore, which is
-                # structurally the same act -- and deliberately NOT
-                # plane_io.py:557-563's `or
-                # prevailing_via_protection_in_text(...)`, the right default
-                # for vias this tool ADDS but a THIRD answer for one that
-                # already existed: it would stamp the majority spec of OTHER
-                # vias onto this one.
+                # structurally the same act. Falling back to the majority
+                # spec of OTHER vias would be a THIRD answer for one that
+                # already existed: it would stamp their spec onto this one.
                 #
                 # `inherit_when_unspecified=True` is where this call goes
                 # BEYOND plane_io's form, and it is the second half of #741. An

@@ -2810,8 +2810,8 @@ run, and the classification table below reads BOTH. The *ledger* and the
   the oracle each name the cause, and the oracle's reaches `JSON_SUMMARY`. The
   older description of this table ("memoises the board so every later step
   skips the oracle too") was itself wrong: that memo's only read sat behind
-  `KICAD_LEGACY_ORACLE`, which nothing sets, so it never fired and the real
-  cost was the 240 s being RE-PAID every round. Two consequences you must
+  an escape hatch nothing set, so it never fired and the real cost was the
+  240 s being RE-PAID every round. Two consequences you must
   build into how you run:
 
   1. **NO MAIN TAKES A WALL-CLOCK BUDGET, AND THAT IS DELIBERATE — BOUND THE

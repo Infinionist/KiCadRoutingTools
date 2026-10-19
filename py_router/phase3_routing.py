@@ -1986,7 +1986,7 @@ def seam_reask_one_net(net_id, pcb_data, config, state, base_obstacles,
     (default 1.3) times the straight-line MST bound over their pads.
     Returns True when the tree was replaced."""
     import math
-    if not env_knobs.SEAM_REASK or getattr(config, 'quick', 0) >= 2:
+    if getattr(config, 'quick', 0) >= 2:
         return False
     r_old = routed_results.get(net_id)
     if (not r_old or r_old.get('failed') or r_old.get('failed_pads_info')
@@ -2092,7 +2092,7 @@ def se_seam_reask(state, pcb_data, config, base_obstacles, gnd_net_id,
                   all_unrouted_net_ids, routed_net_ids, remaining_net_ids,
                   routed_net_paths, routed_results, diff_pair_by_net_id,
                   results, track_proximity_cache, layer_map):
-    """#444 SE seam dissolution (KICAD_SEAM_REASK=0 disables).
+    """#444 SE seam dissolution.
 
     After Phase 3, a fully-connected multipoint net is a COMPOSITION: a main
     edge routed early in the loop plus taps welded on across the run, each
@@ -2106,7 +2106,7 @@ def se_seam_reask(state, pcb_data, config, base_obstacles, gnd_net_id,
     lower bound over their pads, worst first, capped at KICAD_SEAM_SE_MAX
     (default 16)."""
     import math
-    if not env_knobs.SEAM_REASK or getattr(config, 'quick', 0) >= 2:
+    if getattr(config, 'quick', 0) >= 2:
         return 0
     from dataclasses import replace as _dc_replace
     try:

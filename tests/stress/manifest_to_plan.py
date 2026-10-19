@@ -127,8 +127,9 @@ REFUSED_TOOLS = {
         'and at the end), so the explicit ones would be lost. Run it on the '
         'CLI over the board the plan leaves'),
     'pack_river.py': (
-        'compacts routed bus lanes off-grid after routing (#658); the plan '
-        'format has no step for it. Run it on the CLI over the plan\'s output'),
+        'its standalone CLI (off-grid bus-lane compaction after routing, #658) '
+        'was removed; there is nothing to run. In-run packing is '
+        'KICAD_PACK_INLINE=1 on the route step'),
     'run_plan.py': (
         'runs a whole GUI plan on the CLI (#507); a plan step cannot hold a '
         'plan. Load that plan in the AI tab instead'),

@@ -239,20 +239,15 @@ Two rules were retired to get here:
   exposed, which is a fab error rather than a cosmetic one. It hid because
   KiCad's FACTORY policy is tented front+back, so on an ordinary board the
   stamp and the inheritance agree.
-* **`prevailing_via_protection` as the added-via default** (the #489 s8 rule).
+* **The board's prevailing via spec as the added-via default** (the #489 s8
+  rule).
   Across those same 886 boards a prevailing spec never once disagreed with the
   board's own `(setup ...)`, so it only ever wrote a redundant token -- and the
   tool then read its OWN stamps back as "the board's convention" on the next
   run. orangecrab_ext_pll's 136 `(tenting …)` tokens are byte-identical to
   `generate_via_sexpr` output; hackrf_one's pristine source has **0/498** vias
   declaring anything, its 498 tokens being KiCad 10's upgrade migration writing
-  out the factory defaults. The function remains correct and available; it is
-  simply not a default.
-
-`prevailing_via_protection(vias)` / `prevailing_via_protection_in_text(content)`
-still answer "what do this board's vias actually say", which is the right
-question if you ever need a new via to match its neighbours rather than the
-board policy. No writer calls them today.
+  out the factory defaults.
 
 **Pass the spec back for any via that already existed.** A via you re-place
 without it -- rip-up, sub-grid nudge, tap relocation -- loses its spec and
