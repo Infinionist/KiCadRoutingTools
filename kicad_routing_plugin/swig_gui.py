@@ -4233,6 +4233,8 @@ class RoutingDialog(wx.Dialog):
                     layer_costs=_cmv.get('layer_costs'),
                     net_widths_by_name=_cmv.get('net_widths_by_name'),
                     net_clearances_by_name=_cmv.get('net_clearances_by_name'),
+                    board_edge_clearance=_cmv.get('board_edge_clearance'),
+                    same_net_pad_clearance=_cmv.get('same_net_pad_clearance'),
                     progress_callback=(
                         lambda c, t, m: self._apply_status(
                             f"{m} ({c}/{t})" if t else m)))
@@ -4295,6 +4297,8 @@ class RoutingDialog(wx.Dialog):
                     net_widths_by_name=_pfo.get('net_widths_by_name'),
                     net_clearances_by_name=_pfo.get(
                         'net_clearances_by_name'),
+                    board_edge_clearance=_pfo.get('board_edge_clearance'),
+                    same_net_pad_clearance=_pfo.get('same_net_pad_clearance'),
                     progress_callback=(
                         lambda c, t, m: self._apply_status(
                             f"{m} ({c}/{t})" if t else m)))

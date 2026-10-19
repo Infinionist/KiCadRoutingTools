@@ -511,6 +511,8 @@ KiCad 6 board parses on the CLI the way it loads in KiCad:
 | Convention in the file | Read as | Applies to |
 |---|---|---|
 | `(layers *.Cu *.Mask)` — names unquoted | the same names | every layer list (KiCad 6 writes pad lists bare) |
+| `(pad 1 smd rect ...)` — the pad number unquoted | the same number | all versions (a footprint pasted in from an older library spelling; pcbnew reads it) |
+| a pad's `(net 3 GND)` / `(net GND)`, `(pinfunction GND)` — names unquoted | the same name, resolved through the board's nets by name | all versions |
 | a zone on `(layers F&B.Cu)` / `(layers *.Cu)` | one `Zone` per layer: F.Cu + B.Cu / every copper layer | all versions |
 | a pad on `(layers "F&B.Cu" ...)`, `"*.Adhes"`, ..., or a plated pad declared on one side | `Pad.layers` as the set pcbnew loads (`canonical_pad_layers`) | all versions |
 | an NPTH or copper-less pad with a number | `pad_number` `''` | all versions |

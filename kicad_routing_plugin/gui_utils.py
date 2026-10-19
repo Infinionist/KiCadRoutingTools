@@ -1211,7 +1211,9 @@ def run_kicad_oracle_on_live_board(board, net_names, *, clearance,
                                    layers=None, layer_costs=None,
                                    net_widths_by_name=None,
                                    progress_callback=None,
-                                   net_clearances_by_name=None):
+                                   net_clearances_by_name=None,
+                                   board_edge_clearance=None,
+                                   same_net_pad_clearance=None):
     """Staged-save kicad-oracle recheck against the LIVE pcbnew board.
 
     The CLI plane fronts (and route.py's plane finalize, #562) finish with
@@ -1237,6 +1239,11 @@ def run_kicad_oracle_on_live_board(board, net_names, *, clearance,
     re-keys them onto it. For the same reason the oracle hands its copper
     back on the LIVE board's netcodes (`net_ids_by_name` below) before this
     applies it with SetNetCode.
+
+    `board_edge_clearance` and `same_net_pad_clearance` (#1290) are the
+    engine run's resolved copper-to-edge floor and #581 via clearance, which
+    the CLI's oracle config carries. Omitted (or not > 0), the edge is the
+    live board's own rule and vias may land in same-net pads, as before.
     """
     try:
         import os
@@ -1259,6 +1266,8 @@ def run_kicad_oracle_on_live_board(board, net_names, *, clearance,
                         or 0) / 1e6
         except Exception:
             _edge_mm = 0.0
+        if board_edge_clearance and board_edge_clearance > 0:
+            _edge_mm = board_edge_clearance       # the run's floor (#1290)
         # #658 (audit finding): this config used to be BARE -- no layers, no
         # layer_costs, no power_net_widths -- so the weld router here ran at
         # UNIFORM layer economics while the CLI finalize priced them, and the
@@ -1274,6 +1283,8 @@ def run_kicad_oracle_on_live_board(board, net_names, *, clearance,
             _cfg_kw['layers'] = list(layers)
         if layer_costs:
             _cfg_kw['layer_costs'] = list(layer_costs)
+        if same_net_pad_clearance and same_net_pad_clearance > 0:
+            _cfg_kw['same_net_pad_clearance'] = same_net_pad_clearance
         ocfg = GridRouteConfig(
             clearance=clearance, track_width=track_width,
             via_size=via_size, via_drill=via_drill, grid_step=grid_step,

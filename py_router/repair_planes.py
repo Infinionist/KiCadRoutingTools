@@ -1141,8 +1141,12 @@ def repair_planes(
         if net_clearances and clamp_netclasses and clearance_ceiling is not None:
             net_clearances = {nid: min(c, clearance_ceiling)
                               for nid, c in net_clearances.items()}
+    # The plane nets this call repairs set the floor every foreign obstacle is
+    # priced from, as batch_route's routed nets do: obstacle_clearance() is
+    # max(floor, the OBSTACLE's class), so without it a Power_Bulk (0.25) GND
+    # tap was priced at the run's 0.15 against Default copper (#1290).
     if net_clearances:
-        config.net_clearances = dict(net_clearances)
+        config.set_net_clearances(net_clearances, net_ids)
     LAST_NET_CLEARANCES_BY_NAME = config.net_clearances_by_name(pcb_data.nets)
     # Publish the SAME map to the fill model (#483 item 5): KiCad refills a
     # zone at max(zone clearance, pairwise netclass), so on honor-classes
@@ -1386,6 +1390,25 @@ def repair_planes(
               + ", ".join(f"{unique_nets[_n][0]}[{_ord_counts.get(_n, 0)}]"
                           for _n in unique_nets) + ")")
 
+    def _reconnect_edge():
+        """The copper-to-edge floor a reconnect sub-run routes at: the one this
+        engine's own taps and joins route at (config.board_edge_clearance),
+        never below the board's own rule (#338/#441). The sub-runs used to
+        re-read the project alone, so an explicit --board-edge-clearance
+        above the board's rule held this engine's copper but not the copper
+        its reconnects laid (#1290)."""
+        try:
+            from fix_kicad_drc_settings import effective_board_edge_clearance
+            _proj = effective_board_edge_clearance(input_file, 0.0)
+        except Exception:
+            _proj = 0.0
+        return max(_proj, config.board_edge_clearance or 0.0)
+
+    # The reconnect sub-runs keep this engine's resolved same-net pad via
+    # clearance (#581); None lets them read the persisted record, as before.
+    _reconnect_snpc = (config.same_net_pad_clearance
+                       if config.same_net_pad_clearance > 0 else None)
+
     def _reconnect_ripped_now(_rip_ids):
         """#517 arm 3: reconnect the nets ripped for the tap that JUST
         committed, before any other pad, region join, or reconnect can claim
@@ -1402,11 +1425,7 @@ def repair_planes(
               f"ripped net(s): {', '.join(_names)})")
         try:
             from route import batch_route
-            try:
-                from fix_kicad_drc_settings import effective_board_edge_clearance
-                _edge = effective_board_edge_clearance(input_file, 0.0)
-            except Exception:
-                _edge = 0.0
+            _edge = _reconnect_edge()
             _pn = list(power_nets or [])
             _pw = list(power_nets_widths or [])
             if len(_pn) == len(_pw):
@@ -1432,6 +1451,7 @@ def repair_planes(
                 grid_step=grid_step,
                 power_nets=_pn or None, power_nets_widths=_pw or None,
                 board_edge_clearance=_edge,
+                same_net_pad_clearance=_reconnect_snpc,
                 net_clearances=net_clearances,
                 layer_costs=(list(layer_costs) if layer_costs else None),  # #658 finalize sub-runs honor chain layer economics
                 hole_to_hole_clearance=hole_to_hole_clearance,
@@ -2003,16 +2023,10 @@ def repair_planes(
                 progress_callback(0, 0, f"Reconnecting {len(_cnames)} ripped net(s)...")
             try:
                 from route import batch_route
-                # #338/#441: resolve the edge floor from the ORIGINAL input's
-                # project (the output board's sibling .kicad_pro may not exist
-                # yet), floored at the fab edge minimum. Do NOT forward this
-                # function's board_edge_clearance -- that is the plane-zone
-                # inset, not an enforced routing floor.
-                try:
-                    from fix_kicad_drc_settings import effective_board_edge_clearance
-                    _edge = effective_board_edge_clearance(input_file, 0.0)
-                except Exception:
-                    _edge = 0.0
+                # #338/#441/#1290: the floor this engine's own copper routes
+                # at, never below the ORIGINAL input's rule (the output
+                # board's sibling .kicad_pro may not exist yet).
+                _edge = _reconnect_edge()
                 # #513 item 5: re-route each ripped net at the width it ARRIVED
                 # with (snapshotted before any rip), not this invocation's
                 # default -- a repair retry that omitted --power-nets used to
@@ -2046,6 +2060,7 @@ def repair_planes(
                     grid_step=grid_step,
                     power_nets=_pn or None, power_nets_widths=_pw or None,
                     board_edge_clearance=_edge,
+                    same_net_pad_clearance=_reconnect_snpc,
                     # #434: forward the map resolved from the ORIGINAL input's
                     # project (batch_route's own auto-read would find no
                     # netclasses next to a not-yet-written output).
@@ -2707,11 +2722,7 @@ def repair_planes(
                 progress_callback(0, 0, f"{_nname}: joining remaining gaps...")
             try:
                 from route import batch_route
-                try:
-                    from fix_kicad_drc_settings import effective_board_edge_clearance
-                    _edge3 = effective_board_edge_clearance(input_file, 0.0)
-                except Exception:
-                    _edge3 = 0.0
+                _edge3 = _reconnect_edge()
                 # The repair edited pcb_data's copper in place: invalidate what was
                 # cached against it before the sub-run looks anything up (#1146 audit).
                 bump_copper_epoch(pcb_data)
@@ -2725,6 +2736,7 @@ def repair_planes(
                     # The board's copper-to-edge floor, as the two reconnect
                     # sub-runs above pass it (this one used to route at 0).
                     board_edge_clearance=_edge3,
+                    same_net_pad_clearance=_reconnect_snpc,
                     net_clearances=net_clearances,
                     layer_costs=(list(layer_costs) if layer_costs else None),  # #658 finalize sub-runs honor chain layer economics
                     # #539: without this the gate's plane-net vias were placed
@@ -3727,6 +3739,10 @@ Examples:
     args.hole_to_hole_clearance = resolve_cli_floor(
         args.input_file, 'hole_to_hole', args.hole_to_hole_clearance,
         defaults.HOLE_TO_HOLE_CLEARANCE, '--hole-to-hole-clearance')
+    # An explicit --board-edge-clearance is a routing floor the post-passes
+    # below hold too; omitted, it resolves to the plane-zone inset default,
+    # which they must not read as one (#1290).
+    _edge_given = args.board_edge_clearance is not None
     args.board_edge_clearance = resolve_cli_floor(
         args.input_file, 'board_edge_clearance', args.board_edge_clearance,
         defaults.PLANE_EDGE_CLEARANCE, '--board-edge-clearance')
@@ -3850,7 +3866,8 @@ Examples:
         try:
             from fix_kicad_drc_settings import effective_board_edge_clearance
             from pcb_modification import retract_castellated_landings
-            _edge = effective_board_edge_clearance(args.input_file, 0.0)
+            _edge = effective_board_edge_clearance(
+                args.input_file, args.board_edge_clearance if _edge_given else 0.0)
             if _edge > 0:
                 retract_castellated_landings(args.output_file, _edge)
         except Exception as e:
@@ -3866,17 +3883,25 @@ Examples:
         # #338: the oracle pass runs on OUTPUT_FILE, whose sibling .kicad_pro
         # is written only below (fix_project_for_output) -- so oracle_reconnect's
         # own project read finds nothing mid-chain. Resolve the board edge rule
-        # from the ORIGINAL input's project here (the plane-zone inset
-        # args.board_edge_clearance is NOT an enforced routing floor; see the
-        # ripped-net reconnect above).
+        # from the ORIGINAL input's project here -- or the flag, when it was
+        # GIVEN (#1290): omitted, args.board_edge_clearance is the plane-zone
+        # inset default, not an enforced routing floor.
         try:
             from fix_kicad_drc_settings import effective_board_edge_clearance
             # #441: the oracle must validate at the fab-floor-pinned edge, not the
             # board's raw (possibly sub-fab / 0) rule, so it agrees with the router
             # and grader. cli=0 -> read project rule, floor at fab edge minimum.
-            _oracle_edge = effective_board_edge_clearance(args.input_file, 0.0)
+            _oracle_edge = effective_board_edge_clearance(
+                args.input_file, args.board_edge_clearance if _edge_given else 0.0)
         except Exception:
             _oracle_edge = 0.0
+        # #581/#1290: the oracle's welds keep vias off same-net pads like the
+        # engine's own copper (the flag, else the persisted record).
+        if args.same_net_pad_clearance is not None:
+            _oracle_snpc = args.same_net_pad_clearance
+        else:
+            from protected_nets import read_snpc_for_pcb_data
+            _oracle_snpc = read_snpc_for_pcb_data(None, args.input_file)
         # LAYERS matter here even though the oracle routes on the board's own
         # copper_layers (audit finding): install_layer_clearances is called
         # with pcb_data=None just below, so kicad_dru falls back to
@@ -3907,7 +3932,8 @@ Examples:
             # forbidden-layer guards inside oracle_reconnect were inert.
             layer_costs=(list(args.layer_costs)
                          if getattr(args, 'layer_costs', None) else []),
-            board_edge_clearance=_oracle_edge)
+            board_edge_clearance=_oracle_edge,
+            same_net_pad_clearance=(_oracle_snpc if _oracle_snpc > 0 else -1.0))
         from kicad_dru import install_layer_clearances
         install_layer_clearances(_ocfg, None, args.input_file, None)  # #498
         # #1137: the class map the engine run resolved, by NAME.

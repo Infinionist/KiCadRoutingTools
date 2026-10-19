@@ -5381,7 +5381,9 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             clearance=cspec['clearance'], track_width=cspec['track_width'],
             via_size=cspec['via_size'], via_drill=cspec['via_drill'],
             grid_step=cspec['grid_step'], layers=list(cspec['layers']),
-            layer_costs=list(cspec['layer_costs']))
+            layer_costs=list(cspec['layer_costs']),
+            board_edge_clearance=cspec['board_edge_clearance'],
+            same_net_pad_clearance=cspec['same_net_pad_clearance'])
         # #1137: the board's .kicad_dru layer rules, installed exactly as the
         # finalize leg's _ocfg installs them (no board, so no design-rules
         # table either), and the run's resolved class map by NAME -- the
@@ -6348,6 +6350,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                     # applier's staged save numbers its nets afresh.
                     'net_clearances_by_name':
                         config.net_clearances_by_name(pcb_data.nets),
+                    # #1290: the run's resolved edge floor and same-net pad
+                    # via clearance, as the in-run oracle's _ocfg carries them.
+                    'board_edge_clearance': config.board_edge_clearance,
+                    'same_net_pad_clearance': config.same_net_pad_clearance,
                 }
                 # Hands-off for the reconcile comes from the FILL-AWARE
                 # checker instead of the oracle verdict: zone nets the model
@@ -6392,12 +6398,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 from kicad_oracle import (oracle_reconnect,
                                           oracle_net_widths_by_name,
                                           oracle_net_ids_by_name)
-                try:
-                    from fix_kicad_drc_settings import \
-                        effective_board_edge_clearance
-                    _oedge = effective_board_edge_clearance(input_file, 0.0)
-                except Exception:
-                    _oedge = 0.0
+                # #1290: the run's RESOLVED copper-to-edge floor, as the
+                # engine leg above gets it -- re-reading the project dropped an
+                # explicit --board-edge-clearance above the board's rule.
+                _oedge = config.board_edge_clearance
                 # #658 fifth power path: this config used to be BARE (no
                 # layers/layer_costs), so the oracle's weld router ran at
                 # UNIFORM layer economics -- on the #589 champion 86% of the
@@ -6415,7 +6419,10 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                     layer_costs=(list(config.layer_costs)
                                  if getattr(config, 'layer_costs', None)
                                  else []),
-                    board_edge_clearance=_oedge)
+                    board_edge_clearance=_oedge,
+                    # #581/#1290: its welds keep vias off same-net pads like
+                    # every other copper of this run.
+                    same_net_pad_clearance=config.same_net_pad_clearance)
                 # #658: power-net membership rides along so the weld leg's
                 # per-net KICAD_POWER_LAYER_COSTS multipliers
                 # (power_layer_config in oracle_reconnect) can fire; #1033:
