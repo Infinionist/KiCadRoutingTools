@@ -36,7 +36,7 @@ respawned (a call outlives this client, so a dropped link loses nothing).
 
 Modal routes run on Linux, KiCad's image python and its KiCad (modal_app.py):
 compare them only with Modal routes -- route the baseline arm here too.
-Placements are not made here; place first.
+Placements are not made here: place_modal.py places an arm on the same app.
 """
 import argparse
 import fcntl

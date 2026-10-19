@@ -13,6 +13,11 @@ and seed, with blocking first, then vias, copper_mm and segments.
   `route_diff.py` step and scores from the route step's own tally and the
   final file instead of `board_score` (blocking from its last
   JSON_SUMMARY_MIN, vias / copper / segments from the file); see below.
+- **`place_modal.py`** places a whole arm on Modal: every board and seed in
+  its own container, each `place_simple.py --seed N` of the tree being
+  measured (`--src`), into `OUT/<key>/s<seed>.kicad_pcb` -- where
+  `route_modal.py` looks for them. Place every arm of an A/B there (Linux and
+  the KiCad image's Python), never some on a Mac.
 - **`route_modal.py`** routes a whole arm on Modal with `route_placed.py
   --quick` (`--quick 2` for the seed judge, `--full` for the whole chain,
   the final route of a chosen placement), one container per board and seed.

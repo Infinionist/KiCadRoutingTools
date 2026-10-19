@@ -87,3 +87,32 @@ def _route(name, board, setn, files, quick):
 @app.function(cpu=4.0, timeout=3 * 3600, retries=0)
 def route(name: str, board: str, setn: str, files: dict, quick: int = 1) -> dict:
     return _route(name, board, setn, files, quick)
+
+
+def _place(name, files, args):
+    """place_simple.py with `args`, whose {in} and {out} name the call's input
+    files (`files`, written to in/) and its output directory; returns every
+    output file's bytes under 'out/<name>'."""
+    import subprocess
+    import time
+    d = f'/tmp/{name}'
+    for sub in ('in', 'out'):
+        os.makedirs(f'{d}/{sub}', exist_ok=True)
+    for fn, data in files.items():
+        with open(f'{d}/in/{fn}', 'wb') as fh:
+            fh.write(data)
+    argv = [x.replace('{in}', f'{d}/in').replace('{out}', f'{d}/out') for x in args]
+    t0 = time.time()
+    r = subprocess.run([sys.executable, '-X', 'utf8', f'{REPO}/py_placer/place_simple.py', *argv],
+                       capture_output=True, text=True, cwd=REPO)
+    res = {'name': name, 'rc': r.returncode, 'seconds': round(time.time() - t0, 1), 'prov': PROV,
+           'log': (r.stdout + r.stderr)[-20000:]}
+    for fn in os.listdir(f'{d}/out'):
+        res['out/' + fn] = open(f'{d}/out/{fn}', 'rb').read()
+    return res
+
+
+# one seed per call: place_simple runs a seed in one process
+@app.function(cpu=1.0, timeout=3 * 3600, retries=0)
+def place(name: str, files: dict, args: list) -> dict:
+    return _place(name, files, args)
