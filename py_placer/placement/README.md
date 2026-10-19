@@ -160,10 +160,11 @@ resistors, buttons). A decoupling cap belongs with the IC whose supply pin it
 decouples; a load or RC cap belongs with the part it loads. Do not send the
 power group to an edge: say `near` its power entry's group.
 
-**Crystals take care of themselves.** `place_simple` finds each passive crystal
-at its IC's oscillator pins and the load caps on the crystal's nets
-(`crystals.py`), and turns them into proximity claims (unless the intent
-already makes them): each crystal leg within 8.1 mm of its pin and each load
+**Crystals take care of themselves.** `check_floorplan --emit-intent` finds each
+passive crystal at its IC's oscillator pins and the load caps on the crystal's
+nets (`crystals.py`) and writes them into the intent as proximity claims
+(graded as warnings; `place_simple` derives the same rows itself when an intent
+lacks them): each crystal leg within 8.1 mm of its pin and each load
 cap within 2.2 mm of the crystal, pad edge to pad edge (three human boards in
 four do at least that well). A leg that reaches its pin through a series
 resistor (the RP2040's XOUT, an STM32's) is claimed link by link: the crystal
@@ -331,7 +332,6 @@ of it; `check_floorplan --intent` grades all of it.
 | `blocks[].rotation`, `rotation_candidates` | not read (`place_fanout_clearance --intent` holds them) | no rule checks a part's angle; the plan check bounds a zone on the declared angles, and `array_conflict` flags a row whose rotation contradicts them |
 | `arrays[]` | not read | yes (`array_formation`, `array_conflict`) |
 | `keep_away[]` | not read | yes (pad edge to pad edge, WARN unless its severity is raised); `route.py` reads the design brief's `keep_away` itself |
-| `blocks[].rigid` | not read | no: accepted by the loader, read by nothing |
 | `replicate[]` | not read (`place_pose replicate --intent` applies it) | yes |
 
 ## Moving parts by hand: place_pose

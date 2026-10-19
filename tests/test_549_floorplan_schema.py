@@ -140,9 +140,7 @@ KEY_SETS = {
     '_BLOCK_KEYS': {'name', 'group', 'refs', 'zone', 'side', 'exclusive',
                     'tolerance_mm', 'note', 'context',
                     # #893: a DECISION and a SET, never both on one block.
-                    'rotation', 'rotation_candidates',
-                    # #1052: opt-in, the block moves as one piece.
-                    'rigid'},
+                    'rotation', 'rotation_candidates'},
     '_KEEPOUT_KEYS': {'name', 'rect', 'circle', 'sides', 'allow', 'note',
                       'context'},
     '_EDGE_CONNECTOR_KEYS': {
@@ -288,8 +286,7 @@ def test_an_intent_using_every_known_key_loads():
                     'tolerance_mm': 0.7, 'rotation': 90,
                     'note': 'n', 'context': {'why': 'w'}},
                    {'name': 'mcu', 'refs': ['U1'],
-                    'rotation_candidates': [0, 90, 180, 270],
-                    'rigid': True}],
+                    'rotation_candidates': [0, 90, 180, 270]}],
         'keepouts': [{'name': 'k', 'rect': [0, 0, 6, 6], 'sides': ['F'],
                       'allow': ['MH1'], 'note': 'n', 'context': {'why': 'w'}},
                      {'name': 'k2', 'circle': [50, 5, 8], 'sides': ['F', 'B'],

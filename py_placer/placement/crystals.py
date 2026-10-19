@@ -19,9 +19,15 @@ roles imply:
   crystal pad on that net. A cap whose other pad is not ground is not a load
   cap, so it gets no claim.
 
-The rows are ordinary `proximity[]` claims, so `check_floorplan` grades them
-and `place_simple`'s claim term pulls each subject to its partner: the
-crystal to its IC, and each cap to the crystal.
+The rows are ordinary `proximity[]` claims, so `place_simple`'s claim term
+pulls each subject to its partner: the crystal to its IC, and each cap to the
+crystal. `check_floorplan --emit-intent` writes them into the intent's
+`proximity[]` (`floorplan.emit_intent`), where the grade reads them at WARN
+(`floorplan.derived_claim`: their limits are the corpus's, not the board's)
+and a review round can loosen or tighten one. place_simple and
+`check_groups` also derive them through `grouping.claim_rows`, beside the
+intent's own rows, for an intent that does not carry them; a pair the intent
+already claims keeps the intent's row.
 
 The limits are derived defaults, not declarations. They are read off the
 human-placed stress corpus by `tests/stress/placement_survey.py`

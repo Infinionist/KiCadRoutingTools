@@ -134,9 +134,9 @@ EDGE_BAND_SANITY_MM = 5.0
 #: run without the decap gate too); `place_pose`'s set/rotate/face take the
 #: caller's angle; `arrays[].rotation` is not a block claim and so not in
 #: `rotations_for_ref`; and `place_simple` does not read block rotations.
-#: Contrast `blocks[].side`, which is declarable and
-#: whose rule docs/floorplan-intent.md calls "vacuous, not conservative"
-#: because no search move carries a side: rotation is carried by every nudge.
+#: Contrast `blocks[].side`, which is declarable and which no search move
+#: carries (#836) -- `place_simple` applies a declared face before it
+#: anneals -- while rotation is carried by every nudge.
 #: 6 (#959, #1000): `edge_connectors[].side` -- the face a connector is on,
 #: compiled from the brief's `user_top_side` with a user-facing or
 #: perpendicular-cable connector. Declarable and graded (`edge_connector_side`,
@@ -146,9 +146,12 @@ EDGE_BAND_SANITY_MM = 5.0
 #: served part, order, rotation, pitch, axis) -- graded by `array_formation`;
 #: `fixed_poses[]` -- an exact pose a part is to be SEATED at, graded by an
 #: anchor the grade compiles from each entry; and `blocks[].rigid`, which
-#: declares a block one piece. One bump for the three: they
+#: declared a block one piece. One bump for the three: they
 #: arrived together, and each changes a verdict or a placement, so the rule
-#: above mandates it. An older build refuses each key by name.
+#: above mandates it. An older build refuses each key by name. `rigid` is
+#: refused by name since its only reader, the quench's group phase, was
+#: retired (5dccf2fa): a key nothing reads is a constraint its author thinks
+#: holds (`_RETIRED_BLOCK_KEYS`).
 #: 8 (#1142): `decaps.within_radius_refs` and `decaps.within_radius_mm` -- the
 #: caps a `--decaps-from` reference keeps within the tether search radius of
 #: their chip, and the radius it was read at. A held cap the graded board
@@ -174,7 +177,13 @@ EDGE_BAND_SANITY_MM = 5.0
 #: parts for it and the grade can be promoted is what the rule above asks
 #: about. An older
 #: build refuses the key by name.
-READER_VERSION = 11
+#: 12: a `proximity[]` row whose `context.source` is `placement.crystals`
+#: (`DERIVED_CLAIM_SOURCE`) -- a crystal claim `emit_intent` derives --
+#: is graded at WARN and not held by the placement gate. An older build
+#: reads the same row as a declared claim at the intent's `proximity`
+#: severity, ERROR by default, so the verdict differs and the rule above
+#: mandates the bump; an intent carrying such rows stamps `min_reader` 12.
+READER_VERSION = 12
 
 _TOP_LEVEL_KEYS = {
     'schema', 'kind', 'board', 'units', 'envelope', 'defaults', 'blocks',
@@ -197,9 +206,15 @@ _BLOCK_KEYS = {'name', 'group', 'refs', 'zone', 'side', 'exclusive',
                # #893. `rotation` is a DECISION (this angle);
                # `rotation_candidates` is a SET a search may choose from.
                # Declaring both on one block is refused -- see `_rotation`.
-               'rotation', 'rotation_candidates',
-               # #1052. Opt-in: the block is declared ONE piece.
-               'rigid'}
+               'rotation', 'rotation_candidates'}
+#: Block keys a retired reader honoured, refused by name with what replaced
+#: them rather than as unknown: an author who wrote one meant it.
+_RETIRED_BLOCK_KEYS = {
+    'rigid': ("`rigid` (#1052) was read only by the retired quench engine, "
+              "and nothing holds a block together now. place_simple moves "
+              "each group of the groups file (check_groups.py) together; "
+              "remove the key"),
+}
 #: #1051. One declared row of identical parts. `members` is ORDERED and
 #: literal (no globs): `order: "declared"` reads it as the order, and a glob
 #: has none. `serves` is the part the row serves (whose pin order
@@ -210,9 +225,9 @@ _ARRAY_KEYS = {'name', 'members', 'serves', 'order', 'rotation', 'pitch_mm',
 #: #1054. An exact pose a part is to be seated at. `basis` says whose fact it
 #: is: `declared` (the design brief), `mechanical` (mechanical.json), or
 #: `derived_default` -- nobody's: a pose a planner chose because nothing
-#: declared one (mounting holes at the board corners,
-#: `placement/mount_holes.py`). `rot`/`side` may be `"unknown"`; absent
-#: means nobody said.
+#: declared one (mounting holes at the board corners, say; no tool in this
+#: tree writes one now). `rot`/`side` may be `"unknown"`; absent means
+#: nobody said.
 #: `accept_courtyard_overlap` (#1060): the refs whose COURTYARD this pose may
 #: overlap -- a named waiver, carrying its `why`, of courtyard overlap only.
 _FIXED_POSE_KEYS = {'ref', 'x', 'y', 'rot', 'side', 'basis', 'why',
@@ -318,6 +333,18 @@ _PROXIMITY_KEYS = {'ref', 'near', 'max_mm', 'basis', 'pads', 'note', 'source',
 #: courtyard, so the word would name geometry the board does not have.
 _PROXIMITY_BASES = ('pad_edge', 'body')
 _PROXIMITY_DEFAULT_BASIS = 'pad_edge'
+#: The `context.source` of the crystal claims `crystals.crystal_claims`
+#: derives and `emit_intent` writes. Their limits are the human corpus's
+#: 75th percentile, which a quarter of human boards exceed, so such a row is
+#: graded at WARN whatever the intent's `proximity` severity, and the
+#: placement gate (`tether_gate_spec`) does not hold it. An author who declares
+#: a crystal claim of their own writes it without this source.
+DERIVED_CLAIM_SOURCE = 'placement.crystals'
+
+
+def derived_claim(claim) -> bool:
+    """A proximity row the toolchain derived, not one an author declared."""
+    return (claim.get('context') or {}).get('source') == DERIVED_CLAIM_SOURCE
 #: #1253. One declared keep-away: `rule` is ONE rule in route.py's own
 #: syntax (`AGGRESSOR:VICTIM:GAP`, `class=` terms), parsed by the router's
 #: `keep_away.parse_keep_away_rules`, so the grade and the router read the
@@ -415,8 +442,6 @@ class Zone:
     #: honoured exactly), and the set a search may choose from. Never both.
     rotation: Optional[float] = None
     rotation_candidates: Optional[Tuple[float, ...]] = None
-    #: #1052. The block is declared one piece (opt-in).
-    rigid: bool = False
     note: str = ''
     #: Free-form provenance, read by nothing (see `_BLOCK_KEYS`). Carried on
     #: the Zone rather than dropped: `keepouts`/`edge_connectors`/
@@ -1307,9 +1332,12 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
     for i, b in enumerate(raw.get('blocks') or []):
         if not isinstance(b, dict):
             raise IntentError(f"blocks[{i}]: expected an object")
+        name = b.get('name') or f"block{i}"
+        for key, why in _RETIRED_BLOCK_KEYS.items():
+            if key in b:
+                raise IntentError(f"blocks[{i}] ({name}): {why}")
         _reject_unknown(b, _BLOCK_KEYS, f"blocks[{i}]")
         _entry_context(b, f"blocks[{i}]")
-        name = b.get('name') or f"block{i}"
         if str(name).startswith(MECHANICAL_ANCHOR_PREFIX):
             raise IntentError(
                 f"blocks[{i}]: the name {name!r} is reserved -- "
@@ -1322,10 +1350,6 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
                 f"`{FIXED_POSE_ANCHOR_PREFIX}` blocks are compiled from "
                 f"`fixed_poses[]` by the grade itself (#1054). Declare the "
                 f"pose there instead")
-        if 'rigid' in b and not isinstance(b['rigid'], bool):
-            raise IntentError(
-                f"blocks[{i}] ({name}): rigid {b['rigid']!r}, expected true "
-                f"or false")
         if name in seen_names:
             raise IntentError(f"blocks[{i}]: duplicate block name {name!r}")
         seen_names.add(name)
@@ -1359,7 +1383,6 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
             tolerance_mm=b.get('tolerance_mm'),
             rotation=rot,
             rotation_candidates=rot_cands,
-            rigid=bool(b.get('rigid', False)),
             note=b.get('note', '') or '',
             context=b.get('context') or {},
         ))
@@ -3023,8 +3046,9 @@ def tether_gate_spec(intent: Intent) -> Dict[str, object]:
             and intent.severity_of('decap_pin_distance') == ERROR):
         out['decap_pin_distance'] = {
             'limit': float(d['max_pin_distance_mm']), 'decaps': d}
-    if intent.proximity and intent.severity_of('proximity') == ERROR:
-        out['proximity'] = tuple(dict(c) for c in intent.proximity)
+    _held = [c for c in intent.proximity if not derived_claim(c)]
+    if _held and intent.severity_of('proximity') == ERROR:
+        out['proximity'] = tuple(dict(c) for c in _held)
     return out
 
 
@@ -4586,13 +4610,14 @@ def rule_zone_side(ctx) -> Iterator[Violation]:
 def rule_assembly_side(ctx) -> Iterator[Violation]:
     """#837. Parts on a face the declared assembly policy does not populate.
 
-    WARN by default, and that is the design rather than timidity. Nothing in
-    the engine can move a part between faces -- `_Part.side` is set once at
-    construction and no move carries it (#836) -- so an ERROR here would be a
-    red mark no run could clear, which is the defect `zone_side` already
-    carries (`docs/floorplan-intent.md`: "vacuous, not conservative"). A
-    second instance of it would be a step backwards. An author who wants the
-    hard gate sets `severity: {"assembly_side": "error"}` and means it.
+    WARN by default, and that is the design rather than timidity. No search
+    move carries a side -- `_Part.side` is set once at construction (#836) --
+    and `place_simple` puts a part on a face only where a declaration names
+    one for it (`declared_side_claims`: `blocks[].side`,
+    `edge_connectors[].side`, `fixed_poses[].side`), which `assembly.sides`
+    is not. So an ERROR here would be a red mark no run could clear. An
+    author who wants the hard gate sets `severity: {"assembly_side":
+    "error"}` and means it.
 
     `severity_of(..., default=WARN)` rather than `ctx.sev(...)`, which
     hard-defaults to ERROR -- the same trap `rule_decap_ungraded` records.
@@ -4710,9 +4735,10 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
                 measured={'found': False})
             continue
         # #959 (#1000): the face the brief's viewing side puts it on. A
-        # fixed WARN, never the configured severity: nothing moves a part
-        # between faces (#836), and the placer does not read it, so it can
-        # steer nothing.
+        # fixed WARN, never the configured severity (the loader refuses
+        # `error` for it): no search move carries a side (#836), and
+        # place_simple puts the connector on this face before it places, as
+        # the message says.
         if c.get('side') and part.side != c['side']:
             yield Violation(
                 rule='edge_connector_side', severity=WARN, ref=ref,
@@ -6087,6 +6113,7 @@ def rule_proximity(ctx) -> Iterator[Violation]:
         # construction, and a consumer resolves it against the intent's own
         # row to recover the pair exactly.
         akey = f"proximity[{i}:{ref}~{near}]"
+        sev = WARN if derived_claim(claim) else ctx.sev('proximity')
 
         a_fp = ctx.pcb.footprints.get(ref)
         b_fp = ctx.pcb.footprints.get(near)
@@ -6141,7 +6168,7 @@ def rule_proximity(ctx) -> Iterator[Violation]:
             if gap <= limit + legality.EPS:
                 continue
             yield Violation(
-                rule='proximity', severity=ctx.sev('proximity'),
+                rule='proximity', severity=sev,
                 ref=ref, block=ctx.owner.get(ref),
                 message=(f"{ref} is {gap:.2f}mm from {near}, body to body, "
                          f"past the declared {limit:.2f}mm "
@@ -6237,7 +6264,7 @@ def rule_proximity(ctx) -> Iterator[Violation]:
             if gap <= limit + legality.EPS:
                 continue
             yield Violation(
-                rule='proximity', severity=ctx.sev('proximity'),
+                rule='proximity', severity=sev,
                 ref=ref, block=ctx.owner.get(ref),
                 message=(f"{ref} pad {pad.pad_number} is {gap:.2f}mm from "
                          f"{near} pad {partner.pad_number}"
@@ -8511,9 +8538,9 @@ def plan_check(intent: Intent, pcb_data, pcb_file: str, *,
                 severity=intent.severity_of('plan_board_crowded', WARN),
                 message=(f"the declared assembly policy puts every part on "
                          f"{sides}.Cu, and on that one face they do not fit "
-                         f"by area (utilisation {util1}). Nothing moves a "
-                         f"part between faces (#836), so this is the "
-                         f"policy's problem, not the plan's"),
+                         f"by area (utilisation {util1}). No placement "
+                         f"search moves a part between faces (#836), so "
+                         f"this is the policy's problem, not the plan's"),
                 measured={'utilisation': util1},
                 expected={'utilisation': '<= 1.0'}))
     out.sort(key=lambda v: v.sort_key())
@@ -9081,11 +9108,14 @@ def emit_intent(pcb_data, pcb_file: str, *,
 
     The emitted intent grades CLEAN by construction. That is the point: it is a
     baseline to tighten, and the round trip (emit then grade) is what proves the
-    rules are wired to real geometry rather than silently skipping.
+    rules are wired to real geometry rather than silently skipping. The
+    crystal claims it writes (`proximity[]`, `context.source`
+    `placement.crystals`) keep it so by grading at WARN: their limits are the
+    human corpus's 75th percentile, not this board's.
 
-    It writes no `arrays`, no `fixed_poses` and no `rigid` by default (#1051,
-    #1052, #1054): which parts form a row, where a part must sit and which
-    block moves as one piece are design decisions, not observations.
+    It writes no `arrays` and no `fixed_poses` by default (#1051, #1054):
+    which parts form a row and where a part must sit are design decisions,
+    not observations.
     `derive_arrays='auto'` writes the row detector's suggestions
     (`arrays.suggest_arrays`, pose-blind) as `arrays` -- SUGGESTIONS, so
     unlike everything else here they need not grade clean. Its DROP step is
@@ -9902,6 +9932,26 @@ def emit_intent(pcb_data, pcb_file: str, *,
     # stamp says which build can act on it.
     if 'within_radius_refs' in (doc.get('decaps') or {}):
         doc['min_reader'] = max(int(doc.get('min_reader') or 0), 8)
+    # The crystal claims place_simple would derive on its own
+    # (`crystals.crystal_claims`: each crystal at its IC's oscillator pins,
+    # through a series part where there is one, and each load cap at its
+    # crystal), written down so the grade and a review round see them. They
+    # read no pose. A pair the brief already relates, either way round,
+    # keeps the brief's row; graded at WARN (`derived_claim`).
+    from .crystals import crystal_claims
+    taken = set()
+    for c in (brief_fragment or {}).get('proximity') or ():
+        taken |= {(str(c.get('ref')), str(c.get('near'))),
+                  (str(c.get('near')), str(c.get('ref')))}
+    xrows = []
+    for r in crystal_claims(pcb_data)[0]:
+        if (r['ref'], r['near']) in taken:
+            continue
+        taken.add((r['ref'], r['near']))
+        xrows.append(r)
+    if xrows:
+        doc['proximity'] = list(doc.get('proximity') or []) + xrows
+        doc['min_reader'] = max(int(doc.get('min_reader') or 0), 12)
     return doc
 
 

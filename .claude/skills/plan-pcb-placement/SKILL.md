@@ -167,7 +167,11 @@ Write `wk/<run>/groups.json` (the format is in `py_placer/placement/grouping.py`
   into the IC's group. The rest of their clock group follows
   only when the crystal is that group's `anchor`; any other member stays in
   the clock group. Every intent `proximity` claim works the same way: the
-  claimed part joins its partner's group.
+  claimed part joins its partner's group. The emitted intent carries these
+  crystal claims as `proximity[]` rows (`context.source`
+  `placement.crystals`, `max_mm` 8.1 and 2.2), graded as warnings; in a
+  review round, edit a row's `max_mm` to loosen or tighten that loop, or
+  drop the `source` to make it an error-graded claim.
 - **Hints, each a soft term of the objective:** `near` (a list of groups to
   sit against), `apart` (groups to keep 3 mm from), `edge` (`N`/`S`/`E`/`W`,
   a group that belongs on a board side; a group holding an edge connector

@@ -198,11 +198,11 @@ One row is one claim is one limit:
 Each compiled row is graded by `proximity` and priced by `place_simple`: the
 subject is pulled toward its partner's pads on shared nets, and each mm past
 `max_mm` costs ("Which rules the placer can see" in
-[floorplan-intent.md](floorplan-intent.md)). `place_simple` also claims each
+[floorplan-intent.md](floorplan-intent.md)). `--emit-intent` also claims each
 passive crystal at its IC's oscillator pins, and its load caps at the
-crystal, by itself, at derived default limits; those claims are not written
-into the intent, so declare the row here when the loop must be graded or
-held to a tighter number.
+crystal, at derived default limits graded as warnings; declare the row here
+when the loop must be held to a tighter number or graded as an error, and the
+brief's row replaces the derived one.
 
 **A list `ref` is sugar and is expanded at compile time.**
 `{"ref": ["C1","C3"], "near": "U2", "max_mm": 2.0}` becomes two intent rows.
