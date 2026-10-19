@@ -119,7 +119,8 @@ def main(argv=None):
             with open(os.path.join(d, f's{s}.log'), 'w') as fh:
                 fh.write(res.get('log', ''))
             rep = os.path.join(d, f's{s}.json')
-            if res.get('rc') == 0 and os.path.exists(rep):
+            if res.get('rc') in (0, 4) and os.path.exists(rep):
+                # exit 4: placed and written, with parts no legal pose was found for
                 j = json.load(open(rep))
                 print(f"{a.prefix} {key} s{s}: {res['seconds']:.0f} s cost {j['final']['cost']:.1f}"
                       + (f" ILLEGAL {j['illegal']}" if j.get('illegal') else ''), flush=True)
