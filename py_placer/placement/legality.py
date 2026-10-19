@@ -1618,9 +1618,12 @@ class BodyOverlapPair(NamedTuple):
     gate_exempt: str = ''
 
 
-def _pair_exact(a: GradedPart, b: GradedPart, s: str, ra, rb):
+def _pair_exact(a: GradedPart, b: GradedPart, s: str, ra, rb,
+                area_only: bool = False):
     """(area, depth, overlap_rect, area_a, area_b) of a pair on shared side
     `s`: on the drawn outlines where the parts carry them, else the rects.
+    `area_only` answers the area alone (the rest None), without measuring
+    the overlap's depth -- the costly part, which the area does not need.
 
     A part's `poly` is used only on its OWN side; the far side of a
     through-hole part is its drilled-pad box -- or, since #1206, one box per
@@ -1636,6 +1639,9 @@ def _pair_exact(a: GradedPart, b: GradedPart, s: str, ra, rb):
                 ix, rect_area(ra), rect_area(rb))
     ga = pa if pa is not None else far_geom(ra)
     gb = pb if pb is not None else far_geom(rb)
+    if area_only:
+        area = ga.intersection(gb).area
+        return (area if area > EPS else 0.0), None, None, None, None
     area, depth, ix = shape_overlap(ga, gb)
     return area, depth, ix, ga.area, gb.area
 
@@ -1654,7 +1660,7 @@ def pair_overlap_area_exact(a: GradedPart, b: GradedPart) -> float:
         rb = rect_on(s, b.side, b.rect, b.tht_rect)
         if ra is None or rb is None or rect_overlap_area(ra, rb) <= EPS:
             continue
-        worst = max(worst, _pair_exact(a, b, s, ra, rb)[0])
+        worst = max(worst, _pair_exact(a, b, s, ra, rb, area_only=True)[0])
     return worst
 
 

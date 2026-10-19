@@ -45,6 +45,16 @@ otherwise only come back over it, a jump the overlap weight refuses late in
 the run. Only the kinds a board can make are drawn: no group moves on a
 board without groups, no swap without two parts of one footprint.
 
+A part seated on an edge (`edge_seat`: a declared edge connector) is the
+exception: every move of it is projected onto its edge line, into the
+nearest stretch of the edge it may use, so it only slides along the edge --
+and turns, when it has no mating face. It may abut another seated part, and
+its stretches already keep it clear of the fixed ones. When a long one (its
+pads spread past the anneal's longest step) can lie either way round, the
+first quarter of the run is made twice (`anneal`).
+At the end the seated parts on each edge are pushed apart along it in their
+order (`edge_seat.pack`) before the legality pass.
+
 `reach` falls from a sixth of the board as (1 - progress)^2, to 0.1 mm. A
 move is kept when it lowers the cost, or with probability exp(-delta / T);
 T falls geometrically from where a move changing the cost by the median
@@ -64,6 +74,8 @@ import numpy as np
 
 from placement import simple
 from placement.legality import BOARD_TOL
+from placement.edge_seat import (SEAT_GAP_MM, legal_on_edge, pack, pad_span, project,
+                                 reseat, rot_key)
 from placement.simple import ROTS, legal, nearest_legal, target
 
 MOVES = {'shift': 0.40, 'turn': 0.15, 'swap': 0.10, 'jump': 0.10, 'dock': 0.10,
@@ -93,6 +105,11 @@ def _place(st, ref, x, y, rot):
     st._inc_intent.clear()
 
 
+def _half_turn(a, b) -> bool:
+    """Whether turns `a` and `b` are half a turn apart."""
+    return abs((a - b) % 360.0 - 180.0) < 1e-6
+
+
 def _turn(x, y, q):
     """(x, y) turned by q degrees (a multiple of 90), the state's way."""
     q = int(round(q)) % 360
@@ -106,23 +123,35 @@ def _turn(x, y, q):
 
 
 class Annealer:
-    def __init__(self, model, movable: List[str], *, seed: int = 0):
+    def __init__(self, model, movable: List[str], *, seed: int = 0, seats=None):
         self.model = model
         self.st = model.state
         st = self.st
+        # parts held on a board edge (`edge_seat`): a move only slides them
+        # along it, or turns one with no mating face
+        self.seats = dict(seats or {})
+        # the long seated parts whose way round the anneal has chosen
+        # (`anneal`'s two starts): their turns then stop at a quarter
+        self.no_flip = frozenset()
         self.mov = sorted(r for r in movable if r in st.parts)
         self.movset = movset = set(self.mov)
+        # what a seated part's pairs are priced differently against: the
+        # parts the anneal does not move, and the other seated parts
+        self.walls = sorted((set(st.parts) - movset) | set(self.seats))
         self.rng = random.Random(seed)
         self.groups = [(n, [r for r in m if r in movset]) for n, m in model.groups]
         self.groups = [(n, m) for n, m in self.groups if len(m) >= 2]
         whole = dict(model.groups)
         self.free_groups = [(n, m) for n, m in self.groups
                             if all(r in movset for r in whole[n])]
-        by_fp: Dict[str, List[str]] = {}
+        # twins: two parts of one footprint, seated on one edge or neither (a
+        # seated part's pose is on its own edge, a free part's on none)
+        def twin_key(r):
+            return (st.parts[r].footprint_name, self.seats[r].edge if r in self.seats else None)
+        by_fp: Dict[tuple, List[str]] = {}
         for r in self.mov:
-            by_fp.setdefault(st.parts[r].footprint_name, []).append(r)
-        self.twins = {r: [o for o in by_fp[st.parts[r].footprint_name] if o != r]
-                      for r in self.mov}
+            by_fp.setdefault(twin_key(r), []).append(r)
+        self.twins = {r: [o for o in by_fp[twin_key(r)] if o != r] for r in self.mov}
         # the board less the margin the legality gate holds a courtyard to
         # (`QuenchState.usable`: the larger of the clearance and the edge
         # clearance), so a pose inside it is never refused for the edge
@@ -161,6 +190,48 @@ class Annealer:
         c, h = self.st.parts[r].rect(), self.half
         return (c[0] - h, c[1] - h, c[2] + h, c[3] + h)
 
+    def _seat_pair(self, a, b):
+        """For a pair with a seated part: None when it is not this term's to
+        price -- the seat's stretches already keep a seated part legal against
+        every fixed one -- else how much less than the clearance it keeps: two
+        seated parts may abut (a declared pose's check,
+        `edge_seat.legal_on_edge`; they keep SEAT_GAP_MM), a seated and a
+        free part keep the clearance. 0.0 for any other pair."""
+        sa, sb = a in self.seats, b in self.seats
+        if not (sa or sb):
+            return 0.0
+        if (sa and b not in self.movset) or (sb and a not in self.movset):
+            return None
+        return 2.0 * self.half - SEAT_GAP_MM if sa and sb else 0.0
+
+    def _seat_correction(self, mine):
+        """What `_seat_pair` changes in a move's overlap, which the Rust sum
+        prices at the plain clearance: each seated mover's pairs with the
+        fixed parts (not priced) and with the other seated parts (SEAT_GAP_MM
+        apart), each pair once."""
+        mset = set(mine)
+        fix = 0.0
+        for a in mine:
+            if a not in self.seats:
+                continue
+            A = self._grown(a)
+            for b in self.walls:
+                if b == a or (b in mset and b < a and b in self.seats) \
+                        or not self.faces[a] & self.faces[b]:
+                    continue
+                B = self._grown(b)
+                ox = min(A[2], B[2]) - max(A[0], B[0])
+                oy = min(A[3], B[3]) - max(A[1], B[1])
+                if ox <= 0 or oy <= 0:
+                    continue
+                fix -= ox * oy      # out: what the plain clearance priced
+                less = self._seat_pair(a, b)
+                if less is not None:
+                    ox, oy = ox - less, oy - less
+                    if ox > 0 and oy > 0:
+                        fix += ox * oy
+        return fix
+
     def _outside(self, r):
         """How far `r`'s courtyard is off the board, as an area: its overhang
         past each side times its size along that side -- the area off while
@@ -173,6 +244,8 @@ class Annealer:
         a pose the gate refuses is never clean. Only a courtyard near a
         cutout, a notch or a rounded corner pays for it; the rest are
         answered by the gate's grid (`rect_bbox_decides`)."""
+        if r in self.seats:
+            return 0.0      # on its edge by design, its overhang declared
         c = self.st.parts[r].rect()
         i = self.inner
         w, hh = c[2] - c[0], c[3] - c[1]
@@ -222,10 +295,13 @@ class Annealer:
         h = self.half
         if refs is not None:
             P, pid = self.st.parts, self.model._pid
-            return simple.grid_router.overlap_sum(
+            total = simple.grid_router.overlap_sum(
                 total, h, [pid(r) for r in mine],
                 np.asarray([P[r].rect() for r in mine], dtype=float).reshape(-1, 4),
                 self.model._CR, self.face_ids)
+            if self.seats:
+                total += self._seat_correction(mine)
+            return total
         mset = set(mine)
         grown = {}
         for a in mine:
@@ -233,11 +309,18 @@ class Annealer:
             for b in self.names:
                 if b == a or (b in mset and b < a) or not self.faces[a] & self.faces[b]:
                     continue
+                less = self._seat_pair(a, b) if self.seats else 0.0
+                if less is None:
+                    continue
                 B = grown.get(b) or grown.setdefault(b, self._grown(b))
                 ox = min(A[2], B[2]) - max(A[0], B[0])
+                if less:
+                    ox -= less
                 if ox <= 0:
                     continue
                 oy = min(A[3], B[3]) - max(A[1], B[1])
+                if less:
+                    oy -= less
                 if oy > 0:
                     total += ox * oy
         return total
@@ -260,21 +343,29 @@ class Annealer:
         new = self._move(kind, reach)
         if not new:
             return new
+        out = {r: v for r, v in new.items() if r not in self.seats}
         rs = []
-        for r, (x, y, rot) in new.items():
+        for r, (x, y, rot) in out.items():
             p = self.st.parts[r]
             p.ensure_rotation(rot)
             rs.append(p.rect(x, y, rot))
-        u = (min(q[0] for q in rs), min(q[1] for q in rs),
-             max(q[2] for q in rs), max(q[3] for q in rs))
-        i = self.inner
-        if u[2] - u[0] > i[2] - i[0] or u[3] - u[1] > i[3] - i[1]:
-            return None
-        dx = max(0.0, i[0] - u[0]) - max(0.0, u[2] - i[2])
-        dy = max(0.0, i[1] - u[1]) - max(0.0, u[3] - i[3])
-        if dx == 0.0 and dy == 0.0:
-            return new
-        return {r: (x + dx, y + dy, rot) for r, (x, y, rot) in new.items()}
+        if rs:
+            u = (min(q[0] for q in rs), min(q[1] for q in rs),
+                 max(q[2] for q in rs), max(q[3] for q in rs))
+            i = self.inner
+            if u[2] - u[0] > i[2] - i[0] or u[3] - u[1] > i[3] - i[1]:
+                return None
+            dx = max(0.0, i[0] - u[0]) - max(0.0, u[2] - i[2])
+            dy = max(0.0, i[1] - u[1]) - max(0.0, u[3] - i[3])
+            if dx or dy:
+                out = {r: (x + dx, y + dy, rot) for r, (x, y, rot) in out.items()}
+        for r, pose in new.items():     # an edge part slides along its edge
+            if r in self.seats:
+                now = self.st.parts[r].rot
+                if r in self.no_flip and _half_turn(pose[2], now):
+                    pose = (pose[0], pose[1], now)
+                out[r] = project(self.seats[r], pose, now)
+        return out
 
     def _move(self, kind, reach):
         rng, st = self.rng, self.st
@@ -287,7 +378,10 @@ class Annealer:
         if kind == 'turn':
             r = rng.choice(self.mov)
             x, y, rot = self.pose(r)
-            return {r: (x, y, rng.choice([q for q in ROTS if abs(q - rot % 360.0) > 1e-6]))}
+            turns = self.seats[r].lines if r in self.seats else ROTS
+            turns = [q for q in turns if abs(q - rot % 360.0) > 1e-6
+                     and not (r in self.no_flip and _half_turn(q, rot))]
+            return {r: (x, y, rng.choice(turns))} if turns else None
         if kind == 'swap':
             r = rng.choice(self.mov)
             if not self.twins[r]:
@@ -461,6 +555,9 @@ class Annealer:
             cx = rng.uniform(i[0] + w / 2.0, max(i[0] + w / 2.0, i[2] - w / 2.0))
             cy = rng.uniform(i[1] + h / 2.0, max(i[1] + h / 2.0, i[3] - h / 2.0))
             pose = (cx - (c[0] + c[2]) / 2.0, cy - (c[1] + c[3]) / 2.0, rot)
+            if r in self.seats:     # a random spot on its own edge
+                pose = project(self.seats[r], pose, was[2])
+                p.ensure_rotation(pose[2])
             _place(st, r, *pose)
             ov = self.overlap([r])
             if best is None or ov < best[0]:
@@ -584,8 +681,10 @@ class Annealer:
             r = self.rng.choice(self.mov)
             x, y, rot = self.pose(r)
             reach = self.span / 6.0
-            dc = self.price({r: (x + self.rng.uniform(-reach, reach),
-                                 y + self.rng.uniform(-reach, reach), rot)})
+            pose = (x + self.rng.uniform(-reach, reach), y + self.rng.uniform(-reach, reach), rot)
+            if r in self.seats:
+                pose = project(self.seats[r], pose, rot)
+            dc = self.price({r: pose})
             if abs(dc) > 1e-9:
                 ds.append(abs(dc))
         if not ds:
@@ -642,7 +741,7 @@ def scatter(model, movable: List[str], seed: int = 0):
 
 
 def anneal(model, movable: List[str], *, moves: int = 11000, seconds: float = 0.0,
-           seed: int = 0, log=None, repair: bool = False) -> Dict:
+           seed: int = 0, log=None, repair: bool = False, seats=None) -> Dict:
     """Anneal from the live poses and leave the best overlap-free placement
     seen applied, each part then held to the exact legality. With `repair`,
     a run that never came clean is first mended where it stands
@@ -651,54 +750,112 @@ def anneal(model, movable: List[str], *, moves: int = 11000, seconds: float = 0.
     'tracked_best', 't0', 'stats': {kind: (tried, kept)}, 'capped',
     'reseated' (parts moved to their nearest legal pose afterwards),
     'repaired' (the run never came clean and `Annealer.repair` mended it)}."""
-    a = Annealer(model, movable, seed=seed)
+    a = Annealer(model, movable, seed=seed, seats=seats)
     st = model.state
+    for r, seat in a.seats.items():     # back on its edge after the scatter
+        p = st.parts[r]
+        pose = project(seat, (p.x, p.y, p.rot))
+        p.ensure_rotation(pose[2])
+        _place(st, r, *pose)
     t_start = time.time()
     model.reprice_all()         # parts may have moved outside the model
     model.total()               # ... and the index and grids with them
     t0 = a.start_temperature()
-    cur = model.total()['cost']
-    ov = a.overlap()
-    start = cur
-    best, best_poses = (cur, {r: a.pose(r) for r in a.mov}) if ov < CLEAN else (math.inf, None)
     kinds = a.kinds()
-    wts = [MOVES[k] for k in kinds]
-    stats = {k: [0, 0] for k in kinds}
     reach0 = a.span / 6.0
-    window = [0, 0]             # moves tried, kept, since the last log line
     late = int(BIG_UNTIL * moves)       # from here no group turns or swaps
-    capped = False
-    done = 0            # moves executed (a `seconds` cap stops the loop early)
+    run = {'capped': False, 'done': 0}  # `seconds` stops the loop early; moves executed
+    stats = {k: [0, 0] for k in kinds}
+
+    def begin():
+        cur = model.total()['cost']
+        ov = a.overlap()
+        best = (cur, {r: a.pose(r) for r in a.mov}) if ov < CLEAN else (math.inf, None)
+        return {'cur': cur, 'ov': ov, 'best': best, 'window': [0, 0]}
+
+    def loop(v, k0, k1):
+        wts = [MOVES[k] if k0 < late or k not in BIG_GROUP_MOVES else 0.0 for k in kinds]
+        for k in range(k0, k1):
+            if seconds and time.time() - t_start > seconds:
+                run['capped'] = True
+                return
+            run['done'] += 1
+            frac = k / moves
+            T = t0 * (T_END / t0) ** frac
+            a.lam = LAM_START * (LAM_END / LAM_START) ** frac
+            reach = max(0.1, reach0 * (1.0 - frac) ** 2)
+            if k == late:
+                wts = [0.0 if kk in BIG_GROUP_MOVES else w for kk, w in zip(kinds, wts)]
+            kind = a.rng.choices(kinds, wts)[0]
+            new = a.propose(kind, reach)
+            stats[kind][0] += 1
+            if not new:
+                continue
+            kept, dc, do = a.trial(new, T)
+            if kept:
+                stats[kind][1] += 1
+                v['cur'] += dc
+                v['ov'] = max(0.0, v['ov'] + do)
+                if v['ov'] < CLEAN and v['cur'] < v['best'][0] - 1e-9:
+                    v['best'] = (v['cur'], {r: a.pose(r) for r in a.mov})
+            v['window'][0] += 1
+            v['window'][1] += int(kept)
+            if log and moves >= 10 and (k + 1) % (moves // 10) == 0:
+                log(f"move {k + 1:6d}: T {T:7.3f} lam {a.lam:7.1f} reach {reach:5.2f} "
+                    f"cost {v['cur']:7.1f} overlap {v['ov']:6.2f} mm2 best {v['best'][0]:7.1f} "
+                    f"accepted {v['window'][1] / max(1, v['window'][0]):.2f}")
+                v['window'] = [0, 0]
+
+    # A LONG seated part with no mating face may lie either way round along
+    # its edge, and which way is one decision for the whole board: a 1x24
+    # header turned half round reverses its pins against every part wired to
+    # them, and once those parts gather round one order the anneal cannot
+    # turn it back (fusb302_pd_dev, its two headers free: 7 of 12 seeds
+    # ended reversed, 100-180 airwire crossings against 26-34). Long is
+    # pads spread along the edge further than the anneal's longest step
+    # (`reach0`, a sixth of the board): its partners cannot follow it
+    # there, where a short part's half turn is a local change its ordinary
+    # turn moves still make. So the first quarter runs twice from the same
+    # start, those parts as they are and each turned half round, and the
+    # anneal goes on from the cheaper; after it they still turn, but never
+    # half round.
+    flips = sorted(r for r, sd in a.seats.items()
+                   if any(rot_key(q + 180.0) in sd.lines for q in sd.lines)
+                   and pad_span(st, sd) > reach0)
     t_loop = time.time()
-    for k in range(moves):
-        if seconds and time.time() - t_start > seconds:
-            capped = True
-            break
-        done = k + 1
-        frac = k / moves
-        T = t0 * (T_END / t0) ** frac
-        a.lam = LAM_START * (LAM_END / LAM_START) ** frac
-        reach = max(0.1, reach0 * (1.0 - frac) ** 2)
-        if k == late:
-            wts = [0.0 if kk in BIG_GROUP_MOVES else w for kk, w in zip(kinds, wts)]
-        kind = a.rng.choices(kinds, wts)[0]
-        new = a.propose(kind, reach)
-        stats[kind][0] += 1
-        if not new:
-            continue
-        kept, dc, do = a.trial(new, T)
-        if kept:
-            stats[kind][1] += 1
-            cur += dc
-            ov = max(0.0, ov + do)
-            if ov < CLEAN and cur < best - 1e-9:
-                best, best_poses = cur, {r: a.pose(r) for r in a.mov}
-        window[0] += 1
-        window[1] += int(kept)
-        if log and moves >= 10 and (k + 1) % (moves // 10) == 0:
-            log(f"move {k + 1:6d}: T {T:7.3f} lam {a.lam:7.1f} reach {reach:5.2f} cost {cur:7.1f} "
-                f"overlap {ov:6.2f} mm2 best {best:7.1f} accepted {window[1] / max(1, window[0]):.2f}")
-            window = [0, 0]
+    if flips and late > 0:
+        a.no_flip = frozenset(flips)
+        p0 = {r: a.pose(r) for r in a.mov}
+        rng0 = a.rng.getstate()
+        tried = []
+        for turned in (False, True):
+            for r, pose in p0.items():
+                if turned and r in flips:
+                    pose = project(a.seats[r], (pose[0], pose[1], pose[2] + 180.0), pose[2])
+                st.parts[r].ensure_rotation(pose[2])
+                _place(st, r, *pose)
+            model.reprice_all()
+            a.rng.setstate(rng0)
+            v = begin()
+            if not turned:
+                start = v['cur']
+            loop(v, 0, late)
+            tried.append((v['cur'] + a.lam * v['ov'], turned, v,
+                          {r: a.pose(r) for r in a.mov}, a.rng.getstate()))
+        _score, _turned, v, poses, rng = min(tried, key=lambda t: (t[0], t[1]))
+        for r, pose in poses.items():
+            st.parts[r].ensure_rotation(pose[2])
+            _place(st, r, *pose)
+        model.reprice_all()
+        model.total()
+        a.rng.setstate(rng)
+        loop(v, late, moves)
+    else:
+        v = begin()
+        start = v['cur']
+        loop(v, 0, moves)
+    best, best_poses = v['best']
+    capped, done = run['capped'], run['done']
     loop_seconds = time.time() - t_loop
     repaired = False
     if repair and best_poses is None and not capped and a.repair(T_END) < CLEAN:
@@ -707,9 +864,21 @@ def anneal(model, movable: List[str], *, moves: int = 11000, seconds: float = 0.
         pose = best_poses[r] if best_poses is not None else a.pose(r)
         st.parts[r].ensure_rotation(pose[2])
         st.apply_move(r, *pose)
-    reseated = []
-    for r in a.mov:
+    # the parts seated on one edge pushed apart along it, in their order;
+    # then the free parts, each to its nearest legal pose; then a seated
+    # part still illegal slides along its edge to a legal spot on it
+    reseated = pack(st, a.seats) if a.seats else []
+    for r in [q for q in a.mov if q not in a.seats] + sorted(a.seats):
         p = st.parts[r]
+        if r in a.seats:
+            if not legal_on_edge(st, r, (p.x, p.y, p.rot)):
+                got = reseat(st, a.seats[r])
+                if got:
+                    st.parts[r].ensure_rotation(got[2])
+                    st.apply_move(r, *got)
+                    if r not in reseated:
+                        reseated.append(r)
+            continue
         if legal(st, r, p.x, p.y, p.rot):
             continue
         for rot in (p.rot,) + tuple(q for q in ROTS if q != p.rot):

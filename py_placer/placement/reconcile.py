@@ -277,11 +277,23 @@ class _Geometry:
         return rect
 
 
-def _edge_of(rect, bounds) -> Optional[str]:
+def _edge_of(rect, bounds, geo=None, ref=None, rot=None) -> Optional[str]:
+    """The edge the grade reads `rect` on (`floorplan._nearest_edge`, at
+    the state's margin, `ref`'s mating face at `rot` -- its board turn when
+    None -- breaking a tie between two sides it reaches)."""
     if rect is None or bounds is None:
         return None
-    from .floorplan import _nearest_edge
-    return _nearest_edge(rect, bounds)
+    from .floorplan import _nearest_edge, edge_facing
+    st = geo.state if geo is not None else None
+
+    def facing():
+        fp = geo.pcb.footprints.get(ref) if geo is not None and ref else None
+        if fp is None:
+            return None
+        turn = rot if isinstance(rot, (int, float)) else None
+        return edge_facing({}, fp, geo.bodies.get(ref), rotation=turn)['facing']
+    return _nearest_edge(rect, bounds, st.edge_gate.margin if st else 0.0,
+                         facing=facing)
 
 
 def same_pose(a, b) -> bool:
@@ -369,7 +381,8 @@ def reconcile(pcb, board_path: str, *, brief_fragment: Optional[Dict] = None,
             p = mech['poses'][ref]
             values['mechanical'] = {
                 'value': _edge_of(geo.seat_rect(ref, entry, p['x'], p['y'],
-                                                p['rot']), bounds),
+                                                p['rot']), bounds, geo, ref,
+                                  p['rot']),
                 'authority': mech_auth, 'source': mech_src}
         if ref in intent_edges:
             ie = intent_edges[ref]
@@ -381,7 +394,7 @@ def reconcile(pcb, board_path: str, *, brief_fragment: Optional[Dict] = None,
                               else 'hypothesis'),
                 'source': intent_source}
         values['board'] = {'value': _edge_of(geo.seat_rect(ref, entry),
-                                             bounds),
+                                             bounds, geo, ref),
                            'authority': 'inferred', 'source': board_path}
         _row(ref, 'edge', values, lambda a, b: a == b,
              'the edge each channel puts this part on, read off the rect the '

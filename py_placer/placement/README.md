@@ -195,7 +195,13 @@ two (C15, C20) by the 93LC46 EEPROM U4, the core group's other IC on +3V3; the
 +3V3 tree in green. The other parts keep back from U3's pad rows, leaving the
 fan-out room.*
 
-**The anneal.** Every unlocked part starts at a random place on the board.
+**The anneal.** Every unlocked part starts at a random place on the board,
+except an edge connector the intent declares on an edge (`edge_connectors[]`
+with an `edge`): that one is held to its edge, its mating face out and flush
+with the low end of its overhang band, and its moves only slide it along the
+edge -- past a locked part rather than through it -- or, when it has no
+mating face (a vertical header, a test pad), turn it. At the end the parts on
+one edge are pushed apart along it in their order.
 Moves shift, turn, swap, dock a part against a partner pad, jump a part to its
 wiring target, and move, turn or swap whole groups. A move is kept when it
 lowers the cost, or uphill with a probability that falls as the run cools. An
@@ -286,6 +292,7 @@ of it; `check_floorplan --intent` grades all of it.
 | zones (`blocks[].zone`, exclusive zones) | binding: members held inside, strangers kept out of an exclusive zone | yes |
 | declared faces (`blocks[].side`, edge and face claims) | applied before the anneal (parts flipped) | yes |
 | `fixed_poses[]` | applied: seated at the declared pose and held | yes |
+| `edge_connectors[]` with an `edge` | applied to an unlocked edge part (connector, receptacle, switch, test pad; a cap the emitter declared because it overhangs is not): held to that edge where every edge-connector conjunct holds (band, edge read, pad copper clear of the outline), sliding along it | yes |
 | `decaps` limits (`max_distance_mm`, `max_pin_distance_mm`) | not read (the decap term pulls decaps to their pins, without a limit) | yes |
 | `blocks[].rotation`, `rotation_candidates` | not read (`place_fanout_clearance --intent` holds them) | yes |
 | `blocks[].rigid`, `arrays[]` | not read | yes |
@@ -383,6 +390,7 @@ cap and the escape routing do not collide. See
 | `design_brief.py`, `reconcile.py` | The design brief and `mechanical.json`, compiled into the intent |
 | `groups.py` | Placement blocks (KiCad groups, sheets) for intent zones and `route.py --group` |
 | `mating.py`, `connector_geometry.py`, `edge_facing.py` | Which way a connector opens; its drawn envelope against its edge; pad rows facing the outline |
+| `edge_seat.py` | An unlocked declared edge connector held to its edge: its turns, its distance, the stretches of the edge it may slide along, the end-of-run push apart |
 | `arrays.py` | Declared `arrays[]`: the formation and the pin order, graded |
 | `roles.py`, `emc_roles.py`, `part_class.py` | What a part is (regulator, crystal, ...), its EMC legs, its position class |
 | `escape.py`, `pair_order.py`, `routability.py` | Escape lanes per face, pin-order inversions, corridors and net affinity for the grade |

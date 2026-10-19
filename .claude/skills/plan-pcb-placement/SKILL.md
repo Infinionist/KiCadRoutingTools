@@ -16,7 +16,7 @@ gave it and place again.
 Invocation: `/plan-pcb-placement <mode> <board.kicad_pcb> [intent.json] [--rounds N]`,
 where mode is `place` or `full`. With no mode, use `full`. A given
 `intent.json` is the intent: use it in place of emitting one (§3.2). `--rounds N` is
-the most placement rounds (§3.5), default 3. The run stops at the first round
+the most placement rounds (§3.6), default 3. The run stops at the first round
 whose best seed's fast route has no blocking net, so a board that routes
 clean after one round gets no review and no input changes.
 
@@ -107,6 +107,13 @@ Take the pose from the design brief or `mechanical.json` when the board has
 one, from the user when they state it, and from the input board only when it
 is a believable layout (not a pile). A pose the intent declares in
 `fixed_poses[]` needs no lock: `place_simple` seats it there and holds it.
+A connector whose EDGE is decided but not its place along it needs no lock
+either: leave it unlocked with its `edge` in the intent's
+`edge_connectors[]` entry (and an `along_edge_band` when only part of the
+edge will do), and `place_simple` holds it to that edge, mating face out,
+and slides it along. On a pile the emitted entry carries no `edge` -- the
+staging pose says nothing -- so write it from the brief, `mechanical.json`
+or the user.
 
 ### 3.2 Emit the intent
 
@@ -180,7 +187,34 @@ read every WARN: a part with more signal links to another group may belong
 there; a decap "exempt" because no IC of its group carries its rail is right
 for a load or RC cap and wrong for a real decap.
 
-### 3.4 Place
+### 3.4 Orient and check the connectors and fixed parts (your judgement)
+
+```bash
+python3 -X utf8 py_tools/check_floorplan.py wk/<run>/fixed.kicad_pcb --intent wk/<run>/intent.json
+```
+
+For each edge connector, read its edge, its facing (`facing ... pass`, or
+`facing abstained (...)` when its body names no face) and the group you gave
+it. Then decide, from the part's function and its datasheet:
+
+- **The edge, and roughly where along it** when that matters (a USB or
+  barrel jack where the enclosure opens, a debug header out of the user's
+  way): `edge`, and `along_edge_band` as fractions of the edge.
+- **The mating face of a connector whose facing abstained** (a side-entry
+  JST drawn symmetric about its pads): find the side its opening is on in the
+  datasheet's PCB-layout drawing and write `mating_face` (`+x`/`-x`/`+y`/`-y`,
+  the footprint's own frame). The side of its solder tabs, away from the
+  contact row, is a hint to check against the drawing, not a rule: it is
+  wrong on 3 of 50 side-entry connectors in the corpus. A `Vertical` part has
+  no face to declare.
+
+Write these into the intent's `edge_connectors[]` entries (or into the brief,
+then emit again, §3.2). Check the fixed parts -- mounting holes, switches, LEDs
+a panel shows -- against the brief or `mechanical.json`, and move any that is
+wrong with `place_pose ... set ... lock` as in §3.1. Run check_floorplan again:
+no `edge_connector` error.
+
+### 3.5 Place
 
 ```bash
 python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/r1/s{seed}.kicad_pcb' \
@@ -216,9 +250,9 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/r1/
   parts on the side of the chip where their pins are, connectors' partners
   right behind them.
 
-### 3.5 Fast-route the seeds; review and place again until one routes clean
+### 3.6 Fast-route the seeds; review and place again until one routes clean
 
-A round is: place the seeds (§3.4), fast-route each, keep the best (steps
+A round is: place the seeds (§3.5), fast-route each, keep the best (steps
 1-2). **If the best fast route has no blocking net, stop: that board is the
 placement.** Otherwise run the review loop (steps 3-6), which finds what the
 objective missed, and place again, up to `--rounds` rounds in all (default
@@ -276,7 +310,7 @@ clean): turn each two-pad part it lists as turned against its wiring with
 `place_pose ... rotate`, then check the board again (`check_assembly`,
 `check_floorplan --intent`, `render_placement`).
 
-### 3.6 Route (full mode)
+### 3.7 Route (full mode)
 
 Route the kept placement with the full chain (`plan-pcb-routing`'s recipe,
 no `--quick-pass`), then `board_score` and `check_complete` with every spec
@@ -315,7 +349,7 @@ flag. If DONE does not come, classify the failure (§4) before you re-place.
     board/fab floor: parameters (grid, ripup budget, width).
   - Geometry already at the floor, failures clustered at one part's escape
     face, or `py_tools/check_reachability.py --pad REF.PAD` says CAGED:
-    placement. Change the inputs (§3.5), re-place, strip, re-route. A finer
+    placement. Change the inputs (§3.6), re-place, strip, re-route. A finer
     grid alone never widens a gap.
 - **`route.py`'s failure tally covers only the nets that step owns** (#1069).
   Count the board's open nets with `check_connected` or `board_score`.
@@ -342,7 +376,7 @@ flag. If DONE does not come, classify the failure (§4) before you re-place.
    - **First reach DONE**; nothing else before it.
    - **Watch long jobs.** Never leave a background job unwatched for more than
      20 minutes.
-   - **Placement rounds stop at the first clean fast route** (§3.5), or
+   - **Placement rounds stop at the first clean fast route** (§3.6), or
      after `--rounds`.
    - **If DONE will not come:** after three consecutive DIFFERENT approaches
      that each fail to lower `unrouted` + `broken` (then the rest of

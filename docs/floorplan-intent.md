@@ -138,7 +138,7 @@ source, suspect, suspect_reason
 | `defaults` | `zone_tolerance_mm` |
 | `blocks[]` | `name`, `group`, `refs`, `zone`, `side`, `exclusive`, `tolerance_mm`, `rotation`, `rotation_candidates`, `rigid` (`true` declares the block one piece; needs `min_reader` 7; no placement tool reads it), `note`, `context` |
 | `keepouts[]` | `name`, `rect`, `circle`, `sides`, `allow`, `note`, `context` |
-| `edge_connectors[]` | `ref`, `edge`, `overhang_mm`, `max_setback_mm`, `center_on_edge`, `along_edge_band`, `side` (`F`/`B`, the connector's face, graded as the advisory `edge_connector_side`; needs `min_reader` 6), `class`, `note`, `context`, and the emitter-written `source`, `suspect`, `suspect_reason`, `overhang_capped`, `observed_overhang_mm` |
+| `edge_connectors[]` | `ref`, `edge`, `overhang_mm`, `max_setback_mm`, `center_on_edge`, `along_edge_band`, `side` (`F`/`B`, the connector's face, graded as the advisory `edge_connector_side`; needs `min_reader` 6), `mating_face` (`+x`/`-x`/`+y`/`-y`, see "Which way it opens" below), `class`, `note`, `context`, and the emitter-written `source`, `suspect`, `suspect_reason`, `overhang_capped`, `observed_overhang_mm` |
 | `edge_connectors[].overhang_mm` | `min`, `max` |
 | `edge_connectors[].center_on_edge` | `tolerance_mm` (required — see below) |
 | `edge_connectors[].along_edge_band` | `from`, `to` |
@@ -495,6 +495,28 @@ points west, not out of the east edge
   reversed connector reaches `board_score` through this ERROR's floorplan
   count, not through the assembly verdict.
 
+### Which way it opens: `mating_face`
+
+The facing conjunct reads a connector's mating face off its drawn body
+(`placement/mating.py`), and abstains when the body sits centred on its pads:
+a side-entry JST drawn "symmetric about its pads" names no face, so the grade
+exempts it and `place_simple` may turn it any way, its opening into the board
+included. `mating_face` declares the face for such a part: the side, in the
+footprint's own unrotated frame, its mating face opens on.
+
+```jsonc
+{ "ref": "J7", "edge": "south", "mating_face": "+y" }
+```
+
+It is used only where the body names no face. There it is the face for
+`place_simple`'s edge seat (only the turns that point it at the edge) and for
+the grade, which then grades the entry's facing whatever its class, at ERROR.
+The emitter never writes it. No footprint cue predicts it reliably enough to
+infer: over the corpus's human boards, the best one (the face is on the side of
+the mounting pads) agrees with the designer on 47 of 50 named side-entry
+connectors, 94%, and fails on two that use tigard J7's own footprint. So it is
+the placement skill's step 3.4 that writes it, from the part's datasheet.
+
 ### WHERE ALONG the edge: `center_on_edge` and `along_edge_band`
 
 `edge_connector` grades the overhang band, the nearest-edge identity, the
@@ -754,7 +776,7 @@ reading.
 | `zone_side` | yes | **applied before placing**: a member on the other face is flipped at its pose (the writer's flip) | — |
 | `fixed_poses[]` (anchor `fixed:<ref>`) | yes, as `zone_containment` on the anchor | **seated and held**: written at the declared pose before placing, and fixed for the whole anneal | — |
 | `proximity` | yes | **priced**: each claimed pad's distance to its partner's nearest pad (pad centres, whatever the `basis`) is a term of the objective, and a claimed part's `jump` move aims at its partner's pads | the term is a distance to lower, not `max_mm`: a claim past its limit is reported by the grade only |
-| `edge_connector` | yes | only `side`, applied before placing | an edge seat is a bound on being OFF the board, and every move keeps the courtyards on it. Lock a connector at its edge pose in the file, or declare that pose in `fixed_poses[]` |
+| `edge_connector` | yes | **seated**: an unlocked edge part (connector, receptacle, switch or test pad) declared on an edge is held there, its mating face (`mating_face` where the body names none) pointing out and flush with the low end of its `overhang_mm` band, and only slides along it; its `side` is applied before placing | a cap or jumper declared only because it overhangs is placed like any other part. Lock a connector at its edge pose in the file, or declare that pose in `fixed_poses[]`, when the position along the edge is fixed |
 | `must_lock` | yes | — | it is a claim about the FILE; no pose satisfies or violates it. `place_simple` holds the parts the file locks |
 | `assembly_side` | yes | — | no move carries a side; a part changes face only by a declaration (the `zone_side` row). **warn** by default so it cannot become a permanent red mark |
 | `envelope` | yes | — | a claim about the intent FILE against the board, not about any pose |

@@ -1,0 +1,595 @@
+"""Edge connectors placed from a pile: each unlocked edge part (a connector,
+receptacle, switch or test pad: SEATED_CLASSES) the intent declares on a
+board edge (`edge_connectors[]` with an `edge`) is seated on that edge before
+the anneal, and the anneal then only slides it along the edge (and turns it,
+when it has no mating face).
+
+The seat is read with the grade's own measurements (`rule_edge_connector`):
+
+* the TURN points its mating face off the board (`mating.mating_face_local`,
+  `mating.facing_edge`). A part with no in-plane face (a vertical header, a
+  test pad, a symmetric terminal) may take any quarter turn, each with its
+  own seat, and the anneal chooses: designers lay such headers both ways --
+  noahfc's five north-edge 1x03 headers stand ACROSS the edge, five abreast
+  where only three fit lying along it, and tigard's 2x05 J5 lies along its
+  edge;
+* the distance from the edge puts the part past the outline by the low end
+  of the entry's `overhang_mm` band as the grade reads it
+  (`connector_geometry.band_amount`: the drawn body, else the courtyard at
+  the board margin) -- flush, without one -- and no nearer the edge than
+  keeps every pad's copper the board's edge clearance inside it;
+* ALONG the edge it may go wherever every conjunct the grade puts on it
+  holds -- the band (a corner adds the side it crosses), the pad copper's
+  edge clearance against the true outline (a rounded corner), the edge the
+  grade reads it on (`floorplan._nearest_edge` on the rule's own seat rect),
+  a declared `along_edge_band` / `center_on_edge` -- and a declared pose's
+  check passes against every part the anneal does not move. Each turn's
+  stretches are read by testing poses every SCAN_STEP_MM and at every
+  position where the part's courtyard just meets a fixed part's or a board
+  margin, each change between two of them bisected to REFINE_MM, so a gap
+  barely wider than the part (tigard's J7 between H3 and J6: 0.1 mm of
+  play) is found. A move that lands outside them snaps to the nearest one,
+  so a connector hops past a locked switch rather than pushing through it.
+
+Its legality is a declared pose's (`seeder._fixed_pose_check`): its courtyard
+may cross the outline when every pad and hole stays on the board, and
+courtyards may abut -- two seated parts keep SEAT_GAP_MM, and `pack` pushes
+the parts on one edge apart along it after the anneal.
+"""
+from __future__ import annotations
+
+from collections import namedtuple
+from types import SimpleNamespace
+from typing import Dict, List, Optional, Tuple
+
+ROTS = (0.0, 90.0, 180.0, 270.0)
+#: The step a seat line is scanned at, and the precision each change found
+#: between two steps is then bisected to.
+SCAN_STEP_MM = 0.5
+REFINE_MM = 0.02
+#: The step and the reach of a part's slide to a legal spot on its edge after
+#: the anneal.
+SLIDE_STEP_MM = 0.25
+SLIDE_REACH_MM = 12.0
+#: Pad copper is held this much beyond the edge clearance, so a pose written
+#: to the board's 0.1 um never reads as copper exactly AT the clearance (the
+#: copper grader fails 0.3000 against 0.3).
+COPPER_SLACK_MM = 0.005
+#: Parts farther than this from a seat line cannot take part in its checks.
+NEAR_MM = 3.0
+#: The gap two seated parts keep along an edge: their courtyards may abut (a
+#: declared pose's check), and 10 um keeps a touch rounded in the written
+#: poses from reading as an overlap.
+SEAT_GAP_MM = 0.01
+EPS = 1e-6
+
+#: The part classes (`part_class.classify_part`) a declared edge seats: what
+#: plugs in, is pressed or is probed at the edge. The intent emitter declares
+#: ANY part whose courtyard overhangs the margin, so a cap or a solder jumper a
+#: designer put by the edge is declared too; held there, noahfc's C6 and C8
+#: (two decaps the emitter put on the north edge) cost 3 blocking nets and +6%
+#: copper over 16 seeds against letting them sit by their ICs.
+SEATED_CLASSES = ('edge_receptacle', 'edge_actuator', 'connector_affinity', 'testpoint')
+
+#: One turn's seat: `coord` is the origin's fixed coordinate across the edge,
+#: `free` the stretches `(a0, a1)` of the origin's coordinate along it.
+Line = namedtuple('Line', 'coord free')
+#: `axis` is the coordinate the part slides along: 0 (x) on a north or south
+#: edge, 1 (y) on east or west. `lines` maps each turn it may take to its
+#: Line; `face` is its mating face ('' when it has none in the plane).
+EdgeSeat = namedtuple('EdgeSeat', 'ref edge axis face lines')
+
+
+def rot_key(rot) -> float:
+    return round(float(rot) % 360.0, 6) % 360.0
+
+
+def _turns(state, pcb, geometry, entry, edge) -> Tuple[List[float], str]:
+    """The turns `entry`'s part may take on `edge` and its mating face: the
+    turns that point the face at the edge -- the face its body reads, else
+    the one the entry declares (`mating_face`) -- or every quarter turn when
+    it has none in the plane (its own turn first)."""
+    from .mating import facing_edge, mating_face_local
+    ref = str(entry['ref'])
+    lf = mating_face_local(pcb.footprints[ref], geometry.get(ref))
+    face = lf.face or entry.get('mating_face')
+    if face:
+        return [r for r in ROTS if facing_edge(face, r) == edge], face
+    own = rot_key(state.parts[ref].rot)
+    return [own] + [r for r in ROTS if r != own], ''
+
+
+def pad_span(state, seat) -> float:
+    """How far apart along its edge `seat`'s part spreads its pad centres,
+    at the turn of its seat that spreads them furthest."""
+    part = state.parts[seat.ref]
+    span = 0.0
+    for rot in seat.lines:
+        part.ensure_rotation(rot)
+        along = [p[seat.axis] for p in part.pad_globals(0.0, 0.0, rot)]
+        if along:
+            span = max(span, max(along) - min(along))
+    part.ensure_rotation(part.rot)
+    return span
+
+
+def _pad_box(pcb, ref, pose):
+    """The box of `ref`'s pad copper at `pose`, posed as the grade poses it."""
+    from .legality import footprint_at_pose
+    pads = [p for p in footprint_at_pose(pcb.footprints[ref], pose).pads
+            if getattr(p, 'pad_type', '') != 'np_thru_hole']
+    if not pads:
+        return None
+    return (min(p.global_x - p.size_x / 2.0 for p in pads), min(p.global_y - p.size_y / 2.0 for p in pads),
+            max(p.global_x + p.size_x / 2.0 for p in pads), max(p.global_y + p.size_y / 2.0 for p in pads))
+
+
+class _Probe:
+    """The grade's conjuncts on one declared edge part, at a trial pose."""
+
+    def __init__(self, state, pcb, pcb_file, bodies, outline):
+        from .connector_geometry import geometry_for
+        from .legality import BoardOutlineGate
+        self.state, self.pcb, self.bodies = state, pcb, bodies
+        self.geo = geometry_for(state, pcb, pcb_file)
+        self.bounds = outline.get('bounds') or pcb.board_info.board_bounds
+        self.copper = BoardOutlineGate(pcb.board_info,
+                                       state.board_edge_clearance + COPPER_SLACK_MM)
+        #: each part's mating face in its own frame ('' for none)
+        self.faces: Dict[str, str] = {}
+
+    def band(self, ref, edge, pose) -> float:
+        from .connector_geometry import band_amount
+        st = self.state
+        legacy = st.edge_gate.rect_outside_amount(st.parts[ref].rect(*pose))
+        return band_amount(self.geo, ref, edge, legacy, st.edge_gate.margin, pose=pose)[0]
+
+    def copper_clear(self, ref, pose) -> bool:
+        """Every pad's copper the board's edge clearance inside the outline
+        (`connector_geometry.pad_copper_outside`), asked pad by pad only when
+        the box round all of them is not clear."""
+        import math
+        from .connector_geometry import pad_boxes, pad_copper_outside
+        x, y, rot = pose
+        c, s = math.cos(math.radians(rot)), math.sin(math.radians(rot))
+        box = None
+        for _i, lx, ly, hx, hy, tilt in pad_boxes(self.geo, ref):
+            a = math.radians(tilt + rot)
+            ca, sa = abs(math.cos(a)), abs(math.sin(a))
+            ex, ey = hx * ca + hy * sa, hx * sa + hy * ca
+            px, py = x + c * lx + s * ly, y - s * lx + c * ly
+            q = (px - ex, py - ey, px + ex, py + ey)
+            box = q if box is None else (min(box[0], q[0]), min(box[1], q[1]),
+                                         max(box[2], q[2]), max(box[3], q[3]))
+        if box is None or self.copper.rect_outside_amount(box) <= 1e-9:
+            return True
+        return pad_copper_outside(self.geo, self.copper, ref, pose) <= 1e-9
+
+    def ok(self, entry, edge, pose, obstacles) -> bool:
+        """Every conjunct `rule_edge_connector` and check_drc put on the part
+        at `pose`, and a declared pose's check against `obstacles`."""
+        from .floorplan import _nearest_edge, drawn_body_rect, edge_seat_rect
+        from .mating import facing_edge
+        from .seeder import _fixed_pose_check
+        st, ref = self.state, entry['ref']
+        x, y, rot = pose
+        band = self.band(ref, edge, pose)
+        lim = entry.get('overhang_mm') or {}
+        if band < float(lim.get('min', 0.0)) - EPS:
+            return False
+        if lim.get('max') is not None and band > float(lim['max']) + EPS:
+            return False
+        if not self.copper_clear(ref, pose):
+            return False
+        proxy = SimpleNamespace(x=x, y=y, rotation=rot)
+        seat_rect, _basis = edge_seat_rect(
+            entry, st.parts[ref].rect(x, y, rot),
+            lambda: drawn_body_rect(self.bodies.get(ref), proxy))
+        face = self.faces.get(ref)
+        if _nearest_edge(seat_rect, self.bounds, st.edge_gate.margin,
+                         facing=facing_edge(face, rot) if face else None) != edge:
+            return False
+        return _fixed_pose_check(st, ref, pose, obstacles)[0] is not None
+
+
+def _near(state, ref, pose, pool):
+    """`{other: pose}` for the parts of `pool` within NEAR_MM of `ref` at
+    `pose`: the only ones a declared pose's check can find a conflict with."""
+    c = state.parts[ref].rect(*pose)
+    out = {}
+    for o, op in pool.items():
+        q = state.parts[o].rect(*op)
+        if (q[0] < c[2] + NEAR_MM and c[0] < q[2] + NEAR_MM
+                and q[1] < c[3] + NEAR_MM and c[1] < q[3] + NEAR_MM):
+            out[o] = op
+    return out
+
+
+def _seat_coord(probe, ref, edge, rot, axis, along, target):
+    """The origin's coordinate across `edge` that puts `ref` `target` past
+    the outline as the grade reads it, held back so every pad's copper is the
+    board's edge clearance inside it."""
+    state, pcb = probe.state, probe.pcb
+    part = state.parts[ref]
+    bounds = pcb.board_info.board_bounds
+    out = -1.0 if edge in ('north', 'west') else 1.0     # outward along the coordinate
+    edge_at = {'north': bounds[1], 'south': bounds[3], 'west': bounds[0], 'east': bounds[2]}[edge]
+
+    def pose(c):
+        return (along, c, rot) if axis == 0 else (c, along, rot)
+    # from the part centred across the board (its band lowest) to well past the edge
+    cr = part.rect(0.0, 0.0, rot)
+    perp = 1 - axis
+    inner = (bounds[perp] + bounds[perp + 2]) / 2.0 - (cr[perp] + cr[perp + 2]) / 2.0
+    outer = edge_at + out * 40.0
+    for _ in range(50):
+        mid = (inner + outer) / 2.0
+        if probe.band(ref, edge, pose(mid)) <= target + EPS:
+            inner = mid
+        else:
+            outer = mid
+    pb = _pad_box(pcb, ref, (0.0, 0.0, rot))
+    if pb is None:
+        return inner
+    e = state.board_edge_clearance + COPPER_SLACK_MM
+    # the origin past which a pad comes nearer the edge than its clearance
+    limit = (edge_at - out * e) - (pb[perp + 2] if out > 0 else pb[perp])
+    return min(inner, limit) if out > 0 else max(inner, limit)
+
+
+def _free_stretches(probe, entry, edge, axis, coord, rot, lo, hi, fixed):
+    """The stretches of [lo, hi] where `entry`'s part seats at `rot` with
+    every conjunct holding (`_Probe.ok`): tested every SCAN_STEP_MM and at
+    each position where its courtyard just meets a fixed part's or a board
+    margin -- where a stretch narrower than a step can lie -- and each change
+    between two tested positions bisected to REFINE_MM."""
+    if hi < lo - EPS:
+        return []
+    state, ref = probe.state, entry['ref']
+    cr = state.parts[ref].rect(0.0, 0.0, rot)
+    perp = 1 - axis
+    lo_p, hi_p = coord + cr[perp], coord + cr[perp + 2]     # the courtyard across the edge
+    cand = [lo + k * SCAN_STEP_MM for k in range(int((hi - lo) / SCAN_STEP_MM) + 1)] + [hi]
+    for o, op in fixed.items():
+        q = state.parts[o].rect(*op)
+        if q[perp] < hi_p + NEAR_MM and lo_p < q[perp + 2] + NEAR_MM:
+            cand += [q[axis] - cr[axis + 2], q[axis + 2] - cr[axis]]
+    b, m = probe.pcb.board_info.board_bounds, state.edge_gate.margin
+    cand += [b[axis] + m - cr[axis], b[axis + 2] - m - cr[axis + 2]]
+    cand = sorted({round(a, 6) for a in cand if lo - EPS <= a <= hi + EPS})
+    # only the fixed parts the line passes near can conflict with it
+    span = ((lo + cr[0], lo_p, hi + cr[2], hi_p) if axis == 0
+            else (lo_p, lo + cr[1], hi_p, hi + cr[3]))
+    pool = {o: op for o, op in fixed.items() if _overlaps(state.parts[o].rect(*op), span, NEAR_MM)}
+
+    def ok(a):
+        pose = (a, coord, rot) if axis == 0 else (coord, a, rot)
+        return probe.ok(entry, edge, pose, _near(state, ref, pose, pool))
+    tested = [(a, ok(a)) for a in cand]
+    pts = tested[:1]
+    for (a0, k0), (a1, k1) in zip(tested, tested[1:]):
+        if k0 != k1:        # the last good position before the change
+            good, bad = (a0, a1) if k0 else (a1, a0)
+            while abs(bad - good) > REFINE_MM:
+                mid = (good + bad) / 2.0
+                if ok(mid):
+                    good = mid
+                else:
+                    bad = mid
+            pts.append((good, True))
+        pts.append((a1, k1))
+    free, start, last = [], None, None
+    for a, k in pts:
+        if k:
+            start = a if start is None else start
+            last = a
+        elif start is not None:
+            free.append((start, last))
+            start = None
+    if start is not None:
+        free.append((start, last))
+    return free
+
+
+def _overlaps(q, c, grow):
+    return (q[0] < c[2] + grow and c[0] < q[2] + grow
+            and q[1] < c[3] + grow and c[1] < q[3] + grow)
+
+
+def seats(state, pcb, pcb_file, intent, movable) -> Tuple[Dict[str, EdgeSeat], List[str]]:
+    """`({ref: EdgeSeat}, notes)` for the movable parts the intent puts on an
+    edge, each already moved onto its edge, in the middle of the longest
+    stretch it has at its own turn (else at the turn with the most room)."""
+    from .body import board_bodies
+    from .floorplan import edge_span, outline_state
+    out: Dict[str, EdgeSeat] = {}
+    notes: List[str] = []
+    # every entry naming an edge whose part is an edge part by class (a
+    # `connector_affinity` entry an author gave an edge included)
+    from .part_class import classify_part
+    entries = []
+    for c in intent.edge_connectors:
+        ref = c.get('ref')
+        if ref not in movable or c.get('edge') not in ('north', 'south', 'east', 'west'):
+            continue
+        cls = classify_part(pcb.footprints[ref], ref).name
+        if cls not in SEATED_CLASSES:
+            notes.append(f"{ref} is declared on the {c['edge']} edge but is not an edge part "
+                         f"({cls or 'no part class'}): placed as any other part")
+            continue
+        entries.append(c)
+    if not entries:
+        return out, notes
+    bodies = board_bodies(pcb, pcb_file)
+    outline = outline_state(pcb, pcb_file)
+    probe = _Probe(state, pcb, pcb_file, bodies, outline)
+    bounds = pcb.board_info.board_bounds
+    fixed = {o: (q.x, q.y, q.rot) for o, q in state.parts.items() if o not in movable}
+    for c in entries:
+        ref, edge = str(c['ref']), c['edge']
+        part = state.parts[ref]
+        rots, face = _turns(state, pcb, bodies, c, edge)
+        probe.faces[ref] = face
+        if not rots:
+            notes.append(f"edge connector {ref}: its mating face ({face}) points at no edge "
+                         f"at a quarter turn; left to the anneal")
+            continue
+        target = float((c.get('overhang_mm') or {}).get('min', 0.0))
+        axis = 0 if edge in ('north', 'south') else 1
+        e = state.board_edge_clearance + COPPER_SLACK_MM
+        lines = {}
+        for rot in rots:
+            part.ensure_rotation(rot)
+            # along: its pads the edge clearance inside the board's span (a
+            # long header runs corner to corner, its courtyard past both
+            # ends), narrowed to a declared band
+            cr = part.rect(0.0, 0.0, rot)
+            pb = _pad_box(pcb, ref, (0.0, 0.0, rot)) or cr
+            lo = bounds[axis] + e - pb[axis]
+            hi = bounds[axis + 2] - e - pb[axis + 2]
+            coord = _seat_coord(probe, ref, edge, rot, axis, (lo + hi) / 2.0, target)
+            along = c.get('along_edge_band')
+            if along is None and c.get('center_on_edge'):
+                along = {'mm': float(c['center_on_edge']['tolerance_mm'])}
+            if along is not None:
+                s0, s1, _basis = edge_span(state.edge_gate, bounds, edge, outline)
+                if s0 is not None:
+                    mid_off = (cr[axis] + cr[axis + 2]) / 2.0    # the courtyard centre from the origin
+                    if 'mm' in along:
+                        centre = (s0 + s1) / 2.0
+                        f0, f1 = centre - along['mm'], centre + along['mm']
+                    else:
+                        f0 = s0 + float(along['from']) * (s1 - s0)
+                        f1 = s0 + float(along['to']) * (s1 - s0)
+                    lo, hi = max(lo, f0 - mid_off), min(hi, f1 - mid_off)
+            free = _free_stretches(probe, c, edge, axis, coord, rot, lo, hi, fixed)
+            if free:
+                lines[rot] = Line(coord, tuple(free))
+        if not lines:
+            part.ensure_rotation(part.rot)
+            notes.append(f"edge connector {ref}: no room along the {edge} edge; left to the anneal")
+            continue
+        seat = EdgeSeat(ref, edge, axis, face, lines)
+        out[ref] = seat
+        own = rot_key(part.rot)
+        rot = own if own in lines else max(lines, key=lambda r: _room(lines[r]))
+        a0, a1 = max(lines[rot].free, key=lambda f: f[1] - f[0])
+        x, y = ((a0 + a1) / 2.0, lines[rot].coord) if axis == 0 else (lines[rot].coord, (a0 + a1) / 2.0)
+        part.ensure_rotation(rot)
+        part.x, part.y, part.rot = x, y, rot
+        notes.append(f"edge connector {ref} on the {edge} edge"
+                     + (f", facing it ({face})" if face else
+                        f", no mating face: {len(lines)} turn(s) seat there"))
+    return out, notes
+
+
+def _room(line) -> float:
+    return sum(f1 - f0 for f0, f1 in line.free)
+
+
+def project(seat: EdgeSeat, pose, rot_now=None) -> Tuple[float, float, float]:
+    """`pose` moved onto `seat`'s edge: its turn when the seat has that turn
+    (else `rot_now`, else the seat's first), the distance from the edge that
+    turn's, and its position along the edge in that turn's nearest free
+    stretch."""
+    x, y, rot = pose
+    rot = rot_key(rot)
+    if rot not in seat.lines:
+        rot = rot_key(rot_now) if rot_now is not None and rot_key(rot_now) in seat.lines \
+            else next(iter(seat.lines))
+    line = seat.lines[rot]
+    a = x if seat.axis == 0 else y
+    a = min((min(max(a, f0), f1) for f0, f1 in line.free), key=lambda v: abs(v - a))
+    return (a, line.coord, rot) if seat.axis == 0 else (line.coord, a, rot)
+
+
+def legal_on_edge(state, ref, pose) -> bool:
+    """A declared pose's legality (`seeder._fixed_pose_check`) against every
+    other part where it is."""
+    from .seeder import _fixed_pose_check
+    pool = {o: (p.x, p.y, p.rot) for o, p in state.parts.items() if o != ref}
+    state.parts[ref].ensure_rotation(pose[2])
+    how, _reasons, _conflicts = _fixed_pose_check(state, ref, tuple(pose),
+                                                  _near(state, ref, tuple(pose), pool))
+    return how is not None
+
+
+def reseat(state, seat: EdgeSeat) -> Optional[Tuple[float, float, float]]:
+    """The legal pose on `seat`'s edge nearest where the part is -- sliding
+    out to SLIDE_REACH_MM each way, at its own turn first and then at its
+    others -- or None."""
+    p = state.parts[seat.ref]
+    own = rot_key(p.rot)
+    best = None
+    for rot in [own] + [r for r in seat.lines if r != own]:
+        if rot not in seat.lines:
+            continue
+        here = project(seat, (p.x, p.y, rot))
+        a0 = here[0] if seat.axis == 0 else here[1]
+        line = seat.lines[rot]
+        tries = [a0] + [a0 + s * k * SLIDE_STEP_MM
+                        for k in range(1, int(SLIDE_REACH_MM / SLIDE_STEP_MM) + 1) for s in (1, -1)]
+        tries += [f for pair in line.free for f in pair]      # a stretch narrower than a step
+        for a in sorted(set(tries), key=lambda v: abs(v - a0)):
+            if best is not None and abs(a - a0) >= best[0]:
+                break
+            if not any(f0 - 1e-9 <= a <= f1 + 1e-9 for f0, f1 in line.free):
+                continue
+            pose = (a, line.coord, rot) if seat.axis == 0 else (line.coord, a, rot)
+            if legal_on_edge(state, seat.ref, pose):
+                best = (abs(a - a0), pose)
+                break
+        if best is not None and best[0] == 0.0:
+            break
+    p.ensure_rotation(p.rot)
+    return best[1] if best else None
+
+
+def pack(state, seats: Dict[str, EdgeSeat]) -> List[str]:
+    """Close the overlaps between parts seated on one edge, keeping their
+    order along it: each edge's row of seated parts is laid out at the least
+    squared displacement from where they are with SEAT_GAP_MM between
+    courtyards (clusters of touching parts placed at their mean, the
+    Abacus row legaliser), each held to its own free stretch. A row that
+    does not fit at its parts' turns takes the narrowest turn of its widest
+    part, as often as that helps. A part seated on another edge (at a
+    corner) is a wall the row keeps clear of. A row that cannot fit is left
+    as it was. Returns the parts it moved by more than a micrometre or
+    turned."""
+    moved: List[str] = []
+    by_edge: Dict[str, List[str]] = {}
+    for r, s in seats.items():
+        by_edge.setdefault(s.edge, []).append(r)
+    for edge, refs in sorted(by_edge.items()):
+        turns = {r: rot_key(state.parts[r].rot) for r in refs}
+        for _ in range(len(refs) + 1):
+            got = _pack_row(state, seats, refs, turns,
+                            [r for r in seats if seats[r].edge != edge])
+            if got is not None:
+                break
+            # narrow the widest part that has a narrower turn
+            best = None
+            for r in refs:
+                w = _width(state, seats[r], turns[r])
+                alt = min(seats[r].lines, key=lambda q: _width(state, seats[r], q))
+                if _width(state, seats[r], alt) < w - EPS and (best is None or w > best[0]):
+                    best = (w, r, alt)
+            if best is None:
+                break
+            turns[best[1]] = best[2]
+        if got is None:
+            continue
+        for r, pose in got.items():
+            p = state.parts[r]
+            step = max(abs(pose[0] - p.x), abs(pose[1] - p.y))
+            turned = rot_key(pose[2]) != rot_key(p.rot)
+            if step > 1e-9 or turned:
+                p.ensure_rotation(pose[2])
+                state.apply_move(r, *pose)
+                if step > 1e-3 or turned:       # not a gap trued to SEAT_GAP_MM
+                    moved.append(r)
+    return moved
+
+
+def _width(state, seat, rot) -> float:
+    c = state.parts[seat.ref].rect(0.0, 0.0, rot)
+    return c[seat.axis + 2] - c[seat.axis]
+
+
+def _pack_row(state, seats, refs, turns, walls=()):
+    """`{ref: pose}` for one edge's row at `turns`, or None when it does not
+    fit. Positions are the courtyards' low ends along the edge; each part's
+    range is its free stretch less where a part of `walls` (seated on
+    another edge) stands across its line."""
+    items = []
+    for r in refs:
+        s, rot = seats[r], turns[r]
+        state.parts[r].ensure_rotation(rot)
+        line = s.lines[rot]
+        c = state.parts[r].rect(0.0, 0.0, rot)
+        lo_c, w = c[s.axis], c[s.axis + 2] - c[s.axis]
+        p = state.parts[r]
+        a = project(s, (p.x, p.y, rot), rot)
+        a = a[0] if s.axis == 0 else a[1]
+        perp = 1 - s.axis
+        p0, p1 = line.coord + c[perp], line.coord + c[perp + 2]
+        blocked = []
+        for o in walls:
+            q = state.parts[o].rect()
+            if q[perp] < p1 + SEAT_GAP_MM and p0 < q[perp + 2] + SEAT_GAP_MM:
+                blocked.append((q[s.axis] - w - SEAT_GAP_MM, q[s.axis + 2] + SEAT_GAP_MM))
+        pieces = []
+        for f0, f1 in line.free:
+            pieces += _less(f0 + lo_c, f1 + lo_c, blocked)
+        if not pieces:
+            pieces = [(f0 + lo_c, f1 + lo_c) for f0, f1 in line.free]
+        want = a + lo_c
+        f0, f1 = min(pieces, key=lambda f: 0.0 if f[0] <= want <= f[1]
+                     else min(abs(want - f[0]), abs(want - f[1])))
+        items.append([want, w, f0, f1, r, lo_c])
+    items.sort(key=lambda t: (t[0] + t[1] / 2.0, t[4]))
+    # Abacus over the row: a cluster's members abut at SEAT_GAP_MM; its
+    # position is their mean desired position, held to every member's stretch
+    clusters = []       # [sum of (want - offset), n, lo, hi, members, width]
+    for k, (want, w, lo, hi, r, _lo_c) in enumerate(items):
+        clusters.append([want, 1, lo, hi, [k], w + SEAT_GAP_MM])
+        while True:
+            cl = clusters[-1]
+            x = _cluster_x(cl)
+            if x is None:
+                return None
+            if len(clusters) < 2:
+                break
+            prev = clusters[-2]
+            px = _cluster_x(prev)
+            if px is None:
+                return None
+            if px + prev[5] <= x + EPS:
+                break
+            # merge: the later members sit at offsets after the earlier ones
+            off = prev[5]
+            prev[0] += cl[0] - cl[1] * off
+            prev[1] += cl[1]
+            prev[2] = max(prev[2], cl[2] - off)
+            prev[3] = min(prev[3], cl[3] - off)
+            prev[4] += cl[4]
+            prev[5] += cl[5]
+            clusters.pop()
+    out = {}
+    for cl in clusters:
+        x = _cluster_x(cl)
+        off = 0.0
+        for k in cl[4]:
+            want, w, _lo, _hi, r, lo_c = items[k]
+            s = seats[r]
+            a = x + off - lo_c
+            line = s.lines[turns[r]]
+            out[r] = (a, line.coord, turns[r]) if s.axis == 0 else (line.coord, a, turns[r])
+            off += w + SEAT_GAP_MM
+    return out
+
+
+def _less(lo, hi, blocked):
+    """[lo, hi] less the open intervals `blocked`, as closed pieces."""
+    pieces = [(lo, hi)]
+    for b0, b1 in blocked:
+        nxt = []
+        for a0, a1 in pieces:
+            if b1 <= a0 or b0 >= a1:
+                nxt.append((a0, a1))
+                continue
+            if a0 <= b0:
+                nxt.append((a0, b0))
+            if b1 <= a1:
+                nxt.append((b1, a1))
+        pieces = nxt
+    return pieces
+
+
+def _cluster_x(cl):
+    """A cluster's low end: its members' mean desired position, held inside
+    the stretch every member allows; None when they allow none."""
+    lo, hi = cl[2], cl[3]
+    if lo > hi + EPS:
+        return None
+    return min(max(cl[0] / cl[1], lo), hi)

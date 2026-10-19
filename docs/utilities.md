@@ -613,7 +613,7 @@ python3 -X utf8 py_tools/route_review.py routed.kicad_pcb --top 12 --json review
 What to do about each finding is in
 `.claude/skills/plan-pcb-placement/references/placement-lessons.md`. The
 `/plan-pcb-placement` skill (`.claude/skills/plan-pcb-placement/SKILL.md`,
-§3.5) runs it on the best fast-routed candidate (`route.py --quick-pass`) of
+§3.6) runs it on the best fast-routed candidate (`route.py --quick-pass`) of
 a round whose best fast route still has a blocking net, then changes the
 groups, hints or claims it gives `place_simple` and places again, up to
 `--rounds` rounds; `render_nets.py` draws a finding's nets beside another

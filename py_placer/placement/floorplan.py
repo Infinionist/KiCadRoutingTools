@@ -267,7 +267,13 @@ _KEEPOUT_KEYS = {'name', 'rect', 'circle', 'sides', 'allow', 'note',
 _EDGE_CONNECTOR_KEYS = {'ref', 'edge', 'overhang_mm', 'max_setback_mm',
                         'class', 'source', 'note', 'suspect', 'suspect_reason',
                         'overhang_capped', 'observed_overhang_mm', 'context',
-                        'center_on_edge', 'along_edge_band', 'side'}
+                        'center_on_edge', 'along_edge_band', 'side',
+                        'mating_face'}
+#: `edge_connectors[].mating_face`: the side of the footprint, in its OWN
+#: unrotated frame, its mating face opens on -- declared for a part whose body
+#: names none (`mating.mating_face_local` abstains: a side-entry JST drawn
+#: symmetric about its pads). Never emitted.
+MATING_FACES = ('+x', '-x', '+y', '-y')
 #: #959 (#1000): mount modes where a connector stands OFF a face, so its mating
 #: face points away from the board and reaching the edge is not what makes it
 #: usable. The edge-receptacle seat does not apply to one: measured on the
@@ -1418,6 +1424,13 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
             raise IntentError(
                 f"edge_connectors[{i}] ({c['ref']}): side {c['side']!r}, "
                 f"expected 'F' or 'B'")
+        if c.get('mating_face') is not None \
+                and c['mating_face'] not in MATING_FACES:
+            raise IntentError(
+                f"edge_connectors[{i}] ({c['ref']}): mating_face "
+                f"{c['mating_face']!r}, expected one of "
+                f"{', '.join(MATING_FACES)} (the side, in the footprint's own "
+                f"frame, its mating face opens on)")
         conns.append(c)
 
     proximity = _proximity_claims(raw)
@@ -3471,9 +3484,46 @@ class _Ctx:
         return hit
 
 
-def _nearest_edge(rect, bounds) -> str:
+def _nearest_edge(rect, bounds, margin: float = 0.0, facing=None) -> str:
+    """The board edge `rect` sits on: the nearest side of `bounds`. When the
+    rect REACHES two or more sides -- comes within `margin` of them or past
+    them, the occupancy reading's "outside" at that margin -- it is, of
+    those: the one the part's mating face points at (`facing`: an edge name,
+    or a zero-argument callable returning one or None, asked only here); else
+    the one side it sticks out past by more than the margin; else the one it
+    runs along the farthest, the nearest of those on a tie.
+
+    A header laid corner to corner along a long side reaches the short sides
+    with its ends too, and which of them is nearest is an accident of a tenth
+    of a millimetre. Measured: ch32v003_usb's J2/J3 (1x10, 25.5 mm along a
+    26.1 mm side) read `south` at 0.13 mm where the west/east sides they run
+    along were 0.22 mm away, and fusb302_pd_dev's J101/J102 (1x24, 62 mm
+    along a 66.75 mm side) read `west`; the emitted intent then declared an
+    edge no seat can hold such a part on, and the grade failed the designer's
+    own pose against the edge it was moved to. Over the corpus's 478 human
+    boards, 3123 parts read an edge, 311 of them reach two sides, and 37 read
+    differently from the bare nearest side -- headers and card edges along a
+    side that read at an end (also rp2040_dev's and rp2350_dev's 1x20s, three
+    DDR testbeds' edge connectors), and two DSUBs whose strong face now
+    decides; none reads against its part's mating face. The length alone,
+    without the face and overhang rungs, misread 16 more: jacks and modules
+    in a corner, their nose out past one side and a flank grazing the other
+    (14 with a mating face, an SFP cage 5.3 mm out)."""
     d = {'west': rect[0] - bounds[0], 'north': rect[1] - bounds[1],
          'east': bounds[2] - rect[2], 'south': bounds[3] - rect[3]}
+    reached = [k for k in d if d[k] <= margin + legality.EPS]
+    if len(reached) > 1:
+        face = facing() if callable(facing) else facing
+        if face in reached:
+            return face
+        out = [k for k in reached if d[k] < -margin - legality.EPS]
+        if len(out) == 1:
+            return out[0]
+        along = {'west': rect[3] - rect[1], 'east': rect[3] - rect[1],
+                 'north': rect[2] - rect[0], 'south': rect[2] - rect[0]}
+        far = max(along[k] for k in reached)
+        return min((k for k in reached if along[k] >= far - legality.EPS),
+                   key=lambda k: d[k])
     return min(d, key=lambda k: d[k])
 
 
@@ -3522,7 +3572,7 @@ def edge_facing_policy(entry: Dict, fp) -> str:
     mm = ctxd.get('mount_mode')
     if mm in VERTICAL_MOUNTS:
         return 'exempt: a %s mates off a face, not the edge' % mm
-    if mm in FACING_MOUNTS:
+    if mm in FACING_MOUNTS or entry.get('mating_face'):
         return 'graded'
     cls = entry.get('class')
     how = 'declared'
@@ -3542,7 +3592,9 @@ def edge_facing(entry: Dict, fp, geom, rotation: Optional[float] = None
 
     `geom` is the part's `body.BodyGeometry` (None reads as no body);
     `rotation` defaults to the footprint's own, and is what a seat trying a
-    turn passes. Returns `{policy, facing, local_face, basis, offset_mm,
+    turn passes. Where the body names no face, the entry's declared
+    `mating_face` is the face (basis `declared`, strong), and the entry is
+    graded whatever its class. Returns `{policy, facing, local_face, basis, offset_mm,
     strong, reason, fails}`. `fails` is True only when the policy grades the
     entry, the face is decisive at that rotation, and it is not the declared
     edge. `strong` (the face's offset reaches `mating.FACE_STRONG_OFFSET_MM`)
@@ -3559,6 +3611,11 @@ def edge_facing(entry: Dict, fp, geom, rotation: Optional[float] = None
     policy = edge_facing_policy(entry, fp)
     lf = (mating_face_local(fp, geom) if geom is not None
           else LocalFace(None, 0.0, '', 'no body geometry'))
+    if lf.face is None and entry.get('mating_face') in MATING_FACES:
+        # The body names no face; the intent declares one. A declaration is
+        # no weaker than a strong body reading: a wrong turn fails at ERROR.
+        lf = LocalFace(entry['mating_face'], 0.0, 'declared', '', lf.votes,
+                       strong=True, marker=lf.marker)
     rot = (fp.rotation or 0.0) if rotation is None else rotation
     facing = facing_edge(lf.face, rot)
     edge = entry.get('edge')
@@ -4734,7 +4791,10 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
             # the south, so a socket flush with the west edge read "nearest
             # the south edge but declared on the west" -- on every one of
             # ten seeds, since the socket is a fixed part.
-            actual = _nearest_edge(seat_rect, ctx.outline_bounds)
+            actual = _nearest_edge(
+                seat_rect, ctx.outline_bounds, ctx.gate.margin,
+                facing=lambda: edge_facing(c, ctx.pcb.footprints.get(ref),
+                                           ctx.body_geom(ref))['facing'])
             if actual != edge:
                 yield Violation(
                     rule='edge_connector', severity=ctx.sev('edge_connector'),
@@ -8922,6 +8982,27 @@ _OPPOSITE_EDGE = {'north': 'south', 'south': 'north',
                   'east': 'west', 'west': 'east'}
 
 
+def _emit_bodies_of(pcb_data, pcb_file: str, cache: Dict[str, object]):
+    if 'bodies' not in cache:
+        try:
+            from .body import board_bodies
+            cache['bodies'] = board_bodies(pcb_data, pcb_file)
+        except Exception:                                    # noqa: BLE001
+            cache['bodies'] = {}
+    return cache['bodies']
+
+
+def _part_facing(pcb_data, pcb_file: str, ref: str,
+                 cache: Dict[str, object]) -> Optional[str]:
+    """The edge `ref`'s mating face points at in its own pose
+    (`edge_facing`), or None."""
+    fp = (pcb_data.footprints or {}).get(ref)
+    if fp is None:
+        return None
+    return edge_facing({}, fp, _emit_bodies_of(pcb_data, pcb_file,
+                                               cache).get(ref))['facing']
+
+
 def _withhold_reversed_edge(entry: Dict, pcb_data, pcb_file: str,
                             cache: Dict[str, object]) -> None:
     """#1155: drop an emitted entry's edge when the part's STRONG mating face
@@ -8936,13 +9017,8 @@ def _withhold_reversed_edge(entry: Dict, pcb_data, pcb_file: str,
     fp = (pcb_data.footprints or {}).get(entry.get('ref'))
     if not edge or fp is None:
         return
-    if 'bodies' not in cache:
-        try:
-            from .body import board_bodies
-            cache['bodies'] = board_bodies(pcb_data, pcb_file)
-        except Exception:                                    # noqa: BLE001
-            cache['bodies'] = {}
-    ef = edge_facing(entry, fp, cache['bodies'].get(entry['ref']))
+    ef = edge_facing(entry, fp, _emit_bodies_of(pcb_data, pcb_file,
+                                                cache).get(entry['ref']))
     if ef['fails'] and ef['strong']:
         # Run-5's suspect-and-derive: the EDGE is as uncertain as the pose
         # -- a part opening west that sits nearest east is either reversed
@@ -9173,6 +9249,9 @@ def emit_intent(pcb_data, pcb_file: str, *,
     conns = []
     declared = set()
     body_geometry = None     # #961: built only if an edged entry is emitted
+    # the bodies, read once if a part reaching two sides asks which way it
+    # faces (`_nearest_edge`), and again by #1155's pass below
+    _emit_bodies: Dict[str, object] = {}
     #: #959: refs whose `overhang_mm` is a CONSTANT of this module (a class
     #: default band, the sanity cap, the affinity floor) rather than a band
     #: read off the part -- labelled `derived_default`, not an observation.
@@ -9255,8 +9334,10 @@ def emit_intent(pcb_data, pcb_file: str, *,
                                   f'spec allowance (run 10)')}
                 band_default.add(ref)
             else:
-                entry = {'ref': ref, 'edge': _nearest_edge(parts[ref].rect,
-                                                           bounds),
+                entry = {'ref': ref, 'edge': _nearest_edge(
+                             parts[ref].rect, bounds, state.edge_gate.margin,
+                             facing=lambda: _part_facing(
+                                 pcb_data, pcb_file, ref, _emit_bodies)),
                          'overhang_mm': {'min': 0.0,
                                          'max': round(amt + 0.5, 3)}}
                 # #961: an edged entry's band is GRADED on the drawn body
@@ -9340,7 +9421,10 @@ def emit_intent(pcb_data, pcb_file: str, *,
                 entry['note'] = ('edge-receptacle class on a pile: no edge '
                                  'declared -- its staging pose says nothing')
             elif plaus:
-                entry['edge'] = _nearest_edge(parts[ref].rect, bounds)
+                entry['edge'] = _nearest_edge(
+                    parts[ref].rect, bounds, state.edge_gate.margin,
+                    facing=lambda: _part_facing(pcb_data, pcb_file, ref,
+                                                _emit_bodies))
             else:
                 entry['note'] = (
                     f'edge-receptacle class in an implausible pose '
@@ -9350,7 +9434,6 @@ def emit_intent(pcb_data, pcb_file: str, *,
     # #1155: ONE pass over every edge this emitter observed (both branches
     # above read it off `_nearest_edge`), before a brief is compiled in -- an
     # author's declared edge is never second-guessed here.
-    _emit_bodies: Dict[str, object] = {}
     for c in conns:
         _withhold_reversed_edge(c, pcb_data, pcb_file, _emit_bodies)
 

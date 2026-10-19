@@ -135,7 +135,7 @@ _PRODUCT_KEYS = {'form_factor', 'primary_axis', 'held_by', 'user_top_side'}
 _INTERFACE_KEYS = {'ref', 'role', 'user_facing', 'edge', 'along_edge',
                    'along_edge_tolerance_mm', 'overhang_mm', 'mount_mode',
                    'cable_entry', 'cable_envelope_mm', 'requirement', 'why',
-                   'note', 'context'}
+                   'note', 'context', 'mating_face'}
 #: #959 (#1000): the space a cable needs, declared. `depth` is how far an
 #: in-plane plug reaches in from the edge; `clear` is the margin around a
 #: perpendicular one. There are NO defaults: measured on five as-built boards
@@ -672,6 +672,8 @@ def _brief_from_dict(raw: Dict, source_path: str = '') -> Brief:
                              f"part, with no rule for which wins")
         seen_refs[ref] = i
         _enum(c.get('edge'), fp._EDGES + (UNKNOWN,), f"{where}.edge")
+        _enum(c.get('mating_face'), fp.MATING_FACES + (UNKNOWN,),
+              f"{where}.mating_face")
         _enum(c.get('mount_mode'), _MOUNT_MODES, f"{where}.mount_mode")
         _enum(c.get('cable_entry'), _CABLE_ENTRY, f"{where}.cable_entry")
         env = c.get('cable_envelope_mm')
@@ -936,6 +938,13 @@ def compile_brief(brief: Brief, *, board_refs: Sequence[str] = (),
             entry['note'] = ('the brief declares this connector with edge '
                              '"unknown" -- no edge is claimed, and any edge '
                              'the emitter inferred is dropped')
+
+        face = c.get('mating_face')
+        if _known(face):
+            entry['mating_face'] = face
+            declared.append(f"interfaces[{ref}].mating_face")
+        elif face == UNKNOWN:
+            unknown.append(f"interfaces[{ref}].mating_face")
 
         if _known(c.get('user_facing')) and c.get('user_facing') is True:
             # An edge class is what the placement ENGINES read (via
@@ -1751,7 +1760,8 @@ def merge_into_intent(emitted: Dict, fragment: Dict, report: Dict) -> Dict:
             # The merge dropped the observed edge; its label goes with it.
             bmap.pop(f"edge_connectors[{c['ref']}].edge", None)
         for key in ('edge', 'overhang_mm', 'center_on_edge',
-                    'along_edge_band', 'max_setback_mm', 'side'):
+                    'along_edge_band', 'max_setback_mm', 'side',
+                    'mating_face'):
             if key in c:
                 own = cb.get(key) or (cb.get('overhang_mm.min')
                                       if key == 'overhang_mm' else None)
@@ -1845,7 +1855,7 @@ def drift_pairs(intent_doc: Dict, fragment: Dict) -> List[Tuple[str, str]]:
                             f"the intent has no entry for it"))
             continue
         for key in ('edge', 'center_on_edge', 'along_edge_band',
-                    'overhang_mm', 'max_setback_mm', 'side'):
+                    'overhang_mm', 'max_setback_mm', 'side', 'mating_face'):
             if key in c and cur.get(key) != c[key]:
                 out.append((
                     _drift_clause_id('interfaces', ref, key,

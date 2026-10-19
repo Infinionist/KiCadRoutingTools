@@ -14,7 +14,12 @@
    holes: whatever the enclosure or a mating part decides), and so does
    every part the intent seats at a declared pose (`fixed_poses[]`, from
    the design brief or mechanical.json), written there first; every other
-   part starts at a random place on the board. The intent's keep-outs and
+   part starts at a random place on the board. An unlocked edge part (a
+   connector, receptacle, switch or test pad) the intent declares on an edge
+   (`edge_connectors[]` with an `edge`) is held to that edge
+   (`placement/edge_seat.py`): its mating face out, flush with the low
+   end of its overhang band, and the anneal only slides it along the edge
+   (and turns it, when it has no mating face). The intent's keep-outs and
    zones bind every part through the anneal's overlap term.
 3. ANNEAL: one cost (`placement/simple.py`) -- signal and rail trees,
    crossings, claims, decaps spread over their own group's supply pins,
@@ -191,6 +196,12 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
                   decap_weight=args.decap_weight, group_weight=args.group_weight,
                   hints=hints(doc, state, movable, args),
                   halo_coef=args.halo_coef, halo_weight=args.halo_weight)
+    # the unlocked parts the intent declares on an edge, seated there
+    model.edge_seats = {}
+    if intent is not None:
+        from placement import edge_seat
+        model.edge_seats, snotes = edge_seat.seats(state, pcb, board, intent, set(movable))
+        notes += snotes
     return state, model, movable, notes
 
 
@@ -468,8 +479,12 @@ def main(argv=None):
 
     def ok(r):
         p = state.parts[r]
-        return (legal(state, r, p.x, p.y, p.rot)
-                and state.intent_clear(r, p.grade_rects(p.x, p.y, p.rot)))
+        if r in model.edge_seats:       # a declared pose's check, on its edge
+            from placement.edge_seat import legal_on_edge
+            fits = legal_on_edge(state, r, (p.x, p.y, p.rot))
+        else:
+            fits = legal(state, r, p.x, p.y, p.rot)
+        return fits and state.intent_clear(r, p.grade_rects(p.x, p.y, p.rot))
     kept = None             # (illegal count, poses, res) of the best run yet
     if not movable:
         print("place_simple: nothing to place; the board is written as it is")
@@ -479,7 +494,8 @@ def main(argv=None):
         seed = a.seed if k == 0 else (a.seed + 1) * 1000003 + k
         simple_anneal.scatter(model, movable, seed=seed)
         res = simple_anneal.anneal(model, movable, moves=moves, seed=seed,
-                                   log=lambda s: print(f"  {s}"), repair=k == RESTARTS)
+                                   log=lambda s: print(f"  {s}"), repair=k == RESTARTS,
+                                   seats=model.edge_seats)
         illegal = [r for r in movable if not ok(r)]
         if kept is None or len(illegal) < kept[0]:
             kept = (len(illegal), {r: (state.parts[r].x, state.parts[r].y, state.parts[r].rot)

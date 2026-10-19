@@ -41,7 +41,7 @@ already grade, and that `place_simple` reads wherever it reads the intent
 
 | brief | becomes | provenance |
 |---|---|---|
-| `interfaces[]` with an `edge` | an `edge_connectors[]` entry — `edge`, `overhang_mm`, `center_on_edge` / `along_edge_band`, and `class: "edge_receptacle"` when `user_facing` is true | `source: "brief"` |
+| `interfaces[]` with an `edge` | an `edge_connectors[]` entry — `edge`, `overhang_mm`, `center_on_edge` / `along_edge_band`, `mating_face`, and `class: "edge_receptacle"` when `user_facing` is true | `source: "brief"` |
 | `interfaces[]` with `edge: "unknown"` | an entry with **no** `edge` key | `source: "brief"`, a `note` naming the unknown |
 | `keepouts[]` | `keepouts[]`, verbatim; `kind` and `why` move into `context` | `context.source` |
 | `proximity[]` | `proximity[]`, one row per member of a list `ref`; `why` and `requirement` move into `context` | `source: "brief"`, `context.proximity_note` |
@@ -91,6 +91,8 @@ board alone gives.
       "along_edge": "center",                // "center" | {"from":f, "to":f} | "unknown"
       "along_edge_tolerance_mm": 0.5,        // REQUIRED with "center"
       "overhang_mm": { "min": 0.0, "max": 0.65 },
+      "mating_face": "+y",                   // +x|-x|+y|-y in the footprint's own frame, or "unknown":
+                                             // the side it opens on, for a body that names none
       "mount_mode": "edge_mount",            // compiled -- see below
       "cable_entry": "in_plane",             // compiled -- see below
       "cable_envelope_mm": { "depth": 2.0 }, // or "unknown"; NO default
