@@ -99,7 +99,7 @@ Fast, grid-based A\* routing with a native Rust core (~10× faster than pure Pyt
 **Interfaces**
 - Full [KiCad plugin GUI](#kicad-plugin) (KiCad 9 & 10) and a scriptable [CLI](#command-line-interface)
 - [AI assistance](docs/claude-skills.md) — an **AI Drive** tab that plans an entire routing workflow or places a board by function, per-field "Ask AI" helpers, and datasheet-driven power / high-speed / diff-pair analysis
-- [Board rendering](docs/utilities.md#board-renderer-route_renderpy) — fast geometry PNG renderer (`route_render.py`), placement stills (`render_placement.py`), and movies of a routing run (`route_movie.py`, made for every stress run) and of a placement (`place_movie.py`)
+- [Board rendering](docs/utilities.md#board-renderer-route_renderpy) — fast geometry PNG renderer (`route_render.py`), placement stills (`render_placement.py`), and movies of a routing run (`route_movie.py`, made for every stress run) and of a placement, or the placement skill's whole flow through to the full route (`place_movie.py`)
 - [Routing plans as files](docs/claude-skills.md#plans-from-the-command-line) — save/load a whole routing chain as JSON: build one from a recorded command chain (`make_plan.py`), run it headless through the real plugin (`run_plan.py`), or load it in the GUI
 
 ## Quick Start

@@ -385,8 +385,10 @@ python3 -X utf8 py_tools/render_placement.py placed.kicad_pcb --before input.kic
 
 To watch a placement happen, `py_placer/place_movie.py` takes the same
 arguments as `place_simple.py`, places the board exactly as it does, and
-films the run: the scatter, the anneal as it lowers the cost, the best
-placement and the board written ([Utilities](../../docs/utilities.md#placement-movie-place_moviepy)).
+films the run: the pile gliding onto the board, the anneal as it lowers the
+cost, the best placement and the board written. With `--route` it films the
+skill's flow too: the seeds fast-routed side by side, the best one picked
+and routed in full ([Utilities](../../docs/utilities.md#placement-movie-place_moviepy)).
 
 ## The GUI tab
 

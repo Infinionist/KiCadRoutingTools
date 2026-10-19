@@ -183,45 +183,42 @@ def chain_input(run_dir):
     return None
 
 
-def make_movie(inputs, out=None, size=SIZE, fps=FPS, theme='dark', max_frames=MAX_FRAMES,
-               quiet=False):
-    """Write the movie of a run dir (one entry) or of a board sequence; returns
-    its path, or None when there is no board."""
+def shoot(movie, r, live_s, live_v, label, hl_s=(), hl_v=(), role='event_new', rips=(),
+          times=1):
+    """One frame: `live_*` copper on `r`'s board, `hl_*` lit in the theme's
+    `role` colour, `rips` red and dashed over it, `label` top left."""
+    ov = None
+    if rips:
+        def ov(d, rr):
+            rr._draw_segments(d, rips, color=rr.theme.rgb('event_ripped'), mark='dashed')
+    movie.add(r.frame(segments=list(live_s.values()), vias=list(live_v.values()),
+                      highlight_segments=list(hl_s), highlight_vias=list(hl_v),
+                      highlight_color=r.theme.rgb(role), label=label,
+                      overlays=[ov] if ov else None), times)
+
+
+def play_chain(movie, boards, first=None, *, size=SIZE, theme='dark', max_frames=MAX_FRAMES,
+               prefix='', first_label='input'):
+    """Play `boards` (chain order) into `movie` from `first`, the board the
+    chain started from (None: its first board's pads and no copper). Each
+    caption starts with `prefix`. Returns the last step's (renderer, tracks,
+    vias) so a caller can go on from the board it ends on."""
     from kicad_parser import parse_kicad_pcb
     from route_render import BoardRenderer
-    say = (lambda *a: None) if quiet else print
-    if len(inputs) == 1 and os.path.isdir(inputs[0]):
-        run_dir = inputs[0]
-        boards, first = run_boards(run_dir), chain_input(run_dir)
-        out = out or os.path.join(run_dir, 'routing.mp4')
-    else:
-        boards, first = [os.path.abspath(b) for b in inputs], None
-        out = out or os.path.splitext(boards[-1])[0] + '_routing.mp4'
-    if not boards:
-        say(f"route_movie: no boards in {inputs[0]}")
-        return None
     traces = {b: os.path.splitext(b)[0] + '_routetrace.json' for b in boards}
     traces = {b: json.load(open(t)) for b, t in traces.items() if os.path.isfile(t)}
     n_events = sum(len(t.get('events', ())) for t in traces.values())
     per = max(1, math.ceil(n_events / max_frames)) if max_frames else 1
-    movie = MovieWriter(out, fps)
 
-    def draw(r, live_s, live_v, label, hl_s=(), hl_v=(), role='event_new', rips=(), times=1):
-        ov = None
-        if rips:
-            def ov(d, rr):
-                rr._draw_segments(d, rips, color=rr.theme.rgb('event_ripped'), mark='dashed')
-        movie.add(r.frame(segments=list(live_s.values()), vias=list(live_v.values()),
-                          highlight_segments=list(hl_s), highlight_vias=list(hl_v),
-                          highlight_color=r.theme.rgb(role), label=label,
-                          overlays=[ov] if ov else None), times)
+    def draw(*a, **kw):
+        shoot(movie, *a, **kw)
 
     pcb0 = parse_kicad_pcb(first or boards[0])
     live_s, live_v = _board_copper(pcb0) if first else ({}, {})
-    r0 = BoardRenderer(pcb0, size=size, supersample=1, theme=theme, show_zones=bool(first))
-    draw(r0, live_s, live_v, 'input')
+    r = BoardRenderer(pcb0, size=size, supersample=1, theme=theme, show_zones=bool(first))
+    draw(r, live_s, live_v, prefix + first_label)
     for board in boards:
-        step = os.path.splitext(os.path.basename(board))[0]
+        step = prefix + os.path.splitext(os.path.basename(board))[0]
         pcb = parse_kicad_pcb(board)
         r = BoardRenderer(pcb, size=size, supersample=1, theme=theme)
         layers = list(pcb.board_info.copper_layers)
@@ -286,7 +283,28 @@ def make_movie(inputs, out=None, size=SIZE, fps=FPS, theme='dark', max_frames=MA
             label = f"{step}: {j // chunk + 1}/{math.ceil(len(nets) / chunk)} " + (
                 ', '.join(names[:3]) + (f" +{len(names) - 3}" if len(names) > 3 else ''))
             draw(r, live_s, live_v, label, hs, hv, rips=gone if j == 0 else ())
-    draw(r, live_s, live_v, os.path.splitext(os.path.basename(boards[-1]))[0])
+    return r, live_s, live_v
+
+
+def make_movie(inputs, out=None, size=SIZE, fps=FPS, theme='dark', max_frames=MAX_FRAMES,
+               quiet=False):
+    """Write the movie of a run dir (one entry) or of a board sequence; returns
+    its path, or None when there is no board."""
+    say = (lambda *a: None) if quiet else print
+    if len(inputs) == 1 and os.path.isdir(inputs[0]):
+        run_dir = inputs[0]
+        boards, first = run_boards(run_dir), chain_input(run_dir)
+        out = out or os.path.join(run_dir, 'routing.mp4')
+    else:
+        boards, first = [os.path.abspath(b) for b in inputs], None
+        out = out or os.path.splitext(boards[-1])[0] + '_routing.mp4'
+    if not boards:
+        say(f"route_movie: no boards in {inputs[0]}")
+        return None
+    movie = MovieWriter(out, fps)
+    r, live_s, live_v = play_chain(movie, boards, first, size=size, theme=theme,
+                                   max_frames=max_frames)
+    shoot(movie, r, live_s, live_v, os.path.splitext(os.path.basename(boards[-1]))[0])
     path = movie.close()
     say(f"route_movie: {path} ({movie.n} frames, {movie.n / fps:.0f} s)")
     return path

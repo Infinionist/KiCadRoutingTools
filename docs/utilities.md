@@ -1092,32 +1092,62 @@ python3 py_router/route_movie.py step1.kicad_pcb step2.kicad_pcb final.kicad_pcb
 
 ## Placement Movie (`place_movie.py`)
 
-A movie of a placement, step by step, in the routing movie's style. It takes
-every `place_simple.py` argument and places the board exactly as
-`place_simple.py` does -- the same placement for the same seed -- while
-filming the run.
+A movie of a placement, step by step, in the routing movie's style -- and,
+with `--route`, of the placement skill's whole flow: seeds placed, the
+cheapest fast-routed and judged, the best routed in full. It takes every
+`place_simple.py` argument (BOARD and OUT first) and places the board exactly
+as `place_simple.py` does: the same placement for the same seed.
 
 ```bash
 python3 -X utf8 py_placer/place_movie.py board.kicad_pcb placed.kicad_pcb \
     --groups groups.json --intent intent.json --seed 0 [--movie placed.mp4]
+python3 -X utf8 py_placer/place_movie.py board.kicad_pcb placed.kicad_pcb \
+    --groups groups.json --intent intent.json --route ch32v003_usb:6
 ```
 
-Each frame is the board with every part's pads and courtyard (movable parts
-tinted by group, fixed parts dim), the airwires the objective prices (ground
-left out: it is poured), the parts that moved since the last frame outlined
-in white, and a caption. The steps, each held a second: the input; the parts
-the intent puts on the other face or at a declared pose; the scatter; the
-parts held to their declared edges; the anneal, sampled `--frames` times
-(default 120) with its move count, temperature, cost and overlap; the best
-placement, with any part moved to its nearest legal pose; and the placed
-board. A fresh start after a run that left a part illegal is captioned where
-it happens.
+Each placement frame is the board with every part's pads and courtyard, the
+airwires the objective prices (ground left out: it is poured), the parts that
+moved since the last frame outlined in white, a caption, and a key in a band
+along the bottom, spread across the width and never over the board: each
+group with a movable part in a colour of its own, by name, then fixed parts
+(hatched), parts in no group and the parts that just moved. The steps:
 
-- `--movie` — the movie (default: the placed board's name, `.mp4`); a GIF
-  without `ffmpeg`.
+1. **input**: the board as given; a pile of movable parts lying off the board
+   is drawn 2 mm off its nearest edge, in view;
+2. **faces and poses**: the parts the intent puts on the other face or at a
+   declared pose (when there are any);
+3. **scatter**: the pile glides onto the board (10 frames), each part to the
+   random place it is seeded at, and the view closes in on the board;
+4. **edge seats**: the parts declared on an edge, held to it (when any);
+5. **anneal**: the moves, with the move count, temperature, cost and
+   overlap, playing faster as it goes (`--speedup`, default 4 times faster
+   at its end than at its start; `--frames`, default 120, per run). A long
+   edge part's half-turn trial and a fresh start after a run that left a
+   part illegal are captioned where they happen;
+6. **best**: the best placement the anneal saw, each part moved to its
+   nearest legal pose where it needed one;
+7. **placed**.
+
+With `--route BOARD:SET` -- a stress-corpus board whose recorded chain routes
+this one, the chain `tests/stress/placement_ab/route_placed.py` replays -- it
+first runs the flow: places every seed of `--seeds` (default 0-23,
+`--jobs` at a time), fast-routes the `--judge` (default 12) legal seeds the
+objective rates cheapest (the chain with `--quick 2`, scored by
+`quick_score.py`), and routes the best (fewest blocking, then vias, copper,
+segments) in full. The movie films the cheapest seed's placement, then:
+
+8. its **fast route**, played by the routing movie's own player;
+9. a **zoom out** to every judged seed's fast route side by side, a box round
+   the best, and a **zoom in** to it;
+10. its fast route **cleared**, net by net, and its **full route** played.
+
+OUT is then the best seed's placement; the placed seeds, routes and scores
+are in `--work` (default: OUT's name + `_work`).
+
+- `--movie` — the movie (default: OUT's name, `.mp4`); a GIF without `ffmpeg`.
 - `--size`, `--fps`, `--theme` — as the routing movie.
-- `--seeds` is refused: one movie is one seed. Exit codes are
-  `place_simple.py`'s.
+- Exit codes are `place_simple.py`'s; with `--route`, 2 also when no seed
+  placed legally or a route did not finish.
 
 ## Orphan Stub Checker (`check_orphan_stubs.py`)
 
