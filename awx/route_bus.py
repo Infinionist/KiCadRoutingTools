@@ -62,6 +62,7 @@ import collections
 import contextlib
 import io
 import json
+import math
 import os
 import re
 import sys
@@ -330,6 +331,7 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
     # grade counts it -- and back on it in OUT)
     pull_pads = [p for n, v in sorted(pulled.items()) if n in set(names) for p in v]
     txt, held = unpull(txt, pull_pads)
+    attached = []               # (the escape fanout: the pull pads it joined to their lanes, attach_pulls)
     base = os.path.join(work, 'base.kicad_pcb')
     with open(base, 'w', encoding='utf-8') as f:
         f.write(txt)
@@ -441,6 +443,8 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
                          if any(f'{p.component_ref}.{p.pad_number}' in left for p in
                                 pcb.nets[next(i for i, nn in pcb.nets.items() if nn.name == n)].pads)})
         log(f'  {src} and {dest} dog-boned' + (f', no dog-bone for {failed}' if failed else ''))
+        if held and awx_settings.get('BUS_ATTACH', '1') != '0':
+            held, attached = attach_pulls(fanned, held, [src, dest], log)
         # ESCAPE_JOINT_ENDS=BOARD (with ESCAPE_JOINT): the board as it was before the shared array's earlier step --
         # fanned here exactly as this step fans a board of the bus alone (its copper off, both arrays dog-boned whole,
         # the caps nudged), turned below into the same frame: the field each round's ends are chosen on, so the bus
@@ -466,7 +470,13 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
             wr.run([os.path.join('..', 'py_router', 'place_fanout_clearance.py'), fanned_e, fanned_e,
                     '--clearance', str(te.SPEC_CLEARANCE), '--beneath-only'] + (['--lock'] + lock_e if lock_e else []),
                    dict(os.environ), log_path=os.path.join(work, 'caps_ends.log'), own_process=True)
-            with contextlib.redirect_stdout(sys.stderr):
+            att_e = {}
+            if attached:
+                # (the pulls the fanout joined to their lanes joined on the bus's own field too, so the ends are chosen
+                # on the field they are laid on)
+                attach_pulls(fanned_e, attached, [src, dest], log=elog.append)
+                att_e = {'BUS_ATTACHED': ','.join(f'{r_}.{n_}' for r_, n_, _t in attached)}
+            with contextlib.redirect_stdout(sys.stderr), awx_settings.given({**awx_settings.environ(), **att_e}):
                 mb.write_ladder(fanned_e, names, log=lambda *a: None, bare_ok=True)
             log(f'  the bus\'s own field, for the ends: {os.path.basename(ends_board)} fanned as the bus alone -- '
                 + '; '.join(x.strip() for x in elog if x.strip().startswith((f'{src}:', f'{dest}:')))[:300])
@@ -477,7 +487,12 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
             fix_project_for_output(fanned, clearance=te.SPEC_CLEARANCE, track_width=sr.FAN_TRACK,
                                    via_diameter=te.VIA_SIZE, via_drill=te.VIA_DRILL, verbose=False)
         log(f'  {src} fanned out: {n_t} tracks, {n_v} vias' + (f', refused {failed}' if failed else ''))
-    with contextlib.redirect_stdout(sys.stderr):
+    # (a pull pad the fanout joined to its lane, attach_pulls: on its net, none of the net's two ends --
+    # coherent_nets.admissible reads BUS_ATTACHED, here and in the whole route's rounds)
+    att_s = ','.join(f'{r_}.{n_}' for r_, n_, _t in attached)
+    att_given = (lambda: awx_settings.given({**awx_settings.environ(), 'BUS_ATTACHED': att_s})) if attached else \
+        contextlib.nullcontext
+    with contextlib.redirect_stdout(sys.stderr), att_given():
         # (a net bare at both arrays -- outer balls left to leave on their own layer -- is a lane the escape fanout lays
         # from its pads: braid.bare_lane)
         mb.write_ladder(fanned, names, log=log, bare_ok=escape)
@@ -489,7 +504,7 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
             log(f'  ladder: the bus alone\'s, from {os.path.basename(fanned_e)}')
         ladder = coherent_nets(10 ** 6, fanned, bare_ok=escape)
     K = min(int(k), len(ladder)) if k else len(ladder)
-    with contextlib.redirect_stdout(sys.stderr):
+    with contextlib.redirect_stdout(sys.stderr), att_given():
         nets = whole_pairs(ladder, K, fanned)            # (the chain's own cut: coherent_nets(K) cuts no pair)
     cut = [n for n in ladder[:K] if n not in nets]
     log(f'  the run: K={K} of the ladder\'s {len(ladder)} nets'
@@ -526,7 +541,8 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
     rc, grade = wr.chain(K, os.path.join(work, 'run'), rounds, base=frame, dest=dest,
                          settings={**(settings or {}), **STEP_SETTINGS, _rules.SETTING: _rules.as_setting(run_rules),
                                    **joint,
-                                   **({'FANOUT_ESCAPE': '1'} if escape else {}), **escape_env})
+                                   **({'FANOUT_ESCAPE': '1'} if escape else {}), **escape_env,
+                                   **({'BUS_ATTACHED': att_s} if attached else {})})
     seq = _routed(os.path.join(work, 'run'))
     short = lambda n: n.split('/')[-1]
     for n in names:
@@ -1113,6 +1129,138 @@ def _pad_block(fp_text, number, with_net):
         if (re.search(r'\(net\s', fp_text[j:k]) is not None) == with_net:
             return j, k
         i = k
+
+ATTACH_PITCHES = 1.5        # (attach_pulls) a pull pad is joined to its lane by a stub this many of its array's ball
+#                             pitches long at most: the tie beside the ball's via -- a longer one runs across the ball
+#                             lines the bus's lanes need into the array
+
+
+def attach_pulls(path, held, refs, log=print):
+    """THE PULLS IN THE FANOUT (the escape fanout; BUS_ATTACH=0 none): each pull or termination pad `held` took off
+    its net (unpull) that a stub of ATTACH_PITCHES of an array of `refs` reaches from its net's dog-bone via there
+    (escape_plan.own_via; the ball itself where it has none and the pad is on its layer) put back on its net in the
+    board at `path` and joined to it by that stub, on the pad's layer -- as the human ties zynq TX_FRAME_N's dog-bone
+    into its pull RX10 under U1, 1.0 mm: straight, else the shortest way along the array's ball and gap lines, clear
+    of every other net's copper by the fanout's rule. The pad is then its lane's own copper and every other net's
+    obstacle, and the pull is connected when the lane is. (held, the pads not joined -- left off their nets, the stub
+    the rest of the chain's; attached, those joined)"""
+    import escape_plan as ep
+    import escape_moves as em
+    import rules as _rules
+    from kicad_parser import parse_kicad_pcb
+    from kicad_writer import add_tracks_and_vias_to_pcb
+    txt = open(path, encoding='utf-8').read()
+    with contextlib.redirect_stdout(sys.stderr):
+        pcb0 = parse_kicad_pcb(path)
+    grids = {r_: em.grid_of(pcb0.footprints[r_]) for r_ in refs if r_ in pcb0.footprints}
+    lims = {r_: ATTACH_PITCHES * max(g_.pitch_x, g_.pitch_y) for r_, g_ in grids.items()}
+    near = []
+    for h in held:
+        fp_ = pcb0.footprints.get(h[0])
+        p_ = next((q for q in (fp_.pads if fp_ else ()) if q.pad_number == h[1]), None)
+        if p_ is None:
+            continue
+        r_ = next((r_ for r_, g_ in grids.items()
+                   if g_.bbox[0] - lims[r_] <= p_.global_x <= g_.bbox[2] + lims[r_]
+                   and g_.bbox[1] - lims[r_] <= p_.global_y <= g_.bbox[3] + lims[r_]), None)
+        if r_ is not None:
+            near.append((h, r_))
+    if not near:
+        return held, []
+    txt2, _miss = repull(txt, [h for h, _r in near])
+    tmp = path[:-len('.kicad_pcb')] + '.attach.kicad_pcb'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        f.write(txt2)
+    with contextlib.redirect_stdout(sys.stderr):
+        pcb = parse_kicad_pcb(tmp)
+    os.remove(tmp)
+    r = _rules.active()
+    cop = ep.Copper(pcb, r.fan_track, r.fan_clear)
+
+    def stub(s, t_, g_, L, nid, lim):
+        # the shortest clear path from s to the pad's centre t_ on the array's half-pitch lattice (its ball lines and
+        # gap lines, eight ways), its last step straight onto the pad -- every step clear of other nets' copper
+        import heapq
+        if cop.path_clear([s, t_], L, nid):
+            return [s, t_] if math.hypot(t_[0] - s[0], t_[1] - s[1]) <= lim else None
+        hx, hy = g_.pitch_x / 2, g_.pitch_y / 2
+        ox, oy = g_.bbox[0], g_.bbox[1]
+        node = lambda q: (round((q[0] - ox) / hx), round((q[1] - oy) / hy))
+        pt = lambda n: (ox + n[0] * hx, oy + n[1] * hy)
+        lo = (min(s[0], t_[0]) - 1.0, min(s[1], t_[1]) - 1.0)
+        hi = (max(s[0], t_[0]) + 1.0, max(s[1], t_[1]) + 1.0)
+        n0 = node(s)
+        if math.hypot(pt(n0)[0] - s[0], pt(n0)[1] - s[1]) > 1e-3:
+            return None                     # (a start off the lattice: no field to walk)
+        dist, prev, todo = {n0: 0.0}, {}, [(0.0, n0)]
+        best = None
+        while todo:
+            d0, n = heapq.heappop(todo)
+            if d0 > dist.get(n, 1e18) + 1e-9 or d0 > lim:
+                continue
+            q = pt(n)
+            if best is not None and d0 >= best[0]:
+                break
+            if math.hypot(q[0] - t_[0], q[1] - t_[1]) <= 2 * max(hx, hy) and cop.path_clear([q, t_], L, nid):
+                tot = d0 + math.hypot(q[0] - t_[0], q[1] - t_[1])
+                if best is None or tot < best[0]:
+                    best = (tot, n)
+            for i in (-1, 0, 1):
+                for j in (-1, 0, 1):
+                    m = (n[0] + i, n[1] + j)
+                    qm = pt(m)
+                    if (i, j) == (0, 0) or not (lo[0] <= qm[0] <= hi[0] and lo[1] <= qm[1] <= hi[1]):
+                        continue
+                    dm = d0 + math.hypot(qm[0] - q[0], qm[1] - q[1])
+                    if dm < dist.get(m, 1e18) - 1e-9 and cop.path_clear([q, qm], L, nid):
+                        dist[m], prev[m] = dm, n
+                        heapq.heappush(todo, (dm, m))
+        if best is None or best[0] > lim:
+            return None
+        chain_ = [best[1]]
+        while chain_[-1] in prev:
+            chain_.append(prev[chain_[-1]])
+        pts = [s] + [pt(n) for n in reversed(chain_[:-1])] + [t_]
+        # (collinear points merged)
+        out = [pts[0]]
+        for k_ in range(1, len(pts) - 1):
+            a_, b_, c_ = out[-1], pts[k_], pts[k_ + 1]
+            if abs((b_[0] - a_[0]) * (c_[1] - a_[1]) - (b_[1] - a_[1]) * (c_[0] - a_[0])) > 1e-9:
+                out.append(b_)
+        out.append(pts[-1])
+        return ep.dedupe(out)
+    tracks, attached, why, lens = [], [], [], []
+    for h, r_ in near:
+        fp_ = pcb.footprints[h[0]]
+        p_ = next(q for q in fp_.pads if q.pad_number == h[1])
+        nid = p_.net_id
+        lays = [L for L in p_.layers if L.endswith('.Cu') and not L.startswith('*')]
+        ball = next((q for q in pcb.footprints[r_].pads if q.net_id == nid), None)
+        if not nid or ball is None or len(lays) != 1:
+            why.append(f'{h[0]}.{h[1]} (no ball of its net at {r_}, or not on one layer)')
+            continue
+        L = lays[0]
+        site = ep.own_via(pcb, ball, nid, grids[r_])
+        starts = [site] if site is not None else ([(ball.global_x, ball.global_y)] if L in ball.layers else [])
+        got = next((q for s in starts
+                    for q in [stub(s, (p_.global_x, p_.global_y), grids[r_], L, nid, lims[r_])] if q), None)
+        if got is None:
+            why.append(f'{h[0]}.{h[1]} (no clear stub on {L} within {lims[r_]:.2f} mm of its ball at {r_})')
+            continue
+        tracks += [{'start': a, 'end': b, 'width': r.fan_track, 'layer': L, 'net_id': nid}
+                   for a, b in zip(got, got[1:])]
+        attached.append(h)
+        lens.append(f'{h[0]}.{h[1]} {sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(got, got[1:])):.2f} mm')
+    if attached:
+        txt3, _miss = repull(txt, attached)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(txt3)
+        with contextlib.redirect_stdout(sys.stderr):
+            add_tracks_and_vias_to_pcb(path, path, tracks, [])
+    log(f'  pulls in the fanout: {len(attached)} pull pad(s) joined to their lanes'
+        + (f' ({", ".join(lens)})' if attached else '')
+        + (f'; left to the rest of the chain: {"; ".join(why)}' if why else ''))
+    return [h for h in held if h not in attached], attached
 
 
 def unpull(txt, pads):

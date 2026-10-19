@@ -43,12 +43,16 @@ def admissible(pcb, net):
     so a net the bench fans out is one the ladder admits."""
     import pairs as _pairs
     import rules as _rules
+    import awx_settings
+    # (a pull pad the bus step's escape fanout joined to the lane -- BUS_ATTACHED, route_bus.attach_pulls -- is none
+    # of the net's ends: its stub stands on the board, connected when the lane is)
+    attached = {h for h in (awx_settings.get('BUS_ATTACHED') or '').split(',') if h}
     bn_all = {n.name.split('/')[-1] for n in pcb.nets.values()}
     prs = _pairs.pair_names(list(bn_all), admit_all=True)   # admission ignores BRAID_PAIR_ONLY
     partner = {}
     for _b, (_pn, _nn) in prs.items():
         partner[_pn], partner[_nn] = _nn, _pn
-    pads = list(net.pads)
+    pads = [p for p in net.pads if f'{p.component_ref}.{p.pad_number}' not in attached]
     if len({p.component_ref for p in pads}) < 2:
         return False
     if len(pads) == 2:
