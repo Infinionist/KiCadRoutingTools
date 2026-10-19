@@ -2,7 +2,7 @@
 
 High-performance A* grid router implemented in Rust with Python bindings via PyO3.
 
-**Current Version: 0.23.6**
+**Current Version: 0.23.7**
 
 > **Release note:** the 0.20.0 per-platform binaries are published as of
 > [v0.20.0](https://github.com/drandyhaas/KiCadRoutingTools/releases/tag/v0.20.0),
@@ -310,6 +310,14 @@ src/
 - **Costs**: ORTHO_COST=1000, DIAG_COST=1414 (sqrt(2) * 1000), DEFAULT_TURN_COST=1000
 
 ## Version History
+
+### 0.23.7 (2026-10-18)
+- **Congestion priced only where it can change** (`placement_kernels.rs`):
+  `cong_block_slack(d, c, pitch, block, win, out)` keeps each 8 x 8 block's
+  least slack (capacity less demand), and `cong_delta_blocks(..., slack,
+  block)` is `cong_delta` to the bit, visiting only the blocks where a cell
+  can overflow before or after the move; the rest add nothing to the
+  overflow total either way.
 
 ### 0.23.6 (2026-10-18)
 - **The simple path's overlap in Rust** (`placement_kernels.rs`):

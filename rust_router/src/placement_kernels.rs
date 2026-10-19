@@ -1293,3 +1293,240 @@ pub fn overlap_sum(
     }
     acc
 }
+
+/// `cong_block_slack`: over each `block` x `block` block of the grid (block
+/// (bi, bj) holds cells bi*block.. and bj*block.., clipped to the grid) that
+/// window (i0, i1, j0, j1) touches, the least `c / pitch - d` -- how much
+/// demand its fullest cell can take before it overflows -- written into `out`
+/// (the block grid). NaN when a cell's is.
+#[pyfunction]
+pub fn cong_block_slack(
+    d: PyReadonlyArray2<f64>,
+    c: PyReadonlyArray2<f64>,
+    pitch: f64,
+    block: usize,
+    win: (usize, usize, usize, usize),
+    mut out: numpy::PyReadwriteArray2<f64>,
+) {
+    let d = d.as_array();
+    let c = c.as_array();
+    let mut o = out.as_array_mut();
+    let (ny, nx) = d.dim();
+    let (i0, i1, j0, j1) = (win.0, win.1.min(ny), win.2, win.3.min(nx));
+    if i1 <= i0 || j1 <= j0 || block == 0 {
+        return;
+    }
+    for bi in (i0 / block)..=((i1 - 1) / block) {
+        for bj in (j0 / block)..=((j1 - 1) / block) {
+            let mut m = f64::INFINITY;
+            'cells: for gi in bi * block..((bi + 1) * block).min(ny) {
+                for gj in bj * block..((bj + 1) * block).min(nx) {
+                    let v = c[[gi, gj]] / pitch - d[[gi, gj]];
+                    if v.is_nan() {
+                        m = f64::NAN;
+                        break 'cells;
+                    }
+                    if v < m {
+                        m = v;
+                    }
+                }
+            }
+            o[[bi, bj]] = m;
+        }
+    }
+}
+
+/// `cong_delta`, visiting only the cells that can change the total: the
+/// window is cut into the `block` x `block` blocks `cong_block_slack` keeps
+/// (`slack`, the least slack per block), and a block is skipped when its
+/// least slack is more than the most the move's demand terms can add to any
+/// of its cells (each term's density times its largest overlaps there) and
+/// the move's pad use does not reach it -- no cell of it overflows before or
+/// after, so each adds exactly nothing. The cells it does visit are summed
+/// in the window's row-major order, each from the same terms in the same
+/// order as `cong_delta`, so the two agree to the bit.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
+pub fn cong_delta_blocks(
+    d: PyReadonlyArray2<f64>,
+    c: PyReadonlyArray2<f64>,
+    uses: Vec<PyReadonlyArray2<f64>>,
+    win: (usize, usize, usize, usize),
+    dem: Vec<(f64, usize, usize, PyReadonlyArray1<f64>, PyReadonlyArray1<f64>)>,
+    usev: Vec<(usize, f64, usize, usize, PyReadonlyArray2<f64>)>,
+    cell2: f64,
+    pitch: f64,
+    slack: PyReadonlyArray2<f64>,
+    block: usize,
+) -> f64 {
+    let d = d.as_array();
+    let c = c.as_array();
+    let sl = slack.as_array();
+    let (i0, i1, j0, j1) = win;
+    if i1 <= i0 || j1 <= j0 {
+        return 0.0;
+    }
+    let b = block.max(1);
+    let (bi0, bi1) = (i0 / b, (i1 - 1) / b + 1);
+    let (bj0, bj1) = (j0 / b, (j1 - 1) / b + 1);
+    let (nbh, nbw) = (bi1 - bi0, bj1 - bj0);
+    let dem: Vec<(f64, usize, usize, Vec<f64>, Vec<f64>)> = dem
+        .iter()
+        .map(|(s, ti0, tj0, cy, cx)| (*s, *ti0, *tj0, cy.as_array().to_vec(), cx.as_array().to_vec()))
+        .collect();
+    // the most a cell of each block can gain: per term, its density times
+    // its largest row and column overlaps in the block
+    let mut gain = vec![0.0f64; nbh * nbw];
+    for (s, ti0, tj0, cy, cx) in &dem {
+        if !(*s > 0.0) || cy.is_empty() || cx.is_empty() {
+            continue;
+        }
+        let (tb0, tb1) = (ti0 / b, (ti0 + cy.len() - 1) / b + 1);
+        let mut ry = vec![0.0f64; tb1 - tb0];
+        for (a, &v) in cy.iter().enumerate() {
+            let k = (ti0 + a) / b - tb0;
+            if v > ry[k] {
+                ry[k] = v;
+            }
+        }
+        let (cb0, cb1) = (tj0 / b, (tj0 + cx.len() - 1) / b + 1);
+        let mut rx = vec![0.0f64; cb1 - cb0];
+        for (q, &v) in cx.iter().enumerate() {
+            let k = (tj0 + q) / b - cb0;
+            if v > rx[k] {
+                rx[k] = v;
+            }
+        }
+        for (kr, &my) in ry.iter().enumerate() {
+            if my == 0.0 {
+                continue;
+            }
+            let row = (tb0 + kr - bi0) * nbw;
+            let sy = s * my;
+            for (kc, &mx) in rx.iter().enumerate() {
+                gain[row + cb0 + kc - bj0] += sy * mx;
+            }
+        }
+    }
+    // the use terms' union box, its new use per layer, then its capacity
+    let (mut ui0, mut ui1, mut uj0, mut uj1) = (usize::MAX, 0usize, usize::MAX, 0usize);
+    for (_l, _s, ti0, tj0, bk) in &usev {
+        let bk = bk.as_array();
+        ui0 = ui0.min(*ti0);
+        uj0 = uj0.min(*tj0);
+        ui1 = ui1.max(ti0 + bk.nrows());
+        uj1 = uj1.max(tj0 + bk.ncols());
+    }
+    let mut cap_u: Vec<f64> = Vec::new();
+    let (uh, uw) = if ui1 > ui0 && uj1 > uj0 { (ui1 - ui0, uj1 - uj0) } else { (0, 0) };
+    if uh > 0 {
+        let nl = uses.len();
+        let mut du = vec![0.0f64; nl * uh * uw];
+        for (l, s, ti0, tj0, bk) in &usev {
+            let bk = bk.as_array();
+            for r in 0..bk.nrows() {
+                for q in 0..bk.ncols() {
+                    du[l * uh * uw + (ti0 - ui0 + r) * uw + (tj0 - uj0 + q)] += s * bk[[r, q]];
+                }
+            }
+        }
+        let us: Vec<_> = uses.iter().map(|u| u.as_array()).collect();
+        cap_u = vec![0.0f64; uh * uw];
+        for r in 0..uh {
+            for q in 0..uw {
+                let mut cap = 0.0f64;
+                for (l, u) in us.iter().enumerate() {
+                    cap += clip0(cell2 - (u[[ui0 + r, uj0 + q]] + du[l * uh * uw + r * uw + q]));
+                }
+                cap_u[r * uw + q] = cap;
+            }
+        }
+    }
+    // the blocks to visit, each a slot of block x block cells
+    let mut slot = vec![usize::MAX; nbh * nbw];
+    let mut nhot = 0usize;
+    for br in 0..nbh {
+        for bc in 0..nbw {
+            let (gbi, gbj) = (bi0 + br, bj0 + bc);
+            let mut hot = !(sl[[gbi, gbj]] > gain[br * nbw + bc] + 1e-9);
+            if !hot && uh > 0 {
+                let (r0, q0) = (gbi * b, gbj * b);
+                hot = r0 < ui1 && ui0 < r0 + b && q0 < uj1 && uj0 < q0 + b;
+            }
+            if hot {
+                slot[br * nbw + bc] = nhot;
+                nhot += 1;
+            }
+        }
+    }
+    if nhot == 0 {
+        return 0.0;
+    }
+    let bb = b * b;
+    let mut buf = vec![0.0f64; nhot * bb];
+    for (s, ti0, tj0, cy, cx) in &dem {
+        let (tj0, end) = (*tj0, tj0 + cx.len());
+        for (a, &yv) in cy.iter().enumerate() {
+            let ya = s * yv;
+            if ya == 0.0 {
+                continue;
+            }
+            let gi = ti0 + a;
+            let bgi = gi / b;
+            let (row, ro) = ((bgi - bi0) * nbw, (gi - bgi * b) * b);
+            let (mut gj, mut bc) = (tj0, tj0 / b);
+            while gj < end {
+                let bstart = bc * b;
+                let stop = (bstart + b).min(end);
+                let k = slot[row + bc - bj0];
+                if k != usize::MAX {
+                    let off = k * bb + ro + (gj - bstart);
+                    let dst = &mut buf[off..off + (stop - gj)];
+                    for (x, v) in dst.iter_mut().zip(&cx[gj - tj0..stop - tj0]) {
+                        *x += ya * v;
+                    }
+                }
+                gj = stop;
+                bc += 1;
+            }
+        }
+    }
+    let nx = d.ncols();
+    let dv = d.as_standard_layout();
+    let cv = c.as_standard_layout();
+    let ds = dv.as_slice().expect("a standard-layout array is one slice");
+    let cs = cv.as_slice().expect("a standard-layout array is one slice");
+    let mut acc = 0.0f64;
+    for gi in i0..i1 {
+        let bgi = gi / b;
+        let (row, ro) = ((bgi - bi0) * nbw, (gi - bgi * b) * b);
+        let in_r = uh > 0 && gi >= ui0 && gi < ui1;
+        let (drow, crow) = (&ds[gi * nx..(gi + 1) * nx], &cs[gi * nx..(gi + 1) * nx]);
+        let (mut gj, mut bc) = (j0, j0 / b);
+        while gj < j1 {
+            let bstart = bc * b;
+            let stop = (bstart + b).min(j1);
+            let k = slot[row + bc - bj0];
+            if k != usize::MAX {
+                let off = k * bb + ro;
+                for g in gj..stop {
+                    let dd = buf[off + g - bstart];
+                    let in_u = in_r && g >= uj0 && g < uj1;
+                    if dd == 0.0 && !in_u {
+                        continue;
+                    }
+                    let dold = drow[g];
+                    let cold = crow[g];
+                    let cnew = if in_u { cap_u[(gi - ui0) * uw + (g - uj0)] } else { cold };
+                    let oo = clip0(dold - cold / pitch);
+                    let on = clip0(dold + dd - cnew / pitch);
+                    acc += on * on - oo * oo;
+                }
+            }
+            gj = stop;
+            bc += 1;
+        }
+    }
+    acc
+}

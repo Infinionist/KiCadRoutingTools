@@ -92,6 +92,9 @@ FAN_MM = 0.25
 #: a part with at most this many pads, wired to a fine-pitch part, may sit
 #: in its halo (a decap at its pin, a crystal at its oscillator pins)
 HALO_SMALL_PADS = 4
+#: cells per side of the congestion grid's blocks: a move visits only the
+#: blocks where a cell can overflow before or after it (`_cong_price`)
+CONG_BLOCK = 8
 
 
 def pad_pitch(offs: Sequence[Tuple[float, float]]) -> float:
@@ -877,6 +880,11 @@ class Model:
                 self._U[L][i0:i1, j0:j1] += blk
         self._C = self._capacity(0, self._ny, 0, self._nx)
         self._S = self._over2(0, self._ny, 0, self._nx)
+        # each block's least slack (capacity / pitch - demand): a move skips
+        # the blocks its demand cannot fill
+        B = CONG_BLOCK
+        self._SL = np.empty((-(-self._ny // B), -(-self._nx // B)))
+        grid_router.cong_block_slack(self._D, self._C, self.pitch, B, (0, self._ny, 0, self._nx), self._SL)
         self._cong_pending = None
 
     def _capacity(self, i0, i1, j0, j1):
@@ -895,7 +903,9 @@ class Model:
         """Price the congestion a move of `refs` makes, without touching the
         grids: the demand of the nets `refs` are on and the pad use of `refs`
         re-priced, and the overflow total corrected over the cells they reach
-        (the Rust kernel `grid_router.cong_delta`). The change is kept as
+        (the Rust kernel `grid_router.cong_delta_blocks`: `cong_delta`'s sum,
+        to the bit, over only the blocks where a cell can overflow before or
+        after the move). The change is kept as
         pending, written by `_cong_commit` if the move is kept and dropped if
         it is not -- a refused move (most of them) writes nothing."""
         dem = [(n, self._dem[n], self._net_demand(n)) for n in self._cong_nets(refs)]
@@ -903,7 +913,7 @@ class Model:
         wins = [v[:4] for _n, old, new in dem for v in (old, new) if v is not None]
         wins += [b[:4] for _r, old, new in use for u in (old, new) for b in u.values()]
         if not wins:
-            self._cong_pending = (dem, use, self._S)
+            self._cong_pending = (dem, use, self._S, None)
             return self._S
         win = (min(w[0] for w in wins), max(w[1] for w in wins),
                min(w[2] for w in wins), max(w[3] for w in wins))
@@ -919,9 +929,10 @@ class Model:
         li = {L: k for k, L in enumerate(self.layers)}
         uterms = [(li[L], sign, b[0], b[2], b[4]) for _r, old, new in use
                   for sign, u in ((-1.0, old), (1.0, new)) for L, b in u.items()]
-        S = self._S + grid_router.cong_delta(self._D, self._C, [self._U[L] for L in self.layers],
-                                             win, dterms, uterms, self.cell * self.cell, self.pitch)
-        self._cong_pending = (dem, use, S)
+        S = self._S + grid_router.cong_delta_blocks(self._D, self._C, [self._U[L] for L in self.layers],
+                                                    win, dterms, uterms, self.cell * self.cell, self.pitch,
+                                                    self._SL, CONG_BLOCK)
+        self._cong_pending = (dem, use, S, win)
         return S
 
     def _cong_commit(self):
@@ -931,7 +942,7 @@ class Model:
         pend = getattr(self, '_cong_pending', None)
         if pend is None:
             return
-        dem, use, S = pend
+        dem, use, S, win = pend
         for n, old, new in dem:
             for sign, v in ((-1.0, old), (1.0, new)):
                 if v is not None:
@@ -951,6 +962,8 @@ class Model:
             i0, i1 = min(b[0] for b in boxes), max(b[1] for b in boxes)
             j0, j1 = min(b[2] for b in boxes), max(b[3] for b in boxes)
             self._C[i0:i1, j0:j1] = self._capacity(i0, i1, j0, j1)
+        if win is not None:     # every cell it changed is in the window
+            grid_router.cong_block_slack(self._D, self._C, self.pitch, CONG_BLOCK, win, self._SL)
         self._S = S
         self._cong_pending = None
 

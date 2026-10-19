@@ -161,6 +161,8 @@ fn grid_router(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(placement_kernels::net_box, m)?)?;
     m.add_function(wrap_pyfunction!(placement_kernels::pad_use, m)?)?;
     m.add_function(wrap_pyfunction!(placement_kernels::cong_delta, m)?)?;
+    m.add_function(wrap_pyfunction!(placement_kernels::cong_delta_blocks, m)?)?;
+    m.add_function(wrap_pyfunction!(placement_kernels::cong_block_slack, m)?)?;
     m.add_function(wrap_pyfunction!(placement_kernels::overlap_sum, m)?)?;
     m.add_function(wrap_pyfunction!(pair_search::pair_search, m)?)?;
     Ok(())
