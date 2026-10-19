@@ -395,11 +395,25 @@ def drilled_pad_boxes_local(fp) -> List[Tuple[float, float, float, float]]:
                                   + (fp.rotation or 0.0))
         c, s = abs(math.cos(local_tilt)), abs(math.sin(local_tilt))
         hx, hy = (getattr(p, 'size_x', 0) or 0) / 2.0, (getattr(p, 'size_y', 0) or 0) / 2.0
-        # An oval/slotted hole is bounded by the pad extent it sits in; taking
-        # the larger of drill radius and half pad size keeps a slot covered.
-        r = d / 2.0
-        rx = max(r, hx * c + hy * s)
-        ry = max(r, hx * s + hy * c)
+        # The hole, at its own extents: a slot `(drill oval w h)` is w x h in
+        # the PAD's frame, turned into the footprint's by the pad's angle in
+        # it -- never a circle of its long side (`pad.drill`), which read
+        # ch32v003_usb's USB-C shield legs (0.6 x 1.7 mm slots in 1.0 mm
+        # pads) 1.7 mm wide on the far face, 0.35 mm past their copper each
+        # side and 0.69 mm2 into the B.CrtYd of the two headers beside it at
+        # the human's own poses: declared as `fixed_poses`, all three were
+        # refused. `kicad_parser.pad_drill_capsule` gives routing the same
+        # slot. The box is the larger of the hole and the pad it sits in.
+        w = getattr(p, 'drill_w', 0.0) or 0.0
+        h = getattr(p, 'drill_h', 0.0) or 0.0
+        if w > 0 and h > 0 and abs(w - h) > 1e-9:
+            t = math.radians((getattr(p, 'rotation', 0.0) or 0.0) - (fp.rotation or 0.0))
+            ct, st = abs(math.cos(t)), abs(math.sin(t))
+            sx, sy = (w * ct + h * st) / 2.0, (w * st + h * ct) / 2.0
+        else:
+            sx = sy = d / 2.0
+        rx = max(sx, hx * c + hy * s)
+        ry = max(sy, hx * s + hy * c)
         out.append((p.local_x - rx, p.local_y - ry,
                     p.local_x + rx, p.local_y + ry))
     return out
