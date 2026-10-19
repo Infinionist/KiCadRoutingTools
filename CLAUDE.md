@@ -39,10 +39,10 @@ lines of such code from awx.)
 Use `build_router.py` to build the Rust router:
 
 ```bash
-python build_router.py
+python3 build_router.py
 ```
 
-This builds the Rust module, copies the library to the correct location, and verifies the version. Do not run `cargo build` directly.
+This installs the Rust module (a matching prebuilt release binary, else a local build), copies the library to the correct location, and verifies the version. Do not run `cargo build` directly.
 
 **Prefer Python-only solutions; avoid changing the Rust router (`rust_router/`)
 unless clearly necessary and agreed.** A Rust change forces a crate version bump,
@@ -50,7 +50,7 @@ a `build_router.py --from-source` rebuild, and re-distributing prebuilt per-plat
 binaries via GitHub Releases — heavy overhead. When a feature seems to need a Rust
 change, surface that cost early and check for a Python-only approach first.
 
-**Important:** When making changes to the Rust router, bump the version in `rust_router/Cargo.toml` and update the version history in `rust_router/README.md`. The release triple is `rust_router/Cargo.toml` + `/VERSION` + `metadata.json` — keep them aligned. **`/VERSION` can lead `Cargo.toml`**: a python-only release bumps only `/VERSION`'s patch and still republishes the current crate's binaries -- which is also the cheapest way to unstick a release whose assets were built from an older crate. A plain `python3 build_router.py` downloads and keeps the release's prebuilt binary when it matches `Cargo.toml`; it skips the download when `Cargo.toml` is ahead of the release tag, and when the tag matches but the asset inside is stale it detects the version mismatch after install and rebuilds from source. Both checks verify in a fresh subprocess: an in-process re-import of a compiled extension reports the previously-loaded library. `--from-source` just skips the lookup.
+**Important:** When making changes to the Rust router, bump the version in `rust_router/Cargo.toml` and update the version history in `rust_router/README.md`. The release triple is `rust_router/Cargo.toml` + `/VERSION` + `metadata.json` — keep them aligned. **`/VERSION` can lead `Cargo.toml`**: a python-only release bumps only `/VERSION`'s patch and still republishes the current crate's binaries -- which is also the cheapest way to unstick a release whose assets were built from an older crate. A plain `python3 build_router.py` downloads and keeps the release's prebuilt binary when it matches `Cargo.toml`; it skips the download when `Cargo.toml` is ahead of the release tag, and when the tag matches but the asset inside is stale it detects the version mismatch after install and rebuilds from source. Both checks verify in a fresh subprocess: an in-process re-import of a compiled extension reports the previously-loaded library. Before any of that, a checkout whose `rust_router/` differs from `origin/main` builds from source without trying the download, because release binaries are built from main's crate (#615); `--tag` forces a prebuilt. `--from-source` just skips the lookup.
 
 ## Testing & Verification
 
@@ -162,7 +162,6 @@ Validate routed boards against the *real* spec, with the right checker — most
   - The PLACEMENT CLI `place_fanout_clearance.py` keeps its `--clearance` = ceiling
     contract (#768/#769, pinned by its test family); the GUI fanout tab prices that
     ceiling from the Min Clearance override alone (`placement_clearance_ceiling`).
-    Gated by the phase-7 corpus A/B in `docs/design-rules-proposal.md` before merge.
   - **`place_fanout_clearance.py` obeys the same two branches (#768/#769)**, and
     it is the only PLACEMENT step that does, because it is the only one that
     lays copper (the #313 via nudge) and therefore the only one that writes a
@@ -184,7 +183,7 @@ Validate routed boards against the *real* spec, with the right checker — most
     gets it too.
   - `--hole-to-hole-clearance` / `--board-edge-clearance` work the same way: omitted →
     the board's own `min_hole_to_hole` / `min_copper_edge_clearance` constraint (via
-    `list_nets.board_constraint`), else the fixed default.
+    `list_nets.resolve_cli_floor`, where a declared 0 reads as unset), else the fixed default.
 - **A board may DECLARE what it is for (#711), in a sibling
   `<board>.design-brief.json`.** Placement otherwise infers everything from the
   board: `emit_intent` is "a starter intent READ OFF the board", and every
@@ -193,14 +192,15 @@ Validate routed boards against the *real* spec, with the right checker — most
   UNLOCKED part's pose is read (#1103: `context.pose_claims_withheld`). The brief is the channel for the
   facts a board file cannot contain -- which connectors are user-facing, which
   edge each belongs on and **where along it**, what the enclosure forbids. It is
-  auto-discovered by `check_floorplan.py` and `board_brief.py` the way
+  auto-discovered by `check_floorplan.py`, `board_brief.py` and `board_context.py` the way
   `kicad_dru` discovers a `.kicad_dru`, carried by `copy_board.SIBLING_EXTS`
   (which every other sibling-copy site now imports), and **compiled** into the
   existing intent by `check_floorplan --emit-intent` rather than being a second
-  constraint system -- so it adds no intent key, and the placement CLIs receive
+  constraint system -- every clause lands in an intent key the grade reads (`edge_connectors`,
+  `keepouts`, `proximity`, `arrays`, `fixed_poses`, `keep_away`, `assembly`), and the placement CLIs receive
   it through the `--intent` they already take rather than through a flag of
   their own. (Unlike `.kicad_dru`, which EVERY routing step reads, the brief is
-  read by those two tools and reaches the rest as a compiled intent -- with ONE
+  read by those tools and reaches the rest as a compiled intent -- with ONE
   exception, #1253: its `keep_away` list of route.py `AGG:VICTIM:GAP` rules is
   ALSO read by the routing engines, `batch_route` and `batch_route_diff_pairs`,
   the way `.kicad_dru` is (input_file, else `PCBData.source_path`), through
@@ -232,7 +232,7 @@ Validate routed boards against the *real* spec, with the right checker — most
   same way (`--mechanical` / `--no-mechanical`): reconciled against the brief
   and the outline, value by value with an authority, and compiled into
   grade-only anchors, whose refs must be locked -- or named, unlocked,
-  by a plan `fixed_poses[]` entry at the declared pose (with its `rot` where the
+  by an intent `fixed_poses[]` entry at the declared pose (with its `rot` where the
   file has one), which `place_simple` seats and holds (#1054).
   `docs/floorplan-intent.md` has the authority table.
 - **Protected nets (#521): matched groups and routed diff pairs are recorded in
@@ -312,15 +312,17 @@ Validate routed boards against the *real* spec, with the right checker — most
   class (zynq: 499 clearance violations at its 0.2 class, routed ~0.1), so keeping the
   stock class in the output manufactures phantom sub-class DRC on copper routed
   correctly at the fab floor. Helpers: `list_nets.board_default_netclass_clearance` /
-  `board_constraint`; the GUI mirrors this with per-floor **override checkboxes** (Min
-  Clearance / Min Hole-to-Hole / Min Edge Clearance — unchecked = use the board's own
-  minimum, checked = clamp to the entered value). The old `--clamp-netclasses` **and**
-  `--no-clamp-netclasses` flags are **removed** (the `--clearance` ceiling replaces
+  `board_constraint`; the GUI mirrors this with per-floor **override checkboxes** (Track Width / Min
+  Clearance / Via Size / Via Drill / Min Hole Clearance / Min Edge Clearance — unchecked =
+  use the board's own value, checked = the entered value; a checked Min Clearance sets
+  the Default class, the CLI's `--clearance`, and the separate **Clearance ceiling** box
+  caps every class, the CLI's `--clearance-ceiling`). The old `--clamp-netclasses` **and**
+  `--no-clamp-netclasses` flags are **removed** (`--clearance-ceiling` replaces
   both; `--net-clearances <json>` gives explicit per-net control). Grade multi-class
   boards at the netclasses that survived (`kicad_drc_compare._staged_copy`).
 
 - **The whole suite is `python3 tests/run_all.py`, and it fans out onto Modal.**
-  ~594 files, ~40 minutes of one laptop -- so on battery, or when you just want
+  ~770 files, ~40 minutes of one laptop -- so on battery, or when you just want
   the answer, use `modal run tests/stress/modal_suite/run_all_modal.py`
   (default 50 shards, about the length of the slowest shard). `--shards N`,
   `--filters "908 910"` for one family, `--fast` for the unit lane.
@@ -358,18 +360,21 @@ Validate routed boards against the *real* spec, with the right checker — most
     as USER kicad; + `python-is-python3`, since Modal's builder shells out to
     `python -m pip`; + `--break-system-packages` for PEP 668) is the proven
     way to give the suite image KiCad too, and would recover exactly the
-    genuinely KiCad-gated self-skips: `test_910_fill_for_delivery` (wants
-    KiCad's bundled python), and the three whose pcbnew/wx half re-runs under
+    genuinely KiCad-gated self-skips: `test_910_fill_for_delivery` and the two
+    `test_1279_*_pcbnew` tests (each wants KiCad's bundled python), and the three whose pcbnew/wx half re-runs under
     KiCad's python and exits 77 without one -- `test_505_min_connection_clamp`,
     `test_505_gui_half_runs` and `test_engine_kwarg_parity_launch`.
     The env-level default is OFF because a new base image is
     a NEW BASELINE ERA that voids cross-wave numeric comparisons -- a reason
     that does NOT apply to the pass/fail suite, which compares no numbers
     across runs.
-    **One other `run_all` self-skip is NOT about KiCad at all**:
-    `test_887_run24_regression` wants recorded artifacts under `wk/`, which
-    is gitignored (0 files tracked), so it self-skips on ANY clean clone --
-    verified locally WITH KiCad present. No image change moves it.
+    **Two other kinds of `run_all` self-skip are NOT about KiCad at all**:
+    `test_887_run24_regression` and `test_1031_keepout_run32_repro` want
+    recorded artifacts under `wk/`, which is gitignored (0 files tracked), so
+    they self-skip on ANY clean clone -- verified locally WITH KiCad present;
+    and the `test_622_*` tests that plan with CP-SAT skip without `ortools`,
+    which `requirements.txt` does not list. No image change moves either.
+    `tests/README.md` keeps the full list.
   - The image is a clean checkout of HEAD, so it is reproducible and you can
     keep editing while it runs; `KICAD_SWEEP_DIRTY=1` ships the working tree
     instead and stamps the provenance `+dirty` (use it to run the suite over
@@ -379,7 +384,8 @@ Validate routed boards against the *real* spec, with the right checker — most
     code defect: a missing git INDEX (`corpus_boards()` asks `git ls-files`, so
     with no `.git` it returns `[]` and corpus tests grade an empty set instead
     of skipping), missing Pillow, missing pytest, and a Python version
-    mismatch. The image now rebuilds the index from `git ls-files --force`
+    mismatch. The image now rebuilds the index by replaying the host's
+    `git ls-files -z` list through `git add --force --pathspec-from-file`
     (never `git add -A`, which honours .gitignore and drops a
     tracked-before-the-rule board), installs `requirements.txt`, and matches
     the interpreter you launched with -- and it ASSERTS the board count against
@@ -570,8 +576,9 @@ through there too.
   rename, or REMOVE a dialog control** — deleting one without updating
   `settings_persistence` crashes on close and loses the user's settings
   (that shipped once; see 31f359c). Seconds to run, no routing.
-- `tests/gui_parity/test_fanout_rotated_gui.py` — needs KiCad python; the only
-  gate that runs a **fanout** step. Drives the REAL FanoutTab on a rotated
+- `tests/gui_parity/test_fanout_rotated_gui.py` — needs KiCad python; the first
+  gate that ran a **fanout** step (the other fanout gates are indexed in
+  `tests/gui_parity/README.md`). Drives the REAL FanoutTab on a rotated
   QFN (haasoscope U2, QFN-76 @ 90°) and compares against the CLI's text-parsed
   engine call, replaying the tab's OWN captured kwargs so the two fronts cannot
   differ by a parameter. Asserts side classification parity (the check that
@@ -579,9 +586,9 @@ through there too.
   Seconds to run. Its wx-free half is `tests/test_rotated_footprint_frame.py`
   (round-trip invariants + change detectors, ~1 s, runs under `run_all.py`).
   **Fanout is the only routing consumer of `pad.local_x/local_y`**, and those
-  are the one PCBData field the GUI COMPUTES rather than reads — see the
-  `_global_to_local` entry in `.gui-parity-checked` for the bug that motivated
-  these.
+  are the one PCBData field the GUI COMPUTES rather than reads — the gate's own
+  docstring and fix commit 301ee1b3 record the `_global_to_local` bug that
+  motivated these.
 - `tests/gui_parity/test_fanout_backside_gui.py` — needs KiCad python; the
   same shape for a **flipped BGA** (bus622-take5's `flip_frame`, which
   re-derives every pad's locals when it turns the board over). Builds its own
@@ -602,8 +609,10 @@ through there too.
   fires wx timers on Windows -- the fanout gates sat out 16-35 min budgets
   there and graded empty results while the worker had finished in 0.5 s.
 - `tests/gui_parity/test_gui_engine_parity.py` — needs KiCad python; runs the
-  plan through the GUI engine path and grades against the CLI chain
-  (`KICAD_DUMP_BATCH_KWARGS` diffs the full batch_route param set, ~105 keys).
+  plan through the GUI engine path and grades the two final boards against
+  each other. The key-by-key diff of the full batch_route param set is a
+  separate tool, `tests/gui_parity/diff_engine_kwargs.py`, over two
+  `KICAD_DUMP_BATCH_KWARGS` captures.
 
   **How to run it (it is NOT a special-session thing — just run it):**
 
@@ -613,8 +622,9 @@ through there too.
   ```
 
   It **re-execs into KiCad's bundled python automatically** (it probes
-  `/Applications/KiCad/KiCad.app/.../bin/python3`, then `/usr/bin/python3`, then
-  the Windows path), so plain `python3` is the correct way to launch it — you do
+  `$KICAD_PYTHON`, then the running interpreter, then the platform's KiCad
+  install -- the macOS app or a versioned Windows install on any drive -- and
+  `/usr/bin/python3` last; `py_router/kicad_locate.py`), so plain `python3` is the correct way to launch it — you do
   NOT need to find the interpreter yourself. The dialog is constructed HEADLESS
   (`parent=None`, never shown, `WXSUPPRESS_SIZER_FLAGS_CHECK=1`), so no window
   appears and no display setup is needed. It routes the small in-repo board
@@ -880,8 +890,8 @@ pcb = parse_kicad_pcb('path/to/file.kicad_pcb')
   fix. Two consequences worth knowing: a pair graded above the board-wide
   clearance is disclosed in `grade_pad_legality`'s `required` key (print it via
   `legality.format_required_clause`, never a hand-copied string), and
-  `placement/fanout_clearance.py` is a SEPARATE flat-scalar channel that still
-  has this bug.
+  `placement/fanout_clearance.py` prices its pairs through the same model
+  (#725).
 
 ### Through-Hole vs SMD Pads
 
@@ -916,9 +926,13 @@ pcb = parse_kicad_pcb('path/to/file.kicad_pcb')
 - `via.x`, `via.y` - Position
 - `via.size` - Via outer diameter
 - `via.drill` - Drill diameter
-- `via.layers` - Layer span
+- `via.layers` - Layer pair as written. Whether the via spans only part of the
+  stack is `via.via_type` (`through`/`blind`/`buried`/`micro`); read a via's
+  copper through `geometry_utils.via_on_layer` / `via_copper_layers`, never off
+  this pair
 - `via.net_id` - Net ID
 - `via.locked` - KiCad `(locked yes)` (see `segment.locked`)
+- `via.held_by` - the `sense:` group holding this via immutable (see `segment.held_by`)
 - `via.tenting_attrs` - Protection spec `{token: raw inner s-expr}` for
   `tenting`/`covering`/`plugging`/`capping`/`filling` (#489 §8); `{}` = the board
   specified nothing. Read by BOTH parse paths in the same normalized form. Pass it
