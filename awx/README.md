@@ -518,13 +518,13 @@ whole bus is 52, AD9361_RST, FB_CLK_N and TX_FRAME_N laid with their pulls):
 
 | | K32 | K40 | K47 | all |
 |---|---|---|---|---|
-| nets routed (the round) | 32 of 32 (1) | 36 of 40 (1) | 45 of 46 (2) | 50 of 52 (3) |
-| handed on | 70 v, 722 mm | 78 v, 850 mm | 108 v, 1117 mm | 117 v, 1287 mm |
+| nets routed (the round) | 32 of 32 (1) | 38 of 40 (2) | 42 of 46 (2) | 49 of 52 (1) |
+| handed on | 70 v, 722 mm | 84 v, 774 mm | 103 v, 996 mm | 108 v, 1116 mm |
 
 Every net it hands on is connected and DRC-clean; the open ones go back as
-they came. Each run is three rounds at most, 3 to 19 minutes on a Mac running
+they came. Each run is three rounds at most, 3 to 26 minutes on a Mac running
 other routes beside it, and hands on its best round: the rounds differ -- the
-whole bus's three left 3, 16 and 2 nets open.
+whole bus's three left 3, 5 and 4 nets open.
 
 `zynq_ad9364` (`boards/`: its source, license and changes in
 `boards/NOTICE.md`), its planes poured as the stress run poured them,
@@ -602,8 +602,8 @@ before the earlier step), with `--escape`.
 
 On the zynq, both buses in one step (the recipe below): the DDR bus by
 `--joint-fanout` first, 45 of its 46 nets (74 vias; DDR3_DQ3 left out of a
-partial round), then the LVDS bus with U1 shared, 44 of its 52 nets (98
-vias), where on the board of the DDR step alone it routes 50. Every other
+partial round), then the LVDS bus with U1 shared, 48 of its 52 nets (107
+vias), where on the board of the DDR step alone it routes 49. Every other
 ball of U1 is served (91 escaped and 11 strapped of 102), and all 98 of its
 plane balls are dropped.
 
@@ -657,7 +657,7 @@ longer tie would run across the ball lines the lanes need into the array, so
 the zynq's FB_CLK_N and AD9361_RST pulls, beside U5, are left to the chain.
 On a shared array's bus the tie is laid on the bus's own field too, so the
 ends are chosen on the field they are laid on. With RX10 so joined the LVDS
-bus routes 50 of its 52 nets where it routed 42, both buses in one call 44
+bus routed 50 of its 52 nets where it had routed 42, both buses in one call 44
 where 42, and on the six-rail board below 50 where 39.
 
 The zynq's USB bus (U1 to U4, 11 nets) and Ethernet bus (U1 to U3, 8 nets)
@@ -686,11 +686,10 @@ python3 route_bus.py tmp/zynq/zr6_both.kicad_pcb tmp/zynq/zr6_eth.kicad_pcb \
 ```
 
 The DDR3 bus routes all 46 nets of its run, 44 lanes (74 vias, 1455 mm), and
-the LVDS bus 50 of its 52 (112 vias, 1160 mm), RX_D2's pair left open, a lane
-the human brings into U5 by its north face. The USB bus routes all 12 of its
-nets (24 vias, 360 mm); the Ethernet bus 13 of its 14 (28 vias, 495 mm),
-ETH_RXD2's lane left open. Each step hands its bus on connected and clean, no plane it
-crosses in more pieces than it came.
+the LVDS bus 50 of its 52 (109 vias, 1078 mm), SPI_ENB and TXNRX left open.
+The USB bus routes all 12 of its nets (24 vias, 359 mm); the Ethernet bus 13
+of its 14 (26 vias, 520 mm), ETH_TXCTL's lane left open. Each step hands its
+bus on connected and clean, no plane it crosses in more pieces than it came.
 
 **One source, two ends.** Those two buses overlap: their balls interleave on
 U1's east face, and routed one after the other the second meets the first's
@@ -1425,7 +1424,9 @@ and the snap lays the singles.
   degrees: laid onto a pose heading south-west, TX_D2 to TX_D5 are laid
   where all four were refused, and the round's open nets fall from 15 to 9.
   On a generated bus of six pairs berthing on the destination's south face
-  three were refused, six nets open; now every pair is laid.
+  three were refused, six nets open; now every pair is laid. An end with no
+  pose clear at all has no pose pair to search, and the pair is left unlaid
+  (the step goes on).
 - **Pose to pose**, owing the router's probe past each pose and turning as
   the pair router's own counters allow (`pairs.pose_turn_over`).
 - **The crossover:** an **opposite-hands** pair -- P on one side of its
@@ -1450,7 +1451,13 @@ and the snap lays the singles.
   nearest grid point whose join folds neither against the stub nor the lane.
 - **Shares:** a lane not yet placed keeps its share of every gap, so the
   lanes laid first cannot take the room the later ones need.
-- **Two sweeps** then lay every lane again against the others' real copper.
+- **Two sweeps** then lay every lane again against the others' real copper. A
+  lane the first pass could not lay is tried again with no share of another
+  lane it could not lay: neither has copper, and two failed lanes each keeping
+  the other's share are never laid. On the zynq LVDS bus TX_FRAME's planned
+  dive fenced TX_D3 and TX_D3's fenced TX_FRAME, and eight of a round's
+  sixteen pairs were left so; over thirteen rounds of the bus's benches the
+  nets the snap left unlaid fall from 98 to 52, in none more.
 - **A single the snap cannot lay** is named with where its search got stuck,
   and the loop sends that place to the solve.
 
