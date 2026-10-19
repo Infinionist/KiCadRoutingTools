@@ -204,7 +204,8 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 'r1/s{seed}.kicad_pcb'
   (final cost, moves, seed, parts moved to a legal pose after the anneal,
   parts left illegal, seconds) and, with `--json`, the full report (adding
   `runs`, the anneals it took, each move kind's tried and kept counts, the
-  groups and the notes).
+  groups, the notes, and `unseated`: declared edge parts that found no seat on
+  their edge and were placed as any other part, each also a WARNING line).
 
 Exit 0 placed; 2 unreadable input, a part in two groups, or a face or pose
 the inputs contradict (two declarations disagree, or a KiCad-locked part is

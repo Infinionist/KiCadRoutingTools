@@ -83,8 +83,9 @@ What to read in the output:
   (`s0.log`): the movable and fixed parts, the groups after folding, one cost
   line per stage of the anneal, the final cost broken down by term, and a
   `JSON_SUMMARY:` line. `--json` writes the full report (`final` costs,
-  `moves`, `seed`, `runs`, `reseated`, `illegal`, the `groups` as placed,
-  `seconds`). A seed is the same placement whether it runs alone (`--seed 0`)
+  `moves`, `seed`, `runs`, `reseated`, `illegal`, `unseated` (declared edge
+  parts that found no seat on their edge, each with why, also printed as a
+  WARNING), the `groups` as placed, `seconds`). A seed is the same placement whether it runs alone (`--seed 0`)
   or in a batch. Exit 0 placed; 4 placed with parts left without a legal pose
   or at a declared pose that is not legal (named); 2 unreadable input, a part
   in two groups, or a face or pose two declarations disagree on;

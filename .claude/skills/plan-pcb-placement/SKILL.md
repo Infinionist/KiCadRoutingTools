@@ -205,11 +205,32 @@ it. Then decide, from the part's function and its datasheet:
   datasheet's PCB-layout drawing and write `mating_face` (`+x`/`-x`/`+y`/`-y`,
   the footprint's own frame). The side of its solder tabs, away from the
   contact row, is a hint to check against the drawing, not a rule: it is
-  wrong on 3 of 50 side-entry connectors in the corpus. A `Vertical` part has
-  no face to declare.
+  wrong on 3 of 50 side-entry connectors in the corpus.
+- **The side a vertical header's cable leaves.** A `Vertical` header mates
+  off the board and names no face, but its cable leaves on one side: a
+  2xN ribbon off a long side. Write that side as its `mating_face`, so the
+  seat lays the header with its long side along the edge and the cable runs
+  off the board. Without it, tigard's 2x05 J5 lay across its edge on most
+  seeds, its cable along the edge.
+- **The pin rows of a plug-in module** (a DIP or breadboard module, rows
+  that go into a socket): the socket sets their spacing, so declare each row
+  in `fixed_poses[]` (`basis: derived_default`), not on its edge: parallel,
+  along the long edges, pins on one 0.1 in grid, centred on the board, a
+  whole number of 2.54 mm apart (the socket's, else the most that keeps
+  every pad the board's edge clearance inside the outline). Seated flush on
+  their edges instead, ch32v003_usb's two 1x10 rows ended 13.21 mm apart,
+  not 12.70, and the module no longer fits a breadboard.
+- **How far an edge receptacle reaches past the edge.** The seat puts a
+  receptacle flush with the low end of its `overhang_mm` band, which the
+  emitter writes as 0. Where the datasheet's PCB-layout drawing puts the
+  board edge inside the body (a USB-C or barrel jack's shell past the edge),
+  write that distance as `overhang_mm.min`, `max` at or above it. Seated
+  flush instead, ch32v003_usb's USB-C J1 sat 0.88 mm deeper than its drawing
+  and the board routed with about 15 mm more copper a seed.
 
-Write these into the intent's `edge_connectors[]` entries (or into the brief,
-then emit again, §3.2). Check the fixed parts -- mounting holes, switches, LEDs
+Write these into the intent's `edge_connectors[]` entries, the rows into
+`fixed_poses[]` instead (a ref in both is refused), or into the brief,
+then emit again (§3.2). Check the fixed parts -- mounting holes, switches, LEDs
 a panel shows -- against the brief or `mechanical.json`, and move any that is
 wrong with `place_pose ... set ... lock` as in §3.1. Run check_floorplan again:
 no `edge_connector` error.

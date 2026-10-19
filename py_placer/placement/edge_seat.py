@@ -25,11 +25,12 @@ The seat is read with the grade's own measurements (`rule_edge_connector`):
   a declared `along_edge_band` / `center_on_edge` -- and a declared pose's
   check passes against every part the anneal does not move. Each turn's
   stretches are read by testing poses every SCAN_STEP_MM and at every
-  position where the part's courtyard just meets a fixed part's or a board
-  margin, each change between two of them bisected to REFINE_MM, so a gap
-  barely wider than the part (tigard's J7 between H3 and J6: 0.1 mm of
-  play) is found. A move that lands outside them snaps to the nearest one,
-  so a connector hops past a locked switch rather than pushing through it.
+  position where the part's courtyard or pad copper just meets a fixed
+  part's courtyard or pad copper, or a board margin, each change between
+  two of them bisected to REFINE_MM, so a gap barely wider than the part
+  (tigard's J7 between H3 and J6: 0.1 mm of play) is found. A move that
+  lands outside them snaps to the nearest one, so a connector hops past a
+  locked switch rather than pushing through it.
 
 Its legality is a declared pose's (`seeder._fixed_pose_check`): its courtyard
 may cross the outline when every pad and hole stays on the board, and
@@ -240,9 +241,10 @@ def _seat_coord(probe, ref, edge, rot, axis, along, target):
 def _free_stretches(probe, entry, edge, axis, coord, rot, lo, hi, fixed):
     """The stretches of [lo, hi] where `entry`'s part seats at `rot` with
     every conjunct holding (`_Probe.ok`): tested every SCAN_STEP_MM and at
-    each position where its courtyard just meets a fixed part's or a board
-    margin -- where a stretch narrower than a step can lie -- and each change
-    between two tested positions bisected to REFINE_MM."""
+    each position where its courtyard or pad copper just meets a fixed
+    part's courtyard or pad copper, or a board margin -- where a stretch
+    narrower than a step can lie -- and each change between two tested
+    positions bisected to REFINE_MM."""
     if hi < lo - EPS:
         return []
     state, ref = probe.state, entry['ref']
@@ -250,10 +252,19 @@ def _free_stretches(probe, entry, edge, axis, coord, rot, lo, hi, fixed):
     perp = 1 - axis
     lo_p, hi_p = coord + cr[perp], coord + cr[perp + 2]     # the courtyard across the edge
     cand = [lo + k * SCAN_STEP_MM for k in range(int((hi - lo) / SCAN_STEP_MM) + 1)] + [hi]
+    # and where its pad copper meets a fixed part's courtyard, or its
+    # courtyard a fixed part's pad copper: a through-hole part's copper is on
+    # both faces, its courtyard on one (ch32v003_usb's F-side J1 between the
+    # B-side rows J2 and J3 seats only in 0.46 mm lying between two courtyard
+    # touches)
+    cp = state.parts[ref].padbox(0.0, 0.0, rot)
     for o, op in fixed.items():
         q = state.parts[o].rect(*op)
         if q[perp] < hi_p + NEAR_MM and lo_p < q[perp + 2] + NEAR_MM:
-            cand += [q[axis] - cr[axis + 2], q[axis + 2] - cr[axis]]
+            qp = state.parts[o].padbox(*op)
+            for mine, theirs in ((cr, q), (cp, q), (cr, qp)):
+                if mine is not None and theirs is not None:
+                    cand += [theirs[axis] - mine[axis + 2], theirs[axis + 2] - mine[axis]]
     b, m = probe.pcb.board_info.board_bounds, state.edge_gate.margin
     cand += [b[axis] + m - cr[axis], b[axis + 2] - m - cr[axis + 2]]
     cand = sorted({round(a, 6) for a in cand if lo - EPS <= a <= hi + EPS})
@@ -296,14 +307,18 @@ def _overlaps(q, c, grow):
             and q[1] < c[3] + grow and c[1] < q[3] + grow)
 
 
-def seats(state, pcb, pcb_file, intent, movable) -> Tuple[Dict[str, EdgeSeat], List[str]]:
-    """`({ref: EdgeSeat}, notes)` for the movable parts the intent puts on an
-    edge, each already moved onto its edge, in the middle of the longest
-    stretch it has at its own turn (else at the turn with the most room)."""
+def seats(state, pcb, pcb_file, intent, movable
+          ) -> Tuple[Dict[str, EdgeSeat], List[str], Dict[str, str]]:
+    """`({ref: EdgeSeat}, notes, {ref: why unseated})` for the movable parts
+    the intent puts on an edge, each already moved onto its edge, in the
+    middle of the longest stretch it has at its own turn (else at the turn
+    with the most room). A declared edge part that finds no seat is placed as
+    any other part, and named in the third value: the caller warns."""
     from .body import board_bodies
     from .floorplan import edge_span, outline_state
     out: Dict[str, EdgeSeat] = {}
     notes: List[str] = []
+    unseated: Dict[str, str] = {}
     # every entry naming an edge whose part is an edge part by class (a
     # `connector_affinity` entry an author gave an edge included)
     from .part_class import classify_part
@@ -319,7 +334,7 @@ def seats(state, pcb, pcb_file, intent, movable) -> Tuple[Dict[str, EdgeSeat], L
             continue
         entries.append(c)
     if not entries:
-        return out, notes
+        return out, notes, unseated
     bodies = board_bodies(pcb, pcb_file)
     outline = outline_state(pcb, pcb_file)
     probe = _Probe(state, pcb, pcb_file, bodies, outline)
@@ -331,8 +346,8 @@ def seats(state, pcb, pcb_file, intent, movable) -> Tuple[Dict[str, EdgeSeat], L
         rots, face = _turns(state, pcb, bodies, c, edge)
         probe.faces[ref] = face
         if not rots:
-            notes.append(f"edge connector {ref}: its mating face ({face}) points at no edge "
-                         f"at a quarter turn; left to the anneal")
+            unseated[ref] = (f"its mating face ({face}) points at the {edge} edge at no "
+                             f"quarter turn")
             continue
         target = float((c.get('overhang_mm') or {}).get('min', 0.0))
         axis = 0 if edge in ('north', 'south') else 1
@@ -367,7 +382,7 @@ def seats(state, pcb, pcb_file, intent, movable) -> Tuple[Dict[str, EdgeSeat], L
                 lines[rot] = Line(coord, tuple(free))
         if not lines:
             part.ensure_rotation(part.rot)
-            notes.append(f"edge connector {ref}: no room along the {edge} edge; left to the anneal")
+            unseated[ref] = f"no room along the {edge} edge"
             continue
         seat = EdgeSeat(ref, edge, axis, face, lines)
         out[ref] = seat
@@ -380,7 +395,7 @@ def seats(state, pcb, pcb_file, intent, movable) -> Tuple[Dict[str, EdgeSeat], L
         notes.append(f"edge connector {ref} on the {edge} edge"
                      + (f", facing it ({face})" if face else
                         f", no mating face: {len(lines)} turn(s) seat there"))
-    return out, notes
+    return out, notes, unseated
 
 
 def _room(line) -> float:

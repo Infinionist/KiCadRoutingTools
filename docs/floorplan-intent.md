@@ -345,6 +345,11 @@ A ref in `fixed_poses` and also in `edge_connectors` or `must_lock` is refused
 by name -- two placements for one part. `fixed:` is a reserved block-name prefix,
 like `mech:`.
 
+The placement skill declares a plug-in module's pin rows here
+(`derived_default`, a whole number of 2.54 mm apart): an edge seat puts each
+row flush with its own edge, so their spacing would follow the outline --
+13.21 mm on ch32v003_usb -- instead of the socket's 0.1 in grid (12.70 mm).
+
 A `mechanical` entry sitting AT its declared pose, on its declared face, whose
 courtyard the census counts off the outline while every pad and its footprint
 graphic copper are on the board at zero margin, leaves
@@ -456,10 +461,11 @@ connector solders at the back and extends forward to its opening -- through
 points west, not out of the east edge
 ```
 
-- **Who is graded:** an entry whose `context.mount_mode` is `edge_mount` or
-  `through_edge`; else a declared `class: edge_receptacle`; else, with no
-  class declared, a part `part_class` infers as a receptacle. A vertical mount, `connector_affinity` and the actuators
-  are exempt -- a connector the board merely keeps near an edge need not
+- **Who is graded:** an entry that declares a `mating_face` (whatever its
+  mount: the seat turns it by that face); else one whose `context.mount_mode`
+  is `edge_mount` or `through_edge`; else a declared `class: edge_receptacle`;
+  else, with no class declared, a part `part_class` infers as a receptacle. A
+  vertical mount, `connector_affinity` and the actuators are exempt -- a connector the board merely keeps near an edge need not
   open out of it (StickHub J5 opens east from a corner of the north edge),
   and a switch's plastic says nothing about which way it is pressed.
 - **Strong is an ERROR, weak a WARN.** A face whose offset reaches 2 mm
@@ -510,7 +516,11 @@ footprint's own unrotated frame, its mating face opens on.
 
 It is used only where the body names no face. There it is the face for
 `place_simple`'s edge seat (only the turns that point it at the edge) and for
-the grade, which then grades the entry's facing whatever its class, at ERROR.
+the grade, which then grades the entry's facing whatever its class or mount,
+at ERROR.
+A `Vertical` header names no face either, and for one `mating_face` is the
+side its cable leaves -- a 2xN ribbon off a long side -- so the seat lays it
+with its long side along the edge (tigard's J5 `+x`).
 The emitter never writes it. No footprint cue predicts it reliably enough to
 infer: over the corpus's human boards, the best one (the face is on the side of
 the mounting pads) agrees with the designer on 47 of 50 named side-entry

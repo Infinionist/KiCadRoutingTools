@@ -3559,10 +3559,13 @@ def edge_facing_policy(entry: Dict, fp) -> str:
     """Whether `rule_edge_connector`'s facing conjunct grades this entry:
     `'graded'`, or `'exempt: <why>'` (#1155).
 
-    In order: a vertical `mount_mode` is exempt (it mates off a face, not
-    the edge -- `VERTICAL_MOUNTS`); `edge_mount` / `through_edge` is graded;
-    a declared `class` grades only `edge_receptacle`; with none declared, the
-    part's own class (`part_class.classify_part`) decides the same way.
+    In order: a declared `mating_face` is graded, whatever the mount -- the
+    edge seat turns the part by it, so the grade checks the same face (a
+    vertical header's names the side its cable leaves); a vertical
+    `mount_mode` is exempt (it mates off a face, not the edge --
+    `VERTICAL_MOUNTS`); `edge_mount` / `through_edge` is graded; a declared
+    `class` grades only `edge_receptacle`; with none declared, the part's own
+    class (`part_class.classify_part`) decides the same way.
 
     `connector_affinity` and the actuators are exempt, measured: on the
     designer's StickHub, J5 (a JST-SH horizontal the emitter declares on the
@@ -3572,9 +3575,11 @@ def edge_facing_policy(entry: Dict, fp) -> str:
     SW1: courtyard north, fab south)."""
     ctxd = entry.get('context') or {}
     mm = ctxd.get('mount_mode')
+    if entry.get('mating_face'):
+        return 'graded'
     if mm in VERTICAL_MOUNTS:
         return 'exempt: a %s mates off a face, not the edge' % mm
-    if mm in FACING_MOUNTS or entry.get('mating_face'):
+    if mm in FACING_MOUNTS:
         return 'graded'
     cls = entry.get('class')
     how = 'declared'

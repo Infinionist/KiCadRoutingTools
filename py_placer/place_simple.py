@@ -204,10 +204,11 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
                   hints=hints(doc, state, movable, args),
                   halo_coef=args.halo_coef, halo_weight=args.halo_weight)
     # the unlocked parts the intent declares on an edge, seated there
-    model.edge_seats = {}
+    model.edge_seats, model.edge_unseated = {}, {}
     if intent is not None:
         from placement import edge_seat
-        model.edge_seats, snotes = edge_seat.seats(state, pcb, board, intent, set(movable))
+        model.edge_seats, snotes, model.edge_unseated = edge_seat.seats(
+            state, pcb, board, intent, set(movable))
         notes += snotes
     # the intent's decap limits, where it grades them at error: priced as the
     # grade measures them (the tether gate's terms), per mm past each limit
@@ -471,6 +472,9 @@ def main(argv=None):
     state, model, movable, notes = build(pcb, src, doc, base, a, intent, blocks, set(fixed))
     for n in notes:
         print(f"  NOTE: {n}")
+    for r, why in sorted(model.edge_unseated.items()):
+        print(f"  WARNING: {r} is declared on an edge but has no seat there ({why}); "
+              f"placed as any other part")
     print(f"place_simple: {len(movable)} movable part(s), fixed: "
           f"{', '.join(sorted(r for r in state.parts if r not in movable)) or 'none'}")
     for name, members in model.groups:
@@ -556,7 +560,7 @@ def main(argv=None):
     report = {'final': final, 'moves': res['moves'], 'seed': a.seed, 'runs': k + 1,
               'declared': sorted(f['reference'] for f in flips),
               'reseated': res['reseated'], 'repaired': bool(res.get('repaired')),
-              'illegal': illegal, 'notes': notes,
+              'illegal': illegal, 'unseated': model.edge_unseated, 'notes': notes,
               'groups': model.groups, 'stats': res['stats'],
               'seconds': {'setup': round(t1 - t0, 1), 'anneal': round(t2 - t1, 1)}}
     if a.json:
