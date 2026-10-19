@@ -22,6 +22,16 @@ import sys
 import tempfile
 import time
 
+# ai_backend.DATASHEET_SENTENCE, mirrored: this module is imported flat by
+# the tests and as a package by the GUI, and a plugin-only sibling cannot be
+# imported both ways (tests/test_plugin_sibling_imports.py).
+# tests/test_datasheet_scratch.py holds the two copies equal.
+DATASHEET_SENTENCE = (
+    "Read datasheets with WebSearch and WebFetch; if you must save a "
+    "downloaded file, save it only under $KRT_DATASHEET_DIR, which is deleted "
+    "when this run ends."
+)
+
 # The write-capable allowlist for placement runs. Write/Edit are the reason
 # this cannot ride ai_backend.CLAUDE_ALLOWED_TOOLS (read-only by convention);
 # the subagent-dispatch tool stays because the skills dispatch verification
@@ -37,8 +47,13 @@ import time
 # Monitor, because /pcb-free-agent's stop rules require watching long jobs
 # (never unwatched for more than 20 minutes); without it a headless run can
 # only poll with Bash.
+#
+# WebFetch, so the grouping step can read a part's datasheet rather than a
+# search snippet (Andy, 2026-10-15). Downloads go to the run's own datasheet
+# folder (ai_backend.datasheet_scratch), which the runner deletes at the end.
 PLACEMENT_ALLOWED_TOOLS = (
-    "Bash,Read,Glob,Grep,Write,Edit,WebSearch,Agent,Task,TodoWrite,Monitor")
+    "Bash,Read,Glob,Grep,Write,Edit,WebSearch,WebFetch,Agent,Task,TodoWrite,"
+    "Monitor")
 
 # The machine-readable completion contract, appended to the instructions.
 # Same last-RESULT=-line convention as ai_plan.PLAN_RESULT_SCHEMA, parsed by
@@ -359,13 +374,15 @@ def build_placement_instructions(workdir, mode, extra=""):
         f"converge ledger at {wd}/ledger.jsonl.",
         f"Do not modify any file outside {wd}, and never edit "
         "input.kicad_pcb in place.",
+        DATASHEET_SENTENCE,
         # #552 item 2. This run's allowlist is the write-capable one, so it is
         # the run whose CHILDREN can actually damage something -- and the
         # workdir pin above was parent-only. A subagent inherits the tools and
         # nothing else, so the pin has to be restated INTO the child, the same
         # way the skills' own <subagent_prompt> blocks are copied verbatim.
         f"If you dispatch a subagent, copy this sentence into its prompt "
-        f"verbatim: it must not modify any file outside {wd}, must never edit "
+        f"verbatim: it must not modify any file outside {wd} (a downloaded "
+        f"datasheet may go under $KRT_DATASHEET_DIR), must never edit "
         f"input.kicad_pcb in place, and must answer with a line beginning "
         f"VERDICT= (never RESULT=, which this GUI reads as the run's own "
         f"result line).",

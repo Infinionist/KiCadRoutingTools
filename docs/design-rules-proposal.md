@@ -404,11 +404,13 @@ back as the output's Default class -- so "no project writeback is needed" holds
 only when the run's `.kicad_pro` writeback is OFF (`--no-fix-drc-settings`, the
 GUI's "Fix DRC settings after routing" unticked). Then the clearance floor is the
 Default class floored at `min_clearance`, what KiCad grades the unchanged project
-at (#1262).
+at (#1262), and a rule the project leaves out of its `.kicad_pro` floors at KiCad's
+factory value, the value KiCad loads for it (#1287).
 
 Where a board leaves a minimum unset (KiCad writes 0; 96 of 445 corpus boards for
 `min_track_width`), `board` falls back to the fab profile's floor **for that key**, and
-says so in the disclosure. This keeps today's completion rate on undeclared boards while
+says so in the disclosure. (With the writeback off, a rule ABSENT from the project is
+not unset: KiCad grades it at its factory value, so it floors there, #1287.) This keeps today's completion rate on undeclared boards while
 never crossing a floor a user did declare.
 
 **A board minimum bounds descents only when the run's own request respects it**

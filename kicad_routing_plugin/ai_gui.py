@@ -25,8 +25,8 @@ import subprocess
 import wx
 
 from .ai_backend import (
-    ANALYSIS_CONSTRAINT, BACKENDS, BACKEND_IDS, DEFAULT_BACKEND_ID,
-    get_backend, extract_result_line,
+    ANALYSIS_CONSTRAINT, BACKENDS, BACKEND_IDS, DATASHEET_DIR_ENV,
+    DEFAULT_BACKEND_ID, datasheet_scratch, get_backend, extract_result_line,
 )
 
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -184,6 +184,13 @@ class AISkillRunner:
                 pass
 
     def _work(self, cmd):
+        # The run's datasheet folder lives exactly as long as the run: every
+        # exit below -- a clean finish, a failure, a cancel -- leaves the
+        # `with`, which deletes it (and whatever the run downloaded into it).
+        with datasheet_scratch() as datasheets:
+            self._work_in(cmd, datasheets)
+
+    def _work_in(self, cmd, datasheets):
         state = self._stream_state
         try:
             kwargs = {}
@@ -193,6 +200,7 @@ class AISkillRunner:
             self._process = subprocess.Popen(
                 cmd,
                 cwd=ROOT_DIR,  # skill discovery is working-directory based
+                env=dict(os.environ, **{DATASHEET_DIR_ENV: datasheets}),
                 stdin=subprocess.PIPE if stdin_payload is not None else None,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

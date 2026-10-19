@@ -190,7 +190,7 @@ def stub_switch_rows():
                          revert_stub_layer_switch=lambda *a, **k: None)
         with patched(sls, **no_switch), patched(ser, route_multipoint_taps=taps):
             got, _ = quiet(phase3_routing._phase3_stub_switch_retry, 2, completed, pcb,
-                           None, state, None, 0, 0, 0)
+                           None, state, lambda: None, 0, 0, 0)
         return pcb, got, (main_v, tap_v, retry_v)
 
     pcb, got, (main_v, tap_v, retry_v) = run(failed_after=True)

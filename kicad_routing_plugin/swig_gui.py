@@ -1374,8 +1374,11 @@ class RoutingDialog(wx.Dialog):
             "so a manual DRC flags only genuine problems instead of stock-default "
             "noise. Never lowers net-class track/via draw sizes and never touches "
             "severities (#842/#856; see 'Relax DRC severities'). The board's next "
-            "save persists it. Unticked, Escalation 'board' stops clearance "
-            "descents at the Default class, since nothing will lower it (#1262). "
+            "save persists it. Unticked, Escalation 'board' stops every descent "
+            "at what KiCad grades the unchanged board at, since nothing will "
+            "lower it: clearance at the Default class (#1262), every other size "
+            "at its Board Setup minimum, or at the size asked for when that is "
+            "already below it (#1287). "
             "Mirrors the CLI's auto-fix (route.py, off via --no-fix-drc-settings)")
         options_inner.Add(self.fix_drc_check, 0, wx.ALL, 3)
 
@@ -3883,6 +3886,12 @@ class RoutingDialog(wx.Dialog):
                     return_results=True,
                     pcb_data=self.pcb_data,
                     net_clearances=net_clearances,
+                    # #1285: the Fix DRC settings box, as the CLI passes
+                    # --no-fix-drc-settings. Inert here today (the in-run
+                    # floor sync it gates writes FILES, and this run writes
+                    # none), passed so the engine never assumes a writeback
+                    # the user turned off.
+                    fix_drc_settings=config.get('fix_drc_settings', True),
                     # #562 parity: let the plane finalize run its ORACLE leg
                     # IN-RUN, at the CLI's own sequence point, by handing it a
                     # save of the LIVE board to stage onto. Saving the live
