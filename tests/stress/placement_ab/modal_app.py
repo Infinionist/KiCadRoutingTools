@@ -1,5 +1,5 @@
-"""The Modal half of route_modal.py: route_placed.py --quick-pass, one placed
-board per container. Deployed by route_modal.py, which stages what it ships
+"""The Modal half of route_modal.py: route_placed.py (with --quick-pass unless
+the client asks for the full chain), one placed board per container. Deployed by route_modal.py, which stages what it ships
 and names the app after a hash of it -- not meant to be deployed by hand.
 
 The image is KiCad's own (default kicad/kicad:10.0.0; KRT_PAB_KICAD_IMAGE
@@ -52,7 +52,7 @@ image = (
 app = modal.App(APP, image=image)
 
 
-def _route(name, board, setn, files):
+def _route(name, board, setn, files, quick):
     import subprocess
     import time
     d = f'/tmp/{name}'
@@ -62,7 +62,8 @@ def _route(name, board, setn, files):
             fh.write(data)
     t0 = time.time()
     r = subprocess.run([sys.executable, '-X', 'utf8', '/opt/route_placed.py', f'{d}/placed/placed.kicad_pcb',
-                        board, setn, f'{d}/{name}', '--quick-pass', '--corpus', CORPUS, '--repo', REPO],
+                        board, setn, f'{d}/{name}', *(['--quick-pass'] if quick else []),
+                        '--corpus', CORPUS, '--repo', REPO],
                        capture_output=True, text=True, cwd=REPO)
     res = {'name': name, 'rc': r.returncode, 'seconds': round(time.time() - t0, 1), 'prov': PROV,
            'line': (r.stdout.strip().splitlines() or ['?'])[-1], 'stderr': r.stderr[-3000:]}
@@ -83,10 +84,10 @@ def _route(name, board, setn, files):
 
 
 @app.function(cpu=4.0, memory=6144, timeout=3 * 3600, retries=0)
-def route_std(name: str, board: str, setn: str, files: dict) -> dict:
-    return _route(name, board, setn, files)
+def route_std(name: str, board: str, setn: str, files: dict, quick: bool = True) -> dict:
+    return _route(name, board, setn, files, quick)
 
 
 @app.function(cpu=4.0, memory=12288, timeout=3 * 3600, retries=0)
-def route_big(name: str, board: str, setn: str, files: dict) -> dict:
-    return _route(name, board, setn, files)
+def route_big(name: str, board: str, setn: str, files: dict, quick: bool = True) -> dict:
+    return _route(name, board, setn, files, quick)

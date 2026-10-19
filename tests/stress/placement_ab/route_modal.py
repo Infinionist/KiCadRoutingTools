@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Route a placement A/B arm on Modal: every placed board and seed in its own
-container at once, each by route_placed.py --quick-pass (the board's recorded
-chain, fast judge).
+container at once, each by route_placed.py (the board's recorded chain), with
+--quick-pass (the fast judge) unless --full.
 
     route_modal.py PLACED_DIR BOARDS SEEDS --out OUT [--prefix P] [--src TREE]
-                   [--corpus DIR]
+                   [--corpus DIR] [--full]
 
   PLACED_DIR  the arm's placements: PLACED_DIR/<board>/s<seed>.kicad_pcb, with
               its .kicad_pro / .kicad_prl siblings when there are any.
@@ -21,6 +21,9 @@ chain, fast judge).
               (work dirs, built libraries) never are.
   --corpus    the stress corpus (default $KICAD_STRESS_CORPUS, else
               ~/Documents/kicad_stress_test).
+  --full      route the whole recorded chain, no --quick-pass: the final
+              route of a chosen placement, minutes rather than seconds. Give
+              it its own --prefix (or --out) so it never reads as a fast route.
 
 One line per route as it lands, the shape route_placed.py prints. The app is
 named after a hash of everything it ships, so two runs over the same tree share
@@ -182,6 +185,7 @@ def main(argv=None):
     ap.add_argument('--out', required=True)
     ap.add_argument('--prefix')
     ap.add_argument('--src', default=THIS_REPO)
+    ap.add_argument('--full', action='store_true')
     ap.add_argument('--corpus', default=os.environ.get('KICAD_STRESS_CORPUS',
                                                        os.path.expanduser('~/Documents/kicad_stress_test')))
     a = ap.parse_args(argv)
@@ -229,7 +233,7 @@ def main(argv=None):
                 if os.path.exists(p):
                     files_in['placed' + ext] = open(p, 'rb').read()
             fn = modal.Function.from_name(app, 'route_big' if key in BIG else 'route_std')
-            call = retry(lambda: fn.spawn(name, board, setn, files_in), f'spawn {name}')
+            call = retry(lambda: fn.spawn(name, board, setn, files_in, not a.full), f'spawn {name}')
             pend[call.object_id] = name
             mine[call.object_id] = (key, s, name)
     print(f'{len(mine)} route(s) on {app}', flush=True)

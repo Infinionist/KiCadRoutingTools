@@ -11,7 +11,8 @@ and seed, with blocking first, then vias, copper_mm and segments.
   `--quick-pass` adds route.py's fast judge to the chain's whole-board route
   steps.
 - **`route_modal.py`** routes a whole arm on Modal with `route_placed.py
-  --quick-pass`, one container per board and seed. Every route runs at once,
+  --quick-pass` (`--full` for the whole chain, the final route of a chosen
+  placement), one container per board and seed. Every route runs at once,
   so an arm takes about as long as its slowest route.
 
 ```bash
