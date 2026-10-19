@@ -136,6 +136,7 @@ FAR_TOOTH = 1000.0        # a tooth on the source's FAR face (the one
 FENCE_OUT = 1.5           # the band round a source side face its lanes ride in: this far outside its pad box, mm
 FENCE_VIAS = 2.0          # a lane round a FENCED side (other nets' copper across that band: side_fences) -- a far-face
 #                           lane's side of the cut, a side face's tooth -- a layer change under the fence and one back
+POCKET_ROW = 0.01         # (plane_ways) a pair's pocket starts this much short of the outer ball row's centres
 WALLED = 1000.0           # a plane ball of the arrays its ends leave no way down (the joint fanout: plane_ways) -- past
 #                           any via count, yet no refusal
 FAR = {'left': (-1, 0), 'right': (1, 0), 'up': (0, -1), 'down': (0, 1)}
@@ -498,6 +499,19 @@ class Ends:
                         if a != b:
                             conf[(a, ia)].add((b, ib))
                             conf[(b, ib)].add((a, ia))
+        # ...but two teeth AS LAID -- copper on the board, which the fanout's own check laid clean -- are not kept a via's
+        # REACH apart: the reach asks whether a run can still be laid beside a via, and both are. Their exits, their
+        # stacks and their lanes stay the rule. The engine lays a tooth a grid step off the move asked (`gap ok` in the
+        # realize audit), and read at the reach the realized board's own teeth conflicted where the moves had not: the
+        # zynq six-rail DDR3's DQS1_N dog-bone 0.375 from DQS1_P's via in pad (0.400 asked) -- every realized board
+        # then judged worse than the one it came from by a conflict nobody could move, and reverted
+        import select_moves as _sm
+        laid_ = {(l_, id(m)): m for l_, m in cur.items() if m is not None}
+        for k_, m_ in laid_.items():
+            for o_ in [o_ for o_ in conf.get(k_, ()) if o_ in laid_]:
+                if not _sm._conflict(m_, laid_[o_], strict=True, stack=True, reach=1e-6):
+                    conf[k_].discard(o_)
+                    conf[o_].discard(k_)
         self.conf = conf
         # ...and per OPTION: the other lanes' options (same end) it cannot be laid with -- a hit test is then a lookup
         where = collections.defaultdict(list)
@@ -1551,9 +1565,27 @@ class Ends:
         cands = [dict(k) for k, v in ranked[:EXACT_TOP] if v <= v0 + EXACT_MARGIN]
         if dict(state) not in cands:
             cands.append(dict(state))
+        # (the candidates' exact routes AT ONCE on the ends model's pool, the calling thread among them -- each on a copy
+        # of the model sharing only the caches written once per key, as cut_phase's cuts: one CP-SAT worker each, at its
+        # deterministic work limit, so the same answers in the time of the slowest. A candidate no worker has started
+        # when its turn comes is routed here: no thread waits on a task nobody runs, and best_exact runs on the pool
+        # itself, inside the cuts' searches. One after another they were a third of the zynq DDR3 bus's fanout)
+        def one(s_):
+            Ec = copy.copy(self)
+            Ec._memo, Ec._parts = {}, collections.OrderedDict()
+            return Ec.score(s_, exact=True)
+        key_ = lambda s_: (tuple(s_[l_] for l_, _lg in self.lanes), True, self.wcut, self.unpriced)
+        futs = {i: _pool().submit(one, s_) for i, s_ in enumerate(cands) if i and key_(s_) not in self._memo}
+        got = {}
+        if cands:
+            got[0] = self.score(cands[0], exact=True)
+        for i, f_ in futs.items():
+            got[i] = one(cands[i]) if f_.cancel() else f_.result()
+            self._memo[key_(cands[i])] = got[i][0]
+            self._keep_parts(key_(cands[i]), got[i][1])
         best = None
-        for s_ in cands:
-            v_, p_ = self.score(s_, exact=True)
+        for i, s_ in enumerate(cands):
+            v_, p_ = got[i] if i in got else self.score(s_, exact=True)
             # (a state the exact route found no plan for ranks after every one it did: its objective is the estimate's,
             # the optimistic one, for the ends the solve will find hardest)
             k_ = (bool(p_.get('exact_failed')), v_)
@@ -2860,12 +2892,16 @@ def plane_ways(st, lanes, T, B, cur):
                 h2h = at[end]['sz']['h2h']
                 # (a pair's two exits by one face on one layer: its POCKET too, the pair's room to close past them,
                 # where the joint escape lays nothing -- joint_escape.laid_pockets)
+                # (from just short of half a pitch inside the exits: the outer row's balls stand ON that line, and the
+                # joint escape's pocket, from the laid copper's tips a hair out of the face, leaves them out -- the
+                # zynq six-rail DDR3's GND B1 between DDR3_DQS0's teeth, its via in its pad laid, read walled in by
+                # 0.0003 mm here and its ends priced past any via count)
                 pk = None
                 if len(lg) == 2 and o[0][0].direction == o[0][1].direction and o[0][0].layer == o[0][1].layer \
                         and DIRS.get(o[0][0].direction) is not None:
                     pk = pt.pockets({0: (0, 1)}, {0: (o[0][0].exit_pt, DIRS[o[0][0].direction], o[0][0].layer),
                                                   1: (o[0][1].exit_pt, DIRS[o[0][1].direction], o[0][1].layer)},
-                                    at[end]['half'])[0]
+                                    at[end]['half'] - POCKET_ROW)[0]
 
                 def in_pk(w):
                     if pk is None:

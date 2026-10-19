@@ -687,6 +687,18 @@ def _route(board, out, src, dest, k, rounds, inproc, log, run_rules, json_out=No
         if missed:
             return finish(2, f'the pull pads {missed} not found again to put back on their nets', g)
     full = {short(n): n for n in names}
+    # ...and LOCKED: KiCad's (locked yes) on every track and via of the lanes handed on. The project's protection is
+    # lifted by a later step naming the net exactly (#521: a route.py --nets finishing a pull's stub names it), a lock
+    # by nothing (#1261): the rest of the chain routes round the lanes and connects to them, never strips them
+    # (BUS_LOCK=0: protected only)
+    if awx_settings.get('BUS_LOCK', '1') != '0':
+        with open(out, encoding='utf-8') as f:
+            txt_o = f.read()
+        ids_ = {i for i, n_ in pcb.nets.items() if n_.name in {full[n] for n in nets}}
+        txt_o, n_locked = lock_lanes(txt_o, ids_, {full[n] for n in nets})
+        with open(out, 'w', encoding='utf-8') as f:
+            f.write(txt_o)
+        log(f'  locked: {n_locked} track(s) and via(s) of the {len(nets)} lane(s) handed on')
     # (the nets the board came with protected stay so -- an earlier bus's among them)
     persist_protected_nets(pro_path_for_board(out), {**read_protected_nets(pro_path_for_board(board)),
                                                      **{full[n]: 'bus' for n in nets}}, verbose=False)
@@ -1139,6 +1151,36 @@ def repull(txt, held):
         at = blk[0] + span[0] + (find_matching_paren(pad, lay) if lay >= 0 else len(pad) - 1)
         txt = txt[:at] + tok + txt[at:]
     return txt, missed
+
+
+def lock_lanes(txt, net_ids, net_names=()):
+    """`txt` with KiCad's (locked yes) on every track and via of the nets (their ids, or their full names in the
+    string dialect), where KiCad writes it: before the (layer ...) of a track, the (layers ...) of a via. (txt, the
+    items locked)"""
+    from kicad_parser import find_matching_paren
+    n = 0
+    for tok, before in (('segment', '(layer '), ('arc', '(layer '), ('via', '(layers ')):
+        out, i = [], 0
+        while True:
+            j = txt.find('(' + tok, i)
+            while j >= 0 and txt[j + 1 + len(tok)] not in ' \n\t':
+                j = txt.find('(' + tok, j + 1)
+            if j < 0:
+                out.append(txt[i:])
+                break
+            k = find_matching_paren(txt, j)
+            block = txt[j:k]
+            m = re.search(r'\(net (\d+)\)', block)
+            m2 = re.search(r'\(net "([^"]+)"\)', block)
+            at = block.find(before)
+            if ((m and int(m.group(1)) in net_ids) or (m2 and m2.group(1) in net_names)) and at > 0 \
+                    and not re.search(r'\(locked[\s)]|^\(\w+\s+locked\b', block):
+                block = block[:at] + '(locked yes) ' + block[at:]
+                n += 1
+            out.append(txt[i:j] + block)
+            i = k
+        txt = ''.join(out)
+    return txt, n
 
 
 def waypoint_pairs(pcb, names, src, dest):

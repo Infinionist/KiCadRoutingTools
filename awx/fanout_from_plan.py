@@ -203,6 +203,20 @@ def via_escapes(moves, end):
     return [m for m in moves if m.kind != 'surface'] or moves
 
 
+def unbanned_or_all(nm, moves, banned, what):
+    """`nm`'s moves less those the fanout refused (`banned`: by signature, and by class) -- or, where that leaves none,
+    all of them, said: a net with no move stops the ends model's whole search (the zynq's USB bus on the six-rail board
+    with the LVDS step's field: OTG_NXT's one tooth class banned when the engine laid it as a via in pad, its laid tooth
+    on an inner layer no move is, and the fanout died, the bus laid nothing), where a refused move is only a move the
+    engine may lay otherwise"""
+    import source_realize as sr
+    ok = [m for m in moves if (nm, sr.move_sig(m)) not in banned and (nm, 'class', sr.move_class(m)) not in banned]
+    if moves and not ok:
+        print(f'  {nm}: every {what} move refused once -- offered again, the net has no other')
+        return list(moves)
+    return ok
+
+
 def plan_state(pcb, names, banned=frozenset()):
     """Everything the plan reads off ONE board: the menus of legal escapes
     at both ends, the launch points (the source teeth AS THEY ARE on this
@@ -302,8 +316,7 @@ def plan_state(pcb, names, banned=frozenset()):
             # move has no berth, and the run names it
             moves = [m for m in moves if em.DIRS[m.direction][0] * (_sc[0] - _c[0])
                      + em.DIRS[m.direction][1] * (_sc[1] - _c[1]) > 1e-9]
-        dmenu[nm] = [m for m in moves if (nm, sr.move_sig(m)) not in banned
-                     and (nm, 'class', sr.move_class(m)) not in banned]
+        dmenu[nm] = unbanned_or_all(nm, moves, banned, 'berth')
         # a pad of this net on the other layer UNDER the ball (a back-side
         # termination resistor under a DDR clock ball) is served by a TIE
         # VIA at the ball (tie_vias_under, after the berths are laid), so
@@ -390,11 +403,9 @@ def plan_state(pcb, names, banned=frozenset()):
         # net's laid tooth TRACKS is a conflict with that tooth (sblock, below), not a refusal -- so teeth can swap and
         # rotate (a run net's laid via still refuses it). The other judges keep them priced against the run's laid
         # stubs (own_only)
-        smenu[nm] = [m for m in dedupe_climbs(menu(p, sgrid, byname[nm][0], own_only=(PLAN_JUDGE != 'ends'),
-                                                   climb=SRC_CLIMB))
-                     if (nm, sr.move_sig(m)) not in banned
-                     and (nm, 'class', sr.move_class(m)) not in banned
-                     and (far_dir is None or m.direction == near_dir or side_half(p, m.direction))]
+        smenu[nm] = unbanned_or_all(
+            nm, [m for m in dedupe_climbs(menu(p, sgrid, byname[nm][0], own_only=(PLAN_JUDGE != 'ends'), climb=SRC_CLIMB))
+                 if far_dir is None or m.direction == near_dir or side_half(p, m.direction)], banned, 'tooth')
         _plegs = getattr(plan_state, '_pair_legs', None) or {}
         if nm in _plegs and _plegs[nm] in byname:
             keep = [m for m in smenu[nm] if pair_exit_clear(pcb, byname[nm][0], byname[_plegs[nm]][0], m, free=run_free)]
@@ -964,6 +975,7 @@ def pf_fmt(k0, k1):
 
 
 SRC_RESIDUE_ROUNDS = int(awx_settings.get('SRC_RESIDUE_ROUNDS', '8'))   # one tooth realized -> re-chosen, at most this often a round
+TEETH_AHEAD = 3             # (ends) a realized board worse as laid: the teeth its own choice asks realized too, this often
 
 
 def total(dst_c, st, cache, buses=None):
@@ -1210,6 +1222,8 @@ def plan(base, names, work):
                     if not ch2:
                         return None, line + '; no destination choice on the new board -- reverted'
                     import whole_ends
+                    # (and what the teeth the new board's own choice asks would make of it: _ahead)
+                    _trial.free = whole_ends.choose.last.get('free') if src2 else None
                     return (new_board, st2, ch2, un2, pf_key(ch2, {}, whole_ends.choose.last['laid']), src2,
                             split_pairs(st2)), line
                 ch2, un2 = dest_choice(st2, new_board, src_out=src2, fixed=keep_sig)
@@ -1272,8 +1286,54 @@ def plan(base, names, work):
                     board, st, dst_choice, un, best_key, src_out = res[0], res[1], res[2], res[3], res[4], res[5]
                     best_split = sp2
                 else:
+                    # THE TEETH AHEAD (ends): a board judged worse on its teeth as laid whose own choice asks teeth that
+                    # make it better than the board kept is a step, not the end -- those teeth realized too, once, from
+                    # it, and the board they make judged against the one kept. The zynq DDR3 bus with its reset's pull
+                    # laid: the moves realized met two berths in conflict as laid (one split pair before), the 13 teeth
+                    # its choice then asked 74 vias and none -- reverted, the round laid the split pair's ends, 326
+                    # crossings, 104 vias where the bus without the reset lays 64
+                    # The steps go on while each is better as laid than the one before (a conflict fewer: 200306 ->
+                    # 100299 -> ...), TEETH_AHEAD at most
+                    free_ = getattr(_trial, 'free', None)
+                    ahead = (PLAN_JUDGE == 'ends' and res[5] and free_ is not None and sp2[0] <= best_split[0]
+                             and free_ < best_key[0])
+                    steps_, won_ = [], None
+                    if ahead:
+                        kept_ = (board, st, dst_choice)
+                        cur_ = res
+                        for a_ in range(TEETH_AHEAD):
+                            board, st, dst_choice = cur_[0], cur_[1], cur_[2]
+                            nxt_, line_n = _trial(dict(cur_[5]), f'{work}_srcres{r}_{_k}a{a_}.kicad_pcb')
+                            if nxt_ is None:
+                                steps_.append('not laid')
+                                break
+                            steps_.append(pf_fmt(best_key, nxt_[4]).replace('judged ', ''))
+                            if nxt_[6][0] < best_split[0] or (nxt_[6][0] == best_split[0]
+                                                               and pf_better(nxt_[4], best_key)):
+                                won_ = (nxt_, line_n)
+                                break
+                            nfree_ = getattr(_trial, 'free', None)
+                            if not (nxt_[5] and nfree_ is not None and nfree_ < best_key[0]
+                                    and nxt_[6][0] <= cur_[6][0] and pf_better(nxt_[4], cur_[4])):
+                                break
+                            cur_ = nxt_
+                        if won_ is not None:
+                            res2, line2 = won_
+                            print(line + f'; {pf_fmt(best_key, res[4])}: worse as laid, its own teeth ahead '
+                                  f'{free_:.0f} -- realized too, {len(steps_)} step(s): {"; ".join(steps_)}')
+                            print(line2 + f'; {pf_fmt(best_key, res2[4])}'
+                                  + (f', pairs split {best_split[0]} -> {res2[6][0]}' if res2[6][0] != best_split[0]
+                                     else '') + ': KEPT')
+                            board, st, dst_choice, un, best_key, src_out = (res2[0], res2[1], res2[2], res2[3],
+                                                                            res2[4], res2[5])
+                            best_split = res2[6]
+                            if not src_out:
+                                break
+                            continue
+                        board, st, dst_choice = kept_
                     print(line + f'; {pf_fmt(best_key, res[4])}'
                           + (f', pairs split {best_split[0]} -> {sp2[0]}' if sp2[0] != best_split[0] else '')
+                          + (f', its own teeth ahead {free_:.0f} realized: {"; ".join(steps_)}' if ahead else '')
                           + ': not better -- reverted')
                     # (nothing banned: the engine laid them as asked -- a ban is the engine's refusal, not the judge's)
                     break
