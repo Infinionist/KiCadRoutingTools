@@ -3563,7 +3563,10 @@ def edge_facing_policy(entry: Dict, fp) -> str:
     edge seat turns the part by it, so the grade checks the same face (a
     vertical header's names the side its cable leaves); a vertical
     `mount_mode` is exempt (it mates off a face, not the edge --
-    `VERTICAL_MOUNTS`); `edge_mount` / `through_edge` is graded; a declared
+    `VERTICAL_MOUNTS`), and so are card-edge fingers
+    (`part_class.is_card_fingers`: they ARE the edge, with no opening to
+    face; their 0.64 mm pad field read as a weak face on interf_u BUS1);
+    `edge_mount` / `through_edge` is graded; a declared
     `class` grades only `edge_receptacle`; with none declared, the part's own
     class (`part_class.classify_part`) decides the same way.
 
@@ -3579,6 +3582,9 @@ def edge_facing_policy(entry: Dict, fp) -> str:
         return 'graded'
     if mm in VERTICAL_MOUNTS:
         return 'exempt: a %s mates off a face, not the edge' % mm
+    from .part_class import is_card_fingers
+    if fp is not None and is_card_fingers(fp):
+        return 'exempt: card-edge fingers are the edge, with no opening to face'
     if mm in FACING_MOUNTS:
         return 'graded'
     cls = entry.get('class')
@@ -9313,8 +9319,14 @@ def emit_intent(pcb_data, pcb_file: str, *,
                                                   'edge_actuator'):
                     entry['class'] = pc.name
                     entry['source'] = 'auto-class'
-                    entry['overhang_mm'] = default_band(pc.name, fp)
-                    band_default.add(ref)
+                    # the class band, widened to the observed overhang when
+                    # that is plausible (under the sanity cap): a suspect
+                    # pose's edge is withheld, but a card's fingers 1.7 mm
+                    # past the edge are not damage (pcie_backplane J2)
+                    band = default_band(pc.name, fp, 0.0 if over_cap else amt)
+                    entry['overhang_mm'] = band
+                    if band == default_band(pc.name, fp):
+                        band_default.add(ref)
                 elif over_cap:
                     entry['overhang_mm'] = {'min': 0.0,
                                             'max': round(_band_cap(ref), 3)}

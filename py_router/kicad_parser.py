@@ -8491,14 +8491,20 @@ def build_pcb_data_from_board(board, guide_layer: str = "User.1",
 
     for fp, reference in zip(_live_fps, _live_keys):
 
-        # Get footprint name (library:footprint)
+        # Get footprint name (library:footprint), as the file parser reads it
+        # from `(footprint "lib:item" ...)`: the item alone made a classifier
+        # table that matches the library name (`Connector_DIN:`, a `switches`
+        # library) class a part one way on the CLI and another in the GUI.
         try:
-            fp_name = fp.GetFPID().GetUniStringLibItemName()
-        except AttributeError:
+            fp_name = str(fp.GetFPIDAsString())
+        except Exception:
             try:
-                fp_name = str(fp.GetFPID().GetLibItemName())
-            except Exception:
-                fp_name = ""
+                fp_name = fp.GetFPID().GetUniStringLibItemName()
+            except AttributeError:
+                try:
+                    fp_name = str(fp.GetFPID().GetLibItemName())
+                except Exception:
+                    fp_name = ""
 
         # Position
         pos = fp.GetPosition()

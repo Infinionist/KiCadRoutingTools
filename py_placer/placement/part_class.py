@@ -135,7 +135,7 @@ CONNECTOR_WORD_RE = re.compile(r'(?<![a-z])conn(?![a-z])|connector|card'
 # carries castellated edge pins, beside CONNECTOR evidence (a CONN_PREFIX_MED
 # reference or a connector word) -> `connector_affinity`, not a receptacle:
 # the word names a card's fingers and the slot that takes them alike (the
-# fingers are read off their pads, in `classify_part`), and without the
+# fingers are read off their pads, `is_card_fingers`), and without the
 # evidence it names a spacer (`m2_hex_spacer_passthrough_edge`, H) and
 # passives with castellated terminals (`LED_0603_1608Metric_Castellated`).
 EDGE_NAMED_RE = re.compile(r'edge|castellat')
@@ -199,6 +199,18 @@ def _prefix(ref: str) -> str:
     return (m.group(1) if m else '').upper()
 
 
+def is_card_fingers(fp) -> bool:
+    """Whether a part is card-edge fingers: made only of `connect` pads,
+    KiCad's EDGE CONNECTOR pad type, four or more -- the fingers of a card
+    that plugs in at this board's edge, whatever it is called (`pcie_x1`,
+    `Zorro3`, `A2000_CPUSLOT_MALE`). Four, because a fiducial is one or
+    three."""
+    from kicad_parser import non_aperture_pads
+    pads = non_aperture_pads(fp)
+    return len(pads) >= 4 and all(
+        getattr(p, 'pad_type', '') == 'connect' for p in pads)
+
+
 def classify_part(fp, ref: str) -> PartClass:
     """Pose-independent classification from footprint name, ref prefix and
     pin functions. Never reads a coordinate."""
@@ -226,14 +238,7 @@ def classify_part(fp, ref: str) -> PartClass:
     pins = {str(getattr(p, 'pinfunction', '') or '').upper() for p in pads}
     recep_pins = pins & RECEPTACLE_PINS
     is_ic_pkg = any(k in name for k in IC_PACKAGE_FP)
-    # Structural: card-edge fingers. `connect` is KiCad's EDGE CONNECTOR pad
-    # type, and a part made only of such pads is the fingers of a card that
-    # plugs in at this board's edge, whatever it is called (`pcie_x1`,
-    # `Zorro3`, `A2000_CPUSLOT_MALE`). Four pads, because a fiducial (above)
-    # is one or three.
-    fingers = len(pads) >= 4 and all(
-        getattr(p, 'pad_type', '') == 'connect' for p in pads)
-    item_cls = ('edge_receptacle' if fingers else
+    item_cls = ('edge_receptacle' if is_card_fingers(fp) else
                 _item_connector_class(name.rsplit(':', 1)[-1], pref))
     fp_recep = ((any(k in name for k in EDGE_RECEPTACLE_FP) and not is_ic_pkg)
                 or item_cls == 'edge_receptacle')
