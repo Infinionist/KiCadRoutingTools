@@ -7584,9 +7584,9 @@ def add_route_to_pcb_data(pcb_data: PCBData, result: dict, debug_lines: bool = F
     # so the dead copper is not left on the board to block following routes. Only
     # the segments being added are prunable; the net's copper already on the board
     # anchors junctions/escapes but is not removed here (the final sweep handles
-    # board-wide settle). collapse_appendices above now only fixes
-    # self-intersections (#148); this unwinds dead-end spurs and chains via
-    # prune_dead_end_segments.
+    # board-wide settle). collapse_appendices is gone (its short-spur half in
+    # #148, its self-intersection half in #159, see above); this unwinds
+    # dead-end spurs and chains via prune_dead_end_segments.
     all_zones = getattr(pcb_data, 'zones', []) or []
     pruned_segments = []
     for net_id in net_ids:

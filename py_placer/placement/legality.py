@@ -4590,9 +4590,9 @@ def part_copper_geometry(footprints: Dict[str, object], clearance: float, *,
     below 0.20mm the hole box grows: measured over the 22 tracked boards, 19
     parts on 6 boards differ between clearance 0.05 and 0.20, by up to
     0.150mm, and nothing differs between 0.20 and 0.40. Pass the clearance you
-    priced the LANE at -- `check_channels` runs the corpus at 0.09, squarely
-    inside that regime, so two ledgers on different clearances would disagree
-    exactly where the starved-face gate lives.
+    priced the LANE at -- `check_channels` (since retired) ran the corpus at
+    0.09, squarely inside that regime, so two ledgers on different clearances
+    would disagree exactly where the starved-face gate lives.
 
     A pad-LESS footprint is absent from the result (as it is from
     `build_part_pads`). That is deliberate and it closes #841's own hazard:

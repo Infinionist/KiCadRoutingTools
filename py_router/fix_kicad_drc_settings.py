@@ -103,8 +103,9 @@ WARNING_CATS = ["starved_thermal"]
 # Severity rank for "only loosen" comparisons (higher = stricter).
 _SEV_RANK = {"error": 2, "warning": 1, "ignore": 0}
 
-# The change strings the most recent fix_project_for_output wrote (a routing
-# main reads this right after the call to put them in its run summary).
+# The change strings the most recent fix_project_for_output wrote. Kept for a
+# run summary to publish; nothing reads it today (no JSON_SUMMARY carries a
+# project_writes key).
 LAST_PROJECT_WRITES = []
 
 # Net-class fields a writeback may lower, for EVERY class including Default.
@@ -1452,13 +1453,9 @@ def apply_targets_to_project(proj: dict, targets: dict, sev_plan: dict,
     ever loosening (lowering a constraint / lowering a severity rank), never
     tightening. Returns a list of human-readable change strings.
 
-    ``diff_pair_gap`` / ``diff_pair_width`` (mm), when given, lower the Default
-    net class's differential-pair geometry to the values the board was actually
-    routed to (issue: a stock 0.25 mm net-class gap is far wider than the
-    fab-floor ~0.1 mm coupled pairs route_diff places, and a planner reading the
-    net class back would recommend the wide value). Neither is a DRC-enforced
-    minimum -- they are draw defaults -- so lowering them cannot create a new
-    violation, consistent with the only-loosen guarantee.
+    ``diff_pair_gap`` / ``diff_pair_width`` are accepted for signature
+    compatibility and IGNORED (#842): they are net-class draw defaults, and a
+    routing step never writes those -- lowering them was the #842 ratchet.
 
     ``clamp_nondefault_netclasses`` clamps the NON-Default net classes'
     clearance/track/via floors DOWN to the routed values. The real entry points
@@ -1467,9 +1464,9 @@ def apply_targets_to_project(proj: dict, targets: dict, sev_plan: dict,
     the human-routed references violate their own class -- zynq has 499 clearance
     violations at its 0.2 class, routed ~0.1), so keeping the stock class in the
     output manufactures phantom sub-class DRC on copper that was routed correctly at
-    the fab floor. The router honors min(class, --clearance) in-run and the writeback
+    the fab floor. The router honors min(class, --clearance-ceiling) in-run and the writeback
     records that same floor, so KiCad grades exactly what was routed. Passing False
-    (the caller routed without a --clearance ceiling, i.e. it HONORED the classes)
+    (the caller routed without --clearance-ceiling, i.e. it HONORED the classes)
     PRESERVES the original class spec. The Default-class /
     rules.min_clearance write below is UNRELATED to this flag and stays: it records
     the actual ROUTING clearance (the router's config.clearance), only-lowering so a
@@ -1572,10 +1569,10 @@ def apply_targets_to_project(proj: dict, targets: dict, sev_plan: dict,
                 default_cls[field] = target
     # NON-Default classes (#295 follow-up; ON by default since #439): stock net
     # classes are largely aspirational, so copper routed at the real fab floor
-    # (min(class, --clearance)) would storm KiCad's per-net-class DRC if the output
-    # kept the stock class. Clamp each non-Default class DOWN to the routed values
-    # so grading matches the copper. clamp=False (the caller routed WITHOUT a
-    # --clearance ceiling, honoring the classes) preserves the original class rules.
+    # (min(class, --clearance-ceiling)) would storm KiCad's per-net-class DRC if the
+    # output kept the stock class. Clamp each non-Default class DOWN to the routed
+    # values so grading matches the copper. clamp=False (the caller routed WITHOUT
+    # --clearance-ceiling, honoring the classes) preserves the original class rules.
     if clamp_nondefault_netclasses:
         for cls in classes:
             if cls is default_cls or not isinstance(cls, dict):
@@ -1615,7 +1612,8 @@ def apply_targets_to_project(proj: dict, targets: dict, sev_plan: dict,
 def add_drc_fix_args(parser, *, include_no_fix=True):
     """Add the post-route DRC-settings-fix CLI options shared by the routing
     front-ends (``route.py`` / ``route_diff.py`` / ``route_planes.py`` /
-    ``repair_planes.py``). Wiring a new shared DRC-fix flag in here
+    ``repair_planes.py`` / ``bga_fanout`` / ``qfn_fanout``, and this script's
+    own CLI). Wiring a new shared DRC-fix flag in here
     adds it to all of them at once; pair with :func:`drc_fix_kwargs` to forward the
     parsed values into :func:`fix_project_for_output`.
 
@@ -1637,9 +1635,10 @@ def add_drc_fix_args(parser, *, include_no_fix=True):
                         "violation unless asked. Each change is logged and the previous "
                         "value is kept under kicad_routing_tools.saved_severities.")
     g.add_argument("--keep-thermal", action="store_true",
-                   help="Deprecated no-op. Routing steps no longer touch DRC severities "
-                        "unless --relax-drc-severities is given; with it, this leaves "
-                        "starved_thermal untouched.")
+                   help="Only with --relax-drc-severities (the standalone script's "
+                        "--relax-severities): leave starved_thermal at its current severity "
+                        "instead of lowering it to warning. Without it a routing step does "
+                        "not touch DRC severities, so this does nothing.")
     g.add_argument("--enable-used-layers", action="store_true",
                    help="Add any layer the board uses but that is missing from its (layers) table "
                         "back into the .kicad_pcb, so KiCad shows it as selectable and stops "
@@ -1652,10 +1651,10 @@ def drc_fix_kwargs(args):
     """Map args parsed via :func:`add_drc_fix_args` to :func:`fix_project_for_output`
     keyword arguments (the shared DRC-fix flags only -- per-script routing floors
     like clearance/track/via are passed separately by each caller)."""
-    # #439: clamp NON-Default classes to the routed clearance whenever the caller
-    # routed with an explicit --clearance ceiling (args._clamp_netclasses, set by
-    # route.py / route_diff.py main); when --clearance was omitted the classes were
-    # honored in full, so the writeback preserves them. Callers that do not set the
+    # #439/#530: clamp NON-Default classes to the routed clearance whenever the
+    # caller routed with --clearance-ceiling (args._clamp_netclasses, set by the
+    # route / route_diff / plane mains); without it the classes were honored in
+    # full, so the writeback preserves them. Callers that do not set the
     # attribute (fanout, standalone runs) clamp by default -- the safe choice, since
     # clamping only ever lowers the output class to the copper actually routed.
     clamp = getattr(args, "_clamp_netclasses", True)
@@ -2129,8 +2128,8 @@ def fix_project_for_output(output_pcb: str, input_pcb=None, *, clearance=None,
                                        diff_pair_gap=diff_pair_gap,
                                        diff_pair_width=diff_pair_width,
                                        clamp_nondefault_netclasses=clamp_nondefault_netclasses)
-    # Machine-readable record of what this call wrote, for the run summary
-    # (JSON_SUMMARY_MIN.project_writes). Replaced per call, never appended.
+    # Machine-readable record of what this call wrote (LAST_PROJECT_WRITES:
+    # nothing publishes it yet). Replaced per call, never appended.
     LAST_PROJECT_WRITES[:] = list(changes)
     if _origin_seeded:
         # Custody: the board's ORIGINAL floors are recorded on the first
@@ -2325,9 +2324,9 @@ def apply_targets_to_board(board, targets: dict, sev_plan: dict,
 
     ``clamp_nondefault_netclasses`` (parity with apply_targets_to_project) clamps
     the NON-Default net classes' floors down to the routed values. Driven by whether
-    routing used a --clearance ceiling (#439: stock classes are aspirational; keeping
+    routing used --clearance-ceiling (#439/#530: stock classes are aspirational; keeping
     them manufactures phantom sub-class DRC). Pass False (routing HONORED the classes
-    -- no --clearance / GUI Min-Clearance override unchecked) to preserve the original
+    -- no --clearance-ceiling / GUI Clearance ceiling box unchecked) to preserve the original
     class spec, for a genuine impedance board whose classes are met."""
     import pcbnew
     MM = 1e6  # mm -> internal nm
@@ -2570,13 +2569,11 @@ def main():
     ap.add_argument("--via-drill", type=float, default=None,
                     help="Min hole/drill diameter in mm (default: smallest drill on the board)")
     ap.add_argument("--diff-pair-gap", type=float, default=None,
-                    help="Default net-class differential-pair gap in mm (match route_diff "
-                         "--diff-pair-gap; lowered only). Use the fab floor (~0.1) for "
-                         "impedance-controlled pairs so the net class stops recommending the "
-                         "stock-wide 0.25 mm gap.")
+                    help="Accepted for compatibility and ignored (#842): the net class's "
+                         "diff-pair gap is a draw default, never written.")
     ap.add_argument("--diff-pair-width", type=float, default=None,
-                    help="Default net-class differential-pair trace width in mm (the diff-pair "
-                         "track width; lowered only).")
+                    help="Accepted for compatibility and ignored (#842): the net class's "
+                         "diff-pair width is a draw default, never written.")
     ap.add_argument("--relax-severities", action="store_true",
                     help="Lower the non-routing DRC severities (courtyard shapes, solder-mask "
                          "bridges, footprint/library issues -> ignore; starved_thermal and "
@@ -2586,8 +2583,10 @@ def main():
     ap.add_argument("--keep-mask", action="store_true", help="Do not ignore solder-mask bridge")
     ap.add_argument("--keep-footprint", action="store_true",
                     help="Do not ignore footprint/library categories (annular_width, lib_footprint_*)")
-    # Shared DRC-fix flags (--keep-thermal, --enable-used-layers); the standalone
-    # script always fixes, so --no-fix-drc-settings is omitted.
+    # Shared DRC-fix flags (--keep-thermal, --enable-used-layers; also
+    # --relax-drc-severities, which this script does not read -- its own
+    # --relax-severities above is the switch); the standalone script always
+    # fixes, so --no-fix-drc-settings is omitted.
     add_drc_fix_args(ap, include_no_fix=False)
     ap.add_argument("--ignore", nargs="+", default=[], metavar="CAT",
                     help="Extra severity categories to set to ignore")

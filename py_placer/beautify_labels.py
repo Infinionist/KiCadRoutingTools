@@ -2,7 +2,7 @@
 Beautify reference-designator silkscreen (#481).
 
 Usage:
-  python beautify_labels.py input.kicad_pcb [output.kicad_pcb] [options]
+  python3 py_placer/beautify_labels.py input.kicad_pcb [output.kicad_pcb] [options]
 
 Places every visible Reference label at a uniform font size and orientation,
 near its own part, avoiding pads, drill holes, other labels, and the board
@@ -34,8 +34,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python beautify_labels.py input.kicad_pcb labeled.kicad_pcb
-  python beautify_labels.py input.kicad_pcb --orientation vertical --refs "C*" "R*"
+  python3 py_placer/beautify_labels.py input.kicad_pcb labeled.kicad_pcb
+  python3 py_placer/beautify_labels.py input.kicad_pcb --orientation vertical --refs "C*" "R*"
 
 Exit codes:
   0  every in-scope label placed

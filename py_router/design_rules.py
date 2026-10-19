@@ -98,8 +98,12 @@ SIZE_KINDS = frozenset({
     'track_width', 'via_diameter', 'hole_size', 'annular_width',
     'diff_pair_width', 'connection_width',
 })
-# The kinds a consumer in this tool actually honours. Anything else in a
-# rule is reported as "parsed, not consumed".
+# The kinds a rule may carry without being reported as "parsed, not
+# consumed". WIDER than what is read today: the resolver's callers ask only
+# for track_width / via_diameter / hole_size (draw_size, floor), copper
+# clearance reaches the router only through kicad_dru's layer- and
+# track-scoped subsets, and `disallow` through net_keepouts. A rule built only on the other kinds listed here is
+# reported neither "NOT honoured" nor "not consumed".
 CONSUMED_KINDS = CLEARANCE_KINDS | SIZE_KINDS | {'disallow', 'via_count'}
 
 # Spellings a caller may use for a kind.

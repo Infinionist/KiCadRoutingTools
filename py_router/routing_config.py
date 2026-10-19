@@ -169,7 +169,7 @@ class GridRouteConfig:
     # routed single-ended (P->P, N->N) instead (issue #121).
     diff_pair_uncouple_factor: float = 6.0  # multiples of pair spacing (track+gap)
     min_turning_radius: float = 0.2  # mm - minimum turning radius for pose-based routing
-    debug_lines: bool = False  # Output debug geometry on User.2/3/8/9 layers
+    debug_lines: bool = False  # Output debug geometry on User.3/4/5/6/8/9 layers
     verbose: bool = False  # Print detailed diagnostic output
     max_rip_up_count: int = 3  # Maximum blockers to rip up at once during rip-up and retry (1 to N)
     # How the #85 arbitration decides keep-retry vs abandon after a Phase 3
@@ -790,14 +790,17 @@ class GridRouteConfig:
 
         Priority order:
         1. Per-net power width override (power_net_widths) -- floored UP to track_width
-        2. Per-net netclass width (net_track_widths) -- the net's OWN class width,
+        2. Per-net per-layer width (net_layer_widths, #521) -- reapplied from a
+           stored impedance declaration (.kicad_pro net_impedance); a layer it
+           does not list falls through to the next rung.
+        3. Per-net netclass width (net_track_widths) -- the net's OWN class width,
            EXACTLY (may be narrower than the global track_width); floored at the fab
            minimum by the caller. Only populated when --track-width was omitted.
-        3. Per-net COPLANAR impedance width (coplanar_layer_widths, #486) -- the
+        4. Per-net COPLANAR impedance width (coplanar_layer_widths, #486) -- the
            net was declared to run through a ground pour, so its width comes
            from the CPW-over-ground model rather than microstrip.
-        4. Layer-specific width (layer_widths, for impedance control)
-        5. Default track_width
+        5. Layer-specific width (layer_widths, for impedance control)
+        6. Default track_width
 
         Args:
             net_id: The net ID to get width for

@@ -2,12 +2,14 @@
 
 Two gates, both report-only here; the CLIs decide what to do with the verdict.
 
-**Unplaced.** A tool that refines poses, or reads anything off them, has
-nothing to work with on a pile of parts at the origin: every candidate pose is
-illegal, so a refinement prints "0 parts moved" plus a legality block that
-*looks like a result*, and an intent emitted from a pile records the pile as
-the spec. This module detects that and lets the caller refuse or, like
-`place_simple.py`, read nothing off the parts' poses.
+**Unplaced.** A tool that reads anything off the poses has nothing to work
+with on a pile of parts at the origin: a grade fires every rule at once,
+labels placed around a pile mean nothing, and an intent read off a pile's
+poses would record the pile as the spec. This module detects that and lets
+the caller refuse (check_floorplan, beautify_labels), warn
+(render_placement) or read nothing off the parts' poses (`emit_intent` on a
+`pile`, #1103) -- which is how `place_simple.py` treats every unlocked part
+anyway.
 
 **Already routed.** Placement models no copper at all: legality is courtyard,
 pads and outline, cost is airwires, and `placement.writer.write_placed_output`
@@ -388,11 +390,11 @@ def format_report(state: PlacementState, tool: str = 'placement', *,
         for r in state.reasons:
             lines.append(f"  - {r}")
         lines.append(
-            "  This toolchain refines an existing placement; it does not place a "
-            "board from scratch. Place the parts in KiCad first.")
+            "  Its poses are not a placement yet: py_placer/place_simple.py "
+            "places a board from a pile.")
         lines.append(
             "  To see what the file currently contains:  "
-            "python3 render_placement.py <board> -o state.png")
+            "python3 py_tools/render_placement.py <board> -o state.png")
         if not allow_unplaced:
             lines.append("  Override with --allow-unplaced.")
     elif state.partially_unplaced:

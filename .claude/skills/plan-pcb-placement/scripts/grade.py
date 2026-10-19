@@ -13,7 +13,8 @@ Grade every arm of a comparison with this same script at the same commit,
 or the numbers do not compare.
 
 Exit 0 when the mode's DONE conditions all hold, 4 when they do not, 2 on
-usage.
+usage, 1 when the board or the baseline is missing or empty, or the intent
+is missing.
 """
 import argparse
 import hashlib

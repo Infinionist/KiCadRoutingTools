@@ -399,8 +399,8 @@ def unrouted_shape(board: str, unrouted_names, pcb=None) -> dict:
 #:   * `locked_contacts` is a strict SUBSET of `blocking`. `locked_ref` is set
 #:     at exactly one site, inside the pad-intersection channel, so every
 #:     locked-contact pair is already a blocking pair --
-#:     `tests/test_run8_locked_contact.py` asserts in so many words that it is
-#:     "a second channel, not a re-count".
+#:     `tests/test_run8_locked_contact.py` (since retired) asserted in so many
+#:     words that it is "a second channel, not a re-count".
 #:   * `coincident_origins` counts GROUPS, not pairs: an N-part stack is one
 #:     group and N(N-1)/2 potential pairs.
 #:   * `containment_blocking` counts `fab`-kind pairs, a different geometry

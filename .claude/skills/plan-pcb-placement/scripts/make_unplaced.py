@@ -3,9 +3,9 @@
 
     python3 -X utf8 .claude/skills/plan-pcb-placement/scripts/make_unplaced.py SRC DST [--keep-locked] [--keep-local-zones]
 
-Nothing else in the toolchain PRODUCES an unplaced board. `perturb.py` damages
-a placement, and every corpus board ships placed. This script builds that
-input deterministically, so the run is replayable. Measured on an 18-part
+Nothing else in the toolchain PRODUCES an unplaced board, and every corpus
+board ships placed. This script builds that input deterministically, so the
+run is replayable. Measured on an 18-part
 2-layer board and a 264-part 4-layer board.
 
 - **Every pad-bearing part moves**, into a tight cluster south of the outline.

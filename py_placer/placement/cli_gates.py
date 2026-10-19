@@ -148,18 +148,18 @@ def load_brief_or_exit(args, board_path: str):
 
 
 def add_board_state_args(parser) -> None:
-    """`--allow-unplaced` / `--allow-routed` overrides for the two gates."""
+    """`--allow-unplaced` / `--allow-routed` overrides for the two gates.
+    check_floorplan is the one caller, and it never applies the routed gate."""
     parser.add_argument("--allow-unplaced", action="store_true",
                         help="Run even when the board does not look placed "
                              "(parts stacked at one coordinate). Off by default: "
-                             "this toolchain REFINES a placement, so on a pile "
-                             "every candidate pose is illegal and the run prints "
-                             "'0 parts moved' plus a legality block that looks "
-                             "like a result")
+                             "graded, a pile fires every rule at once, which is "
+                             "noise rather than a verdict. On a pile that "
+                             "place_simple.py is about to place, pass it to "
+                             "emit or check the intent (--plan-only implies it)")
     parser.add_argument("--allow-routed", action="store_true",
-                        help="Run even when the board already carries copper. "
-                             "Off by default: placement moves FOOTPRINTS and "
-                             "not tracks, so every segment would be left behind "
-                             "detached from its pad")
+                        help="Accepted and ignored: check_floorplan never "
+                             "refuses a board for carrying copper (copper is "
+                             "irrelevant to a floorplan)")
 
 

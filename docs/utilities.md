@@ -49,6 +49,7 @@ runnable tool in the clone with a one-line purpose.
 - The clone itself: [build script](#build-script-build_routerpy) ·
   [tool inventory](#tool-inventory-krt_registrypy-krt_capabilitiespy) ·
   [reach metrics](#reach-metrics-repo_metricspy) ·
+  [clean ignored files](#clean-ignored-files-clean_ignoredpy) ·
   [test scripts](#test-scripts) · [common workflows](#common-workflows)
 
 Documented elsewhere: the routing CLIs `route.py` / `route_diff.py` /
@@ -2503,6 +2504,19 @@ The traffic endpoints need a token with **push access**; releases are public
 and need none. A failing endpoint is recorded in the archive's `meta.json` and
 disclosed on the page, because a silently absent series looks exactly like a
 quiet week.
+
+## Clean Ignored Files (`clean_ignored.py`)
+
+Lists every git-ignored file and directory in the checkout (routed outputs,
+build artifacts, caches) with its size, and deletes them on request.
+
+```bash
+python3 py_tools/clean_ignored.py              # list only
+python3 py_tools/clean_ignored.py --delete     # delete, after a confirmation prompt
+python3 py_tools/clean_ignored.py --delete -y  # delete without asking
+```
+
+It always works from the repository root, wherever it is run from.
 
 ## Common Workflows
 

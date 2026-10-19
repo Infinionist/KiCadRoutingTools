@@ -83,8 +83,8 @@ def _true_max(name):
 
 def test_the_default_emission_declares_no_limit():
     """`--declare-decaps` is opt-in. Everything that emits without it -- and
-    that is every caller in the tree except the new flag, including
-    `tests/test_placement_ab.py` -- must be byte-unaffected in this key."""
+    that is every caller in the tree except the new flag -- must be
+    byte-unaffected in this key."""
     n = 0
     for name in _present(EMITTING + tuple(WITHHELD)):
         doc, _p = _emit(name)
@@ -341,7 +341,8 @@ def test_the_census_discloses_what_the_limit_cannot_see():
 def test_the_census_is_deterministic():
     """`beyond_radius_refs` is built from a dict of lists; an unsorted set
     would make the emitted document depend on PYTHONHASHSEED, which
-    test_run5_emit_guard pins for the rest of the emitter."""
+    test_run5_emit_guard pinned for the rest of the emitter until it was
+    deleted (ecd673eb)."""
     name = _present(EMITTING)[0]
     outs = []
     for seed in ('0', '12345'):

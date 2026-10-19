@@ -1733,14 +1733,14 @@ def main():
     # middle one is `--track-width 0.08` failing against this parser) and it
     # cost a replay of that manifest another. dest stays `width`.
     parser.add_argument('--width', '--track-width', '-w', type=float,
-                        default=0.1, help='Track width in mm '
-                                          '(--track-width is an alias)')
+                        default=0.1, help='Track width in mm (default 0.1; '
+                                          '--track-width is an alias)')
     import routing_defaults as defaults
     parser.add_argument('--extension', type=float, default=defaults.QFN_EXTENSION,
-                        help='Extension past pad edge before bend (mm)')
+                        help=f'Extension past pad edge before bend (mm, default {defaults.QFN_EXTENSION})')
     parser.add_argument('--clearance', type=float, default=defaults.QFN_CLEARANCE,
-                        help='Min clearance to other-net pads (mm); stubs that '
-                             'would graze a foreign pad are shortened or dropped')
+                        help=f'Min clearance to other-net pads (mm, default {defaults.QFN_CLEARANCE}); '
+                             'stubs that would graze a foreign pad are shortened or dropped')
     parser.add_argument('--nets', '-n', nargs='*',
                         help='Net patterns to include')
     parser.add_argument('--grid-step', type=float, default=defaults.GRID_STEP,

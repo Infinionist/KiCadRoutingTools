@@ -7,7 +7,8 @@ route.py's --quick (level 1, the fast judge) unless --quick 2 or --full.
                    [--corpus DIR] [--quick LEVEL | --full]
 
   PLACED_DIR  the arm's placements: PLACED_DIR/<board>/s<seed>.kicad_pcb, with
-              its .kicad_pro / .kicad_prl siblings when there are any.
+              its .kicad_pro / .kicad_prl / .kicad_dru / .design-brief.json
+              siblings when there are any.
   BOARDS      comma list of keys of BOARDS below (ch32,noahfc,...), or
               key=<corpus board>:<set> for any other corpus board.
   SEEDS       0-15, or 0,1,5.
@@ -229,7 +230,9 @@ def main(argv=None):
                 mine[old] = (key, s, name)
                 continue
             files_in = {}
-            for ext in ('.kicad_pcb', '.kicad_pro', '.kicad_prl'):
+            # every sibling copy_board carries: the .kicad_dru's rules and the
+            # brief's keep_away reach the route step (#498, #1253)
+            for ext in ('.kicad_pcb', '.kicad_pro', '.kicad_prl', '.kicad_dru', '.design-brief.json'):
                 p = os.path.join(placed_dir, key, f's{s}{ext}')
                 if os.path.exists(p):
                     files_in['placed' + ext] = open(p, 'rb').read()

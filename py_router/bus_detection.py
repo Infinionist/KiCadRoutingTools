@@ -343,7 +343,7 @@ def filter_bus_groups_geometric(pcb_data, bus_groups, config,
                                 max_len_ratio: float = 1.5):
     """Strict geometric bus definition (default on; KICAD_BUS_STRICT=0
     reverts to raw clique detection): a group is a bus only if its members
-    genuinely TRAVEL TOGETHER. Five rules, no names, no component identity:
+    genuinely TRAVEL TOGETHER. Four rules, no names, no component identity:
 
       1. >=3 members (pairs belong to the diff router or aren't worth
          bundling),
@@ -354,9 +354,11 @@ def filter_bus_groups_geometric(pcb_data, bus_groups, config,
          destinations, subsuming any shared-component test),
       3. run length >= 5mm (local hops gain nothing; also retires the
          decoupling-cap clusters without a passive-component carve-out),
-      4. no power nets (config.power_net_widths),
-      5. no diff-pair members (config-independent: *_P/*_N by pair map is
-         the caller's concern; here power/width classes only).
+      4. no power nets (config.power_net_widths).
+
+    A member with fewer than 2 pads has no run and is dropped too. Diff-pair
+    members are NOT filtered here: the *_P/*_N pair map is the caller's
+    concern.
 
     Raw clique detection on ottercast declared 31 groups/118 members and
     planned corridors for decoupling clusters and power rails; these rules

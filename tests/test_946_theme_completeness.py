@@ -26,11 +26,11 @@ byte-identity harness could not see, because that harness renders
 animation, whose colours had been folded onto `render_placement`'s
 near-identical ones -- 4 to 13 apart -- and would have shipped silently.
 
-**DETERMINISTIC.** `tests/test_431_render_placement.py:175-195` requires
-byte-identical PNGs across two `PYTHONHASHSEED` values. A palette built from set
-iteration order flaps that test intermittently -- the worst possible failure
-mode for a colour change -- so this guards it at the data level, ~200x faster,
-and names the cause when it fires.
+**DETERMINISTIC.** Renders must be byte-identical across `PYTHONHASHSEED`
+values (`tests/test_431_render_placement.py` asserted it on the PNGs until it
+was deleted in ecd673eb). A palette built from set iteration order would break
+that intermittently -- the worst possible failure mode for a colour change --
+so this guards it at the data level and names the cause when it fires.
 
 **PIL-FREE.** `py_tools/render_placement.py` imports `render_theme` at module
 scope and must keep importing with `sys.modules['PIL'] = None`.

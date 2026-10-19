@@ -44,14 +44,15 @@ from obstacle_map import build_base_obstacle_map
 # prefers the narrower corridor: k rungs below k_max is penalized like
 # ROOM_WEIGHT * k * (track + clearance) millimetres of extra length.
 ROOM_WEIGHT = 40.0
-# Rung cap: k_max = min(ceil((N-1)/2), MAX_RUNG) sibling-rooms per side.
+# Rung cap: k_max = min(MAX_RUNG, max(1, N // 2)) sibling-rooms per side.
 MAX_RUNG = 3
 # Probe via-cost multiplier (#296 R9 phase C): the human routes a bus as a
 # river on ONE layer; a centerline probed at normal via cost hops layers
 # freely and then guides every member incoherently. Pricing vias up in the
 # PROBE ONLY makes the planned corridor layer-coherent; members still pay
-# normal via costs. Override with KICAD_BUS_CORRIDOR_VIA_MULT (1 = off).
-CORRIDOR_VIA_COST_MULT = 4.0
+# normal via costs. The multiplier is env_knobs.BUS_CORRIDOR_PROBE_VIA_MULT
+# (KICAD_BUS_CORRIDOR_PROBE_VIA_MULT, default 20; 1 = off), read per probe
+# in plan_bus_corridors.
 
 
 def _sample_dense(path: List[Tuple[int, int, int]], step: int = 1

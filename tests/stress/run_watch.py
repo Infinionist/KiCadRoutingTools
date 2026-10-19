@@ -350,7 +350,7 @@ NET_SCOPED = ('route.py',)
 #: no cli_banner, so their invocations are only ever seen through a teed
 #: `cmd_timing.jsonl` row -- see _scan_ledger_argv. Kept so a RECORDED run
 #: still replays with its driver flags reported; tests/test_run20_run_watch.py
-#: pins that exemption (`_REPLAY_ONLY`).
+#: pinned that exemption (`_REPLAY_ONLY`) until it was deleted (ecd673eb).
 DRIVERS = ('placement_driver.py', 'loop_driver.py')
 #: Every CLI that calls `fab_tiers.add_fab_tier_args`, which is what actually
 #: supplies `--fab-tier` / `--fab-overrides`. Scoped to GRADERS + ROUTERS
@@ -908,8 +908,8 @@ def _self_test():
     """Checkable in the field, where the harness runs and pytest does not.
 
     Modelled on the retired `loop_driver.py --self-test`. The full fixtures
-    live in tests/test_run20_run_watch.py; this is the subset that needs no
-    files.
+    lived in tests/test_run20_run_watch.py (deleted in ecd673eb); this is the
+    subset that needs no files.
     """
     bad = []
 

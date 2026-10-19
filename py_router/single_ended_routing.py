@@ -1198,7 +1198,7 @@ def _identify_blocking_obstacles(
     except (ImportError, AttributeError) as e:
         raise RuntimeError(
             "grid_router.identify_blocking_obstacles is unavailable -- rebuild the "
-            "Rust router to 0.16.1+ (python build_router.py --from-source)") from e
+            "Rust router to 0.16.1+ (python3 build_router.py --from-source)") from e
 
     coord = GridCoord(config.grid_step)
     layer_map = build_layer_map(config.layers)

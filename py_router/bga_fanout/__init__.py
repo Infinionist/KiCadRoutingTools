@@ -2809,8 +2809,8 @@ def _generate_bga_fanout_core(footprint: Footprint,
         diff_pair_gap: Gap between P and N traces of a differential pair
         exit_margin: How far past BGA boundary to extend
         primary_escape: Primary escape direction preference ('horizontal' or 'vertical')
-        via_size: Size of vias to add at pads (default 0.3mm)
-        via_drill: Drill size for vias (default 0.2mm)
+        via_size: Size of vias to add at pads (default 0.5mm)
+        via_drill: Drill size for vias (default 0.3mm)
         check_for_previous: If True, skip pads that already have fanout tracks
         no_inner_top_layer: If True, inner pads cannot use F.Cu (top layer)
         escape_method: 'auto' (default) runs the channel router and, if it drops

@@ -1381,8 +1381,8 @@ def pad_band(rect, face, pad_box):
     wider than its pad is routine (it necks down at the joint); this model
     says no. Measured on ulx3s U1, whose balls are 0.4mm wide, at clearance
     0.2: the corridor frees 71 balls at every track width up to and including
-    0.400, and 0 at 0.401. `check_channels` floors the track UP to the fab
-    floor, which can only move toward that edge. Widening the strip to admit
+    0.400, and 0 at 0.401. `check_channels` (since retired) floored the track
+    UP to the fab floor, which can only move toward that edge. Widening the strip to admit
     a necked track is a real change and would need its own evidence -- the
     measured alternatives (a pitch-wide window, a zero threshold) both break
     `qfn_interior_pads`, so it is not a one-line relaxation.
@@ -1732,9 +1732,9 @@ def escape_ledger(pcb_data, *, refs: Optional[Sequence[str]] = None,
     `fine_at_board_rules` (#1196): with no `refs`, ALSO ledger every part
     that is fine at the track, clearance and via pitch resolved here
     (`fine_by_rules`), not only those fine by the two absolute pitches. The
-    reporting tools pass it (`check_capacity`'s options, `check_floorplan
-    --health`); the default keeps the population every other caller and
-    every recorded measurement of this ledger was taken on.
+    reporting tool passes it (`check_floorplan --health`, through
+    `routability.health`); the default keeps the population every other
+    caller and every recorded measurement of this ledger was taken on.
 
     Returns [] on a board with no fine-pitch parts, which is the common case
     and is not a failure -- there is simply no escape question to ask.

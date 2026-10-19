@@ -17,10 +17,10 @@ are historical records, not runnable chains.
 
 Usage:
     # Auto-detect all zones in PCB:
-    python py_router/repair_planes.py input.kicad_pcb output.kicad_pcb
+    python3 py_router/repair_planes.py input.kicad_pcb output.kicad_pcb
 
     # Specific nets and layers:
-    python py_router/repair_planes.py input.kicad_pcb output.kicad_pcb \\
+    python3 py_router/repair_planes.py input.kicad_pcb output.kicad_pcb \\
         --nets GND --plane-layers B.Cu
 """
 from __future__ import annotations
@@ -1119,8 +1119,8 @@ def repair_planes(
             print(f"Warning: could not auto-read netclass clearances ({_e}); "
                   f"repairing at the uniform clearance.")
             net_clearances = None
-        # #439: --clearance was the CEILING -> cap every class at min(class,
-        # ceiling). When not clamping (--clearance omitted), honor the classes
+        # #439/#530: --clearance-ceiling GIVEN -> cap every class at min(class,
+        # ceiling). When not clamping (no ceiling), honor the classes
         # in full. Only the auto-read map is capped: a map the caller passes
         # (the #562 finalize's resolved map, a --net-clearances file) is used
         # as given, as batch_route and create_plane do. The map propagates to
@@ -3502,18 +3502,18 @@ def main():
         epilog="""
 Examples:
     # Auto-detect all zones in PCB:
-    python py_router/repair_planes.py input.kicad_pcb output.kicad_pcb
+    python3 py_router/repair_planes.py input.kicad_pcb output.kicad_pcb
 
     # Only process specific layers (all nets on those layers):
-    python py_router/repair_planes.py input.kicad_pcb output.kicad_pcb \\
+    python3 py_router/repair_planes.py input.kicad_pcb output.kicad_pcb \\
         --plane-layers B.Cu In1.Cu
 
     # Only process specific nets (on all layers they have zones):
-    python py_router/repair_planes.py input.kicad_pcb output.kicad_pcb \\
+    python3 py_router/repair_planes.py input.kicad_pcb output.kicad_pcb \\
         --nets GND +3.3V
 
     # Specific net/layer pairs (counts must match):
-    python py_router/repair_planes.py input.kicad_pcb output.kicad_pcb \\
+    python3 py_router/repair_planes.py input.kicad_pcb output.kicad_pcb \\
         --nets GND +3.3V --plane-layers B.Cu In1.Cu \\
         --max-track-width 1.0
 """
@@ -3647,10 +3647,11 @@ Examples:
                            enforce_fab_floors, count_copper_layers_in_file)
     add_fab_tier_args(parser)
     args = __import__("cli_nets").pin_dash_digit_values(parser).parse_args()
-    # #439: identical net-class/clearance model to route.py. --clearance is the
-    # clamp switch: GIVEN -> ceiling, every class capped at min(class, ceiling),
-    # writeback clamps (_clamp_netclasses True). OMITTED -> each net routes at its
-    # own class (base = board Default class), classes preserved. Geometry flags
+    # #530: identical net-class/clearance model to route.py. --clearance sets the
+    # Default class for the run; other classes route at their own. --clearance-
+    # ceiling GIVEN -> every class capped at min(class, ceiling), writeback clamps
+    # (_clamp_netclasses True). OMITTED -> each net routes at its own class (base =
+    # --clearance, else the board Default class), classes preserved. Geometry flags
     # omitted -> default from the board (track/clearance/via from Default net-class,
     # hole/edge from board constraints, else a routing_defaults constant). Planes
     # keep their larger PLANE_EDGE_CLEARANCE fallback when the board declares none.

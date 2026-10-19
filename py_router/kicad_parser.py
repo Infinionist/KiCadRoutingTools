@@ -974,7 +974,8 @@ class PCBData:
     #: #962: footprint copper the parser does NOT model, named so a grade that
     #: cannot see it says so instead of passing it:
     #: `{'owner_ref', 'kind', 'reason'}`, kind 'logo' (a pad-less footprint's
-    #: copper, which the writer relocates to silk, #146) or 'curve' (bezier).
+    #: copper, which the writer relocates to silk, #146), 'curve' (bezier) or
+    #: 'text' (copper text on a part with pads).
     #: Filled by both parse paths.
     graphic_copper_unmeasured: List[dict] = field(default_factory=list)
     #: #1279: protected Kelvin sense branches, one per KiCad group named
@@ -5101,7 +5102,7 @@ def extract_vias(content: str, name_to_id: Dict[str, int] = None) -> List[Via]:
     model. Not an invisible spec -- an invisible barrel, which the router then
     plans tracks through (the hazard PR #534 was written against). Our own
     writer produces that exact shape whenever a net name fails to resolve, and
-    ``net_id_to_name`` has no key 0 on any board.
+    ``net_id_to_name`` has no key 0 on a name-net board.
 
     A token sitting between ``(net ...)`` and ``(uuid ...)`` used to cost the
     SPEC in both dialects for the same positional reason -- the uuid capture

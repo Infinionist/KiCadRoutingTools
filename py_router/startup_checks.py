@@ -2,7 +2,7 @@
 Startup checks for the PCB router.
 
 Verifies that:
-1. Required Python libraries are available (numpy)
+1. Required Python libraries are available (numpy, scipy, shapely: IMPORT_TESTS)
 2. The Rust library is available
 3. The Rust library version matches Cargo.toml
 
@@ -10,7 +10,8 @@ Rendering is a SEPARATE gate (`check_render_dependencies`, #887): Pillow is not
 needed to route, and requiring it here stops a machine that can route from
 routing. See that function for what it cost when the two were merged.
 
-If version mismatch is detected, automatically rebuilds using build_router.py.
+If the library is missing or its version does not match, it does NOT rebuild:
+it raises with the instruction to run build_router.py.
 
 These checks RAISE `StartupCheckError` rather than calling sys.exit (#457 item 3).
 The CLI entry points still exit 1 with the same message -- they catch it at their
@@ -584,7 +585,7 @@ def check_rust_library():
                   f"Cargo.toml={cargo_version}")
 
     if reason:
-        lines = [reason, "Please run:", "  python build_router.py", "",
+        lines = [reason, "Please run:", "  python3 build_router.py", "",
                  "Then re-run your command."]
         if sys.version_info < MIN_PYTHON:
             lines += ["",

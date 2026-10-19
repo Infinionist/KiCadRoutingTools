@@ -31,11 +31,14 @@
    movable part from `--seed`, so the same board, inputs and seed give the
    same placement. A run that leaves a part with no legal pose (a big part
    wedged between fixed ones on a full board) is run again from a fresh
-   start, up to RESTARTS times, the first legal placement kept: a run that
-   got stuck is a worse arrangement than a fresh one that did not, so the
-   fresh start is worth its time. The last run, if it never comes clean,
-   is mended where it stands instead (`simple_anneal.Annealer.repair`: its
-   overlaps shoved apart), so no part is left illegal that a shove frees. On
+   start, up to RESTARTS times, the first legal placement kept (a part too
+   big for the usable area at either quarter turn does not count against
+   it): a run that got stuck is a worse arrangement than a fresh one that
+   did not, so the fresh start is worth its time. The last run, if it
+   never comes clean, is mended where it stands instead
+   (`simple_anneal.Annealer.repair`: its overlaps shoved apart), so no part
+   is left illegal that a shove frees; when no run is legal, the one that
+   left the fewest parts illegal is kept, the earlier on a tie. On
    ch32v003_usb (22 movable parts) the whole run takes about 2.5 s.
 
 Exit codes: 0 placed, 2 unreadable input, a part in two groups, or a face the

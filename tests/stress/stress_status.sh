@@ -2,7 +2,7 @@
 # Orchestration status for the stress-test corpus (set 1 + set 2 + set 3 ...).
 #
 # Classifies every board from DISK so a context-summarized parent can resume
-# cold (see RUNBOOK.md "Driving the run"):
+# cold (see RUNBOOK.md "Orchestration" and its "Manual fallback"):
 #   DONE    = results JSON exists
 #   RUNNING = a process matches the run-dir path, OR the run dir was touched in
 #             the last 180 min (covers the pgrep blind-spot while an agent is

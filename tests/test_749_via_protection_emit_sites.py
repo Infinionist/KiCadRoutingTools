@@ -7,10 +7,11 @@ board's convention for a new one.
   A. `add_tracks_and_vias_to_pcb` had no `tenting_attrs` parameter AT ALL, and
      it also takes `remove_vias` -- so a via removed and re-added round-tripped
      through it and came back re-stamped. Its callers split cleanly: fanout and
-     route_planes emit NEW vias (which want the board's prevailing convention),
+     route_planes emit NEW vias (which took the board's prevailing convention
+     at #749, and now carry no token and inherit its `(setup ...)` -- see A1),
      while route.py's #666 re-emit of model copper the written file lost is a
-     genuinely PRE-EXISTING via (which wants its own spec back, and inheritance
-     when it had none).
+     genuinely PRE-EXISTING via (which wants its own spec back, and
+     inheritance when it had none).
   B. Three `kicad_oracle` sites passed no spec, so every via the oracle welded
      got the hardcoded front+back tenting whatever the board said.
   C. `plane_io.restore_failed_reroute_nets` carried the spec but not the
@@ -157,8 +158,8 @@ def run():
                   f"A1: a NEW via got {got[0].tenting_attrs}, expected NO "
                   f"protection token at all so it inherits the board policy")
             check(got[0].tenting_attrs != DEFAULT_VIA_TENTING,
-                  "A1: the new via was stamped with the hardcoded front+back "
-                  "tenting, which is what #489 s8 set out to stop")
+                  "A1: the new via was stamped with the RETIRED hardcoded "
+                  "front+back tenting, which is what #489 s8 set out to stop")
             check(got[0].tenting_attrs != HOUSE_SPEC,
                   f"A1: the new via was stamped with the board's PREVAILING "
                   f"per-via spec {HOUSE_SPEC}; that is still an override, and "
@@ -242,8 +243,8 @@ def run():
     # must decide the protection question rather than fall through to the
     # writer's default. A new emit site that forgets fails here.
     #
-    # py_placer/placement/writer.py is deliberately out of scope: that is #741,
-    # whose fix is not on main.
+    # py_placer/placement/writer.py is deliberately out of scope: that is #741's
+    # site, pinned by tests/test_741_via_nudge_tenting.py.
     for rel in ('py_router/kicad_oracle.py', 'py_router/plane_io.py',
                 'py_router/repair_planes.py', 'py_router/output_writer.py',
                 'py_router/kicad_writer.py',
@@ -262,8 +263,9 @@ def run():
             kw = {k.arg for k in c.keywords}
             check('tenting_attrs' in kw,
                   f"{rel}:{c.lineno}: generate_via_sexpr with no "
-                  f"tenting_attrs= -- it will be stamped with the hardcoded "
-                  f"front+back tenting (#489 s8 / #749)")
+                  f"tenting_attrs= -- an existing via it re-emits loses its own "
+                  f"protection spec and falls back to the board's `(setup ...)` "
+                  f"(#489 s8 / #749)")
 
     # --- The via TYPE, the same way (found reviewing #1268) -----------------
     # A via block with no blind/buried/micro word is a THROUGH via to KiCad,

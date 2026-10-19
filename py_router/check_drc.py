@@ -3580,17 +3580,14 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
         from list_nets import fab_floor_min
         copper_layers = getattr(pcb_data.board_info, 'copper_layers', None) or []
         copper_count = len(copper_layers) if copper_layers else 2
-        # Grade against the DEEPEST floor the active fab tier can reach (fab_floor_min):
-        # for 'standard' that's the advanced rung it escalates to (0.25 dia / 0.15
-        # drill on 4+ layers), so legitimately-escalated fine vias aren't flagged;
-        # for 'advanced'/overrides it's the hard floor (issue #237).
         # #857/#530: the PHYSICAL fab floor (the override file, else the
-        # advanced rung), not the selected tier's: the tier bounds what the
-        # router may descend to on its own, while an explicit --via-size 0.3
-        # is accepted as asked, so grading at the tier would flag every via
-        # the operator requested. The board's own minimums (below) are what
-        # KiCad grades; `--fab-tier advanced` and `--fab-overrides` still
-        # tighten this through physical_fab_floor.
+        # advanced rung: 0.25 dia / 0.15 drill on 4+ layers), not the selected
+        # tier's: the tier bounds what the router may descend to on its own,
+        # while an explicit --via-size 0.3 is accepted as asked, so grading at
+        # the tier would flag every via the operator requested. The board's own
+        # minimums (below) are what KiCad grades. Only `--fab-overrides` moves
+        # this floor; physical_fab_floor ignores the tier, so `--fab-tier`
+        # changes nothing here.
         from fab_tiers import physical_fab_floor
         fab = physical_fab_floor(copper_count)
         eff_min_track = min_track_width if min_track_width is not None else fab['track_width']

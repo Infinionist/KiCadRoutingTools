@@ -9,21 +9,17 @@ usage example still used it. The run followed the documentation, `route.py`
 answered `error: unrecognized arguments`, and a lap was spent finding out why.
 
 Nothing caught it, and the near-miss is instructive: `test_krt_capabilities.py`
-asserts `--track-width-floor` is absent on `route_planes.py` and
-`route_diff.py` -- but never on `route.py`, the one CLI it had actually been
-removed from. The removal passed CI because the only assertions about the flag
-were about the two tools that never had it.
+(since deleted) asserted `--track-width-floor` was absent on `route_planes.py`
+and `route_diff.py` -- but never on `route.py`, the one CLI it had actually
+been removed from. The removal passed CI because the only assertions about the
+flag were about the two tools that never had it.
 
-How this differs from `tests/test_431_skill_commands.py`, which is ALSO a
-"every flag the skill tells you to pass must exist" gate over the same skill
-files -- keep both, and do not delete either as a duplicate:
-
-  * #431 reads COMMAND LINES and resolves each flag against the NAMED tool's
-    real parser (`--help`, or the built argparse object). Stronger, per-tool,
-    and it is the right check for an emitted invocation.
-  * this gate reads PROSE -- a `--flag` in backticks in a sentence -- and
-    resolves it as a UNION over every tool, because prose names a flag without
-    naming a tool.
+This gate reads PROSE -- a `--flag` in backticks in a sentence -- and resolves
+it as a UNION over every tool, because prose names a flag without naming a
+tool. Its per-tool sibling, `tests/test_431_skill_commands.py`, read COMMAND
+LINES and resolved each flag against the NAMED tool's real parser; it was
+deleted with the old placement flows (ecd673eb), so no gate now checks an
+emitted invocation against its own tool.
 
 That is exactly the gap 53a5a16e fell through: the stale `--track-width-floor`
 instruction was a sentence ("plus `--track-width-floor` for a width clause"),

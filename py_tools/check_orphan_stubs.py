@@ -3,19 +3,31 @@
 Check for orphan trace stubs in a KiCad PCB file.
 
 An orphan stub is a trace endpoint that:
-1. Has only one connected segment (degree-1 node)
-2. Is NOT near a via
-3. Is NOT near a through-hole pad
+1. Has only one connected segment on its layer (degree-1 node)
+2. Does not overlap same-net copper with its end cap (half the track width
+   past the endpoint counts): a via, a pad by its real outline (a
+   through-hole pad on every layer, an SMD pad on its own), another
+   same-net track's body (a T-junction tap), or a same-net zone outline on
+   that layer (#513)
+3. Is not a reverse T (#1167): no other same-net track vertex or via lands
+   on the stub's own body with at most a short nib (3 x the track width)
+   left past it
 
 These represent traces that end without a proper connection point.
 
+Without --layer it scans F.Cu, B.Cu, In1.Cu and In2.Cu only; on a board with
+more copper layers, run it once per layer with --layer (as check_complete.py
+does). Exit 1 when orphans are found (with a second file, when it has new
+ones; or when --compare is given without one), else 0.
+
 Usage:
-    python check_orphan_stubs.py input.kicad_pcb [--net NET_NAME] [--layer LAYER]
+    python3 py_tools/check_orphan_stubs.py input.kicad_pcb [compare.kicad_pcb]
+        [--net NET_NAME] [--layer LAYER] [--compare]
 
 Examples:
-    python check_orphan_stubs.py board.kicad_pcb
-    python check_orphan_stubs.py board.kicad_pcb --net "+3.3V" --layer F.Cu
-    python check_orphan_stubs.py original.kicad_pcb modified.kicad_pcb --compare
+    python3 py_tools/check_orphan_stubs.py board.kicad_pcb
+    python3 py_tools/check_orphan_stubs.py board.kicad_pcb --net "+3.3V" --layer F.Cu
+    python3 py_tools/check_orphan_stubs.py original.kicad_pcb modified.kicad_pcb --compare
 """
 
 from __future__ import annotations
@@ -338,7 +350,8 @@ def main():
     parser.add_argument('compare_file', nargs='?',
                        help='Second file to compare against (optional)')
     parser.add_argument('--net', help='Only check this net')
-    parser.add_argument('--layer', help='Only check this layer')
+    parser.add_argument('--layer', help='Only check this layer (default: '
+                        'F.Cu, B.Cu, In1.Cu and In2.Cu)')
     parser.add_argument('--compare', action='store_true',
                        help='Compare two files (requires two input files)')
 

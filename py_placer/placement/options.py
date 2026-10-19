@@ -128,9 +128,10 @@ def hosts_the_design(ref, gx0, gy0, gx1, gy1, fp, footprints) -> bool:
     return len(spots) >= max(4, 0.5 * len(hosted))
 
 
-#: Public since #709: the pocket census excludes the same frames from its
-#: area-weighted centroid, and `board_brief` records the repo's rule that an
-#: artifact must not sit behind a private cross-module name. The old spelling
+#: Public since #709: the pocket census (`check_pockets`, since retired)
+#: excluded the same frames from its area-weighted centroid, and
+#: `board_brief` records the repo's rule that an artifact must not sit behind
+#: a private cross-module name. The old spelling
 #: stays so nothing in-tree has to change in the same commit.
 _hosts_the_design = hosts_the_design
 
@@ -143,12 +144,12 @@ _hosts_the_design = hosts_the_design
 #: swept three candidate currencies over the tracked corpus and its
 #: pre-registered rule selected this one. `legality.rect_on` is the only place
 #: in the tree where the far-face rect is DECIDED rather than sidestepped, and
-#: it answers the drilled-pad rect; `check_pockets.courtyard_cover` charges the
-#: whole courtyard, but it answers a per-window COVER question where summing
-#: never arises, so it is not a competing answer to this one. The measurement's
-#: falsifier: charging the whole courtyard makes flat_hierarchy's far charge
-#: equal its near charge part-for-part (64 of 64 pad-bearing parts drilled),
-#: which is the same area counted twice.
+#: it answers the drilled-pad rect; `check_pockets.courtyard_cover` (since
+#: retired) charged the whole courtyard, but it answered a per-window COVER
+#: question where summing never arises, so it was not a competing answer.
+#: The measurement's falsifier: charging the whole courtyard makes
+#: flat_hierarchy's far charge equal its near charge part-for-part (64 of 64
+#: pad-bearing parts drilled), which is the same area counted twice.
 FAR_FACE_BASIS = ('the drilled-pad rect, the same rect legality.rect_on '
                   'presents on the far side')
 
@@ -400,10 +401,10 @@ def grow_board(pcb_data, pcb_file: str, *, clearance: float,
         # #878, and what is left after it. A through-hole part's leads ARE now
         # charged on the far face, at `FAR_FACE_BASIS` -- the drilled-pad rect,
         # the model `legality.rect_on` already enforces for the placement
-        # search. What remains not-modelled is the DISAGREEMENT: the other
-        # per-face instrument, `check_pockets.courtyard_cover`, charges the
-        # whole courtyard on both faces instead, and the two still differ by
-        # that amount. (The issue's own table also named
+        # search. The other per-face instrument #878 named,
+        # `check_pockets.courtyard_cover`, charged the whole courtyard on both
+        # faces instead; it has since been retired, so that disagreement is
+        # gone. (The issue's own table also named
         # `floorplan.rule_keepout` as a third model; it is not one -- it uses
         # `part.sides` only to BIND which keep-outs apply, then hands
         # `keepout_hit` both rects and takes a max, consulting no side.)

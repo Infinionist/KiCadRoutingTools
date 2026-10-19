@@ -4,19 +4,19 @@ List and analyze nets in a KiCad PCB file.
 
 Examples:
     # List nets on a component
-    python list_nets.py board.kicad_pcb --component U1
+    python3 list_nets.py board.kicad_pcb --component U1
 
     # Show pad-to-net assignments
-    python list_nets.py board.kicad_pcb --component U1 --pads
+    python3 list_nets.py board.kicad_pcb --component U1 --pads
 
     # Detect differential pairs in the board
-    python list_nets.py board.kicad_pcb --diff-pairs
+    python3 list_nets.py board.kicad_pcb --diff-pairs
 
     # Show power/ground nets with pad counts
-    python list_nets.py board.kicad_pcb --power
+    python3 list_nets.py board.kicad_pcb --power
 
     # Full board analysis
-    python list_nets.py board.kicad_pcb --diff-pairs --power
+    python3 list_nets.py board.kicad_pcb --diff-pairs --power
 """
 
 #: #937 registry: which door(s) show this tool, and whether it changes
@@ -537,8 +537,8 @@ def resolve_cli_floor(pcb_path, name, explicit, fallback, flag):
     The four routing mains did not: each carried its own copy of
     ``board_constraint(...) if ... is not None else <default>``, an
     ``is not None`` test with no positivity guard, eight sites in all
-    (route.py 3725/3731, route_diff.py 1947/1953, route_planes.py 4940/4946,
-    route_disconnected_planes.py 3410/3416).
+    (two each in route.py, route_diff.py, route_planes.py and repair_planes.py,
+    then named route_disconnected_planes.py).
 
     So on a board declaring ``min_copper_edge_clearance: 0.0`` the two halves
     of the place/route loop read one declared floor two ways: the placement
@@ -553,7 +553,7 @@ def resolve_cli_floor(pcb_path, name, explicit, fallback, flag):
     The FALLBACKS legitimately differ between callers and are NOT unified
     here: the signal mains fall back to BOARD_EDGE_CLEARANCE 0.0, which is a
     deliberate sentinel meaning "no edge rule declared, use the copper-copper
-    clearance instead" (route.py:896, obstacle_map.py:797), while the plane
+    clearance instead" (obstacle_map's ``board_edge_clearance > 0`` tests), while the plane
     mains fall back to PLANE_EDGE_CLEARANCE 0.5 and the placement model to
     0.55. What must agree -- and now does -- is whether the board declared
     anything at all, and what the tool SAYS about where its number came from.
@@ -774,7 +774,8 @@ def print_design_rules(pcb_path):
     non_default = {n: c for n, c in dr['assignments'].items() if c != 'Default'}
     if non_default:
         print(f"  ({len(non_default)} net(s) assigned to non-default classes — "
-              f"route those separately with that class's flags)")
+              f"the routers honour their class clearance in the same call; omit "
+              f"--track-width / --via-size and they keep their class width and via too)")
 
     # The DRC-enforced Board Constraints. Net-class track_width/via_diameter are
     # only drawing DEFAULTS; ONLY these min_* are DRC floors (#111/#115).
@@ -850,7 +851,8 @@ def print_design_rules(pcb_path):
     print("\nSUGGESTED route.py/qfn_fanout/bga_fanout/route_planes flags "
           "(Default class; small working via):\n  " + " ".join(flags))
     print("  Fine-pitch escape may drop --clearance toward the manufacturing floor "
-          f"{eff['drc_clearance']} (never below); route non-Default-class nets separately.")
+          f"{eff['drc_clearance']} (never below); non-Default-class nets keep their own "
+          f"class clearance in the same call.")
     if eff['fab_track_width'] < eff['min_track_width']:
         print(f"  On dense/congested boards, drop --track-width to the fab floor "
               f"{eff['fab_track_width']} for ordinary signals (keep --power-nets and "

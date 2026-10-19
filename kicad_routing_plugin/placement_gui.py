@@ -128,7 +128,8 @@ class LabelsOptionsPanel(wx.Panel):
             "How far beyond the part's courtyard a label may be pushed.")
         self.label_include_hidden = wx.CheckBox(self, label="Include hidden labels")
         self.label_include_hidden.SetToolTip(
-            "Also place (and un-hide) labels that are currently hidden.")
+            "Also place labels that are currently hidden (they stay hidden; "
+            "only their pose and size are tidied).")
         self.label_skip_locked = wx.CheckBox(self, label="Skip locked parts")
         self.label_skip_locked.SetToolTip(
             "Leave the labels of KiCad-locked footprints untouched.")
@@ -820,8 +821,9 @@ class PlacementTab(wx.Panel):
         """Raw stream-json tap: feed FULL Bash commands to the monitor.
 
         The formatted transcript prefers the Bash tool's short description
-        and truncates at ~120 chars, which usually loses the `--stage P4`
-        that stage derivation keys on - the raw event still carries it.
+        and truncates at ~120 chars, which usually loses the `--seeds 0-23`
+        and `r<N>/s<S>` arguments that stage derivation keys on - the raw
+        event still carries them.
         """
         if not self or self._monitor is None:
             return
@@ -1245,7 +1247,7 @@ class PlacementTab(wx.Panel):
     def _apply_copper(self, board, result_pcb, pcbnew):
         """Make the live board's tracks and vias the result board's copper.
 
-        The result board is the authority: the place+route loop's contract is
+        The result board is the authority: a Place + Route run's contract is
         that placement invalidates prior copper, so live copper the result
         does not carry is removed and copper it adds is created. A live
         track, arc or via the result carries UNCHANGED -- same geometry,

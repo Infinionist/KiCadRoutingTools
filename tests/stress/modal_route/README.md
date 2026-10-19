@@ -5,9 +5,8 @@ Upload a KiCad board; an LLM agent on Modal plans it (the repo's own
 `check_drc` + `check_connected`, and you download the routed board plus a
 deterministic replay manifest.
 
-No Anthropic account involved: the agent is `opencode` (the stress harness's
-#503 backend) talking to a **self-hosted open model on Modal** via vLLM's
-OpenAI-compatible endpoint.
+No Anthropic account involved: the agent is `opencode` (#503) talking to a
+**self-hosted open model on Modal** via vLLM's OpenAI-compatible endpoint.
 
 ## One-time setup
 

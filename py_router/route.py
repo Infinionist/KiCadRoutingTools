@@ -4,7 +4,7 @@ Batch PCB Router using Rust-accelerated A* - Routes single-ended nets sequential
 For differential pair routing, use route_diff.py instead.
 
 Usage:
-    python py_router/route.py input.kicad_pcb output.kicad_pcb --nets "Net-(U2A-*)"
+    python3 py_router/route.py input.kicad_pcb output.kicad_pcb --nets "Net-(U2A-*)"
 
 Requires the Rust router module. Build it with:
     python3 build_router.py
@@ -1455,7 +1455,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         bga_proximity_radius: Radius around BGA edges to penalize in mm (default: 7.0)
         bga_proximity_cost: Cost penalty near BGA edges in mm equivalent (default: 0.2)
         debug_lines: Output debug geometry on User.3 (connectors), User.4
-                     (stub dirs), User.8 (simplified), User.9 (raw A*)
+                     (stub dirs), User.5 (exclusion zones), User.6 (position
+                     labels), User.8 (simplified), User.9 (raw A*)
         minimal_obstacle_cache: If True, only build obstacle cache for nets being routed
                                (faster when re-routing a small number of nets)
         cancel_check: Optional callable returning True if routing should be cancelled
@@ -2259,6 +2260,13 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         config.netclass_width_floors = dict(netclass_width_floors)
 
     # Identify power nets and set up per-net widths
+    if power_nets and not power_nets_widths:
+        # The widths are what --power-nets is for; without them nothing below
+        # reads the list, and a chain step that forgot them routed its power
+        # nets at the signal width with no word said.
+        print(f"WARNING: --power-nets given without --power-nets-widths: the "
+              f"{len(power_nets)} power net pattern(s) get no width of their own "
+              f"(pass one width per pattern).")
     if power_nets and power_nets_widths:
         if len(power_nets) != len(power_nets_widths):
             raise ValueError(f"--power-nets ({len(power_nets)}) and --power-nets-widths ({len(power_nets_widths)}) must have same length")
@@ -5820,7 +5828,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             #
             # clamp_nondefault_netclasses is deliberately FALSE: whether the
             # non-Default classes get clamped is the writeback's call (#439 --
-            # it depends on the caller having passed a --clearance ceiling,
+            # it depends on the caller having passed --clearance-ceiling,
             # which is a main() fact, not an engine one). Lowering them here
             # could ship a tightened class on a run that meant to honor them.
             #
@@ -8165,11 +8173,11 @@ Wildcard patterns supported:
   "Net-(*CLK*)"       - matches any net containing CLK
 
 Examples:
-  python py_router/route.py fanout_starting_point.kicad_pcb routed.kicad_pcb "Net-(U2A-DATA_*)"
-  python py_router/route.py input.kicad_pcb output.kicad_pcb "Net-(U2A-DATA_*)" --ordering mps
+  python3 py_router/route.py fanout_starting_point.kicad_pcb routed.kicad_pcb "Net-(U2A-DATA_*)"
+  python3 py_router/route.py input.kicad_pcb output.kicad_pcb "Net-(U2A-DATA_*)" --ordering mps
 
 For differential pair routing, use route_diff.py:
-  python py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*lvds*"
+  python3 py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*lvds*"
 """
     )
     parser.add_argument("input_file", help="Input KiCad PCB file")
@@ -8365,9 +8373,13 @@ For differential pair routing, use route_diff.py:
     parser.add_argument("--bus-detection-radius", type=float, default=defaults.BUS_DETECTION_RADIUS,
                         help=f"Max endpoint distance to form bus in mm (default: {defaults.BUS_DETECTION_RADIUS})")
     parser.add_argument("--bus-attraction-radius", type=float, default=defaults.BUS_ATTRACTION_RADIUS,
-                        help=f"Attraction radius from neighbor track in mm (default: {defaults.BUS_ATTRACTION_RADIUS})")
+                        help=f"Reach of the bus attraction around the group's planned corridor (else an "
+                             f"already-routed neighbour's track) in mm; the pull falls off quadratically "
+                             f"to 0 here (default: {defaults.BUS_ATTRACTION_RADIUS})")
     parser.add_argument("--bus-attraction-bonus", type=int, default=defaults.BUS_ATTRACTION_BONUS,
-                        help=f"Cost bonus for staying near neighbor track (default: {defaults.BUS_ATTRACTION_BONUS})")
+                        help=f"Strength of the bus attraction: a step near the planned corridor (else the "
+                             f"routed neighbour) and moving along it costs up to bonus/50 percent less, capped "
+                             f"at 90%% -- 4500 and above is full strength (default: {defaults.BUS_ATTRACTION_BONUS})")
     parser.add_argument("--bus-min-nets", type=int, default=defaults.BUS_MIN_NETS,
                         help=f"Minimum nets to form a bus group (default: {defaults.BUS_MIN_NETS})")
     parser.add_argument("--guide-corridor", action="store_true",
@@ -8464,7 +8476,8 @@ For differential pair routing, use route_diff.py:
 
     # Length matching options
     parser.add_argument("--length-match-group", action="append", nargs="+", dest="length_match_groups",
-                        help="Net patterns to length-match as a group (can be repeated). Use 'auto' for DDR4 auto-grouping")
+                        help="Net patterns to length-match as a group (can be repeated). Use 'auto' for DRAM auto-grouping "
+                             "(DDR2-5, LPDDR4/5: byte lanes plus one command/address group)")
     parser.add_argument("--length-match-tolerance", type=float, default=defaults.LENGTH_MATCH_TOLERANCE,
                         help="Acceptable length variance within group in mm (default: 0.1)")
     parser.add_argument("--meander-amplitude", type=float, default=defaults.MEANDER_AMPLITUDE,
@@ -8555,7 +8568,8 @@ For differential pair routing, use route_diff.py:
 
     # Layer preference options
     parser.add_argument("--layer-costs", nargs="+", type=float, default=[],
-                        help="Per-layer cost multipliers (1.0-1000, default: F.Cu=1.0, others=3.0), "
+                        help="Per-layer cost multipliers (1.0-1000; default: 1.0 on every layer when "
+                             "routing 4+ layers, else F.Cu=1.0 and the others 3.0), "
                              "or any negative value (e.g. -1) = FORBIDDEN: the layer stays an obstacle "
                              "(its copper blocks vias) and through-vias may span it, but NO track copper "
                              "is placed on it. One value per --layers entry, in that order (another count is "
@@ -8564,7 +8578,8 @@ For differential pair routing, use route_diff.py:
 
     # Debug options
     parser.add_argument("--debug-lines", action="store_true",
-                        help="Output debug geometry on User.3 (connectors), User.4 (stub dirs), User.8 (simplified), User.9 (raw A*)")
+                        help="Output debug geometry on User.3 (connectors), User.4 (stub dirs), User.5 (exclusion zones), "
+                             "User.6 (position labels), User.8 (simplified), User.9 (raw A*)")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Print detailed diagnostic output (setback checks, etc.)")
     parser.add_argument("--skip-routing", action="store_true",
@@ -8607,12 +8622,12 @@ For differential pair routing, use route_diff.py:
     # negative rail (-12V, -5V) is read as an unknown option and argparse exits
     # 2 before this line's result is ever used.
     args = __import__("cli_nets").pin_dash_digit_values(parser).parse_args()
-    # #439: the PRESENCE of --clearance is the clamp switch. Given -> it is the
-    # ceiling: non-Default classes are capped at min(class, --clearance) and the
-    # output .kicad_pro clamps them to the routed floor. Omitted -> honor the
-    # classes: the base clearance defaults to the board's OWN Default net-class
-    # clearance, each non-Default net routes at its full class value (uncapped), and
-    # the writeback preserves the classes. --hole-to-hole-clearance and
+    # #530: --clearance-ceiling is the clamp switch (#439 used the PRESENCE of
+    # --clearance). Given -> non-Default classes are capped at min(class, ceiling)
+    # and the output .kicad_pro clamps them to the routed floor. Omitted -> honor
+    # the classes: the base clearance is --clearance, else the board's OWN Default
+    # net-class clearance, each non-Default net routes at its full class value
+    # (uncapped), and the writeback preserves the classes. --hole-to-hole-clearance and
     # --board-edge-clearance work the same way (omitted -> the board's own
     # constraint minimum). Resolved here, before enforce_fab_floors and every
     # downstream use. Stashed on args for drc_fix_kwargs (the writeback clamp).
@@ -8640,14 +8655,13 @@ For differential pair routing, use route_diff.py:
             print(f"--{_pname.replace('_', '-')} not given; using "
                   f"{'the board Default net-class' if _v is not None else 'the fallback'} "
                   f"{getattr(args, _pname)}mm.")
-    # --clearance, when given, is a pure CEILING on EVERY class -- Default included,
-    # nothing special. Each net routes at min(its class, ceiling): the base clearance
-    # (Default-class nets) is min(Default class, ceiling), and non-Default classes are
-    # capped at the ceiling in the map below. Omitted -> no ceiling: every net routes
-    # at its own class (base = the board's Default class).
     # #530 (decision 2): --clearance is the DEFAULT CLASS clearance for this run
     # (KiCad semantics: other classes are honoured pairwise). The old cap-every-
-    # class behaviour (#439) is the explicit --clearance-ceiling.
+    # class behaviour (#439) is the explicit --clearance-ceiling: each net routes
+    # at min(its class, ceiling) -- the base clearance (Default-class nets) is
+    # min(Default class, ceiling), and non-Default classes are capped in the map
+    # below. Ceiling omitted -> every net routes at its own class (base = the
+    # --clearance given, else the board's Default class).
     if env_knobs.CLEARANCE_LEGACY_CEILING and args.clearance is not None \
             and getattr(args, 'clearance_ceiling', None) is None:
         args.clearance_ceiling = args.clearance   # replay knob: pre-#530 reading
@@ -9027,13 +9041,13 @@ For differential pair routing, use route_diff.py:
     # this board's nets so the obstacle-map builders price each pre-placed obstacle at its own
     # net-class clearance (KiCad's max(classA, classB)). None/absent -> empty map -> prior
     # behaviour. The GUI front builds the same map from live net classes (swig_gui).
-    # #439: ALWAYS build the non-Default netclass map. When --clearance was GIVEN
-    # (args._clamp_netclasses) it is the CEILING -- each class is capped at
-    # min(class, --clearance), because stock classes are often aspirational (the
-    # human-routed zynq itself violates its 0.2 class, routed ~0.1). When --clearance
-    # was OMITTED the classes are honored in full (each net routes at its own class),
-    # and the writeback preserves them. --net-clearances <json> overrides with
-    # explicit per-net values, used as-is.
+    # #439/#530: ALWAYS build the non-Default netclass map. When --clearance-ceiling
+    # was GIVEN (args._clamp_netclasses) each class is capped at min(class, ceiling),
+    # because stock classes are often aspirational (the human-routed zynq itself
+    # violates its 0.2 class, routed ~0.1). Without it the classes are honored in
+    # full (each net routes at its own class; --clearance moves only the Default
+    # class), and the writeback preserves them. --net-clearances <json> overrides
+    # with explicit per-net values, used as-is.
     _net_clearances_map = None
     if args.net_clearances:
         # The Route tab reads its Net Clearances File the same way.
@@ -9053,7 +9067,7 @@ For differential pair routing, use route_diff.py:
             _classes = sorted({round(v, 4) for v in _net_clearances_map.values()})
             _mode = (f"capped at --clearance-ceiling {args._clearance_ceiling}"
                      if args._clamp_netclasses
-                     else "honored in full (--clearance omitted)")
+                     else "honored in full (no --clearance-ceiling)")
             print(f"Netclass clearances for {len(_net_clearances_map)} net(s), {_mode} "
                   f"(mm: {_classes}); cross-class max(A,B) respected.")
 

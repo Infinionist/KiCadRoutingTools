@@ -19,7 +19,7 @@ first, since copper this pass draws can also break a cap that arrived clean.
 They are in the unresolved list too; this line names the cause, which is us.
 
 Usage:
-  python place_fanout_clearance.py fanned.kicad_pcb [output.kicad_pcb] [options]
+  python3 py_placer/place_fanout_clearance.py fanned.kicad_pcb [output.kicad_pcb] [options]
 
 Run it ONCE after ALL fanouts, not after each: the pass is board-global (it
 reads every via and every BGA footprint), so one late run sees every constraint
@@ -57,10 +57,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python place_fanout_clearance.py fanned.kicad_pcb
-  python place_fanout_clearance.py fanned.kicad_pcb cleared.kicad_pcb \\
+  python3 py_placer/place_fanout_clearance.py fanned.kicad_pcb
+  python3 py_placer/place_fanout_clearance.py fanned.kicad_pcb cleared.kicad_pcb \\
       --clearance 0.1 --max-displacement 2
-  python place_fanout_clearance.py fanned.kicad_pcb cleared.kicad_pcb \\
+  python3 py_placer/place_fanout_clearance.py fanned.kicad_pcb cleared.kicad_pcb \\
       --clearance 0.1 --intent floorplan.json
 """
     )
@@ -76,7 +76,10 @@ Examples:
                              "class from the sibling .kicad_pro, else "
                              f"{defaults.CLEARANCE}) and the net CLASSES are "
                              "preserved. The PRESENCE of the flag is the clamp "
-                             "switch, exactly as in route.py. Note OMITTED "
+                             "switch: this CLI's own ceiling contract "
+                             "(#768/#769), the one route.py spells "
+                             "--clearance-ceiling (route.py's --clearance sets "
+                             "the Default class, #530). Note OMITTED "
                              "preserves the clearance family specifically, not "
                              "the whole project: the size minima, the "
                              "severities and the fab-floor provenance are "

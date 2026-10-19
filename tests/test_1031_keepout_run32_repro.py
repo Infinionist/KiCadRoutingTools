@@ -3,8 +3,9 @@
 
 Needs `wk/run32/placed_v2.kicad_pcb` (+ .kicad_pro) from
 edgehero/KiCadRoutingTools@run32-assets `repro/run32/`. `wk/` is gitignored,
-so this SELF-SKIPS (exit 77) on a clean clone; the synthetic-board test
-`tests/test_1031_keepout_legality.py` always runs.
+so this SELF-SKIPS (exit 77) on a clean clone. Its synthetic-board sibling,
+`tests/test_1031_keepout_legality.py`, which always ran, was deleted with the
+old placement flows (ecd673eb).
 
 What it pins, all measured on that board at --clearance 0.2 (track 0.2 from
 the board netclass, band 0.3 mm):

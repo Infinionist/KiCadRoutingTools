@@ -8,10 +8,11 @@ until the code changes, which is the trap
 reason the stale formula below survived for as long as the term did.
 
 1. **No prose gates on `check_assembly`'s `blocking == 0`.** `check_assembly`
-   decides NOT BUILDABLE on FIVE conjuncts and publishes `buildable` so nobody
-   has to re-derive them; `blocking` is the first conjunct alone and means
-   "pad intersections". A gate written against it passes a board that is
-   unbuildable through the other four.
+   decides NOT BUILDABLE on several conjuncts (five when this was written,
+   eleven since) and publishes `buildable` so nobody has to re-derive them;
+   `blocking` is the first conjunct alone and means "pad intersections". A
+   gate written against it passes a board that is unbuildable through any of
+   the others.
 
    This IS #918's acceptance, which asks for `grep -rn "blocking == 0"` over
    every enrolled skill dir to return "nothing **that is a gate**" -- the last

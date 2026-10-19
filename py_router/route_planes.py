@@ -11,7 +11,7 @@ cannot reach. Run route.py over all nets (plane nets included) after this
 and grade THAT board, not the bare pour.
 
 Usage:
-    python py_router/route_planes.py input.kicad_pcb output.kicad_pcb --nets GND --plane-layers B.Cu
+    python3 py_router/route_planes.py input.kicad_pcb output.kicad_pcb --nets GND --plane-layers B.Cu
 """
 from __future__ import annotations
 
@@ -3271,9 +3271,8 @@ def create_plane(
     # were spent on boards nobody could open.
     #
     # Engine-side, not in main(): main() never parses the board so it cannot
-    # validate, and this way the CLI, the GUI planes tab and
-    # route_disconnected_planes all inherit the guard (same reasoning as the
-    # copper-to-edge rule below).
+    # validate, and this way the CLI and the GUI planes tab both inherit the
+    # guard (same reasoning as the copper-to-edge rule below).
     _copper = list(getattr(pcb_data.board_info, 'copper_layers', None) or ())
     if _copper:
         _bad = [l for l in plane_layers if l not in _copper]
@@ -3529,8 +3528,8 @@ def create_plane(
         except Exception as _e:
             print(f"  Warning: could not auto-read netclass clearances ({_e}).")
             net_clearances = None
-        # #439: --clearance was the CEILING -> cap every class at min(class,
-        # ceiling). When not clamping (--clearance omitted), honor the classes
+        # #439/#530: --clearance-ceiling GIVEN -> cap every class at min(class,
+        # ceiling). When not clamping (no ceiling), honor the classes
         # in full. Only the auto-read map is capped: a map the caller passes
         # (the --net-clearances file, or the GUI's own class map, already
         # capped there) is used as given, as batch_route does.
@@ -4256,10 +4255,10 @@ def main():
         epilog="""
 Examples:
     # Single net:
-    python py_router/route_planes.py input.kicad_pcb output.kicad_pcb --nets GND --plane-layers B.Cu
+    python3 py_router/route_planes.py input.kicad_pcb output.kicad_pcb --nets GND --plane-layers B.Cu
 
     # Multiple nets (each net paired with corresponding plane layer):
-    python py_router/route_planes.py input.kicad_pcb output.kicad_pcb --nets GND +3.3V --plane-layers In1.Cu In2.Cu
+    python3 py_router/route_planes.py input.kicad_pcb output.kicad_pcb --nets GND +3.3V --plane-layers In1.Cu In2.Cu
 
 """
     )
@@ -4268,7 +4267,7 @@ Examples:
     parser.add_argument("--ripup-blocker-select",
                         choices=list(defaults.RIPUP_BLOCKER_SELECT_CHOICES),
                         default=defaults.RIPUP_BLOCKER_SELECT,
-                        help="""Blocker SELECTION algorithm for the rip-up ladder (see route.py --help / docs/rip-up-reroute.md)""")
+                        help="""Accepted for compatibility with route.py; no effect on the pour (#562: the pour rips nothing). See route.py --help / docs/rip-up-reroute.md""")
     # #381 D9: accept --output FILE like route.py / route_diff.py (flag form of the
     # positional output). Additive: default None, positional still works.
     parser.add_argument("--output", metavar="FILE",
@@ -4286,9 +4285,9 @@ Examples:
                              "is refused against the board's own copper layers.")
 
     # Via and track geometry
-    parser.add_argument("--via-size", type=float, default=None, help="Via outer diameter in mm (default: the board Default net-class via, else 0.5). NOT a hard floor: a tap into a fine-pitch pad field can escalate to the --fab-tier via and print a per-via warning, because a 0.5mm via does not fit a 0.5mm-pitch TQFP. Pass --fab-overrides to forbid the escalation -- at the cost of the taps that then cannot be made")
+    parser.add_argument("--via-size", type=float, default=None, help="Via outer diameter in mm (default: the board Default net-class via, else 0.5) for the vias this step places: thermal arrays, --stitch-vias, the edge fence and --add-gnd-vias. The pour places no pad taps (#562); the route step's finalize does, at its own --via-size")
     parser.add_argument("--via-drill", type=float, default=None, help="Via drill size in mm (default: the board Default net-class via drill, else 0.3)")
-    parser.add_argument("--track-width", type=float, default=None, help="Track width for via-to-pad connections in mm (default: the board Default net-class width, else 0.3)")
+    parser.add_argument("--track-width", type=float, default=None, help="Track width in mm (default: the board Default net-class width, else 0.3). The pour draws no via-to-pad traces (#562); the width sizes the spines a shared plane layer is split around, any soft-joint bridge, and the output project's min_track_width floor")
     parser.add_argument("--clearance", type=float, default=None, help="Copper clearance of the DEFAULT net class for this run, in mm; other classes are honoured at their own clearance (pairwise max). When OMITTED, the board's Default class, else 0.25. --clearance-ceiling caps every class (the old #439 behaviour) and the writeback clamps.")
     parser.add_argument("--net-clearances", metavar="JSON", default=None,
                         help="JSON file mapping net NAME -> clearance mm (the file route.py and "
@@ -4323,13 +4322,14 @@ Examples:
     # #381 D9: accept the plural --no-bga-zones spelling too (route.py uses the
     # plural). Same store_true dest -- additive, old spelling kept.
     parser.add_argument("--no-bga-zone", "--no-bga-zones", action="store_true",
-                        help="Disable BGA auto-exclusion zones when re-routing ripped nets "
-                             "(issue #88.2). Use when the original signal routing used "
-                             "--no-bga-zones, so the reroute uses compatible parameters.")
+                        help="Accepted for compatibility; no effect on the pour (#562: it "
+                             "re-routes no ripped nets, so there is no reroute for the "
+                             "BGA exclusion zones to apply to).")
     parser.add_argument("--power-nets", nargs="+", default=None,
-                        help="Glob patterns for power nets to route with wider tracks (e.g., '*GND*' '*VCC*')")
+                        help="Accepted for compatibility with route.py; no effect on the pour (#562: "
+                             "it routes no tracks). Pass it to the route step instead")
     parser.add_argument("--power-nets-widths", nargs="+", type=float, default=None,
-                        help="Track widths in mm for each power-net pattern (must match --power-nets length)")
+                        help="Accepted with --power-nets for compatibility; no effect on the pour (#562)")
 
     # Shared plane layer (the spine split) options
     parser.add_argument("--voronoi-seed-interval", type=float,
@@ -4412,10 +4412,11 @@ Examples:
                            enforce_fab_floors, count_copper_layers_in_file)
     add_fab_tier_args(parser)
     args = __import__("cli_nets").pin_dash_digit_values(parser).parse_args()
-    # #439: identical net-class/clearance model to route.py. --clearance is the
-    # clamp switch: GIVEN -> ceiling, every class capped at min(class, ceiling),
-    # writeback clamps (_clamp_netclasses True). OMITTED -> each net routes at its
-    # own class (base = board Default class), classes preserved. Geometry flags
+    # #530: identical net-class/clearance model to route.py. --clearance sets the
+    # Default class for the run; other classes route at their own. --clearance-
+    # ceiling GIVEN -> every class capped at min(class, ceiling), writeback clamps
+    # (_clamp_netclasses True). OMITTED -> each net routes at its own class (base =
+    # --clearance, else the board Default class), classes preserved. Geometry flags
     # omitted -> default from the board (track/clearance/via from Default net-class,
     # hole/edge from board constraints, else a routing_defaults constant). Planes
     # keep their larger PLANE_EDGE_CLEARANCE fallback when the board declares none.

@@ -1711,13 +1711,19 @@ def expand_pad_layers(pad_layers: List[str], routing_layers: List[str]) -> List[
 
 def get_all_unrouted_net_ids(pcb_data: PCBData) -> List[int]:
     """
-    Find all net IDs in the PCB that need routing.
+    Net IDs the stub-proximity costs treat as still needing routing.
 
-    A net is unrouted if it has 2+ pads and they're not all connected.
-    This includes:
-    1. Nets with multiple disconnected segment groups (partial routing)
-    2. Nets with 2+ pads but no segments (completely unrouted)
-    3. Nets with 2+ pads but only 1 segment group (stub connects to 1 pad only)
+    What it returns today is EVERY net with 2+ pads (net 0 excluded):
+    1. Nets with 2+ pads but no segments (completely unrouted)
+    2. Nets whose segments form 2+ disconnected groups (via-aware; partial
+       routing)
+    3. Nets whose segments form ONE group -- whatever pads that group reaches.
+       The test is `len(pads) > 1`, which the 2+ pad filter has already made
+       true, and no pad coverage is checked, so a fully routed net lands here
+       too. (Meant: a stub reaching some pads but not all.)
+
+    Callers: route.py / route_diff.py, for the stub-proximity cost set only
+    (route.py skips it under minimal_obstacle_cache).
     """
     unrouted_ids = set()
 
@@ -1754,7 +1760,9 @@ def get_all_unrouted_net_ids(pcb_data: PCBData) -> List[int]:
                 # Multiple disconnected stub groups = unrouted
                 unrouted_ids.add(net_id)
             elif len(groups) == 1 and len(pads) > 1:
-                # Only 1 segment group but multiple pads - stub connects to some but not all
+                # Only 1 segment group but multiple pads. Meant "stub connects to
+                # some but not all", but no pad coverage is checked and
+                # len(pads) > 1 always holds here, so every such net is added.
                 unrouted_ids.add(net_id)
 
     return list(unrouted_ids)

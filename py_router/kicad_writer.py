@@ -481,10 +481,11 @@ def via_net_name(net_id: int, net_id_to_name: dict) -> Optional[str]:
     """This board's name for a net id, or None to mean "use the numeric dialect".
 
     THE one resolver for every via emit site (#749 D). `net_id_to_name` has no
-    key `0` on any board -- `extract_nets` records `name_to_id[""] = 0` but never
-    builds a Net for id 0 -- so a legitimate no-net via missed the lookup at
-    every site and fell back to numeric. Measured: orangecrab_ext_pll resolves
-    169 nets and has no key 0.
+    key `0` on a NAME-net board -- `extract_nets` records `name_to_id[""] = 0`
+    there but never builds a Net for id 0 (a numeric board's table declares
+    `(net 0 "")`, so its map carries `{0: ''}`) -- so a legitimate no-net via
+    missed the lookup at every site and fell back to numeric. Measured:
+    orangecrab_ext_pll resolves 169 nets and has no key 0.
 
     That mattered more than a cosmetic dialect slip. `generate_via_sexpr` picks
     the net dialect from `net_name` and the protection tokens from
@@ -508,11 +509,13 @@ def via_net_name(net_id: int, net_id_to_name: dict) -> Optional[str]:
 def prevailing_via_protection(vias) -> Optional[dict]:
     """The protection spec most of a board's existing vias carry, or None.
 
-    Used as the default for vias this tool ADDS, so a new via follows the
-    board's own convention instead of a hardcoded front+back tenting (#489 §8).
-    hackrf_one is the motivating case: all 498 of its vias explicitly declare
-    covering/plugging/capping/filling = no, and the tool would have stamped
-    tenting yes on every via it added to that board.
+    It WAS the default for vias this tool adds (#489 §8, replacing a hardcoded
+    front+back tenting; hackrf_one, whose 498 vias all declare
+    covering/plugging/capping/filling = no, was the motivating case). That
+    default is retired: an added via now emits no token and inherits the
+    board's `(setup ...)` -- over 886 corpus boards a prevailing spec never
+    disagreed with the setup (see via_protection_sexpr). The answer is still
+    correct; nothing in the tree uses it as a default.
 
     Deterministic: ties break on the canonical spec text, not dict order.
     """
@@ -535,7 +538,7 @@ def prevailing_via_protection(vias) -> Optional[dict]:
 
 def prevailing_via_protection_in_text(content: str) -> Optional[dict]:
     """`prevailing_via_protection` for a writer that holds the board TEXT rather
-    than parsed Via objects (the plane / repair writers work on file text)."""
+    than parsed Via objects. Like it, no longer anyone's default."""
     from kicad_parser import _extract_via_protection_attrs
 
     class _V:
@@ -563,7 +566,8 @@ def generate_via_sexpr(x: float, y: float, size: float, drill: float,
         tenting_attrs: The via's own protection spec as parsed from the board
             (Via.tenting_attrs). Pass it for any via that already existed so a
             ripped-and-re-placed via keeps its real tenting/plugging/filling
-            instead of being re-stamped with front+back tenting (#489 §8).
+            (#489 §8). None or {} emits no token: the via inherits the
+            board's `(setup ...)`.
         inherit_when_unspecified: Pass True alongside it for a RE-PLACED via.
             An empty spec then emits nothing, so a via that was inheriting the
             board's `(setup (tenting ...))` keeps inheriting it rather than
@@ -1210,15 +1214,16 @@ def add_tracks_and_vias_to_pcb(input_path: str, output_path: str,
             # through here and comes back re-stamped. Which behaviour is right
             # depends on the caller, so the via dict carries the answer:
             #
-            #   fanout / route_planes  -> new copper, no keys: prevailing spec
+            #   fanout / route_planes  -> new copper, no keys: no token, the
+            #                              via inherits the board's setup
             #   route.py's #666 re-emit -> PRE-EXISTING copper the written file
             #                              lost, so its own spec, and inherit
             #                              when it had none
             #
-            # `inherit_when_unspecified` is the second half and not redundant:
-            # {} is what Via.tenting_attrs holds for a via that inherits the
-            # board's `(setup ...)`, so without it such a via would silently
-            # GAIN the prevailing spec on the way back in.
+            # `inherit_when_unspecified` no longer changes the output (#741: an
+            # empty spec emits nothing either way); it records that the via
+            # ALREADY EXISTED. {} is what Via.tenting_attrs holds for a via that
+            # inherits the board's `(setup ...)`.
             # A via this call ADDS carries no spec and so emits no token: it
             # INHERITS the board's `(setup ...)` policy, which is what pcbnew
             # does for a via the GUI adds and what KiCad does for one the user
@@ -1240,7 +1245,7 @@ def add_tracks_and_vias_to_pcb(input_path: str, output_path: str,
                 via.get('free', False),
                 # #749 D: the ONE resolver, so a no-net via does not fall to the
                 # numeric dialect on a name-net board (net 0 is missing from
-                # every map).
+                # that board's map).
                 net_name=via_net_name(via['net_id'], net_id_to_name),
                 tenting_attrs=attrs,
                 inherit_when_unspecified=existing,
@@ -1953,9 +1958,10 @@ def add_teardrops_to_vias(content: str,
     KiCad accepts the same 9-field `(teardrops ...)` block on a via as on a pad
     (verified by round-tripping SetTeardropsEnabled through pcbnew). The block is
     inserted AFTER `(uuid ...)`, as the via's last child: KiCad's parser does not
-    care about child order, while this repo's own via regexes require
-    layers -> (free)? -> net -> uuid to be contiguous, so inserting earlier would
-    make the boards we write unparseable BY US.
+    care about child order, and since #748 neither does ours past the geometry
+    prefix (`extract_vias` reads net, uuid, free and the protection family by
+    token, in any order), but that prefix up to `(layers ...)` is still
+    positional, so the block goes last rather than anywhere near it.
 
     Returns (modified_content, count_of_vias_given_teardrops).
     """

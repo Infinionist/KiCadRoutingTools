@@ -42,7 +42,8 @@ LOCAL = CORPUS / "pernet_ab"            # results live beside the corpus, not in
 APP = os.environ.get("PERNET_AB_APP", "pernet-via-ab")
 app = modal.App(APP)
 vol = modal.Volume.from_name("kicad-pernet-ab", create_if_missing=True)
-SIBLINGS = (".kicad_pro", ".kicad_prl", ".kicad_dru")
+# copy_board.SIBLING_EXTS: the brief carries keep_away rules route.py reads (#1253)
+SIBLINGS = (".kicad_pro", ".kicad_prl", ".kicad_dru", ".design-brief.json")
 
 # The image (a clean `git archive HEAD` + KiCad) is only needed to DEPLOY and
 # inside the container -- not for select/collect, whose worker processes

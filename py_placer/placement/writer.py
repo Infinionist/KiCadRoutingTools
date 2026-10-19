@@ -1022,11 +1022,11 @@ def write_placed_output(input_file: str, output_file: str,
     # STRING up, so one placement rewrote EVERY block carrying it: measured, a
     # single placement for esp_prog's `Ref*` moved both fiducials and left them
     # stacked 23.44 mm from where the second one belonged, and `perturb.
-    # _all_at_current` -- the identity write that builds the stress harness's
-    # ground-truth CONTROL board -- relocated 3 blocks on 2 corpus boards, up
-    # to 23.44 mm. (12 blocks across 5 boards, to 70.66 mm, is the ceiling for
-    # a caller that places every PARSED footprint; `state.parts` excludes the
-    # zero-pad blocks that make up the difference.)
+    # _all_at_current` (since retired) -- the identity write that built the
+    # stress harness's ground-truth CONTROL board -- relocated 3 blocks on 2
+    # corpus boards, up to 23.44 mm. (12 blocks across 5 boards, to 70.66 mm,
+    # is the ceiling for a caller that places every PARSED footprint;
+    # `state.parts` excludes the zero-pad blocks that make up the difference.)
     #
     # Resolving here means the writer and the parser can no longer disagree
     # about what a name means -- which is the property that matters, not merely
@@ -1097,14 +1097,14 @@ def write_placed_output(input_file: str, output_file: str,
         # pad coordinates that exist nowhere on the board.
         #
         # ON AN ACTUAL POSE CHANGE ONLY, and that qualifier is not a nicety.
-        # `perturb._all_at_current` deliberately hands this writer EVERY part,
-        # at its current pose, so the moved set cannot be read off the
-        # six-decimal `(at)` formatting -- and its dose-0 CONTROL board is
-        # exactly that call with no moves at all. Gating on presence in
-        # `placements` therefore refused to write the control board of every
-        # perturbation run on a board with an outline owner, with a message
-        # blaming a mover that had not moved anything. Measured before this
-        # qualifier existed.
+        # An identity write hands this writer EVERY part at its current
+        # pose, so the moved set cannot be read off the six-decimal `(at)`
+        # formatting -- `perturb._all_at_current` (since retired) did, and
+        # its dose-0 CONTROL board was exactly that call with no moves at all.
+        # Gating on presence in `placements` therefore refused to write the
+        # control board of every perturbation run on a board with an outline
+        # owner, with a message blaming a mover that had not moved anything.
+        # Measured before this qualifier existed.
         if (_OWNS_OUTLINE_RE.search(fp_text)
                 and (abs(new_x - float(at_match.group(1))) > _POSE_EPS
                      or abs(new_y - float(at_match.group(2))) > _POSE_EPS
@@ -1113,10 +1113,9 @@ def write_placed_output(input_file: str, output_file: str,
                      # and on an outline owner it MIRRORS the owned Edge.Cuts
                      # geometry -- the board resize this guard exists to
                      # refuse. Without this term the flip walks straight past
-                     # it. `perturb._all_at_current` never sets `new_side`, so
-                     # the dose-0 control board is unaffected, which is the
-                     # reason the rest of this predicate is written the way it
-                     # is.
+                     # it. An identity write never sets `new_side`, so it is
+                     # unaffected, which is the reason the rest of this
+                     # predicate is written the way it is.
                      or side_change)
                 # `key`, not the raw reference: #726 keys a duplicated
                 # reference's second block `TP4~2`, and the owner map is keyed

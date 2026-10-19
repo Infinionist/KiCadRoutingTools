@@ -790,9 +790,9 @@ class RoutingDialog(wx.Dialog):
             event.Skip()
 
     def _fab_floored(self, ctrl_name, val):
-        """Pin ``val`` UP to the fab floor for ``ctrl_name`` (the fab can't make
-        sub-floor geometry) -- parity with the CLI's enforce_fab_floors, and it
-        respects the same --fab-tier / fab-overrides file. Idempotent for a control
+        """Pin ``val`` UP to the physical fab floor for ``ctrl_name`` (the fab
+        can't make sub-floor geometry) -- parity with the CLI's enforce_fab_floors:
+        the advanced rung, or the fab-overrides file. Idempotent for a control
         value that was already fab-floored interactively."""
         floor = self._fab_floor_for_ctrl(ctrl_name)
         if floor is not None and val is not None and val < floor:
@@ -1253,8 +1253,9 @@ class RoutingDialog(wx.Dialog):
         self._revalidate_fab_floors()
 
     def _fab_floor_for_ctrl(self, ctrl_name):
-        """Fab floor (mm) for a Basic-tab spin control under the active fab tier +
-        override file, or None if the control has no fab floor / no board loaded."""
+        """Physical fab floor (mm) for a Basic-tab spin control (fab_floor_for_param:
+        the advanced rung, or the override file -- the selected tier does not move
+        it), or None if the control has no fab floor / no board loaded."""
         try:
             from fab_tiers import fab_floor_for_param, parse_fab_overrides
             ncu = len(self.pcb_data.board_info.copper_layers) or 2
@@ -1344,7 +1345,7 @@ class RoutingDialog(wx.Dialog):
         # Add teardrops
         self.add_teardrops_check = wx.CheckBox(options_scroll, label="Add teardrops")
         self.add_teardrops_check.SetValue(False)
-        self.add_teardrops_check.SetToolTip("Add teardrop settings to all pads in output file")
+        self.add_teardrops_check.SetToolTip("Add teardrop settings to every pad and via (this run's new vias included)")
         options_inner.Add(self.add_teardrops_check, 0, wx.ALL, 3)
 
         self.fix_drc_check = wx.CheckBox(options_scroll, label="Fix DRC settings after routing")
@@ -1678,7 +1679,7 @@ class RoutingDialog(wx.Dialog):
         self.bus_attraction_radius = wx.SpinCtrlDouble(options_scroll, min=r['min'], max=r['max'],
                                                         initial=defaults.BUS_ATTRACTION_RADIUS, inc=r['inc'])
         self.bus_attraction_radius.SetDigits(r['digits'])
-        self.bus_attraction_radius.SetToolTip("Attraction radius from neighbor track (mm)")
+        self.bus_attraction_radius.SetToolTip("Reach of the bus attraction around the group's planned corridor (else an already-routed neighbour's track), mm; the pull falls off to 0 here")
         bus_attract_sizer.Add(self.bus_attraction_radius, 1, wx.EXPAND)
         options_inner.Add(bus_attract_sizer, 0, wx.EXPAND | wx.ALL, 3)
 
@@ -1687,7 +1688,7 @@ class RoutingDialog(wx.Dialog):
         r = defaults.PARAM_RANGES['bus_attraction_bonus']
         self.bus_attraction_bonus = wx.SpinCtrl(options_scroll, min=r['min'], max=r['max'],
                                                  initial=defaults.BUS_ATTRACTION_BONUS)
-        self.bus_attraction_bonus.SetToolTip("Cost bonus for staying parallel to neighbor track")
+        self.bus_attraction_bonus.SetToolTip("Strength of the bus attraction: a step near the planned corridor (else the routed neighbour) and moving along it costs up to bonus/50 percent less, capped at 90% (4500 and above is full strength)")
         bus_bonus_sizer.Add(self.bus_attraction_bonus, 1, wx.EXPAND)
         options_inner.Add(bus_bonus_sizer, 0, wx.EXPAND | wx.ALL, 3)
 
@@ -3561,7 +3562,7 @@ class RoutingDialog(wx.Dialog):
                 except ImportError:
                     msg = "Rust router module not found.\n\n"
                     msg += "Build it by running:\n"
-                    msg += "  python build_router.py\n\n"
+                    msg += "  python3 build_router.py\n\n"
                     msg += "from the KiCadRoutingTools directory."
                     raise RuntimeError(msg)
 

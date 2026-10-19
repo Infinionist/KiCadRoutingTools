@@ -10,20 +10,22 @@ Prereqs (one-time):
 
 The board (plus its .kicad_pro/.kicad_prl/.kicad_dru siblings, if present) is
 shipped as bytes into a CPU container built from a clean checkout of HEAD --
-the same image discipline as the parameter sweep. Inside, a headless
-`opencode run` agent (the stress harness's #503 backend) pointed at the vLLM
-endpoint follows the repo's own skills: plan-pcb-routing to produce the
-plan, then executes the chain (fanout / diff pairs / planes / signal), and
-verifies with check_drc + check_connected, consulting
-diagnose-routing-failures on retries. Every board-mutating tool
-self-records to a redo manifest (REDO_MANIFEST), so the run comes back
-REPLAYABLE, exactly like a stress-corpus board.
+the same image discipline as the parameter sweep, KICAD_SWEEP_DIRTY=1
+included (it ships the working tree instead). Inside, a headless
+`opencode run` agent (#503) pointed at the vLLM endpoint follows the repo's
+own skills: plan-pcb-routing to produce the plan, then executes the chain
+(fanout / diff pairs / planes / signal), and verifies with check_drc +
+check_connected, consulting diagnose-routing-failures on retries. Every
+board-mutating tool self-records to a redo manifest (REDO_MANIFEST), so the
+run comes back REPLAYABLE, exactly like a stress-corpus board.
 
-Returned and written next to the input (or --out DIR):
-  <name>.routed.kicad_pcb / .kicad_pro    the routed board + its project
-  redo_commands.sh                        deterministic replay manifest
+Returned and written into <stem>_routed/ next to the input (or --out DIR):
+  routed.kicad_pcb (+ its .kicad_pro)     the routed board + its project, as
+                                          the agent copy_board'ed it
   SUMMARY.md                              the agent's plan + outcome report
+  redo_commands.sh                        deterministic replay manifest
   agent.log                               full agent transcript
+(plus anything else the agent left in its out/ dir).
 """
 from __future__ import annotations
 
@@ -57,8 +59,8 @@ image = (
     .pip_install("numpy>=1.21.0", "scipy>=1.7.0", "shapely>=1.8.0")
     .apt_install("curl", "procps", "git", "unzip")
     .env({"KICAD_SWEEP_GIT": GIT_SHA})
-    # opencode: the OpenAI-compatible-agent CLI the stress harness already
-    # supports as a backend (#503). Standalone installer, no node needed.
+    # opencode: an OpenAI-compatible agent CLI (#503); the stress harness's own
+    # workers run `claude -p`. Standalone installer, no node needed.
     .run_commands("curl -fsSL https://opencode.ai/install | bash",
                   "ln -sf /root/.opencode/bin/opencode /usr/local/bin/opencode")
     .add_local_dir(_src_dir, REPO, copy=True, ignore=[

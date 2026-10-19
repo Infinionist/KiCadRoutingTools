@@ -27,9 +27,9 @@ this cost by simulated annealing; `place_simple.py` is the CLI.
          + the halo, in front of fine-pitch parts' pads only: a part with
            HALO_MIN_PADS pads or more at a pitch of HALO_PITCH_MM or less (a
            QFN, a QFP, a BGA, a fine-pitch connector) keeps, on each side its
-           pads face (`pad_fronts`), a strip `base + coef x the nets that
-           leave by it` deep (ground, dropping a via to its plane, leaves
-           none), spanning those pads, for its tracks to fan out in; a
+           pads face (`pad_fronts`), a strip `coef x the nets that leave by
+           it` deep (ground, dropping a via to its plane, leaves none),
+           spanning those pads, for its tracks to fan out in; a
            part sharing a board side with it, where a strip reaches it,
            pays halo_weight x the shortfall squared on the axis that
            separates the two best. Everything else packs as

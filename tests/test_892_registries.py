@@ -121,16 +121,18 @@ class Capabilities(unittest.TestCase):
     def test_deliberately_not_a_flag_script(self):
         """FLAG_SCRIPTS is a CONTRACT, and this tool cannot meet it.
 
-        `tests/test_798_registrar_flags.py` reads that tuple as "every flag
-        the source registers is visible in --help as an option AND accepted by
-        the top-level parser". `place_pose`'s `--rot` / `--near` /
+        `tests/test_798_registrar_flags.py` (deleted in ecd673eb) read that
+        tuple as "every flag the source registers is visible in --help as an
+        option AND accepted by the top-level parser". `place_pose`'s `--rot` / `--near` /
         `--relative` belong to per-VERB parsers, so they are neither, and
         listing the tool there turned the gate red for telling the truth
         (measured: `place_pose.py claims flags argparse rejects: ['--near',
         '--relative', '--rot']`). The verbs are registered as SUBPARSERS
-        instead, which is how `tests/test_431_skill_commands.py` finds them --
-        it walks the subparsers action of `build_parser()`. `--help` itself
-        renders the epilog, because `main()` parses with the verb-less parser.
+        instead, so a checker that walks the subparsers action of
+        `build_parser()` finds them (the since-deleted
+        `tests/test_431_skill_commands.py` did; the next test does). `--help`
+        itself renders the epilog, because `main()` parses with the verb-less
+        parser.
         """
         import krt_capabilities as caps
         self.assertNotIn(TOOL, caps.FLAG_SCRIPTS)
@@ -154,8 +156,8 @@ class Capabilities(unittest.TestCase):
         found = options(mod.build_parser())
         for flag in ('--rot', '--near', '--relative'):
             self.assertIn(flag, found, "%s is documented in the skill and the "
-                                       "docs; test_431_skill_commands walks "
-                                       "the subparsers action to find it"
+                                       "docs; a checker walking the "
+                                       "subparsers action must find it"
                           % flag)
         # And a reader of --help finds them in the epilog, since main() parses
         # with the verb-less parser and argparse renders no subparser section.

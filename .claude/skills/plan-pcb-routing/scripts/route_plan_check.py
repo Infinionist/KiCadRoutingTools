@@ -77,7 +77,8 @@ DELEGATED = (
     ('fanout escaped every ball it was asked to (failed == 0)',
      "the fanout step's own JSON_SUMMARY.failed"),
     ('diff pairs did not silently peel to single-ended',
-     'JSON_SUMMARY.failed_diff_pairs / single_ended_diff_pairs'),
+     'JSON_SUMMARY.failed_diff_pairs / single_ended_diff_pairs / '
+     'partial_diff_pairs'),
     ('emitted width meets each width-specced net minimum',
      'board_score.py --net-min-widths'),
     ('pours kept their promises to carved-off balls',

@@ -392,9 +392,10 @@ def build_placement_instructions(workdir, mode, extra=""):
         f"result line).",
         f"At close-out write the final board to {wd}/final.kicad_pcb (with "
         f"sibling final.kicad_pro) and the report to {wd}/REPORT.md.",
-        "If a gate refuses (for example the board already carries routed "
-        'copper), stop and report status "refused" instead of stripping '
-        "copper.",
+        "If a gate refuses because the board already carries routed copper, "
+        'stop and report status "refused" instead of stripping copper. On a '
+        "pile, check_floorplan's unplaced gate is not a refusal of this run: "
+        "pass it --allow-unplaced, as the skill says.",
         # The GUI's progress line names the newest tool command and the
         # newest ledger row, so the milestone rows are what the user sees as
         # the run's progress between commands.
@@ -552,11 +553,13 @@ def scan_candidates(workdir, active=None):
     row: {round, seed, placed, fast, blocking, vias, copper_mm, segments,
     status, mtime}. `placed`/`fast` are the board paths or None; the metrics
     are None until the fast route is scored. status: "placing" (no finished
-    placement yet), "routing" (placed, no score yet), "routed" (scored, with
-    blocking nets), "clean" (scored, blocking 0), "best" (the best scored
-    row of its round). `active` = the (round, seed) pairs the run is placing
-    right now (`active_candidates`), shown as "placing" before their boards
-    exist.
+    placement yet), "routing" (placed, no score yet), "not judged" (placed,
+    and outside the JUDGED_PER_ROUND legal seeds of lowest `final.cost` the
+    skill fast-routes), "illegal" (its report lists illegal parts, so it is
+    never judged), "routed" (scored, with blocking nets), "clean" (scored,
+    blocking 0), "best" (the best scored row of its round). `active` = the
+    (round, seed) pairs the run is placing right now (`active_candidates`),
+    shown as "placing" before their boards exist.
     """
     rows = {}
     try:
@@ -602,10 +605,48 @@ def scan_candidates(workdir, active=None):
                             "status": "placing", "mtime": time.time()}
     out = [rows[k] for k in sorted(rows)]
     for n in {r["round"] for r in out}:
+        _mark_unjudged([r for r in out if r["round"] == n])
         scored = [r for r in out if r["round"] == n and r["blocking"] is not None]
         if scored:
             min(scored, key=candidate_key)["status"] = "best"
     return out
+
+
+#: The skill fast-routes this many legal seeds a round, those of lowest
+#: `final.cost` (plan-pcb-placement §3.6); the rest are placed and never
+#: routed, and must not read "routing" forever.
+JUDGED_PER_ROUND = 12
+
+
+def _mark_unjudged(round_rows):
+    """Re-label one round's placed, unscored rows that the skill will not
+    judge: "illegal" when the seed's report lists illegal parts, "not judged"
+    when JUDGED_PER_ROUND legal seeds of lower `final.cost` exist. Until that
+    many legal reports are in, every unscored row stays "routing"."""
+    legal = []                         # (final.cost, row) of every legal seed
+    for r in round_rows:
+        if not r["placed"] or r["status"] not in ("routing", "routed", "clean"):
+            continue
+        try:
+            with open(os.path.splitext(r["placed"])[0] + ".json", encoding="utf-8") as fh:
+                rep = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(rep, dict):
+            continue
+        if rep.get("illegal"):
+            if r["status"] == "routing":
+                r["status"] = "illegal"
+            continue
+        cost = (rep.get("final") or {}).get("cost")
+        if isinstance(cost, (int, float)):
+            legal.append((cost, r))
+    if len(legal) < JUDGED_PER_ROUND:
+        return
+    legal.sort(key=lambda t: t[0])
+    for _cost, r in legal[JUDGED_PER_ROUND:]:
+        if r["status"] == "routing":
+            r["status"] = "not judged"
 
 
 def _mtime(path):

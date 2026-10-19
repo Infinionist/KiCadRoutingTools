@@ -13,9 +13,9 @@ caption HUD) via its `overlays=` hook, and every world->pixel conversion through
 the rect handed to the drawing layer is `state.parts[ref].rect()` identically,
 which fails the day someone inlines a courtyard transform.
 
-    python3 render_placement.py BOARD.kicad_pcb [-o OUT.png|OUTDIR] [options]
-    python3 render_placement.py BOARD --before SEED --arrows -o delta.png
-    python3 render_placement.py BOARD --zoom-group sheet:1a2b --per-side -o dir/
+    python3 py_tools/render_placement.py BOARD.kicad_pcb [-o OUT.png|OUTDIR] [options]
+    python3 py_tools/render_placement.py BOARD --before SEED --arrows -o delta.png
+    python3 py_tools/render_placement.py BOARD --zoom-group sheet:1a2b --per-side -o dir/
 
 Known limits, stated because the artifact should not oversell (the issue's own
 list): a dense board does not fit one readable frame, which is why delta-first
@@ -1938,10 +1938,10 @@ def build_parser():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  render_placement.py board.kicad_pcb -o state.png
-  render_placement.py placed.kicad_pcb --before seed.kicad_pcb -o delta.png
-  render_placement.py board.kicad_pcb --list-groups --group-by sheet
-  render_placement.py board.kicad_pcb --zoom-group sheet:58d913ec --per-side -o out/
+  python3 py_tools/render_placement.py board.kicad_pcb -o state.png
+  python3 py_tools/render_placement.py placed.kicad_pcb --before seed.kicad_pcb -o delta.png
+  python3 py_tools/render_placement.py board.kicad_pcb --list-groups --group-by sheet
+  python3 py_tools/render_placement.py board.kicad_pcb --zoom-group sheet:58d913ec --per-side -o out/
 """)
     p.add_argument('board', nargs='?', help='the board to render ("after")')
     p.add_argument('--before', metavar='BOARD',

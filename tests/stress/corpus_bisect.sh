@@ -25,9 +25,10 @@
 #   3. The image's router download must be PINNED to the release whose asset
 #      matches the commit's crate. #615 made build_router skip the prebuilt
 #      whenever rust_router/ differs from main -- which a bisect worktree always
-#      does -- sending it to a source build the image cannot do (no Rust
-#      toolchain). An explicit --tag is honored as-given. Crate 0.20.1 maps to
-#      release v0.20.2, because v0.20.1's asset is a stale 0.20.0 build.
+#      does -- sending it to a source build (once impossible in the image, now
+#      ~10 min of cargo on its rustup layer). An explicit --tag is honored
+#      as-given. Crate 0.20.1 maps to release v0.20.2, because v0.20.1's asset
+#      is a stale 0.20.0 build.
 #   4. core64_logic is excluded: it replays in 4 min historically and now never
 #      terminates (issue #625), and one such board holds every arm at N-1.
 #
@@ -64,10 +65,10 @@ if [ -n "$CRATE" ]; then
   # Pin the image's prebuilt to this commit's crate release. This used to REWRITE
   # modal_app.py's build command from here; it now rides an env var that
   # modal_app._build_step() reads client-side, because a rewrite that silently
-  # no-ops launches an arm that builds unpinned and dies 30 minutes later (#615
-  # skips the prebuilt in a bisect worktree, and the image has no Rust). Keep the
-  # loud guard: if the knob is gone, refuse to launch rather than spend on an arm
-  # that cannot build.
+  # no-ops launches an arm that builds unpinned (#615 skips the prebuilt in a
+  # bisect worktree), which died 30 minutes later before the image had Rust and
+  # now pays a source build. Keep the loud guard: if the knob is gone, refuse to
+  # launch rather than quietly build every arm from source.
   if ! grep -q "KICAD_SWEEP_BUILD_TAG" "$WT/tests/stress/modal_sweep/modal_app.py"; then
     echo "  $TAG: modal_app.py has no KICAD_SWEEP_BUILD_TAG support -- refusing to launch unpinned"
     exit 1
