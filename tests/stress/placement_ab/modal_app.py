@@ -1,4 +1,4 @@
-"""The Modal half of route_modal.py: route_placed.py (with --quick-pass unless
+"""The Modal half of route_modal.py: route_placed.py (with --quick LEVEL unless
 the client asks for the full chain), one placed board per container. Deployed by route_modal.py, which stages what it ships
 and names the app after a hash of it -- not meant to be deployed by hand.
 
@@ -62,7 +62,7 @@ def _route(name, board, setn, files, quick):
             fh.write(data)
     t0 = time.time()
     r = subprocess.run([sys.executable, '-X', 'utf8', '/opt/route_placed.py', f'{d}/placed/placed.kicad_pcb',
-                        board, setn, f'{d}/{name}', *(['--quick-pass'] if quick else []),
+                        board, setn, f'{d}/{name}', *(['--quick', str(int(quick))] if quick else []),
                         '--corpus', CORPUS, '--repo', REPO],
                        capture_output=True, text=True, cwd=REPO)
     res = {'name': name, 'rc': r.returncode, 'seconds': round(time.time() - t0, 1), 'prov': PROV,
@@ -85,5 +85,5 @@ def _route(name, board, setn, files, quick):
 
 # no memory request: Modal sizes the container to what the route uses
 @app.function(cpu=4.0, timeout=3 * 3600, retries=0)
-def route(name: str, board: str, setn: str, files: dict, quick: bool = True) -> dict:
+def route(name: str, board: str, setn: str, files: dict, quick: int = 1) -> dict:
     return _route(name, board, setn, files, quick)

@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""route.py --quick-pass: a placement review's first round.
+"""route.py --quick: a placement review's first round (level 1).
 
 The main pass runs; the recovery tail does not -- the net rescue, the
 terminal escalation, the plane finalize and the reconciliation laps -- and
-the run says so (JSON_SUMMARY `quick_pass`), because its board is a diagnosis,
+the run says so (JSON_SUMMARY `quick`), because its board is a diagnosis,
 never one to ship. On a tracked board, in-process, with the tail's entry
 points spied on:
-  1. with quick_pass the rescue and the escalation are never called, and the
+  1. with quick=1 the rescue and the escalation are never called, and the
      summary names all four skipped stages;
   2. the control, the same run without it, calls both and writes no
-     `quick_pass` key -- so the spies can see a call, and (1) is not vacuous;
-  3. the CLI flag reaches the engine (`route.py --quick-pass --json-out`).
+     `quick` key -- so the spies can see a call, and (1) is not vacuous;
+  3. the CLI flag reaches the engine (`route.py --quick --json-out`).
 """
 import json
 import os
@@ -49,33 +49,33 @@ def _run(td, tag, quick):
         nets = sorted(n.name for nid, n in parse_kicad_pcb(BOARD).nets.items()
                       if nid and n.name)
         route.batch_route(BOARD, os.path.join(td, f'{tag}.kicad_pcb'), nets,
-                          quick_pass=quick, json_out=js)
+                          quick=quick, json_out=js)
         return calls, json.load(open(js, encoding='utf-8'))
     finally:
         net_rescue.rescue_failed_nets, net_rescue.terminal_geometry_escalation = orig
 
 
 def main():
-    print("route.py --quick-pass: the main pass without the recovery tail")
+    print("route.py --quick: the main pass without the recovery tail")
     with tempfile.TemporaryDirectory() as td:
-        calls, doc = _run(td, 'quick', True)
+        calls, doc = _run(td, 'quick', 1)
         ok("quick pass: no rescue, no escalation", calls == [], str(calls))
-        qp = doc.get('quick_pass') or {}
+        qp = doc.get('quick') or {}
         ok("quick pass: the summary names the four skipped stages",
            qp.get('skipped') == ['net_rescue', 'terminal_escalation',
                                  'plane_finalize', 'reconciliation'], str(qp))
-        calls, doc = _run(td, 'full', False)
+        calls, doc = _run(td, 'full', 0)
         ok("control: the full run calls the rescue and the escalation",
            'rescue' in calls and 'escalation' in calls, str(calls))
-        ok("control: the full run writes no quick_pass key", 'quick_pass' not in doc)
+        ok("control: the full run writes no quick key", 'quick' not in doc)
         js = os.path.join(td, 'cli.json')
         r = subprocess.run([sys.executable, '-X', 'utf8', os.path.join(ROOT, 'py_router', 'route.py'),
                             BOARD, os.path.join(td, 'cli.kicad_pcb'), '--nets', '*',
-                            '--quick-pass', '--json-out', js],
+                            '--quick', '--json-out', js],
                            capture_output=True, text=True, timeout=300)
-        ok("CLI: --quick-pass exits 0", r.returncode == 0, r.stderr[-300:])
-        ok("CLI: --quick-pass reaches the engine",
-           os.path.isfile(js) and 'quick_pass' in json.load(open(js, encoding='utf-8')))
+        ok("CLI: --quick exits 0", r.returncode == 0, r.stderr[-300:])
+        ok("CLI: --quick reaches the engine",
+           os.path.isfile(js) and 'quick' in json.load(open(js, encoding='utf-8')))
     print(f"\n{sum(results)}/{len(results)} checks passed")
     return 0 if all(results) else 1
 

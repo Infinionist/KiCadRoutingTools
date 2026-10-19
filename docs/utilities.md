@@ -161,7 +161,7 @@ for inspection in KiCad. Exit 0 clean, 1 violations, 2 usage errors.
 Places a board by function: the parts sorted into groups, one objective,
 lowered by simulated annealing, and exact pad legality at the end. It is the
 placer the `plan-pcb-placement` skill runs in rounds. A round places seeds 0-3,
-fast-routes each (`route.py --quick-pass`) and keeps the best. The run stops at
+fast-routes each (`route.py --quick`) and keeps the best. The run stops at
 the first round whose best fast route has no blocking net; otherwise the skill
 reviews the best with `route_review.py`, changes the groups, hints or claims
 and places again, up to `--rounds N` rounds in all (default 3). The kept board
@@ -615,7 +615,7 @@ python3 -X utf8 py_tools/route_review.py routed.kicad_pcb --top 12 --json review
 What to do about each finding is in
 `.claude/skills/plan-pcb-placement/references/placement-lessons.md`. The
 `/plan-pcb-placement` skill (`.claude/skills/plan-pcb-placement/SKILL.md`,
-§3.6) runs it on the best fast-routed candidate (`route.py --quick-pass`) of
+§3.6) runs it on the best fast-routed candidate (`route.py --quick`) of
 a round whose best fast route still has a blocking net, then changes the
 groups, hints or claims it gives `place_simple` and places again, up to
 `--rounds` rounds; `render_nets.py` draws a finding's nets beside another

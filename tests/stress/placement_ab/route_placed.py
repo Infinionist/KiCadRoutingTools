@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Route a PLACED board the way the stress corpus routed the original: replay
 the board's recorded chain (`runs_set<SET>/<BOARD>/redo_commands.sh`) on the
-placed board instead of the recorded input, then `board_score` the result.
+placed board instead of the recorded input, then score the result.
 
-    route_placed.py PLACED.kicad_pcb BOARD SET OUT_DIR [--quick-pass]
+    route_placed.py PLACED.kicad_pcb BOARD SET OUT_DIR [--quick [LEVEL]]
                     [--corpus DIR] [--repo DIR]
 
 This is how a placement is judged (CLAUDE.md, "What a placement run is FOR"):
@@ -11,8 +11,17 @@ by routing it. A placement A/B places each arm over seeds, routes every
 placed board with this, and compares `score.json` (blocking first, then vias,
 copper_mm, segments).
 
-  --quick-pass   add route.py's --quick-pass to the chain's whole-board route
-                 step(s) (`--nets '*'`): the fast judge, minutes not hours.
+  --quick [LEVEL]  route to judge, not to ship. 1 (`--quick` alone) adds
+                 route.py's --quick to the chain's whole-board route step(s)
+                 (`--nets '*'`, or a bare `'*'`): the main pass without the
+                 recovery tail, scored by `board_score`. 2, the seed judge,
+                 adds `--quick 2` to those steps and to every route_diff.py
+                 step, skipping the copper polish too, and scores from the
+                 route step's own tally (its last JSON_SUMMARY_MIN's failed
+                 singles + open singles + multipoint deficit, CLAUDE.md's
+                 verdict) and the final file's vias / copper / segments --
+                 no board_score: about half the time of level 1, and it
+                 picks seeds as well (see README.md).
   --corpus DIR   the stress corpus (default $KICAD_STRESS_CORPUS, else
                  ~/Documents/kicad_stress_test).
   --repo DIR     the tree whose scripts the chain runs (default this one). The
@@ -49,6 +58,31 @@ def baked_prefix(lines, pattern):
     return found.pop() if found else None
 
 
+def whole_board_route(line):
+    """A recorded route.py step over every net: `--nets '*'`, or the older
+    positional spelling with a bare `'*'` (glasgow, librevna, kirdy, ...)."""
+    return (not line.startswith('#') and '/route.py ' in line
+            and re.search(r"(--nets '\*'|\s'\*'(\s|$))", line) is not None)
+
+
+def light_score(chain_log, final):
+    """--quick 2's score: blocking from the last route.py JSON_SUMMARY_MIN
+    (failed singles + open singles + multipoint deficit), vias / copper /
+    segments from the final file's text. Matches board_score's quality
+    exactly; its blocking leaves out DRC, which the full route clears."""
+    mins = [x for x in open(chain_log, errors='replace').read().split('\n')
+            if x.startswith('JSON_SUMMARY_MIN: ')]
+    js = json.loads(mins[-1].split(': ', 1)[1]) if mins else None
+    blk = (len(js.get('failed_single') or []) + len(js.get('open_single') or [])
+           + int(js.get('multipoint_deficit') or 0)) if js else None
+    txt = open(final, errors='replace').read()
+    segs = re.findall(r'\(segment\s+\(start ([-0-9.]+) ([-0-9.]+)\)\s+\(end ([-0-9.]+) ([-0-9.]+)\)', txt)
+    cu = sum(((float(c) - float(a)) ** 2 + (float(e) - float(b)) ** 2) ** 0.5 for a, b, c, e in segs)
+    return {'blocking': blk, 'blocking_by': {'broken': blk}, 'score': 'route --quick 2 tally',
+            'quality': {'vias': len(re.findall(r'\(via\b', txt)), 'copper_mm': round(cu, 2),
+                        'segments': len(segs)}}
+
+
 def final_board(lines):
     """The chain's last board: the last command's --output, else its second .kicad_pcb."""
     cmds = [x for x in lines if x.strip() and not x.startswith('#') and 'python' in x and '--help' not in x]
@@ -65,7 +99,7 @@ def main(argv=None):
     ap.add_argument('board', help='the corpus board name, e.g. tigard')
     ap.add_argument('set', help='its corpus set number, e.g. 3')
     ap.add_argument('out')
-    ap.add_argument('--quick-pass', action='store_true')
+    ap.add_argument('--quick', nargs='?', const=1, default=0, type=int, choices=(0, 1, 2), metavar='LEVEL')
     ap.add_argument('--corpus', default=os.environ.get('KICAD_STRESS_CORPUS',
                                                        os.path.expanduser('~/Documents/kicad_stress_test')))
     ap.add_argument('--repo', default=THIS_REPO)
@@ -73,11 +107,13 @@ def main(argv=None):
     placed, repo, d = os.path.abspath(a.placed), os.path.abspath(a.repo), os.path.abspath(a.out)
     run_dir = os.path.join(a.corpus, f'runs_set{a.set}', a.board)
     lines = open(os.path.join(run_dir, 'redo_commands.sh')).read().split('\n')
-    if a.quick_pass:
-        lines = [x + ' --quick-pass' if ('/route.py ' in x and "--nets '*'" in x and not x.startswith('#')) else x
-                 for x in lines]
-        if not any('--quick-pass' in x for x in lines):
-            sys.exit(f'{run_dir}: no whole-board route step (route.py --nets \'*\') to quick-pass')
+    if a.quick:
+        flag = '--quick' if a.quick == 1 else f'--quick {a.quick}'
+        lines = [x + ' ' + flag if whole_board_route(x) else x for x in lines]
+        if not any(whole_board_route(x) for x in lines):
+            sys.exit(f'{run_dir}: no whole-board route step (route.py --nets \'*\' or \'*\') to route --quick')
+        if a.quick >= 2:
+            lines = [x + ' ' + flag if ('/route_diff.py ' in x and not x.startswith('#')) else x for x in lines]
     # what the recording machine called the tree, the input board's directory and the run directory
     baked_repo = baked_prefix(lines, r"(/[^\s'\"]+?)/(?:py_router|py_placer|py_tools)/\w+\.py")
     baked_in = baked_prefix(lines, rf"(/[^\s'\"]+/boards_unrouted_set{a.set})/")
@@ -107,10 +143,14 @@ def main(argv=None):
     if not os.path.exists(final):
         print(f'{name}: chain rc={r.returncode} in {secs:.0f} s; NO final board {os.path.basename(final)}')
         return 1
-    subprocess.run([sys.executable, '-X', 'utf8', os.path.join(repo, 'py_tools', 'board_score.py'), final,
-                    '--baseline', placed, '--json', os.path.join(d, 'score.json'), '--quiet'],
-                   cwd=repo, capture_output=True)
-    sc = json.load(open(os.path.join(d, 'score.json')))
+    if a.quick >= 2:
+        sc = light_score(os.path.join(d, 'chain.log'), final)
+        json.dump(sc, open(os.path.join(d, 'score.json'), 'w'), indent=1)
+    else:
+        subprocess.run([sys.executable, '-X', 'utf8', os.path.join(repo, 'py_tools', 'board_score.py'), final,
+                        '--baseline', placed, '--json', os.path.join(d, 'score.json'), '--quiet'],
+                       cwd=repo, capture_output=True)
+        sc = json.load(open(os.path.join(d, 'score.json')))
     q = sc.get('quality') or {}
     by = {k: v for k, v in (sc.get('blocking_by') or {}).items() if v}
     print(f"{name}: {secs:.0f} s blocking {sc.get('blocking')} {by if by else ''} vias {q.get('vias')} "

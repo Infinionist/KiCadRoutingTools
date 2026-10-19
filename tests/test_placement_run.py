@@ -491,7 +491,7 @@ check("placing a round's seed",
                    None, None) == "round 2: placing seed 3")
 check("fast-routing a round's seed, with the last milestone",
       derive_stage(["cd wk/r2/s1_route && python3 py_router/route.py a.kicad_pcb "
-                    "b.kicad_pcb --nets '*' --quick-pass"], row, None)
+                    "b.kicad_pcb --nets '*' --quick"], row, None)
       == "round 2: fast-routing seed 1 (lap 7: reseat/COL4)")
 check("scoring a round's seed",
       derive_stage(["python3 py_tools/board_score.py wk/r1/s2_fast.kicad_pcb "

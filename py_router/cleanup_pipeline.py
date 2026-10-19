@@ -241,6 +241,12 @@ def run_post_route_cleanup(results, pcb_data, scope_net_ids, config, *,
     out = CleanupOutcome()
     counts = out.counts
     strip = out.input_strip_segments
+    # --quick 2, the seed judge: keep the passes that keep board and
+    # write-list one ledger (snap, phantom, the sweeps); skip the ones that
+    # only polish copper for shipping, which judging a placement never reads.
+    _judge = getattr(config, 'quick', 0) >= 2
+    if _judge:
+        graze = octolinear = via_nudge = cycles = neck = smooth = False
 
     # KICAD_LEDGER_TRACE="x,y;x,y;..." -- ledger-leak forensics: after every
     # pass, print how many pcb_data / write-list segments have an endpoint
@@ -354,7 +360,7 @@ def run_post_route_cleanup(results, pcb_data, scope_net_ids, config, *,
                   f"on {_nz_nets} net(s)")
 
     _prog("graze micro-shift")
-    _ms_segs, _ms_nets, _ms_strip, _ = nudge_grazing_microshift(
+    _ms_segs, _ms_nets, _ms_strip, _ = (0, 0, [], None) if _judge else nudge_grazing_microshift(
         results, pcb_data, scope_net_ids, clearance=config.clearance,
         max_shift=(microshift_max_shift if microshift_max_shift is not None
                    else config.grid_step / 2),
@@ -531,7 +537,7 @@ def run_post_route_cleanup(results, pcb_data, scope_net_ids, config, *,
     if _sm_env == '':
         _sm_on = smooth and not getattr(config, 'guide_corridor_enabled', False)
     else:
-        _sm_on = _sm_env in ('1', 'true', 'on')
+        _sm_on = _sm_env in ('1', 'true', 'on') and not _judge
     if _sm_on:
         _prog("octolinear smoothing")
         _sm_n, _sm_nets, _sm_strip, _sm_added, _sm_stats = smooth_octolinear_chains(

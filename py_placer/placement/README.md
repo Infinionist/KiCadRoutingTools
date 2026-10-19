@@ -235,7 +235,7 @@ broken), then vias, copper length and segment count. The objective's cost,
 crossings and hpwl only rank placements nobody has routed yet.
 
 Route each seed with the board's own routing chain (the `plan-pcb-routing`
-skill writes one), giving `route.py` `--quick-pass`: it skips the recovery
+skill writes one), giving `route.py` `--quick`: it skips the recovery
 tail, where a poor placement's routing time goes, and names the same trouble
 nets. Use the same chain for every seed so they compare.
 
@@ -262,7 +262,7 @@ python3 -X utf8 py_placer/place_fanout_clearance.py $W/fanout.kicad_pcb $W/caps.
 python3 -X utf8 py_router/route_diff.py $W/caps.kicad_pcb $W/diff.kicad_pcb \
     --nets /USB_DP /USB_DN --track-width 0.1 --diff-pair-gap 0.1 --clearance-ceiling 0.1 --no-gnd-vias
 python3 -X utf8 py_router/route.py $W/diff.kicad_pcb $W/route.kicad_pcb \
-    --nets '*' --quick-pass --track-width 0.10 --clearance-ceiling 0.15 --via-size 0.5 \
+    --nets '*' --quick --track-width 0.10 --clearance-ceiling 0.15 --via-size 0.5 \
     --via-drill 0.25 --hole-to-hole-clearance 0.25 --board-edge-clearance 0.5 --grid-step 0.05 \
     --layers F.Cu In1.Cu In2.Cu B.Cu --layer-costs 1.0 3.0 3.0 1.0 \
     --power-nets GND +3V3 +5V VTARGET VREG /VBUS +1V8
@@ -273,9 +273,9 @@ python3 -X utf8 py_tools/board_score.py $R/s${s}_fast.kicad_pcb \
 
 `board_score` exits 0 when no net blocks and 4 when some do. Read `blocking`
 and `quality` (vias, copper_mm, segments) from the score file, keep the best
-seed, and copy its placement (`$R/s<S>.kicad_pcb`, never the quick-pass board)
+seed, and copy its placement (`$R/s<S>.kicad_pcb`, never the `--quick` board)
 to `wk/tig/final.kicad_pcb` with `copy_board.py`; in `full` mode the skill then
-routes it with the chain, without `--quick-pass`.
+routes it with the chain, without `--quick`.
 
 **The skill's round rule.** A round places seeds 0-3, fast-routes each and
 keeps the best. The run stops at the first round whose best fast route has no

@@ -8,12 +8,16 @@ and seed, with blocking first, then vias, copper_mm and segments.
 - **`route_placed.py`** routes one placed board on this machine. It replays
   the corpus board's recorded chain (`runs_set<SET>/<BOARD>/redo_commands.sh`)
   on the placed board and scores the final board with `board_score`.
-  `--quick-pass` adds route.py's fast judge to the chain's whole-board route
-  steps.
+  `--quick` adds route.py's fast judge to the chain's whole-board route
+  steps. `--quick 2`, the seed judge, also passes it to every
+  `route_diff.py` step and scores from the route step's own tally and the
+  final file instead of `board_score` (blocking from its last
+  JSON_SUMMARY_MIN, vias / copper / segments from the file); see below.
 - **`route_modal.py`** routes a whole arm on Modal with `route_placed.py
-  --quick-pass` (`--full` for the whole chain, the final route of a chosen
-  placement), one container per board and seed. Every route runs at once,
-  so an arm takes about as long as its slowest route.
+  --quick` (`--quick 2` for the seed judge, `--full` for the whole chain,
+  the final route of a chosen placement), one container per board and seed.
+  Every route runs at once, so an arm takes about as long as its slowest
+  route.
 
 ```bash
 # placements in arms/base/<board>/s<seed>.kicad_pcb and arms/new/<board>/s<seed>.kicad_pcb

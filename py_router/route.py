@@ -408,7 +408,7 @@ def _regrade_pour_fill(board, output_file: str,
 
     The final re-grade's zone credit comes from the raster fill model, which
     predicts the fill from the copper. The finalize's oracle is the pass that
-    grades the pours on KiCad's fill instead, and --quick-pass skips the
+    grades the pours on KiCad's fill instead, and --quick skips the
     finalize, so its tally was the model's word alone. KiCad's filler can
     pour far less: on KiCad 10.0.0 three foreign vias pinching a pocket at
     about min_thickness empty a whole plane (see
@@ -484,7 +484,7 @@ def _final_regrade(pcb_data, output_file: str, return_results: bool,
 
     The pours of the written board are read through KiCad's own fill when no
     pass of this run checked them against it (`_regrade_pour_fill`): the
-    plane finalize's oracle is that check, and --quick-pass skips it.
+    plane finalize's oracle is that check, and --quick skips it.
 
     Prints the record as `JSON_REGRADE:` (merge_route_summaries reads it from
     the log), stores it for --json-out and JSON_SUMMARY_MIN, prints a
@@ -1321,14 +1321,19 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
                 # sibling .kicad_dru track rules; explicit dict (tests) wins.
                 track_clearances: Optional[Dict[int, float]] = None,
                 final_reconcile: bool = True,
-                # A placement review's first round: route the main pass and
-                # skip the recovery tail -- the net rescue, the terminal
-                # escalation, the plane finalize and the reconciliation laps.
-                # What is still open, and what cost the most, names what to
-                # move; the tail is where a poor placement's time goes. The
-                # board is a diagnosis, never one to ship (JSON_SUMMARY
-                # `quick_pass`).
-                quick_pass: bool = False,
+                # --quick LEVEL. 1, a placement review's first round: route
+                # the main pass and skip the recovery tail -- the net rescue,
+                # the terminal escalation, the plane finalize and the
+                # reconciliation laps. What is still open, and what cost the
+                # most, names what to move; the tail is where a poor
+                # placement's time goes. 2, the seed judge: also skip every
+                # pass that only polishes copper for shipping (the cleanup's
+                # graze/cycle/neck passes and smoothing, the seam re-asks, the
+                # plane-fragility field, the late collapse and sweeps, the
+                # final re-grade, the improvement gate, the via-protection
+                # stamp). Either board is a diagnosis, never one to ship
+                # (JSON_SUMMARY `quick`).
+                quick: int = 0,
                 rip_preexisting: Optional[bool] = None,
                 add_teardrops: bool = False,
                 collect_stats: bool = False,
@@ -2175,6 +2180,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         print(f"Same-net pad via clearance {_snpc581:g}mm (from {_snpc_src}, "
               f"#581): vias stay off same-net pads")
     config = GridRouteConfig(**config_kwargs)
+    config.quick = int(quick or 0)
     # The in-loop stub-debris trim must treat input copper as read-only in
     # --keep-input-copper runs; the loop only sees config, so carry it there.
     if keep_input_copper:
@@ -3603,7 +3609,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     if progress_callback:
         progress_callback(0, 0, "Rescuing failed nets...")
     from net_rescue import rescue_failed_nets
-    rescue_summary = None if (_ckpt_stop or quick_pass) else rescue_failed_nets(
+    rescue_summary = None if (_ckpt_stop or quick) else rescue_failed_nets(
         state, single_ended_nets, net_clearances=net_clearances,
         progress_callback=progress_callback, cancel_check=cancel_check)
 
@@ -3626,7 +3632,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # ITS escalation the same way (the "opens emerged after the escalation"
     # class from the term_ecp5 study -- victims were invisible, not late).
     _esc_scope = _escalation_scope(single_ended_nets, pcb_data)
-    terminal_escalation_summary = None if (_ckpt_stop or quick_pass) else \
+    terminal_escalation_summary = None if (_ckpt_stop or quick) else \
         terminal_geometry_escalation(
             state, _esc_scope, net_clearances=net_clearances,
             progress_callback=progress_callback, cancel_check=cancel_check)
@@ -5049,13 +5055,22 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         # loud on a terminal and invisible to pipelines. Key absent when no
         # clamp fired.
         summary['impedance_width_clamped'] = impedance_width_clamped
-    if quick_pass:
+    if quick:
         # A diagnosis, never a board to ship: the recovery tail did not run.
-        summary['quick_pass'] = {
-            'skipped': ['net_rescue', 'terminal_escalation', 'plane_finalize',
-                        'reconciliation'],
-            'why': 'a placement review first round: what is open and what '
-                   'cost most names what to move; route again to ship'}
+        _skipped = ['net_rescue', 'terminal_escalation', 'plane_finalize',
+                    'reconciliation']
+        if quick >= 2:
+            _skipped += ['seam_reask', 'plane_fragility', 'cleanup_polish',
+                         'smoothing', 'late_collapse', 'late_sweeps',
+                         'final_regrade', 'improvement_gate',
+                         'via_protection_stamp']
+        summary['quick'] = {
+            'level': int(quick), 'skipped': _skipped,
+            'why': ('a placement review first round: what is open and what '
+                    'cost most names what to move; route again to ship'
+                    if quick < 2 else
+                    'the seed judge: rank placements by what routes, then '
+                    'route the chosen one again to ship')}
     if rescue_summary:
         # #331/#371 rescue pass outcome (key absent when nothing was rescued,
         # so pre-rescue JSON_SUMMARY consumers/diffs are unaffected).
@@ -6010,7 +6025,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         except Exception as _e9c:
             print(f"  (pre-finalize checkpoint failed: {_e9c})")
     if (final_reconcile and (not skip_routing or _fin_only)
-            and not _ckpt_stop and not quick_pass
+            and not _ckpt_stop and not quick
             and (output_file or return_results)
             and not _plane_finalize_active()
             and os.environ.get('KICAD_PLANE_FINALIZE', '1') == '1'):
@@ -6784,7 +6799,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             if nid in _scope_pre9 and nid not in _copper_pre9
             and nid not in _zone_pre9 and len(net.pads) >= 2)
     if (final_reconcile and not skip_routing and not _ckpt_stop
-            and not quick_pass
+            and not quick
             and (output_file or return_results)
             and (failed_single or failed_multipoint or _custody_nets9
                  or _victim_retry_names or open_single or _zero_pre9)):
@@ -7394,7 +7409,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # finalize, the oracle legs, the reconciliation laps, the #678 weld) and
     # before the sweep, the #962 via stamp and the #1069 re-grade, so all of
     # them read the collapsed board. Outermost run only, both fronts.
-    if final_reconcile and not skip_routing and not _ckpt_stop:
+    if final_reconcile and not skip_routing and not _ckpt_stop and quick < 2:
         _late_strict_collapse1063(
             pcb_data, output_file, return_results, locals().get('results_data'),
             _gui_write_model, _input_sig1069,
@@ -7409,10 +7424,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
              if _n in pcb_data.nets},
             keep_input_copper)
 
-    _late_orphan_sweep659(
-        pcb_data, output_file, return_results,
-        locals().get('results_data'), _protect_unfinished, keep_input_copper,
-        skip_routing)
+    if quick < 2:
+        _late_orphan_sweep659(
+            pcb_data, output_file, return_results,
+            locals().get('results_data'), _protect_unfinished,
+            keep_input_copper, skip_routing)
 
     # #962: declare Type VII on every via this run put in a pad or a paste
     # opening. It runs HERE because this is after the last pass that adds or
@@ -7420,7 +7436,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # reconcile sub-run, the #678 weld, the late sweep above), so the record
     # describes the board that ships. Outermost call only.
     _via_in_pad962 = None
-    if final_reconcile and not skip_routing:
+    if final_reconcile and not skip_routing and quick < 2:
         _via_in_pad962 = _ship_via_protection962(
             pcb_data, output_file, return_results, locals().get('results_data'),
             _input_vias962)
@@ -7658,7 +7674,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # returned successful/failed the GUI shows -- describe the whole run
     # rather than the last reconciliation lap. Outermost run only, both
     # fronts; a re-grade that raises leaves the summary-only merge in place.
-    if final_reconcile and not _ckpt_stop and _SUMMARY_SINK:
+    if final_reconcile and not _ckpt_stop and _SUMMARY_SINK and quick < 2:
         try:
             _rg1069 = _final_regrade(
                 pcb_data, output_file, return_results,
@@ -7918,7 +7934,7 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
     # nothing for the gate, and only the later steps, which are exactly where
     # the rips live, are measured.
     _gate_report = None
-    _gate_ok = (env_knobs.IMPROVEMENT_GATE and not _ckpt_stop
+    _gate_ok = (env_knobs.IMPROVEMENT_GATE and not _ckpt_stop and quick < 2
                 and final_reconcile
                 and any(_orig_seg_by_net.values())
                 and (return_results
@@ -8438,15 +8454,21 @@ For differential pair routing, use route_diff.py:
                         help="Acceptable time variance in picoseconds (default: 1.0)")
 
     # Rip-up and retry options
-    parser.add_argument("--quick-pass", action="store_true",
-                        help="A placement review's first round: route the main "
-                             "pass only, skipping the net rescue, the terminal "
+    parser.add_argument("--quick", nargs='?', const=1, default=0, type=int,
+                        choices=(0, 1, 2), metavar='LEVEL',
+                        help="Route to judge, not to ship. --quick (= 1), a "
+                             "placement review's first round: the main pass "
+                             "only, skipping the net rescue, the terminal "
                              "escalation, the plane finalize and the "
-                             "reconciliation laps. What stays open and what "
+                             "reconciliation laps; what stays open and what "
                              "costs most names what to move "
-                             "(py_tools/route_review.py); the board is a "
-                             "diagnosis, not one to ship (JSON_SUMMARY "
-                             "quick_pass)")
+                             "(py_tools/route_review.py). --quick 2, the seed "
+                             "judge: also skip the passes that only polish "
+                             "copper for shipping (cleanup, smoothing, seam "
+                             "re-asks, plane fragility, late sweeps, final "
+                             "re-grade), about half the time of level 1. The "
+                             "board is a diagnosis, not one to ship "
+                             "(JSON_SUMMARY quick)")
     parser.add_argument("--max-ripup", type=int, default=defaults.MAX_RIPUP,
                         help=f"Maximum blockers to rip up at once during rip-up and retry (default: {defaults.MAX_RIPUP})")
     parser.add_argument("--ripup-abandon-metric",
@@ -9015,7 +9037,7 @@ For differential pair routing, use route_diff.py:
     _preview_out = batch_route(args.input_file,
                 "" if args.preview else args.output_file, net_names,
                 return_results=args.preview,
-                quick_pass=args.quick_pass,
+                quick=args.quick,
                 direction_order=args.direction,
                 ordering_strategy=args.ordering,
                 disable_bga_zones=args.no_bga_zones,
@@ -9152,7 +9174,7 @@ For differential pair routing, use route_diff.py:
     # a castellated pad's edge-clearance zone back to the pad's inner reach.
     # No-op on boards without pad_prop_castellated pads or an edge rule.
     if not args.skip_routing and args.output_file and not _gate_reverted \
-            and os.path.isfile(args.output_file):
+            and args.quick < 2 and os.path.isfile(args.output_file):
         try:
             from fix_kicad_drc_settings import effective_board_edge_clearance
             from pcb_modification import retract_castellated_landings

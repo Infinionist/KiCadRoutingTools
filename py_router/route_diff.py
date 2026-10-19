@@ -357,7 +357,13 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                 # rip machinery skips matches, and they persist to the output
                 # .kicad_pro so later steps honor them without the flag.
                 cancel_check=None,
-                progress_callback=None) -> Tuple[int, int, float]:
+                progress_callback=None,
+                # --quick LEVEL (route.py's): 2, the seed judge, skips the
+                # passes that only polish copper for shipping (the cleanup's
+                # graze/cycle passes, the seam re-asks, the plane-fragility
+                # field). 1 changes nothing here: a diff-pair step has no
+                # recovery tail for route.py's level 1 to skip.
+                quick: int = 0) -> Tuple[int, int, float]:
     """
     Route differential pairs using the Rust router.
 
@@ -852,6 +858,7 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         print(f"Same-net pad via clearance {_snpc581:g}mm (from {_snpc_src}, "
               f"#581): vias stay off same-net pads")
     config = GridRouteConfig(**config_kwargs)
+    config.quick = int(quick or 0)
 
     # Find differential pairs from all provided nets
     diff_pairs: Dict[str, DiffPairNet] = find_differential_pairs(pcb_data, net_names)
@@ -2405,6 +2412,14 @@ Examples:
                              "caps (#196): auto-detect the cap chain, match the concatenated P path vs the N path, "
                              "and place the compensating meanders on whichever segment has room. Off by default.")
 
+    parser.add_argument("--quick", nargs='?', const=1, default=0, type=int,
+                        choices=(0, 1, 2), metavar='LEVEL',
+                        help="Route to judge, not to ship (route.py's --quick). "
+                             "--quick 2, the seed judge: skip the passes that "
+                             "only polish copper for shipping (cleanup, seam "
+                             "re-asks, plane fragility). Level 1 changes "
+                             "nothing here.")
+
     # Rip-up and retry options
     parser.add_argument("--max-ripup", type=int, default=defaults.MAX_RIPUP,
                         help="Maximum blockers to rip up at once during rip-up and retry (default: 3)")
@@ -2693,6 +2708,7 @@ Examples:
 
     batch_route_diff_pairs(args.input_file, args.output_file, net_names,
                 net_clearances=_net_clearances_map,
+                quick=args.quick,
                 direction_order=args.direction,
                 ordering_strategy=args.ordering,
                 disable_bga_zones=args.no_bga_zones,

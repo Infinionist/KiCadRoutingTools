@@ -412,6 +412,12 @@ class GridRouteConfig:
     # keep-outs. Engine-computed and handed down to nested sub-runs; no CLI
     # flag and no GUI control (KICAD_POUR_GUARD=0 reverts). Empty = inert.
     pour_barriers: List[dict] = field(default_factory=list)
+    # route.py / route_diff.py --quick LEVEL: 0 routes to ship; 1 is a
+    # placement review's first round (route.py skips the recovery tail); 2 is
+    # the seed judge, which also skips every pass that only polishes copper
+    # for shipping (cleanup_pipeline, the seam re-asks, the plane-fragility
+    # field). Read by the engines from here so both fronts see one value.
+    quick: int = 0
 
     def net_via(self, net_id: int) -> Tuple[float, float]:
         """(diameter, drill) this net's vias are drawn at."""

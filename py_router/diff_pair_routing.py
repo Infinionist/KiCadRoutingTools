@@ -3473,7 +3473,7 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
             # handoff). Re-ask each net's WHOLE connection with ONE A* --
             # partner's final copper as obstacle AND attractor -- and swap it
             # in only when strictly better and every assembly gate passes.
-            if env_knobs.SEAM_REASK:
+            if env_knobs.SEAM_REASK and getattr(config, 'quick', 0) < 2:
                 def _reask_net(_net, _partner, _cur_segs, _cur_vias):
                     """One whole-connection A* for _net against _partner's
                     CURRENT copper (obstacle + attractor). Returns (segs,
@@ -4188,7 +4188,7 @@ def seam_reask_chain_leg(pcb_data, pair, config, leg_obstacles, layer_names,
     score. Mutates pcb_data and leg_result in place on accept. Returns True
     when the leg was replaced."""
     import os as _os
-    if not env_knobs.SEAM_REASK:
+    if not env_knobs.SEAM_REASK or getattr(config, 'quick', 0) >= 2:
         return False
     terms = leg_result.get('_leg_terms')
     if not terms:

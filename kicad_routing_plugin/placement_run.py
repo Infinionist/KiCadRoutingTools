@@ -772,7 +772,7 @@ _COMMAND_STAGES = (
     (re.compile(r"route_review\.py\b.*?" + _RS), "round {0}: reviewing seed {1}"),
     (re.compile(r"route_review\.py\b"), "reviewing the fast route"),
     (re.compile(_RS + r"_(?:route|fast)\b"), "round {0}: fast-routing seed {1}"),
-    (re.compile(r"\broute\.py\b.*--quick-pass"), "fast-routing"),
+    (re.compile(r"\broute\.py\b.*--quick\b"), "fast-routing"),
     (re.compile(r"\b(?:route|route_planes|route_diff|bga_fanout|qfn_fanout|"
                 r"place_fanout_clearance)\.py\b"), "routing"),
     (re.compile(r"board_score\.py\b"), "scoring"),
@@ -868,7 +868,7 @@ def scan_workdir_outputs(workdir):
                  if os.path.basename(t[0]) != "input.kicad_pcb"]
     board = os.path.join(workdir, "final.kicad_pcb")
     if not os.path.isfile(board):
-        # The best scored candidate's PLACEMENT (never its quick-pass board),
+        # The best scored candidate's PLACEMENT (never its --quick board),
         # else the newest top-level board. No newer scan to compare sizes
         # against - the run is over, so any file is as stable as it gets.
         scored = [r for r in scan_candidates(workdir)

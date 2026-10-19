@@ -283,13 +283,13 @@ nets open is one the review can still improve.
 
 1. **Fast-route each candidate** with the board's routing chain (the recipe
    is `plan-pcb-routing`'s: planes, fanout, the decap clearance step,
-   `route.py`), giving `route.py` `--quick-pass`: it skips the recovery tail
+   `route.py`), giving `route.py` `--quick`: it skips the recovery tail
    (net rescue, terminal escalation, plane finalize, reconciliation laps),
    where a poor placement's routing time goes, and names the same trouble
    nets as the full route (19 of 20 placements on 10 corpus boards). Use the
    SAME chain for every candidate, so they compare. Run it in
    `r<N>/s<S>_route/` and copy its last board to `r<N>/s<S>_fast.kicad_pcb`.
-   Never ship a quick-pass board.
+   Never ship a `--quick` board.
 2. **Score each** with `py_tools/board_score.py r<N>/s<S>_fast.kicad_pcb --baseline r<N>/s<S>.kicad_pcb --json r<N>/s<S>_fast.score.json`
    and keep the best by blocking, then vias, copper_mm, segments. **If its
    blocking is 0, stop here**: that board is the placement.
@@ -334,7 +334,7 @@ clean): turn each two-pad part it lists as turned against its wiring with
 ### 3.7 Route (full mode)
 
 Route the kept placement with the full chain (`plan-pcb-routing`'s recipe,
-no `--quick-pass`), then `board_score` and `check_complete` with every spec
+no `--quick`), then `board_score` and `check_complete` with every spec
 flag. If DONE does not come, classify the failure (§4) before you re-place.
 
 ## 4. Traps measured in real runs

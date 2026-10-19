@@ -803,11 +803,12 @@ ROUTE_CLI_ONLY = {
                     "GUI edits a live board KiCad fills itself",
     '--enable-used-layers': "adds used layers back to the output FILE's "
                             "(layers) table; changes no copper",
-    # A placement review's first round (the placement skill's review pass, which
-    # runs the CLIs from the GUI's Place + Route too): it skips the recovery
-    # tail and its board is never shipped, so no recorded chain carries it.
-    '--quick-pass': "a placement review's first round, never a shipped "
-                    "board; the GUI routes to ship",
+    # A placement review's first round or the seed judge (the placement
+    # skill's review pass, which runs the CLIs from the GUI's Place + Route
+    # too): it skips the recovery tail, and at level 2 the shipping polish;
+    # its board is never shipped, so no recorded chain carries it.
+    '--quick': "a placement review / seed judge, never a shipped board; "
+               "the GUI routes to ship",
     # Diagnostics: console or User-layer output only, never copper.
     '--verbose': "console verbosity only",
     '--stats': "prints A* search statistics only",
