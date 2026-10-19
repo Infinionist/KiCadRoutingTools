@@ -4,7 +4,7 @@ container at once, each by route_placed.py (the board's recorded chain), with
 --quick-pass (the fast judge) unless --full.
 
     route_modal.py PLACED_DIR BOARDS SEEDS --out OUT [--prefix P] [--src TREE]
-                   [--corpus DIR] [--full] [--big]
+                   [--corpus DIR] [--full]
 
   PLACED_DIR  the arm's placements: PLACED_DIR/<board>/s<seed>.kicad_pcb, with
               its .kicad_pro / .kicad_prl siblings when there are any.
@@ -24,8 +24,6 @@ container at once, each by route_placed.py (the board's recorded chain), with
   --full      route the whole recorded chain, no --quick-pass: the final
               route of a chosen placement, minutes rather than seconds. Give
               it its own --prefix (or --out) so it never reads as a fast route.
-  --big       the big container (12 GB) for every board of the call, as BIG
-              gives it to z80: a board of several hundred parts.
 
 One line per route as it lands, the shape route_placed.py prints. The app is
 named after a hash of everything it ships, so two runs over the same tree share
@@ -62,8 +60,6 @@ BOARDS = {
     'bitaxe': ('bitaxe_ultra', '1'),
     'z80': ('z80_devboard_rp2040', '12'),
 }
-#: boards whose route needs the big container (z80's peaks near 2 GB)
-BIG = {'z80'}
 
 
 def seeds_of(spec):
@@ -158,7 +154,7 @@ def deployed(app):
 
     def look():
         try:
-            modal.Function.from_name(app, 'route_std').hydrate()
+            modal.Function.from_name(app, 'route').hydrate()
             return True
         except modal.exception.NotFoundError:
             return False
@@ -188,7 +184,6 @@ def main(argv=None):
     ap.add_argument('--prefix')
     ap.add_argument('--src', default=THIS_REPO)
     ap.add_argument('--full', action='store_true')
-    ap.add_argument('--big', action='store_true')
     ap.add_argument('--corpus', default=os.environ.get('KICAD_STRESS_CORPUS',
                                                        os.path.expanduser('~/Documents/kicad_stress_test')))
     a = ap.parse_args(argv)
@@ -235,7 +230,7 @@ def main(argv=None):
                 p = os.path.join(placed_dir, key, f's{s}{ext}')
                 if os.path.exists(p):
                     files_in['placed' + ext] = open(p, 'rb').read()
-            fn = modal.Function.from_name(app, 'route_big' if a.big or key in BIG else 'route_std')
+            fn = modal.Function.from_name(app, 'route')
             call = retry(lambda: fn.spawn(name, board, setn, files_in, not a.full), f'spawn {name}')
             pend[call.object_id] = name
             mine[call.object_id] = (key, s, name)

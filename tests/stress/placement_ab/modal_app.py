@@ -83,11 +83,7 @@ def _route(name, board, setn, files, quick):
     return res
 
 
-@app.function(cpu=4.0, memory=6144, timeout=3 * 3600, retries=0)
-def route_std(name: str, board: str, setn: str, files: dict, quick: bool = True) -> dict:
-    return _route(name, board, setn, files, quick)
-
-
-@app.function(cpu=4.0, memory=12288, timeout=3 * 3600, retries=0)
-def route_big(name: str, board: str, setn: str, files: dict, quick: bool = True) -> dict:
+# no memory request: Modal sizes the container to what the route uses
+@app.function(cpu=4.0, timeout=3 * 3600, retries=0)
+def route(name: str, board: str, setn: str, files: dict, quick: bool = True) -> dict:
     return _route(name, board, setn, files, quick)
