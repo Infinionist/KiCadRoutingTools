@@ -316,9 +316,8 @@ bisect on the cloud", with the rules that make their results trustworthy:
   removed.
 
 Other directories here: `modal_sweep/` (routing-parameter sweeps on Modal, and
-the engine behind the cloud replay), `modal_route/` (cloud plan+route of one
-uploaded board), `modal_suite/` (the test suite on Modal; see `tests/README.md`)
-and `placement_ab/` (judging placements by routing them).
+the engine behind the cloud replay), `modal_suite/` (the test suite on Modal;
+see `tests/README.md`) and `placement_ab/` (judging placements by routing them).
 
 ## Routing-constraint validation (what params to route with)
 
