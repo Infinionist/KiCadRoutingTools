@@ -24,7 +24,8 @@
 3. ANNEAL: one cost (`placement/simple.py`) -- signal and rail trees,
    crossings, claims, decaps spread over their own group's supply pins,
    each group's gap tree, the halo in front of fine-pitch parts' pads,
-   airwires over foreign pads, routing congestion -- lowered by simulated
+   airwires over foreign pads, routing congestion, and the intent's decap
+   limits where it grades them at error -- lowered by simulated
    annealing (`placement/simple_anneal.py`), MOVES_PER_PART moves per
    movable part from `--seed`, so the same board, inputs and seed give the
    same placement. A run that leaves a part with no legal pose (a big part
@@ -170,18 +171,24 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
     # a decap serves its own group's IC when the group has one on its rail:
     # an LDO's output cap belongs at the LDO, not at the MCU's VDD pin
     gof = group_of(doc)
-    decaps, decap_pins = [], {}
+    decaps, decap_pins, foreign = [], {}, set()
     for r, nid in sorted(view.decaps().items()):
         if r in state.parts and r not in exempt:
             decaps.append((r, nid))
-            own = [q for q in supply[nid] if gof.get(q[0]) == gof.get(r)]
+            serves = view.decap_pins(r)
+            own = [q for q in serves if gof.get(q[0]) == gof.get(r)]
             if own:
                 decap_pins[r] = own
+            else:
+                foreign.add(r)
+                if serves != supply[nid]:
+                    decap_pins[r] = serves     # a stacked cap: its owners' pins only
     for r, nid in decaps:
         pins = decap_pins.get(r) or supply[nid]
-        notes.append(f"decap {r} on {pcb.nets[nid].name} serves "
+        notes.append(f"decap {r} on "
+                     + '|'.join(pcb.nets[n].name for n in view.decap_rails()[r]) + " serves "
                      + ', '.join(sorted({ic for ic, _n in pins}))
-                     + ("" if r in decap_pins else " (no IC of its group is on its rail)"))
+                     + (" (no IC of its group is on its rail)" if r in foreign else ""))
     # congestion counts every net that is routed as tracks: all but ground,
     # which is poured as a plane
     cnets = sorted(n for n in state.net_refs if n and not is_ground(pcb.nets[n].name))
@@ -202,6 +209,16 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
         from placement import edge_seat
         model.edge_seats, snotes = edge_seat.seats(state, pcb, board, intent, set(movable))
         notes += snotes
+    # the intent's decap limits, where it grades them at error: priced as the
+    # grade measures them (the tether gate's terms), per mm past each limit
+    if intent is not None and args.decap_limit_weight > 0:
+        from placement.quench import TetherGateView
+        spec = {k: v for k, v in fp.tether_gate_spec(intent).items()
+                if k in ('decap_distance', 'decap_pin_distance')}
+        if spec:
+            model.set_limits(TetherGateView(pcb, board, state.parts, spec), args.decap_limit_weight)
+            notes.append(f"decap limits priced: {len(model._lterms)} term(s) ("
+                         + ', '.join(f"{k} {v['limit']:g} mm" for k, v in sorted(spec.items())) + ")")
     return state, model, movable, notes
 
 
@@ -209,7 +226,9 @@ def _line(t):
     groups = ', '.join(f"{n} {v:.1f}" for n, v in t['per_group'].items() if v > 0.05)
     hints = ', '.join(f"{n} {v:.1f}" for n, v in t['per_hint'].items() if v > 0.05)
     return (f"cost {t['cost']:.1f} (wire {t['wire']:.1f} mm, {t['crossings']} crossings, "
-            f"claims {t['claims']:.1f}, decaps {t['decaps']:.1f}, halo {t['halo']:.2f}, "
+            f"claims {t['claims']:.1f}, decaps {t['decaps']:.1f}, "
+            + (f"{t['decap_broken']} decap limit(s) broken, " if t.get('decap_broken') else "")
+            + f"halo {t['halo']:.2f}, "
             f"pad hits {t['pad_hits']:.0f}, congestion {t['congestion']:.2f}, "
             f"groups {t['groups']:.1f}" + (f": {groups}" if groups else "")
             + f", hints {t['hints']:.1f}" + (f": {hints}" if hints else "") + ")")
@@ -307,7 +326,8 @@ def main(argv=None):
     ap.add_argument('--groups', required=True, help='the groups file (check_groups.py)')
     ap.add_argument('--intent', required=True,
                     help='the emitted intent (check_floorplan --emit-intent): its '
-                         'proximity claims, keep-outs, zones and declared faces')
+                         'proximity claims, keep-outs, zones, declared faces and decap '
+                         'limits')
     ap.add_argument('--crossing-weight', type=float, default=2.0,
                     help='mm of wire one airwire crossing costs (default 2)')
     ap.add_argument('--claim-weight', type=float, default=1.0,
@@ -315,6 +335,10 @@ def main(argv=None):
     ap.add_argument('--decap-weight', type=float, default=2.0,
                     help='per mm of a decap to the supply-pin site it is matched to '
                          '(default 2)')
+    ap.add_argument('--decap-limit-weight', type=float, default=10.0,
+                    help='per mm past an intent decap limit it grades at error '
+                         '(decaps.max_distance_mm, max_pin_distance_mm), measured as the '
+                         'grade measures it (default 10; 0 leaves the limits unpriced)')
     ap.add_argument('--group-weight', type=float, default=5.0,
                     help='per mm of gap in a group\'s tree over its members\' '
                          'courtyards (default 5)')

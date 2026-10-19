@@ -37,6 +37,7 @@ moves them. `edge` is one of N/S/E/W (the board side a group belongs on),
 from __future__ import annotations
 
 import json
+import re
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 SCHEMA = 1
@@ -153,6 +154,91 @@ def is_ground(name) -> bool:
 CONNECTOR_ROLES = frozenset({'connector', 'pin header', 'usb receptacle', 'edge receptacle'})
 
 
+#: A part whose pads span this share of the board's bounds is the board's own
+#: contacts (`is_carrier`).
+CARRIER_SHARE = 0.5
+
+
+def is_carrier(pcb, ref) -> bool:
+    """Whether a part is the board's own contacts rather than a chip on it:
+    its pads, in its own frame, span half the board's bounds or more -- a
+    module's castellated or LGA pads (osm_l_bmc_som's OSM-L, core1106_cam),
+    a plug-in form factor's pin rows (a Teensy, a DIP-40 adapter), a carrier's
+    headers. Every part on such a board lies inside its pad span, so it is
+    the nearest "chip" to every cap. Pose-free: the span is read in the
+    part's own frame against the outline's bounds."""
+    fp = pcb.footprints.get(ref)
+    bb = getattr(getattr(pcb, 'board_info', None), 'board_bounds', None)
+    pads = _cu_pads(fp) if fp is not None else []
+    if not bb or not pads:
+        return False
+    area = (bb[2] - bb[0]) * (bb[3] - bb[1])
+    xs = [p.local_x for p in pads]
+    ys = [p.local_y for p in pads]
+    return area > 0 and (max(xs) - min(xs)) * (max(ys) - min(ys)) >= CARRIER_SHARE * area
+
+
+def owns_decaps(pcb, ref) -> bool:
+    """Whether a chip's supply pins own decaps: every chip but a connector
+    (`CONNECTOR_ROLES`) or the board's own contacts (`is_carrier`). A cap on
+    a connector's power pin is a bulk cap where power enters. The decap
+    rule's one connector test, read by the placer (`BoardView.supply_pins`)
+    and the grade (`floorplan`)."""
+    from placement.roles import infer_role
+    return (infer_role(pcb.footprints.get(ref), ref, None)['role'] not in CONNECTOR_ROLES
+            and not is_carrier(pcb, ref))
+
+
+#: A supply word in a net or pin name (`reads_as_rail`): a voltage (`+5V`,
+#: `3V3`, `V1P8`), a V-name (`VPHY`, `VAA`), or a rail word (`AVDD`,
+#: `VCCPLL1`, `REGOUT`, `CPOUT`, `VCAP`).
+_RAIL_WORDS = re.compile(
+    r'^\+(\d|V|BAT)|^-\d|\d+V\d*|V\d+P\d+|^V[A-Z0-9]|VCC|VDD|VEE|VTT|VBUS|'
+    r'VBAT|VSYS|VIN|VOUT|REG|PWR|PLL|CPOUT|VCAP|VIO')
+#: A word that makes a rail-like name a SIGNAL: a reference or bias
+#: (`VREF`, `VCOM`, `VOCM`), a sense or detect input, a loop's compensation,
+#: filter or tuning node (`PLL_VTUNE`), a slew or soft-start pin, a switch
+#: node or bootstrap, a reset or enable, a clock or crystal pin (`PLL_XI`).
+_NOT_RAIL = re.compile(
+    r'REF|VBG|BANDGAP|VCOM|VO?CM\b|SENSE|SNS|DET|COMP|FILT|TUNE|DVDT|BOOT|BST|'
+    r'RST|RESET|XTAL|OSC|CLK|SYNC|^EN\b|_EN\b|\bEN$|^FB|_FB\b|^SS\b|_SS\b|'
+    r'^SW\b|^LX|^PH\b|^X(I|O|IN|OUT)\b|_X(I|O|IN|OUT)\b')
+#: A pin that is a switch node, bootstrap or charge-pump terminal: a cap
+#: across two of a chip's pins is a decap only between its supply pins.
+_SWITCH_PIN = re.compile(r'^(SW|BST|BOOT|LX|CP|VCP|CB|PH)')
+#: Parts a local rail may run through besides its caps (`BoardView._local`).
+_RAIL_PATH_ROLES = frozenset({'inductor', 'ferrite bead', 'test point'})
+
+
+def _name_words(name) -> str:
+    return re.sub(r'[~{}]', '', str(name or '').upper())
+
+
+def reads_as_rail(name) -> Optional[bool]:
+    """Whether a net or pin NAME reads as a supply rail: True, False, or None
+    for no name. `V_{OUT}` reads as `VOUT`; `VREF`, `VBUS_DET`, `5V_SS`,
+    `PLL_VTUNE` read as signals."""
+    s = _name_words(name)
+    if not s:
+        return None
+    t = s.replace('_', '')
+    return not (_NOT_RAIL.search(s) or _NOT_RAIL.search(t)) and bool(_RAIL_WORDS.search(t))
+
+
+def decap_view(pcb) -> 'BoardView':
+    """`pcb`'s BoardView, built once per parsed board and kept on it. The
+    decap rule is electrical, so one answer holds at every pose of the board:
+    the grade, the tether gate and the placer ask it per cap and per pin."""
+    v = getattr(pcb, '_decap_view', None)
+    if v is None or v.pcb is not pcb:
+        v = BoardView(pcb)
+        try:
+            pcb._decap_view = v
+        except AttributeError:
+            pass
+    return v
+
+
 class BoardView:
     """What grouping needs from a parsed board: who carries copper, who is
     locked, which refs share which nets, and which nets are rails."""
@@ -174,48 +260,190 @@ class BoardView:
         self.name_of = lambda nid: getattr(nets.get(nid), 'name', '') or ''
         self.rails = rail_net_ids(self.owners, self.name_of, len(self.parts))
         self._supply = None
+        self._ladder = None     # the ladder's share of `_supply`
         self._decaps = None
+        self._roles: Dict[str, str] = {}
+        self._pin_names: Optional[Dict[Tuple[str, str], str]] = None
 
     def supply_pins(self) -> Dict[int, List[Tuple[str, str]]]:
-        """{rail net id: [(chip, pad number)]} -- the supply pins
-        `floorplan.supply_pins` finds by shape and pin type, function or rail
-        name, on every net but ground, less connectors': a cap on a
+        """{rail net id: [(chip, pad number)]} -- the chips' supply pins on
+        every net but ground, less connectors' (`owns_decaps`): a cap on a
         connector's power pin is a bulk cap where power enters, placed with
-        its group, not a decap pulled to that pin."""
+        its group, not a decap pulled to that pin. Two sources, joined:
+
+          * `floorplan.supply_pins`, whose ladder takes ONE channel per chip
+            (pin type, else pin function, else rail name);
+          * the pins on a real rail that the one channel leaves out
+            (`rail_pins`): tigard's FT2232H wins on its typed pins and so
+            lost VPHY, VPLL and VREG, noahfc's MPU6000 its REGOUT and CPOUT.
+        """
         if self._supply is None:
             from placement.floorplan import supply_pins
-            from placement.roles import infer_role
-            self._supply = {}
+            self._supply, self._ladder = {}, {}
+            seen = set()
             for ic, rec in supply_pins(self.pcb).items():
-                if infer_role(self.pcb.footprints.get(ic), ic, None)['role'] in CONNECTOR_ROLES:
+                if not owns_decaps(self.pcb, ic):
                     continue
                 for pad, net in rec.get('pins') or ():
                     nid = getattr(pad, 'net_id', None) or (net if isinstance(net, int) else None)
                     if nid and not is_ground(self.name_of(nid)):
                         self._supply.setdefault(nid, []).append((ic, str(pad.pad_number)))
+                        self._ladder.setdefault(nid, []).append((ic, str(pad.pad_number)))
+                        seen.add((ic, str(pad.pad_number)))
+            for ic, num, nid in self.rail_pins():
+                if (ic, num) not in seen:
+                    seen.add((ic, num))
+                    self._supply.setdefault(nid, []).append((ic, num))
         return self._supply
+
+    def rail_pins(self) -> List[Tuple[str, str, int]]:
+        """[(chip, pad number, net id)] -- a chip's pins on a REAL rail, read
+        off names and off what else the net reaches. A pin of a chip
+        (`groups.chip_refs`, not a connector) that has a pad on ground, on a
+        net that is not ground, whose own name does not read as a signal
+        (`reads_as_rail` is not False), is one when
+
+          * its net is NAMED as a rail (`/VPHY`, `VREG`, `V1P8`,
+            `/DCDC/16V_OUT`), or
+          * its own name reads as one (`REGOUT`, `CPOUT`, `5VOUT`, `AVIN`)
+            and the net is local to it (`_local`).
+
+        A pin named as a signal stays out on any net (`PD7/NRST` beside its
+        RC cap, `VREF`, `VBUS_DET`, `5V_SS`, `PLL_XI`), and so does an
+        unnamed pin on a net named `Net-(...)`, which says nothing."""
+        from placement.groups import chip_refs
+        from placement.roles import pin_function_name
+        out = []
+        for ic in sorted(chip_refs(self.pcb)):
+            fp = self.parts.get(ic)
+            if fp is None or not owns_decaps(self.pcb, ic):
+                continue
+            pads = _cu_pads(fp)
+            if not any(p.net_id > 0 and is_ground(self.name_of(p.net_id)) for p in pads):
+                continue
+            for p in pads:
+                name = self.name_of(p.net_id) if p.net_id > 0 else ''
+                if not name or is_ground(name) or name.startswith('unconnected-'):
+                    continue
+                pin = reads_as_rail(pin_function_name(p))
+                if pin is False:
+                    continue
+                leaf = name.split('/')[-1]
+                named = not leaf.startswith('Net-(') and reads_as_rail(leaf) is True
+                if named or (pin and self._local(p.net_id, ic)):
+                    out.append((ic, str(p.pad_number), p.net_id))
+        return out
+
+    def _role(self, ref: str) -> str:
+        r = self._roles.get(ref)
+        if r is None:
+            from placement.roles import infer_role
+            r = self._roles[ref] = infer_role(self.pcb.footprints.get(ref), ref, None)['role']
+        return r
+
+    def _local(self, nid: int, ic: str) -> bool:
+        """Whether net `nid` is local to chip `ic`: every other part on it is
+        a cap from it to ground, an inductor, ferrite or test point on the
+        way in, or a two-pad resistor from a net named as a rail (an RC
+        supply filter, glasgow's R59 into U12's Vbus). A reset RC's resistor
+        comes from a signal or a pull-up rail the pin is not named for, a
+        loop filter's from another cap, so neither reads as a rail here."""
+        from placement.groups import is_decoupling_cap
+        for r in self.owners.get(nid, ()):
+            if r == ic:
+                continue
+            fp = self.parts[r]
+            other = {p.net_id for p in _cu_pads(fp) if p.net_id > 0} - {nid}
+            if is_decoupling_cap(fp, r):
+                if len(other) == 1 and is_ground(self.name_of(next(iter(other)))):
+                    continue
+                return False
+            role = self._role(r)
+            if role in _RAIL_PATH_ROLES:
+                continue
+            if role == 'resistor' and len(_cu_pads(fp)) == 2 and len(other) == 1:
+                o = self.name_of(next(iter(other)))
+                leaf = o.split('/')[-1]
+                if (not is_ground(o) and not leaf.startswith('Net-(')
+                        and reads_as_rail(leaf) is True):
+                    continue
+            return False
+        return True
+
+    def _pin_name(self, ic: str, num: str) -> str:
+        if self._pin_names is None:
+            from placement.roles import pin_function_name
+            self._pin_names = {}
+            for r, fp in self.parts.items():
+                for p in _cu_pads(fp):
+                    self._pin_names.setdefault((r, str(p.pad_number)), pin_function_name(p))
+        return self._pin_names.get((ic, num), '')
 
     def decaps(self) -> Dict[str, int]:
         """{cap: its rail net id} -- every decap by the electrical rule, the
-        ONE rule place_simple prices and check_groups reports by: a cap
-        (`groups.is_decoupling_cap`) from ground (`is_ground`) to a rail
-        another chip has a supply pin on (`supply_pins`). A cap from a rail to
-        anything else (a converter's feed-forward cap, rail to FB) decouples
-        nothing. Electrical only: it asks nothing of where the parts are, so
-        it answers on a pile too."""
+        ONE rule place_simple prices, check_groups reports by and the grade
+        measures (`groups.decap_population`). A cap
+        (`groups.is_decoupling_cap`) is a decap when it is
+
+          * from ground (`is_ground`) to a rail some other chip has a supply
+            pin on (`supply_pins`); its owners are those chips;
+          * or between two rails that each carry a supply pin of one chip: a
+            STACKED domain, where one die's VSS is the next one's ground
+            (bitaxe's BM1366, VDD1 to VDD2 to VDD3), or a chip's own analog
+            ground (an ECP5's VCCPLL to GNDPLL). Its owners are the chips
+            with a supply pin on both by `floorplan.supply_pins`' ladder --
+            not a rail pin (`rail_pins`), which reads a gate driver's VB/VS
+            bootstrap pair or a battery monitor's VC cell taps as rails, and
+            not a switch-node, bootstrap or charge-pump pin (`_SWITCH_PIN`),
+            so a buck's BST-to-SW cap is no decap -- and its rail the first
+            of the two by net id.
+
+        A cap from a rail to anything else (a converter's feed-forward cap,
+        rail to FB) decouples nothing. Electrical only: it asks nothing of
+        where the parts are, so it answers on a pile too."""
         if self._decaps is None:
             from placement.groups import is_decoupling_cap
             supply = self.supply_pins()
-            self._decaps = {}
+            ladder = self._ladder
+            self._decaps, self._decap_rails, self._decap_owners = {}, {}, {}
             for ref, fp in sorted(self.parts.items()):
                 if not is_decoupling_cap(fp, ref):
                     continue
-                nets = {p.net_id for p in fp.pads if p.net_id > 0}
-                rail = [n for n in nets if not is_ground(self.name_of(n))]
-                if (len(rail) == 1 and len(nets) == 2
-                        and any(ic != ref for ic, _p in supply.get(rail[0], ()))):
-                    self._decaps[ref] = rail[0]
+                nets = sorted({p.net_id for p in fp.pads if p.net_id > 0})
+                rails = [n for n in nets if not is_ground(self.name_of(n))]
+                if len(nets) != 2 or not rails:
+                    continue
+                if len(rails) == 1:
+                    owners = {ic for ic, _p in supply.get(rails[0], ()) if ic != ref}
+                else:
+                    a, b = ({ic for ic, num in ladder.get(n, ())
+                             if ic != ref and not _SWITCH_PIN.match(self._pin_name(ic, num))}
+                            for n in rails)
+                    owners = a & b
+                if owners:
+                    self._decaps[ref] = rails[0]
+                    self._decap_rails[ref] = tuple(rails)
+                    self._decap_owners[ref] = owners
         return self._decaps
+
+    def decap_rails(self) -> Dict[str, Tuple[int, ...]]:
+        """{cap: (rail net id, ...)} -- the rail a decap decouples, or the
+        two of a stacked one (`decaps`)."""
+        self.decaps()
+        return self._decap_rails
+
+    def decap_owners(self) -> Dict[str, Set[str]]:
+        """{cap: {owner chip}} -- the chips a decap serves (`decaps`)."""
+        self.decaps()
+        return self._decap_owners
+
+    def decap_pins(self, cap: str) -> List[Tuple[str, str]]:
+        """The supply pins `cap` serves: its owners' pins on its rail."""
+        rail = self.decaps().get(cap)
+        if rail is None:
+            return []
+        own = self._decap_owners[cap]
+        return [q for q in self.supply_pins().get(rail, ()) if q[0] in own]
 
     def pad_count(self, ref: str) -> int:
         return len(_cu_pads(self.parts[ref]))
@@ -233,11 +461,11 @@ def group_of(doc: Dict) -> Dict[str, str]:
 
 def cap_owners(view: BoardView, cap: str):
     """`(net name, [owner refs])` when `cap` is a decap (`BoardView.decaps`):
-    its rail and the chips with a supply pin on it -- else None."""
-    nid = view.decaps().get(cap)
-    if nid is None:
+    its rail (a stacked cap's two, `A|B`) and its owners -- else None."""
+    if cap not in view.decaps():
         return None
-    return view.name_of(nid), sorted({ic for ic, _p in view.supply_pins()[nid]} - {cap})
+    return ('|'.join(view.name_of(n) for n in view.decap_rails()[cap]),
+            sorted(view.decap_owners()[cap]))
 
 
 def decap_conflicts(doc: Dict, view: BoardView) -> List[Dict]:

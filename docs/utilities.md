@@ -179,7 +179,8 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 'r1/s{seed}.kicad_pcb'
   checks it): each group a set of parts kept together, with optional `near`,
   `apart` and `edge` hints and a `side`. `--intent` is the emitted intent
   (`check_floorplan --emit-intent`): its `proximity[]` claims, keep-outs,
-  zones, declared faces and `fixed_poses[]`.
+  zones, declared faces, `fixed_poses[]`, and the decap limits it grades at
+  error (priced per mm past each limit, `--decap-limit-weight`).
 - **What stays put.** Parts the board locks (`(locked yes)`) and parts the
   intent seats at a declared pose, written there first. Faces the intent or a
   group's `side` declares are applied first, by the writer's flip.

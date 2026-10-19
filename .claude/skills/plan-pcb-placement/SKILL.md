@@ -127,7 +127,7 @@ python3 -X utf8 py_tools/check_floorplan.py wk/<run>/fixed.kicad_pcb --emit-inte
 - **Never emit the intent from a damaged board.** It records the damage as
   the spec. Emit it from the brief, or edit it down.
 - `place_simple` reads the intent's `proximity` claims, keep-outs, zones,
-  declared faces and `fixed_poses`.
+  declared faces, `fixed_poses` and the decap limits it grades at error.
 
 ### 3.3 Group the parts (your judgement)
 

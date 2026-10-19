@@ -442,51 +442,52 @@ def is_decoupling_cap(fp, ref: str) -> bool:
     return len({p.net_id for p in fp.pads if p.net_id > 0}) == 2
 
 
+def decap_population(pcb_data) -> Dict[str, Tuple[Tuple[int, ...], List[str]]]:
+    """{cap: ((rail net id, ...), [owner chips])} -- the decaps by the ONE
+    rule place_simple prices (`grouping.BoardView.decaps`): a cap
+    (`is_decoupling_cap`) from ground to a rail some chip other than a
+    connector has a supply pin on, or between two rails that each carry a
+    supply pin of one chip (a stacked domain: two rails). Its owners are
+    those chips, in the footprints' order. An RC cap on a reset pin, a
+    crystal's load cap, a cap on a connector's power pin is no decap here,
+    so its distance sets no limit and is graded by none."""
+    from placement.grouping import decap_view
+    view = decap_view(pcb_data)
+    rails, owners = view.decap_rails(), view.decap_owners()
+    order = {r: i for i, r in enumerate(pcb_data.footprints or {})}
+    return {cap: (rails[cap], sorted(owners[cap], key=lambda r: order.get(r, len(order))))
+            for cap in view.decaps()}
+
+
 def _elect_tethers(pcb_data, movable=None):
     """[(cap, ic|None, distance|None)] in sorted cap order -- the ONE election.
+
+    Every decap (`decap_population`) against its owners, nearest wins: the
+    cap's pad centroid to each owner's pad bbox (`chip_bounds_of`).
 
     **The radius never reaches here.** Callers prune the winner by distance
     afterwards, so asking at two radii runs ONE election, and the wider
     answer always contains the narrower one.
 
-    `ic is None` means NO chip carries this cap's rail -- a bulk or filter cap
-    upstream of an LC network, not a decoupler: "a decap by its rail" and
-    "graded against an IC" are two different questions.
+    `ic is None` only when no owner has copper pads to measure.
     """
-    # THE SAME chip list `chip_refs` publishes, so an owner test and the
-    # grader's tether election cannot answer "what is an IC" differently.
-    chips = _chip_list(pcb_data)
+    pop = decap_population(pcb_data)
     if movable is None:
         movable = set(pcb_data.footprints)
-    ic_nets = {}
-    for c in chips:
-        fp = pcb_data.footprints.get(c.reference)
-        if fp is not None:
-            ic_nets[c.reference] = {p.net_id for p in fp.pads if p.net_id > 0}
-
+    fps = pcb_data.footprints or {}
+    bounds: Dict[str, object] = {}
     out: List[Tuple[str, Optional[str], Optional[float]]] = []
     for ref in sorted(movable):
-        fp = pcb_data.footprints.get(ref)
-        if not is_decoupling_cap(fp, ref):
+        hit = pop.get(ref)
+        if hit is None:
             continue
-        power = _cap_power_nets(pcb_data, fp)
-        # Nearest chip THAT CARRIES THE RAIL, not nearest-then-reject.
-        # Rejecting after the fact dropped the cap entirely whenever some
-        # unrelated part happened to be closer, so a genuinely distant decap
-        # went ungraded instead of flagged.
-        best, best_d = nearest_chip(
-            _centroid(fp),
-            ((c.reference, c.bounds) for c in chips
-             if c.reference != ref
-             and power & ic_nets.get(c.reference, set())))
-        # A second `nets & ic_nets[best]` recheck used to stand here, commented
-        # "near, but not electrically its cap". It was UNREACHABLE: `power` is a
-        # subset of `nets`, and `best` is only ever assigned inside the branch
-        # that already required `power & ic_nets[c]` to be non-empty. Deleted
-        # rather than kept, because a guard that cannot execute is worse than an
-        # absent one -- it reads like protection, and its comment described an
-        # ordering (proximity first, net-sharing second) that is the opposite of
-        # what the loop above does.
+        cands = []
+        for ic in hit[1]:
+            if ic not in bounds:
+                bounds[ic] = chip_bounds_of(fps[ic])
+            if bounds[ic] is not None:
+                cands.append((ic, bounds[ic]))
+        best, best_d = nearest_chip(_centroid(fps[ref]), cands)
         out.append((ref, best, best_d))
     return out
 
@@ -520,24 +521,11 @@ def nearest_chip(pt, candidates) -> Tuple[Optional[str], Optional[float]]:
 
 
 def rail_chips(pcb_data, cap: str) -> List[str]:
-    """The chips `_elect_tethers` would consider for `cap`, in its order:
-    every chip of `_chip_list` (bar the cap) carrying the cap's power rail.
-    Pose-invariant under a move (membership reads pad counts, nets, and the
-    collinearity of a chip's pads, which a 90-degree move keeps; a supply
-    owner's evidence -- pintypes, footprint name, nets -- reads no pose)."""
-    fp = pcb_data.footprints.get(cap)
-    if fp is None:
-        return []
-    power = _cap_power_nets(pcb_data, fp)
-    out = []
-    for c in _chip_list(pcb_data):
-        if c.reference == cap:
-            continue
-        cfp = pcb_data.footprints.get(c.reference)
-        if cfp is not None and power & {p.net_id for p in cfp.pads
-                                        if p.net_id > 0}:
-            out.append(c.reference)
-    return out
+    """The chips `_elect_tethers` considers for `cap`, in its order: its
+    owners (`decap_population`); none for a cap that is no decap.
+    Pose-invariant: the rule reads nets, pin types and roles, never a pose."""
+    hit = decap_population(pcb_data).get(cap)
+    return list(hit[1]) if hit is not None else []
 
 
 def _point_to_bounds(pt, bounds) -> float:
@@ -574,8 +562,8 @@ def decap_tethers(pcb_data, movable=None,
                   ) -> Dict[str, List[Tuple[str, float]]]:
     """{IC ref: [(cap ref, bbox distance mm)]} -- the decoupling tethers.
 
-    Nearest IC by bounding-box distance, but ONLY when the cap shares a net with
-    it. Proximity alone is not enough -- on ulx3s 13 of 70 caps sit near an IC
+    Nearest owner by bounding-box distance: a decap (`decap_population`) and
+    the chips with a supply pin on its rail. Proximity alone is not enough -- on ulx3s 13 of 70 caps sit near an IC
     they have no electrical relationship with, and dragging those along would be
     a wrong group.
 
@@ -604,7 +592,7 @@ def decap_populations(pcb_data, movable=None,
                 the population `rule_decap_distance` grades.
     * `beyond`  [(cap, ic, d)] cap-sorted -- elected, then pruned by the radius;
                 `rule_decap_ungraded` reports them.
-    * `orphans` [cap] -- in scope, but NO chip carries their rail. There is no
+    * `orphans` [cap] -- in scope, but no owner has pads to measure. There is no
                 IC for them to be far from, so the grader ignores them.
 
     The three sets partition the in-scope population, and `decap_census` emits

@@ -1535,8 +1535,8 @@ therefore carries `max_mm` unrounded and `max_mm_display` for the reader.
 ### When it is withheld
 
 A limit read off the board can never be violated by that board, so that is not
-the test. The test is **censoring**. `groups.decap_tethers` drops any cap
-further than `DECAP_RADIUS_MM` (5 mm) from a chip carrying its rail, so the
+the test. The test is **censoring**. `groups.decap_tethers` drops any decap
+further than `DECAP_RADIUS_MM` (5 mm) from its nearest owner, so the
 observed distribution is censored and a limit read off the survivors can bless
 a board whose caps have left decoupling range. Measured over the tracked
 boards:
@@ -1636,8 +1636,47 @@ shipped default would flood every board.
 violate only when the MINIMUM over that superset exceeds the limit. Every cap
 added can only lower the number, so the only way to manufacture a violation is
 to have MISSED a cap — which turns "is this finding real?" into one auditable
-question. The answer is forced: every two-net `C*` carrying the pin's exact net,
-either side, any distance, whoever else it also serves.
+question. The answer: every decap (below) on the pin's exact net, either side,
+any distance, whoever else it also serves.
+
+**What a decap is -- one rule for the grade, the gate and the placer.** A cap
+(`groups.is_decoupling_cap`: a `C*` bridging two nets) is a decap
+(`grouping.BoardView.decaps`, read through `groups.decap_population`) when it
+runs
+
+* from ground (`grouping.is_ground`) to a rail some chip other than a
+  connector has a supply pin on; its owners are those chips. A part whose
+  pads span half the board's bounds or more is the board's own contacts
+  (`grouping.is_carrier`: a module's castellated or LGA pads, a Teensy or
+  DIP-40 form factor's pin rows) and owns none, like a connector: every part
+  on such a board lies inside its pad span, so it was the nearest owner of
+  every cap;
+* or between two rails that each carry a supply pin of ONE chip -- a stacked
+  domain, where one die's VSS is the next one's ground (bitaxe's BM1366, VDD1
+  to VDD2 to VDD3), or a chip's own analog ground (an ECP5's VCCPLL to
+  GNDPLL). Its owners are the chips with a supply pin on both, a switch-node,
+  bootstrap or charge-pump pin aside, so a buck's BST-to-SW cap is no decap.
+
+A chip's supply pins here are the pin rule's (below: one channel per chip)
+joined with its pins on a REAL rail (`BoardView.rail_pins`), which that one
+channel leaves out when the chip wins on another: tigard's FT2232H wins on
+its typed pins and lost VPHY, VPLL and VREG. A pin of a chip with a ground
+pad is on a real rail when its name does not read as a signal
+(`grouping.reads_as_rail`) and either its net is NAMED as a rail (`/VPHY`,
+`V1P8`, `/DCDC/16V_OUT`) or its own name reads as one (`REGOUT`, `CPOUT`,
+`AVIN`) and the net is local to it: nothing else on it but caps to ground,
+an inductor, ferrite or test point, or a resistor from a net named as a
+rail (an RC supply filter). A pin or net named as a reference or bias
+(`VREF`, `VCOM`), a sense or detect input, a compensation, filter or tuning
+node, a soft-start or slew pin, a switch node or bootstrap, a reset or
+enable, or a clock is a signal, so its cap stays out.
+
+`decap_distance` elects the nearest owner and `place_simple` prices the same
+caps. An RC cap on a reset pin, a crystal's load cap, a cap on a connector's
+power pin, a compensation or bootstrap cap is no decap, so its distance neither
+sets an emitted limit nor is graded by one. The pin rule grades its own
+ladder's pins only (the rail pins are not graded), against the decaps on each
+pin's net: a stacked cap counts on both of its rails.
 
 That is also why the cap set is **derived rather than taken from
 `decap_tethers`**. The tether map is a cap→one-IC assignment truncated at 5 mm
@@ -1765,7 +1804,7 @@ authored, never inferred, and no emitter path can set it.
   stitching. It measures a gap in millimetres.
 * `decap_pin_distance_inferred` does not claim the pad **is** a supply pin.
 * `decap_pin_uncovered` does not claim the rail is undecoupled — only that no
-  two-net `C*` on this board carries that net.
+  decap on this board (from ground to it, or a stacked one) carries that net.
 * A **clean** result does not mean the board is decoupled. It means every pin
   the rule could identify had a cap on its own net within the limit. When it can
   identify none, it says so in `rules_skipped` and does not report a pass.

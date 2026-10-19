@@ -3035,7 +3035,7 @@ def tether_pairings(tethers: Dict[str, object], pcb_data
     Each pairing is the grader's own: `decap_distance` from
     `groups.decap_populations` at the rule's radius (the election
     `rule_decap_distance` reads through `_Ctx.decap_populations`) -- with
-    the chips on the cap's rail (`groups.rail_chips`), because the grade
+    the cap's owners (`groups.rail_chips`), because the grade
     RE-ELECTS on the board it is handed and the gate must hold the pair it
     will elect, not the one elected here -- the pins
     and caps of `decap_pin_distance` from `supply_pins` and `decap_pin_caps`,
@@ -3048,7 +3048,8 @@ def tether_pairings(tethers: Dict[str, object], pcb_data
 
     What is left out, each graded elsewhere or not pose-dependent:
       * exempt caps (`decaps.exempt`), as the rules skip them;
-      * orphan caps (no chip carries the rail), which the rule never grades;
+      * caps that are no decap (`groups.decap_population`), which the rule
+        never grades;
       * INFERRED supply pins (`channel == 'rail_net'`), graded at WARN under
         their own name `decap_pin_distance_inferred`;
       * a proximity claim with a missing ref or an unresolved pad name, which
@@ -3090,7 +3091,7 @@ def tether_pairings(tethers: Dict[str, object], pcb_data
     if dp:
         spec = dp['decaps']
         by_net = _decap_caps_by_net(pcb_data)
-        recs = supply_pins(pcb_data, pin_functions=spec.get('pin_functions'))
+        recs = _decap_supply_pins(pcb_data, pin_functions=spec.get('pin_functions'))
         for ref, rec in sorted(recs.items()):
             if not rec['pins'] or rec['channel'] == 'rail_net':
                 continue
@@ -3453,7 +3454,7 @@ class _Ctx:
         never describe two different pin sets."""
         if self._supply_pins is None:
             kw = (self.intent.decaps or {}).get('pin_functions')
-            self._supply_pins = supply_pins(self.pcb, pin_functions=kw)
+            self._supply_pins = _decap_supply_pins(self.pcb, pin_functions=kw)
         return self._supply_pins
 
     def decap_populations(self, radius: float):
@@ -5271,21 +5272,24 @@ def rule_decap_distance(ctx) -> Iterator[Violation]:
 
 
 def _decap_caps_by_net(pcb_data) -> Dict[int, List]:
-    """{net_id: [decap footprint]} -- every cap that carries the net.
+    """{rail net id: [decap footprint]} -- the decaps (`groups.decap_population`,
+    the one rule place_simple prices), each under the rail it decouples (a
+    stacked cap under both of its two). A per-rail question, not the tether
+    map: a cap serving two chips counts for both, and nothing is truncated at
+    the search radius."""
+    out: Dict[int, List] = {}
+    fps = pcb_data.footprints or {}
+    for ref, (rails, _owners) in sorted(groups_mod.decap_population(pcb_data).items()):
+        for rail in rails:
+            out.setdefault(rail, []).append(fps[ref])
+    return out
 
-    DERIVED, deliberately not `groups.decap_tethers`. The tether map is a
-    cap->one-IC assignment truncated at 5mm and it DISCARDS the net that
-    matched, so it cannot answer a per-rail question at all. Measured over 271
-    typed supply pins on 8 boards, a tether-derived cap set reports a LARGER
-    distance on 11 and a spurious "uncovered" on 56 (interf_u_placed: 20 of
-    24), because the metric here is a minimum and the tether set is a strict
-    subset. Three causes: the truncation (#794), nearest-IC exclusivity (a cap
-    serving two chips is invisible to one of them), and the discarded net.
 
-    The CAP predicate is still single-sourced -- `groups.is_decoupling_cap` --
-    so the two rules disagree about assignment, which is the point, and agree
-    about what a decap is, which is #792.
-    """
+def _caps_carrying_net(pcb_data) -> Dict[int, List]:
+    """{net_id: [cap footprint]} -- every two-net cap (`groups.is_decoupling_cap`)
+    carrying the net: `supply_pins`' evidence that a net NAMED like a rail is
+    one (its rail-net channel). Not the decap population, which is built on
+    `supply_pins` (`groups.decap_population`) and so cannot be its input."""
     out: Dict[int, List] = {}
     for ref, fp_ in sorted((pcb_data.footprints or {}).items()):
         if not groups_mod.is_decoupling_cap(fp_, ref):
@@ -5294,6 +5298,15 @@ def _decap_caps_by_net(pcb_data) -> Dict[int, List]:
             if p.net_id > 0:
                 out.setdefault(p.net_id, []).append(fp_)
     return out
+
+
+def _decap_supply_pins(pcb_data, pin_functions=None) -> Dict[str, Dict]:
+    """`supply_pins` less the chips whose supply pins own no decap -- a
+    connector (`grouping.owns_decaps`, the decap rule's one connector test,
+    which the placer reads too)."""
+    from .grouping import owns_decaps
+    return {r: rec for r, rec in supply_pins(pcb_data, pin_functions=pin_functions).items()
+            if owns_decaps(pcb_data, r)}
 
 
 def _gradeable_supply_net(pcb_data, net_id: int) -> Optional[str]:
@@ -5388,7 +5401,7 @@ def supply_pins(pcb_data, *, pin_functions=None,
         is_power_net_name
     if chips is None:
         chips = groups_mod.chip_refs(pcb_data)
-    by_net = _decap_caps_by_net(pcb_data)
+    by_net = _caps_carrying_net(pcb_data)
     owners = groups_mod.regulator_owners(pcb_data)
     out: Dict[str, Dict] = {}
     for ref in sorted(chips):
@@ -5703,9 +5716,9 @@ def _arm_decap_pins(ctx) -> Optional[str]:
     """
     caps = _decap_caps_by_net(ctx.pcb)
     if not caps:
-        return ("the board carries no decoupling capacitor (no C* footprint "
-                "with exactly two nets), so no supply pin can be graded "
-                "against one")
+        return ("the board carries no decoupling capacitor (no cap from "
+                "ground to a rail some chip other than a connector has a "
+                "supply pin on), so no supply pin can be graded against one")
     recs = ctx.supply_pins()
     if not any(r['pins'] for r in recs.values()):
         tot = {c: sum(r['counts'][c] for r in recs.values())
@@ -5732,7 +5745,7 @@ def rule_decap_pin_distance(ctx) -> Iterator[Violation]:
     when either set is empty. Because the metric is a minimum, every cap added
     can only lower it, so the only way to manufacture a violation is to have
     MISSED a cap. That reduces "is this finding real?" to one auditable
-    question, and the answer is forced: every two-net `C*` carrying the pin's
+    question, and the answer is forced: every decap (`groups.decap_population`) on the pin's
     exact net, either side, any distance, whoever else it also serves.
 
     THREE NAMES, because severity is settable per NAME and these are three
@@ -8701,7 +8714,7 @@ DECAP_MIN_SAMPLE = 3
 
 #: The share of rail-sharing caps that may lie BEYOND the tether search radius
 #: before a derived limit stops meaning anything. `groups.decap_tethers` drops
-#: any cap further than `DECAP_RADIUS_MM` from a chip carrying its rail, so the
+#: any decap further than `DECAP_RADIUS_MM` from its nearest owner, so the
 #: observed distribution is CENSORED by construction and a limit read off the
 #: survivors can bless a board whose caps have left decoupling range entirely.
 #: Measured over the tracked boards: healthy 0.04-0.12 (tigard 0.04,
@@ -8753,17 +8766,16 @@ def decap_census(pcb_data, radius: float = None) -> Dict:
     # `--declare-decaps` stdout, in the withholding reason, and in
     # docs/floorplan-intent.md's censoring table, so all three understated
     # the thing the census exists to disclose.
-    # Counted off the predicate rather than off the election's output --
+    # Counted off the population rather than off the election's output --
     # but NOT independently of it, and the first draft of this comment
     # claimed otherwise. `_elect_tethers(movable=None)` walks the same
-    # footprint dict through the same `is_decoupling_cap` call, so
+    # `decap_population`, so
     # `unaccounted` is 0 by CONSTRUCTION, not by measurement: it catches
     # a future election that drops a cap for some new reason, and it
     # cannot catch today's. Its battery row is recorded as an expected
     # survivor for exactly that reason, paired with one that breaks the
     # election so the tripwire has something to catch.
-    scope = sum(1 for _r, _fp in (pcb_data.footprints or {}).items()
-                if groups_mod.is_decoupling_cap(_fp, _r))
+    scope = len(groups_mod.decap_population(pcb_data))
     out = {
         'source': 'auto-tethers',
         'metric': ('cap footprint centroid to IC bounding box, clamped to 0 '
@@ -8811,7 +8823,7 @@ def _pin_census_of(pcb_data) -> Dict[str, object]:
     (#1102): every graded pin's gap to the nearest decoupling cap on its net,
     with the rule's own functions -- `supply_pins`, `decap_pin_caps`,
     `nearest_rail_cap` -- and no exemptions."""
-    pins = supply_pins(pcb_data)
+    pins = _decap_supply_pins(pcb_data)
     by_net = _decap_caps_by_net(pcb_data)
     gaps, uncovered, total = [], 0, 0
     for ref, rec in sorted(pins.items()):
@@ -8892,8 +8904,8 @@ def _decap_derivation(census: Dict) -> Tuple[Optional[float], Optional[str]]:
     """
     n = int(census.get('tethers', 0))
     if not n:
-        return None, (f"no cap is within {census['search_radius_mm']}mm of a "
-                      f"chip carrying its rail, so nothing was measured"
+        return None, (f"no decap is within {census['search_radius_mm']}mm of "
+                      f"its owner, so nothing was measured"
                       + (f" ({census['beyond_radius']} rail-sharing cap(s) lie "
                          f"beyond it, worst {census['worst_beyond_mm']}mm)"
                          if census.get('beyond_radius') else ""))

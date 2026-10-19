@@ -172,10 +172,11 @@ emptied `clock` group is dropped, and `near` entries that named it point at
 | ground | the same tree for ground: a plane, each pad only drops a via | `--ground-weight` (0.02) |
 | crossings | each crossing among the signal trees' edges, in mm of wire | `--crossing-weight` (2) |
 | claims | each claimed pad's distance to its partner's pad, per mm (intent `proximity[]`, crystals) | `--claim-weight` (1) |
-| decaps | each decap's distance to the supply-pin site it is matched to, per mm. A decap is a cap from ground to a rail some chip other than a connector has a supply pin on, the rule `check_groups` reports by. A rail's decaps are matched to its pin sites (an IC's supply pins within 1.5 mm of each other) at the least total distance, every site taking one decap before any takes two, so decaps spread over the pins | `--decap-weight` (2) |
+| decaps | each decap's distance to the supply-pin site it is matched to, per mm. A decap is a cap from ground to a rail some chip other than a connector (or the board's own contacts, a part whose pads span half the board) has a supply pin on, or between two rails that each carry a supply pin of one chip (a stacked domain), the rule `check_groups` reports by and `check_floorplan` grades by (`BoardView.decaps`); a chip's supply pins include its pins on a rail named as one, or named as one on a net local to it (`BoardView.rail_pins`). A rail's decaps are matched to its pin sites (an IC's supply pins within 1.5 mm of each other) at the least total distance, every site taking one decap before any takes two, so decaps spread over the pins | `--decap-weight` (2) |
 | group contiguity | the spanning tree over a group's courtyards, priced by the gap between neighbours: zero while the group is one contiguous piece, whatever its shape | `--group-weight` (5) |
 | `near` / `apart` / `edge` | the groups file's hints (above) | `--near-weight` (2), `--apart-weight` (5), `--edge-weight` (2) |
 | front halo | room for a fine-pitch part's fan-out: on each side its pads face, a strip `coef x nets leaving by that side` deep; a same-face part inside it pays the shortfall squared | `--halo-weight` (10), `--halo-coef` (0.25 mm per net) |
+| decap limits | the intent's `decaps.max_distance_mm` and `max_pin_distance_mm`, where it grades them at error: each decap's distance to its nearest owner (the chips the decap rule above names), and each supply pin's gap to its nearest cap, per mm past the limit, measured as `check_floorplan` measures them. A pin limit wider than the tether search radius (5 mm), which any cap on the rail meets, is priced only up to the radius past it, so the scattered start does not shape the board around it | `--decap-limit-weight` (10) |
 | foreign pads | each tree edge's crossing of another part's pad (through-hole counts twice) | `--pad-weight` (2) |
 | congestion | each 0.5 mm cell's routing overflow squared: demand spread over each net's bounding box against the free area per copper layer | `--congestion-weight` (5), `--track-pitch` (0.33 mm) |
 
@@ -183,8 +184,10 @@ emptied `clock` group is dropped, and `near` entries that named it point at
 at a median pitch of 1.0 mm or less (QFN, QFP, BGA, fine-pitch connectors). Its
 strip spans the facing pads, a part off the end of a pad row (the chip's corner)
 pays nothing, and a small part wired to the chip (4 pads or fewer: a decap at
-its pin, a crystal at its oscillator pins) may touch. Everything else packs as
-tight as legality lets it.
+its pin, a crystal at its oscillator pins) may touch. A decap may touch only on
+the side of the supply pin it is matched to; on the chip's other sides it pays
+like any other part, so the spare decaps of a rail do not park in a signal
+side's fan-out. Everything else packs as tight as legality lets it.
 
 ![U3 with its decaps on its supply pins](../../docs/placement-tigard-qfn.png)
 
@@ -203,7 +206,12 @@ edge -- past a locked part rather than through it -- or, when it has no
 mating face (a vertical header, a test pad), turn it. At the end the parts on
 one edge are pushed apart along it in their order.
 Moves shift, turn, swap, dock a part against a partner pad, jump a part to its
-wiring target, and move, turn or swap whole groups. A move is kept when it
+wiring target, and move, turn or swap whole groups. A chip's own move carries
+the caps that hold its decap limits (the cap at a supply pin, a cap the chip is
+nearest to) when moving the chip alone would pull them past their limits: each
+keeps its offset and turns with the chip. Without that the limits glue a chip
+to its caps, and a crystal or an IC that started in the wrong place stays
+there. A move is kept when it
 lowers the cost, or uphill with a probability that falls as the run cools. An
 overlap penalty (courtyards, the board's real outline with its cutouts and
 notches, the intent's keep-outs and zones, and the board's rule-area keep-out
@@ -293,7 +301,7 @@ of it; `check_floorplan --intent` grades all of it.
 | declared faces (`blocks[].side`, edge and face claims) | applied before the anneal (parts flipped) | yes |
 | `fixed_poses[]` | applied: seated at the declared pose and held | yes |
 | `edge_connectors[]` with an `edge` | applied to an unlocked edge part (connector, receptacle, switch, test pad; a cap the emitter declared because it overhangs is not): held to that edge where every edge-connector conjunct holds (band, edge read, pad copper clear of the outline), sliding along it | yes |
-| `decaps` limits (`max_distance_mm`, `max_pin_distance_mm`) | not read (the decap term pulls decaps to their pins, without a limit) | yes |
+| `decaps` limits (`max_distance_mm`, `max_pin_distance_mm`) | priced where graded at error: the decap-limit term | yes |
 | `blocks[].rotation`, `rotation_candidates` | not read (`place_fanout_clearance --intent` holds them) | yes |
 | `blocks[].rigid`, `arrays[]` | not read | yes |
 | `replicate[]` | not read (`place_pose replicate --intent` applies it) | yes |

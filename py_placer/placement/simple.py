@@ -32,7 +32,9 @@ this cost by simulated annealing; `place_simple.py` is the CLI.
            tight as legality lets it, and a part off the end of a pad row (a
            chip's corner) pays nothing. A small part wired to it (a decap at
            its pin, a crystal at its oscillator pins: HALO_SMALL_PADS pads or
-           fewer) is meant to touch and pays nothing; a bigger one wired to
+           fewer) is meant to touch and pays nothing -- a decap only on the
+           side of the pin it is matched to, priced with its cluster
+           (`_offside_halo`); a bigger one wired to
            it (a header its signals go to) leaves the fan-out room all the
            same.
          + pad_weight x each tree edge's crossings of foreign pads: a pad of
@@ -41,6 +43,10 @@ this cost by simulated annealing; `place_simple.py` is the CLI.
          + the groups file's hints, each weighted: `near`, the gap between
            two groups' nearest courtyards; `apart`, how far that gap falls
            short of APART_MM; `edge`, how far a group is from its board edge
+         + decap_limit_weight x mm past the intent's decap limits, where it
+           grades them at error (`set_limits`): each cap's distance to the
+           nearest chip on its rail, each supply pin's gap to its nearest
+           cap, measured as the grade measures them
          + congestion_weight x the sum over a grid of each cell's routing
            overflow squared: every net spreads its tree's length evenly over
            its bounding box (the demand, mm of track); a cell holds its area
@@ -95,6 +101,26 @@ HALO_SMALL_PADS = 4
 #: cells per side of the congestion grid's blocks: a move visits only the
 #: blocks where a cell can overflow before or after it (`_cong_price`)
 CONG_BLOCK = 8
+
+
+def _posed(fp, pose):
+    """`fp`'s pads at `pose`, as `legality.footprint_at_pose` poses them: the
+    footprint's own pads at the pose it holds, else `pads_at_pose`'s (whose
+    numbers it copies) -- without copying a footprint or a pad."""
+    from .legality import pads_at_pose
+    x, y, rot = pose
+    if (fp.x, fp.y, (fp.rotation or 0.0) % 360.0) == (x, y, rot % 360.0):
+        return fp.pads
+    return pads_at_pose(fp, pose)
+
+
+def _subset_fp(fp, pads):
+    """A copy of footprint `fp` carrying only `pads` (posing it poses only
+    them)."""
+    import copy
+    out = copy.copy(fp)
+    out.pads = list(pads)
+    return out
 
 
 def pad_pitch(offs: Sequence[Tuple[float, float]]) -> float:
@@ -350,6 +376,7 @@ class Model:
         self.groups = groups            # [(name, [members])], two or more each
         self._pidx: Dict[Tuple[str, str], List[int]] = {}
         self._fr: Dict = {}
+        self._psides: Dict = {}
         self._sites()
         # the parts that keep a halo (fine pitch, many pins), and how far
         # each one's reaches: its deepest front, the same at every turn (the
@@ -364,6 +391,7 @@ class Model:
         self.net_len: Dict[int, float] = {}
         self.net_edges: Dict[int, np.ndarray] = {}
         self._moving = frozenset()
+        self._lim, self._lw, self._lterms, self._lof, self._lval = None, 0.0, [], {}, {}
         self.reprice_all()
 
     def reprice_all(self):
@@ -555,7 +583,72 @@ class Model:
         return float(D[ri, ci % ns].sum()), {caps[i]: int(c % ns) for i, c in zip(ri, ci)}
 
     def cluster_cost(self, k):
-        return self.cluster_match(k)[0]
+        """Cluster `k`'s decaps at their matched sites, and the halo each
+        decap pays a fine-pitch owner away from the side of the pin it is
+        matched to (`_offside_halo`), in decap units."""
+        cost, match = self.cluster_match(k)
+        if self.dw > 0 and match:
+            cost += self._offside_halo(k, match) / self.dw
+        return cost
+
+    def _pin_sides(self, ic, num):
+        """The sides of `ic` (0..3: W, E, N, S, as `pad_fronts`) its pad
+        `num` faces at its live turn, as `pad_fronts` reads a pad: by its
+        offset from the pads' centre scaled by their half-extent; none for a
+        pad in the inner half (an exposed pad)."""
+        part = self.state.parts[ic]
+        key = (ic, part.rot, tuple(part.sides), str(num))
+        got = self._psides.get(key)
+        if got is None:
+            pg = [(x - part.x, y - part.y) for x, y, _n in part.pad_globals()]
+            xs, ys = [q[0] for q in pg], [q[1] for q in pg]
+            cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+            hw, hh = (max(xs) - min(xs)) / 2.0, (max(ys) - min(ys)) / 2.0
+            got = set()
+            for x, y in self._pad_xy(ic, num):
+                u = (x - part.x - cx) / hw if hw >= 0.05 else 0.0
+                v = (y - part.y - cy) / hh if hh >= 0.05 else 0.0
+                if max(abs(u), abs(v)) < 0.5:
+                    continue
+                if abs(u) >= abs(v) - 0.05:
+                    got.add(0 if u < 0 else 1)
+                if abs(v) >= abs(u) - 0.05:
+                    got.add(2 if v < 0 else 3)
+            got = self._psides[key] = frozenset(got)
+        return got
+
+    def _offside_halo(self, k, match):
+        """The halo cluster `k`'s decaps pay their fine-pitch owners: a
+        decap at its pin is meant to touch the chip, but only on the side of
+        the pin it is matched to; on the chip's other sides it leaves the
+        fan-out room like any other part (`halo_pair`, which exempts it
+        everywhere, leaves this pair to here)."""
+        _net, caps, sites = self.clusters[k]
+        chips = sorted({ic for site in sites for ic, _n in site if ic in self._fine})
+        if not chips:
+            return 0.0
+        total = 0.0
+        st = self.state
+        for cap in caps:
+            j = match.get(cap)
+            if j is None or st.parts[cap].pin_count > HALO_SMALL_PADS:
+                continue        # a bigger cap pays the halo in `halo_pair`
+            for ic in chips:
+                if not self._halo_near(cap, ic):
+                    continue
+                own = set()
+                for jc, num in sites[j]:
+                    if jc == ic:
+                        own |= self._pin_sides(ic, num)
+                total += self._halo_raw(cap, ic, drop_b=own)
+        return total
+
+    def _halo_near(self, a, b):
+        st = self.state
+        ra, rb = st.parts[a].rect(), st.parts[b].rect()
+        need = self._reach[a] + self._reach[b]
+        return not (ra[2] + need <= rb[0] or rb[2] + need <= ra[0]
+                    or ra[3] + need <= rb[1] or rb[3] + need <= ra[1])
 
     def decap_cost(self, cap, net):
         """`cap`'s distance to the site it is matched to."""
@@ -731,9 +824,24 @@ class Model:
         if not set(pa.sides) & set(pb.sides):
             return 0.0      # on opposite faces, neither drilled
         if min(pa.pin_count, pb.pin_count) <= HALO_SMALL_PADS and self.wired(a, b):
+            return 0.0      # a decap's own chip: priced in its cluster (`_offside_halo`)
+        return self._halo_raw(a, b)
+
+    def _halo_raw(self, a, b, drop_b=frozenset()):
+        """`halo_pair` without the small-wired exemption, `b`'s fronts on
+        the sides in `drop_b` left out."""
+        st = self.state
+        pa, pb = st.parts[a], st.parts[b]
+        if pa.locked and pb.locked:
+            return 0.0
+        if a in st.container_refs or b in st.container_refs:
+            return 0.0
+        if not set(pa.sides) & set(pb.sides):
             return 0.0
         ra, rb = pa.rect(), pb.rect()
         fa, fb = self.fronts(a), self.fronts(b)
+        if drop_b:
+            fb = tuple(None if i in drop_b else f for i, f in enumerate(fb))
         short, any_need = float('inf'), False
         # x: the W/E fronts, spanning y from the part's y; y: N/S, spanning x
         for lo, hi, olo, ohi, ca, cb, k in ((0, 2, 1, 3, pa.y, pb.y, 0),
@@ -1015,11 +1123,324 @@ class Model:
             self._cong_init()       # from scratch: total() is the reference
         cong = self.congestion()
         pads = self.pad_crossings() if self.pw_pad > 0 else 0.0
+        lim = self._limits_all()
         return {'wire': wire, 'crossings': cross, 'claims': claims, 'decaps': dec,
                 'groups': grp, 'per_group': per_group, 'hints': hint, 'per_hint': per_hint,
-                'halo': halo, 'congestion': cong, 'pad_hits': pads,
+                'halo': halo, 'congestion': cong, 'pad_hits': pads, 'decap_limits': lim,
+                'decap_broken': self.limits_broken(),
                 'cost': (wire + self.cw * cross + self.kw * claims + self.dw * dec
-                         + self.gw * grp + hint + halo + self.qw * cong + self.pw_pad * pads)}
+                         + self.gw * grp + hint + halo + self.qw * cong + self.pw_pad * pads
+                         + self._lw * lim)}
+
+    # -- the intent's decap limits ---------------------------------------------
+    # Each term is a MINIMUM over pairs, as the grade measures it: a supply
+    # pin's pad-edge gap to each cap that can serve it (`floorplan._pin_gap`,
+    # which `nearest_rail_cap` minimises), or a cap's pad centroid to each
+    # chip on its rail (`groups._point_to_bounds`, which `elect_live`
+    # minimises). The pairs are kept at the committed poses: a move
+    # re-measures only the pairs whose two ends it moved differently, and
+    # none of them when a pair it leaves alone keeps the term within its
+    # limit already (the term is then 0, whatever they read; `commit`
+    # measures them).
+    def set_limits(self, view, weight):
+        """Price the intent's decap limits (`decaps.max_distance_mm`,
+        `max_pin_distance_mm`, the ones it grades at error): `view` is a
+        `quench.TetherGateView` over the state's parts, whose terms are the
+        grade's own pairings. Each term costs `weight` per mm past its
+        limit."""
+        self._lim, self._lw = view, weight
+        T = view._tether_terms
+        self._lterms = [i for i, t in enumerate(T) if t.kind in ('decap', 'pin')]
+        self._lthr = {i: T[i].threshold for i in self._lterms}
+        # How far out a term pulls. A cap's own term (`max_distance_mm`) and a
+        # supply pin's limit within the tether search radius are tethers: priced
+        # however far past the limit, so a cap stranded across the board comes
+        # home (noahfc's C17-C19 at U6) and a pin a cap must sit at
+        # (fusb302's 1.38 mm) has one from the start. A pin limit wider than
+        # the radius is no tether -- any cap on the rail meets it, and no sane
+        # placement breaks it -- so it is priced only up to the radius past
+        # the limit: further out it is the scatter's accident, and a pull there
+        # shapes the board by whichever rail cap lands nearest (bitaxe_ultra's
+        # 26 mm pin limit tore its buck toward the ASIC's caps).
+        from .groups import DECAP_RADIUS_MM
+        self._lreach = float((view.tethers.get('decap_distance') or {}).get('radius', DECAP_RADIUS_MM))
+        self._lfar = {i for i in self._lterms
+                      if T[i].kind == 'decap' or T[i].threshold <= self._lreach}
+        ks = set(self._lterms)
+        self._lof = {r: tuple(i for i in idx if i in ks) for r, idx in view._tethers_of.items()}
+        # each term's anchor (the pin's IC; the cap) and members (the caps
+        # that can serve the pin; the chips on the cap's rail)
+        self._lanc = {i: T[i].data['ic'] if T[i].kind == 'pin' else T[i].data['cap']
+                      for i in self._lterms}
+        self._lmem = {i: T[i].data['caps'] if T[i].kind == 'pin' else T[i].data['rail']
+                      for i in self._lterms}
+        # the parts a limit can tether caps to: a pin's IC, a chip on a cap's rail
+        self._lcar = {self._lanc[i] if T[i].kind == 'pin' else m
+                      for i in self._lterms for m in (self._lmem[i] if T[i].kind == 'decap' else (None,))}
+        self._lpair, self._lval, self._lpose = {}, {}, {}
+        # what a pair reads of a part, posed with only the pads it needs: an
+        # IC's pins its pin terms name; a chip's outermost pad centres (all
+        # that reach its bounds at any quarter turn); a cap whole
+        from .groups import _pads
+        fps = self.pcb.footprints
+        self._lgeo, self._lpin, self._lnap = {}, {}, {}
+        pins = {}
+        for i in self._lterms:
+            if T[i].kind == 'pin':
+                pins.setdefault(T[i].data['ic'], []).append(T[i].data['pad_index'])
+        self._lfp_pins = {}
+        for ic, idx in pins.items():
+            idx = sorted(set(idx))
+            self._lfp_pins[ic] = _subset_fp(fps[ic], [fps[ic].pads[k] for k in idx])
+            for i in self._lterms:
+                if T[i].kind == 'pin' and T[i].data['ic'] == ic:
+                    self._lpin[i] = idx.index(T[i].data['pad_index'])
+        # each pin term's caps: how far a pad of the cap on the pin's net can
+        # reach from the cap's origin, at any turn (a pair's lower bound)
+        from .legality import pad_half_extents
+        self._lrad = {}
+        for i in self._lterms:
+            if T[i].kind == 'pin':
+                net = fps[T[i].data['ic']].pads[T[i].data['pad_index']].net_id
+                for c in T[i].data['caps']:
+                    f = fps[c]
+                    self._lrad[(c, net)] = max(
+                        (math.hypot(q.global_x - f.x, q.global_y - f.y) + math.hypot(*pad_half_extents(q))
+                         for q in f.pads if q.net_id == net), default=None)
+        self._lfp_hull = {}
+        for r in {m for i in self._lterms if T[i].kind == 'decap' for m in self._lmem[i]}:
+            f = fps[r]
+            P = _pads(f)
+            if P:
+                xs, ys = [p.global_x for p in P], [p.global_y for p in P]
+                ex = (min(xs), max(xs), min(ys), max(ys))
+                P = [p for p in P if min(abs(p.global_x - ex[0]), abs(p.global_x - ex[1]),
+                                          abs(p.global_y - ex[2]), abs(p.global_y - ex[3])) < 1e-9]
+            self._lfp_hull[r] = _subset_fp(f, P)
+
+    def _over_limit(self, i, v):
+        over = max(0.0, v - self._lthr[i])
+        return over if i in self._lfar else min(over, self._lreach)
+
+    def limits_broken(self):
+        """How many terms the committed poses put past their limit."""
+        from .legality import EPS
+        return sum(1 for i, v in self._lval.items() if v > self._lthr[i] + EPS)
+
+    def _lg(self, ref):
+        """The live pose of `ref` and its cache of what the pairs read there."""
+        pose = self._lim._pose_of(ref)
+        key = (ref, pose[0], pose[1], pose[2])
+        g = self._lgeo.get(key)
+        if g is None:
+            if len(self._lgeo) > 20000:
+                self._lgeo.clear()
+            g = self._lgeo[key] = {}
+        return g, pose
+
+    def _lim_pin_rect(self, i):
+        """`(net, rect)` of term `i`'s supply pin at its IC's live pose."""
+        from .legality import pad_rect
+        ic = self._lim._tether_terms[i].data['ic']
+        g, pose = self._lg(ic)
+        rects = g.get('pins')
+        if rects is None:
+            f = self._lfp_pins[ic]
+            rects = g['pins'] = [(o.net_id, pad_rect(q)) for o, q in zip(f.pads, _posed(f, pose))]
+        return rects[self._lpin[i]]
+
+    def _lim_cap(self, ref):
+        """`ref`'s pads at its live pose (`legality.pads_at_pose`, whose
+        numbers `footprint_at_pose` copies) and the cache they live in."""
+        g, pose = self._lg(ref)
+        pp = g.get('pp')
+        if pp is None:
+            pp = g['pp'] = _posed(self.pcb.footprints[ref], pose)
+        return g, pp, pose
+
+    def _lim_pair(self, i, m):
+        """Term `i`'s pair with member `m` at the live poses (None: `m` has no
+        pad on the pin's net, or no pads)."""
+        from . import groups as gr
+        from .legality import footprint_at_pose, pad_rect, rect_gap
+        t = self._lim._tether_terms[i]
+        if t.kind == 'pin':
+            # `floorplan._pin_gap`: the pin to each of the cap's pads on its net
+            net, pr = self._lim_pin_rect(i)
+            g, pp, _pose = self._lim_cap(m)
+            rects = g.get(net)
+            if rects is None:
+                rects = g[net] = [pad_rect(q) for o, q in zip(self.pcb.footprints[m].pads, pp)
+                                  if o.net_id == net]
+            return min((rect_gap(pr, q) for q in rects), default=None)
+        cap = t.data['cap']
+        g, pp, pose = self._lim_cap(cap)
+        c = g.get('centroid')
+        if c is None:
+            # `groups._centroid`: the mean of its pads less aperture-only ones
+            nap = self._lnap.get(cap)
+            if nap is None:
+                keep = {id(q) for q in gr._pads(self.pcb.footprints[cap])}
+                nap = self._lnap[cap] = [k for k, q in enumerate(self.pcb.footprints[cap].pads)
+                                         if id(q) in keep]
+            pts = [(pp[k].global_x, pp[k].global_y) for k in nap]
+            c = g['centroid'] = ((sum(q[0] for q in pts) / len(pts), sum(q[1] for q in pts) / len(pts))
+                                 if pts else (pose[0], pose[1]))
+        h, pose = self._lg(m)
+        if 'bounds' not in h:
+            h['bounds'] = (gr.chip_bounds_of(footprint_at_pose(self._lfp_hull[m], pose))
+                           if (pose[2] - (self.pcb.footprints[m].rotation or 0.0)) % 90.0 < 1e-9
+                           else gr.chip_bounds_of(footprint_at_pose(self.pcb.footprints[m], pose)))
+        b = h['bounds']
+        return None if b is None else gr._point_to_bounds(c, b)
+
+    def _lim_value(self, i, pairs):
+        """Term `i`'s value over its pairs, as `_tether_measure` reads it."""
+        from .legality import EPS
+        ds = [d for d in pairs.values() if d is not None]
+        if not ds:
+            return 0.0
+        d = min(ds)
+        t = self._lim._tether_terms[i]
+        if (t.kind == 'decap' and not (t.data['graded'] or t.data.get('stranded_error'))
+                and d > t.data['radius'] + EPS):
+            return 0.0      # beyond the radius: `decap_ungraded`, a warning
+        return d
+
+    def _limits_all(self):
+        """Every limit term's pairs at the live poses, from scratch: the
+        committed values. Returns mm past the limits, summed."""
+        if self._lim is None:
+            return 0.0
+        P = self.state.parts
+        self._lpair = {i: {m: self._lim_pair(i, m) for m in self._lmem[i]} for i in self._lterms}
+        self._lval = {i: self._lim_value(i, self._lpair[i]) for i in self._lterms}
+        self._lpose = {r: (P[r].x, P[r].y, P[r].rot) for r in self._lof if r in P}
+        return sum(self._over_limit(i, v) for i, v in self._lval.items())
+
+    def tethered(self, ref, pose):
+        """The caps a move of `ref` alone to `pose` would pull past a decap
+        limit they hold it within: the cap nearest one of its supply pins, or
+        a cap whose nearest chip on its rail it is, whose term `ref` at `pose`
+        would break. `simple_anneal` carries them with it."""
+        if self._lim is None or ref not in self._lcar:
+            return []
+        from .legality import EPS
+        T = self._lim._tether_terms
+        cand = []
+        for i in self._lof[ref]:
+            if self._lval[i] > self._lthr[i] + EPS:
+                continue
+            pairs = [(d, m) for m, d in self._lpair[i].items() if d is not None]
+            if not pairs:
+                continue
+            near = min(pairs)[1]
+            if T[i].kind == 'pin' and self._lanc[i] == ref:
+                cand.append((i, near))
+            elif T[i].kind == 'decap' and near == ref:
+                cand.append((i, self._lanc[i]))
+        if not cand:
+            return []
+        p = self.state.parts[ref]
+        was = (p.x, p.y, p.rot)
+        p.x, p.y, p.rot = pose
+        out = set()
+        try:
+            for i, c in cand:
+                if c in out:
+                    continue
+                thr = self._lthr[i] + EPS
+                if T[i].kind == 'pin':      # every pair moves with the pin
+                    held = any(d is not None and d <= thr
+                               for d in (self._lim_pair(i, m) for m in self._lmem[i]))
+                else:                       # the pair to `ref` moves
+                    held = self._lim_value(i, {**self._lpair[i],
+                                               ref: self._lim_pair(i, ref)}) <= thr
+                if not held:
+                    out.add(c)
+        finally:
+            p.x, p.y, p.rot = was
+        return sorted(out - {ref})
+
+    def _lim_local(self, ls, R):
+        """Terms `ls` with the parts `R` at their live poses: `({term:
+        value}, {term: (stale members, the stale pairs measured)})`. A pair
+        is stale when its two ends did not move as one (both shifted by the
+        same step, neither turned). Only the pairs a value needs are measured
+        here -- none when a pair left alone keeps the term within its limit --
+        and `commit` measures the rest."""
+        from .legality import EPS
+        P = self.state.parts
+        Rs = set(R)
+        step = {}
+        for r in R:
+            a, p = self._lpose.get(r), P[r]
+            step[r] = None if a is None or p.rot != a[2] else (p.x - a[0], p.y - a[1])
+
+        def together(a, b):
+            sa, sb = step.get(a), step.get(b)
+            return (sa is not None and sb is not None
+                    and abs(sa[0] - sb[0]) < 1e-9 and abs(sa[1] - sb[1]) < 1e-9)
+        vals, fresh = {}, {}
+        for i in ls:
+            anc, pairs = self._lanc[i], self._lpair[i]
+            ain = anc in Rs
+            stale = [m for m in self._lmem[i]
+                     if (m in Rs) != ain or (ain and not together(anc, m))]
+            if not stale:
+                vals[i] = self._lval[i]
+                continue
+            st = set(stale)
+            keep = {m: d for m, d in pairs.items() if m not in st}
+            best = min((d for d in keep.values() if d is not None), default=None)
+            if best is not None and best <= self._lthr[i] + EPS:
+                vals[i] = best
+                fresh[i] = (stale, None)
+                continue
+            if i in self._lpin:
+                # a pin term: its stale caps measured nearest first by a lower
+                # bound (centre distance less both reaches, below the gap when
+                # positive), until none left can beat the nearest found or one
+                # is within the limit; the rest are measured on `commit`
+                net, pr = self._lim_pin_rect(i)
+                cx, cy = (pr[0] + pr[2]) / 2.0, (pr[1] + pr[3]) / 2.0
+                hd = math.hypot((pr[2] - pr[0]) / 2.0, (pr[3] - pr[1]) / 2.0)
+                cand = []
+                for m in stale:
+                    r = self._lrad.get((m, net))
+                    if r is not None:       # else no pad on the pin's net: no pair
+                        cand.append((math.hypot(P[m].x - cx, P[m].y - cy) - hd - r - 1e-9, m))
+                cand.sort()
+                thr, got = self._lthr[i] + EPS, {}
+                for lb, m in cand:
+                    if best is not None and (best <= thr or lb >= best):
+                        break
+                    d = got[m] = self._lim_pair(i, m)
+                    if d is not None and (best is None or d < best):
+                        best = d
+                fresh[i] = (stale, got)
+                vals[i] = 0.0 if best is None else best
+                continue
+            new = {m: self._lim_pair(i, m) for m in stale}
+            fresh[i] = (stale, new)
+            vals[i] = self._lim_value(i, {**pairs, **new})
+        return vals, fresh
+
+    def _lim_commit(self, pend):
+        """A move was kept: its stale pairs measured at the new poses."""
+        if self._lim is None:
+            return
+        for i, (stale, new) in pend.get('lim', ({}, {}))[1].items():
+            new = dict(new or {})
+            for m in stale:
+                if m not in new:
+                    new[m] = self._lim_pair(i, m)
+            self._lpair[i].update(new)
+            self._lval[i] = self._lim_value(i, self._lpair[i])
+        P = self.state.parts
+        for r in pend['R']:
+            if r in self._lpose:
+                self._lpose[r] = (P[r].x, P[r].y, P[r].rot)
 
     # -- airwires over foreign pads -------------------------------------------
     def _pad_rows(self, ref):
@@ -1191,6 +1612,7 @@ class Model:
         for (n, pid), w in self._pad_breakdown((E, ends, labs), self._pads_of(names)).items():
             self._pn.setdefault(n, {})[pid] = w
             self._po.setdefault(pid, {})[n] = w
+        self._limits_all()
         self._pend = None
 
     def halo_pair_fast(self, a, b):
@@ -1351,6 +1773,7 @@ class Model:
         for (n, pid), w in pend['pads'].items():
             self._pn.setdefault(n, {})[pid] = self._pn.get(n, {}).get(pid, 0.0) + w
             self._po.setdefault(pid, {})[n] = self._po.get(pid, {}).get(n, 0.0) + w
+        self._lim_commit(pend)
         self._pend = None
 
     # -- local pricing of a set of moved parts --------------------------------
@@ -1363,7 +1786,8 @@ class Model:
         dc = sorted({d for r in refs for d in self._decaps_by.get(r, ())})
         gr = list({name: m for r in refs for name, m in self._groups_by.get(r, ())}.values())
         hs = list({h['key']: h for r in refs for h in self._hints_by.get(r, ())}.values())
-        return nets, cl, dc, gr, hs
+        ls = sorted({i for r in refs for i in self._lof.get(r, ())}) if self._lim is not None else []
+        return nets, cl, dc, gr, hs, ls
 
     def local(self, refs, touched=None, reprice=True):
         """The part of the cost `refs` can change. `reprice` False: the
@@ -1371,7 +1795,7 @@ class Model:
         and the cached trees -- a move's "before". True: re-priced at the
         live poses against the committed state near them, its breakdown
         held as pending for `commit` -- a move's "after"."""
-        nets, cl, dc, gr, hs = touched or self.touched(refs)
+        nets, cl, dc, gr, hs, ls = touched or self.touched(refs)
         R = sorted(refs)
         T = [n for n in nets if n in self.signal]
         if not reprice:
@@ -1396,9 +1820,10 @@ class Model:
                         halo += self._hp[(r, b) if r < b else (b, r)]
             grp = sum(self._gc[name] for name in self._group_names(gr))
             hint = sum(self._hc[h['key']] for h in hs)
+            lim = sum(self._over_limit(i, self._lval[i]) for i in ls)
             return (wire + self.cw * cross + self.kw * claims + self.dw * dec
                     + self.gw * grp + hint + halo + self.qw * self.congestion()
-                    + self.pw_pad * pads)
+                    + self.pw_pad * pads + self._lw * lim)
         ccl = {id(c): self.claim_cost(c) for c in cl}
         cdc = {k: self.cluster_cost(k) for k in dc}
         claims = sum(ccl[id(c)] for c in cl)
@@ -1426,12 +1851,16 @@ class Model:
         else:
             pend['pads'], pads = {}, 0.0
         pend['halo'] = self._local_halo_bd(R)
+        lim = 0.0
+        if ls:
+            pend['lim'] = self._lim_local(ls, R)
+            lim = sum(self._over_limit(i, v) for i, v in pend['lim'][0].items())
         self._pend = pend
         self._moving = frozenset()
         return (wire + self.cw * cross + self.kw * claims + self.dw * dec
                 + self.gw * sum(groups.values()) + sum(pend['hints'].values())
                 + sum(pend['halo'].values()) + self.qw * self.congestion()
-                + self.pw_pad * pads)
+                + self.pw_pad * pads + self._lw * lim)
 
     def _group_names(self, gr):
         names = {id(m): name for name, m in self.groups}

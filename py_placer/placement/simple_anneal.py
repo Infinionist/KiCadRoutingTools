@@ -33,6 +33,14 @@ Moves, each priced by `Model.local` against the committed state near it:
     escape  a part that overlaps something, to the least-overlap pose of
             ESCAPE_TRIES drawn at random over the board
 
+A shift, turn, jump or dock of a chip carries the caps that hold its decap
+limits (`Model.tethered`: the cap at one of its supply pins, a cap it is the
+nearest rail chip of) when moving the chip alone would pull them past their
+limits: each keeps its offset from the chip and turns with it. Priced at the
+limit, a cap is otherwise glue: on fusb302 a crystal that started across the
+board from its MCU stayed there, since jumping to its pins would have left
+its load cap 25 mm behind.
+
 Group turns and swaps are drawn only in the first quarter of the run
 (`BIG_UNTIL`): they move a whole group far at once, and on every board
 measured none was kept after the first fifth, while each one costs its
@@ -81,6 +89,7 @@ from placement.simple import ROTS, legal, nearest_legal, target
 MOVES = {'shift': 0.40, 'turn': 0.15, 'swap': 0.10, 'jump': 0.10, 'dock': 0.10,
          'gshift': 0.12, 'gturn': 0.08, 'gswap': 0.05, 'escape': 0.05}
 BIG_GROUP_MOVES = ('gturn', 'gswap')
+CARRY = ('shift', 'turn', 'jump', 'dock')    # one part's moves that carry its tethered caps
 BIG_UNTIL = 0.25    # the share of the run group turns and swaps are drawn in
 ESCAPE_TRIES = 48   # random poses an escape move draws, keeping the least overlap
 SHOVE_PARTS = 32    # the most parts one shove pushes
@@ -343,6 +352,8 @@ class Annealer:
         new = self._move(kind, reach)
         if not new:
             return new
+        if kind in CARRY:
+            new = self._carry(new)
         out = {r: v for r, v in new.items() if r not in self.seats}
         rs = []
         for r, (x, y, rot) in out.items():
@@ -365,6 +376,26 @@ class Annealer:
                 if r in self.no_flip and _half_turn(pose[2], now):
                     pose = (pose[0], pose[1], now)
                 out[r] = project(self.seats[r], pose, now)
+        return out
+
+    def _carry(self, new):
+        """One part's move `new` with the caps that hold its decap limits
+        (`Model.tethered`) moved as one with it: each at its offset from the
+        part, turned with it."""
+        (r, (x1, y1, rot1)), = new.items()
+        sats = [c for c in self.model.tethered(r, (x1, y1, rot1)) if c in self.movset]
+        if not sats:
+            return new
+        x0, y0, rot0 = self.pose(r)
+        q = (rot1 - rot0) % 360.0
+        out = dict(new)
+        for c in sats:
+            cx, cy, crot = self.pose(c)
+            if abs(q) < 1e-9 or abs(q - 360.0) < 1e-9 or abs(q / 90.0 - round(q / 90.0)) > 1e-9:
+                out[c] = (cx + x1 - x0, cy + y1 - y0, crot)     # a step (or an odd turn: stepped only)
+            else:
+                tx, ty = _turn(cx - x0, cy - y0, q)
+                out[c] = (x1 + tx, y1 + ty, (crot + q) % 360.0)
         return out
 
     def _move(self, kind, reach):
