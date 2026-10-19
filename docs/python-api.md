@@ -176,7 +176,11 @@ for how they fit together.
   via `run_obstacle_audit` / `obstacle_ledger_report`; with `pcb_data` and
   `config` the audit also runs `run_obstacle_content_audit`, which recomputes
   every cached net from the board and counts the cells the map should block
-  but does not -- the invariant ref-count balance cannot see.
+  but does not -- the invariant ref-count balance cannot see. The ledger's
+  scaffold watch (`ledger_scaffold_begin` / `ledger_scaffold_end`) checks, on
+  ANY map, that a `route_multipoint_taps` call leaves none of its own search
+  state behind (free vias, allowed cells, source/target overrides), which the
+  working-map books cannot see either.
 
 - **`fab_tiers`** — JLCPCB fab-capability floors as selectable cost tiers
   (issue #237). `fab_floor_ladder` / `fab_floors` / `fab_floor_for_param` give

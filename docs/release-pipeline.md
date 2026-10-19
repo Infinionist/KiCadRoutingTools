@@ -104,7 +104,7 @@ instead, for comparison.) The board is byte-identical to the corpus's
 that step re-reads the sibling `.kicad_pro` floor and changes the routing, so
 it is load-bearing, not redundant.
 
-It enforces three invariants and records a fourth:
+It enforces four invariants and records a fifth:
 
 | | invariant | |
 |---|---|---|
@@ -112,6 +112,17 @@ It enforces three invariants and records a fourth:
 | B | no unbalanced cache OBJECT | ENFORCED |
 | C | no cells unaccounted for by any net cache | ENFORCED |
 | D | raw add/remove op deltas cancel | RECORDED, not enforced |
+| F | a multipoint tap pass leaves no per-route state on its map | ENFORCED |
+
+**F covers what A-D cannot see.** They follow the working map alone and count
+only ref-counted cells, while Phase 3 routes each multipoint net on a per-net
+clone, and a tap pass's own search state -- free vias, terminal allowed-cell
+rects, source/target overrides -- lives in plain sets that no cache object
+carries and that `restore_obstacles_inplace` empties on the working map before
+the end-of-run audit looks. With the ledger armed, `route_multipoint_taps`
+checks every call on whatever map it was handed (the ledger's SCAFFOLD WATCH)
+and prints a `SCAFFOLD LEAK` line for each one that left state behind; F fails
+on any.
 
 **Do not substitute a faster board.** Measured 2026-08-29: `splitflap_driver`
 (8 s) reports every invariant BALANCED with the fix *disabled*, so a gate
