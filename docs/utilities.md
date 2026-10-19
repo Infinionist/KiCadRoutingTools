@@ -36,7 +36,9 @@ runnable tool in the clone with a one-line purpose.
 - Pictures: [board renderer](#board-renderer-route_renderpy) ·
   [placement renderer](#placement-renderer-render_placementpy) ·
   [floorplan overlay](#floorplan-overlay-render_planpy) ·
-  [nets side by side](#nets-side-by-side-render_netspy)
+  [nets side by side](#nets-side-by-side-render_netspy) ·
+  [routing movie](#routing-movie-route_moviepy) ·
+  [placement movie](#placement-movie-place_moviepy)
 - Fanout: [BGA](#bga-fanout-generator-bga_fanoutpy) ·
   [QFN/QFP](#qfnqfp-fanout-generator-qfn_fanoutpy)
 - Boards and projects: [net analyzer](#net-analyzer-list_netspy) ·
@@ -926,7 +928,7 @@ renderer the other pictures are drawn on: the GUI placement tab's live
 preview (`render_board_file`, redrawn each time the board being placed
 changes), `render_placement.py`'s stills, `check_drc.py --render DIR`'s
 violation-cluster crops, `route.py --preview --preview-png`'s proposed
-copper, and the stress-run images.
+copper, the stress-run images, and the routing and placement movies.
 
 ```bash
 python3 py_router/route_render.py BOARD.kicad_pcb [-o OUT.png] [--size 1600]
@@ -1056,6 +1058,66 @@ python3 -X utf8 py_tools/render_nets.py -o gnd.png --nets GND --view 120,60,150,
 - `--scale` — pixels per mm (default 12).
 
 Exit 0 drawn; 2 an unreadable board, or a pattern no board's net matches.
+
+## Routing Movie (`route_movie.py`)
+
+A movie of a routing run: each step's copper in the order it was laid, drawn
+by `route_render` on the dark theme with a caption naming the step, the event
+and the net. Every stress run makes one (`<rundir>/routing.mp4`, through
+`tests/stress/render_run.py`); by hand:
+
+```bash
+python3 py_router/route_movie.py RUNDIR                       # RUNDIR/routing.mp4
+python3 py_router/route_movie.py step1.kicad_pcb step2.kicad_pcb final.kicad_pcb -o run.mp4
+```
+
+- A run dir's boards play in chain order: `stepN` in the name, else the order
+  they were written, a `final*` board last. The first frame is the chain's
+  input board, the first board `redo_commands.sh` reads, when it can be found.
+- Where a step left a `<board>_routetrace.json`, its copper plays one router
+  event per frame: new copper flashes white, restored copper cyan, and ripped
+  copper red and dashed before it goes. `route.py` and `route_diff.py` write
+  that file beside their output when `KICAD_ROUTE_TRACE=1` (the stress
+  harness sets it; it records, and changes no copper).
+- Whatever else a step changed -- a plane pour, the route step's plane
+  finalize, any step with no trace -- then lands net by net, until the frame
+  is the board that step wrote.
+- `-o` — the movie (default `RUNDIR/routing.mp4`, or `<last board>_routing.mp4`).
+  An `.mp4` needs `ffmpeg` on PATH; without it, or with `-o x.gif`, it is a GIF,
+  which holds every frame in memory (the stress harness films only with
+  `ffmpeg`).
+- `--size` (default 1000 px), `--fps` (default 6), `--theme` (default `dark`).
+- `--max-frames` (default 2400) — past that many router events, several share
+  a frame.
+
+## Placement Movie (`place_movie.py`)
+
+A movie of a placement, step by step, in the routing movie's style. It takes
+every `place_simple.py` argument and places the board exactly as
+`place_simple.py` does -- the same placement for the same seed -- while
+filming the run.
+
+```bash
+python3 -X utf8 py_placer/place_movie.py board.kicad_pcb placed.kicad_pcb \
+    --groups groups.json --intent intent.json --seed 0 [--movie placed.mp4]
+```
+
+Each frame is the board with every part's pads and courtyard (movable parts
+tinted by group, fixed parts dim), the airwires the objective prices (ground
+left out: it is poured), the parts that moved since the last frame outlined
+in white, and a caption. The steps, each held a second: the input; the parts
+the intent puts on the other face or at a declared pose; the scatter; the
+parts held to their declared edges; the anneal, sampled `--frames` times
+(default 120) with its move count, temperature, cost and overlap; the best
+placement, with any part moved to its nearest legal pose; and the placed
+board. A fresh start after a run that left a part illegal is captioned where
+it happens.
+
+- `--movie` — the movie (default: the placed board's name, `.mp4`); a GIF
+  without `ffmpeg`.
+- `--size`, `--fps`, `--theme` — as the routing movie.
+- `--seeds` is refused: one movie is one seed. Exit codes are
+  `place_simple.py`'s.
 
 ## Orphan Stub Checker (`check_orphan_stubs.py`)
 

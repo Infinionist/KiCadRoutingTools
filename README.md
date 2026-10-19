@@ -99,7 +99,7 @@ Fast, grid-based A\* routing with a native Rust core (~10× faster than pure Pyt
 **Interfaces**
 - Full [KiCad plugin GUI](#kicad-plugin) (KiCad 9 & 10) and a scriptable [CLI](#command-line-interface)
 - [AI assistance](docs/claude-skills.md) — an **AI Drive** tab that plans an entire routing workflow or places a board by function, per-field "Ask AI" helpers, and datasheet-driven power / high-speed / diff-pair analysis
-- [Board rendering](docs/utilities.md#board-renderer-route_renderpy) — fast geometry PNG renderer (`route_render.py`), and placement stills (`render_placement.py`)
+- [Board rendering](docs/utilities.md#board-renderer-route_renderpy) — fast geometry PNG renderer (`route_render.py`), placement stills (`render_placement.py`), and movies of a routing run (`route_movie.py`, made for every stress run) and of a placement (`place_movie.py`)
 - [Routing plans as files](docs/claude-skills.md#plans-from-the-command-line) — save/load a whole routing chain as JSON: build one from a recorded command chain (`make_plan.py`), run it headless through the real plugin (`run_plan.py`), or load it in the GUI
 
 ## Quick Start
@@ -694,6 +694,7 @@ KiCadRoutingTools/
 │   ├── route_planes.py           # Main CLI - power/ground plane pours
 │   ├── repair_planes.py          # Standalone utility - repair disconnected plane regions (the chain step is absorbed into route.py's finalize, #562)
 │   ├── route_render.py           # PNG still of a board from its geometry
+│   ├── route_movie.py            # Movie of a routing run, step by step (route_trace.py records the router's events)
 │   ├── make_plan.py              # Recorded command chain -> GUI routing plan (plan.json)
 │   ├── run_plan.py               # Run a GUI routing plan headless, through the real plugin dialog
 │   ├── add_rule_area.py          # Write a copper keep-out rule area onto a board
@@ -740,6 +741,7 @@ KiCadRoutingTools/
 │
 ├── py_placer/                # Placement CLIs and the placement package
 │   ├── place_simple.py           # The placer: functional groups, one objective, annealed
+│   ├── place_movie.py            # place_simple with a camera: a movie of the placement, step by step
 │   ├── place_pose.py             # Set, turn, face, lock or replicate parts by hand
 │   ├── place_fanout_clearance.py # Move decoupling caps off fanout vias
 │   ├── beautify_labels.py        # Tidy the reference-designator silkscreen
@@ -940,6 +942,9 @@ Key functions in `py_tools/analyze_power_paths.py` (used by `/analyze-power-nets
 | `schematic_updater.py` | Update .kicad_sch files with pad swaps from routing |
 | `impedance.py` | Impedance calculations (microstrip/stripline, width from target Z) |
 | `memory_debug.py` | Memory usage statistics and debugging |
+| `route_render.py` | PNG still of a board from its geometry: the frame every picture and movie is drawn on |
+| `route_trace.py` | With `KICAD_ROUTE_TRACE=1`, records each track and via as the router lays, rips and restores it (`<output>_routetrace.json`), for `route_movie.py` |
+| `route_movie.py` | Movie of a routing run, step by step |
 
 ## Performance
 
@@ -974,6 +979,7 @@ Every tool prints its full option list with `--help`, and **[docs/configuration.
 | `check_complete.py` | Is the board DONE? One fail-closed verdict over the checks | [Utilities](docs/utilities.md#completion-check-check_completepy) |
 | `krt_registry.py` | Every runnable tool in the clone, what it is for, and which door (placement / routing) serves it | [Utilities](docs/utilities.md#tool-inventory-krt_registrypy-krt_capabilitiespy) |
 | `route_render.py` | PNG still of a board from its geometry | [Utilities](docs/utilities.md#board-renderer-route_renderpy) |
+| `route_movie.py` / `place_movie.py` | Movie of a routing run / of a placement, step by step | [Utilities](docs/utilities.md#routing-movie-route_moviepy) |
 | `make_plan.py` / `run_plan.py` | Build a GUI routing plan from a recorded chain / run one headless | [Plans from the CLI](docs/claude-skills.md#plans-from-the-command-line) |
 
 ```bash

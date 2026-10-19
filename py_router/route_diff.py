@@ -479,6 +479,10 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     # #962: the input's vias as values, for the ship-time Type VII stamp
     from fab_notes import via_snapshot as _via_snapshot962
     _input_vias962 = _via_snapshot962(pcb_data.vias, pcb_data)  # #1171: + sites
+    # KICAD_ROUTE_TRACE=1: the pairs' copper as laid, ripped and restored, for
+    # route_movie.py (written beside the output at the end)
+    from route_trace import attach as _attach_route_trace
+    _attach_route_trace(pcb_data, output_file)
 
     # Cross-class clearance: auto-read non-Default netclasses from the sibling
     # .kicad_pro when no map was passed (KiCad pairwise max(classA, classB)). A
@@ -2153,6 +2157,8 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
 
         if schematic_swaps:
             apply_swaps_to_schematics(schematic_dir, schematic_swaps, verbose=verbose)
+    from route_trace import dump as _dump_route_trace
+    _dump_route_trace(pcb_data, output_file)
 
     # Final memory summary
     if debug_memory:

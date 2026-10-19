@@ -728,6 +728,11 @@ def main():
                          "the whole replay forever. Pass 0 to disable the cap.")
     args = ap.parse_args()
 
+    # Record a route trace for each replayed route.py / route_diff.py step
+    # (#482), for the run's routing movie below. Default-on; set
+    # KICAD_ROUTE_TRACE=0 to skip.
+    os.environ.setdefault("KICAD_ROUTE_TRACE", "1")
+
     remaps = []
     for r in args.remap:
         if ":" not in r:
@@ -936,16 +941,18 @@ def main():
         if not os.path.isfile(fb_path):
             fb_path = None
 
-    # Final-board snapshot (combined + per-layer PNGs, #296/#424), via the fast
-    # geometry renderer (render_run -> route_render), replacing the old kicad-cli
-    # + headless-Chrome board_layer_images path. Drops <board>.png and
-    # <board>_<layer>.png. Non-fatal.
+    # Final-board snapshot (combined + per-layer PNGs, #296/#424) and the
+    # run's routing movie (#482), via the fast geometry renderer (render_run ->
+    # route_render, route_movie), replacing the old kicad-cli + headless-Chrome
+    # board_layer_images path. Drops <board>.png, <board>_<layer>.png and
+    # <rundir>/routing.mp4. Non-fatal.
     if fb_path:
         try:
-            from render_run import render_final_snapshot
+            from render_run import render_final_snapshot, render_run_movie
             render_final_snapshot(fb_path)
+            render_run_movie(os.path.dirname(os.path.abspath(fb_path)))
         except Exception as e:
-            print(f"board render skipped ({e})")
+            print(f"board render/movie skipped ({e})")
 
     # Parser-parity validation of the FINAL board (the headless twin of the
     # GUI's "Validate PCB Data" button): the pcbnew-built PCBData and the text

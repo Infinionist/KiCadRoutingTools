@@ -7645,6 +7645,9 @@ def add_route_to_pcb_data(pcb_data: PCBData, result: dict, debug_lines: bool = F
         pcb_data.vias.append(via)
     # Update result so output file also gets cleaned segments
     result['new_segments'] = cleaned_segments
+    if getattr(pcb_data, '_route_trace', None) is not None:     # the movie's record
+        from route_trace import record
+        record(pcb_data, cleaned_segments, result['new_vias'], result, trace_event)
 
 
 def drop_phantom_copper(results, pcb_data: PCBData,
@@ -7750,6 +7753,9 @@ def remove_route_from_pcb_data(pcb_data: PCBData, result: dict) -> None:
 
     if not segments_to_remove and not vias_to_remove:
         return
+    if getattr(pcb_data, '_route_trace', None) is not None:     # the movie's record
+        from route_trace import record
+        record(pcb_data, segments_to_remove, vias_to_remove, result, 'rip')
 
     if segments_to_remove:
         remove_ids = {id(s) for s in segments_to_remove}

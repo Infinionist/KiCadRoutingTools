@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
-"""Stress-run rendering: the final-board snapshot (#482).
+"""Stress-run rendering: the final-board snapshot and the routing movie (#482).
 
 Replaces the old kicad-cli + headless-Chrome renderer (board_image.py /
 board_layer_images.py) with the fast geometry renderer (route_render). Drops,
-next to the final board:
+next to the final board / in the run dir:
 
   * ``<board>.png``            -- combined final snapshot (all copper layers)
   * ``<board>_<layer>.png``    -- one snapshot per copper layer
+  * ``<rundir>/routing.mp4``   -- the run's routing movie (py_router/route_movie.py):
+                                  each step's copper in the order it was laid,
+                                  router event by router event where the step
+                                  recorded a ``*_routetrace.json``
+                                  (KICAD_ROUTE_TRACE=1). Only where ffmpeg is
+                                  on PATH.
 
 Geometry rendering is ~100x faster than the SVG->PNG path and needs no KiCad
 or browser, so it is feasible on every run.
 
 Usage:
     python3 tests/stress/render_run.py RUNDIR [FINAL_BOARD]
-      RUNDIR      stress run dir (holds stepN_*.kicad_pcb)
+      RUNDIR      stress run dir (holds stepN_*.kicad_pcb [+ *_routetrace.json])
       FINAL_BOARD final board to snapshot (default: the last step board)
 """
 import argparse
@@ -88,6 +94,21 @@ def render_final_snapshot(board_path, size=1600, per_layer=True, quiet=False):
     return written
 
 
+def render_run_movie(run_dir, out=None, quiet=False):
+    """The run dir's routing movie (`route_movie.make_movie`). Returns its path,
+    or None when the dir holds no board or the machine has no `ffmpeg`: a GIF
+    keeps every frame in memory, over 2 GB for a big chain, so the harness
+    films only where it can stream an .mp4 (`route_movie.py` makes the GIF
+    by hand)."""
+    import shutil
+    if not shutil.which('ffmpeg'):
+        if not quiet:
+            print("render_run: no ffmpeg on PATH; no routing movie")
+        return None
+    from route_movie import make_movie
+    return make_movie([run_dir], out=out, quiet=quiet)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -95,6 +116,8 @@ def main():
     ap.add_argument('final_board', nargs='?', default=None)
     ap.add_argument('--size', type=int, default=1600, help='snapshot px (default 1600)')
     ap.add_argument('--quiet', action='store_true')
+    ap.add_argument('--no-movie', action='store_true',
+                    help='snapshots only: skip RUNDIR/routing.mp4')
     args = ap.parse_args()
 
     final = args.final_board or final_board_of(args.run_dir)
@@ -106,6 +129,11 @@ def main():
     except Exception as e:
         print(f"render_run: snapshot failed: {e}", file=sys.stderr)
         return 1
+    if not args.no_movie:
+        try:
+            render_run_movie(args.run_dir, quiet=args.quiet)
+        except Exception as e:
+            print(f"render_run: movie failed: {e}", file=sys.stderr)
     return 0 if paths else 1
 
 

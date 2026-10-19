@@ -59,7 +59,8 @@ orphan verification -> compare-to-original), writing
 `transcript.jsonl` by `extract_narrative.py`. After the agent exits the worker
 also re-grades the final board itself (`grade_final.py` →
 `authoritative_grade.json`; `MISGRADE` in `.worker_done` when the agent's
-self-report disagrees), renders it (`render_run.py`), runs the parser-parity
+self-report disagrees), renders it and films the run (`render_run.py`: the
+snapshots and `routing.mp4`), runs the parser-parity
 check (`validate_pcb_data.txt`) and converts the manifest to a GUI plan
 (`<board>_plan.json`). The queue scripts read the data root from `$STRESS_ROOT`
 (same default as `$STRESS_DIR`). The full mechanism, fresh-machine prereqs
@@ -139,7 +140,8 @@ failing command instead of stopping — the recorded sequence already contains t
 agent's retries, so a recorded failure is normal and is followed by its
 successful retry), `--timeout SECONDS` (per-command cap, default 3 h, 0 = none),
 `--skip-validate` (skip the final board's parser-parity check). A replay also
-renders the final board (`render_run.py`) and writes `git_version.txt`.
+renders the final board and films the run (`render_run.py`) and writes
+`git_version.txt`.
 
 Recording is opt-in: set `REDO_MANIFEST=<path>` to capture a manual run (only the
 board-mutating tools record; re-run `check_*` separately for grading), or leave it

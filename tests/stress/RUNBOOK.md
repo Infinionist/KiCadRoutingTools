@@ -109,7 +109,7 @@ variable.
    `boards_set1/`, `results_set1/`; set 2 → `boards_unrouted_set2/`, `runs_set2/`,
    `boards_set2/`, `results_set2/`)
 
-## Run artifacts: final snapshot (#482)
+## Run artifacts: final snapshot and routing movie (#482)
 
 At the end of each board's run the harness renders, into the run dir, via the
 fast geometry renderer (`tests/stress/render_run.py` → `route_render`; no KiCad
@@ -119,18 +119,30 @@ headless-Chrome `board_layer_images` path):
 - `<final-board>.png` — combined all-copper snapshot of the final board.
 - `<final-board>_<layer>.png` — one snapshot per copper layer (plane vs signal
   at a glance; plane pours render natively).
+- `routing.mp4` — the run's routing movie (`py_router/route_movie.py`): each
+  step's copper in the order it was laid. The harness sets
+  `KICAD_ROUTE_TRACE=1`, so every `route.py` / `route_diff.py` step leaves a
+  `<board>_routetrace.json` and plays router event by router event (new copper
+  white, restored cyan, ripped red and dashed); a step without one (planes,
+  fanout) lands net by net. Seconds a board (zynq_ad9364's 12-step chain:
+  43 s, 330 MB). Made only where `ffmpeg` is on PATH -- not in the cloud
+  images; a GIF would hold every frame in memory -- so film a downloaded run
+  dir by hand. `KICAD_ROUTE_TRACE=0` in the outer environment skips the traces.
 
 Both the live worker (`run_board.sh`) and the no-LLM replay
 (`redo_stress_test.py`) produce these automatically. By hand, for any run dir:
 
 ```bash
-python3 tests/stress/render_run.py runs_set1/myboard   # the final board of the dir
+python3 tests/stress/render_run.py runs_set1/myboard   # the final board of the dir, and the movie
+python3 tests/stress/render_run.py runs_set1/myboard --no-movie   # snapshots only
+python3 py_router/route_movie.py runs_set1/myboard     # the movie only
 ```
 
 The final board is an explicit `final*` board when there is one, else the last
 chain board: `stepN` order in the filename (`step6_route` or
 `board_step6_route`, sub-steps `step2a/2b` ordered correctly), or **write-time
-order** when a chain names outputs semantically (`diff_groupA`, `planes`).
+order** when a chain names outputs semantically (`diff_groupA`, `planes`). The
+movie plays the boards in that same order.
 
 ## Building a board set (source → validate → prep)
 

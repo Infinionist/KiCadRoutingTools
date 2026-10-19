@@ -3174,6 +3174,11 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
         mem_after_working = get_process_memory_mb()
         print(format_memory_stats("After working obstacle map", mem_after_working, mem_after_working - mem_start))
 
+    # KICAD_ROUTE_TRACE=1: record the copper as it is laid, ripped and
+    # restored, for route_movie.py (written beside the output at the end)
+    from route_trace import attach as _attach_route_trace
+    _attach_route_trace(pcb_data, output_file)
+
     # Create routing state object to hold all shared state
     state = create_routing_state(
         pcb_data=pcb_data,
@@ -7872,6 +7877,8 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             dump_net_story(state, output_file or input_file)
         except Exception as _e:
             print(f"  net story dump failed: {_e}")
+    from route_trace import dump as _dump_route_trace
+    _dump_route_trace(state.pcb_data, output_file)
 
     # KICAD_DUP_TRAP=1: final verdict. Says whether the traps SURVIVED the
     # run -- a rebind swaps in a plain list and disarms them, so a bare

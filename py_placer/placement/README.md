@@ -383,6 +383,11 @@ python3 -X utf8 py_tools/render_placement.py placed.kicad_pcb --before input.kic
   `a_off_outline.pad_copper_gating`: the parts whose pads are off the board).
   The render is triage; the routed result is the verdict.
 
+To watch a placement happen, `py_placer/place_movie.py` takes the same
+arguments as `place_simple.py`, places the board exactly as it does, and
+films the run: the scatter, the anneal as it lowers the cost, the best
+placement and the board written ([Utilities](../../docs/utilities.md#placement-movie-place_moviepy)).
+
 ## The GUI tab
 
 The KiCad plugin's **AI Drive › Placement** tab runs the same skill on the open
@@ -416,6 +421,7 @@ after a QFN fanout, as tigard's does. See
 | file | what it is |
 |---|---|
 | `../place_simple.py` | The placer CLI: groups, one objective, annealed |
+| `../place_movie.py` | `place_simple` with a camera: a movie of the run |
 | `simple.py` | The objective: every term above, priced locally per move (spatial index, cached breakdowns, Rust kernels) |
 | `simple_anneal.py` | The simulated annealing: moves, schedule, overlap penalty, the final legality pass |
 | `grouping.py` | The groups file: schema, rails, cohesion and decap checks, folding claims into groups (`check_groups.py`) |
