@@ -103,6 +103,77 @@ IC_PACKAGE_FP = ('qfn', 'dfn', 'sot', 'soic', 'ssop', 'tssop', 'vssop',
                  'msop', 'qfp', 'bga', 'csp', 'wlp', 'lga', 'to-', 'sod',
                  'dip-', 'pga')
 
+# Connector families the substring tables above miss, read as WORDS of the
+# footprint ITEM (`lib:item` -> item). The item, because the pcbnew front
+# has no library name: a token that matched `Connector_Coaxial:` classed
+# `SMA_..._EdgeMount` a connector on the CLI and nothing in the GUI. Over
+# the 478 corpus human boards these were the real edge connectors that
+# claimed no edge (BNC, FAKRA, edge-mount SMA, card-edge fingers, SFP cages,
+# FFC, WAGO). Two strengths, as for the tables above:
+#
+# Mates THROUGH the edge -> `edge_receptacle`: an SFP cage (its host
+# connector sits at the cage's far end, 3-16 mm inboard on the corpus, so it
+# is only a connector); the `PJ-` jack series (barrel and 3.5 mm); TRS/TRRS;
+# modular RJ jacks.
+EDGE_RECEPTACLE_RE = re.compile(
+    r'(?<![a-z])[qo]?sfp.*cage|(?<![a-z])pj-?\d|(?<![a-z])trr?s(?![a-z])'
+    r'|(?<![a-z])rj-?\d')
+# Coaxial RF. `sma` is also the DO-214AC diode package (`D_SMA`,
+# `DIODE-SMA`, LCSC `SMA_L4.3-W2.6-LS5.1`), so it needs connector evidence
+# or an edge-mount word and never reads a diode package; the other families
+# name nothing else. Edge-mount, end-launch, horizontal or right-angle ->
+# `edge_receptacle`; vertical and board-level (U.FL) -> `connector_affinity`.
+RF_COAX_RE = re.compile(r'(?<![a-z0-9])(?:rp-?)?(?:bnc|fakra|mmcx|mcx'
+                        r'|u[.-]?fl|w\.fl|ipex|mhf\d*[a-z]?)(?![a-z])')
+RF_SMA_RE = re.compile(r'(?<![a-z0-9])(?:rp-?)?sma(?![a-z])')
+RF_EDGE_MOUNT_RE = re.compile(r'edge|launch|horizontal|right.?angle'
+                              r'|(?<![a-z])(?:ang|ra)(?![a-z])')
+DIODE_PACKAGE_RE = re.compile(r'^d[_-]|diode|do-?214')
+CONNECTOR_WORD_RE = re.compile(r'(?<![a-z])conn(?![a-z])|connector|card'
+                               r'|cartridge')
+# An item that says EDGE (`PCB-Edge_PCIexpress_x1`, `cartridge_edge_72`) or
+# carries castellated edge pins, beside CONNECTOR evidence (a CONN_PREFIX_MED
+# reference or a connector word) -> `connector_affinity`, not a receptacle:
+# the word names a card's fingers and the slot that takes them alike (the
+# fingers are read off their pads, in `classify_part`), and without the
+# evidence it names a spacer (`m2_hex_spacer_passthrough_edge`, H) and
+# passives with castellated terminals (`LED_0603_1608Metric_Castellated`).
+EDGE_NAMED_RE = re.compile(r'edge|castellat')
+# Wire-to-board and board-to-board -> `connector_affinity` (no edge claim by
+# itself): `Conn_*` / `CONN-*`, FFC/FPC, WAGO / Phoenix / terminal blocks,
+# JST part numbers (`SM04B-SRSS-TB`, `B2B-XH-A`), XT30/60/90, Tag-Connect,
+# IDC, PMOD, DIMM and M.2 sockets, PCIe slots, SFP host connectors,
+# shrouded headers, solder wires.
+CONNECTOR_ITEM_RE = re.compile(
+    r'(?<![a-z])conn(?![a-z])|(?<![a-z])(?:ffc|fpc)(?![a-z])'
+    r'|(?<![a-z])wago|termblock|phoenix'
+    r'|(?<![a-z0-9])(?:s|b|sm|bm)\d{1,2}b-[a-z]'
+    r'|(?<![a-z])xt(?:30|60|90)|tag-?connect|(?<![a-z])tc20[357]0'
+    r'|(?<![a-z])idc(?![a-z])|(?<![a-z])pmod|dimm(?![a-z])'
+    r'|(?<![a-z])pci-?e|pciexpress|(?<![a-z0-9])m\.2(?![0-9]).*(?:key|socket)'
+    r'|(?<![a-z])[qo]?sfp|shroud|(?<![a-z])(?:solder)?wire(?![a-z])')
+
+
+def _item_connector_class(item: str, pref: str) -> Optional[str]:
+    """`edge_receptacle`, `connector_affinity` or None from the item-word
+    families above; `item` is the lower-case footprint item."""
+    # IC packages never; `sod` (SOD-123) also spells SO-DIMM, whose sockets
+    # and card edges are connectors.
+    if any(k in item.replace('sodimm', '') for k in IC_PACKAGE_FP):
+        return None
+    conn = pref in CONN_PREFIX_MED or bool(CONNECTOR_WORD_RE.search(item))
+    edge_mount = bool(RF_EDGE_MOUNT_RE.search(item))
+    rf = (not DIODE_PACKAGE_RE.search(item)
+          and (RF_COAX_RE.search(item) is not None
+               or (RF_SMA_RE.search(item) is not None
+                   and (conn or edge_mount))))
+    if EDGE_RECEPTACLE_RE.search(item) or (rf and edge_mount):
+        return 'edge_receptacle'
+    if (rf or CONNECTOR_ITEM_RE.search(item)
+            or (conn and EDGE_NAMED_RE.search(item))):
+        return 'connector_affinity'
+    return None
+
 _PREFIX_RE = re.compile(r'^([A-Za-z]+)')
 
 SEAT_TOL_MM = 0.5      # default; callers pass max(0.5, 2*grid_step)
@@ -155,10 +226,21 @@ def classify_part(fp, ref: str) -> PartClass:
     pins = {str(getattr(p, 'pinfunction', '') or '').upper() for p in pads}
     recep_pins = pins & RECEPTACLE_PINS
     is_ic_pkg = any(k in name for k in IC_PACKAGE_FP)
-    fp_recep = any(k in name for k in EDGE_RECEPTACLE_FP) and not is_ic_pkg
+    # Structural: card-edge fingers. `connect` is KiCad's EDGE CONNECTOR pad
+    # type, and a part made only of such pads is the fingers of a card that
+    # plugs in at this board's edge, whatever it is called (`pcie_x1`,
+    # `Zorro3`, `A2000_CPUSLOT_MALE`). Four pads, because a fiducial (above)
+    # is one or three.
+    fingers = len(pads) >= 4 and all(
+        getattr(p, 'pad_type', '') == 'connect' for p in pads)
+    item_cls = ('edge_receptacle' if fingers else
+                _item_connector_class(name.rsplit(':', 1)[-1], pref))
+    fp_recep = ((any(k in name for k in EDGE_RECEPTACLE_FP) and not is_ic_pkg)
+                or item_cls == 'edge_receptacle')
     fp_act = any(k in name for k in EDGE_ACTUATOR_FP)
 
-    if (fp_recep or recep_pins) and not is_ic_pkg:
+    if ((fp_recep or recep_pins) and not is_ic_pkg) \
+            or item_cls == 'edge_receptacle':
         ev = []
         if fp_recep:
             ev.append('footprint name matches the edge-receptacle table')
@@ -185,7 +267,8 @@ def classify_part(fp, ref: str) -> PartClass:
     # graded at ADVISORY severity: a mid-board pose is a flag for the
     # boundary review, never an error, and pose_plausible makes no claim
     # for it.
-    if any(k in name for k in CONNECTOR_FP) and not is_ic_pkg:
+    if (any(k in name for k in CONNECTOR_FP) and not is_ic_pkg) \
+            or item_cls == 'connector_affinity':
         return PartClass('connector_affinity', 'low',
                          ('connector-family footprint name; no edge claim',))
     return PartClass(None, None)
