@@ -1172,6 +1172,16 @@ def _offset_side(run, h):
         i = back[0]
         del pts[i + 1 if i + 1 < len(pts) - 1 else i]
 
+def bare_lane(pcb, nm, byname):
+    """a net with no track at all (a via in its pad at most) and pads on two parts: on the ESCAPE fanout's field
+    (dogbone_arrays) a net whose balls are both outer balls left to leave on their own layer, or one whose ball found
+    no gap for its dog-bone -- no stub end to read, and the escape fanout lays both of its ends from the pads
+    (escape_plan.plan_state reads a lane by its pads; sdi_mipi_conv's SDI bus lost five of its 21 nets to the ladder,
+    D0, D2 and D7 outer balls at both arrays)"""
+    nid, net = byname[nm]
+    return not any(s.net_id == nid for s in pcb.segments) and len({p.component_ref for p in net.pads}) >= 2
+
+
 def endpoints(pcb, names, byname, dest_ref=None):
     """Where each net's corridor must start and finish.
 
@@ -6722,7 +6732,17 @@ def setup(board, names, dest, log, plan=None, pairs=False):
             try:
                 with open(_pj, encoding='utf-8') as _f:
                     plan = _json_pl.load(_f)
-                named = [nm for nm in names if nm in plan.get('ends', {})]
+                # (a pair member by its legs: the sidecar keys a pair's
+                # ends, layers and directions by its legs, as every read
+                # below takes them. Asked by its member's name alone, an
+                # all-pair bus's plan named none of its nets and was
+                # dropped: sdi_mipi_conv's MIPI bus to J4 read its escape
+                # directions off copper, MIPI0_D3's south tooth read west,
+                # a far-face tooth inside U11, and the solve refused every
+                # round -- the fanout's audit, its legs as singles, clean)
+                _pe = plan.get('ends', {})
+                named = [nm for nm in names if nm in _pe
+                         or any(l_ in _pe for l_ in _pairs_here.get(nm, ()))]
                 if not named:
                     log(f'plan sidecar {os.path.basename(_pj)} names none of '
                         f'this run\'s nets -- ignored')
@@ -6737,7 +6757,7 @@ def setup(board, names, dest, log, plan=None, pairs=False):
                     # than the one the plan was judged in (measured at
                     # K41: every net read off copper, the spine 0.07 mm
                     # off the judged one, three legs moved to one s)
-                    miss = [nm for nm in names if nm not in plan.get('ends', {})]
+                    miss = [nm for nm in names if nm not in named]
                     log(f'plan from {os.path.basename(_pj)}: {len(named)} of '
                         f'{len(names)} nets; {", ".join(miss)} read off the board')
                 else:
@@ -6794,6 +6814,10 @@ def setup(board, names, dest, log, plan=None, pairs=False):
             ctx.dest_cut = (f_, v_)
         else:
             ctx.dest_cut = (2.0 * CY - float(dc_)) if chi < 0 else float(dc_)
+    # ...and the source's far-face cut (whole_frame.src_cut: which side a far-face tooth goes round), mirrored the same
+    ctx.src_cut = None
+    if plan and plan.get('src_cut') is not None:
+        ctx.src_cut = (2.0 * CY - float(plan['src_cut'])) if chi < 0 else float(plan['src_cut'])
     if ctx.pages_first and EXACT_PAGES_ENV != '0':
         # a PAGES-FIRST plan (fanout_from_plan PLAN_PAGES): its two chains
         # were chosen to cover every lane, so the schedule pages it exactly

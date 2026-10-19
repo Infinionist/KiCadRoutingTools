@@ -12,8 +12,10 @@ With the step itself stood in for (no routing: each bus 'handed on' as its input
 3. a SHARED ARRAY: an escape bus on an array an earlier bus was handed on through gets that array planned whole
    (ESCAPE_JOINT) and its ends on the board as it was before that earlier bus (ESCAPE_JOINT_ENDS); an escape bus on
    arrays nothing went through, and one after an earlier bus that was not handed on, get neither; a plain or joint
-   bus from such an array gets neither either -- keeping the escapes the earlier step laid it there is the
-   environment's to opt into (SOURCE_SHARED), never set here;
+   bus from such an array gets neither either, and no SOURCE_SHARED set on it;
+3b. keeps_source_escapes: a PLAIN bus keeps the escapes an earlier step laid its nets at its source by default, a joint
+   or an escape bus does not; SOURCE_SHARED=0 keeps none; SOURCE_SHARED=REF,.. a plain or joint bus from those
+   sources, never an escape bus;
 4. step_policy lays a step's settings over the environment, the step's own policy over both.
 """
 import os
@@ -91,6 +93,15 @@ check([c['settings'].get('SOURCE_SHARED') for c in calls] == [None] * 5,
       f'3: SOURCE_SHARED is the environment\'s to opt into, set on no bus: {[c["settings"] for c in calls]}')
 check(calls[2]['settings'] == {'ROUTE_LAYERS': L4} and not calls[2]['escape'] and not calls[2]['joint'],
       f'3: U1-U4: its layers, plain: {calls[2]}')
+
+# 3b. keeps_source_escapes (src, escape, joint_fanout, SOURCE_SHARED)
+ks = rb.keeps_source_escapes
+check(ks('U1', False, False, None) and ks('U1', False, False, '  '), '3b: a plain bus keeps them by default')
+check(not ks('U1', False, True, None), '3b: a joint bus does not by default')
+check(not ks('U1', True, False, None) and not ks('U1', True, False, 'U1'), '3b: an escape bus never')
+check(not ks('U1', False, False, '0'), '3b: SOURCE_SHARED=0 keeps none')
+check(ks('U1', False, True, 'U7,U1') and not ks('U1', False, False, 'U7'),
+      '3b: SOURCE_SHARED=REF,..: a plain or joint bus from those sources alone')
 
 # 4. step_policy: the step's settings over the environment, its policy over both
 import awx_settings  # noqa: E402

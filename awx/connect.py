@@ -190,7 +190,12 @@ def connect(pcb: PCBData, net_id: int, a: Point, a_layer: str,
     bx0, bx1 = min(p[0] for p in pts), max(p[0] for p in pts)
     by0, by1 = min(p[1] for p in pts), max(p[1] for p in pts)
     cx, cy = (bx0 + bx1) / 2, (by0 + by1) / 2
-    half = max(bx1 - bx0, by1 - by0) / 2 + margin
+    # the window's edge is a BOARD edge to the obstacle builders (make_local_window): a via at the lane's outermost
+    # point stands its edge clearance inside it and a step to spare, whatever the margin asked -- 0.6 left
+    # sdi_mipi_conv's SDI_D2 (4 layers) no via at its planned change 1.4 mm short of its berth, the lane's
+    # easternmost point, 0.600 from the window's edge where a via's reach is 0.625: refused both rounds
+    edge_ = cfg.board_edge_clearance if cfg.board_edge_clearance > 0 else cfg.clearance
+    half = max(bx1 - bx0, by1 - by0) / 2 + max(margin, edge_ + cfg.via_size / 2 + 2 * cfg.grid_step)
     window = make_local_window(pcb, cx, cy, half)
     if not window.board_info.board_bounds:
         return None

@@ -370,6 +370,17 @@ def fan_via_reach(rules):
         * rules.grid
 
 
+def fan_via_clear(rules):
+    """How far a via keeps another net's escape run off it where the run is laid EXACTLY as planned, not routed on a
+    grid: the escape fanout (escape_plan) lays its moves as they are, and joint_escape plans the shared array's runs at
+    exactly this -- the via's radius, the run's half width and the clearance. fan_via_reach's grid ring is 0.40625 at
+    0.45 mm vias, 0.12 escapes and 0.1 clearance: past the 0.4 a 0.8 mm array's dog-bone stands off the next ball line,
+    so every dog-bone met every neighbouring line's run on every layer, and the ends model found no plan with no
+    conflict for sdi_mipi_conv's SDI bus on four routing layers or on eight (11 of 15 teeth at most), where the joint
+    escape laid them"""
+    return rules.via_size / 2 + rules.fan_track / 2 + rules.clearance
+
+
 def active():
     """The rules in force in this process: the last installed, else the
     supplied (SETTING), else DEFAULT. A module initializes its constants

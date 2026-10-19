@@ -275,6 +275,7 @@ def candidate(pcb, names, dest, plan, tracks=(), cfg=None, board=None):
     ctx.pages_first = bool(plan.get('pages_first'))
     dc_ = plan.get('dest_cut')
     ctx.dest_cut = None if dc_ is None else ((dc_[0], float(dc_[1])) if isinstance(dc_, (list, tuple)) else float(dc_))
+    ctx.src_cut = None if plan.get('src_cut') is None else float(plan['src_cut'])
     pe = plan['ends']
     # (each net's end at the destination part it reaches: DEST may name several, braid.net_dest)
     ends = {nm: (tuple(pe[nm][0]), tuple(pe[nm][1]), bd.net_dest(byname[nm][1], dest)) for nm in names if nm in pe}

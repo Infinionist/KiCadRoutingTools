@@ -129,6 +129,14 @@ FRONT_REACH = 1.2         # a single lane's exit: its straight run out, this far
 FRONT_VIA = 1.0           # ... blocked, with room for a via before the block: the lane changes layer there ...
 FRONT_BLOCKED = 1000.0    # ... blocked with no room for one: past any via count, yet no refusal (a lane with no other end
 #                           keeps it)
+FAR_TOOTH = 1000.0        # a tooth on the source's FAR face (the one
+#                           turned away from the destination): the lane goes round the source (whole_frame's lead-in),
+#                           so past any via count, yet no refusal -- taken only by a lane with no other way out of the
+#                           source (sdi_mipi_conv's SDI bus on U11's columns beside its far face)
+FENCE_OUT = 1.5           # the band round a source side face its lanes ride in: this far outside its pad box, mm
+FENCE_VIAS = 2.0          # a lane round a FENCED side (other nets' copper across that band: side_fences) -- a far-face
+#                           lane's side of the cut, a side face's tooth -- a layer change under the fence and one back
+POCKET_ROW = 0.01         # (plane_ways) a pair's pocket starts this much short of the outer ball row's centres
 WALLED = 1000.0           # a plane ball of the arrays its ends leave no way down (the joint fanout: plane_ways) -- past
 #                           any via count, yet no refusal
 FAR = {'left': (-1, 0), 'right': (1, 0), 'up': (0, -1), 'down': (0, 1)}
@@ -140,6 +148,35 @@ FAR = {'left': (-1, 0), 'right': (1, 0), 'up': (0, -1), 'down': (0, 1)}
 CORNER_ON = (awx_settings.get('ENDS_CORNER') or '0') == '1'
 CORNER = float(awx_settings.get('ENDS_CORNER_PRICE') or '1000')
 CORNER_K = float(awx_settings.get('ENDS_CORNER_K') or '4')
+
+
+def side_fences(pcb, box, skip, out=FENCE_OUT):
+    """{'N': [x, ..], 'S': [x, ..]}: where other nets' copper -- routed copper, a bus an earlier step laid -- crosses
+    the line `out` outside the source's pad box's north face and its south face, corner to corner, on the routing
+    layers: its TRACKS across the line, and its VIAS within half that of it, a barrel on every layer (`skip`: the run's
+    net names). What a lane round that side crosses: sdi_mipi_conv's DDR3 bus leaves U11's south face on four of its
+    eight layers and drops to the planes there, and the SDI lanes sent round the south -- far-face lanes, and teeth on
+    the south face -- were found against it every round (the north side free)"""
+    import route_layers
+    lays = set(route_layers.layers())
+    x0, x1 = box[0] - out, box[2] + out
+    name = lambda i: pcb.nets[i].name.split('/')[-1] if i in pcb.nets else ''
+    res = {}
+    for side, y in (('N', box[1] - out), ('S', box[3] + out)):
+        xs = []
+        for s_ in pcb.segments:
+            if s_.layer not in lays or getattr(s_, 'graphic', False):
+                continue
+            nm = name(s_.net_id)
+            if not nm or nm in skip or (s_.start_y - y) * (s_.end_y - y) > 0 or s_.start_y == s_.end_y:
+                continue
+            x = s_.start_x + (y - s_.start_y) / (s_.end_y - s_.start_y) * (s_.end_x - s_.start_x)
+            if x0 <= x <= x1:
+                xs.append(x)
+        xs += [v_.x for v_ in pcb.vias if x0 <= v_.x <= x1 and abs(v_.y - y) <= out / 2
+               and name(v_.net_id) and name(v_.net_id) not in skip]
+        res[side] = sorted(xs)
+    return res
 
 
 def _box_run(a, b, box, n=64):
@@ -285,6 +322,10 @@ class Ends:
         if cd[0] <= cs[0] or abs(cd[1] - cs[1]) > cd[0] - cs[0]:
             raise SystemExit('whole_ends: the bench is not in the canonical frame (source to destination along +x)')
         far_dir = min(FAR, key=lambda d_: FAR[d_][0] * (cd[0] - cs[0]) + FAR[d_][1] * (cd[1] - cs[1]))
+        self.far_dir = far_dir
+        # (a far-face tooth still inside the source's array -- a ball's via, its lane not out of the field -- has no way
+        # round the source: the frame refuses it, whole_frame.FarFace)
+        far_in = lambda m: m.direction == far_dir and m.exit_pt[0] >= sb[0] - 1e-6
         cur = {n: pf.current_tooth(st, n) for n in names}
         # ---- each lane's options at each end: (moves per leg, point, layer, vias)
         rt = 1.3 * max(st['sgrid'].pitch_x, st['sgrid'].pitch_y)
@@ -338,10 +379,11 @@ class Ends:
             # (`free_teeth`: an incremental fanout frees only the teeth its feedback names; the rest stand as laid)
             held = not src_free or (free_teeth is not None and lane not in free_teeth)
             if held and all(cur[l_] is not None for l_ in lg):
-                # the teeth as laid: the one option, refused on the source's far face
+                # the teeth as laid: the one option, refused on the source's far face inside the array (a far-face
+                # tooth out of it is priced, FAR_TOOTH)
                 # (ESCAPE_VIAS: a tooth laid as a surface escape refused, so a re-fan through a via is not judged
                 # worse than it for the via it adds)
-                self.T[lane] = [o[:4] + (o[4] or o[0][0].direction == far_dir
+                self.T[lane] = [o[:4] + (o[4] or any(far_in(m) for m in o[0])
                                          or (vias_only and any(m.kind == 'surface' for m in o[0])),)
                                 for o in combos([[cur[l_]] for l_ in lg], rt, forced=True)]
             else:
@@ -349,7 +391,7 @@ class Ends:
                 tm = [[m for m in ([cur[l_]] if cur[l_] is not None and not (
                        vias_only and cur[l_].kind == 'surface' and st['smenu'].get(l_)) else [])
                        + [m for m in st['smenu'].get(l_, []) if not same_as_laid(m, cur[l_])]
-                       if m.direction != far_dir] for l_ in lg]
+                       if not far_in(m)] for l_ in lg]
                 self.T[lane] = unbanned(lg, combos(tm, rt))
                 if not self.T[lane]:
                     # nothing clean to offer (a pair's legs with no clean combination, every joint move banned, the laid
@@ -391,6 +433,11 @@ class Ends:
         # only to its tooth's tip -- and the loop's audits then found it against a passive the solve cannot move it
         # off (zynq: C105 0.6 mm in front of the source teeth, C98 beside the berths -- most of the static findings)
         self.front, self.run_ids = {}, run_ids
+        # (the tracks across the source's side bands, read on the board the bus's routed neighbours stand on -- the
+        # shared field where the ends are chosen on the bus's own: escape_plan, `fence_pcb`)
+        import whole_frame as _wf
+        self.fence = side_fences(st.get('fence_pcb') or st['pcb'], _wf.box_of(st['pcb'], st['sref']),
+                                 {l_ for _lane, lg in self.lanes for l_ in lg})
         for lane, lg in self.lanes:
             if len(lg) != 1:
                 continue
@@ -418,11 +465,15 @@ class Ends:
                     for leg, m in zip(lg, o[0]):
                         kept[end][leg][id(m)] = m
         conf = collections.defaultdict(set)
+        # (the escape fanout lays its moves exactly as they are: a via keeps another lane's run off by the rule, not by
+        # the router's grid ring -- rules.fan_via_clear)
+        import rules as _rules
+        reach_ = _rules.fan_via_clear(_rules.active()) if st.get('escape') else None
         for cands, strict in (({n: list(kept[0][n].values()) for n in names}, True),
                               ({n: list(kept[1][n].values()) for n in names}, bool(pf.PAGES_STRICT))):
             # stacked: the whole route orders each layer's lanes on their own, so an F exit over a B one is
             # no conflict
-            for (a, i, b, j) in pf._conflicts(cands, strict, stack=True):
+            for (a, i, b, j) in pf._conflicts(cands, strict, stack=True, via_reach=reach_):
                 conf[(a, id(cands[a][i]))].add((b, id(cands[b][j])))
                 conf[(b, id(cands[b][j]))].add((a, id(cands[a][i])))
         # ...and a tooth move through another run net's LAID tooth (fanout_from_plan: sblock): a conflict with that
@@ -448,6 +499,19 @@ class Ends:
                         if a != b:
                             conf[(a, ia)].add((b, ib))
                             conf[(b, ib)].add((a, ia))
+        # ...but two teeth AS LAID -- copper on the board, which the fanout's own check laid clean -- are not kept a via's
+        # REACH apart: the reach asks whether a run can still be laid beside a via, and both are. Their exits, their
+        # stacks and their lanes stay the rule. The engine lays a tooth a grid step off the move asked (`gap ok` in the
+        # realize audit), and read at the reach the realized board's own teeth conflicted where the moves had not: the
+        # zynq six-rail DDR3's DQS1_N dog-bone 0.375 from DQS1_P's via in pad (0.400 asked) -- every realized board
+        # then judged worse than the one it came from by a conflict nobody could move, and reverted
+        import select_moves as _sm
+        laid_ = {(l_, id(m)): m for l_, m in cur.items() if m is not None}
+        for k_, m_ in laid_.items():
+            for o_ in [o_ for o_ in conf.get(k_, ()) if o_ in laid_]:
+                if not _sm._conflict(m_, laid_[o_], strict=True, stack=True, reach=1e-6):
+                    conf[k_].discard(o_)
+                    conf[o_].discard(k_)
         self.conf = conf
         # ...and per OPTION: the other lanes' options (same end) it cannot be laid with -- a hit test is then a lookup
         where = collections.defaultdict(list)
@@ -479,21 +543,8 @@ class Ends:
         # its lane, its layer and ANY leg's exit's distance to the end's points as laid (fb_weights), so a pair cannot
         # leave the price by moving one leg and keeping the other where it was found crowded; two items naming one
         # option add
-        self.fb_avoid, self.fb_pairs = collections.defaultdict(dict), []
-
-        def matches(it):
-            if it['lane'] not in self.legs_of:
-                return {}
-            return fb_weights(self.T[it['lane']] if it['end'] == 0 else self.B[it['lane']], it)
         fb = st.get('feedback') or {}
-        for it in fb.get('avoid', ()):
-            w_ = self.fb_avoid[(it['lane'], it['end'])]
-            for i, w in matches(it).items():
-                w_[i] = w_.get(i, 0.0) + w
-        for a_, b_ in fb.get('pairs', ()):
-            ma, mb = matches(a_), matches(b_)
-            if ma and mb and a_['end'] == b_['end']:
-                self.fb_pairs.append((a_['lane'], b_['lane'], a_['end'], ma, mb))
+        self.fb_avoid, self.fb_pairs = fb_tables(fb, self.T, self.B)
         # ...and the lanes the whole solve could not keep to two vias on an earlier round's ends ('over': whole_route,
         # an unproved plan's nets over two): each counted over by at least that much on every option, so the ends no
         # longer pay vias for a promise the solve could not keep (K51: ends at 92 vias promising SCK at two, chosen over
@@ -564,6 +615,41 @@ class Ends:
             if s_w is not None and s_w != whole_frame.ring_side(bo[l_][1], DB, far):
                 out[l_] = s_w
         return out
+
+    def _far_ride(self, far_l, to, bo, scut, npair):
+        """the ride each far-face lane adds by going round the source on ITS side of the far face's cut (whole_frame's
+        lead-in: north of the cut round the north) where ride() measured the shorter way round (select_moves.
+        around_box): from its tooth to that side's far corner, a lane pitch out, then round the box to its berth"""
+        if not far_l or scut is None:
+            return 0.0
+        import plan_ends as pe
+        sb = self.st['sgrid'].bbox
+        pad = _bd.LPITCH
+        extra = 0.0
+        for l_ in far_l:
+            a, b = to[l_][1], bo[l_][1]
+            c = (sb[0] - pad, (sb[1] - pad) if a[1] <= scut else (sb[3] + pad))
+            extra += npair[l_] * (math.hypot(c[0] - a[0], c[1] - a[1]) + pe.sm.around_box(c, b, sb)
+                                  - pe.sm.around_box(a, b, sb))
+        return extra
+
+    def _far_fence(self, far_l, to, scut, npair, lanes=()):
+        """the vias the lanes pay round a FENCED side of the source (side_fences: other nets' copper across the band
+        they ride in) -- a far-face lane round its side of the cut, across the whole of it; a tooth on a side face
+        (`lanes`, the rest) across what stands between its exit and the near corner -- a layer change under the fence
+        and one back each"""
+        n_ = 0.0
+        for l_ in lanes:
+            if l_ in far_l:
+                if scut is not None and self.fence.get('N' if to[l_][1][1] <= scut else 'S'):
+                    n_ += npair[l_]
+                continue
+            d_ = to[l_][0][0].direction
+            if d_ in ('up', 'down') and any(x_ >= to[l_][1][0] for x_ in self.fence.get('N' if d_ == 'up' else 'S', ())):
+                n_ += npair[l_]
+        if not lanes and scut is not None:
+            n_ = sum(npair[l_] for l_ in far_l if self.fence.get('N' if to[l_][1][1] <= scut else 'S'))
+        return FENCE_VIAS * n_
 
     def _wind_stack(self, lanes, to, bo, kd, dcls, npair, wound):
         """the ride each WOUND lane (`wound`, _wound_sides) adds by riding OUTSIDE its ring's other lanes (wound_ride
@@ -669,10 +755,12 @@ class Ends:
         if isinstance(cut, (tuple, list)) and cut[0] == 'E':
             cut = float(cut[1])                 # (a far-face cut is its y, as the sidecar has always carried it)
 
+        scut_ = [None]                  # the source's far face's cut (below; None: its middle -- no far-face tooth)
+
         def psrc(p):
-            k = (p, SB)
+            k = (p, SB, scut_[0])
             if k not in pc:
-                pc[k] = whole_frame.perim_s(p, SB)
+                pc[k] = whole_frame.perim_s(p, SB, scut_[0])
             return pc[k]
 
         def pdst(p):
@@ -693,14 +781,25 @@ class Ends:
             if k not in pc:
                 pc[k] = whole_frame.perim_c(p, *bcut[b_]) + RANK_MM * self.rank[b_]
             return pc[k]
-        ps = {l_: psrc(to[l_][1]) for l_ in lanes}
         pd = {l_: pend(l_, bo[l_][1]) for l_ in lanes}
         tl = {l_: to[l_][2] for l_ in lanes}
         dl = {l_: bo[l_][2] for l_ in lanes}
         # strict orders: a tie broken by the lane's place in the run, the same way in both
         idx = {l_: i for i, l_ in enumerate(lanes)}
-        kp = {l_: (ps[l_], idx[l_]) for l_ in lanes}
         kd = {l_: (pd[l_], idx[l_]) for l_ in lanes}
+        # (a tooth on the source's FAR face goes round the source on its side of the far face's cut, as the frame
+        # reads it: whole_frame.src_cut, the gap between those teeth that crosses the fewest lanes -- the cut rides the
+        # plan sidecar to the frame, src_cut, as the destination's does)
+        far_l = [l_ for l_ in lanes if to[l_][0][0].direction == self.far_dir]
+        if far_l:
+            def _rank(c_):
+                # (the lanes crossed -- and the other nets' tracks across the side each far lane rides: side_fences)
+                kp_ = {l_: (whole_frame.perim_s(to[l_][1], SB, c_), idx[l_]) for l_ in lanes}
+                return sum(1 for a, b in itertools.combinations(lanes, 2) if (kp_[a] < kp_[b]) != (kd[a] < kd[b])) \
+                    + sum(len(self.fence.get('N' if to[l_][1][1] <= c_ else 'S', ())) for l_ in far_l)
+            scut_[0] = whole_frame.src_cut([to[l_][1][1] for l_ in far_l], SB[1], SB[3], rank=_rank)
+        ps = {l_: psrc(to[l_][1]) for l_ in lanes}
+        kp = {l_: (ps[l_], idx[l_]) for l_ in lanes}
         inv = [(a, b) for a, b in itertools.combinations(lanes, 2) if (kp[a] < kp[b]) != (kd[a] < kd[b])]
         flat = {l_: tl[l_] == dl[l_] for l_ in lanes}
         same = [(a, b) for a, b in inv if flat[a] and flat[b] and tl[a] == tl[b]]
@@ -751,7 +850,7 @@ class Ends:
         sv = {l_: max(t_.vias + b_.vias for t_, b_ in zip(to[l_][0], bo[l_][0])) for l_, lg in self.lanes}
         if self.NL > 2:
             return self._score_nl(state, exact, lanes, npair, to, bo, fan, nconf, nref, nsplit, lane_of, chosen, kp, kd,
-                                  inv, tl, dl, sv, dface, cut, SB, DB)
+                                  inv, tl, dl, sv, dface, cut, SB, DB, scut=scut_[0], nfar=len(far_l))
         base = {l_: sv[l_] + (0 if flat[l_] else 1) + xo[l_] for l_ in lanes}
         ov = lambda l_, k_: max(0, base[l_] + k_ - VIA_PREF)
         w = {l_: 2 * npair[l_] + W_OVER * (ov(l_, 2) - ov(l_, 0)) for l_ in lanes}
@@ -873,7 +972,7 @@ class Ends:
             over = sum(max(ovk(l_, chg[l_]), self.fb_over.get(l_, 0)) for l_ in lanes)
         wound = self._wound_sides(prim, bo, DB, cut)
         ride = sum(self.ride(l_, npair[l_], state[l_][0], state[l_][1], wound.get(l_)) for l_ in lanes) + \
-            self._wind_stack(lanes, to, bo, kd, dcls, npair, wound)
+            self._wind_stack(lanes, to, bo, kd, dcls, npair, wound) + self._far_ride(far_l, to, bo, scut_[0], npair)
         stacks = _stacks(self.lanes, to, bo, chg, every=bool(self.st.get('escape')))
         fbk = (FB_AVOID * sum(ix.get(state[l_][k_], 0.0) for (l_, k_), ix in self.fb_avoid.items())
                + FB_PAIR * sum(ia.get(state[a_][k_], 0.0) * ib.get(state[b_][k_], 0.0)
@@ -896,7 +995,8 @@ class Ends:
         walled = walled_balls(self.pw, self.lanes, state)
         corner = corner_lanes(lanes, to, bo, SB, DB, dcls) if CORNER_ON and not self.unpriced else []
         obj = (W_OVER * over + fan + route + ride / VIA_MM + cong + fbk + EPS_X * len(inv) + BIG * (nconf + nsplit + nref)
-               + STACK_COST * stacks + front + WALLED * len(walled) + CORNER * len(corner))
+               + STACK_COST * stacks + front + WALLED * len(walled) + CORNER * len(corner) + FAR_TOOTH * len(far_l)
+               + self._far_fence(far_l, to, scut_[0], npair, lanes))
         # (each lane's share, for a round the whole route laid nothing on or left nets open -- whole_feedback --name
         # names the lanes to free from these: its nets over two, its load on the trunk, its crossings -- and the lanes
         # still in a conflict, which a destination re-plan frees with their neighbours)
@@ -908,7 +1008,8 @@ class Ends:
                          crossings=len(inv), same=len(same), conflicts=nconf, splits=nsplit, refused=nref,
                          lane_over=lane_over, lane_load={l_: round(v_, 3) for l_, v_ in loads.items()},
                          lane_x=dict(xl), stacks=stacks, exact_failed=exact_failed, cut=cut, front=front,
-                         lane_front=dict(lane_front), walled=walled, corner=corner,
+                         lane_front=dict(lane_front), walled=walled, corner=corner, scut=scut_[0], far=len(far_l),
+                         fence=self._far_fence(far_l, to, scut_[0], npair, lanes),
                          conf_lanes=(sorted({lane_of[c[0]] for c in chosen for o in self.conf.get(c, ())
                                              if o in chosen}) if nconf else []))
 
@@ -1172,7 +1273,7 @@ class Ends:
         return chg, drp, col
 
     def _score_nl(self, state, exact, lanes, npair, to, bo, fan, nconf, nref, nsplit, lane_of, chosen, kp, kd, inv,
-                  tl, dl, sv, dface, cut, SB, DB):
+                  tl, dl, sv, dface, cut, SB, DB, scut=None, nfar=0):
         """the objective of a state on MORE ROUTING LAYERS THAN TWO (_score's, with its N-layer route): each end's
         layer domain (end_domain), the route estimated by a colouring of the crossing graph (_colour) or, exact, by
         the whole solve's own model (exact_route_nl); an OPPOSITE-HANDS pair (pairs.opposite_hands) a change at least, at
@@ -1231,7 +1332,8 @@ class Ends:
             over = sum(max(ovk(l_, chg[l_]), self.fb_over.get(l_, 0)) for l_ in lanes)
         wound = self._wound_sides([l_ for l_ in lanes if self.dest_of[l_] == self.st['dref']], bo, DB, cut)
         ride = sum(self.ride(l_, npair[l_], state[l_][0], state[l_][1], wound.get(l_)) for l_ in lanes) + \
-            self._wind_stack(lanes, to, bo, kd, dcls, npair, wound)
+            self._wind_stack(lanes, to, bo, kd, dcls, npair, wound) + \
+            self._far_ride(far_l := [l_ for l_ in lanes if to[l_][0][0].direction == self.far_dir], to, bo, scut, npair)
         stacks = _stacks(self.lanes, to, bo, chg, every=bool(self.st.get('escape')))
         fbk = (FB_AVOID * sum(ix.get(state[l_][k_], 0.0) for (l_, k_), ix in self.fb_avoid.items())
                + FB_PAIR * sum(ia.get(state[a_][k_], 0.0) * ib.get(state[b_][k_], 0.0)
@@ -1261,7 +1363,7 @@ class Ends:
         corner = corner_lanes(lanes, to, bo, SB, DB, dcls) if CORNER_ON and not self.unpriced else []
         obj = (W_OVER * over + fan + route + ride / VIA_MM + cong + fbk + EPS_X * len(inv) + BIG * (nconf + nsplit + nref)
                + STACK_COST * stacks + front + WALLED * len(walled := walled_balls(self.pw, self.lanes, state)) + xlearn
-               + CORNER * len(corner))
+               + CORNER * len(corner) + FAR_TOOTH * nfar + (fence := self._far_fence(far_l, to, scut, npair, lanes)))
         xl = collections.Counter(l_ for e in inv for l_ in e)
         lane_over = {l_: k_ for l_ in lanes if (k_ := max(ovk(l_, chg[l_]), self.fb_over.get(l_, 0)))}
         same = sum(1 for a, b in inv if col.get(a) is not None and col.get(a) == col.get(b))
@@ -1274,7 +1376,7 @@ class Ends:
                          lane_over=lane_over, lane_load={l_: round(v_, 3) for l_, v_ in loads.items()},
                          lane_x=dict(xl), stacks=stacks, exact_failed=exact_failed, cut=cut, front=front,
                          lane_front=dict(lane_front), dropped=sum(npair[l_] * drp[l_] for l_ in lanes), walled=walled,
-                         learned=round(xlearn, 2), corner=corner,
+                         learned=round(xlearn, 2), corner=corner, scut=scut, far=nfar, fence=fence,
                          conf_lanes=(sorted({lane_of[c[0]] for c in chosen for o in self.conf.get(c, ())
                                              if o in chosen}) if nconf else []))
 
@@ -1463,9 +1565,27 @@ class Ends:
         cands = [dict(k) for k, v in ranked[:EXACT_TOP] if v <= v0 + EXACT_MARGIN]
         if dict(state) not in cands:
             cands.append(dict(state))
+        # (the candidates' exact routes AT ONCE on the ends model's pool, the calling thread among them -- each on a copy
+        # of the model sharing only the caches written once per key, as cut_phase's cuts: one CP-SAT worker each, at its
+        # deterministic work limit, so the same answers in the time of the slowest. A candidate no worker has started
+        # when its turn comes is routed here: no thread waits on a task nobody runs, and best_exact runs on the pool
+        # itself, inside the cuts' searches. One after another they were a third of the zynq DDR3 bus's fanout)
+        def one(s_):
+            Ec = copy.copy(self)
+            Ec._memo, Ec._parts = {}, collections.OrderedDict()
+            return Ec.score(s_, exact=True)
+        key_ = lambda s_: (tuple(s_[l_] for l_, _lg in self.lanes), True, self.wcut, self.unpriced)
+        futs = {i: _pool().submit(one, s_) for i, s_ in enumerate(cands) if i and key_(s_) not in self._memo}
+        got = {}
+        if cands:
+            got[0] = self.score(cands[0], exact=True)
+        for i, f_ in futs.items():
+            got[i] = one(cands[i]) if f_.cancel() else f_.result()
+            self._memo[key_(cands[i])] = got[i][0]
+            self._keep_parts(key_(cands[i]), got[i][1])
         best = None
-        for s_ in cands:
-            v_, p_ = self.score(s_, exact=True)
+        for i, s_ in enumerate(cands):
+            v_, p_ = got[i] if i in got else self.score(s_, exact=True)
             # (a state the exact route found no plan for ranks after every one it did: its objective is the estimate's,
             # the optimistic one, for the ends the solve will find hardest)
             k_ = (bool(p_.get('exact_failed')), v_)
@@ -1847,6 +1967,11 @@ JOINT_SEED = awx_settings.get('JOINT_SEED') or ''   # (probe) CP-SAT's random_se
 JOINT_SWEEPS = 30          # the descent's sweeps at most (joint_descent)
 
 
+def _far_opt(E, o):
+    """a tooth option on the source's far face (whole_ends.FAR_TOOTH: the lane goes round the source)"""
+    return o[0][0].direction == E.far_dir
+
+
 def joint_boxes(E, s):
     """(SB, DB): the two pad boxes grown by the ends of state `s` (whole_frame.grown), the orders' frame"""
     import whole_frame
@@ -1869,12 +1994,15 @@ def joint_descent(E, s0, boxes, cut, learned=None):
     n = len(lanes)
     Q = lambda v_: int(round(v_ * 1000))
     cut_ = float(cut[1]) if isinstance(cut, (tuple, list)) and cut[0] == 'E' else cut
-    PT = {l_: np.array([Q(whole_frame.perim_s(o[1], SB)) for o in E.T[l_]]) for l_ in lanes}
+    # (the source's far-face cut: the start's, as the model reads it -- a far-face tooth's side round the source)
+    scut = E.score(s0)[1].get('scut')
+    PT = {l_: np.array([Q(whole_frame.perim_s(o[1], SB, scut)) for o in E.T[l_]]) for l_ in lanes}
     PB = {l_: np.array([Q(whole_frame.perim_c(o[1], DB, cut_)) for o in E.B[l_]]) for l_ in lanes}
     lin = {}
     for l_ in lanes:
         for k_, O_ in ((0, E.T[l_]), (1, E.B[l_])):
-            c_ = np.array([np.inf if o[4] else float(o[3]) for o in O_])
+            c_ = np.array([np.inf if o[4] else float(o[3]) + (FAR_TOOTH if k_ == 0 and _far_opt(E, o) else 0.0)
+                           for o in O_])
             fr, fb = E.front.get((l_, k_)) or {}, E.fb_avoid.get((l_, k_)) or {}
             c_ += np.array([fr.get(i, 0.0) + FB_AVOID * fb.get(i, 0.0) for i in range(len(O_))])
             lin[(l_, k_)] = c_
@@ -1986,7 +2114,8 @@ def joint_state(E, hint, learned=None, log=print, boxes=None):
     cost = []
     # the crossings: two lanes whose orders round the boxes (whole_frame's perimeters, a tie broken by the run's order)
     # differ at the two ends
-    PS = {l_: sum(Q(whole_frame.perim_s(E.T[l_][i][1], SB)) * v for i, v in xs[0][l_].items()) for l_ in lanes}
+    scut = E.score(hint)[1].get('scut')     # (the source's far-face cut, the hint's: whole_frame.src_cut)
+    PS = {l_: sum(Q(whole_frame.perim_s(E.T[l_][i][1], SB, scut)) * v for i, v in xs[0][l_].items()) for l_ in lanes}
     PD = {l_: sum(Q(whole_frame.perim_c(E.B[l_][j][1], DB, cut)) * v for j, v in xs[1][l_].items()) for l_ in lanes}
     X = {}
     for a, b in itertools.combinations(lanes, 2):
@@ -2047,9 +2176,10 @@ def joint_state(E, hint, learned=None, log=print, boxes=None):
     cost.append(Q(1.0) * (sum(E.T[l_][i][3] * v for l_ in lanes for i, v in xs[0][l_].items())
                           + sum(E.B[l_][j][3] * v for l_ in lanes for j, v in xs[1][l_].items())
                           - sum(npair[l_] * (Dv[(l_, 0)] + Dv[(l_, 1)]) for l_ in lanes)))
-    # a single's blocked front, the whole route's feedback, as the objective prices them
+    # a single's blocked front, the whole route's feedback, a tooth on the source's far face, as the objective prices them
     for (l_, k_), c_ in E.front.items():
         cost += [Q(c_[i]) * v for i, v in xs[k_][l_].items() if c_.get(i)]
+    cost += [Q(FAR_TOOTH) * v for l_ in lanes for i, v in xs[0][l_].items() if _far_opt(E, E.T[l_][i])]
     for (l_, k_), ws_ in E.fb_avoid.items():
         cost += [Q(FB_AVOID * ws_[i]) * v for i, v in xs[k_][l_].items() if ws_.get(i)]
     for a_, b_, k_, ia, ib in E.fb_pairs:
@@ -2467,6 +2597,9 @@ def state_plan(E, state):
                         tracks.append({'start': tuple(p), 'end': tuple(q), 'width': fan, 'layer': L, 'net_id': nid})
     if E.wcut is not None:
         plan['dest_cut'] = list(E.wcut) if isinstance(E.wcut, (list, tuple)) else E.wcut
+    scut = E.score(state)[1].get('scut')
+    if scut is not None:
+        plan['src_cut'] = float(scut)       # (the source's far face's cut, as the model read the state)
     return plan, tracks, [nm for nm in st['launch'] if nm in plan['ends']]
 
 
@@ -2759,12 +2892,16 @@ def plane_ways(st, lanes, T, B, cur):
                 h2h = at[end]['sz']['h2h']
                 # (a pair's two exits by one face on one layer: its POCKET too, the pair's room to close past them,
                 # where the joint escape lays nothing -- joint_escape.laid_pockets)
+                # (from just short of half a pitch inside the exits: the outer row's balls stand ON that line, and the
+                # joint escape's pocket, from the laid copper's tips a hair out of the face, leaves them out -- the
+                # zynq six-rail DDR3's GND B1 between DDR3_DQS0's teeth, its via in its pad laid, read walled in by
+                # 0.0003 mm here and its ends priced past any via count)
                 pk = None
                 if len(lg) == 2 and o[0][0].direction == o[0][1].direction and o[0][0].layer == o[0][1].layer \
                         and DIRS.get(o[0][0].direction) is not None:
                     pk = pt.pockets({0: (0, 1)}, {0: (o[0][0].exit_pt, DIRS[o[0][0].direction], o[0][0].layer),
                                                   1: (o[0][1].exit_pt, DIRS[o[0][1].direction], o[0][1].layer)},
-                                    at[end]['half'])[0]
+                                    at[end]['half'] - POCKET_ROW)[0]
 
                 def in_pk(w):
                     if pk is None:
@@ -2808,6 +2945,32 @@ def front_span(pcb, nid, m, kids):
 def _fb_nl():
     import route_layers
     return len(route_layers.layers())
+
+
+def fb_tables(fb, T, B):
+    """(avoid {(lane, end): {option: weight}}, pairs [(lane, lane, end, weights, weights)]): the feedback `fb`
+    (whole_feedback's) on the lanes' tooth options `T` and berth options `B` ({lane: options}), each item weighed by
+    place (fb_weights), a pair of items when both name options of one end. An item for a lane with no options here --
+    its ends chosen again on a field where the lane had none: sdi_mipi_conv's SDI_D13, laid in round 1 from the joint
+    field's escape, no tooth move on round 2's dog-boned field -- prices nothing and keys nothing (a key the state has
+    no lane for stopped the score)"""
+    avoid, pairs = {}, []
+
+    def matches(it):
+        if it['lane'] not in T:
+            return {}
+        return fb_weights(T[it['lane']] if it['end'] == 0 else B[it['lane']], it)
+    for it in fb.get('avoid', ()):
+        if it['lane'] not in T:
+            continue
+        w_ = avoid.setdefault((it['lane'], it['end']), {})
+        for i, w in matches(it).items():
+            w_[i] = w_.get(i, 0.0) + w
+    for a_, b_ in fb.get('pairs', ()):
+        ma, mb = matches(a_), matches(b_)
+        if ma and mb and a_['end'] == b_['end']:
+            pairs.append((a_['lane'], b_['lane'], a_['end'], ma, mb))
+    return avoid, pairs
 
 
 def fb_weights(opts, item):

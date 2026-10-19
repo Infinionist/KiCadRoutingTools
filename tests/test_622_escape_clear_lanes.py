@@ -7,7 +7,8 @@ counted the 13 faults and the round handed the board on. On moves stood in for (
 1. three lanes' runs along one line on one layer: the first kept, the other two left out;
 2. a lane on that line on ANOTHER layer is kept, and a lane clear of the line on the same layer is kept;
 3. a pair's legs are one lane (lanes_of): left out together when one leg meets a kept run, and its own legs side by
-   side at the rule are no fault between them;
+   side at the rule are no fault between them -- but within it they are, and the pair is left out whole (MIPI2_D2's
+   legs on In2.Cu set the J4 bus's whole round aside at the audit);
 4. lay()'s faults are run_faults: the kept moves have none.
 """
 import os
@@ -53,7 +54,26 @@ moves2 = [('D1', run(60.1, 68.3, 71.7, 'B.Cu')), ('DQSP', run(62.0, 68.3, 71.7, 
           ('DQSN', run(62.0, 68.52, 71.7, 'B.Cu'))]
 kept2, left2 = ep.clear_lanes(moves2, byname, ep.lanes_of(['D1', 'DQSP', 'DQSN']), R)
 check(left2 == [['DQSP', 'DQSN']] and [nm for nm, _m in kept2] == ['D1'], f'3. the pair left out whole -- {left2}')
+# 3b. a pair whose own legs' runs come within the rule of each other (0.15 mm apart, the rule 0.22): left out whole, the
+#     lane after it kept (sdi_mipi_conv's MIPI2_D2 on In2.Cu: the audit set the J4 bus's whole round aside)
+moves3 = [('DQSP', run(62.0, 68.3, 71.7, 'B.Cu')), ('DQSN', run(62.0, 68.45, 71.7, 'B.Cu')),
+          ('D1', run(60.1, 69.3, 71.7, 'B.Cu'))]
+kept3, left3 = ep.clear_lanes(moves3, byname, ep.lanes_of(['DQSP', 'DQSN', 'D1']), R)
+check(left3 == [['DQSP', 'DQSN']] and [nm for nm, _m in kept3] == ['D1'],
+      f'3b. a pair\'s own legs within the rule: left out whole, the next lane kept -- {left3}')
 tr = ep.run_tracks(kept, byname, R)
 check(not [f for i, t in enumerate(tr) for f in ep.run_faults([t], tr[i + 1:], R)], '4. the kept moves: no fault')
+# 5. a joint field laid without the lanes it leaves no way to their ends (escape_plan.run, partial): a missed leg takes
+#    its pair's other leg out with it, and a lane counts as ended only with every leg's both ends (lanes_ended)
+T5 = {nm: nm for nm in names}
+B5 = {nm: nm for nm in names if nm != 'D4'}
+t5, b5 = ep.without_lanes(names, T5, B5, ['DQSN', 'D3'])
+check(sorted(t5) == ['D1', 'D2', 'D4', 'D6', 'E1'] and sorted(b5) == ['D1', 'D2', 'D6', 'E1'],
+      f'5. a missed leg leaves out its pair, a missed single itself -- {sorted(t5)} {sorted(b5)}')
+check(ep.lanes_ended(names, T5, B5) == 6 and ep.lanes_ended(names, t5, b5) == 4,
+      f'5. lanes ended: a pair one lane, a lane short a berth not ended -- {ep.lanes_ended(names, T5, B5)} '
+      f'{ep.lanes_ended(names, t5, b5)}')
+check(ep.lanes_ended(names, {**T5, 'DQSN': None}, {k: v for k, v in B5.items() if k != 'DQSN'}) == 5,
+      '5. a pair short one leg\'s berth: not ended')
 print(f'\n{len(fails)} failure(s)')
 sys.exit(1 if fails else 0)

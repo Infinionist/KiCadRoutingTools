@@ -260,6 +260,14 @@ def _layer_index(tag):
     return route_layers.index(tag)
 
 
+def _seg_pt(p, a, b):
+    """point p's distance from the segment a-b"""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    l2 = dx * dx + dy * dy
+    t = 0.0 if l2 < 1e-18 else max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2))
+    return math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy)
+
+
 def layer_cut(lane, island, box, layer):
     """the loop's LAYER cut: `lane` held off the island's layers across `island` (its box, whole_geo's island_boxes;
     `blocked` the island's layers, `layer` -- on two -- the one the lane is held on) -- none where the island stands on
@@ -273,27 +281,90 @@ def layer_cut(lane, island, box, layer):
     return c
 
 
-def audit_layer_cuts(audit, geo):
+_TRACKS = {}       # (a bench file, its mtime and size) -> (its tracks by layer index, its keep-out areas' boxes, shapes)
+
+
+def _tracks_of(bench):
+    """(the bench's tracks as (x0, y0, x1, y1, half width, net name) per routing-layer index (route_layers), the
+    bboxes of its keep-out areas as plan_audit.keepout_areas lists them, and their shapes (polygon, holes) as point
+    lists), read once"""
+    st_ = os.stat(bench)
+    key = (os.path.abspath(bench), st_.st_mtime_ns, st_.st_size)
+    if key not in _TRACKS:
+        import route_layers
+        sys.path.insert(0, os.path.join(HERE, '..', 'py_router'))
+        from kicad_parser import parse_kicad_pcb
+        with contextlib.redirect_stdout(io.StringIO()):
+            pcb = parse_kicad_pcb(bench)
+        lays = list(route_layers.layers())
+        by = collections.defaultdict(list)
+        for s_ in pcb.segments:
+            if s_.layer in lays and not getattr(s_, 'graphic', False):
+                nm = pcb.nets[s_.net_id].name.split('/')[-1] if s_.net_id in pcb.nets else ''
+                by[_layer_index(s_.layer)].append((s_.start_x, s_.start_y, s_.end_x, s_.end_y, s_.width / 2, nm))
+        import plan_audit as _pa
+        ka_ = _pa.keepout_areas(pcb, lays)
+        rnd = lambda P: [[round(float(x_), 4), round(float(y_), 4)] for x_, y_ in P]
+        _TRACKS.clear()
+        _TRACKS[key] = (dict(by), [k_[3] for k_ in ka_], [(rnd(k_[0]), [rnd(h_) for h_ in k_[1]]) for k_ in ka_])
+    return _TRACKS[key]
+
+
+def audit_layer_cuts(audit, geo, bench=None):
     """the LAYER cuts an audit's STATIC findings give: a lane found against a pad of an island (a geometry's 'islands',
     'REF.PAD' -> island) on one layer, the layer it was found on -- and, on more routing layers than two, a lane found
     against an ARRAY's own pad (no island), off the layer it was found on round that place (ARRAY_CUT_R): it was pushed
     into the pad by the lanes beside it on its layer -- a ring's lanes crowding the channel beside the destination
     (synth wind_rot16_g3_vias: nine lanes up a 2 mm channel on one layer, the innermost into the destination's corner
     ball every round) -- and on another layer it has room. A drilled ball stands on every layer, so this is no island's
-    cut, which no change answers"""
+    cut, which no change answers. The same, on more than two, for a lane found against another net's TRACK (copper: a
+    bus an earlier step routed, on its layer alone -- sdi_mipi_conv's SDI_D0 from its surface tooth round U11's corner
+    into the DDR3 bus's F.Cu fan, a finding at the teeth the loop had stopped on, ENDS CROWDED, both rounds): on another
+    layer the lane passes under it, its tooth's change right at the tooth (whole_solve's TVIA). With the `bench` the
+    lane is held off EVERY routing layer another net's tracks cross that place on, as an island's cut holds it off the
+    island's layers -- that bus routed on four of the eight there, one layer a round found the next one blocked -- and
+    none where they cross it on every layer, which no change answers. And a lane found in a KEEP-OUT rule area whose
+    tracks are not allowed on some layers (plan_audit.keepout_areas -- the router stamps it, the plan did not see it:
+    sdi_mipi_conv's wound SDI lanes round U15 laid on In2.Cu through the area east of it that keeps In1 and In2 clear,
+    and the snap failed them there every round) is held off its layers where its laid path meets the area itself (its
+    polygon: own_spans), not the area's box -- the area east of U15 is an L whose box reaches U15's berths"""
     import route_layers
     nl = len(route_layers.layers())
     out, isl, bxs = [], geo.get('islands') or {}, geo.get('island_boxes') or {}
     for ln in lines_of(audit):
-        m = re.match(r'STATIC (\S+)\s+([FB]|In\d+\.Cu) ([-+]?[\d.]+)/([\d.]+) (?:pad|hole) (\S+) ', ln)
+        k = re.match(r'STATIC (\S+)\s+([FB]|In\d+\.Cu) ([-+]?[\d.]+)/([\d.]+) keepout K(\d+) (\S+) at '
+                     r'\(([-\d.]+),\s*([-\d.]+)\)', ln)
+        if k:
+            # (a KEEP-OUT area's layers: the lane held off them across its box -- the bench's, else round the place)
+            lane, x, y, r = k.group(1), float(k.group(7)), float(k.group(8)), max(ARRAY_CUT_R, 3 * float(k.group(4)))
+            blk = {_layer_index(k.group(2))} | {_layer_index(t_) for t_ in k.group(6).split('+')}
+            kb = _tracks_of(bench)[1] if bench else []
+            ki = int(k.group(5))
+            box = list(kb[ki]) if ki < len(kb) else [x - r, y - r, x + r, y + r]
+            c = {'lane': lane, 'island': 'keepout K' + k.group(5), 'layer': 0, 'box': box, 'blocked': sorted(blk)} \
+                if nl > 2 and len(blk) < nl else None
+            if c and ki < len(kb):
+                c['poly'], c['holes'] = _tracks_of(bench)[2][ki]
+            if c and c not in out:
+                out.append(c)
+            continue
+        m = re.match(r'STATIC (\S+)\s+([FB]|In\d+\.Cu) ([-+]?[\d.]+)/([\d.]+) (pad|hole|copper) (\S+) ', ln)
         if not m:
             continue
-        lane, L, bar, pad = m.group(1), _layer_index(m.group(2)), float(m.group(4)), m.group(5)
+        lane, L, bar, kind, pad = m.group(1), _layer_index(m.group(2)), float(m.group(4)), m.group(5), m.group(6)
         if pad in isl:
             c = layer_cut(lane, isl[pad], bxs.get(isl[pad]), L)
         elif nl > 2 and (at := re.search(r' at \(([-\d.]+),\s*([-\d.]+)\)', ln)):
             x, y, r = float(at.group(1)), float(at.group(2)), max(ARRAY_CUT_R, 3 * bar)
-            c = {'lane': lane, 'island': pad, 'layer': 0, 'box': [x - r, y - r, x + r, y + r], 'blocked': [L]}
+            blk = {L}
+            if kind == 'copper' and bench:
+                # (every layer another net's track crosses the place on: its distance from the place within the box)
+                for Lk, segs in _tracks_of(bench)[0].items():
+                    if any(nm_ != lane and _seg_pt((x, y), (x0_, y0_), (x1_, y1_)) < r + hw_
+                           for x0_, y0_, x1_, y1_, hw_, nm_ in segs):
+                        blk.add(Lk)
+            c = {'lane': lane, 'island': pad, 'layer': 0, 'box': [x - r, y - r, x + r, y + r], 'blocked': sorted(blk)} \
+                if len(blk) < nl else None
         else:
             c = None
         if c and c not in out:
@@ -372,7 +443,15 @@ def own_spans(cf, geo, plan=None):
             continue
         x0, y0, x1, y1 = c['box'][:4]
         us = []
-        for p in _dense([list(q) for q in path], R.grid / 2):
+        pts_ = _dense([list(q) for q in path], R.grid / 2)
+        if c.get('poly'):
+            # (a keep-out area: where the path meets its polygon, within a lane's clearance -- not its box)
+            import numpy as _np
+            import plan_audit as _pa
+            dk_ = _pa.keepout_dist(_np.array([p_[-2:] for p_ in pts_], float), _np.array(c['poly'], float),
+                                   [_np.array(h_, float) for h_ in c.get('holes') or []]) if pts_ else []
+            pts_ = [p_ for p_, d_ in zip(pts_, dk_) if d_ <= reach]
+        for p in pts_:
             if x0 - reach <= p[0] <= x1 + reach and y0 - reach <= p[1] <= y1 + reach:
                 # (the laid path's place on the lane's route: its nearest column, the polish having moved it little)
                 d, u = min((math.hypot(r_[1] - p[0], r_[2] - p[1]), r_[0]) for r_ in rows)
@@ -597,7 +676,8 @@ def loop(solve, out, rounds, env, log):
             # answer to such an island, and it stands whatever flip names the lane and island
             import route_layers
             nl_ = len(route_layers.layers())
-            lcuts = [c for c in audit_layer_cuts(O(f'p{i}.audit'), gj) if nl_ > 2 or (c['lane'], c['island']) not in new]
+            lcuts = [c for c in audit_layer_cuts(O(f'p{i}.audit'), gj, env.get('BENCH'))
+                     if nl_ > 2 or (c['lane'], c['island']) not in new]
             lcuts += [c for c in gj.get('lcuts', []) + pj.get('lcuts', []) if c not in lcuts]
             if lcuts:
                 log(f"  layer cuts: {', '.join(c_['lane'] + ' under ' + c_['island'] for c_ in lcuts)}")
@@ -1100,6 +1180,44 @@ def stage_env(env):
     return env
 
 
+def no_ends(bench, nets, dest):
+    """the nets of `nets` the solve cannot read both ends of on BENCH: a net the fanout's plan sidecar runs (its 'nets')
+    and laid no end for (its 'ends'), and one it does not name with no free stub end at each part (braid.endpoints,
+    which the solve's setup asserts on). A fanout can choose a lane no escape -- sdi_mipi_conv's SDI_D18 once the DDR3
+    bus and its terminations took U11's field, its ball a via in pad and no stub -- and the round's solve, and every
+    last resort after it, then died on that one lane. A lane its fanout ran and did not lay stands on the field's
+    dog-bone, inside the array, not on a tooth: its neighbours SDI_D13 and SDI_D19 there, on the source's far face,
+    which the solve's frame refuses (whole_frame.FarFace) -- for the round's every lane"""
+    if PYR not in sys.path:
+        sys.path.insert(0, PYR)
+    from kicad_parser import parse_kicad_pcb
+    import braid as te
+    pj = os.path.splitext(bench)[0] + '.plan.json'
+    sc = json.load(open(pj)) if os.path.isfile(pj) else {}
+    planned, ran = set(sc.get('ends') or {}), set(sc.get('nets') or ())
+    bad = {n for n in nets if n in ran and n not in planned}
+    rest = [n for n in nets if n not in planned and n not in ran]
+    if rest:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            pcb = parse_kicad_pcb(bench)
+        bn = {n_.name.split('/')[-1]: (i, n_) for i, n_ in pcb.nets.items()}
+        for n in rest:
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    te.endpoints(pcb, [n], bn, dest_ref=dest)
+            except (AssertionError, KeyError):
+                bad.add(n)
+    return [n for n in nets if n in bad]
+
+
+def with_ends(bench, nets, dest, lanes):
+    """(`nets` less the whole lanes -- `lanes` {lane: its nets}, a pair's legs together -- one of whose nets has no end
+    on BENCH (no_ends), the nets with none, the legs left out with them): what a round can solve, the rest open"""
+    bad = set(no_ends(bench, nets, dest))
+    out = bad | {n for lg in lanes.values() if bad.intersection(lg) for n in lg}
+    return [n for n in nets if n not in out], sorted(bad), sorted(out - bad)
+
+
 def footprint_poses(board):
     """{reference: [x, y, rotation]} of each footprint on `board` whose reference no other carries"""
     from kicad_parser import parse_kicad_pcb
@@ -1217,6 +1335,15 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
         legs = {l_ for pr in prs.values() for l_ in pr}
         return {**{n: (n,) for n in nets_all if n not in legs}, **{b: tuple(pr) for b, pr in prs.items()}}
 
+    def solvable(bench, nets):
+        """`nets` less the lanes with no end on BENCH (with_ends), those named: the round's solve and lay take the
+        rest, and the lanes left out count open"""
+        keep, bad, mates = with_ends(bench, nets, dest, lane_legs())
+        if bad:
+            say(f"  no end on {os.path.basename(bench)} for {', '.join(bad)} -- left out of the solve, open"
+                + (f" (with {', '.join(mates)})" if mates else ''))
+        return keep
+
     def last_resort(r):
         """THE LAST RESORT, when no round laid anything: a PARTIAL plan on the last ends a fanout laid -- the solve,
         its loop and the route all at once on the lanes LESS those the rounds named (whole_feedback --name: open, else
@@ -1251,7 +1378,9 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
             dj = os.path.join(o, f'partial{j}')
             os.makedirs(dj, exist_ok=True)
             keep = {n for ln, lg in legs.items() if ln not in dr for n in lg}
-            sub = [n for n in nets_all if n in keep]
+            sub = solvable(bench, [n for n in nets_all if n in keep])
+            if not sub:
+                continue
             say(f"=== the last resort {j}: a partial plan on {os.path.relpath(bench, o)}, {len(dr)} of {len(legs)} "
                 f"lanes left out: {', '.join(dr)}")
             env_ = {**env, 'BENCH': bench, 'NETS': ','.join(sub), 'DEST': dest}
@@ -1391,7 +1520,8 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
                 log_path=os.path.join(d, 'hold.log'))
             for ln in grep(os.path.join(d, 'hold.log'), r'joint fanout of'):
                 say(ln[:220])
-        env.update(BENCH=bench, NETS=NETS, DEST=dest)
+        sub = solvable(bench, nets_all)
+        env.update(BENCH=bench, NETS=','.join(sub), DEST=dest)
         solve = os.path.join(d, 'solve.json')
         # (a round never ends with nothing: its solve keeps a plan it cannot prove -- whole_solve SOLVE_UNPROVED -- and
         # the round lays it; the loop's own re-solves still take only a proved one)
@@ -1431,9 +1561,9 @@ def chain(K, o, R=3, base=None, dest=None, settings=None):
                 say(f"  the loop did not pass -- laid from the plan it held: "
                     f"{os.path.relpath(plan, d) if plan else 'none'}")
             try_ = rc != 0 and plan is not None and lay_tries() > 1
-            res = lay(r, d, plan, plan_bench(loopd, plan, bench), quiet=try_) if plan else None
+            res = lay(r, d, plan, plan_bench(loopd, plan, bench), sub, quiet=try_) if plan else None
             if try_:
-                res = lay_rounds(loopd, d, env, res, lambda hp, tag: lay(r, d, hp, plan_bench(loopd, hp, bench),
+                res = lay_rounds(loopd, d, env, res, lambda hp, tag: lay(r, d, hp, plan_bench(loopd, hp, bench), sub,
                                                                           tag=tag, quiet=True), say, plan=plan)
                 if res is not None:
                     say(res['grade'])

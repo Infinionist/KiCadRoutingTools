@@ -11,7 +11,8 @@ CHOSEN together, then laid together:
 1. Every signal ball of the array gets its menu of escapes (escape_moves.enumerate_moves: surface along an adjacent
    gap, dog-bone, via-in-pad; face, exit gap, layer, kind), priced against the board's static copper the way the
    whole route prices its own (braid.build_obstacles). A bus ball's layers are the routing layers and it never leaves
-   by the array's far face (the one facing away from the other array); another net's layers are the board's signal
+   by the array's far face (the one facing away from the other array) -- unless the bus's own ends HELD its tooth
+   there, where it had no other way out (whole_ends.FAR_TOOTH); another net's layers are the board's signal
    layers -- never an inner plane layer the run does not route on. On more routing layers than two a via move's run
    is planned on no one layer (RUN): K runs may share a lane, an exit cluster or a crossing, and each chosen run is
    given its layer after the solve (colour_runs).
@@ -454,6 +455,34 @@ def laid_pockets(pcb, grid, nets):
             if pk != 'apart']
 
 
+def lane_walls(pcb, grid, nets):
+    """[(layer, quad)]: the pockets between two neighbouring LAID lanes of `nets` (short names; the lanes routed before
+    the array's other balls are planned) that close past their teeth on one layer -- no room left between them for a
+    via, so a track of another net that leaves the array there neither crosses them nor leaves their layer
+    (pair_teeth.lane_pockets): the zynq U1's OTG_DATA5 and SD_D1, escaped on F.Cu east between the DDR3 bus's A14 and
+    A10, which leave that face 1.6 mm apart and run on north-east 0.78 mm apart, OTG_DATA5 open on every board after"""
+    import braid as te
+    import pair_teeth as pt
+    import pairs as _pairs
+    name_of = {i: short_name(n.name) for i, n in pcb.nets.items() if n.name}
+    laid = set(nets)
+    segs = [((s.start_x, s.start_y), (s.end_x, s.end_y), s.layer, s.net_id) for s in pcb.segments
+            if name_of.get(s.net_id) in laid]
+    if not segs:
+        return []
+    tooth = pt.teeth(segs, name_of, laid, grid.bbox)
+    return [(L, q) for L, _u, q in pt.lane_pockets(segs, name_of, tooth, grid.bbox, max(grid.pitch_x, grid.pitch_y) / 2.0,
+                                                   te.VIA_SIZE + 2 * te.CLEAR + te.TRACK,
+                                                   _pairs.pair_names(sorted(laid), admit_all=True))]
+
+
+def exit_walled(walls, m):
+    """does escape move `m`'s EXIT -- where its lane goes on from, on its layer -- stand in one of `walls` (lane_walls)"""
+    import pair_teeth as pt
+    q, L = getattr(m, 'exit_pt', None), getattr(m, 'layer', None)
+    return q is not None and any(L == wl and pt.in_pocket(wq, tuple(q)) for wl, wq in walls)
+
+
 def in_pockets(pockets, legs, vias):
     """does copper -- `legs` [(a, b, layer)], `vias` [points] (every layer) -- enter one of `pockets` (laid_pockets)"""
     import pair_teeth as pt
@@ -772,8 +801,8 @@ def build_menus(pcb, ref, bus, others, other_layers, far=None, drops=(), climb=C
     esc_copper = esc_faces = None
     if escape_to:
         # (`escape_to`, the other array's ref: the bus's menus are the ESCAPE FIELD's -- escape_field_moves --
-        # its faces escape_plan.plan_state's at a source: toward the other array, or one on the ball's own half, never
-        # the far face)
+        # its faces escape_plan.plan_state's at a source: toward the other array, or one on the ball's own half -- the
+        # far face only for a ball whose tooth is HELD there, the bus's own ends' choice: whole_ends.FAR_TOOTH)
         import escape_plan as ep
         esc_copper = ep.Copper(pcb, sz['tw'], sz['cl'])
         o_ = pcb.footprints[escape_to]
@@ -783,11 +812,11 @@ def build_menus(pcb, ref, bus, others, other_layers, far=None, drops=(), climb=C
         far_ = min(ep.DIRS, key=lambda d: ep.DIRS[d][0] * ox_ + ep.DIRS[d][1] * oy_)
         mid_ = ((grid.bbox[0] + grid.bbox[2]) / 2, (grid.bbox[1] + grid.bbox[3]) / 2)
 
-        def esc_faces(p):
+        def esc_faces(p, far_ok=False):
             def half(d):
                 ax = 0 if ep.DIRS[d][0] else 1
                 return ((p.global_x, p.global_y)[ax] - mid_[ax]) * ep.DIRS[d][ax] >= -1e-6
-            return [d for d in ep.DIRS if d != far_ and (d == toward_ or half(d))]
+            return [d for d in ep.DIRS if (d != far_ or far_ok) and (d == toward_ or half(d))]
     for p in foot.pads:
         nm = short_name(p.net_name or '')
         if not p.net_id or (nm not in bus_s and nm not in oth_s and nm not in drop_s):
@@ -818,9 +847,12 @@ def build_menus(pcb, ref, bus, others, other_layers, far=None, drops=(), climb=C
         # In2 tooth, which the plan never saw and the engine refused, the ball left bare -- zynq U1's TX_FRAME_P on
         # three layers)
         esc = bool(escape_to) and nm in bus_s
+        # (a bus tooth the bus's own ends HELD on the far face -- chosen there only by a lane with no other way out,
+        # whole_ends.FAR_TOOTH -- keeps its far-face moves; any other bus ball never leaves by that face)
+        far_held = bool(hold) and nm in bus_s and nm in hold and hold[nm]['direction'] in (far, far_ if esc else None)
         if esc:
             moves = escape_field_moves(
-                p, grid, home, lays, esc_faces(p), esc_copper,
+                p, grid, home, lays, esc_faces(p, far_ok=far_held), esc_copper,
                 lambda q, r, _n=p.net_id: _via_clear(pcb, obs, _n, q, r or sz['vr'], sz),
                 lambda a, b, _n=p.net_id, _h=home: obs(_n, _h).seg_clear(a, b), sz['inpad'](p)[0], bool(runs))
         else:
@@ -871,7 +903,7 @@ def build_menus(pcb, ref, bus, others, other_layers, far=None, drops=(), climb=C
                 moves = at_
             else:
                 unheld.append(key)
-        if nm in bus_s and far:
+        if nm in bus_s and far and not far_held:
             moves = [m for m in moves if m.direction != far]
         if nm in bus_s and vias_only:
             # (ESCAPE_VIAS at this array: the bus's escapes through a via -- a dog-bone, a via in its pad -- whose lane
@@ -899,14 +931,20 @@ def build_menus(pcb, ref, bus, others, other_layers, far=None, drops=(), climb=C
     # is walled in once it closes -- the zynq DDR's U1 NetR3_2 escaped on B.Cu between DDR3_DQS1's B teeth, 0.77 mm
     # apart, A14 over its end -- and a drop's via there stands in the pair's way -- U2's GND B9 dropped between
     # DDR3_DQS1's berths, the whole route's audit found the pair 0.03 mm into it)
-    pockets = laid_pockets(pcb, grid, {short_name(p.net_name) for p in foot.pads if p.net_id and p.net_name}
-                           - bus_s - oth_s - drop_s)
+    laid_s = {short_name(p.net_name) for p in foot.pads if p.net_id and p.net_name} - bus_s - oth_s - drop_s
+    pockets = laid_pockets(pcb, grid, laid_s)
     if pockets:
         for key in menu:
             menu[key] = [m for m in menu[key]
                          if not in_pockets(pockets, m.legs or [], [m.site] if m.site is not None else [])]
             dmenu[key] = [d for d in dmenu[key]
                           if not in_pockets(pockets, [d.stub + (d.layer,)] if d.stub else [], [d.site])]
+    # (...and no escape whose lane would go on from between two laid lanes that close round it: lane_walls -- an
+    # escape with no other option keeps its menu, the plan's to weigh)
+    walls = lane_walls(pcb, grid, laid_s)
+    if walls:
+        for key in menu:
+            menu[key] = [m for m in menu[key] if not exit_walled(walls, m)] or menu[key]
     t_menu = time.time() - t0
     # (a plane ball's straps too: the human's U5 A4 joins A5 down its column, A5 and A6 sharing one via off the
     # array's edge, the bus's lanes in every gap beside them)
@@ -1830,7 +1868,8 @@ def escape_field(board, out, ref, dest, bus, others, drops, hold, log=print, pas
     hold=) -- laid with each bus ball's dog-bone at the site the plan gave it (a via in the pad, or none for a surface
     escape: the step's own lay runs the teeth from there), the other nets' escapes, straps and dog-bones alone and the
     plane drops as planned (lay). The passives stand where they are (the step's cap nudge ran on the field). OUT is the
-    field; returns the plan's report, with `laid_sites` the bus vias laid"""
+    field; returns the plan's report, with `laid_sites` the bus vias laid and `bus_free` {net: tooth, as `hold`'s} the
+    escapes it chose for bus balls `hold` holds no tooth for"""
     import make_bench as mb
     import rules as _rules
     import fanout_from_plan as fp
@@ -1857,6 +1896,13 @@ def escape_field(board, out, ref, dest, bus, others, drops, hold, log=print, pas
                                 prefer=prefer, log=log, debug=True, escape_to=dest, hold=hold)
         chosen = (rep.pop('debug', None) or {}).get('chosen') or {}
         bus_s = {short_name(n) for n in bus}
+        # (a bus ball the plan escaped with no tooth held -- its lane the step's ends gave none: its escape as the
+        # plan chose it, the tooth the step may hold it to on this field, `bus_free`)
+        held_s = {short_name(n) for n in hold}
+        rep['bus_free'] = {k.split('#')[0]: {'tooth': tuple(o.exit_pt), 'direction': o.direction, 'layer': o.layer,
+                                             'kind': o.kind}
+                           for k, (kind, o) in sorted(chosen.items())
+                           if kind == 'escape' and k.split('#')[0] in bus_s and k.split('#')[0] not in held_s}
         sz = _sizes(pcb, pcb.footprints[ref])
         r = _rules.active()
         pads = {f'{short_name(p.net_name)}#{p.pad_number}': p for p in pcb.footprints[ref].pads if p.net_id}
@@ -2041,10 +2087,20 @@ def carry(prev, cur, out, ref, others, drops, grow=1.5, release_near=(), in_plac
         fp.copy_pro(cur, out)
         kept = {k for keys, _s, _v in stand for k in keys}
         return sorted(key_of(p) for p in balls if key_of(p) not in kept), len(stand), len(moved)
+    # (a piece CUR has already is not laid again: the obstacles above are other nets', so a track or via of the net's
+    # own on CUR reads clear, and a round whose board came with the array's other balls fanned -- an earlier bus's
+    # field on the shared array -- had each carried twice: sdi_mipi_conv's DDR3 bus after the SDI bus, 168 vias
+    # stacked on their own copies)
+    rk = lambda x, y: (round(x, 3), round(y, 3))                                 # noqa: E731
+    have_s = {(s.net_id, s.layer, frozenset((rk(s.start_x, s.start_y), rk(s.end_x, s.end_y)))) for s in now.segments}
+    have_v = {(v.net_id, rk(v.x, v.y)) for v in now.vias}
     tracks = [{'start': (s.start_x, s.start_y), 'end': (s.end_x, s.end_y), 'width': s.width, 'layer': s.layer,
-               'net_id': id_now[name_of[s.net_id]]} for _k, ss, _v in stand for s in ss]
+               'net_id': id_now[name_of[s.net_id]]} for _k, ss, _v in stand for s in ss
+              if (id_now[name_of[s.net_id]], s.layer,
+                  frozenset((rk(s.start_x, s.start_y), rk(s.end_x, s.end_y)))) not in have_s]
     new_vias = [{'x': v.x, 'y': v.y, 'size': v.size, 'drill': v.drill, 'layers': list(v.layers),
-                 'net_id': id_now[name_of[v.net_id]]} for _k, _s, vv in stand for v in vv]
+                 'net_id': id_now[name_of[v.net_id]]} for _k, _s, vv in stand for v in vv
+                if (id_now[name_of[v.net_id]], rk(v.x, v.y)) not in have_v]
     with contextlib.redirect_stdout(sys.stderr):
         add_tracks_and_vias_to_pcb(cur, out, tracks, new_vias, [],
                                    net_id_to_name={i: n.name for i, n in now.nets.items()})

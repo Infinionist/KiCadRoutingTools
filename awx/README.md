@@ -278,14 +278,28 @@ It hands on what it laid connected, never nothing for the sake of a few nets:
 a net the whole route left open, and a bus net the grade finds open on the
 board or named in a violation of the bus's (or of the board's, when the board
 came out worse), goes back as it came -- its own copper, if it had any -- and
-the rest are graded again, up to three times. The nets put back are named in
-the summary's `refused`, for the rest of the chain to route. Only a failure
-no bus net is named in refuses the whole bus.
+the rest are graded again. Another net's copper the step laid -- a shared
+array's other nets, fanned with the bus -- in such a violation goes back
+first (`changed_nets`; never a plane's net, whose drops the step lays by the
+dozen), as the bus is what the step is for (summary `others_put_back`). The
+nets put back are named in the summary's `refused`, for the rest of the chain
+to route. The bus is handed on whenever its own nets come out connected and
+clean; a violation the board still has more of than it came with, on no bus
+net, is named (`board_violations_added`), never a reason to throw the bus
+away: sdi_mipi_conv's SDI bus on four layers, 14 nets laid clean, had been
+refused whole for one cap pad on a via of the joint field's.
 
 A board with inner copper layers is taken as it is. The lanes run on F.Cu
 and B.Cu, and the inner layers' copper meets the through vias only. The nets
 handed on are protected in the board's project (#521), with those it came
-with protected -- an earlier bus's among them.
+with protected -- an earlier bus's among them -- and their lanes are
+**locked**: KiCad's `(locked yes)` on every track and via the step hands on
+(`route_bus.lock_lanes`; `BUS_LOCK=0` protects them only). A later step lifts
+a project's protection by naming the net exactly; nothing lifts a lock
+(#1261), so the rest of the chain routes round the lanes and connects to
+them, never strips them. On sdi_mipi_conv the route step after the bus step,
+given the same bus board unlocked, ripped DDR3_A2 -- a lane the step had
+connected -- and left it open.
 
 Without `--src` and `--dest` it finds the board's buses itself
 (`find_buses`): every pair of parts sharing eight nets or more that the
@@ -362,6 +376,13 @@ Nothing of another net goes into a laid bus pair's **pocket**, between its two
 teeth out to where its legs close (`joint_escape.laid_pockets`): an escape
 there is walled in once the pair closes, and a via stands in its way. The
 zynq DDR's NetR3_2 escaped on B.Cu between DDR3_DQS1's teeth, 0.77 mm apart.
+Nor does another ball's escape leave on a layer between two neighbouring laid
+lanes whose copper past the array's face closes to less than a via's room
+(`pair_teeth.lane_pockets`, `joint_escape.lane_walls`), unless the ball has no
+other way out. The zynq DDR's A14 and A10 leave U1's east face 1.6 mm apart on
+F.Cu and run on 0.78 mm apart; the LVDS step laid OTG_DATA5 out between them,
+and the USB bus left it open on every board after. Walled, it takes a via, and
+the USB bus routes all 12 nets with the stub step after it, against 11.
 
 On the zynq's U5 the human's RFGND balls stand four round one via, two at a via
 off the edge, and three strapped down a column; there the plan's plane balls
@@ -454,7 +475,10 @@ human escapes a ball grid array:
   balls) are then free on every other layer, and the gap line through the
   array's middle, between the rows dog-boned up and the rows dog-boned down,
   is a **street** with no via on it. The passives beneath the arrays are
-  moved off the vias once (the chain's cap nudge). An outer-ring ball whose
+  moved off the vias once (the chain's cap nudge); a passive counts by its
+  copper pads, so one whose paste openings are drawn as pads is still a
+  two-pad part that moves (sdi_mipi_conv's C105 under U11 had held two SDI
+  balls' via sites). An outer-ring ball whose
   straight run out of the field on its own layer is clear is left without a
   via (a pair's two balls alike; `DOGBONE_EDGE_FREE=0` dog-bones every ball),
   as the human leaves 42 of U1's 55 outer balls: it leaves on the surface, and
@@ -462,6 +486,14 @@ human escapes a ball grid array:
   the zynq LVDS bus's two-round chains (`--rounds 2`, `LOOP_ROUNDS=2`) at
   K32, K40 and K47 it ended with 0, 0 and 2 nets open against 2, 0 and 2 with
   every ball dog-boned, and 2 to 5 vias fewer.
+- **A lane bare at both arrays** (`braid.bare_lane`: no track of its net, its
+  pads on two parts) -- its balls outer balls at both, left without a via, or
+  one ball with no gap for its dog-bone -- has no stub end to read, and the
+  ladder takes it all the same (`make_bench.write_ladder` and `coherent_nets`
+  with `bare_ok`, which the escape fanout sets): the fanout lays both its ends
+  from the pads. The ladder had dropped such a net for want of a stub, so a bus
+  of outer balls alone routed nothing, and sdi_mipi_conv's SDI bus ran 16 of
+  its 21 nets.
 - **Escapes instead of teeth** (`escape_plan.py`): each round's fanout lists
   every way a lane can leave its ball's via -- half a pitch onto a ball line
   beside it, a sidestep to a line up to two pitches over, or a pitch onto a
@@ -481,19 +513,18 @@ human escapes a ball grid array:
 On the zynq's LVDS bus (U1 to U5) on four routing layers, on the board the
 recipe below makes, at its sizes, `ROUTE_LAYERS=F.Cu,B.Cu,In1.Cu,In2.Cu`
 (K: the first K nets of the ladder `route_bus` builds on the dog-boned board,
-a pair's leg left out where the K-th net would split it -- K32 is 31 nets, K40
-39; 47 is the whole bus):
+a pair's leg left out where the K-th net would split it -- K47 is 46 nets; the
+whole bus is 52, AD9361_RST, FB_CLK_N and TX_FRAME_N laid with their pulls):
 
-| | K32 | K40 | K47 |
-|---|---|---|---|
-| nets routed (the round) | 31 of 31 (2) | 39 of 39 (1) | 45 of 47 (1) |
-| handed on | 64 v, 683 mm | 82 v, 826 mm | 99 v, 967 mm |
+| | K32 | K40 | K47 | all |
+|---|---|---|---|---|
+| nets routed (the round) | 32 of 32 (1) | 38 of 40 (2) | 42 of 46 (2) | 49 of 52 (1) |
+| handed on | 70 v, 722 mm | 84 v, 774 mm | 103 v, 996 mm | 108 v, 1116 mm |
 
 Every net it hands on is connected and DRC-clean; the open ones go back as
-they came. Each run is three rounds at most, 3 to 13 minutes on the Mac (20
-to 65 before the joint ends and the pair search in Rust), and hands on its
-best round: the rounds differ -- K47's second and third left 6 and 10 nets
-open.
+they came. Each run is three rounds at most, 3 to 26 minutes on a Mac running
+other routes beside it, and hands on its best round: the rounds differ -- the
+whole bus's three left 3, 5 and 4 nets open.
 
 `zynq_ad9364` (`boards/`: its source, license and changes in
 `boards/NOTICE.md`), its planes poured as the stress run poured them,
@@ -544,21 +575,37 @@ comes within the rule of it (`relayer.clashes`). The joint plan keeps every
 other net's copper off each run on every layer the run is free on in the bus's
 own field, so the solve keeps all the layer changes it has there. A round
 whose ends the joint plan cannot keep falls back to ends chosen on the shared
-array, dog-boned. Each step's cap nudge moves only the passives beneath its
-own two arrays: the DDR step leaves U5's, the LVDS step U2's.
+array, dog-boned. A lane with no tooth move on that field still has its ball
+planned by the joint solve. It takes the escape the solve chose for it, and its
+berth is chosen with every other lane's ends held (`escape_plan.free_ends`). On
+sdi_mipi_conv, once the DDR3 bus and its terminations had taken U11's field,
+SDI_D13, D18 and D19 had no tooth move there. Without this the three were never
+laid, and stood on bare dog-bones inside U11's far face. A joint field that
+leaves some lanes no way to their chosen ends is laid without them, when with
+`free_ends` it ends at least as many lanes as the dog-boned field does
+(`escape_plan.without_lanes`, `lanes_ended`); otherwise the round lays the
+dog-boned field's ends. Given up for SDI_D12 alone, the SDI bus's field had
+left 7 lanes no end and U11's other balls on bare dog-bones; laid without it,
+16 of the 21 lanes have ends (14 on the dog-boned field), U11's other balls
+their planned escapes, and the bus hands on 14 nets connected against 12. Each
+step's cap nudge moves only the passives beneath its own two arrays: the DDR step leaves U5's, the LVDS step U2's. The joint plan
+lays its vias as if those passives will move; one the nudge cannot move off
+them (at its displacement cap) is locked where it stands, the field planned
+again round it and the round laid again, the lock taken off after
+(`escape_plan.lock_parts`). On sdi_mipi_conv on four layers the nudge had
+left C118's GND pad on a DDR3 address via of the field's.
 
 `route_bus --bus` sets this up itself for an escape bus on an array an earlier
 bus was handed on through. A step run on its own takes it as settings:
 `ESCAPE_JOINT=REF` (the shared array) and `ESCAPE_JOINT_ENDS=BOARD` (the board
 before the earlier step), with `--escape`.
 
-On the zynq, after the DDR step (`--joint-fanout`, 43 of 43 nets, 74 vias),
-the LVDS bus routes as the table above at each K. Its ends, its solve and the
-nets it leaves open match, round for round: K32 and K40 clean with 64 and 82
-vias, K47 2 open with 99 vias, the copper within 3 mm. Every other ball of U1
-is served (at K40: 98 escaped, 12 strapped and 5 dog-boned of 115). 97 of its
-98 plane balls are dropped; the last one's in-plane gap sites are the bus's
-own dog-bone and run.
+On the zynq, both buses in one step (the recipe below): the DDR bus by
+`--joint-fanout` first, 45 of its 46 nets (74 vias; DDR3_DQ3 left out of a
+partial round), then the LVDS bus with U1 shared, 48 of its 52 nets (107
+vias), where on the board of the DDR step alone it routes 49. Every other
+ball of U1 is served (91 escaped and 11 strapped of 102), and all 98 of its
+plane balls are dropped.
 
 Both buses in one step, the DDR's on two routing layers and the LVDS bus's on
 four:
@@ -578,27 +625,49 @@ where the whole route places its vias. Each round lays the chosen escapes as
 planned (`fanout_from_plan.row_berths`): the array engine follows a plan over
 a ball grid, and refuses most of a QFN's.
 
-`SOURCE_SHARED=REF` (opt-in) has a plain or joint bus from an array an earlier
-bus went through keep the escapes that step's plan laid it there, instead of
-fanning that full array out again. Fanned out again for the bus alone, a full
-array sends a deep ball out by any face with room: the zynq's USB balls by
-U1's south face, into the LVDS bus's lanes, where the plan had them east
-toward U4. The earlier plan chose those escapes for its own bus, so it is set
-per bus: it sends three of the Ethernet bus's balls south, away from U3.
+A plain bus from an array an earlier bus went through keeps the escapes that
+step's plan laid it there, instead of fanning that full array out again
+(`route_bus.keeps_source_escapes`). Fanned out again for the bus alone, a full
+array sends a deep ball out by any face with room: the zynq's Ethernet balls
+ETH_RXCTL and ETH_RXD2 by U1's south face, into the LVDS bus's escapes, where
+the plan had them east toward U3. Kept, the Ethernet bus routes 14 of its 14
+lanes against 12, and the USB and Ethernet buses as one 24 of 26 against 22.
+`SOURCE_SHARED=0` fans every source out again; `SOURCE_SHARED=REF,..` keeps
+them for a plain or a joint bus from those sources only.
 
-`BUS_PULLED` (opt-in: `1` for every bus, or `U1-U4,U1-U3`) lays as a lane each
-net that a pull alone keeps out of the bus: its other pads are on two-pad parts
-whose other pad is a plane's net (`route_bus.pulled_nets`). The pull pads come
-off their nets for the step and go back on in OUT, for the chain to connect.
+A net that a pull or a termination alone keeps out of the bus is laid as a
+lane of it (`route_bus.pulled_nets`): one pad on each of the bus's two parts,
+and every other pad on a small part (at most `STUB_PADS` pads) whose nets are
+rails and such nets only, that either reaches a rail or joins the two legs of
+a pair. A rail is a net with a zone, or one on more than `LEFT_PARTS` parts.
+So a pull-up or pull-down joins its bus, a fly-by DDR3's address and command
+nets join theirs through the resistor arrays that terminate them to Vtt past
+the memory, and so does a clock pair through the resistor across its legs.
+The pull and termination pads come off their nets for the step and go back on
+in OUT, for the chain to connect the stub.
+
+On an escape bus, a pull pad that a short tie reaches from its ball's dog-bone
+via -- at most `ATTACH_PITCHES` (1.5) of the array's ball pitch, straight or
+along the array's ball and gap lines round other copper -- is joined to the
+via by that tie instead, on the pad's layer, as the human ties the zynq's
+TX_FRAME_N into its pull RX10 under U1 (`attach_pulls`; `BUS_ATTACH=0`
+none). The pad stays on its net through the step, its lane's own copper and
+every other net's obstacle, and the pull is connected when the lane is. A
+longer tie would run across the ball lines the lanes need into the array, so
+the zynq's FB_CLK_N and AD9361_RST pulls, beside U5, are left to the chain.
+On a shared array's bus the tie is laid on the bus's own field too, so the
+ends are chosen on the field they are laid on. With RX10 so joined the LVDS
+bus routed 50 of its 52 nets where it had routed 42, both buses in one call 44
+where 42, and on the six-rail board below 50 where 39.
 
 The zynq's USB bus (U1 to U4, 11 nets) and Ethernet bus (U1 to U3, 8 nets)
 were routed on its SIX-RAIL board: the unrouted board (the recipe above) with In2
 split six ways -- VCC_3V3, VCC_1V8, VCC_1V5, VDD_DIG, VDDA_RX_LO and VCC_1V0
 -- beside In1's GND and RFGND. Its DDR3 and LVDS buses are routed first, as
-above; then each of the two alone on that board, with `BUS_PULLED` -- the USB
-bus's OTG_RESETN (R33, C121) and the Ethernet bus's ETH_MDIO, ETH_RXCTL and
-ETH_RXD0-3 (R34-R45) laid as lanes -- the USB bus from U1's escapes as the
-LVDS step laid them (`SOURCE_SHARED`):
+above; then each of the two alone on that board -- the USB bus's OTG_RESETN
+(R33, C121) and the Ethernet bus's ETH_MDIO, ETH_RXCTL and ETH_RXD0-3
+(R34-R45) laid as lanes, their pulls beside them -- each from U1's escapes as
+the LVDS step laid them:
 
 ```bash
 python3 ../py_router/route_planes.py tmp/zynq/src/boards_unrouted_set1/zynq_ad9364.kicad_pcb tmp/zynq/zr6.kicad_pcb \
@@ -608,20 +677,19 @@ python3 ../py_router/route_planes.py tmp/zynq/src/boards_unrouted_set1/zynq_ad93
     --power-nets GND RFGND VCC_3V3 VCC_1V8 VCC_1V5 VDD_DIG VDDA_RX_LO VCC_1V0 \
     --power-nets-widths 0.4 0.4 0.4 0.4 0.4 0.4 0.4 0.4
 SZ="--clearance 0.09 --track-width 0.15 --fanout-track-width 0.12 --via-size 0.45 --via-drill 0.3"
-python3 route_bus.py tmp/zynq/zr6.kicad_pcb tmp/zynq/zr6_both.kicad_pcb --k 47 --rounds 2 --inproc \
+python3 route_bus.py tmp/zynq/zr6.kicad_pcb tmp/zynq/zr6_both.kicad_pcb --rounds 2 --inproc \
     --bus U1:U2:joint --bus U1:U5:escape:F.Cu,B.Cu,In1.Cu,In2.Cu $SZ
-SOURCE_SHARED=U1 BUS_PULLED=1 python3 route_bus.py tmp/zynq/zr6_both.kicad_pcb tmp/zynq/zr6_usb.kicad_pcb \
+python3 route_bus.py tmp/zynq/zr6_both.kicad_pcb tmp/zynq/zr6_usb.kicad_pcb \
     --rounds 2 --inproc --bus U1:U4:plain:F.Cu,B.Cu,In1.Cu,In2.Cu $SZ
-BUS_PULLED=1 python3 route_bus.py tmp/zynq/zr6_both.kicad_pcb tmp/zynq/zr6_eth.kicad_pcb \
+python3 route_bus.py tmp/zynq/zr6_both.kicad_pcb tmp/zynq/zr6_eth.kicad_pcb \
     --rounds 2 --inproc --bus U1:U3:plain:F.Cu,B.Cu,In1.Cu,In2.Cu $SZ
 ```
 
-The DDR3 bus routes all 45 nets of its run, 43 lanes (72 vias, 1397 mm), and
-the LVDS bus 45 of the 47 of its run (99 vias, 969 mm), the RX_D1 pair left
-open. The USB bus routes 11 of its 12 nets (22 vias, 313 mm), OTG_RESETN left
-open; the Ethernet bus 12 of its 14 (24 vias, 430 mm), ETH_TXCTL and ETH_TXD0
-left open. Each step hands its bus on connected and clean, no plane it crosses
-in more pieces than it came.
+The DDR3 bus routes all 46 nets of its run, 44 lanes (74 vias, 1455 mm), and
+the LVDS bus 50 of its 52 (109 vias, 1078 mm), SPI_ENB and TXNRX left open.
+The USB bus routes all 12 of its nets (24 vias, 359 mm); the Ethernet bus 13
+of its 14 (26 vias, 520 mm), ETH_TXCTL's lane left open. Each step hands its
+bus on connected and clean, no plane it crosses in more pieces than it came.
 
 **One source, two ends.** Those two buses overlap: their balls interleave on
 U1's east face, and routed one after the other the second meets the first's
@@ -638,16 +706,14 @@ its part turned toward the source. It is a plain bus: no joint or escape
 fanout. On the six-rail board, after its DDR3 and LVDS buses as above:
 
 ```bash
-BUS_PULLED=1 python3 route_bus.py tmp/zynq/zr6_both.kicad_pcb tmp/zynq/zr6_usb_eth.kicad_pcb \
+python3 route_bus.py tmp/zynq/zr6_both.kicad_pcb tmp/zynq/zr6_usb_eth.kicad_pcb \
     --rounds 2 --inproc --bus U1:U4+U3:plain:F.Cu,B.Cu,In1.Cu,In2.Cu $SZ
 ```
 
-It routes 24 of the 26 nets (ETH_RXD2 and OTG_DATA2 left open; 48 vias,
-811 mm), handed on connected and clean, in 16 minutes: its first round 10
-minutes, the second (new ends for the two open nets, 8 left open) the rest.
-Its lanes on In2 split VCC_1V8 and VCC_3V3
-there (454 unconnected island links against 451 as it came): the whole route
-plans across a pour without pricing what it cuts.
+It routes 22 of the 26 nets (ETH_RXCTL, OTG_DATA0, OTG_DATA1 and OTG_DATA6
+left open; 45 vias, 769 mm), handed on connected and clean, in 23 minutes: its
+first round 12 minutes, the second (new ends for the four open nets, 4 left
+open again) the rest.
 
 ### Building the zynq article
 
@@ -736,7 +802,20 @@ router keeps a track off a via (`rules.fan_via_reach`: its via-to-track
 clearance for a fanout track rounded up to whole grid cells, and a quarter
 cell). An F exit stacked over a B one is allowed, and the engine checks
 a stub against other nets' tracks on the stub's own layer only, so it lays
-what the model allows.
+what the model allows. The escape fanout lays its escapes exactly as listed,
+so on its states the ends model holds another lane's run off a via by the
+rule itself (`rules.fan_via_clear`: the via's radius, the run's half width and
+the clearance). At 0.45 mm vias, 0.12 escapes and 0.1 clearance the grid ring
+is 0.406, past the 0.4 a dog-bone stands off the next ball line, so every
+dog-bone met every neighbouring line's run on every layer: sdi_mipi_conv's SDI
+bus had no plan of its teeth with no conflict, on four layers or on eight.
+Two teeth **as laid** -- copper the fanout's own audit passed -- are held to
+the exits, stacks and runs alone, not to a via's reach: the engine lays a
+tooth a grid step off the move asked, and at the reach a realized board's own
+teeth conflicted where the moves had not (the zynq six-rail DDR3's DQS1_N
+dog-bone 0.375 mm from DQS1_P's via in its pad, 0.400 asked), so every
+realized board was judged worse than the one it came from by a conflict no
+move could clear.
 
 **The estimate.** The route's layer changes are estimated from the ends alone:
 the end-layer changes, a least-weight cover of the crossings between lanes on
@@ -789,7 +868,11 @@ Linux, and an unproved state ranks last.
   ball none pays `WALLED`, past any via count, yet no refusal. On the zynq
   DDR the cheapest ends ran the bus over every way down three of U1's
   VCC_1V5 balls had (a bus track on B.Cu under each pad, bus stubs in every
-  gap round it); priced, the ends keep them a way down for 8 vias more;
+  gap round it); priced, the ends keep them a way down for 8 vias more. A
+  pair's pocket starts just short of half a pitch inside its two exits
+  (`POCKET_ROW`), the line the outer row's balls stand on: on the six-rail
+  board GND B1, between DDR3_DQS0's teeth with its via laid in its pad, was
+  read walled in by 0.0003 mm;
 - a conflict, a split pair or a refused move, at a price no via count
   reaches.
 
@@ -802,9 +885,10 @@ again without them, and the better state stands (four in a row finding
 nothing stop). First with the teeth as laid, then with the teeth free from
 the berths just chosen; a tooth move is asked only for half a via. The best
 distinct states within `EXACT_MARGIN` of the best (`EXACT_TOP`) are ranked on
-the exact route, and a state whose exact route fails ranks after every one
-that routes. Each state is scored once and each end's place round a grown box
-is cached.
+the exact route, all at once on the model's threads (each on a copy of the
+model: the same answers, the zynq DDR3 bus's fanout 9% sooner), and a state
+whose exact route fails ranks after every one that routes. Each state is
+scored once and each end's place round a grown box is cached.
 
 **The solve's check** (the escape fanout). The ends chosen are put to the
 whole solve under its strict rules before any is laid -- the bench they make
@@ -882,23 +966,59 @@ audited in passes (`DST_ITERS`, 8):
   `berth_sig`), except those the re-plan still finds in conflict, which are
   freed;
 - every pass is graded -- berths not as asked, then the model's objective --
-  and the best pass's board ships, not merely the last.
+  and the best pass's board ships, not merely the last;
+- a net whose every move the bans refuse is offered its whole menu again, and
+  said (`unbanned_or_all`): a net with no move stops the whole search, where a
+  refused move is only one the engine may lay otherwise: the zynq's USB bus,
+  on a board whose LVDS step had laid OTG_NXT's tooth on an inner layer no
+  move is on, banned that tooth's one class and laid nothing.
 
 At the source, a board the fanout did not lay as asked is not kept, and a
 move set the realize rejects for DRC has the moves its violations name
-banned.
+banned. A realized board judged worse on its teeth as laid than the board
+kept is not the end when its own choice asks teeth that would beat the kept
+board: those teeth are realized too, and theirs, while each board is better
+as laid than the one before (`TEETH_AHEAD`, three steps at most), and the
+first that beats the kept board is kept; else the kept board stands. On the
+zynq DDR3 bus with its reset's pull (the recipe's DDR step) the first realize
+met two berths in conflict as laid and was reverted, and the round laid 104
+vias; stepped on, it lays 72.
 
 **Never chosen:**
 
 - two moves the fanout cannot lay together;
 - a tooth move through another run net's laid tooth;
 - a pair's legs apart;
-- a tooth on the source's far face.
+- a tooth on the source's far face still inside the array (a ball's via
+  whose lane has not left the field): the frame has no way round the source
+  from there.
+
+**A tooth on the source's far face** (the face turned away from the
+destination) is priced `FAR_TOOTH`, past any via count, yet no refusal, so
+a lane takes it only when it has no other way out of the source. Its ride
+round the source is priced as any lane's (`around_box`), and the far face
+is cut between its teeth at the gap that crosses the fewest lanes
+(`whole_frame.src_cut`); the cut rides the sidecar (`src_cut`) as the
+destination's does. A pinout can leave a bus no other way: sdi_mipi_conv's
+SDI bus sits in the columns of U11 beside its far face, and four of its
+lanes had no tooth escape on any other face.
+
+**A fenced side of the source.** Another net's copper across the band a
+lane rides round a side of the source -- a bus an earlier step routed:
+its tracks across the line 1.5 mm outside the side face, its vias beside
+that line (`side_fences`, read on the shared field where the ends are chosen
+on the bus's own, `fence_pcb`) -- costs that lane `FENCE_VIAS`, two vias, a
+change under the fence and one back: a far-face lane round that side of the
+cut, a tooth on that side face where the fence stands between its exit and
+the near corner. The far face's cut counts the fence's crossings as it counts
+the lanes'. On sdi_mipi_conv the DDR3 bus leaves U11's south face on four of
+its eight layers; the north side is free.
 
 **Never offered** -- which halves each pass:
 
 - a berth on the destination's far face from a ball in the array's other half;
-- a tooth on a source side face from a ball in the other half.
+- a tooth on a source side face, or on its far face, from a ball in the
+  other half.
 
 **Far dog-bones.** A dog-bone whose via stands past its ball's diagonal cells
 goes to the engine with its stub as a walked `path`, the one way the engine
@@ -950,8 +1070,28 @@ net was read as starting there and left out of the frame, open every round).
 
 A pair whose stub stands across the trunk -- a tooth on the source's side
 face -- starts at the end of its end run and the run its turn onto the trunk
-takes, as a ring pair lands. A tooth on the source's far face has no way
-round the source here, and is refused (the fanout is told, below).
+takes, as a ring pair lands.
+
+A tooth on the source's **far face** -- the face its escape leaves by
+(`tooth_face`), not the face it stands nearest, so an exit past the north
+face beside the far corner is a north-face tooth -- goes round the source
+on a **lead-in** (`lead_ins`). The trunk cannot carry a lane along the far
+face: its columns stand across the spine, and that stretch runs along
+them. So the lane leaves its tooth straight out of the face, runs along it
+and round the corner on a 45-degree chamfer, and starts beside the side
+face, where the trunk takes it as it takes a side face's lanes. Which
+corner is decided by the far face's cut: the teeth north of it go round
+the north, outside every lane of the north face, first in the launch order
+(`perim_s`); those south of it round the south, last. On each side the
+tooth nearest the corner is innermost, and the lanes nest a lane's room
+apart, a pitch out of the far face's teeth and the side face's -- and
+outside the copper in their way (`lead_obstacles`: another part's pad,
+another net's via or track, on a lead-in's layer), as the destination's rings
+go round the parts hugging it: the run along the far face, or the chamfer
+and the start, moved out past it by its bar. Laid through a cap beside the
+far face, a lead-in was found against it every round, and the lane stayed
+open. A far-face tooth still inside the array has no way round from there,
+and is refused (`FarFace`; the fanout is told, below).
 
 #### The solve (`whole_solve.py`)
 
@@ -1130,7 +1270,18 @@ solve as **cuts**.
   a change the solve's grid rounds a part of a step past a stub's end stands
   at it. A via is kept off a part by the part's own extent on the via's
   column, as a lane is, not by the part's box in the frame -- a part past a
-  ring's end projects onto the whole ring.
+  ring's end projects onto the whole ring. A change AT a terminal -- a
+  surface tooth's via at its stub's end, a surface berth's -- has a column of
+  no length, so the terminal's own layer is drawn a grid step long there: the
+  line had never taken it, and the lane reached its berth on the other layer
+  with no via (sdi_mipi_conv's PCLK, its berth on F.Cu: the route refused it).
+- **Other nets' vias in the field** the lanes cross -- the arrays' boxes and
+  `FIELD_MARGIN` (5 mm) round them -- are islands on every layer, at the
+  router's ring about each (`pairs.svia_reach`), as the stubs' vias beside the
+  boxes are: a bus an earlier step routed drops its lanes there
+  (sdi_mipi_conv's DDR3 bus south of U11, where the SDI lanes pass on the plane
+  layers: one lane 0.007 short of such a via round after round, a finding no
+  cut answers).
 - **Islands:** one split per island and layer, in the lane order, pinned by
   the lanes' own ends. An island is a part, or parts no lane can surely pass
   between (`whole_ctx.part_islands`). A two-pad part whose pads stand a lane
@@ -1249,7 +1400,17 @@ and the snap lays the singles.
   lays every lane).
 - **Keeping to its line:** a slanted line is laid as a staircase on the two
   router headings either side (`pairs.stair_spread`); beyond that and a grid
-  step it pays `W_KEEP` per mm of length per mm.
+  step it pays `W_KEEP` per mm of length per mm. The plan leaves room for the
+  staircase where nothing else can: a single with a pair either side on its
+  layer, which the snap cannot move off either, is held that much further off
+  each pair's line where it runs at a slant (`pairs.stair_dev`: half the
+  smallest staircase along its heading there, no more than half how far a short
+  jog runs across) -- in the geometry, the polish and the audit alike. On
+  h616_lpddr4's escape bus SDQS2 and SDQS3 ran 12 degrees off vertical either
+  side of SDQM2, 0.40 from it as planned and 0.30 as laid, where it needs 0.34:
+  SDQM2 had no path; held off, every lane of the bus is laid. A single with
+  another single on one side is moved toward it by the snap, as every such lane
+  there was; and a pair beside a pair is laid against the other's steps.
 - **End connectors** (`pairs.end_legs`): two legs from its tips to a **pose**
   on the grid, the shortest whose legs clear everything. The pair router
   takes over at the pose with no setback of its own
@@ -1263,7 +1424,9 @@ and the snap lays the singles.
   degrees: laid onto a pose heading south-west, TX_D2 to TX_D5 are laid
   where all four were refused, and the round's open nets fall from 15 to 9.
   On a generated bus of six pairs berthing on the destination's south face
-  three were refused, six nets open; now every pair is laid.
+  three were refused, six nets open; now every pair is laid. An end with no
+  pose clear at all has no pose pair to search, and the pair is left unlaid
+  (the step goes on).
 - **Pose to pose**, owing the router's probe past each pose and turning as
   the pair router's own counters allow (`pairs.pose_turn_over`).
 - **The crossover:** an **opposite-hands** pair -- P on one side of its
@@ -1288,7 +1451,13 @@ and the snap lays the singles.
   nearest grid point whose join folds neither against the stub nor the lane.
 - **Shares:** a lane not yet placed keeps its share of every gap, so the
   lanes laid first cannot take the room the later ones need.
-- **Two sweeps** then lay every lane again against the others' real copper.
+- **Two sweeps** then lay every lane again against the others' real copper. A
+  lane the first pass could not lay is tried again with no share of another
+  lane it could not lay: neither has copper, and two failed lanes each keeping
+  the other's share are never laid. On the zynq LVDS bus TX_FRAME's planned
+  dive fenced TX_D3 and TX_D3's fenced TX_FRAME, and eight of a round's
+  sixteen pairs were left so; over thirteen rounds of the bus's benches the
+  nets the snap left unlaid fall from 98 to 52, in none more.
 - **A single the snap cannot lay** is named with where its search got stuck,
   and the loop sends that place to the solve.
 
@@ -1320,7 +1489,12 @@ it; `whole_gate.py` passes it only when it is complete and clean with
 
 **What the router gets** (`PlanLanes` on the whole frame): reservations, via
 sites, bands, layer runs, search windows. A snapped lane's band is its own
-grid line -- half a grid step either side, its end cells and its via cells.
+grid line -- half a grid step either side, its end cells and its via cells. A
+search window's edge is a board edge to the router, so the window stands at
+least a via's half size, the board-edge clearance and two grid steps past the
+lane's points (`connect.connect`): at 0.6 a via at the lane's outermost point
+had no cell (sdi_mipi_conv's SDI_D2 on four layers, its change 1.4 mm short
+of its berth, refused every round).
 
 **The audit** runs every `plan_audit.py` check: pads as KiCad draws them; a
 single's terminal join as the router lays it; each piece's off-grid allowance;
@@ -1408,7 +1582,7 @@ The channels:
 - **Over two:** the nets an unproved plan leaves over two vias, each priced
   over by at least that much.
 - **A refused fanout** (`--refused`): a pair the laid fanout split, and a
-  tooth on the source's far face, avoided.
+  tooth on the source's far face still inside the array, avoided.
 - **By name** (`--name`): a round that leaves nets open names them, whatever
   its audits found, each at the end where it fails -- where the round's
   findings name it, else the array nearer its ball cut off from its copper,
@@ -1526,6 +1700,26 @@ via.
   against an array's own pad is held off that layer round the place
   (`ARRAY_CUT_R`): the lanes beside it pushed it there, and another layer has
   room. A drilled ball stands on every layer, so it is no island's cut.
+- **Another net's tracks** -- a bus an earlier step routed -- are cut so too: a
+  lane found against one is held off every layer the bench's other tracks
+  cross that place on, the finding's own among them, and none where they cross
+  it on every layer. Held off the one layer, a lane moved a round found the
+  next one blocked: sdi_mipi_conv's DDR3 bus runs along U11's south face on
+  four of its eight layers, and the loop had stopped there, ENDS CROWDED.
+- **Keep-out rule areas.** The audit measures each lane against the board's
+  keep-out areas whose tracks are not allowed on its layer
+  (`plan_audit.keepout_areas`, resolved as the router resolves them), and a
+  lane found in one is held off its layers where its laid path meets the area
+  itself, not the area's box (`whole_route.own_spans`, the cut carrying the
+  area's shape: the area round U15 is an L whose box reaches U15's berths).
+  The router stamps them and the plan did not see them: on sdi_mipi_conv the
+  wound SDI lanes round U15 were planned on In2.Cu through the area east of it
+  that keeps In1 and In2 clear, and the snap failed them there every round.
+  The cut is FIRM (a hundred vias broken, where a layer cut is otherwise
+  soft at three): a lane planned through the area is a lane not laid. Soft,
+  SDI_D1 on four layers kept its run through the area every round, its
+  changes off In2.Cu and back dearer than the break; firm, it held and the
+  lane was laid.
 - **Cuts on the lane's own route.** A cut is written in route u, and a place
   in u is a line across the frame. Where a lane runs steeply across the trunk,
   a few millimetres of it advance u by a fraction of that, so an island's
@@ -1698,13 +1892,13 @@ With nothing supplied, as on the benches:
 
 | | |
 |---|---|
-| `route_bus.py` | the bus step: a board as the chain hands it on, its bus routed in the board's own frame, graded on the board (`BUS ..`); the buses found on a board (`tests/test_622_find_buses.py`); a board's buses in turn, each its own fanout and layers, a later escape bus planning a shared array whole (`--bus`: `tests/test_622_route_buses_shared.py`) and, opt-in, a later plain or joint one keeping its escapes there (`SOURCE_SHARED`); a net a pull alone keeps out laid as a lane, opt-in (`BUS_PULLED`: `tests/test_622_route_bus_pulled.py`); one source and several ends as one whole route, `--bus SRC:U4+U3` (the frame's branches, `whole_frame.dest_ranks`: `tests/test_622_two_end.py`) |
-| `escape_plan.py`, `dogbone_arrays.py` | the escape fanout (`route_bus --escape`): both arrays dog-boned, and each round's ends chosen among the escapes that field has (ball lines, sidesteps, streets) and laid as they are (`tests/test_622_escape_plan.py`) |
-| `joint_escape.py`, `conflict_groups.py` | the joint fanout (`route_bus --joint-fanout`): an array's other balls planned together in one CP-SAT solve and laid by the under-pad engine's joint escape (a drop at a finer rung's via: `tests/test_622_drop_fine_via.py`; nothing in a laid pair's pocket: `test_622_pair_teeth.py`); the escapes' conflicts as cliques and bicliques (`tests/test_622_conflict_groups.py`); a shared array planned whole round an escape bus's teeth (`route_bus --escape`, `ESCAPE_JOINT`: `escape_field`) |
-| `whole_route.py`, `modal_whole.py` | one rung end to end -- fanout, solve, loop, route, checks, feedback rounds -- graded in one line (`WHOLE K=..`); the loop's layer cuts from the audit and the snap (`tests/test_622_layer_cuts.py`); the ladder in the cloud, one container per rung |
-| `whole_ends.py`, `whole_frame.py`, `whole_feedback.py` | the choice of ends (the fanout's `PLAN_JUDGE=ends`; every plane ball kept a way down: `tests/test_622_walled_balls.py`); the frame of a bench (a part on a ring's stack: `tests/test_622_ring_room.py`); what goes back to the fanout (`tests/test_622_ends_fixes.py`, `test_622_exit_front.py`, `test_622_feedback_rounds.py`) |
+| `route_bus.py` | the bus step: a board as the chain hands it on, its bus routed in the board's own frame, graded on the board (`BUS ..`), handed on whenever its own nets come out clean, another net's copper it laid put back first (`tests/test_622_bus_handed_on.py`); the buses found on a board (`tests/test_622_find_buses.py`); a board's buses in turn, each its own fanout and layers, a later escape bus planning a shared array whole (`--bus`: `tests/test_622_route_buses_shared.py`) and a later plain or joint one keeping its escapes there (`keeps_source_escapes`, `SOURCE_SHARED`); the lanes handed on locked (`lock_lanes`: `tests/test_622_bus_lock.py`); a pull pad a short tie reaches joined to its lane in the escape fanout (`attach_pulls`: `tests/test_622_attach_pulls.py`); a net a pull or a termination alone keeps out laid as a lane (`pulled_nets`: `tests/test_622_route_bus_pulled.py`); a bus net the run leaves out planned with its arrays' other nets each round, its escapes kept where it had no copper of its own (`others_left_out`, `escapes_kept`: `tests/test_622_route_bus_left_out.py`); one source and several ends as one whole route, `--bus SRC:U4+U3` (the frame's branches, `whole_frame.dest_ranks`: `tests/test_622_two_end.py`) |
+| `escape_plan.py`, `dogbone_arrays.py` | the escape fanout (`route_bus --escape`): both arrays dog-boned, and each round's ends chosen among the escapes that field has (ball lines, sidesteps, streets) and laid as they are (`tests/test_622_escape_plan.py`); no lane laid whose runs come within the rule of a kept lane's or of its own other leg's (`clear_lanes`: `tests/test_622_escape_clear_lanes.py`); on a shared array, a lane the ends gave no end that the joint field escaped held to the tooth its plan chose and given a berth with the others held (`free_ends`); a joint field that leaves a lane no way to its chosen end laid without it when it ends at least as many lanes as the dog-boned field (`without_lanes`, `lanes_ended`: `tests/test_622_escape_clear_lanes.py`) |
+| `joint_escape.py`, `conflict_groups.py` | the joint fanout (`route_bus --joint-fanout`): an array's other balls planned together in one CP-SAT solve and laid by the under-pad engine's joint escape (a drop at a finer rung's via: `tests/test_622_drop_fine_via.py`; nothing in a laid pair's pocket: `test_622_pair_teeth.py`; no escape between two laid lanes that close round it: `test_622_lane_walls.py`); the escapes' conflicts as cliques and bicliques (`tests/test_622_conflict_groups.py`); a shared array planned whole round an escape bus's teeth (`route_bus --escape`, `ESCAPE_JOINT`: `escape_field`); a later round's pieces carried onto its board once (`carry`: `tests/test_622_joint_rounds.py`) |
+| `whole_route.py`, `modal_whole.py` | one rung end to end -- fanout, solve, loop, route, checks, feedback rounds -- graded in one line (`WHOLE K=..`); the loop's layer cuts from the audit and the snap (`tests/test_622_layer_cuts.py`); a lane its fanout gave no end, or ran and did not lay, left out of the round, open (`with_ends`: `tests/test_622_whole_route_no_ends.py`); the ladder in the cloud, one container per rung |
+| `whole_ends.py`, `whole_frame.py`, `whole_feedback.py` | the choice of ends (the fanout's `PLAN_JUDGE=ends`; every plane ball kept a way down: `tests/test_622_walled_balls.py`); the frame of a bench (a part on a ring's stack: `tests/test_622_ring_room.py`); what goes back to the fanout (`tests/test_622_ends_fixes.py`, `test_622_exit_front.py`, `test_622_feedback_rounds.py`; an item for a lane the round's ends have no option for keys nothing: `fb_tables`) |
 | `whole_solve.py`, `whole_geo.py`, `whole_polish.py`, `whole_snap.py` | the crossing and layer solve, the geometry LP (a part seen from several frames: `tests/test_622_part_frames.py`; islands made of pads: `tests/test_622_pad_islands.py`), the polish, the snap onto the router's grid |
-| `whole_audit.py`, `whole_gate.py`, `whole_lint.py`, `whole_render.py`, `whole_ctx.py` | a plan installed and audited, gated, linted, drawn; the bench they share |
+| `whole_audit.py`, `whole_gate.py`, `whole_lint.py`, `whole_render.py`, `whole_ctx.py` | a plan installed and audited, gated, linted, drawn; the bench they share, read as the ends model reads it (`tests/test_622_candidate_ctx.py`: an all-pair bus's plan sidecar read by the pairs' legs) |
 | `whole_ladder.py` | the ladders on this machine: rungs side by side, each stopped at a cap with every stage it started, one grade line each |
 | `route_layers.py`, `relayer.py` | the routing layers (`ROUTE_LAYERS`), the escapes' layers and `ESCAPE_VIAS`; a via end's run moved onto the layer the solve chose, its via dropped where it is left on its pad's layer |
 | `synth_layers.py` | the whole route on generated buses on two to six routing layers, each graded against its optimum on that many layers (`synth_bus.truth_layers`, `truth_wind`) and drawn layer by layer, `--sheet` every case on one image |
@@ -1723,7 +1917,7 @@ With nothing supplied, as on the benches:
 | `fanout_from_plan.py`, `pages_first.py` | the planner and both fanouts |
 | `select_moves.py`, `escape_moves.py`, `plan_ends.py` | menus, conflicts, plan cost; a row part's (a QFN's) one escape a pad, laid as planned (`fanout_from_plan.row_berths`: `tests/test_622_row_part.py`) |
 | `source_realize.py` | a source plan realised with the production engine, audited per dimension |
-| `connect.py`, `corridor.py`, `topo_strings.py`, `taut_fast.py` | the real router, corridors (a lane's layers on its two pieces: `tests/test_622_piece_u.py`), the taut relaxation |
+| `connect.py`, `corridor.py`, `topo_strings.py`, `taut_fast.py` | the real router, corridors (a lane's layers on its two pieces: `tests/test_622_piece_u.py`; a ring wound round the destination from a bundle arriving at a slant: `tests/test_622_wrap_spine_slant.py`), the taut relaxation |
 | `pairs.py` | a differential pair's rules: its hand, end connectors, dive room, crossover, staircase; `harmonise` |
 | `plan_audit.py`, `route_lanes.py` | a plan checked before routing; chosen lanes routed one at a time in band, with renders and a refused search's frontiers |
 | `human_ends_bench.py` | a bench on a human's ends, with the plan sidecar |
@@ -1741,7 +1935,7 @@ With nothing supplied, as on the benches:
 | `coherent_nets.py`, `k_ladder_coherent.txt` | the coherent K-ladder |
 | `flow_frame.py`, `pose_gate.sh`, `make_bench.py`, `rotate_board.py`, `mirror_board.py` | the canonical frame, the poses, articles from any board |
 | `human_at_k.py`, `census_vs_human.py`, `cmp_copper.py` | the human's count at a K, per-net comparisons, copper diffs |
-| `joint_floor.py`, `synth_bus.py`, `synth_ladder.py` | the via floor over a board's own paths; the synthetic channel with a known optimum (on two to six layers: `truth_layers`; with lanes free to go round the destination either way: `truth_wind`, with `--ring-e` berths on its far face, `--pattern rotate`, and `--closed` arrays no lane can pass under) |
+| `joint_floor.py`, `synth_bus.py`, `synth_ladder.py` | the via floor over a board's own paths; the synthetic channel with a known optimum (on two to six layers: `truth_layers`; with lanes free to go round the destination either way: `truth_wind`, with `--ring-e` berths on its far face (a block `--e-depth` columns deep), `--pattern rotate`, and `--closed` arrays no lane can pass under) |
 
 ### What this adds to `py_router`
 
@@ -1821,8 +2015,8 @@ channels first, and the other escapes leave round it.
    class, `.kicad_dru` layer rules, and `--fab-tier` / `--escalation`.
 5. **Termination parts as waypoints.** A pair through a termination part
    between the arrays (the zynq's CK through R20) is refused, and so are the
-   nets `find_buses` leaves (fly-by, multi-drop; a pull-down too, unless
-   `BUS_PULLED`); a pair could be laid through its part.
+   nets `find_buses` leaves that no pull or termination explains
+   (multi-drop); a pair could be laid through its part.
 6. **The handoff.** The laid nets go into the project's `protected_nets`;
    a refused lane is left with no partial copper, unprotected, and listed in
    a JSON summary for `route.py`; the bus's own pairs stop going to
@@ -1893,29 +2087,36 @@ channels first, and the other escapes leave round it.
 
 ### Next, the whole route (`whole_*.py`)
 
-- **A tooth on the source's far face.** Today no lane may leave the source
-  by the face turned away from the destination: `whole_frame.build` refuses
-  it by name (`FarFace`), the ends model's source menus leave such moves out
-  and refuse one laid there, and the fanout audit refuses the board. But a
-  pinout can put a bus's balls on that side. On sdi_mipi_conv (the corpus)
-  the SDI bus's balls sit on U11's side away from U15. The human leaves them
-  by U11's far and south faces and runs round U11, some of them over the
-  top of the board. The escape fanout sent the bus through U11's interior
-  instead, two lanes still on its far face, and the round was refused. To
-  try: the destination's rings, mirrored at the source.
-  - **Source rings:** a north and a south ring round the source, from its
-    far face to the trunk's start (`braid.ring_spine` on the source's hull).
-    The far face is cut between them at the widest gap of its teeth, as the
-    destination's far face is cut between its berths.
-  - **The orders:** the teeth unrolled at that cut, not at the middle of
-    the far face (`perim_s`).
-  - **Joining the trunk:** a source ring's lanes join it at a start stepped
-    out of the source's hull, as a destination ring's lanes leave it at Hk.
-    Their crossings stay on the trunk, as a ring's do.
-  - **Downstream:** the solve and the geometry handle a source ring as they
-    handle a destination ring. The ends model prices it and searches its
-    cut, as WINDING does at the destination. The menus and the audit allow
-    far-face teeth.
+- **The source's far face, further** (the lead-ins of [the frame](#the-frame-whole_framepy)
+  route its teeth today). On sdi_mipi_conv's SDI bus (U11 to U15, `route_bus
+  --escape`, all eight of the board's copper layers, two rounds) the first
+  round lays all 21 of the bus's nets, connected and DRC-clean on the board,
+  one of them round U11's far face. On four layers (F.Cu, B.Cu, In2.Cu and
+  In4.Cu, chosen by hand) it lays 19 of the 21. Left:
+  - **Teeth beside an earlier bus on every layer.** On those four layers
+    SDI_D0 and SDI_D1 cannot leave their teeth at U11's corner, where the DDR3
+    bus routed before them runs on all four: ENDS CROWDED in both fanout
+    rounds, the feedback's between them. To try: the ends priced by
+    another net's copper across a tooth's escape on every routing layer, as the
+    side fences price the copper beside the source's faces.
+  - **Power pours split.** The plane grade names two of In6.Cu's power pours
+    (+1V5, 1V0_Power) split by the SDI lanes under U11, three and two more
+    islands for the chain's plane repair to join. To try: a lane's run on a
+    plane layer priced by the islands it would cut from its pour.
+  - **Lanes the escape step leaves out** (`clear_lanes`: their runs on one
+    layer within the rule of a kept lane's) are named by nothing the feedback
+    can price, so a refusal over them ends the rounds. To try: name the kept
+    lane each one clashed with, a pair of ends not to choose together, for the
+    next round.
+  - **The lead-in's own geometry.** It goes round the copper in its way but is
+    laid as the frame draws it, fixed. To try: the destination's rings mirrored
+    at the source (`braid.ring_spine` on the source's hull), so the geometry
+    places those lanes as it places a ring's.
+  - **Winding at the source.** A lane may leave a side face and go round the
+    far face to the other side, as a destination's wound lanes do: the
+    generated `wind_rot16_g3` routed source and destination swapped lays 14
+    vias on three layers and 4 on four, where routed forward the winding cut
+    lays 2.
 
 - **The zynq's LVDS bus (U1 to U5) on four layers.** With `route_bus
   --escape` (see [the bus step](#the-bus-step-on-a-real-board)) the whole

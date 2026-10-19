@@ -402,6 +402,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         except Exception:
             FRONT = {}
     LAYER_CUTS = []
+    FAR = set(getattr(Fr, 'far', ()))      # (a far-face lane's tooth: its route starts round the source's corner)
     for n, ends_ in sorted(FRONT.items()):
         if n not in M or n in prs:
             continue
@@ -410,7 +411,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
         # it, and nowhere between it and the far side of the copper, a via's half width more than a track's)
         for k_, sp_ in sorted(ends_.items()):
             k_, vm_ = int(k_), (VIA - TRK) / 2
-            if k_ == 1 and n in bname or len(sp_) != 4:
+            if k_ == 1 and n in bname or k_ == 0 and n in FAR or len(sp_) != 4:
                 continue
             v0_, v1_, d0_, d1_ = sp_
             if k_ == 1:
@@ -534,7 +535,8 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
     # (its neighbours a ball pitch across along the face) and no built-in via cut -- at a via's cost, as any change. So
     # the lanes leave the source's surface escapes for whichever layer the plan gives them where the gap between the
     # arrays has no room for their changes (the zynq's U1 to U5)
-    TVIA = {n for n in M if not via_end(n, 0)} if NL > 2 else set()     # (the bench's own: VIA_ENDS holds no tooth)
+    # (not a far-face lane: its route starts at the end of its lead-in round the source's corner, not at its tooth)
+    TVIA = {n for n in M if not via_end(n, 0) and n not in FAR} if NL > 2 else set()   # (the bench's own: VIA_ENDS holds no tooth)
     VIN0_ROOM = dict(VIN0)
     for n in TVIA:
         if n not in prs:
@@ -1182,6 +1184,7 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
               f'{sum(1 for s_ in soft_broken if s_[0] == "via")} via), each {W_SOFT / W_V:g} vias when broken')
     # ---- LAYER cuts (the blocked fronts, above): no change of the lane inside the span, and its layer there -- its end's
     # layer flipped by the changes before the span -- the other; soft as the geometry's cuts are, priced W_SOFT broken
+    # (a keep-out area's, W_FIRM)
     for (n_, k_, L_, lo_u, hi_u, lo_c, hi_c, w0, w1) in LAYER_CUTS + CHAN_CUTS:
         cs_l, act_l = chg[n_]
         br_ = m.NewBoolVar('')
@@ -1199,7 +1202,12 @@ def solve(ctx, dest, cuts=(), hist=(), hint=None, soft_cuts=(), crowd=False, rel
             run_ = run_at(n_, bef)
             for blk_ in blks_:
                 m.Add(run_ != blk_).OnlyEnforceIf(br_.Not())
-            soft_broken[('layer', n_, str(k_), round(lo_u, 3))] = br_     # (k_ a front's end, or an island's name)
+            # (a KEEP-OUT area's cut FIRM: the router stamps the area exactly, so a lane planned through it is a lane not
+            # laid, dearer than any vias -- soft, sdi_mipi_conv's SDI_D1 on four layers was planned through the area
+            # round U15 every round, its changes off In2.Cu and back dearer than the break, and never laid; firm, the
+            # cut held and the lane was laid)
+            (firm_broken if str(k_).startswith('chan keepout') else soft_broken)[
+                ('layer', n_, str(k_), round(lo_u, 3))] = br_     # (k_ a front's end, or an island's name)
             continue
         par = m.NewBoolVar('')
         m.AddBoolXOr(bef + [par.Not()])                        # par: an odd number of changes before the span

@@ -2582,10 +2582,13 @@ def repair_planes(
                     os.unlink(_tmp.name)
                 except OSError:
                     pass
-                try:  # the seeded sibling .kicad_pro (#513 item 12)
-                    os.unlink(os.path.splitext(_tmp.name)[0] + '.kicad_pro')
-                except OSError:
-                    pass
+                # The siblings the writer seeded (#513 item 12, #1286).
+                from copy_board import SIBLING_EXTS
+                for _ext in SIBLING_EXTS:
+                    try:
+                        os.unlink(os.path.splitext(_tmp.name)[0] + _ext)
+                    except OSError:
+                        pass
                 return False if _links is None else _links
             except Exception as _oe:
                 print(f"  (gate oracle unavailable: {_oe})")

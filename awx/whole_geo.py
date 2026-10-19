@@ -321,6 +321,7 @@ def stub_pieces(reach, lanes=False):
 # a VIA beside the box line meets stub copper within its reach; a LANE (never inside the box) only the copper
 # within a clearance block of the line
 REACH = VIA_ST + bd.VIA_NEED
+FIELD_MARGIN = 5.0          # the FIELD the lanes cross: the arrays' boxes and this far round them, mm (other nets' vias)
 VSTUB = stub_pieces(REACH) + VIA_ONLY        # (x0, y0, x1, y1, {layer}, label, owner)
 LSTUB = stub_pieces(TW + CL, lanes=True)
 # base VIAS near the box lines (a stub ending in a via: SDQM1's berth) -- discs on both layers
@@ -332,6 +333,17 @@ for v_ in ctx.base_vias:
             # (its reach for a lane: the router's ring about the grid point it rounds to -- pairs.svia_reach)
             r = max(r, _pairs.svia_reach(ctx.cfg, v_.x, v_.y, v_.size))
         VSTUB.append((v_.x - r, v_.y - r, v_.x + r, v_.y + r, ALL(), 'svia ' + (own_ or ctx.pcb.nets[v_.net_id].name.split('/')[-1]), own_))
+    elif v_.net_id not in NET_LANE and (min(b[0] for b in BOX) - FIELD_MARGIN <= v_.x <= max(b[2] for b in BOX)
+                                        + FIELD_MARGIN and min(b[1] for b in BOX) - FIELD_MARGIN <= v_.y
+                                        <= max(b[3] for b in BOX) + FIELD_MARGIN):
+        # ...and every OTHER net's via in the FIELD the lanes cross, away from the boxes: a bus an earlier step routed
+        # drops its lanes there (sdi_mipi_conv's DDR3 bus, south of U11, where the SDI lanes pass on the plane layers:
+        # the audit found one lane 0.007 short of such a via round after round, a static no cut answers, and the
+        # geometry had never seen it) -- a disc on every layer, the router's ring about it, as a stub's via
+        r = max(v_.size / 2, _pairs.svia_reach(ctx.cfg, v_.x, v_.y, v_.size)) \
+            if (awx_settings.get('SVIA_RING') or '1') == '1' else v_.size / 2
+        VSTUB.append((v_.x - r, v_.y - r, v_.x + r, v_.y + r, ALL(), 'svia ' + ctx.pcb.nets[v_.net_id].name.split('/')[-1]
+                      if v_.net_id in ctx.pcb.nets else 'svia', None))
 # ... and the LANES keep off the stub copper within a clearance block of the line, and off the stub vias
 for st_ in LSTUB + [v for v in VSTUB if v[5].startswith('svia ')]:
     STATIC.append(st_)
@@ -517,6 +529,18 @@ def build_and_solve(sides, prev=None):
         for k in range(v['k0'], v['k1'] + 1):
             var[(f, n, k)] = len(var)
     inv = {j: key for key, j in var.items()}
+    # a PAIR's staircase off its line, per column, as the pass before laid the line (pairs.stair_dev): a single with a
+    # pair either side stands that much further off each -- the two are laid nearer it than their lines by that, and
+    # the lane between them had no path (h616's SDQM2 between SDQS2 and SDQS3). Not a single with another single on
+    # one side: the snap moves it toward that one, as it does every such lane (room held for those too, h616's joint
+    # bus on two layers lost two lanes more); nor a pair beside a pair, laid against the other one's steps
+    STD = {}
+    if prev is not None:
+        for (f, n), v in PIECE.items():
+            if n in prs:
+                ks = [k for k in range(v['k0'], v['k1'] + 1) if (f, n, k) in prev]
+                for k, d_ in zip(ks, _pairs.stair_dev(ctx.cfg, [FR[f]['sp'].xy(k * G, prev[(f, n, k)]) for k in ks])):
+                    STD[(f, n, k)] = d_
 
     def tangents(sl):
         """The slopes to cut sqrt(1 + k^2) at for the mean slope of segments sl [(j1, j0)]: with a previous
@@ -609,8 +633,13 @@ def build_and_solve(sides, prev=None):
                     or (v['o1'] is not None and v['k1'] - k <= v['hold1'] + NTURN))
             for Ly in range(NL):
                 seq = [n for n in od if Ly in lay[n]]
+                # (a single with a pair either side on the layer: its room from their staircases)
+                sand = {seq[i_] for i_ in range(1, len(seq) - 1)
+                        if seq[i_] not in prs and seq[i_ - 1] in prs and seq[i_ + 1] in prs}
                 for a, b in zip(seq, seq[1:]):
-                    sep = P_MIN + hw[a] + hw[b] + (PAIR_TURN_ROOM if turning(a) or turning(b) else 0.0)
+                    st_ = (STD.get((f, a, k), 0.0) if b in sand else 0.0) + \
+                          (STD.get((f, b, k), 0.0) if a in sand else 0.0)
+                    sep = P_MIN + hw[a] + hw[b] + st_ + (PAIR_TURN_ROOM if turning(a) or turning(b) else 0.0)
                     ta, tb = term_o(a), term_o(b)
                     if ta and tb and ta[0] == tb[0]:
                         sep = min(sep, max(0.0, abs(tb[1] - ta[1]) - G / 20))
@@ -644,10 +673,10 @@ def build_and_solve(sides, prev=None):
                                 terms += [(p1, sep * be / (len(sl) * G)), (p0, -sep * be / (len(sl) * G))]
                             le(terms, -sep * al, ('pitch', f, k, a, b, Ly), tangent=True)
                     e = newvar(W_COMF * G)
-                    le([(ja, 1.0), (jb, -1.0), (e, -1.0)], -(P_COMF + hw[a] + hw[b]))
+                    le([(ja, 1.0), (jb, -1.0), (e, -1.0)], -(P_COMF + hw[a] + hw[b] + st_))
                     # ...and steeper below the midpoint to the minimum: the tightest pairs are spread first
                     e = newvar(W_COMF_TIGHT * G)
-                    le([(ja, 1.0), (jb, -1.0), (e, -1.0)], -(P_MID + hw[a] + hw[b]))
+                    le([(ja, 1.0), (jb, -1.0), (e, -1.0)], -(P_MID + hw[a] + hw[b] + st_))
     # vias
     vias = []
     for (f, n), v in PIECE.items():
@@ -1472,14 +1501,37 @@ for n in M:
                 # then cut (K28 SDQS1 folded 113 degrees)
                 _chamfer(pieces, xy_all, TURN_RUN)
         # ...and at its tooth: a pair started past its end run (whole_frame) runs straight out of its tooth to its
-        # start and turns there onto its lane, the same two bends
+        # start and turns there onto its lane, the same two bends -- and a far-face lane runs its LEAD-IN round the
+        # source's corner to its start (whole_frame.lead_ins), drawn as the frame gives it, on its first run's layer
         sx, sy = Fr.start[n]
-        if math.hypot(tx - sx, ty - sy) > 1e-9:
+        lead = (getattr(Fr, 'lead', None) or {}).get(n)
+        if lead:
+            a = pieces[0]; pieces[0] = (sx, sy, a[2], a[3], a[4]); xy_all[0] = (sx, sy)
+            pieces[:0] = [(p[0], p[1], q[0], q[1], a[4]) for p, q in zip(lead, lead[1:])]
+            xy_all[:0] = [tuple(p) for p in lead[:-1]]
+        elif math.hypot(tx - sx, ty - sy) > 1e-9:
             a = pieces[0]; pieces[0] = (sx, sy, a[2], a[3], a[4]); xy_all[0] = (sx, sy)
             pieces.insert(0, (tx, ty, sx, sy, a[4])); xy_all.insert(0, (tx, ty))
             rp, rx = [(q[2], q[3], q[0], q[1], q[4]) for q in reversed(pieces)], xy_all[::-1]
             _chamfer(rp, rx, TURN_RUN)
             pieces[:] = [(q[2], q[3], q[0], q[1], q[4]) for q in reversed(rp)]; xy_all[:] = rx[::-1]
+    # a change AT a terminal -- a surface tooth's via at its stub's end (whole_solve's TVIA), a surface berth's (BVIA):
+    # its column has no length, so the line drawn never took the layer the lane leaves its tooth on, or reaches its
+    # berth on, and the plan ended on the other layer with no via (sdi_mipi_conv's PCLK, its berth on F.Cu: drawn on
+    # In2.Cu into it, the band BERTH-OUT and the route refused it). The terminal's own layer is drawn a grid step long
+    if pieces:
+        for at_end, L_ in ((False, LNAME[layer_of(n, -math.inf)]), (True, LNAME[layer_of(n, math.inf)])):
+            ax, ay, bx, by, L0 = pieces[-1] if at_end else pieces[0]
+            ln_ = math.hypot(bx - ax, by - ay)
+            if L0 == L_ or ln_ < 1e-9:
+                continue
+            t_ = min(G, ln_ / 2) / ln_
+            if at_end:
+                cx, cy = bx - (bx - ax) * t_, by - (by - ay) * t_
+                pieces[-1:] = [(ax, ay, cx, cy, L0), (cx, cy, bx, by, L_)]
+            else:
+                cx, cy = ax + (bx - ax) * t_, ay + (by - ay) * t_
+                pieces[:1] = [(ax, ay, cx, cy, L_), (cx, cy, bx, by, L0)]
     # reversing vertices next to a short side (mapping artifacts inside spine corners, at a replaced terminal):
     # dropped over the finished line, while the two sides share a layer
     changed = True

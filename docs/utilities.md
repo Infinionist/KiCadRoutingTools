@@ -1723,7 +1723,9 @@ You normally don't run this by hand: **`route.py`, `route_diff.py`,
 step** (issue #160), pinning the floors to the clearances/sizes they just routed
 with, so the written project is DRC-consistent by default. If the output is a new
 file with no project yet, they copy the input board's `.kicad_pro` (or seed a
-complete one when the input has none). Pass `--no-fix-drc-settings` to skip it, or
+complete one when the input has none). Pass `--no-fix-drc-settings` to skip it
+(route.py's mid-run copy of it, the #650 in-run floor sync, is skipped with it,
+#1285), or
 `--relax-drc-severities` to ALSO lower the non-routing severities (off by default,
 #856; `--keep-thermal` is accepted as a deprecated no-op). Every routing step
 that writes the project prints one `PROJECT_WRITES_JSON: {...}` line listing

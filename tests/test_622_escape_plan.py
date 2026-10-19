@@ -229,5 +229,95 @@ check(st0['smenu'].get('N0') and st0['dmenu'].get('N0') and lanes0 == ['N0'],
       f'10: N0 has escapes at both arrays and a lane: {lanes0}')
 check(not st1['smenu'].get('N0') and lanes1 == [], f'10: N0 with no tooth escape has no lane: {lanes1}')
 
+# 12. the escape fanout's via reach: its moves are laid exactly as they are, so a via keeps another lane's run off by
+# the rule (rules.fan_via_clear), not the router's grid ring (fan_via_reach) -- at 0.45 mm vias, 0.12 escapes and 0.1
+# clearance the ring is past the 0.4 a dog-bone stands off the next ball line, and every dog-bone met every
+# neighbouring line's run (sdi_mipi_conv's SDI bus: no plan of its teeth with no conflict, on four layers or eight)
+r10 = _rules.Rules(clearance=0.1, track=0.15, via_size=0.45, via_drill=0.2, fan_track=0.12, source='test')
+ring, clear = _rules.fan_via_reach(r10), _rules.fan_via_clear(r10)
+check(clear < 0.4 < ring, f'12: at 0.45/0.12/0.1 the grid ring {ring:.5f} is past 0.4 and the rule {clear:.3f} short of it')
+# (A along the ball line y 0 on B.Cu past B's dog-bone via, 0.4 off it; B a STREET move on In1.Cu, which buckets every
+# move by a via's reach -- pages_first._conflicts)
+ra = em.Move('A', 'dogbone', 'left', 'B.Cu', (-1.2, 0.0), 1,
+             [((2.4, 0.0), (2.8, 0.4), 'F.Cu'), ((2.8, 0.4), (2.8, 0.0), 'B.Cu'), ((2.8, 0.0), (-1.2, 0.0), 'B.Cu')],
+             site=(2.8, 0.4), climb=1)
+rb = em.Move('B', 'dogbone', 'up', 'In1.Cu', (1.2, -1.2), 1,
+             [((0.8, 0.8), (1.2, 0.4), 'F.Cu'), ((1.2, 0.4), (1.2, -1.2), 'In1.Cu')], site=(1.2, 0.4), climb=1)
+rb.street = 1
+check(sm._conflict(ra, rb, strict=True, stack=True, xing=2, reach=ring),
+      '12: under the grid ring, A\'s run beside B\'s via is a conflict')
+check(not sm._conflict(ra, rb, strict=True, stack=True, xing=2, reach=clear),
+      '12: under the rule it is none')
+check(not pf._conflicts({'A': [ra], 'B': [rb]}, True, stack=True, xing=2, via_reach=clear),
+      '12: pages_first._conflicts passes the reach through (a street move among them)')
+check(pf._conflicts({'A': [ra], 'B': [rb]}, True, stack=True, xing=2, via_reach=ring) != [],
+      '12: ...and the ring\'s conflict with it')
+
+# 13. dogbone_arrays.beneath: a passive's PASTE-only pads are no pads of its (sdi_mipi_conv's C105 under U11, two
+# copper pads and two paste openings drawn as pads, read as no two-pad part and held -- no dog-bone for two SDI balls)
+cap = '''  (footprint "C0402" (layer "B.Cu") (at 1.6 1.6)
+    (property "Reference" "C1" (at 0 0) (layer "B.SilkS"))
+    (pad "1" smd rect (at -0.48 0) (size 0.56 0.62) (layers "B.Cu" "B.Mask") (net 3 "N2"))
+    (pad "2" smd rect (at 0.48 0) (size 0.56 0.62) (layers "B.Cu" "B.Mask") (net 4 "N3"))
+    (pad "" smd rect (at -0.48 0) (size 0.4 0.5) (layers "B.Paste"))
+    (pad "" smd rect (at 0.48 0) (size 0.4 0.5) (layers "B.Paste"))
+  )
+  (footprint "C3" (layer "B.Cu") (at 1.6 2.4)
+    (property "Reference" "C2" (at 0 0) (layer "B.SilkS"))
+    (pad "1" smd rect (at -0.5 0) (size 0.3 0.3) (layers "B.Cu" "B.Mask") (net 3 "N2"))
+    (pad "2" smd rect (at 0 0) (size 0.3 0.3) (layers "B.Cu" "B.Mask") (net 4 "N3"))
+    (pad "3" smd rect (at 0.5 0) (size 0.3 0.3) (layers "B.Cu" "B.Mask") (net 5 "N4"))
+  )'''
+pcb_c, _p = parse(board(cap))
+check(dga.beneath(pcb_c, pcb_c.footprints['C1'], ['U1', 'U2']),
+      '13: a two-pad cap with paste-only pads beneath U1 is beneath it (moved by the cap step, no via blocked)')
+check(not dga.beneath(pcb_c, pcb_c.footprints['C2'], ['U1', 'U2']), '13: a three-pad part is not')
+
+# 14. a lane BARE at both arrays (braid.bare_lane): no track of its net, its pads on two parts -- the outer balls the
+# escape field leaves to leave on their own layer; the escape fanout lays both ends from the pads, so the ladder takes
+# it (make_bench.write_ladder, coherent_nets with bare_ok) where a stub end was all it read (sdi_mipi_conv's SDI bus
+# lost D0, D2 and D7 so; a synth bus of outer balls alone lost every net)
+import braid as _bd  # noqa: E402
+import make_bench as _mb  # noqa: E402
+import coherent_nets as _cn  # noqa: E402
+pcb0, path0 = parse(board())
+bn0 = {n.name.split('/')[-1]: (i, n) for i, n in pcb0.nets.items()}
+check(_bd.bare_lane(pcb0, 'N0', bn0), '14: N0 (U1 and U2, no copper) is a bare lane')
+pcb_s, _p = parse(board('  (segment (start 0 0) (end 0.4 0.4) (width 0.12) (layer "F.Cu") (net 1))'))
+check(not _bd.bare_lane(pcb_s, 'N0', {n.name.split('/')[-1]: (i, n) for i, n in pcb_s.nets.items()}),
+      '14: with a stub it is not')
+with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    _mb.write_ladder(path0, ['N0'], log=lambda *a: None)
+    lad_off = _cn.coherent_nets(10, path0, bare_ok=False)
+    _mb.write_ladder(path0, ['N0'], log=lambda *a: None, bare_ok=True)
+    lad_on = _cn.coherent_nets(10, path0, bare_ok=True)
+check(lad_off == [] and lad_on == ['N0'], f'14: the ladder takes the bare lane with bare_ok alone: {lad_off} {lad_on}')
+
+# 15. ...and the ends model prices an escape state's conflicts by it: its conflicts do not move with the grid ring
+# (select_moves._VIA_REACH), which on these menus moves the conflicts priced by the ring
+# (the dog-boned board, its inner 3 x 3 balls' nets on a 3 x 3 array U3 east of it)
+idx15 = [i for i in range(1, N * N) if i % N in (1, 2, 3) and i // N in (1, 2, 3)]
+names15 = [f'N{i}' for i in idx15]
+u3 = '  (footprint "BGA3" (layer "F.Cu") (at 25 0.8)\n    (property "Reference" "U3" (at 0 0) (layer "F.SilkS"))\n' + \
+    '\n'.join(f'    (pad "{k}" smd circle (at {(k % 3) * PITCH:.3f} {(k // 3) * PITCH:.3f}) (size 0.4 0.4) '
+              f'(layers "F.Cu" "F.Mask") (net {i + 1} "N{i}"))' for k, i in enumerate(idx15)) + '\n  )'
+pcb15, _p = parse(board(vtxt + '\n' + stxt + '\n' + u3))
+with contextlib.redirect_stdout(io.StringIO()):
+    st15 = ep.plan_state(pcb15, names15, 'U1', 'U3', log=lambda *a: None)
+    st15['launch'] = {n: v for n, v in st15['launch'].items() if st15['smenu'].get(n) and st15['dmenu'].get(n)}
+ring0 = sm._VIA_REACH
+nconf, nring = [], []
+try:
+    for R_ in (0.30, 0.45):
+        sm._VIA_REACH = R_
+        with contextlib.redirect_stdout(io.StringIO()):
+            E15 = whole_ends.Ends(st15)
+        nconf.append(sum(len(v) for v in E15.conf.values()))
+        nring.append(len(pf._conflicts({n: st15['smenu'][n] for n in st15['launch']}, True, stack=True)))
+finally:
+    sm._VIA_REACH = ring0
+check(nring[0] != nring[1], f'15: the ring moves the conflicts it prices on these menus: {nring}')
+check(nconf[0] == nconf[1] > 0, f'15: the ends model\'s conflicts on the escape state do not move with it: {nconf}')
+
 print(f'escape plan: {len(moves)} moves from the test ball; ' + ('FAIL' if fails else 'all checks pass'))
 sys.exit(1 if fails else 0)

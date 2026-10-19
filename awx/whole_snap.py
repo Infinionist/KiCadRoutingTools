@@ -685,7 +685,7 @@ def build(n):
     # apart, so each share holds at least one grid row). Left to a soft price, SDQ6 and SDQ7 drifted to 0.225 of
     # SDQ3's line and left it a channel only its exact slanted line fits
     snap_('placed vias')
-    unplaced = [m for m in M if m != n and m not in res['lanes'] and (m in prs or not PAIRS_ONLY)]
+    unplaced = [m for m in M if m != n and m not in res['lanes'] and (m in prs or not PAIRS_ONLY) and m not in UNSHARED]
     for m in unplaced:
         Pm, Lm = LANE[m]['pts'], LANE[m]['lays']
         for (p_, q_), L in zip(zip(Pm, Pm[1:]), Lm):
@@ -1280,7 +1280,9 @@ def route(n, strict=True, wide=False):
         # reaches no end): each pose pair is a search of 2-3 s, and TX_D4's was the 137th in rank
         more = [allc[k_][:12] + [c_ for h_ in sorted({c_[2] for c_ in allc[k_]} - {c_[2] for c_ in allc[k_][:12]})
                                  for c_ in [c_ for c_ in allc[k_] if c_[2] == h_][:POSE_HEADS]] for k_ in (0, 1)]
-        if path is None and (len(more[0]) > len(cands[0]) or len(more[1]) > len(cands[1])):
+        # (an end with no candidate pose has no pose pair to search: the pair router panics on an empty list of starts
+        # or ends, and the snap died with it -- zynq LVDS, TX_FRAME's 12 x 0 poses, the round laid nothing)
+        if path is None and more[0] and more[1] and (len(more[0]) > len(cands[0]) or len(more[1]) > len(cands[1])):
             cell_ = lambda c_: (c_[1][0] - i0, c_[1][1] - j0)
             EG = {}
             for c1_ in more[1]:
@@ -1437,6 +1439,7 @@ def place(n, out):
 
 
 ROUTED = {}
+UNSHARED = set()     # lanes not laid whose shares build() leaves out: in a sweep, the other failed lanes
 
 
 STUCK_AT = {}        # a lane that could not be laid: where its search got farthest (route; 'last' the latest search's)
@@ -1447,7 +1450,8 @@ def route_memo(n, strict=True, wide=False):
     placed (res['lanes'], in the order they were laid) and what never changes -- so a sweep that finds a lane's board as
     it left it (SCK after SDQS0 and SDQS1 are laid again exactly where they were) does not search it again. A lane not
     laid leaves where its search got stuck in STUCK_AT"""
-    key = (n, strict or n in prs, wide, json.dumps(res['lanes']))  # a pair searches pose to pose: strict is a single's
+    # (a pair searches pose to pose: strict is a single's)
+    key = (n, strict or n in prs, wide, json.dumps(res['lanes']), tuple(sorted(UNSHARED)))
     if (awx_settings.get('SNAP_XROOM_PAIRS') or '0') in ('2', '3'):
         key += (tuple(sorted(failed)),)     # (those crossover sides leave the failed lanes out: they read them too)
     if key not in ROUTED:
@@ -1522,9 +1526,13 @@ for n in lay:
 # so a sweep never fails a lane.
 for sw in range(SWEEPS):
     # a lane the first pass could not lay is tried again against the others' REAL copper: a share is the room a lane
-    # not yet laid might need, and where a gap holds just one row a turn can close it (SDQ0 at SA4's share)
+    # not yet laid might need, and where a gap holds just one row a turn can close it (SDQ0 at SA4's share). The other
+    # failed lanes have no copper and keep no share: two that each kept the other's never laid either (zynq LVDS, the
+    # held plan: TX_FRAME's dive barrels fenced TX_D3 and TX_D3's fenced TX_FRAME, eight pairs open of sixteen)
     relaid = []
     for n in [n for n in lay if n in failed]:
+        UNSHARED.clear()
+        UNSHARED.update(m for m in failed if m != n)
         out, why = route_memo(n)
         if out is None:
             out, why2 = route_memo(n, strict=False)
@@ -1538,6 +1546,7 @@ for sw in range(SWEEPS):
             place(n, out)
             del failed[n]
             relaid.append(n)
+    UNSHARED.clear()
     if relaid:
         log(f'  sweep {sw + 1}: laid against the placed copper: {", ".join(relaid)}')
     nb0 = sum(len(L_['pieces']) for L_ in res['lanes'].values())
