@@ -4815,6 +4815,55 @@ def get_all_segment_tap_points(
                    for (gx, gy, layer_idx), (ox, oy) in tap_points.items()])
 
 
+def _free_via_cells_on_entry(obstacles, pcb_data, net_id: int, config,
+                             main_result: dict) -> Optional[List[Tuple[int, int]]]:
+    """The free-via cells `obstacles` holds as route_multipoint_taps starts,
+    or None when they cannot all be named.
+
+    Free vias are a plain set with no remove, so the only undo is
+    clear_free_vias() and re-adding what was there: the entry set must be
+    known exactly. A map handed to this call gets its free vias from the net's
+    plated holes and existing vias (_add_free_via_positions, at build or
+    prepare time) and from its main route's vias, so those cells are probed,
+    and the answer is trusted only when they account for EVERY free via the
+    map holds (get_stats()[6]). One more -- a leftover of an earlier route on
+    the same map -- and the set cannot be put back in place."""
+    coord = GridCoord(config.grid_step)
+    cand = set()
+    for pad in pcb_data.pads_by_net.get(net_id, []):
+        if pad.drill and pad.drill > 0:
+            cand.add(coord.to_grid(pad.global_x, pad.global_y))
+            hx, hy = getattr(pad, 'hole_x', None), getattr(pad, 'hole_y', None)
+            if hx is not None and hy is not None:
+                cand.add(coord.to_grid(hx, hy))
+    for v in pcb_data.vias:
+        if v.net_id == net_id:
+            cand.add(coord.to_grid(v.x, v.y))
+    for v in main_result.get('new_vias') or ():
+        cand.add(coord.to_grid(v.x, v.y))
+    held = [c for c in sorted(cand) if obstacles.is_free_via(c[0], c[1])]
+    return held if len(held) == obstacles.get_stats()[6] else None
+
+
+def _restore_tap_scaffolding(obstacles,
+                             free_vias: Optional[List[Tuple[int, int]]]) -> None:
+    """Take route_multipoint_taps' per-route state off `obstacles` (see its
+    contract): the overrides, allowed rects and endpoint exemption are
+    emptied, the free-via set is put back to `free_vias`. None = the taps
+    routed on a scoped copy, which took their free vias with it; the map's
+    own are left as they were."""
+    obstacles.clear_source_target_cells()
+    obstacles.clear_endpoint_exempt()
+    obstacles.clear_allowed_cells()
+    if free_vias is None:
+        return
+    if (obstacles.get_stats()[6] != len(free_vias)
+            or not all(obstacles.is_free_via(gx, gy) for gx, gy in free_vias)):
+        obstacles.clear_free_vias()
+        if free_vias:
+            obstacles.add_free_vias_batch(free_vias)
+
+
 def route_multipoint_taps(
     pcb_data: PCBData,
     net_id: int,
@@ -4825,16 +4874,45 @@ def route_multipoint_taps(
     global_total: int = 0,
     global_failed: int = 0
 ) -> Optional[dict]:
-    """route_multipoint_taps with guaranteed cleanup of the in-progress-via
-    rings (issue #309). _register_inprogress_via stamps raw ref-counted
-    blocked-via rings into `obstacles` while the taps route; when the caller
-    passed the PERSISTENT working map (reroute_loop's in-place mode) rather
-    than a per-net clone, those rings leaked forever - restore_obstacles_inplace
-    only removes its own same-net-via cells. The rings are per-route
-    scaffolding (the committed route's vias get their real keep-outs from the
-    net's recomputed obstacle cache), so remove exactly the cells added, on
-    every exit path. On a clone the removal is harmless."""
+    """Phase 3 of a multipoint net (_route_multipoint_taps_impl), with a
+    contract on the map: nothing the tap edges stamp on `obstacles` for their
+    own searches survives the call, on any exit path, so a caller may route
+    anything else on it afterwards, or hand it to a second call, and inherit
+    nothing.
+
+    The tap edges route on `obstacles` itself. Each stamp comes off again here:
+      * the in-progress via rings (#309), in rung 0 and every populated rung:
+        removed exactly, cell by cell. They matter most on the PERSISTENT
+        working map (reroute_loop's in-place mode), where
+        restore_obstacles_inplace removes only its own same-net-via cells;
+      * free vias -- every in-progress via and every #189 unblock via. A free
+        via is a zero-cost layer change that also overrides the via-blocked
+        veto (router.rs), so one left where no barrel is lets a later search
+        drill there through any keep-out. The set is put back to what it held
+        on entry;
+      * the source/target overrides, the terminal allowed-cell rects (#800)
+        and the endpoint exemption: per-route scaffolding that no map builder
+        adds (prepare/restore_obstacles_inplace empty them on the working map),
+        so they are EMPTY on return;
+      * the #908 own-pad lift and the net keep-outs: released.
+    Until this, the free vias, the allowed rects and the last edge's overrides
+    stayed behind: the Phase-3 stub-switch retry, while it was handed the first
+    pass's map, started from that pass's leftovers.
+
+    When the entry free-via set cannot be named (_free_via_cells_on_entry),
+    the taps route on a scoped copy instead -- exact by construction, at the
+    price of one map clone -- and the map's own free vias are left as they
+    were; the scaffolding above is still emptied. The routes themselves are
+    the same either way. Measured on glasgow_revC's release chain: 5 of 399
+    calls took the copy, each a reroute whose main route had run the #189
+    via-in-pad unblock on the same map (an unblock via registered there and
+    not committed to pcb_data is a free via no probe here can name)."""
     ring_cells: list = []
+    # Ledger-only (KICAD_OBSTACLE_LEDGER=1): checks the contract above on
+    # whatever map this is, which the ref-count ledger cannot (it books only
+    # the working map, and only ref-counted cells).
+    from obstacle_cache import ledger_scaffold_begin, ledger_scaffold_end
+    _audit = ledger_scaffold_begin(obstacles)
     # #908: Phase 3 routes on a map built elsewhere, which had neither
     # prepare's lift nor the single-net bake -- so a footprint's own copper
     # sealed the pad it was drawn around here even when every other path was
@@ -4852,20 +4930,31 @@ def route_multipoint_taps(
         ring_rungs = tuple(populated_via_rungs(obstacles))
     except ImportError:
         ring_rungs = ()
+    free_vias = _free_via_cells_on_entry(obstacles, pcb_data, net_id, config,
+                                         main_result)
+    result = None
     # Net-filtered keep-outs binding this net, removed on every exit.
     from net_keepouts import stamp as _nk_stamp
     try:
         with _nk_stamp(obstacles, pcb_data, (net_id,), config):
-            return _route_multipoint_taps_impl(
-                pcb_data, net_id, config, obstacles, main_result,
+            # The scoped copy is taken AFTER the lift and the keep-outs: the
+            # #977 lift registry is keyed by map, so a copy taken first would
+            # be lifted a second time.
+            work = obstacles if free_vias is not None else obstacles.clone()
+            result = _route_multipoint_taps_impl(
+                pcb_data, net_id, config, work, main_result,
                 global_offset, global_total, global_failed, ring_cells, ring_rungs)
+            return result
     finally:
         release_own_pad_lift(obstacles, net_id, _oplift)
-        if ring_cells:
+        if ring_cells and free_vias is not None:   # in place (a copy took its rings with it)
             _rc = np.array(ring_cells, dtype=np.int32)
             obstacles.remove_blocked_vias_batch(_rc)
             for _r in ring_rungs:   # the same rungs the rings were stamped into
                 obstacles.remove_blocked_vias_rung_batch(_r, _rc)
+        _restore_tap_scaffolding(obstacles, free_vias)
+        ledger_scaffold_end(_audit, obstacles, pcb_data, net_id, config,
+                            result or main_result)
 
 
 def inprogress_via_ring_cells(v, net_id: int, config: GridRouteConfig,
@@ -4969,6 +5058,8 @@ def _route_multipoint_taps_impl(
     # hole-to-hole of it. Without this, a later branch dropped a via a sub-mm away
     # -- the VTT multipoint junction double-via (hole_to_hole DRC). The ring skips
     # the via's own cell so reuse stays open (sized by inprogress_via_ring_cells).
+    # Both are for THIS call's edges only: route_multipoint_taps takes the free
+    # vias and the rings off the map again on return.
 
     def _register_inprogress_via(v):
         vgx, vgy = coord.to_grid(v.x, v.y)
