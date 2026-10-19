@@ -65,18 +65,23 @@ it was, how to tell, and the board.
 ## Clock parts
 
 - **Crystal load caps are clock parts, not decaps.** A 2-pad cap from an oscillator
-  net to GND serves the crystal, though a rule that reads only nets can take it for
-  the chip's decap (ch32v003_usb's C4, 20 pF on PA2, reads as U3's).
+  net to GND serves the crystal, though by its nets alone it looks like the chip's
+  decap (ch32v003_usb's C4, 20 pF on PA2, beside U3). The toolchain's decap rule
+  does not count it: an oscillator net is no supply rail.
   - *Group:* with the crystal, the caps symmetric at the crystal's pads, and the
     crystal on the IC's oscillator face. `place_simple` writes that as `proximity[]`
     claims (`py_placer/placement/crystals.py`): the crystal at its IC's oscillator
-    pins, each cap at the crystal, all in the IC's group.
+    pins (link by link through a series resistor on a leg), each cap at the
+    crystal, all in the IC's group.
 - **A 4-pin crystal is not a 4-pin oscillator.** A 2016 or 3225 crystal has two GND
   pins. An oscillator has a supply pin, and the cap on that pin is the oscillator's
   decap.
 - **Jumpers and 0 Ω on oscillator pins are bridges.** On ch32v003_usb, JP1/JP2 route
   PA1/PA2 to the header so the pins can be GPIO instead.
-  - *Group:* clock, at the crystal pins, facing the header pin they reach.
+  - *Group:* clock, at the crystal pins, facing the header pin they reach. Make the
+    crystal the clock group's `anchor`: `place_simple` moves the crystal into its
+    IC's group, and the rest of the clock group follows only when the crystal is
+    its anchor.
 
 ## Caps and resistors whose role is their nets
 
@@ -112,11 +117,14 @@ it was, how to tell, and the board.
 - **Test points** (TP*, or a "TestPoint_01x02" referenced J4 on ch32v003_usb, which
   has no courtyard) go with the net they probe. They need no group of their own.
 - **Buttons.** The part classifier calls any footprint named switch, button or tact
-  `edge_actuator`, by name alone, and that class makes no edge claim. A top-actuated
+  `edge_actuator`, by name alone, and that class never calls an interior pose
+  wrong. A top-actuated
   tact switch (Omron B3U-1000P) can sit anywhere; a side-actuated one (B3U-3000P)
   belongs at the edge. Check the datasheet before you give a button an edge.
-- **Mounting holes, fiducials and logos** are in no functional group. Mounting holes
-  are mechanical.
+- **Mounting holes, fiducials and logos** are in no functional group. Holes and
+  fiducials are mechanical: place and lock them first (an unlocked part with a
+  copper pad must be in a group, or `check_groups` reports an ERROR). A pad-less
+  logo is never placed.
 - **A wireless module** (an ESP32 module, a Pico) is the core. Its antenna end needs
   its keep-out at the edge.
 
@@ -129,9 +137,14 @@ it was, how to tell, and the board.
   symbol (ch32v003_usb: 25 paths for 25 parts), so grouping by sheet says nothing
   there. Check the count before trusting it.
 - **A pin function equal to the pad number** ("1", "2") carries no information.
-- **The decap election takes any 2-pad cap from GND to a net an IC pin carries.** That
-  includes load caps, RC caps and filter caps. Put such a cap in its real group, and
-  say why in the group's reason.
+- **The decap rule reads nets, not roles.** `check_groups`, `place_simple` and the
+  grade count as a decap any 2-net cap from ground to a rail some chip (not a
+  connector) has a supply pin on, or across two of one chip's supply rails. A load
+  or RC cap on a signal pin is not one; a bulk, input or filter cap on such a rail
+  is, and `place_simple` pulls it to the supply pins of its group's chips on that
+  rail. Put each cap in its real group and say why in the group's reason: a decap
+  whose chips are all in other groups is left out of the decap term, and
+  `check_groups` WARNs it.
 
 ## Where humans put each group
 

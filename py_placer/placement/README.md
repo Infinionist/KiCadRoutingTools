@@ -73,9 +73,11 @@ What to read in the output:
 
 - **`check_groups`** lists the groups, the crystal it found (`crystal Y1 at U3
   pads 2, 3; load caps C23, C24`), the parts that bridge two groups, and any
-  `ERROR` (a part in no group or in two, a ref not on the board: exit 4) or
-  `WARN` (a part with more signal links to another group than to its own: a
-  judgement to look at, not a mistake by itself).
+  `ERROR` (a part in no group or in two, a ref not on the board, a group with
+  no part on the board: exit 4) or
+  `WARN` (a part with more signal links to another group than to its own, or a
+  decap whose chips are all in other groups: a judgement to look at, not a
+  mistake by itself).
 - **`place_simple --seeds 0-23`** runs one process per seed (`--jobs N`
   limits how many at once; the default is one per seed, at most 4) and prints
   one line per seed: `seed 0: cost 2897.5, 38000 moves in 14.7 s ->
@@ -83,16 +85,23 @@ What to read in the output:
   (`s0.log`): the movable and fixed parts, the groups after folding, one cost
   line per stage of the anneal, the final cost broken down by term, and a
   `JSON_SUMMARY:` line. `--json` writes the full report (`final` costs,
-  `moves`, `seed`, `runs`, `reseated`, `illegal`, `unseated` (declared edge
-  parts that found no seat on their edge, each with why, also printed as a
-  WARNING), the `groups` as placed, `seconds`). A seed is the same placement whether it runs alone (`--seed 0`)
-  or in a batch. Exit 0 placed; 4 placed with parts left without a legal pose
-  or at a declared pose that is not legal (named); 2 unreadable input, a part
-  in two groups, or a face or pose two declarations disagree on;
-  with `--seeds`, the worst seed's code.
+  `moves`, `seed`, `runs`, `reseated`, `repaired` (the last run was mended
+  where it stood, below), `illegal`, `unseated` (declared edge parts that
+  found no seat on their edge, each with why, also printed as a WARNING), the
+  `groups` as placed, `seconds`). A seed is the same placement whether it runs
+  alone (`--seed 0`) or in a batch. Exit 0 placed; 4 placed with parts left
+  without a legal pose or at a declared pose that is not legal (named); 2
+  unreadable input, a part in two groups, a face or pose two declarations
+  disagree on, or a part the board locks declared on another face or at
+  another pose; with `--seeds`, the worst seed's code.
 - **`check_assembly`** says `buildable` or not, with every reason.
-- **`render_placement`** writes one PNG per board side (`s0_F.png`,
-  `s0_B.png` when the board has back-side parts).
+- **`render_placement`** writes one PNG per board side (`s0_F.png` and
+  `s0_B.png`: tigard's JP1 and JP2 are on the back; a one-sided board gets
+  `s0.png`).
+
+The quick start keeps the locked parts on the board (`--keep-locked`). A board
+piled whole (no part locked) does not look placed to `check_floorplan`, which
+then refuses (exit 3) unless given `--allow-unplaced`.
 
 On tigard each seed anneals its 76 movable parts in about 15 s, and the four
 run at once. The same board, inputs and seed always give the same placement.
@@ -178,7 +187,7 @@ emptied `clock` group is dropped, and `near` entries that named it point at
 | crossings | each crossing among the signal trees' edges, in mm of wire | `--crossing-weight` (2) |
 | claims | each claimed pad's distance to its partner's pad, per mm (intent `proximity[]`, crystals) | `--claim-weight` (1) |
 | claim limits | each claimed pad past its claim's `max_mm`, pad edge to the nearest partner pad on its net as `check_floorplan` grades it (a crystal leg past 8.1 mm of its pin, a load cap past 2.2 mm of its crystal), per mm | `--claim-limit-weight` (10) |
-| decaps | each decap's distance to the supply-pin site it is matched to, per mm. A decap is a cap from ground to a rail some chip other than a connector (or the board's own contacts, a part whose pads span half the board) has a supply pin on, or between two rails that each carry a supply pin of one chip (a stacked domain), the rule `check_groups` reports by and `check_floorplan` grades by (`BoardView.decaps`); a chip's supply pins include its pins on a rail named as one, or named as one on a net local to it (`BoardView.rail_pins`). A rail's decaps are matched to its pin sites (an IC's supply pins within 1.5 mm of each other) at the least total distance, every site taking one decap before any takes two, so decaps spread over the pins | `--decap-weight` (2) |
+| decaps | each decap's distance to the supply-pin site it is matched to, per mm. A decap is a cap from ground to a rail some chip other than a connector (or the board's own contacts, a part whose pads span half the board) has a supply pin on, or between two rails that each carry a supply pin of one chip (a stacked domain), the rule `check_groups` reports by and `check_floorplan` grades by (`BoardView.decaps`); a chip's supply pins include its pins on a rail named as one, or named as one on a net local to it (`BoardView.rail_pins`). A rail's decaps are matched to its pin sites (an IC's supply pins within 1.5 mm of each other) at the least total distance, every site taking one decap before any takes two, so decaps spread over the pins; a decap goes to the sites of the chips in its own group when one is on its rail (an LDO's output cap at the LDO, not at the MCU's VDD pin). A decap none of whose chips is in its group (a load or RC cap the groups file put elsewhere, which `check_groups` WARNs) is left out of this term | `--decap-weight` (2) |
 | group contiguity | the spanning tree over a group's courtyards, priced by the gap between neighbours: zero while the group is one contiguous piece, whatever its shape | `--group-weight` (5) |
 | `near` / `apart` / `edge` | the groups file's hints (above) | `--near-weight` (2), `--apart-weight` (5), `--edge-weight` (2) |
 | front halo | room for a fine-pitch part's fan-out: on each side its pads face, a strip `coef x nets leaving by that side` deep; a same-face part inside it pays the shortfall squared | `--halo-weight` (10), `--halo-coef` (0.25 mm per net) |
@@ -212,7 +221,8 @@ edge -- past a locked part rather than through it -- or, when it has no
 mating face (a vertical header, a test pad), turn it. At the end the parts on
 one edge are pushed apart along it in their order.
 Moves shift, turn, swap, dock a part against a partner pad, jump a part to its
-wiring target, and move, turn or swap whole groups. A chip's own move carries
+wiring target, move an overlapping part to the least-overlap of random poses
+over the board, and move, turn or swap whole groups. A chip's own move carries
 the caps that hold its decap limits (the cap at a supply pin, a cap the chip is
 nearest to) when moving the chip alone would pull them past their limits: each
 keeps its offset and turns with the chip. Without that the limits glue a chip
@@ -284,7 +294,8 @@ python3 -X utf8 py_tools/quick_score.py $R/s${s}_fast.kicad_pcb \
     --route $W/route.json --json $R/s${s}_fast.score.json
 ```
 
-`quick_score` exits 0 when no net blocks and 4 when some do. Read `blocking`
+`quick_score` exits 0 when no net blocks, 4 when some do, and 2 when the
+route summary holds no tally. Read `blocking`
 and `quality` (vias, copper_mm, segments) from the score file, keep the best
 seed, and copy its placement (`$R/s<S>.kicad_pcb`, never the `--quick` board)
 to `wk/tig/final.kicad_pcb` with `copy_board.py`; in `full` mode the skill then
@@ -317,8 +328,10 @@ of it; `check_floorplan --intent` grades all of it.
 | `fixed_poses[]` | applied: seated at the declared pose and held | yes |
 | `edge_connectors[]` with an `edge` | applied to an unlocked edge part (connector, receptacle, switch, test pad; a cap the emitter declared because it overhangs is not): held to that edge where every edge-connector conjunct holds (band, edge read, pad copper clear of the outline), sliding along it | yes |
 | `decaps` limits (`max_distance_mm`, `max_pin_distance_mm`) | priced where graded at error: the decap-limit term | yes |
-| `blocks[].rotation`, `rotation_candidates` | not read (`place_fanout_clearance --intent` holds them) | yes |
-| `blocks[].rigid`, `arrays[]` | not read | yes |
+| `blocks[].rotation`, `rotation_candidates` | not read (`place_fanout_clearance --intent` holds them) | no rule checks a part's angle; the plan check bounds a zone on the declared angles, and `array_conflict` flags a row whose rotation contradicts them |
+| `arrays[]` | not read | yes (`array_formation`, `array_conflict`) |
+| `keep_away[]` | not read | yes (pad edge to pad edge, WARN unless its severity is raised); `route.py` reads the design brief's `keep_away` itself |
+| `blocks[].rigid` | not read | no: accepted by the loader, read by nothing |
 | `replicate[]` | not read (`place_pose replicate --intent` applies it) | yes |
 
 ## Moving parts by hand: place_pose
@@ -331,7 +344,7 @@ python3 -X utf8 py_placer/place_pose.py BOARD OUT set U1 129.9 98.3 --rot 270   
 python3 -X utf8 py_placer/place_pose.py BOARD OUT set U1 --near 130 98 --rot 270 # nearest legal pose
 python3 -X utf8 py_placer/place_pose.py BOARD OUT rotate CON2 180
 python3 -X utf8 py_placer/place_pose.py BOARD OUT face U1 W USB1                 # aim a pad row at a part
-python3 -X utf8 py_placer/place_pose.py BOARD OUT lock U1 CON1 CON2
+python3 -X utf8 py_placer/place_pose.py BOARD OUT lock U1 CON1 CON2              # unlock REF undoes it
 python3 -X utf8 py_placer/place_pose.py BOARD OUT replicate --from CH1 --to CH2 --to CH3 --anchor J1
 ```
 
@@ -373,22 +386,29 @@ python3 -X utf8 py_tools/render_placement.py placed.kicad_pcb --before input.kic
 ## The GUI tab
 
 The KiCad plugin's **AI Drive › Placement** tab runs the same skill on the open
-board, laid out like the routing tab: the AI column sets the backend, model,
-effort, rounds and extra instructions, and **Place** runs
-`/plan-pcb-placement place`, **Place + Route** runs `full`. The left pane is a candidates table, one
+board, laid out like the routing tab: the AI column sets the backend (Claude
+Code), model, effort, rounds and extra instructions, and **Place (AI)** runs
+`/plan-pcb-placement place`, **Place + Route (AI)** runs `full`, headless on a
+snapshot of the board, into a `krt_placement/` folder beside the board file
+(its newest three runs are kept). The left pane is a candidates table, one
 row per seed per round (blocking, vias, copper, segments, and a status:
 placing, routing, routed, clean, best, KEPT), filled live from the run folder's
 `r<N>/` files, beside a preview of the selected row's fast-routed board; the
 transcript streams below, and **Apply Result to Board** writes the kept
-placement back. **Beautify Labels** tidies reference designators without AI.
+placement back (after Place + Route, its tracks and vias too). **Beautify
+Labels** tidies reference designators without AI (the CLI is
+`py_placer/beautify_labels.py`).
 
 ![the AI Drive › Placement tab](../../docs/placement-ai-tab.png)
 
 ## Decap clearance after fanout: place_fanout_clearance
 
-A routing step, run after a BGA or QFN fanout: it moves decoupling caps off the
-fanout's vias and tracks, within their reach of the pin they decouple, so the
-cap and the escape routing do not collide. See
+A routing step, run once after the last BGA fanout: it nudges the decoupling
+caps (and resistors and beads) near a ball field off the fanout's vias and
+tracks, a few millimetres at most (with `--intent`, within the intent's decap
+limits), so the cap and the escape routing do not collide. On a board with no
+BGA it moves nothing and passes the board through, so a chain may carry it
+after a QFN fanout, as tigard's does. See
 [docs/utilities.md](../../docs/utilities.md#decap-clearance-repair-place_fanout_clearancepy).
 
 ## Module map
@@ -399,14 +419,14 @@ cap and the escape routing do not collide. See
 | `simple.py` | The objective: every term above, priced locally per move (spatial index, cached breakdowns, Rust kernels) |
 | `simple_anneal.py` | The simulated annealing: moves, schedule, overlap penalty, the final legality pass |
 | `grouping.py` | The groups file: schema, rails, cohesion and decap checks, folding claims into groups (`check_groups.py`) |
-| `crystals.py` | Crystal claims: each passive crystal at its IC's oscillator pins, each load cap at its crystal |
+| `crystals.py` | Crystal claims: each passive crystal at its IC's oscillator pins (link by link through a series resistor), each load cap at its crystal |
 | `quench.py` | `QuenchState`: the parts, their poses and geometry at every quarter turn, the board, the intent's keep-outs and zones, the seat gate (`candidate_valid`) and `wire_metrics` (length, crossings, hpwl) |
 | `seeder.py` | The seat predicate `pose_ok`, the wiring target, the fixed-pose checks and the `(locked yes)` stamps |
 | `legality.py` | The legality every tool shares: board side, Edge.Cuts containment, pad and drill legality, courtyards, the graders |
 | `body.py` | A footprint's body: courtyard, else fab, else silk, else the pad box |
 | `writer.py` | Writes poses and face flips back to the board |
 | `parser.py` | Courtyard, fab, silk and lock extraction |
-| `../place_pose.py`, `pose_ops.py` | Hand placement: set, rotate, face, lock, snap |
+| `../place_pose.py`, `pose_ops.py` | Hand placement: set, rotate, face, lock, unlock, snap |
 | `replicate.py` | `place_pose replicate`: one channel copied onto its sibling instances |
 | `../pose_score.py` | Builds the placement state; ranks a part's legal poses nearest first |
 | `floorplan.py` | The floorplan intent: emit it, grade a board against it |

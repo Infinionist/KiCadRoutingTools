@@ -111,9 +111,10 @@ A connector whose EDGE is decided but not its place along it needs no lock
 either: leave it unlocked with its `edge` in the intent's
 `edge_connectors[]` entry (and an `along_edge_band` when only part of the
 edge will do), and `place_simple` holds it to that edge, mating face out,
-and slides it along. On a pile the emitted entry carries no `edge` -- the
-staging pose says nothing -- so write it from the brief, `mechanical.json`
-or the user.
+and slides it along. On a pile the emitter writes no `edge` -- the staging
+pose says nothing; `--emit-intent --declare-classes` writes each edge part's
+entry without one, plain `--emit-intent` no entry -- so write it from the
+brief, `mechanical.json` or the user.
 
 ### 3.2 Emit the intent
 
@@ -126,8 +127,14 @@ python3 -X utf8 py_tools/check_floorplan.py wk/<run>/fixed.kicad_pcb --emit-inte
   limits, and say in your report that you did.
 - **Never emit the intent from a damaged board.** It records the damage as
   the spec. Emit it from the brief, or edit it down.
+- **On a pile** (`pile` in board_brief's summary), give every
+  `check_floorplan` call before the placement `--allow-unplaced`: without it
+  the tool refuses a board that does not look placed (exit 3, "does not look
+  PLACED"). That gate is for tools that refine a placement, not a refusal of
+  this run.
 - `place_simple` reads the intent's `proximity` claims, keep-outs, zones,
-  declared faces, `fixed_poses` and the decap limits it grades at error.
+  declared faces, `fixed_poses`, the edges of `edge_connectors[]` and the
+  decap limits it grades at error.
 
 ### 3.3 Group the parts (your judgement)
 
@@ -155,8 +162,9 @@ Write `wk/<run>/groups.json` (the format is in `py_placer/placement/grouping.py`
 - **A cap belongs with the IC whose supply pin it decouples.** A load or RC
   cap belongs with its crystal or its button.
 - **Crystals take care of themselves.** `place_simple` claims each passive
-  crystal at its IC's oscillator pins and its load caps at the crystal, and
-  moves all three into the IC's group. The rest of their clock group follows
+  crystal at its IC's oscillator pins (link by link through a series
+  resistor on a leg) and its load caps at the crystal, and moves them all
+  into the IC's group. The rest of their clock group follows
   only when the crystal is that group's `anchor`; any other member stays in
   the clock group. Every intent `proximity` claim works the same way: the
   claimed part joins its partner's group.

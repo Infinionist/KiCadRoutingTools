@@ -22,7 +22,7 @@ for layer in pcb.board_info.stackup:               # List[StackupLayer], ordered
 
 # Existing zones - don't silently duplicate them
 for zone in pcb.zones:
-    print(zone.net_name if hasattr(zone, 'net_name') else zone, getattr(zone, 'layer', '?'))
+    print(zone.net_name, zone.layer, 'priority', zone.priority)
 ```
 
 Report the layer count up front. On a **2-layer board** there are no inner layers to
@@ -159,4 +159,6 @@ RESULT=GND:In1.Cu;VCC|+3V3:In2.Cu
 - Use exact net names as they appear on the board (including any `/` prefix)
 
 This line maps 1:1 onto the Planes tab's assignment list and `route_planes.py
---nets ... --plane-layers ...` arguments.
+--nets ... --plane-layers ...` arguments: one `--nets` entry per group (a split
+layer keeps its `|`, quoted) and one bare layer name per entry, positionally —
+`--nets GND 'VCC|+3V3' --plane-layers In1.Cu In2.Cu` for the line above.

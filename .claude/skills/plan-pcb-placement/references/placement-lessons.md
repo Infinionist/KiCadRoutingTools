@@ -59,11 +59,11 @@ six others.
     10 mm. 74-80% of legal 1-4 mm moves, turns and swaps make the human MST longer.
   - *Apply:* place a part where its pads join each net's tree cheapest: next to the
     nearest pad of each net, not in the middle of all its partners.
-  - *Measured on a route:* aiming parts this way, pricing the links between groups as
-    each net's tree, and the spacing below (`place_simple`'s wire term is this tree)
-    routed the grouped candidates of 10 corpus boards (six each, by each board's recorded
+  - *Measured on a route:* in the grouped placer `place_simple` replaced, aiming parts
+    this way, pricing the links between groups as each net's tree, and the spacing
+    below routed six candidates on each of 10 corpus boards (by each board's recorded
     chain) with blocking 4.2 → 3.2, 6% fewer vias and 5% less copper; vias were lower
-    on 9 of the 10 boards.
+    on 9 of the 10 boards. `place_simple`'s wire term is this tree.
 - **Humans do not pay much wire to avoid a straight-airwire crossing.**
   - *Humans:* fitted on 165,771 legal moves, one crossing is worth about 0.14 mm of
     Manhattan MST (0.07 mm on 4-layer boards, 0.65 mm on 2-layer ones). Still, human
@@ -129,11 +129,11 @@ six others.
   - *Apply:* leave room where the wiring needs a channel, not around every part. An IC
     keeps a little more than a passive: its neighbours' copper rarely comes within 0.5
     mm (4-layer) or 0.8 mm (2-layer).
-  - *Measured on a route:* an earlier placement polish asked 0.5 + 0.15·√pins mm of courtyard
-    room per part, about 1.4 mm between two passives, which forbade 53-81% of human
-    spacings. Cut to 0.02·√pins, the grouped candidates of 10 corpus boards (six each,
-    routed by each board's recorded chain) routed with blocking 4.8 → 3.2, 2% fewer
-    vias and 1% less copper.
+  - *Measured on a route:* the polish of the grouped placer `place_simple` replaced
+    asked 0.5 + 0.15·√pins mm of courtyard room per part, about 1.4 mm between two
+    passives, which forbade 53-81% of human spacings. Cut to 0.02·√pins, its six
+    candidates on each of 10 corpus boards (routed by each board's recorded chain)
+    routed with blocking 4.8 → 3.2, 2% fewer vias and 1% less copper.
 
 ## Around a fine-pitch chip
 
@@ -642,6 +642,7 @@ python3 tests/stress/placement_survey.py report rows.jsonl
   - *Humans:* courtyard gap 0.14 mm, the same rotation in 99%, aligned in 92% (88 pairs,
     69 boards). On an RP2040 or RP2350 the pair sits at the chip (82%, about 3 mm pad
     gap). For other chips, chip end and connector end are equally common.
+
 ## Clocks
 
 - **Put a crystal beside the oscillator pins on the chip's face, its pad axis parallel
@@ -657,9 +658,10 @@ python3 tests/stress/placement_survey.py report rows.jsonl
     there).
   - *Limits:* measured pad edge to the pad on the same net, the way an intent's
     `proximity[]` claim grades it, the farther crystal leg is 5.4 mm from its pin
-    (75th percentile 8.1 mm) and the farther load cap 0.8 mm from the crystal (75th
-    percentile 2.2 mm; 258 crystals). `placement/crystals.py` writes claims at those
-    75th percentiles.
+    (75th percentile 8.1 mm; 258 crystals) and the farther load cap 0.8 mm from the
+    crystal (75th percentile 2.2 mm; the 174 with a load cap). `placement/crystals.py`
+    writes claims at those 75th percentiles; a leg through a series resistor is
+    claimed link by link.
   - *Measured on a route:* turning the IC for its crystal alone cost a 21-part board 13 routed
     vias; turn it for the crystal only among the rotations its other connections
     accept.

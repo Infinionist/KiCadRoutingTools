@@ -22,14 +22,18 @@ python3 py_tools/check_floorplan.py board.kicad_pcb --intent floorplan.json --js
 The intent is also a GENERATOR input, not only a grader's. These tools read
 it:
 
-1. **`place_simple.py --intent` places from it.** It reads the `proximity[]`
-   claims (cost terms of its objective), the keep-outs and zones (charged in
-   its anneal's overlap term, or held by its final legality check; a part
-   left breaking one is named and the run exits 4), every declared face
-   (`blocks[].side`, `edge_connectors[].side`, `fixed_poses[].side`, applied
-   before it places, by the writer's flip) and `fixed_poses[]` (seated at
-   the declared pose and held there). The rest of the intent is graded
-   only; "Which rules the placer can see" below has the table.
+1. **`place_simple.py --intent` places from it** (the flag is required). It
+   reads the `proximity[]` claims and their `max_mm` limits, and the decap
+   limits it grades at error (`decaps.max_distance_mm`,
+   `max_pin_distance_mm`), all cost terms of its objective; the keep-outs
+   and zones (charged in its anneal's overlap term, or held by its final
+   legality check; a part left breaking one is named and the run exits 4);
+   every declared face (`blocks[].side`, `edge_connectors[].side`,
+   `fixed_poses[].side`, applied before it places, by the writer's flip);
+   `fixed_poses[]` (seated at the declared pose and held there); and each
+   `edge_connectors[]` entry with an `edge` (seated on that edge). The rest
+   of the intent is graded only; "Which rules the placer can see" below has
+   the table.
 2. **`place_pose --intent` refuses a pose that walks a part out of its
    zone.** A pose that leaves a moved part further outside its block's zone
    than it was is refused at exit 4, and `place_pose replicate --intent` (no
@@ -37,7 +41,8 @@ it:
 3. **`place_fanout_clearance --intent` holds its decap limits** and the
    rotations it declares for caps.
 
-See `placement/README.md` for all of them.
+See [py_placer/placement/README.md](../py_placer/placement/README.md) for all
+of them.
 
 **`place_pose`'s zone check is RELATIVE: it prevents a walk-out, it does not
 demand an arrival.** A part that is already outside its zone may improve or
@@ -126,17 +131,18 @@ exists to prevent, one level down. The message names the key that was wrong and
 lists the ones that were accepted:
 
 ```
-edge_connectors[0]: unknown key(s) max_setback. Known: class, context, edge,
-max_setback_mm, note, observed_overhang_mm, overhang_capped, overhang_mm, ref,
-source, suspect, suspect_reason
+edge_connectors[0]: unknown key(s) max_setback. Known: along_edge_band,
+center_on_edge, class, context, edge, mating_face, max_setback_mm, note,
+observed_overhang_mm, overhang_capped, overhang_mm, ref, side, source, suspect,
+suspect_reason
 ```
 
 | object | keys |
 |---|---|
-| top level | `schema`, `kind`, `board`, `units`, `min_reader`, `envelope`, `defaults`, `blocks`, `keepouts`, `edge_connectors`, `decaps`, `must_lock`, `legality_budget`, `health`, `severity`, `overlap_waivers`, `assembly`, `proximity`, `dispositions`, `arrays`, `fixed_poses`, `context` |
+| top level | `schema`, `kind`, `board`, `units`, `min_reader`, `envelope`, `defaults`, `blocks`, `keepouts`, `edge_connectors`, `decaps`, `must_lock`, `legality_budget`, `health`, `severity`, `overlap_waivers`, `assembly`, `proximity`, `keep_away`, `replicate`, `dispositions`, `arrays`, `fixed_poses`, `context` |
 | `envelope` | `rect`, `tolerance_mm` |
 | `defaults` | `zone_tolerance_mm` |
-| `blocks[]` | `name`, `group`, `refs`, `zone`, `side`, `exclusive`, `tolerance_mm`, `rotation`, `rotation_candidates`, `rigid` (`true` declares the block one piece; needs `min_reader` 7; no placement tool reads it), `note`, `context` |
+| `blocks[]` | `name`, `group`, `refs`, `zone`, `side`, `exclusive`, `tolerance_mm`, `rotation`, `rotation_candidates`, `rigid` (`true` declares the block one piece; needs `min_reader` 7; accepted and read by nothing -- no rule grades it and no placement tool reads it), `note`, `context` |
 | `keepouts[]` | `name`, `rect`, `circle`, `sides`, `allow`, `note`, `context` |
 | `edge_connectors[]` | `ref`, `edge`, `overhang_mm`, `max_setback_mm`, `center_on_edge`, `along_edge_band`, `side` (`F`/`B`, the connector's face, graded as the advisory `edge_connector_side`; needs `min_reader` 6), `mating_face` (`+x`/`-x`/`+y`/`-y`, see "Which way it opens" below), `class`, `note`, `context`, and the emitter-written `source`, `suspect`, `suspect_reason`, `overhang_capped`, `observed_overhang_mm` |
 | `edge_connectors[].overhang_mm` | `min`, `max` |
@@ -152,7 +158,7 @@ source, suspect, suspect_reason
 | `legality_budget` | `overlap_area`, `oob_count`, `oob_amount` (`oob_area` refused — see below) |
 | `health` | `bus_corridors`, `classes`, `block_displacement_mm`, `ignore_net_ids`, `max_fanout`, `zoned_blocks`, `affinity_exempt_nets`, `affinity_exempt_net_ids`, `plane_layers` |
 | `health.bus_corridors[]` | `name`, `nets`, `width_mm` |
-| `severity` | any of the 44 rule names below |
+| `severity` | any of the 45 rule names below |
 | `overlap_waivers[]` | `pair`, `reason`, `context` |
 | `dispositions` | `rules`, `withheld`, `refs`, `contradictions` -- each `{key: why}`, a non-empty written reason (see "The rule roster" below) |
 | `must_lock` | a list of reference globs (no nested keys) |
@@ -162,10 +168,11 @@ source, suspect, suspect_reason
 its block declares and turns one with candidates only within them, and
 by the grade's `array_conflict`. `place_simple` does not read them.
 
-`severity` keys are checked too. The settable names are the fifteen rules —
+`severity` keys are checked too. The settable names are the seventeen rules —
 `envelope`, `zone_containment`, `zone_side`, `assembly_side`, `zone_exclusive`, `keepout`,
 `edge_connector`, `decap_distance`, `decap_ungraded`, `decap_pin_distance`,
-`proximity`, `must_lock`, `legality`, `pins_to_edge`, `array_formation` — plus the ten
+`proximity`, `keep_away`, `must_lock`, `legality`, `pins_to_edge`,
+`array_formation`, `replicate` — plus the ten
 findings raised outside the rule loop: `intent_zone_outside_envelope`, `intent_zone_overlap`,
 `block_unresolved`, `intent_zone_in_keepout`, `keepout_allow_unresolved`,
 `array_unresolved`, `array_conflict`, `fixed_pose_unresolved`,
@@ -180,27 +187,35 @@ the twelve `plan_check` findings (`plan_zone_exclusive_unsatisfiable`,
 `plan_board_overfull`, `plan_board_crowded`, `plan_fixed_overlap`,
 `plan_fixed_overlap_budget`), `edge_connector_side` (settable to `warn`
 only -- `error` is refused, because the rule is advisory by design),
-plus three more raised BESIDE a rule's own name —
-`decap_pin_distance_inferred` and `decap_pin_uncovered`, and
-`proximity_unresolved`. One measurement can support several claims, and
+plus five more raised BESIDE a rule's own name —
+`decap_pin_distance_inferred` and `decap_pin_uncovered`,
+`proximity_unresolved`, `keep_away_unresolved` and `replicate_unresolved`.
+One measurement can support several claims, and
 an author must be able to set their severities apart: a pin inferred from a net
 name and a pin the pad declares are not the same evidence, and a proximity
 claim naming a part the board does not have is a different finding from one
 whose parts are simply too far apart — a DNP-variant board can demote the first
-without demoting the second. `assembly_side`, `decap_ungraded`,
-`decap_pin_distance_inferred` and `decap_pin_uncovered` default to
-**warn**; all but those and the last of the five default to **error**;
-`keepout_allow_unresolved` defaults to **warn** and is upgraded by writing
-`{"keepout_allow_unresolved": "error"}`.
+without demoting the second.
+
+Every name defaults to **error** except these, which default to **warn**:
+`assembly_side`, `decap_ungraded`, `decap_pin_distance_inferred`,
+`decap_pin_uncovered`, `keep_away` and `keep_away_unresolved`, `replicate`
+and `replicate_unresolved`, `keepout_allow_unresolved`,
+`intent_zone_overlap`, `fixed_pose_overlap_waived`, `plan_fixed_overlap` and
+the three `plan_*_crowded` findings; `pins_to_edge` and
+`edge_connector_side` are always warn; `mechanical_drift` is warn for a
+move the anchor already reports and error for a turn. Writing
+`{"keepout_allow_unresolved": "error"}` upgrades one.
 `{"decap_distanc": "warn"}` is a
 demotion that never happens, so it is refused rather than accepted.
 
 ### `context` is the slot for everything that is not a claim
 
-`context` is **deliberately open** — free-form keys, at the top level and on
-every `blocks[]`, `keepouts[]`, `edge_connectors[]` and `overlap_waivers[]`
-entry. Nothing reads it and no rule grades it; it is where a run records why a
-claim is what it is:
+`context` is **deliberately open** — free-form keys, at the top level, on
+`assembly`, and on every entry of `blocks[]`, `keepouts[]`,
+`edge_connectors[]`, `overlap_waivers[]`, `proximity[]`, `keep_away[]`,
+`replicate[]`, `arrays[]` and `fixed_poses[]`. No rule grades it; it is where
+a run records why a claim is what it is:
 
 ```jsonc
 { "ref": "J1", "edge": "east",
@@ -214,14 +229,18 @@ it. `note` is not the place either: it is grepped for the substring `SUSPECT`, s
 it can change behaviour. A `context` value must still be an object; the keys
 inside it are yours.
 
-The exceptions are all on `edge_connectors[]` entries:
-- `context.mount_mode: edge_mount` makes the seat read the drawn body.
+A few keys inside it are read, all on `edge_connectors[]` entries:
+- `context.mount_mode: edge_mount` makes the seat read the drawn body, and
+  `edge_mount` or `through_edge` puts the entry under the facing conjunct.
 - `context.mount_mode: top_mount` / `bottom_mount` exempts the part from the
   edge-receptacle seat. With a design brief, a plan and brief that disagree
   about a vertical mount drift.
 - `context.compiled_from` is read by drift attribution.
 
-The top-level `context.basis` labels numbers and changes no verdict.
+At the top level, `context.basis` labels numbers and changes no verdict, and
+`context.budget_withheld` is read by the grade: a key the emitter withheld
+is abstained on, not passed (see "What `--emit-intent` does and does not
+claim").
 
 ### Versioning: `schema` is the format, `min_reader` is the vocabulary
 
@@ -370,8 +389,11 @@ nothing written), since a lock is a decision. An unlocked `mechanical.json`
 ref is accepted, instead of needing a hand lock, when the plan names it here
 at the declared pose.
 
-`place_simple` does not judge the declared pose. Whether two declared poses
-can both stand is the plan check's question (`plan_fixed_pose_conflict`,
+`place_simple` never moves a declared pose to make it legal. It checks each
+against the parts that stay where they are (`seeder._fixed_pose_check`),
+names one that is not legal, writes it as declared and exits 4. Whether two
+declared poses can both stand is the plan check's question
+(`plan_fixed_pose_conflict`,
 below, through `seeder.fixed_pose_pair_conflicts`). That check judges
 courtyards the way KiCad's DRC judges them: an overlap is illegal,
 courtyards that abut (gap 0) are not, so a human's edge-to-edge rows can be
@@ -693,9 +715,11 @@ it meets all five of these conditions (nothing refuses a run on it, so read the
 roster):
 
 1. The rule is dark, meaning the plan does not arm it.
-2. It is not a **policy** rule. `proximity`, `zone_exclusive` and
-   `array_formation` are policy rules: nothing on the board says which parts
-   belong together, which area is reserved, or which parts form one row.
+2. It is not a **policy** rule. `proximity`, `zone_exclusive`,
+   `array_formation`, `keep_away` and `replicate` are policy rules: nothing
+   on the board says which parts belong together, which area is reserved,
+   which parts form one row, which nets are noisy, or which sheet instance
+   the others copy.
 3. A **board fact** says the rule applies. The plan's own claims never count
    here.
 4. It is **gating**: its table-default severity is ERROR. An intent can promote
@@ -755,6 +779,9 @@ status from this list:
 | `replicate_unresolved` | a declaration the board cannot resolve -- an unknown or ambiguous sheet, instances not wired alike, a waiver naming no pad -- with `place_pose replicate`'s own reason (**warn** by default) | same |
 | `must_lock` | a declared-critical part is not locked in the file | `parser.extract_locked_refs` |
 | `legality` | overlap or off-board parts exceed a budget. An overlap finding's `measured` carries `overlap_area` (the outline reading the budget grades), `overlap_area_rect`, the worst 50 `pairs` (`[a, b, rect, exact]`) with `pairs_total`, and `excluded` -- the containers, pad-less logos and silk-only parts the budget does not see (a silk body never gates); `legality.overlap_area_excluded` counts them on every grade | overlap: `legality.courtyard_overlap_pairs` (check_assembly's drawn outlines); off-board: `QuenchState.legality_metrics` |
+| `pins_to_edge` | a part's pad row faces the outline (within `edge_facing.EDGE_MM`, 2 mm) with no partner beyond it, so its nets can leave only along the edge strip or under the part. Always **warn**, whatever `severity` says; armed only by declared `edge_connectors`, whose edge claims it excludes | `placement.edge_facing` |
+| `edge_connector_side` | a connector's declared `side` is not the face it is on (`place_simple` applies that face before placing, so it fires on a board placed some other way). Always **warn** (`error` is refused at load) | the graded part's face |
+| `mechanical_drift` | a `mechanical.json` ref moved or turned away from its recorded pose: **warn** for a move its anchor already reports, **error** for a turn and for a pad-less ref; the map may promote the warn, never demote the error | the recorded pose vs the board |
 | `block_unresolved` | a block matched no footprint | — |
 | `intent_zone_in_keepout` | a declared zone is contradicted by a keep-out that binds its members: covered entirely (reported per block), or left with no pose for a member at any rotation (per member) | `zone_covered_by_keepout`, then `zone_pose_feasibility` |
 | `keepout_allow_unresolved` | a keep-out's `allow` pattern matches no footprint (**warn** by default) | `allow_pattern_matches`, the resolver's own matcher |
@@ -785,12 +812,12 @@ reading.
 | `keepout` | yes | **priced and enforced**: the area inside a keep-out is in the anneal's overlap term, and the legality check refuses such a pose | — |
 | `zone_side` | yes | **applied before placing**: a member on the other face is flipped at its pose (the writer's flip) | — |
 | `fixed_poses[]` (anchor `fixed:<ref>`) | yes, as `zone_containment` on the anchor | **seated and held**: written at the declared pose before placing, and fixed for the whole anneal | — |
-| `proximity` | yes | **priced**: each claimed pad's distance to its partner's nearest pad (pad centres, whatever the `basis`) is a term of the objective, and a claimed part's `jump` move aims at its partner's pads | the term is a distance to lower, not `max_mm`: a claim past its limit is reported by the grade only |
-| `edge_connector` | yes | **seated**: an unlocked edge part (connector, receptacle, switch or test pad) declared on an edge is held there, its mating face (`mating_face` where the body names none) pointing out and flush with the low end of its `overhang_mm` band, and only slides along it; its `side` is applied before placing | a part that is not an edge part by class (a cap or a jumper by the edge) is emitted with its observed overhang as a band and no edge, so it is placed like any other part. Lock a connector at its edge pose in the file, or declare that pose in `fixed_poses[]`, when the position along the edge is fixed |
+| `proximity` | yes | **priced**: each claimed pad's distance to its partner's nearest pad on its net (pad centres) is a term of the objective, and each mm a claimed pad is past `max_mm`, pad edge to pad edge as the grade measures it, costs `--claim-limit-weight` (default 10). A claimed part's `jump` move aims at its partner's pads, a move of the partner carries the parts holding their claim on it, and a claimed part joins its partner's group. `place_simple` also writes claims of its own: each passive crystal at its IC's oscillator pins (through a series resistor where a leg has one) and its load caps at the crystal (`placement/crystals.py`, `max_mm` 8.1 and 2.2, derived defaults), unless the intent already claims that pair | the term reads pads on shared nets whatever the `basis`, so a claim whose parts share no net is not priced. The crystal claims are the anneal's only: they are not written into the intent, so the grade does not see them |
+| `edge_connector` | yes | **seated**: an unlocked edge part (connector, receptacle, switch or test pad) declared on an edge is held there, its mating face (`mating_face` where the body names none) pointing out and flush with the low end of its `overhang_mm` band, and only slides along it, within its `along_edge_band` / `center_on_edge` when it declares one; its `side` is applied before placing | a part that is not an edge part by class (a cap or a jumper by the edge) is emitted with its observed overhang as a band and no edge, so it is placed like any other part. Lock a connector at its edge pose in the file, or declare that pose in `fixed_poses[]`, when the position along the edge is fixed |
 | `must_lock` | yes | — | it is a claim about the FILE; no pose satisfies or violates it. `place_simple` holds the parts the file locks |
 | `assembly_side` | yes | — | no move carries a side; a part changes face only by a declaration (the `zone_side` row). **warn** by default so it cannot become a permanent red mark |
 | `envelope` | yes | — | a claim about the intent FILE against the board, not about any pose |
-| `decap_distance`, `decap_pin_distance` | yes | — | its decap term pulls each cap toward a supply pin of its rail on an IC of its own group (any IC's when the group has none), the rail's caps matched one to a pin site, whatever the limit. `place_fanout_clearance --intent` (and the GUI fanout tab, which shares its engine) holds both limits on the caps it moves, measured by CALLING the grader's own distances (`groups.elect_live`, `floorplan.nearest_rail_cap`) |
+| `decap_distance`, `decap_pin_distance` | yes | **priced** when graded at error: each mm past `max_distance_mm` or `max_pin_distance_mm`, measured as the grade measures it (the tether gate's terms, `floorplan.tether_gate_spec`), costs `--decap-limit-weight` (default 10), and a move of a chip carries the caps holding their limits at it. Beside it, the decap term pulls each cap toward a supply pin of its rail on an IC of its own group (any IC's when the group has none), the rail's caps matched one to a pin site, whatever the limit | a limit demoted to warn is not priced. `place_fanout_clearance --intent` (and the GUI fanout tab, which shares its engine) holds both limits on the caps it moves, measured by CALLING the grader's own distances (`groups.elect_live`, `floorplan.nearest_rail_cap`) |
 | `decap_ungraded`, `decap_pin_uncovered`, `decap_pin_distance_inferred` | yes | — | `decap_ungraded` and `decap_pin_uncovered` are claims about what the GRADE covers rather than about any pose, and `decap_pin_distance_inferred` is a WARN about a pin inferred from a net name. A cap a `--decaps-from` reference holds leaving the radius is counted by `place_fanout_clearance --intent` as a decap claim made worse when it picks the arm to keep |
 | `legality` | yes | — | a whole-board aggregate against a BUDGET. The anneal keeps only an overlap-free state as its best, and the legality check holds every part clear of its neighbours |
 | `replicate` | yes | — | `place_pose replicate --intent` applies the declaration; an anneal after it may move a copied part, and the grade then reports it |
@@ -839,6 +866,8 @@ Two things read it:
 * **`options.grow_board`** charges the parts against one face instead of the
   busier one. That is the arithmetic the key exists for: without it, a board's
   back-side area is credited to every board with nothing charged against it.
+  The plan check reads it (`--plan-only`): a declared `F` or `B` on which the
+  parts do not fit by area is a `plan_board_crowded` WARN.
 
 It grades the **body face**, never `sides_occupied`. A through-hole part on the
 front needs wave, selective or hand soldering — not a second reflow pass — and
@@ -1172,7 +1201,8 @@ grader's own rect at the declared pose, rounded outward, and is graded by
   must be FILE-locked at its pose, or named -- unlocked, at that
   pose -- by the plan's `fixed_poses[]`, which `place_simple` seats there and
   holds. `--emit-intent` compiles such an entry for every anchored
-  ref no edge connector, `must_lock` pattern or brief pose already claims
+  ref no edge connector, `must_lock` pattern, brief pose or array row
+  already claims
   (`context.mechanical.fixed_poses` / `fixed_skipped`). A file-locked part is
   placed already, and its anchor is only graded.
 - `mechanical_drift` reports any mechanical ref, locked or not, that moved or
@@ -1365,12 +1395,25 @@ and it would be the emitter that was wrong. Zones are emitted only where
 **disjoint**, tightest first (ulx3s: 4 of 10), clamped to the envelope; the rest
 carry membership and say why they have no zone.
 
-This is the same spatial incoherence that makes sheet blocks useless for
-*movement* — see `placement/README.md`.
+This is the same spatial incoherence that makes a sheet a poor unit to place
+by: the groups file `place_simple` reads groups parts by function, not by
+sheet ([py_placer/placement/README.md](../py_placer/placement/README.md)).
 
 Parts already overhanging the outline are recorded as `edge_connectors` by
 observation, which is what stops `oob_count` reporting a card edge or USB shell
 as a defect forever.
+
+**On a pile, no unlocked part's pose is read** (#1103). When
+`PlacementState.pile` calls the board a pile (a heap, or a staging ring),
+its unlocked parts' poses are staging, not decisions, and every staged part
+is nearest SOME edge. So the emitter writes no edge read off such a pose
+(with `--declare-classes`, an edge receptacle keeps its class and band, with
+no `edge`), no zone, and no `overlap_area` or `oob_count` budget read off
+the staging (both go to `context.budget_withheld`).
+`context.pose_claims_withheld` says what was withheld and why, and lists the
+staged parts off the board. A KiCad-locked part's pose is a decision and
+keeps its claims, and a design brief or `mechanical.json` still merges after
+this.
 
 An edge part whose STRONG mating face points at another edge than the one it
 sits nearest -- the opposite edge (seated reversed) or one at right angles
@@ -1412,6 +1455,10 @@ class.
 The `overlap_area` budget is **withheld** when the emitting board carries a
 blocking body pair, or an unwaived courtyard interpenetration past the
 blocking floors: baking the number would bless the board it was measured on.
+It is also withheld on a pile, and when the board's project sets
+`courtyards_overlap` to `ignore` (a courtyard overlap budget would grade
+nothing it asks for). `oob_count` is withheld on a pile that has parts off
+the board, and when an edge connector sits in a SUSPECT pose.
 `context.budget_withheld` names each withheld key and why, so a reader can tell
 "withheld" from "forgot"; declare the budget by hand if the overlap is by
 design.
@@ -1594,10 +1641,13 @@ the worst distance, on every withholding arm.
 
 ### What reads the declared limit
 
-`place_simple` does not: its decap term pulls each cap toward a supply pin
-of its rail on an IC of its own group (any IC's when the group has none), the
-rail's caps matched one to a pin site, whatever the limit. `place_fanout_clearance --intent` (and the GUI
-fanout tab, which shares its engine) does: at error severity,
+`place_simple` prices it: at error severity, each mm a cap or a supply pin is
+past `max_distance_mm` or `max_pin_distance_mm`, measured as the grade
+measures it, costs `--decap-limit-weight` (default 10; 0 leaves the limits
+unpriced), on top of its decap term, which pulls each cap toward a supply pin
+of its rail on an IC of its own group (any IC's when the group has none)
+whatever the limit. `place_fanout_clearance --intent` (and the GUI
+fanout tab, which shares its engine) holds it: at error severity,
 `max_distance_mm` and `max_pin_distance_mm` are held on every cap it moves --
 no move may take a claim past its limit and further than the board as it
 stands, unless no clear pose keeps it, and then the claim it broke is named.

@@ -4,7 +4,9 @@ Placement in this toolchain infers everything about a board from the board.
 `emit_intent` says so in its own docstring — *"a starter intent READ OFF the
 board … the emitted intent grades CLEAN by construction"* — and every
 connector's edge is **guessed** from its current pose by `_nearest_edge`, which
-is the only source of an edge anywhere in the toolchain.
+is the only source of an edge anywhere in the toolchain. On a pile not even
+that: no unlocked part's pose is read, so the emitted intent claims no edge
+for it at all (`context.pose_claims_withheld`, #1103).
 
 A board file cannot say which end of a stick the USB plug is, which header a
 ribbon mates with, or where the enclosure rib runs. Those are facts about the
@@ -27,8 +29,13 @@ python3 py_tools/check_floorplan.py board.kicad_pcb --intent floorplan.json
 
 `--brief PATH` overrides the sibling. `--no-brief` suppresses discovery — the
 OFF arm, without which there is no way to measure what declaring changed.
-`--require-brief` exits 4 when none was found, the parallel of
-`--require-rules` one level up.
+`--require-brief` exits 4 when none was found, or when the one found declares
+nothing gradable — the parallel of `--require-rules` one level up.
+`--require-brief-coverage` exits 4 unless every clause the brief declares
+reached a verdict: `--require-rules` counts RULES, and a grade can run six of
+them and measure no clause its brief declared. A clause declared `"unknown"`,
+and one this toolchain carries by design, never blocks. `board_brief.py`
+takes the same `--brief` / `--no-brief`.
 
 ## It is a compiler, not a second constraint system
 
@@ -54,16 +61,19 @@ already grade, and that `place_simple` reads wherever it reads the intent
 
 ### The compiler declares nothing that nothing grades
 
-Every key the brief compiles is graded by an existing rule. The one intent key
-that exists for the brief, `proximity[]`, arrives with its own rule
-(`proximity` in floorplan), because no other entry means *these two named
-parts, this far apart*:
+Every key the brief compiles is graded: by a floorplan rule, or, for
+`assembly.body_edge_mm`, by check_assembly. Where no existing intent entry
+meant what the brief says, the key arrived with its own rule: `proximity[]`
+(`proximity`), `keep_away[]` (`keep_away`), `arrays[]` (`array_formation`)
+and `fixed_poses[]` (an anchor graded as `zone_containment`). `proximity[]`
+is the plainest case, because no other entry means *these two named parts,
+this far apart*:
 
 - `decaps.max_distance_mm` is **one board-wide budget over a derived
-  population**, not a claim about a named pair. A decap is syntactic (`ref`
-  starts with `C`, bridges two nets), so an inductor, a crystal or an ESD array
-  is never its subject, and its partner is elected by the grader and measured
-  to a pad box, not to a named pin.
+  population**, not a claim about a named pair. A decap is a `C*` part
+  bridging ground (or a stacked domain) and a chip's supply rail, so an
+  inductor, a crystal or an ESD array is never its subject, and its partner
+  is elected by the grader and measured to a pad box, not to a named pin.
 - A **keep-out is an exclusion, not an attraction.** Compiling "beside" into
   "not inside" grades the opposite claim.
 
@@ -124,9 +134,10 @@ not the intent's `assembly.sides`, which is which faces the **fab
 populates**. The two are independent and cannot contradict each other: a
 back-populated board whose front carries the label is `assembly.sides: "B"`
 with `user_top_side: "F"`, and that is coherent. With a perpendicular-cable
-connector, `user_top_side` compiles to the face that cable plugs into, graded as `edge_connector_side` at a fixed WARN that no search reads (see
-below); on its own it is carried and graded by nothing, and the brief report
-says so under `not_graded`. `assembly.sides` is graded by `rule_assembly_side`
+connector, `user_top_side` compiles to the face that cable plugs into, graded as `edge_connector_side` at a fixed WARN, and
+applied by `place_simple` before it places (see below); on its own it is
+carried and graded by nothing, and the brief report says so under
+`not_graded`. `assembly.sides` is graded by `rule_assembly_side`
 and charged by
 `options.grow_board`, which also charges a through-hole part's leads against the face it is *not* mounted on, so the
 busier face is the busier **obstructed** one.
@@ -183,6 +194,15 @@ One row is one claim is one limit:
 | `basis` | optional, default `pad_edge` | `pad_edge` or `body` |
 | `pads` | optional, or `"unknown"` | `{"REF": ["1", "2"]}` — pad numbers as **strings** |
 | `requirement`, `why`, `note`, `context` | optional | carried into the compiled entry's `context` |
+
+Each compiled row is graded by `proximity` and priced by `place_simple`: the
+subject is pulled toward its partner's pads on shared nets, and each mm past
+`max_mm` costs ("Which rules the placer can see" in
+[floorplan-intent.md](floorplan-intent.md)). `place_simple` also claims each
+passive crystal at its IC's oscillator pins, and its load caps at the
+crystal, by itself, at derived default limits; those claims are not written
+into the intent, so declare the row here when the loop must be graded or
+held to a tighter number.
 
 **A list `ref` is sugar and is expanded at compile time.**
 `{"ref": ["C1","C3"], "near": "U2", "max_mm": 2.0}` becomes two intent rows.
@@ -387,10 +407,10 @@ for a member, and says so.
 ## Connector declarations compile to clauses
 
 `mount_mode`, `cable_entry` and `user_top_side` compile, in
-`design_brief.connector_consequences`,
-which every tool that reads a brief against a board calls -- `check_floorplan`
-on both its emit and grade paths, `--plan-only`, and `board_brief` -- so the
-grade and drift see exactly what the emit wrote.
+`design_brief.connector_consequences`. Every tool that reads a brief against a
+board calls it through `design_brief.compile_with_consequences` --
+`check_floorplan` on both its emit and grade paths, `--plan-only`, and
+`board_brief` -- so the grade and drift see exactly what the emit wrote.
 
 The mapping is calibrated on five as-built boards (esp_prog, tigard,
 splitflap_driver, glasgow_revC, ulx3s -- their briefs are
@@ -403,6 +423,7 @@ splitflap_driver, glasgow_revC, ulx3s -- their briefs are
 | `mount_mode: top_mount` / `bottom_mount` | an exemption, reported `carried`: NOT held to the edge-receptacle seat; its declared edge and overhang still grade it, and nothing measures the mount itself | declared -- without it, `user_facing` would make vertical headers edge receptacles and fail them |
 | `cable_entry: perpendicular_top` / `_bottom`, with `product.user_top_side` | `side`: the face the cable plugs into, graded as `edge_connector_side` | declared; a fixed **WARN** an intent cannot raise; `place_simple` applies the face before it places |
 | `cable_entry: in_plane` | reported `carried`: the declared `edge` is already a clause and in-plane adds none; with `edge: "unknown"` it is reported unmeasured | declared |
+| `cable_entry: none` | nothing: carried, and listed under `not_graded` | declared |
 | `cable_envelope_mm: {depth}` (in-plane) or `{clear}` (perpendicular) | a `cable:<REF>` keep-out -- a band `depth` in from the edge across the body, or the body plus `clear` on the cable's face -- ONLY for a FILE-locked part (off an unlocked one it would move with every seed), and for an in-plane band only when the body reaches within `depth` of its declared edge. A `cable:<REF>` keep-out the brief declares itself wins | declared |
 
 `user_facing` compiles no face. That the user reaches a part says nothing
@@ -412,7 +433,9 @@ wrong one.
 
 **There is no default cable envelope.** No clearance passes every as-built
 control, and a fixed in-plane band lies inside some connectors' own bodies. An envelope that is `"unknown"` or absent is reported
-`unmeasured`, naming the dimension. z-height and insertion travel are never
+`unmeasured`, naming the dimension. An envelope on an interface whose
+`cable_entry` is absent, `none` or `"unknown"` is refused at load: it
+describes a cable nothing says the part has. z-height and insertion travel are never
 measured: a keep-out is a 2D projection, and the row says so.
 
 Each consequence is a row in the check's `consequences` list and in the
@@ -481,9 +504,13 @@ two copies. Both read it through `keep_away.brief_rule_rows`:
   the intent's `severity` promotes it. The rule is described in [the floorplan
   intent](floorplan-intent.md).
 - The routing engines (`route.py`, `route_diff.py`, the GUI's Route and
-  Differential tabs) read the same key off the brief beside the board and price
-  it on the tracks, added to any `--keep-away` they are given. The brief
-  travels with every routed output, so later steps keep it.
+  Differential tabs) read the same key off the brief beside the board
+  (`keep_away.resolve_keep_away`, in the engine, so there is no flag or GUI
+  control) and price it on the tracks, added to any `--keep-away` they are
+  given; the run prints `Keep-away: N rule(s) read from the design brief`.
+  `route.py` and `route_diff.py` refuse a malformed `keep_away` there before
+  routing (exit 2, the parser's message); it is never skipped.
+  The brief travels with every routed output, so later steps keep it.
 
 On the `--intent` path a rule the brief declares and the intent lacks drifts.
 So does a rule the intent carries from the brief that the brief no longer

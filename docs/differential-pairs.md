@@ -6,7 +6,7 @@ This document describes how the router handles differential pairs, including P/N
 
 Differential pairs are routed using a **centerline + offset** approach with **pose-based A* routing**:
 
-1. **Setback position finding** - Find clear positions in front of stubs at fixed setback distance, scanning 9 angles (0°, ±max/4, ±max/2, ±3max/4, ±max)
+1. **Setback position finding** - Find clear launch positions in front of the stubs, over a ladder of setback distances, each scanned at 9 angles (0°, ±max/4, ±max/2, ±3max/4, ±max)
 2. **Pose-based centerline routing** - Route using orientation-aware A* with Dubins path heuristic
 3. **Path simplification** - Remove collinear points and in-place turns for cleaner geometry
 4. **P/N offset generation** - Create P and N paths as perpendicular offsets from centerline
@@ -24,7 +24,7 @@ The router recognizes common differential pair naming conventions:
 | `_PX` / `_NX` indexed suffix | `FE_CLK_P0`, `FE_CLK_P1` | `FE_CLK_N0`, `FE_CLK_N1` |
 | `_t` / `_c` suffix (case-insensitive) | `DQS0_t_A`, `CK_T` | `DQS0_c_A`, `CK_C` |
 | `_tX` / `_cX` (no-separator channel) | `DQS0_TA` | `DQS0_CA` |
-| `P` / `N` suffix | `DATA0P` | `DATA0N` |
+| `P` / `N` suffix (after a digit, `_` or capital) | `DATA0P`, `TXP` | `DATA0N`, `TXN` |
 | `DP` / `DM` / `DN`, `DPLUS` / `DMINUS` (USB) | `USB_DP`, `USB_DPLUS` | `USB_DM`, `USB_DN`, `USB_DMINUS` |
 | `+` / `-` suffix | `CLK+` | `CLK-` |
 | `+` / `-` before an `_`-led suffix | `D+_L` | `D-_L` |
@@ -50,23 +50,23 @@ Use `route_diff.py` for differential pair routing. All nets specified are treate
 
 ```bash
 # Route a specific diff pair
-python py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*lvds_rx1_11*"
+python3 py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*lvds_rx1_11*"
 
 # Route with debug visualization
-python py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*lvds_rx1_11*" \
+python3 py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*lvds_rx1_11*" \
     --debug-lines
 
 # Route all LVDS nets with custom gap
-python py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*lvds*" \
+python3 py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*lvds*" \
     --diff-pair-gap 0.1 \
     --diff-pair-centerline-setback 1.5
 
 # Keep diff pairs out of a keepout polygon drawn on a User layer (issue #27)
-python py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*lvds*" \
+python3 py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*lvds*" \
     --keepout --keepout-layer User.2
 
 # 4+ layer board: pass EVERY copper layer (issue #116)
-python py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*lvds*" \
+python3 py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*lvds*" \
     --layers F.Cu In1.Cu In2.Cu B.Cu
 ```
 
@@ -87,8 +87,9 @@ copper-layer list you gave `bga_fanout.py`; drop `--layers` only for true 2-laye
 boards (issue #116).
 
 Differential pairs respect user-drawn keepout polygons (`--keepout`, default layer
-`User.2`) and KiCad native keep-out rule areas (`(zone … (keepout …))`, honoured
-automatically). See [configuration.md](configuration.md#keepout-zone-options) for details.
+`User.2`), KiCad native keep-out rule areas (`(zone … (keepout …))`, honoured
+automatically) and net-filtered keep-outs declared by `disallow` rules in the
+board's `.kicad_dru` (#1278). See [configuration.md](configuration.md#keepout-zone-options) for details.
 
 ## Centerline Routing
 
@@ -157,7 +158,9 @@ tapping leg's P/N tracks would have to cross the existing pair. So pairs with
 routed as a **chain** of 2-point legs (`diff_pair_multipoint.py`):
 
 1. The pair's pads are grouped into (P pad, N pad) terminals by nearest
-   matching (connector pins, IC input pairs, termination resistors).
+   matching (connector pins, IC input pairs, termination resistors). A pad of
+   a declared Kelvin sense branch (a `sense:` group, #1279) is never a
+   terminal; it joins its net at the branch's join pad.
 2. Terminals are ordered as the shortest open chain. Each terminal has only
    two usable sides (the +/- directions of its escape axis), so the topology
    must be a path, not an MST tree. Orderings whose interior terminals have
@@ -268,7 +271,7 @@ This produces routes that:
 
 ### Setback Position Finding
 
-The router uses a fixed setback distance (default: 2× P-N spacing) and scans 9 angles to find an unblocked position:
+The setback (`--diff-pair-centerline-setback`, default 2× the P-N centre pitch) is the first rung of a ladder of distances (#90): the configured setback, then 0.75×, 0.5×, the geometric floor (the room the connector fan needs to taper from the pad separation to the pair pitch at ≤45°, at least 2× the half-pitch) and 1.5× and 2× the setback. At each distance the router scans 9 angles about the escape direction (`--max-setback-angle`, default 45°):
 
 ```python
 # With max_setback_angle = 45° (default):
@@ -279,18 +282,18 @@ For each angle:
 1. Check if the position is blocked in the obstacle map
 2. Check if the connector path from stub center is clear
 
-This allows finding unblocked positions even when the straight path is blocked by nearby stubs. With 9 angles (vs 5 previously), there's finer granularity for finding optimal positions.
+The first distance with a clear angle wins (0° is preferred unless it sits too close to a neighbouring stub). If no distance works, the ladder is re-run with the launch direction rotated 90°, −90° and 180°, so a terminal buried in a dense row can launch sideways or backwards; such a launch routes like a flipped end (it must wrap around its endpoint).
 
 ### Extra Clearance
 
 The centerline is routed with extra clearance to accommodate both P and N tracks:
 
 ```python
-# Extra clearance = offset from centerline to P/N track outer edge
-extra_clearance = (track_width + diff_pair_gap) / 2 + track_width / 2
+# Extra clearance = offset from centerline to the P/N track centres
+extra_clearance = (track_width + diff_pair_gap) / 2
 ```
 
-This accounts for the P/N track offset (half the track-to-track spacing) plus half the track width.
+It is added to the ordinary single-track keep-out (half the track width plus the clearance), so each offset track keeps its clearance from every obstacle.
 The map carries this one offset, the call's, for every layer. A layer wider than the
 pair's own width (an `--impedance` outer layer above `--track-width`) runs at its own
 wider pitch (below), so a segment of it that comes inside a neighbour's clearance is
@@ -307,7 +310,7 @@ The offset is half the P/N centre pitch, `(width + gap) / 2`. With per-layer wid
 (`layer_pair_spacing`), so a narrower stripline layer keeps the declared gap:
 
 ```python
-def create_parallel_path_float(centerline_path, coord, sign, spacing_mm, start_dir, end_dir):
+def create_parallel_path_from_float(centerline_path, sign, spacing_mm, start_dir, end_dir):
     for i, (gx, gy, layer) in enumerate(centerline_path):
         # Calculate perpendicular direction using bisector at corners
         if i == 0:
@@ -356,13 +359,14 @@ cross = path_dir_x * to_p_dy - path_dir_y * to_p_dx
 src_p_sign = +1 if cross >= 0 else -1
 ```
 
-The router also detects if polarity differs between source and target (polarity swap needed) and prints this information:
+The router also detects if polarity differs between source and target (P on the other side at the target end) and says how it resolves it:
 
 ```
-Polarity: src_p_sign=1, tgt_p_sign=-1, swap_needed=True, has_vias=True
+  Polarity swap needed - will swap target pad and stub nets in output
+  Polarity mismatch - trying target connectors out the opposite side
 ```
 
-**Note:** Polarity swaps are automatically fixed by default, which swaps the target pad net assignments (P↔N) so polarity matches. The swap is applied consistently in three places:
+**Note:** For a pair `--polarity-swap-nets` allows (none by default), a mismatch can be fixed by swapping the target pad net assignments (P↔N) so polarity matches. The swap is applied consistently in three places:
 
 - the in-memory `pcb_data` (pads and stub segments/vias), so post-route cleanup
   and subsequent routes see the swapped nets - without this, the appendix
@@ -429,8 +433,11 @@ P and N vias are placed perpendicular to the centerline direction at layer chang
 perp_x = (-in_dir_y + -out_dir_y) / 2
 perp_y = (in_dir_x + out_dir_x) / 2
 
-# Via spacing (may be larger than track spacing for clearance)
-via_spacing = max(spacing_mm, min_via_spacing / 2, track_via_clearance)
+# Via offset from the centerline (_pair_via_offset): at least the track
+# half-pitch, half the minimum via-to-via distance, and far enough that the
+# partner's track clears the via, all at the P-against-N clearance (#1218)
+track_via_clearance = (pn_clearance + track_width / 2 + via_size / 2) * routing_clearance_margin
+via_spacing = max(spacing_mm, min_via_spacing / 2, track_via_clearance - spacing_mm)
 
 # Place vias perpendicular to centerline
 p_via = (cx + perp_x * p_sign * via_spacing, ...)
@@ -494,9 +501,11 @@ By default, the router places GND vias adjacent to each differential pair signal
 3. **Direction stored** - The chosen direction (1=ahead, -1=behind) is stored per layer change
 4. **Python places vias** - After routing, Python uses the direction info to place GND vias connected to the GND net
 
-**GND via positions:**
+**GND via positions** (`_gnd_via_offsets()`):
 - Perpendicular offset: `P/N spacing + track_width/2 + clearance + via_size/2`
 - Along-heading offset: `via_size + clearance` (ahead or behind signal vias)
+
+The clearance is the one `check_drc` grades GND against the pair at (the pair's net class or `.kicad_dru` value, #1207), not just the run's base clearance. After the tracks are drawn, a GND via that sits too close to them is moved outward by up to 0.25 mm, and only to a site clear of every other net's copper.
 
 Use `--no-gnd-vias` to disable this feature. GND vias are recommended for all high-speed
 differential pairs (LVDS, USB, Ethernet, PCIe). Use the `/find-high-speed-nets` skill to
@@ -550,13 +559,19 @@ from the terminal escapes (`_route_direct_coupled_middle`):
    inner, then `F.Cu`/`B.Cu`). Offset the centerline into a clean parallel P/N
    pair. The pair runs the open corridor as close to each terminal as it can.
 
-2. **Polarity by minimum crossings.** There is no coupled polarity stage; the
-   P/N offset side is chosen to **minimise terminal-leg crossings** — align the P
-   track with the side P's vias are actually on. A genuine side-swap still costs
-   one crossing leg either way, but both legs never cross gratuitously.
+2. **Polarity by the pads' sides.** There is no coupled polarity stage. Each end
+   votes for the offset side its P pad lies on, relative to the local centerline
+   direction. A genuine side-swap still costs one crossing leg either way, so the
+   hybrid is then assembled with **both** polarities and the cleaner one kept
+   (fewest P/N overlaps, then fewest vias, then shortest copper; #248).
 
 3. **Point-to-point legs.** Attach each terminal to its middle near-end with a
-   short single-ended A* leg (`_route_hybrid_legs`). The leg starts on the
+   short single-ended A* leg (`_route_hybrid_leg`), trying leg orders in turn
+   (P's legs first, then N's first, then both source legs before either target
+   leg; #244) so a first leg cannot box out its partner's in a dense terminal
+   field. The second leg at each end is attracted to its partner's just-routed
+   leg, and the first keeps room beside itself for it, so the two escape
+   together (`KICAD_HYBRID_COUPLE=0` disables this). The leg starts on the
    terminal's own through-via (any layer) or the bare pad's layer and **drops its
    own escape via** for the layer change to the middle. The **partner net's
    copper** — its middle, its terminal vias, the first net's just-routed legs, and
@@ -636,7 +651,13 @@ This helps visualize the routing structure without affecting the actual routed c
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--diff-pair-gap` | board class, else 0.101 | Gap between P and N traces (mm). Omitted (the GUI: override unchecked), each pair takes its net class's `diff_pair_gap` and the call the Default class's; a class that leaves it unset inherits Default's, and a 0 is unset, falling back to the class clearance (the same rule makes an omitted `--track-width` the class `diff_pair_width`, else the class track width). Raised, never lowered, to the clearance (#441), the pair's net class (#530) and any `.kicad_dru` clearance rule that binds the pair on a layer it routes on (#1145): KiCad grades P against N as two nets |
+| `--track-width` | board class, else 0.3 | Each leg's width (mm). Omitted, the net class's `diff_pair_width` (see above). With `--impedance` it is the min-width floor and the no-stackup fallback |
+| `--impedance` | - | Target differential impedance (ohms, e.g. 100): solves each layer's leg width from the board stackup at `--diff-pair-gap` |
+| `--coplanar-gap` | - | Declares that every pair in the call runs through a same-layer ground pour this far (mm) from each trace's outer edge, so outer layers use the coplanar-waveguide model (requires `--impedance`; see [configuration.md](configuration.md#differential-pair-options-route_diffpy-only)) |
 | `--diff-pair-centerline-setback` | 2x P-N dist | Distance in front of stubs to start centerline (mm) |
+| `--max-setback-angle` | 45 | Half-angle of the setback angle scan (degrees) |
+| `--routing-clearance-margin` | 1.0 | Multiplier on the track-to-via distance that sets the P/N via offset and the centerline's via keep-out (1.0 = minimum DRC) |
+| `--diff-chamfer-extra` | 1.5 | Chamfer of pair-centreline meanders, as a multiple of the P/N half-pitch (>1 keeps P and N from crossing) |
 | `--min-turning-radius` | 0.2 | Minimum turning radius for pose-based routing (mm) |
 | `--max-turn-angle` | 180 | Max cumulative turn angle (degrees) to prevent U-turns |
 | `--polarity-swap-nets` | (none = deny all) | Glob patterns naming the pairs ALLOWED to resolve a P/N mismatch by a pad-net swap (#279). `'*'` = all pairs; omit for no swaps ever |
@@ -652,6 +673,7 @@ This helps visualize the routing structure without affecting the actual routed c
 | `--track-proximity-cost` | 0.0 | Cost penalty near routed tracks (0 = disabled) |
 | `--mps-reverse-rounds` | false | Route most-conflicting MPS groups first (instead of least) |
 | `--diff-pair-intra-match` | false | Match P/N lengths within each diff pair (meander shorter track) |
+| `--ac-couple-match` | false | Match an AC-coupled pair end to end across its series caps (see [Length Matching](length-matching.md#differential-pairs)) |
 
 ## Track Proximity Avoidance
 
@@ -666,7 +688,7 @@ For swappable diff pairs (e.g., memory data lanes where any source can connect t
 ### Usage
 
 ```bash
-python py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*rx*" \
+python3 py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*rx*" \
     --swappable-nets "*rx*"
 ```
 
@@ -705,11 +727,11 @@ When enabled:
 
 ```bash
 # Enable intra-pair matching
-python py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*DQS*" \
+python3 py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*DQS*" \
     --diff-pair-intra-match
 
 # Combine with inter-pair matching
-python py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*DQS*" "*CK*" \
+python3 py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*DQS*" "*CK*" \
     --length-match-group auto \
     --diff-pair-intra-match
 ```
@@ -727,7 +749,7 @@ This is useful when differential pairs in a group are routed on different layers
 
 ```bash
 # Time match differential pairs
-python py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*DQS*" \
+python3 py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*DQS*" \
     --length-match-group auto \
     --time-matching \
     --time-match-tolerance 1.0
@@ -735,8 +757,8 @@ python py_router/route_diff.py input.kicad_pcb output.kicad_pcb --nets "*DQS*" \
 
 ## Limitations
 
-1. **Polarity swap** - Off by default; allow it per pair with `--polarity-swap-nets <patterns>` (`'*'` = every pair; the GUI's "Polarity-swap allowed nets" field, default `*`). Only allow pairs an endpoint can compensate (FPGA generic I/O, polarity-tolerant SerDes) - never USB/MIPI/TMDS (#279). For a denied pair, a mismatch is re-routed with the connectors out the opposite side at one end (bare-pad endpoints only), and skipped with a warning if that is not possible; denied-but-wanted swaps are listed in `polarity_swap_denied_pairs` in the JSON summary
-2. **Fixed spacing** - Spacing is constant along the route (no tapering)
+1. **Polarity swap** - Off by default; allow it per pair with `--polarity-swap-nets <patterns>` (`'*'` = every pair; the GUI's "Polarity-swap allowed nets" field, empty by default). Only allow pairs an endpoint can compensate (FPGA generic I/O, polarity-tolerant SerDes) - never USB/MIPI/TMDS (#279). For a denied pair, a mismatch is re-routed with the connectors out the opposite side at one end (bare-pad endpoints only), and skipped with a warning if that is not possible; denied-but-wanted swaps are listed in `polarity_swap_denied_pairs` in the JSON summary
+2. **Fixed spacing** - Spacing is constant along each layer of the route (no tapering); with per-layer widths each layer keeps its own pitch
 3. **Grid snapping** - Centerline endpoints snap to grid for the search; the
    terminal endpoints of the generated geometry are un-snapped back to the
    exact setback positions so the connector fan stays centered between the

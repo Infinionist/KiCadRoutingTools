@@ -24,6 +24,13 @@ fnmatch-style wildcards (`*`, `?`), with `!` prefix for exclusion. A name
 matches if it matches at least one inclusion pattern (when any exist) and no
 exclusion pattern. Exclusion-only lists match everything not excluded.
 
+Matching is case-sensitive and sheet-path aware (`net_pattern_matches`,
+#493): a pattern with no `/` (`GND`, `VCC*`) also matches the last path
+component of a hierarchical net, so `GND` matches `/GND` and `/Analog/GND`;
+a pattern with a `/` is matched against the full name only. A `!`-pattern
+that names a net verbatim is that active-low net, not an exclusion (`!RESET`),
+and `\!FOO` is always the literal name `!FOO` (#177).
+
 #### `expand_net_patterns`
 
 ```python
@@ -32,11 +39,16 @@ expand_net_patterns(pcb_data, patterns: List[str],
                     quiet: bool = False) -> List[str]
 ```
 
-Expands patterns to the sorted list of actual net names on the board,
-dropping `unconnected-*` nets by default. It prints how many nets each
-wildcard matched; `quiet=True` prints only what is wrong with a pattern (it
-matched nothing, or an unqualified exclusion also took a namesake), for a
-caller that resolves many patterns and reports the totals itself.
+Expands patterns to the actual net names on the board, with the same
+matching rules as `matches_net_filter`, dropping `unconnected-*` nets from
+wildcards by default (naming one literally still selects it). Patterns apply
+in order: each wildcard adds its matches sorted, an exclusion removes what
+it matches (and keeps it out of later patterns), and an exclusion-only list
+implies a leading `*`. A literal naming no net is kept as given, with a
+warning. It prints how many nets each wildcard matched; `quiet=True` prints
+only what is wrong with a pattern (it matched nothing, or an unqualified
+exclusion also took a namesake), for a caller that resolves many patterns and
+reports the totals itself.
 
 ```python
 from kicad_parser import parse_kicad_pcb
@@ -111,9 +123,10 @@ identify_power_nets(pcb_data, patterns: List[str],
 ```
 
 Pattern-based power net detection (the engine behind `--power-nets`).
-`patterns[i]` gets `widths[i]`; the first matching pattern wins, so order
-patterns most-specific first. Returns net_id → track width, ready to assign
-to `GridRouteConfig.power_net_widths`.
+`patterns[i]` gets `widths[i]` (unequal lengths raise `ValueError`); each
+pattern is a case-sensitive fnmatch against the full net name, and the first
+matching pattern wins, so order patterns most-specific first. Returns
+net_id → track width, ready to assign to `GridRouteConfig.power_net_widths`.
 
 ```python
 from kicad_parser import parse_kicad_pcb
@@ -136,7 +149,8 @@ find_differential_pairs(pcb_data, patterns: List[str])
 ```
 
 Finds complete P/N pairs among nets matching the patterns, keyed by base
-name. Recognized suffix conventions:
+name (when two conventions share a base, the second pair is keyed
+`<base>(<style>)`). Recognized suffix conventions:
 
 | Style | Example pair |
 |-------|--------------|
@@ -198,8 +212,8 @@ find_single_ended_nets(pcb_data, patterns, exclude_net_ids=None)
     -> List[Tuple[str, int]]   # (net_name, net_id)
 ```
 
-Pattern-matched nets minus an exclusion set — typically the diff-pair net
-IDs you just found.
+Pattern-matched nets (case-sensitive fnmatch on the full name) minus an
+exclusion set — typically the diff-pair net IDs you just found.
 
 ### Routing-status queries
 
@@ -207,8 +221,12 @@ IDs you just found.
 get_all_unrouted_net_ids(pcb_data) -> List[int]
 ```
 
-Net IDs that still need work: ≥ 2 pads and either no segments, or multiple
-disconnected segment groups, or a single group that doesn't reach all pads.
+The router's candidate list for stub-proximity costs: net IDs with ≥ 2 pads
+and no segments, several disconnected segment groups (via-aware), or a single
+group — which it counts too, without testing whether that group reaches
+every pad. So on a routed board it returns every multi-pad net; it is not a
+connectivity grade. To ask whether a net is connected, use
+`check_connected.check_net_connectivity`.
 
 ```python
 calculate_route_length(segments, vias=None, pcb_data=None) -> float
@@ -225,7 +243,7 @@ from kicad_parser import parse_kicad_pcb
 from net_queries import get_all_unrouted_net_ids, calculate_route_length
 
 pcb = parse_kicad_pcb('kicad_files/routed_output.kicad_pcb')
-print(f"{len(get_all_unrouted_net_ids(pcb))} nets still unrouted")
+print(f"{len(get_all_unrouted_net_ids(pcb))} candidate nets")
 
 net = next(n for n in pcb.nets.values() if n.name.endswith('lvds_rx1_8_P'))
 segs = [s for s in pcb.segments if s.net_id == net.net_id]
@@ -283,8 +301,8 @@ print(f"{net.name}: {total:.2f} mm total copper, "
 
 ```python
 net_pads_joined(pcb_data, net_id, pads=None, tolerance=0.02) -> bool
-net_match_length(pcb_data, net_id, mode='total', tolerance=0.02)
-    -> Optional[float]
+net_match_length(pcb_data, net_id, mode='total', tolerance=0.02,
+                 include_pad_to_die=True) -> Optional[float]
 ```
 
 `net_copper_length` reports whatever copper a net has, routed or not: a net
@@ -421,10 +439,14 @@ Algorithm details and strategy comparison: [Net Ordering](net-ordering.md).
 ### `find_connected_groups`
 
 ```python
-find_connected_groups(segments, tolerance=0.01,
+find_connected_groups(segments, tolerance=COINCIDENCE_TOL,
                       layer_aware=True, vias=None)
     -> List[List[Segment]]
 ```
+
+`COINCIDENCE_TOL` (0.02 mm) is the engine's one endpoint-coincidence
+radius (#320); `find_stub_free_ends` and `find_connected_segment_positions`
+below default to it too.
 
 Groups segments into connected components (union-find with spatial hashing,
 O(n)). With `layer_aware=True` (default), segments on different layers only
@@ -448,12 +470,15 @@ One group = fully connected copper; more = stubs/partial routing.
 ### Stub queries
 
 ```python
-find_stub_free_ends(segments, pads, tolerance=0.05)
+find_stub_free_ends(segments, pads, tolerance=0.05,
+                    coincidence_tol=COINCIDENCE_TOL)
     -> List[Tuple[float, float, str]]   # (x, y, layer)
 ```
 
 Endpoints of a connected segment group that touch neither another segment
-nor a pad — i.e. where the router should continue from.
+nor a pad — i.e. where the router should continue from. `tolerance` is the
+pad-attach radius (an end this close to a pad centre is on the pad);
+`coincidence_tol` decides whether two segment ends meet.
 
 ```python
 get_stub_direction(segments, stub_x, stub_y, stub_layer, tolerance=0.05)
@@ -525,7 +550,8 @@ compute_mst_edges(points, use_manhattan=False)
 compute_mst_segments(points)
     -> List[Tuple[Tuple, Tuple]]        # ((x1, y1), (x2, y2))
 find_connected_segment_positions(pcb_data, start_x, start_y, net_id,
-                                 tolerance=0.1, layer=None) -> set
+                                 tolerance=None, layer=None) -> set
+    # tolerance None = COINCIDENCE_TOL; crossing layers needs a same-net via
 find_connected_segments(pcb_data, start_x, start_y, net_id) -> List[Segment]
 segments_intersect(a1, a2, b1, b2) -> bool   # shared endpoints don't count
 is_edge_stub(pad_x, pad_y, bga_zones) -> bool

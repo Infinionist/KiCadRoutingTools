@@ -9,16 +9,23 @@ Power nets (GND, VCC, etc.) typically require wider tracks than signal nets to h
 1. **Manual patterns** - Specify net patterns and widths via CLI
 2. **AI-powered analysis** - Use the `/analyze-power-nets` skill for datasheet lookup and component analysis
 
+A board whose net classes already size its power nets needs neither: when `--track-width` is omitted, every net routes at its own net class's track width (and any `.kicad_dru` `track_width` rule that matches it), so a `Power` class drawn at 0.5 mm routes at 0.5 mm. `--power-nets` is for the nets the classes do not size, and outranks the class width for the nets it names.
+
 ## Command-Line Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--power-nets` | - | Glob patterns for power nets (e.g., `"*GND*" "*VCC*"`) |
 | `--power-nets-widths` | - | Track widths in mm for each pattern (must match length) |
+| `--neckdown-length` | 2.5 | Narrow track length from the pad on a necked-down power route (mm) |
+| `--neckdown-taper-length` | 0.5 | Narrow-to-wide width taper (mm, 0 = abrupt) |
+| `--no-power-tap-neckdown` | off | Disable the neck-down retry of failed wide power routes |
+
+The plugin's Route tab has the same fields (Power Nets, Power Widths, and the "Power route neck-down" checkbox).
 
 ```bash
 # Route with wider tracks for power nets
-python py_router/route.py input.kicad_pcb output.kicad_pcb --nets "Net*" \
+python3 py_router/route.py input.kicad_pcb output.kicad_pcb --nets "Net*" \
   --power-nets "*GND*" "*VCC*" "+3.3V" \
   --power-nets-widths 0.4 0.5 0.35
 ```
@@ -27,11 +34,11 @@ This routes:
 - Nets matching `*GND*` with 0.4mm tracks
 - Nets matching `*VCC*` with 0.5mm tracks
 - Nets matching `+3.3V` with 0.35mm tracks
-- All other nets with 0.3mm tracks (the default `--track-width`)
+- All other nets at the run's track width (`--track-width`; omitted, each net's own net-class width, where an unclassed net takes the Default class's, else 0.3mm)
 
 Patterns are matched in order - first matching pattern determines the width. Obstacle clearances automatically adjust for wider power traces.
 
-**Note:** Power net widths are automatically enforced to be at least `--track-width`. This prevents accidentally specifying power widths smaller than signal widths.
+**Note:** Power net widths are automatically enforced to be at least the run's base track width (`--track-width`, else the Default net class's). This prevents accidentally specifying power widths smaller than signal widths.
 
 ## Neck-Down for Failed Power Routes
 
@@ -77,6 +84,8 @@ Analyze the power nets in kicad_files/my_board.kicad_pcb and recommend track wid
 # Or invoke the skill directly
 /analyze-power-nets kicad_files/my_board.kicad_pcb
 ```
+
+In the plugin, the **Ask AI** button beside the Power Nets field runs the same skill headless and fills the Power Nets and Power Widths fields from its recommendation.
 
 ### What the Skill Does
 

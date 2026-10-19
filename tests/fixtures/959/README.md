@@ -9,6 +9,10 @@ Copied from the run-29 work directory (`wk/run29/esp_prog/` on branch `run29-har
 | `zone_plan_r1.json` | the run's first zone plan (six zoned blocks, `fiducial-nw` among them, `Ref[*]~2` in `must_lock`) | `zone_plan.json` | `702f8fc0…85b9` |
 | `zone_plan_r2_lap5.json` | the lap-5 draft of the second plan, which the run amended within a minute. Reconstructed from the session record, not copied from a file: its two overlaps (1.60 and 0.6325 mm2) are the ones the lap-5 grade reported | (session record) | `81c101c8…2845` |
 
+Readers: `run29_pile.kicad_pcb` (its `.kicad_pro` comes along as the sibling) is the pile in `test_959_decaps_auto`, `test_959_padless_blocks`, `test_959_pose_intent`, `test_959_rule_roster`, `test_1064_place_pose_same_net_stack`, `test_1100_1103_run37_followups`, `test_1178_decaps_from_shared_origin` and `test_check_assembly_pile_baseline`; `zone_plan_r1.json` is read by `test_959_rule_roster`, `zone_plan_r2_lap5.json` by `test_959_pose_intent`.
+
+`asbuilt/` holds the design briefs of five as-built boards (esp_prog, glasgow_revC, splitflap_driver, tigard, ulx3s), written for #1000: the calibration set for how connector declarations compile to clauses (`docs/design-brief.md`, "Connector declarations compile to clauses"). No test reads them; they are the evidence that mapping was measured on.
+
 The hashes are of the bytes git stores (LF line endings). A Windows checkout with `core.autocrlf` writes CRLF and hashes differently; pin against `git show HEAD:<path>`, not the working copy.
 
 What the run's own record says about these files:

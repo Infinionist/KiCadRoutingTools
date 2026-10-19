@@ -28,13 +28,16 @@ modal run tests/stress/modal_route/route_app.py --board my_board.kicad_pcb
 ```
 
 `--notes "route the RF section first"` passes extra instructions;
-`--out DIR` picks the download dir. Siblings (`.kicad_pro`/`.kicad_prl`/
+`--out DIR` picks the download dir (default `<board>_routed/` beside the
+input). `--endpoint URL` / `--model NAME` point at another OpenAI-compatible
+server instead of the deployed one. Siblings (`.kicad_pro`/`.kicad_prl`/
 `.kicad_dru`) upload automatically -- they carry the DRC floor and per-layer
 rules.
 
 ## Model choice
 
-`KICAD_LLM_MODEL` / `KICAD_LLM_GPU` at **deploy** time:
+`KICAD_LLM_MODEL` / `KICAD_LLM_GPU` at **deploy** time (`KICAD_LLM_TP`
+overrides the tensor-parallel size, which otherwise follows the GPU count):
 
 | model | GPU | hot cost | per board (est) |
 |---|---|---|---|
@@ -48,8 +51,14 @@ per board.
 
 ## Notes
 
-- The board container is a **clean checkout of HEAD** (same discipline as
-  `modal_sweep`; `KICAD_SWEEP_DIRTY=1` is deliberately not honored here).
+- The board container is a **clean checkout of HEAD**, built by
+  `modal_sweep`'s own image-source function, so `KICAD_SWEEP_DIRTY=1` ships the
+  working tree here too.
+- That container is plain `debian_slim`: **no KiCad**, so the route step's
+  KiCad-oracle legs (the plane finalize's completion audit and recheck) do not
+  run, and **no Rust toolchain**, so the image builds only when a released
+  prebuilt router matches `rust_router/Cargo.toml`. Grade the downloaded board
+  locally, where KiCad lives.
 - Every board-mutating tool self-records (`REDO_MANIFEST`), so a cloud-routed
   board is replayable/gradeable locally exactly like a stress-corpus board:
   `tests/stress/redo_stress_test.py redo_commands.sh --remap ...`.

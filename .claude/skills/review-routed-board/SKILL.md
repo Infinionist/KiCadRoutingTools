@@ -54,7 +54,7 @@ Without `--baseline`, every pre-existing one reads as a violation
 part MOVE created (`graphic-board-edge`); `graphic-off-board` (copper past the
 outline) is reported either way.
 
-**Important caveat to include in the report:** `check_drc.py` does not check zone copper, minimum trace width, or netclass compliance. If the board has copper zones/planes, recommend the zone-aware check:
+**Important caveat to include in the report:** `check_drc.py` does not grade zone (pour) fill copper. It does grade per-netclass clearance and `.kicad_dru` rules, and track width / via size against the FAB floor for the layer count unless given `--min-track-width` / `--min-via-diameter` / `--min-via-drill` (pass the spec's numbers when they are tighter). If the board has copper zones/planes, recommend the zone-aware check:
 
 ```bash
 kicad-cli pcb drc board.kicad_pcb --refill-zones --format json -o /tmp/drc.json
@@ -193,14 +193,19 @@ was routed by this tool below the recommendation — the
 For high-speed nets (use `/find-high-speed-nets` results if available, else the name-pattern tiers from `/plan-pcb-routing`), check each signal via has a GND via nearby:
 
 ```python
+from kicad_parser import pad_is_plated_through
 gnd_ids = {n.net_id for n in pcb.nets.values() if n.name and 'GND' in n.name.upper()}
-gnd_vias = [v for v in pcb.vias if v.net_id in gnd_ids]
-# Through-hole GND pads also count as return paths
+# GND vias, and plated through-hole GND pads, are return paths
+gnd_pts = [(v.x, v.y) for v in pcb.vias if v.net_id in gnd_ids]
+gnd_pts += [(p.global_x, p.global_y) for fp in pcb.footprints.values()
+            for p in fp.pads if p.net_id in gnd_ids and pad_is_plated_through(p)]
 for via in pcb.vias:
     if via.net_id in high_speed_net_ids:
-        nearest = min(((v.x-via.x)**2 + (v.y-via.y)**2)**0.5 for v in gnd_vias)
+        nearest = min((((x-via.x)**2 + (y-via.y)**2)**0.5 for x, y in gnd_pts),
+                      default=float('inf'))
         # Flag if nearest > recommended distance for the net's speed tier
-        # (ultra-high: 2.0mm, high: 3.0mm, medium: 5.0mm)
+        # (ultra-high: the 3 x (via_size + clearance) floor, 2.25mm at the
+        # default 0.5 via / 0.25 clearance; high: 3.0mm; medium: 5.0mm)
 ```
 
 ## Step 3b: Impedance & Return-Path Audit (#486)
@@ -280,6 +285,19 @@ Step 9 rather than signing off with caveats. Two traps this closes:
 - **The size floors default to the FAB minimum, not the spec.** Pass the spec's
   numbers, or copper that meets the fab and violates the board's own tighter
   requirement signs off clean.
+
+`blocking == 0` is necessary, not sufficient: `/plan-pcb-routing`'s DONE also
+needs `check_complete.py` (repo root) to say DONE. It takes the same spec
+flags, runs `board_score` plus the instruments `board_score` has no component
+for (orphan stubs, weird copper, ...), and fails closed: exit 0 DONE, 4
+INCOMPLETE, 5 UNSOUND (the board grades clean only against floors the chain
+rewrote; pass `--authored-from <the board the chain started from>` so it can
+tell).
+
+```bash
+python3 -X utf8 check_complete.py board.kicad_pcb --authored-from <original> \
+    --min-track-width <spec> --min-via-diameter <spec> --min-via-drill <spec>
+```
 
 Then present a compact report — one pass/fail line per category, details only for failures, ending with next actions:
 
