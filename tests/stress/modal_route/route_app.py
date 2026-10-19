@@ -56,7 +56,7 @@ else:
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    .pip_install("numpy>=1.21.0", "scipy>=1.7.0", "shapely>=1.8.0")
+    .pip_install_from_requirements(str(_repo_root / "requirements.txt"))
     .apt_install("curl", "procps", "git", "unzip")
     .env({"KICAD_SWEEP_GIT": GIT_SHA})
     # opencode: an OpenAI-compatible agent CLI (#503); the stress harness's own
