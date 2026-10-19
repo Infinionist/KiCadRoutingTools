@@ -479,7 +479,7 @@ class PlacementTab(wx.Panel):
                                        initial=DEFAULT_ROUNDS)
         self.rounds_ctrl.SetToolTip(
             "The most placement rounds (the skill's --rounds). A round places "
-            "seeds 0-3, fast-routes each and keeps the best; the run stops at "
+            "seeds 0-15, fast-routes each and keeps the best; the run stops at "
             "the first round whose best fast route has no blocking net, else "
             "the agent reviews it, changes the groups, hints or claims and "
             "places again.")
@@ -506,7 +506,7 @@ class PlacementTab(wx.Panel):
         self.place_btn = wx.Button(self, label="Place (AI)")
         self.place_btn.SetToolTip(
             "Claude Code runs /plan-pcb-placement place headless on a "
-            "snapshot of this board: it groups the parts, places seeds 0-3 "
+            "snapshot of this board: it groups the parts, places seeds 0-15 "
             "and keeps the one whose fast route is best, reviewing and "
             "placing again up to Rounds rounds while none routes clean. "
             "Artifacts land in a krt_placement folder next to the board file, "

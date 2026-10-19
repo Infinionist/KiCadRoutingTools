@@ -414,7 +414,7 @@ def build_placement_prompt(backend, workdir, staged_board, mode, extra="",
     """The full skill prompt for a placement run (via backend.skill_prompt).
 
     `rounds` is the skill's `--rounds N`: the most placement rounds. A round
-    places seeds 0-3, fast-routes each and keeps the best; the skill stops at
+    places seeds 0-15, fast-routes each and keeps the best; the skill stops at
     the first round whose best fast route has no blocking net. None leaves
     the skill's own default.
     """
@@ -521,7 +521,7 @@ def newest_stable_board(artifacts, prev_artifacts):
 #   s<S>.kicad_pcb + s<S>.json     seed S's placement and place_simple report
 #   s<S>_route/                    the fast route's working files
 #   s<S>_fast.kicad_pcb            the fast-routed board
-#   s<S>_fast.score.json           its board_score (blocking, quality{...})
+#   s<S>_fast.score.json           its quick_score (blocking, quality{...})
 # and writes the kept board to <workdir>/final.kicad_pcb.
 
 _ROUND_DIR_RE = re.compile(r"^r(\d+)$")
@@ -529,7 +529,7 @@ _SEED_FILE_RE = re.compile(r"^s(\d+)(?:\.|_)")
 
 
 def _read_score(path):
-    """(blocking, vias, copper_mm, segments) from a board_score JSON, or None."""
+    """(blocking, vias, copper_mm, segments) from a quick_score / board_score JSON, or None."""
     try:
         with open(path, encoding="utf-8") as f:
             doc = json.load(f)

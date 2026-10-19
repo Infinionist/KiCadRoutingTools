@@ -118,7 +118,7 @@ what runs here is what the buttons run.
 
 | Skill | Purpose | Main output |
 |-------|---------|-------------|
-| [`/plan-pcb-placement`](#plan-pcb-placement) | Place a board by function over several seeds and keep the one that fast-routes best; when none routes clean, review, change the groups and place again (up to `--rounds N`, default 3); in `full` mode route and verify it (modes `place` / `full`) | The best board it reached, its groups file and REPORT.md, checked by one independent verifier |
+| [`/plan-pcb-placement`](#plan-pcb-placement) | Place a board by function over 16 seeds and keep the one that fast-routes best; when none routes clean, review, change the groups and place again (up to `--rounds N`, default 3); in `full` mode route it with `/plan-pcb-routing` and verify it (modes `place` / `full`) | The best board it reached, its groups file and REPORT.md, checked by one independent verifier |
 | [`/plan-pcb-routing`](#plan-pcb-routing) | Full board analysis and step-by-step routing plan | Ordered routing commands, executed on approval |
 | [`/analyze-power-nets`](#analyze-power-nets) | Identify power nets and track widths via datasheets | `--power-nets` / `--power-nets-widths` arguments |
 | [`/find-high-speed-nets`](#find-high-speed-nets) | Classify nets by speed tier via datasheets | `--gnd-via-distance` recommendation |
@@ -134,7 +134,7 @@ what runs here is what the buttons run.
 Placement by function, the way a designer lays a board out:
 - **Grouping.** The agent sorts the parts into functional groups (power entry and conditioning, the core and its clock, each interface, the user interface), reading pin functions and datasheets, and records why. `py_tools/check_groups.py` checks the result; `near` / `apart` / `edge` / `side` hints steer where groups go.
 - **Placement.** `py_placer/place_simple.py` keeps each group in one piece and arranges the pieces by one objective (wire, crossings, decaps spread over their own IC's supply pins, the hints, fan-out room in front of fine-pitch parts, congestion), annealed from a random start; the same seed gives the same placement.
-- **Selection and review.** Each seed is fast-routed (`route.py --quick`) and the one that routes best is kept. If its fast route has no blocking net, that is the placement. Otherwise `py_tools/route_review.py` shows what the placement costs the router, and the agent changes the groups, hints or intent claims and places again, up to `--rounds N` rounds (default 3), keeping the board that routes best.
+- **Selection and review.** Each of 16 seeds is fast-routed (`route.py --quick 2`, scored by `py_tools/quick_score.py`) and the one that routes best is kept. If its fast route has no blocking net, that is the placement. Otherwise `py_tools/route_review.py` shows what the placement costs the router, and the agent changes the groups, hints or intent claims and places again, up to `--rounds N` rounds (default 3), keeping the board that routes best.
 - **Routing (full mode).** The kept placement is routed with the full chain, graded, and checked by one independent verifier; the board comes back with REPORT.md. `scripts/grade.py` and `scripts/measure.py` grade the board and split the wall clock independently of the agent's own claims, and `scripts/make_unplaced.py` builds an all-off-the-board input for from-scratch runs.
 
 ### /plan-pcb-routing

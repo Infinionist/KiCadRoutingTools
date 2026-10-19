@@ -16,12 +16,10 @@ copper_mm, segments).
                  (`--nets '*'`, or a bare `'*'`): the main pass without the
                  recovery tail, scored by `board_score`. 2, the seed judge,
                  adds `--quick 2` to those steps and to every route_diff.py
-                 step, skipping the copper polish too, and scores from the
-                 route step's own tally (its last JSON_SUMMARY_MIN's failed
-                 singles + open singles + multipoint deficit, CLAUDE.md's
-                 verdict) and the final file's vias / copper / segments --
-                 no board_score: about half the time of level 1, and it
-                 picks seeds as well (see README.md).
+                 step, skipping the copper polish too, and scores with
+                 `py_tools/quick_score.py` (the route step's own tally and
+                 board_score's quality counts), as the placement skill does:
+                 about half the time of level 1, and it picks seeds as well.
   --corpus DIR   the stress corpus (default $KICAD_STRESS_CORPUS, else
                  ~/Documents/kicad_stress_test).
   --repo DIR     the tree whose scripts the chain runs (default this one). The
@@ -63,24 +61,6 @@ def whole_board_route(line):
     positional spelling with a bare `'*'` (glasgow, librevna, kirdy, ...)."""
     return (not line.startswith('#') and '/route.py ' in line
             and re.search(r"(--nets '\*'|\s'\*'(\s|$))", line) is not None)
-
-
-def light_score(chain_log, final):
-    """--quick 2's score: blocking from the last route.py JSON_SUMMARY_MIN
-    (failed singles + open singles + multipoint deficit), vias / copper /
-    segments from the final file's text. Matches board_score's quality
-    exactly; its blocking leaves out DRC, which the full route clears."""
-    mins = [x for x in open(chain_log, errors='replace').read().split('\n')
-            if x.startswith('JSON_SUMMARY_MIN: ')]
-    js = json.loads(mins[-1].split(': ', 1)[1]) if mins else None
-    blk = (len(js.get('failed_single') or []) + len(js.get('open_single') or [])
-           + int(js.get('multipoint_deficit') or 0)) if js else None
-    txt = open(final, errors='replace').read()
-    segs = re.findall(r'\(segment\s+\(start ([-0-9.]+) ([-0-9.]+)\)\s+\(end ([-0-9.]+) ([-0-9.]+)\)', txt)
-    cu = sum(((float(c) - float(a)) ** 2 + (float(e) - float(b)) ** 2) ** 0.5 for a, b, c, e in segs)
-    return {'blocking': blk, 'blocking_by': {'broken': blk}, 'score': 'route --quick 2 tally',
-            'quality': {'vias': len(re.findall(r'\(via\b', txt)), 'copper_mm': round(cu, 2),
-                        'segments': len(segs)}}
 
 
 def final_board(lines):
@@ -144,13 +124,15 @@ def main(argv=None):
         print(f'{name}: chain rc={r.returncode} in {secs:.0f} s; NO final board {os.path.basename(final)}')
         return 1
     if a.quick >= 2:
-        sc = light_score(os.path.join(d, 'chain.log'), final)
-        json.dump(sc, open(os.path.join(d, 'score.json'), 'w'), indent=1)
+        # the seed judge's score, as the skill takes it (py_tools/quick_score.py)
+        subprocess.run([sys.executable, '-X', 'utf8', os.path.join(repo, 'py_tools', 'quick_score.py'), final,
+                        '--route', os.path.join(d, 'chain.log'), '--json', os.path.join(d, 'score.json')],
+                       cwd=repo, capture_output=True)
     else:
         subprocess.run([sys.executable, '-X', 'utf8', os.path.join(repo, 'py_tools', 'board_score.py'), final,
                         '--baseline', placed, '--json', os.path.join(d, 'score.json'), '--quiet'],
                        cwd=repo, capture_output=True)
-        sc = json.load(open(os.path.join(d, 'score.json')))
+    sc = json.load(open(os.path.join(d, 'score.json')))
     q = sc.get('quality') or {}
     by = {k: v for k, v in (sc.get('blocking_by') or {}).items() if v}
     print(f"{name}: {secs:.0f} s blocking {sc.get('blocking')} {by if by else ''} vias {q.get('vias')} "

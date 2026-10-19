@@ -160,19 +160,19 @@ for inspection in KiCad. Exit 0 clean, 1 violations, 2 usage errors.
 
 Places a board by function: the parts sorted into groups, one objective,
 lowered by simulated annealing, and exact pad legality at the end. It is the
-placer the `plan-pcb-placement` skill runs in rounds. A round places seeds 0-3,
-fast-routes each (`route.py --quick`) and keeps the best. The run stops at
+placer the `plan-pcb-placement` skill runs in rounds. A round places seeds 0-15,
+fast-routes each (`route.py --quick 2`, scored by `quick_score.py`) and keeps the best. The run stops at
 the first round whose best fast route has no blocking net; otherwise the skill
 reviews the best with `route_review.py`, changes the groups, hints or claims
 and places again, up to `--rounds N` rounds in all (default 3). The kept board
-is then routed in full.
+is then routed in full (`/plan-pcb-routing`).
 
 ```bash
 python3 -X utf8 py_placer/place_simple.py board.kicad_pcb placed.kicad_pcb \
     --groups groups.json --intent intent.json [--seed 0] [--json report.json]
 # several seeds at once, one process each:
 python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 'r1/s{seed}.kicad_pcb' \
-    --groups groups.json --intent intent.json --seeds 0-3 [--jobs 4] --json 'r1/s{seed}.json'
+    --groups groups.json --intent intent.json --seeds 0-15 [--jobs 4] --json 'r1/s{seed}.json'
 ```
 
 - **Inputs.** `--groups` is the groups file (`py_tools/check_groups.py`
@@ -615,11 +615,32 @@ python3 -X utf8 py_tools/route_review.py routed.kicad_pcb --top 12 --json review
 What to do about each finding is in
 `.claude/skills/plan-pcb-placement/references/placement-lessons.md`. The
 `/plan-pcb-placement` skill (`.claude/skills/plan-pcb-placement/SKILL.md`,
-§3.6) runs it on the best fast-routed candidate (`route.py --quick`) of
+§3.6) runs it on the best fast-routed candidate (`route.py --quick 2`) of
 a round whose best fast route still has a blocking net, then changes the
 groups, hints or claims it gives `place_simple` and places again, up to
 `--rounds` rounds; `render_nets.py` draws a finding's nets beside another
 routed board's. Exit 0 reviewed (findings or not), 2 unreadable input.
+
+## Seed Judge Score (`quick_score.py`)
+
+Scores a board a `route.py --quick 2` chain routed, the judging route the
+placement skill gives each seed. `blocking` is the route step's own tally --
+failed singles, open singles and the multipoint pad deficit -- read from its
+`--json-out` file or the last `JSON_SUMMARY_MIN` line of its log; `quality`
+(vias, copper_mm, segments) is `board_score`'s own count of the board. It
+leaves DRC, assembly and the floorplan out: level 2 skips the passes that fix
+grazes, so DRC on its board measures the polish it skipped, not the
+placement. The JSON has `board_score`'s keys, so the GUI's candidates table
+reads either.
+
+```bash
+python3 -X utf8 py_tools/quick_score.py r1/s0_fast.kicad_pcb --route r1/s0_route/route.json \
+    --json r1/s0_fast.score.json
+```
+
+Exit 0 when no net blocks, 4 when some do, 2 when the summary holds no tally.
+Never grade a board to ship with it: route that one in full and run
+`board_score`.
 
 ## Board Renderer (`route_render.py`)
 

@@ -58,10 +58,10 @@ python3 -X utf8 py_tools/check_floorplan.py wk/tig/fixed.kicad_pcb --emit-intent
 # 4. Check the groups file against the board.
 python3 -X utf8 py_tools/check_groups.py wk/tig/fixed.kicad_pcb --groups docs/examples/tigard.groups.json
 
-# 5. Place four seeds (round 1), in parallel: {seed} becomes 0, 1, 2, 3.
+# 5. Place 16 seeds (round 1), four at a time: {seed} becomes 0, 1, ... 15.
 python3 -X utf8 py_placer/place_simple.py wk/tig/fixed.kicad_pcb 'wk/tig/r1/s{seed}.kicad_pcb' \
     --groups docs/examples/tigard.groups.json --intent wk/tig/intent.json \
-    --seeds 0-3 --json 'wk/tig/r1/s{seed}.json'
+    --seeds 0-15 --jobs 4 --json 'wk/tig/r1/s{seed}.json'
 
 # 6. Check a seed, and look at it.
 python3 -X utf8 py_tools/check_assembly.py wk/tig/r1/s0.kicad_pcb --baseline wk/tig/fixed.kicad_pcb
@@ -76,7 +76,7 @@ What to read in the output:
   `ERROR` (a part in no group or in two, a ref not on the board: exit 4) or
   `WARN` (a part with more signal links to another group than to its own: a
   judgement to look at, not a mistake by itself).
-- **`place_simple --seeds 0-3`** runs one process per seed (`--jobs N`
+- **`place_simple --seeds 0-15`** runs one process per seed (`--jobs N`
   limits how many at once; the default is one per seed, at most 4) and prints
   one line per seed: `seed 0: cost 2897.5, 38000 moves in 14.7 s ->
   wk/tig/r1/s0.kicad_pcb`. Each seed's own log goes beside its board
@@ -235,9 +235,13 @@ broken), then vias, copper length and segment count. The objective's cost,
 crossings and hpwl only rank placements nobody has routed yet.
 
 Route each seed with the board's own routing chain (the `plan-pcb-routing`
-skill writes one), giving `route.py` `--quick`: it skips the recovery
-tail, where a poor placement's routing time goes, and names the same trouble
-nets. Use the same chain for every seed so they compare.
+skill writes one), giving `route.py` and every `route_diff.py` step
+`--quick 2`: the judging route. It skips the recovery tail, where a poor
+placement's routing time goes, and every pass that only polishes copper for
+shipping, so it takes about half the time of `--quick` alone and picks seeds
+as well. Score it with `py_tools/quick_score.py`, which takes the route
+step's own tally of open nets and `board_score`'s quality counts. Use the
+same chain for every seed so they compare.
 
 The skill keeps each round in `wk/<run>/r<N>/`, and the GUI's candidates table
 reads the same names:
@@ -247,7 +251,7 @@ reads the same names:
 | `s<S>.kicad_pcb`, `s<S>.json` | seed S's placement and its `place_simple` report |
 | `s<S>_route/` | the fast route's working files |
 | `s<S>_fast.kicad_pcb` | the fast-routed board, copied out of `s<S>_route/` |
-| `s<S>_fast.score.json` | its `board_score` |
+| `s<S>_fast.score.json` | its `quick_score` |
 
 and the kept board goes to `wk/<run>/final.kicad_pcb`. For tigard's seed 0 in
 round 1:
@@ -260,24 +264,25 @@ python3 -X utf8 py_router/qfn_fanout.py $W/planes.kicad_pcb --component U3 \
     --nets '*' '!GND' '!+3V3' --output $W/fanout.kicad_pcb
 python3 -X utf8 py_placer/place_fanout_clearance.py $W/fanout.kicad_pcb $W/caps.kicad_pcb --clearance 0.1
 python3 -X utf8 py_router/route_diff.py $W/caps.kicad_pcb $W/diff.kicad_pcb \
-    --nets /USB_DP /USB_DN --track-width 0.1 --diff-pair-gap 0.1 --clearance-ceiling 0.1 --no-gnd-vias
+    --nets /USB_DP /USB_DN --track-width 0.1 --diff-pair-gap 0.1 --clearance-ceiling 0.1 --no-gnd-vias \
+    --quick 2
 python3 -X utf8 py_router/route.py $W/diff.kicad_pcb $W/route.kicad_pcb \
-    --nets '*' --quick --track-width 0.10 --clearance-ceiling 0.15 --via-size 0.5 \
+    --nets '*' --quick 2 --json-out $W/route.json --track-width 0.10 --clearance-ceiling 0.15 --via-size 0.5 \
     --via-drill 0.25 --hole-to-hole-clearance 0.25 --board-edge-clearance 0.5 --grid-step 0.05 \
     --layers F.Cu In1.Cu In2.Cu B.Cu --layer-costs 1.0 3.0 3.0 1.0 \
     --power-nets GND +3V3 +5V VTARGET VREG /VBUS +1V8
 python3 -X utf8 py_router/copy_board.py $W/route.kicad_pcb $R/s${s}_fast.kicad_pcb
-python3 -X utf8 py_tools/board_score.py $R/s${s}_fast.kicad_pcb \
-    --baseline $R/s$s.kicad_pcb --json $R/s${s}_fast.score.json
+python3 -X utf8 py_tools/quick_score.py $R/s${s}_fast.kicad_pcb \
+    --route $W/route.json --json $R/s${s}_fast.score.json
 ```
 
-`board_score` exits 0 when no net blocks and 4 when some do. Read `blocking`
+`quick_score` exits 0 when no net blocks and 4 when some do. Read `blocking`
 and `quality` (vias, copper_mm, segments) from the score file, keep the best
 seed, and copy its placement (`$R/s<S>.kicad_pcb`, never the `--quick` board)
 to `wk/tig/final.kicad_pcb` with `copy_board.py`; in `full` mode the skill then
-routes it with the chain, without `--quick`.
+routes it with `/plan-pcb-routing`, without `--quick`.
 
-**The skill's round rule.** A round places seeds 0-3, fast-routes each and
+**The skill's round rule.** A round places seeds 0-15, fast-routes each and
 keeps the best. The run stops at the first round whose best fast route has no
 blocking net. Otherwise the agent reviews it (`py_tools/route_review.py` lists
 the open nets with the parts holding their loose pads, the nets with the most
