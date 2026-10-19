@@ -24,7 +24,11 @@
    movable part from `--seed`, so the same board, inputs and seed give the
    same placement. A run that leaves a part with no legal pose (a big part
    wedged between fixed ones on a full board) is run again from a fresh
-   start, up to RESTARTS times, the first legal placement kept. On
+   start, up to RESTARTS times, the first legal placement kept: a run that
+   got stuck is a worse arrangement than a fresh one that did not, so the
+   fresh start is worth its time. The last run, if it never comes clean,
+   is mended where it stands instead (`simple_anneal.Annealer.repair`: its
+   overlaps shoved apart), so no part is left illegal that a shove frees. On
    ch32v003_usb (22 movable parts) the whole run takes about 2.5 s.
 
 Exit codes: 0 placed, 2 unreadable input, a part in two groups, or a face the
@@ -475,7 +479,7 @@ def main(argv=None):
         seed = a.seed if k == 0 else (a.seed + 1) * 1000003 + k
         simple_anneal.scatter(model, movable, seed=seed)
         res = simple_anneal.anneal(model, movable, moves=moves, seed=seed,
-                                   log=lambda s: print(f"  {s}"))
+                                   log=lambda s: print(f"  {s}"), repair=k == RESTARTS)
         illegal = [r for r in movable if not ok(r)]
         if kept is None or len(illegal) < kept[0]:
             kept = (len(illegal), {r: (state.parts[r].x, state.parts[r].y, state.parts[r].rot)
@@ -493,6 +497,8 @@ def main(argv=None):
     t2 = time.time()
     illegal = [r for r in movable if not ok(r)] + sorted(refused)
     print(f"place_simple: annealed {res['moves']} moves in {t2 - t1:.1f} s; {_line(final)}")
+    if res.get('repaired'):
+        print("  NOTE: the last run never came clean; its overlaps were shoved apart where it stood")
     if res['reseated']:
         print(f"  NOTE: moved to the nearest legal pose after the anneal: {', '.join(res['reseated'])}")
     if illegal:
@@ -509,7 +515,8 @@ def main(argv=None):
     final.pop('per_hint', None)
     report = {'final': final, 'moves': res['moves'], 'seed': a.seed, 'runs': k + 1,
               'declared': sorted(f['reference'] for f in flips),
-              'reseated': res['reseated'], 'illegal': illegal, 'notes': notes,
+              'reseated': res['reseated'], 'repaired': bool(res.get('repaired')),
+              'illegal': illegal, 'notes': notes,
               'groups': model.groups, 'stats': res['stats'],
               'seconds': {'setup': round(t1 - t0, 1), 'anneal': round(t2 - t1, 1)}}
     if a.json:

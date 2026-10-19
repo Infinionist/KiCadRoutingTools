@@ -12,7 +12,10 @@ and the board's rule-area keep-outs. Its weight rises from
 other early and a group can cross a crowded board; only an overlap-free
 state can become the best one,
 and the best one is finally checked by the exact pad legality
-(`simple.legal`), a part failing it moved to the nearest legal pose.
+(`simple.legal`), a part failing it moved to the nearest legal pose. Asked
+to (`repair`: place_simple's last run), a run that never came clean is first
+mended where it stands (`Annealer.repair`): its overlapping parts shoved
+apart, the movable parts in their way pushed aside in turn.
 
 Moves, each priced by `Model.local` against the committed state near it:
 
@@ -68,6 +71,9 @@ MOVES = {'shift': 0.40, 'turn': 0.15, 'swap': 0.10, 'jump': 0.10, 'dock': 0.10,
 BIG_GROUP_MOVES = ('gturn', 'gswap')
 BIG_UNTIL = 0.25    # the share of the run group turns and swaps are drawn in
 ESCAPE_TRIES = 48   # random poses an escape move draws, keeping the least overlap
+SHOVE_PARTS = 32    # the most parts one shove pushes
+SHOVE_GAP = 1e-3    # mm a shove leaves between two grown courtyards
+REPAIR_ROUNDS = 3   # passes of the repair over the parts a stuck run left overlapping
 CLEAN = 1e-3        # mm2 of overlap that counts as none
 FLOOR = 2 * CLEAN   # the least an outline or keep-out-band breach costs: never clean
 ACCEPT = 0.1        # the start: the median cost change taken uphill this often
@@ -105,7 +111,7 @@ class Annealer:
         self.st = model.state
         st = self.st
         self.mov = sorted(r for r in movable if r in st.parts)
-        movset = set(self.mov)
+        self.movset = movset = set(self.mov)
         self.rng = random.Random(seed)
         self.groups = [(n, [r for r in m if r in movset]) for n, m in model.groups]
         self.groups = [(n, m) for n, m in self.groups if len(m) >= 2]
@@ -138,6 +144,7 @@ class Annealer:
                       for r in self.names}
         self.face_ids = np.asarray([self.faces[r] for r in self.names], dtype=np.int64)
         self.lam = LAM_START
+        self.shoving = False        # an escape may shove: only in `repair`
 
     # -- poses -----------------------------------------------------------------
     def pose(self, r):
@@ -330,13 +337,118 @@ class Annealer:
             return out
         return None
 
-    def _escape(self, r):
-        """`r` out of an overlap small steps cannot leave -- wedged between
-        fixed parts, or past one: when it overlaps anything, the pose of least
-        overlap among ESCAPE_TRIES drawn at random over the board. Late in the
-        run the overlap weight takes it; early, its wire cost mostly refuses it."""
-        if self.overlap([r]) <= CLEAN:
-            return None
+    def _grown_at(self, r, pose):
+        c, h = self.st.parts[r].rect(*pose), self.half
+        return (c[0] - h, c[1] - h, c[2] + h, c[3] + h)
+
+    def _hits(self, r, G, poses):
+        """[(part, its grown courtyard)]: the parts whose grown courtyards
+        overlap `G` (r's, grown) on a face r has, each at its pose in
+        `poses`, else where it is."""
+        h = self.half
+        out = []
+        for b in sorted(self.model._ixp.query((G[0] - h, G[1] - h, G[2] + h, G[3] + h))
+                        | set(poses)):
+            if b == r or not self.faces[r] & self.faces[b]:
+                continue
+            B = self._grown_at(b, poses[b]) if b in poses else self._grown(b)
+            if min(G[2], B[2]) - max(G[0], B[0]) > 0 and min(G[3], B[3]) - max(G[1], B[1]) > 0:
+                out.append((b, B))
+        return out
+
+    def _onto(self, r, pose):
+        """`pose` translated until r's courtyard is on the board (less its
+        margin)."""
+        c, i = self.st.parts[r].rect(*pose), self.inner
+        dx = max(0.0, i[0] - c[0]) - max(0.0, c[2] - i[2])
+        dy = max(0.0, i[1] - c[1]) - max(0.0, c[3] - i[3])
+        return (pose[0] + dx, pose[1] + dy, pose[2])
+
+    def _shove(self, r, dx, dy):
+        """{part: pose}: `r` translated by (dx, dy), and each movable part it
+        then overlaps pushed out of its way by the shortest straight step
+        that clears it on the board -- one clear of the fixed parts and of
+        `r` first -- then the parts those run into, and so on, a part pushed
+        again from where it was pushed to: at most SHOVE_PARTS parts, else
+        None. `r` and the fixed parts are never pushed (their overlaps stay,
+        priced)."""
+        x, y, rot = self.pose(r)
+        new = {r: self._onto(r, (x + dx, y + dy, rot))}
+        queue = [r]
+        pushes = 0
+        e = SHOVE_GAP
+        while queue:
+            a = queue.pop(0)
+            A = self._grown_at(a, new[a])
+            for b, B in self._hits(a, A, new):
+                if b == r or b not in self.movset:
+                    continue
+                x, y, rot = new.get(b) or self.pose(b)
+                best = None
+                for sx, sy in ((A[2] - B[0] + e, 0.0), (A[0] - B[2] - e, 0.0),
+                               (0.0, A[3] - B[1] + e), (0.0, A[1] - B[3] - e)):
+                    pose = self._onto(b, (x + sx, y + sy, rot))
+                    G = self._grown_at(b, pose)
+                    left = (max(0.0, min(A[2], G[2]) - max(A[0], G[0]))
+                            * max(0.0, min(A[3], G[3]) - max(A[1], G[1])))
+                    fixed = sum((min(G[2], F[2]) - max(G[0], F[0]))
+                                * (min(G[3], F[3]) - max(G[1], F[1]))
+                                for f, F in self._hits(b, G, new)
+                                if f == r or f not in self.movset)
+                    key = (left > CLEAN, fixed > CLEAN, abs(sx) + abs(sy))
+                    if best is None or key < best[0]:
+                        best = (key, pose)
+                new[b] = best[1]
+                queue.append(b)
+                pushes += 1
+                if len(new) > SHOVE_PARTS or pushes > 4 * SHOVE_PARTS:
+                    return None
+        return new
+
+    def _shove_best(self, r):
+        """(overlap change, {part: pose}): of the four straight steps that
+        clear each part (or cutout) `r` overlaps, the shove (`_shove`) that
+        lowers the overlap and is the cheapest as the trial prices it (the
+        cost change plus the overlap weight times the overlap change), or
+        None when none lowers it."""
+        st = self.st
+        A = self._grown(r)
+        obstacles = [B for _b, B in self._hits(r, A, {})]
+        if self.gate is not None:       # a cutout's box, as near as the gate lets r come
+            m = self.gate.margin + self.half
+            for c in self.gate.cutouts:
+                x0, y0 = min(p[0] for p in c) - m, min(p[1] for p in c) - m
+                x1, y1 = max(p[0] for p in c) + m, max(p[1] for p in c) + m
+                if x0 < A[2] and A[0] < x1 and y0 < A[3] and A[1] < y1:
+                    obstacles.append((x0, y0, x1, y1))
+        e = SHOVE_GAP
+        steps = set()
+        for B in obstacles:
+            steps |= {(B[0] - A[2] - e, 0.0), (B[2] - A[0] + e, 0.0),
+                      (0.0, B[1] - A[3] - e), (0.0, B[3] - A[1] + e)}
+        best = None
+        for dx, dy in sorted(steps):
+            new = self._shove(r, dx, dy)
+            if not new:
+                continue
+            refs = sorted(new)
+            was = {q: self.pose(q) for q in refs}
+            before = self.overlap(refs)
+            for q in refs:
+                _place(st, q, *new[q])
+            gain = self.overlap(refs) - before
+            for q in refs:
+                _place(st, q, *was[q])
+            if gain >= -CLEAN:
+                continue
+            delta = self.price(new) + self.lam * gain
+            if best is None or delta < best[0]:
+                best = (delta, gain, new)
+        return (best[1], best[2]) if best else None
+
+    def _board_pose(self, r):
+        """(overlap, pose): the least-overlap pose of `r` among ESCAPE_TRIES
+        drawn at random over the board, at random turns."""
         st, rng, p = self.st, self.rng, self.st.parts[r]
         was = self.pose(r)
         i = self.inner
@@ -355,7 +467,24 @@ class Annealer:
                 best = (ov, pose)
         p.ensure_rotation(was[2])
         _place(st, r, *was)
-        return {r: best[1]}
+        return best
+
+    def _escape(self, r):
+        """`r` out of an overlap small steps cannot leave: when it overlaps
+        anything, the pose of least overlap among ESCAPE_TRIES drawn at
+        random over the board -- a small part finds a hole somewhere -- or,
+        in `repair`, when none of those is clear, the SHOVE that lowers the
+        overlap more (`_shove_best`)."""
+        before = self.overlap([r])
+        if before <= CLEAN:
+            return None
+        ov, pose = self._board_pose(r)
+        best = (ov - before, {r: pose})
+        if self.shoving and ov > CLEAN:
+            got = self._shove_best(r)
+            if got and got[0] < best[0]:
+                best = got
+        return best[1]
 
     def _dock(self, r):
         """`r` against the part of the nearest partner pad on one of its nets."""
@@ -464,6 +593,36 @@ class Annealer:
         ds.sort()
         return ds[len(ds) // 2] / -math.log(ACCEPT)
 
+    def repair(self, T: float) -> float:
+        """A run that never came clean, mended where it stands: up to
+        REPAIR_ROUNDS passes over the parts still overlapping, each one's
+        escape -- with the SHOVE -- kept by the trial at the run's last
+        temperature and overlap weight. A big part wedged among its
+        neighbours (z80_devboard's Z80, 0.88 mm into a locked switch, RAMs
+        and glue DIPs on its other sides) needs them to make room together,
+        which no move of one part makes, and no hole elsewhere is big
+        enough for it; one shove of four parts clears it.
+
+        The LAST resort, not instead of a fresh start: a run that got stuck
+        is a worse arrangement than a fresh run that did not (measured on
+        the seven stuck runs of noahfc, tigard and z80_devboard: 5-30% more
+        cost when mended than the next fresh run, and noahfc's three routed
+        worse), so it only saves a run that would otherwise leave a part
+        illegal. Returns the overlap left."""
+        self.shoving = True
+        try:
+            for _ in range(REPAIR_ROUNDS):
+                stuck = [r for r in self.mov if self.overlap([r]) > CLEAN]
+                if not stuck:
+                    break
+                for r in stuck:
+                    new = self._escape(r)
+                    if new:
+                        self.trial(new, T)
+            return self.overlap()
+        finally:
+            self.shoving = False
+
 
 def scatter(model, movable: List[str], seed: int = 0):
     """Every movable part at a random place on the board (less its edge
@@ -483,12 +642,15 @@ def scatter(model, movable: List[str], seed: int = 0):
 
 
 def anneal(model, movable: List[str], *, moves: int = 11000, seconds: float = 0.0,
-           seed: int = 0, log=None) -> Dict:
+           seed: int = 0, log=None, repair: bool = False) -> Dict:
     """Anneal from the live poses and leave the best overlap-free placement
-    seen applied, each part then held to the exact legality. Returns
+    seen applied, each part then held to the exact legality. With `repair`,
+    a run that never came clean is first mended where it stands
+    (`Annealer.repair`). Returns
     {'moves' (executed), 'seconds', 'loop_seconds', 'start', 'best',
     'tracked_best', 't0', 'stats': {kind: (tried, kept)}, 'capped',
-    'reseated' (parts moved to their nearest legal pose afterwards)}."""
+    'reseated' (parts moved to their nearest legal pose afterwards),
+    'repaired' (the run never came clean and `Annealer.repair` mended it)}."""
     a = Annealer(model, movable, seed=seed)
     st = model.state
     t_start = time.time()
@@ -538,6 +700,9 @@ def anneal(model, movable: List[str], *, moves: int = 11000, seconds: float = 0.
                 f"overlap {ov:6.2f} mm2 best {best:7.1f} accepted {window[1] / max(1, window[0]):.2f}")
             window = [0, 0]
     loop_seconds = time.time() - t_loop
+    repaired = False
+    if repair and best_poses is None and not capped and a.repair(T_END) < CLEAN:
+        best_poses, repaired = {r: a.pose(r) for r in a.mov}, True
     for r in a.mov:     # the QuenchState's own state, airwires and all
         pose = best_poses[r] if best_poses is not None else a.pose(r)
         st.parts[r].ensure_rotation(pose[2])
@@ -557,5 +722,5 @@ def anneal(model, movable: List[str], *, moves: int = 11000, seconds: float = 0.
     final = model.total()['cost']
     return {'moves': done, 'seconds': round(time.time() - t_start, 2), 'start': start,
             'best': final, 'tracked_best': best, 't0': t0, 'capped': capped,
-            'reseated': reseated, 'loop_seconds': round(loop_seconds, 3),
+            'reseated': reseated, 'repaired': repaired, 'loop_seconds': round(loop_seconds, 3),
             'stats': {kk: tuple(v) for kk, v in stats.items()}}

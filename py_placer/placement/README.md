@@ -206,7 +206,12 @@ early and a group can cross a crowded board. The run is 500 moves per movable
 part (`--moves` sets the total) from `--seed`. At the end every part is checked
 by the exact legality gate, and a part that fails it moves to the nearest legal
 pose. A run that leaves a part with no legal pose anneals again from a fresh
-start, up to two more times; the first legal run is kept.
+start, up to two more times; the first legal run is kept. A run that got stuck
+is a worse arrangement than a fresh one that did not, so the fresh start pays
+for itself; but if the last run never comes clean either -- a big part wedged
+among its neighbours, which no move of one part frees -- it is mended where it
+stands: each part still overlapping is shoved one straight step out of what it
+overlaps, the movable parts in its way pushed aside in turn.
 
 ## Judging seeds by routing
 
