@@ -64,11 +64,11 @@ SEAT_GAP_MM = 0.01
 EPS = 1e-6
 
 #: The part classes (`part_class.classify_part`) a declared edge seats: what
-#: plugs in, is pressed or is probed at the edge. The intent emitter declares
-#: ANY part whose courtyard overhangs the margin, so a cap or a solder jumper a
-#: designer put by the edge is declared too; held there, noahfc's C6 and C8
-#: (two decaps the emitter put on the north edge) cost 3 blocking nets and +6%
-#: copper over 16 seeds against letting them sit by their ICs.
+#: plugs in, is pressed or is probed at the edge. The intent emitter claims an
+#: edge only for these (`floorplan.emit_intent`): a cap or a solder jumper a
+#: designer put by the edge keeps its observed overhang as a band and no edge.
+#: Held there, noahfc's C6 and C8 cost 3 blocking nets and +6% copper over 16
+#: seeds against letting them sit by their ICs.
 SEATED_CLASSES = ('edge_receptacle', 'edge_actuator', 'connector_affinity', 'testpoint')
 
 #: One turn's seat: `coord` is the origin's fixed coordinate across the edge,

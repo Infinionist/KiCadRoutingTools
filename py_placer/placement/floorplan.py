@@ -51,6 +51,7 @@ from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 from kicad_parser import non_aperture_pads
 from . import legality
 from . import groups as groups_mod
+from .edge_seat import SEATED_CLASSES
 
 SCHEMA_VERSION = 1
 KIND = 'floorplan-intent'
@@ -9333,6 +9334,19 @@ def emit_intent(pcb_data, pcb_file: str, *,
                                   f'how a 160mm displacement became a 160mm '
                                   f'spec allowance (run 10)')}
                 band_default.add(ref)
+            elif pc is None or pc.name not in SEATED_CLASSES:
+                # Only an edge part claims an edge: the placer seats only
+                # those (`edge_seat.SEATED_CLASSES`), so a cap or a solder
+                # jumper the designer put by the edge, declared on it, failed
+                # its own claim as soon as it was placed freely (noahfc C6, C8).
+                # The band stays, so the observed pose still grades clean.
+                entry = {'ref': ref,
+                         'overhang_mm': {'min': 0.0,
+                                         'max': round(amt + 0.5, 3)},
+                         'note': (f'overhang observed at {amt:.3f}mm; not an '
+                                  f'edge part '
+                                  f'({(pc and pc.name) or "no part class"}),'
+                                  f' so no edge is claimed')}
             else:
                 entry = {'ref': ref, 'edge': _nearest_edge(
                              parts[ref].rect, bounds, state.edge_gate.margin,
