@@ -442,3 +442,15 @@ gate, `place_pose` and the graders:
 [docs/floorplan-intent.md](../../docs/floorplan-intent.md) has the intent's
 rules, and [docs/utilities.md](../../docs/utilities.md) each tool's full
 contract.
+
+## TODO
+
+- **Shield cans.** A can is neither a solid body nor free space: parts sit
+  under it, inside its fence, and a net reaches them only through the few
+  openings the fence leaves (gaps in the wall, or a via to an inner layer).
+  The placer should treat a can as a container, decide which parts belong
+  inside it, and price every net that crosses its wall by those limited
+  crossings, so cross-wall nets stay few and near the openings. Today a locked
+  can is solid: on thunderscope, where the human board puts 354 parts under
+  four cans and a heatsink, the placer ended with 6 and 16 parts illegal, and
+  placed cleanly only with the cans removed.
