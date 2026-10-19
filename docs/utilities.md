@@ -160,8 +160,8 @@ for inspection in KiCad. Exit 0 clean, 1 violations, 2 usage errors.
 
 Places a board by function: the parts sorted into groups, one objective,
 lowered by simulated annealing, and exact pad legality at the end. It is the
-placer the `plan-pcb-placement` skill runs in rounds. A round places seeds 0-15,
-fast-routes each (`route.py --quick 2`, scored by `quick_score.py`) and keeps the best. The run stops at
+placer the `plan-pcb-placement` skill runs in rounds. A round places seeds 0-23,
+fast-routes the 12 legal ones its cost rates best (`route.py --quick 2`, scored by `quick_score.py`) and keeps the best. The run stops at
 the first round whose best fast route has no blocking net; otherwise the skill
 reviews the best with `route_review.py`, changes the groups, hints or claims
 and places again, up to `--rounds N` rounds in all (default 3). The kept board
@@ -172,7 +172,7 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb placed.kicad_pcb \
     --groups groups.json --intent intent.json [--seed 0] [--json report.json]
 # several seeds at once, one process each:
 python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 'r1/s{seed}.kicad_pcb' \
-    --groups groups.json --intent intent.json --seeds 0-15 [--jobs 4] --json 'r1/s{seed}.json'
+    --groups groups.json --intent intent.json --seeds 0-23 [--jobs 4] --json 'r1/s{seed}.json'
 ```
 
 - **Inputs.** `--groups` is the groups file (`py_tools/check_groups.py`

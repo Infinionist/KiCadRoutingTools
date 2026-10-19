@@ -414,7 +414,7 @@ def build_placement_prompt(backend, workdir, staged_board, mode, extra="",
     """The full skill prompt for a placement run (via backend.skill_prompt).
 
     `rounds` is the skill's `--rounds N`: the most placement rounds. A round
-    places seeds 0-15, fast-routes each and keeps the best; the skill stops at
+    places seeds 0-23, fast-routes the 12 its cost rates best and keeps the best; the skill stops at
     the first round whose best fast route has no blocking net. None leaves
     the skill's own default.
     """

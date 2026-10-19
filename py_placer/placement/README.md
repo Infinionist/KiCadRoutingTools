@@ -58,10 +58,10 @@ python3 -X utf8 py_tools/check_floorplan.py wk/tig/fixed.kicad_pcb --emit-intent
 # 4. Check the groups file against the board.
 python3 -X utf8 py_tools/check_groups.py wk/tig/fixed.kicad_pcb --groups docs/examples/tigard.groups.json
 
-# 5. Place 16 seeds (round 1), four at a time: {seed} becomes 0, 1, ... 15.
+# 5. Place 24 seeds (round 1), four at a time: {seed} becomes 0, 1, ... 23.
 python3 -X utf8 py_placer/place_simple.py wk/tig/fixed.kicad_pcb 'wk/tig/r1/s{seed}.kicad_pcb' \
     --groups docs/examples/tigard.groups.json --intent wk/tig/intent.json \
-    --seeds 0-15 --jobs 4 --json 'wk/tig/r1/s{seed}.json'
+    --seeds 0-23 --jobs 4 --json 'wk/tig/r1/s{seed}.json'
 
 # 6. Check a seed, and look at it.
 python3 -X utf8 py_tools/check_assembly.py wk/tig/r1/s0.kicad_pcb --baseline wk/tig/fixed.kicad_pcb
@@ -76,7 +76,7 @@ What to read in the output:
   `ERROR` (a part in no group or in two, a ref not on the board: exit 4) or
   `WARN` (a part with more signal links to another group than to its own: a
   judgement to look at, not a mistake by itself).
-- **`place_simple --seeds 0-15`** runs one process per seed (`--jobs N`
+- **`place_simple --seeds 0-23`** runs one process per seed (`--jobs N`
   limits how many at once; the default is one per seed, at most 4) and prints
   one line per seed: `seed 0: cost 2897.5, 38000 moves in 14.7 s ->
   wk/tig/r1/s0.kicad_pcb`. Each seed's own log goes beside its board
@@ -290,7 +290,8 @@ seed, and copy its placement (`$R/s<S>.kicad_pcb`, never the `--quick` board)
 to `wk/tig/final.kicad_pcb` with `copy_board.py`; in `full` mode the skill then
 routes it with `/plan-pcb-routing`, without `--quick`.
 
-**The skill's round rule.** A round places seeds 0-15, fast-routes each and
+**The skill's round rule.** A round places seeds 0-23, fast-routes the 12
+legal ones with the lowest `final.cost` and
 keeps the best. The run stops at the first round whose best fast route has no
 blocking net. Otherwise the agent reviews it (`py_tools/route_review.py` lists
 the open nets with the parts holding their loose pads, the nets with the most
