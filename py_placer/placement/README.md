@@ -276,7 +276,8 @@ reads the same names:
 
 | file | what it is |
 |---|---|
-| `s<S>.kicad_pcb`, `s<S>.json` | seed S's placement and its `place_simple` report |
+| `s<S>.kicad_pcb`, `s<S>.json` | seed S's placement and its `place_simple` report (`start`: scattered or clustered) |
+| `judge.json` | the seeds `place_simple --round` names for a judging route |
 | `s<S>_route/` | the fast route's working files |
 | `s<S>_fast.kicad_pcb` | the fast-routed board, copied out of `s<S>_route/` |
 | `s<S>_fast.score.json` | its `quick_score` |

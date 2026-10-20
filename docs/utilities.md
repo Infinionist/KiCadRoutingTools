@@ -315,8 +315,9 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 'r1/s{seed}.kicad_pcb'
   these defaults shipped fewer open nets and vias than 24 scattered seeds
   with 12 judged, in half the time; judging all 12 of them shipped worse.
 - **Output.** The placed board with its siblings, a `JSON_SUMMARY:` line
-  (final cost, moves, seed, parts moved to a legal pose after the anneal,
-  parts left illegal, seconds) and, with `--json`, the full report (adding
+  (final cost, moves, seed, `start` -- `scattered` or `clustered` -- parts
+  moved to a legal pose after the anneal, parts left illegal, seconds) and,
+  with `--json`, the full report (adding
   `runs`, the anneals it took; `declared`, the parts set at a declared pose or
   face; `repaired`; `stats`, each move kind's tried and kept counts; the
   groups, the notes, and `unseated`: declared edge parts that found no seat on
