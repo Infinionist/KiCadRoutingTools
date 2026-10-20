@@ -335,13 +335,15 @@ class Recorder(Story):
                   air=False, alpha=ROUTE_ALPHA if alpha is None else round(alpha, 4), **extra)
 
     # -- the run's hooks, the 3D way ---------------------------------------------
-    def on_scatter(self, seed, clustered=False):
+    def on_scatter(self, seed, clustered=False, anchored=False):
         self.run += 1
         if self.run > 1:
             self.shot(f"run {self.run}, a fresh start (the last left a part with no legal "
                       f"pose): scatter (seed {seed})", moved=self.movable, times=self.hold)
             return
-        label = (f"scatter: each group's parts round one random place (seed {seed})" if clustered
+        label = (f"scatter: each group's parts round the place its wiring prefers (seed {seed})"
+                 if anchored else
+                 f"scatter: each group's parts round one random place (seed {seed})" if clustered
                  else f"scatter: each movable part to a random place (seed {seed})")
         seeded = {r: (p.x, p.y, p.rot) for r, p in self.state.parts.items() if r in self.movable}
         # the pile takes off part by part: each starts a little after the last

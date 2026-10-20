@@ -290,7 +290,11 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 'r1/s{seed}.kicad_pcb'
   is annealed: 500 moves per movable part by default (`--moves` sets the
   total instead). A seed named in `--clustered-seeds` starts instead with each
   group's movable parts gathered round one random point of the board, in a
-  square of their courtyards' area (the `start` key of the report). A group gets no
+  square of their courtyards' area; one named in `--anchored-seeds` (opt-in)
+  gathers them round the point its wiring prefers -- a least-squares solve
+  pulling each group toward the fixed parts and groups it is wired to and its
+  `near` / `edge` hints, re-weighted and jittered per seed (the `start` key of
+  the report says which). A group gets no
   region or shape; its gap tree is a cost term that keeps it in one piece.
   The hints are soft terms; the intent's keep-outs and zones bind every part
   through the anneal's overlap term. Every weight is a flag (`--help`).
@@ -306,16 +310,17 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 'r1/s{seed}.kicad_pcb'
   `.log`; it prints one line per seed and exits 2 if any seed failed, else 4
   if any left parts illegal, else 0. One process takes about 120 MB.
 - **A round.** `--round` places `--scattered` seeds (default 6) started
-  scattered, then `--clustered` seeds (default 6) started clustered, numbered
-  from 0 as `--seeds` would, and then names the `--judge` legal seeds of
-  lowest `final.cost` (default 6) for a judging route: printed, and written
-  to `judge.json` beside the boards (`judge`, cheapest first, then the
-  round's `scattered`, `clustered` and `illegal` seeds). It refuses
-  `--seeds` and `--clustered-seeds`, which it sets itself. Over 11 boards,
+  scattered, then `--clustered` seeds (default 6) started clustered, then
+  `--anchored` seeds (default 0, opt-in) started anchored, numbered from 0 as
+  `--seeds` would, and then names the `--judge` legal seeds of lowest
+  `final.cost` (default 6) for a judging route: printed, and written to
+  `judge.json` beside the boards (`judge`, cheapest first, then the round's
+  `scattered`, `clustered`, `anchored` and `illegal` seeds). It refuses
+  `--seeds`, `--clustered-seeds` and `--anchored-seeds`, which it sets itself. Over 11 boards,
   these defaults shipped fewer open nets and vias than 24 scattered seeds
   with 12 judged, in half the time; judging all 12 of them shipped worse.
 - **Output.** The placed board with its siblings, a `JSON_SUMMARY:` line
-  (final cost, moves, seed, `start` -- `scattered` or `clustered` -- parts
+  (final cost, moves, seed, `start` -- `scattered`, `clustered` or `anchored` -- parts
   moved to a legal pose after the anneal, parts left illegal, seconds) and,
   with `--json`, the full report (adding
   `runs`, the anneals it took; `declared`, the parts set at a declared pose or
@@ -1186,7 +1191,8 @@ group with a movable part in a colour of its own, by name, then fixed parts
 With `--route BOARD:SET` -- a stress-corpus board whose recorded chain routes
 this one, the chain `tests/stress/placement_ab/route_placed.py` replays -- it
 first runs the flow: places the skill's round (`--scattered` and
-`--clustered`, default 6 each, as `place_simple --round`; `--jobs` at a
+`--clustered`, default 6 each, and the opt-in `--anchored`, default 0, as
+`place_simple --round`; `--jobs` at a
 time), fast-routes the `--judge` (default 6) legal seeds the
 objective rates cheapest (the chain with `--quick 2`, scored by
 `quick_score.py`), and routes the best (fewest blocking, then vias, copper,

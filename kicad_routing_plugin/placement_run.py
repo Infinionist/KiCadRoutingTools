@@ -761,7 +761,8 @@ def active_candidates(transcript_tail):
                 return [(n, s) for s in _seed_spec(seeds.group(1))]
             if _ROUND_RE.search(line):
                 sc, cl, _judged = _round_defaults()
-                count = _int_opt(line, "--scattered", sc) + _int_opt(line, "--clustered", cl)
+                count = (_int_opt(line, "--scattered", sc) + _int_opt(line, "--clustered", cl)
+                         + _int_opt(line, "--anchored", 0))      # anchored: opt-in, none by default
                 return [(n, s) for s in range(count)]
             return []
     return []

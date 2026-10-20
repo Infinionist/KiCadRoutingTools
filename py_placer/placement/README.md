@@ -229,7 +229,14 @@ arranges whole groups from the first move. Neither start is better on every
 board: on boards dominated by one big IC the clustered start routes better
 (argus_mainboard about 60 vias a seed fewer), on glasgow_revC and ulx3s the
 scattered one does. So the skill's round places six of each and lets the
-judge choose.
+judge choose. An anchored seed (`--round --anchored N`, or `--anchored-seeds`;
+opt-in, none by default) gathers each group round the point its wiring prefers
+instead: a quick least-squares solve pulls each group toward the fixed parts'
+pads and the groups it shares signal nets with and toward its `near` and
+`edge` hints, and each seed re-weights those pulls at random and jitters the
+centres, so seeds still differ. Over 10 boards, 6 scattered + 6 anchored
+seeds routed better than the default round on covg_patchclamp and bitaxe and
+worse on tigard, argus_mainboard and librevna, so it stays opt-in.
 Moves shift, turn, swap, dock a part against a partner pad, jump a part to its
 wiring target, move an overlapping part to the least-overlap of random poses
 over the board, and move, turn or swap whole groups. A chip's own move carries

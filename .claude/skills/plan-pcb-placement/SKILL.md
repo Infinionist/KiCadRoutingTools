@@ -14,13 +14,14 @@ route of each keeps the best. When none routes clean, you change what you
 gave it and place again.
 
 Invocation: `/plan-pcb-placement <mode> <board.kicad_pcb> [intent.json] [--rounds N]
-[--scattered N] [--clustered N] [--judge N]`,
+[--scattered N] [--clustered N] [--anchored N] [--judge N]`,
 where mode is `place` or `full`. With no mode, use `full`. A given
 `intent.json` is the intent: use it in place of emitting one (§3.2). `--rounds N` is
-the most placement rounds (§3.6), default 3. `--scattered`, `--clustered` and
-`--judge` are each round's seeds of each start and how many are judged
-(§3.5), passed to `place_simple --round` as given; its defaults (6, 6, 6)
-apply when they are not. The run stops at the first round
+the most placement rounds (§3.6), default 3. `--scattered`, `--clustered`,
+`--anchored` and `--judge` are each round's seeds of each start and how many
+are judged (§3.5), passed to `place_simple --round` as given; its defaults
+(6, 6, 0, 6) apply when they are not. Anchored seeds (each group started
+round the point its wiring prefers) are opt-in. The run stops at the first round
 whose best seed's fast route has no blocking net, so a board that routes
 clean after one round gets no review and no input changes.
 

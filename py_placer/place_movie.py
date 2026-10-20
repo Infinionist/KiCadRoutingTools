@@ -36,8 +36,8 @@ frame outlined in white, and a caption, in the routing movie's style
 With --route BOARD:SET (a stress-corpus board whose recorded chain routes
 this one: `tests/stress/placement_ab/route_placed.py`), it runs the placement
 skill's flow first and films it after: the skill's round is placed
-(--scattered seeds started scattered, then --clustered started clustered, as
-`place_simple --round`), the --judge legal seeds the objective rates cheapest
+(--scattered seeds started scattered, then --clustered started clustered, then
+the opt-in --anchored started anchored, as `place_simple --round`), the --judge legal seeds the objective rates cheapest
 are fast-routed (the chain
 with `--quick 2`) and scored by quick_score, the best (fewest blocking, then
 vias, copper, segments) is routed in full. The movie films that seed's
@@ -322,7 +322,7 @@ def run_flow(a, board, out, opts, work):
     if a.fresh:
         shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work, exist_ok=True)
-    seeds = list(range(a.scattered + a.clustered))
+    seeds = list(range(a.scattered + a.clustered + getattr(a, 'anchored', 0)))
     todo = [s for s in seeds if not (os.path.isfile(os.path.join(work, f's{s}.json'))
                                      and os.path.isfile(os.path.join(work, f's{s}.kicad_pcb')))]
     if todo:
@@ -487,7 +487,7 @@ def film_routes(a, movie, work, judged, scores, best, full, filmed):
 
 def main(argv=None):
     from route_movie import FPS, SIZE, MovieWriter
-    from place_simple import ROUND_CLUSTERED, ROUND_JUDGED, ROUND_SCATTERED
+    from place_simple import ROUND_ANCHORED, ROUND_CLUSTERED, ROUND_JUDGED, ROUND_SCATTERED
     ap = argparse.ArgumentParser(
         description=__doc__.split('\n')[0], allow_abbrev=False,   # --seed is place_simple's
         epilog="BOARD and OUT come first; every other argument is place_simple.py's "
@@ -510,6 +510,9 @@ def main(argv=None):
     ap.add_argument('--clustered', type=int, default=ROUND_CLUSTERED,
                     help=f'with --route, the seeds started clustered, numbered after the '
                          f'scattered ones (default {ROUND_CLUSTERED})')
+    ap.add_argument('--anchored', type=int, default=ROUND_ANCHORED,
+                    help=f'with --route, the seeds started anchored, numbered after the '
+                         f'clustered ones (default {ROUND_ANCHORED}: opt-in)')
     ap.add_argument('--judge', type=int, default=ROUND_JUDGED,
                     help=f'with --route, how many of the cheapest legal seeds are fast-routed '
                          f'(default {ROUND_JUDGED})')
@@ -542,12 +545,17 @@ def main(argv=None):
     if ':' not in a.route:
         ap.error('--route BOARD:SET, e.g. ch32v003_usb:6')
     work = os.path.abspath(a.work or os.path.splitext(out)[0] + '_work')
-    opts = _strip(opts, '--seed', '--json', '--seeds', '--jobs', '--clustered-seeds')
-    n = a.scattered + a.clustered
-    if a.scattered < 0 or a.clustered < 0 or n < 1 or a.judge < 1:
-        ap.error('--scattered and --clustered of 0 or more, at least one seed, --judge 1 or more')
+    opts = _strip(opts, '--seed', '--json', '--seeds', '--jobs', '--clustered-seeds',
+                  '--anchored-seeds')
+    c0 = a.scattered + a.clustered
+    n = c0 + a.anchored
+    if min(a.scattered, a.clustered, a.anchored) < 0 or n < 1 or a.judge < 1:
+        ap.error('--scattered, --clustered and --anchored of 0 or more, at least one seed, '
+                 '--judge 1 or more')
     if a.clustered:             # the round's clustered seeds, for the placing and the filming
-        opts += ['--clustered-seeds', f'{a.scattered}-{n - 1}']
+        opts += ['--clustered-seeds', f'{a.scattered}-{c0 - 1}']
+    if a.anchored:
+        opts += ['--anchored-seeds', f'{c0}-{n - 1}']
     got = run_flow(a, board, out, opts, work)
     if got is None:
         return 2

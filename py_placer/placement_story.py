@@ -226,14 +226,16 @@ class Story:
         return best[1]
 
     # -- the run's hooks ------------------------------------------------------
-    def on_scatter(self, seed, clustered=False):
+    def on_scatter(self, seed, clustered=False, anchored=False):
         self.run += 1
         if self.run > 1:
             self.shot(f"run {self.run}, a fresh start (the last left a part with no legal "
                       f"pose): scatter (seed {seed})", moved=self.movable, times=self.hold)
             return
         # the pile glides onto the board, each part to the place it is seeded at
-        label = (f"scatter: each group's parts round one random place (seed {seed})" if clustered
+        label = (f"scatter: each group's parts round the place its wiring prefers (seed {seed})"
+                 if anchored else
+                 f"scatter: each group's parts round one random place (seed {seed})" if clustered
                  else f"scatter: each movable part to a random place (seed {seed})")
         seeded = {r: (p.x, p.y, p.rot) for r, p in self.state.parts.items() if r in self.movable}
         for i in range(1, GLIDE + 1):
@@ -335,9 +337,9 @@ def install(story):
 
     scatter, anneal = simple_anneal.scatter, simple_anneal.anneal
 
-    def _scatter(model, movable, seed=0, clustered=False):
-        scatter(model, movable, seed=seed, clustered=clustered)
-        story.on_scatter(seed, clustered)
+    def _scatter(model, movable, seed=0, clustered=False, anchored=False):
+        scatter(model, movable, seed=seed, clustered=clustered, anchored=anchored)
+        story.on_scatter(seed, clustered, anchored)
     simple_anneal.scatter = _scatter
 
     def _anneal(model, movable, **kw):

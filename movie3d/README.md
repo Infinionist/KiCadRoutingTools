@@ -67,7 +67,7 @@ python3 -X utf8 movie3d/make_movie.py BOARD OUT.kicad_pcb \
 This runs place_movie's own `run_flow`, in `--route-work` (default: OUT's
 name + `_work`, place_movie's default, so a 2D flow run's work is reused):
 
-1. the round's seeds are placed (`--scattered` 6, `--clustered` 6);
+1. the round's seeds are placed (`--scattered` 6, `--clustered` 6, and the opt-in `--anchored`, 0);
 2. the `--judge` 6 cheapest legal seeds are fast-routed;
 3. the best of them is routed in full.
 

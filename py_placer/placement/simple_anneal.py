@@ -743,12 +743,108 @@ class Annealer:
             self.shoving = False
 
 
-def scatter(model, movable: List[str], seed: int = 0, clustered: bool = False):
+#: The anchored start: each pull's weight is scaled by exp(N(0, SPREAD)) per
+#: seed, and each solved centre moved by N(0, JITTER x the board's short side).
+ANCHOR_SPREAD = 0.5
+ANCHOR_JITTER = 0.15
+
+
+def _anchors(model, movable: List[str], rng, inner) -> Tuple[List[List[str]], np.ndarray]:
+    """`(nodes, centres)`: each group's movable members (and each movable part
+    in no group, alone) as one node, and the node's centre that minimises the
+    squared wire to what it is wired to -- the fixed parts' pads on its signal
+    nets, the other nodes on them (each net a clique, 1/(k-1) per pair) -- and
+    its `near` hints to other groups and `edge` hints to its edge. Every pull
+    is scaled by a random factor of this seed's, so seeds solve different
+    arrangements near good ones; a faint pull to the board's centre keeps a
+    node wired to nothing in place."""
+    st = model.state
+    mov = set(movable)
+    nodes: List[List[str]] = []
+    of: Dict[str, int] = {}
+    for _n, members in model.groups:
+        m = [r for r in members if r in mov and r not in of]
+        if m:
+            for r in m:
+                of[r] = len(nodes)
+            nodes.append(m)
+    for r in movable:
+        if r not in of:
+            of[r] = len(nodes)
+            nodes.append([r])
+    k = len(nodes)
+    L = np.zeros((k, k))
+    dx, dy = np.zeros(k), np.zeros(k)
+    bx, by = np.zeros(k), np.zeros(k)
+    cx, cy = (inner[0] + inner[2]) / 2.0, (inner[1] + inner[3]) / 2.0
+
+    def jit():
+        return math.exp(rng.gauss(0.0, ANCHOR_SPREAD))
+
+    def link(i, j, w):
+        L[i, j] -= w
+        L[j, i] -= w
+        L[i, i] += w
+        L[j, j] += w
+
+    def pin(i, x, y, w):
+        if x is not None:
+            dx[i] += w
+            bx[i] += w * x
+        if y is not None:
+            dy[i] += w
+            by[i] += w * y
+    for n in model.nets:
+        ends, fixed = set(), []
+        for r in st.net_refs.get(n, ()):
+            if r in of:
+                ends.add(of[r])
+            elif r in st.parts:
+                pts = [(x, y) for x, y, nn in st.parts[r].pad_globals() if nn == n]
+                if pts:
+                    fixed.append((sum(p[0] for p in pts) / len(pts),
+                                  sum(p[1] for p in pts) / len(pts)))
+        size = len(ends) + len(fixed)
+        if not ends or size < 2:
+            continue
+        w0 = 1.0 / (size - 1)
+        ends = sorted(ends)
+        for a, i in enumerate(ends):
+            for j in ends[a + 1:]:
+                link(i, j, w0 * jit())
+            for x, y in fixed:
+                pin(i, x, y, w0 * jit())
+    for h in model.hints:
+        ga = {of[r] for r in h.get('a') or () if r in of}
+        if h['kind'] == 'near':
+            gb = {of[r] for r in h.get('b') or () if r in of}
+            for i in ga:
+                for j in gb - {i}:
+                    link(i, j, h['weight'] * jit())
+        elif h['kind'] == 'edge':
+            x = {'W': inner[0], 'E': inner[2]}.get(h['edge'])
+            y = {'N': inner[1], 'S': inner[3]}.get(h['edge'])
+            for i in ga:
+                pin(i, x, y, h['weight'] * jit())
+    for i in range(k):
+        pin(i, cx, cy, 1e-3)
+    xs = np.linalg.solve(L + np.diag(dx), bx)
+    ys = np.linalg.solve(L + np.diag(dy), by)
+    sd = ANCHOR_JITTER * min(inner[2] - inner[0], inner[3] - inner[1])
+    centres = np.array([[x + rng.gauss(0.0, sd), y + rng.gauss(0.0, sd)]
+                        for x, y in zip(xs, ys)])
+    return nodes, centres
+
+
+def scatter(model, movable: List[str], seed: int = 0, clustered: bool = False,
+            anchored: bool = False):
     """Every movable part at a random place on the board (less its edge
     margin), at its present turn: the start, a part's neighbourhood local
     from the first move. `clustered` then gathers each group's movable
     members round one random point, in a square of their courtyards' area,
-    so the anneal arranges whole groups from the first move."""
+    so the anneal arranges whole groups from the first move. `anchored`
+    gathers them round the point its wiring prefers instead (`_anchors`),
+    each part in no group set at its own."""
     st = model.state
     rng = random.Random(seed)
     inner = tuple(st.usable)
@@ -759,7 +855,21 @@ def scatter(model, movable: List[str], seed: int = 0, clustered: bool = False):
         x = rng.uniform(inner[0] + w / 2, max(inner[0] + w / 2, inner[2] - w / 2))
         y = rng.uniform(inner[1] + h / 2, max(inner[1] + h / 2, inner[3] - h / 2))
         _place(st, r, p.x + x - (c[0] + c[2]) / 2.0, p.y + y - (c[1] + c[3]) / 2.0, p.rot)
-    if clustered:
+    if anchored:
+        nodes, centres = _anchors(model, movable, rng, inner)
+        for m, (gx, gy) in zip(nodes, centres):
+            area = sum((q[2] - q[0]) * (q[3] - q[1]) for q in (st.parts[r].rect() for r in m))
+            half = min(math.sqrt(area) / 2.0, (inner[2] - inner[0]) / 2.0,
+                       (inner[3] - inner[1]) / 2.0)
+            gx = min(max(gx, inner[0] + half), inner[2] - half)
+            gy = min(max(gy, inner[1] + half), inner[3] - half)
+            for r in m:
+                p = st.parts[r]
+                c = p.rect()
+                x, y = (gx, gy) if len(m) == 1 else (gx + rng.uniform(-half, half),
+                                                     gy + rng.uniform(-half, half))
+                _place(st, r, p.x + x - (c[0] + c[2]) / 2.0, p.y + y - (c[1] + c[3]) / 2.0, p.rot)
+    elif clustered:
         mov = set(movable)
         for _n, members in model.groups:
             m = [r for r in members if r in mov]

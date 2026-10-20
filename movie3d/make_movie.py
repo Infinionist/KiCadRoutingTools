@@ -58,14 +58,19 @@ def flow(a, rest):
         sys.exit('make_movie: --route BOARD:SET, e.g. ch32v003_usb:6')
     board, out = rest[0], rest[1]
     work = os.path.abspath(a.route_work or os.path.splitext(os.path.abspath(out))[0] + '_work')
-    opts = place_movie._strip(rest[2:], '--seed', '--json', '--seeds', '--jobs', '--clustered-seeds')
-    n = a.scattered + a.clustered
-    if a.scattered < 0 or a.clustered < 0 or n < 1 or a.judge < 1:
-        sys.exit('make_movie: --scattered and --clustered of 0 or more, at least one seed, --judge 1 or more')
+    opts = place_movie._strip(rest[2:], '--seed', '--json', '--seeds', '--jobs', '--clustered-seeds',
+                              '--anchored-seeds')
+    c0 = a.scattered + a.clustered
+    n = c0 + a.anchored
+    if min(a.scattered, a.clustered, a.anchored) < 0 or n < 1 or a.judge < 1:
+        sys.exit('make_movie: --scattered, --clustered and --anchored of 0 or more, at least one seed, '
+                 '--judge 1 or more')
     if a.clustered:
-        opts += ['--clustered-seeds', f'{a.scattered}-{n - 1}']
+        opts += ['--clustered-seeds', f'{a.scattered}-{c0 - 1}']
+    if a.anchored:
+        opts += ['--anchored-seeds', f'{c0}-{n - 1}']
     fa = argparse.Namespace(route=a.route, fresh=a.fresh, scattered=a.scattered, clustered=a.clustered,
-                            judge=a.judge, jobs=a.jobs, route_jobs=a.route_jobs)
+                            anchored=a.anchored, judge=a.judge, jobs=a.jobs, route_jobs=a.route_jobs)
     got = place_movie.run_flow(fa, board, out, opts, work)
     if got is None:
         return 2, None
@@ -92,7 +97,7 @@ def main(argv=None):
                                  epilog="BOARD and OUT come first; every other argument is "
                                         "place_simple.py's (--groups, --intent, --seed, ...).")
     record.own_args(ap, work_required=False)
-    from place_simple import ROUND_CLUSTERED, ROUND_JUDGED, ROUND_SCATTERED
+    from place_simple import ROUND_ANCHORED, ROUND_CLUSTERED, ROUND_JUDGED, ROUND_SCATTERED
     ap.add_argument('--route', metavar='BOARD:SET',
                     help="run and film place_movie's placement flow, routing with this "
                          "stress-corpus board's recorded chain (e.g. ch32v003_usb:6)")
@@ -100,6 +105,8 @@ def main(argv=None):
                     help=f'with --route, the seeds started scattered (default {ROUND_SCATTERED})')
     ap.add_argument('--clustered', type=int, default=ROUND_CLUSTERED,
                     help=f'with --route, the seeds started clustered (default {ROUND_CLUSTERED})')
+    ap.add_argument('--anchored', type=int, default=ROUND_ANCHORED,
+                    help=f'with --route, the seeds started anchored (default {ROUND_ANCHORED}: opt-in)')
     ap.add_argument('--judge', type=int, default=ROUND_JUDGED,
                     help=f'with --route, the cheapest legal seeds fast-routed (default {ROUND_JUDGED})')
     ap.add_argument('--jobs', type=int, default=4, help='with --route, placements and routes at once (default 4)')
