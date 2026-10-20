@@ -415,7 +415,7 @@ def build_placement_prompt(backend, workdir, staged_board, mode, extra="",
     """The full skill prompt for a placement run (via backend.skill_prompt).
 
     `rounds` is the skill's `--rounds N`: the most placement rounds. A round
-    places seeds 0-23, fast-routes the 12 its cost rates best and keeps the best; the skill stops at
+    places seeds 0-11 (6-11 started clustered), fast-routes the 6 its cost rates best and keeps the best; the skill stops at
     the first round whose best fast route has no blocking net. None leaves
     the skill's own default.
     """
@@ -615,7 +615,7 @@ def scan_candidates(workdir, active=None):
 #: The skill fast-routes this many legal seeds a round, those of lowest
 #: `final.cost` (plan-pcb-placement §3.6); the rest are placed and never
 #: routed, and must not read "routing" forever.
-JUDGED_PER_ROUND = 12
+JUDGED_PER_ROUND = 6
 
 
 def _mark_unjudged(round_rows):

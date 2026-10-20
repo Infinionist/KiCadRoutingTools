@@ -257,8 +257,8 @@ Exit 0 clean, 1 violations, 2 usage errors.
 
 Places a board by function: the parts sorted into groups, one objective,
 lowered by simulated annealing, and exact pad legality at the end. It is the
-placer the `plan-pcb-placement` skill runs in rounds. A round places seeds 0-23,
-fast-routes the 12 legal ones its cost rates best (`route.py --quick 2`, scored by `quick_score.py`) and keeps the best. The run stops at
+placer the `plan-pcb-placement` skill runs in rounds. A round places seeds 0-11
+(6-11 started clustered), fast-routes the 6 legal ones its cost rates best (`route.py --quick 2`, scored by `quick_score.py`) and keeps the best. The run stops at
 the first round whose best fast route has no blocking net; otherwise the skill
 reviews the best with `route_review.py`, changes the groups, hints or claims
 and places again, up to `--rounds N` rounds in all (default 3). The kept board
@@ -269,7 +269,8 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb placed.kicad_pcb \
     --groups groups.json --intent intent.json [--seed 0] [--json report.json]
 # several seeds at once, one process each:
 python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 'r1/s{seed}.kicad_pcb' \
-    --groups groups.json --intent intent.json --seeds 0-23 [--jobs 4] --json 'r1/s{seed}.json'
+    --groups groups.json --intent intent.json --seeds 0-11 --clustered-seeds 6-11 \
+    [--jobs 4] --json 'r1/s{seed}.json'
 ```
 
 - **Inputs.** `--groups` is the groups file (`py_tools/check_groups.py`
@@ -283,7 +284,9 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 'r1/s{seed}.kicad_pcb'
   group's `side` declares are applied first, by the writer's flip.
 - **What moves.** Every other part starts at a random place on the board and
   is annealed: 500 moves per movable part by default (`--moves` sets the
-  total instead). A group gets no
+  total instead). A seed named in `--clustered-seeds` starts instead with each
+  group's movable parts gathered round one random point of the board, in a
+  square of their courtyards' area (the `start` key of the report). A group gets no
   region or shape; its gap tree is a cost term that keeps it in one piece.
   The hints are soft terms; the intent's keep-outs and zones bind every part
   through the anneal's overlap term. Every weight is a flag (`--help`).
@@ -1168,8 +1171,9 @@ group with a movable part in a colour of its own, by name, then fixed parts
 
 With `--route BOARD:SET` -- a stress-corpus board whose recorded chain routes
 this one, the chain `tests/stress/placement_ab/route_placed.py` replays -- it
-first runs the flow: places every seed of `--seeds` (default 0-23,
-`--jobs` at a time), fast-routes the `--judge` (default 12) legal seeds the
+first runs the flow: places every seed of `--seeds` (default the skill's
+round, 0-11 with `--clustered-seeds 6-11`; `--jobs` at a time), fast-routes
+the `--judge` (default 6) legal seeds the
 objective rates cheapest (the chain with `--quick 2`, scored by
 `quick_score.py`), and routes the best (fewest blocking, then vias, copper,
 segments) in full. The movie films that seed's placement -- the one routed
@@ -1185,10 +1189,11 @@ are in `--work` (default: OUT's name + `_work`). A second run reuses them --
 every placed seed and finished route there -- so it only films (`--fresh`
 places and routes again). `--route-jobs` runs the fast
 routes fewer at a time than the placements: a 350-part board's route can take
-5 GB, so `--route-jobs 1` there. Measured on one laptop, argus_mainboard (334
-parts): 48 min for the whole flow -- 18 min placing 24 seeds 4 at a time, 23
-min for the 12 fast routes one at a time, 7.5 min for the full route; ch32
-(25 parts) takes 1 min and tigard (89 parts) 4.3 min, everything 4 at a time.
+5 GB, so `--route-jobs 1` there. Measured on one laptop with 24 seeds and
+12 fast routes, twice the default round, argus_mainboard (334 parts): 48 min
+for the whole flow -- 18 min placing the seeds 4 at a time, 23 min for the
+fast routes one at a time, 7.5 min for the full route; ch32 (25 parts) took
+1 min and tigard (89 parts) 4.3 min, everything 4 at a time.
 
 - `--movie` — the movie (default: OUT's name, `.mp4`); a GIF without `ffmpeg`.
 - `--size`, `--fps`, `--theme` — as the routing movie.

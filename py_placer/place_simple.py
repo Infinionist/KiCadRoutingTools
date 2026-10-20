@@ -14,7 +14,9 @@
    holes: whatever the enclosure or a mating part decides), and so does
    every part the intent seats at a declared pose (`fixed_poses[]`, from
    the design brief or mechanical.json), written there first; every other
-   part starts at a random place on the board. An unlocked edge part (a
+   part starts at a random place on the board, or, for a seed named in
+   `--clustered-seeds`, with each group's members gathered round one random
+   point. An unlocked edge part (a
    connector, receptacle, switch or test pad) the intent declares on an edge
    (`edge_connectors[]` with an `edge`) is held to that edge
    (`placement/edge_seat.py`): its mating face out, flush with the low
@@ -320,7 +322,8 @@ def _many_seeds(ap, a):
         if summary:
             fin = summary['final']
             ill = summary.get('illegal') or []
-            print(f"  seed {s}: cost {fin['cost']:.1f}, {summary['moves']} moves in "
+            print(f"  seed {s}{' (clustered)' if summary.get('start') == 'clustered' else ''}: "
+                  f"cost {fin['cost']:.1f}, {summary['moves']} moves in "
                   f"{summary['seconds']['anneal']} s"
                   + (f", no legal pose for {', '.join(ill)}" if ill else '') + f" -> {out}")
         else:
@@ -396,11 +399,21 @@ def main(argv=None):
                          '--json then carry {seed}, each seed is its own process (the '
                          'same placement a --seed run gives) and its log goes beside its '
                          'board as .log')
+    ap.add_argument('--clustered-seeds', metavar='LIST',
+                    help='the seeds, listed as --seeds lists them, that start with each '
+                         "group's movable members gathered round one random point of the "
+                         'board instead of every part scattered on its own (default: none)')
     ap.add_argument('--jobs', type=int, default=0,
                     help='with --seeds, how many seeds run at once (default: one per '
                          'seed, at most 4)')
     ap.add_argument('--json', help='write the report here')
     a = ap.parse_args(argv)
+    try:
+        clustered = a.seed in _seed_list(a.clustered_seeds or '')
+    except ValueError:
+        print(f"place_simple: --clustered-seeds {a.clustered_seeds!r} is not a list like 0-3 "
+              "or 0,1,2,3", file=sys.stderr)
+        return 2
     if a.seeds:
         return _many_seeds(ap, a)
     t0 = time.time()
@@ -535,7 +548,7 @@ def main(argv=None):
     for k in range(RESTARTS + 1 if movable else 0):
         # a restart's own stream, distinct from every other seed's first run
         seed = a.seed if k == 0 else (a.seed + 1) * 1000003 + k
-        simple_anneal.scatter(model, movable, seed=seed)
+        simple_anneal.scatter(model, movable, seed=seed, clustered=clustered)
         res = simple_anneal.anneal(model, movable, moves=moves, seed=seed,
                                    log=lambda s: print(f"  {s}"), repair=k == RESTARTS,
                                    seats=model.edge_seats)
@@ -572,7 +585,8 @@ def main(argv=None):
         shutil.rmtree(tmp, ignore_errors=True)
     final.pop('per_group', None)
     final.pop('per_hint', None)
-    report = {'final': final, 'moves': res['moves'], 'seed': a.seed, 'runs': k + 1,
+    report = {'final': final, 'moves': res['moves'], 'seed': a.seed,
+              'start': 'clustered' if clustered else 'scattered', 'runs': k + 1,
               'declared': sorted(f['reference'] for f in flips),
               'reseated': res['reseated'], 'repaired': bool(res.get('repaired')),
               'illegal': illegal, 'unseated': model.edge_unseated, 'notes': notes,
@@ -581,7 +595,8 @@ def main(argv=None):
     if a.json:
         json.dump(report, open(a.json, 'w', encoding='utf-8'), indent=1)
     print('JSON_SUMMARY: ' + json.dumps({k: report[k] for k in
-                                          ('final', 'moves', 'seed', 'reseated', 'illegal', 'seconds')}))
+                                          ('final', 'moves', 'seed', 'start', 'reseated', 'illegal',
+                                           'seconds')}))
     return 4 if illegal else 0
 
 

@@ -71,7 +71,8 @@ T falls geometrically from where a move changing the cost by the median
 amount is taken uphill with probability `ACCEPT`, to `T_END`. The run is a
 fixed number of moves from a seeded random stream, so the same board and
 seed give the same placement; `seconds` only caps a slow machine. It starts
-from `scatter`: every part at a random place on the board.
+from `scatter`: every part at a random place on the board, or, for a
+clustered start, each group's members gathered round one random point.
 """
 from __future__ import annotations
 
@@ -742,10 +743,12 @@ class Annealer:
             self.shoving = False
 
 
-def scatter(model, movable: List[str], seed: int = 0):
+def scatter(model, movable: List[str], seed: int = 0, clustered: bool = False):
     """Every movable part at a random place on the board (less its edge
     margin), at its present turn: the start, a part's neighbourhood local
-    from the first move."""
+    from the first move. `clustered` then gathers each group's movable
+    members round one random point, in a square of their courtyards' area,
+    so the anneal arranges whole groups from the first move."""
     st = model.state
     rng = random.Random(seed)
     inner = tuple(st.usable)
@@ -756,6 +759,21 @@ def scatter(model, movable: List[str], seed: int = 0):
         x = rng.uniform(inner[0] + w / 2, max(inner[0] + w / 2, inner[2] - w / 2))
         y = rng.uniform(inner[1] + h / 2, max(inner[1] + h / 2, inner[3] - h / 2))
         _place(st, r, p.x + x - (c[0] + c[2]) / 2.0, p.y + y - (c[1] + c[3]) / 2.0, p.rot)
+    if clustered:
+        mov = set(movable)
+        for _n, members in model.groups:
+            m = [r for r in members if r in mov]
+            if len(m) < 2:
+                continue
+            area = sum((q[2] - q[0]) * (q[3] - q[1]) for q in (st.parts[r].rect() for r in m))
+            half = min(math.sqrt(area) / 2.0, (inner[2] - inner[0]) / 2.0, (inner[3] - inner[1]) / 2.0)
+            gx = rng.uniform(inner[0] + half, max(inner[0] + half, inner[2] - half))
+            gy = rng.uniform(inner[1] + half, max(inner[1] + half, inner[3] - half))
+            for r in m:
+                p = st.parts[r]
+                c = p.rect()
+                x, y = gx + rng.uniform(-half, half), gy + rng.uniform(-half, half)
+                _place(st, r, p.x + x - (c[0] + c[2]) / 2.0, p.y + y - (c[1] + c[3]) / 2.0, p.rot)
     model.reprice_all()
 
 

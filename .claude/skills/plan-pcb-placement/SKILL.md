@@ -1,6 +1,6 @@
 ---
 name: plan-pcb-placement
-description: Places a KiCad board by function, and in full mode routes and verifies it. The agent sorts the parts into functional groups, place_simple.py anneals one objective over 24 seeds, a quick judging route of the 12 its objective rates best keeps the best, and in full mode that board is then routed by /plan-pcb-routing; when no seed's fast route is clean, the agent reviews the best, changes the groups, hints or claims and places again, up to --rounds rounds (default 3). One independent verifier grades the result, and the board comes back with REPORT.md. Modes are place and full (place + route). Use it to place, arrange, re-place or optimise components, handle an unplaced board or parts piled off the outline, place and route from scratch, or run the GUI's Place / Place + Route. It never changes the outline. To route a placed board without moving parts, use plan-pcb-routing; for sign-off QA, review-routed-board.
+description: Places a KiCad board by function, and in full mode routes and verifies it. The agent sorts the parts into functional groups, place_simple.py anneals one objective over 12 seeds (6 started scattered, 6 with each group gathered), a quick judging route of the 6 its objective rates best keeps the best, and in full mode that board is then routed by /plan-pcb-routing; when no seed's fast route is clean, the agent reviews the best, changes the groups, hints or claims and places again, up to --rounds rounds (default 3). One independent verifier grades the result, and the board comes back with REPORT.md. Modes are place and full (place + route). Use it to place, arrange, re-place or optimise components, handle an unplaced board or parts piled off the outline, place and route from scratch, or run the GUI's Place / Place + Route. It never changes the outline. To route a placed board without moving parts, use plan-pcb-routing; for sign-off QA, review-routed-board.
 ---
 
 # Plan PCB placement
@@ -251,8 +251,8 @@ no `edge_connector` error.
 
 ```bash
 python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/r1/s{seed}.kicad_pcb' \
-    --groups wk/<run>/groups.json --intent wk/<run>/intent.json --seeds 0-23 --jobs 4 \
-    --json 'wk/<run>/r1/s{seed}.json'
+    --groups wk/<run>/groups.json --intent wk/<run>/intent.json --seeds 0-11 \
+    --clustered-seeds 6-11 --jobs 4 --json 'wk/<run>/r1/s{seed}.json'
 ```
 
 - **The seeds run in parallel, then the fast routes.** `--seeds`
@@ -265,16 +265,23 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/r1/
 
 - Every part not locked or seated by the intent starts at a random place and
   is annealed; the same board, inputs and seed give the same placement.
+  Seeds 6-11 (`--clustered-seeds`) start with each group's parts gathered
+  round one random point instead: on boards dominated by one big IC (argus,
+  covg) those route clearly better, on others the scattered ones do, and the
+  judge takes whichever routes best.
   The run is 500 moves per movable part by default (`--moves N` sets the
   total), roughly 2 s for 25 parts.
-- **Place 24 seeds (0-23); judge the 12 the objective rates best.** Seeds
-  differ more than most input changes, so more seeds give a better best one,
-  and the anneal's own cost (`final.cost` in each `s<S>.json`) says which are
-  worth a judging route: the seed the judge would pick out of 16 is in the
-  cheaper half 85-100% of the time. Placing 24 and judging the 12 cheapest
-  ships fewer vias than placing 16 and judging all 16, on all six boards
-  measured (ch32v003_usb, noahfc, fusb302, tigard, bitaxe, z80_devboard;
-  e.g. tigard 176 vs 181, bitaxe 137 vs 141), with four judging routes fewer.
+- **Place 12 seeds (0-11, 6-11 clustered); judge the 6 the objective rates
+  best.** Seeds differ more than most input changes, and the anneal's own
+  cost (`final.cost` in each `s<S>.json`) says which are worth a judging
+  route: the seed the judge would pick out of 16 is in the cheaper half
+  85-100% of the time. Over 11 boards from 25 to 350 parts (each seed's
+  full route, 2000 resampled pools per board), this ships 50 open nets in
+  all against 57 for 24 scattered seeds with the 12 cheapest judged, 71
+  blocking against 101 and 6426 vias against 6495, in half the placing and
+  half the judging; glasgow_revC is the board it does worse on (3.8 open
+  nets against 0.6). Judging all 12 instead of the 6 cheapest ships worse
+  (60 open nets): the judge is wrong more often with more to choose from.
   Exit 4 if any seed left a part illegal (its `illegal` list is not empty):
   never judge or keep that seed. Exit 2 if any failed outright.
 - A run that leaves a part with no legal pose anneals again from a fresh
@@ -293,7 +300,7 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/r1/
 
 ### 3.6 Fast-route the seeds; review and place again until one routes clean
 
-A round is: place the seeds (§3.5), fast-route the 12 cheapest, keep the
+A round is: place the seeds (§3.5), fast-route the 6 cheapest, keep the
 best (steps 1-2). **If the best fast route has no blocking net, stop: that board is the
 placement.** Otherwise run the review loop (steps 3-6), which finds what the
 objective missed, and place again, up to `--rounds` rounds in all (default
@@ -301,7 +308,7 @@ objective missed, and place again, up to `--rounds` rounds in all (default
 net the fast route left open, but a placement whose fast routes all leave
 nets open is one the review can still improve.
 
-1. **Fast-route the 12 legal seeds with the lowest `final.cost`** (a seed
+1. **Fast-route the 6 legal seeds with the lowest `final.cost`** (a seed
    whose `s<S>.json` lists `illegal` parts is out) with the board's routing
    chain (the recipe
    is `plan-pcb-routing`'s: planes, fanout, the decap clearance step,

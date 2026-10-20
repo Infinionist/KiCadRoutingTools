@@ -5,7 +5,7 @@
     python3 -X utf8 py_placer/place_movie.py board.kicad_pcb placed.kicad_pcb \\
         --groups groups.json --intent intent.json [--seed 0] [--movie placed.mp4]
     python3 -X utf8 py_placer/place_movie.py board.kicad_pcb placed.kicad_pcb \\
-        --groups groups.json --intent intent.json --route ch32v003_usb:6 [--seeds 0-23]
+        --groups groups.json --intent intent.json --route ch32v003_usb:6 [--seeds 0-11]
 
 BOARD and OUT come first; every other argument but this tool's own is
 place_simple.py's (see `place_simple.py --help`). The placement is exactly
@@ -35,7 +35,8 @@ frame outlined in white, and a caption, in the routing movie's style
 
 With --route BOARD:SET (a stress-corpus board whose recorded chain routes
 this one: `tests/stress/placement_ab/route_placed.py`), it runs the placement
-skill's flow first and films it after: every seed of --seeds is placed, the
+skill's flow first and films it after: every seed of --seeds is placed (by
+default the skill's round, seeds 0-11 with 6-11 started clustered), the
 --judge legal seeds the objective rates cheapest are fast-routed (the chain
 with `--quick 2`) and scored by quick_score, the best (fewest blocking, then
 vias, copper, segments) is routed in full. The movie films that seed's
@@ -353,14 +354,15 @@ class Film:
         self.movie.add(r.frame(segments=[], vias=[], label=label, overlays=[draw]), times)
 
     # -- the run's hooks ------------------------------------------------------
-    def on_scatter(self, seed):
+    def on_scatter(self, seed, clustered=False):
         self.run += 1
         if self.run > 1:
             self.shot(f"run {self.run}, a fresh start (the last left a part with no legal "
                       f"pose): scatter (seed {seed})", moved=self.movable, times=self.hold)
             return
         # the pile glides onto the board, each part to the place it is seeded at
-        label = f"scatter: each movable part to a random place (seed {seed})"
+        label = (f"scatter: each group's parts round one random place (seed {seed})" if clustered
+                 else f"scatter: each movable part to a random place (seed {seed})")
         seeded = {r: (p.x, p.y, p.rot) for r, p in self.state.parts.items() if r in self.movable}
         for i in range(1, GLIDE + 1):
             t = _ease(i / GLIDE)
@@ -492,9 +494,9 @@ def install(film):
 
     scatter, anneal = simple_anneal.scatter, simple_anneal.anneal
 
-    def _scatter(model, movable, seed=0):
-        scatter(model, movable, seed=seed)
-        film.on_scatter(seed)
+    def _scatter(model, movable, seed=0, clustered=False):
+        scatter(model, movable, seed=seed, clustered=clustered)
+        film.on_scatter(seed, clustered)
     simple_anneal.scatter = _scatter
 
     def _anneal(model, movable, **kw):
@@ -760,10 +762,11 @@ def main(argv=None):
     ap.add_argument('--route', metavar='BOARD:SET',
                     help='run and film the placement flow, routing with this stress-corpus '
                          "board's recorded chain (e.g. ch32v003_usb:6)")
-    ap.add_argument('--seeds', help='with --route, the seeds placed (default 0-23)')
-    ap.add_argument('--judge', type=int, default=12,
+    ap.add_argument('--seeds', help="with --route, the seeds placed (default: the skill's "
+                                    'round, 0-11 with --clustered-seeds 6-11)')
+    ap.add_argument('--judge', type=int, default=6,
                     help='with --route, how many of the cheapest legal seeds are fast-routed '
-                         '(default 12)')
+                         '(default 6)')
     ap.add_argument('--jobs', type=int, default=4,
                     help='with --route, placements and fast routes run at once (default 4)')
     ap.add_argument('--route-jobs', type=int, default=0,
@@ -796,7 +799,10 @@ def main(argv=None):
         ap.error('--route BOARD:SET, e.g. ch32v003_usb:6')
     work = os.path.abspath(a.work or os.path.splitext(out)[0] + '_work')
     opts = _strip(opts, '--seed', '--json', '--seeds', '--jobs')
-    a.seeds = a.seeds or '0-23'
+    if not a.seeds:             # the skill's round
+        a.seeds = '0-11'
+        if not any(x == '--clustered-seeds' or x.startswith('--clustered-seeds=') for x in opts):
+            opts += ['--clustered-seeds', '6-11']
     got = run_flow(a, board, out, opts, work)
     if got is None:
         return 2
