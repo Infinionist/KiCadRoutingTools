@@ -487,6 +487,31 @@ contract.
 
 ## TODO
 
+- **Datasheet layouts.** A switching regulator, an LDO, a crystal oscillator
+  or an RF front end comes with a recommended layout in its datasheet: where
+  each support part sits relative to the chip, and the rules behind it. For a
+  buck, those are an input cap across each VIN and ground pin pair, the
+  inductor at the switch pin with the switch node kept small, the boot cap
+  across BOOT and SW, the feedback divider at FB and away from the switch
+  node, and the output caps' ground next to the input caps'. The placer knows
+  only the decap part of that. The step to try:
+  1. AI reads the part's datasheet (its layout guidelines and example layout)
+     and derives the arrangement as a template (each support part's offset and
+     angle from the chip, and the pins it serves) plus the rules.
+  2. The parts are seated as the template draws them before the anneal.
+  3. Strong cohesion holds them there: a chip's move carries its template's
+     parts, the way it carries its decaps and claims today, and a move that
+     breaks the arrangement pays heavily.
+  4. Maybe cost terms from the rules too, such as switch-node length and
+     input-loop area, which `check_floorplan` would also grade, since routing
+     cannot see them.
+
+  On fusb302_pd_dev the human copied the LMR36006 datasheet's example layout
+  part for part. Grouped seed 5 put the inductor 6.1 mm from the switch pin
+  (human 0.8), the boot cap 3.3 mm from its pin (0.5), the feedback divider
+  3.5-3.9 mm from FB (1.7) and one output cap 10 mm from the inductor (2.0),
+  and still routed with 0 blocking. 150 of the 478 corpus boards carry a
+  regulator with a switch pin.
 - **Shield cans.** A can is neither a solid body nor free space: parts sit
   under it, inside its fence, and a net reaches them only through the few
   openings the fence leaves (gaps in the wall, or a via to an inner layer).
