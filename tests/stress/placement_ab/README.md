@@ -12,9 +12,9 @@ and seed, with blocking first, then vias, copper_mm and segments.
   on the placed board and scores the final board with `board_score`.
   `--quick` adds route.py's fast judge to the chain's whole-board route
   steps. `--quick 2`, the seed judge, also passes it to every
-  `route_diff.py` step and scores with `py_tools/quick_score.py` (the route
-  step's own tally and board_score's quality counts), as the placement skill
-  does.
+  `route_diff.py` step and scores with `py_tools/quick_score.py` (the
+  connectivity of the nets without a zone, and board_score's quality counts),
+  as the placement skill does.
 - **`place_modal.py OUT BOARDS SEEDS`** places a whole arm on Modal: every
   board and seed in its own container, each `place_simple.py --seed N` of the
   tree being measured (`--src`), into `OUT/<key>/s<seed>.kicad_pcb` -- where
