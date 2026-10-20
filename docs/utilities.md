@@ -1115,8 +1115,10 @@ along the bottom, spread across the width and never over the board: each
 group with a movable part in a colour of its own, by name, then fixed parts
 (hatched), parts in no group and the parts that just moved. The steps:
 
-1. **input**: the board as given; a pile of movable parts lying off the board
-   is drawn 2 mm off its nearest edge, in view;
+1. **input**: the board's outline with two piles in view, each 2 mm off an
+   edge: the movable parts, and the fixed parts (off whichever other edge
+   leaves the board biggest in the frame). The fixed parts then fly to their
+   places one at a time, biggest first, 3 frames each;
 2. **faces and poses**: the parts the intent puts on the other face or at a
    declared pose (when there are any);
 3. **scatter**: the pile glides onto the board (10 frames), each part to the
@@ -1137,11 +1139,12 @@ first runs the flow: places every seed of `--seeds` (default 0-23,
 `--jobs` at a time), fast-routes the `--judge` (default 12) legal seeds the
 objective rates cheapest (the chain with `--quick 2`, scored by
 `quick_score.py`), and routes the best (fewest blocking, then vias, copper,
-segments) in full. The movie films the cheapest seed's placement, then:
+segments) in full. The movie films that seed's placement -- the one routed
+in full -- then:
 
 8. its **fast route**, played by the routing movie's own player;
 9. a **zoom out** to every judged seed's fast route side by side, a box round
-   the best, and a **zoom in** to it;
+   it, and a **zoom in** back to it;
 10. its fast route **cleared**, net by net, and its **full route** played.
 
 OUT is then the best seed's placement; the placed seeds, routes and scores

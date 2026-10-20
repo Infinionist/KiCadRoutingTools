@@ -17,7 +17,9 @@ prices (ground left out: it is poured), the parts that moved since the last
 frame outlined in white, and a caption, in the routing movie's style
 (`route_movie.py`). The steps:
 
-  1. input: the board as given, the pile in view when it lies off the board;
+  1. input: the board's outline, the movable parts in their pile and the
+     fixed parts in a pile of their own, each off an edge, in view; then the
+     fixed parts fly to their places, one at a time, biggest first;
   2. faces and poses: the parts the intent puts on the other face or at a
      declared pose (when there are any);
   3. scatter: the pile glides onto the board, each part to the random place
@@ -36,8 +38,8 @@ this one: `tests/stress/placement_ab/route_placed.py`), it runs the placement
 skill's flow first and films it after: every seed of --seeds is placed, the
 --judge legal seeds the objective rates cheapest are fast-routed (the chain
 with `--quick 2`) and scored by quick_score, the best (fewest blocking, then
-vias, copper, segments) is routed in full. The movie then goes on from the
-placement of the cheapest seed (the one it films):
+vias, copper, segments) is routed in full. The movie films that seed's
+placement -- the one routed in full -- and goes on:
 
   8. its fast route, played as the routing movie plays a run;
   9. a zoom out to the judged seeds' fast routes side by side, a box round
@@ -71,6 +73,7 @@ FRAMES = 120        # anneal frames per run
 SPEEDUP = 4.0       # the anneal plays this much faster at its end than at its start
 GLIDE = 10          # frames the pile takes to reach the places it is seeded at
 PILE_GAP = 2.0      # mm off the board's edge the pile is drawn, at most
+FLY = 3             # frames each fixed part takes to fly from its pile to its place
 ZOOM = 12           # frames of a zoom between the board and the judged seeds
 LABEL_PX = 16       # the line under each judged seed's picture
 STEP_HOLD = 0.5     # seconds a step's frame holds
@@ -139,51 +142,105 @@ class Film:
                     self.nets.setdefault(p.net_id, []).append((ref, i))
         self.nets = {n: m for n, m in self.nets.items() if len({r for r, _ in m}) > 1}
         self._posed = {}
-        # the pile: where the movable parts lie before the scatter, drawn
-        # PILE_GAP mm off the board's nearest edge when they lie further out
-        # (a parking place, not a pose: the whole pile moves, as one)
-        self.pile = {r: (p.x, p.y, p.rot) for r, p in self.state.parts.items() if r in self.movable}
+        # the piles: the movable parts where they lie before the scatter, and
+        # the fixed parts in a pile of their own, each drawn PILE_GAP mm off an
+        # edge of the board (parking places, not poses): the fixed parts fly to
+        # their places first, one at a time, then the movable pile glides in
+        st = self.state
         bx0, by0, bx1, by1 = self.r.bounds
-        rects = [self.state.parts[r].rect() for r in self.pile]
+        self.pile = {r: (p.x, p.y, p.rot) for r, p in st.parts.items() if r in self.movable}
+        rects = [st.parts[r].rect() for r in self.pile]
         dx = dy = 0.0
+        mside = None
         if rects:
             px0, py0 = min(q[0] for q in rects), min(q[1] for q in rects)
             px1, py1 = max(q[2] for q in rects), max(q[3] for q in rects)
             gaps = {'below': py0 - by1, 'above': by0 - py1, 'right': px0 - bx1, 'left': bx0 - px1}
             side, gap = max(gaps.items(), key=lambda kv: kv[1])
             if gap > PILE_GAP:
-                move = gap - PILE_GAP
+                move, mside = gap - PILE_GAP, side
                 dx = {'right': -move, 'left': move}.get(side, 0.0)
                 dy = {'below': -move, 'above': move}.get(side, 0.0)
                 self.pile = {r: (x + dx, y + dy, q) for r, (x, y, q) in self.pile.items()}
-        # ... and in view, with the board
-        x0, y0, x1, y1 = bx0, by0, bx1, by1
-        for ref, p in self.state.parts.items():
-            a, b, c, d = p.rect()
-            if ref in self.pile:
-                a, b, c, d = a + dx, b + dy, c + dx, d + dy
-            x0, y0, x1, y1 = min(x0, a), min(y0, b), max(x1, c), max(y1, d)
+        # the faces and poses the intent declares were written first: the
+        # board as given shows those parts where they were
+        self.given, declared = {}, []
+        if os.path.abspath(board) != os.path.abspath(args.board):
+            given = parse_kicad_pcb(args.board)
+            declared = sorted(r for r in pcb.footprints
+                              if r in given.footprints and _moved(given.footprints[r], pcb.footprints[r]))
+            self.given = {r: given.footprints[r] for r in declared}
+        fixed = sorted(r for r in st.parts if r not in self.movable)
+        self.fixed_pile = self._fixed_pile([r for r in fixed if r not in self.given], mside)
+        # ... and both in view, with the board
+        x0, y0, x1, y1 = _union([self.r.bounds] + list(self._rects_at({**self.pile,
+                                                                      **self.fixed_pile}).values())
+                                 + [p.rect() for p in st.parts.values()])
         # the key's band along the bottom never covers a part: each view is
         # grown below what it shows by the band
         self.home = self._fit(self.r.bounds)
         if min(x0 - bx0, y0 - by0, bx1 - x1, by1 - y1) < -2.0:
             self.wide = self._fit((x0 - 1.0, y0 - 1.0, x1 + 1.0, y1 + 1.0))
         self.r.set_view(self.wide or self.home)
-        fixed = sorted(r for r in self.state.parts if r not in self.movable)
-        head = (f"input: {len(self.state.parts)} parts, {len(self.movable)} movable, "
-                f"{len(fixed)} fixed")
-        if os.path.abspath(board) != os.path.abspath(args.board):
-            # the faces and poses the intent declares were written first:
-            # show the board as given, then with them
-            given = parse_kicad_pcb(args.board)
-            moved = sorted(r for r in pcb.footprints
-                           if r in given.footprints and _moved(given.footprints[r], pcb.footprints[r]))
-            self.shot(head, times=self.hold, given={r: given.footprints[r] for r in moved},
-                      poses=self.pile)
-            self.shot(f"faces and poses: {', '.join(moved)} at their declared face or pose",
-                      moved=moved, times=self.hold, poses=self.pile)
-        else:
-            self.shot(head, times=self.hold, poses=self.pile)
+        poses = {**self.pile, **self.fixed_pile}
+        self.shot(f"input: {len(st.parts)} parts, {len(self.movable)} movable, {len(fixed)} fixed",
+                  times=self.hold, given=self.given, poses=poses)
+        # the fixed parts to their places, biggest first
+        size = {r: (lambda q: (q[2] - q[0]) * (q[3] - q[1]))(st.parts[r].rect()) for r in self.fixed_pile}
+        order = sorted(self.fixed_pile, key=lambda r: (-size[r], r))
+        for k, ref in enumerate(order, 1):
+            home = (st.parts[ref].x, st.parts[ref].y, st.parts[ref].rot)
+            for i in range(1, FLY + 1):
+                poses[ref] = _lerp(self.fixed_pile[ref], home, _ease(i / FLY))
+                self.shot(f"fixed parts: {ref} to its place ({k}/{len(order)})", moved=[ref],
+                          given=self.given, poses=poses)
+            del poses[ref]
+        if declared:
+            self.shot(f"faces and poses: {', '.join(declared)} at their declared face or pose",
+                      moved=declared, times=self.hold, poses=self.pile)
+
+    def _rects_at(self, poses):
+        """{ref: courtyard rect} of each part at its pose in `poses` (its turn
+        unchanged: the rect moves with it)."""
+        out = {}
+        for r, (x, y, _q) in poses.items():
+            p = self.state.parts[r]
+            a, b, c, d = p.rect()
+            out[r] = (a + x - p.x, b + y - p.y, c + x - p.x, d + y - p.y)
+        return out
+
+    def _fixed_pile(self, refs, taken):
+        """The fixed parts piled PILE_GAP mm off the board's edge -- the edge,
+        other than `taken` (the movable pile's), that leaves the board biggest
+        in the frame -- each a little off the pile's centre."""
+        import random
+        if not refs:
+            return {}
+        st = self.state
+        bx0, by0, bx1, by1 = self.r.bounds
+        rs = {r: st.parts[r].rect() for r in refs}
+        mw = max(q[2] - q[0] for q in rs.values())
+        mh = max(q[3] - q[1] for q in rs.values())
+        cx, cy = (bx0 + bx1) / 2, (by0 + by1) / 2
+        anchors = {'above': (cx, by0 - PILE_GAP - mh / 2), 'below': (cx, by1 + PILE_GAP + mh / 2),
+                   'left': (bx0 - PILE_GAP - mw / 2, cy), 'right': (bx1 + PILE_GAP + mw / 2, cy)}
+        rng = random.Random(0)
+        jit = {r: (rng.uniform(-1, 1), rng.uniform(-1, 1)) for r in sorted(refs)}
+        reach = min(1.0, 0.15 * max(mw, mh))
+        best = None
+        for side, (ax, ay) in anchors.items():
+            if side == taken:
+                continue
+            piled = {}
+            for r, q in rs.items():
+                p = st.parts[r]
+                tx, ty = ax + jit[r][0] * reach, ay + jit[r][1] * reach
+                piled[r] = (p.x + tx - (q[0] + q[2]) / 2, p.y + ty - (q[1] + q[3]) / 2, p.rot)
+            u = _union([self.r.bounds] + list(self._rects_at({**self.pile, **piled}).values()))
+            scale = min(self.r.W / (u[2] - u[0]), self.r.H / (u[3] - u[1]))
+            if best is None or scale > best[0]:
+                best = (scale, piled)
+        return best[1]
 
     # -- the key -------------------------------------------------------------
     def _key_layout(self):
@@ -390,6 +447,12 @@ def group_palette(n):
         out.append(tuple(int(255 * v) for v in colorsys.hsv_to_rgb(h, 0.7 - 0.25 * (len(out) // 20 % 2),
                                                                      0.95)))
     return out
+
+
+def _union(rects):
+    rects = list(rects)
+    return (min(q[0] for q in rects), min(q[1] for q in rects),
+            max(q[2] for q in rects), max(q[3] for q in rects))
 
 
 def _moved(a, b):
@@ -752,8 +815,8 @@ def main(argv=None):
     if got is None:
         return 2
     judged, scores, best, full = got
-    filmed = judged[0]
-    # film: the cheapest seed's placement again (the same placement), then its routes
+    filmed = best
+    # film: the chosen seed's placement again (the same placement), then its routes
     movie = MovieWriter(movie_path, a.fps)
     film = Film(a, movie)
     install(film)
