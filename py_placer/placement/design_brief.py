@@ -1701,15 +1701,26 @@ def merge_into_intent(emitted: Dict, fragment: Dict, report: Dict) -> Dict:
     if fragment.get('keepouts'):
         out['keepouts'] = list(emitted.get('keepouts') or []) \
             + list(fragment['keepouts'])
-    # #902. APPENDED, like keepouts, and deliberately not the per-ref merge
-    # `edge_connectors` gets: there is no "declared outranks inferred" question
-    # to answer, because there is no inference. `emit_intent` writes no
-    # `proximity` -- a relation between two parts is not readable off a board,
-    # only the distance is -- so the emitted side is always empty and a
-    # reconciliation policy would be a rule for a case that cannot arise.
+    # #902. APPENDED, like keepouts. The one inference on the emitted side is
+    # a crystal claim `emit_intent` derives (`floorplan.derived_claim`); a
+    # declared row about the same two parts, in either order, outranks it, so
+    # the derived row is dropped and REPORTED -- kept, the intent loader would
+    # refuse the pair as a duplicate claim.
     if fragment.get('proximity'):
-        out['proximity'] = list(emitted.get('proximity') or []) \
-            + list(fragment['proximity'])
+        from placement.floorplan import derived_claim
+        declared = {frozenset((str(c.get('ref')), str(c.get('near'))))
+                    for c in fragment['proximity']}
+        kept = []
+        for c in emitted.get('proximity') or []:
+            if derived_claim(c) and frozenset((str(c.get('ref')),
+                                               str(c.get('near')))) in declared:
+                report['contradictions'].append(
+                    f"{c.get('ref')} near {c.get('near')}: the brief declares "
+                    f"this relation -- the brief wins, and the derived crystal "
+                    f"claim is dropped")
+                continue
+            kept.append(c)
+        out['proximity'] = kept + list(fragment['proximity'])
     # #1051/#1054. APPENDED, for proximity's reason: `emit_intent` writes no
     # `arrays` and no `fixed_poses` by default, so there is no inference to
     # outrank.

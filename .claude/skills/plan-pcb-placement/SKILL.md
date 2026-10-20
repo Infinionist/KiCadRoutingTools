@@ -226,7 +226,7 @@ it. Then decide, from the part's function and its datasheet:
   off the board and names no face, but its cable leaves on one side: a
   2xN ribbon off a long side. Write that side as its `mating_face`, so the
   seat lays the header with its long side along the edge and the cable runs
-  off the board. Without it, tigard's 2x05 J5 lay across its edge on most
+  off the board. Without it, a 2x05 header lay across its edge on most
   seeds, its cable along the edge.
 - **The pin rows of a plug-in module** (a DIP or breadboard module, rows
   that go into a socket): the socket sets their spacing, so declare each row
@@ -271,9 +271,9 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/r1/
   is annealed; the same board, inputs and seed give the same placement.
   `--round` places `--scattered` seeds (default 6) that way, then
   `--clustered` seeds (default 6, numbered after them) that start with each
-  group's parts gathered round one random point instead: on boards dominated by one big IC (argus,
-  covg) those route clearly better, on others the scattered ones do, and the
-  judge takes whichever routes best.
+  group's parts gathered round one random point instead: on boards dominated
+  by one big IC those route clearly better, on others the scattered ones do,
+  and the judge takes whichever routes best.
   The run is 500 moves per movable part by default (`--moves N` sets the
   total), roughly 2 s for 25 parts.
 - **Place 12 seeds (6 scattered, 6 clustered); judge the 6 the objective
@@ -286,8 +286,8 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/r1/
   full route, 2000 resampled pools per board), this ships 50 open nets in
   all against 57 for 24 scattered seeds with the 12 cheapest judged, 71
   blocking against 101 and 6426 vias against 6495, in half the placing and
-  half the judging; glasgow_revC is the board it does worse on (3.8 open
-  nets against 0.6). Judging all 12 instead of the 6 cheapest ships worse
+  half the judging; one board of the 11 does worse (3.8 open nets against
+  0.6). Judging all 12 instead of the 6 cheapest ships worse
   (60 open nets): the judge is wrong more often with more to choose from.
   Exit 4 if any seed left a part illegal (its `illegal` list is not empty):
   never judge or keep that seed. Exit 2 if any failed outright.

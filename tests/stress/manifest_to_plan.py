@@ -52,6 +52,11 @@ REFUSED_TOOLS = {
         'places the board by its groups and one annealed objective; the plan '
         'format has no placement step. Run it BEFORE the plan and start the '
         'plan from the placed board'),
+    'place_movie.py': (
+        'films place_simple placing the board (and, with --route, the '
+        "placement skill's flow, routing included); the plan format has no "
+        'placement step. Run it BEFORE the plan and start the plan from the '
+        'placed board'),
     # place_optimize, place_route_loop, place_seed, place_groups,
     # place_candidates, place_reconstruct, place_portfolio, rank_rotations and
     # place_intent_sides are retired, but recorded manifests still name them,

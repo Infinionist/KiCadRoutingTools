@@ -364,17 +364,22 @@ def _signal_pads(b: _Board, x) -> List:
 def _crystals(b: _Board, out: List[Dict]) -> None:
     """A crystal (`roles.infer_role` says so) and the IC its two load nets
     reach. A PASSIVE crystal has exactly two signal pads -- pads on a
-    non-ground net that reaches another part -- on two distinct nets.
-    Anything else in the crystal role (an active oscillator: a supply pin,
-    a tie, an enable) is read only through a pad typed `output` or named
-    OUT / CLK, and is `unknown` without one."""
+    non-ground net that reaches another part -- on two distinct nets, and no
+    output. Anything else in the crystal role (an active oscillator: a supply
+    pin, a tie, an enable) is read only through a pad typed `output` or named
+    OUT / CLK, and is `unknown` without one -- read FIRST, because an
+    oscillator with an enable pin also has two signal pads (enable and
+    output) once its supply pin is set aside."""
     for x in sorted(b.fps, key=_nkey):
         if b.role[x]['role'] != 'crystal':
             continue
         sig = _signal_pads(b, x)
         ev = [f"{x} is in the role table's crystal row: "
               + '; '.join(b.role[x]['evidence'])]
-        if len(sig) == 2 and len({p.net_id for p in sig}) == 2:
+        outs = [p for p in b.copper[x]
+                if 'output' in str(getattr(p, 'pintype', '') or '').split('+')
+                or _fn_is(p, _OSC_OUT_FN)]
+        if not outs and len(sig) == 2 and len({p.net_id for p in sig}) == 2:
             votes: Dict[str, int] = {}
             for p in sig:
                 for r in b.net_parts.get(p.net_id, ()):
@@ -412,9 +417,6 @@ def _crystals(b: _Board, out: List[Dict]) -> None:
                         'proximity': ([_row(x, ic, subj, part, legs)]
                                       if legs else [])})
             continue
-        outs = [p for p in b.copper[x]
-                if 'output' in str(getattr(p, 'pintype', '') or '').split('+')
-                or _fn_is(p, _OSC_OUT_FN)]
         if not outs:
             out.append({
                 'role': 'unknown', 'candidate': 'crystal or oscillator',
