@@ -436,6 +436,7 @@ after a QFN fanout, as tigard's does. See
 |---|---|
 | `../place_simple.py` | The placer CLI: groups, one objective, annealed |
 | `../place_movie.py` | `place_simple` with a camera: a movie of the run |
+| `../placement_story.py` | The movie's story, shared by `place_movie` and the 3D movie (`movie3d/`): the hooks into `place_simple`, the piles, the fixed parts' flights, the scatter, the anneal's frame schedule and the captions; each movie only draws it |
 | `simple.py` | The objective: every term above, priced locally per move (spatial index, cached breakdowns, Rust kernels) |
 | `simple_anneal.py` | The simulated annealing: moves, schedule, overlap penalty, the final legality pass |
 | `grouping.py` | The groups file: schema, rails, cohesion and decap checks, folding claims into groups (`check_groups.py`) |
