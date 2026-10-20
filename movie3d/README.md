@@ -59,13 +59,15 @@ anneal), render 21 s (213 frames at 90 ms each, SwiftShader), encode 1 s. The
 result is 18 s of movie at 12 fps, 3.1 MB.
 
 Own options: `--movie`, `--fps` (12), `--width`/`--height` (1000x560),
-`--frames` (anneal frames, 120), `--speedup` (how much faster the anneal plays
-at its end, 4), `--work`, `--browser`, `--crf` (20).
+`--frames` (anneal frames, tweens included, 120), `--tween` (frames per anneal
+step, 3; 1 gives the 2D movie's cuts), `--speedup` (how much faster the anneal
+plays at its end, 4), `--work`, `--browser`, `--crf` (20).
 
 ## What it shows
 
-- **The board**: its outline extruded to the stackup's thickness, standing
-  above a table.
+- **The board**: its outline extruded, standing above a table. It is drawn at
+  most 0.8 mm thick (`DRAWN_THICKNESS`): at its real 1.6 mm the slab looked
+  like a block next to 0402 parts.
 - **Each part**:
   - its pads, with dark drills;
   - its courtyard, as a plate tinted in its group's colour;
@@ -91,12 +93,24 @@ The steps, in order:
    while the camera closes in on the board.
 4. Edge seats, when the intent declares any.
 5. The anneal, sampled on place_movie's schedule and playing faster as it goes.
-6. The best placement.
+   The frame budget (`--frames`) is shared: `--frames / --tween` snapshots,
+   each played as a move of `--tween` frames. A part that moved since the last
+   snapshot slides there with a small hop, turning the short way round, so
+   moves read as motion rather than cuts.
+6. The best placement: the parts go back to the best placement the anneal saw.
 7. Placed, held for 3 s.
 
-Over the whole movie the camera orbits slowly, from 25 to 80 degrees of
-azimuth at 38 degrees of elevation. Each frame is fitted to the board, or to
-the board and the piles.
+Over the whole movie the camera orbits slowly, 20 degrees either side of a
+base azimuth, at 46 degrees of elevation. Each frame is fitted to the board,
+or to the board and the piles.
+
+The base azimuth keeps the action in view. For every 10 degrees,
+`record.Recorder._hidden` measures how much the tall bodies (0.9 mm and
+taller) hide of the other parts, from the anneal on. A part counts as hidden
+when its centre lies in the ground a body hides behind itself: up to its
+height / tan(elevation) behind it. Parts that are moving count double, and
+the see-through fixed parts hide at half. The least-hidden azimuth wins, and a
+view across the board's long side wins a near tie.
 
 ## How it works
 
@@ -137,10 +151,10 @@ carried over.
   is drawn as its bounding box. No copper, silkscreen or zones are drawn.
 - A part the intent puts on the other face, or at a declared pose, is drawn
   there from the first frame. The 2D movie shows it moving there.
-- Anneal frames are snapshots, so parts jump between frames, as in the 2D
-  movie.
+- Early in the anneal one step covers about a hundred moves, so a tween is a
+  straight slide from one snapshot to the next, not the path the part took.
 - The story code (piles, schedule, captions) is a copy of place_movie's, not
   shared with it, so the two can drift apart.
 - Airwires are 1 px lines, because WebGL draws lines 1 px wide.
-- The fixed orbit can put a tall part in front of the action.
+- The occlusion measure uses the guessed box heights and part centres only.
 - Tested on two boards: a 25-part one and tigard.

@@ -42,7 +42,9 @@ REPO = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(REPO, 'py_placer'))
 import _path  # noqa: E402,F401  (py_router and py_tools on sys.path, as for every py_placer script)
 
-FRAMES = 120        # anneal frames per run (place_movie's default)
+FRAMES = 120        # anneal frames per run (place_movie's default): the budget the tweens share
+TWEEN = 3           # frames each anneal step takes: FRAMES / TWEEN snapshots, each played as a move
+HOP = 1.2           # mm a part hops at most on an anneal step (a shorter step hops less)
 SPEEDUP = 4.0       # the anneal plays this much faster at its end than at its start
 FPS = 12.0
 FLY = 8             # frames a fixed part takes to fly to its place (at most)
@@ -51,9 +53,13 @@ ZOOM_FROM = 0.3     # how far into the glide the camera starts closing in on the
 PILE_GAP = 2.0      # mm off the board's edge each pile lies, at most
 HOLD_S = 0.6        # seconds a step's frame holds
 END_S = 3.0         # seconds on the placed board (the camera keeps orbiting)
-TABLE = -3.0        # the table under the board (y of its top); the board stands on it on legs
-AZ0, AZ1 = 25.0, 80.0   # camera azimuth (deg from the board's south edge toward east), first to last frame
-ELEV = 38.0             # camera elevation, deg
+TABLE = -3.0        # the table under the board (y of its top); the board stands above it
+#: The board is DRAWN this thick at most: at its real 1.6 mm the slab read as
+#: a block next to 0402 parts (Andy, on the first stills).
+DRAWN_THICKNESS = 0.8
+SWEEP = 20.0        # the camera orbits this far either side of its base azimuth over the movie
+ELEV = 46.0         # camera elevation, deg
+TALL = 0.9          # mm: a body this tall or taller can hide the parts behind it
 
 #: Body heights (mm) by footprint name, then by reference prefix. A stand-in:
 #: the board file carries no heights the parser reads.
@@ -208,6 +214,8 @@ class Recorder:
                             r not in self.movable) for r in self.refs]
         self.side = {p['ref']: p['side'] for p in parts}
         self.bodyh = {p['ref']: (p['body'][4] if p['body'] else 0.0) for p in parts}
+        self.court = {p['ref']: p['court'] for p in parts}
+        self.fixed = {p['ref'] for p in parts if p['fixed']}
         # the airwires' nets: every net but ground, joining two parts or more
         nets = {}
         for i, ref in enumerate(self.refs):
@@ -226,9 +234,10 @@ class Recorder:
         self.board_poly = Polygon(outline).buffer(0)
         self._Point = Point
         st_total = sum(float(getattr(s, 'thickness', 0) or 0) for s in (bi.stackup or []))
-        self.d = st_total if 0.2 <= st_total <= 10 else 1.6
+        real = st_total if 0.2 <= st_total <= 10 else 1.6
+        self.d = min(real, DRAWN_THICKNESS)
         self.scene = {
-            'thickness': round(self.d, 4), 'table': TABLE, 'bounds': [bx0, by0, bx1, by1],
+            'thickness': round(self.d, 4), 'real_thickness': round(real, 4), 'table': TABLE, 'bounds': [bx0, by0, bx1, by1],
             'outline': outline, 'cutouts': cutouts, 'parts': parts, 'nets': nets, 'key': key,
             'colors': {'ground': list(th.rgb('ground')), 'board': [24, 74, 48],
                        'edge': list(th.rgb('board_edge')), 'pad': list(th.rgb('pad')),
@@ -387,12 +396,42 @@ class Recorder:
         self.shot(label, times=self.hold)
 
     def on_anneal(self, moves):
-        f = max(1, self.a.frames)
+        # snapshot i of F is taken at move N g(i/F): g' grows linearly to
+        # SPEEDUP times its start, so the play speeds up that much. The frame
+        # budget is shared: F = frames / tween snapshots, each played as a
+        # move of `tween` frames
+        self.tween = max(1, self.a.tween)
+        f = max(1, self.a.frames // self.tween)
         sp = max(1.0, self.a.speedup)
         g = lambda u: (u + (sp - 1) / 2 * u * u) / ((sp + 1) / 2)  # noqa: E731
         self.marks = [max(1, math.ceil(moves * g(i / f))) for i in range(1, f + 1)]
         self.n, self.k, self.mi, self.T = moves, 0, 0, math.inf
         self.since, self.note = set(), ''
+        self.prev = self._poses()
+        if getattr(self, 'anneal_from', None) is None:
+            self.anneal_from = len(self.frames)
+
+    def _poses(self):
+        return {r: (p.x, p.y, p.rot) for r, p in self.state.parts.items() if r in self.movable}
+
+    def play(self, label, moved, frames):
+        """The parts that moved since the last snapshot, played from where
+        they were to where they are over `frames` frames, each with a small
+        hop (a turn takes the short way round)."""
+        cur = self._poses()
+        went = [r for r in cur if cur[r] != self.prev.get(r, cur[r])]
+        for j in range(1, frames + 1):
+            t = _ease(j / frames)
+            poses, lifts = {}, {}
+            for r in went:
+                a, b = self.prev[r], cur[r]
+                turn = (b[2] - a[2] + 180.0) % 360.0 - 180.0
+                poses[r] = (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, (a[2] + turn * t) % 360.0)
+                dist = math.hypot(b[0] - a[0], b[1] - a[1])
+                h0, h1 = self.base(r, a[0], a[1]), self.base(r, b[0], b[1])
+                lifts[r] = h0 + (h1 - h0) * t + min(HOP, 0.3 + 0.25 * dist) * math.sin(math.pi * t)
+            self.shot(label, moved=moved, poses=poses, lifts=lifts)
+        self.prev = cur
 
     def on_seats(self, a):
         if a.seats:
@@ -424,33 +463,83 @@ class Recorder:
         if due:
             what = 'repair: shoving the overlaps apart' if a.shoving else \
                 f"anneal{self.note}: move {self.k}/{self.n}"
-            self.shot(f"{what} | T {T:.3g} | cost {self.cost:.0f} | overlap {self.ov:.2f} mm2",
-                      moved=self.since)
+            self.play(f"{what} | T {T:.3g} | cost {self.cost:.0f} | overlap {self.ov:.2f} mm2",
+                      self.since, 1 if a.shoving else self.tween)
             self.since = set()
 
     def on_annealed(self, res):
         legal = res.get('reseated') or []
-        self.shot(f"best placement, cost {res['best']:.0f}"
-                  + (f" | to the nearest legal pose: {', '.join(legal)}" if legal else ''),
-                  moved=legal, times=self.hold)
+        label = (f"best placement, cost {res['best']:.0f}"
+                 + (f" | to the nearest legal pose: {', '.join(legal)}" if legal else ''))
+        # the anneal ends on the best placement it saw: the parts go back to it
+        back = [r for r, q in self._poses().items() if q != self.prev.get(r, q)]
+        self.play(label, set(back) | set(legal), 2 * self.tween)
+        self.shot(label, moved=legal, times=self.hold)
 
     def placed(self, rc):
         cost = self.model.total()['cost']
         label = f"placed: cost {cost:.0f}" + (' | parts left illegal (see the log)' if rc == 4 else '')
         self.shot(label, times=max(1, int(round(END_S * self.a.fps))))
 
-    def finish(self):
-        """The timeline: each frame with the camera's azimuth (one slow
-        orbit over the whole movie) and elevation."""
+    def _hidden(self, base, step=4):
+        """How much the tall parts hide of the parts that move, over the
+        film, with the camera orbiting SWEEP either side of `base`: for every
+        sampled frame, each part whose centre lies in the ground a tall body
+        hides from the camera (up to its height / tan(elevation) behind it)
+        costs that body's height, double when the part is moving. A fixed
+        part is drawn see-through, so it hides at half. Only the frames from
+        the anneal on count: before it the parts lie piled, hiding each other
+        from every side."""
         n = len(self.frames)
+        cot = 1.0 / math.tan(math.radians(ELEV))
+        tall = [i for i, r in enumerate(self.refs)
+                if self.bodyh[r] >= TALL and self.side[r] == 'F']
+        half = {i: 0.5 * max(c[2] - c[0], c[3] - c[1])
+                for i, c in enumerate(self.court[r] for r in self.refs)}
+        cost = 0.0
+        for k in range(getattr(self, 'anneal_from', None) or 0, n, step):
+            f = self.frames[k]
+            az = math.radians(base + SWEEP * (2.0 * k / max(1, n - 1) - 1.0))
+            ux, uy = math.sin(az), math.cos(az)        # board plane, toward the camera
+            p = f['p']
+            moving = set(f['moved'])
+            for t in tall:
+                tx, ty, ht = p[t][0], p[t][1], self.bodyh[self.refs[t]]
+                w = ht / 2.0 if self.refs[t] in self.fixed else ht
+                for i, q in enumerate(p):
+                    if i == t:
+                        continue
+                    vx, vy = q[0] - tx, q[1] - ty
+                    behind = -(vx * ux + vy * uy)
+                    side = abs(vx * uy - vy * ux)
+                    if 0.0 < behind < ht * cot + half[t] and side < half[t] + half[i]:
+                        cost += w * (2.0 if i in moving else 1.0)
+        return cost
+
+    def finish(self):
+        """The timeline: each frame with the camera's azimuth and
+        elevation. The camera orbits SWEEP either side of a base azimuth,
+        chosen so that the tall parts hide the least of the parts that move;
+        a view across the board's long side wins a near tie."""
+        n = len(self.frames)
+        bx0, by0, bx1, by1 = self.pcb.board_info.board_bounds
+        long_x = (bx1 - bx0) >= (by1 - by0)
+        scores = []
+        for base in range(0, 360, 10):
+            # 0: the camera south of the board; across the long side is
+            # 90/270 for a tall board, 0/180 for a wide one
+            across = abs(math.cos(math.radians(base))) if long_x else abs(math.sin(math.radians(base)))
+            scores.append((self._hidden(base) * (1.0 + 0.25 * (1.0 - across)) + 0.5 * (1.0 - across),
+                           base))
+        self.base_az = min(scores)[1]
         out = []
         for i, f in enumerate(self.frames):
             g = dict(f)
-            g['az'] = round(AZ0 + (AZ1 - AZ0) * (i / max(1, n - 1)), 4)
+            g['az'] = round(self.base_az + SWEEP * (2.0 * i / max(1, n - 1) - 1.0), 4)
             g['el'] = ELEV
             out.append(g)
         return {'fps': self.a.fps, 'width': self.a.width, 'height': self.a.height,
-                'refs': self.refs, 'frames': out}
+                'refs': self.refs, 'base_az': self.base_az, 'frames': out}
 
 
 def install(rec):
@@ -513,7 +602,11 @@ def own_args(ap, work_required=True):
     ap.add_argument('--work', required=work_required,
                     help='directory for scene.json and timeline.json' + ('' if work_required else
                          " (default: OUT's name + _movie3d)"))
-    ap.add_argument('--frames', type=int, default=FRAMES, help=f'anneal frames (default {FRAMES})')
+    ap.add_argument('--frames', type=int, default=FRAMES,
+                    help=f'anneal frames, tweens included (default {FRAMES})')
+    ap.add_argument('--tween', type=int, default=TWEEN,
+                    help=f'frames per anneal step: --frames / --tween snapshots, each played '
+                         f'as a move (default {TWEEN}; 1 = cuts, as the 2D movie)')
     ap.add_argument('--speedup', type=float, default=SPEEDUP,
                     help=f'how much faster the anneal plays at its end (default {SPEEDUP:g})')
     ap.add_argument('--fps', type=float, default=FPS, help=f'frames per second (default {FPS:g})')
