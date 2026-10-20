@@ -13,10 +13,14 @@ together; `py_placer/place_simple.py` arranges it over several seeds; a fast
 route of each keeps the best. When none routes clean, you change what you
 gave it and place again.
 
-Invocation: `/plan-pcb-placement <mode> <board.kicad_pcb> [intent.json] [--rounds N]`,
+Invocation: `/plan-pcb-placement <mode> <board.kicad_pcb> [intent.json] [--rounds N]
+[--scattered N] [--clustered N] [--judge N]`,
 where mode is `place` or `full`. With no mode, use `full`. A given
 `intent.json` is the intent: use it in place of emitting one (§3.2). `--rounds N` is
-the most placement rounds (§3.6), default 3. The run stops at the first round
+the most placement rounds (§3.6), default 3. `--scattered`, `--clustered` and
+`--judge` are each round's seeds of each start and how many are judged
+(§3.5), passed to `place_simple --round` as given; its defaults (6, 6, 6)
+apply when they are not. The run stops at the first round
 whose best seed's fast route has no blocking net, so a board that routes
 clean after one round gets no review and no input changes.
 
@@ -251,8 +255,8 @@ no `edge_connector` error.
 
 ```bash
 python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/r1/s{seed}.kicad_pcb' \
-    --groups wk/<run>/groups.json --intent wk/<run>/intent.json --seeds 0-11 \
-    --clustered-seeds 6-11 --jobs 4 --json 'wk/<run>/r1/s{seed}.json'
+    --groups wk/<run>/groups.json --intent wk/<run>/intent.json --round --jobs 4 \
+    --json 'wk/<run>/r1/s{seed}.json'
 ```
 
 - **The seeds run in parallel, then the fast routes.** `--seeds`
@@ -265,14 +269,17 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/r1/
 
 - Every part not locked or seated by the intent starts at a random place and
   is annealed; the same board, inputs and seed give the same placement.
-  Seeds 6-11 (`--clustered-seeds`) start with each group's parts gathered
-  round one random point instead: on boards dominated by one big IC (argus,
+  `--round` places `--scattered` seeds (default 6) that way, then
+  `--clustered` seeds (default 6, numbered after them) that start with each
+  group's parts gathered round one random point instead: on boards dominated by one big IC (argus,
   covg) those route clearly better, on others the scattered ones do, and the
   judge takes whichever routes best.
   The run is 500 moves per movable part by default (`--moves N` sets the
   total), roughly 2 s for 25 parts.
-- **Place 12 seeds (0-11, 6-11 clustered); judge the 6 the objective rates
-  best.** Seeds differ more than most input changes, and the anneal's own
+- **Place 12 seeds (6 scattered, 6 clustered); judge the 6 the objective
+  rates best.** `--round` ends by naming them: printed, and written to
+  `r<N>/judge.json` (`judge`, cheapest first; a seed that left a part
+  illegal is never named). Seeds differ more than most input changes, and the anneal's own
   cost (`final.cost` in each `s<S>.json`) says which are worth a judging
   route: the seed the judge would pick out of 16 is in the cheaper half
   85-100% of the time. Over 11 boards from 25 to 350 parts (each seed's
@@ -308,8 +315,8 @@ objective missed, and place again, up to `--rounds` rounds in all (default
 net the fast route left open, but a placement whose fast routes all leave
 nets open is one the review can still improve.
 
-1. **Fast-route the 6 legal seeds with the lowest `final.cost`** (a seed
-   whose `s<S>.json` lists `illegal` parts is out) with the board's routing
+1. **Fast-route the seeds `r<N>/judge.json` names** (the `--judge` legal
+   seeds of lowest `final.cost`) with the board's routing
    chain (the recipe
    is `plan-pcb-routing`'s: planes, fanout, the decap clearance step,
    `route.py`), giving `route.py` and every `route_diff.py` step `--quick 2`,

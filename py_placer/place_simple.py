@@ -60,6 +60,14 @@ import _path  # noqa: F401  (py_placer -> py_router/py_tools on sys.path)
 MOVES_PER_PART = 500
 #: Further anneals, each from a fresh start, when one leaves parts illegal.
 RESTARTS = 2
+#: `--round`: the seeds placed with each start, and how many of the legal ones
+#: of lowest `final.cost` are named for a judging route. Over 11 boards, 6
+#: scattered + 6 clustered with the 6 cheapest judged shipped fewer open nets
+#: and vias than 24 scattered with 12 judged, in half the time; judging all 12
+#: shipped worse (the judge errs more with more to choose from).
+ROUND_SCATTERED = 6
+ROUND_CLUSTERED = 6
+ROUND_JUDGED = 6
 
 import argparse
 import json
@@ -261,8 +269,9 @@ def _seed_list(spec):
 
 def _many_seeds(ap, a):
     """`--seeds`: each seed a `--seed` run of this script in its own process,
-    `--jobs` at a time, every other option passed through as parsed. Exit 2
-    if any seed failed outright, else 4 if any left parts illegal, else 0."""
+    `--jobs` at a time, every other option passed through as parsed; with
+    `--round`, then the seeds to judge (`_name_judged`). Exit 2 if any seed
+    failed outright, else 4 if any left parts illegal, else 0."""
     import subprocess
     try:
         seeds = _seed_list(a.seeds)
@@ -278,7 +287,8 @@ def _many_seeds(ap, a):
         print("place_simple: with several --seeds, OUT (and --json) must carry {seed}",
               file=sys.stderr)
         return 2
-    skip = {'help', 'board', 'out', 'seed', 'seeds', 'jobs', 'json'}
+    skip = {'help', 'board', 'out', 'seed', 'seeds', 'jobs', 'json',
+            'round', 'scattered', 'clustered', 'judge'}
     passed = []
     for act in ap._actions:
         if act.dest in skip or not act.option_strings:
@@ -298,7 +308,7 @@ def _many_seeds(ap, a):
                + passed + ['--seed', str(s)] + (['--json', js] if js else []))
         runs.append((s, out, cmd))
     print(f"place_simple: seeds {', '.join(map(str, seeds))} ({jobs} at a time)")
-    live, done = [], {}
+    live, done, summaries = [], {}, {}
     pending = list(runs)
     while pending or live:
         while pending and len(live) < jobs:
@@ -320,6 +330,7 @@ def _many_seeds(ap, a):
                 if line.startswith('JSON_SUMMARY: '):
                     summary = json.loads(line[len('JSON_SUMMARY: '):])
         if summary:
+            summaries[s] = summary
             fin = summary['final']
             ill = summary.get('illegal') or []
             print(f"  seed {s}{' (clustered)' if summary.get('start') == 'clustered' else ''}: "
@@ -328,8 +339,29 @@ def _many_seeds(ap, a):
                   + (f", no legal pose for {', '.join(ill)}" if ill else '') + f" -> {out}")
         else:
             print(f"  seed {s}: exit {rc}, no summary (see {os.path.splitext(out)[0]}.log)")
+    if a.round:
+        _name_judged(a, seeds, summaries)
     rcs = set(done.values())
     return 2 if rcs - {0, 4} else (4 if 4 in rcs else 0)
+
+
+def _name_judged(a, seeds, summaries):
+    """`--round`'s last step: the `--judge` legal seeds of lowest
+    `final.cost`, printed and written to `judge.json` beside the seeds' boards
+    (`judge` in judging order, cheapest first; `scattered`, `clustered` and
+    `illegal` list the round's seeds by start and verdict)."""
+    legal = sorted((summaries[s]['final']['cost'], s) for s in seeds
+                   if s in summaries and not summaries[s].get('illegal'))
+    judge = [s for _c, s in legal[:a.judge]]
+    doc = {'judge': judge,
+           'scattered': [s for s in seeds if summaries.get(s, {}).get('start') != 'clustered'],
+           'clustered': [s for s in seeds if summaries.get(s, {}).get('start') == 'clustered'],
+           'illegal': [s for s in seeds if summaries.get(s, {}).get('illegal')]}
+    path = os.path.join(os.path.dirname(a.out.format(seed=seeds[0])), 'judge.json')
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(doc, f, indent=1)
+    print(f"place_simple: judge seeds {', '.join(map(str, judge)) or 'none'} "
+          f"(the {a.judge} legal seeds of lowest cost) -> {path}")
 
 
 def main(argv=None):
@@ -403,6 +435,19 @@ def main(argv=None):
                     help='the seeds, listed as --seeds lists them, that start with each '
                          "group's movable members gathered round one random point of the "
                          'board instead of every part scattered on its own (default: none)')
+    ap.add_argument('--round', action='store_true',
+                    help="place one round of the plan-pcb-placement flow: --scattered seeds "
+                         "started scattered, then --clustered seeds started clustered, numbered "
+                         "from 0 (OUT and --json carry {seed}), and name the --judge legal seeds "
+                         "of lowest cost for a judging route, printed and written to judge.json "
+                         "beside the boards")
+    ap.add_argument('--scattered', type=int, default=ROUND_SCATTERED,
+                    help=f'with --round, the seeds started scattered (default {ROUND_SCATTERED})')
+    ap.add_argument('--clustered', type=int, default=ROUND_CLUSTERED,
+                    help=f'with --round, the seeds started clustered (default {ROUND_CLUSTERED})')
+    ap.add_argument('--judge', type=int, default=ROUND_JUDGED,
+                    help=f'with --round, how many legal seeds of lowest cost to name for a '
+                         f'judging route (default {ROUND_JUDGED})')
     ap.add_argument('--jobs', type=int, default=0,
                     help='with --seeds, how many seeds run at once (default: one per '
                          'seed, at most 4)')
@@ -414,6 +459,18 @@ def main(argv=None):
         print(f"place_simple: --clustered-seeds {a.clustered_seeds!r} is not a list like 0-3 "
               "or 0,1,2,3", file=sys.stderr)
         return 2
+    if a.round:
+        if a.seeds or a.clustered_seeds:
+            print("place_simple: --round numbers its own seeds; drop --seeds and "
+                  "--clustered-seeds", file=sys.stderr)
+            return 2
+        n = a.scattered + a.clustered
+        if a.scattered < 0 or a.clustered < 0 or n < 1 or a.judge < 0:
+            print("place_simple: --round needs --scattered and --clustered of 0 or more, "
+                  "at least one seed, and --judge of 0 or more", file=sys.stderr)
+            return 2
+        a.seeds = f'0-{n - 1}'
+        a.clustered_seeds = f'{a.scattered}-{n - 1}' if a.clustered else None
     if a.seeds:
         return _many_seeds(ap, a)
     t0 = time.time()

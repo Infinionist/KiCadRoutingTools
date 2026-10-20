@@ -58,11 +58,11 @@ python3 -X utf8 py_tools/check_floorplan.py wk/tig/fixed.kicad_pcb --emit-intent
 # 4. Check the groups file against the board.
 python3 -X utf8 py_tools/check_groups.py wk/tig/fixed.kicad_pcb --groups docs/examples/tigard.groups.json
 
-# 5. Place 12 seeds (round 1), four at a time: {seed} becomes 0, 1, ... 11;
-#    seeds 6-11 start with each group's parts gathered.
+# 5. Place round 1, four seeds at a time: 6 scattered (seeds 0-5) and 6 with
+#    each group's parts gathered (6-11), then name the 6 to judge.
 python3 -X utf8 py_placer/place_simple.py wk/tig/fixed.kicad_pcb 'wk/tig/r1/s{seed}.kicad_pcb' \
     --groups docs/examples/tigard.groups.json --intent wk/tig/intent.json \
-    --seeds 0-11 --clustered-seeds 6-11 --jobs 4 --json 'wk/tig/r1/s{seed}.json'
+    --round --jobs 4 --json 'wk/tig/r1/s{seed}.json'
 
 # 6. Check a seed, and look at it.
 python3 -X utf8 py_tools/check_assembly.py wk/tig/r1/s0.kicad_pcb --baseline wk/tig/fixed.kicad_pcb
@@ -79,7 +79,7 @@ What to read in the output:
   `WARN` (a part with more signal links to another group than to its own, or a
   decap whose chips are all in other groups: a judgement to look at, not a
   mistake by itself).
-- **`place_simple --seeds 0-11`** runs one process per seed (`--jobs N`
+- **`place_simple --round`** runs one process per seed (`--jobs N`
   limits how many at once; the default is one per seed, at most 4) and prints
   one line per seed: `seed 0: cost 2897.5, 38000 moves in 14.7 s ->
   wk/tig/r1/s0.kicad_pcb`. Each seed's own log goes beside its board
@@ -221,8 +221,9 @@ with an `edge`): that one is held to its edge, its mating face out and flush
 with the low end of its overhang band, and its moves only slide it along the
 edge -- past a locked part rather than through it -- or, when it has no
 mating face (a vertical header, a test pad), turn it. At the end the parts on
-one edge are pushed apart along it in their order. A seed named in
-`--clustered-seeds` starts instead with each group's movable parts gathered
+one edge are pushed apart along it in their order. A clustered seed (`--round`'s
+`--clustered` seeds, or any named in `--clustered-seeds`) starts instead with
+each group's movable parts gathered
 round one random point, in a square of their courtyards' area, so the anneal
 arranges whole groups from the first move. Neither start is better on every
 board: on boards dominated by one big IC the clustered start routes better
@@ -310,9 +311,11 @@ seed, and copy its placement (`$R/s<S>.kicad_pcb`, never the `--quick` board)
 to `wk/tig/final.kicad_pcb` with `copy_board.py`; in `full` mode the skill then
 routes it with `/plan-pcb-routing`, without `--quick`.
 
-**The skill's round rule.** A round places seeds 0-11, 6-11 of them started
-clustered (below), fast-routes the 6 legal ones with the lowest `final.cost`
-and keeps the best. The run stops at the first round whose best fast route has no
+**The skill's round rule.** A round is `place_simple --round`: `--scattered`
+seeds (default 6), then `--clustered` seeds started clustered (default 6,
+below), and it names the `--judge` legal seeds of lowest `final.cost`
+(default 6) in `r<N>/judge.json`. The skill fast-routes those and keeps the
+best. The run stops at the first round whose best fast route has no
 blocking net. Otherwise the agent reviews it (`py_tools/route_review.py` lists
 the open nets with the parts holding their loose pads, the nets with the most
 vias and the longest detours, the congested areas and the two-pad parts turned

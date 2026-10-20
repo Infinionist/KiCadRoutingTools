@@ -415,7 +415,7 @@ def build_placement_prompt(backend, workdir, staged_board, mode, extra="",
     """The full skill prompt for a placement run (via backend.skill_prompt).
 
     `rounds` is the skill's `--rounds N`: the most placement rounds. A round
-    places seeds 0-11 (6-11 started clustered), fast-routes the 6 its cost rates best and keeps the best; the skill stops at
+    places 12 seeds (6 started scattered, 6 clustered), fast-routes the 6 its cost rates best and keeps the best; the skill stops at
     the first round whose best fast route has no blocking net. None leaves
     the skill's own default.
     """
@@ -554,8 +554,8 @@ def scan_candidates(workdir, active=None):
     status, mtime}. `placed`/`fast` are the board paths or None; the metrics
     are None until the fast route is scored. status: "placing" (no finished
     placement yet), "routing" (placed, no score yet), "not judged" (placed,
-    and outside the JUDGED_PER_ROUND legal seeds of lowest `final.cost` the
-    skill fast-routes), "illegal" (its report lists illegal parts, so it is
+    and not among the seeds the round's `judge.json` names for the skill to
+    fast-route), "illegal" (its report lists illegal parts, so it is
     never judged), "routed" (scored, with blocking nets), "clean" (scored,
     blocking 0), "best" (the best scored row of its round). `active` = the
     (round, seed) pairs the run is placing right now (`active_candidates`),
@@ -612,17 +612,41 @@ def scan_candidates(workdir, active=None):
     return out
 
 
-#: The skill fast-routes this many legal seeds a round, those of lowest
-#: `final.cost` (plan-pcb-placement §3.6); the rest are placed and never
-#: routed, and must not read "routing" forever.
-JUDGED_PER_ROUND = 6
+def _round_defaults():
+    """`place_simple --round`'s defaults: (scattered, clustered, judged) --
+    the seeds of each start a round places, and how many legal seeds of
+    lowest `final.cost` it names for a judging route. place_simple is the
+    authority; the import is guarded like `SIBLING_EXTS` above (KiCad's plugin
+    loader does not put py_placer on sys.path) and the fallback is a copy."""
+    try:
+        from place_simple import ROUND_CLUSTERED, ROUND_JUDGED, ROUND_SCATTERED
+        return ROUND_SCATTERED, ROUND_CLUSTERED, ROUND_JUDGED
+    except Exception:                                      # noqa: BLE001
+        return 6, 6, 6
+
+
+def _named_judged(round_rows):
+    """The seeds the round's `judge.json` names (`place_simple --round` writes
+    it beside the round's boards once every seed is placed), else None."""
+    for r in round_rows:
+        if r["placed"]:
+            try:
+                with open(os.path.join(os.path.dirname(r["placed"]), "judge.json"),
+                          encoding="utf-8") as fh:
+                    doc = json.load(fh)
+                return {int(s) for s in doc.get("judge") or ()}
+            except (OSError, ValueError, TypeError, AttributeError):
+                return None
+    return None
 
 
 def _mark_unjudged(round_rows):
     """Re-label one round's placed, unscored rows that the skill will not
     judge: "illegal" when the seed's report lists illegal parts, "not judged"
-    when JUDGED_PER_ROUND legal seeds of lower `final.cost` exist. Until that
-    many legal reports are in, every unscored row stays "routing"."""
+    when the round's `judge.json` does not name it -- or, without one, when
+    `--round`'s default number of legal seeds of lower `final.cost` exist
+    (a round placed by an older run). Until then,
+    every unscored row stays "routing"."""
     legal = []                         # (final.cost, row) of every legal seed
     for r in round_rows:
         if not r["placed"] or r["status"] not in ("routing", "routed", "clean"):
@@ -641,10 +665,17 @@ def _mark_unjudged(round_rows):
         cost = (rep.get("final") or {}).get("cost")
         if isinstance(cost, (int, float)):
             legal.append((cost, r))
-    if len(legal) < JUDGED_PER_ROUND:
+    named = _named_judged(round_rows)
+    if named is not None:
+        for _cost, r in legal:
+            if r["status"] == "routing" and r["seed"] not in named:
+                r["status"] = "not judged"
+        return
+    judged = _round_defaults()[2]
+    if len(legal) < judged:
         return
     legal.sort(key=lambda t: t[0])
-    for _cost, r in legal[JUDGED_PER_ROUND:]:
+    for _cost, r in legal[judged:]:
         if r["status"] == "routing":
             r["status"] = "not judged"
 
@@ -694,6 +725,12 @@ def mark_kept(rows, workdir, board=None):
 
 _ACTIVE_RE = re.compile(r"\br(\d+)[/\\]s(\d+|\{seed\})\.kicad_pcb\b")
 _SEEDS_RE = re.compile(r"--seeds[ =]([\d,\-]+)")
+_ROUND_RE = re.compile(r"--round\b")
+
+
+def _int_opt(line, flag, default):
+    m = re.search(re.escape(flag) + r"[ =](\d+)", line)
+    return int(m.group(1)) if m else default
 
 
 def _seed_spec(spec):
@@ -709,7 +746,8 @@ def _seed_spec(spec):
 def active_candidates(transcript_tail):
     """[(round, seed)] the newest place_simple command is writing: one seed
     (`r<N>/s<S>.kicad_pcb`), or every seed of the parallel form
-    (`r<N>/s{seed}.kicad_pcb --seeds 0-3`). [] when it names no round."""
+    (`r<N>/s{seed}.kicad_pcb --seeds 0-3`, or `--round`, whose seeds are
+    `--scattered` + `--clustered` from 0). [] when it names no round."""
     for line in reversed(list(transcript_tail or ())):
         if "place_simple.py" in line:
             m = _ACTIVE_RE.search(line)
@@ -719,7 +757,13 @@ def active_candidates(transcript_tail):
             if m.group(2).isdigit():
                 return [(n, int(m.group(2)))]
             seeds = _SEEDS_RE.search(line)
-            return [(n, s) for s in _seed_spec(seeds.group(1))] if seeds else []
+            if seeds:
+                return [(n, s) for s in _seed_spec(seeds.group(1))]
+            if _ROUND_RE.search(line):
+                sc, cl, _judged = _round_defaults()
+                count = _int_opt(line, "--scattered", sc) + _int_opt(line, "--clustered", cl)
+                return [(n, s) for s in range(count)]
+            return []
     return []
 
 
@@ -801,6 +845,10 @@ _ARTIFACT_STAGES = (
 # a round folder's seed: r<N>/s<S>.
 _RS = r"\br(\d+)[/\\]s(\d+)"
 _COMMAND_STAGES = (
+    # A round: --round into r<N>/s{seed}.kicad_pcb.
+    (re.compile(r"place_simple\.py\b(?=.*--round\b)(?=.*\br(\d+)[/\\]s\{seed\})"),
+     "round {0}: placing its seeds"),
+    (re.compile(r"place_simple\.py\b.*?--round\b"), "placing a round of seeds"),
     # The parallel form: --seeds 0-3 into r<N>/s{seed}.kicad_pcb.
     (re.compile(r"place_simple\.py\b(?=.*--seeds[ =]([\d,\-]+))"
                 r"(?=.*\br(\d+)[/\\]s\{seed\})"), "round {1}: placing seeds {0}"),

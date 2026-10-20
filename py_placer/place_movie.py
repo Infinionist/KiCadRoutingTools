@@ -5,7 +5,7 @@
     python3 -X utf8 py_placer/place_movie.py board.kicad_pcb placed.kicad_pcb \\
         --groups groups.json --intent intent.json [--seed 0] [--movie placed.mp4]
     python3 -X utf8 py_placer/place_movie.py board.kicad_pcb placed.kicad_pcb \\
-        --groups groups.json --intent intent.json --route ch32v003_usb:6 [--seeds 0-11]
+        --groups groups.json --intent intent.json --route ch32v003_usb:6 [--scattered 6 --clustered 6 --judge 6]
 
 BOARD and OUT come first; every other argument but this tool's own is
 place_simple.py's (see `place_simple.py --help`). The placement is exactly
@@ -35,9 +35,10 @@ frame outlined in white, and a caption, in the routing movie's style
 
 With --route BOARD:SET (a stress-corpus board whose recorded chain routes
 this one: `tests/stress/placement_ab/route_placed.py`), it runs the placement
-skill's flow first and films it after: every seed of --seeds is placed (by
-default the skill's round, seeds 0-11 with 6-11 started clustered), the
---judge legal seeds the objective rates cheapest are fast-routed (the chain
+skill's flow first and films it after: the skill's round is placed
+(--scattered seeds started scattered, then --clustered started clustered, as
+`place_simple --round`), the --judge legal seeds the objective rates cheapest
+are fast-routed (the chain
 with `--quick 2`) and scored by quick_score, the best (fewest blocking, then
 vias, copper, segments) is routed in full. The movie films that seed's
 placement -- the one routed in full -- and goes on:
@@ -557,14 +558,6 @@ def _route(placed, name, set_, out, quick):
     return json.load(open(sc)) if r.returncode == 0 and os.path.isfile(sc) else None
 
 
-def _seed_list(spec):
-    out = []
-    for part in spec.split(','):
-        lo, _, hi = part.partition('-')
-        out += range(int(lo), int(hi or lo) + 1)
-    return out
-
-
 def _done(work, key):
     """The score of a route route_placed.py already finished in `work/key`."""
     p = os.path.join(work, key, 'score.json')
@@ -580,7 +573,7 @@ def run_flow(a, board, out, opts, work):
     if a.fresh:
         shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work, exist_ok=True)
-    seeds = _seed_list(a.seeds)
+    seeds = list(range(a.scattered + a.clustered))
     todo = [s for s in seeds if not (os.path.isfile(os.path.join(work, f's{s}.json'))
                                      and os.path.isfile(os.path.join(work, f's{s}.kicad_pcb')))]
     if todo:
@@ -745,6 +738,7 @@ def film_routes(a, movie, work, judged, scores, best, full, filmed):
 
 def main(argv=None):
     from route_movie import FPS, SIZE, MovieWriter
+    from place_simple import ROUND_CLUSTERED, ROUND_JUDGED, ROUND_SCATTERED
     ap = argparse.ArgumentParser(
         description=__doc__.split('\n')[0], allow_abbrev=False,   # --seed is place_simple's
         epilog="BOARD and OUT come first; every other argument is place_simple.py's "
@@ -762,11 +756,14 @@ def main(argv=None):
     ap.add_argument('--route', metavar='BOARD:SET',
                     help='run and film the placement flow, routing with this stress-corpus '
                          "board's recorded chain (e.g. ch32v003_usb:6)")
-    ap.add_argument('--seeds', help="with --route, the seeds placed (default: the skill's "
-                                    'round, 0-11 with --clustered-seeds 6-11)')
-    ap.add_argument('--judge', type=int, default=6,
-                    help='with --route, how many of the cheapest legal seeds are fast-routed '
-                         '(default 6)')
+    ap.add_argument('--scattered', type=int, default=ROUND_SCATTERED,
+                    help=f'with --route, the seeds started scattered (default {ROUND_SCATTERED})')
+    ap.add_argument('--clustered', type=int, default=ROUND_CLUSTERED,
+                    help=f'with --route, the seeds started clustered, numbered after the '
+                         f'scattered ones (default {ROUND_CLUSTERED})')
+    ap.add_argument('--judge', type=int, default=ROUND_JUDGED,
+                    help=f'with --route, how many of the cheapest legal seeds are fast-routed '
+                         f'(default {ROUND_JUDGED})')
     ap.add_argument('--jobs', type=int, default=4,
                     help='with --route, placements and fast routes run at once (default 4)')
     ap.add_argument('--route-jobs', type=int, default=0,
@@ -783,8 +780,6 @@ def main(argv=None):
     board, out, opts = rest[0], rest[1], rest[2:]
     movie_path = a.movie or os.path.splitext(out)[0] + '.mp4'
     if not a.route:
-        if a.seeds:
-            ap.error('--seeds needs --route: a placement movie is one seed (--seed N)')
         movie = MovieWriter(movie_path, a.fps)
         film = Film(a, movie)
         install(film)
@@ -798,11 +793,12 @@ def main(argv=None):
     if ':' not in a.route:
         ap.error('--route BOARD:SET, e.g. ch32v003_usb:6')
     work = os.path.abspath(a.work or os.path.splitext(out)[0] + '_work')
-    opts = _strip(opts, '--seed', '--json', '--seeds', '--jobs')
-    if not a.seeds:             # the skill's round
-        a.seeds = '0-11'
-        if not any(x == '--clustered-seeds' or x.startswith('--clustered-seeds=') for x in opts):
-            opts += ['--clustered-seeds', '6-11']
+    opts = _strip(opts, '--seed', '--json', '--seeds', '--jobs', '--clustered-seeds')
+    n = a.scattered + a.clustered
+    if a.scattered < 0 or a.clustered < 0 or n < 1 or a.judge < 1:
+        ap.error('--scattered and --clustered of 0 or more, at least one seed, --judge 1 or more')
+    if a.clustered:             # the round's clustered seeds, for the placing and the filming
+        opts += ['--clustered-seeds', f'{a.scattered}-{n - 1}']
     got = run_flow(a, board, out, opts, work)
     if got is None:
         return 2

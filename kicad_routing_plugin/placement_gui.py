@@ -480,7 +480,7 @@ class PlacementTab(wx.Panel):
                                        initial=DEFAULT_ROUNDS)
         self.rounds_ctrl.SetToolTip(
             "The most placement rounds (the skill's --rounds). A round places "
-            "seeds 0-11 (6-11 started clustered), fast-routes the 6 its cost rates best and keeps the best; the run stops at "
+            "12 seeds (6 started scattered, 6 clustered), fast-routes the 6 its cost rates best and keeps the best; the run stops at "
             "the first round whose best fast route has no blocking net, else "
             "the agent reviews it, changes the groups, hints or claims and "
             "places again.")
@@ -507,7 +507,7 @@ class PlacementTab(wx.Panel):
         self.place_btn = wx.Button(self, label="Place (AI)")
         self.place_btn.SetToolTip(
             "Claude Code runs /plan-pcb-placement place headless on a "
-            "snapshot of this board: it groups the parts, places seeds 0-11 "
+            "snapshot of this board: it groups the parts, places 12 seeds "
             "and keeps the one whose fast route is best, reviewing and "
             "placing again up to Rounds rounds while none routes clean. "
             "Artifacts land in a krt_placement folder next to the board file, "
@@ -821,7 +821,7 @@ class PlacementTab(wx.Panel):
         """Raw stream-json tap: feed FULL Bash commands to the monitor.
 
         The formatted transcript prefers the Bash tool's short description
-        and truncates at ~120 chars, which usually loses the `--seeds 0-11`
+        and truncates at ~120 chars, which usually loses the `--round`
         and `r<N>/s<S>` arguments that stage derivation keys on - the raw
         event still carries them.
         """
