@@ -70,12 +70,17 @@ def flow(a, rest):
     if got is None:
         return 2, None
     judged, scores, best, full = got
-    rc, rec = record.place(a, [board, os.path.join(work, f'film3d_s{best}.kicad_pcb'), *opts,
-                               '--seed', str(best)])
+    # film a seed the judge did not pick: the cheapest by the objective, or
+    # the next cheapest when that one is the best (judged runs cheapest first)
+    filmed = next((s for s in judged if s in scores and s != best), best)
+    print(f"make_movie: filming seed {filmed} (the objective's cheapest the judge did not pick); "
+          f"the best is seed {best}")
+    rc, rec = record.place(a, [board, os.path.join(work, f'film3d_s{filmed}.kicad_pcb'), *opts,
+                               '--seed', str(filmed)])
     if rec.scene is None:
         return rc or 2, None
     rec.placed(rc, rec.hold)
-    film_routes(rec, work, judged, scores, best, full, budget=a.route_frames)
+    film_routes(rec, work, judged, scores, best, full, filmed, budget=a.route_frames)
     subprocess.run([sys.executable, os.path.join(record.REPO, 'py_router', 'copy_board.py'),
                     os.path.join(work, f's{best}.kicad_pcb'), out], check=False, capture_output=True)
     print(f"make_movie: {out} = seed {best}; its full route in {os.path.join(work, f'full_s{best}', 'out')}")
@@ -197,6 +202,9 @@ def main(argv=None):
         fast = [i for i, lab in enumerate(labels) if lab.startswith('fast route, seed')]
         if fast:
             stills['fast_route'] = fast[0]
+        seeds = [i for i, lab in enumerate(labels) if lab.startswith('the best: seed')]
+        if seeds:
+            stills['seeds'] = seeds[0]
     stills['final'] = len(labels) - 1
     base = os.path.splitext(movie)[0]
     for name, i in stills.items():

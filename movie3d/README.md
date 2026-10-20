@@ -3,9 +3,10 @@
 A 3D take on `py_placer/place_movie.py`. It tells the same placement story
 (the input with its piles, the fixed parts flying to their places, the
 scatter, the anneal, the best placement) on a 3D board, rendered to an .mp4.
-With `--route`, it also films place_movie's flow: the routes of the best
-seed, with copper appearing and ripped copper going. It is a prototype, to
-judge whether a 3D movie is worth more work.
+With `--route`, it also films place_movie's flow: one seed's placement and
+fast route, then every judged seed's board side by side, the best one picked,
+and its routes, with copper appearing and ripped copper going. It is a
+prototype, to judge whether a 3D movie is worth more work.
 
 **The story is shared with the 2D movie.** `py_placer/placement_story.py`
 holds it: place_simple's hooks, the piles, the schedule and the captions.
@@ -70,8 +71,14 @@ name + `_work`, place_movie's default, so a 2D flow run's work is reused):
 2. the `--judge` 6 cheapest legal seeds are fast-routed;
 3. the best of them is routed in full.
 
-The movie records the best seed's placement, then plays its routes on the 3D
-board. OUT is that seed. The stills add `_placed.png` and `_fast_route.png`.
+The movie films a seed the judge did NOT pick, so the pick is something the
+viewer sees happen: the judged seed the objective rates cheapest, or the next
+cheapest when that one is the judge's best. It records that seed's placement
+and plays its fast route. Then the camera pulls back to every judged seed's
+fast-routed board side by side and frames the best one. It flies in to the
+best seed, clears its fast route, and plays its full route on the 3D board.
+OUT is the best seed. The stills add `_placed.png`, `_fast_route.png` and
+`_seeds.png` (the seed grid with the best one framed).
 Options for the flow: `--jobs`, `--route-jobs`, `--fresh` and
 `--route-frames` (past this many router events in a chain, several share a
 frame; 240).
@@ -95,7 +102,7 @@ Own options: `--movie`, `--fps` (12), `--width`/`--height` (1000x560),
 `--frames` (anneal frames, tweens included, 120), `--tween` (frames per anneal
 step, 3; 1 gives the 2D movie's cuts), `--speedup` (how much faster the anneal
 plays at its end, 4), `--no-models` (boxes only), `--kicad-cli`, `--tint` (how
-far each model's colours go toward its group's colour, 0.7), `--work`,
+far each model's colours go toward its group's colour, 0.4), `--work`,
 `--browser`, `--crf` (20).
 
 ## What it shows
@@ -105,9 +112,9 @@ far each model's colours go toward its group's colour, 0.7), `--work`,
   like a block next to 0402 parts.
 - **Each part**:
   - its pads, with dark drills;
-  - its courtyard, as a plate tinted in its group's colour;
-  - its body: its **KiCad 3D model**, with its colours tinted toward its
-    group's colour (`--tint`). The models come from `models.py`: kicad-cli
+  - its courtyard, as a plate lightly tinted in its group's colour;
+  - its body: its **KiCad 3D model**, with its colours tinted 40% of the way
+    toward its group's colour (`--tint`). The models come from `models.py`: kicad-cli
     exports the placed board's parts as one GLB, and the page re-poses each
     part's node every frame.
   - A part without a model falls back to a **box**, and the console says
@@ -121,7 +128,6 @@ far each model's colours go toward its group's colour, 0.7), `--work`,
     the table.
 - **Airwires**: the nets the objective prices (ground is left out), as one
   spanning tree per net, recomputed every frame.
-- **Moves**: parts that moved since the last frame are outlined in white.
 - **Text**: place_movie's caption at the top left, and the group key along the
   bottom.
 
@@ -153,9 +159,17 @@ plays them:
    (cyan when the router restored it). A ripped track turns magenta, then
    goes; the 2D movie uses red, but F.Cu is red here. Whatever else a step
    changed (a pour, the fanout, a step with no trace) then lands net by net.
-3. A caption gives the judged seeds' scores.
-4. The fast route is cleared, net by net.
-5. The full route plays the same way.
+3. The camera pulls back to every judged seed's board side by side, each at
+   its placement with its fast route and labelled with its score (blocking |
+   vias | mm). The grid lies along the camera's screen axes, in the
+   columns x rows that fill the frame best (`record.Recorder._lay_grid`).
+4. The best seed is framed in gold, blinking as the 2D movie's box does, and
+   its label says BEST.
+5. While the camera is pulled back, the live board becomes the best seed's,
+   unseen, because its copy in the grid looks the same. The camera flies in
+   to it, and the other seeds' boards go.
+6. Its fast route is cleared, net by net.
+7. Its full route plays the same way.
 
 Copper is drawn per layer in the theme's layer colours, vias as barrels,
 pours as tinted flats clipped to the board.
@@ -225,8 +239,8 @@ Blender path and its board flip were not carried over.
 
 ## Limits
 
-- The routing half shows one seed's routes. The 2D movie's grid of the judged
-  seeds is a caption here.
+- The seed grid shows each judged seed's fast route as it ended, not played.
+  Only the filmed seed's and the best seed's routes play.
 - Back-side copper shows only through the see-through board, and faintly. The
   board does not turn over, as stage3d's did.
 - A part whose model is missing from the installed library is a box with a

@@ -213,12 +213,19 @@ FADE = 6            # frames the board takes to turn see-through for the copper
 ROUTE_ALPHA = 0.55  # the board's opacity while the copper plays: the back's copper shows through
 
 
-def film_routes(rec, work, judged, scores, best, full, budget=0):
+ZOOM = 14           # frames of the camera pulling back to the seeds, and flying back in
+
+
+def film_routes(rec, work, judged, scores, best, full, filmed, budget=0):
     """The routing half of the flow movie, after the placement of seed
-    `best`: its fast route, the judged seeds' scores, the fast route
-    cleared, its full route -- place_movie's `film_routes`, on the 3D
-    board, from the same work dir (place_movie's `run_flow`)."""
+    `filmed` (one the judge did not pick, when there is one): its fast
+    route; the camera pulling back to every judged seed's fast-routed board
+    side by side, each labelled with its score; the best one framed and the
+    camera flying in to it; its fast route cleared and its full route played
+    -- place_movie's `film_routes`, on the 3D board, from the same work dir
+    (place_movie's `run_flow`)."""
     import render_theme
+    from kicad_parser import parse_kicad_pcb
     from place_movie import _chain, _score_text
     from placement_story import _ease
     th = render_theme.theme('dark', strict=False)
@@ -229,17 +236,75 @@ def film_routes(rec, work, judged, scores, best, full, budget=0):
     hold = rec.hold
     # the board turns see-through, so the copper on its back will show
     for i in range(1, FADE + 1):
-        rec.copper_shot(f"seed {best} placed: routing it",
+        rec.copper_shot(f"seed {filmed} placed: routing it",
                         alpha=1.0 - (1.0 - ROUTE_ALPHA) * _ease(i / FADE))
-    first, boards = _chain(work, f'fast_s{best}')
+    first, boards = _chain(work, f'fast_s{filmed}')
     play_chain(rec, cop, boards, first, prefix='fast route | ',
-               first_label=f'placed, seed {best}', budget=budget)
+               first_label=f'placed, seed {filmed}', budget=budget)
     cop.next()          # a hold lights nothing: its copper was all laid before it
-    rec.copper_shot(f"fast route, seed {best}: {_score_text(scores[best])}", times=hold)
-    rows = ' | '.join(f"s{s} blk {sc.get('blocking')}, {(sc.get('quality') or {}).get('vias')} v"
-                      for s, sc in sorted(scores.items()))
-    rec.copper_shot(f"the {len(scores)} cheapest seeds, fast-routed: {rows}", times=2 * hold)
-    rec.copper_shot(f"the best: seed {best} ({_score_text(scores[best])})", times=2 * hold)
+    rec.copper_shot(f"fast route, seed {filmed}: {_score_text(scores[filmed])}", times=hold)
+    # every judged seed's board, at its placement with its fast route
+    seeds = sorted(scores)
+    cells = []
+    for s in seeds:
+        placed = parse_kicad_pcb(os.path.join(work, f's{s}.kicad_pcb'))
+        _f, bs = _chain(work, f'fast_s{s}')
+        routed = parse_kicad_pcb(bs[-1])
+        c = Copper(layers, rec.scene['outline'], rec.scene['cutouts'])
+        segs, vias = _board_copper(routed)
+        for o in segs.values():
+            c.add_s(o)
+        for o in vias.values():
+            c.add_v(o)
+        c.set_pours(routed)
+        poses = []
+        for r in rec.refs:
+            fp = placed.footprints.get(r)
+            poses.append(None if fp is None else
+                         [round(fp.x, 4), round(fp.y, 4), round((fp.rotation or 0.0) % 360.0, 3),
+                          round(rec.base(r, fp.x, fp.y), 3)])
+        cu = c.json()
+        cells.append({'seed': s, 'best': s == best, 'filmed': s == filmed, 'poses': poses,
+                      'copper': {'segs': cu['segs'], 'vias': cu['vias'], 'pours': cu['pours']},
+                      'label': (f"BEST  seed {s}: " if s == best else f"seed {s}: ") + _score_text(scores[s])})
+    fi, bi = seeds.index(filmed), seeds.index(best)
+    rec.scene['grid'] = {'cells': cells, 'filmed': fi, 'best': bi}
+    title = f"the {len(scores)} cheapest seeds by the objective, fast-routed"
+    grid = dict(grid=True, labels=True, ro=fi)
+    for i in range(1, ZOOM + 1):
+        rec.copper_shot(title, gv=['out', round(_ease(i / ZOOM), 4)], **grid)
+    rec.copper_shot(title, times=2 * hold, gv=['out', 1.0], **grid)
+    pick = f"the best: seed {best} ({_score_text(scores[best])})"
+    for blink in range(3):
+        rec.copper_shot(pick, times=max(1, hold // 2), gv=['out', 1.0], best=blink % 2 == 0, **grid)
+    rec.copper_shot(pick, times=hold, gv=['out', 1.0], best=True, **grid)
+    if best != filmed:
+        # the live board becomes the best seed's, out here where its copy and
+        # the filmed seed's look the same: its placement and its fast route
+        # (laid on a tick no frame shows, so nothing is lit or red)
+        placed = parse_kicad_pcb(os.path.join(work, f's{best}.kicad_pcb'))
+        rec.route_poses = {r: (fp.x, fp.y, (fp.rotation or 0.0) % 360.0)
+                           for r, fp in placed.footprints.items() if r in rec.idx}
+        cop.next()
+        for k in list(cop.live_s):
+            cop.rm_s(k)
+        for k in list(cop.live_v):
+            cop.rm_v(k)
+        _f, bs = _chain(work, f'fast_s{best}')
+        routed = parse_kicad_pcb(bs[-1])
+        segs, vias = _board_copper(routed)
+        for o in segs.values():
+            cop.add_s(o)
+        for o in vias.values():
+            cop.add_v(o)
+        cop.set_pours(routed)
+        cop.next()
+        grid['ro'] = bi
+    for i in range(1, ZOOM + 1):
+        rec.copper_shot(pick, gv=['in', round(_ease(i / ZOOM), 4)], best=True, **grid)
+    # from here on the live board stands in the best seed's cell, alone: the
+    # other seeds' boards would hang at the edges of the frame
+    rec.extra = {'ro': bi, 'gv': ['in', 1.0]}
     cop.clear(rec, f"clearing the fast route of seed {best}")
     first, boards = _chain(work, f'full_s{best}')
     play_chain(rec, cop, boards, first, prefix='full route | ',

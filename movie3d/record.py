@@ -25,7 +25,7 @@ Writes two JSON files into --work, which the page (page/movie3d.mjs) draws:
                  the key and the colours; and, from models.py, the parts'
                  KiCad models (a GLB) and the poses they were exported at;
   timeline.json  one entry per movie frame: every part's pose [x, y, rot,
-                 height of its mounting face], the parts that just moved, the
+                 height of its mounting face], the parts that moved, the
                  caption, the box the camera frames and the camera's azimuth
                  and elevation (and, in a flow movie, the copper's tick).
 """
@@ -200,7 +200,6 @@ class Recorder(Story):
         fixed_rgb = (120, 118, 108)
         if len(self.movable) < len(st.parts):
             key.append({'rgb': list(fixed_rgb), 'mark': 'solid', 'text': 'fixed'})
-        key.append({'rgb': [250, 250, 250], 'mark': 'ring', 'text': 'just moved'})
         # every part place_simple models, and any other footprint with pads
         # (a pad-less logo it does not model is left out)
         self.refs = sorted(r for r in pcb.footprints if not r.startswith('#')
@@ -244,7 +243,8 @@ class Recorder(Story):
                        'edge': list(th.rgb('board_edge')), 'pad': list(th.rgb('pad')),
                        'hole': list(th.rgb('pad_hole')), 'air': [150, 162, 185],
                        'table': [34, 36, 40], 'moved': [255, 255, 255],
-                       'band': list(th.rgb('chrome_band')), 'text': list(th.rgb('chrome_text'))}}
+                       'band': list(th.rgb('chrome_band')), 'text': list(th.rgb('chrome_text')),
+                       'best': list(th.rgb('status_best'))}}
         diag = math.hypot(bx1 - bx0, by1 - by0)
         self.arc = min(15.0, max(2.5, 0.15 * diag))
 
@@ -326,13 +326,13 @@ class Recorder(Story):
                **self.extra, **extra}
         self.frames.extend([rec] * times)
 
-    def copper_shot(self, label, times=1, alpha=None):
+    def copper_shot(self, label, times=1, alpha=None, **extra):
         """A frame of a flow movie's routing half (route3d.py): the placed
         board, its copper at the current tick, no airwires, the board
         see-through."""
         from route3d import ROUTE_ALPHA
-        self.shot(label, times=times, tick=self.cop.tick, air=False,
-                  alpha=ROUTE_ALPHA if alpha is None else round(alpha, 4))
+        self.shot(label, times=times, poses=getattr(self, 'route_poses', None), tick=self.cop.tick,
+                  air=False, alpha=ROUTE_ALPHA if alpha is None else round(alpha, 4), **extra)
 
     # -- the run's hooks, the 3D way ---------------------------------------------
     def on_scatter(self, seed, clustered=False):
@@ -442,6 +442,79 @@ class Recorder(Story):
                         cost += w * (2.0 if i in moving else 1.0)
         return cost
 
+    def _lay_grid(self, grid, az):
+        """Lay the judged seeds' boards out side by side along the camera's
+        own screen axes at azimuth `az`, in the arrangement (columns x rows)
+        that fills the frame best, each with its label in front. Fills each
+        cell's `off` (its board's offset from the live board's real place,
+        which is the filmed seed's cell) and `label_at` / `label_w`; returns
+        the views, each as four ground corners: the filmed seed's cell, the
+        whole grid, the best's cell."""
+        el = math.radians(ELEV)
+        a = math.radians(az)
+        u = (math.sin(a), math.cos(a))          # board plane, toward the camera
+        r = (math.cos(a), -math.sin(a))         # board plane, screen right
+        dvec = (-u[0], -u[1])                   # board plane, away (screen up)
+        bx0, by0, bx1, by1 = self.pcb.board_info.board_bounds
+        corners = [(bx0, by0), (bx1, by0), (bx1, by1), (bx0, by1)]
+        dot = lambda p, v: p[0] * v[0] + p[1] * v[1]  # noqa: E731
+        wr = max(dot(c, r) for c in corners) - min(dot(c, r) for c in corners)
+        wd = max(dot(c, dvec) for c in corners) - min(dot(c, dvec) for c in corners)
+        label_w = 0.95 * wr
+        label_h = label_w / 8
+        pitch_r = 1.3 * wr
+        pitch_d = 1.25 * wd + 1.8 * label_h / math.sin(el)
+        cells = grid['cells']
+        n = len(cells)
+        W, H = self.frame_size
+        best = None
+        for cols in range(1, n + 1):
+            rows = math.ceil(n / cols)
+            fit = min(W / (cols * pitch_r), H / (rows * pitch_d * math.sin(el) + label_h))
+            if best is None or fit > best[0]:
+                best = (fit, cols, rows)
+        _fit, cols, rows = best
+        centre = {}
+        for k in range(n):
+            col, row = k % cols, k // cols
+            a_r = (col - (cols - 1) / 2) * pitch_r
+            a_d = ((rows - 1) / 2 - row) * pitch_d
+            centre[k] = (a_r * r[0] + a_d * dvec[0], a_r * r[1] + a_d * dvec[1])
+        f0 = centre[grid['filmed']]
+        cx, cy = (bx0 + bx1) / 2, (by0 + by1) / 2
+        pts = []
+        for k, cell in enumerate(cells):
+            ox, oy = centre[k][0] - f0[0], centre[k][1] - f0[1]
+            cell['off'] = [round(ox, 4), round(oy, 4)]
+            front = wd / 2 + 0.9 * label_h / math.sin(el)
+            lx, ly = cx + ox + u[0] * front, cy + oy + u[1] * front
+            cell['label_at'] = [round(lx, 4), round(ly, 4)]
+            cell['label_w'] = round(label_w, 4)
+            pts += [(x + ox, y + oy) for x, y in corners]
+            pts += [(lx + r[0] * label_w / 2, ly + r[1] * label_w / 2),
+                    (lx - r[0] * label_w / 2, ly - r[1] * label_w / 2)]
+        grid['cols'], grid['rows'] = cols, rows
+        home = self.home
+
+        def quad(corners):
+            # the corners in one order round the centre, starting far left on
+            # screen, so two quads' corners pair up for a zoom between them
+            mr = sum(dot(c, r) for c in corners) / 4
+            md = sum(dot(c, dvec) for c in corners) / 4
+            return sorted(corners, key=lambda c: (math.atan2(dot(c, dvec) - md, dot(c, r) - mr)
+                                                  - math.radians(135)) % (2 * math.pi))
+
+        def cell_quad(k):
+            ox, oy = cells[k]['off']
+            x0, y0, x1, y1 = home[0] + ox, home[1] + oy, home[2] + ox, home[3] + oy
+            return quad([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+        # the grid's own rectangle, along the screen's axes (no empty corners)
+        lo_r, hi_r = min(dot(p, r) for p in pts) - 1.0, max(dot(p, r) for p in pts) + 1.0
+        lo_d, hi_d = min(dot(p, dvec) for p in pts) - 1.0, max(dot(p, dvec) for p in pts) + 1.0
+        g = quad([(a_r * r[0] + a_d * dvec[0], a_r * r[1] + a_d * dvec[1])
+                  for a_r, a_d in ((lo_r, lo_d), (hi_r, lo_d), (hi_r, hi_d), (lo_r, hi_d))])
+        return {'filmed': cell_quad(grid['filmed']), 'grid': g, 'best': cell_quad(grid['best'])}
+
     def finish(self):
         """The timeline: each frame with the camera's azimuth and
         elevation. The camera orbits SWEEP either side of a base azimuth,
@@ -458,11 +531,26 @@ class Recorder(Story):
             scores.append((self._hidden(base) * (1.0 + 0.25 * (1.0 - across)) + 0.5 * (1.0 - across),
                            base))
         self.base_az = min(scores)[1]
+        az = [round(self.base_az + SWEEP * (2.0 * i / max(1, n - 1) - 1.0), 4) for i in range(n)]
+        grid = self.scene.get('grid')
+        if grid:
+            at = next(i for i, f in enumerate(self.frames) if 'gv' in f)
+            boxes = self._lay_grid(grid, az[at])
         out = []
         for i, f in enumerate(self.frames):
             g = dict(f)
-            g['az'] = round(self.base_az + SWEEP * (2.0 * i / max(1, n - 1) - 1.0), 4)
+            g['az'] = az[i]
             g['el'] = ELEV
+            if 'gv' in g:       # a grid frame's view: the zoom out to the seeds, or back in
+                kind, t = g.pop('gv')
+                a, b = ((boxes['filmed'], boxes['grid']) if kind == 'out' else
+                        (boxes['grid'], boxes['best']))
+                # the four ground corners to fit, each moving to its fellow
+                pts = [_lerp(p, q, t) for p, q in zip(a, b)]
+                g['pts'] = [[round(x, 3), round(y, 3)] for x, y in pts]
+                g['view'] = [round(min(x for x, _ in pts), 3), round(min(y for _, y in pts), 3),
+                             round(max(x for x, _ in pts), 3), round(max(y for _, y in pts), 3),
+                             0.0, round(self.home[5], 3)]
             out.append(g)
         return {'fps': self.a.fps, 'width': self.a.width, 'height': self.a.height,
                 'refs': self.refs, 'base_az': self.base_az, 'frames': out}
@@ -514,9 +602,9 @@ def own_args(ap, work_required=True):
                          'exported by kicad-cli and cached in movie3d/cache/)')
     ap.add_argument('--kicad-cli', help='the kicad-cli to export the models with (default: '
                                         '$KICAD_CLI, else the installed KiCad)')
-    ap.add_argument('--tint', type=float, default=0.7,
+    ap.add_argument('--tint', type=float, default=0.4,
                     help="how far each model's colours are tinted toward its group's colour, "
-                         '0-1 (default 0.7)')
+                         '0-1 (default 0.4)')
     ap.add_argument('--width', type=int, default=1000, help='frame width, px (default 1000)')
     ap.add_argument('--height', type=int, default=560, help='frame height, px (default 560)')
 
@@ -537,10 +625,11 @@ def write(a, rec):
     a.work. Returns (scene path, timeline path, frame count)."""
     attach_models(a, rec)
     sp, tp = os.path.join(a.work, 'scene.json'), os.path.join(a.work, 'timeline.json')
+    tl = rec.finish()           # first: it lays a flow's seed grid out into the scene
     with open(sp, 'w', encoding='utf-8') as f:
         json.dump(rec.scene, f)
     with open(tp, 'w', encoding='utf-8') as f:
-        json.dump(rec.finish(), f)
+        json.dump(tl, f)
     return sp, tp, len(rec.frames)
 
 

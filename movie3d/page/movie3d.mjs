@@ -33,6 +33,7 @@ function buildBoard(sc) {
   const board = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: rgb(C.board), roughness: 0.85,
                                                                      metalness: 0.0, transparent: true }));
   S.boardMat = board.material;
+  S.boardMesh = board;
   board.receiveShadow = true;
   board.castShadow = true;
   const lm = new THREE.LineBasicMaterial({ color: rgb(C.edge), transparent: true, opacity: 0.55 });
@@ -45,7 +46,7 @@ function buildBoard(sc) {
 
 function buildTable(sc) {
   const [x0, y0, x1, y1] = sc.bounds;
-  const span = 8 * Math.max(x1 - x0, y1 - y0, 20);
+  const span = 40 * Math.max(x1 - x0, y1 - y0, 20);     // past the frame, even round the seed grid
   const g = new THREE.PlaneGeometry(span, span);
   g.rotateX(-Math.PI / 2);
   const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: rgb(sc.colors.table), roughness: 1.0 }));
@@ -89,7 +90,8 @@ function buildParts(sc, root) {
   const d = sc.thickness, C = sc.colors;
   const padMat = new THREE.MeshStandardMaterial({ color: rgb(C.pad), roughness: 0.3, metalness: 0.75 });
   const holeMat = new THREE.MeshBasicMaterial({ color: rgb(C.hole) });
-  const hiMat = new THREE.LineBasicMaterial({ color: rgb(C.moved) });
+  const soft = sc.soft ?? 0.4;     // how far a box, plate or outline's colour goes toward neutral
+  const grey = rgb([120, 120, 126]), board = rgb(C.board);
   S.parts = [];
   for (const P of sc.parts) {
     const grp = new THREE.Group();
@@ -129,16 +131,13 @@ function buildParts(sc, root) {
     const plate = new THREE.PlaneGeometry(Math.max(cx1 - cx0, 0.05), Math.max(cy1 - cy0, 0.05));
     plate.rotateX(up > 0 ? -Math.PI / 2 : Math.PI / 2);
     const pm = new THREE.Mesh(plate, new THREE.MeshBasicMaterial({
-      color: col, transparent: true, opacity: P.fixed ? 0.12 : 0.42, depthWrite: false }));
+      color: col, transparent: true, opacity: P.fixed ? 0.1 : (sc.plate ?? 0.2), depthWrite: false }));
     pm.position.set((cx0 + cx1) / 2, up * 0.006, (cy0 + cy1) / 2);
     pm.renderOrder = 1;
     grp.add(pm);
-    const line = rectLoop(P.court, up * 0.012, new THREE.LineBasicMaterial({ color: col }));
+    const line = rectLoop(P.court, up * 0.012,
+                          new THREE.LineBasicMaterial({ color: col.clone().lerp(board, soft) }));
     grp.add(line);
-    const hiLoop = rectLoop(P.court, up * 0.02, hiMat);
-    hiLoop.visible = false;
-    grp.add(hiLoop);
-    const hi = [hiLoop];
     let boxed = null;
     if (P.body) {
       const [x0, y0, x1, y1, h] = P.body;
@@ -146,29 +145,22 @@ function buildParts(sc, root) {
       // a fixed part's body is ghosted: it never moves, and must not hide
       // the parts that do
       const body = new THREE.Mesh(bg, new THREE.MeshStandardMaterial({
-        color: P.fixed ? rgb([150, 150, 156]) : col, roughness: 0.55, metalness: 0.05,
+        color: P.fixed ? rgb([150, 150, 156]) : col.clone().lerp(grey, soft), roughness: 0.55, metalness: 0.05,
         transparent: P.fixed, opacity: P.fixed ? 0.32 : 1.0, depthWrite: !P.fixed }));
       if (P.fixed) body.renderOrder = 3;
       body.position.set((x0 + x1) / 2, up * (h / 2 + PAD_T * 0.5), (y0 + y1) / 2);
       body.castShadow = true;
       body.receiveShadow = true;
       grp.add(body);
-      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(bg), hiMat);
-      edges.position.copy(body.position);
-      edges.scale.setScalar(1.04);
-      edges.visible = false;
-      grp.add(edges);
-      hi.push(edges);
-      boxed = { body, edges };
+      boxed = body;
     }
     root.add(grp);
-    S.parts.push({ P, grp, near, far, hi, up, boxed, col });
+    S.parts.push({ P, grp, near, far, up, boxed, col });
   }
 }
 
 function poseParts(fr) {
   const d = S.sc.thickness;
-  const moved = new Set(fr.moved);
   S.parts.forEach((part, i) => {
     const [x, y, rot, h] = fr.p[i];
     part.grp.position.set(x, h, y);
@@ -176,7 +168,6 @@ function poseParts(fr) {
     // the far face's copper shows only while the part stands on the board
     const onBoard = Math.abs(h - (part.up > 0 ? d : 0)) < 1e-3;
     for (const m of part.far) m.visible = onBoard;
-    for (const m of part.hi) m.visible = moved.has(i);
   });
 }
 
@@ -245,22 +236,7 @@ async function loadModels(url, sc) {
         if (part.P.fixed) c.renderOrder = 3;
       });
       part.grp.add(clone);
-      if (part.boxed) {
-        part.grp.remove(part.boxed.body, part.boxed.edges);
-        part.hi = part.hi.filter((h) => h !== part.boxed.edges);
-      }
-      // the moved outline: the model's own box, in the part's frame (the
-      // group is still at the origin here)
-      part.grp.updateMatrixWorld(true);
-      const box = new THREE.Box3().setFromObject(clone);
-      const size = box.getSize(new THREE.Vector3()), mid = box.getCenter(new THREE.Vector3());
-      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(size.x, size.y, size.z)),
-                                           new THREE.LineBasicMaterial({ color: rgb(sc.colors.moved) }));
-      edges.position.copy(mid);
-      edges.scale.setScalar(1.04);
-      edges.visible = false;
-      part.grp.add(edges);
-      part.hi.push(edges);
+      if (part.boxed) part.grp.remove(part.boxed);
       n += 1;
     });
   }
@@ -299,32 +275,51 @@ function layerY(li, n, d) {
   return d * (1 - li / (n - 1));                  // an inner layer, inside
 }
 
+// one flat quad per track (square-capped), both faces, with each item's
+// birth, death and restored flag per vertex
+function trackGeometry(items, y) {
+  const pos = [], born = [], died = [], rest = [], tri = [];
+  let v = 0;
+  for (const [sx, sy, ex, ey, w, , b, dd, r] of items) {
+    let dx = ex - sx, dy = ey - sy;
+    const L = Math.hypot(dx, dy) || 1e-6;
+    dx /= L; dy /= L;
+    const hw = Math.max(w, 0.05) / 2, nx = -dy * hw, ny = dx * hw;
+    const ax = sx - dx * hw, ay = sy - dy * hw, bx = ex + dx * hw, by = ey + dy * hw;
+    pos.push(ax + nx, y, ay + ny, ax - nx, y, ay - ny, bx - nx, y, by - ny, bx + nx, y, by + ny);
+    tri.push(v, v + 2, v + 1, v, v + 3, v + 2, v, v + 1, v + 2, v, v + 2, v + 3);
+    for (let k = 0; k < 4; k++) { born.push(b); died.push(dd); rest.push(r); }
+    v += 4;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('born', new THREE.Float32BufferAttribute(born, 1));
+  g.setAttribute('died', new THREE.Float32BufferAttribute(died, 1));
+  g.setAttribute('restored', new THREE.Float32BufferAttribute(rest, 1));
+  g.setIndex(tri);
+  return g;
+}
+
+function pourMesh(z, C, d, n) {
+  const shape = new THREE.Shape(z.poly.map((q) => new THREE.Vector2(q[0], q[1])));
+  for (const ring of z.holes || []) shape.holes.push(new THREE.Path(ring.map((q) => new THREE.Vector2(q[0], q[1]))));
+  const g = new THREE.ShapeGeometry(shape);
+  g.rotateX(Math.PI / 2);
+  g.translate(0, z.layer === 0 ? d + 0.01 : (z.layer === n - 1 ? -0.01 : layerY(z.layer, n, d)), 0);
+  const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({
+    color: rgb(C.board).lerp(rgb(C.layers[z.layer] || C.pad), 0.5), transparent: true, opacity: 0.5,
+    side: THREE.DoubleSide, depthWrite: false }));
+  m.renderOrder = 1;
+  return m;
+}
+
 function buildCopper(sc, root) {
   const cu = sc.copper, C = sc.colors, n = cu.layers.length, d = sc.thickness;
   S.copper = [];
   cu.layers.forEach((_name, li) => {
     const items = cu.segs.filter((q) => q[5] === li);
     if (!items.length) return;
-    const pos = [], born = [], died = [], rest = [], tri = [];
-    const y = layerY(li, n, d);
-    let v = 0;
-    for (const [sx, sy, ex, ey, w, , b, dd, r] of items) {
-      let dx = ex - sx, dy = ey - sy;
-      const L = Math.hypot(dx, dy) || 1e-6;
-      dx /= L; dy /= L;
-      const hw = Math.max(w, 0.05) / 2, nx = -dy * hw, ny = dx * hw;
-      const ax = sx - dx * hw, ay = sy - dy * hw, bx = ex + dx * hw, by = ey + dy * hw;
-      pos.push(ax + nx, y, ay + ny, ax - nx, y, ay - ny, bx - nx, y, by - ny, bx + nx, y, by + ny);
-      tri.push(v, v + 2, v + 1, v, v + 3, v + 2, v, v + 1, v + 2, v, v + 2, v + 3);   // both faces
-      for (let k = 0; k < 4; k++) { born.push(b); died.push(dd); rest.push(r); }
-      v += 4;
-    }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    g.setAttribute('born', new THREE.Float32BufferAttribute(born, 1));
-    g.setAttribute('died', new THREE.Float32BufferAttribute(died, 1));
-    g.setAttribute('restored', new THREE.Float32BufferAttribute(rest, 1));
-    g.setIndex(tri);
+    const g = trackGeometry(items, layerY(li, n, d));
     const m = new THREE.Mesh(g, new THREE.ShaderMaterial({
       vertexShader: COPPER_VS, fragmentShader: COPPER_FS,
       uniforms: { uT: { value: -1 }, uColor: { value: srgb(C.layers[li] || C.pad) }, uNew: { value: srgb(C.new) },
@@ -344,17 +339,8 @@ function buildCopper(sc, root) {
   root.add(S.vias);
   // pours: a flat tinted shape each, on its layer
   S.pours = [];
-  const body = rgb(C.board);
   for (const z of cu.pours) {
-    const shape = new THREE.Shape(z.poly.map((q) => new THREE.Vector2(q[0], q[1])));
-    for (const ring of z.holes || []) shape.holes.push(new THREE.Path(ring.map((q) => new THREE.Vector2(q[0], q[1]))));
-    const g = new THREE.ShapeGeometry(shape);
-    g.rotateX(Math.PI / 2);
-    g.translate(0, z.layer === 0 ? d + 0.01 : (z.layer === n - 1 ? -0.01 : layerY(z.layer, n, d)), 0);
-    const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({
-      color: body.clone().lerp(rgb(C.layers[z.layer] || C.pad), 0.5), transparent: true, opacity: 0.5,
-      side: THREE.DoubleSide, depthWrite: false }));
-    m.renderOrder = 1;
+    const m = pourMesh(z, C, d, n);
     m.userData.life = [z.born, z.died];
     root.add(m);
     S.pours.push(m);
@@ -384,6 +370,108 @@ function setCopper(fr) {
     const [b, dd] = m.userData.life;
     m.visible = b <= T && (dd < 0 || dd > T);
   }
+}
+
+// ---------------------------------------------------------------- the seed grid
+// A flow movie's zoom out (route3d.py): every judged seed's board side by
+// side, at that seed's placement and with its fast route's copper, each
+// labelled with its score, the best one framed. The live board stands in
+// one cell (a frame's `ro`), whose copy is hidden; the cells lie along the
+// camera's own screen axes (record.py lays them out).
+function staticCopper(cu, C, d, n) {
+  const g = new THREE.Group();
+  for (let li = 0; li < n; li++) {
+    const items = cu.segs.filter((q) => q[5] === li);
+    if (!items.length) continue;
+    g.add(new THREE.Mesh(trackGeometry(items, layerY(li, n, d)),
+                         new THREE.MeshBasicMaterial({ color: rgb(C.layers[li] || C.pad), side: THREE.DoubleSide })));
+  }
+  if (cu.vias.length) {
+    const cyl = new THREE.CylinderGeometry(0.5, 0.5, d + 0.08, 16);
+    cyl.translate(0, d / 2, 0);
+    const vm = new THREE.InstancedMesh(cyl, new THREE.MeshStandardMaterial({ color: rgb(C.via), roughness: 0.4,
+                                                                          metalness: 0.2 }), cu.vias.length);
+    const M = new THREE.Matrix4();
+    cu.vias.forEach(([x, y, size], i) => {
+      const k = Math.max(size, 0.1);
+      vm.setMatrixAt(i, M.makeScale(k, 1, k).setPosition(x, 0, y));
+    });
+    g.add(vm);
+  }
+  for (const z of cu.pours) g.add(pourMesh(z, C, d, n));
+  return g;
+}
+
+function makeLabel(text, color) {
+  const cv = document.createElement('canvas');
+  cv.width = 1024; cv.height = 128;
+  const x = cv.getContext('2d');
+  x.fillStyle = 'rgba(0, 0, 0, 0.72)';
+  x.beginPath(); x.roundRect(4, 8, 1016, 112, 24); x.fill();
+  let px = 64;
+  const font = () => `600 ${px}px -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif`;
+  x.font = font();
+  while (x.measureText(text).width > 960 && px > 20) { px -= 2; x.font = font(); }
+  x.fillStyle = css(color);
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.fillText(text, 512, 66);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
+  sp.renderOrder = 10;
+  return sp;
+}
+
+function buildGrid(sc, world) {
+  const G = sc.grid, C = sc.colors, d = sc.thickness, n = sc.copper.layers.length;
+  S.cells = [];
+  G.cells.forEach((cell) => {
+    const g = new THREE.Group();
+    g.position.set(cell.off[0], 0, cell.off[1]);
+    g.add(S.boardMesh.clone());
+    S.parts.forEach((part, i) => {
+      const q = cell.poses[i];
+      if (!q) return;
+      const c = part.grp.clone(true);
+      c.position.set(q[0], q[3], q[1]);
+      c.rotation.set(0, rad(q[2]), 0);
+      g.add(c);
+    });
+    g.add(staticCopper(cell.copper, C, d, n));
+    g.visible = false;
+    world.add(g);
+    const label = makeLabel(cell.label, cell.best ? C.best : C.text);
+    label.position.set(cell.label_at[0], d + 1.0, cell.label_at[1]);
+    label.scale.set(cell.label_w, cell.label_w / 8, 1);
+    label.visible = false;
+    world.add(label);
+    S.cells.push({ g, label });
+  });
+  // the best seed's frame: a flat band round its board
+  const b = G.cells[G.best], [x0, y0, x1, y1] = sc.bounds, m = 1.2, w = 0.8;
+  const outer = new THREE.Shape([[x0 - m - w, y0 - m - w], [x1 + m + w, y0 - m - w], [x1 + m + w, y1 + m + w],
+                                 [x0 - m - w, y1 + m + w]].map((q) => new THREE.Vector2(q[0], q[1])));
+  outer.holes.push(new THREE.Path([[x0 - m, y0 - m], [x1 + m, y0 - m], [x1 + m, y1 + m], [x0 - m, y1 + m]]
+    .map((q) => new THREE.Vector2(q[0], q[1]))));
+  const fg = new THREE.ShapeGeometry(outer);
+  fg.rotateX(Math.PI / 2);
+  S.bestFrame = new THREE.Mesh(fg, new THREE.MeshBasicMaterial({ color: rgb(C.best), side: THREE.DoubleSide }));
+  S.bestFrame.position.set(b.off[0], d + 0.08, b.off[1]);
+  S.bestFrame.visible = false;
+  world.add(S.bestFrame);
+}
+
+function setGrid(fr) {
+  const G = S.sc.grid;
+  const off = (G && fr.ro != null) ? G.cells[fr.ro].off : [0, 0];
+  S.root.position.set(off[0], 0, off[1]);
+  if (!S.cells) return;
+  S.cells.forEach((c, k) => {
+    c.g.visible = !!fr.grid && k !== fr.ro;
+    c.label.visible = !!fr.labels;
+  });
+  S.bestFrame.visible = !!fr.best;
 }
 
 // ---------------------------------------------------------------- airwires
@@ -442,10 +530,13 @@ const FOV = 30;
 function fitCamera(fr) {
   const [x0, y0, x1, y1, lo, hi] = fr.view;
   const cam = S.cam, d = S.sc.thickness;
+  // a grid frame names its four ground corners (a rectangle along the
+  // screen's axes); any other frame its box
   const dir = new THREE.Vector3(Math.sin(rad(fr.az)) * Math.cos(rad(fr.el)), Math.sin(rad(fr.el)),
                                 Math.cos(rad(fr.az)) * Math.cos(rad(fr.el)));
   const corners = [];
-  for (const x of [x0, x1]) for (const z of [y0, y1]) for (const y of [lo, hi]) corners.push(new THREE.Vector3(x, y, z));
+  const ground = fr.pts || [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+  for (const [x, z] of ground) for (const y of [lo, hi]) corners.push(new THREE.Vector3(x, y, z));
   const target = new THREE.Vector3((x0 + x1) / 2, d / 2, (y0 + y1) / 2);
   let dist = 2 * Math.hypot(x1 - x0, y1 - y0);
   const tanh = Math.tan(rad(FOV / 2));
@@ -529,6 +620,8 @@ window.m3dInit = async function (o) {
     // the models are decoration: a missing or corrupt GLB leaves the boxes
     try { models = await loadModels(o.glbUrl, sc); } catch (e) { modelError = String(e).slice(0, 200); }
   }
+  S.root = root;
+  if (sc.grid) buildGrid(sc, world);      // after the models: each cell clones the parts
   S.cam = new THREE.PerspectiveCamera(FOV, W / (H - kh), 0.5, 100000);
   Object.assign(S, { renderer, world, root });
   const gl = renderer.getContext();
@@ -542,6 +635,7 @@ window.m3dFrame = function (i) {
   poseParts(fr);
   setAir(fr);
   setCopper(fr);
+  setGrid(fr);
   S.boardMat.opacity = fr.alpha ?? 1.0;
   fitCamera(fr);
   document.getElementById('cap').textContent = fr.label;
