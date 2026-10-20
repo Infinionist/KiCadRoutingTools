@@ -27,8 +27,7 @@ animation, whose colours had been folded onto `render_placement`'s
 near-identical ones -- 4 to 13 apart -- and would have shipped silently.
 
 **DETERMINISTIC.** Renders must be byte-identical across `PYTHONHASHSEED`
-values (`tests/test_431_render_placement.py` asserted it on the PNGs until it
-was deleted in ecd673eb). A palette built from set iteration order would break
+values (`tests/test_431_render_placement.py` asserts it on the PNGs). A palette built from set iteration order would break
 that intermittently -- the worst possible failure mode for a colour change --
 so this guards it at the data level and names the cause when it fires.
 

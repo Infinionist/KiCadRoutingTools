@@ -75,8 +75,7 @@ class TheEnumeration(unittest.TestCase):
 
     def test_it_enumerates_the_parser_not_a_list(self):
         """The universe is krt_capabilities.script_flags, which
-        tests/test_798_registrar_flags.py held EXACT against argparse until it
-        was deleted (ecd673eb). A hand list only covers the flags someone
+        tests/test_798_registrar_flags.py holds EXACT against argparse. A hand list only covers the flags someone
         thought of."""
         import krt_capabilities as caps
         for tool, (_bad, rows) in self.results.items():

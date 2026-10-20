@@ -758,7 +758,7 @@ def check_owner_scoping():
 #
 # This arm asks the question of EVERY flag route.py's argparse accepts --
 # krt_capabilities.script_flags, which tests/test_798_registrar_flags.py
-# proved EXACT against the real parser until it was deleted (ecd673eb) -- and
+# proves EXACT against the real parser -- and
 # requires each to be accounted
 # for in exactly ONE way:
 #

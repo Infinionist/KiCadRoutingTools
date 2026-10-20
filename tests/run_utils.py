@@ -37,7 +37,7 @@ def tool(name):
     So a missing tool must fail HERE, naming what it looked for and where,
     rather than three frames away inside a subprocess. A static lint cannot do
     this job: a test that builds `os.path.join(ROOT, script)` with `script` a
-    variable (the since-deleted test_431_board_gates did) knows the bad path
+    variable (test_431_board_gates did) knows the bad path
     only at runtime. This function is the gate.
     """
     try:

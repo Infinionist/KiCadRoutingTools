@@ -40,7 +40,11 @@ compare them only with Modal routes -- route the baseline arm here too.
 Placements are not made here: place_modal.py places an arm on the same app.
 """
 import argparse
-import fcntl
+try:                    # POSIX only: Windows runs without the registry lock (one client at a time)
+    import fcntl
+    _HAS_FCNTL = True
+except ImportError:
+    _HAS_FCNTL = False
 import hashlib
 import json
 import os
@@ -91,7 +95,8 @@ class Registry:
     def __enter__(self):
         os.makedirs(CACHE, exist_ok=True)
         self.fd = os.open(REG + '.lock', os.O_RDWR | os.O_CREAT, 0o644)
-        fcntl.flock(self.fd, fcntl.LOCK_EX)
+        if _HAS_FCNTL:
+            fcntl.flock(self.fd, fcntl.LOCK_EX)
         try:
             self.d = json.load(open(REG))
         except (OSError, ValueError):
@@ -102,7 +107,8 @@ class Registry:
         with open(REG + '.tmp', 'w') as fh:
             json.dump(self.d, fh, indent=1)
         os.replace(REG + '.tmp', REG)
-        fcntl.flock(self.fd, fcntl.LOCK_UN)
+        if _HAS_FCNTL:
+            fcntl.flock(self.fd, fcntl.LOCK_UN)
         os.close(self.fd)
 
 

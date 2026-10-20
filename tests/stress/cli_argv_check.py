@@ -442,7 +442,7 @@ def _flag_list_rejection(tool, args):
     """The fallback when the tool's parser cannot be built here (a missing
     dependency in this interpreter): its long flags as krt_capabilities reads
     them from the source -- held exact against the real parsers by
-    tests/test_798_registrar_flags.py until it was deleted (ecd673eb) -- with
+    tests/test_798_registrar_flags.py -- with
     argparse's own rule that an
     unambiguous prefix of a long option is that option. It sees an unknown
     flag (the --dry-run class), not a bad value or a missing argument."""

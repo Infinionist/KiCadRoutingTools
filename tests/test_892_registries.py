@@ -121,7 +121,7 @@ class Capabilities(unittest.TestCase):
     def test_deliberately_not_a_flag_script(self):
         """FLAG_SCRIPTS is a CONTRACT, and this tool cannot meet it.
 
-        `tests/test_798_registrar_flags.py` (deleted in ecd673eb) read that
+        `tests/test_798_registrar_flags.py` reads that
         tuple as "every flag the source registers is visible in --help as an
         option AND accepted by the top-level parser". `place_pose`'s `--rot` / `--near` /
         `--relative` belong to per-VERB parsers, so they are neither, and
@@ -129,8 +129,8 @@ class Capabilities(unittest.TestCase):
         (measured: `place_pose.py claims flags argparse rejects: ['--near',
         '--relative', '--rot']`). The verbs are registered as SUBPARSERS
         instead, so a checker that walks the subparsers action of
-        `build_parser()` finds them (the since-deleted
-        `tests/test_431_skill_commands.py` did; the next test does). `--help`
+        `build_parser()` finds them (`tests/test_431_skill_commands.py`
+        does; so does the next test). `--help`
         itself renders the epilog, because `main()` parses with the verb-less
         parser.
         """

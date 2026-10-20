@@ -16,10 +16,8 @@ flag were about the two tools that never had it.
 
 This gate reads PROSE -- a `--flag` in backticks in a sentence -- and resolves
 it as a UNION over every tool, because prose names a flag without naming a
-tool. Its per-tool sibling, `tests/test_431_skill_commands.py`, read COMMAND
-LINES and resolved each flag against the NAMED tool's real parser; it was
-deleted with the old placement flows (ecd673eb), so no gate now checks an
-emitted invocation against its own tool.
+tool. Its per-tool sibling, `tests/test_431_skill_commands.py`, reads COMMAND
+LINES and resolves each flag against the NAMED tool's real parser.
 
 That is exactly the gap 53a5a16e fell through: the stale `--track-width-floor`
 instruction was a sentence ("plus `--track-width-floor` for a width clause"),
