@@ -724,6 +724,17 @@ def zone_overlap_priorities(zones) -> List[int]:
     Ties break on (net_id, index) so the result never depends on dict order.
     Zones that overlap nothing keep priority 0, so boards that never had the
     ambiguity are byte-for-byte unaffected.
+
+    Zones of ONE net that overlap at equal priority are split too, and only
+    them. Their copper merges either way, but KiCad's DRC reports two
+    overlapping zones at equal priority as `zones_intersect`, an ERROR, same
+    net or not: argus_mainboard's split In2.Cu plane wrote a GND region piece
+    and the whole-layer GND background both at priority 0. The smaller gets a
+    level just above the larger and the layer is renumbered in (priority,
+    level) order, so every other pair of zones keeps its order AND its ties. It
+    has to: ranking the piece by area with the rest put it above the +3V3
+    zones it only borders, and they pulled back from it (11 mm2 of In2.Cu
+    changed hands on argus).
     """
     n = len(zones)
     prio = [0] * n
@@ -746,7 +757,7 @@ def zone_overlap_priorities(zones) -> List[int]:
         for pos, i in enumerate(idxs):
             for j in idxs[pos + 1:]:
                 if zones[i][1] == zones[j][1]:
-                    continue  # same net: overlap is harmless, they merge
+                    continue  # same net: split below, without reordering anything
                 if _polygons_overlap(zones[i][2], zones[j][2]):
                     ri, rj = find(i), find(j)
                     if ri != rj:
@@ -764,6 +775,36 @@ def zone_overlap_priorities(zones) -> List[int]:
                                             zones[i][1], i))
             for rank, i in enumerate(ordered):
                 prio[i] = rank
+
+        # same-net zones overlapping at EQUAL priority: a level each, the
+        # smaller higher, then the layer renumbered densely by (priority,
+        # level) -- identical numbers when no such tie exists
+        same = {i: i for i in idxs}
+
+        def top(a):
+            while same[a] != a:
+                same[a] = same[same[a]]
+                a = same[a]
+            return a
+
+        for pos, i in enumerate(idxs):
+            for j in idxs[pos + 1:]:
+                if (zones[i][1] == zones[j][1] and prio[i] == prio[j]
+                        and _polygons_overlap(zones[i][2], zones[j][2])):
+                    ri, rj = top(i), top(j)
+                    if ri != rj:
+                        same[ri] = rj
+        level = {i: 0 for i in idxs}
+        ties: Dict[int, List[int]] = {}
+        for i in idxs:
+            ties.setdefault(top(i), []).append(i)
+        for members in ties.values():
+            if len(members) > 1:
+                for lv, i in enumerate(sorted(members, key=lambda i: (-_polygon_area(zones[i][2]), i))):
+                    level[i] = lv
+        dense = {k: r for r, k in enumerate(sorted({(prio[i], level[i]) for i in idxs}))}
+        for i in idxs:
+            prio[i] = dense[(prio[i], level[i])]
     return prio
 
 

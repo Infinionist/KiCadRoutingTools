@@ -171,11 +171,12 @@ zone_overlap_priorities(zones) -> List[int]   # zones: [(layer, net_id, polygon)
 If `net_name` is given (or `use_net_name=True` for zones and rule areas),
 KiCad 10 format is emitted; otherwise KiCad 9. `generate_zone_sexpr` is what
 `route_planes.py` uses to create power/ground planes; `direct_connect=True`
-makes solid pad connections instead of thermal reliefs. Overlapping zones of
-different nets on one layer need distinct `priority` values, or KiCad breaks
+makes solid pad connections instead of thermal reliefs. Overlapping zones on
+one layer need distinct `priority` values: of different nets, or KiCad breaks
 the tie on their (freshly minted) UUIDs and the fill changes from run to run;
-`zone_overlap_priorities` assigns them, the smaller zone winning, and leaves a
-zone that overlaps nothing at 0.
+of one net too, or KiCad's DRC reports them as intersecting zones (an error),
+though their copper merges either way. `zone_overlap_priorities` assigns them,
+the smaller zone winning, and leaves a zone that overlaps nothing at 0.
 
 `generate_rule_area_sexpr` writes a KiCad keep-out rule area forbidding each
 of `RULE_AREA_FLAGS` (`tracks`, `vias`, `pads`, `copperpour`, `footprints`)
