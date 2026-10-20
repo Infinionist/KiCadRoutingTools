@@ -37,6 +37,7 @@ runnable tool in the clone with a one-line purpose.
   [placement renderer](#placement-renderer-render_placementpy) ·
   [floorplan overlay](#floorplan-overlay-render_planpy) ·
   [nets side by side](#nets-side-by-side-render_netspy) ·
+  [power view](#power-view-render_powerpy) ·
   [routing movie](#routing-movie-route_moviepy) ·
   [placement movie](#placement-movie-place_moviepy)
 - Fanout: [BGA](#bga-fanout-generator-bga_fanoutpy) ·
@@ -1058,6 +1059,38 @@ python3 -X utf8 py_tools/render_nets.py -o gnd.png --nets GND --view 120,60,150,
 - `--scale` — pixels per mm (default 12).
 
 Exit 0 drawn; 2 an unreadable board, or a pattern no board's net matches.
+
+## Power View (`render_power.py`)
+
+A picture of a board's power components: each part that passes power from
+rail to rail (regulator, filter, fuse, switch) and each connector where power
+enters, filled in its output rail's colour, outlined bold and named; each
+decap and every other part of the power groups filled in its rail's colour;
+under them each supply rail's copper (tracks, vias, plane) in the same
+colours, muted, and every other net's copper faint. A key below the board
+names the rails and marks the planes.
+
+```bash
+python3 -X utf8 py_tools/render_power.py routed.kicad_pcb -o power.png \
+    --groups groups.json --manifest runs_set3/tigard/redo_commands.sh
+```
+
+- Rails: `--power-nets NET ...`, else a recorded chain's own `--power-nets`
+  (`--manifest`, its redo_commands.sh; its route_planes `--nets` mark the
+  planes), else the nets `list_nets.find_power_nets` names. Ground is never a
+  rail.
+- `--groups` adds the parts of the groups file's power groups.
+- Which part passes power is read, not graded: one of its rail pins is an
+  output (`OUT`, `VO`, `SW`, `LX`), or it is a two-pad part between rails, a
+  switch, jumper, fuse, diode, resistor, inductor, bead or transistor, or a
+  small (8 pads or fewer) or power-group chip whose pins carry no names; its
+  input is the rail on an input pin, else the one whose name gives the higher
+  voltage (or says VBUS, VIN, BAT). A chip with supply pins alone on several
+  rails -- a level shifter -- is a load. Power enters at a connector on a rail
+  some part takes in and no part makes.
+- `--size` (default 1800 px), `--theme` (default `dark`), `--title`.
+
+Exit 0 drawn; 2 no rail found (name them with `--power-nets`).
 
 ## Routing Movie (`route_movie.py`)
 

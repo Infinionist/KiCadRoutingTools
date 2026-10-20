@@ -97,6 +97,22 @@ GROUP_PALETTE = ((31, 119, 180), (255, 127, 14), (44, 160, 44),
                  (127, 127, 127))
 
 
+def group_palette(n):
+    """`n` colours, no two alike: GROUP_PALETTE (its grey, which reads as no
+    group, left out), then hues a golden angle apart. For a picture whose
+    every group or rail must be told apart -- the placement movie's groups,
+    render_power's rails."""
+    import colorsys
+    base = [c for c in GROUP_PALETTE if len(set(c)) > 1]
+    out = list(base[:n])
+    h = 0.11
+    while len(out) < n:
+        h = (h + 0.618034) % 1.0
+        out.append(tuple(int(255 * v) for v in colorsys.hsv_to_rgb(h, 0.7 - 0.25 * (len(out) // 20 % 2),
+                                                                     0.95)))
+    return out
+
+
 def group_colours(path, refs) -> Tuple[Dict[str, tuple], List[tuple], List[str]]:
     """The groups file at `path` as colours: ({ref: rgb}, legend rows,
     refs the file names that `refs` does not hold). Raises

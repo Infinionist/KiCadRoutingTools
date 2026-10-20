@@ -99,7 +99,7 @@ Fast, grid-based A\* routing with a native Rust core (~10× faster than pure Pyt
 **Interfaces**
 - Full [KiCad plugin GUI](#kicad-plugin) (KiCad 9 & 10) and a scriptable [CLI](#command-line-interface)
 - [AI assistance](docs/claude-skills.md) — an **AI Drive** tab that plans an entire routing workflow or places a board by function, per-field "Ask AI" helpers, and datasheet-driven power / high-speed / diff-pair analysis
-- [Board rendering](docs/utilities.md#board-renderer-route_renderpy) — fast geometry PNG renderer (`route_render.py`), placement stills (`render_placement.py`), and movies of a routing run (`route_movie.py`, made for every stress run) and of a placement, or the placement skill's whole flow through to the full route (`place_movie.py`)
+- [Board rendering](docs/utilities.md#board-renderer-route_renderpy) — fast geometry PNG renderer (`route_render.py`), placement stills (`render_placement.py`), a board's power components (`render_power.py`), and movies of a routing run (`route_movie.py`, made for every stress run) and of a placement, or the placement skill's whole flow through to the full route (`place_movie.py`)
 - [Routing plans as files](docs/claude-skills.md#plans-from-the-command-line) — save/load a whole routing chain as JSON: build one from a recorded command chain (`make_plan.py`), run it headless through the real plugin (`run_plan.py`), or load it in the GUI
 
 ## Quick Start
@@ -779,6 +779,7 @@ KiCadRoutingTools/
 │   ├── render_placement.py       # PNG stills of a placement, with its legality
 │   ├── route_review.py           # What to move after a route
 │   ├── render_nets.py            # Chosen nets' copper on several boards side by side
+│   ├── render_power.py           # A board's power components over its rails
 │   ├── board_score.py            # One score for a board: blocking, then quality
 │   ├── quick_score.py            # Score a route.py --quick 2 board (the placement seed judge)
 │   ├── check_reachability.py     # Is this pad reachable, or is the geometry to blame?
@@ -980,6 +981,7 @@ Every tool prints its full option list with `--help`, and **[docs/configuration.
 | `krt_registry.py` | Every runnable tool in the clone, what it is for, and which door (placement / routing) serves it | [Utilities](docs/utilities.md#tool-inventory-krt_registrypy-krt_capabilitiespy) |
 | `route_render.py` | PNG still of a board from its geometry | [Utilities](docs/utilities.md#board-renderer-route_renderpy) |
 | `route_movie.py` / `place_movie.py` | Movie of a routing run / of a placement, step by step | [Utilities](docs/utilities.md#routing-movie-route_moviepy) |
+| `render_power.py` | A board's power components over its rails | [Utilities](docs/utilities.md#power-view-render_powerpy) |
 | `make_plan.py` / `run_plan.py` | Build a GUI routing plan from a recorded chain / run one headless | [Plans from the CLI](docs/claude-skills.md#plans-from-the-command-line) |
 
 ```bash

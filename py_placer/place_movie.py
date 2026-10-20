@@ -119,6 +119,7 @@ class Film:
         # (a group of fixed parts only shows no colour, so it takes none)
         groups = [g for g in load_groups(args.groups)['groups']
                   if any(r in self.movable for r in g['refs'])]
+        from render_placement import group_palette
         colours = group_palette(len(groups))
         self.line, self.fill, self.key = {}, {}, []
         for g, rgb in zip(groups, colours):
@@ -432,21 +433,6 @@ class Film:
             for i in range(1, 5):
                 self.r.set_view(_lerp(self.home, self.r.bounds, _ease(i / 4)))
                 self.shot(label, key=False)
-
-
-def group_palette(n):
-    """`n` colours, no two alike: render_placement's group palette (its grey,
-    which reads as no group, left out), then hues a golden angle apart."""
-    import colorsys
-    from render_placement import GROUP_PALETTE
-    base = [c for c in GROUP_PALETTE if len(set(c)) > 1]
-    out = list(base[:n])
-    h = 0.11
-    while len(out) < n:
-        h = (h + 0.618034) % 1.0
-        out.append(tuple(int(255 * v) for v in colorsys.hsv_to_rgb(h, 0.7 - 0.25 * (len(out) // 20 % 2),
-                                                                     0.95)))
-    return out
 
 
 def _union(rects):
