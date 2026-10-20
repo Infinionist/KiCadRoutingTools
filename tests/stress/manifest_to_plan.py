@@ -57,6 +57,16 @@ REFUSED_TOOLS = {
         "placement skill's flow, routing included); the plan format has no "
         'placement step. Run it BEFORE the plan and start the plan from the '
         'placed board'),
+    # movie3d/: the 3D placement movie, place_simple placing the board on camera.
+    'make_movie.py': (
+        'films place_simple placing the board in 3D (and, with --route, the '
+        "placement skill's flow, routing included); the plan format has no "
+        'placement step. Run it BEFORE the plan and start the plan from the '
+        'placed board'),
+    'record.py': (
+        "records place_simple's run for the 3D placement movie and writes its "
+        'placed board; the plan format has no placement step. Run it BEFORE '
+        'the plan and start the plan from the placed board'),
     # place_optimize, place_route_loop, place_seed, place_groups,
     # place_candidates, place_reconstruct, place_portfolio, rank_rotations and
     # place_intent_sides are retired, but recorded manifests still name them,
