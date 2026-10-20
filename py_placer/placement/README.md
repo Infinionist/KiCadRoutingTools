@@ -489,15 +489,17 @@ contract.
 
 - **Datasheet layouts.** A switching regulator, an LDO, a crystal oscillator
   or an RF front end comes with a recommended layout in its datasheet: where
-  each support part sits relative to the chip, and the rules behind it. For a
-  buck, those are an input cap across each VIN and ground pin pair, the
-  inductor at the switch pin with the switch node kept small, the boot cap
-  across BOOT and SW, the feedback divider at FB and away from the switch
-  node, and the output caps' ground next to the input caps'. The placer knows
-  only the decap part of that. The step to try:
+  each support part sits relative to the chip, how the copper between them
+  runs, and the rules behind both. For a buck, those are an input cap across
+  each VIN and ground pin pair, the inductor at the switch pin with the switch
+  node kept small, the boot cap across BOOT and SW, the feedback divider at FB
+  and away from the switch node, and the output caps' ground next to the input
+  caps'. The placer knows only the decap part of that, and the router none of
+  it. The step to try:
   1. AI reads the part's datasheet (its layout guidelines and example layout)
      and derives the arrangement as a template (each support part's offset and
-     angle from the chip, and the pins it serves) plus the rules.
+     angle from the chip, and the pins it serves) plus the placement and
+     routing rules.
   2. The parts are seated as the template draws them before the anneal.
   3. Strong cohesion holds them there: a chip's move carries its template's
      parts, the way it carries its decaps and claims today, and a move that
@@ -505,6 +507,14 @@ contract.
   4. Maybe cost terms from the rules too, such as switch-node length and
      input-loop area, which `check_floorplan` would also grade, since routing
      cannot see them.
+  5. The router follows the datasheet's routing rules for those parts and the
+     area they cover: the input loop short, wide and on one layer, for low
+     inductance; the switch node's copper small; the feedback trace kept away
+     from the switch node; a ground via beside each cap's ground pad; thermal
+     vias under the exposed pad. Some rules compile into what the router
+     already reads: a `keep_away` rule in the design brief, or per-net widths
+     through `--power-nets` / `--power-nets-widths`. Loop inductance and
+     copper area would be new router costs, graded on the routed board.
 
   On fusb302_pd_dev the human copied the LMR36006 datasheet's example layout
   part for part. Grouped seed 5 put the inductor 6.1 mm from the switch pin
