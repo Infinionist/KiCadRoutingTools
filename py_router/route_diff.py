@@ -254,6 +254,67 @@ def diff_cleanup_scope(pairs, routed_results, single_ended_nets, member_connecte
     return scope
 
 
+def coupled_pair_floors(pcb_data, input_file, pairs, routable_layers):
+    """#1293: the pairs a .kicad_dru coupled-pair rule grades P against N.
+
+    KiCad lets a pair couple tighter than the clearance everything else keeps
+    with a custom rule scoped to the pair, `AB.isCoupledDiffPair() && ...` with
+    a clearance constraint. Where that rule is the one KiCad grades P against
+    N at (design_rules.coupled_pair_clearance: the last matching rule, so a
+    later layer or class rule still wins), its value is the pair's P<->N
+    clearance, and #441 / #530 / #1145 must not raise the gap past it.
+
+    Returns ({p_net_id: (gap floor mm, rule names)}, {frozenset({P, N}):
+    pair_clearance map}). A pair has a gap floor only when the rule governs
+    its tracks on EVERY layer it may route on (one gap per pair). The map
+    holds the layers it governs, per pair_clearance kind: 'track' (track vs
+    track), 'layer' (track vs track or via), 'stack' (via vs via, every
+    copper layer). Both are empty when the board has no such rule."""
+    path = input_file or getattr(pcb_data, 'source_path', '') or ''
+    if not path or not os.path.isfile(os.path.splitext(path)[0] + '.kicad_dru'):
+        return {}, {}
+    from design_rules import DesignRules
+    from list_nets import fab_floors
+    copper = list(getattr(pcb_data.board_info, 'copper_layers', None) or routable_layers)
+    try:
+        dr = DesignRules.from_project(pcb_data, path, copper_layers=copper,
+                                      fab_floor=fab_floors(len(copper) or 2))
+    except Exception as e:                                      # noqa: BLE001
+        print(f"  (#1293: design rules not read: {e})")
+        return {}, {}
+    if not dr.has_coupled_rules():
+        return {}, {}
+    # The engine's default stack names inner layers a 2-layer board lacks;
+    # a layer with no copper cannot carry the pair.
+    routable_layers = [l for l in routable_layers if l in copper]
+    floors, cmap = {}, {}
+    for pair in pairs:
+        p, n = pair.p_net_id, pair.n_net_id
+
+        def gov(types, layer):
+            return dr.coupled_pair_clearance(p, n, layer, types)
+        track, layer_kind, rules = {}, {}, set()
+        for l in copper:
+            tt = gov(('track', 'track'), l)
+            if tt is None:
+                continue
+            track[l] = tt.min
+            rules.add(tt.min_rule)
+            tv, vt = gov(('track', 'via'), l), gov(('via', 'track'), l)
+            if tv is not None and vt is not None:
+                layer_kind[l] = max(tt.min, tv.min, vt.min)
+        vv = [gov(('via', 'via'), l) for l in copper]
+        stack = (max(c.min for c in vv) if vv and all(c is not None for c in vv)
+                 else None)
+        if not track:
+            continue
+        cmap[frozenset((p, n))] = {'track': track, 'layer': layer_kind,
+                                   'stack': stack}
+        if routable_layers and all(l in track for l in routable_layers):
+            floors[p] = (max(track[l] for l in routable_layers), sorted(rules))
+    return floors, cmap
+
+
 def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[str],
                 layers: List[str] = None,
                 # #530: cap every auto-read net class at this clearance (the
@@ -397,6 +458,8 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     # before the parity dump, the --impedance width solve, and routing -- so the
     # impedance-derived width is computed at the ACTUAL (floored) gap and stays
     # on target, and every downstream consumer sees a single, consistent gap.
+    # A pair a coupled-pair rule grades (#1293) keeps the gap asked for here.
+    _requested_gap = diff_pair_gap
     if diff_pair_gap is not None and clearance and diff_pair_gap < clearance:
         print(f"Diff-pair gap {diff_pair_gap}mm is below clearance {clearance}mm; "
               f"raising gap to {clearance}mm (KiCad grades P<->N coupling as clearance).")
@@ -580,10 +643,33 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                 g, why = v, "the track-clearance map"
         return g, why
 
+    # #1293: a pair whose P<->N clearance a coupled-pair rule sets is floored
+    # at that rule alone (per pair, below), never at #441 / #530 / #1145.
+    _target_pairs = list(find_differential_pairs(pcb_data, net_names).values())
+    _coupled_floor, _coupled_map = coupled_pair_floors(
+        pcb_data, input_file, _target_pairs, _routable_layers)
+    for _pair in _target_pairs:
+        _cf = _coupled_floor.get(_pair.p_net_id)
+        if _cf is not None:
+            print(f"  #1293: {_pair.p_net_name}/{_pair.n_net_name}: P<->N graded at "
+                  f"{_cf[0]:g}mm by the coupled-pair rule "
+                  f"{', '.join(repr(r) for r in _cf[1])}")
+    if (_target_pairs and _requested_gap is not None
+            and all(p.p_net_id in _coupled_floor for p in _target_pairs)):
+        # Every pair is graded by its own rule: the call's gap is theirs, so
+        # the --impedance solve below sees the gap the pairs are built at.
+        _cg = max([_requested_gap] + [f for f, _ in _coupled_floor.values()])
+        if abs(_cg - diff_pair_gap) > 1e-9:
+            print(f"Diff-pair gap {_cg:g}mm: every pair is graded by its coupled-pair "
+                  f"rule, not the clearance (#1293).")
+            diff_pair_gap = _cg
+
     _gap_rules_bind = bool(_gap_layer_map or _gap_track_rules or track_clearances)
     if _gap_rules_bind and diff_pair_gap is not None:
         _rg, _rwhy = 0.0, None
-        for _pair in find_differential_pairs(pcb_data, net_names).values():
+        for _pair in _target_pairs:
+            if _pair.p_net_id in _coupled_floor:
+                continue
             _g, _why = _pair_rule_gap(_pair.p_net_id, _pair.n_net_id)
             if _g > _rg:
                 _rg, _rwhy = _g, _why
@@ -859,6 +945,9 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         print(f"Same-net pad via clearance {_snpc581:g}mm (from {_snpc_src}, "
               f"#581): vias stay off same-net pads")
     config = GridRouteConfig(**config_kwargs)
+    # #1293: every P<->N pricing site (the #318 neck, via spacing, the
+    # self-checks) reads the coupled-pair rule through pair_clearance.
+    config.coupled_pair_clearances = _coupled_map
 
     # Find differential pairs from all provided nets
     diff_pairs: Dict[str, DiffPairNet] = find_differential_pairs(pcb_data, net_names)
@@ -1288,7 +1377,7 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         # machinery, so the pair reserves and routes its wider channel.
         # #1145: ...or when a .kicad_dru rule binds a pair (`_pair_rule_gap`).
         if (diff_pair_width_from_class or diff_pair_gap_from_class or net_clearances
-                or _gap_rules_bind):
+                or _gap_rules_bind or _coupled_floor):
             try:
                 from list_nets import (read_design_rules, resolve_net_class, fab_floors,
                                        class_diff_pair_geometry)
@@ -1312,24 +1401,44 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                 _w = _cw if diff_pair_width_from_class and impedance is None else None
                 _g = _cg if diff_pair_gap_from_class else None
                 _ew = max(_w if _w is not None else config.track_width, _wfloor)
-                _eg = max(_g if _g is not None else config.diff_pair_gap, _gfloor)
+                _cf = _coupled_floor.get(_pair.p_net_id)
+                if _cf is not None:
+                    # #1293: KiCad grades this pair's P<->N at its coupled-pair
+                    # rule, not at the clearance, the class or another rule:
+                    # build the gap asked for, floored at that rule alone.
+                    _ask = _g if _g is not None else (
+                        _requested_gap if _requested_gap is not None
+                        else config.diff_pair_gap)
+                    _eg = max(_ask, _gfloor)
+                    if _cf[0] > _eg + 1e-9:
+                        print(f"  #1293: {_pn}: coupling gap {_eg:.4g} mm raised to its "
+                              f"coupled-pair rule {_cf[0]:.4g} mm.")
+                        _eg = _cf[0]
+                    elif config.clearance and _eg < config.clearance - 1e-9:
+                        print(f"  #1293: {_pn}: coupling gap {_eg:.4g} mm kept under the "
+                              f"clearance {config.clearance:.4g} mm (its coupled-pair "
+                              f"rule grades P<->N at {_cf[0]:.4g} mm).")
+                else:
+                    _eg = max(_g if _g is not None else config.diff_pair_gap, _gfloor)
                 # #441 again: a class gap REPLACES the call's floored one, so
                 # floor it at the clearance here too. Below it the pair was
                 # built inside clearance and the #318 neck shaved P and N to
                 # different widths to clear it (cap_chain, class gap 0.15
                 # under 0.2: P 0.127, N 0.1726).
-                if config.clearance and _eg < config.clearance - 1e-9:
+                if _cf is None and config.clearance and _eg < config.clearance - 1e-9:
                     print(f"  #441: {_pn}: net-class coupling gap {_eg:.4g} mm raised "
                           f"to clearance {config.clearance:.4g} mm (KiCad grades "
                           f"P<->N coupling as clearance).")
                     _eg = config.clearance
-                _pclr = max((net_clearances or {}).get(_pair.p_net_id) or 0.0,
-                            (net_clearances or {}).get(_pair.n_net_id) or 0.0)
+                _pclr = (0.0 if _cf is not None else
+                         max((net_clearances or {}).get(_pair.p_net_id) or 0.0,
+                             (net_clearances or {}).get(_pair.n_net_id) or 0.0))
                 if _pclr > _eg + 1e-9:
                     print(f"  #530: {_pn}: coupling gap {_eg:.4g} mm raised to its net-class "
                           f"clearance {_pclr:.4g} mm (KiCad grades P<->N as clearance).")
                     _eg = _pclr
-                _rg, _rwhy = _pair_rule_gap(_pair.p_net_id, _pair.n_net_id)
+                _rg, _rwhy = ((0.0, None) if _cf is not None
+                              else _pair_rule_gap(_pair.p_net_id, _pair.n_net_id))
                 if _rg > _eg + 1e-9:
                     print(f"  #1145: {_pn}: coupling gap {_eg:.4g} mm raised to "
                           f"{_rwhy} {_rg:.4g} mm (KiCad grades P<->N under it).")
@@ -2584,13 +2693,13 @@ Examples:
         print(f"--clearance-ceiling {_ceiling}: every net class is capped at it (#439).")
     # #441: a diff-pair coupling gap below clearance is graded as a clearance
     # violation by KiCad (P<->N are different nets). Raise the gap to the clearance
-    # floor now that both are resolved -- BOTH the engine call below and the
-    # post-route .kicad_pro writeback then record the same floored gap, so the
-    # written diff_pair_gap never drops under the class clearance either. (The
-    # engine floors again as a safety net for direct callers.)
+    # floor now that both are resolved, for the post-route .kicad_pro writeback, so
+    # the written diff_pair_gap never drops under the class clearance. The ENGINE
+    # gets the gap as asked -- as the GUI's Differential tab passes it -- and
+    # floors each pair itself: at the clearance (#441, said there), or, for a
+    # pair a coupled-pair rule grades, at that rule (#1293).
+    args._engine_diff_pair_gap = args.diff_pair_gap
     if args.diff_pair_gap is not None and args.clearance and args.diff_pair_gap < args.clearance:
-        print(f"Diff-pair gap {args.diff_pair_gap}mm is below clearance "
-              f"{args.clearance}mm; raising gap to clearance (#441).")
         args.diff_pair_gap = args.clearance
     # Shared resolver: a declared 0 is UNSET, the same rule the placement half
     # of the loop applies (list_nets.resolve_cli_floor).
@@ -2740,7 +2849,7 @@ Examples:
                 keep_away=args.keep_away,
                 keep_away_free=args.keep_away_free,
                 keep_away_cost=args.keep_away_cost,
-                diff_pair_gap=args.diff_pair_gap,
+                diff_pair_gap=args._engine_diff_pair_gap,
                 diff_pair_width_from_class=not _dp_width_explicit,
                 diff_pair_gap_from_class=not _dp_gap_explicit,
                 diff_pair_centerline_setback=args.diff_pair_centerline_setback,

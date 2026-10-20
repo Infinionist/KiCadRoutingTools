@@ -3559,12 +3559,62 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
         board_min_clearance_for as _bm_for
     _board_min_clr = _bm_for(pcb_data, pcb_file)
 
-    def _pad_pair_cl(pad, other_net: int, layer: str = None, other_pad=None) -> float:
+    # #1293: a diff pair's P against its own N is graded at the .kicad_dru
+    # coupled-pair rule (AB.isCoupledDiffPair()) wherever that rule is the one
+    # KiCad applies -- resolved per item types, since a rule may scope itself
+    # with A.Type == 'track', and at KiCad's value (no fab floor). One dict
+    # test per pair on any other board.
+    _coupled_dr, _coupled_nets = None, frozenset()
+    if pcb_file and os.path.isfile(os.path.splitext(pcb_file)[0] + '.kicad_dru'):
+        try:
+            from design_rules import DesignRules, match_dp_suffix
+            _cdr = DesignRules.from_project(pcb_data, pcb_file,
+                                            copper_layers=_board_copper)
+            if _cdr.has_coupled_rules():
+                _by_name = {n.name: nid for nid, n in pcb_data.nets.items() if n.name}
+                _coupled_nets = frozenset(
+                    nid for nm, nid in _by_name.items()
+                    if match_dp_suffix(nm)[0] and match_dp_suffix(nm)[1] in _by_name)
+                _coupled_dr = _cdr
+                if not quiet:
+                    print("Coupled-pair clearance rules (.kicad_dru, #1293): "
+                          + ", ".join(sorted(r.name for r in _cdr.rules
+                                             if r.coupled and not r.unsupported)))
+        except Exception as _e:                                  # noqa: BLE001
+            if not quiet:
+                print(f"  .kicad_dru: coupled-pair rules not read ({_e})")
+    _coupled_cache: dict = {}
+
+    def _coupled_cl(net_a: int, net_b: int, type_a: str, type_b: str, layers):
+        """KiCad's clearance for a P/N pair of items when a coupled-pair rule
+        sets it on every layer in ``layers`` (the max over them), else None."""
+        if (_coupled_dr is None or net_a == net_b or net_a not in _coupled_nets
+                or net_b not in _coupled_nets):
+            return None
+        key = (net_a, net_b, type_a, type_b, tuple(layers))
+        if key not in _coupled_cache:
+            vals = []
+            for l in key[4]:
+                c = _coupled_dr.coupled_pair_clearance(net_a, net_b, l, (type_a, type_b))
+                if c is None:
+                    vals = None
+                    break
+                vals.append(c.kicad_min)
+            _coupled_cache[key] = max(vals) if vals else None
+        return _coupled_cache[key]
+
+    def _pad_pair_cl(pad, other_net: int, layer: str = None, other_pad=None,
+                     other_type: str = None) -> float:
         eff = _pair_cl(pad.net_id, other_net)
         if layer is not None:
             eff = _layer_cl(layer, eff)
         else:
             eff = _pads_cl(eff, pad, other_pad)
+        if other_type is not None:
+            _cv = _coupled_cl(pad.net_id, other_net, 'pad', other_type,
+                              (layer,) if layer is not None else _pad_copper(pad))
+            if _cv is not None:
+                eff = _cv
         return _override_clr(eff, _board_min_clr, pad, other_pad)
 
     def _mark_required(v: dict, eff: float) -> dict:
@@ -3728,6 +3778,9 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
             checked_pairs.add(pair_key)
 
             _eff, _trule = _track_pair_cl(net1, net2, layer=seg1.layer)
+            _cv = _coupled_cl(net1, net2, 'track', 'track', (seg1.layer,))
+            if _cv is not None:
+                _eff, _trule = _cv, None
             has_violation, overlap, pt1, pt2 = check_segment_overlap(seg1, seg2, _eff, clearance_margin)
             if has_violation and _graphic_pair_is_same_net(seg1, seg2, net1, net2):
                 has_violation = False
@@ -3954,6 +4007,9 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                     continue
 
                 _eff = _pair_cl(via_net, seg_net, layer=seg.layer)
+                _cv = _coupled_cl(via_net, seg_net, 'via', 'track', (seg.layer,))
+                if _cv is not None:
+                    _eff = _cv
                 has_violation, overlap = check_via_segment_overlap(via, seg, _eff, clearance_margin)
                 if has_violation and _graphic_pair_is_same_net(seg, None, seg_net, via_net):
                     has_violation = False
@@ -4159,6 +4215,9 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
             via_via_checked.add(pair_key)
 
             _eff = _stack_cl(_pair_cl(net1, net2) if net1 != net2 else clearance)
+            _cv = _coupled_cl(net1, net2, 'via', 'via', _board_copper)
+            if _cv is not None:
+                _eff = _cv
             has_violation, overlap = check_via_via_overlap(via1, via2, _eff, clearance_margin)
             if has_violation:
                 net1_name = pcb_data.nets.get(net1, None)
@@ -4206,7 +4265,7 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
             if not seg_net_matches and not pad_net_matches:
                 continue
 
-            _eff = _pad_pair_cl(pad, seg_net, layer=seg.layer)
+            _eff = _pad_pair_cl(pad, seg_net, layer=seg.layer, other_type='track')
             has_violation, overlap, closest_pt = check_pad_segment_overlap(
                 pad, seg, _eff, routing_layers, clearance_margin
             )
@@ -4260,7 +4319,7 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                 if not via_net_matches and not pad_net_matches:
                     continue
 
-                _eff = _pad_pair_cl(pad, via_net)
+                _eff = _pad_pair_cl(pad, via_net, other_type='via')
                 has_violation, overlap = check_pad_via_overlap(
                     pad, via, _eff, routing_layers, clearance_margin
                 )
@@ -4319,7 +4378,7 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                         continue
                     pad_pad_checked.add(pair_key)
                     # both pads' overrides are folded in by _pad_pair_cl
-                    _eff = _pad_pair_cl(pad1, pad2_net, other_pad=pad2)
+                    _eff = _pad_pair_cl(pad1, pad2_net, other_pad=pad2, other_type='pad')
                     has_violation, overlap, closest_pt = check_pad_pad_overlap(
                         pad1, pad2, _eff, routing_layers, clearance_margin)
                     if has_violation:

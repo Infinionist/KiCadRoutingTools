@@ -336,7 +336,7 @@ the subset our item model can answer without guessing:
 | `A.memberOfFootprint('glob')`, `A.intersectsCourtyard('ref')` | footprint ref / courtyard polygon | 2 |
 | `A.memberOfGroup('G')` | group membership (parseable from the file; GUI via `GetParentGroup`) | 2 |
 | `A.intersectsArea('zone')`, `enclosedByArea` | rule-area zone polygons (we parse zones) | 2 |
-| `A.inDiffPair('glob')`, `AB.isCoupledDiffPair()` | diff-pair detection (exists) | 2 |
+| `A.inDiffPair('glob')`, `AB.isCoupledDiffPair()` | diff-pair detection (exists); `AB.isCoupledDiffPair()` as a positive AND term is evaluated since #1293 (KiCad's `MatchDpSuffix`, ported) | 2 |
 | `fromTo`, `memberOfSheet`, `hasComponentClass`, `getField`, `A.Length`, assertions | out of scope | never |
 
 A rule using an unsupported predicate or kind is kept in the table marked

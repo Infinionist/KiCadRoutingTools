@@ -551,10 +551,27 @@ def min_rule_clearance(board_path: str) -> Optional[float]:
     ABSOLUTE floor that outranks custom rules, so leaving it above a RELAXING
     rule re-manufactures phantom violations on copper legally routed at the
     rule value. Uses a generous synthetic copper list -- for the minimum it
-    only matters that every plausibly-referenced layer resolves."""
+    only matters that every plausibly-referenced layer resolves.
+
+    A coupled-pair rule (``AB.isCoupledDiffPair()``, #1293) counts too: KiCad
+    grades a pair's gap at max(this minimum, its class diff_pair_gap), so a
+    board minimum above the rule fails every pair built at the rule's value
+    (measured on KiCad 10: 6 diff_pair_gap_out_of_range at 0.25, 0 at 0.15)."""
     copper = ["F.Cu", "B.Cu"] + [f"In{i}.Cu" for i in range(1, 31)]
     lmap, _ = read_board_layer_clearances(board_path, copper)
-    return min(lmap.values()) if lmap else None
+    vals = list(lmap.values())
+    dru = os.path.splitext(board_path)[0] + ".kicad_dru" if board_path else ""
+    if dru and os.path.isfile(dru):
+        try:
+            from design_rules import parse_dru
+            with open(dru, encoding="utf-8") as fh:
+                rules, _ = parse_dru(fh.read())
+            vals += [r.constraints["clearance"]["min"] for r in rules
+                     if r.coupled and not r.unsupported
+                     and "min" in r.constraints.get("clearance", {})]
+        except Exception:                                       # noqa: BLE001
+            pass
+    return min(vals) if vals else None
 
 
 def _record_board_copper(config, pcb_data) -> None:
