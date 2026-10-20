@@ -2,7 +2,7 @@
 KiCad Routing Tools - Placement sub-tab (AI tab notebook).
 
 Two Claude-Code-driven actions ("Place" via /plan-pcb-placement place, "Place +
-Route" via /plan-pcb-placement full, both with the skill's --rounds N) plus
+Route" via /plan-pcb-placement full) plus
 the non-AI "Beautify Labels" action. The layout follows the Routing sub-tab:
 a large pane on the left (here the run's candidates table and the preview,
 with the labels options under them), the "AI" control column on the right,
@@ -56,10 +56,6 @@ MODE_LABELS = {"place": "Place", "place_route": "Place + Route"}
 
 # "Default" combo entry = don't pass the model/effort flag (ai_gui convention).
 DEFAULT_CHOICE = "Default"
-
-# The skill's --rounds default (.claude/skills/plan-pcb-placement/SKILL.md):
-# the most placement rounds; a run stops at the first clean fast route.
-DEFAULT_ROUNDS = 3
 
 # Transcript control cap: an hours-long stream-json run grows without bound;
 # when the text exceeds the cap the oldest quarter is dropped.
@@ -251,7 +247,7 @@ class PlacementRunMonitor:
     the candidates table.
 
     One 1000 ms wx.Timer owned by the tab. Every second tick it rescans the
-    run's rounds (stat + small JSON reads: placement_run.scan_candidates)
+    run's seeds (stat + small JSON reads: placement_run.scan_candidates)
     and the newest board; every tick it reads the converge ledger's new rows
     and rewrites the status line.
     """
@@ -312,7 +308,7 @@ class PlacementRunMonitor:
 
 
 # The candidates table: (heading, width) per column.
-_CAND_COLUMNS = (("Round", 52), ("Seed", 44), ("Blocking", 66), ("Vias", 48),
+_CAND_COLUMNS = (("Seed", 44), ("Blocking", 66), ("Vias", 48),
                  ("Copper (mm)", 88), ("Segments", 72), ("Status", 64))
 
 
@@ -320,14 +316,14 @@ def _cand_cells(row):
     """One candidates-table row's cell texts, in _CAND_COLUMNS order."""
     def num(v, fmt="{}"):
         return "" if v is None else fmt.format(v)
-    return (str(row["round"]), str(row["seed"]), num(row["blocking"]),
+    return (str(row["seed"]), num(row["blocking"]),
             num(row["vias"]), num(row["copper_mm"], "{:.0f}"),
             num(row["segments"]), row["status"])
 
 
 def _cand_caption(row):
     """The preview caption for a candidate."""
-    head = f"round {row['round']}, seed {row['seed']}"
+    head = f"seed {row['seed']}"
     if row["blocking"] is not None:
         text = (f"{head} — fast route: {row['blocking']} blocking, "
                 f"{row['vias']} vias, {row['copper_mm']:.0f} mm")
@@ -335,7 +331,7 @@ def _cand_caption(row):
         text = f"{head} — placed; fast route pending"
     else:
         text = f"{head} — placing"
-    tag = {"KEPT": "kept", "best": "best of its round"}.get(row["status"])
+    tag = {"KEPT": "kept", "best": "best fast route"}.get(row["status"])
     return f"{text} ({tag})" if tag else text
 
 
@@ -394,7 +390,7 @@ class PlacementTab(wx.Panel):
         self._cand_rows = []           # placement_run.scan_candidates rows
         self._user_picked = False      # a click stops the auto-selection
         self._selecting = False        # programmatic selection in progress
-        self._sel_key = None           # (round, seed) shown in the preview
+        self._sel_key = None           # the seed shown in the preview
         self._shown = None             # (png, png mtime, caption) on screen
         self._render_busy = False
         self._render_next = None       # (board, png) queued behind a render
@@ -425,8 +421,8 @@ class PlacementTab(wx.Panel):
                 i, name, wx.LIST_FORMAT_LEFT if i == len(_CAND_COLUMNS) - 1
                 else wx.LIST_FORMAT_RIGHT, width)
         self.cand_list.SetToolTip(
-            "One row per seed per round: its fast route's blocking nets, vias, "
-            "copper and segments. 'best' is the best of its round, 'clean' a "
+            "One row per seed: its fast route's blocking nets, vias, "
+            "copper and segments. 'best' is the best fast route, 'clean' a "
             "fast route with no blocking net, 'KEPT' the board the run "
             "returned. Select a row to see its board.")
         self.cand_list.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_cand_selected)
@@ -474,17 +470,6 @@ class PlacementTab(wx.Panel):
                      wx.ALIGN_CENTER_VERTICAL)
         self.effort_choice = wx.ComboBox(self, value=DEFAULT_CHOICE, choices=[])
         sel_grid.Add(self.effort_choice, 0, wx.EXPAND)
-        sel_grid.Add(wx.StaticText(self, label="Rounds:"), 0,
-                     wx.ALIGN_CENTER_VERTICAL)
-        self.rounds_ctrl = wx.SpinCtrl(self, min=1, max=10,
-                                       initial=DEFAULT_ROUNDS)
-        self.rounds_ctrl.SetToolTip(
-            "The most placement rounds (the skill's --rounds). A round places "
-            "12 seeds (6 started scattered, 6 clustered), fast-routes the 6 its cost rates best and keeps the best; the run stops at "
-            "the first round whose best fast route has no blocking net, else "
-            "the agent reviews it, changes the groups, hints or claims and "
-            "places again.")
-        sel_grid.Add(self.rounds_ctrl, 0, wx.EXPAND)
         ctrl_sizer.Add(sel_grid, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
         # No combo population here: __init__ calls _refresh_cli_status() once
         # AFTER _create_ui, like the Routing tab.
@@ -508,8 +493,8 @@ class PlacementTab(wx.Panel):
         self.place_btn.SetToolTip(
             "Claude Code runs /plan-pcb-placement place headless on a "
             "snapshot of this board: it groups the parts, places 12 seeds "
-            "and keeps the one whose fast route is best, reviewing and "
-            "placing again up to Rounds rounds while none routes clean. "
+            "(6 started scattered, 6 clustered), fast-routes the 6 its cost "
+            "rates best and keeps the one whose fast route is best. "
             "Artifacts land in a krt_placement folder next to the board file, "
             f"which keeps this board's newest {KEEP_RUNS} runs.")
         ctrl_sizer.Add(self.place_btn, 0,
@@ -517,7 +502,7 @@ class PlacementTab(wx.Panel):
         self.place_route_btn = wx.Button(self, label="Place + Route (AI)")
         self.place_route_btn.SetToolTip(
             "Claude Code runs /plan-pcb-placement full headless: the same "
-            "placement rounds as Place, then the kept placement is routed "
+            "placement as Place, then the kept placement is routed "
             "with the full chain and graded. Artifacts land in a krt_placement "
             f"folder next to the board file, which keeps this board's newest "
             f"{KEEP_RUNS} runs.")
@@ -604,16 +589,6 @@ class PlacementTab(wx.Panel):
         a line longer than the field."""
         self.status_text.SetLabel(text)
         self.status_text.SetToolTip(text)
-
-    def get_rounds_value(self):
-        """The skill's --rounds for the next run."""
-        return self.rounds_ctrl.GetValue()
-
-    def set_rounds_value(self, value):
-        try:
-            self.rounds_ctrl.SetValue(max(1, min(10, int(value))))
-        except (TypeError, ValueError):
-            pass  # a malformed saved value must not break dialog restore
 
     def _populate_ai_combos(self):
         """Kept as the old entry point; the refresh owns the combos now
@@ -727,10 +702,9 @@ class PlacementTab(wx.Panel):
         # pruned (KEEP_RUNS) the moment this one launches.
         self._clear_candidates()
         self._set_outputs()
-        rounds = self.get_rounds_value()
         prompt = build_placement_prompt(
             self.backend, workdir, staged, mode,
-            extra=self.extra_instructions.GetValue(), rounds=rounds)
+            extra=self.extra_instructions.GetValue())
 
         model = self.get_model_value()
         effort = self.get_effort_value()
@@ -740,8 +714,7 @@ class PlacementTab(wx.Panel):
         self.set_status(f"{label} — starting Claude Code...")
         self._append_transcript(
             f"=== {label} run ===\nworkdir: {workdir}\n"
-            f"model: {model or 'default'}  effort: {effort or 'default'}  "
-            f"rounds: {rounds}\n\n")
+            f"model: {model or 'default'}  effort: {effort or 'default'}\n\n")
         self.append_log(f"Placement: {label} run started, workdir {workdir}\n")
 
         self._runner = AISkillRunner(cli, self._on_transcript,
@@ -821,8 +794,8 @@ class PlacementTab(wx.Panel):
         """Raw stream-json tap: feed FULL Bash commands to the monitor.
 
         The formatted transcript prefers the Bash tool's short description
-        and truncates at ~120 chars, which usually loses the `--round`
-        and `r<N>/s<S>` arguments that stage derivation keys on - the raw
+        and truncates at ~120 chars, which usually loses the `s{seed}`
+        and `s<S>` arguments that stage derivation keys on - the raw
         event still carries them.
         """
         if not self or self._monitor is None:
@@ -924,7 +897,7 @@ class PlacementTab(wx.Panel):
         self.preview.clear("No candidates yet.")
 
     def refresh_candidates(self, active=None, kept_board=None, final=False):
-        """Rescan the run's rounds into the table (monitor tick; run end).
+        """Rescan the run's seeds into the table (monitor tick; run end).
 
         During a run the newest row is selected until the user clicks one;
         at the end the row the run kept is marked KEPT and selected.
@@ -934,8 +907,8 @@ class PlacementTab(wx.Panel):
             return
         rows = scan_candidates(workdir, active=None if final else active)
         kept = mark_kept(rows, workdir, kept_board) if final else None
-        keys = [(r["round"], r["seed"]) for r in rows]
-        if keys != [(r["round"], r["seed"]) for r in self._cand_rows]:
+        keys = [r["seed"] for r in rows]
+        if keys != [r["seed"] for r in self._cand_rows]:
             self.cand_list.DeleteAllItems()
             for i, _k in enumerate(keys):
                 self.cand_list.InsertItem(i, "")
@@ -945,10 +918,10 @@ class PlacementTab(wx.Panel):
                     self.cand_list.SetItem(i, col, text)
         self._cand_rows = rows
         if kept is not None:
-            pick = (kept["round"], kept["seed"])
+            pick = kept["seed"]
         elif not self._user_picked and rows:
-            newest = max(rows, key=lambda r: (r["mtime"], r["round"], r["seed"]))
-            pick = (newest["round"], newest["seed"])
+            newest = max(rows, key=lambda r: (r["mtime"], r["seed"]))
+            pick = newest["seed"]
         else:
             pick = self._sel_key
         if pick in keys:
@@ -969,13 +942,13 @@ class PlacementTab(wx.Panel):
             if not self._selecting:
                 self._user_picked = True
             row = self._cand_rows[i]
-            self._sel_key = (row["round"], row["seed"])
+            self._sel_key = row["seed"]
             self._show_selected()
 
     def _show_selected(self):
         """Show the selected row's fast-routed board (else its placement)."""
         row = next((r for r in self._cand_rows
-                    if (r["round"], r["seed"]) == self._sel_key), None)
+                    if r["seed"] == self._sel_key), None)
         if row is None:
             return
         caption = _cand_caption(row)
@@ -986,7 +959,7 @@ class PlacementTab(wx.Panel):
             return
         png = os.path.join(
             self.last_workdir, "_gui_preview",
-            f"r{row['round']}_s{row['seed']}{'_fast' if row['fast'] else ''}.png")
+            f"s{row['seed']}{'_fast' if row['fast'] else ''}.png")
         if os.path.isfile(png) and _safe_mtime(png) >= _safe_mtime(board):
             shown = (png, _safe_mtime(png), caption)
             if shown != self._shown:

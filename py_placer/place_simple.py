@@ -3,6 +3,15 @@
 
     python3 -X utf8 py_placer/place_simple.py board.kicad_pcb placed.kicad_pcb \\
         --groups groups.json --intent intent.json [--seed 0] [--json report.json]
+    python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 's{seed}.kicad_pcb' \\
+        --groups groups.json --intent intent.json [--jobs 4] [--json 's{seed}.json']
+
+An OUT carrying {seed}, with no seed named, places the default seeds: 6
+started scattered, then 6 with each group gathered (`--scattered`,
+`--clustered`, and the opt-in `--anchored`), one process each, and names the
+`--judge` (6) legal seeds of lowest cost for a judging route, printed and
+written to judge.json beside the boards. `--seeds LIST` places the seeds it
+lists instead, and names the judged ones the same way.
 
 1. GROUPS: the groups file (`check_groups.py`), a crystal and its load caps
    folded into their IC's group. A group is a set of parts kept together:
@@ -60,19 +69,20 @@ import _path  # noqa: F401  (py_placer -> py_router/py_tools on sys.path)
 MOVES_PER_PART = 500
 #: Further anneals, each from a fresh start, when one leaves parts illegal.
 RESTARTS = 2
-#: `--round`: the seeds placed with each start, and how many of the legal ones
-#: of lowest `final.cost` are named for a judging route. Over 11 boards, 6
-#: scattered + 6 clustered with the 6 cheapest judged shipped fewer open nets
-#: and vias than 24 scattered with 12 judged, in half the time; judging all 12
-#: shipped worse (the judge errs more with more to choose from).
-ROUND_SCATTERED = 6
-ROUND_CLUSTERED = 6
-ROUND_JUDGED = 6
+#: The default seeds (an OUT carrying {seed}, no seed named): how many are
+#: placed with each start, and how many of the legal ones of lowest
+#: `final.cost` are named for a judging route. Over 11 boards, 6 scattered + 6
+#: clustered with the 6 cheapest judged shipped fewer open nets and vias than
+#: 24 scattered with 12 judged, in half the time; judging all 12 shipped worse
+#: (the judge errs more with more to choose from).
+SCATTERED_SEEDS = 6
+CLUSTERED_SEEDS = 6
+JUDGED_SEEDS = 6
 #: Anchored seeds (`--anchored`) are opt-in, numbered after the clustered ones.
 #: Over 10 boards, 6 scattered + 6 anchored routed better than the default
-#: round on two (covg blocking 3.1 -> 0.1, bitaxe) and worse on three (tigard,
-#: argus, librevna), so the default round has none.
-ROUND_ANCHORED = 0
+#: seeds on two (covg blocking 3.1 -> 0.1, bitaxe) and worse on three (tigard,
+#: argus, librevna), so the default has none.
+ANCHORED_SEEDS = 0
 
 import argparse
 import json
@@ -273,10 +283,10 @@ def _seed_list(spec):
 
 
 def _many_seeds(ap, a):
-    """`--seeds`: each seed a `--seed` run of this script in its own process,
-    `--jobs` at a time, every other option passed through as parsed; with
-    `--round`, then the seeds to judge (`_name_judged`). Exit 2 if any seed
-    failed outright, else 4 if any left parts illegal, else 0."""
+    """`--seeds` (or the default seeds): each seed a `--seed` run of this
+    script in its own process, `--jobs` at a time, every other option passed
+    through as parsed; then the seeds to judge (`_name_judged`). Exit 2 if any
+    seed failed outright, else 4 if any left parts illegal, else 0."""
     import subprocess
     try:
         seeds = _seed_list(a.seeds)
@@ -293,7 +303,7 @@ def _many_seeds(ap, a):
               file=sys.stderr)
         return 2
     skip = {'help', 'board', 'out', 'seed', 'seeds', 'jobs', 'json',
-            'round', 'scattered', 'clustered', 'anchored', 'judge'}
+            'scattered', 'clustered', 'anchored', 'judge'}
     passed = []
     for act in ap._actions:
         if act.dest in skip or not act.option_strings:
@@ -345,17 +355,16 @@ def _many_seeds(ap, a):
                   + (f", no legal pose for {', '.join(ill)}" if ill else '') + f" -> {out}")
         else:
             print(f"  seed {s}: exit {rc}, no summary (see {os.path.splitext(out)[0]}.log)")
-    if a.round:
-        _name_judged(a, seeds, summaries)
+    _name_judged(a, seeds, summaries)
     rcs = set(done.values())
     return 2 if rcs - {0, 4} else (4 if 4 in rcs else 0)
 
 
 def _name_judged(a, seeds, summaries):
-    """`--round`'s last step: the `--judge` legal seeds of lowest
+    """A run of several seeds' last step: the `--judge` legal seeds of lowest
     `final.cost`, printed and written to `judge.json` beside the seeds' boards
-    (`judge` in judging order, cheapest first; `scattered`, `clustered` and
-    `illegal` list the round's seeds by start and verdict)."""
+    (`judge` in judging order, cheapest first; `scattered`, `clustered`,
+    `anchored` and `illegal` list the seeds by start and verdict)."""
     legal = sorted((summaries[s]['final']['cost'], s) for s in seeds
                    if s in summaries and not summaries[s].get('illegal'))
     judge = [s for _c, s in legal[:a.judge]]
@@ -432,13 +441,14 @@ def main(argv=None):
     ap.add_argument('--moves', type=int, default=0,
                     help='annealing moves (default 0: MOVES_PER_PART per movable '
                          'part)')
-    ap.add_argument('--seed', type=int, default=0,
-                    help='the random stream: the start and the moves (default 0)')
+    ap.add_argument('--seed', type=int,
+                    help='the random stream: the start and the moves (default 0); with '
+                         'an OUT carrying {seed}, that one seed placed there')
     ap.add_argument('--seeds', metavar='LIST',
-                    help='place several seeds in one call, e.g. 0-3 or 0,1,2,3: OUT and '
-                         '--json then carry {seed}, each seed is its own process (the '
-                         'same placement a --seed run gives) and its log goes beside its '
-                         'board as .log')
+                    help='place these seeds, e.g. 0-3 or 0,1,2,3, instead of the default '
+                         'ones: OUT and --json carry {seed}, each seed is its own process '
+                         '(the same placement a --seed run gives) and its log goes beside '
+                         'its board as .log')
     ap.add_argument('--clustered-seeds', metavar='LIST',
                     help='the seeds, listed as --seeds lists them, that start with each '
                          "group's movable members gathered round one random point of the "
@@ -448,27 +458,56 @@ def main(argv=None):
                          "group gathered round the point its wiring prefers (a quick "
                          "least-squares solve toward the fixed parts and groups it is "
                          "wired to, re-weighted and jittered per seed)")
-    ap.add_argument('--round', action='store_true',
-                    help="place one round of the plan-pcb-placement flow: --scattered seeds "
-                         "started scattered, then --clustered seeds started clustered, then "
-                         "--anchored seeds started anchored, numbered from 0 (OUT and --json "
-                         "carry {seed}), and name the --judge legal seeds of lowest cost for a "
-                         "judging route, printed and written to judge.json beside the boards")
-    ap.add_argument('--scattered', type=int, default=ROUND_SCATTERED,
-                    help=f'with --round, the seeds started scattered (default {ROUND_SCATTERED})')
-    ap.add_argument('--clustered', type=int, default=ROUND_CLUSTERED,
-                    help=f'with --round, the seeds started clustered (default {ROUND_CLUSTERED})')
-    ap.add_argument('--anchored', type=int, default=ROUND_ANCHORED,
-                    help=f'with --round, the seeds started anchored, after the clustered ones '
-                         f'(default {ROUND_ANCHORED}: opt-in)')
-    ap.add_argument('--judge', type=int, default=ROUND_JUDGED,
-                    help=f'with --round, how many legal seeds of lowest cost to name for a '
-                         f'judging route (default {ROUND_JUDGED})')
+    ap.add_argument('--scattered', type=int,
+                    help=f'with an OUT carrying {{seed}} and no seed named, the seeds '
+                         f'started scattered, numbered from 0 (default {SCATTERED_SEEDS})')
+    ap.add_argument('--clustered', type=int,
+                    help=f'likewise, the seeds started clustered, after the scattered ones '
+                         f'(default {CLUSTERED_SEEDS})')
+    ap.add_argument('--anchored', type=int,
+                    help=f'likewise, the seeds started anchored, after the clustered ones '
+                         f'(default {ANCHORED_SEEDS}: opt-in)')
+    ap.add_argument('--judge', type=int, default=JUDGED_SEEDS,
+                    help=f'in a run of several seeds, how many legal seeds of lowest cost '
+                         f'to name for a judging route, printed and written to judge.json '
+                         f'beside the boards (default {JUDGED_SEEDS})')
     ap.add_argument('--jobs', type=int, default=0,
-                    help='with --seeds, how many seeds run at once (default: one per '
+                    help='with several seeds, how many run at once (default: one per '
                          'seed, at most 4)')
     ap.add_argument('--json', help='write the report here')
     a = ap.parse_args(argv)
+    starts = [f for f, v in (('--scattered', a.scattered), ('--clustered', a.clustered),
+                             ('--anchored', a.anchored)) if v is not None]
+    if a.seed is None and not a.seeds and '{seed}' in a.out:
+        if a.clustered_seeds or a.anchored_seeds:
+            print("place_simple: the default seeds number their own starts; name the seeds "
+                  "with --seeds to use --clustered-seeds or --anchored-seeds", file=sys.stderr)
+            return 2
+        sc = SCATTERED_SEEDS if a.scattered is None else a.scattered
+        cl = CLUSTERED_SEEDS if a.clustered is None else a.clustered
+        an = ANCHORED_SEEDS if a.anchored is None else a.anchored
+        n = sc + cl + an
+        if min(sc, cl, an) < 0 or n < 1:
+            print("place_simple: --scattered, --clustered and --anchored must be 0 or more, "
+                  "with at least one seed", file=sys.stderr)
+            return 2
+        a.seeds = f'0-{n - 1}'
+        a.clustered_seeds = f'{sc}-{sc + cl - 1}' if cl else None
+        a.anchored_seeds = f'{sc + cl}-{n - 1}' if an else None
+    elif starts:
+        print(f"place_simple: {', '.join(starts)} set the default seeds of an OUT carrying "
+              "{seed}; with --seed or --seeds, list the starts with --clustered-seeds and "
+              "--anchored-seeds", file=sys.stderr)
+        return 2
+    if a.judge < 0:
+        print("place_simple: --judge must be 0 or more", file=sys.stderr)
+        return 2
+    if not a.seeds:
+        if a.seed is None:
+            a.seed = 0
+        a.out = a.out.replace('{seed}', str(a.seed))
+        if a.json:
+            a.json = a.json.replace('{seed}', str(a.seed))
     try:
         clustered = a.seed in _seed_list(a.clustered_seeds or '')
         anchored = a.seed in _seed_list(a.anchored_seeds or '')
@@ -476,20 +515,6 @@ def main(argv=None):
         print(f"place_simple: --clustered-seeds {a.clustered_seeds!r} or --anchored-seeds "
               f"{a.anchored_seeds!r} is not a list like 0-3 or 0,1,2,3", file=sys.stderr)
         return 2
-    if a.round:
-        if a.seeds or a.clustered_seeds or a.anchored_seeds:
-            print("place_simple: --round numbers its own seeds; drop --seeds, "
-                  "--clustered-seeds and --anchored-seeds", file=sys.stderr)
-            return 2
-        n = a.scattered + a.clustered + a.anchored
-        if min(a.scattered, a.clustered, a.anchored) < 0 or n < 1 or a.judge < 0:
-            print("place_simple: --round needs --scattered, --clustered and --anchored of 0 "
-                  "or more, at least one seed, and --judge of 0 or more", file=sys.stderr)
-            return 2
-        a.seeds = f'0-{n - 1}'
-        c0 = a.scattered + a.clustered
-        a.clustered_seeds = f'{a.scattered}-{c0 - 1}' if a.clustered else None
-        a.anchored_seeds = f'{c0}-{n - 1}' if a.anchored else None
     if a.seeds:
         return _many_seeds(ap, a)
     t0 = time.time()

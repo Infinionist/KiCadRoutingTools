@@ -273,7 +273,6 @@ def get_dialog_settings(dialog):
         'placement_model': dialog.placement_tab.get_model_value(),
         'placement_effort': dialog.placement_tab.get_effort_value(),
         'placement_extra_instructions': dialog.placement_tab.extra_instructions.GetValue(),
-        'placement_rounds': dialog.placement_tab.get_rounds_value(),
         'placement_last_workdir': getattr(dialog.placement_tab, 'last_workdir', '') or '',
         'placement_labels_options': dialog.placement_tab.labels_options.get_config(),
 
@@ -843,8 +842,6 @@ def restore_dialog_settings(dialog, settings):
     if 'placement_extra_instructions' in settings:
         dialog.placement_tab.extra_instructions.SetValue(
             settings['placement_extra_instructions'])
-    if 'placement_rounds' in settings:
-        dialog.placement_tab.set_rounds_value(settings['placement_rounds'])
     if 'placement_labels_options' in settings and isinstance(
             settings['placement_labels_options'], dict):
         dialog.placement_tab.labels_options.set_config(

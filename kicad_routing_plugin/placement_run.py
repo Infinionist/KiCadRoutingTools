@@ -371,10 +371,10 @@ def build_placement_instructions(workdir, mode, extra=""):
     lines = [
         "Work headless and unattended; never wait for user input.",
         f"Use {wd} as the working directory for ALL artifacts (groups.json, "
-        "the intent, scores, renders, REPORT.md). Keep each round's "
-        f"candidates in {wd}/r<N>/ with the skill's names (s<S>.kicad_pcb, "
-        "s<S>.json, s<S>_route/, s<S>_fast.kicad_pcb, s<S>_fast.score.json): "
-        "this GUI's candidates table reads them. Keep the converge ledger at "
+        "the intent, scores, renders, REPORT.md). Keep the seeds in "
+        f"{wd}/ with the skill's names (s<S>.kicad_pcb, s<S>.json, "
+        "s<S>_route/, s<S>_fast.kicad_pcb, s<S>_fast.score.json): this GUI's "
+        "candidates table reads them. Keep the converge ledger at "
         f"{wd}/ledger.jsonl.",
         f"Do not modify any file outside {wd}, and never edit "
         "input.kicad_pcb in place.",
@@ -410,18 +410,9 @@ def build_placement_instructions(workdir, mode, extra=""):
     return " ".join(lines)
 
 
-def build_placement_prompt(backend, workdir, staged_board, mode, extra="",
-                           rounds=None):
-    """The full skill prompt for a placement run (via backend.skill_prompt).
-
-    `rounds` is the skill's `--rounds N`: the most placement rounds. A round
-    places 12 seeds (6 started scattered, 6 clustered), fast-routes the 6 its cost rates best and keeps the best; the skill stops at
-    the first round whose best fast route has no blocking net. None leaves
-    the skill's own default.
-    """
+def build_placement_prompt(backend, workdir, staged_board, mode, extra=""):
+    """The full skill prompt for a placement run (via backend.skill_prompt)."""
     args = f"{PLACEMENT_SKILL_MODES[mode]} {_fwd(staged_board)}"
-    if rounds:
-        args += f" --rounds {int(rounds)}"
     return backend.skill_prompt(
         PLACEMENT_SKILLS[mode], args,
         build_placement_instructions(workdir, mode, extra))
@@ -481,7 +472,7 @@ def parse_placement_result(value):
 def list_board_artifacts(workdir):
     """Top-level *.kicad_pcb files -> [(path, mtime, size)], oldest first.
 
-    Not recursive: the rounds' candidates live in r<N>/ (scan_candidates),
+    Not recursive: a seed's fast-route working files live in s<S>_route/,
     and the converge boards/<sha> store churns too much to look at.
     """
     out = []
@@ -518,15 +509,15 @@ def newest_stable_board(artifacts, prev_artifacts):
 
 # ------------------------------------------------------------ candidates
 #
-# The skill keeps each round in <workdir>/r<N>/ (SKILL.md section 2):
+# The skill keeps the seeds in <workdir> (SKILL.md section 2):
 #   s<S>.kicad_pcb + s<S>.json     seed S's placement and place_simple report
 #   s<S>_route/                    the fast route's working files
 #   s<S>_fast.kicad_pcb            the fast-routed board
 #   s<S>_fast.score.json           its quick_score (blocking, quality{...})
 # and writes the kept board to <workdir>/final.kicad_pcb.
 
-_ROUND_DIR_RE = re.compile(r"^r(\d+)$")
 _SEED_FILE_RE = re.compile(r"^s(\d+)(?:\.|_)")
+_FAST_BOARD_RE = re.compile(r"^s\d+_fast\.kicad_pcb$")    # a --quick board: never shipped
 
 
 def _read_score(path):
@@ -547,88 +538,79 @@ def candidate_key(row):
 
 
 def scan_candidates(workdir, active=None):
-    """One row per seed per round, from <workdir>/r<N>/ -> [row], by round
-    then seed.
+    """One row per seed, from the seeds' files in <workdir> -> [row], by seed.
 
-    row: {round, seed, placed, fast, blocking, vias, copper_mm, segments,
-    status, mtime}. `placed`/`fast` are the board paths or None; the metrics
-    are None until the fast route is scored. status: "placing" (no finished
-    placement yet), "routing" (placed, no score yet), "not judged" (placed,
-    and not among the seeds the round's `judge.json` names for the skill to
-    fast-route), "illegal" (its report lists illegal parts, so it is
-    never judged), "routed" (scored, with blocking nets), "clean" (scored,
-    blocking 0), "best" (the best scored row of its round). `active` = the
-    (round, seed) pairs the run is placing right now (`active_candidates`),
-    shown as "placing" before their boards exist.
+    row: {seed, placed, fast, blocking, vias, copper_mm, segments, status,
+    mtime}. `placed`/`fast` are the board paths or None; the metrics are None
+    until the fast route is scored. status: "placing" (no finished placement
+    yet), "routing" (placed, no score yet), "not judged" (placed, and not
+    among the seeds `judge.json` names for the skill to fast-route),
+    "illegal" (its report lists illegal parts, so it is never judged),
+    "routed" (scored, with blocking nets), "clean" (scored, blocking 0),
+    "best" (the best scored row). `active` = the seeds the run is placing
+    right now (`active_candidates`), shown as "placing" before their boards
+    exist.
     """
     rows = {}
     try:
-        names = os.listdir(workdir)
+        files = os.listdir(workdir)
     except OSError:
-        names = []
-    for name in names:
-        m = _ROUND_DIR_RE.match(name)
-        rdir = os.path.join(workdir, name)
-        if not m or not os.path.isdir(rdir):
-            continue
-        n = int(m.group(1))
-        try:
-            files = os.listdir(rdir)
-        except OSError:
-            continue
-        for s in sorted({int(sm.group(1)) for sm in map(_SEED_FILE_RE.match, files) if sm}):
-            def p(suffix):
-                path = os.path.join(rdir, f"s{s}{suffix}")
-                return path if os.path.isfile(path) else None
-            placed, report, fast = p(".kicad_pcb"), p(".json"), p("_fast.kicad_pcb")
-            score_path = p("_fast.score.json")
-            score = _read_score(score_path) if score_path else None
-            mtime = max((_mtime(x) for x in (placed, report, fast, score_path) if x),
-                        default=0.0)
-            row = {"round": n, "seed": s, "placed": placed, "fast": fast,
-                   "blocking": None, "vias": None, "copper_mm": None,
-                   "segments": None, "mtime": mtime}
-            if score is not None:
-                (row["blocking"], row["vias"], row["copper_mm"],
-                 row["segments"]) = score
-                row["status"] = "clean" if score[0] == 0 else "routed"
-            elif placed and report:
-                row["status"] = "routing"
-            else:
-                row["status"] = "placing"
-            rows[(n, s)] = row
-    for n, s in active or ():
-        if (n, s) not in rows:
-            rows[(n, s)] = {"round": n, "seed": s, "placed": None,
-                            "fast": None, "blocking": None, "vias": None,
-                            "copper_mm": None, "segments": None,
-                            "status": "placing", "mtime": time.time()}
+        files = []
+    for s in sorted({int(sm.group(1)) for sm in map(_SEED_FILE_RE.match, files) if sm}):
+        def p(suffix):
+            path = os.path.join(workdir, f"s{s}{suffix}")
+            return path if os.path.isfile(path) else None
+        placed, report, fast = p(".kicad_pcb"), p(".json"), p("_fast.kicad_pcb")
+        score_path = p("_fast.score.json")
+        if not (placed or report or fast or score_path):
+            continue                       # only a seed's route folder
+        score = _read_score(score_path) if score_path else None
+        mtime = max((_mtime(x) for x in (placed, report, fast, score_path) if x),
+                    default=0.0)
+        row = {"seed": s, "placed": placed, "fast": fast,
+               "blocking": None, "vias": None, "copper_mm": None,
+               "segments": None, "mtime": mtime}
+        if score is not None:
+            (row["blocking"], row["vias"], row["copper_mm"],
+             row["segments"]) = score
+            row["status"] = "clean" if score[0] == 0 else "routed"
+        elif placed and report:
+            row["status"] = "routing"
+        else:
+            row["status"] = "placing"
+        rows[s] = row
+    for s in active or ():
+        if s not in rows:
+            rows[s] = {"seed": s, "placed": None, "fast": None,
+                       "blocking": None, "vias": None, "copper_mm": None,
+                       "segments": None, "status": "placing",
+                       "mtime": time.time()}
     out = [rows[k] for k in sorted(rows)]
-    for n in {r["round"] for r in out}:
-        _mark_unjudged([r for r in out if r["round"] == n])
-        scored = [r for r in out if r["round"] == n and r["blocking"] is not None]
-        if scored:
-            min(scored, key=candidate_key)["status"] = "best"
+    _mark_unjudged(out)
+    scored = [r for r in out if r["blocking"] is not None]
+    if scored:
+        min(scored, key=candidate_key)["status"] = "best"
     return out
 
 
-def _round_defaults():
-    """`place_simple --round`'s defaults: (scattered, clustered, judged) --
-    the seeds of each start a round places, and how many legal seeds of
-    lowest `final.cost` it names for a judging route. place_simple is the
+def _seed_defaults():
+    """place_simple's default seeds: (scattered, clustered, judged) -- the
+    seeds of each start it places for an OUT carrying {seed} with no seed
+    named, and how many legal seeds of lowest `final.cost` it names for a
+    judging route. place_simple is the
     authority; the import is guarded like `SIBLING_EXTS` above (KiCad's plugin
     loader does not put py_placer on sys.path) and the fallback is a copy."""
     try:
-        from place_simple import ROUND_CLUSTERED, ROUND_JUDGED, ROUND_SCATTERED
-        return ROUND_SCATTERED, ROUND_CLUSTERED, ROUND_JUDGED
+        from place_simple import CLUSTERED_SEEDS, JUDGED_SEEDS, SCATTERED_SEEDS
+        return SCATTERED_SEEDS, CLUSTERED_SEEDS, JUDGED_SEEDS
     except Exception:                                      # noqa: BLE001
         return 6, 6, 6
 
 
-def _named_judged(round_rows):
-    """The seeds the round's `judge.json` names (`place_simple --round` writes
-    it beside the round's boards once every seed is placed), else None."""
-    for r in round_rows:
+def _named_judged(rows):
+    """The seeds `judge.json` names (place_simple writes it beside the seeds'
+    boards once every seed is placed), else None."""
+    for r in rows:
         if r["placed"]:
             try:
                 with open(os.path.join(os.path.dirname(r["placed"]), "judge.json"),
@@ -640,15 +622,14 @@ def _named_judged(round_rows):
     return None
 
 
-def _mark_unjudged(round_rows):
-    """Re-label one round's placed, unscored rows that the skill will not
-    judge: "illegal" when the seed's report lists illegal parts, "not judged"
-    when the round's `judge.json` does not name it -- or, without one, when
-    `--round`'s default number of legal seeds of lower `final.cost` exist
-    (a round placed by an older run). Until then,
+def _mark_unjudged(rows):
+    """Re-label the placed, unscored rows that the skill will not judge:
+    "illegal" when the seed's report lists illegal parts, "not judged" when
+    `judge.json` does not name it -- or, without one, when place_simple's
+    default number of legal seeds of lower `final.cost` exist. Until then,
     every unscored row stays "routing"."""
     legal = []                         # (final.cost, row) of every legal seed
-    for r in round_rows:
+    for r in rows:
         if not r["placed"] or r["status"] not in ("routing", "routed", "clean"):
             continue
         try:
@@ -665,13 +646,13 @@ def _mark_unjudged(round_rows):
         cost = (rep.get("final") or {}).get("cost")
         if isinstance(cost, (int, float)):
             legal.append((cost, r))
-    named = _named_judged(round_rows)
+    named = _named_judged(rows)
     if named is not None:
         for _cost, r in legal:
             if r["status"] == "routing" and r["seed"] not in named:
                 r["status"] = "not judged"
         return
-    judged = _round_defaults()[2]
+    judged = _seed_defaults()[2]
     if len(legal) < judged:
         return
     legal.sort(key=lambda t: t[0])
@@ -704,8 +685,7 @@ def mark_kept(rows, workdir, board=None):
     The kept board (`board`, else <workdir>/final.kicad_pcb) is matched to a
     candidate by the sha256 of its placement or fast-routed board. A kept
     board that is neither -- touched up with place_pose, or routed in full --
-    falls back to the best scored row over all rounds, the one the skill's
-    ranking keeps.
+    falls back to the best scored row, the one the skill's ranking keeps.
     """
     target = board if board and os.path.isfile(board) else \
         os.path.join(workdir, "final.kicad_pcb")
@@ -723,9 +703,8 @@ def mark_kept(rows, workdir, board=None):
     return kept
 
 
-_ACTIVE_RE = re.compile(r"\br(\d+)[/\\]s(\d+|\{seed\})\.kicad_pcb\b")
+_ACTIVE_RE = re.compile(r"(?:^|[\s/\\'\"])s(\d+|\{seed\})\.kicad_pcb\b")
 _SEEDS_RE = re.compile(r"--seeds[ =]([\d,\-]+)")
-_ROUND_RE = re.compile(r"--round\b")
 
 
 def _int_opt(line, flag, default):
@@ -744,33 +723,34 @@ def _seed_spec(spec):
 
 
 def active_candidates(transcript_tail):
-    """[(round, seed)] the newest place_simple command is writing: one seed
-    (`r<N>/s<S>.kicad_pcb`), or every seed of the parallel form
-    (`r<N>/s{seed}.kicad_pcb --seeds 0-3`, or `--round`, whose seeds are
-    `--scattered` + `--clustered` from 0). [] when it names no round."""
+    """[seed] the newest place_simple command is writing: one seed
+    (`s<S>.kicad_pcb`), or every seed of the parallel form
+    (`s{seed}.kicad_pcb --seeds 0-3`, or with no seed named the default
+    seeds, `--scattered` + `--clustered` + `--anchored` from 0). [] when it
+    names no seed board."""
     for line in reversed(list(transcript_tail or ())):
         if "place_simple.py" in line:
             m = _ACTIVE_RE.search(line)
             if not m:
                 return []
-            n = int(m.group(1))
-            if m.group(2).isdigit():
-                return [(n, int(m.group(2)))]
+            if m.group(1).isdigit():
+                return [int(m.group(1))]
             seeds = _SEEDS_RE.search(line)
             if seeds:
-                return [(n, s) for s in _seed_spec(seeds.group(1))]
-            if _ROUND_RE.search(line):
-                sc, cl, _judged = _round_defaults()
-                count = (_int_opt(line, "--scattered", sc) + _int_opt(line, "--clustered", cl)
-                         + _int_opt(line, "--anchored", 0))      # anchored: opt-in, none by default
-                return [(n, s) for s in range(count)]
-            return []
+                return _seed_spec(seeds.group(1))
+            one = re.search(r"--seed[ =](\d+)", line)
+            if one:
+                return [int(one.group(1))]
+            sc, cl, _judged = _seed_defaults()
+            count = (_int_opt(line, "--scattered", sc) + _int_opt(line, "--clustered", cl)
+                     + _int_opt(line, "--anchored", 0))      # anchored: opt-in, none by default
+            return list(range(count))
     return []
 
 
 def newest_run_board(workdir):
-    """The newest board of the run, top level or a round's, as a path
-    relative to the workdir with forward slashes (for derive_stage)."""
+    """The newest board of the run, as a path relative to the workdir with
+    forward slashes (for derive_stage)."""
     best = (0.0, None)
     for rel in _run_boards(workdir):
         mt = _mtime(os.path.join(workdir, rel))
@@ -787,13 +767,6 @@ def _run_boards(workdir):
     for name in names:
         if name.endswith(".kicad_pcb"):
             yield name
-        elif _ROUND_DIR_RE.match(name) and os.path.isdir(os.path.join(workdir, name)):
-            try:
-                for sub in os.listdir(os.path.join(workdir, name)):
-                    if sub.endswith(".kicad_pcb"):
-                        yield f"{name}/{sub}"
-            except OSError:
-                pass
 
 
 def read_ledger_tail(ledger_path, offset):
@@ -829,11 +802,11 @@ def read_ledger_tail(ledger_path, offset):
 
 
 # What the newest board file says the run reached (newest_run_board names
-# it relative to the workdir): the locked input, a round's placement or fast
+# it relative to the workdir): the locked input, a seed's placement or fast
 # route, the final board.
 _ARTIFACT_STAGES = (
-    (re.compile(r"^r(\d+)/s(\d+)_fast\.kicad_pcb$"), "round {0}: seed {1} fast-routed"),
-    (re.compile(r"^r(\d+)/s(\d+)\.kicad_pcb$"), "round {0}: seed {1} placed"),
+    (re.compile(r"^s(\d+)_fast\.kicad_pcb$"), "seed {0} fast-routed"),
+    (re.compile(r"^s(\d+)\.kicad_pcb$"), "seed {0} placed"),
     (re.compile(r"^fixed\.kicad_pcb$"), "fixed parts locked"),
     (re.compile(r"^final\.kicad_pcb$"), "final board written"),
     (re.compile(r"route", re.I), "routing"),
@@ -842,26 +815,18 @@ _ARTIFACT_STAGES = (
 
 # What the newest tool command says the run is doing NOW. Matched against the
 # transcript tail newest-first; the first command that matches names the
-# activity. Order matters: a specific pattern before its general one. `RS` is
-# a round folder's seed: r<N>/s<S>.
-_RS = r"\br(\d+)[/\\]s(\d+)"
+# activity. Order matters: a specific pattern before its general one. `SS`
+# is a seed's board or route folder: s<S>.kicad_pcb, s<S>_route, s<S>_fast.
+_SS = r"(?:^|[\s/\\'\"])s(\d+)"
 _COMMAND_STAGES = (
-    # A round: --round into r<N>/s{seed}.kicad_pcb.
-    (re.compile(r"place_simple\.py\b(?=.*--round\b)(?=.*\br(\d+)[/\\]s\{seed\})"),
-     "round {0}: placing its seeds"),
-    (re.compile(r"place_simple\.py\b.*?--round\b"), "placing a round of seeds"),
-    # The parallel form: --seeds 0-3 into r<N>/s{seed}.kicad_pcb.
-    (re.compile(r"place_simple\.py\b(?=.*--seeds[ =]([\d,\-]+))"
-                r"(?=.*\br(\d+)[/\\]s\{seed\})"), "round {1}: placing seeds {0}"),
     (re.compile(r"place_simple\.py\b.*?--seeds[ =]([\d,\-]+)"), "placing seeds {0}"),
-    (re.compile(r"place_simple\.py\b.*?" + _RS + r"\.kicad_pcb"),
-     "round {0}: placing seed {1}"),
+    (re.compile(r"place_simple\.py\b(?!.*--seed[ =]\d).*?s\{seed\}"), "placing the seeds"),
+    (re.compile(r"place_simple\.py\b.*?" + _SS + r"\.kicad_pcb"), "placing seed {0}"),
     (re.compile(r"place_simple\.py\b.*?--seed[ =](\d+)"), "placing seed {0}"),
     (re.compile(r"place_simple\.py\b"), "placing"),
-    (re.compile(r"board_score\.py\b.*?" + _RS + r"_fast"), "round {0}: scoring seed {1}"),
-    (re.compile(r"route_review\.py\b.*?" + _RS), "round {0}: reviewing seed {1}"),
+    (re.compile(r"(?:quick_score|board_score)\.py\b.*?" + _SS + r"_fast"), "scoring seed {0}"),
     (re.compile(r"route_review\.py\b"), "reviewing the fast route"),
-    (re.compile(_RS + r"_(?:route|fast)\b"), "round {0}: fast-routing seed {1}"),
+    (re.compile(_SS + r"_(?:route|fast)\b"), "fast-routing seed {0}"),
     (re.compile(r"\broute\.py\b.*--quick\b"), "fast-routing"),
     (re.compile(r"\b(?:route|route_planes|route_diff|bga_fanout|qfn_fanout|"
                 r"place_fanout_clearance)\.py\b"), "routing"),
@@ -955,7 +920,8 @@ def scan_workdir_outputs(workdir):
     status "scavenged" so callers can say so.
     """
     artifacts = [t for t in list_board_artifacts(workdir)
-                 if os.path.basename(t[0]) != "input.kicad_pcb"]
+                 if os.path.basename(t[0]) != "input.kicad_pcb"
+                 and not _FAST_BOARD_RE.match(os.path.basename(t[0]))]
     board = os.path.join(workdir, "final.kicad_pcb")
     if not os.path.isfile(board):
         # The best scored candidate's PLACEMENT (never its --quick board),

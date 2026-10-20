@@ -1,6 +1,6 @@
 ---
 name: plan-pcb-placement
-description: Places a KiCad board by function, and in full mode routes and verifies it. The agent sorts the parts into functional groups, place_simple.py anneals one objective over 12 seeds (6 started scattered, 6 with each group gathered), a quick judging route of the 6 its objective rates best keeps the best, and in full mode that board is then routed by /plan-pcb-routing; when no seed's fast route is clean, the agent reviews the best, changes the groups, hints or claims and places again, up to --rounds rounds (default 3). One independent verifier grades the result, and the board comes back with REPORT.md. Modes are place and full (place + route). Use it to place, arrange, re-place or optimise components, handle an unplaced board or parts piled off the outline, place and route from scratch, or run the GUI's Place / Place + Route. It never changes the outline. To route a placed board without moving parts, use plan-pcb-routing; for sign-off QA, review-routed-board.
+description: Places a KiCad board by function, and in full mode routes and verifies it. The agent sorts the parts into functional groups, place_simple.py anneals one objective over 12 seeds (6 started scattered, 6 with each group gathered), a quick judging route of the 6 its objective rates best keeps the best, and in full mode that board is then routed by /plan-pcb-routing. One independent verifier grades the result, and the board comes back with REPORT.md. Modes are place and full (place + route). Use it to place, arrange, re-place or optimise components, handle an unplaced board or parts piled off the outline, place and route from scratch, or run the GUI's Place / Place + Route. It never changes the outline. To route a placed board without moving parts, use plan-pcb-routing; for sign-off QA, review-routed-board.
 ---
 
 # Plan PCB placement
@@ -10,20 +10,16 @@ right behind it, the regulator and its caps between the power entry and the
 loads, the MCU with its crystal on its oscillator pins, the LEDs and the
 button along an edge. This skill places that way. You decide what belongs
 together; `py_placer/place_simple.py` arranges it over several seeds; a fast
-route of each keeps the best. When none routes clean, you change what you
-gave it and place again.
+route of each keeps the best.
 
-Invocation: `/plan-pcb-placement <mode> <board.kicad_pcb> [intent.json] [--rounds N]
+Invocation: `/plan-pcb-placement <mode> <board.kicad_pcb> [intent.json]
 [--scattered N] [--clustered N] [--anchored N] [--judge N]`,
 where mode is `place` or `full`. With no mode, use `full`. A given
-`intent.json` is the intent: use it in place of emitting one (§3.2). `--rounds N` is
-the most placement rounds (§3.6), default 3. `--scattered`, `--clustered`,
-`--anchored` and `--judge` are each round's seeds of each start and how many
-are judged (§3.5), passed to `place_simple --round` as given; its defaults
-(6, 6, 0, 6) apply when they are not. Anchored seeds (each group started
-round the point its wiring prefers) are opt-in. The run stops at the first round
-whose best seed's fast route has no blocking net, so a board that routes
-clean after one round gets no review and no input changes.
+`intent.json` is the intent: use it in place of emitting one (§3.2).
+`--scattered`, `--clustered`, `--anchored` and `--judge` are the seeds of
+each start and how many are judged (§3.5), passed to `place_simple` as
+given; its defaults (6, 6, 0, 6) apply when they are not. Anchored seeds
+(each group started round the point its wiring prefers) are opt-in.
 
 ## 1. The goal, per mode
 
@@ -53,7 +49,7 @@ clean after one round gets no review and no input changes.
 - **Work in `wk/<run>/`.** Copy every board with
   `python3 -X utf8 py_router/copy_board.py <src> <dst>`, never a bare `cp`:
   the `.kicad_pro` beside a board carries its DRC floor.
-- **Keep each round in `wk/<run>/r<N>/`**, with these names, which the GUI's
+- **Keep the seeds in `wk/<run>/`**, with these names, which the GUI's
   candidates table reads: `s<S>.kicad_pcb` and `s<S>.json` (seed S's
   placement and its `place_simple` report), `s<S>_route/` (the fast route's
   working files), `s<S>_fast.kicad_pcb` (the fast-routed board, copied out of
@@ -174,9 +170,9 @@ Write `wk/<run>/groups.json` (the format is in `py_placer/placement/grouping.py`
   the clock group. Every intent `proximity` claim works the same way: the
   claimed part joins its partner's group. The emitted intent carries these
   crystal claims as `proximity[]` rows (`context.source`
-  `placement.crystals`, `max_mm` 8.1 and 2.2), graded as warnings; in a
-  review round, edit a row's `max_mm` to loosen or tighten that loop, or
-  drop the `source` to make it an error-graded claim.
+  `placement.crystals`, `max_mm` 8.1 and 2.2), graded as warnings; edit a
+  row's `max_mm` to loosen or tighten that loop, or drop the `source` to
+  make it an error-graded claim.
 - **Hints, each a soft term of the objective:** `near` (a list of groups to
   sit against), `apart` (groups to keep 3 mm from), `edge` (`N`/`S`/`E`/`W`,
   a group that belongs on a board side; a group holding an edge connector
@@ -255,13 +251,13 @@ no `edge_connector` error.
 ### 3.5 Place
 
 ```bash
-python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/r1/s{seed}.kicad_pcb' \
-    --groups wk/<run>/groups.json --intent wk/<run>/intent.json --round --jobs 4 \
-    --json 'wk/<run>/r1/s{seed}.json'
+python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{seed}.kicad_pcb' \
+    --groups wk/<run>/groups.json --intent wk/<run>/intent.json --jobs 4 \
+    --json 'wk/<run>/s{seed}.json'
 ```
 
-- **The seeds run in parallel, then the fast routes.** `--seeds`
-  starts one process per seed (`--jobs N` caps how many at once; default one per seed, at most 4),
+- **The seeds run in parallel, then the fast routes.** An OUT carrying
+  `{seed}` places the default seeds, one process per seed (`--jobs N` caps how many at once; default one per seed, at most 4),
   each giving exactly the placement a `--seed` run would, its log beside its
   board as `s<S>.log`; one placement process takes about 120 MB. A judging
   route takes up to about 1.3 GB on a small board and 5 GB on a 350-part one:
@@ -270,7 +266,7 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/r1/
 
 - Every part not locked or seated by the intent starts at a random place and
   is annealed; the same board, inputs and seed give the same placement.
-  `--round` places `--scattered` seeds (default 6) that way, then
+  It places `--scattered` seeds (default 6) that way, then
   `--clustered` seeds (default 6, numbered after them) that start with each
   group's parts gathered round one random point instead: on boards dominated
   by one big IC those route clearly better, on others the scattered ones do,
@@ -278,8 +274,8 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/r1/
   The run is 500 moves per movable part by default (`--moves N` sets the
   total), roughly 2 s for 25 parts.
 - **Place 12 seeds (6 scattered, 6 clustered); judge the 6 the objective
-  rates best.** `--round` ends by naming them: printed, and written to
-  `r<N>/judge.json` (`judge`, cheapest first; a seed that left a part
+  rates best.** place_simple ends by naming them: printed, and written to
+  `wk/<run>/judge.json` (`judge`, cheapest first; a seed that left a part
   illegal is never named). Seeds differ more than most input changes, and the anneal's own
   cost (`final.cost` in each `s<S>.json`) says which are worth a judging
   route: the seed the judge would pick out of 16 is in the cheaper half
@@ -306,73 +302,37 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/r1/
   parts on the side of the chip where their pins are, connectors' partners
   right behind them.
 
-### 3.6 Fast-route the seeds; review and place again until one routes clean
+### 3.6 Fast-route the judged seeds and keep the best
 
-A round is: place the seeds (§3.5), fast-route the 6 cheapest, keep the
-best (steps 1-2). **If the best fast route has no blocking net, stop: that board is the
-placement.** Otherwise run the review loop (steps 3-6), which finds what the
-objective missed, and place again, up to `--rounds` rounds in all (default
-3). Judge "clean" on the fast route in both modes: a full route can close a
-net the fast route left open, but a placement whose fast routes all leave
-nets open is one the review can still improve.
-
-1. **Fast-route the seeds `r<N>/judge.json` names** (the `--judge` legal
+1. **Fast-route the seeds `wk/<run>/judge.json` names** (the `--judge` legal
    seeds of lowest `final.cost`) with the board's routing
    chain (the recipe
    is `plan-pcb-routing`'s: planes, fanout, the decap clearance step,
-   `route.py`), giving `route.py` and every `route_diff.py` step `--quick 2`,
-   and `route.py` also `--json-out r<N>/s<S>_route/route.json`. Level 2
-   skips the recovery tail (net rescue, terminal escalation, plane finalize,
-   reconciliation laps), where a poor placement's routing time goes, and every
-   pass that only polishes copper for shipping: about half the time of
-   `--quick` alone, and it picks seeds as well (measured over 16 seeds of
-   five corpus boards against their full routes). Use the SAME chain for
-   every candidate, so they compare. Run it in `r<N>/s<S>_route/` and copy
-   its last board to `r<N>/s<S>_fast.kicad_pcb`. Never ship a `--quick`
+   `route.py`), giving `route.py` and every `route_diff.py` step `--quick 2`.
+   Level 2 skips the recovery tail (net rescue, terminal escalation, plane
+   finalize, reconciliation laps), where a poor placement's routing time
+   goes, and every pass that only polishes copper for shipping: about half
+   the time of `--quick` alone, and it picks seeds as well (measured over 16
+   seeds of five corpus boards against their full routes). Use the SAME
+   chain for every candidate, so they compare. Run it in `s<S>_route/` and
+   copy its last board to `s<S>_fast.kicad_pcb`. Never ship a `--quick`
    board.
-2. **Score each** with `py_tools/quick_score.py r<N>/s<S>_fast.kicad_pcb --route r<N>/s<S>_route/route.json --json r<N>/s<S>_fast.score.json`:
-   the route step's own tally of open nets and `board_score`'s via, copper
-   and segment counts. (`board_score` would count DRC grazes that level 2
-   leaves for the full route's cleanup, which say nothing about the
-   placement.) Keep the best by blocking, then vias, copper_mm, segments.
-   **If its blocking is 0, stop here**: that board is the placement.
-3. **Review the best:**
-   ```bash
-   python3 -X utf8 py_tools/route_review.py <routed.kicad_pcb> --json wk/<run>/review.json
-   ```
-   It lists the open nets with the parts holding their loose pads, the signal
-   nets with the most vias and the longest detours (routed length over the
-   pads' spanning tree), the congested areas with their parts and nets, and
-   the two-pad parts turned against their wiring. Compare its worst nets with
-   the render: `python3 -X utf8 py_tools/render_nets.py -o <png> --nets <NET> human=<ref routed board> run=<routed>`
-   draws chosen nets side by side.
-4. **Change what you give `place_simple`, not the board.** It re-places every
-   unlocked part, so a part moved by hand is moved back. For each finding:
-   - a group placed away from what it serves (a regulator far from its power
-     entry, a connector's resistors across the board): a `near` hint between
-     the two groups;
-   - a part far from the pins it serves: move it into their group, or give it
-     a `proximity` claim in the intent (`{"ref": "C6", "near": "SW1", "max_mm": 2}`,
-     pad edge to the nearest pad on a shared net);
-   - two groups crowding one area: an `apart` hint, or split a group that is
-     two things;
-   - a part whose pose is right and should stay: lock it in the board
-     (`place_pose ... lock REF`) or declare it in `fixed_poses`;
-   - a turned two-pad part: leave it for the end (`place_pose ... rotate`
-     after the last placement).
-5. **Place again** with the same seeds, fast-route, score, and keep the
-   better board. An input change reshuffles the whole anneal, so judge it on
-   every seed, not only the net you aimed at.
-6. **Stop** at the first round whose best fast route has no blocking net,
-   or after `--rounds` rounds; keep the best board of all rounds (fewest
-   blocking, then vias, copper_mm, segments). Record each round in the
-   ledger (§5.6).
+2. **Score each** with `py_tools/quick_score.py wk/<run>/s<S>_fast.kicad_pcb --json wk/<run>/s<S>_fast.score.json`:
+   the board's open nets, graded as `board_score` grades a full route but
+   over the nets without a zone (level 2 skips the plane finalize, which
+   joins a poured net's pads; the score lists those apart as `poured`), and
+   `board_score`'s via, copper and segment counts. (`board_score` itself
+   would count DRC grazes that level 2 leaves for the full route's cleanup,
+   which say nothing about the placement.)
+3. **Keep the best** by blocking, then vias, copper_mm, segments: copy its
+   placement (`s<S>.kicad_pcb`, never the `--quick` board) to
+   `wk/<run>/final.kicad_pcb` with `copy_board.py`.
 
-In `place` mode the best fast-routed placement is the result. Run
-`route_review` on its fast route (step 3, even when the first round was
-clean): turn each two-pad part it lists as turned against its wiring with
-`place_pose ... rotate`, then check the board again (`check_assembly`,
-`check_floorplan --intent`, `render_placement`).
+In `place` mode that placement is the result. Run
+`python3 -X utf8 py_tools/route_review.py wk/<run>/s<S>_fast.kicad_pcb --json wk/<run>/review.json`
+on its fast route: turn each two-pad part it lists as turned against its
+wiring with `place_pose ... rotate`, then check the board again
+(`check_assembly`, `check_floorplan --intent`, `render_placement`).
 
 ### 3.7 Route (full mode)
 
@@ -380,7 +340,7 @@ Route the kept placement by running `/plan-pcb-routing` on
 `wk/<run>/final.kicad_pcb`: the routing is that skill's, chain and checks
 included, never a `--quick` run (the judging chain is a starting point it may
 use). Then `board_score` and `check_complete` with every spec flag. If DONE
-does not come, classify the failure (§4) before you re-place.
+does not come, classify the failure (§4).
 
 ## 4. Traps measured in real runs
 
@@ -415,7 +375,7 @@ does not come, classify the failure (§4) before you re-place.
     board/fab floor: parameters (grid, ripup budget, width).
   - Geometry already at the floor, failures clustered at one part's escape
     face, or `py_tools/check_reachability.py --pad REF.PAD` says CAGED:
-    placement. Change the inputs (§3.6), re-place, strip, re-route. A finer
+    placement. Itemise it in the report with that measurement (§6). A finer
     grid alone never widens a gap.
 - **`route.py`'s failure tally covers only the nets that step owns** (#1069).
   Count the board's open nets with `check_connected` or `board_score`.
@@ -442,8 +402,6 @@ does not come, classify the failure (§4) before you re-place.
    - **First reach DONE**; nothing else before it.
    - **Watch long jobs.** Never leave a background job unwatched for more than
      20 minutes.
-   - **Placement rounds stop at the first clean fast route** (§3.6), or
-     after `--rounds`.
    - **If DONE will not come:** after three consecutive DIFFERENT approaches
      that each fail to lower `unrouted` + `broken` (then the rest of
      `blocking`), measured, stop and ship the best board with every remaining
@@ -456,8 +414,8 @@ does not come, classify the failure (§4) before you re-place.
    board, spawn ONE fresh subagent (not a fork) with
    `references/verifier.md`, filled in for your mode, board, sha256, baseline,
    intent and spec flags. On FAIL, fix what it names and continue.
-6. **Record milestones in the ledger:** the first legal placement, each kept
-   placement, each review round, the first routed board, the first DONE, the
+6. **Record milestones in the ledger:** the first legal placement, the kept
+   placement, the first routed board, the first DONE, the
    final board, and tried-and-worse boards with `--rejected`.
    ```bash
    python3 -X utf8 py_tools/board_score.py <board> --intent <i> --baseline <input> --json <board>.score.json --quiet
@@ -480,9 +438,7 @@ does not come, classify the failure (§4) before you re-place.
 2. **`wk/<run>/REPORT.md`**, containing:
    - **the result first:** a table of the mode's DONE conditions with measured
      values, the `blocking_by` breakdown, and vias / copper_mm / segments;
-   - **the groups and every judgement call** in them, with its reason, and
-     each review round: what the route showed, what you changed, and what it
-     did to the routed result;
+   - **the groups and every judgement call** in them, with its reason;
    - **which stop rule fired**, and every remaining blocker BY NAME with its
      measurement;
    - **floors:** where the run went below the board's authored or fab floors

@@ -205,21 +205,21 @@ def main():
           any("lap 1: quench/nudge" in s for s in statuses), str(statuses))
     check("elapsed/mode in status",
           any(s.startswith("Place —") for s in statuses), str(statuses))
-    # The candidates table: round 1's seed 0 from r1/, kept at the end (the
+    # The candidates table: seed 0 from the run folder, kept at the end (the
     # final board is that seed's placement), selected, and previewed.
-    rows = {(r["round"], r["seed"]): r for r in tab._cand_rows}
-    check("candidates table filled from the run's r1/ folder",
-          (1, 0) in rows and rows[(1, 0)]["vias"] == 12, str(list(rows)))
+    rows = {r["seed"]: r for r in tab._cand_rows}
+    check("candidates table filled from the run folder's seed files",
+          0 in rows and rows[0]["vias"] == 12, str(list(rows)))
     check("the kept candidate is marked and selected",
-          rows.get((1, 0), {}).get("status") == "KEPT"
-          and tab._sel_key == (1, 0)
+          rows.get(0, {}).get("status") == "KEPT"
+          and tab._sel_key == 0
           and tab.cand_list.GetFirstSelected() == 0, str(tab._sel_key))
     if pil_ok:
-        png = os.path.join(workdir, "_gui_preview", "r1_s0_fast.png")
+        png = os.path.join(workdir, "_gui_preview", "s0_fast.png")
         check("the selected row's fast-routed board rendered",
               os.path.isfile(png), png)
         check("the preview caption names the row",
-              "round 1, seed 0" in tab.preview.caption.GetLabel(),
+              "seed 0" in tab.preview.caption.GetLabel(),
               tab.preview.caption.GetLabel())
     else:
         print("  [skip] preview render (Pillow not importable)")

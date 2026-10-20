@@ -97,18 +97,18 @@ def main(argv=None):
                                  epilog="BOARD and OUT come first; every other argument is "
                                         "place_simple.py's (--groups, --intent, --seed, ...).")
     record.own_args(ap, work_required=False)
-    from place_simple import ROUND_ANCHORED, ROUND_CLUSTERED, ROUND_JUDGED, ROUND_SCATTERED
+    from place_simple import ANCHORED_SEEDS, CLUSTERED_SEEDS, JUDGED_SEEDS, SCATTERED_SEEDS
     ap.add_argument('--route', metavar='BOARD:SET',
                     help="run and film place_movie's placement flow, routing with this "
                          "stress-corpus board's recorded chain (e.g. ch32v003_usb:6)")
-    ap.add_argument('--scattered', type=int, default=ROUND_SCATTERED,
-                    help=f'with --route, the seeds started scattered (default {ROUND_SCATTERED})')
-    ap.add_argument('--clustered', type=int, default=ROUND_CLUSTERED,
-                    help=f'with --route, the seeds started clustered (default {ROUND_CLUSTERED})')
-    ap.add_argument('--anchored', type=int, default=ROUND_ANCHORED,
-                    help=f'with --route, the seeds started anchored (default {ROUND_ANCHORED}: opt-in)')
-    ap.add_argument('--judge', type=int, default=ROUND_JUDGED,
-                    help=f'with --route, the cheapest legal seeds fast-routed (default {ROUND_JUDGED})')
+    ap.add_argument('--scattered', type=int, default=SCATTERED_SEEDS,
+                    help=f'with --route, the seeds started scattered (default {SCATTERED_SEEDS})')
+    ap.add_argument('--clustered', type=int, default=CLUSTERED_SEEDS,
+                    help=f'with --route, the seeds started clustered (default {CLUSTERED_SEEDS})')
+    ap.add_argument('--anchored', type=int, default=ANCHORED_SEEDS,
+                    help=f'with --route, the seeds started anchored (default {ANCHORED_SEEDS}: opt-in)')
+    ap.add_argument('--judge', type=int, default=JUDGED_SEEDS,
+                    help=f'with --route, the cheapest legal seeds fast-routed (default {JUDGED_SEEDS})')
     ap.add_argument('--jobs', type=int, default=4, help='with --route, placements and routes at once (default 4)')
     ap.add_argument('--route-jobs', type=int, default=0, help='with --route, fast routes at once (default --jobs)')
     ap.add_argument('--fresh', action='store_true', help='with --route, empty --route-work first')

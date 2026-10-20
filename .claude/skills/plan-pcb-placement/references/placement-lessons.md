@@ -1,8 +1,7 @@
 # Placement lessons: what human boards do, what a routed board shows, and what to move
 
 Read this when you place a board or review a placement: before you write the groups,
-between candidates, or in the loop that routes, looks and changes what the placement
-is given.
+and when you look at a placed or routed candidate.
 
 The lessons come from two sources:
 

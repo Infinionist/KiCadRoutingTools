@@ -24,7 +24,7 @@ pulls each subject to its partner: the crystal to its IC, and each cap to the
 crystal. `check_floorplan --emit-intent` writes them into the intent's
 `proximity[]` (`floorplan.emit_intent`), where the grade reads them at WARN
 (`floorplan.derived_claim`: their limits are the corpus's, not the board's)
-and a review round can loosen or tighten one. place_simple and
+and an edit of the intent can loosen or tighten one. place_simple and
 `check_groups` also derive them through `grouping.claim_rows`, beside the
 intent's own rows, for an intent that does not carry them; a pair the intent
 already claims keeps the intent's row.

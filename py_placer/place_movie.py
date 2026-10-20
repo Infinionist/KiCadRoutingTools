@@ -35,9 +35,9 @@ frame outlined in white, and a caption, in the routing movie's style
 
 With --route BOARD:SET (a stress-corpus board whose recorded chain routes
 this one: `tests/stress/placement_ab/route_placed.py`), it runs the placement
-skill's flow first and films it after: the skill's round is placed
+skill's flow first and films it after: the skill's seeds are placed
 (--scattered seeds started scattered, then --clustered started clustered, then
-the opt-in --anchored started anchored, as `place_simple --round`), the --judge legal seeds the objective rates cheapest
+the opt-in --anchored started anchored, as place_simple's default seeds), the --judge legal seeds the objective rates cheapest
 are fast-routed (the chain
 with `--quick 2`) and scored by quick_score, the best (fewest blocking, then
 vias, copper, segments) is routed in full. The movie films that seed's
@@ -487,7 +487,7 @@ def film_routes(a, movie, work, judged, scores, best, full, filmed):
 
 def main(argv=None):
     from route_movie import FPS, SIZE, MovieWriter
-    from place_simple import ROUND_ANCHORED, ROUND_CLUSTERED, ROUND_JUDGED, ROUND_SCATTERED
+    from place_simple import ANCHORED_SEEDS, CLUSTERED_SEEDS, JUDGED_SEEDS, SCATTERED_SEEDS
     ap = argparse.ArgumentParser(
         description=__doc__.split('\n')[0], allow_abbrev=False,   # --seed is place_simple's
         epilog="BOARD and OUT come first; every other argument is place_simple.py's "
@@ -505,17 +505,17 @@ def main(argv=None):
     ap.add_argument('--route', metavar='BOARD:SET',
                     help='run and film the placement flow, routing with this stress-corpus '
                          "board's recorded chain (e.g. ch32v003_usb:6)")
-    ap.add_argument('--scattered', type=int, default=ROUND_SCATTERED,
-                    help=f'with --route, the seeds started scattered (default {ROUND_SCATTERED})')
-    ap.add_argument('--clustered', type=int, default=ROUND_CLUSTERED,
+    ap.add_argument('--scattered', type=int, default=SCATTERED_SEEDS,
+                    help=f'with --route, the seeds started scattered (default {SCATTERED_SEEDS})')
+    ap.add_argument('--clustered', type=int, default=CLUSTERED_SEEDS,
                     help=f'with --route, the seeds started clustered, numbered after the '
-                         f'scattered ones (default {ROUND_CLUSTERED})')
-    ap.add_argument('--anchored', type=int, default=ROUND_ANCHORED,
+                         f'scattered ones (default {CLUSTERED_SEEDS})')
+    ap.add_argument('--anchored', type=int, default=ANCHORED_SEEDS,
                     help=f'with --route, the seeds started anchored, numbered after the '
-                         f'clustered ones (default {ROUND_ANCHORED}: opt-in)')
-    ap.add_argument('--judge', type=int, default=ROUND_JUDGED,
+                         f'clustered ones (default {ANCHORED_SEEDS}: opt-in)')
+    ap.add_argument('--judge', type=int, default=JUDGED_SEEDS,
                     help=f'with --route, how many of the cheapest legal seeds are fast-routed '
-                         f'(default {ROUND_JUDGED})')
+                         f'(default {JUDGED_SEEDS})')
     ap.add_argument('--jobs', type=int, default=4,
                     help='with --route, placements and fast routes run at once (default 4)')
     ap.add_argument('--route-jobs', type=int, default=0,

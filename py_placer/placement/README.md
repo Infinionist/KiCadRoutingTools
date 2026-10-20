@@ -37,11 +37,10 @@ groups file.*
 
 Everything below runs from a fresh clone on `kicad_files/tigard.kicad_pcb`
 (an FT2232H USB-to-JTAG/SPI/UART adapter: two LDOs, two level shifters, nine
-headers and switches). Outputs go to `wk/tig/`, one folder per round
-(`wk/tig/r1/` for the first); git ignores `wk/`.
+headers and switches). Outputs go to `wk/tig/`; git ignores `wk/`.
 
 ```bash
-mkdir -p wk/tig/r1
+mkdir -p wk/tig
 
 # 1. Lock what the enclosure decides: the connectors, the switches, the
 #    mounting holes. The placer never moves a locked part.
@@ -58,16 +57,16 @@ python3 -X utf8 py_tools/check_floorplan.py wk/tig/fixed.kicad_pcb --emit-intent
 # 4. Check the groups file against the board.
 python3 -X utf8 py_tools/check_groups.py wk/tig/fixed.kicad_pcb --groups docs/examples/tigard.groups.json
 
-# 5. Place round 1, four seeds at a time: 6 scattered (seeds 0-5) and 6 with
-#    each group's parts gathered (6-11), then name the 6 to judge.
-python3 -X utf8 py_placer/place_simple.py wk/tig/fixed.kicad_pcb 'wk/tig/r1/s{seed}.kicad_pcb' \
+# 5. Place the default seeds, four at a time: 6 scattered (seeds 0-5) and 6
+#    with each group's parts gathered (6-11), then name the 6 to judge.
+python3 -X utf8 py_placer/place_simple.py wk/tig/fixed.kicad_pcb 'wk/tig/s{seed}.kicad_pcb' \
     --groups docs/examples/tigard.groups.json --intent wk/tig/intent.json \
-    --round --jobs 4 --json 'wk/tig/r1/s{seed}.json'
+    --jobs 4 --json 'wk/tig/s{seed}.json'
 
 # 6. Check a seed, and look at it.
-python3 -X utf8 py_tools/check_assembly.py wk/tig/r1/s0.kicad_pcb --baseline wk/tig/fixed.kicad_pcb
-python3 -X utf8 py_tools/render_placement.py wk/tig/r1/s0.kicad_pcb \
-    --groups docs/examples/tigard.groups.json -o wk/tig/r1/s0.png
+python3 -X utf8 py_tools/check_assembly.py wk/tig/s0.kicad_pcb --baseline wk/tig/fixed.kicad_pcb
+python3 -X utf8 py_tools/render_placement.py wk/tig/s0.kicad_pcb \
+    --groups docs/examples/tigard.groups.json -o wk/tig/s0.png
 ```
 
 What to read in the output:
@@ -79,10 +78,10 @@ What to read in the output:
   `WARN` (a part with more signal links to another group than to its own, or a
   decap whose chips are all in other groups: a judgement to look at, not a
   mistake by itself).
-- **`place_simple --round`** runs one process per seed (`--jobs N`
+- **`place_simple`** with an OUT carrying `{seed}` runs one process per seed (`--jobs N`
   limits how many at once; the default is one per seed, at most 4) and prints
   one line per seed: `seed 0: cost 2897.5, 38000 moves in 14.7 s ->
-  wk/tig/r1/s0.kicad_pcb`. Each seed's own log goes beside its board
+  wk/tig/s0.kicad_pcb`. Each seed's own log goes beside its board
   (`s0.log`): the movable and fixed parts, the groups after folding, one cost
   line per stage of the anneal, the final cost broken down by term, and a
   `JSON_SUMMARY:` line. `--json` writes the full report (`final` costs,
@@ -134,7 +133,7 @@ three of its nine groups:
 
 ![tigard seed 0, coloured by group](../../docs/placement-tigard-groups.png)
 
-*`render_placement wk/tig/r1/s0.kicad_pcb --groups docs/examples/tigard.groups.json
+*`render_placement wk/tig/s0.kicad_pcb --groups docs/examples/tigard.groups.json
 --flat --no-ratsnest --no-legality`: each group's parts tinted and outlined in
 its colour, keyed bottom right. Locked parts take their group's outline: J1
 anchors `usb_in`, J2 anchors `shift_a`. The colours are the file's, so Y1 and
@@ -208,7 +207,7 @@ side's fan-out. Everything else packs as tight as legality lets it.
 
 ![U3 with its decaps on its supply pins](../../docs/placement-tigard-qfn.png)
 
-*`render_placement wk/tig/r1/s0.kicad_pcb --side F --view 43,37,71,61
+*`render_placement wk/tig/s0.kicad_pcb --side F --view 43,37,71,61
 --ratsnest-nets '+3V3'`: tigard's FT2232H (U3) with five +3V3 decaps (C14,
 C16-C19) on its supply pins, spread round three sides, and the rail's other
 two (C15, C20) by the 93LC46 EEPROM U4, the core group's other IC on +3V3; the
@@ -221,21 +220,21 @@ with an `edge`): that one is held to its edge, its mating face out and flush
 with the low end of its overhang band, and its moves only slide it along the
 edge -- past a locked part rather than through it -- or, when it has no
 mating face (a vertical header, a test pad), turn it. At the end the parts on
-one edge are pushed apart along it in their order. A clustered seed (`--round`'s
+one edge are pushed apart along it in their order. A clustered seed (the default
 `--clustered` seeds, or any named in `--clustered-seeds`) starts instead with
 each group's movable parts gathered
 round one random point, in a square of their courtyards' area, so the anneal
 arranges whole groups from the first move. Neither start is better on every
 board: on boards dominated by one big IC the clustered start routes better
 (argus_mainboard about 60 vias a seed fewer), on glasgow_revC and ulx3s the
-scattered one does. So the skill's round places six of each and lets the
-judge choose. An anchored seed (`--round --anchored N`, or `--anchored-seeds`;
+scattered one does. So the default seeds are six of each, and the judge
+chooses. An anchored seed (`--anchored N`, or `--anchored-seeds`;
 opt-in, none by default) gathers each group round the point its wiring prefers
 instead: a quick least-squares solve pulls each group toward the fixed parts'
 pads and the groups it shares signal nets with and toward its `near` and
 `edge` hints, and each seed re-weights those pulls at random and jitters the
 centres, so seeds still differ. Over 10 boards, 6 scattered + 6 anchored
-seeds routed better than the default round on covg_patchclamp and bitaxe and
+seeds routed better than the default seeds on covg_patchclamp and bitaxe and
 worse on tigard, argus_mainboard and librevna, so it stays opt-in.
 Moves shift, turn, swap, dock a part against a partner pad, jump a part to its
 wiring target, move an overlapping part to the least-overlap of random poses
@@ -274,26 +273,27 @@ skill writes one), giving `route.py` and every `route_diff.py` step
 `--quick 2`: the judging route. It skips the recovery tail, where a poor
 placement's routing time goes, and every pass that only polishes copper for
 shipping, so it takes about half the time of `--quick` alone and picks seeds
-as well. Score it with `py_tools/quick_score.py`, which takes the route
-step's own tally of open nets and `board_score`'s quality counts. Use the
-same chain for every seed so they compare.
+as well. Score it with `py_tools/quick_score.py`, which grades the board's
+open nets as `board_score` grades a full route, over the nets without a zone
+(level 2 skips the plane finalize that joins a poured net's pads), and adds
+`board_score`'s quality counts. Use the same chain for every seed so they
+compare.
 
-The skill keeps each round in `wk/<run>/r<N>/`, and the GUI's candidates table
+The skill keeps the seeds in `wk/<run>/`, and the GUI's candidates table
 reads the same names:
 
 | file | what it is |
 |---|---|
 | `s<S>.kicad_pcb`, `s<S>.json` | seed S's placement and its `place_simple` report (`start`: scattered or clustered) |
-| `judge.json` | the seeds `place_simple --round` names for a judging route |
+| `judge.json` | the seeds `place_simple` names for a judging route |
 | `s<S>_route/` | the fast route's working files |
 | `s<S>_fast.kicad_pcb` | the fast-routed board, copied out of `s<S>_route/` |
 | `s<S>_fast.score.json` | its `quick_score` |
 
-and the kept board goes to `wk/<run>/final.kicad_pcb`. For tigard's seed 0 in
-round 1:
+and the kept board goes to `wk/<run>/final.kicad_pcb`. For tigard's seed 0:
 
 ```bash
-R=wk/tig/r1; s=0; W=$R/s${s}_route; mkdir -p $W
+R=wk/tig; s=0; W=$R/s${s}_route; mkdir -p $W
 python3 -X utf8 py_router/route_planes.py $R/s$s.kicad_pcb $W/planes.kicad_pcb \
     --nets GND +3V3 --plane-layers In1.Cu In2.Cu --clearance-ceiling 0.15
 python3 -X utf8 py_router/qfn_fanout.py $W/planes.kicad_pcb --component U3 \
@@ -303,33 +303,25 @@ python3 -X utf8 py_router/route_diff.py $W/caps.kicad_pcb $W/diff.kicad_pcb \
     --nets /USB_DP /USB_DN --track-width 0.1 --diff-pair-gap 0.1 --clearance-ceiling 0.1 --no-gnd-vias \
     --quick 2
 python3 -X utf8 py_router/route.py $W/diff.kicad_pcb $W/route.kicad_pcb \
-    --nets '*' --quick 2 --json-out $W/route.json --track-width 0.10 --clearance-ceiling 0.15 --via-size 0.5 \
+    --nets '*' --quick 2 --track-width 0.10 --clearance-ceiling 0.15 --via-size 0.5 \
     --via-drill 0.25 --hole-to-hole-clearance 0.25 --board-edge-clearance 0.5 --grid-step 0.05 \
     --layers F.Cu In1.Cu In2.Cu B.Cu --layer-costs 1.0 3.0 3.0 1.0 \
     --power-nets GND +3V3 +5V VTARGET VREG /VBUS +1V8
 python3 -X utf8 py_router/copy_board.py $W/route.kicad_pcb $R/s${s}_fast.kicad_pcb
-python3 -X utf8 py_tools/quick_score.py $R/s${s}_fast.kicad_pcb \
-    --route $W/route.json --json $R/s${s}_fast.score.json
+python3 -X utf8 py_tools/quick_score.py $R/s${s}_fast.kicad_pcb --json $R/s${s}_fast.score.json
 ```
 
-`quick_score` exits 0 when no net blocks, 4 when some do, and 2 when the
-route summary holds no tally. Read `blocking`
+`quick_score` exits 0 when no net blocks, 4 when some do, and 2 when
+check_connected gave no summary. Read `blocking`
 and `quality` (vias, copper_mm, segments) from the score file, keep the best
 seed, and copy its placement (`$R/s<S>.kicad_pcb`, never the `--quick` board)
 to `wk/tig/final.kicad_pcb` with `copy_board.py`; in `full` mode the skill then
 routes it with `/plan-pcb-routing`, without `--quick`.
 
-**The skill's round rule.** A round is `place_simple --round`: `--scattered`
-seeds (default 6), then `--clustered` seeds started clustered (default 6,
-below), and it names the `--judge` legal seeds of lowest `final.cost`
-(default 6) in `r<N>/judge.json`. The skill fast-routes those and keeps the
-best. The run stops at the first round whose best fast route has no
-blocking net. Otherwise the agent reviews it (`py_tools/route_review.py` lists
-the open nets with the parts holding their loose pads, the nets with the most
-vias and the longest detours, the congested areas and the two-pad parts turned
-against their wiring), changes the groups, hints or claims, and places again,
-up to `--rounds N` rounds (default 3). A part moved by hand would be moved back
-by the next placement, so a fix goes into the inputs, not the board.
+**The skill's seeds.** `place_simple`'s default seeds are `--scattered` seeds
+(default 6), then `--clustered` seeds started clustered (default 6, below);
+it names the `--judge` legal seeds of lowest `final.cost` (default 6) in
+`judge.json`. The skill fast-routes those and keeps the best.
 
 ## What the placer reads from the intent
 
@@ -413,13 +405,13 @@ and routed in full ([Utilities](../../docs/utilities.md#placement-movie-place_mo
 
 The KiCad plugin's **AI Drive › Placement** tab runs the same skill on the open
 board, laid out like the routing tab: the AI column sets the backend (Claude
-Code), model, effort, rounds and extra instructions, and **Place (AI)** runs
+Code), model, effort and extra instructions, and **Place (AI)** runs
 `/plan-pcb-placement place`, **Place + Route (AI)** runs `full`, headless on a
 snapshot of the board, into a `krt_placement/` folder beside the board file
 (its newest three runs are kept). The left pane is a candidates table, one
-row per seed per round (blocking, vias, copper, segments, and a status:
-placing, routing, routed, clean, best, KEPT), filled live from the run folder's
-`r<N>/` files, beside a preview of the selected row's fast-routed board; the
+row per seed (blocking, vias, copper, segments, and a status: placing,
+routing, routed, clean, best, KEPT), filled live from the run folder's seed
+files, beside a preview of the selected row's fast-routed board; the
 transcript streams below, and **Apply Result to Board** writes the kept
 placement back (after Place + Route, its tracks and vias too). **Beautify
 Labels** tidies reference designators without AI (the CLI is

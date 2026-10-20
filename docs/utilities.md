@@ -257,24 +257,22 @@ Exit 0 clean, 1 violations, 2 usage errors.
 
 Places a board by function: the parts sorted into groups, one objective,
 lowered by simulated annealing, and exact pad legality at the end. It is the
-placer the `plan-pcb-placement` skill runs in rounds. A round (`--round`) places
-6 seeds started scattered and 6 started clustered, fast-routes the 6 legal ones its cost rates best (`route.py --quick 2`, scored by `quick_score.py`) and keeps the best. The run stops at
-the first round whose best fast route has no blocking net; otherwise the skill
-reviews the best with `route_review.py`, changes the groups, hints or claims
-and places again, up to `--rounds N` rounds in all (default 3). The kept board
-is then routed in full (`/plan-pcb-routing`).
+placer the `plan-pcb-placement` skill runs. By default it places 6 seeds
+started scattered and 6 started clustered; the skill fast-routes the 6 legal ones its
+cost rates best (`route.py --quick 2`, scored by `quick_score.py`) and keeps
+the best, which in full mode is then routed in full (`/plan-pcb-routing`).
 
 ```bash
 python3 -X utf8 py_placer/place_simple.py board.kicad_pcb placed.kicad_pcb \
     --groups groups.json --intent intent.json [--seed 0] [--json report.json]
-# several seeds at once, one process each:
-python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 'r1/s{seed}.kicad_pcb' \
+# the default seeds (the skill's), one process each, and the ones to judge:
+python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 's{seed}.kicad_pcb' \
+    --groups groups.json --intent intent.json [--scattered 6] [--clustered 6] \
+    [--judge 6] [--jobs 4] --json 's{seed}.json'
+# seeds of your own:
+python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 's{seed}.kicad_pcb' \
     --groups groups.json --intent intent.json --seeds 0-3 [--clustered-seeds 2-3] \
-    [--jobs 4] --json 'r1/s{seed}.json'
-# one round of the skill's flow, and the seeds to judge:
-python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 'r1/s{seed}.kicad_pcb' \
-    --groups groups.json --intent intent.json --round [--scattered 6] [--clustered 6] \
-    [--judge 6] [--jobs 4] --json 'r1/s{seed}.json'
+    [--jobs 4] --json 's{seed}.json'
 ```
 
 - **Inputs.** `--groups` is the groups file (`py_tools/check_groups.py`
@@ -304,21 +302,23 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 'r1/s{seed}.kicad_pcb'
 - **Deterministic.** The same board, inputs and `--seed` give the same
   placement. Seeds differ more than most input changes, so place several and
   judge them by routing.
-- **Several seeds.** `--seeds 0-3` (or `0,1,2,3`) runs each seed as its own
-  `--seed` process, `--jobs` at a time (default one per seed, at most 4), with
-  `{seed}` in OUT and `--json` and each seed's log beside its board as
-  `.log`; it prints one line per seed and exits 2 if any seed failed, else 4
-  if any left parts illegal, else 0. One process takes about 120 MB.
-- **A round.** `--round` places `--scattered` seeds (default 6) started
-  scattered, then `--clustered` seeds (default 6) started clustered, then
-  `--anchored` seeds (default 0, opt-in) started anchored, numbered from 0 as
-  `--seeds` would, and then names the `--judge` legal seeds of lowest
-  `final.cost` (default 6) for a judging route: printed, and written to
-  `judge.json` beside the boards (`judge`, cheapest first, then the round's
-  `scattered`, `clustered`, `anchored` and `illegal` seeds). It refuses
-  `--seeds`, `--clustered-seeds` and `--anchored-seeds`, which it sets itself. Over 11 boards,
-  these defaults shipped fewer open nets and vias than 24 scattered seeds
-  with 12 judged, in half the time; judging all 12 of them shipped worse.
+- **Several seeds.** An OUT carrying `{seed}` (and `--json` too, when given)
+  with no seed named places the default seeds: `--scattered` (default 6)
+  started scattered, then `--clustered` (default 6) started clustered, then
+  `--anchored` (default 0, opt-in) started anchored, numbered from 0. Over 11
+  boards these defaults shipped fewer open nets and vias than 24 scattered
+  seeds with 12 judged, in half the time. `--seeds 0-3` (or `0,1,2,3`) places
+  the seeds it lists instead, with `--clustered-seeds` and `--anchored-seeds`
+  naming their starts; `--seed N` places that one seed. Each seed runs as its
+  own `--seed` process, `--jobs` at a time (default one per seed, at most 4),
+  its log beside its board as `.log`; it prints one line per seed and exits 2
+  if any seed failed, else 4 if any left parts illegal, else 0. One process
+  takes about 120 MB.
+- **The seeds to judge.** A run of several seeds then names the `--judge`
+  legal seeds of lowest `final.cost` (default 6) for a judging route:
+  printed, and written to `judge.json` beside the boards (`judge`, cheapest
+  first, then the `scattered`, `clustered`, `anchored` and `illegal` seeds).
+  Judging all 12 default seeds instead of the 6 cheapest shipped worse.
 - **Output.** The placed board with its siblings, a `JSON_SUMMARY:` line
   (final cost, moves, seed, `start` -- `scattered`, `clustered` or `anchored` -- parts
   moved to a legal pose after the anneal, parts left illegal, seconds) and,
@@ -857,30 +857,34 @@ python3 -X utf8 py_tools/route_review.py routed.kicad_pcb --top 12 --json review
 What to do about each finding is in
 `.claude/skills/plan-pcb-placement/references/placement-lessons.md`. The
 `/plan-pcb-placement` skill (`.claude/skills/plan-pcb-placement/SKILL.md`,
-§3.6) runs it on the best fast-routed candidate (`route.py --quick 2`) of
-a round whose best fast route still has a blocking net, then changes the
-groups, hints or claims it gives `place_simple` and places again, up to
-`--rounds` rounds; `render_nets.py` draws a finding's nets beside another
-routed board's. Exit 0 reviewed (findings or not), 2 unreadable input.
+§3.6) runs it in `place` mode on the kept seed's fast route
+(`route.py --quick 2`) and turns the two-pad parts it lists;
+`render_nets.py` draws a finding's nets beside another routed board's.
+Exit 0 reviewed (findings or not), 2 unreadable input.
 
 ## Seed Judge Score (`quick_score.py`)
 
 Scores a board a `route.py --quick 2` chain routed, the judging route the
-placement skill gives each seed. `blocking` is the route step's own tally --
-failed singles, open singles and the multipoint pad deficit -- read from its
-`--json-out` file or the last `JSON_SUMMARY_MIN` line of its log; `quality`
-(vias, copper_mm, segments) is `board_score`'s own count of the board. It
-leaves DRC, assembly and the floorplan out: level 2 skips the passes that fix
-grazes, so DRC on its board measures the polish it skipped, not the
-placement. The JSON has `board_score`'s keys, so the GUI's candidates table
-reads either.
+placement skill gives each seed. `blocking` is the board's own connectivity,
+graded as `board_score` grades a full route (`check_connected`: unrouted nets
+plus the joins each broken net still needs), over the nets without a zone.
+Level 2 skips the plane finalize, which taps a poured net's pads into its
+pour, so those nets' open pads are listed apart as `poured` and not counted.
+The board is graded rather than the route step's tally because each route
+step of a chain tallies only its own `--nets`: a recorded one-net retry at the
+end reports `already_connected` and nothing about the rest of the board.
+`quality` (vias, copper_mm, segments) is `board_score`'s own count of the
+board. It leaves DRC, assembly and the floorplan out: level 2 skips the
+passes that fix grazes, so DRC on its board measures the polish it skipped,
+not the placement. The JSON has `board_score`'s keys, so the GUI's candidates
+table reads either.
 
 ```bash
-python3 -X utf8 py_tools/quick_score.py r1/s0_fast.kicad_pcb --route r1/s0_route/route.json \
-    --json r1/s0_fast.score.json
+python3 -X utf8 py_tools/quick_score.py s0_fast.kicad_pcb --json s0_fast.score.json
 ```
 
-Exit 0 when no net blocks, 4 when some do, 2 when the summary holds no tally.
+Exit 0 when no net blocks, 4 when some do, 2 when check_connected gave no
+summary.
 Never grade a board to ship with it: route that one in full and run
 `board_score`.
 
@@ -1190,9 +1194,9 @@ group with a movable part in a colour of its own, by name, then fixed parts
 
 With `--route BOARD:SET` -- a stress-corpus board whose recorded chain routes
 this one, the chain `tests/stress/placement_ab/route_placed.py` replays -- it
-first runs the flow: places the skill's round (`--scattered` and
+first runs the flow: places the skill's seeds (`--scattered` and
 `--clustered`, default 6 each, and the opt-in `--anchored`, default 0, as
-`place_simple --round`; `--jobs` at a
+place_simple's default seeds; `--jobs` at a
 time), fast-routes the `--judge` (default 6) legal seeds the
 objective rates cheapest (the chain with `--quick 2`, scored by
 `quick_score.py`), and routes the best (fewest blocking, then vias, copper,
@@ -1210,7 +1214,7 @@ every placed seed and finished route there -- so it only films (`--fresh`
 places and routes again). `--route-jobs` runs the fast
 routes fewer at a time than the placements: a 350-part board's route can take
 5 GB, so `--route-jobs 1` there. Measured on one laptop with 24 seeds and
-12 fast routes, twice the default round, argus_mainboard (334 parts): 48 min
+12 fast routes, twice the default, argus_mainboard (334 parts): 48 min
 for the whole flow -- 18 min placing the seeds 4 at a time, 23 min for the
 fast routes one at a time, 7.5 min for the full route; ch32 (25 parts) took
 1 min and tigard (89 parts) 4.3 min, everything 4 at a time.

@@ -9935,7 +9935,7 @@ def emit_intent(pcb_data, pcb_file: str, *,
     # The crystal claims place_simple would derive on its own
     # (`crystals.crystal_claims`: each crystal at its IC's oscillator pins,
     # through a series part where there is one, and each load cap at its
-    # crystal), written down so the grade and a review round see them. They
+    # crystal), written down so the grade and the intent's reader see them. They
     # read no pose. A pair the brief already relates, either way round,
     # keeps the brief's row; graded at WARN (`derived_claim`).
     from .crystals import crystal_claims
