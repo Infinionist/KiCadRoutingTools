@@ -1953,6 +1953,13 @@ class QuenchState:
             legal = False
             if self._why is not None:
                 self._veto('pad_copper_outline')
+        # #962: and the copper the footprint DRAWS (esp_prog U2's F.Cu tab),
+        # which reaches past the courtyard the same way, and which the grade
+        # place_pose re-grades with refuses past the outline.
+        if legal and self._graphic_copper_past(ref, x, y, rot) > EPS_IMPROVE:
+            legal = False
+            if self._why is not None:
+                self._veto('graphic_copper_outline')
         if legal and getattr(self, 'courtyards_ignored', False):
             # #1101: courtyards waived by the project, so the neighbour test
             # asks the PAD question instead, ABSOLUTELY and at each pair's own
@@ -2115,7 +2122,8 @@ class QuenchState:
                 and cand_board < cur_board - EPS_IMPROVE):
             if (self._why is not None and cand_overlap > EPS_IMPROVE
                     and self._why.get('check') in ('board_bbox', 'outline',
-                                                   'pad_copper_outline')):
+                                                   'pad_copper_outline',
+                                                   'graphic_copper_outline')):
                 # #1113: a part coming home from off the board, refused for
                 # OVERLAP -- the board term the ordinary path named is not
                 # what stopped it (a courtyard label keeps its blocker).
@@ -2135,6 +2143,12 @@ class QuenchState:
                 ref, *self._incumbent_pose(ref)) + EPS_IMPROVE:
             if self._why is not None:
                 self._veto('pad_copper_outline')
+            return False
+        cand_gfx = self._graphic_copper_past(ref, x, y, rot)
+        if cand_gfx > EPS_IMPROVE and cand_gfx > self._graphic_copper_past(
+                ref, *self._incumbent_pose(ref)) + EPS_IMPROVE:
+            if self._why is not None:
+                self._veto('graphic_copper_outline')
             return False
         # #1101: ...and the same BODY conjunct the ordinary path has. Coming in
         # from the pile, a part whose courtyard is small and whose drawn body
@@ -2495,6 +2509,18 @@ class QuenchState:
         if sd._pad_copper_overhang(self, ref) <= self.edge_gate.margin:
             return 0.0
         return sd._pad_copper_off_board(self, ref, x, y, rot)
+
+    def _graphic_copper_past(self, ref, x, y, rot) -> float:
+        """#962: `_pad_copper_past` for the copper the footprint draws: how
+        far it reaches past the outline at the pose by the grade's measure,
+        for a part whose drawn copper reaches past its courtyard by more than
+        `edge_gate.margin`; 0.0 for every other part, after one cached
+        compare. Through the seeder's own two functions
+        (`_graphic_copper_overhang`, `_graphic_copper_off_board`)."""
+        sd = _seeder()
+        if sd._graphic_copper_overhang(self, ref) <= self.edge_gate.margin:
+            return 0.0
+        return sd._graphic_copper_off_board(self, ref, x, y, rot)
 
     def _edges_near(self, ref) -> list:
         """Cached: the Edge.Cuts edges this part can touch -- every edge for

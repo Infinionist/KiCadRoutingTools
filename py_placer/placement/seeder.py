@@ -70,6 +70,12 @@ def pose_ok(state, ref: str, x: float, y: float, rot: float,
     if (_pad_copper_overhang(state, ref) > state.edge_gate.margin
             and _pad_copper_off_board(state, ref, x, y, rot) > 1e-6):
         return False
+    # #962: and the copper the footprint draws (a tab, an antenna), for the
+    # parts whose drawn copper reaches past the courtyard by more than the
+    # margin -- the same cached compare, then the grade's own measure.
+    if (_graphic_copper_overhang(state, ref) > state.edge_gate.margin
+            and _graphic_copper_off_board(state, ref, x, y, rot) > 1e-6):
+        return False
     # BOTH rects, because `rule_keepout` grades both: a through-hole part's
     # leads pass through a keep-out even when its body sits on the far side,
     # so a courtyard-only seat would be accepted here and flagged there --
@@ -161,6 +167,109 @@ def _pad_copper_off_board(state, ref: str, x: float, y: float,
         pads[ref] = pp
     return legality.pad_copper_gating_mm(pp, fp, (x, y, rot),
                                          _zero_edge_gate(state))
+
+
+def _graphic_copper_shapes(state, ref: str) -> list:
+    """`ref`'s own graphic copper shapes (#962: a drawn tab, an antenna, a
+    jumper bridge), as `check_drc.graphic_copper_shapes` groups them, at the
+    pose the board was parsed at. The board's shapes are grouped once per
+    state and cached by owner; [] for the parts that draw none."""
+    by_owner = getattr(state, '_graphic_copper_shapes_cache', None)
+    if by_owner is None:
+        from check_drc import graphic_copper_shapes
+        by_owner = {}
+        for shape in graphic_copper_shapes(state.pcb_data):
+            if shape['owner']:
+                by_owner.setdefault(shape['owner'], []).append(shape)
+        state._graphic_copper_shapes_cache = by_owner
+    return by_owner.get(ref, [])
+
+
+def _graphic_copper_overhang(state, ref: str) -> float:
+    """How far `ref`'s own graphic copper can reach past its grade rect at
+    ANY pose, in mm; 0.0 when it cannot. `_pad_copper_overhang`'s bound for
+    the copper a footprint draws rather than its pads: measured once in the
+    footprint's own frame (the parse pose's `_global_to_local`, the frame
+    `padbox_local` is in), every vertex and circle grown by half its drawn
+    stroke, as the diagonal of the two axes' overhangs. Cached per part.
+
+    Without it, the seat gate held only courtyards and pads to the outline,
+    so on esp_prog `place_pose set U2 ... --snap` ranked six poses with U2's
+    F.Cu tab past the edge ahead of any other, re-graded them all and
+    refused, though a clean pose sat 1.36 mm away."""
+    cache = getattr(state, '_graphic_copper_overhang_cache', None)
+    if cache is None:
+        cache = state._graphic_copper_overhang_cache = {}
+    over = cache.get(ref)
+    if over is None:
+        over = 0.0
+        fp = state.pcb_data.footprints.get(ref)
+        shapes = _graphic_copper_shapes(state, ref)
+        if shapes and fp is not None and getattr(fp, 'parsed_pose', None):
+            from kicad_parser import _global_to_local
+            x0, y0, r0, _layer = fp.parsed_pose
+            lo = [math.inf, math.inf, -math.inf, -math.inf]
+            for shape in shapes:
+                for sg in shape['segs']:
+                    half = (getattr(sg, 'drawn_width', None) or sg.width or 0.0) / 2.0
+                    pts = [(sg.start_x, sg.start_y, half), (sg.end_x, sg.end_y, half)]
+                    circ = getattr(sg, 'graphic_circle', None)
+                    if circ is not None:
+                        pts.append((circ[0], circ[1], circ[2] + half))
+                    for gx, gy, grow in pts:
+                        lx, ly = _global_to_local(x0, y0, r0, gx, gy)
+                        lo = [min(lo[0], lx - grow), min(lo[1], ly - grow),
+                              max(lo[2], lx + grow), max(lo[3], ly + grow)]
+            g = state.parts[ref].grade_by_rot[0.0]
+            over = math.hypot(max(0.0, g[0] - lo[0], lo[2] - g[2]),
+                              max(0.0, g[1] - lo[1], lo[3] - g[3]))
+        cache[ref] = over
+    return over
+
+
+def _graphic_copper_off_board(state, ref: str, x: float, y: float,
+                              rot: float) -> float:
+    """How far `ref`'s own graphic copper reaches past the board outline at
+    `(x, y, rot)`, by the grade's own measure (`check_drc.
+    graphic_outline_overrun` at margin 0, what `grade_pad_legality`'s
+    `oob_graphic_copper_*` and place_pose gate on), the milled rings the
+    part's pads sit in at its seed pose exempt as the census exempts them;
+    0.0 when it stays on the board. Also 0.0 where it cannot be measured --
+    no parse pose, a side changed since parse, or the board-outline owner
+    the census waives -- and the grade still sees those."""
+    from check_drc import (GRAPHIC_WAIVED_STATES, _graphic_outline_geometry,
+                           _reposed_shape, graphic_outline_overrun,
+                           graphic_owner_state, milled_rings_enclosing)
+    from types import SimpleNamespace
+    fps = state.pcb_data.footprints
+    fp = fps.get(ref)
+    shapes = _graphic_copper_shapes(state, ref)
+    if (not shapes or fp is None or not getattr(fp, 'parsed_pose', None)
+            or graphic_owner_state(ref, fps) in GRAPHIC_WAIVED_STATES):
+        return 0.0
+    bi = state.pcb_data.board_info
+    geom = getattr(state, '_graphic_outline_geom', None)
+    if geom is None:
+        geom = state._graphic_outline_geom = _graphic_outline_geometry(bi)
+    owned_cache = getattr(state, '_graphic_owned_rings', None)
+    if owned_cache is None:
+        owned_cache = state._graphic_owned_rings = {}
+    owned = owned_cache.get(ref)
+    if owned is None:
+        pts = [(p.global_x, p.global_y) for p in fp.pads]
+        owned = owned_cache[ref] = (milled_rings_enclosing(geom[3], pts)
+                                    if pts else frozenset())
+    probe = SimpleNamespace(parsed_pose=fp.parsed_pose, x=x, y=y, rotation=rot,
+                            layer=fp.layer)
+    worst = 0.0
+    for shape in shapes:
+        moved = _reposed_shape(shape, probe)
+        if moved is False:
+            return 0.0
+        ov, sg, _pt = graphic_outline_overrun(moved or shape, bi, owned, _geom=geom)
+        if sg is not None:
+            worst = max(worst, ov)
+    return worst
 
 
 def _materialise_rotation(part, rot: float) -> float:
@@ -599,6 +708,10 @@ def _fixed_pose_check(state, ref: str, pose, obstacles: Dict[str, Tuple],
         off = _pad_copper_off_board(state, ref, x, y, rot)
         if off > 1e-6:
             reasons.append(f"pad copper {off:.3f}mm past the outline")
+    if _graphic_copper_overhang(state, ref) > state.edge_gate.margin:
+        off = _graphic_copper_off_board(state, ref, x, y, rot)
+        if off > 1e-6:
+            reasons.append(f"graphic copper {off:.3f}mm past the outline")
     return (None if reasons else 'contained'), reasons, conflicts
 
 
