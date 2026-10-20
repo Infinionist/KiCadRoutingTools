@@ -621,7 +621,7 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     # those of the gap the pairs are built at. Each pair is floored again at
     # its own rule below, where its net-class gap may replace this one (#435).
     from kicad_dru import (resolve_layer_clearances, board_track_rules,
-                           pair_gap_rule_floor)
+                           pair_gap_rule_floor, nets_coupled)
     _routable_layers = [l for i, l in enumerate(layers)
                         if i >= len(layer_costs) or layer_costs[i] >= 0]
     _gap_layer_map = resolve_layer_clearances(layer_clearances, input_file,
@@ -631,10 +631,16 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         else board_track_rules(pcb_data, input_file))
 
     def _pair_rule_gap(p_net_id, n_net_id):
+        # #1295: a "keep pairs apart" rule exempts P against N only when
+        # KiCad couples the two NAMES, not because our detector paired them.
+        _pn = pcb_data.nets.get(p_net_id)
+        _nn = pcb_data.nets.get(n_net_id)
         g, why = pair_gap_rule_floor(
             _gap_layer_map, _routable_layers, _gap_track_rules,
             _gap_classes.get(p_net_id, frozenset()),
-            _gap_classes.get(n_net_id, frozenset()))
+            _gap_classes.get(n_net_id, frozenset()),
+            coupled=nets_coupled(getattr(_pn, 'name', None),
+                                 getattr(_nn, 'name', None)))
         if track_clearances:
             # an explicit map (tests) prices the pair as pair_clearance does
             v = max(track_clearances.get(p_net_id) or 0.0,

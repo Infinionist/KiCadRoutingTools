@@ -20,7 +20,8 @@ neck and via spacing, and the writeback caps Board Setup min_clearance at it
 -- KiCad grades the pair gap at max(that minimum, the class gap), so leaving
 the run's 0.25 there failed every pair built at 0.15 (measured: 6
 diff_pair_gap_out_of_range). The inverse "keep pairs apart" form
-(`!AB.isCoupledDiffPair()`) and inDiffPair() stay unsupported, as before.
+(`!AB.isCoupledDiffPair()`) and inDiffPair() are #1295's
+(test_1295_diff_pair_rule_forms.py); neither is a coupled-pair rule here.
 
 The fixture is cap_chain (pairs DPA_P/N, DPB_P/N) with a Default class at
 clearance 0.25, an HS class (pattern DP*) with diff_pair_gap 0.15, and a rule
@@ -28,7 +29,8 @@ clearance 0.25, an HS class (pattern DP*) with diff_pair_gap 0.15, and a rule
 
 Checks:
   A. match_dp_suffix reproduces KiCad's MatchDpSuffix on its own examples
-  B. the positive form is supported; negated, OR'ed and inDiffPair are not
+  B. the positive form is a coupled-pair rule; negated and inDiffPair are
+     supported but are not (#1295); OR'ed is unsupported
   C. the resolver: P<->N at the rule on every layer; P against the other
      pair at the class; a later layer rule wins its layer; a two-item
      condition matches in either order; the diff-pair-context shortcut
@@ -162,9 +164,12 @@ def t_support():
     rules = {r.name: r for r in parse_dru(text)[0]}
     check('AB.isCoupledDiffPair() ANDed in: supported, a coupled rule',
           rules['pos'].unsupported is None and rules['pos'].coupled)
-    for n in ('neg', 'or', 'indp'):
-        check(f'{n}: still unsupported, with the reason said',
-              bool(rules[n].unsupported), rules[n].unsupported or '')
+    for n in ('neg', 'indp'):
+        check(f'{n}: supported (#1295), and not a coupled-pair rule',
+              rules[n].unsupported is None and not rules[n].coupled,
+              rules[n].unsupported or '')
+    check('or: still unsupported, with the reason said',
+          bool(rules['or'].unsupported), rules['or'].unsupported or '')
 
 
 def _rules(d, text):
@@ -224,7 +229,7 @@ def t_writeback_and_pricing():
         check('min_rule_clearance counts the coupled-pair rule',
               min_rule_clearance(pcb) == 0.15, f'{min_rule_clearance(pcb)}')
         pcb = stage(d, 'v', dru(('neg', NEGATED, 0.12, None, 'clearance')))
-        check('...and not an unsupported one', min_rule_clearance(pcb) is None)
+        check('...and not a keep-apart one', min_rule_clearance(pcb) is None)
     cfg = GridRouteConfig(layers=['F.Cu', 'B.Cu'], clearance=0.25)
     cfg.coupled_pair_clearances = {frozenset((1, 3)): {
         'track': {'F.Cu': 0.15}, 'layer': {'F.Cu': 0.16}, 'stack': 0.17}}

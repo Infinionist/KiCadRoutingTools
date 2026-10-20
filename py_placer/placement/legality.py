@@ -3614,12 +3614,13 @@ class PadClearanceModel:
 
     __slots__ = ('base', 'net_floor', 'layer_rules', 'board_copper',
                  'active', 'notes', 'ceiling', '_pair_cache',
-                 'track_rules', 'net_classes', 'board_min_clearance')
+                 'track_rules', 'net_classes', 'board_min_clearance',
+                 'track_partners')
 
     def __init__(self, base: float, net_floor=None, layer_rules=None,
                  board_copper=(), has_overrides: bool = False,
                  ceiling: Optional[float] = None,
-                 track_rules=None, net_classes=None):
+                 track_rules=None, net_classes=None, track_partners=None):
         self.base = float(base)
         # #768: the --clearance ceiling this model was built under, or None.
         # Recorded rather than re-derived: `net_floor` is already capped by the
@@ -3640,6 +3641,10 @@ class PadClearanceModel:
         # DOES ask reads `track_rules` directly -- see `track_pair`.
         self.track_rules = list(track_rules or [])
         self.net_classes = dict(net_classes or {})
+        # #1295: the diff pairs KiCad couples by name, {frozenset({P, N})},
+        # which a "keep pairs apart" track rule exempts. Empty unless the
+        # board declares such a rule.
+        self.track_partners = frozenset(track_partners or ())
         # rules.min_clearance: the floor under a pad override (set by for_board).
         self.board_min_clearance = 0.0
         self.active = bool(self.net_floor or self.layer_rules or has_overrides)
@@ -3782,9 +3787,15 @@ class PadClearanceModel:
                 track_rules, net_classes = [], {}
                 notes.append('.kicad_dru track rules unread (%s: %s)'
                              % (type(exc).__name__, exc))
+        track_partners = ()
+        if any(r.except_coupled for r in track_rules):
+            from kicad_dru import coupled_net_pairs
+            track_partners = [frozenset(pn) for pn in coupled_net_pairs(
+                {nid: n.name for nid, n in (getattr(pcb_data, 'nets', None) or {}).items()})]
         model = cls(clearance, net_floor, layer_rules, board_copper,
                     track_rules=track_rules, net_classes=net_classes,
-                    has_overrides=has_overrides, ceiling=ceiling)
+                    has_overrides=has_overrides, ceiling=ceiling,
+                    track_partners=track_partners)
         model.notes = notes
         if has_overrides and path:
             try:
@@ -3898,9 +3909,10 @@ class PadClearanceModel:
         if not self.track_rules:
             return resolved, None
         from kicad_dru import track_pair_clearance
-        return track_pair_clearance(self.track_rules,
-                                    self.net_classes.get(net_a, ()),
-                                    self.net_classes.get(net_b, ()), resolved)
+        return track_pair_clearance(
+            self.track_rules, self.net_classes.get(net_a, ()),
+            self.net_classes.get(net_b, ()), resolved,
+            coupled=frozenset((net_a, net_b)) in self.track_partners)
 
 
 def resolve_npth_floor(pcb_data, pcb_file: str = None,

@@ -160,11 +160,15 @@ class Conditions(unittest.TestCase):
             "A.NetClass == 'loosediffpair' && B.NetClass == 'Default'",
             "A.NetClass == '90R_DP' && B.NetName == 'GND'",
             "A.Type == 'Via' && B.Pad_Type == 'SMD' && (B.memberOfFootprint('*0402*') || B.memberOfFootprint('*0603*'))",
+            "A.inDiffPair('*')",
+            "A.NetClass == '100Ohm-diff_CSI' && A.inDiffPair('*')",
+            "A.NetClass == '85Ohm-diff' && !AB.isCoupledDiffPair() && A.Type == 'Track' && B.Type == 'Track'",
         ]
         for src in ok:
             parse_condition(src)
         for src in ("A.intersectsArea('underFPGA') || A.intersectsArea('underDDR')",
-                    "A.inDiffPair('*')",
+                    "AB.inDiffPair('*')",
+                    "!AB.isCoupledDiffPair() || A.NetClass == 'X'",
                     "A.NetClass == 'DDR4_CMD' && A.fromTo('IC14-*','IC13-*')",
                     "(A.Type == 'Track' && A.memberOfGroup('X')) || B.Length > 1mm"):
             with self.assertRaises(Unsupported):

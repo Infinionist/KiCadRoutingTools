@@ -77,6 +77,9 @@ _ONLAYER = re.compile(r"[AB]\s*\.\s*onLayer\s*\(\s*['\"]([^'\"]+)['\"]\s*\)")
 # exactly one X.NetClass=='C' term (optionally the mirror Y.NetClass!='C').
 _TRACK_TYPE = re.compile(r"([AB])\s*\.\s*Type\s*==\s*['\"]track['\"]", re.IGNORECASE)
 _NC_TERM = re.compile(r"([AB])\s*\.\s*NetClass\s*([!=]=)\s*['\"]([^'\"]+)['\"]")
+# KiCad's "keep pairs apart" term (#1295): the rule binds every pair except a
+# diff pair's P against its own N.
+_NOT_COUPLED = re.compile(r"!\s*AB\s*\.\s*isCoupledDiffPair\s*\(\s*\)")
 
 
 class TrackRule(NamedTuple):
@@ -85,16 +88,29 @@ class TrackRule(NamedTuple):
     ``other_only`` is True for the ``A.NetClass=='C' && B.NetClass!='C'``
     shape: the requirement binds only member-vs-NON-member pairs, so a
     member's own siblings (the coupled half of a diff pair) are exempt.
+
+    ``except_coupled`` is True when the condition also ANDs in
+    ``!AB.isCoupledDiffPair()`` (#1295): a pair whose two nets KiCad's
+    MatchDpSuffix couples (``nets_coupled``) is exempt. ``layer_clause`` is
+    the rule's ``(layer ...)`` token (a layer name, ``outer``, ``inner``), or
+    None for every layer.
     """
     name: str
     cls: str
     other_only: bool
     clearance_mm: float
+    except_coupled: bool = False
+    layer_clause: Optional[str] = None
 
 
-def _parse_track_condition(expr: str) -> Optional[Tuple[str, bool]]:
-    """(class, other_only) when ``expr`` is exactly the honored track-pair
-    subset; None otherwise (the rule falls back to the skip note)."""
+def _parse_track_condition(expr: str) -> Optional[Tuple[str, bool, bool]]:
+    """(class, other_only, except_coupled) when ``expr`` is exactly the
+    honored track-pair subset; None otherwise (the rule falls back to the
+    skip note)."""
+    except_coupled = len(_NOT_COUPLED.findall(expr))
+    if except_coupled > 1:
+        return None
+    expr = _NOT_COUPLED.sub("", expr)
     types = {t.upper() for t in _TRACK_TYPE.findall(expr)}
     ncs = _NC_TERM.findall(expr)
     residue = _NC_TERM.sub("", _TRACK_TYPE.sub("", expr))
@@ -110,8 +126,49 @@ def _parse_track_condition(expr: str) -> Optional[Tuple[str, bool]]:
         oside, ocls = ne[0]
         if oside == side or ocls != cls:
             return None
-        return cls, True
-    return cls, False
+        return cls, True, bool(except_coupled)
+    return cls, False, bool(except_coupled)
+
+
+def track_rule_on_layer(rule: TrackRule, layer: Optional[str]) -> bool:
+    """Whether ``rule`` binds on ``layer``. A rule with no layer clause binds
+    on every layer; ``layer`` None (the caller cannot say) binds too, which
+    over-requires rather than under-requires."""
+    lc = rule.layer_clause
+    if lc is None or layer is None or lc in ('*.Cu', '*'):
+        return True
+    if lc == 'outer':
+        return layer in ('F.Cu', 'B.Cu')
+    if lc == 'inner':
+        return layer.endswith('.Cu') and layer not in ('F.Cu', 'B.Cu')
+    return layer == lc
+
+
+def nets_coupled(name_a: Optional[str], name_b: Optional[str]) -> bool:
+    """KiCad's AB.isCoupledDiffPair() for two tracks: B's net is the
+    MatchDpSuffix complement of A's (#1293/#1295). Symmetric, and decided on
+    the NAMES: a pair our detector couples under another convention (DP/DM)
+    is not coupled to KiCad, so a "keep pairs apart" rule binds it."""
+    if not name_a or not name_b:
+        return False
+    from design_rules import match_dp_suffix
+    rv, comp, _base = match_dp_suffix(name_a)
+    return bool(rv) and comp == name_b
+
+
+def coupled_net_pairs(net_names: Dict[int, str]) -> List[Tuple[int, int]]:
+    """Every (P, N) pair of net ids KiCad's MatchDpSuffix couples, each once
+    (P is the positive side)."""
+    by_name = {nm: nid for nid, nm in net_names.items() if nm}
+    out = []
+    from design_rules import match_dp_suffix
+    for nid, nm in net_names.items():
+        if not nm:
+            continue
+        rv, comp, _base = match_dp_suffix(nm)
+        if rv > 0 and comp in by_name:
+            out.append((nid, by_name[comp]))
+    return out
 
 
 def _to_mm(tok: str) -> Optional[float]:
@@ -233,6 +290,7 @@ def _parse_dru(text: str, copper_layers: List[str]
         clearance_mm = None
         severity_ignore = False
         condition = None
+        layer_clause = None
         has_layer_clause = False
         for item in node:
             if not isinstance(item, list) or not item:
@@ -243,6 +301,7 @@ def _parse_dru(text: str, copper_layers: List[str]
                 condition = item[1]
             if item[0] == "layer":
                 has_layer_clause = True
+                layer_clause = item[1] if len(item) >= 2 else None
             if item[0] == "constraint" and len(item) >= 2 and item[1] == "clearance":
                 for sub in item[2:]:
                     if isinstance(sub, list) and sub and sub[0] == "min" and len(sub) >= 2:
@@ -252,14 +311,23 @@ def _parse_dru(text: str, copper_layers: List[str]
         if severity_ignore:
             notes.append(f"rule '{name}': severity ignore, skipped")
             continue
+        # A track rule may carry a copper (layer ...) clause (#1295); any other
+        # clause keeps the rule out of the channel.
+        copper_clause = (not has_layer_clause or (
+            isinstance(layer_clause, str)
+            and (layer_clause in ('outer', 'inner', '*.Cu', '*')
+                 or layer_clause.endswith('.Cu'))))
         track = (_parse_track_condition(condition)
-                 if condition and not has_layer_clause else None)
+                 if condition and copper_clause else None)
         if track is not None:
-            cls, other_only = track
-            track_rules.append(TrackRule(str(name), cls, other_only, clearance_mm))
+            cls, other_only, except_coupled = track
+            track_rules.append(TrackRule(str(name), cls, other_only, clearance_mm,
+                                         except_coupled, layer_clause))
             notes.append(f"rule '{name}': track-to-track clearance "
                          f"{clearance_mm}mm for class '{cls}'"
                          f"{' vs other classes only' if other_only else ''}"
+                         f"{', its own coupled partner exempt' if except_coupled else ''}"
+                         f"{f' on {layer_clause}' if layer_clause else ''}"
                          f" -- handled by the track channel")
             continue
         layers = _rule_layers(node, copper_layers, notes)
@@ -338,7 +406,9 @@ def read_board_track_clearances(board_path: str) -> Tuple[List[TrackRule], List[
 
 
 def track_pair_clearance(track_rules: List[TrackRule], a_cls, b_cls,
-                         resolved: float) -> Tuple[float, Optional[TrackRule]]:
+                         resolved: float, *, coupled: bool = False,
+                         layer: Optional[str] = None
+                         ) -> Tuple[float, Optional[TrackRule]]:
     """THE pair-exact track-rule resolver: (effective mm, the rule that RAISED
     it or None).
 
@@ -347,6 +417,12 @@ def track_pair_clearance(track_rules: List[TrackRule], a_cls, b_cls,
     over it, so a rule at or below it is inert and the fab floor can never be
     dragged down. ``a_cls`` / ``b_cls`` are the two nets' class-membership sets
     from ``list_nets.net_class_memberships``.
+
+    #1295: ``coupled`` says the two nets are a diff pair's P and N to KiCad
+    (``nets_coupled``), which exempts them from an ``except_coupled`` rule;
+    ``layer`` is where the two tracks meet, which a rule's layer clause must
+    take in (None binds it everywhere, the over-requiring answer). A caller
+    that passes neither gets the #735 answer for every rule shape.
 
     One site, deliberately. ``check_drc`` graded the seg-seg pair through a
     closure of this body and ``fanout_clearance``'s connector gate had no
@@ -361,6 +437,10 @@ def track_pair_clearance(track_rules: List[TrackRule], a_cls, b_cls,
     if not track_rules:
         return eff, rule
     for r in track_rules:
+        if r.except_coupled and coupled:
+            continue
+        if r.layer_clause is not None and not track_rule_on_layer(r, layer):
+            continue
         a_in, b_in = r.cls in a_cls, r.cls in b_cls
         binds = ((a_in != b_in) or (a_in and b_in and not r.other_only))
         if binds and r.clearance_mm > eff:
@@ -435,7 +515,14 @@ def effective_track_clearances(track_rules: List[TrackRule],
     under an ``other_only`` rule -- the route-the-pair-tight-first workflow
     survives. Monolithic runs mixing classes over-block non-member pairs, the
     same over-approximation shape PR392 accepted; route a ruled class in its
-    own invocation for exact pricing."""
+    own invocation for exact pricing.
+
+    #1295: a "keep pairs apart" rule (``except_coupled``) prices like a rule
+    without the term -- a member's partner is a member too, so its stamp is
+    raised for the partner as well; the P<->N pricing sites read the exact
+    value from ``config.track_partner_clearances`` instead. A rule's layer
+    clause is not read here either: one value per net prices it on every
+    layer. Both over-block, neither under-blocks."""
     if not track_rules:
         return {}
     routed = set(routed_net_ids or ())
@@ -466,7 +553,15 @@ def install_track_clearances(config, track_clearances, input_file,
     read the sibling .kicad_dru, resolve class memberships through
     list_nets.net_class_memberships (the SAME resolver the netclass clearance
     map uses), and compute the effective per-obstacle map for this call's
-    routed set. Announces what is honored, once per (board, rules)."""
+    routed set. Announces what is honored, once per (board, rules).
+
+    #1295: with a "keep pairs apart" rule, ``config.track_partner_clearances``
+    ({frozenset({P, N}): mm}) carries the pair-exact track-rule value of each
+    diff pair KiCad couples by name, for ``pair_clearance``'s P<->N sites --
+    the per-net map above prices the partner too. Empty otherwise, and on the
+    explicit-dict path, whose map a parent resolved (a nested sub-run then
+    prices P<->N at that map, over-requiring)."""
+    config.track_partner_clearances = {}
     if track_clearances is not None:
         config.track_clearances = dict(track_clearances)
         return
@@ -485,8 +580,15 @@ def install_track_clearances(config, track_clearances, input_file,
     eff = effective_track_clearances(rules, memberships, nets.keys(),
                                      routed_net_ids or nets.keys())
     config.track_clearances = eff
+    if any(r.except_coupled for r in rules):
+        config.track_partner_clearances = {
+            frozenset((p, n)): track_pair_clearance(
+                rules, memberships.get(p, ()), memberships.get(n, ()), 0.0,
+                coupled=True)[0]
+            for p, n in coupled_net_pairs(nets) if p in eff or n in eff}
     _key = (os.path.abspath(input_file),
-            tuple(sorted((r.name, r.cls, r.other_only, r.clearance_mm)
+            tuple(sorted((r.name, r.cls, r.other_only, r.clearance_mm,
+                          r.except_coupled, r.layer_clause or '')
                          for r in rules)))
     if _key not in _TRACK_ANNOUNCED:
         _TRACK_ANNOUNCED.add(_key)
@@ -495,6 +597,8 @@ def install_track_clearances(config, track_clearances, input_file,
                   f"(raise-only on seg-seg pairs): '{r.name}' class "
                   f"'{r.cls}' {r.clearance_mm:g}mm"
                   f"{' (vs other classes only)' if r.other_only else ''}"
+                  f"{' (its own coupled partner exempt)' if r.except_coupled else ''}"
+                  f"{f' (on {r.layer_clause}; the router prices it on every layer)' if r.layer_clause else ''}"
                   f" -- {len(eff)} net(s) priced")
 
 
@@ -617,7 +721,8 @@ def resolve_layer_clearances(layer_clearances, input_file, pcb_data=None,
 
 def pair_gap_rule_floor(layer_map: Dict[str, float], layers,
                         track_rules: List[TrackRule] = (),
-                        p_cls=frozenset(), n_cls=frozenset()
+                        p_cls=frozenset(), n_cls=frozenset(),
+                        coupled: bool = False
                         ) -> Tuple[float, Optional[str]]:
     """The largest .kicad_dru clearance that binds a diff pair's P against
     its own N on a layer in ``layers``, and what set it: (mm, why), or
@@ -626,20 +731,24 @@ def pair_gap_rule_floor(layer_map: Dict[str, float], layers,
     KiCad grades P against N like any two nets, so a layer rule (#498) on a
     layer the pair routes on and a track rule (#735) whose class takes in
     the pair (``track_pair_clearance``, pair-exact: an ``other_only`` rule
-    exempts a member's own partner) both bind the coupled run. The caller
-    raises the coupling gap to this and never lowers it, so a rule that
-    RELAXES its layer below the class changes nothing. One value over every
-    layer: a per-layer gap would need per-layer geometry."""
+    exempts a member's own partner, and so does a "keep pairs apart" rule
+    when ``coupled`` -- the two names are a pair to KiCad, #1295) both bind
+    the coupled run. The caller raises the coupling gap to this and never
+    lowers it, so a rule that RELAXES its layer below the class changes
+    nothing. One value over every layer: a per-layer gap would need
+    per-layer geometry."""
     best, why = 0.0, None
     for layer in layers or ():
         v = layer_map.get(layer) if layer_map else None
         if v is not None and v > best:
             best, why = v, f"the .kicad_dru clearance rule on {layer}"
     if track_rules:
-        v, rule = track_pair_clearance(track_rules, p_cls, n_cls, best)
-        if rule is not None:
-            best, why = v, (f"the .kicad_dru track rule '{rule.name}' "
-                            f"(class '{rule.cls}')")
+        for layer in list(layers or ()) or [None]:
+            v, rule = track_pair_clearance(track_rules, p_cls, n_cls, best,
+                                           coupled=coupled, layer=layer)
+            if rule is not None:
+                best, why = v, (f"the .kicad_dru track rule '{rule.name}' "
+                                f"(class '{rule.cls}')")
     return best, why
 
 

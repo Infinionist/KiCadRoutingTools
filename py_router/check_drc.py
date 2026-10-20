@@ -3479,7 +3479,8 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
     # exempts member siblings), which is <= the router's per-obstacle-net
     # over-approximation -- so router output always grades clean. Applied at
     # the SEG-SEG site only (KiCad's Type=='track' binds tracks).
-    from kicad_dru import read_board_track_clearances, track_pair_clearance
+    from kicad_dru import (read_board_track_clearances, track_pair_clearance,
+                           nets_coupled)
     _track_rules, _track_notes = read_board_track_clearances(pcb_file)
     _cls_of: Dict[int, set] = {}
     if _track_rules:
@@ -3496,7 +3497,13 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
         print("Track-to-track clearance rules (.kicad_dru): "
               + ", ".join(f"'{r.cls}':{r.clearance_mm:g}"
                           f"{'(other-only)' if r.other_only else ''}"
+                          f"{'(partner exempt)' if r.except_coupled else ''}"
+                          f"{f'({r.layer_clause})' if r.layer_clause else ''}"
                           for r in _track_rules))
+    # #1295: a "keep pairs apart" rule exempts the two nets KiCad's
+    # MatchDpSuffix couples, decided on the names (kicad_dru.nets_coupled).
+    _track_names = ({nid: n.name for nid, n in pcb_data.nets.items()}
+                    if any(r.except_coupled for r in _track_rules) else None)
 
     def _track_pair_cl(net_a: int, net_b: int, layer: str):
         """Effective seg-seg clearance for the pair, plus the TrackRule
@@ -3517,8 +3524,11 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
         eff = _pair_cl(net_a, net_b, layer=layer)
         if not _track_rules:
             return eff, None
+        coupled = (_track_names is not None
+                   and nets_coupled(_track_names.get(net_a), _track_names.get(net_b)))
         return track_pair_clearance(_track_rules, _cls_of.get(net_a, ()),
-                                    _cls_of.get(net_b, ()), eff)
+                                    _cls_of.get(net_b, ()), eff,
+                                    coupled=coupled, layer=layer)
 
     def _layer_cl(layer: str, eff: float) -> float:
         v = _lcl.get(layer) if _lcl else None

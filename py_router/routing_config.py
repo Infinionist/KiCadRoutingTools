@@ -391,6 +391,13 @@ class GridRouteConfig:
     # consults it (KiCad's Type=='track' binds tracks only). An empty map is
     # a strict no-op. Like the layer map: no CLI flag, no GUI control.
     track_clearances: Dict[int, float] = field(default_factory=dict)
+    # #1295: a .kicad_dru "keep pairs apart" track rule (!AB.isCoupledDiffPair())
+    # exempts a diff pair's P against its own N, which the per-net map above
+    # cannot say -- it raises the partner's stamp too. This holds the
+    # pair-exact track-rule value of every pair KiCad couples by name,
+    # frozenset({P, N}) -> mm, which pair_clearance reads instead of that map.
+    # Engine-computed (kicad_dru.install_track_clearances); empty = inert.
+    track_partner_clearances: Dict[FrozenSet[int], float] = field(default_factory=dict)
     # #530: the board's design rules resolved in KiCad's order
     # (design_rules.DesignRules), installed engine-side by
     # kicad_dru.install_layer_clearances for both fronts. None until then.
@@ -570,7 +577,9 @@ class GridRouteConfig:
           it (check_drc's `_track_pair_cl`). The router side reads the
           per-obstacle-net map, an over-approximation of check_drc's
           pair-exact rule. Net-0 copper is in no class and missing from that
-          map, so it is priced at the widest track rule;
+          map, so it is priced at the widest track rule. A diff pair's P
+          against its own N on a board with a "keep pairs apart" rule reads
+          its pair-exact value (`track_partner_clearances`, #1295) instead;
         * 'stack' -- via vs via, which meet on every layer: the max over the
           stack (check_drc's `_stack_cl`). `layer` is ignored.
 
@@ -605,6 +614,10 @@ class GridRouteConfig:
         if layer is not None:
             clr = self.layer_clearance(layer, clr)
         if kind == 'track' and self.track_clearances:
+            tp = (self.track_partner_clearances.get(frozenset((net_a, net_b)))
+                  if self.track_partner_clearances else None)
+            if tp is not None:
+                return tp if tp > clr else clr
             if not net_a or not net_b:
                 widest = max(self.track_clearances.values())
                 if widest > clr:
