@@ -26,6 +26,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -134,18 +135,23 @@ def main():
               'no_worse' in (s.get('legal_basis') or '')
               and 'graphic' in (s.get('legal_basis') or ''))
 
-        # 6 -- --snap never writes an overrun
+        # 6 -- --snap never writes an overrun: it writes a clean pose (exit 0)
+        # or refuses (exit 4, nothing written)
         out = os.path.join(work, 'snap.kicad_pcb')
-        r = run_check([sys.executable, '-X', 'utf8', POSE, src, out, 'set', 'U2', '115.34',
-                       '93.6', '--rot', '90', '--snap'], accept=True, allow=())
+        r = subprocess.run([sys.executable, '-X', 'utf8', POSE, src, out, 'set', 'U2',
+                            '115.34', '93.6', '--rot', '90', '--snap'],
+                           capture_output=True, text=True, encoding='utf-8', errors='replace')
+        assert r.returncode in (0, 4) and 'Traceback' not in r.stdout + r.stderr, \
+            (r.returncode, (r.stdout + r.stderr)[-1200:])
         s = summary(r)
         if os.path.exists(out):
             ov = u2_overrun(out)
             check('6. --snap from 115.34 writes a pose with NO graphic overrun',
-                  ov is not None and ov <= 1e-6 and s.get('legal') is True, f'{ov} {s.get("snapped")}')
+                  r.returncode == 0 and ov is not None and ov <= 1e-6
+                  and s.get('legal') is True, f'{ov} {s.get("snapped")}')
         else:
             check('6. --snap from 115.34 refused rather than writing an overrun',
-                  s.get('output') is None)
+                  r.returncode == 4 and s.get('output') is None)
 
         # 7 -- a swap cannot launder an overrun onto a clean part by keeping
         # the totals level

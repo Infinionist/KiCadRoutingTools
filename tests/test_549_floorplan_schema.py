@@ -152,7 +152,10 @@ KEY_SETS = {
         'center_on_edge', 'along_edge_band',
         # #959 (#1000): the face, compiled from the brief. Absent by
         # default and never written by `emit_intent` itself.
-        'side'},
+        'side',
+        # The side of the footprint its mating face opens on, in its own
+        # frame: a part placed from a pile has no pose to read it from.
+        'mating_face'},
     '_OVERHANG_KEYS': {'min', 'max'},
     '_CENTER_ON_EDGE_KEYS': {'tolerance_mm'},
     '_ALONG_EDGE_BAND_KEYS': {'from', 'to'},
@@ -303,7 +306,8 @@ def test_an_intent_using_every_known_key_loads():
             # refused at load, deliberately. Without this the "every known key
             # is accepted" claim would silently degrade to "every key but one".
             {'ref': 'J2', 'edge': 'west',
-             'along_edge_band': {'from': 0.10, 'to': 0.35}}],
+             'along_edge_band': {'from': 0.10, 'to': 0.35},
+             'mating_face': '-x'}],
         'decaps': {'max_distance_mm': 2.5, 'exempt': ['C99'],
                    'search_radius_mm': 6.0, 'max_pin_distance_mm': 1.5,
                    'pin_functions': ['VCC', 'VDD'], 'same_side': False,

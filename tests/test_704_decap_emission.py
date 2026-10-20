@@ -460,29 +460,28 @@ def test_the_printed_heading_is_not_a_legality_claim():
 # --------------------------------------------------------------------------
 
 def test_the_census_partitions_ulx3s_by_cause():
-    """The census splits the caps no limit grades by CAUSE, on ulx3s.
+    """The census splits ulx3s's caps by CAUSE, and names the ones that matter.
 
-    THIS TEST'S PREDECESSOR PINNED 70 / 53 / 17 AND SAID A SILENT
-    RECONCILIATION MUST FAIL LOUDLY. It did, and this is the argument it
-    forced.
+    70 two-pad caps; 36 are decaps by the placer's own rule
+    (`groups.decap_population`, which the grade has used since f87f1593):
 
-    The old numbers were right and the old EXPLANATION was wrong. The doc and
-    the census both blamed the gap on the two "is this a decap" predicates
-    disagreeing. Measured over every tracked board, the three spellings of that
-    predicate name identical sets, so the residue attributable to them is
-    ZERO. ulx3s's 17 is:
+        29  tethered to a chip within the 5mm search radius, and graded;
+         7  beyond the radius -- a real GRADING hole (#794), reported by
+            `decap_ungraded`.
 
-        7   beyond the 5mm tether search radius -- a real GRADING hole (#794),
-            reported by `decap_ungraded` since this change;
-        10  whose rail NO chip carries at all -- C3 C4 C22 on /power/P1V1,
-            C7 C8 C24 on /power/P3V3, C11 C12 C23 on /power/P2V5, C14 on
-            /power/SHUT. Every one of those rails is owned only by two-pad
-            passives (the caps, L1-L3, RA*/RP*): they are bulk and filter caps
-            upstream of an LC network, not decouplers. The GRADER is right to
-            ignore all ten.
+    The other 34 are not decaps, and the rule is right about every one:
 
-    So the pin is now the PARTITION and the ten refs BY NAME, because the whole
-    argument rests on which ten they are rather than on how many.
+        10  bulk and filter caps on rails NO chip carries -- C3 C4 C22 on
+            /power/P1V1, C7 C8 C24 on /power/P3V3, C11 C12 C23 on /power/P2V5,
+            C14 on /power/SHUT, upstream of an LC network. (The old rule let
+            them into the population and then set them aside as
+            `no_rail_chip`; that class is now empty.)
+        24  signal caps: the GPDI and serdes AC-coupling caps, the regulators'
+            FB caps, the WKUP cap and the 32 kHz crystal's load caps -- caps
+            the old one-channel rule counted as decaps.
+
+    So the pin is the PARTITION and the ten refs BY NAME, because the argument
+    rests on which they are rather than on how many.
     """
     if not os.path.exists(_board('ulx3s')):
         print("  SKIP: ulx3s not present")
@@ -491,23 +490,26 @@ def test_the_census_partitions_ulx3s_by_cause():
     scope = {r for r, f in pcb.footprints.items()
              if r[:1].upper() == 'C'
              and len([p for p in f.pads if p.net_id > 0]) == 2}
+    population = set(groups_mod.decap_population(pcb))
     near, beyond, orphans = groups_mod.decap_populations(pcb)
     tethered = {c for caps in near.values() for c, _d in caps}
+    far = {b if isinstance(b, str) else b[0] for b in beyond}
+    bulk = {'C11', 'C12', 'C14', 'C22', 'C23', 'C24', 'C3', 'C4', 'C7', 'C8'}
     assert len(scope) == 70, len(scope)
-    assert len(tethered) == 53, len(tethered)
-    assert len(scope - tethered) == 17, len(scope - tethered)
+    assert len(population) == 36 and population <= scope, len(population)
+    assert len(tethered) == 29, len(tethered)
     assert len(beyond) == 7, len(beyond)
-    assert len(orphans) == 10, len(orphans)
-    assert sorted(orphans) == ['C11', 'C12', 'C14', 'C22', 'C23', 'C24',
-                               'C3', 'C4', 'C7', 'C8'], sorted(orphans)
+    assert tethered | far == population, sorted(population - tethered - far)
+    assert not orphans, sorted(orphans)
+    assert bulk <= scope - population, sorted(bulk & population)
     c = _emit('ulx3s', derive_decaps=True)[0]['context']['decap_census']
-    assert c['population'] == 70, c
-    assert c['tethers'] == 53 and c['beyond_radius'] == 7, c
-    assert c['no_rail_chip'] == 10, c
-    assert c['no_rail_chip_refs'] == sorted(orphans), c
+    assert c['population'] == 36, c
+    assert c['tethers'] == 29 and c['beyond_radius'] == 7, c
+    assert c['beyond_radius_refs'] == sorted(far), c
+    assert c['no_rail_chip'] == 0 and c['no_rail_chip_refs'] == [], c
     assert c['unaccounted'] == 0, c
-    print("  PASS: ulx3s -- 70 in scope = 53 graded + 7 beyond the radius + "
-          "10 with no rail-carrying chip; 0 from the predicates")
+    print("  PASS: ulx3s -- 70 two-pad caps; 36 decaps = 29 graded + 7 beyond the "
+          "radius; the 10 bulk caps and 24 signal caps are not decaps; 0 unaccounted")
 
 
 def test_the_worst_beyond_is_the_FARTHEST_cap_not_the_last_one():

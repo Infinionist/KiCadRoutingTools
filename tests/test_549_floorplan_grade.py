@@ -662,11 +662,16 @@ def test_emit_records_the_overhanging_parts_as_edge_connectors():
     conns = raw['edge_connectors']
     assert conns, "ulx3s has overhanging parts and none were recorded"
     for c in conns:
-        assert c['edge'] in ('north', 'south', 'east', 'west')
+        # only an edge part claims an edge; any other overhanging part keeps
+        # its observed band and claims none (d5aede5d)
+        assert c.get('edge', 'north') in ('north', 'south', 'east', 'west'), c
         assert c['overhang_mm']['max'] > 0
+    edged = [c for c in conns if 'edge' in c]
+    assert edged, "no overhanging part on ulx3s claimed its edge"
     r = _graded(raw)
     assert not [v for v in r.violations if v.rule == 'edge_connector']
-    print(f"  PASS: {len(conns)} overhanging parts recorded, none flagged")
+    print(f"  PASS: {len(conns)} overhanging parts recorded ({len(edged)} claiming "
+          f"an edge), none flagged")
 
 
 def test_an_edge_connector_outside_its_declared_overhang_is_caught():

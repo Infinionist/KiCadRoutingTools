@@ -120,9 +120,10 @@ def test_section_1_the_carried_fields_now_measure_something():
             with open(js, encoding='utf-8') as fh:
                 grades[tag] = (s, json.load(fh))
     s, doc = grades['observed']
+    # 7 rules since af45a9e7: the emitted crystal claims arm `proximity`
     assert (s['rules_run'], s['brief_declared'], s['brief_clauses'],
             s['brief_drift'], s['brief_coverage_complete']) == \
-        (6, 16, 19, 0, True), s
+        (7, 16, 19, 0, True), s
     # `complete` no longer stands alone: what was NOT physically checked is
     # named beside it, and the defaults this code chose are listed apart.
     assert s['carried_facts'] == [

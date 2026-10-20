@@ -79,7 +79,9 @@ class APlacedReferenceWithASharedOrigin(unittest.TestCase):
     def test_both_limits_are_derived(self):
         decaps = self.doc.get('decaps') or {}
         self.assertEqual(decaps.get('max_distance_mm'), 1.0925, decaps)
-        self.assertEqual(decaps.get('max_pin_distance_mm'), 6.7132, decaps)
+        # U5 pin 6; connector J3's +3V3 pin (6.713) owns no decap, so it is
+        # not one of the reference's supply pins
+        self.assertEqual(decaps.get('max_pin_distance_mm'), 5.904, decaps)
         withheld = self.doc['context']['budget_withheld']
         self.assertNotIn('decaps.max_distance_mm', withheld)
         cen = self.doc['context']['decap_census']

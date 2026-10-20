@@ -97,12 +97,14 @@ def test_esp_prog_regulator_owns_its_caps():
     assert sorted(c for c, _d in near['U2']) == ['C3'], near
     cen = fp.decap_census(pcb)
     lim, why = fp._decap_derivation(cen)
-    assert why is None and lim == 1.53, (lim, why)
+    # C3 is the board's one tether (C2 and C4 are Y1's load caps, not decaps),
+    # and one sample is a coordinate, not a limit: the derivation withholds
+    assert lim is None and why and 'only 1 tether' in why, (lim, why)
     pcb5 = _parse(LAP5)
     el5 = _elections(pcb5)
     assert el5['C1'] == ('U2', 0.95) and el5['C3'] == ('U2', 0.95), el5
     print(f"  PASS: esp_prog C3 -> U2 1.53, C1 -> U2 5.17 (beyond, "
-          f"{owners['U2']}); limit {lim}; lap 5 C1/C3 -> U2 0.95")
+          f"{owners['U2']}); limit withheld (1 tether); lap 5 C1/C3 -> U2 0.95")
 
 
 def _edited(mutate):
@@ -230,7 +232,7 @@ def test_kit_dev_supervisor_is_the_named_case():
         without = _elections(pcb)
     finally:
         groups.supply_owners = real
-    assert len(with_lv) == 53, len(with_lv)
+    assert len(with_lv) == 38, len(with_lv)    # the decaps by the one rule (f87f1593)
     changed = [c for c in with_lv if with_lv[c] != without[c]]
     assert not changed, changed
     # The shape says LV101 owns caps, not which pins are supply pins: it is
@@ -242,7 +244,7 @@ def test_kit_dev_supervisor_is_the_named_case():
     assert [(p.pad_number, n) for p, n in rec['pins']] == [('2', '+3.3V')], \
         rec['pins']
     print("  PASS: kit-dev LV101 (DS1818) admitted by the 3-pad shape; "
-          "0 of 53 elections change; its supply pin is +3.3V (pad 2) by "
+          "0 of 38 elections change; its supply pin is +3.3V (pad 2) by "
           "the rail-net channel, not RST")
 
 
