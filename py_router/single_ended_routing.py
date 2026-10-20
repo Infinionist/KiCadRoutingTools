@@ -5767,6 +5767,40 @@ def _terminal_copper_on_layer(pcb_data, net_id, x, y, layer) -> bool:
     return False
 
 
+def _bridge_inside_own_through_via(pcb_data, net_id, config, layer, a, b) -> bool:
+    """True when a terminal bridge a->b would be a track on `layer`, a layer
+    `config` forbids track on, and both ends lie in the copper of ONE through
+    via of this net (#1294).
+
+    The route stands on a forbidden layer only at a barrel, and a one-cell
+    path does so with no copper of its own: the source island and the
+    target share that cell, both offered on every layer because a via spans
+    every layer (glasgow_revC's plane taps: the via a pad-via rescue just
+    dropped in U4.1, and the target pad that via sits in; C57.2, D21.5,
+    D21.10, D23.10 and U30.D6 alike). Each bridge was then a 50-100 um track
+    on the plane layer, inside the via. A through via's disc is on every
+    copper layer, so it already overlaps the copper at both ends wherever
+    that copper is, and the bridge joins nothing it does not. A blind or
+    micro via, or an end outside the disc, keeps its bridge."""
+    if pcb_data is None or layer not in config.layers \
+            or layer in config.routable_layers():
+        return False
+    from geometry_utils import via_on_layer
+    tol = 1e-6
+    for v in pcb_data.vias:
+        if v.net_id != net_id:
+            continue
+        radius = (getattr(v, 'size', 0) or 0) / 2.0
+        if radius <= 0:
+            continue
+        if (math.hypot(a[0] - v.x, a[1] - v.y) > radius + tol
+                or math.hypot(b[0] - v.x, b[1] - v.y) > radius + tol):
+            continue
+        if all(via_on_layer(v, name) for name in config.layers):
+            return True
+    return False
+
+
 def _trim_after_fill_via(path, coord, layer_names, pcb_data, net_id):
     """#562 barrel-in-fill completion (the U2-class tail trim).
 
@@ -5940,7 +5974,10 @@ def _path_to_segments_vias(
         if ((abs(orig_x - first_grid_x) > 0.001 or abs(orig_y - first_grid_y) > 0.001)
                 and (orig_layer == path_start_layer or pcb_data is None
                      or _terminal_copper_on_layer(pcb_data, net_id, orig_x, orig_y,
-                                                  path_start_layer))):
+                                                  path_start_layer))
+                and not _bridge_inside_own_through_via(
+                    pcb_data, net_id, config, path_start_layer,
+                    (orig_x, orig_y), (first_grid_x, first_grid_y))):
             seg = Segment(
                 start_x=orig_x, start_y=orig_y,
                 end_x=first_grid_x, end_y=first_grid_y,
@@ -6018,7 +6055,10 @@ def _path_to_segments_vias(
         if ((abs(orig_x - last_grid_x) > 0.001 or abs(orig_y - last_grid_y) > 0.001)
                 and (orig_layer == path_end_layer or pcb_data is None
                      or _terminal_copper_on_layer(pcb_data, net_id, orig_x, orig_y,
-                                                  path_end_layer))):
+                                                  path_end_layer))
+                and not _bridge_inside_own_through_via(
+                    pcb_data, net_id, config, path_end_layer,
+                    (last_grid_x, last_grid_y), (orig_x, orig_y))):
             seg = Segment(
                 start_x=last_grid_x, start_y=last_grid_y,
                 end_x=orig_x, end_y=orig_y,
