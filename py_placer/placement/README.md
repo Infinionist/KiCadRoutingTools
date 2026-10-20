@@ -344,6 +344,45 @@ of it; `check_floorplan --intent` grades all of it.
 | `arrays[]` | not read | yes (`array_formation`, `array_conflict`) |
 | `keep_away[]` | not read | yes (pad edge to pad edge, WARN unless its severity is raised); `route.py` reads the design brief's `keep_away` itself |
 | `replicate[]` | not read (`place_pose replicate --intent` applies it) | yes |
+| `templates[]` | applied and priced: each member seated at its template pose round its chip at the start, carried with every move of the chip, its drift priced (`--template-weight`, default 100 per mm); it joins the chip's group and is not priced as a decap | yes (`template`, WARN) |
+
+## Datasheet layouts: templates
+
+A switching regulator's datasheet draws where its support parts go: the
+input caps across VIN and ground, the inductor on the switch pin, the boot
+cap across BOOT and SW, the feedback divider at FB. The router cannot see
+whether a placement follows that drawing, so a buck can route clean and
+still work badly. A template holds the drawing: each support part's pose in
+the chip's own frame (`templates.py`), declared in the intent's
+`templates[]` ([docs/floorplan-intent.md](../../docs/floorplan-intent.md)).
+
+The poses are fitted to the board's own footprints, not copied from the
+drawing, because a datasheet packs its parts tighter than a board's
+courtyards allow. `py_tools/fit_template.py` takes a sketch -- the members
+in the drawing's order, nearest the chip first, each with the pins it serves
+and the side of the chip it sits on -- and seats each member in turn as close
+to its pins as the courtyards already seated allow, kept the board's
+clearance apart (the seat gate's own rule, so a member at its template pose
+is legal), at the quarter turn that brings its pads closest:
+
+```bash
+python3 -X utf8 py_tools/fit_template.py BOARD --pins U2      # the pins, to match the drawing
+python3 -X utf8 py_tools/fit_template.py BOARD --sketch sketch.json --render u2.png \
+    --intent intent.json --write-intent intent.json
+```
+
+`place_simple` seats each member at its template pose when every start is
+laid out, carries the members rigidly with every move of the chip, sends a
+member's `jump` back to its pose, and prices each member's mean pad distance
+from it. On fusb302_pd_dev (an LMR36006 buck, its datasheet's Figure 57)
+the members ended within 0.5 mm of their poses on 142 of 144 member-seeds,
+the inductor 0.7 mm from the switch pin on average against 3.7 mm without the
+template. On argus (two TPS54226) and bread_dcmotor (an AP63205) the members'
+pad-edge gaps to the pins they serve fell from 4-33 mm to 1.7-2.4 mm. The
+routing was unchanged on all three: no broken or unrouted net was gained or
+lost, and the vias differed by less than the seed-to-seed spread. The
+`plan-pcb-placement` skill's §3.5 is how an agent goes from the datasheet to
+the sketch.
 
 ## Moving parts by hand: place_pose
 
@@ -441,6 +480,7 @@ after a QFN fanout, as tigard's does. See
 | `grouping.py` | The groups file: schema, rails, cohesion and decap checks, folding claims into groups (`check_groups.py`) |
 | `crystals.py` | Crystal claims: each passive crystal at its IC's oscillator pins (link by link through a series resistor), each load cap at its crystal |
 | `quench.py` | `QuenchState`: the parts, their poses and geometry at every quarter turn, the board, the intent's keep-outs and zones, the seat gate (`candidate_valid`) and `wire_metrics` (length, crossings, hpwl) |
+| `templates.py` | Datasheet layout templates: the intent rows' validation, a member's pose for its chip's pose, its drift, the fit of a sketch to the board's footprints, the pin table and the render (`py_tools/fit_template.py`) |
 | `seeder.py` | The seat predicate `pose_ok`, the wiring target, the fixed-pose checks and the `(locked yes)` stamps |
 | `legality.py` | The legality every tool shares: board side, Edge.Cuts containment, pad and drill legality, courtyards, the graders |
 | `body.py` | A footprint's body: courtyard, else fab, else silk, else the pad box |
@@ -499,41 +539,32 @@ contract.
 
 ## TODO
 
-- **Datasheet layouts.** A switching regulator, an LDO, a crystal oscillator
-  or an RF front end comes with a recommended layout in its datasheet: where
-  each support part sits relative to the chip, how the copper between them
-  runs, and the rules behind both. For a buck, those are an input cap across
-  each VIN and ground pin pair, the inductor at the switch pin with the switch
-  node kept small, the boot cap across BOOT and SW, the feedback divider at FB
-  and away from the switch node, and the output caps' ground next to the input
-  caps'. The placer knows only the decap part of that, and the router none of
-  it. The step to try:
-  1. AI reads the part's datasheet (its layout guidelines and example layout)
-     and derives the arrangement as a template (each support part's offset and
-     angle from the chip, and the pins it serves) plus the placement and
-     routing rules.
-  2. The parts are seated as the template draws them before the anneal.
-  3. Strong cohesion holds them there: a chip's move carries its template's
-     parts, the way it carries its decaps and claims today, and a move that
-     breaks the arrangement pays heavily.
-  4. Maybe cost terms from the rules too, such as switch-node length and
-     input-loop area, which `check_floorplan` would also grade, since routing
-     cannot see them.
-  5. The router follows the datasheet's routing rules for those parts and the
-     area they cover: the input loop short, wide and on one layer, for low
-     inductance; the switch node's copper small; the feedback trace kept away
-     from the switch node; a ground via beside each cap's ground pad; thermal
-     vias under the exposed pad. Some rules compile into what the router
-     already reads: a `keep_away` rule in the design brief, or per-net widths
-     through `--power-nets` / `--power-nets-widths`. Loop inductance and
-     copper area would be new router costs, graded on the routed board.
+- **Datasheet layouts: the rules.** A template (above) holds where a
+  converter's support parts sit. The datasheet's rules behind that layout
+  are still unused:
+  1. Cost terms from the rules, such as switch-node length and input-loop
+     area, which `check_floorplan` would also grade, since routing cannot see
+     them.
+  2. The router follows the datasheet's routing rules for those parts and the
+     area they cover:
+     - the input loop short, wide and on one layer, for low inductance;
+     - the switch node's copper small;
+     - the feedback trace kept away from the switch node;
+     - a ground via beside each cap's ground pad, and thermal vias under the
+       exposed pad.
 
-  On fusb302_pd_dev the human copied the LMR36006 datasheet's example layout
-  part for part. Grouped seed 5 put the inductor 6.1 mm from the switch pin
-  (human 0.8), the boot cap 3.3 mm from its pin (0.5), the feedback divider
-  3.5-3.9 mm from FB (1.7) and one output cap 10 mm from the inductor (2.0),
-  and still routed with 0 blocking. 150 of the 478 corpus boards carry a
-  regulator with a switch pin.
+     Some rules compile into what the router already reads: a `keep_away`
+     rule in the design brief, or per-net widths through `--power-nets` /
+     `--power-nets-widths`. Loop inductance and copper area would be new
+     router costs, graded on the routed board.
+- **Custom pads in placement.** A custom pad whose anchor sits at a corner of
+  its copper is modelled as a box centred on the anchor
+  (`kicad_parser._custom_pad_board_extent`), twice the copper's size: bitaxe's
+  CSD17311Q5 drain pad is 10.0 x 9.1 mm against 5.0 x 4.6 mm of copper.
+  Routing reads the real outline, but placement prices pad clearance on that
+  box, and seats a part with no courtyard by it. A box round the copper's
+  own extent, on both parse paths, would let a template or a placement put
+  parts beside such a FET.
 - **Shield cans.** A can is neither a solid body nor free space: parts sit
   under it, inside its fence, and a net reaches them only through the few
   openings the fence leaves (gaps in the wall, or a via to an inner layer).

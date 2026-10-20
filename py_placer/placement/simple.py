@@ -13,6 +13,10 @@ this cost by simulated annealing; `place_simple.py` is the CLI.
            `max_mm`, pad edge to its partner pad as `check_floorplan` grades
            it (`claim_over`: a crystal leg past 8.1 mm of its pin, a load cap
            past 2.2 mm of its crystal)
+         + template_weight x each datasheet-template member's mean pad
+           distance from where its template puts it for its chip's live pose
+           (`placement.templates`: the members are seated there before the
+           anneal and carried with every move of the chip)
          + decap_weight x each decap's distance to the supply-pin site it
            is matched to: the decaps of one rail and one set of pins (its own
            group's IC's, any IC's when its group has none) are matched to
@@ -376,7 +380,8 @@ class Model:
                  ground_nets=(), ground_weight: float = 0.0, pad_weight: float = 0.0,
                  hints: Sequence[Dict] = (), halo_coef: float = 0.25,
                  halo_weight: float = 10.0, claim_limits: Sequence = (),
-                 claim_limit_weight: float = 0.0):
+                 claim_limit_weight: float = 0.0, templates: Sequence = (),
+                 template_weight: float = 0.0):
         self.state, self.pcb = state, pcb
         self.halo_coef, self.halo_weight = halo_coef, halo_weight
         self.hints = [h for h in hints if h['weight'] > 0]
@@ -407,6 +412,15 @@ class Model:
         self._cmax = ({id(c): float(m) for c, m in zip(claims, claim_limits) if m is not None}
                       if claim_limit_weight > 0 else {})
         self._phx: Dict = {}
+        # datasheet templates, one entry per member: (anchor, member row
+        # {ref, at, rot}) -- `placement.templates`
+        self.tw = template_weight
+        self.tmpl = [(t['anchor'], m) for t in templates for m in t['members']
+                     if t['anchor'] in state.parts and m['ref'] in state.parts]
+        self._tmpl_member = {m['ref']: i for i, (_a, m) in enumerate(self.tmpl)}
+        self._tmpl_anchor: Dict[str, List[int]] = {}
+        for i, (a, _m) in enumerate(self.tmpl):
+            self._tmpl_anchor.setdefault(a, []).append(i)
         self.decaps = decaps            # [(cap ref, rail net)]
         self.supply = supply            # rail net -> [(ic ref, pad number)]
         self.decap_pins = decap_pins    # cap -> the supply pins it serves
@@ -594,6 +608,31 @@ class Model:
                 for a in self._pad_rects(subj, spad):
                     over += max(0.0, min(rect_gap(a, b) for b in P) - m)
         return over
+
+    # -- datasheet templates --------------------------------------------------
+    def template_target(self, i):
+        """Template member `i`'s pose for its anchor's live pose."""
+        from .templates import member_target
+        a, m = self.tmpl[i]
+        A = self.state.parts[a]
+        return member_target((A.x, A.y, A.rot), m)
+
+    def template_cost(self, i):
+        """Member `i`'s mean pad distance (mm) from its template position."""
+        from .templates import pad_deviation
+        _a, m = self.tmpl[i]
+        P = self.state.parts[m['ref']]
+        return pad_deviation(P, (P.x, P.y, P.rot), self.template_target(i))[0]
+
+    def template_members(self, ref):
+        """The members of the template `ref` anchors (none for most parts)."""
+        return [self.tmpl[i][1]['ref'] for i in self._tmpl_anchor.get(ref, ())]
+
+    def template_pose(self, ref):
+        """`ref`'s template pose for its anchor's live pose, or None when it
+        is no template's member."""
+        i = self._tmpl_member.get(ref)
+        return None if i is None else self.template_target(i)
 
     def claims_broken(self):
         """How many claims the committed poses put past their limit."""
@@ -1227,6 +1266,7 @@ class Model:
                 allE.append(E)
         claims = sum(self.claim_cost(c) for c in self.claims)
         cover = sum(self.claim_over(c) for c in self.claims)
+        tmpl = sum(self.template_cost(i) for i in range(len(self.tmpl)))
         dec = sum(self.cluster_cost(k) for k in range(len(self.clusters)))
         per_group = {name: self.group_cost(m) for name, m in self.groups}
         grp = sum(per_group.values())
@@ -1242,10 +1282,10 @@ class Model:
                 'groups': grp, 'per_group': per_group, 'hints': hint, 'per_hint': per_hint,
                 'halo': halo, 'congestion': cong, 'pad_hits': pads, 'decap_limits': lim,
                 'decap_broken': self.limits_broken(), 'claim_limits': cover,
-                'claim_broken': self.claims_broken(),
+                'claim_broken': self.claims_broken(), 'template': tmpl,
                 'cost': (wire + self.cw * cross + self.kw * claims + self.dw * dec
                          + self.gw * grp + hint + halo + self.qw * cong + self.pw_pad * pads
-                         + self._lw * lim + self.klw * cover)}
+                         + self._lw * lim + self.klw * cover + self.tw * tmpl)}
 
     # -- the intent's decap limits ---------------------------------------------
     # Each term is a MINIMUM over pairs, as the grade measures it: a supply
@@ -1689,6 +1729,10 @@ class Model:
         for h in self.hints:
             for r in set(h['a']) | set(h['b'] or ()):
                 self._hints_by.setdefault(r, []).append(h)
+        self._tmpl_by: Dict[str, List[int]] = {}
+        for i, (a, m) in enumerate(self.tmpl):
+            for r in (a, m['ref']):
+                self._tmpl_by.setdefault(r, []).append(i)
         self._synced = True
         self._rc = {}
         self._build_breakdowns()
@@ -1713,6 +1757,7 @@ class Model:
         self._gc = {name: self.group_cost(m) for name, m in self.groups}
         self._clc = {id(c): self.claim_cost(c) for c in self.claims}
         self._clo = {id(c): self.claim_over(c) for c in self.claims}
+        self._tpc = {i: self.template_cost(i) for i in range(len(self.tmpl))}
         self._dcc = {k: self.cluster_cost(k) for k in range(len(self.clusters))}
         self._hw = {h['key']: self._hint_full(h) for h in self.hints}
         self._hc = {h['key']: self._hint_value(h, self._hw[h['key']][0]) for h in self.hints}
@@ -1870,6 +1915,7 @@ class Model:
         self._gc.update(pend['groups'])
         self._clc.update(pend['claims'])
         self._clo.update(pend['claim_over'])
+        self._tpc.update(pend['tmpl'])
         self._dcc.update(pend['decaps'])
         self._hc.update(pend['hints'])
         self._hw.update(pend['hint_w'])
@@ -1906,7 +1952,8 @@ class Model:
         gr = list({name: m for r in refs for name, m in self._groups_by.get(r, ())}.values())
         hs = list({h['key']: h for r in refs for h in self._hints_by.get(r, ())}.values())
         ls = sorted({i for r in refs for i in self._lof.get(r, ())}) if self._lim is not None else []
-        return nets, cl, dc, gr, hs, ls
+        ts = sorted({i for r in refs for i in self._tmpl_by.get(r, ())})
+        return nets, cl, dc, gr, hs, ls, ts
 
     def local(self, refs, touched=None, reprice=True):
         """The part of the cost `refs` can change. `reprice` False: the
@@ -1914,7 +1961,7 @@ class Model:
         and the cached trees -- a move's "before". True: re-priced at the
         live poses against the committed state near them, its breakdown
         held as pending for `commit` -- a move's "after"."""
-        nets, cl, dc, gr, hs, ls = touched or self.touched(refs)
+        nets, cl, dc, gr, hs, ls, ts = touched or self.touched(refs)
         R = sorted(refs)
         T = [n for n in nets if n in self.signal]
         if not reprice:
@@ -1941,9 +1988,11 @@ class Model:
             grp = sum(self._gc[name] for name in self._group_names(gr))
             hint = sum(self._hc[h['key']] for h in hs)
             lim = sum(self._over_limit(i, self._lval[i]) for i in ls)
+            tmpl = sum(self._tpc[i] for i in ts)
             return (wire + self.cw * cross + self.kw * claims + self.dw * dec
                     + self.gw * grp + hint + halo + self.qw * self.congestion()
-                    + self.pw_pad * pads + self._lw * lim + self.klw * cover)
+                    + self.pw_pad * pads + self._lw * lim + self.klw * cover
+                    + self.tw * tmpl)
         ccl = {id(c): self.claim_cost(c) for c in cl}
         cco = {id(c): self.claim_over(c) for c in cl}
         cdc = {k: self.cluster_cost(k) for k in dc}
@@ -1959,7 +2008,9 @@ class Model:
             else:
                 self._cong_price(refs)
         wire = sum(self.wire_weight(n) * self.net_len[n] for n in nets)
-        pend = {'R': R, 'T': T, 'claims': ccl, 'claim_over': cco, 'decaps': cdc}
+        ctp = {i: self.template_cost(i) for i in ts}
+        pend = {'R': R, 'T': T, 'claims': ccl, 'claim_over': cco, 'decaps': cdc,
+                'tmpl': ctp}
         cross, pend['cross'] = self._local_crossings_bd(T)
         groups = {name: self.group_cost(m) for name, m in zip(self._group_names(gr), gr)}
         pend['groups'] = groups
@@ -1982,7 +2033,8 @@ class Model:
         return (wire + self.cw * cross + self.kw * claims + self.dw * dec
                 + self.gw * sum(groups.values()) + sum(pend['hints'].values())
                 + sum(pend['halo'].values()) + self.qw * self.congestion()
-                + self.pw_pad * pads + self._lw * lim + self.klw * cover)
+                + self.pw_pad * pads + self._lw * lim + self.klw * cover
+                + self.tw * sum(ctp.values()))
 
     def _group_names(self, gr):
         names = {id(m): name for name, m in self.groups}
@@ -2111,6 +2163,8 @@ def blame(model) -> Dict[str, Dict[str, float]]:
                 out[r]['cross'] += model.cw / 4.0
     for c in model.claims:
         out[c[0]]['claims'] += model.kw * model.claim_cost(c) + model.klw * model.claim_over(c)
+    for i, (_a, m) in enumerate(model.tmpl):      # a template member's drift, as a claim
+        out[m['ref']]['claims'] += model.tw * model.template_cost(i)
     for cap, n in model.decaps:
         out[cap]['decaps'] += model.dw * model.decap_cost(cap, n)
     for _name, members in model.groups:

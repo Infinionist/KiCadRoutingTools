@@ -134,7 +134,9 @@ KEY_SETS = {
         # #1253: two net groups apart, in route.py's rule syntax.
         'keep_away',
         # #1211: sibling sheet instances laid out as copies of one.
-        'replicate'},
+        'replicate',
+        # a chip's datasheet layout, seated and carried by place_simple.
+        'templates'},
     '_ENVELOPE_KEYS': {'rect', 'tolerance_mm'},
     '_DEFAULTS_KEYS': {'zone_tolerance_mm'},
     '_BLOCK_KEYS': {'name', 'group', 'refs', 'zone', 'side', 'exclusive',
@@ -368,6 +370,12 @@ def test_an_intent_using_every_known_key_loads():
                        'search_mm': 2.0, 'tolerance_mm': 0.1, 'why': 'w',
                        'note': 'n', 'source': 's', 'context': {'why': 'w'}},
                       {'from': 'CH1', 'to': ['CH4'], 'skip': ['R1']}],
+        # A chip's datasheet layout: each member's pose in the chip's frame.
+        'templates': [{'anchor': 'U1', 'source': 's', 'note': 'n', 'why': 'w',
+                       'tolerance_mm': 0.3, 'context': {'why': 'w'},
+                       'members': [{'ref': 'C1', 'at': [1.5, 0.0], 'rot': 90,
+                                    'pads': {'C1': ['1'], 'U1': ['3']}, 'note': 'n'}],
+                       'fitted': {'legs_gap_mm': {'C1': 0.2}, 'gap_mm': 0.15}}],
     }
     # Every key of every set must appear above, or this proves less than it
     # claims -- the point is coverage of the vocabulary, not of a sample.
@@ -690,7 +698,8 @@ def test_severity_keys_are_checked_against_the_rule_names():
                                         'keep_away_unresolved',
                                         # #1211: a copy the board cannot
                                         # resolve
-                                        'replicate_unresolved'}
+                                        'replicate_unresolved',
+                                        'template_unresolved'}
     assert _SEVERITY_KEYS == expected, sorted(_SEVERITY_KEYS ^ expected)
     for name in sorted(expected):
         # Two names accept one direction only, and say so at load:

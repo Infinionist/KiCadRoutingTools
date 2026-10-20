@@ -371,13 +371,15 @@ class Annealer:
 
     def _carry(self, new):
         """One part's move `new` with the caps that hold its decap limits
-        (`Model.tethered`) and the parts that hold their claim limits at it
+        (`Model.tethered`), the parts that hold their claim limits at it
         (`Model.claim_tethered`: a crystal at its IC, a load cap at its
-        crystal) moved as one with it: each at its offset from the part,
-        turned with it (`simple.follow`)."""
+        crystal) and the members of the datasheet template it anchors
+        (`Model.template_members`, always) moved as one with it: each at its
+        offset from the part, turned with it (`simple.follow`)."""
         (r, pose), = new.items()
         sats = [c for c in dict.fromkeys(self.model.tethered(r, pose)
-                                          + self.model.claim_tethered(r, pose))
+                                          + self.model.claim_tethered(r, pose)
+                                          + self.model.template_members(r))
                 if c in self.movset and c != r]
         if not sats:
             return new
@@ -410,6 +412,9 @@ class Annealer:
             return {r: self.pose(o), o: self.pose(r)}
         if kind == 'jump':
             r = rng.choice(self.mov)
+            home = self.model.template_pose(r)
+            if home is not None:        # a template member: back to its pose
+                return {r: home}
             tx, ty = target(self.model, r, self.everyone)
             p = st.parts[r]
             rot = rng.choice(ROTS)
@@ -884,6 +889,15 @@ def scatter(model, movable: List[str], seed: int = 0, clustered: bool = False,
                 c = p.rect()
                 x, y = gx + rng.uniform(-half, half), gy + rng.uniform(-half, half)
                 _place(st, r, p.x + x - (c[0] + c[2]) / 2.0, p.y + y - (c[1] + c[3]) / 2.0, p.rot)
+    # each datasheet-template member at its template pose round its anchor's
+    # start: the arrangement as drawn, for the anneal to keep
+    mov = set(movable)
+    for i, (_a, m) in enumerate(model.tmpl):
+        r = m['ref']
+        if r in mov:
+            x, y, rot = model.template_target(i)
+            st.parts[r].ensure_rotation(rot)
+            _place(st, r, x, y, rot)
     model.reprice_all()
 
 

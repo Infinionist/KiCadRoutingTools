@@ -62,9 +62,10 @@ CLAUDE_ALLOWED_TOOLS = "Read,Glob,Grep,Bash,Agent,Task,WebSearch,WebFetch"
 #: sentence every run is told about it (stated once, as ANALYSIS_CONSTRAINT is).
 DATASHEET_DIR_ENV = "KRT_DATASHEET_DIR"
 DATASHEET_SENTENCE = (
-    "Read datasheets with WebSearch and WebFetch; if you must save a "
-    "downloaded file, save it only under $KRT_DATASHEET_DIR, which is deleted "
-    "when this run ends."
+    "Read datasheets with WebSearch and WebFetch; a PDF datasheet reads "
+    "better downloaded (curl) and opened with the Read tool, a few `pages` at "
+    "a time, figures included. If you must save a downloaded file, save it "
+    "only under $KRT_DATASHEET_DIR, which is deleted when this run ends."
 )
 
 

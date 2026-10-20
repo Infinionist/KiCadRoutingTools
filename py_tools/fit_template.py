@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""Fit a datasheet layout sketch to a board's footprints: a `templates[]` row.
+
+    fit_template.py BOARD.kicad_pcb --pins U2
+    fit_template.py BOARD.kicad_pcb --sketch SKETCH.json [-o ROW.json] [--render ROW.png]
+                    [--intent INTENT.json --write-intent OUT.json]
+
+`--pins REF` prints the chip's pads as the sketch needs them: number, pin
+function, position in the footprint's own frame and the side of the
+footprint it is on, net, and the other parts on that net with their values
+and pads -- what matching the datasheet's drawing to the board takes.
+
+SKETCH names the chip (`anchor`) and its support parts in the datasheet
+drawing's order, nearest the chip first, each with `pads`: its own pads, and
+per partner (the chip, or a member listed earlier) the partner's pads it
+belongs beside -- matched by net, so their order does not matter -- as an
+intent `proximity[]` row's `pads`. Optionally a member gives the `side` of the
+chip it sits on (`-x`, `+x`, `-y`, `+y` in the footprint's own frame: its
+centre beyond that courtyard edge; `+x-y` for a corner, beyond both) or its
+quarter turn (`rot`, relative to the chip):
+
+    {"anchor": "U2", "source": "LMR36006 SNVSB48C Figure 57",
+     "members": [
+       {"ref": "C2", "pads": {"C2": ["1", "2"], "U2": ["2", "1"]}, "side": "+y"},
+       {"ref": "L1", "pads": {"L1": ["1"], "U2": ["12"]}, "side": "-x"},
+       {"ref": "C7", "pads": {"C7": ["1"], "L1": ["2"]}}]}
+
+Each member is seated as close to its partner pads as the courtyards already
+seated allow -- kept the board's clearance apart, the seat gate's courtyard
+rule (`gap_mm` in the sketch for another) -- within `--reach` mm (4) of them,
+at the quarter turn that brings its pads closest (`placement.templates.fit`).
+A member that cannot be seated stops the fit with the reason (its side, or
+the members in its way, named), and `--render` then draws the members seated
+before it. A part with no courtyard is fitted as the box round its pads,
+and the run names it: check that box against the part's real body. The row gives each
+member's pose in the chip's frame, the chip at the origin unturned, and the
+pad-edge gaps the fit reached (`fitted.legs_gap_mm`). `--render` draws the
+fitted template in the chip's frame -- courtyards, pads, the chip's pad
+numbers, each member's legs -- to set beside the datasheet's drawing.
+`--write-intent`
+writes INTENT with the row added to its `templates[]` (a row for the same
+anchor is replaced, so a re-fit may write over its own input) and
+`min_reader` raised to the version that reads it.
+
+Exit 0 fitted, 2 an unreadable board, sketch or intent, or a sketch the
+board cannot fit.
+"""
+#: #937 registry: which door(s) show this tool, and whether it changes
+#: the board. Read by krt_registry.py -- by AST, never imported.
+KRT_TOOL = {'scope': ['placement'], 'kind': 'instrument'}
+
+import argparse
+import json
+import os
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for _d in ('py_router', 'py_placer'):
+    sys.path.insert(0, os.path.join(ROOT, _d))
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
+    ap.add_argument('board')
+    ap.add_argument('--pins', metavar='REF', help="print REF's pads for matching, and exit")
+    ap.add_argument('--sketch', help='the sketch JSON')
+    ap.add_argument('--render', metavar='PNG', help='draw the fitted template here')
+    ap.add_argument('--reach', type=float, default=4.0, metavar='MM',
+                    help='how far from its partner pads a member is sought (default 4)')
+    ap.add_argument('-o', '--out', help='write the fitted row here')
+    ap.add_argument('--intent', help='an intent to add the row to (with --write-intent)')
+    ap.add_argument('--write-intent', metavar='OUT', help='write INTENT plus the row here')
+    a = ap.parse_args(argv)
+    if bool(a.intent) != bool(a.write_intent):
+        ap.error('--intent and --write-intent go together')
+    if not a.pins and not a.sketch:
+        ap.error('give --pins REF or --sketch SKETCH.json')
+    import pose_score
+    from kicad_parser import parse_kicad_pcb
+    from list_nets import board_floor_knobs
+    from placement import floorplan
+    from placement.parser import extract_courtyard_sides
+    from placement.templates import FitError, TemplateError, fit, pin_table, render
+    if a.pins:
+        try:
+            pcb = parse_kicad_pcb(a.board)
+            rows = pin_table(pcb, a.pins)
+        except (OSError, ValueError, KeyError) as ex:
+            print(f"fit_template: {ex}", file=sys.stderr)
+            return 2
+        fp = pcb.footprints[a.pins]
+        print(f"{a.pins} {fp.value} {fp.footprint_name} on {fp.layer} at rotation "
+              f"{fp.rotation:g} on this board; positions in its own frame (rotation 0):")
+        for r in rows:
+            on = (f"rail, {r['rail']} parts" if 'rail' in r else
+                  ' '.join(f"{q['ref']}.{'/'.join(q['pads'])}[{q['value']}]" for q in r['parts']))
+            print(f"  pad {r['pad']:>4} {r['function'][:10]:10s} ({r['at'][0]:+7.3f}, "
+                  f"{r['at'][1]:+7.3f}) {r['side']:8s} {r['net'][:28]:28s} {on}")
+        print('JSON_SUMMARY: ' + json.dumps({'ref': a.pins, 'pads': rows}))
+        return 0
+    try:
+        sketch = json.load(open(a.sketch, encoding='utf-8'))
+        pcb = parse_kicad_pcb(a.board)
+        clearance, edge, _ = board_floor_knobs(a.board)
+        state = pose_score.make_state(pcb, a.board, clearance=clearance,
+                                      board_edge_clearance=edge)
+        names = [sketch.get('anchor')] + [m.get('ref') for m in sketch.get('members') or ()]
+        crt = extract_courtyard_sides(a.board)
+        boxed = [r for r in names if r in pcb.footprints and r not in crt]
+        if boxed:
+            print(f"  NOTE: no courtyard on {', '.join(boxed)}: each is fitted (and placed) as "
+                  f"the box round its pads -- check that box against the part's real body in "
+                  f"the render", flush=True)
+        row = fit(pcb, state, sketch, reach=a.reach)
+    except FitError as ex:
+        print(f"fit_template: {ex}", file=sys.stderr)
+        for m in ex.partial['members']:
+            print(f"  seated {m['ref']:6s} at ({m['at'][0]:+7.3f}, {m['at'][1]:+7.3f}) "
+                  f"rot {m['rot']:5.1f}", file=sys.stderr)
+        if a.render:
+            render(pcb, state, ex.partial, a.render, boxed=boxed)
+            print(f"  drew the members seated so far: {a.render}", file=sys.stderr)
+        return 2
+    except (OSError, ValueError, TemplateError) as ex:
+        print(f"fit_template: {ex}", file=sys.stderr)
+        return 2
+    for m in row['members']:
+        print(f"  {m['ref']:6s} at ({m['at'][0]:+7.3f}, {m['at'][1]:+7.3f}) rot {m['rot']:5.1f}"
+              f"  legs {row['fitted']['legs_gap_mm'][m['ref']]:.3f} mm")
+    if a.out:
+        with open(a.out, 'w', encoding='utf-8') as fh:
+            json.dump(row, fh, indent=1)
+    if a.render:
+        render(pcb, state, row, a.render, boxed=boxed)
+    if a.write_intent:
+        try:
+            doc = json.load(open(a.intent, encoding='utf-8'))
+        except (OSError, ValueError) as ex:
+            print(f"fit_template: {ex}", file=sys.stderr)
+            return 2
+        rows = [t for t in doc.get('templates') or () if t.get('anchor') != row['anchor']]
+        doc['templates'] = rows + [row]
+        doc['min_reader'] = max(int(doc.get('min_reader') or 0), floorplan.TEMPLATES_READER)
+        with open(a.write_intent, 'w', encoding='utf-8') as fh:
+            json.dump(doc, fh, indent=1)
+        try:
+            floorplan.load_intent(a.write_intent)
+        except ValueError as ex:
+            print(f"fit_template: the written intent does not load: {ex}", file=sys.stderr)
+            return 2
+    print(f"JSON_SUMMARY: {json.dumps({'anchor': row['anchor'], 'members': len(row['members']), 'legs_gap_mm': row['fitted']['legs_gap_mm']})}")
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

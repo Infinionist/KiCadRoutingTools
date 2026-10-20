@@ -164,7 +164,17 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
     # claims: the intent's own, and each crystal at its IC's oscillator pins
     rows, xnotes = claim_rows(pcb, base)
     notes += xnotes
-    doc, folded = fold_followers(doc, rows)
+    # datasheet templates (`placement.templates`): each member joins its
+    # chip's group, as a claimed part joins its partner's
+    from placement.templates import validate as validate_templates
+    tmpls = (list(intent.templates) if intent is not None
+             else validate_templates(base.get('templates')))
+    tmembers = {m['ref'] for t in tmpls for m in t['members']}
+    for t in tmpls:
+        notes.append(f"template {t['anchor']}: {', '.join(m['ref'] for m in t['members'])} "
+                     f"seated as drawn and carried with it")
+    doc, folded = fold_followers(doc, rows + [{'ref': m['ref'], 'near': t['anchor']}
+                                              for t in tmpls for m in t['members']])
     if folded:
         notes.append("in their IC's group: " + ', '.join(
             f"{r} ({a} -> {b})" for r, (a, b) in sorted(folded.items())))
@@ -196,7 +206,7 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
     # (`BoardView.decaps`) -- not a claimed part, and not a cap whose IC is in
     # another group (an RC cap beside its button, not a decap)
     view = BoardView(pcb)
-    exempt = {str(c['ref']) for c in rows} | {
+    exempt = {str(c['ref']) for c in rows} | tmembers | {
         c['cap'] for c in decap_conflicts(doc, view)}
     supply = view.supply_pins()
     # a decap serves its own group's IC when the group has one on its rail:
@@ -234,7 +244,8 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
                   decap_weight=args.decap_weight, group_weight=args.group_weight,
                   hints=hints(doc, state, movable, args),
                   halo_coef=args.halo_coef, halo_weight=args.halo_weight,
-                  claim_limits=limits, claim_limit_weight=args.claim_limit_weight)
+                  claim_limits=limits, claim_limit_weight=args.claim_limit_weight,
+                  templates=tmpls, template_weight=args.template_weight)
     # the unlocked parts the intent declares on an edge, seated there
     model.edge_seats, model.edge_unseated = {}, {}
     if intent is not None:
@@ -262,6 +273,7 @@ def _line(t):
             f"claims {t['claims']:.1f}, "
             + (f"{t['claim_broken']} claim limit(s) broken, " if t.get('claim_broken') else "")
             + f"decaps {t['decaps']:.1f}, "
+            + (f"template {t['template']:.1f} mm, " if t.get('template') else "")
             + (f"{t['decap_broken']} decap limit(s) broken, " if t.get('decap_broken') else "")
             + f"halo {t['halo']:.2f}, "
             f"pad hits {t['pad_hits']:.0f}, congestion {t['congestion']:.2f}, "
@@ -400,6 +412,11 @@ def main(argv=None):
                          "8.1 mm of its IC pin, a load cap past 2.2 mm of its crystal); "
                          "a move of the partner carries the parts holding their limits "
                          "at it (default 10; 0 leaves the limits unpriced)")
+    ap.add_argument('--template-weight', type=float, default=100.0,
+                    help="per mm a datasheet-template member's pads are, on average, from "
+                         "where the intent's `templates[]` puts them for its chip's pose "
+                         "(default 100); the members are seated there before the anneal and "
+                         "carried with every move of the chip")
     ap.add_argument('--decap-weight', type=float, default=2.0,
                     help='per mm of a decap to the supply-pin site it is matched to '
                          '(default 2)')
@@ -669,6 +686,13 @@ def main(argv=None):
     model.reprice_all()
     final = model.total()
     t2 = time.time()
+    # each template member's drift from its template pose, worst pad
+    from placement.templates import pad_deviation
+    drift = []
+    for i, (anc, m) in enumerate(model.tmpl):
+        P = state.parts[m['ref']]
+        _mean, worst = pad_deviation(P, (P.x, P.y, P.rot), model.template_target(i))
+        drift.append({'anchor': anc, 'ref': m['ref'], 'worst_mm': round(worst, 3)})
     illegal = [r for r in movable if not ok(r)] + sorted(refused)
     print(f"place_simple: annealed {res['moves']} moves in {t2 - t1:.1f} s; {_line(final)}")
     if res.get('repaired'):
@@ -677,6 +701,9 @@ def main(argv=None):
         print(f"  NOTE: moved to the nearest legal pose after the anneal: {', '.join(res['reseated'])}")
     if illegal:
         print(f"  WARNING: no legal pose found for: {', '.join(illegal)}")
+    if drift:
+        print("  template drift (worst pad, mm): " + ', '.join(
+            f"{d['ref']} {d['worst_mm']:.2f}" for d in drift))
     placements = [{'reference': r, 'new_x': round(state.parts[r].x, 4),
                    'new_y': round(state.parts[r].y, 4),
                    'new_rotation': state.parts[r].rot % 360.0}
@@ -693,7 +720,7 @@ def main(argv=None):
               'declared': sorted(f['reference'] for f in flips),
               'reseated': res['reseated'], 'repaired': bool(res.get('repaired')),
               'illegal': illegal, 'unseated': model.edge_unseated, 'notes': notes,
-              'groups': model.groups, 'stats': res['stats'],
+              'groups': model.groups, 'stats': res['stats'], 'templates': drift,
               'seconds': {'setup': round(t1 - t0, 1), 'anneal': round(t2 - t1, 1)}}
     if a.json:
         json.dump(report, open(a.json, 'w', encoding='utf-8'), indent=1)

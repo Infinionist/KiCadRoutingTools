@@ -29,6 +29,7 @@ runnable tool in the clone with a one-line purpose.
   [context sheet](#board-context-sheet-board_contextpy) ·
   [route review](#route-review-route_reviewpy) ·
   [seed judge score](#seed-judge-score-quick_scorepy) ·
+  [datasheet template fit](#datasheet-template-fit-fit_templatepy) ·
   [run ledger](#run-ledger-convergepy) ·
   [label tidy](#label-tidy-beautify_labelspy) ·
   [decap clearance repair](#decap-clearance-repair-place_fanout_clearancepy) ·
@@ -857,7 +858,7 @@ python3 -X utf8 py_tools/route_review.py routed.kicad_pcb --top 12 --json review
 What to do about each finding is in
 `.claude/skills/plan-pcb-placement/references/placement-lessons.md`. The
 `/plan-pcb-placement` skill (`.claude/skills/plan-pcb-placement/SKILL.md`,
-§3.6) runs it in `place` mode on the kept seed's fast route
+§3.7) runs it in `place` mode on the kept seed's fast route
 (`route.py --quick 2`) and turns the two-pad parts it lists;
 `render_nets.py` draws a finding's nets beside another routed board's.
 Exit 0 reviewed (findings or not), 2 unreadable input.
@@ -887,6 +888,54 @@ Exit 0 when no net blocks, 4 when some do, 2 when check_connected gave no
 summary.
 Never grade a board to ship with it: route that one in full and run
 `board_score`.
+
+## Datasheet Template Fit (`fit_template.py`)
+
+Turns a chip's datasheet layout into an intent `templates[]` row
+(`placement/templates.py`): each support part's pose in the chip's own
+frame, fitted to this board's footprints. `--pins REF` prints what matching
+the drawing to the board takes: each pad's number, pin function, position and
+side in the footprint's own frame (the outer row or column it lies on;
+`centre` for an exposed pad and each piece of a split one, `inner -x` and so
+on for an inner pad off the middle), net, and the other parts on that net
+with their values and pads.
+
+`--sketch` fits a sketch: the members in the drawing's order, nearest the
+chip first. Each member gives `pads`, its own pads and per partner (the chip,
+or a member listed earlier) the partner's pads it belongs beside, matched by
+net as an intent `proximity[]` row's `pads` are. Optionally it also gives:
+- `side`: its centre beyond that edge of the chip's courtyard (`-x`, `+x`,
+  `-y`, `+y`), or a corner (`+x-y`, beyond both);
+- `rot`: its turn relative to the chip.
+
+Each member is seated in turn within `--reach` mm (4) of its partner pads, as
+close to them as the courtyards already seated allow. They are kept the
+board's clearance apart (the placer's seat rule), at the quarter turn that
+brings the pads closest. A member that cannot be seated stops the fit: it
+names the side, or the members already seated, that stood in the way, prints
+the members seated so far, and `--render` draws them.
+
+`--render` draws the fitted template:
+- courtyards, and every pad with its number;
+- each leg across its pad-edge gap to the nearest partner pad;
+- parts with no courtyard labelled, since each is fitted as the box round its
+  pads, and the run names them.
+
+`--write-intent` adds the row to an intent, replacing one for the same chip,
+and raises its `min_reader` to 13.
+
+```bash
+python3 -X utf8 py_tools/fit_template.py board.kicad_pcb --pins U2
+python3 -X utf8 py_tools/fit_template.py board.kicad_pcb --sketch u2.sketch.json -o u2.row.json \
+    --render u2.png --intent intent.json --write-intent intent.json
+```
+
+`place_simple` seats and carries the template and prices each member's
+drift (`--template-weight`); `check_floorplan` grades it (`template`, a
+WARN). Exit 0 fitted. Exit 2 means one of:
+- an unreadable input;
+- a sketch the board cannot fit: a partner listed after its member, a
+  member on the other face, or no pose within reach.
 
 ## Run Ledger (`converge.py`)
 

@@ -139,7 +139,7 @@ suspect_reason
 
 | object | keys |
 |---|---|
-| top level | `schema`, `kind`, `board`, `units`, `min_reader`, `envelope`, `defaults`, `blocks`, `keepouts`, `edge_connectors`, `decaps`, `must_lock`, `legality_budget`, `health`, `severity`, `overlap_waivers`, `assembly`, `proximity`, `keep_away`, `replicate`, `dispositions`, `arrays`, `fixed_poses`, `context` |
+| top level | `schema`, `kind`, `board`, `units`, `min_reader`, `envelope`, `defaults`, `blocks`, `keepouts`, `edge_connectors`, `decaps`, `must_lock`, `legality_budget`, `health`, `severity`, `overlap_waivers`, `assembly`, `proximity`, `keep_away`, `replicate`, `templates`, `dispositions`, `arrays`, `fixed_poses`, `context` |
 | `envelope` | `rect`, `tolerance_mm` |
 | `defaults` | `zone_tolerance_mm` |
 | `blocks[]` | `name`, `group`, `refs`, `zone`, `side`, `exclusive`, `tolerance_mm`, `rotation`, `rotation_candidates`, `note`, `context`. `rigid` is refused by name: its only reader, the retired quench engine, is gone, and `place_simple` moves each group of the groups file together |
@@ -153,6 +153,7 @@ suspect_reason
 | `proximity[]` | `ref`, `near`, `max_mm`, `basis` (`"pad_edge"` or `"body"`), `pads`, `note`, `context`, and the compiler-written `source` |
 | `keep_away[]` | `rule` (ONE rule in route.py's `--keep-away` syntax, `AGGRESSOR:VICTIM:GAP`), `note`, `context`, and the compiler-written `source` (see "`keep_away[]`" below; needs `min_reader` 10) |
 | `replicate[]` | `from` (a sheet instance: its name or path, as `place_pose replicate --from` takes it), `to` (a list of them), `anchor`, `allow_net_mismatch` (`REF.PAD` entries), `only` or `skip` (refs; not both), `search_mm`, `tolerance_mm`, `why`, `note`, `context`, `source` (see "`replicate[]`" below; needs `min_reader` 11) |
+| `templates[]` | `anchor` (the chip), `members` (each `ref`, `at` [dx, dy] mm and `rot`, a quarter turn, in the chip's own frame; `pads` and `note` as the fit wrote them), `tolerance_mm`, `source`, `note`, `why`, `context`, and the fit-written `fitted` (see "`templates[]`" below; needs `min_reader` 13) |
 | `arrays[]` | `name`, `members` (an ORDERED list of literal refs, at least two), `serves` (a ref, or `"unknown"`), `order` (`"pin"`, `"declared"` or `"unknown"`), `rotation` (degrees, `"shared"` or `"unknown"`), `pitch_mm` (`"auto"` or mm), `axis` (`"auto"`, `"x"` or `"y"`), `allow_mixed`, `why`, `note`, `context`, and the compiler-written `source` (see "Arrays" below; needs `min_reader` 7) |
 | `fixed_poses[]` | `ref`, `x`, `y`, `rot` (degrees or `"unknown"`), `side` (`"F"`, `"B"` or `"unknown"`), `basis` (`"declared"`, `"mechanical"` or `"derived_default"`), `why`, `context`, `accept_courtyard_overlap` (a list of literal refs) (see "Fixed poses" below; needs `min_reader` 7) |
 | `legality_budget` | `overlap_area`, `oob_count`, `oob_amount` (`oob_area` refused — see below) |
@@ -168,11 +169,11 @@ suspect_reason
 its block declares and turns one with candidates only within them, and
 by the grade's `array_conflict`. `place_simple` does not read them.
 
-`severity` keys are checked too. The settable names are the seventeen rules —
+`severity` keys are checked too. The settable names are the eighteen rules —
 `envelope`, `zone_containment`, `zone_side`, `assembly_side`, `zone_exclusive`, `keepout`,
 `edge_connector`, `decap_distance`, `decap_ungraded`, `decap_pin_distance`,
 `proximity`, `keep_away`, `must_lock`, `legality`, `pins_to_edge`,
-`array_formation`, `replicate` — plus the ten
+`array_formation`, `replicate`, `template` — plus the ten
 findings raised outside the rule loop: `intent_zone_outside_envelope`, `intent_zone_overlap`,
 `block_unresolved`, `intent_zone_in_keepout`, `keepout_allow_unresolved`,
 `array_unresolved`, `array_conflict`, `fixed_pose_unresolved`,
@@ -187,9 +188,10 @@ the twelve `plan_check` findings (`plan_zone_exclusive_unsatisfiable`,
 `plan_board_overfull`, `plan_board_crowded`, `plan_fixed_overlap`,
 `plan_fixed_overlap_budget`), `edge_connector_side` (settable to `warn`
 only -- `error` is refused, because the rule is advisory by design),
-plus five more raised BESIDE a rule's own name —
+plus six more raised BESIDE a rule's own name —
 `decap_pin_distance_inferred` and `decap_pin_uncovered`,
-`proximity_unresolved`, `keep_away_unresolved` and `replicate_unresolved`.
+`proximity_unresolved`, `keep_away_unresolved`, `replicate_unresolved` and
+`template_unresolved`.
 One measurement can support several claims, and
 an author must be able to set their severities apart: a pin inferred from a net
 name and a pin the pad declares are not the same evidence, and a proximity
@@ -200,7 +202,8 @@ without demoting the second.
 Every name defaults to **error** except these, which default to **warn**:
 `assembly_side`, `decap_ungraded`, `decap_pin_distance_inferred`,
 `decap_pin_uncovered`, `keep_away` and `keep_away_unresolved`, `replicate`
-and `replicate_unresolved`, `keepout_allow_unresolved`,
+and `replicate_unresolved`, `template` and `template_unresolved`,
+`keepout_allow_unresolved`,
 `intent_zone_overlap`, `fixed_pose_overlap_waived`, `plan_fixed_overlap` and
 the three `plan_*_crowded` findings; `pins_to_edge` and
 `edge_connector_side` are always warn; `mechanical_drift` is warn for a
@@ -214,7 +217,7 @@ demotion that never happens, so it is refused rather than accepted.
 `context` is **deliberately open** — free-form keys, at the top level, on
 `assembly`, and on every entry of `blocks[]`, `keepouts[]`,
 `edge_connectors[]`, `overlap_waivers[]`, `proximity[]`, `keep_away[]`,
-`replicate[]`, `arrays[]` and `fixed_poses[]`. No rule grades it; it is where
+`replicate[]`, `templates[]`, `arrays[]` and `fixed_poses[]`. No rule grades it; it is where
 a run records why a claim is what it is:
 
 ```jsonc
@@ -290,6 +293,8 @@ Each `min_reader` level and the keys it covers:
 | 9 | `assembly.body_edge_mm` |
 | 10 | `keep_away[]` |
 | 11 | `replicate[]` |
+| 12 | a `proximity[]` row whose `context.source` is `placement.crystals` |
+| 13 | `templates[]` |
 
 The emitter and the design-brief compiler stamp the level their output needs.
 
@@ -716,10 +721,10 @@ roster):
 
 1. The rule is dark, meaning the plan does not arm it.
 2. It is not a **policy** rule. `proximity`, `zone_exclusive`,
-   `array_formation`, `keep_away` and `replicate` are policy rules: nothing
-   on the board says which parts belong together, which area is reserved,
-   which parts form one row, which nets are noisy, or which sheet instance
-   the others copy.
+   `array_formation`, `keep_away`, `replicate` and `template` are policy
+   rules: nothing on the board says which parts belong together, which area
+   is reserved, which parts form one row, which nets are noisy, which sheet
+   instance the others copy, or where a chip's datasheet puts its parts.
 3. A **board fact** says the rule applies. The plan's own claims never count
    here.
 4. It is **gating**: its table-default severity is ERROR. An intent can promote
@@ -821,6 +826,7 @@ reading.
 | `decap_ungraded`, `decap_pin_uncovered`, `decap_pin_distance_inferred` | yes | — | `decap_ungraded` and `decap_pin_uncovered` are claims about what the GRADE covers rather than about any pose, and `decap_pin_distance_inferred` is a WARN about a pin inferred from a net name. A cap a `--decaps-from` reference holds leaving the radius is counted by `place_fanout_clearance --intent` as a decap claim made worse when it picks the arm to keep |
 | `legality` | yes | — | a whole-board aggregate against a BUDGET. The anneal keeps only an overlap-free state as its best, and the legality check holds every part clear of its neighbours |
 | `replicate` | yes | — | `place_pose replicate --intent` applies the declaration; an anneal after it may move a copied part, and the grade then reports it |
+| `template` | yes | **seated, carried and priced**: each member starts at its template pose round its chip, moves rigidly with every move of the chip, and its mean pad distance from that pose costs `--template-weight` (default 100) per mm; a member's `jump` goes back to its pose, and a member joins the chip's group and is not priced as a decap | the final legality step can still nudge a member to its nearest legal pose; the grade then reports the drift |
 | `keep_away` | yes | — | grade only; the routers price it once there are tracks |
 | `pins_to_edge` | yes | — | always-WARN advice for a reviewer |
 | `array_formation` | yes | — | graded only. A group in the groups file keeps its parts together, not in a row |
@@ -1018,6 +1024,46 @@ Two things read it:
 
 `place_simple` does not read it: an anneal run after the copy may move a
 copied part, and the grade then reports it.
+
+### `templates[]`: a chip's datasheet layout
+
+```jsonc
+"templates": [{ "anchor": "U2",
+                "source": "TI LMR36006 SNVSB48C, 11.1 and Figure 57",
+                "members": [{ "ref": "L1", "at": [-5.808, 0.0], "rot": 180.0,
+                              "pads": { "L1": ["1"], "U2": ["12"] },
+                              "note": "inductor on SW 12" }, ...],
+                "tolerance_mm": 0.3 }]
+```
+
+A switching regulator's datasheet comes with a recommended layout: where
+each support part sits round the chip and which way it faces.
+A template records that arrangement for one chip on one board, as each
+member's pose (`at`, `rot`) in the chip's own frame: the chip at the origin,
+unturned. Where a datasheet puts the parts is read from the datasheet, not
+the board, so this key is never emitted. `py_tools/fit_template.py` writes
+it from a sketch, the members in the drawing's order with the pins each
+serves, fitting each member to this board's footprints as close to those
+pins as the courtyards allow (`placement.templates.fit`). The skill's §3.5
+says how an agent gets from the datasheet to the sketch.
+
+The loader refuses a member named twice (in one template or across two), a
+member that is a template's anchor, an `at` that is not two numbers and a
+`rot` that is not a quarter turn. Whether the refs exist is the board's
+question (`template_unresolved`).
+
+Two things read it:
+
+- **`place_simple`** seats each member at its template pose when every
+  start is laid out, carries the members rigidly with every move of the
+  chip, and prices each member's drift (see "Which rules the placer can
+  see").
+- **The grade** (`template`, **warn** by default) measures each member's
+  worst pad's distance from where the template puts it for the chip's pose
+  on the board. A template with a member past `tolerance_mm` (default 0.3)
+  or on the other face is one finding naming the worst members; every
+  template prints a line, and `--json` carries the readings as
+  `templates[]`.
 
 ### A through-hole part is in a keep-out from either side
 

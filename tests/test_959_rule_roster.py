@@ -81,6 +81,7 @@ ARM_WITH = {
                                     'order': 'declared'}]},
     # #1211: a declared channel copy arms its grade.
     'replicate': {'replicate': [{'from': 'CH1', 'to': ['CH2']}]},
+    'template': {'templates': [{'anchor': 'U1', 'members': [{'ref': 'C1', 'at': [1.0, 0.0], 'rot': 0}]}]},
 }
 
 

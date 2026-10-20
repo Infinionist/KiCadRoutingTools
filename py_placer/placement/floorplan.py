@@ -183,14 +183,22 @@ EDGE_BAND_SANITY_MM = 5.0
 #: reads the same row as a declared claim at the intent's `proximity`
 #: severity, ERROR by default, so the verdict differs and the rule above
 #: mandates the bump; an intent carrying such rows stamps `min_reader` 12.
-READER_VERSION = 12
+#: 13: `templates[]` -- a chip's support parts held at the poses its
+#: datasheet layout draws (`placement.templates`): `place_simple` seats and
+#: carries them, and the grade's `template` rule (WARN by default) measures
+#: each member's drift. A placement tool acts on it and the grade can be
+#: promoted, so the rule above mandates the bump; an older build refuses the
+#: key by name, and `fit_template.py` stamps `min_reader` 13.
+READER_VERSION = 13
+#: The reader version that first reads `templates[]`.
+TEMPLATES_READER = 13
 
 _TOP_LEVEL_KEYS = {
     'schema', 'kind', 'board', 'units', 'envelope', 'defaults', 'blocks',
     'keepouts', 'edge_connectors', 'decaps', 'must_lock', 'legality_budget',
     'health', 'severity', 'context', 'overlap_waivers', 'min_reader',
     'assembly', 'proximity', 'dispositions', 'arrays', 'fixed_poses',
-    'keep_away', 'replicate',
+    'keep_away', 'replicate', 'templates',
 }
 #: #959 (#997). WRITTEN answers to "why is this not graded", one map per kind
 #: of question: a rule the plan leaves dark, a budget key the emitter withheld,
@@ -519,6 +527,12 @@ class Intent:
     #: by `place_pose replicate --intent`; graded by `replicate`, which the
     #: placer does not read.
     replicate: Tuple[Dict[str, object], ...] = ()
+    #: Datasheet layout templates, `[{anchor, members[{ref, at, rot}],
+    #: tolerance_mm, ...}]` (`placement.templates`). NEVER emitted: where a
+    #: chip's datasheet puts its support parts is read from the datasheet,
+    #: not the board. Seated and carried by `place_simple`; graded by
+    #: `template`.
+    templates: Tuple[Dict[str, object], ...] = ()
 
     def assembly_sides(self) -> str:
         """The declared policy, or 'both' -- which constrains nothing.
@@ -970,6 +984,16 @@ def _replicate_claims(raw: Dict) -> List[Dict]:
                                       f" number of mm, got {v!r}")
         out.append(dict(r, to=to))
     return out
+
+
+def _template_claims(raw: Dict) -> List[Dict]:
+    """Validate `templates[]` AT LOAD (`placement.templates.validate`):
+    `place_simple` acts on it and never calls `validate_intent`."""
+    from .templates import TemplateError, validate
+    try:
+        return validate(raw.get('templates'))
+    except TemplateError as ex:
+        raise IntentError(str(ex)) from ex
 
 
 def _along_edge_claim(c: Dict, i: int) -> None:
@@ -1685,6 +1709,7 @@ def intent_from_dict(raw: Dict, source_path: str = '') -> Intent:
         fixed_poses=tuple(fixed_poses),
         keep_away=tuple(_keep_away_claims(raw)),
         replicate=tuple(_replicate_claims(raw)),
+        templates=tuple(_template_claims(raw)),
     )
     # A disposition for a rule the intent ARMS says "this is not graded" about
     # a rule that is -- the two statements cannot both be true, and a reader
@@ -3218,6 +3243,9 @@ class _Ctx:
         #: best-fit translation and each part's distance from the source's
         #: arrangement.
         self.replicate_measured: List[Dict[str, object]] = []
+        #: One row per declared template: each member's drift from its
+        #: template pose, passing ones too.
+        self.template_measured: List[Dict[str, object]] = []
         #: #1051. One row per declared array, formed or not: the verdict,
         #: the order it could place and the members it could not.
         self.array_measured: List[Dict[str, object]] = []
@@ -6565,6 +6593,47 @@ def rule_replicate(ctx) -> Iterator[Violation]:
 NAMED_WORST = 6
 
 
+def rule_template(ctx) -> Iterator[Violation]:
+    """Each declared datasheet template's members at the poses it gives
+    them in the anchor's frame (`placement.templates.measure`): one finding
+    per template whose worst member pad sits more than `tolerance_mm` from
+    its template position, or with a member on the other face. A template
+    naming a ref the board does not have is `template_unresolved`. WARN by
+    default (both names); the `severity` map may promote either. Every
+    template is recorded on `ctx.template_measured`, passing ones too."""
+    from .templates import measure
+    sev = ctx.intent.severity_of('template', default=WARN)
+    sev_unres = ctx.intent.severity_of('template_unresolved', default=WARN)
+    for i, decl in enumerate(ctx.intent.templates):
+        key = f"templates[{i}] ({decl['anchor']})"
+        row = dict(measure(ctx.pcb, decl), index=i)
+        if row['state'] == 'unresolved':
+            row['passes'] = None
+            ctx.template_measured.append(row)
+            yield Violation(rule='template_unresolved', severity=sev_unres,
+                            message=f"{key}: not measured -- {row['reason']}",
+                            measured={'index': i}, expected={'anchor': decl['anchor']})
+            continue
+        tol = decl['tolerance_mm']
+        off = [m for m in row['members']
+               if m['worst_mm'] > tol + legality.EPS or m['side_differs']]
+        row.update(passes=not off, off=len(off))
+        ctx.template_measured.append(row)
+        if not off:
+            continue
+        worst = off[0]
+        yield Violation(
+            rule='template', severity=sev, ref=worst['ref'],
+            block=ctx.owner.get(worst['ref']),
+            message=(f"{key}: {len(off)} of {len(row['members'])} member(s) off the "
+                     f"template -- worst {worst['ref']}, a pad "
+                     f"{worst['worst_mm']:.2f}mm from its template position"
+                     + (" (on the other face)" if worst['side_differs'] else '')),
+            measured={'index': i, 'off': len(off), 'max_mm': worst['worst_mm'],
+                      'worst': [m['ref'] for m in off[:NAMED_WORST]]},
+            expected={'tolerance_mm': tol})
+
+
 def rule_pins_to_edge(ctx) -> Iterator[Violation]:
     """A part whose pad row faces the board outline with nothing beyond it.
 
@@ -6749,6 +6818,7 @@ RULES = (
     ('pins_to_edge', rule_pins_to_edge),
     ('array_formation', rule_array_formation),
     ('replicate', rule_replicate),
+    ('template', rule_template),
 )
 
 #: Rules whose violations are raised OUTSIDE the `RULES` loop, and so have no
@@ -6780,6 +6850,9 @@ _NON_RULE_SEVERITIES = frozenset({
     # unknown sheet, instances not wired alike) is a different claim from a
     # distance. WARN by default, like the rule it stands in for.
     'replicate_unresolved',
+    # Beside `template`: a template naming a ref the board does not have is
+    # a different claim from a drift. WARN by default, like the rule.
+    'template_unresolved',
     # #959 (#1001). Raised by `grade` itself when `mechanical.json` is read:
     # a part that moved off (or turned away from) its declared mechanical
     # pose. WARN for a move the grade-time anchor already reports at ERROR
@@ -6844,6 +6917,7 @@ _SKIP_REASON = {
     'pins_to_edge': 'the intent declares no edge_connectors',
     'array_formation': 'the intent declares no arrays',
     'replicate': 'the intent declares no replicate copies',
+    'template': 'the intent declares no templates',
 }
 
 
@@ -7018,6 +7092,8 @@ def _wants(intent: Intent, rule: str) -> bool:
         return bool(intent.arrays)
     if rule == 'replicate':
         return bool(intent.replicate)
+    if rule == 'template':
+        return bool(intent.templates)
     return True
 
 
@@ -7047,6 +7123,7 @@ _ARMING_KEY = {
     'pins_to_edge': 'edge_connectors[]',
     'array_formation': 'arrays[]',
     'replicate': 'replicate[]',
+    'template': 'templates[]',
 }
 
 #: What each rule reports at when the intent's `severity` map says nothing.
@@ -7058,7 +7135,7 @@ _ARMING_KEY = {
 _RULE_DEFAULT_SEVERITY = dict({name: ERROR for name, _ in RULES},
                               assembly_side=WARN, decap_ungraded=WARN,
                               pins_to_edge=WARN, keep_away=WARN,
-                              replicate=WARN)
+                              replicate=WARN, template=WARN)
 
 #: A rule whose severity the intent's map cannot change, because the rule
 #: ignores the map (`rule_pins_to_edge` always yields WARN).
@@ -7090,6 +7167,10 @@ _POLICY_RULES = {
     'replicate': ('a design decision about which sheet instance is the '
                   'template; the board says which instances are siblings, '
                   'not that they must be laid out alike'),
+    # Where a chip's support parts sit is read from its datasheet's layout.
+    'template': ("an arrangement read from a part's datasheet; the board says "
+                 'which parts are wired to the chip, not where its datasheet '
+                 'puts them'),
 }
 
 
@@ -7448,6 +7529,9 @@ class GradeResult:
     #: arrangement, passing ones included (plus one row per declaration the
     #: board cannot resolve). Empty when the intent declares none.
     replicate_measured: List[Dict[str, object]] = field(default_factory=list)
+    #: Every declared template's members' drift from their template poses,
+    #: passing ones included. Empty when the intent declares none.
+    template_measured: List[Dict[str, object]] = field(default_factory=list)
     #: #1051: every declared array's formation measurement, formed or not,
     #: with the members its pin order could not place. Empty when no array
     #: is declared.
@@ -8734,6 +8818,7 @@ def grade(intent: Intent, pcb_data, pcb_file: str, *,
         proximity_measured=list(ctx.proximity_measured),
         keep_away_measured=list(ctx.keep_away_measured),
         replicate_measured=list(ctx.replicate_measured),
+        template_measured=list(ctx.template_measured),
         array_measured=list(ctx.array_measured),
         edge_connector_evidence=list(ctx.edge_connector_evidence),
         decap_pin_evidence=pin_evidence,
@@ -10160,6 +10245,15 @@ def format_text(r: GradeResult) -> str:
               f"({m['fit_offset'][0]:+.2f}, {m['fit_offset'][1]:+.2f})"
             + (f", {len(m['left_in_place'])} left out by the declaration"
                if m.get('left_in_place') else ''))
+    for m in r.template_measured:
+        if m.get('state') == 'unresolved':
+            lines.append(f"  templates[{m['index']}] {m['anchor']}: not measured")
+            continue
+        w = m['members'][0] if m['members'] else None
+        lines.append(f"  templates[{m['index']}] {m['anchor']}: "
+                     + ('as drawn' if m['passes'] else
+                        f"{m['off']} of {len(m['members'])} member(s) off")
+                     + (f", worst {w['ref']} {w['worst_mm']:.2f}mm" if w else ''))
     rows = [e for e in r.edge_seating
             if e.get('along_edge_offset_mm') is not None]
     if rows:
@@ -10685,6 +10779,8 @@ def to_json(r: GradeResult) -> Dict:
         **({'keep_away': r.keep_away_measured} if r.keep_away_measured
            else {}),
         **({'replicate': r.replicate_measured} if r.replicate_measured
+           else {}),
+        **({'templates': r.template_measured} if r.template_measured
            else {}),
         **({'pad_stacks': r.pad_stacks} if r.pad_stacks is not None
            else {}),

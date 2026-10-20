@@ -29,9 +29,10 @@ import time
 # imported both ways (tests/test_plugin_sibling_imports.py).
 # tests/test_datasheet_scratch.py holds the two copies equal.
 DATASHEET_SENTENCE = (
-    "Read datasheets with WebSearch and WebFetch; if you must save a "
-    "downloaded file, save it only under $KRT_DATASHEET_DIR, which is deleted "
-    "when this run ends."
+    "Read datasheets with WebSearch and WebFetch; a PDF datasheet reads "
+    "better downloaded (curl) and opened with the Read tool, a few `pages` at "
+    "a time, figures included. If you must save a downloaded file, save it "
+    "only under $KRT_DATASHEET_DIR, which is deleted when this run ends."
 )
 
 # The write-capable allowlist for placement runs. Write/Edit are the reason

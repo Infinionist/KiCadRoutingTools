@@ -1,6 +1,6 @@
 ---
 name: plan-pcb-placement
-description: Places a KiCad board by function, and in full mode routes and verifies it. The agent sorts the parts into functional groups, place_simple.py anneals one objective over 12 seeds (6 started scattered, 6 with each group gathered), a quick judging route of the 6 its objective rates best keeps the best, and in full mode that board is then routed by /plan-pcb-routing. One independent verifier grades the result, and the board comes back with REPORT.md. Modes are place and full (place + route). Use it to place, arrange, re-place or optimise components, handle an unplaced board or parts piled off the outline, place and route from scratch, or run the GUI's Place / Place + Route. It never changes the outline. To route a placed board without moving parts, use plan-pcb-routing; for sign-off QA, review-routed-board.
+description: Places a KiCad board by function, and in full mode routes and verifies it. The agent sorts the parts into functional groups, copies each switching regulator's datasheet layout into a template its support parts are held to, place_simple.py anneals one objective over 12 seeds (6 started scattered, 6 with each group gathered), a quick judging route of the 6 its objective rates best keeps the best, and in full mode that board is then routed by /plan-pcb-routing. One independent verifier grades the result, and the board comes back with REPORT.md. Modes are place and full (place + route). Use it to place, arrange, re-place or optimise components, handle an unplaced board or parts piled off the outline, place and route from scratch, or run the GUI's Place / Place + Route. It never changes the outline. To route a placed board without moving parts, use plan-pcb-routing; for sign-off QA, review-routed-board.
 ---
 
 # Plan PCB placement
@@ -17,7 +17,7 @@ Invocation: `/plan-pcb-placement <mode> <board.kicad_pcb> [intent.json]
 where mode is `place` or `full`. With no mode, use `full`. A given
 `intent.json` is the intent: use it in place of emitting one (§3.2).
 `--scattered`, `--clustered`, `--anchored` and `--judge` are the seeds of
-each start and how many are judged (§3.5), passed to `place_simple` as
+each start and how many are judged (§3.6), passed to `place_simple` as
 given; its defaults (6, 6, 0, 6) apply when they are not. Anchored seeds
 (each group started round the point its wiring prefers) are opt-in.
 
@@ -86,7 +86,9 @@ given; its defaults (6, 6, 0, 6) apply when they are not. Anchored seeds
   a rule keeping its clock nets away from every switch node, with its
   measured gap and a `brief_row` ready to paste into the brief's
   `keep_away` list. Which nets are noisy is the user's to say; do not infer
-  it from net names.
+  it from net names. A converter you give a datasheet template (§3.5) needs
+  only the `keep_away` rows: the template places its support parts, so do
+  not ask for their limits.
 - **Nothing is sacred except a KiCad lock.** `place_simple` re-places every
   part the board does not lock (`(locked yes)`) or the intent does not seat
   (`fixed_poses[]`). For a from-scratch experiment with everything off the
@@ -248,7 +250,161 @@ a panel shows -- against the brief or `mechanical.json`, and move any that is
 wrong with `place_pose ... set ... lock` as in §3.1. Run check_floorplan again:
 no `edge_connector` error.
 
-### 3.5 Place
+### 3.5 Datasheet layouts (your judgement)
+
+A switching regulator's datasheet draws where each of its support parts goes:
+the input caps across VIN and ground, the inductor on the switch pin, the boot
+cap across BOOT and SW, the feedback divider at FB, away from the switch node.
+The router cannot see whether the board follows that drawing, so a buck can
+route clean and still work badly. Copy the drawing into the intent as a
+**template**. `place_simple` seats each part at its template pose, carries it
+with every move of the chip, and makes leaving that pose expensive.
+
+1. **Which chips.** Every row of `emc_roles.roles` (`board_context.py
+   --json`) whose `role` is `switching converter`, and every row whose `role`
+   is `unknown` with `candidate: switching converter`: its pads carry no pin
+   functions, so read its pins off the datasheet's pinout. Only converters:
+   an LDO's caps and a crystal's load caps are held by the decap and crystal
+   rules, with no datasheet to read. **Skip** a converter, and say why in
+   REPORT.md, when no datasheet can be found for its value, when the
+   datasheet has no layout figure, or when its support parts are locked.
+   A skipped converter keeps its §2 `proximity[]` rows.
+2. **Get the datasheet.** WebSearch the part number with "datasheet" and
+   take the manufacturer's PDF (TI's is
+   `https://www.ti.com/lit/ds/symlink/<part>.pdf`, the base part number in
+   lower case; a search usually returns its HTML viewer instead). Save it
+   under `$KRT_DATASHEET_DIR` when that is set, else under
+   `wk/<run>/datasheets/<part>/`, one folder per part: a download is data,
+   not code. WebFetch mangles a PDF, so download it (`curl -sSL -o
+   <folder>/<part>.pdf <url>`) and open it with the Read tool and `pages`, a
+   few at a time. You need three things from it:
+   - the **layout guidelines** (they say what matters most, usually the
+     input cap nearest, and give distances);
+   - the **layout example** figure ("Layout Example" or "Recommended
+     Layout", near the end);
+   - the **application schematic** whose designators that figure uses
+     ("Typical Application" or "Design Example"). Without it the figure's
+     C1 and Q2 mean nothing.
+
+   The table of contents names their pages. Where poppler is installed,
+   `pdftotext -layout -f N -l N <pdf> -` prints page N, to grep for those
+   headings, and a figure too small to read on the Read page is rendered
+   larger by `pdftoppm -r 300 -f N -l N -png <pdf> <prefix>`: crop the figure
+   out of the PNG and Read the crop.
+3. **Match the drawing to the board, by net and pin function, never by
+   designator.** The datasheet's C1 is not the board's C1: a bitaxe agent
+   found Q1, Q2, R4, R10 and C1 naming different parts in the two, so
+   matching by name would have swapped the FETs.
+   `python3 -X utf8 py_tools/fit_template.py wk/<run>/fixed.kicad_pcb --pins <REF>`
+   lists the chip's pads: number, pin function, position and side in the
+   footprint's own frame (`centre` for an exposed pad, `inner -x` and so on
+   for an inner pad off the middle), net, and the other parts on that net
+   with their values and pads. Name each part of the drawing by its board
+   reference, from the pin it connects to and its value: CIN is the 4.7 uF
+   on VIN and ground, CBOOT the cap from BOOT to SW, the inductor the part
+   on SW, the divider the resistors on FB, COUT the caps on the inductor's
+   far pad (`--pins` takes any part, so `--pins <inductor>` lists them). Where several parts qualify (four
+   4.7 uF caps on VIN), take the ones your groups file puts in the chip's
+   group; the others serve something else. Leave out what the drawing has
+   and the board does not (a CFF not fitted), and what the board has and the
+   drawing does not.
+
+   **A controller with external FETs** (no VIN pin of its own; `emc_roles`
+   notes it) takes its FETs as members too. Their input caps go across the
+   high-side FET's drain and the low-side FET's source, and the inductor
+   on the switch node between the FETs. Those members' legs name the FETs'
+   pads (an earlier member), not the controller's pins, and the FETs' legs
+   name the gate-drive pins.
+4. **Turn the drawing into the footprint's frame.** The template is in the
+   footprint's own frame: rotation 0, +x right, +y down. From `--pins`, see
+   where each pin group lies, then map the drawing's directions onto it. For
+   example, the LMR36006's Figure 57 draws SW (pin 12) at the top, and
+   fusb302_pd_dev's footprint has pad 12 at `inner -x`, so the drawing's up
+   is -x there. **Check whether it is a turn or a mirror** on pin 1 and the
+   way the numbers run from it. If they run the same way round in the drawing
+   and in `--pins`, it is a turn. If they run the other way, the drawing is a
+   bottom view or the chip is on the back, so mirror it. A back-side chip's
+   frame is mirrored, so read its sides from `--pins` and never from the drawing.
+5. **Write the sketch:** the chip as `anchor`, then the members in the
+   drawing's priority order. Seating is greedy, so order matters:
+   - the parts the datasheet wants closest first (input caps, the boot cap,
+     the inductor, a controller's FETs);
+   - then the small signal parts;
+   - a part that sits beyond another member (COUT past the inductor) after
+     that member.
+
+   Give each member:
+   - `pads`: its own pads, and for each partner (the chip, or a member
+     listed earlier) the partner's pads it belongs beside. They are matched by
+     net, so their order does not matter, and one member may name several
+     partners. A second part like one already seated (the second input cap)
+     goes beside the first, so name the first as its partner;
+   - `side`: where the drawing puts it, in the footprint frame. `-x`, `+x`,
+     `-y` or `+y` means its centre is beyond that edge of the chip's
+     courtyard, anywhere along it. Two of different axes (`+x-y`) mean a
+     corner, beyond both edges;
+   - `rot` where the drawing fixes which way the part faces (a FET, an
+     inductor whose pads differ): its turn relative to the chip, in degrees
+     (0, 90, 180 or 270), so on the board it sits at the chip's rotation plus
+     `rot`. Leave
+     it out and the fit picks the turn that brings its pads closest;
+   - a `note` naming what the drawing calls it.
+
+   Cite the datasheet (title, revision, section, figure) in `source`:
+   ```json
+   {"anchor": "U2", "source": "TI LMR36006 SNVSB48C, 11.1 and Figure 57",
+    "members": [
+     {"ref": "C2", "pads": {"C2": ["1", "2"], "U2": ["2", "1"]}, "side": "+y", "note": "CHF across VIN 2 / PGND 1"},
+     {"ref": "C5", "pads": {"C5": ["1", "2"], "U2": ["4", "3"]}, "side": "+y", "note": "CBOOT across BOOT 4 / NC-SW 3"},
+     {"ref": "L1", "pads": {"L1": ["1"], "U2": ["12"]}, "side": "-x", "note": "inductor on SW 12"},
+     {"ref": "R2", "pads": {"R2": ["1"], "U2": ["7"]}, "side": "+x", "note": "RFBB at FB 7"},
+     {"ref": "C7", "pads": {"C7": ["2"], "L1": ["2"]}, "side": "-x", "note": "COUT past the inductor"}]}
+   ```
+6. **Fit, look, adjust.**
+   ```bash
+   python3 -X utf8 py_tools/fit_template.py wk/<run>/fixed.kicad_pcb --sketch <sketch> \
+       --render <png> --intent wk/<run>/intent.json --write-intent wk/<run>/intent.json
+   ```
+   It seats each member in order, within `--reach` mm (4) of its partner
+   pads, as close to them as the courtyards already seated allow. They are
+   kept the board's clearance apart, the placer's own rule. It tries each
+   quarter turn and keeps the one that brings the pads closest. It prints
+   each member's pose and leg gaps, and writes the template into the intent,
+   replacing that chip's row if it has one, so re-fit as often as you like.
+   - **If a member cannot be seated**, the fit stops. It says why: its
+     `side`, or which members already seated take its spot. `--render`
+     then draws the members seated so far. Move the member earlier in the
+     order, change its side, make a like part its partner, or raise
+     `--reach`.
+   - **Look at the PNG** beside the datasheet's figure, turned to the
+     footprint's frame. Check that every part sits on its side and faces the
+     pin it serves. Each red leg runs across a pad-edge gap, so it should be
+     short. A leg of several mm usually means the member lost its spot to one
+     listed before it.
+   - **A part with no courtyard** is fitted, and placed, as the box round
+     its pads; the run names it, and the render labels it. Check that box
+     against the part's real body. A custom pad, a power FET's drain, can
+     be modelled larger than its copper. The placer uses the same box, so
+     note any such part in REPORT.md rather than working round it.
+
+   **Give up on the template**, keep the §2 rows and say why in REPORT.md,
+   when after adjusting a member's legs still run several mm past the
+   distances the guidelines give.
+7. **The rest is automatic.** `place_simple` seats and carries the template
+   (`--template-weight`, default 100 per mm of drift), and `check_floorplan`
+   grades each member's drift from its template pose (`template`, a WARN,
+   past 0.3 mm by default, the row's `tolerance_mm`). Report each template in
+   REPORT.md: the datasheet and figure, the parts matched, and the drift
+   graded on the final board.
+
+- **Never copy coordinates from the drawing.** A datasheet packs its parts
+  tighter than this board's courtyards allow (on fusb302_pd_dev the 0402s
+  cannot come closer than 0.6 mm to the chip's pins); the fit sizes the
+  template to the board's own footprints.
+- One part belongs to at most one template. A template's members need no
+  EMC `proximity[]` rows (§2): the template holds them.
+
+### 3.6 Place
 
 ```bash
 python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{seed}.kicad_pcb' \
@@ -302,7 +458,7 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
   parts on the side of the chip where their pins are, connectors' partners
   right behind them.
 
-### 3.6 Fast-route the judged seeds and keep the best
+### 3.7 Fast-route the judged seeds and keep the best
 
 1. **Fast-route the seeds `wk/<run>/judge.json` names** (the `--judge` legal
    seeds of lowest `final.cost`) with the board's routing
@@ -334,7 +490,7 @@ on its fast route: turn each two-pad part it lists as turned against its
 wiring with `place_pose ... rotate`, then check the board again
 (`check_assembly`, `check_floorplan --intent`, `render_placement`).
 
-### 3.7 Route (full mode)
+### 3.8 Route (full mode)
 
 Route the kept placement by running `/plan-pcb-routing` on
 `wk/<run>/final.kicad_pcb`: the routing is that skill's, chain and checks
