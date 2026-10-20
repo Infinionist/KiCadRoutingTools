@@ -27,7 +27,12 @@ function buildBoard(sc) {
   const geo = new THREE.ExtrudeGeometry(shape, { depth: d, bevelEnabled: false, curveSegments: 24 });
   geo.rotateX(Math.PI / 2);           // shape (x, y) -> three (x, z); depth -> -y
   geo.translate(0, d, 0);             // y in [0, d]
-  const board = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: rgb(C.board), roughness: 0.85, metalness: 0.0 }));
+  // see-through while the copper is played (a frame's `alpha`), so the
+  // back's copper shows through it; always `transparent` so a frame only
+  // changes its opacity
+  const board = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: rgb(C.board), roughness: 0.85,
+                                                                     metalness: 0.0, transparent: true }));
+  S.boardMat = board.material;
   board.receiveShadow = true;
   board.castShadow = true;
   const lm = new THREE.LineBasicMaterial({ color: rgb(C.edge), transparent: true, opacity: 0.55 });
@@ -262,6 +267,125 @@ async function loadModels(url, sc) {
   return n;
 }
 
+// ---------------------------------------------------------------- copper
+// The flow movie's copper (route3d.py): every track, via and pour with the
+// tick it was born at and the tick it died at (-1: never). A frame shows an
+// item from its birth to its death: lit (white, or cyan when restored) on
+// the tick it is born, red on the tick it dies, gone after. Tracks are one
+// flat quad each (square-capped), per layer, the tick test in the shader
+// (stage3d's copper lifetimes, #1081).
+const COPPER_VS = `
+attribute float born; attribute float died; attribute float restored;
+uniform float uT; varying float vKeep; varying float vState;
+void main() {
+  vKeep = (born <= uT && (died < 0.0 || died >= uT)) ? 1.0 : 0.0;
+  vState = (died == uT) ? 2.0 : ((born == uT) ? (restored > 0.5 ? 3.0 : 1.0) : 0.0);
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`;
+const COPPER_FS = `
+uniform vec3 uColor; uniform vec3 uNew; uniform vec3 uRip; uniform vec3 uRestore; uniform float uAlpha;
+varying float vKeep; varying float vState;
+void main() {
+  if (vKeep < 0.5) discard;
+  vec3 c = vState > 2.5 ? uRestore : (vState > 1.5 ? uRip : (vState > 0.5 ? uNew : uColor));
+  gl_FragColor = vec4(c, uAlpha);
+}`;
+// a ShaderMaterial writes its colour as given: sRGB bytes go straight out
+const srgb = (c) => new THREE.Vector3(c[0] / 255, c[1] / 255, c[2] / 255);
+
+function layerY(li, n, d) {
+  if (li === 0) return d + 0.02;                  // F.Cu, on the top face
+  if (li === n - 1) return -0.02;                 // B.Cu, on the bottom face
+  return d * (1 - li / (n - 1));                  // an inner layer, inside
+}
+
+function buildCopper(sc, root) {
+  const cu = sc.copper, C = sc.colors, n = cu.layers.length, d = sc.thickness;
+  S.copper = [];
+  cu.layers.forEach((_name, li) => {
+    const items = cu.segs.filter((q) => q[5] === li);
+    if (!items.length) return;
+    const pos = [], born = [], died = [], rest = [], tri = [];
+    const y = layerY(li, n, d);
+    let v = 0;
+    for (const [sx, sy, ex, ey, w, , b, dd, r] of items) {
+      let dx = ex - sx, dy = ey - sy;
+      const L = Math.hypot(dx, dy) || 1e-6;
+      dx /= L; dy /= L;
+      const hw = Math.max(w, 0.05) / 2, nx = -dy * hw, ny = dx * hw;
+      const ax = sx - dx * hw, ay = sy - dy * hw, bx = ex + dx * hw, by = ey + dy * hw;
+      pos.push(ax + nx, y, ay + ny, ax - nx, y, ay - ny, bx - nx, y, by - ny, bx + nx, y, by + ny);
+      tri.push(v, v + 2, v + 1, v, v + 3, v + 2, v, v + 1, v + 2, v, v + 2, v + 3);   // both faces
+      for (let k = 0; k < 4; k++) { born.push(b); died.push(dd); rest.push(r); }
+      v += 4;
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('born', new THREE.Float32BufferAttribute(born, 1));
+    g.setAttribute('died', new THREE.Float32BufferAttribute(died, 1));
+    g.setAttribute('restored', new THREE.Float32BufferAttribute(rest, 1));
+    g.setIndex(tri);
+    const m = new THREE.Mesh(g, new THREE.ShaderMaterial({
+      vertexShader: COPPER_VS, fragmentShader: COPPER_FS,
+      uniforms: { uT: { value: -1 }, uColor: { value: srgb(C.layers[li] || C.pad) }, uNew: { value: srgb(C.new) },
+                  uRip: { value: srgb(C.rip) }, uRestore: { value: srgb(C.restored) }, uAlpha: { value: 1.0 } } }));
+    m.renderOrder = 2;
+    m.frustumCulled = false;
+    root.add(m);
+    S.copper.push(m);
+  });
+  // vias: one instanced barrel each, scaled away when not alive
+  const cyl = new THREE.CylinderGeometry(0.5, 0.5, d + 0.08, 16);
+  cyl.translate(0, d / 2, 0);
+  S.vias = new THREE.InstancedMesh(cyl, new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4, metalness: 0.2 }),
+                                   Math.max(1, cu.vias.length));
+  S.vias.count = cu.vias.length;
+  S.vias.frustumCulled = false;
+  root.add(S.vias);
+  // pours: a flat tinted shape each, on its layer
+  S.pours = [];
+  const body = rgb(C.board);
+  for (const z of cu.pours) {
+    const shape = new THREE.Shape(z.poly.map((q) => new THREE.Vector2(q[0], q[1])));
+    for (const ring of z.holes || []) shape.holes.push(new THREE.Path(ring.map((q) => new THREE.Vector2(q[0], q[1]))));
+    const g = new THREE.ShapeGeometry(shape);
+    g.rotateX(Math.PI / 2);
+    g.translate(0, z.layer === 0 ? d + 0.01 : (z.layer === n - 1 ? -0.01 : layerY(z.layer, n, d)), 0);
+    const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({
+      color: body.clone().lerp(rgb(C.layers[z.layer] || C.pad), 0.5), transparent: true, opacity: 0.5,
+      side: THREE.DoubleSide, depthWrite: false }));
+    m.renderOrder = 1;
+    m.userData.life = [z.born, z.died];
+    root.add(m);
+    S.pours.push(m);
+  }
+}
+
+function setCopper(fr) {
+  if (!S.copper) return;
+  const T = fr.tick ?? -1;
+  for (const m of S.copper) m.material.uniforms.uT.value = T;
+  const C = S.sc.colors, M = new THREE.Matrix4(), Z = new THREE.Matrix4().makeScale(0, 0, 0);
+  const col = { via: rgb(C.via), new: rgb(C.new), rip: rgb(C.rip), restored: rgb(C.restored) };
+  S.sc.copper.vias.forEach((q, i) => {
+    const [x, y, size, , , , b, dd, r] = q;
+    if (b <= T && (dd < 0 || dd >= T)) {
+      const k = Math.max(size, 0.1);
+      M.makeScale(k, 1, k).setPosition(x, 0, y);
+      S.vias.setMatrixAt(i, M);
+      S.vias.setColorAt(i, dd === T ? col.rip : (b === T ? (r ? col.restored : col.new) : col.via));
+    } else {
+      S.vias.setMatrixAt(i, Z);
+    }
+  });
+  S.vias.instanceMatrix.needsUpdate = true;
+  if (S.vias.instanceColor) S.vias.instanceColor.needsUpdate = true;
+  for (const m of S.pours) {
+    const [b, dd] = m.userData.life;
+    m.visible = b <= T && (dd < 0 || dd > T);
+  }
+}
+
 // ---------------------------------------------------------------- airwires
 function buildAir(sc, root) {
   let n = 0;
@@ -285,6 +409,8 @@ function padWorld(i, k, fr) {
 }
 
 function setAir(fr) {
+  S.air.visible = fr.air !== false;
+  if (!S.air.visible) return;
   const a = S.air.geometry.getAttribute('position');
   let v = 0;
   for (const net of S.sc.nets) {
@@ -397,6 +523,7 @@ window.m3dInit = async function (o) {
   root.add(buildBoard(sc));
   buildParts(sc, root);
   buildAir(sc, root);
+  if (sc.copper) buildCopper(sc, root);
   let models = 0, modelError = null;
   if (o.glbUrl && sc.glb) {
     // the models are decoration: a missing or corrupt GLB leaves the boxes
@@ -414,6 +541,8 @@ window.m3dFrame = function (i) {
   const fr = S.tl.frames[i];
   poseParts(fr);
   setAir(fr);
+  setCopper(fr);
+  S.boardMat.opacity = fr.alpha ?? 1.0;
   fitCamera(fr);
   document.getElementById('cap').textContent = fr.label;
   S.renderer.render(S.world, S.cam);

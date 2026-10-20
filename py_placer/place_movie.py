@@ -71,43 +71,28 @@ from concurrent.futures import ThreadPoolExecutor
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 
-FRAMES = 120        # anneal frames per run
-SPEEDUP = 4.0       # the anneal plays this much faster at its end than at its start
-GLIDE = 10          # frames the pile takes to reach the places it is seeded at
-PILE_GAP = 2.0      # mm off the board's edge the pile is drawn, at most
-FLY = 3             # frames each fixed part takes to fly from its pile to its place
+# the story (what happens when: piles, scatter, anneal, captions) is
+# placement_story's, shared with the 3D movie (movie3d/); this file draws it
+from placement_story import (FRAMES, SPEEDUP, STEP_HOLD, Story, _ease,  # noqa: E402,F401
+                             _lerp, install)
+
 ZOOM = 12           # frames of a zoom between the board and the judged seeds
 LABEL_PX = 16       # the line under each judged seed's picture
-STEP_HOLD = 0.5     # seconds a step's frame holds
 END_HOLD = 1.0      # seconds on the last frame
 
 
-def _ease(t):
-    return t * t * (3 - 2 * t)
-
-
-def _lerp(a, b, t):
-    return tuple(x + (y - x) * t for x, y in zip(a, b))
-
-
-class Film:
-    """Draws the placement state as it stands (or at the poses a frame
-    overrides) and feeds the frames to `movie`. `start` is called with
-    place_simple's built state; the anneal's hooks call `on_*`."""
+class Film(Story):
+    """Draws the placement story (`placement_story.Story`) as it stands (or
+    at the poses a shot overrides) and feeds the frames to `movie`."""
 
     def __init__(self, args, movie):
-        self.a, self.movie = args, movie
-        self.run = 0
-        self.wide = None        # the view with the pile in it, when it is off the board
+        super().__init__(args)
+        self.movie = movie
 
-    # -- setup ----------------------------------------------------------------
-    def start(self, pcb, board, args, built):
-        from kicad_parser import parse_kicad_pcb
+    # -- the renderer the story draws through ---------------------------------
+    def setup(self, pcb, board, args):
         from route_render import BoardRenderer
         from placement.grouping import is_ground, load_groups
-        self.state, self.model, self.movable, _notes = built
-        self.pcb, self.args = pcb, args
-        self.hold = max(1, int(round(STEP_HOLD * self.a.fps)))
         self.r = BoardRenderer(pcb, size=self.a.size, supersample=1, theme=self.a.theme,
                                show_pads=False, show_zones=False)
         th = self.r.theme
@@ -145,105 +130,20 @@ class Film:
                     self.nets.setdefault(p.net_id, []).append((ref, i))
         self.nets = {n: m for n, m in self.nets.items() if len({r for r, _ in m}) > 1}
         self._posed = {}
-        # the piles: the movable parts where they lie before the scatter, and
-        # the fixed parts in a pile of their own, each drawn PILE_GAP mm off an
-        # edge of the board (parking places, not poses): the fixed parts fly to
-        # their places first, one at a time, then the movable pile glides in
-        st = self.state
-        bx0, by0, bx1, by1 = self.r.bounds
-        self.pile = {r: (p.x, p.y, p.rot) for r, p in st.parts.items() if r in self.movable}
-        rects = [st.parts[r].rect() for r in self.pile]
-        dx = dy = 0.0
-        mside = None
-        if rects:
-            px0, py0 = min(q[0] for q in rects), min(q[1] for q in rects)
-            px1, py1 = max(q[2] for q in rects), max(q[3] for q in rects)
-            gaps = {'below': py0 - by1, 'above': by0 - py1, 'right': px0 - bx1, 'left': bx0 - px1}
-            side, gap = max(gaps.items(), key=lambda kv: kv[1])
-            if gap > PILE_GAP:
-                move, mside = gap - PILE_GAP, side
-                dx = {'right': -move, 'left': move}.get(side, 0.0)
-                dy = {'below': -move, 'above': move}.get(side, 0.0)
-                self.pile = {r: (x + dx, y + dy, q) for r, (x, y, q) in self.pile.items()}
-        # the faces and poses the intent declares were written first: the
-        # board as given shows those parts where they were
-        self.given, declared = {}, []
-        if os.path.abspath(board) != os.path.abspath(args.board):
-            given = parse_kicad_pcb(args.board)
-            declared = sorted(r for r in pcb.footprints
-                              if r in given.footprints and _moved(given.footprints[r], pcb.footprints[r]))
-            self.given = {r: given.footprints[r] for r in declared}
-        fixed = sorted(r for r in st.parts if r not in self.movable)
-        self.fixed_pile = self._fixed_pile([r for r in fixed if r not in self.given], mside)
-        # ... and both in view, with the board
-        x0, y0, x1, y1 = _union([self.r.bounds] + list(self._rects_at({**self.pile,
-                                                                      **self.fixed_pile}).values())
-                                 + [p.rect() for p in st.parts.values()])
-        # the key's band along the bottom never covers a part: each view is
-        # grown below what it shows by the band
-        self.home = self._fit(self.r.bounds)
-        if min(x0 - bx0, y0 - by0, bx1 - x1, by1 - y1) < -2.0:
-            self.wide = self._fit((x0 - 1.0, y0 - 1.0, x1 + 1.0, y1 + 1.0))
-        self.r.set_view(self.wide or self.home)
-        poses = {**self.pile, **self.fixed_pile}
-        self.shot(f"input: {len(st.parts)} parts, {len(self.movable)} movable, {len(fixed)} fixed",
-                  times=self.hold, given=self.given, poses=poses)
-        # the fixed parts to their places, biggest first
-        size = {r: (lambda q: (q[2] - q[0]) * (q[3] - q[1]))(st.parts[r].rect()) for r in self.fixed_pile}
-        order = sorted(self.fixed_pile, key=lambda r: (-size[r], r))
-        for k, ref in enumerate(order, 1):
-            home = (st.parts[ref].x, st.parts[ref].y, st.parts[ref].rot)
-            for i in range(1, FLY + 1):
-                poses[ref] = _lerp(self.fixed_pile[ref], home, _ease(i / FLY))
-                self.shot(f"fixed parts: {ref} to its place ({k}/{len(order)})", moved=[ref],
-                          given=self.given, poses=poses)
-            del poses[ref]
-        if declared:
-            self.shot(f"faces and poses: {', '.join(declared)} at their declared face or pose",
-                      moved=declared, times=self.hold, poses=self.pile)
 
-    def _rects_at(self, poses):
-        """{ref: courtyard rect} of each part at its pose in `poses` (its turn
-        unchanged: the rect moves with it)."""
-        out = {}
-        for r, (x, y, _q) in poses.items():
-            p = self.state.parts[r]
-            a, b, c, d = p.rect()
-            out[r] = (a + x - p.x, b + y - p.y, c + x - p.x, d + y - p.y)
-        return out
+    @property
+    def bounds(self):
+        return self.r.bounds
 
-    def _fixed_pile(self, refs, taken):
-        """The fixed parts piled PILE_GAP mm off the board's edge -- the edge,
-        other than `taken` (the movable pile's), that leaves the board biggest
-        in the frame -- each a little off the pile's centre."""
-        import random
-        if not refs:
-            return {}
-        st = self.state
-        bx0, by0, bx1, by1 = self.r.bounds
-        rs = {r: st.parts[r].rect() for r in refs}
-        mw = max(q[2] - q[0] for q in rs.values())
-        mh = max(q[3] - q[1] for q in rs.values())
-        cx, cy = (bx0 + bx1) / 2, (by0 + by1) / 2
-        anchors = {'above': (cx, by0 - PILE_GAP - mh / 2), 'below': (cx, by1 + PILE_GAP + mh / 2),
-                   'left': (bx0 - PILE_GAP - mw / 2, cy), 'right': (bx1 + PILE_GAP + mw / 2, cy)}
-        rng = random.Random(0)
-        jit = {r: (rng.uniform(-1, 1), rng.uniform(-1, 1)) for r in sorted(refs)}
-        reach = min(1.0, 0.15 * max(mw, mh))
-        best = None
-        for side, (ax, ay) in anchors.items():
-            if side == taken:
-                continue
-            piled = {}
-            for r, q in rs.items():
-                p = st.parts[r]
-                tx, ty = ax + jit[r][0] * reach, ay + jit[r][1] * reach
-                piled[r] = (p.x + tx - (q[0] + q[2]) / 2, p.y + ty - (q[1] + q[3]) / 2, p.rot)
-            u = _union([self.r.bounds] + list(self._rects_at({**self.pile, **piled}).values()))
-            scale = min(self.r.W / (u[2] - u[0]), self.r.H / (u[3] - u[1]))
-            if best is None or scale > best[0]:
-                best = (scale, piled)
-        return best[1]
+    @property
+    def frame_size(self):
+        return self.r.W, self.r.H
+
+    def view_of(self, box, wide=False):
+        return self._fit(box)
+
+    def set_view(self, view):
+        self.r.set_view(view)
 
     # -- the key -------------------------------------------------------------
     def _key_layout(self):
@@ -354,101 +254,6 @@ class Film:
                 self._draw_key(d, rr)
         self.movie.add(r.frame(segments=[], vias=[], label=label, overlays=[draw]), times)
 
-    # -- the run's hooks ------------------------------------------------------
-    def on_scatter(self, seed, clustered=False):
-        self.run += 1
-        if self.run > 1:
-            self.shot(f"run {self.run}, a fresh start (the last left a part with no legal "
-                      f"pose): scatter (seed {seed})", moved=self.movable, times=self.hold)
-            return
-        # the pile glides onto the board, each part to the place it is seeded at
-        label = (f"scatter: each group's parts round one random place (seed {seed})" if clustered
-                 else f"scatter: each movable part to a random place (seed {seed})")
-        seeded = {r: (p.x, p.y, p.rot) for r, p in self.state.parts.items() if r in self.movable}
-        for i in range(1, GLIDE + 1):
-            t = _ease(i / GLIDE)
-            self.shot(label, moved=self.movable,
-                      poses={r: _lerp(self.pile[r], seeded[r], t) for r in seeded})
-        if self.wide:           # ... and the view closes in on the board
-            for i in range(1, 7):
-                self.r.set_view(_lerp(self.wide, self.home, _ease(i / 6)))
-                self.shot(label)
-            self.r.set_view(self.home)
-        self.shot(label, times=self.hold // 2)
-
-    def on_anneal(self, moves):
-        # frame i of F is taken at move N g(i/F): g' grows linearly to
-        # SPEEDUP times its start, so the play speeds up that much
-        f = max(1, self.a.frames)
-        sp = max(1.0, self.a.speedup)
-        g = lambda u: (u + (sp - 1) / 2 * u * u) / ((sp + 1) / 2)  # noqa: E731
-        self.marks = [max(1, math.ceil(moves * g(i / f))) for i in range(1, f + 1)]
-        self.n, self.k, self.mi, self.T = moves, 0, 0, math.inf
-        self.since, self.note = set(), ''
-
-    def on_seats(self, a):
-        if a.seats:
-            self.shot(f"edge seats: {', '.join(sorted(a.seats))} held to their declared edges",
-                      moved=a.seats, times=self.hold)
-
-    def on_total(self, cost):
-        self.cost = cost
-
-    def on_overlap(self, ov):
-        self.ov = ov
-
-    def on_trial(self, a, new, T, res):
-        kept, dc, do = res
-        if T > self.T * 1.5:          # the second start of the half-turn trial
-            self.k, self.mi, self.note = 0, 0, ' (long edge parts turned half round)'
-        self.T = T
-        self.k += 1
-        if kept:
-            self.cost += dc
-            self.ov = max(0.0, self.ov + do)
-            self.since |= set(new)
-        if a.shoving:
-            due = self.k % 5 == 0
-        else:
-            due = self.mi < len(self.marks) and self.k >= self.marks[self.mi]
-            while self.mi < len(self.marks) and self.k >= self.marks[self.mi]:
-                self.mi += 1
-        if due:
-            what = 'repair: shoving the overlaps apart' if a.shoving else \
-                f"anneal{self.note}: move {self.k}/{self.n}"
-            self.shot(f"{what} | T {T:.3g} | cost {self.cost:.0f} | overlap {self.ov:.2f} mm2",
-                      moved=self.since)
-            self.since = set()
-
-    def on_annealed(self, res):
-        legal = res.get('reseated') or []
-        self.shot(f"best placement, cost {res['best']:.0f}"
-                  + (f" | to the nearest legal pose: {', '.join(legal)}" if legal else ''),
-                  moved=legal, times=self.hold)
-
-    def placed(self, rc, times, handoff=False):
-        """The placed board; with `handoff`, the view then opens to the
-        whole frame, the key gone, as the routing frames show the board."""
-        cost = self.model.total()['cost']
-        label = f"placed: cost {cost:.0f}" + (' | parts left illegal (see the log)' if rc == 4 else '')
-        self.shot(label, times=times)
-        if handoff and self.home != tuple(self.r.bounds):
-            for i in range(1, 5):
-                self.r.set_view(_lerp(self.home, self.r.bounds, _ease(i / 4)))
-                self.shot(label, key=False)
-
-
-def _union(rects):
-    rects = list(rects)
-    return (min(q[0] for q in rects), min(q[1] for q in rects),
-            max(q[2] for q in rects), max(q[3] for q in rects))
-
-
-def _moved(a, b):
-    return (abs(a.x - b.x) > 1e-6 or abs(a.y - b.y) > 1e-6
-            or abs(((a.rotation or 0) - (b.rotation or 0) + 180) % 360 - 180) > 1e-6
-            or a.layer != b.layer)
-
 
 def _mst(pts):
     """Prim's tree over `pts`, as (x0, y0, x1, y1) lines."""
@@ -468,62 +273,6 @@ def _mst(pts):
         out.append((pts[j][0], pts[j][1], pts[at][0], pts[at][1]))
     return out
 
-
-def install(film):
-    """Hook the film into place_simple's run. The hooks only read the state
-    and pass every call through, so the placement is the one place_simple
-    makes."""
-    import place_simple
-    from placement import simple_anneal
-    from placement.simple_anneal import Annealer
-
-    build = place_simple.build
-
-    def _build(pcb, board, doc, base, args, *k, **kw):
-        out = build(pcb, board, doc, base, args, *k, **kw)
-        model = out[1]
-        total = model.total
-
-        def _total(*a, **kk):
-            t = total(*a, **kk)
-            film.on_total(t['cost'])
-            return t
-        model.total = _total
-        film.start(pcb, board, args, out)
-        return out
-    place_simple.build = _build
-
-    scatter, anneal = simple_anneal.scatter, simple_anneal.anneal
-
-    def _scatter(model, movable, seed=0, clustered=False):
-        scatter(model, movable, seed=seed, clustered=clustered)
-        film.on_scatter(seed, clustered)
-    simple_anneal.scatter = _scatter
-
-    def _anneal(model, movable, **kw):
-        film.on_anneal(kw.get('moves', 11000))
-        res = anneal(model, movable, **kw)
-        film.on_annealed(res)
-        return res
-    simple_anneal.anneal = _anneal
-
-    start_t, trial, overlap = Annealer.start_temperature, Annealer.trial, Annealer.overlap
-
-    def _start_t(self, *a, **kw):
-        film.on_seats(self)
-        return start_t(self, *a, **kw)
-
-    def _trial(self, new, T):
-        res = trial(self, new, T)
-        film.on_trial(self, new, T, res)
-        return res
-
-    def _overlap(self, refs=None):
-        ov = overlap(self, refs)
-        if refs is None:
-            film.on_overlap(ov)
-        return ov
-    Annealer.start_temperature, Annealer.trial, Annealer.overlap = _start_t, _trial, _overlap
 
 
 # -- the flow (--route) ---------------------------------------------------------

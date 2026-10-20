@@ -3,12 +3,21 @@
 
     python3 -X utf8 movie3d/make_movie.py BOARD OUT.kicad_pcb \\
         --groups groups.json --intent intent.json --seed 0 [--movie OUT_3d.mp4]
+    python3 -X utf8 movie3d/make_movie.py BOARD OUT.kicad_pcb \\
+        --groups groups.json --intent intent.json --route ch32v003_usb:6
 
 BOARD and OUT come first; every argument but this tool's own is
 place_simple.py's. Three steps, each printed with its time:
 
   1. record  (record.py)   place_simple runs in-process with read-only hooks
                            and writes scene.json + timeline.json to --work;
+                           with --route BOARD:SET, place_movie's flow runs
+                           first (its `run_flow`: the round's seeds placed,
+                           the cheapest fast-routed, the best routed in full,
+                           in --route-work, which a 2D flow run's work dir
+                           can be: what is there is reused), the best seed's
+                           placement is recorded, and its routes are played
+                           on the 3D board (route3d.py) -- OUT is that seed;
   2. render  (render.mjs)  headless Chromium draws each frame with three.js
                            (page/movie3d.mjs) to --work/frames/f00000.png ...;
   3. encode  (ffmpeg)      the frames become the .mp4, and three stills are
@@ -32,12 +41,70 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import record  # noqa: E402
 
+#: #937 registry: a prototype in its own directory, in no door; it writes
+#: OUT (the placed board). Read by krt_registry.py by AST.
+KRT_TOOL = {'scope': [], 'kind': 'actor'}
+
+
+def flow(a, rest):
+    """place_movie's flow (--route), filmed in 3D: run_flow places the
+    round's seeds, fast-routes the judged ones and routes the best in full
+    (reusing what --route-work holds); the best seed's placement is then
+    recorded and its routes played on the 3D board. Returns what
+    record.record does."""
+    import place_movie
+    from route3d import film_routes
+    if ':' not in a.route:
+        sys.exit('make_movie: --route BOARD:SET, e.g. ch32v003_usb:6')
+    board, out = rest[0], rest[1]
+    work = os.path.abspath(a.route_work or os.path.splitext(os.path.abspath(out))[0] + '_work')
+    opts = place_movie._strip(rest[2:], '--seed', '--json', '--seeds', '--jobs', '--clustered-seeds')
+    n = a.scattered + a.clustered
+    if a.scattered < 0 or a.clustered < 0 or n < 1 or a.judge < 1:
+        sys.exit('make_movie: --scattered and --clustered of 0 or more, at least one seed, --judge 1 or more')
+    if a.clustered:
+        opts += ['--clustered-seeds', f'{a.scattered}-{n - 1}']
+    fa = argparse.Namespace(route=a.route, fresh=a.fresh, scattered=a.scattered, clustered=a.clustered,
+                            judge=a.judge, jobs=a.jobs, route_jobs=a.route_jobs)
+    got = place_movie.run_flow(fa, board, out, opts, work)
+    if got is None:
+        return 2, None
+    judged, scores, best, full = got
+    rc, rec = record.place(a, [board, os.path.join(work, f'film3d_s{best}.kicad_pcb'), *opts,
+                               '--seed', str(best)])
+    if rec.scene is None:
+        return rc or 2, None
+    rec.placed(rc, rec.hold)
+    film_routes(rec, work, judged, scores, best, full, budget=a.route_frames)
+    subprocess.run([sys.executable, os.path.join(record.REPO, 'py_router', 'copy_board.py'),
+                    os.path.join(work, f's{best}.kicad_pcb'), out], check=False, capture_output=True)
+    print(f"make_movie: {out} = seed {best}; its full route in {os.path.join(work, f'full_s{best}', 'out')}")
+    return rc, record.write(a, rec)
+
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0], allow_abbrev=False,
                                  epilog="BOARD and OUT come first; every other argument is "
                                         "place_simple.py's (--groups, --intent, --seed, ...).")
     record.own_args(ap, work_required=False)
+    from place_simple import ROUND_CLUSTERED, ROUND_JUDGED, ROUND_SCATTERED
+    ap.add_argument('--route', metavar='BOARD:SET',
+                    help="run and film place_movie's placement flow, routing with this "
+                         "stress-corpus board's recorded chain (e.g. ch32v003_usb:6)")
+    ap.add_argument('--scattered', type=int, default=ROUND_SCATTERED,
+                    help=f'with --route, the seeds started scattered (default {ROUND_SCATTERED})')
+    ap.add_argument('--clustered', type=int, default=ROUND_CLUSTERED,
+                    help=f'with --route, the seeds started clustered (default {ROUND_CLUSTERED})')
+    ap.add_argument('--judge', type=int, default=ROUND_JUDGED,
+                    help=f'with --route, the cheapest legal seeds fast-routed (default {ROUND_JUDGED})')
+    ap.add_argument('--jobs', type=int, default=4, help='with --route, placements and routes at once (default 4)')
+    ap.add_argument('--route-jobs', type=int, default=0, help='with --route, fast routes at once (default --jobs)')
+    ap.add_argument('--fresh', action='store_true', help='with --route, empty --route-work first')
+    ap.add_argument('--route-work', help="with --route, the flow's work dir (default: OUT's name + _work, "
+                                         "place_movie's own default, so a 2D flow run's work is reused)")
+    ap.add_argument('--route-frames', type=int, default=240,
+                    help='with --route, past this many router events in a chain, several share a '
+                         'frame (default 240; 0 = one frame each)')
     ap.add_argument('--movie', help="the movie to write (default: OUT's name + _3d.mp4)")
     ap.add_argument('--browser', default=os.environ.get('MOVIE3D_CHROMIUM'),
                     help='a Chromium executable (default: $MOVIE3D_CHROMIUM, else the headless '
@@ -59,7 +126,10 @@ def main(argv=None):
 
     # 1. record
     t0 = time.time()
-    rc, got = record.record(a, rest)
+    if a.route:
+        rc, got = flow(a, rest)
+    else:
+        rc, got = record.record(a, rest)
     t_rec = time.time() - t0
     if not got:
         print('make_movie: place_simple did not get as far as a placement', file=sys.stderr)
@@ -120,8 +190,14 @@ def main(argv=None):
     with open(tp, encoding='utf-8') as f:
         labels = [fr['label'] for fr in json.load(f)['frames']]
     anneal = [i for i, lab in enumerate(labels) if lab.startswith('anneal')]
-    stills = {'start': 0, 'anneal': anneal[len(anneal) // 2] if anneal else len(labels) // 2,
-              'final': len(labels) - 1}
+    stills = {'start': 0, 'anneal': anneal[len(anneal) // 2] if anneal else len(labels) // 2}
+    placed = [i for i, lab in enumerate(labels) if lab.startswith('placed: ')]
+    if a.route and placed:
+        stills['placed'] = placed[-1]
+        fast = [i for i, lab in enumerate(labels) if lab.startswith('fast route, seed')]
+        if fast:
+            stills['fast_route'] = fast[0]
+    stills['final'] = len(labels) - 1
     base = os.path.splitext(movie)[0]
     for name, i in stills.items():
         shutil.copy(os.path.join(frames, f'f{i:05d}.png'), f'{base}_{name}.png')

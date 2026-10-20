@@ -3,13 +3,18 @@
 A 3D take on `py_placer/place_movie.py`. It tells the same placement story
 (the input with its piles, the fixed parts flying to their places, the
 scatter, the anneal, the best placement) on a 3D board, rendered to an .mp4.
-It covers placement only, with no routing. It is a prototype, to judge whether
-a 3D movie is worth more work.
+With `--route`, it also films place_movie's flow: the routes of the best
+seed, with copper appearing and ripped copper going. It is a prototype, to
+judge whether a 3D movie is worth more work.
 
-Everything lives in this directory. It imports the repo's Python modules
-read-only (`place_simple` and its `placement` package, `kicad_parser`,
-`render_theme`, `render_placement.group_palette`) and changes no file outside
-`movie3d/`. Its Node libraries are installed in `movie3d/node_modules` only.
+**The story is shared with the 2D movie.** `py_placer/placement_story.py`
+holds it: place_simple's hooks, the piles, the schedule and the captions.
+`place_movie.py` and this directory are its two renderers. Everything else
+lives in this directory. It imports the repo's Python modules read-only
+(`place_simple` and its `placement` package, `placement_story`,
+`place_movie`'s flow helpers, `route_movie`'s copper helpers, `kicad_parser`,
+`render_theme`, `render_placement.group_palette`). Its Node libraries are
+installed in `movie3d/node_modules` only.
 
 ## Setup
 
@@ -49,6 +54,27 @@ place_simple gives for that seed. The movie is written to OUT's name +
 `_3d.mp4`, or to `--movie`. Three stills go beside it: `_start.png`,
 `_anneal.png` (mid-anneal) and `_final.png`. The JSON and the frames go to
 OUT's name + `_movie3d/` (or `--work`).
+
+With place_movie's flow and routing (a stress-corpus board whose recorded
+chain routes this one):
+
+```bash
+python3 -X utf8 movie3d/make_movie.py BOARD OUT.kicad_pcb \
+    --groups groups.json --intent intent.json --route ch32v003_usb:6
+```
+
+This runs place_movie's own `run_flow`, in `--route-work` (default: OUT's
+name + `_work`, place_movie's default, so a 2D flow run's work is reused):
+
+1. the round's seeds are placed (`--scattered` 6, `--clustered` 6);
+2. the `--judge` 6 cheapest legal seeds are fast-routed;
+3. the best of them is routed in full.
+
+The movie records the best seed's placement, then plays its routes on the 3D
+board. OUT is that seed. The stills add `_placed.png` and `_fast_route.png`.
+Options for the flow: `--jobs`, `--route-jobs`, `--fresh` and
+`--route-frames` (past this many router events in a chain, several share a
+frame; 240).
 
 From a fresh clone (tigard, 89 parts):
 
@@ -118,6 +144,22 @@ Over the whole movie the camera orbits slowly, 20 degrees either side of a
 base azimuth, at 46 degrees of elevation. Each frame is fitted to the board,
 or to the board and the piles.
 
+With `--route`, the placed seed's routes follow, as place_movie's 2D flow
+plays them:
+
+1. The board turns see-through (55% opaque), so the back's copper shows
+   through it.
+2. The fast route plays: one router event per frame. New copper is lit white
+   (cyan when the router restored it). A ripped track turns magenta, then
+   goes; the 2D movie uses red, but F.Cu is red here. Whatever else a step
+   changed (a pour, the fanout, a step with no trace) then lands net by net.
+3. A caption gives the judged seeds' scores.
+4. The fast route is cleared, net by net.
+5. The full route plays the same way.
+
+Copper is drawn per layer in the theme's layer colours, vias as barrels,
+pours as tinted flats clipped to the board.
+
 The base azimuth keeps the action in view. For every 10 degrees,
 `record.Recorder._hidden` measures how much the tall bodies (0.9 mm and
 taller) hide of the other parts, from the anneal on. A part counts as hidden
@@ -128,9 +170,18 @@ view across the board's long side wins a near tie.
 
 ## How it works
 
-- `record.py` runs `place_simple.main` in-process. It uses place_movie's hooks
-  (`build`, `scatter`, `anneal`, and `Annealer.start_temperature`/`trial`/`overlap`),
-  which only read the state and pass every call through. It writes two files:
+- `py_placer/placement_story.py` (shared with `place_movie.py`) is the story.
+  Its hooks (`build`, `scatter`, `anneal`, and
+  `Annealer.start_temperature`/`trial`/`overlap`) only read the state and pass
+  every call through, so the placement is place_simple's own. It decides what
+  is shot when, and calls a renderer's primitives (`setup`, `shot`, `view_of`,
+  `set_view`). The 2D renderer is place_movie's `Film`; its output is
+  unchanged by the move: the same frames, hash for hash, on ch32 seed 0, both
+  with and without `--route`.
+- `record.py`'s `Recorder` is the 3D renderer. Each shot becomes a timeline
+  row, and the 3D beats are overrides: arcs, the table, the staggered scatter,
+  the tweened anneal, the glide back to the best placement. It runs
+  `place_simple.main` in-process and writes two files:
   - `scene.json`: every part in its own frame (pads, courtyard, body, side,
     colour), plus the nets and the key;
   - `timeline.json`: one row per frame, with every part's
@@ -145,6 +196,10 @@ view across the board's long side wins a near tie.
   re-render or another seed does not export again. kicad-cli writes no
   metallic factor, and glTF's default of 1 makes every model a black mirror,
   so the page sets each model material's metalness to 0.15.
+- `route3d.py` plays a route_placed.py chain as route_movie's `play_chain`
+  does, with its own helpers. Each track, via and pour gets the tick it was
+  born at and the tick it died at (stage3d's copper lifetimes). A frame names
+  one tick, and the page's shader shows, lights or reddens each item for it.
 - `render.mjs` uses Node and playwright-core to open `page/index.html` in
   headless Chromium on SwiftShader (CPU WebGL, so the pixels do not depend on
   the GPU). The page is served through `page.route` from a fake host, so
@@ -165,25 +220,26 @@ view across the board's long side wins a near tie.
 - the three.js version (r186).
 
 Also reused: stage3d's kicad-cli GLB model export and its re-pose,
-`F(now) · F(export)⁻¹`. Its copper timeline and Blender paths were not
-carried over.
+`F(now) · F(export)⁻¹`, and its copper-lifetime idea and track quads. Its
+Blender path and its board flip were not carried over.
 
 ## Limits
 
-- Placement only: there is no `--route` flow and no round of seeds.
+- The routing half shows one seed's routes. The 2D movie's grid of the judged
+  seeds is a caption here.
+- Back-side copper shows only through the see-through board, and faintly. The
+  board does not turn over, as stage3d's did.
 - A part whose model is missing from the installed library is a box with a
   guessed height. On ch32, U3's `QFN-20-1EP_3x3mm_P0.45mm` is not in KiCad
   10's library. The occlusion measure uses the guessed heights even for parts
-  drawn from models. A custom pad is drawn as its bounding box. No copper,
-  silkscreen or zones are drawn.
+  drawn from models. A custom pad is drawn as its bounding box. No silkscreen
+  is drawn, and in a flow a pour is drawn by its zone outline, not its fill.
 - Models make rendering slower: 110 ms per frame on ch32, against 72 ms with
   boxes.
 - A part the intent puts on the other face, or at a declared pose, is drawn
   there from the first frame. The 2D movie shows it moving there.
 - Early in the anneal one step covers about a hundred moves, so a tween is a
   straight slide from one snapshot to the next, not the path the part took.
-- The story code (piles, schedule, captions) is a copy of place_movie's, not
-  shared with it, so the two can drift apart.
 - Airwires are 1 px lines, because WebGL draws lines 1 px wide.
 - The occlusion measure uses the guessed box heights and part centres only.
-- Tested on two boards: a 25-part one and tigard.
+- Tested on two boards: a 25-part one (with `--route` too) and tigard.

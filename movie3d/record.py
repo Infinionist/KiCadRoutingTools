@@ -4,31 +4,35 @@
     python3 -X utf8 movie3d/record.py BOARD OUT.kicad_pcb --work DIR \\
         --groups groups.json --intent intent.json --seed 0
 
-BOARD and OUT come first; every argument but this tool's own (--work,
---frames, --speedup, --fps) is place_simple.py's.
+BOARD and OUT come first; every argument but this tool's own is
+place_simple.py's.
 
-place_simple runs IN-PROCESS with hooks that only read its state and pass
-every call through (the idea of py_placer/place_movie.py's `install`), so the
-placement is place_simple's own for the same seed and OUT is its output.
-Nothing in the repo is changed: the hooks patch the imported modules in this
-process only.
+The story is the 2D movie's own: `py_placer/placement_story.py` (shared with
+`place_movie.py`) hooks place_simple's run -- read-only, so the placement and
+OUT are place_simple's for the same seed -- and decides what happens when:
+the piles, the fixed parts flying to their places, the scatter, the anneal's
+schedule and captions, the best placement, placed. `Recorder` is its 3D
+renderer: each shot becomes a timeline row, and the 3D beats are its
+overrides -- parts off the board lie on a table below it, a part travelling
+to its place arcs up and over, the pile takes off part by part while the
+camera closes in, and each anneal snapshot plays as a short move with a hop.
 
 Writes two JSON files into --work, which the page (page/movie3d.mjs) draws:
 
   scene.json     the board (outline, cutouts, thickness), every part in its
                  OWN frame (pads, courtyard, a body box with a height by part
                  kind), its side and group colour, the nets the airwires join,
-                 the key and the colours;
+                 the key and the colours; and, from models.py, the parts'
+                 KiCad models (a GLB) and the poses they were exported at;
   timeline.json  one entry per movie frame: every part's pose [x, y, rot,
                  height of its mounting face], the parts that just moved, the
                  caption, the box the camera frames and the camera's azimuth
-                 and elevation.
-
-The story is place_movie's: the input with its piles, the fixed parts flying
-to their places, the scatter, the anneal (played faster as it goes), the
-best placement, placed. In 3D, parts off the board lie on a table below it,
-and a part travelling to its place arcs up and over.
+                 and elevation (and, in a flow movie, the copper's tick).
 """
+#: #937 registry: a prototype in its own directory, in no door; it writes
+#: OUT (place_simple's placed board). Read by krt_registry.py by AST.
+KRT_TOOL = {'scope': [], 'kind': 'actor'}
+
 import argparse
 import json
 import math
@@ -42,6 +46,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(REPO, 'py_placer'))
 import _path  # noqa: E402,F401  (py_router and py_tools on sys.path, as for every py_placer script)
+from placement_story import Story, _ease, _lerp, install  # noqa: E402
 
 FRAMES = 120        # anneal frames per run (place_movie's default): the budget the tweens share
 TWEEN = 3           # frames each anneal step takes: FRAMES / TWEEN snapshots, each played as a move
@@ -51,7 +56,6 @@ FPS = 12.0
 FLY = 8             # frames a fixed part takes to fly to its place (at most)
 GLIDE = 20          # frames the pile takes to reach the places it is seeded at
 ZOOM_FROM = 0.3     # how far into the glide the camera starts closing in on the board
-PILE_GAP = 2.0      # mm off the board's edge each pile lies, at most
 HOLD_S = 0.6        # seconds a step's frame holds
 END_S = 3.0         # seconds on the placed board (the camera keeps orbiting)
 TABLE = -3.0        # the table under the board (y of its top); the board stands above it
@@ -73,20 +77,6 @@ PREFIX_HEIGHTS = {'R': 0.35, 'C': 0.5, 'L': 0.8, 'FB': 0.5, 'D': 0.45, 'LED': 0.
                   'P': 3.0, 'BT': 3.0, 'F': 1.0}
 #: Parts drawn by their courtyard (mechanical bodies), not by their pad field.
 COURT_BODY = ('J', 'P', 'SW', 'S', 'BT')
-
-
-def _ease(t):
-    return t * t * (3 - 2 * t)
-
-
-def _lerp(a, b, t):
-    return tuple(x + (y - x) * t for x, y in zip(a, b))
-
-
-def _union(rects):
-    rects = list(rects)
-    return (min(q[0] for q in rects), min(q[1] for q in rects),
-            max(q[2] for q in rects), max(q[3] for q in rects))
 
 
 def _prefix(ref):
@@ -165,25 +155,25 @@ def part_scene(ref, fp, part, colour, fixed):
             'color': list(colour) if colour else None, 'fixed': fixed}
 
 
-class Recorder:
-    """Records the placement state as frames. `start` is called with
-    place_simple's built state; the anneal's hooks call `on_*`."""
+class Recorder(Story):
+    """The placement story, recorded as timeline rows for the 3D page. The
+    Story (placement_story.py) decides what happens when; this supplies the
+    renderer's primitives and plays the 3D beats its own way."""
 
     def __init__(self, a):
-        self.a = a
+        super().__init__(a)
         self.frames = []
-        self.run = 0
         self.scene = None
+        self.view = None
+        self.extra = {}         # fields every row carries from now on (a flow movie's copper)
 
-    # -- setup ----------------------------------------------------------------
-    def start(self, pcb, board, args, built):
+    # -- the renderer the story draws through ---------------------------------
+    def setup(self, pcb, board, args):
         from shapely.geometry import Point, Polygon
         from placement.grouping import is_ground, load_groups
         from render_placement import group_palette
         import render_theme
-        self.state, self.model, self.movable, _notes = built
         st = self.state
-        self.pcb = pcb
         # the board the parts' models are exported from: the one placed (the
         # input, or place_simple's copy with the declared faces written), its
         # model paths resolved against the ORIGINAL board's directory
@@ -257,90 +247,44 @@ class Recorder:
                        'band': list(th.rgb('chrome_band')), 'text': list(th.rgb('chrome_text'))}}
         diag = math.hypot(bx1 - bx0, by1 - by0)
         self.arc = min(15.0, max(2.5, 0.15 * diag))
-        # the piles, as place_movie lays them out: the movable parts where
-        # they lie before the scatter, moved to PILE_GAP mm off the board's
-        # nearest edge, and the fixed parts in a pile of their own off
-        # another edge
-        self.pile = {r: (p.x, p.y, p.rot) for r, p in st.parts.items() if r in self.movable}
-        mside = None
-        if self.pile:
-            px0, py0, px1, py1 = _union(st.parts[r].rect() for r in self.pile)
-            gaps = {'below': py0 - by1, 'above': by0 - py1, 'right': px0 - bx1, 'left': bx0 - px1}
-            side, gap = max(gaps.items(), key=lambda kv: kv[1])
-            if gap > PILE_GAP:
-                move, mside = gap - PILE_GAP, side
-                dx = {'right': -move, 'left': move}.get(side, 0.0)
-                dy = {'below': -move, 'above': move}.get(side, 0.0)
-                self.pile = {r: (x + dx, y + dy, q) for r, (x, y, q) in self.pile.items()}
-        fixed = sorted(r for r in st.parts if r not in self.movable)
-        self.fixed_pile = self._fixed_pile(fixed, mside)
-        # each view is [x0, y0, x1, y1, lowest, highest]: the board's box, and
-        # with the piles in view, the table's height too
+
+    @property
+    def frame_size(self):
+        return self.a.width, self.a.height
+
+    def view_of(self, box, wide=False):
+        """[x0, y0, x1, y1, lowest, highest]: the board's box (1 mm round it),
+        or with the piles in view, down to the table."""
         top = self.d + 2.5
-        self.home = (bx0 - 1.0, by0 - 1.0, bx1 + 1.0, by1 + 1.0, 0.0, top)
-        piled = list(self._rects_at({**self.pile, **self.fixed_pile}).values())
-        u = _union([self.home[:4]] + piled)
-        self.wide = ((u[0] - 1.0, u[1] - 1.0, u[2] + 1.0, u[3] + 1.0, TABLE, top)
-                     if u != self.home[:4] else None)
-        self.view = self.wide or self.home
-        poses = {**self.pile, **self.fixed_pile}
-        self.shot(f"input: {len(st.parts)} parts, {len(self.movable)} movable, {len(fixed)} fixed",
-                  times=2 * self.hold, poses=poses)
-        # the fixed parts fly to their places, biggest first, each arcing over
-        size = {r: (lambda q: (q[2] - q[0]) * (q[3] - q[1]))(st.parts[r].rect()) for r in self.fixed_pile}
-        order = sorted(self.fixed_pile, key=lambda r: (-size[r], r))
-        fly = max(3, min(FLY, 48 // max(1, len(order))))
-        for k, ref in enumerate(order, 1):
-            home = (st.parts[ref].x, st.parts[ref].y, st.parts[ref].rot)
-            for i in range(1, fly + 1):
-                t = _ease(i / fly)
-                poses[ref] = _lerp(self.fixed_pile[ref], home, t)
-                lifts = {ref: self._arc(ref, self.fixed_pile[ref], home, t)}
-                self.shot(f"fixed parts: {ref} to its place ({k}/{len(order)})", moved=[ref],
-                          poses=poses, lifts=lifts)
-            del poses[ref]
+        if wide:
+            return (box[0], box[1], box[2], box[3], TABLE, top)
+        return (box[0] - 1.0, box[1] - 1.0, box[2] + 1.0, box[3] + 1.0, 0.0, top)
+
+    def set_view(self, view):
+        self.view = view
+
+    def _pile_scale(self, u):
+        # the camera looks across the board's long side: fit either way round
+        W, H = self.frame_size
+        return max(min(W / (u[2] - u[0]), H / (u[3] - u[1])), min(W / (u[3] - u[1]), H / (u[2] - u[0])))
+
+    def _wide_extent(self):
+        # the board and the piles as drawn (not the parts where the file
+        # left them: the movable pile is drawn moved up to the board)
+        return [self.bounds] + list(self._rects_at({**self.pile, **self.fixed_pile}).values())
+
+    # -- the 3D beats -----------------------------------------------------------
+    def intro_times(self):
+        return 2 * self.hold
+
+    def fly_frames(self, n):
+        return max(3, min(FLY, 48 // max(1, n)))
+
+    def fly_shot(self, label, ref, frm, to, t, poses):
+        self.shot(label, moved=[ref], poses=poses, lifts={ref: self._arc(ref, frm, to, t)})
+
+    def after_fly(self, poses):
         self.shot("fixed parts in place", times=self.hold, poses=poses)
-
-    def _rects_at(self, poses):
-        out = {}
-        for r, (x, y, _q) in poses.items():
-            p = self.state.parts[r]
-            a, b, c, d = p.rect()
-            out[r] = (a + x - p.x, b + y - p.y, c + x - p.x, d + y - p.y)
-        return out
-
-    def _fixed_pile(self, refs, taken):
-        """place_movie's fixed pile: PILE_GAP mm off the edge (not `taken`)
-        that leaves the board biggest in a 16:9 frame."""
-        if not refs:
-            return {}
-        st = self.state
-        bx0, by0, bx1, by1 = self.pcb.board_info.board_bounds
-        rs = {r: st.parts[r].rect() for r in refs}
-        mw = max(q[2] - q[0] for q in rs.values())
-        mh = max(q[3] - q[1] for q in rs.values())
-        cx, cy = (bx0 + bx1) / 2, (by0 + by1) / 2
-        anchors = {'above': (cx, by0 - PILE_GAP - mh / 2), 'below': (cx, by1 + PILE_GAP + mh / 2),
-                   'left': (bx0 - PILE_GAP - mw / 2, cy), 'right': (bx1 + PILE_GAP + mw / 2, cy)}
-        rng = random.Random(0)
-        jit = {r: (rng.uniform(-1, 1), rng.uniform(-1, 1)) for r in sorted(refs)}
-        reach = min(1.0, 0.15 * max(mw, mh))
-        W, H = self.a.width, self.a.height
-        best = None
-        for side, (ax, ay) in anchors.items():
-            if side == taken:
-                continue
-            piled = {}
-            for r, q in rs.items():
-                p = st.parts[r]
-                tx, ty = ax + jit[r][0] * reach, ay + jit[r][1] * reach
-                piled[r] = (p.x + tx - (q[0] + q[2]) / 2, p.y + ty - (q[1] + q[3]) / 2, p.rot)
-            u = _union([(bx0, by0, bx1, by1)] + list(self._rects_at({**self.pile, **piled}).values()))
-            # the camera looks across the board's long side: fit either way round
-            s = max(min(W / (u[2] - u[0]), H / (u[3] - u[1])), min(W / (u[3] - u[1]), H / (u[2] - u[0])))
-            if best is None or s > best[0]:
-                best = (s, piled)
-        return best[1]
 
     # -- heights ----------------------------------------------------------------
     def base(self, ref, x, y):
@@ -358,9 +302,11 @@ class Recorder:
         return h0 + (h1 - h0) * t + min(self.arc, 0.5 * dist + 0.5) * math.sin(math.pi * t)
 
     # -- frames -----------------------------------------------------------------
-    def shot(self, label, moved=(), times=1, poses=None, lifts=None):
+    def shot(self, label, moved=(), times=1, given=None, poses=None, key=True, lifts=None, **extra):
         """One frame of the state as it stands; `poses` draws those parts at
-        another pose (a glide), `lifts` at another height (a hop)."""
+        another pose (a glide), `lifts` at another height (a hop). `given`
+        and `key` are the 2D movie's: a declared face or pose is drawn from
+        the first frame here, and the key is always on."""
         poses, lifts = poses or {}, lifts or {}
         st = self.state
         row = []
@@ -376,10 +322,19 @@ class Recorder:
             h = lifts[r] if r in lifts else self.base(r, x, y)
             row.append([round(x, 4), round(y, 4), round(q, 3), round(h, 3)])
         rec = {'p': row, 'label': label, 'view': [round(v, 3) for v in self.view],
-               'moved': sorted(self.idx[r] for r in set(moved) if r in self.idx)}
+               'moved': sorted(self.idx[r] for r in set(moved) if r in self.idx),
+               **self.extra, **extra}
         self.frames.extend([rec] * times)
 
-    # -- the run's hooks (place_movie's) ---------------------------------------
+    def copper_shot(self, label, times=1, alpha=None):
+        """A frame of a flow movie's routing half (route3d.py): the placed
+        board, its copper at the current tick, no airwires, the board
+        see-through."""
+        from route3d import ROUTE_ALPHA
+        self.shot(label, times=times, tick=self.cop.tick, air=False,
+                  alpha=ROUTE_ALPHA if alpha is None else round(alpha, 4))
+
+    # -- the run's hooks, the 3D way ---------------------------------------------
     def on_scatter(self, seed, clustered=False):
         self.run += 1
         if self.run > 1:
@@ -406,21 +361,20 @@ class Recorder:
         self.view = self.home
         self.shot(label, times=self.hold)
 
+    def anneal_snapshots(self):
+        return self.a.frames // max(1, self.a.tween)
+
     def on_anneal(self, moves):
-        # snapshot i of F is taken at move N g(i/F): g' grows linearly to
-        # SPEEDUP times its start, so the play speeds up that much. The frame
-        # budget is shared: F = frames / tween snapshots, each played as a
-        # move of `tween` frames
+        # the frame budget is shared: --frames / --tween snapshots, each
+        # played as a move of --tween frames
         self.tween = max(1, self.a.tween)
-        f = max(1, self.a.frames // self.tween)
-        sp = max(1.0, self.a.speedup)
-        g = lambda u: (u + (sp - 1) / 2 * u * u) / ((sp + 1) / 2)  # noqa: E731
-        self.marks = [max(1, math.ceil(moves * g(i / f))) for i in range(1, f + 1)]
-        self.n, self.k, self.mi, self.T = moves, 0, 0, math.inf
-        self.since, self.note = set(), ''
+        super().on_anneal(moves)
         self.prev = self._poses()
         if getattr(self, 'anneal_from', None) is None:
             self.anneal_from = len(self.frames)
+
+    def snapshot(self, label, moved, annealer):
+        self.play(label, moved, 1 if annealer.shoving else self.tween)
 
     def _poses(self):
         return {r: (p.x, p.y, p.rot) for r, p in self.state.parts.items() if r in self.movable}
@@ -444,40 +398,6 @@ class Recorder:
             self.shot(label, moved=moved, poses=poses, lifts=lifts)
         self.prev = cur
 
-    def on_seats(self, a):
-        if a.seats:
-            self.shot(f"edge seats: {', '.join(sorted(a.seats))} held to their declared edges",
-                      moved=a.seats, times=self.hold)
-
-    def on_total(self, cost):
-        self.cost = cost
-
-    def on_overlap(self, ov):
-        self.ov = ov
-
-    def on_trial(self, a, new, T, res):
-        kept, dc, do = res
-        if T > self.T * 1.5:          # the second start of the half-turn trial
-            self.k, self.mi, self.note = 0, 0, ' (long edge parts turned half round)'
-        self.T = T
-        self.k += 1
-        if kept:
-            self.cost += dc
-            self.ov = max(0.0, self.ov + do)
-            self.since |= set(new)
-        if a.shoving:
-            due = self.k % 5 == 0
-        else:
-            due = self.mi < len(self.marks) and self.k >= self.marks[self.mi]
-            while self.mi < len(self.marks) and self.k >= self.marks[self.mi]:
-                self.mi += 1
-        if due:
-            what = 'repair: shoving the overlaps apart' if a.shoving else \
-                f"anneal{self.note}: move {self.k}/{self.n}"
-            self.play(f"{what} | T {T:.3g} | cost {self.cost:.0f} | overlap {self.ov:.2f} mm2",
-                      self.since, 1 if a.shoving else self.tween)
-            self.since = set()
-
     def on_annealed(self, res):
         legal = res.get('reseated') or []
         label = (f"best placement, cost {res['best']:.0f}"
@@ -486,11 +406,6 @@ class Recorder:
         back = [r for r, q in self._poses().items() if q != self.prev.get(r, q)]
         self.play(label, set(back) | set(legal), 2 * self.tween)
         self.shot(label, moved=legal, times=self.hold)
-
-    def placed(self, rc):
-        cost = self.model.total()['cost']
-        label = f"placed: cost {cost:.0f}" + (' | parts left illegal (see the log)' if rc == 4 else '')
-        self.shot(label, times=max(1, int(round(END_S * self.a.fps))))
 
     def _hidden(self, base, step=4):
         """How much the tall parts hide of the parts that move, over the
@@ -553,62 +468,6 @@ class Recorder:
                 'refs': self.refs, 'base_az': self.base_az, 'frames': out}
 
 
-def install(rec):
-    """Hook the recorder into place_simple's run (place_movie's `install`).
-    The hooks only read the state and pass every call through."""
-    import place_simple
-    from placement import simple_anneal
-    from placement.simple_anneal import Annealer
-
-    build = place_simple.build
-
-    def _build(pcb, board, doc, base, args, *k, **kw):
-        out = build(pcb, board, doc, base, args, *k, **kw)
-        model = out[1]
-        total = model.total
-
-        def _total(*a, **kk):
-            t = total(*a, **kk)
-            rec.on_total(t['cost'])
-            return t
-        model.total = _total
-        rec.start(pcb, board, args, out)
-        return out
-    place_simple.build = _build
-
-    scatter, anneal = simple_anneal.scatter, simple_anneal.anneal
-
-    def _scatter(model, movable, seed=0, clustered=False):
-        scatter(model, movable, seed=seed, clustered=clustered)
-        rec.on_scatter(seed, clustered)
-    simple_anneal.scatter = _scatter
-
-    def _anneal(model, movable, **kw):
-        rec.on_anneal(kw.get('moves', 11000))
-        res = anneal(model, movable, **kw)
-        rec.on_annealed(res)
-        return res
-    simple_anneal.anneal = _anneal
-
-    start_t, trial, overlap = Annealer.start_temperature, Annealer.trial, Annealer.overlap
-
-    def _start_t(self, *a, **kw):
-        rec.on_seats(self)
-        return start_t(self, *a, **kw)
-
-    def _trial(self, new, T):
-        res = trial(self, new, T)
-        rec.on_trial(self, new, T, res)
-        return res
-
-    def _overlap(self, refs=None):
-        ov = overlap(self, refs)
-        if refs is None:
-            rec.on_overlap(ov)
-        return ov
-    Annealer.start_temperature, Annealer.trial, Annealer.overlap = _start_t, _trial, _overlap
-
-
 def attach_models(a, rec):
     """The parts' KiCad models (models.py), named in the scene; a part
     without one keeps its box. Prints what fell back."""
@@ -662,25 +521,37 @@ def own_args(ap, work_required=True):
     ap.add_argument('--height', type=int, default=560, help='frame height, px (default 560)')
 
 
-def record(a, rest):
-    """Run place_simple with the recorder; write scene.json and
-    timeline.json into a.work. Returns (place_simple's exit code, paths)."""
+def place(a, rest):
+    """Run place_simple (`rest`: BOARD OUT and its options) with a Recorder
+    hooked in. Returns (place_simple's exit code, the recorder)."""
     rec = Recorder(a)
     install(rec)
     import place_simple
     os.makedirs(a.work, exist_ok=True)
     os.makedirs(os.path.dirname(os.path.abspath(rest[1])), exist_ok=True)
-    rc = place_simple.main(rest)
-    if rec.scene is None:
-        return rc, None
-    rec.placed(rc)
+    return place_simple.main(rest), rec
+
+
+def write(a, rec):
+    """The parts' models attached, scene.json and timeline.json written into
+    a.work. Returns (scene path, timeline path, frame count)."""
     attach_models(a, rec)
     sp, tp = os.path.join(a.work, 'scene.json'), os.path.join(a.work, 'timeline.json')
     with open(sp, 'w', encoding='utf-8') as f:
         json.dump(rec.scene, f)
     with open(tp, 'w', encoding='utf-8') as f:
         json.dump(rec.finish(), f)
-    return rc, (sp, tp, len(rec.frames))
+    return sp, tp, len(rec.frames)
+
+
+def record(a, rest):
+    """The placement movie's recording: place, the placed board held,
+    written. Returns (place_simple's exit code, write()'s paths or None)."""
+    rc, rec = place(a, rest)
+    if rec.scene is None:
+        return rc, None
+    rec.placed(rc, max(1, int(round(END_S * a.fps))))
+    return rc, write(a, rec)
 
 
 def main(argv=None):
