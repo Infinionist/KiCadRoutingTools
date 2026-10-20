@@ -31,6 +31,11 @@ downloads it into that per-user cache, or point `--browser` (or
 Also needed: `ffmpeg` on PATH and Node 18 or newer. Python needs nothing
 beyond the repo's own `requirements.txt`.
 
+**Part models** need KiCad's `kicad-cli` (KiCad 10, with its 3D model
+library). It is found through `--kicad-cli`, then `$KICAD_CLI`, then the
+repo's `kicad_oracle` resolver, then `/Applications/KiCad/KiCad.app`, then
+PATH. Without it, every part is drawn as a box.
+
 ## Make a movie
 
 ```bash
@@ -54,14 +59,18 @@ python3 -X utf8 movie3d/make_movie.py kicad_files/tigard.kicad_pcb movie3d/out/t
     --groups docs/examples/tigard.groups.json --intent movie3d/out/tigard.intent.json --seed 0
 ```
 
-On an M-series Mac this takes about 35 s: record 12 s (place_simple's own
-anneal), render 21 s (213 frames at 90 ms each, SwiftShader), encode 1 s. The
-result is 18 s of movie at 12 fps, 3.1 MB.
+On an M-series Mac this takes about 65 s: record 16 s (place_simple's own
+anneal 12 s, the model export 4 s the first time), render 48 s (218 frames at
+216 ms each, SwiftShader), encode 1 s. The result is 18 s of movie at 12 fps,
+4.6 MB. 78 of the 89 parts are drawn from their KiCad models; the console
+names the rest.
 
 Own options: `--movie`, `--fps` (12), `--width`/`--height` (1000x560),
 `--frames` (anneal frames, tweens included, 120), `--tween` (frames per anneal
 step, 3; 1 gives the 2D movie's cuts), `--speedup` (how much faster the anneal
-plays at its end, 4), `--work`, `--browser`, `--crf` (20).
+plays at its end, 4), `--no-models` (boxes only), `--kicad-cli`, `--tint` (how
+far each model's colours go toward its group's colour, 0.7), `--work`,
+`--browser`, `--crf` (20).
 
 ## What it shows
 
@@ -71,10 +80,15 @@ plays at its end, 4), `--work`, `--browser`, `--crf` (20).
 - **Each part**:
   - its pads, with dark drills;
   - its courtyard, as a plate tinted in its group's colour;
-  - a body box. Connectors and switches use the courtyard, inset 0.25 mm; all
-    other parts use the pad field, inset. The height is a guess from the
-    footprint name or the reference prefix (`NAME_HEIGHTS` and
-    `PREFIX_HEIGHTS` in `record.py`).
+  - its body: its **KiCad 3D model**, with its colours tinted toward its
+    group's colour (`--tint`). The models come from `models.py`: kicad-cli
+    exports the placed board's parts as one GLB, and the page re-poses each
+    part's node every frame.
+  - A part without a model falls back to a **box**, and the console says
+    which parts did. Connectors and switches get a box the size of the
+    courtyard, inset 0.25 mm; all other parts get the pad field, inset. The
+    height is a guess from the footprint name or the reference prefix
+    (`NAME_HEIGHTS` and `PREFIX_HEIGHTS` in `record.py`).
   - Fixed parts are grey and see-through, so they never hide the parts that
     move. Unassembled parts with no model (test pads, solder jumpers) get no
     body. A back-side part hangs below the board. Parts off the board lie on
@@ -122,6 +136,15 @@ view across the board's long side wins a near tie.
   - `timeline.json`: one row per frame, with every part's
     `[x, y, rot, height]`, the caption, the parts that moved, the camera's box
     and its azimuth.
+- `models.py` exports the parts' models with
+  `kicad-cli pcb export glb --no-board-body --subst-models`. It first stages
+  the board: each model path is made absolute, a `.wrl` the library no longer
+  ships is pointed at its `.step` twin, and a still-missing model is found by
+  its file name in the library. The GLB is cached in `movie3d/cache/<key>/`
+  (gitignored), keyed by the staged board and kicad-cli's version, so a
+  re-render or another seed does not export again. kicad-cli writes no
+  metallic factor, and glTF's default of 1 makes every model a black mirror,
+  so the page sets each model material's metalness to 0.15.
 - `render.mjs` uses Node and playwright-core to open `page/index.html` in
   headless Chromium on SwiftShader (CPU WebGL, so the pixels do not depend on
   the GPU). The page is served through `page.route` from a fake host, so
@@ -141,14 +164,20 @@ view across the board's long side wins a near tie.
 - the body and not-assembled rules;
 - the three.js version (r186).
 
-The real-model (kicad-cli GLB), copper-timeline and Blender paths were not
+Also reused: stage3d's kicad-cli GLB model export and its re-pose,
+`F(now) · F(export)⁻¹`. Its copper timeline and Blender paths were not
 carried over.
 
 ## Limits
 
 - Placement only: there is no `--route` flow and no round of seeds.
-- Bodies are boxes with guessed heights, with no real 3D models. A custom pad
-  is drawn as its bounding box. No copper, silkscreen or zones are drawn.
+- A part whose model is missing from the installed library is a box with a
+  guessed height. On ch32, U3's `QFN-20-1EP_3x3mm_P0.45mm` is not in KiCad
+  10's library. The occlusion measure uses the guessed heights even for parts
+  drawn from models. A custom pad is drawn as its bounding box. No copper,
+  silkscreen or zones are drawn.
+- Models make rendering slower: 110 ms per frame on ch32, against 72 ms with
+  boxes.
 - A part the intent puts on the other face, or at a declared pose, is drawn
   there from the first frame. The 2D movie shows it moving there.
 - Early in the anneal one step covers about a hundred moves, so a tween is a

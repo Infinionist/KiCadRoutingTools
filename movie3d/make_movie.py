@@ -70,8 +70,10 @@ def main(argv=None):
     # 2. render
     frames = os.path.join(a.work, 'frames')
     shutil.rmtree(frames, ignore_errors=True)
+    with open(sp, encoding='utf-8') as f:
+        glb = (json.load(f).get('glb') or {}).get('path')
     job = {'browser': a.browser, 'width': a.width, 'height': a.height, 'outDir': frames,
-           'scene': sp, 'timeline': tp}
+           'scene': sp, 'timeline': tp, 'glb': glb}
     jp = os.path.join(a.work, 'job.json')
     with open(jp, 'w', encoding='utf-8') as f:
         json.dump(job, f)
@@ -87,7 +89,8 @@ def main(argv=None):
         kind = msg.get('type')
         if kind == 'info':
             print(f"make_movie: rendering on {msg.get('renderer')} (Chromium {msg.get('browser')}, "
-                  f"three r{msg.get('three')})")
+                  f"three r{msg.get('three')}); {msg.get('models', 0)} part models loaded"
+                  + (f" -- MODELS FAILED: {msg['modelError']}" if msg.get('modelError') else ''))
         elif kind == 'progress':
             print(f"  {msg['done']}/{msg['of']} frames", flush=True)
         elif kind == 'done':

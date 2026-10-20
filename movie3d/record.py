@@ -36,6 +36,7 @@ import os
 import random
 import re
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -183,6 +184,11 @@ class Recorder:
         self.state, self.model, self.movable, _notes = built
         st = self.state
         self.pcb = pcb
+        # the board the parts' models are exported from: the one placed (the
+        # input, or place_simple's copy with the declared faces written), its
+        # model paths resolved against the ORIGINAL board's directory
+        with open(board, encoding='utf-8') as f:
+            self.model_src = (f.read(), os.path.dirname(os.path.abspath(args.board)))
         self.hold = max(1, int(round(HOLD_S * self.a.fps)))
         th = render_theme.theme('dark', strict=False)
         # each group with a movable member its own colour, as place_movie
@@ -239,6 +245,11 @@ class Recorder:
         self.scene = {
             'thickness': round(self.d, 4), 'real_thickness': round(real, 4), 'table': TABLE, 'bounds': [bx0, by0, bx1, by1],
             'outline': outline, 'cutouts': cutouts, 'parts': parts, 'nets': nets, 'key': key,
+            'glb': None,
+            # the poses the models are exported at: the page re-poses each by
+            # F(now) F(export)^-1
+            'export_poses': {r: [pcb.footprints[r].x, pcb.footprints[r].y,
+                                 pcb.footprints[r].rotation or 0.0, self.side[r]] for r in self.refs},
             'colors': {'ground': list(th.rgb('ground')), 'board': [24, 74, 48],
                        'edge': list(th.rgb('board_edge')), 'pad': list(th.rgb('pad')),
                        'hole': list(th.rgb('pad_hole')), 'air': [150, 162, 185],
@@ -598,6 +609,35 @@ def install(rec):
     Annealer.start_temperature, Annealer.trial, Annealer.overlap = _start_t, _trial, _overlap
 
 
+def attach_models(a, rec):
+    """The parts' KiCad models (models.py), named in the scene; a part
+    without one keeps its box. Prints what fell back."""
+    sc = rec.scene
+    sc['tint'] = max(0.0, min(1.0, a.tint))
+    if a.no_models:
+        print('record: models off (--no-models): every part is a box')
+        return
+    import models
+    t0 = time.time()
+    info, why = models.export(rec.model_src[0], rec.model_src[1], rec.refs, cli=a.kicad_cli)
+    if info is None:
+        print(f'record: no part models ({why}); every part is a box')
+        return
+    matched = set(info['matched'])
+    for p in sc['parts']:
+        p['model'] = p['ref'] in matched
+    boxed = sorted(p['ref'] for p in sc['parts'] if not p['model'] and p['body'])
+    bare = sorted(p['ref'] for p in sc['parts'] if not p['model'] and not p['body'])
+    sc['glb'] = {'path': info['path'], 'matched': sorted(matched)}
+    rec.model_report = {'models': len(matched), 'parts': len(sc['parts']), 'boxes': boxed,
+                        'bare': bare, 'cached': info['cached']}
+    print(f"record: {len(matched)} of {len(sc['parts'])} parts drawn from their KiCad model "
+          f"({'cached' if info['cached'] else f'exported in {time.time() - t0:.1f} s'}"
+          + (f"; {info['note']}" if info['note'] else '') + "); "
+          + (f"{len(boxed)} fell back to a box ({', '.join(boxed)})" if boxed else 'none fell back to a box')
+          + (f"; {len(bare)} have no model and nothing assembled ({', '.join(bare)})" if bare else ''))
+
+
 def own_args(ap, work_required=True):
     ap.add_argument('--work', required=work_required,
                     help='directory for scene.json and timeline.json' + ('' if work_required else
@@ -610,6 +650,14 @@ def own_args(ap, work_required=True):
     ap.add_argument('--speedup', type=float, default=SPEEDUP,
                     help=f'how much faster the anneal plays at its end (default {SPEEDUP:g})')
     ap.add_argument('--fps', type=float, default=FPS, help=f'frames per second (default {FPS:g})')
+    ap.add_argument('--no-models', action='store_true',
+                    help="draw every part as a box (default: each part's KiCad 3D model, "
+                         'exported by kicad-cli and cached in movie3d/cache/)')
+    ap.add_argument('--kicad-cli', help='the kicad-cli to export the models with (default: '
+                                        '$KICAD_CLI, else the installed KiCad)')
+    ap.add_argument('--tint', type=float, default=0.7,
+                    help="how far each model's colours are tinted toward its group's colour, "
+                         '0-1 (default 0.7)')
     ap.add_argument('--width', type=int, default=1000, help='frame width, px (default 1000)')
     ap.add_argument('--height', type=int, default=560, help='frame height, px (default 560)')
 
@@ -626,6 +674,7 @@ def record(a, rest):
     if rec.scene is None:
         return rc, None
     rec.placed(rc)
+    attach_models(a, rec)
     sp, tp = os.path.join(a.work, 'scene.json'), os.path.join(a.work, 'timeline.json')
     with open(sp, 'w', encoding='utf-8') as f:
         json.dump(rec.scene, f)

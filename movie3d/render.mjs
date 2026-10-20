@@ -3,7 +3,7 @@
 //
 //   node render.mjs job.json
 //
-// job = { browser|null, width, height, outDir, scene, timeline }
+// job = { browser|null, width, height, outDir, scene, timeline, glb|null }
 // Writes <outDir>/f00000.png ... one per timeline frame, and prints one JSON
 // object per line on stdout: {"type":"info",...} first (the WebGL renderer,
 // the browser version, three's revision), progress lines, then
@@ -21,13 +21,15 @@ import url from 'node:url';
 const here = path.dirname(url.fileURLToPath(import.meta.url));
 const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 const TYPES = { '.html': 'text/html', '.mjs': 'text/javascript', '.js': 'text/javascript',
-                '.json': 'application/json' };
+                '.json': 'application/json', '.glb': 'model/gltf-binary' };
 const ROOTS = { '/page/': path.join(here, 'page'),
-                '/three/': path.join(here, 'node_modules', 'three', 'build') };
+                '/three/': path.join(here, 'node_modules', 'three', 'build'),
+                '/three-addons/': path.join(here, 'node_modules', 'three', 'examples', 'jsm') };
 
 async function main() {
   const job = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
   const files = { '/data/scene.json': job.scene, '/data/timeline.json': job.timeline };
+  if (job.glb) files['/data/parts.glb'] = job.glb;
   const browser = await chromium.launch({
     executablePath: job.browser || undefined, headless: true,
     args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--use-gl=angle',
@@ -56,6 +58,7 @@ async function main() {
     const info = await page.evaluate((o) => window.m3dInit(o), {
       sceneUrl: 'http://movie3d.local/data/scene.json',
       timelineUrl: 'http://movie3d.local/data/timeline.json',
+      glbUrl: job.glb ? 'http://movie3d.local/data/parts.glb' : null,
       width: job.width, height: job.height });
     out({ type: 'info', ...info, browser: browser.version(), errors });
     const cdp = await page.context().newCDPSession(page);

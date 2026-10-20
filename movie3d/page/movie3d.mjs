@@ -10,6 +10,7 @@
 // (0, 0, 0)), and a frame's pose row is [x, y, rot, h]: h is the height of the
 // part's mounting face (the board's face, the table, or mid-hop).
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 const S = {};
 const rad = (d) => d * Math.PI / 180;
@@ -123,7 +124,7 @@ function buildParts(sc, root) {
     const plate = new THREE.PlaneGeometry(Math.max(cx1 - cx0, 0.05), Math.max(cy1 - cy0, 0.05));
     plate.rotateX(up > 0 ? -Math.PI / 2 : Math.PI / 2);
     const pm = new THREE.Mesh(plate, new THREE.MeshBasicMaterial({
-      color: col, transparent: true, opacity: P.fixed ? 0.12 : 0.28, depthWrite: false }));
+      color: col, transparent: true, opacity: P.fixed ? 0.12 : 0.42, depthWrite: false }));
     pm.position.set((cx0 + cx1) / 2, up * 0.006, (cy0 + cy1) / 2);
     pm.renderOrder = 1;
     grp.add(pm);
@@ -133,6 +134,7 @@ function buildParts(sc, root) {
     hiLoop.visible = false;
     grp.add(hiLoop);
     const hi = [hiLoop];
+    let boxed = null;
     if (P.body) {
       const [x0, y0, x1, y1, h] = P.body;
       const bg = new THREE.BoxGeometry(Math.max(x1 - x0, 0.1), h, Math.max(y1 - y0, 0.1));
@@ -152,9 +154,10 @@ function buildParts(sc, root) {
       edges.visible = false;
       grp.add(edges);
       hi.push(edges);
+      boxed = { body, edges };
     }
     root.add(grp);
-    S.parts.push({ P, grp, near, far, hi, up });
+    S.parts.push({ P, grp, near, far, hi, up, boxed, col });
   }
 }
 
@@ -170,6 +173,93 @@ function poseParts(fr) {
     for (const m of part.far) m.visible = onBoard;
     for (const m of part.hi) m.visible = moved.has(i);
   });
+}
+
+// ---------------------------------------------------------------- models
+// The parts' KiCad models (models.py): kicad-cli's GLB holds each part as a
+// node named by its reference, at its export pose. Each node is re-parented
+// into its part's group as `[Rx(180) for a back part] F(export)^-1 world`,
+// so the group's pose carries it (stage3d's re-pose, #1081). Its colours are
+// tinted toward the group's (a fixed part's model is ghosted instead), and
+// the part's box gives way to it.
+async function loadModels(url, sc) {
+  const buf = await (await fetch(url)).arrayBuffer();
+  const gltf = await new GLTFLoader().parseAsync(buf, '');
+  gltf.scene.updateMatrixWorld(true);
+  const want = new Set(sc.glb.matched.map((r) => r.split('~')[0]));
+  const picked = [];
+  gltf.scene.traverse((o) => {
+    if (!want.has(o.name)) return;
+    for (let a = o.parent; a; a = a.parent) if (want.has(a.name)) return;   // top node only
+    picked.push(o);
+  });
+  const index = {};
+  S.parts.forEach((p, i) => { index[p.P.ref] = i; });
+  // a duplicate reference: kicad-cli names every node by the BARE reference,
+  // the parser keys the later blocks REF~2...; the k-th node goes to the
+  // k-th block when the counts agree
+  const byName = {};
+  for (const o of picked) (byName[o.name] = byName[o.name] || []).push(o);
+  const mm = new THREE.Matrix4().makeScale(1000, 1000, 1000);        // glTF metres -> mm
+  const flip = new THREE.Matrix4().makeRotationX(Math.PI);
+  let n = 0;
+  for (const name of Object.keys(byName)) {
+    const nodes = byName[name];
+    const keys = [name];
+    for (let k = 2; index[name + '~' + k] !== undefined; k++) keys.push(name + '~' + k);
+    nodes.forEach((o, j) => {
+      const key = nodes.length === keys.length ? keys[j] : name;
+      const i = index[key], pose = sc.export_poses[key];
+      if (i === undefined || !pose) return;
+      const part = S.parts[i];
+      const world = new THREE.Matrix4().multiplyMatrices(mm, o.matrixWorld);
+      const F = new THREE.Matrix4().makeRotationY(rad(pose[2]));
+      if (pose[3] === 'B') F.multiply(flip);
+      F.setPosition(pose[0], world.elements[13], pose[1]);   // on the face the export put it on
+      const rest = F.clone().invert().multiply(world);
+      const clone = o.clone(true);
+      clone.matrixAutoUpdate = false;
+      clone.matrix.multiplyMatrices(pose[3] === 'B' ? flip : new THREE.Matrix4(), rest);
+      clone.traverse((c) => {
+        if (!c.isMesh) return;
+        const mats = (Array.isArray(c.material) ? c.material : [c.material]).map((m) => {
+          const q = m.clone();
+          // kicad-cli writes no metallicFactor, so glTF's default of 1 makes
+          // every model a mirror -- near black with no environment to reflect
+          if ('metalness' in q) { q.metalness = 0.15; q.roughness = 0.6; }
+          if (part.P.fixed) {
+            q.transparent = true; q.opacity = 0.32; q.depthWrite = false;
+          } else if (q.color) {
+            q.color.lerp(part.col, sc.tint ?? 0.5);
+          }
+          return q;
+        });
+        c.material = Array.isArray(c.material) ? mats : mats[0];
+        c.castShadow = true;
+        c.receiveShadow = !part.P.fixed;
+        if (part.P.fixed) c.renderOrder = 3;
+      });
+      part.grp.add(clone);
+      if (part.boxed) {
+        part.grp.remove(part.boxed.body, part.boxed.edges);
+        part.hi = part.hi.filter((h) => h !== part.boxed.edges);
+      }
+      // the moved outline: the model's own box, in the part's frame (the
+      // group is still at the origin here)
+      part.grp.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(clone);
+      const size = box.getSize(new THREE.Vector3()), mid = box.getCenter(new THREE.Vector3());
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(size.x, size.y, size.z)),
+                                           new THREE.LineBasicMaterial({ color: rgb(sc.colors.moved) }));
+      edges.position.copy(mid);
+      edges.scale.setScalar(1.04);
+      edges.visible = false;
+      part.grp.add(edges);
+      part.hi.push(edges);
+      n += 1;
+    });
+  }
+  return n;
 }
 
 // ---------------------------------------------------------------- airwires
@@ -307,12 +397,17 @@ window.m3dInit = async function (o) {
   root.add(buildBoard(sc));
   buildParts(sc, root);
   buildAir(sc, root);
+  let models = 0, modelError = null;
+  if (o.glbUrl && sc.glb) {
+    // the models are decoration: a missing or corrupt GLB leaves the boxes
+    try { models = await loadModels(o.glbUrl, sc); } catch (e) { modelError = String(e).slice(0, 200); }
+  }
   S.cam = new THREE.PerspectiveCamera(FOV, W / (H - kh), 0.5, 100000);
   Object.assign(S, { renderer, world, root });
   const gl = renderer.getContext();
   const ext = gl.getExtension('WEBGL_debug_renderer_info');
   return { renderer: ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
-           three: THREE.REVISION, frames: tl.frames.length };
+           three: THREE.REVISION, frames: tl.frames.length, models, modelError };
 };
 
 window.m3dFrame = function (i) {
