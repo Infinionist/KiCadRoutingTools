@@ -38,7 +38,8 @@ notification stream entirely.
   prompted.
 
 **Monitoring:** `bash tests/stress/stress_status.sh` — prints DONE/RUNNING/TODO
-across every board plus free slots. (For detail: `QUEUE_STATUS.txt` is the
+across every board, then whether `run_queue.sh`'s load rule would admit another
+board now (`admit` / `hold` and why). (For detail: `QUEUE_STATUS.txt` is the
 manager heartbeat; `runs_set<N>/<board>/worker.log` holds the wrapper markers +
 stderr, the per-tool `*.log` files update live, and after the run
 `agent_narrative.md` is the readable routing decision trail derived from
@@ -825,10 +826,12 @@ boards" and "which commit broke connectivity".
   with `py_router/` and `rust_router/` checked out at `<sha>` (a worktree under
   `$SCRATCH`, default `/tmp`), pins the image's prebuilt router to that commit's
   crate release, and launches detached the `plan,run` stages of
-  `cloud_replay_sets.py` as arm `bis<tag>` into `<stress>/cloud_bis<tag>`:
+  `cloud_replay_sets.py` as arm `bis<tag>-kc` (`bis<tag>-kc-<image>` when
+  `KICAD_SWEEP_KICAD_IMAGE` picks another image; the launch line prints it) into
+  `<stress>/cloud_<arm>`:
   `SETS` (default `set10-set19`), the `LIMIT` cheapest boards (default 130) or a
   fixed `BOARDS=a,b` list. Harvest and compare it afterwards with
-  `cloud_replay_sets.py --sets <same> --arm bis<tag> --out <stress>/cloud_bis<tag>
+  `cloud_replay_sets.py --sets <same> --arm <arm> --out <stress>/cloud_<arm>
   --only harvest,baseline,compare`.
 
 - **`cloud_arms_to_sweep.py`** — score a knob screened as SEPARATE

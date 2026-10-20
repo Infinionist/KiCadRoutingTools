@@ -1211,10 +1211,9 @@ Options:
                        (a second file alone also compares)
 ```
 
-Without `--layer` it scans F.Cu, B.Cu, In1.Cu and In2.Cu only; on a board
-with more copper layers, run it once per layer with `--layer` (as
-`check_complete.py` does). Exit 1 when orphans are found (with `--compare`,
-when file 2 has new ones), else 0.
+Without `--layer` it scans every copper layer the board declares; `--layer`
+narrows it to one. Exit 1 when orphans are found (with `--compare`, when
+file 2 has new ones), else 0.
 
 ### Examples
 

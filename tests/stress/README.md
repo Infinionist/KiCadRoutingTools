@@ -40,7 +40,7 @@ Drive the whole corpus with the queue manager:
 
 ```bash
 bash run_queue.sh [max_concurrency=8] [model=sonnet]   # from tests/stress/
-bash stress_status.sh                              # monitor: DONE/RUNNING/TODO + free slots
+bash stress_status.sh                              # monitor: DONE/RUNNING/TODO + admit/hold
 ```
 
 `run_queue.sh` keeps N headless agent workers (`claude -p`, at

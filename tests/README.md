@@ -573,7 +573,7 @@ it with the status script:
 
 ```bash
 bash run_queue.sh [max_concurrency=8] [model]   # keeps headless workers in flight
-bash stress_status.sh                           # DONE/RUNNING/TODO + free slots
+bash stress_status.sh                           # DONE/RUNNING/TODO + admit/hold
 ```
 
 Above a floor of `QUEUE_CONC_MIN` workers (default 2), the queue admits a new

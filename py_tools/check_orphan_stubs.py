@@ -15,10 +15,9 @@ An orphan stub is a trace endpoint that:
 
 These represent traces that end without a proper connection point.
 
-Without --layer it scans F.Cu, B.Cu, In1.Cu and In2.Cu only; on a board with
-more copper layers, run it once per layer with --layer (as check_complete.py
-does). Exit 1 when orphans are found (with a second file, when it has new
-ones; or when --compare is given without one), else 0.
+Without --layer it scans every copper layer the board declares; --layer
+narrows it to one. Exit 1 when orphans are found (with a second file, when it
+has new ones; or when --compare is given without one), else 0.
 
 Usage:
     python3 py_tools/check_orphan_stubs.py input.kicad_pcb [compare.kicad_pcb]
@@ -244,8 +243,13 @@ def find_orphan_stubs(filename: str, net_name: Optional[str] = None,
         nets_to_check = [(nid, net) for nid, net in pcb_data.nets.items()
                          if net.name and nid in nets_with_segments]
 
-    # Determine which layers to check
-    layers_to_check = [layer] if layer else ['F.Cu', 'B.Cu', 'In1.Cu', 'In2.Cu']
+    # Determine which layers to check: every copper layer the board declares
+    # (a fixed F/B/In1/In2 list left In3+ of a 6+ layer board unscanned, and
+    # said nothing about them). A board whose layer table reads empty falls
+    # back to the layers its tracks sit on, so it is not swept as clean.
+    layers_to_check = [layer] if layer else (
+        list(pcb_data.board_info.copper_layers or [])
+        or sorted({lyr for _, lyr in segments_by_net_layer}))
 
     results = {}
 
@@ -351,7 +355,7 @@ def main():
                        help='Second file to compare against (optional)')
     parser.add_argument('--net', help='Only check this net')
     parser.add_argument('--layer', help='Only check this layer (default: '
-                        'F.Cu, B.Cu, In1.Cu and In2.Cu)')
+                        'every copper layer of the board)')
     parser.add_argument('--compare', action='store_true',
                        help='Compare two files (requires two input files)')
 

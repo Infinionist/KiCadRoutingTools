@@ -59,7 +59,7 @@ from disk (safe to stop and restart):
 
 ```bash
 bash tests/stress/run_queue.sh [max_concurrency=8] [model=sonnet]
-bash tests/stress/stress_status.sh        # monitor: DONE/RUNNING/TODO + free slots
+bash tests/stress/stress_status.sh        # monitor: DONE/RUNNING/TODO + admit/hold
 ```
 
 `sonnet` is the alias for the latest Sonnet: pass an alias, never a pinned
@@ -174,7 +174,8 @@ machine before):
 ### Manual fallback (no queue script)
 
 To drive by hand instead, spawn one general-purpose subagent per board without a
-fresh results JSON, keeping ~4 in flight and refilling off `stress_status.sh`:
+fresh results JSON, admitting by load the way `run_queue.sh` does (one at a time,
+while `stress_status.sh`'s admission line says `admit`):
 
 > Read tests/stress/RUNBOOK.md (in the tools repo — the single source of truth)
 > and execute it for BOARD=<name> (<one-line complexity hint>). Follow the runbook

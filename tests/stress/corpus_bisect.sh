@@ -78,6 +78,15 @@ if [ -n "$CRATE" ]; then
 fi
 echo "  $TAG: engine=$SHA harness=HEAD  (py_router matches $SHA)"
 cd "$WT"
+# The arm and its wave dir carry the KiCad image, by cloud_replay_sets' own
+# kicad_label: bis<tag>-kc on the default image, bis<tag>-kc-<image> when
+# KICAD_SWEEP_KICAD_IMAGE picks another. --arm is taken as given (arm_name()
+# adds nothing to it), so a bare bis<tag> let two images' runs of one tag share
+# result rows -- the volume resumes by arm name -- and one wave dir.
+ARM=$(python3 -c 'import os, sys; sys.path.insert(0, "tests/stress")
+import cloud_replay_sets as c
+print(c.kicad_label(sys.argv[1], os.environ.get("KICAD_SWEEP_KICAD_IMAGE") or c.DEFAULT_KICAD_IMAGE))' "bis${TAG}")
+[ -n "$ARM" ] || { echo "  $TAG: could not derive the arm name -- aborting before spending"; exit 1; }
 # Retry the LAUNCH, not just the build. Modal rate-limits app CREATION, and a
 # bisect ladder starts several points back to back -- launching six ~2s apart
 # had three rejected outright with "App create rate limit exceeded". The script
@@ -88,9 +97,9 @@ cd "$WT"
 _launch() {
   KICAD_SWEEP_BUILD_TAG="$BUILD_TAG" \
   KICAD_SWEEP_DIRTY=1 caffeinate -dimsu nohup python3 tests/stress/cloud_replay_sets.py \
-     --sets "$SETS" --arm "bis${TAG}" --label "bis${TAG}" --limit "$LIMIT" \
+     --sets "$SETS" --arm "$ARM" --label "$ARM" --limit "$LIMIT" \
      ${BOARDS:+--boards "$BOARDS"} \
-     --exclude core64_logic --out "$ST/cloud_bis${TAG}" --only plan,run \
+     --exclude core64_logic --out "$ST/cloud_$ARM" --only plan,run \
      > "$S/bis_$TAG.log" 2>&1
 }
 (
@@ -105,4 +114,4 @@ _launch() {
   done
 ) &
 disown
-echo "  $TAG: launched -> $S/bis_$TAG.log  (auto-retries an app-create rate limit)"
+echo "  $TAG: launched arm $ARM -> $ST/cloud_$ARM, log $S/bis_$TAG.log  (auto-retries an app-create rate limit)"
