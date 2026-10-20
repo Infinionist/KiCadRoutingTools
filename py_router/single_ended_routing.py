@@ -3604,8 +3604,17 @@ def _dense_fanout_refs(pcb_data: PCBData) -> set:
     return refs
 
 
+def _track_forbidden_layers(config, layer_names):
+    """Indices into layer_names of the layers `config` forbids track on (a
+    negative layer cost: outside --layers, or a per-net power override). The
+    route stands on such a layer only at a via or a through-hole pad."""
+    routable = set(config.routable_layers())
+    return frozenset(i for i, name in enumerate(layer_names)
+                     if name in config.layers and name not in routable)
+
+
 def _pour_launch_region_cells(pcb_data, net_id, pad_info, pad_components,
-                              layer_names, coord, island_cells):
+                              layer_names, coord, island_cells, config):
     """#544/#562 POUR-LAUNCH ladder v3: per-REGION fill launch cells.
 
     Every pad-covered fill REGION of this net's zones contributes laddered
@@ -3628,6 +3637,13 @@ def _pour_launch_region_cells(pcb_data, net_id, pad_info, pad_components,
     cells (no fragility penalty); first rung with any candidate wins,
     best _NBEST kept.
 
+    A cell's weld point is its fill float, so the converter's sub-cell
+    terminal bridge lands ON fill copper -- except on a layer the config
+    forbids track on (#1292). The route reaches such a cell only by a via at
+    the grid point, whose copper covers the fill point a sub-cell away, so
+    the weld point is the grid point and no bridge is drawn: one would be a
+    20-56 um track on a layer left out of --layers.
+
     Returns {component_id: {(gx, gy, layer_idx): (fx, fy)}} for the caller
     to merge into its island-cell map (Phase 1's _island_cells AND Phase
     3's _p3_island_cells -- v2 only fed Phase 1, so the straggler edges
@@ -3641,8 +3657,11 @@ def _pour_launch_region_cells(pcb_data, net_id, pad_info, pad_components,
     # the IDENTICAL pad_components object (main_result carries it), and every
     # rescue reroute of a big plane net repeats the pair -- the scan is pure
     # in (net, grouping), so keying on (net_id, id(pad_components), #pads)
-    # halves the ladder cost per invocation and per reroute.
-    _mk = (net_id, id(pad_components), len(pad_info))
+    # halves the ladder cost per invocation and per reroute. The forbidden
+    # layers join the key because they change the weld points, and Phase 3's
+    # per-net power config can forbid a layer Phase 1 allowed.
+    _forbid = _track_forbidden_layers(config, layer_names)
+    _mk = (net_id, id(pad_components), len(pad_info), _forbid)
     _memo = getattr(pcb_data, '_pour_launch_memo', None)
     # The memo HOLDS pad_components (id() alone is unsafe: a freed dict's id
     # can be reused by a different grouping -- the memo's strong ref pins it).
@@ -3683,7 +3702,8 @@ def _pour_launch_region_cells(pcb_data, net_id, pad_info, pad_components,
                    tuple((_i[3], _i[4]) for _i in pad_info),
                    tuple(pad_components.get(_j, _j)
                          for _j in range(len(pad_info))),
-                   tuple((id(z), id(m)) for z, m in _models))
+                   tuple((id(z), id(m)) for z, m in _models),
+                   _forbid)
             _lru = getattr(pcb_data, '_pour_launch_lru', None)
             _hit = _lru.get(_ck) if _lru is not None else None
             if _hit is not None:
@@ -3765,7 +3785,9 @@ def _pour_launch_region_cells(pcb_data, net_id, pad_info, pad_components,
                         _g = coord.to_grid(_fx, _fy)
                         _k = (_g[0], _g[1], _fl)
                         if _k not in _cells_out:
-                            _cells_out[_k] = (_fx, _fy)
+                            _cells_out[_k] = (coord.to_float(_g[0], _g[1])
+                                              if _fl in _forbid
+                                              else (_fx, _fy))
     except Exception as _e:
         print(f"  POUR-LAUNCH unavailable ({_e})")
         return {}
@@ -3800,7 +3822,9 @@ def _pour_launch_pair_anchors(pcb_data, net_id, sources, targets,
     width for stub rows). Each anchor row carries the fill cell's own float
     as its weld point, so the terminal bridge the converter draws is
     sub-cell and lands ON fill copper -- never the any-angle slash back to
-    the distant pad that the multipoint owner map exists to prevent.
+    the distant pad that the multipoint owner map exists to prevent. On a
+    layer the config forbids track on, the row carries the grid point
+    instead and no bridge is drawn (#1292, see _pour_launch_region_cells).
 
     When both sides carry regions, a route may weld anchor to anchor: a
     short region-to-region joint connecting the pads through their pours.
@@ -3838,6 +3862,7 @@ def _pour_launch_pair_anchors(pcb_data, net_id, sources, targets,
     if not any(_m is not None for _m in _models):
         return [], []
     _net_pads = pcb_data.pads_by_net.get(net_id, [])
+    _forbid = _track_forbidden_layers(config, layer_names)
 
     def _probe_size(fx, fy):
         for _p in _net_pads:
@@ -3907,6 +3932,8 @@ def _pour_launch_pair_anchors(pcb_data, net_id, sources, targets,
                     and bounds[1] <= _g[1] <= bounds[3]):
                 continue
             taken.add(_k)
+            if _li in _forbid:
+                _fx, _fy = coord.to_float(_g[0], _g[1])
             _out.append((_g[0], _g[1], _li, _fx, _fy))
             if len(_out) >= _NBEST:
                 break
@@ -4210,7 +4237,7 @@ def _route_multipoint_main_impl(
         # straggler edges Phase 3 routes never saw fill targets.
         _pl_cells = _pour_launch_region_cells(
             pcb_data, net_id, pad_info, pad_components, layer_names, coord,
-            _island_cells)
+            _island_cells, config)
         _pl_added = 0
         for _cid, _cmap in _pl_cells.items():
             _cells = _island_cells.setdefault(_cid, {})
@@ -4767,7 +4794,9 @@ def get_all_segment_tap_points(
     Get all grid points along existing segments and vias as potential tap sources.
 
     Returns list of (gx, gy, layer_idx, orig_x, orig_y) for each point.
-    Points are sampled at grid resolution along each segment.
+    Points are sampled at grid resolution along each segment; an axial or
+    45-degree segment between grid points yields its cells' exact grid
+    points (#1291).
     Vias are added on ALL layers (they connect all copper layers).
     Sorted by grid coordinates for deterministic iteration.
     """
@@ -4790,8 +4819,25 @@ def get_all_segment_tap_points(
             if key not in tap_points:
                 tap_points[key] = (seg.start_x, seg.start_y)
         else:
-            # Sample along segment at grid step intervals
-            num_steps = max(1, int(length / coord.grid_step))
+            # #1291: an axial or 45-degree segment between grid points is
+            # sampled once per cell it crosses, each sample on its cell's grid
+            # point. The length-based count below spaced its samples off grid
+            # (every diagonal; an axial span whose float length fell just
+            # under a whole number of steps), and a route tapping one welded
+            # in through a 35-71 um T stub KiCad reports as track_dangling.
+            # Other copper (off grid, any angle) keeps that count unchanged.
+            g0 = coord.to_grid(seg.start_x, seg.start_y)
+            g1 = coord.to_grid(seg.end_x, seg.end_y)
+            gdx, gdy = g1[0] - g0[0], g1[1] - g0[1]
+            f0, f1 = coord.to_float(*g0), coord.to_float(*g1)
+            if ((gdx == 0 or gdy == 0 or abs(gdx) == abs(gdy))
+                    and abs(seg.start_x - f0[0]) <= 1e-6
+                    and abs(seg.start_y - f0[1]) <= 1e-6
+                    and abs(seg.end_x - f1[0]) <= 1e-6
+                    and abs(seg.end_y - f1[1]) <= 1e-6):
+                num_steps = max(1, abs(gdx), abs(gdy))
+            else:
+                num_steps = max(1, int(length / coord.grid_step))
             for i in range(num_steps + 1):
                 t = i / num_steps
                 x = seg.start_x + t * dx
@@ -5121,7 +5167,7 @@ def _route_multipoint_taps_impl(
     # fill becomes launchable for every later edge.
     _pl_cells = _pour_launch_region_cells(
         pcb_data, net_id, pad_info, _p3_comps, layer_names, coord,
-        _p3_island_cells)
+        _p3_island_cells, config)
     _pl_added = 0
     for _cid, _cmap in _pl_cells.items():
         _cells = _p3_island_cells.setdefault(_cid, {})

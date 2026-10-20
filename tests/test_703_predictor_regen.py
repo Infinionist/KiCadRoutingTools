@@ -65,6 +65,20 @@ sys.path.insert(0, os.path.join(ROOT, 'tests', 'stress'))
 #:
 #: MEASURED, from the run recorded in the pull request. Never predicted.
 #:
+#: RE-RECORDED 2026-10-20 (#1291). `truth.quality` of TWO rows; blocking and
+#: the headline unmoved. Taps on an axial or 45-degree track between grid
+#: points now sit on the grid, so the welds that started off grid move onto
+#: it. Both rows regenerate identically twice at the fix and give the old
+#: values at the commit before it.
+#:   * esp_prog:perturb-scatter-d1 -- one GND B.Cu bend moves from
+#:     (135.2682, 103.4682) to (135.3, 103.5). KiCad DRC findings unchanged.
+#:   * splitflap_driver:authored -- the two off-grid welds KiCad reported as
+#:     track_dangling, at (154.9, 45.1647) and (106.8324, 33.4), are gone;
+#:     every other KiCad finding is unchanged; connected both ways.
+#:   esp_prog:perturb-scatter-d1  copper 348.89 -> 348.91
+#:   splitflap_driver:authored    copper 2866.22 -> 2866.21, segs 845 -> 844
+#:   other rows                   unmoved
+#:
 #: RE-RECORDED 2026-10-16 (fix-unblock-via-gates). `truth.quality` of ONE
 #: row; blocking and the headline unmoved.
 #:   * esp_prog:authored -- /+3.3V's Phase 3 tap needed a #189 via-in-pad
@@ -440,7 +454,8 @@ EXPECTED = {
                # 2026-09-14 (#958 phase 2): segs 311 -> 292; vias/copper unmoved
                # 2026-09-15 (#908 Phase 3 lift): 37/363.0/292 -> 38/361.26/296
                # 2026-09-16 (#958 fine-pitch tie guard): segs 296 -> 302
-               'quality': {'vias': 36, 'copper_mm': 348.89, 'segments': 235}},
+               # 2026-10-20 (#1291 tap grid): copper 348.89 -> 348.91
+               'quality': {'vias': 36, 'copper_mm': 348.91, 'segments': 235}},
         predictors={
             'crossings': 50, 'hpwl': 252.34828000000005,
             'halo': 130.46454030971682, 'overlap_area': 1.1400451712000104,
@@ -529,8 +544,9 @@ EXPECTED = {
                # single-file revert; the fanout and plane-fill roundings of
                # the same change leave this row alone.
                # 2026-10-07 (#1161 web polygon): copper 2864.97 -> 2866.22
-               'quality': {'vias': 165, 'copper_mm': 2866.22,
-                           'segments': 845}},
+               # 2026-10-20 (#1291 tap grid): 2866.22/845 -> 2866.21/844
+               'quality': {'vias': 165, 'copper_mm': 2866.21,
+                           'segments': 844}},
         predictors={
             'crossings': 300, 'hpwl': 2504.4400000000014,
             'halo': 297.4273114820511, 'overlap_area': 1.7621459846850488e-13,
