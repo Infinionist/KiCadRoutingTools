@@ -1152,7 +1152,10 @@ are in `--work` (default: OUT's name + `_work`). A second run reuses them --
 every placed seed and finished route there -- so it only films (`--fresh`
 places and routes again). `--route-jobs` runs the fast
 routes fewer at a time than the placements: a 350-part board's route can take
-5 GB, so `--route-jobs 1` there.
+5 GB, so `--route-jobs 1` there. Measured on one laptop, argus_mainboard (334
+parts): 48 min for the whole flow -- 18 min placing 24 seeds 4 at a time, 23
+min for the 12 fast routes one at a time, 7.5 min for the full route; ch32
+(25 parts) takes 1 min and tigard (89 parts) 4.3 min, everything 4 at a time.
 
 - `--movie` — the movie (default: OUT's name, `.mp4`); a GIF without `ffmpeg`.
 - `--size`, `--fps`, `--theme` — as the routing movie.
