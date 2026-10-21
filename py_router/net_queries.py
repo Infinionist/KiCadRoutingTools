@@ -478,6 +478,58 @@ def net_match_length(pcb_data: PCBData, net_id: int, mode: str = 'total',
     return net_copper_length(pcb_data, net_id) + die
 
 
+def net_signal_length(pcb_data: PCBData, net_id: int,
+                      tolerance: float = 0.02) -> Optional[float]:
+    """The length a net's copper will measure once it ships, read off the
+    board BEFORE the post-route cleanup has run (#1303), in mm with every
+    pad's pad-to-die; None while its copper pads are not all joined.
+
+    A route step's board still carries what its cleanup will trim: fanout
+    stubs the new copper made dead ends, and loops where a leg and the
+    coupled middle both join the same two points. So a 2-pad net reads its
+    pad-to-pad copper path (`pin_pair_path_length`), which is what a loop
+    collapses to; a net with more pads reads its copper with every dead-end
+    branch trimmed (leaves that are not pads, repeatedly), the tree KiCad's
+    length DRC then totals. On imx6ulz DQS0 this read P 21.31 / N 16.82 mm
+    where the routing result said P 12.00 / N 13.08 (it carries no stub
+    lengths after a seam re-ask) and the shipped board measured P 21.33 /
+    N 16.82."""
+    pads = _copper_pads(pcb_data, net_id)
+    if len(pads) < 2 or not net_pads_joined(pcb_data, net_id, pads, tolerance):
+        return None
+    die = net_pad_to_die_length(pcb_data, net_id)
+    if len(pads) == 2:
+        path = pin_pair_path_length(pcb_data, net_id, pads[0], pads[1], tolerance)
+        return None if path is None else path + die
+    graph = _net_track_graph(pcb_data, net_id, pads, tolerance)
+    if graph is None:
+        return None
+    adjacency, pad_nodes = graph
+    keep = {n for hubs in pad_nodes.values() for n in hubs}
+    edges = [(u, v, w) for u, nbrs in adjacency.items() for v, w in nbrs if u < v]
+    incident: Dict[int, List[int]] = {}
+    for i, (u, v, _w) in enumerate(edges):
+        incident.setdefault(u, []).append(i)
+        incident.setdefault(v, []).append(i)
+    alive = [True] * len(edges)
+    degree = {n: len(ix) for n, ix in incident.items()}
+    todo = [n for n, d in degree.items() if d == 1 and n not in keep]
+    while todo:
+        node = todo.pop()
+        if degree.get(node) != 1:
+            continue
+        for i in incident[node]:
+            if not alive[i]:
+                continue
+            alive[i] = False
+            u, v, _w = edges[i]
+            for end in (u, v):
+                degree[end] -= 1
+                if end != node and degree[end] == 1 and end not in keep:
+                    todo.append(end)
+    return math.fsum(w for i, (_u, _v, w) in enumerate(edges) if alive[i]) + die
+
+
 def net_match_pad_to_die(pcb_data: PCBData, net_id: int,
                          mode: str = 'total', attr: str = 'die_length') -> float:
     """The pad-to-die term `net_match_length` adds in `mode` (#1248), in mm:

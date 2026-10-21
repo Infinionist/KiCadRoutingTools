@@ -763,14 +763,28 @@ Use `--diff-pair-intra-match` to match P and N track lengths within each differe
 - Different via positions
 
 When enabled:
-1. After routing and inter-pair length matching, the router calculates P and N lengths for each pair
+1. After routing and inter-pair length matching, the router measures P and N
+   **on the board's copper** (#1303, `net_queries.net_signal_length`): the
+   pad-to-pad copper path of a 2-pad member, the copper of a larger one with
+   every dead-end branch trimmed, plus pad-to-die -- what the post-route cleanup
+   will leave of it. The routing result alone is not that copper: a hybrid
+   escape or seam re-ask returns no stub lengths, and on imx6ulz DQS0 the result
+   read P 12.00 < N 13.08 while the board had P 21.31 > N 16.82. A member whose
+   pads are not joined yet falls back to the result's own sums (segments plus
+   recorded stub lengths), as before
 2. If the difference exceeds `--length-match-tolerance` (default 0.1mm), meanders are added to the shorter track
 3. The meanders are placed with clearance checking against the other track of the pair
-4. For polarity-swapped pairs, stub lengths are correctly recalculated using post-swap assignments (P gets P_source + N_target stubs, N gets N_source + P_target stubs)
-5. **The verdict is read off the shipped copper** (#1303). The matcher works on
-   its own result (segments plus stub lengths recorded at routing time), which is
-   not always the copper that ships: on imx6ulz after a seam re-ask it read DQS0
-   as P 12.00 < N 13.08 and meandered P, where the board had P 21.33 > N 16.82.
+4. For polarity-swapped pairs, stub lengths are correctly recalculated using post-swap assignments (P gets P_source + N_target stubs, N gets N_source + P_target stubs) -- in the fallback; the board copper already carries the swap
+5. A multipoint pair's meander lands in the **leg** that held the copper it
+   replaced (`length_matching._splice_into_legs`), as group matching's does: the
+   writer emits the per-leg dicts, so a meander written only to the merged
+   bookkeeping dict shipped beside the leg's original straight run, which
+   shorted the bump out (imx6ulz CLK0; `KICAD_BOARD_LEDGER=1` reported the net
+   diverged)
+6. **The verdict is read off the shipped copper** (#1303). The board the matcher
+   measures (step 1) is the one BEFORE the post-route cleanup, so what ships can
+   still differ by what the cleanup trims or collapses (imx6ulz CLK0: the matcher
+   reached 0.001 mm, the board shipped 0.214 mm).
    Once the board is final, `length_matching.regrade_intra_pair_reports` sets each
    `intra_pair_matching` record's `delta_mm` to the shipped skew (KiCad's
    measure, `net_queries.diff_pair_skew`) and its `status` from it: `matched` /

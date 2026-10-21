@@ -373,6 +373,17 @@ the parser linearises -- nonzero means the figures are approximate).
 difference, `None` while a member's pads are not joined. On a routed imx6ulz
 board and a ten-case fixture both matched kicad-cli 10.0.0's actuals to 0.1 um.
 
+```python
+net_signal_length(pcb_data, net_id, tolerance=0.02) -> Optional[float]
+```
+
+What a net's copper will measure once the post-route cleanup has trimmed it,
+read off a board that still carries the trimmings (#1303): the pad-to-pad path
+of a 2-pad net (`pin_pair_path_length`; a loop collapses to it), the copper of
+a larger net with every dead-end branch trimmed, plus every pad's pad-to-die;
+`None` while the pads are not joined. Intra-pair matching measures its two legs
+with it.
+
 The gap window is the caller's: `check_drc` and `board_score` pass the pair's
 binding `diff_pair_gap` (`design_rules.DesignRules`), as KiCad does;
 route_diff passes the gap it routed the pair at, up to 1.5x
