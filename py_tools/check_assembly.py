@@ -125,18 +125,24 @@ def main():
     # clearance is right HERE because this tool grades existing geometry --
     # check_channels PREDICTS routability and therefore needs a fab floor
     # instead (see list_nets.board_floor, grade-vs-predict).
+    #
+    # #1338: "the board's own clearance" is what KiCad grades -- the Default
+    # class floored at Board Setup min_clearance, as check_drc has read it
+    # since #1210 -- not the class alone. multichannel_mixer declares class
+    # 0.2 and min_clearance 0.3; at 0.2 this tool called a board buildable
+    # with no pad pair while kicad-cli and check_drc reported two at 0.24 and
+    # 0.25 mm, and `--clearance 0.3` was told it was STRICTER than the board.
     _board_clr = None
     _decl = None
+    from list_nets import board_grading_clearance
     try:
-        from list_nets import (board_default_netclass_clearance,
-                               board_floor_declaration)
-        _board_clr = board_default_netclass_clearance(args.board)
+        from list_nets import board_floor_declaration
+        _board_clr, _board_src = board_grading_clearance(args.board)
         _decl = board_floor_declaration(args.board)
     except Exception:                                          # noqa: BLE001
         pass
-    from list_nets import board_floor
-    clearance, _src = board_floor(args.board, 'clearance', args.clearance,
-                                  defaults.CLEARANCE)
+    clearance, _src = board_grading_clearance(args.board, args.clearance,
+                                              defaults.CLEARANCE)
     print(f"  grading at clearance {clearance}mm  [{_src}]")
     # A board that declares NOTHING is a DIFFERENT case from one whose Default
     # class happens to match (run-12 Tier 1.3). The comparison below can only
@@ -157,10 +163,10 @@ def main():
     # can, and they should be told they did.
     if args.clearance is not None and _board_clr is not None \
             and abs(_board_clr - clearance) > 1e-9:
-        print(f"  NOTE: --clearance {clearance}mm overrides this board's own "
-              f"Default net-class clearance of {_board_clr}mm, so this grade "
-              f"is {'STRICTER' if clearance > _board_clr else 'LOOSER'} than "
-              f"the board asks for. Drop --clearance to grade at the board's "
+        print(f"  NOTE: --clearance {clearance}mm overrides the clearance KiCad "
+              f"grades this board at, {_board_clr}mm [{_board_src}], so this "
+              f"grade is {'STRICTER' if clearance > _board_clr else 'LOOSER'} "
+              f"than the board asks for. Drop --clearance to grade at the board's "
               f"floor. Expect the pad/hole ECHO counts to move; `blocking` "
               f"usually will not, because blocking pairs are pad "
               f"intersections rather than clearance grazes.")

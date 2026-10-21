@@ -362,10 +362,21 @@ def project_grading_clearance(proj: dict):
     multichannel_mixer (class 0.2, min_clearance 0.3): kicad-cli reports 12
     clearance errors on the designer's own board; graded at the class alone,
     check_drc and board_score read clean."""
-    cls = project_copper_clearance(proj)
     mc = ((proj.get("board") or {}).get("design_settings") or {}) \
         .get("rules", {}).get("min_clearance")
-    mc = float(mc) if isinstance(mc, (int, float)) and mc > 0 else None
+    return grading_clearance(project_copper_clearance(proj), mc)
+
+
+def grading_clearance(class_clearance, min_clearance):
+    """``(clearance, source)``: the Default class clearance floored at Board
+    Setup ``min_clearance``, KiCad's grading rule (#1210), from the two
+    values however they were read. A missing or non-positive value is unset;
+    ``(None, None)`` when both are. One rule for
+    :func:`project_grading_clearance` and the placement graders'
+    ``list_nets.board_grading_clearance`` (#1338)."""
+    def _mm(v):
+        return float(v) if isinstance(v, (int, float)) and v > 0 else None
+    cls, mc = _mm(class_clearance), _mm(min_clearance)
     if mc is not None and (cls is None or mc > cls + 1e-9):
         return mc, "board minimum clearance"
     if cls is None:

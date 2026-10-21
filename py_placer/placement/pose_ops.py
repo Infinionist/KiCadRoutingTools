@@ -184,11 +184,16 @@ def resolve_knobs(board_path: str, clearance=None, board_edge_clearance=None,
     netclass / constraint > the fixed default. A fixed 0.25/0.55 on a board
     routed to 0.15/0.3 vetoes poses the router would happily route, which is
     the run-7 S4 finding this exists to avoid.
+
+    The clearance is read as KiCad GRADES it (`grading=True`, #1338): the
+    class floored at Board Setup `min_clearance`. This verb's verdict is a
+    grade, and on multichannel_mixer (class 0.2, min_clearance 0.3) the class
+    alone called `legal` a pose KiCad reports two pad clearance errors on.
     """
     import list_nets
     import routing_defaults as defaults
     clr, edge, knobs = list_nets.board_floor_knobs(
-        board_path, clearance, board_edge_clearance)
+        board_path, clearance, board_edge_clearance, grading=True)
     if not math.isfinite(edge) or edge < 0:
         raise PoseRefusal('board-edge-clearance must be finite and nonnegative (mm); '
                           'got %r' % edge, code=2)

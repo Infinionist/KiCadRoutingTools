@@ -179,9 +179,10 @@ def build_parser(with_verbs=True):
                         'path)')
     p.add_argument('--clearance', type=float, default=None, metavar='MM',
                    help="Pad clearance the grade runs at. Omitted, it comes "
-                        "from the BOARD (its Default netclass / constraints) "
-                        "-- a fixed 0.25 on a board routed to 0.15 vetoes "
-                        "poses the router would happily route")
+                        "from the BOARD as KiCad grades it: its Default "
+                        "netclass, floored at Board Setup min_clearance "
+                        "(#1338) -- a fixed 0.25 on a board routed to 0.15 "
+                        "vetoes poses the router would happily route")
     p.add_argument('--board-edge-clearance', type=float, default=None,
                    metavar='MM',
                    help="Edge clearance for the pose ranking. Omitted, from "

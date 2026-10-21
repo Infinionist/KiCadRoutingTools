@@ -374,7 +374,7 @@ def board_floor_declaration(pcb_path, design_rules=None):
 
 def board_floor_knobs(pcb_path, clearance=None, board_edge_clearance=None,
                       clearance_default=0.25, edge_default=0.55,
-                      design_rules=None):
+                      design_rules=None, grading=False):
     """Resolve grading/legality knobs BOARD-first (run-7 S1/S4).
 
     An explicit value wins; an unset one resolves from the board's own
@@ -384,9 +384,14 @@ def board_floor_knobs(pcb_path, clearance=None, board_edge_clearance=None,
     violations (S1: check_floorplan oob), and one LOOSER lets real ones
     pass; the same mistake vetoed legal poses in converge (S4).
 
+    `grading=True` resolves an unset clearance the way KiCad grades it,
+    floored at Board Setup ``min_clearance`` (`board_grading_clearance`,
+    #1338) -- place_pose's verdict. The placers keep the class.
+
     Returns ``(clearance, board_edge_clearance, knobs)`` where ``knobs``
     records each value's source (``'cli'`` | ``'board netclass'`` |
-    ``'board constraint'`` | ``'fixed default'``) for JSON disclosure.
+    ``'board minimum clearance'`` | ``'board constraint'`` |
+    ``'fixed default'``) for JSON disclosure.
     """
     # A non-positive declared value is UNSET, not a floor of zero -- KiCad
     # writes 0 into these fields for "not configured", and reading it as a real
@@ -396,7 +401,10 @@ def board_floor_knobs(pcb_path, clearance=None, board_edge_clearance=None,
     # render_placement a 0.0 edge floor (every edge-halo and oob term
     # vanishing) where it had previously used 0.55.
     knobs = {}
-    if clearance is None:
+    if clearance is None and grading:
+        clearance, src = board_grading_clearance(
+            pcb_path, None, clearance_default, design_rules)
+    elif clearance is None:
         v = board_default_netclass_clearance(pcb_path, design_rules)
         clearance, src = ((v, 'board netclass') if v is not None and v > 0
                           else (clearance_default, 'fixed default'))
@@ -519,6 +527,40 @@ def board_floor(pcb_path, name, explicit=None, fallback=None,
         # exactly like a board that genuinely declares nothing.
         return _num(fallback), 'unreadable project'
     return _num(fallback), 'fixed default'
+
+
+def board_grading_clearance(pcb_path, explicit=None, fallback=None,
+                            design_rules=None):
+    """The clearance KiCad GRADES this board's pads at, ``(value, source)``
+    (#1338): the Default net class floored at Board Setup ``min_clearance``
+    -- `fix_kicad_drc_settings.grading_clearance`, the rule check_drc has
+    graded by since #1210.
+
+    `board_floor('clearance')` is the class alone, and stays so: it is what a
+    placement or routing step WORKS at, and the route writeback lowers
+    ``min_clearance`` to what it routed. A tool that grades existing copper
+    against what KiCad will report must read this instead. Measured on
+    multichannel_mixer (class 0.2, min_clearance 0.3): kicad-cli and check_drc
+    report 2 pad pairs at 0.24 / 0.25 mm while check_assembly and place_pose,
+    reading the class, called the board buildable and legal.
+
+    Sources: ``'cli'`` | ``'board netclass'`` | ``'board minimum clearance'``
+    | ``'fixed default'`` | ``'unreadable project'`` -- `board_floor`'s
+    vocabulary plus the one this adds."""
+    if explicit is not None:
+        return float(explicit), 'cli'
+    try:
+        dr = (design_rules if design_rules is not None
+              else read_design_rules(pcb_path))
+        from fix_kicad_drc_settings import grading_clearance
+        value, src = grading_clearance(
+            board_default_netclass_param(pcb_path, 'clearance', dr),
+            board_constraint(pcb_path, 'min_clearance', dr))
+    except Exception:                                          # noqa: BLE001
+        return _num(fallback), 'unreadable project'
+    if value is None:
+        return _num(fallback), 'fixed default'
+    return value, ('board netclass' if src == 'Default net class' else src)
 
 
 def _num(v):
