@@ -5,10 +5,14 @@
     fit_template.py BOARD.kicad_pcb --sketch SKETCH.json [-o ROW.json] [--render ROW.png]
                     [--intent INTENT.json --write-intent OUT.json]
 
-`--pins REF` prints the chip's pads as the sketch needs them: number, pin
+`--pins REF` prints a part's pads as the sketch needs them: number, pin
 function, position in the footprint's own frame and the side of the
 footprint it is on, net, and the other parts on that net with their values
-and pads -- what matching the datasheet's drawing to the board takes.
+and pads -- what matching the datasheet's drawing to the board takes. It
+takes any part, to walk a net from part to part. A net with more than 20
+parts (a ground, a board-wide rail) prints as a count; with `--groups
+GROUPS.json` it still lists the parts of REF's own group on it (a buck's
+output caps on its 3V3 rail).
 
 SKETCH names the chip (`anchor`) and its support parts in the datasheet
 drawing's order, nearest the chip first, each with `pads`: its own pads, and
@@ -23,18 +27,23 @@ quarter turn (`rot`, relative to the chip):
      "members": [
        {"ref": "C2", "pads": {"C2": ["1", "2"], "U2": ["2", "1"]}, "side": "+y"},
        {"ref": "L1", "pads": {"L1": ["1"], "U2": ["12"]}, "side": "-x"},
-       {"ref": "C7", "pads": {"C7": ["1"], "L1": ["2"]}}]}
+       {"ref": "C7", "pads": {"C7": ["2"], "L1": ["2"]}}]}
 
 Each member is seated as close to its partner pads as the courtyards already
 seated allow -- kept the board's clearance apart, the seat gate's courtyard
-rule (`gap_mm` in the sketch for another) -- within `--reach` mm (4) of them,
-at the quarter turn that brings its pads closest (`placement.templates.fit`).
+rule (`gap_mm` in the sketch for another) -- within `--reach` mm (4, or the
+member's own `reach`) of them, at the quarter turn that brings its pads
+closest (`placement.templates.fit`). A LOCKED chip's locked neighbours are
+where the board has them: obstacles, and partners a member may name. Each
+member prints with each leg's gap and its gap to the chip; a NOTE names a
+member with one `side` that ended beside another edge.
 A member that cannot be seated stops the fit with the reason (its side, or
 the members in its way, named), and `--render` then draws the members seated
 before it. A part with no courtyard is fitted as the box round its pads,
 and the run names it: check that box against the part's real body. The row gives each
 member's pose in the chip's frame, the chip at the origin unturned, and the
-pad-edge gaps the fit reached (`fitted.legs_gap_mm`). `--render` draws the
+pad-edge gaps the fit reached (`fitted.legs_mm`, one per named pad of the
+member, in the order of its pads; `legs_gap_mm` sums them). `--render` draws the
 fitted template in the chip's frame -- courtyards, pads, the chip's pad
 numbers, each member's legs -- to set beside the datasheet's drawing.
 `--write-intent`
@@ -63,6 +72,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('board')
     ap.add_argument('--pins', metavar='REF', help="print REF's pads for matching, and exit")
+    ap.add_argument('--groups', metavar='JSON', help="with --pins: list REF's group's parts "
+                    "on a rail too")
     ap.add_argument('--sketch', help='the sketch JSON')
     ap.add_argument('--render', metavar='PNG', help='draw the fitted template here')
     ap.add_argument('--reach', type=float, default=4.0, metavar='MM',
@@ -84,16 +95,24 @@ def main(argv=None):
     if a.pins:
         try:
             pcb = parse_kicad_pcb(a.board)
-            rows = pin_table(pcb, a.pins)
+            group = None
+            if a.groups:
+                from placement.grouping import load_groups
+                group = next((set(g['refs']) for g in load_groups(a.groups)['groups']
+                              if a.pins in g['refs']), set())
+            rows = pin_table(pcb, a.pins, group)
         except (OSError, ValueError, KeyError) as ex:
             print(f"fit_template: {ex}", file=sys.stderr)
             return 2
         fp = pcb.footprints[a.pins]
-        print(f"{a.pins} {fp.value} {fp.footprint_name} on {fp.layer} at rotation "
-              f"{fp.rotation:g} on this board; positions in its own frame (rotation 0):")
+        print(f"{a.pins} {fp.value} {fp.footprint_name} on {fp.layer}; positions in its own "
+              f"frame (rotation 0, +x right, +y down):")
         for r in rows:
-            on = (f"rail, {r['rail']} parts" if 'rail' in r else
-                  ' '.join(f"{q['ref']}.{'/'.join(q['pads'])}[{q['value']}]" for q in r['parts']))
+            on = ' '.join(f"{q['ref']}.{'/'.join(q['pads'])}[{q['value']}]"
+                          + ('@' + q['layer'][:1] if q.get('layer') and q['layer'] != fp.layer else '')
+                          for q in r.get('parts') or ())
+            if 'rail' in r:
+                on = f"rail, {r['rail']} parts" + (f"; of its group: {on}" if on else '')
             print(f"  pad {r['pad']:>4} {r['function'][:10]:10s} ({r['at'][0]:+7.3f}, "
                   f"{r['at'][1]:+7.3f}) {r['side']:8s} {r['net'][:28]:28s} {on}")
         print('JSON_SUMMARY: ' + json.dumps({'ref': a.pins, 'pads': rows}))
@@ -125,8 +144,20 @@ def main(argv=None):
         print(f"fit_template: {ex}", file=sys.stderr)
         return 2
     for m in row['members']:
+        legs = row['fitted']['legs_mm'][m['ref']]
         print(f"  {m['ref']:6s} at ({m['at'][0]:+7.3f}, {m['at'][1]:+7.3f}) rot {m['rot']:5.1f}"
-              f"  legs {row['fitted']['legs_gap_mm'][m['ref']]:.3f} mm")
+              f"  legs {' + '.join(f'{g:.2f}' for g in legs)} mm"
+              f"  ({row['fitted']['off_chip_mm'][m['ref']]:.2f} mm off the chip)")
+    for n in row['fitted'].get('notes') or ():
+        print(f"  NOTE: {n}")
+    near = [o for o in row['fitted'].get('context') or () if o not in crt]
+    if near:
+        boxed = boxed + near
+        print(f"  NOTE: no courtyard on the locked neighbour(s) {', '.join(near)}: each is an "
+              f"obstacle as the box round its pads -- check that box against its real body")
+    if row['fitted'].get('context'):
+        print(f"  locked neighbours of the locked chip, as obstacles and partners: "
+              f"{', '.join(row['fitted']['context'])}")
     if a.out:
         with open(a.out, 'w', encoding='utf-8') as fh:
             json.dump(row, fh, indent=1)

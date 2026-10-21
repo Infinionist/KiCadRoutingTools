@@ -1,6 +1,6 @@
 ---
 name: plan-pcb-placement
-description: Places a KiCad board by function, and in full mode routes and verifies it. The agent sorts the parts into functional groups, copies each switching regulator's datasheet layout into a template its support parts are held to, place_simple.py anneals one objective over 12 seeds (6 started scattered, 6 with each group gathered), a quick judging route of the 6 its objective rates best keeps the best, and in full mode that board is then routed by /plan-pcb-routing. One independent verifier grades the result, and the board comes back with REPORT.md. Modes are place and full (place + route). Use it to place, arrange, re-place or optimise components, handle an unplaced board or parts piled off the outline, place and route from scratch, or run the GUI's Place / Place + Route. It never changes the outline. To route a placed board without moving parts, use plan-pcb-routing; for sign-off QA, review-routed-board.
+description: Places a KiCad board by function, and in full mode routes and verifies it. The agent sorts the parts into functional groups, names each switching stage and RF front end, copies its datasheet layout into a template its support parts are held to, place_simple.py anneals one objective over 12 seeds (6 started scattered, 6 with each group gathered), a quick judging route of the 6 its objective rates best keeps the best, and in full mode that board is then routed by /plan-pcb-routing. One independent verifier grades the result, and the board comes back with REPORT.md. Modes are place and full (place + route). Use it to place, arrange, re-place or optimise components, handle an unplaced board or parts piled off the outline, place and route from scratch, or run the GUI's Place / Place + Route. It never changes the outline. To route a placed board without moving parts, use plan-pcb-routing; for sign-off QA, review-routed-board.
 ---
 
 # Plan PCB placement
@@ -182,6 +182,58 @@ Write `wk/<run>/groups.json` (the format is in `py_placer/placement/grouping.py`
   the regulator sits by its power entry -- say `near` its entry's group.
 - **Faces:** give a group a `side` (`F`/`B`) only to put all its parts on that
   face; without one each part keeps its face.
+- **Name the template candidates** in the group that holds each one, as
+  `"templates": [{"chip": "U2", "kind": "switching stage", "why": "buck
+  converter; its datasheet's layout figure"}]`. §3.5 copies each one's
+  datasheet layout. Judge from what the part IS (its value, and its
+  datasheet when the value does not settle it), never from pin names alone.
+  Pin names miss many stages, and some chips have none. Two kinds:
+  - **`switching stage`**: anything that switches current through an
+    inductor, a transformer, a flying or bootstrap cap, or a motor:
+    - a buck, boost, inverting or buck-boost converter or controller, with
+      its FETs;
+    - a flyback with its transformer;
+    - a charge pump;
+    - a class-D amplifier's output filter;
+    - a motor or gate driver's bridge with its bootstrap caps;
+    - the built-in DC-DC of an MCU or a radio (an RP2350's VREG_LX, an nRF52's
+      DCC, an SX126x's DCC_SW).
+  - **`rf front end`**: the parts between a radio or RF chip's RF pins and
+    its antenna or RF connector: the matching network, a balun, a filter, an
+    RF switch, an LNA or PA. A module that holds its own (a radio module, a
+    power module) needs none.
+  - **Never** an LDO, a crystal or a plain decap: the decap and crystal rules
+    hold those, with no datasheet to read.
+
+  On a big board, find them by their parts. List every inductor,
+  transformer, power diode and flying cap, and run `fit_template.py --pins`
+  on each to see which chip it reaches. Then list every chip's value for
+  radios and RF parts.
+  - **One chip, one template.** A chip that is both kinds (an nRF52 or an
+    SX126x: a radio with a DC-DC) takes one template holding both stages.
+    Name it once, with its main kind, and say both in `why`. A dual converter
+    is one template too.
+  - **Members go in the chip's group.** `place_simple` moves a template's
+    members into its chip's group whatever the file says, and `check_groups`
+    warns of any you put elsewhere.
+  - **Record the exceptions:** `"skip": "<why>"` on a candidate that will get
+    no template (§3.5 step 1), and `{"chip": "U8", "kind": "none", "why":
+    "..."}` for a chip a hint points at that is no stage (an ADC whose supply
+    has an LC filter).
+
+  `check_groups` lists the candidates and, with `--intent`, which have a
+  template row yet. It also prints a HINT for each chip the board's pins and
+  nets suggest that no group names:
+  - `emc_roles` reads it as a switching converter;
+  - a pin's net carries an inductor and at most four other parts;
+  - a cap sits across two of its pins, one named as a bootstrap or flying-cap
+    pin;
+  - a pin is named as an RF port.
+
+  Run it once before you name anything, to see every hint. A hint is
+  evidence to weigh, not a verdict, and no hint does not mean no candidate:
+  an RF chain without named pins, or a stage of a chip with no pin names,
+  shows none.
 - **Look parts up.** A part number the board and `part-roles.md` do not
   settle is a datasheet question: WebSearch it and WebFetch the datasheet.
   If you must save a file, save it only under `$KRT_DATASHEET_DIR` when that
@@ -200,7 +252,8 @@ a follower still shows in the group you gave it. Fix every ERROR (a part
 in no group or in two, a ref not on the board) and
 read every WARN: a part with more signal links to another group may belong
 there; a decap "exempt" because no IC of its group carries its rail is right
-for a load or RC cap and wrong for a real decap.
+for a load or RC cap and wrong for a real decap. Read every template HINT
+(above).
 
 ### 3.4 Orient and check the connectors and fixed parts (your judgement)
 
@@ -252,102 +305,215 @@ no `edge_connector` error.
 
 ### 3.5 Datasheet layouts (your judgement)
 
-A switching regulator's datasheet draws where each of its support parts goes:
+A switching stage's datasheet draws where each of its support parts goes:
 the input caps across VIN and ground, the inductor on the switch pin, the boot
 cap across BOOT and SW, the feedback divider at FB, away from the switch node.
-The router cannot see whether the board follows that drawing, so a buck can
-route clean and still work badly. Copy the drawing into the intent as a
-**template**. `place_simple` seats each part at its template pose, carries it
-with every move of the chip, and makes leaving that pose expensive.
+An RF chip's draws its matching network as a short line from the RF pin
+toward the antenna, each shunt part beside it with its own ground. The parts'
+values are tuned on that geometry. The router cannot see whether the board
+follows the drawing, so the board can route clean and still work badly.
+Copy the drawing into the intent as a **template**. `place_simple` seats each
+part at its template pose, carries it with every move of the chip, and makes
+leaving that pose expensive.
 
-1. **Which chips.** Every row of `emc_roles.roles` (`board_context.py
-   --json`) whose `role` is `switching converter`, and every row whose `role`
-   is `unknown` with `candidate: switching converter`: its pads carry no pin
-   functions, so read its pins off the datasheet's pinout. Only converters:
-   an LDO's caps and a crystal's load caps are held by the decap and crystal
-   rules, with no datasheet to read. **Skip** a converter, and say why in
-   REPORT.md, when no datasheet can be found for its value, when the
-   datasheet has no layout figure, or when its support parts are locked.
-   A skipped converter keeps its §2 `proximity[]` rows.
-2. **Get the datasheet.** WebSearch the part number with "datasheet" and
-   take the manufacturer's PDF (TI's is
-   `https://www.ti.com/lit/ds/symlink/<part>.pdf`, the base part number in
-   lower case; a search usually returns its HTML viewer instead). Save it
-   under `$KRT_DATASHEET_DIR` when that is set, else under
-   `wk/<run>/datasheets/<part>/`, one folder per part: a download is data,
-   not code. WebFetch mangles a PDF, so download it (`curl -sSL -o
-   <folder>/<part>.pdf <url>`) and open it with the Read tool and `pages`, a
-   few at a time. You need three things from it:
-   - the **layout guidelines** (they say what matters most, usually the
-     input cap nearest, and give distances);
-   - the **layout example** figure ("Layout Example" or "Recommended
-     Layout", near the end);
+1. **Which chips.** The template candidates your groups file names (§3.3),
+   one template each. A chip whose pads carry no pin functions (`--pins`
+   shows them blank) has its pins read off the datasheet's pinout.
+   - **A figure is best, but guidelines can do.** A datasheet with no layout
+     figure whose text names each part's pins still makes a template, with
+     no `side`s: "a 10 nF bootstrap cap between pins 1 and 2", "1 uF as
+     close as possible to VS (pin 6) and GROUND (pin 7)".
+   - **Skip** a candidate when no datasheet or reference design can be found
+     for it, when neither a figure nor such text places its parts, or when
+     its support parts are locked (`check_groups` lists each group's fixed
+     parts). Put the reason in the candidate's `skip` and in REPORT.md. Then
+     write a `proximity[]` row (§2) for each part its datasheet says to keep
+     close: `emc_roles` writes rows only for chips whose pins it can read as
+     a converter's, so a bridge or an unnamed chip would be held by nothing.
+2. **Get the drawing.** WebSearch the part number with "datasheet" and take
+   the manufacturer's PDF. TI's is `https://www.ti.com/lit/ds/symlink/<part>.pdf`
+   and Analog Devices' (Linear too) is
+   `https://www.analog.com/media/en/technical-documentation/data-sheets/<part>.pdf`,
+   the base part number in lower case with the package and reel suffix
+   dropped: LMR36006CRNX is `lmr36006`, LT3471 rev B is `3471fb`. A search
+   often returns an HTML viewer or distributors' pages instead.
+   - **When the maker's site blocks a download** (a browser check, a
+     JavaScript link), take a distributor's or a vendor CDN's copy
+     (SparkFun, Adafruit, Mouser), and check it is the maker's file: its
+     document number and revision on every page.
+   - **Save it** under `$KRT_DATASHEET_DIR` when that is set, else under
+     `wk/<run>/datasheets/<part>/`, one folder per part: a download is data,
+     not code. Delete the folder before you hand back (§3.3). WebFetch
+     mangles a PDF, so download it (`curl -sSL -o <folder>/<part>.pdf <url>`)
+     and open it with the Read tool and `pages`, a few at a time.
+
+   You need three things from it:
+   - the **layout guidelines**. They say what matters most and sometimes
+     give distances, but may say neither;
+   - the **layout figure** ("Layout Example" or "Recommended Layout", near
+     the end);
    - the **application schematic** whose designators that figure uses
      ("Typical Application" or "Design Example"). Without it the figure's
-     C1 and Q2 mean nothing.
+     C1 and Q2 mean nothing. Where no schematic uses the figure's names,
+     take one of the same topology and match by the nets the figure draws.
 
-   The table of contents names their pages. Where poppler is installed,
-   `pdftotext -layout -f N -l N <pdf> -` prints page N, to grep for those
-   headings, and a figure too small to read on the Read page is rendered
-   larger by `pdftoppm -r 300 -f N -l N -png <pdf> <prefix>`: crop the figure
-   out of the PNG and Read the crop.
+   - **Several readings of one figure.** Where the figure and the schematic
+     disagree on how many of a part there are, the figure is the layout to
+     copy. A part the schematic calls 2x and the figure draws once: seat
+     the second beside the first. A family datasheet may draw a sibling's
+     extra parts (an adjustable version's divider), and the board's own
+     version decides which exist.
+   - **An RF chip or a built-in DC-DC** often has its layout in a separate
+     **reference design** or application note (Nordic's reference layouts,
+     Semtech's reference design for the SX126x). Take the configuration that
+     matches the board: its supply, and which DC-DCs it uses. An application
+     note's evaluation-board figure will do when the design files cannot be
+     fetched. A reference design's pick-and-place file gives each part's
+     centre and turn exactly (Altium's in mils, +y up). Use it to read the
+     arrangement, then fit as below; never copy its coordinates.
+   - **Finding the pages.** The table of contents names them. Where poppler
+     is installed:
+     - `pdftotext -layout -f N -l N <pdf> -` prints page N, to grep for the
+       headings;
+     - `pdftoppm -r 300 -f N -l N -png <pdf> <prefix>` renders a figure too
+       small to read: crop it and Read the crop;
+     - `pdfimages -j` extracts a figure the PDF holds as an embedded image,
+       which rendering cannot sharpen.
 3. **Match the drawing to the board, by net and pin function, never by
    designator.** The datasheet's C1 is not the board's C1: a bitaxe agent
    found Q1, Q2, R4, R10 and C1 naming different parts in the two, so
-   matching by name would have swapped the FETs.
-   `python3 -X utf8 py_tools/fit_template.py wk/<run>/fixed.kicad_pcb --pins <REF>`
-   lists the chip's pads: number, pin function, position and side in the
-   footprint's own frame (`centre` for an exposed pad, `inner -x` and so on
-   for an inner pad off the middle), net, and the other parts on that net
-   with their values and pads. Name each part of the drawing by its board
-   reference, from the pin it connects to and its value: CIN is the 4.7 uF
-   on VIN and ground, CBOOT the cap from BOOT to SW, the inductor the part
-   on SW, the divider the resistors on FB, COUT the caps on the inductor's
-   far pad (`--pins` takes any part, so `--pins <inductor>` lists them). Where several parts qualify (four
-   4.7 uF caps on VIN), take the ones your groups file puts in the chip's
-   group; the others serve something else. Leave out what the drawing has
-   and the board does not (a CFF not fitted), and what the board has and the
-   drawing does not.
+   matching by name would have swapped the FETs. Nets first; values only
+   break ties, since a board often fits other values than the datasheet's.
+   - **`--pins`.**
+     `python3 -X utf8 py_tools/fit_template.py wk/<run>/fixed.kicad_pcb --pins <REF>`
+     lists a part's pads: number, pin function, position and side in its
+     own frame (`centre` for an exposed pad, `inner -x` and so on for an
+     inner pad off the middle), net, and the other parts on that net with
+     their values and pads (`@B` or `@F` marks a part on the other face). It takes any
+     part, so walk a net from part to part. A net of more than 20 parts
+     prints as a count; with `--groups wk/<run>/groups.json` it still lists
+     that net's parts in the part's own group.
+   - **The stage's parts.** CIN is on VIN and ground, CBOOT from BOOT to SW,
+     the inductor on SW, the divider on FB. COUT is on the output rail,
+     wherever the topology puts it: past a buck's inductor, on a boost's
+     diode cathode, past an inverter's second inductor. Where several parts
+     qualify (four caps on VIN), take the ones your groups file puts in the
+     chip's group; the others serve something else. A chip with two VIN/PGND
+     pin pairs takes a cap set at each pair, where the board has them.
+   - **Faces.** A template holds only parts on its chip's face. A part on
+     the other face (a bypass cap on the back between a through-hole chip's
+     pins): leave it out and write a `proximity[]` row for it (§2), keeping
+     the author's face, unless the whole group belongs on one face (`side`,
+     §3.3).
+   - **What is not a member.** The chip's other decaps and its crystal: the
+     decap and crystal rules hold them. A heatsink or thermal pad under the
+     chip: it stays with the group. Bulk capacitance the text places by
+     role, not by pin ("at least 100 uF per amp"): it stays with the group
+     unless it fits beside the loop.
+   - **"The drawing" is the whole layout section**: the figure and the
+     guidelines, which may name a part the figure omits (a CFF). Leave out
+     what it has and the board does not, and what the board has and it does
+     not. Where the board has fewer like parts than the figure draws (two
+     COUT for four), take the figure's positions nearest the chip. A drawn
+     part that only fits far out and does not matter to the loop (a
+     soft-start RC) may be left to the group.
 
    **A controller with external FETs** (no VIN pin of its own; `emc_roles`
    notes it) takes its FETs as members too. Their input caps go across the
    high-side FET's drain and the low-side FET's source, and the inductor
    on the switch node between the FETs. Those members' legs name the FETs'
    pads (an earlier member), not the controller's pins, and the FETs' legs
-   name the gate-drive pins.
+   name the gate-drive pins. **A motor bridge**'s bootstrap caps go across
+   each BOOTSTRAP and OUTPUT pin pair, and its supply bypass across VS and
+   ground; its hot loop is that bypass.
+
+   **An RF front end** is a chain: walk it from the chip's RF pin with
+   `--pins` on each part in turn, along the reference schematic.
+   - **Its parts.** A series part carries the chain on both pads, a series
+     0R or jumper included. A shunt part has one pad on the chain and one on
+     ground. A balun or RF switch takes the chain in and passes it on. Where
+     the reference uses another part than the board (a different RF switch),
+     match by function: which port is which.
+   - **Its ends.** The antenna or the RF connector ends the chain. It is
+     placed and locked with the edge parts, so it is no member.
+   - **A locked part mid-chain** (a test connector) splits it: template each
+     side on its own chip (the radio, the switch), and leave the parts that
+     land on the locked part to their group.
+   - **A locked chip** (the author locked the radio) takes the board's
+     locked parts round it into the fit: obstacles where they are, and
+     partners a member may name, so the chain can head for the antenna's
+     feed pad.
 4. **Turn the drawing into the footprint's frame.** The template is in the
    footprint's own frame: rotation 0, +x right, +y down. From `--pins`, see
    where each pin group lies, then map the drawing's directions onto it. For
    example, the LMR36006's Figure 57 draws SW (pin 12) at the top, and
    fusb302_pd_dev's footprint has pad 12 at `inner -x`, so the drawing's up
-   is -x there. **Check whether it is a turn or a mirror** on pin 1 and the
-   way the numbers run from it. If they run the same way round in the drawing
-   and in `--pins`, it is a turn. If they run the other way, the drawing is a
-   bottom view or the chip is on the back, so mirror it. A back-side chip's
-   frame is mirrored, so read its sides from `--pins` and never from the drawing.
-5. **Write the sketch:** the chip as `anchor`, then the members in the
-   drawing's priority order. Seating is greedy, so order matters:
-   - the parts the datasheet wants closest first (input caps, the boot cap,
-     the inductor, a controller's FETs);
-   - then the small signal parts;
-   - a part that sits beyond another member (COUT past the inductor) after
-     that member.
+   is -x there.
+
+   **Check whether it is a turn or a mirror** on pin 1 and the way the
+   numbers run from it.
+   - Read the numbers off the layout figure itself, since some datasheets
+     turn the figure from the pinout page.
+   - Plot `--pins`' positions with +y DOWN, as the board draws them.
+   - If the numbers run the same way round in the figure and in `--pins`,
+     it is a turn. If they run the other way, the drawing is a bottom view
+     or the chip is on the back. Mirror it about the axis that keeps pin 1's
+     side where `--pins` puts it.
+   - A ball grid runs by rows and columns instead: its letters and numbers
+     must run the same way in both.
+   - A back-side chip's frame is mirrored, so read its sides from `--pins`
+     and never from the drawing.
+5. **Write the sketch:** the chip as `anchor`, then the members. Seating is
+   greedy: each member takes the best spot left, so order decides.
+   - **The hot loop first.** A buck's input caps; a boost's diode and output
+     cap; an inverter's coupling cap and diode; a controller's FETs; a
+     bridge's supply bypass. Then the inductor, then the boot cap and the rest
+     at the chip, then the small signal parts.
+   - **Every part that sits beyond another member** (a second rank of input
+     caps, COUT beside the inductor) after all the parts at the chip.
+     Listed earlier, it takes a chip-side part's spot.
+   - **An RF chain** goes in its order from the RF pin: each series part's
+     partner is the part before it (the chip's pin for the first), each
+     shunt part's the series pads on its node. After a shunt the next series
+     part names both.
+   - **If the fit puts a part where the figure has another**, list the
+     figure's occupant first.
 
    Give each member:
    - `pads`: its own pads, and for each partner (the chip, or a member
-     listed earlier) the partner's pads it belongs beside. They are matched by
-     net, so their order does not matter, and one member may name several
-     partners. A second part like one already seated (the second input cap)
-     goes beside the first, so name the first as its partner;
+     listed earlier) the partner's pads it belongs beside.
+     - Pads are matched by net, so their order does not matter.
+     - Each of the member's named pads goes to the NEAREST same-net pad
+       among the partners named, and the fit minimises the sum over its
+       pads. So partner pads on one net are alternatives. Only a partner for
+       ANOTHER of the member's pads holds it in place: COUT names the
+       inductor's output pad for its VOUT pad and CIN's ground for its
+       ground pad, the copper the figure shares.
+     - A second part like one already seated (the second input cap) names
+       the first.
+     - Name a cap's ground pad only where the drawing grounds it at the
+       chip's ground pin; a decap's ground usually goes to its own via;
    - `side`: where the drawing puts it, in the footprint frame. `-x`, `+x`,
      `-y` or `+y` means its centre is beyond that edge of the chip's
-     courtyard, anywhere along it. Two of different axes (`+x-y`) mean a
-     corner, beyond both edges;
-   - `rot` where the drawing fixes which way the part faces (a FET, an
-     inductor whose pads differ): its turn relative to the chip, in degrees
-     (0, 90, 180 or 270), so on the board it sits at the chip's rotation plus
-     `rot`. Leave
-     it out and the fit picks the turn that brings its pads closest;
+     courtyard, anywhere along it; two of different axes (`+x-y`) mean a
+     corner, beyond both edges. It is relative to the chip only. On a small
+     chip a corner costs a long leg; a big inductor beside a small chip
+     often needs one;
+   - `rot` wherever the drawing fixes the part's axis or which pad faces
+     which way:
+     - a FET, a diode or a balun;
+     - an inductor;
+     - a series RF part;
+     - any two-pad part whose other pad leaves the template (to a locked
+       part, or a pad not named), which the fit would otherwise lay along
+       the chip's pins.
+
+     Leave it out for a cap whose two pads both go to the chip. It is the
+     part's turn relative to the chip, in degrees (0, 90, 180 or 270),
+     counter-clockwise in the footprint frame as KiCad turns parts. On the
+     board the part sits at the chip's rotation plus `rot`;
+   - `reach` (mm, default 4, `--reach` for all) for a member whose spot
+     lies further from its partners;
    - a `note` naming what the drawing calls it.
 
    Cite the datasheet (title, revision, section, figure) in `source`:
@@ -356,45 +522,63 @@ with every move of the chip, and makes leaving that pose expensive.
     "members": [
      {"ref": "C2", "pads": {"C2": ["1", "2"], "U2": ["2", "1"]}, "side": "+y", "note": "CHF across VIN 2 / PGND 1"},
      {"ref": "C5", "pads": {"C5": ["1", "2"], "U2": ["4", "3"]}, "side": "+y", "note": "CBOOT across BOOT 4 / NC-SW 3"},
-     {"ref": "L1", "pads": {"L1": ["1"], "U2": ["12"]}, "side": "-x", "note": "inductor on SW 12"},
+     {"ref": "C1", "pads": {"C1": ["1", "2"], "C2": ["1", "2"]}, "side": "+y", "note": "CIN beyond CHF"},
+     {"ref": "L1", "pads": {"L1": ["1"], "U2": ["12"]}, "side": "-x", "rot": 180, "note": "inductor on SW 12"},
      {"ref": "R2", "pads": {"R2": ["1"], "U2": ["7"]}, "side": "+x", "note": "RFBB at FB 7"},
-     {"ref": "C7", "pads": {"C7": ["2"], "L1": ["2"]}, "side": "-x", "note": "COUT past the inductor"}]}
+     {"ref": "C7", "pads": {"C7": ["1", "2"], "L1": ["2"], "C1": ["2"]}, "side": "-x+y",
+      "note": "COUT beside the inductor: VOUT on L1's output, ground by CIN's"}]}
    ```
 6. **Fit, look, adjust.**
    ```bash
    python3 -X utf8 py_tools/fit_template.py wk/<run>/fixed.kicad_pcb --sketch <sketch> \
        --render <png> --intent wk/<run>/intent.json --write-intent wk/<run>/intent.json
    ```
-   It seats each member in order, within `--reach` mm (4) of its partner
-   pads, as close to them as the courtyards already seated allow. They are
-   kept the board's clearance apart, the placer's own rule. It tries each
-   quarter turn and keeps the one that brings the pads closest. It prints
-   each member's pose and leg gaps, and writes the template into the intent,
-   replacing that chip's row if it has one, so re-fit as often as you like.
+   - **What it does.** It seats each member in order, within its reach of
+     its partner pads, as close to them as the courtyards already seated
+     allow, kept the board's clearance apart (the placer's own rule). It
+     tries each quarter turn and keeps the one that brings the pads closest.
+   - **What it prints.** Each member's pose, the gap of each of its legs
+     (`legs 1.07 + 0.74 mm`), and its gap to the chip. A NOTE flags a member
+     that ended beside another edge than its `side`.
+   - **What it writes.** The template goes into the intent, replacing that
+     chip's row, so writing over the input and re-fitting as often as you
+     like is safe.
    - **If a member cannot be seated**, the fit stops. It says why: its
      `side`, or which members already seated take its spot. `--render`
      then draws the members seated so far. Move the member earlier in the
-     order, change its side, make a like part its partner, or raise
-     `--reach`.
+     order, change its side, make a like part its partner, or raise its
+     `reach`.
    - **Look at the PNG** beside the datasheet's figure, turned to the
-     footprint's frame. Check that every part sits on its side and faces the
-     pin it serves. Each red leg runs across a pad-edge gap, so it should be
-     short. A leg of several mm usually means the member lost its spot to one
-     listed before it.
+     footprint's frame.
+     - Check that every part sits on its side and faces the pin it serves.
+     - Each red leg runs across a pad-edge gap to the nearest partner pad,
+       so it should be short. A short leg can still hide a part far from
+       the chip, when its partner is a member that strayed, so read the gap
+       to the chip too.
+     - A leg of several mm usually means the member lost its spot to one
+       listed before it. A part much bigger than the drawn one (an IHLP
+       inductor beside a 3 mm chip) leaves a long leg that no order fixes.
    - **A part with no courtyard** is fitted, and placed, as the box round
      its pads; the run names it, and the render labels it. Check that box
-     against the part's real body. A custom pad, a power FET's drain, can
-     be modelled larger than its copper. The placer uses the same box, so
-     note any such part in REPORT.md rather than working round it.
+     against the part's real body. A custom pad (a power FET's drain, a
+     printed antenna) can be modelled larger than its copper, and the placer
+     uses the same box. Note any such part in REPORT.md rather than working
+     round it.
 
    **Give up on the template**, keep the §2 rows and say why in REPORT.md,
-   when after adjusting a member's legs still run several mm past the
-   distances the guidelines give.
+   when after adjusting a member's legs still run several mm past what the
+   drawing itself shows. Judge against the distances the guidelines give,
+   else against the drawing's own legs for the parts it puts first (the hot
+   loop, the switch-node inductor, the RF pin's first part). A template
+   from text alone has no drawing: judge each leg against the shortest it
+   gets when its member is listed first. A member you leave out of a
+   template gets a `proximity[]` row instead.
 7. **The rest is automatic.** `place_simple` seats and carries the template
    (`--template-weight`, default 100 per mm of drift), and `check_floorplan`
    grades each member's drift from its template pose (`template`, a WARN,
-   past 0.3 mm by default, the row's `tolerance_mm`). Report each template in
-   REPORT.md: the datasheet and figure, the parts matched, and the drift
+   past 0.3 mm by default, the row's `tolerance_mm`). On the unplaced board
+   every member reads off its pose; that is expected. Report each template
+   in REPORT.md: the datasheet and figure, the parts matched, and the drift
    graded on the final board.
 
 - **Never copy coordinates from the drawing.** A datasheet packs its parts

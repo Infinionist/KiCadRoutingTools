@@ -152,6 +152,7 @@ its load caps show `clock`, the group the placer folds into `core`.*
 | `edge` | `N` / `S` / `E` / `W`: costs the group's distance from that board edge |
 | `side` | `F` / `B`: every part of the group goes on that face (flipped before the anneal) |
 | `why`, `note` | free text; `why` is where the judgement is recorded |
+| `templates` | the group's template candidates, `[{"chip", "kind", "why"}]`: a chip whose datasheet layout the skill copies into an intent `templates[]` row ([Datasheet layouts](#datasheet-layouts-templates)). `kind` is `switching stage` (anything switching current through an inductor, transformer, flying or bootstrap cap, or a motor) or `rf front end` (the parts between a radio chip's RF pins and its antenna). The placer does not read it |
 
 **How to group:** by function, not by schematic sheet or net count. The power
 entry and its conditioning, the core and its decaps, its clock, each interface
@@ -378,9 +379,14 @@ from it. On fusb302_pd_dev (an LMR36006 buck, its datasheet's Figure 57)
 the members ended within 0.5 mm of their poses on 142 of 144 member-seeds,
 the inductor 0.7 mm from the switch pin on average against 3.7 mm without the
 template. On argus (two TPS54226) and bread_dcmotor (an AP63205) the members'
-pad-edge gaps to the pins they serve fell from 4-33 mm to 1.7-2.4 mm. The
-routing was unchanged on all three: no broken or unrouted net was gained or
-lost, and the vias differed by less than the seed-to-seed spread. The
+pad-edge gaps to the pins they serve fell from 4-33 mm to 1.7-2.4 mm; on
+pocat_comms's two RF front ends (an SX1262 and its RF switch) from 1-5.6 mm
+to 0.3-0.5 mm; and on covg_patchclamp's LT3471, a converter its pin names do
+not show and which was named while grouping, from 4-15 mm to 1.0 mm. The
+routing was no worse on any of the five. On the first four no broken or
+unrouted net was gained or lost, and the vias differed by less than the
+seed-to-seed spread; on covg_patchclamp 3 of the 6 judged seeds routed with
+nothing blocking, against none of 6 without the template. The
 `plan-pcb-placement` skill's §3.5 is how an agent goes from the datasheet to
 the sketch.
 
@@ -557,6 +563,14 @@ contract.
      rule in the design brief, or per-net widths through `--power-nets` /
      `--power-nets-widths`. Loop inductance and copper area would be new
      router costs, graded on the routed board.
+- **A through-hole part's far face in the anneal.** The seat gate prices a
+  through-hole part on its far face by its leads alone (`legality.FarSide`),
+  but `simple_anneal`'s overlap term pairs any two parts whose faces meet,
+  at their whole courtyards. So a part on the back under a through-hole
+  part's body (a bootstrap cap between a TO-220's pins, as bread_dcmotor's
+  author placed them) is legal, yet the anneal pushes it away, and a
+  template cannot hold it there. Pricing the far face by the lead boxes, as
+  the gate does, would let templates and decaps keep a part there.
 - **Custom pads in placement.** A custom pad whose anchor sits at a corner of
   its copper is modelled as a box centred on the anchor
   (`kicad_parser._custom_pad_board_extent`), twice the copper's size: bitaxe's

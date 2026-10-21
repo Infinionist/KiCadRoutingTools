@@ -365,6 +365,19 @@ python3 -X utf8 py_tools/check_groups.py board.kicad_pcb --groups groups.json --
 - **`--intent`**: the intent `place_simple` will read. Parts it seats at a
   declared pose (`fixed_poses[]`) count as fixed, like locked parts, and its
   claims are followed as above.
+- **Templates**: the template candidates the groups name (a group's
+  `templates`: a switching stage or an RF front end whose datasheet layout
+  the skill copies). With `--intent`, each one's state (templated, skipped
+  and why, no row yet), and a WARN for a template member in another group
+  than its chip's. As a HINT, each chip the board's pins and nets suggest
+  that no group names or records `none`:
+  - `emc_roles` reads a switching converter;
+  - a pin's net carries an inductor and at most four other parts;
+  - a cap sits across two of its pins, one named a bootstrap or flying-cap
+    pin;
+  - a pin is named as an RF port.
+
+  Hints are for the agent to weigh and never fail the check.
 
 Exit 0 placeable (warnings allowed); 2 unreadable input; 4 errors.
 
@@ -908,12 +921,17 @@ net as an intent `proximity[]` row's `pads` are. Optionally it also gives:
   `-y`, `+y`), or a corner (`+x-y`, beyond both);
 - `rot`: its turn relative to the chip.
 
-Each member is seated in turn within `--reach` mm (4) of its partner pads, as
-close to them as the courtyards already seated allow. They are kept the
-board's clearance apart (the placer's seat rule), at the quarter turn that
-brings the pads closest. A member that cannot be seated stops the fit: it
-names the side, or the members already seated, that stood in the way, prints
-the members seated so far, and `--render` draws them.
+Each member is seated in turn within `--reach` mm (4, or its own `reach`) of
+its partner pads, as close to them as the courtyards already seated allow.
+They are kept the board's clearance apart (the placer's seat rule), at the
+quarter turn that brings the pads closest. The run prints each member's legs
+one by one and its gap to the chip, and a NOTE for a member with one `side`
+that ended beside another edge. A LOCKED chip's locked neighbours, containers
+aside, are where the board has them: obstacles, and partners a member may
+name (an antenna's feed); the render draws them in grey. A member that cannot
+be seated stops the fit: it names the side, or the members already seated,
+that stood in the way, prints the members seated so far, and `--render`
+draws them.
 
 `--render` draws the fitted template:
 - courtyards, and every pad with its number;

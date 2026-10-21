@@ -46,6 +46,9 @@ TEMPLATE_TOLERANCE_MM = 0.3
 #: template turned onto the anchor's pose: bread_dcmotor's C1 was refused at
 #: its template pose on 5 of 12 seeds and moved 4.75 mm.
 FIT_MARGIN_MM = 0.001
+#: How far (mm, centre to centre) round a LOCKED anchor the fit takes the
+#: board's other locked parts as obstacles and partners.
+LOCKED_CONTEXT_MM = 30.0
 
 
 class TemplateError(ValueError):
@@ -262,15 +265,23 @@ def fit(pcb, state, sketch, *, step: float = 0.1, fine: float = 0.01,
     order is seated where the sum over its legs of the pad-edge gap to the
     nearest partner pad (the anchor's pins, or a member seated before it) is
     least, its courtyard (`part.rect`) more than `gap_mm` (default: the board's
-    clearance, the seat gate's courtyard rule; `FIT_MARGIN_MM` more) from every courtyard already
-    seated, trying each quarter turn (or the sketch's `rot`) and, with
-    `side`, only centres on that side of the anchor (`side_ok`). A coarse grid
+    clearance, the seat gate's courtyard rule; `FIT_MARGIN_MM` more) from what
+    each part already seated presents on the faces they share (its courtyard
+    on its own face, its drilled pads' boxes on the other, as the seat gate
+    pairs them, which matters for a locked neighbour's leads); every member is
+    on the chip's own face. It is seated trying
+    each quarter turn (or the sketch's `rot`) and, with `side`, only centres
+    on that side of the anchor (`side_ok`). A coarse grid
     (`step`) within `reach` mm of its partners, then a fine one round the
-    best; ties go to the pose nearer the anchor. The row carries each
-    member's fitted legs (`fitted`), so the result can be checked against
-    the drawing. A member that cannot be seated raises `FitError`, saying
-    whether its side or the parts seated before it (named) stood in the
-    way, with the row so far."""
+    best (a member's own `reach` overrides it); ties go to the pose nearer
+    the anchor. A LOCKED anchor's locked neighbours are where the board has
+    them (`fitted.context`): obstacles like the members seated, and partners
+    a member may name (an antenna's feed). The row carries each member's
+    fitted legs and its gap to the anchor (`fitted`), and `fitted.notes`
+    names a member with one side that ended past a corner, so the result can
+    be checked against the drawing. A member that cannot be seated raises
+    `FitError`, saying whether its side or the parts seated before it (named)
+    stood in the way, with the row so far."""
     from .legality import rect_gap
     from .simple import ROTS
     a = sketch.get('anchor')
@@ -286,9 +297,19 @@ def fit(pcb, state, sketch, *, step: float = 0.1, fine: float = 0.01,
         A.ensure_rotation(r)
     poses = {a: (0.0, 0.0, 0.0)}
     seated = [A.rect(0.0, 0.0, 0.0)]
+    # what each seated part presents on each face, for the face-aware test:
+    # its courtyard on its own face, its drilled pads' boxes on the other
+    occ = [(a, A, (0.0, 0.0, 0.0))]
     ar = seated[0]
     ac = ((ar[0] + ar[2]) / 2.0, (ar[1] + ar[3]) / 2.0)
-    members, fitted = [], {}
+    context = _locked_context(pcb, state, sketch, a, a_side)
+    for o, rel in context.items():
+        Q = parts[o]
+        Q.ensure_rotation(rel[2])
+        poses[o] = rel
+        seated.append(Q.rect(*rel))
+        occ.append((o, Q, rel))
+    members, fitted, each, off, notes = [], {}, {}, {}, []
     for k, m in enumerate(sketch.get('members') or []):
         r = m.get('ref')
         where = f"sketch members[{k}] ({r})"
@@ -298,7 +319,13 @@ def fit(pcb, state, sketch, *, step: float = 0.1, fine: float = 0.01,
             raise TemplateError(f"{where}: named twice")
         P = parts[r]
         if getattr(P, 'side', None) != a_side:
-            raise TemplateError(f"{where}: on the other face from {a}")
+            # A through-hole chip's far face is its leads alone to the seat
+            # gate, but the anneal's overlap term prices its whole courtyard
+            # there (`simple_anneal`'s face masks), so the anneal pushes a
+            # member under its body away. Refused until the anneal prices the
+            # far face as the gate does (README TODO).
+            raise TemplateError(f"{where}: on the other face from {a}; a template holds "
+                                f"only parts on its chip's face")
         pads = m.get('pads') or {}
         if r not in pads:
             raise TemplateError(f"{where}: `pads` must name {r}'s own pads and its partners'")
@@ -316,10 +343,25 @@ def fit(pcb, state, sketch, *, step: float = 0.1, fine: float = 0.01,
         cx = float(np.mean([(t[0] + t[2]) / 2 for t in targets]))
         cy = float(np.mean([(t[1] + t[3]) / 2 for t in targets]))
         rots = [float(m['rot']) % 360.0] if 'rot' in m else list(ROTS)
+        reach_m = float(m.get('reach', reach))
         side = m.get('side')
         if side:
             side_ok(side, 0.0, 0.0, ar)     # refuses a malformed side
-        S = np.array(seated, dtype=float)
+        def blockers(rot):
+            """[(member box at the origin, obstacle box)] over the faces the
+            member shares with each seated part, as the seat gate pairs them
+            (`legality.pair_min_gap`)."""
+            from .legality import far_boxes, rect_on
+            mc, mf = P.rects(0.0, 0.0, rot)
+            out = []
+            for _o, Q, qp in occ:
+                Q.ensure_rotation(qp[2])
+                qc, qf = Q.rects(*qp)
+                for face in P.sides & Q.sides:
+                    mb, qb = rect_on(face, P.side, mc, mf), rect_on(face, Q.side, qc, qf)
+                    if mb is not None and qb is not None:
+                        out += [(b1, b2) for b1 in far_boxes(mb) for b2 in far_boxes(qb)]
+            return out
 
         def search(clear=True, sided=True):
             """(sum of leg gaps + tie-break, x, y, rot, legs) of the best
@@ -331,7 +373,8 @@ def fit(pcb, state, sketch, *, step: float = 0.1, fine: float = 0.01,
                 P.ensure_rotation(rot)
                 base = P.rect(0.0, 0.0, rot)
                 prect0 = _pad_rects(P, fps[r], (0.0, 0.0, rot))
-                span = max(base[2] - base[0], base[3] - base[1]) / 2.0 + reach
+                pairs = blockers(rot)
+                span = max(base[2] - base[0], base[3] - base[1]) / 2.0 + reach_m
 
                 def score(X, Y):
                     """Leg gaps, feasibility and the tie-break, over arrays
@@ -340,9 +383,9 @@ def fit(pcb, state, sketch, *, step: float = 0.1, fine: float = 0.01,
                     r0, r1 = base[0] + X, base[1] + Y
                     r2, r3 = base[2] + X, base[3] + Y
                     if clear:
-                        for q in S:     # the seat gate's courtyard test: Euclidean gap
-                            gx = np.maximum(0.0, np.maximum(q[0] - r2, r0 - q[2]))
-                            gy = np.maximum(0.0, np.maximum(q[1] - r3, r1 - q[3]))
+                        for b, q in pairs:  # the seat gate's courtyard test: Euclidean gap
+                            gx = np.maximum(0.0, np.maximum(q[0] - (b[2] + X), (b[0] + X) - q[2]))
+                            gy = np.maximum(0.0, np.maximum(q[1] - (b[3] + Y), (b[1] + Y) - q[3]))
                             ok &= np.hypot(gx, gy) >= gap + FIT_MARGIN_MM
                     mx, my = (r0 + r2) / 2.0, (r1 + r3) / 2.0
                     if side and sided:
@@ -385,38 +428,94 @@ def fit(pcb, state, sketch, *, step: float = 0.1, fine: float = 0.01,
 
         best = search()
         if best is None:
-            why = f"{where}: no pose within {reach:g} mm of its partners"
+            why = f"{where}: no pose within {reach_m:g} mm of its partners"
             if side and search(sided=False) is not None:
                 why += (f" on side {side}; it seats off that side -- change the side, or "
                         f"list it before the members that fill that side")
             else:
+                from .legality import pair_min_gap
                 _s, x, y, rot, _t = search(clear=False, sided=False)
                 P.ensure_rotation(rot)
-                want = P.rect(x, y, rot)
-                taken = [o for o, q in zip(poses, seated) if rect_gap(want, q) < gap]
+                wc, wf = P.rects(x, y, rot)
+                taken = []
+                for o, Q, qp in occ:
+                    Q.ensure_rotation(qp[2])
+                    qc, qf = Q.rects(*qp)
+                    g = pair_min_gap(P.sides, P.side, wc, wf, Q.sides, Q.side, qc, qf)
+                    if g is not None and g < gap:
+                        taken.append(o)
                 why += (f" clears the parts seated before it: the spot nearest its partners "
                         f"is taken by {', '.join(taken) or 'nothing (raise --reach)'}. List it "
                         f"before them, make a like part already seated its partner, or "
                         f"raise --reach")
-            raise FitError(why, _row(sketch, a, members, fitted, gap))
+            raise FitError(why, _row(sketch, a, members, fitted, gap, each, off, notes, context))
         _s, x, y, rot, tot = best
         x, y = round(x, 4), round(y, 4)
         poses[r] = (x, y, rot)
         P.ensure_rotation(rot)
         seated.append(P.rect(x, y, rot))
+        occ.append((r, P, (x, y, rot)))
+        mine = _pad_rects(P, fps[r], (x, y, rot))
+        each[r] = [round(max(0.0, min(rect_gap(mine[i], prects[o][j]) for o, j in ps)), 3)
+                   for i, ps in legs]
+        q = seated[-1]
+        off[r] = round(max(0.0, rect_gap(q, ar)), 3)
+        if side and len(side) == 2:     # one side: say so when it ended beside another
+            mx, my = (q[0] + q[2]) / 2.0, (q[1] + q[3]) / 2.0
+            out = {'-x': ar[0] - mx, '+x': mx - ar[2], '-y': ar[1] - my, '+y': my - ar[3]}
+            across = max((k for k in (('-x', '+x') if side[1] == 'y' else ('-y', '+y'))),
+                         key=lambda k: out[k])
+            if out[across] > out[side]:
+                notes.append(f"{r} (side {side}) sits further past the chip's {across} edge "
+                             f"than its {side} one: beside the {across} edge, at a corner")
         members.append(dict({'ref': r, 'at': [x, y], 'rot': rot, 'pads': pads},
                             **({'note': m['note']} if 'note' in m else {})))
         fitted[r] = round(tot, 3)
-    row = _row(sketch, a, members, fitted, gap)
+    row = _row(sketch, a, members, fitted, gap, each, off, notes, context)
     validate([row])
     return row
 
 
-def _row(sketch, anchor, members, fitted, gap) -> Dict:
-    """The `templates[]` row of the members fitted so far."""
+def _locked_context(pcb, state, sketch, anchor, a_side) -> Dict:
+    """{ref: pose in the anchor's frame} of the locked parts round a LOCKED
+    anchor, its members excepted: within LOCKED_CONTEXT_MM, containers left
+    out (the fit pairs faces as the seat gate does). A movable anchor has
+    none -- where it lands decides where they fall."""
+    from .simple import follow
+    parts, fps = state.parts, pcb.footprints
+    if not getattr(parts[anchor], 'locked', False):
+        return {}
+    F = fps[anchor]
+    apose = (F.x, F.y, (F.rotation or 0.0) % 360.0)
+    names = {m.get('ref') for m in sketch.get('members') or ()}
+    # a container (a pin frame round the board) holds parts, as the seat gate
+    # lets it (`QuenchState.container_refs`)
+    names |= set(getattr(state, 'container_refs', ()) or ())
+    out = {}
+    for o, Q in parts.items():
+        if o == anchor or o in names or not getattr(Q, 'locked', False):
+            continue
+        G = fps[o]
+        rel = follow(apose, (0.0, 0.0, 0.0), (G.x, G.y, (G.rotation or 0.0) % 360.0))
+        if math.hypot(rel[0], rel[1]) <= LOCKED_CONTEXT_MM:
+            out[o] = (round(rel[0], 4), round(rel[1], 4), rel[2] % 360.0)
+    return out
+
+
+def _row(sketch, anchor, members, fitted, gap, each, off, notes, context) -> Dict:
+    """The `templates[]` row of the members fitted so far: `fitted` carries
+    each member's legs summed (`legs_gap_mm`) and one by one (`legs_mm`, in
+    the order of its named pads), its courtyard gap to the anchor's
+    (`off_chip_mm`), the fit's `notes`, and a locked anchor's locked
+    neighbours as the fit saw them (`context`)."""
     row = {'anchor': anchor, 'members': list(members),
            'tolerance_mm': float(sketch.get('tolerance_mm', TEMPLATE_TOLERANCE_MM)),
-           'fitted': {'legs_gap_mm': dict(fitted), 'gap_mm': gap}}
+           'fitted': {'legs_gap_mm': dict(fitted), 'legs_mm': dict(each),
+                      'off_chip_mm': dict(off), 'gap_mm': gap}}
+    if notes:
+        row['fitted']['notes'] = list(notes)
+    if context:
+        row['fitted']['context'] = {o: list(p) for o, p in context.items()}
     for k in ('source', 'note', 'why', 'context'):
         if k in sketch:
             row[k] = sketch[k]
@@ -456,7 +555,7 @@ def _exposed_pads(pads) -> set:
             and x0 < p.local_x < x1 and y0 < p.local_y < y1}
 
 
-def pin_table(pcb, ref) -> List[Dict]:
+def pin_table(pcb, ref, group=None) -> List[Dict]:
     """One row per pad of `ref`, for matching a datasheet's drawing to the
     board: its number and pin function, its position in the footprint's own
     frame (the frame a template is in) and which side of the footprint that
@@ -464,11 +563,13 @@ def pin_table(pcb, ref) -> List[Dict]:
     so on for an inner pad off the middle), its net, and
     the other parts on that net with their values and pads (`rail` with a
     count when more than RAIL_PARTS share it: a ground or a board-wide
-    supply). A pad's side is the outer row or column of pads it lies on,
+    supply; with `group`, a set of refs, a rail's parts in that group are
+    still listed -- a buck's output caps on the 3V3 rail). A pad's side is the outer row or column of pads it lies on,
     a corner pad's the longer of its two lines; an inner pad's is where the
     pieces of its number lie together (`_exposed_pads`)."""
     fp = pcb.footprints[ref]
-    pads = list(fp.pads)
+    # a pad with neither a number nor a net is paste or thermal art
+    pads = [p for p in fp.pads if str(p.pad_number).strip() or p.net_id]
     if not pads:
         return []
     exposed = _exposed_pads(pads)
@@ -514,8 +615,10 @@ def pin_table(pcb, ref) -> List[Dict]:
                'net': p.net_name or ''}
         if len(others) > RAIL_PARTS:
             row['rail'] = len(others)
-        else:
+            others = [o for o in others if group and o in group]
+        if others or 'rail' not in row:
             row['parts'] = [{'ref': o, 'value': getattr(pcb.footprints.get(o), 'value', '') or '',
+                             'layer': getattr(pcb.footprints.get(o), 'layer', ''),
                              'pads': [str(q.pad_number) for q in pcb.footprints[o].pads
                                       if q.net_id == p.net_id]}
                             for o in others if o in pcb.footprints]
@@ -543,10 +646,15 @@ def render(pcb, state, row, path, scale: float = 60.0, boxed=()) -> None:
     pad-edge gap to the nearest partner pad (as the fit measures it) --
     to set beside the datasheet's drawing. A part in `boxed` has no
     courtyard: its box is its pads', which is all the fit and the placer
-    know of its body, and is labelled so."""
+    know of its body, and is labelled so. A locked anchor's locked
+    neighbours (`fitted.context`) are drawn in grey where the board has
+    them."""
     from PIL import Image, ImageDraw
     fps, parts = pcb.footprints, state.parts
+    context = {o: tuple(p) for o, p in ((row.get('fitted') or {}).get('context') or {}).items()
+               if o in parts}
     poses = {row['anchor']: (0.0, 0.0, 0.0)}
+    poses.update(context)
     for m in row['members']:
         poses[m['ref']] = (m['at'][0], m['at'][1], m['rot'])
     rects, pads = {}, {}
@@ -570,7 +678,10 @@ def render(pcb, state, row, path, scale: float = 60.0, boxed=()) -> None:
     for r, q in rects.items():
         anchor = r == row['anchor']
         d.rectangle([px(q[0], q[1]), px(q[2], q[3])],
-                    outline=(40, 40, 40) if anchor else (90, 110, 160), width=3 if anchor else 2)
+                    outline=(40, 40, 40) if anchor else (160, 160, 160) if r in context
+                    else (90, 110, 160), width=3 if anchor else 2)
+        if r in context:
+            d.text(px(q[0] + 0.1, q[1] + 0.1), f"{r} (locked)", fill=(120, 120, 120))
     for r, P in pads.items():
         anchor = r == row['anchor']
         # largest first, so a big pad (a FET's drain) never hides the small ones
@@ -578,8 +689,8 @@ def render(pcb, state, row, path, scale: float = 60.0, boxed=()) -> None:
                        key=lambda e: -(e[0][2] - e[0][0]) * (e[0][3] - e[0][1]))
         for q, p in drawn:
             d.rectangle([px(q[0], q[1]), px(q[2], q[3])],
-                        fill=(196, 160, 60) if anchor else (170, 140, 70),
-                        outline=(120, 90, 30))
+                        fill=(196, 160, 60) if anchor else (200, 200, 200) if r in context
+                        else (170, 140, 70), outline=(120, 90, 30))
         for q, p in drawn:
             cxp, cyp = px((q[0] + q[2]) / 2, (q[1] + q[3]) / 2)
             d.text((cxp - 4, cyp - 6), str(p.pad_number),
@@ -602,6 +713,9 @@ def render(pcb, state, row, path, scale: float = 60.0, boxed=()) -> None:
         d.text((cxp - 8, cyp - 14), m['ref'] + (' (no courtyard)' if m['ref'] in boxed else ''),
                fill=(20, 40, 120))
     q = rects[row['anchor']]
+    back = getattr(fps[row['anchor']], 'layer', 'F.Cu') == 'B.Cu'
     d.text(px(q[0], q[1] - 0.6), f"{row['anchor']} (origin, unturned; +x right, +y down)"
-           + (' (no courtyard)' if row['anchor'] in boxed else ''), fill=(20, 20, 20))
+           + (' (no courtyard)' if row['anchor'] in boxed else '')
+           + (' -- BACK face: its own frame, mirrored from the top view' if back else ''),
+           fill=(20, 20, 20))
     img.save(path)

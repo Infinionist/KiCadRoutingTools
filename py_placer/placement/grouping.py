@@ -33,6 +33,19 @@ The file (schema 1):
 are fixed members, the rest of the group is placed around them, and nothing
 moves them. `edge` is one of N/S/E/W (the board side a group belongs on),
 `near` / `apart` name other groups.
+
+`templates` names the group's TEMPLATE CANDIDATES: chips whose datasheet
+layout the agent will copy into an intent `templates[]` row (the
+plan-pcb-placement skill's §3.5):
+
+    "templates": [{"chip": "U2", "kind": "switching stage",
+                   "why": "buck converter; its datasheet's layout figure"}]
+
+`kind` is one of TEMPLATE_KINDS; `none` records a chip the hints point at
+that is no stage, and a `skip` reason a candidate that gets no template (no
+layout in its datasheet), so neither is asked about again. The candidates
+are the agent's judgement of the parts, like the groups; `template_hints`
+lists what the board's pins and nets suggest, as a check on it.
 """
 from __future__ import annotations
 
@@ -43,7 +56,12 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 SCHEMA = 1
 EDGES = ('N', 'S', 'E', 'W')
 GROUP_KEYS = ('name', 'role', 'refs', 'anchor', 'why', 'edge', 'side', 'near',
-              'apart', 'note')
+              'apart', 'note', 'templates')
+#: What a template candidate is: a stage that switches current through an
+#: inductor, transformer, flying or bootstrap cap, or a motor; or the parts
+#: between a radio chip's RF pins and its antenna.
+TEMPLATE_KINDS = ('switching stage', 'rf front end', 'none')
+TEMPLATE_KEYS = ('chip', 'kind', 'why', 'skip')
 DOC_KEYS = ('schema', 'board', 'groups', 'note')
 
 #: A net is a RAIL -- left out of every connectivity vote here -- when its
@@ -93,7 +111,7 @@ def validate_doc(doc, where: str = 'groups') -> Dict:
     groups = doc.get('groups')
     if not isinstance(groups, list) or not groups:
         raise GroupsError(f"{where}: `groups` must be a non-empty list")
-    names = []
+    names, chips = [], set()
     for i, g in enumerate(groups):
         if not isinstance(g, dict):
             raise GroupsError(f"{where}: groups[{i}] is not an object")
@@ -120,6 +138,7 @@ def validate_doc(doc, where: str = 'groups') -> Dict:
             v = g.get(key) or []
             if not isinstance(v, list):
                 raise GroupsError(f"{where}: group {name!r} `{key}` must be a list of group names")
+        _check_templates(g, name, refs, where, chips)
     for i, g in enumerate(groups):
         for key in ('near', 'apart'):
             for other in g.get(key) or []:
@@ -127,6 +146,126 @@ def validate_doc(doc, where: str = 'groups') -> Dict:
                     raise GroupsError(f"{where}: group {g['name']!r} `{key}` names "
                                       f"{other!r}, which is not a group")
     return doc
+
+
+def _check_templates(g, name, refs, where, chips) -> None:
+    """A group's `templates` list: each a chip of the group, a known kind and
+    a reason, no chip named twice in the file."""
+    tl = g.get('templates')
+    if tl is None:
+        return
+    if not isinstance(tl, list):
+        raise GroupsError(f"{where}: group {name!r} `templates` must be a list")
+    for k, t in enumerate(tl):
+        at = f"{where}: group {name!r} templates[{k}]"
+        if not isinstance(t, dict):
+            raise GroupsError(f"{at} is not an object")
+        bad = sorted(set(t) - set(TEMPLATE_KEYS))
+        if bad:
+            raise GroupsError(f"{at} unknown key(s) {bad} (known: {list(TEMPLATE_KEYS)})")
+        if t.get('chip') not in refs:
+            raise GroupsError(f"{at} chip {t.get('chip')!r} is not one of the group's refs")
+        if t['chip'] in chips:
+            raise GroupsError(f"{at} chip {t['chip']!r} is named a candidate twice")
+        chips.add(t['chip'])
+        if t.get('kind') not in TEMPLATE_KINDS:
+            raise GroupsError(f"{at} kind {t.get('kind')!r} is not one of {TEMPLATE_KINDS}")
+        if not isinstance(t.get('why'), str) or not t['why'].strip():
+            raise GroupsError(f"{at} needs a `why`: the part, and the datasheet layout to copy")
+        if 'skip' in t and (not isinstance(t['skip'], str) or not t['skip'].strip()):
+            raise GroupsError(f"{at} `skip` must say why the candidate gets no template")
+
+
+def template_candidates(doc: Dict, *, all_kinds: bool = False) -> List[Dict]:
+    """[{group, chip, kind, why, skip?}]: every template candidate the file
+    names -- without `all_kinds`, not the chips it records as `none`."""
+    return [dict(t, group=g['name']) for g in doc.get('groups') or ()
+            for t in g.get('templates') or () if all_kinds or t.get('kind') != 'none']
+
+
+#: An RF port's pin function: ANT, RFO, RFI_P, RF_IN, RFIO, LNA_IN, PA_OUT.
+_RF_FN = re.compile(r'^(ANT\w*|RFO\w*|RFI\w*|RF_?IN\w*|RF_?OUT\w*|RFIO\w*|LNA_?IN\w*|PA_?OUT\w*)$', re.I)
+#: A bootstrap or flying-cap pin: BOOT, BST, VBST, BOOTSTRAP1, CB, C1+, CP, FLY.
+_CAP_FN = re.compile(r'(^|[_/])(V?BOOT\w*|V?BST\w*|BS|CB\d?|C\d[+-]|CAP[+-]|CP[+-]?\w*|FLY\w*)$', re.I)
+#: A chip pin's net with more parts than this is a rail, not a switch node
+#: or an RF match.
+_SWITCH_NET_PARTS = 4
+
+
+def _is_inductor(fp, ref) -> bool:
+    """A two-pad inductor (L, value in henries), not a ferrite bead."""
+    v = (getattr(fp, 'value', '') or '').replace(' ', '').lower()
+    pads = [p for p in fp.pads if p.net_id]
+    return (len(pads) == 2 and re.match(r'^L\d', ref) is not None
+            and re.search(r'\d(\.\d+)?[pnum\u00b5]?h', v) is not None)
+
+
+def _is_cap(fp, ref) -> bool:
+    return re.match(r'^C\d', ref) is not None and len([p for p in fp.pads if p.net_id]) == 2
+
+
+def template_hints(doc: Dict, pcb) -> List[str]:
+    """What the board's pins and nets suggest and the file does not name:
+    a chip that `emc_roles` reads as a switching converter; a chip pin whose
+    net carries an inductor and few other parts (a switch node, a built-in
+    DC-DC's coil, an RF match); a cap across two of a chip's pins, one of
+    them named a bootstrap or flying-cap pin; a pin named as an RF port. A hint
+    for the agent to weigh, never a rule: a stage can show none of these, and
+    some that show one need nothing -- the file records those as `none`."""
+    named = {t['chip'] for t in template_candidates(doc, all_kinds=True)}
+    fps = pcb.footprints or {}
+    why: Dict[str, List[str]] = {}
+    try:
+        from placement.emc_roles import emc_roles
+        for r in emc_roles(pcb).get('roles') or []:
+            kind = r.get('role') if r.get('role') != 'unknown' else r.get('candidate')
+            if kind == 'switching converter':
+                why.setdefault(r['part'], []).append('emc_roles reads a switching converter')
+    except Exception as ex:      # a hint never stops the check
+        why.setdefault('?', []).append(f"emc_roles could not read the board ({type(ex).__name__})")
+    on: Dict[int, Set[str]] = {}
+    for ref, fp in fps.items():
+        for p in fp.pads:
+            if p.net_id:
+                on.setdefault(p.net_id, set()).add(ref)
+    gnd = {nid for nid in on if is_ground(_net(pcb, nid))}
+    for ref, fp in fps.items():
+        pads = [p for p in fp.pads if p.net_id]
+        if len(pads) < 5 or not re.match(r'^(U|IC)\d', ref):
+            continue
+        mine = {p.net_id for p in pads} - gnd
+        capped = {p.net_id for p in pads if _CAP_FN.search((p.pinfunction or '').strip())}
+        for p in pads:
+            fn = (p.pinfunction or '').strip()
+            others = on.get(p.net_id, set()) - {ref}
+            if p.net_id in gnd or len(others) > _SWITCH_NET_PARTS:
+                continue
+            ls = sorted(o for o in others if _is_inductor(fps[o], o))
+            if ls:
+                why.setdefault(ref, []).append(f"pin {p.pad_number}{' ' + fn if fn else ''} "
+                                               f"carries inductor {'/'.join(ls)}")
+            if fn and _RF_FN.match(fn) and others:
+                why.setdefault(ref, []).append(f"pin {p.pad_number} is RF port {fn}")
+        for c, cf in fps.items():
+            if not _is_cap(cf, c):
+                continue
+            a, b = [q.net_id for q in cf.pads if q.net_id][:2]
+            if a != b and a in mine and b in mine and (a in capped or b in capped):
+                why.setdefault(ref, []).append(f"cap {c} across two of its pins")
+    out = []
+    for ref in sorted(why, key=str):
+        if ref in named:
+            continue
+        seen = list(dict.fromkeys(why[ref]))
+        val = getattr(fps.get(ref), 'value', '') or '?'
+        out.append(f"{ref} ({val}): {'; '.join(seen[:4])} -- a switching stage or an RF front "
+                   f"end? Name it, or record it `none`")
+    return out
+
+
+def _net(pcb, nid) -> str:
+    n = (pcb.nets or {}).get(nid)
+    return getattr(n, 'name', '') or ''
 
 
 # ---------------------------------------------------------------------------
