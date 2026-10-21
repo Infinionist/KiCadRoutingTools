@@ -274,6 +274,30 @@ def test_rescued_power_net_without_neckdown_routes_at_the_floor():
     assert segs and max(s.width for s in segs) < 0.2, [s.width for s in segs]
 
 
+def test_fold_into_restored_registration_reaches_the_write_list():
+    """Copper folded into a restored pre-existing net's custody registration
+    (not on the write-list: its copper is the input file's) also rides an
+    entry of its own naming the registration, carrying ONLY the new copper,
+    so the writer emits it once and the original is not written twice. A
+    result already on the write-list gets no second entry."""
+    old, new = make_seg(0, 0, 1, 0, net_id=5), make_seg(1, 0, 2, 0, net_id=5)
+    reg = {'net_id': 5, 'new_segments': [old], 'new_vias': [],
+           'is_existing_route': True}
+    merged = {'net_name': 'N5', 'net_id': 5, 'new_segments': [new],
+              'new_vias': [], 'iterations': 3}
+    state = SimpleNamespace(results=[])
+    net_rescue._fold_into_result(state, reg, merged)
+    assert reg['new_segments'] == [old, new]
+    assert len(state.results) == 1, state.results
+    ride = state.results[0]
+    assert ride['extends'] is reg and ride['new_segments'] == [new], ride
+
+    routed = {'net_id': 6, 'new_segments': [], 'new_vias': []}
+    state = SimpleNamespace(results=[routed])
+    net_rescue._fold_into_result(state, routed, dict(merged, net_id=6))
+    assert state.results == [routed] and routed['new_segments'] == [new]
+
+
 def main():
     fns = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     for fn in fns:
