@@ -207,7 +207,8 @@ class _Probe:
         `('band_min', amount)`, `('band_max', amount)`, `('copper', None)`,
         `('edge', the edge it reads nearest)` or `('fixed', [the parts in
         the way, else the declared-pose check's reasons])`."""
-        from .floorplan import _nearest_edge, drawn_body_rect, edge_seat_rect
+        from .floorplan import (_nearest_edge, drawn_body_rect, edge_reach_mm,
+                                edge_seat_rect)
         from .mating import facing_edge
         from .seeder import _fixed_pose_check
         st, ref = self.state, entry['ref']
@@ -225,7 +226,7 @@ class _Probe:
             entry, st.parts[ref].rect(x, y, rot),
             lambda: drawn_body_rect(self.bodies.get(ref), proxy))
         face = self.faces.get(ref)
-        near = _nearest_edge(seat_rect, self.bounds, st.edge_gate.margin,
+        near = _nearest_edge(seat_rect, self.bounds, edge_reach_mm(st),
                              facing=facing_edge(face, rot) if face else None)
         if near != edge:
             return 'edge', near
@@ -323,9 +324,12 @@ def _free_stretches(probe, entry, edge, axis, coord, rot, lo, hi, fixed, tally=N
             for mine, theirs in ((cr, q), (cp, q), (cr, qp)):
                 if mine is not None and theirs is not None:
                     cand += [theirs[axis] - mine[axis + 2], theirs[axis + 2] - mine[axis]]
-    b, m = probe.pcb.board_info.board_bounds, state.edge_gate.margin
-    cand += [b[axis] + m - cr[axis], b[axis + 2] - m - cr[axis + 2],
-             b[axis] - cr[axis], b[axis + 2] - cr[axis + 2]]   # and the band's, at zero margin
+    from .floorplan import edge_reach_mm
+    b = probe.pcb.board_info.board_bounds
+    for m in (state.edge_gate.margin, edge_reach_mm(state), 0.0):
+        # the gate's margin (the declared-pose check's outline), the edge
+        # reach (`_nearest_edge`'s), and the band's, at zero margin
+        cand += [b[axis] + m - cr[axis], b[axis + 2] - m - cr[axis + 2]]
     cand = sorted({round(a, 6) for a in cand if lo - EPS <= a <= hi + EPS})
     # only the fixed parts the line passes near can conflict with it
     span = ((lo + cr[0], lo_p, hi + cr[2], hi_p) if axis == 0

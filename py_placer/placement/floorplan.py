@@ -3663,6 +3663,24 @@ class _Ctx:
         return hit
 
 
+def edge_reach_mm(state) -> float:
+    """The `margin` every reader passes `_nearest_edge`: the board's EDGE
+    clearance as placement resolves it (`state.board_edge_clearance`, the
+    floor routing writes back, #1301), never the gate's margin
+    `max(clearance, edge clearance)`.
+
+    The clearance half of that max is a netclass value a routing step's DRC
+    writeback lowers (`--clearance-ceiling`), so on a board whose class
+    clearance is above its edge floor (sonde_xilinx: 0.254 over 0.20) one
+    pose was read for the sides it reaches at 0.254 placed and 0.20 routed,
+    while #1301 had already made the band read the same on both. The edge
+    clearance is the value placement and routing agree on, and the distance
+    a seated part's pad copper stands inside its edge. Wherever the class
+    clearance is at or under it, it is the margin read before."""
+    edge = getattr(state, 'board_edge_clearance', None)
+    return float(edge if edge is not None else state.edge_gate.margin)
+
+
 def _nearest_edge(rect, bounds, margin: float = 0.0, facing=None) -> str:
     """The board edge `rect` sits on: the nearest side of `bounds`. When the
     rect REACHES two or more sides -- comes within `margin` of them or past
@@ -3670,7 +3688,9 @@ def _nearest_edge(rect, bounds, margin: float = 0.0, facing=None) -> str:
     those: the one the part's mating face points at (`facing`: an edge name,
     or a zero-argument callable returning one or None, asked only here); else
     the one side it sticks out past by more than the margin; else the one it
-    runs along the farthest, the nearest of those on a tie.
+    runs along the farthest, the nearest of those on a tie. Every reader
+    passes `edge_reach_mm` (#1301), so a placed board and its routed copy
+    read one edge.
 
     A header laid corner to corner along a long side reaches the short sides
     with its ends too, and which of them is nearest is an accident of a tenth
@@ -4991,7 +5011,7 @@ def rule_edge_connector(ctx) -> Iterator[Violation]:
             # the south edge but declared on the west" -- on every one of
             # ten seeds, since the socket is a fixed part.
             actual = _nearest_edge(
-                seat_rect, ctx.outline_bounds, ctx.gate.margin,
+                seat_rect, ctx.outline_bounds, edge_reach_mm(ctx.state),
                 facing=lambda: edge_facing(c, ctx.pcb.footprints.get(ref),
                                            ctx.body_geom(ref))['facing'])
             if actual != edge:
@@ -9660,7 +9680,7 @@ def emit_intent(pcb_data, pcb_file: str, *,
                                   f' so no edge is claimed')}
             else:
                 entry = {'ref': ref, 'edge': _nearest_edge(
-                             parts[ref].rect, bounds, state.edge_gate.margin,
+                             parts[ref].rect, bounds, edge_reach_mm(state),
                              facing=lambda: _part_facing(
                                  pcb_data, pcb_file, ref, _emit_bodies)),
                          'overhang_mm': {'min': 0.0,
@@ -9747,7 +9767,7 @@ def emit_intent(pcb_data, pcb_file: str, *,
                                  'declared -- its staging pose says nothing')
             elif plaus:
                 entry['edge'] = _nearest_edge(
-                    parts[ref].rect, bounds, state.edge_gate.margin,
+                    parts[ref].rect, bounds, edge_reach_mm(state),
                     facing=lambda: _part_facing(pcb_data, pcb_file, ref,
                                                 _emit_bodies))
             else:

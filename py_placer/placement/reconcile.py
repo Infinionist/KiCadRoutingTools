@@ -279,11 +279,11 @@ class _Geometry:
 
 def _edge_of(rect, bounds, geo=None, ref=None, rot=None) -> Optional[str]:
     """The edge the grade reads `rect` on (`floorplan._nearest_edge`, at
-    the state's margin, `ref`'s mating face at `rot` -- its board turn when
-    None -- breaking a tie between two sides it reaches)."""
+    the state's `edge_reach_mm`, `ref`'s mating face at `rot` -- its board
+    turn when None -- breaking a tie between two sides it reaches)."""
     if rect is None or bounds is None:
         return None
-    from .floorplan import _nearest_edge, edge_facing
+    from .floorplan import _nearest_edge, edge_facing, edge_reach_mm
     st = geo.state if geo is not None else None
 
     def facing():
@@ -292,7 +292,7 @@ def _edge_of(rect, bounds, geo=None, ref=None, rot=None) -> Optional[str]:
             return None
         turn = rot if isinstance(rot, (int, float)) else None
         return edge_facing({}, fp, geo.bodies.get(ref), rotation=turn)['facing']
-    return _nearest_edge(rect, bounds, st.edge_gate.margin if st else 0.0,
+    return _nearest_edge(rect, bounds, edge_reach_mm(st) if st else 0.0,
                          facing=facing)
 
 

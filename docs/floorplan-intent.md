@@ -677,7 +677,13 @@ alike. The setback conjunct's "no overhang" test reads the courtyard at zero
 margin too. It used to let a receptacle 0.52 mm inside its edge count as
 overhanging at a 0.55 margin, skipping its seat tolerance, and then fail it at
 0.2. The pad-copper edge clearance and the `oob_count` census still read the
-board's edge floor. When `min_copper_edge_clearance` is unset, that floor is
+board's edge floor. So does the nearest-edge identity: the sides a part
+reaches, and sticks out past, are read within the board's edge clearance
+(`floorplan.edge_reach_mm`, which the edge seat, reconcile and the emitter
+read too), not within the gate's `max(clearance, edge clearance)`. The
+writeback lowers the clearance half of that max (sonde_xilinx's class 0.254 is
+written back as 0.2), so a part 0.23 mm from a second side used to reach it
+placed and not routed. When `min_copper_edge_clearance` is unset, that floor is
 the fab edge floor every routing step writes back (0.20 mm, source `fab edge
 floor (what routing writes)`), not a fixed 0.55 mm.
 
