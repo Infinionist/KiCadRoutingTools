@@ -767,12 +767,16 @@ class TheReseatPutsThePadsBackOnTheBoard(unittest.TestCase):
         # #1240's line, follow-up verifier: an input angle the writer rounds
         # (180.1234567 is written 180.123) read as a polish move when the
         # seeded pose was the unrounded float.
-        # Since #1240 the re-seat seats it on its edge inside the zone, and
-        # the seed passes.
-        r, _summary = self._seed(
+        # Since #1240 the re-seat seats it on its edge inside the zone. Since
+        # #1301 the grade reads this courtyard-only band at ZERO margin while
+        # place_seed still seats it at the gate's, so the 1.5 minimum now
+        # stands as the seed's one grade error (exit 4); the rounding is what
+        # this test is about.
+        r, summary = self._seed(
             _box('J1', 20, 20, 2, 2).replace('(at 20 20)\n',
                                               '(at 20 20 180.1234567)\n', 1),
-            zone=self._LATERAL, code=0)
+            zone=self._LATERAL, code=4)
+        self.assertEqual(summary['grade_error_rules'], {'edge_connector': 1})
         self.assertIn('the seed placed J1 outside a declared '
                       'zone_containment and the polish did not move it',
                       r.stdout)

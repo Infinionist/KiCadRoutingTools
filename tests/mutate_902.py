@@ -230,9 +230,10 @@ ROWS = [
      "        if setback is not None and band <= legality.EPS:",
      (T961,), KILLED),
     ('exempt-reads-the-occupancy', 'fp',
-     "                band, _basis, _body = _band_amount(self, ref, c.get('edge'),\n"
-     "                                                   amt)",
-     "                band, _basis, _body = amt, 'legacy', {}",
+     "                band, _basis, _body = _band_amount(\n"
+     "                    self, ref, c.get('edge'), courtyard_overhang(",
+     "                band, _basis, _body = amt, 'legacy', {}; (\n"
+     "                    self, ref, c.get('edge'), courtyard_overhang(",
      (T961,), KILLED),
     ('seat-band-reads-the-occupancy', 'sd',
      "    amt, _basis, _body = band_amount(geometry, part.ref, edge, amt,\n"

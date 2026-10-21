@@ -746,20 +746,22 @@ it replaces, the graded number is summed over every side the body crosses, so
 a corner part counts both sides. For a body that crosses only its declared
 edge, it is exactly that edge's overhang.
 
-When no body can be measured, the band is graded exactly as before, on the
-occupancy reading. Unmeasurable cases include a courtyard-only part, an arc
-in the Fab drawing, a non-rectangular outline, an entry with no `edge`, and a
-drawn envelope that does not enclose the centroid of its own pads (a pin-1
-marker is not a body).
+When no body can be measured, the band is graded on the courtyard's
+occupancy reading, at **zero margin** since #1301 (basis
+`legacy_occupancy@margin=0`; see below). Unmeasurable cases include a
+courtyard-only part, an arc in the Fab drawing, a non-rectangular outline, an
+entry with no `edge`, and a drawn envelope that does not enclose the centroid
+of its own pads (a pin-1 marker is not a body).
 
 **The copper rule above follows the body**, so identical geometry can be
 graded two ways: a violation when the library drew a body, and the old band
 arithmetic when it did not. The reason is not that the legacy reading sees
 the copper — it sees it only when the occupancy rect it measures (the
 courtyard, or the pad box when the part draws no courtyard) happens to
-enclose the pads. The reason is that the legacy path grades **exactly** as it
-did before #961, deliberately, so that this change cannot move a board it
-cannot measure. The gap that leaves is real: on the legacy reading nothing
+enclose the pads. The reason is that the legacy path kept the occupancy
+reading of the courtyard, deliberately, so that #961 could not move a board it
+cannot measure (#1301 then took the margin out of that reading). The gap
+that leaves is real: on the legacy reading nothing
 grades pad copper against the outline at all, so a part whose courtyard does
 not enclose its pads can carry copper past the edge unnamed, on `main` and on
 this branch alike. `check_drc --check-pad-edge` is the channel that names it.
@@ -768,12 +770,48 @@ body is unmeasured and it takes the legacy path — though its own copper sits
 0.28 mm inside the outline, 0.27 mm short of that board's 0.55 mm floor,
 which is a clearance question rather than a containment one.)
 Nothing is withheld or abstained, and the basis says which reading was used.
-The seat conjunct's "no overhang" gate, the nearest-edge identity, the class
-setback defaults and the `connector_affinity` warning are **unchanged**. The
-seeder's `edge_seat_ok` and `_Ctx.oob_exempt` grade the band in the same
-currency as the rule, and `edge_seat_ok` refuses a pose whose pad copper
+The nearest-edge identity, the class setback defaults and the
+`connector_affinity` warning are **unchanged**; the seat conjunct's "no
+overhang" gate reads the courtyard at zero margin (#1301, below).
+`_Ctx.oob_exempt` grades the band in the same currency as the rule, and so
+does the seeder's `edge_seat_ok` on a drawn body (on a courtyard it keeps
+the gate-margin reading, #1301 below). `edge_seat_ok` refuses a pose whose pad copper
 leaves the outline for the same reason the rule names it: otherwise the
 search hands the grade a seat it will reject.
+
+### The overhang band takes no margin (#1301)
+
+The courtyard reading used to be taken at the gate's margin,
+`max(clearance, board edge clearance)`, so a courtyard flush with the edge
+read the margin and one `x` past it read `x + margin`. Every routing step's
+DRC writeback rewrites both inputs to that margin (the edge rule is pinned to
+the fab floor, the Default class can descend), so the same pose read
+differently before and after routing. Measured on daplink, nothing moved:
+J2/J3 read 7.0062 placed (margin 0.55) and 6.6562 routed (margin 0.2), P1
+1.0500 and 0.7000, and three band errors appeared after routing.
+
+The band is a **mechanical** measure: an overhang of `x` reads `x` at any
+margin. Both currencies take none -- the drawn body (as before) and the
+courtyard (`legacy_occupancy@margin=0`) -- and so does the seat conjunct's
+"no overhang" test, which used to let a receptacle 0.52 mm inside its edge
+count as overhanging at a 0.55 margin, skipping its seat tolerance, and fail
+it at 0.2. The grade reads the courtyard through
+`connector_geometry.courtyard_overhang` and the grouped flow's edge seat
+reads it the same way. `place_seed`'s seeder is left as it was: it still seats
+a courtyard at the gate's margin, so on a courtyard-only part it can write a
+seat that the grade reports. That happens with a band whose `min` is above
+zero, or with a receptacle that sits within the margin of its edge. Write a band
+as the distance the part reaches past the edge; never add the board's edge
+margin to it. A band written in the old currency reads `margin` too high:
+daplink's hand-written J2/J3 `{7.0, 7.4}` and P1 `{1.05, 1.35}` both added
+0.55, and now read 6.4562 and 0.5000 against them, on the placed and routed
+boards alike. The pad-copper edge clearance (`pad_copper_edge`) and the
+occupancy census (`oob_count`) still read the board's edge floor, which is a
+clearance question, not an overhang. On a board whose
+`min_copper_edge_clearance` is unset, that floor is the fab edge floor every
+routing step writes back (0.20 mm, source `fab edge floor (what routing
+writes)`), no longer a fixed 0.55 mm, so it too reads the same before and
+after routing.
 
 The seat's own tests carry a 0.02 mm tolerance, and the grade's does not
 (#987). `edge_seat_ok` accepts a band reading within 0.02 mm of the band, and
@@ -790,10 +828,10 @@ its edge, and does not trade the band for a setback: an inward move that
 leaves an `edge_receptacle` no overhang is refused. Otherwise the
 pose is kept and the grade reports it as before. What that leaves, measured:
 a band `min` that can only be met by moving pad copper into, or deeper into,
-the board-edge floor,
-and a `{min: 0, max: 0}` band on a courtyard-only receptacle at a 0.55 mm gate
-margin. The latter cannot meet both the band and the 0.5 mm receptacle
-setback, whatever the seat does.
+the board-edge floor. (A `{min: 0, max: 0}` band on a courtyard-only
+receptacle could not meet both the band and the 0.5 mm receptacle setback at
+a 0.55 mm gate margin; read at zero margin since #1301, a flush courtyard
+meets both.)
 
 The board-edge FLOOR on that copper is a preference of the seat, not a
 conjunct (#975). At each rotation, when the seat the ladder always chose leaves
@@ -873,7 +911,7 @@ board's own (`containment_inherited`), named and not charged: declare it in
 Every declared connector on the board gets a row in `edge_connector_evidence`
 (`--json`), including passing ones. Each row carries:
 - `overhang_mm` and `overhang_basis` (`body:<layer>`, e.g. `body:F.Fab`,
-  `body:B.Fab`, `body:F.SilkS`, or `legacy_occupancy@margin=<m>`), plus the
+  `body:B.Fab`, `body:F.SilkS`, or `legacy_occupancy@margin=0`), plus the
   limit and a disposition;
 - the body's signed position, setback and other-edge overhang, or
   `body_unmeasured_reason`;

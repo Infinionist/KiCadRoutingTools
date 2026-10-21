@@ -1234,9 +1234,17 @@ class OverhangBand(_Graded):
     def test_b3_a_gate_margin_under_the_walks_tolerance(self):
         crt = '(fp_rect (start -2.3 -1.1) (end 1.1 1.1) (layer "F.CrtYd"))'
         path = self.write('b3.kicad_pcb', board((20, 20), j1((crt,))))
-        self.assert_settled(path, {'ref': 'J1', 'edge': 'west',
-                                   'overhang_mm': {'min': 0.0, 'max': 0.015}},
-                            clearance=0.01, edge=0.01)
+        # #1301: the grade reads a courtyard band at ZERO margin, so a gate
+        # margin under the walk's tolerance no longer leaves the seat a hair
+        # outside the band -- the blind seat now grades clean on it as well.
+        # (It read 0.018 on {0, 0.015} at margin 0.01; it reads 0.008.)
+        entry = {'ref': 'J1', 'edge': 'west',
+                 'overhang_mm': {'min': 0.0, 'max': 0.015}}
+        for ladder, (bp, bk, fp, fk, _n) in self.both(
+                path, entry, clearance=0.01, edge=0.01).items():
+            with self.subTest(ladder=ladder):
+                self.assertNotIn('band', bk, (ladder, bp))
+                self.assertNotIn('band', fk, (ladder, fp))
 
     def test_b4_a_settle_that_would_trade_keeps_the_raw_pose(self):
         cases = []
@@ -1251,9 +1259,14 @@ class OverhangBand(_Graded):
         cases.append(('setback', board((20, 20), j1((rcrt,), rpads)),
                       {'ref': 'J1', 'edge': 'north', 'overhang_mm': {'min': 0.0, 'max': 0.0},
                        'class': 'edge_receptacle'}))
+        # The setback case at margin 0 (#1301): the grade reads the courtyard
+        # at zero margin, main's place_seed at the gate's, and they read one
+        # number only there.
+        knobs = {'floor': {}, 'setback': {'clearance': 0.0, 'edge': 0.0}}
         for name, text, entry in cases:
             path = self.write(f'b4_{name}.kicad_pcb', text)
-            for ladder, (bp, bk, fp, fk, _n) in self.both(path, entry).items():
+            for ladder, (bp, bk, fp, fk, _n) in self.both(path, entry,
+                                                          **knobs[name]).items():
                 with self.subTest(case=name, ladder=ladder):
                     self.assertIn('band', bk)                  # the fixture is broken
                     self.assertEqual(fp, bp)                   # and stays as it was

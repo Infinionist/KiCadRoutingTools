@@ -1,14 +1,24 @@
 """#1301: an edge connector's `overhang_mm` band, graded on the courtyard,
 changed value when a routing step rewrote the project floors.
 
-Pinned here on a synthetic board (40 x 30 mm, rectangular outline,
-courtyard-only connectors so no drawn body is measured):
+Two halves, each pinned here on a synthetic board (40 x 30 mm, rectangular
+outline, courtyard-only connectors so no drawn body is measured):
 
 1. An UNSET `min_copper_edge_clearance` (0 or absent) resolves to the fab
    edge floor every routing step writes back -- `fab_edge_floor`, 0.20 --
    not a fixed 0.55, so `board_floor_knobs` answers the same value before
    and after `fix_project_for_output` (the routing writeback) runs. A
    declared value, an explicit one and a caller's own default are unchanged.
+
+2. The band is a MECHANICAL measure: the courtyard reading takes no margin
+   (`legacy_occupancy@margin=0`), and neither does the setback conjunct's
+   "no overhang" test, so the grade reads one pose the same at any
+   (clearance, edge clearance). Measured on daplink before the fix: J2/J3
+   read 7.0062 placed (margin 0.55) and 6.6562 routed (margin 0.2), 3 band
+   errors after routing with nothing moved. The grouped branch's seat
+   (`edge_seat._Probe`) reads the band in the same currency, tested where
+   that module exists; main's place_seed keeps its own reading (#1301 leaves
+   it alone).
 """
 
 import json
@@ -24,7 +34,6 @@ for _p in ('py_placer', 'py_router', 'py_tools', 'tests'):
 
 from kicad_parser import parse_kicad_pcb                      # noqa: E402
 from placement import floorplan                              # noqa: E402
-from test_1184_container_classification import _board        # noqa: E402
 
 EPS = 1e-6
 FAB_SOURCE = 'fab edge floor (what routing writes)'
@@ -32,6 +41,21 @@ FAB_SOURCE = 'fab edge floor (what routing writes)'
 #: placed and routed floors, sonde's, and a wide one.
 MARGINS = ((0.2, 0.55), (0.1818, 0.2), (0.254, 0.01), (0.2223, 0.2),
            (0.3, 1.0))
+
+
+def _board(td, body, size=(40, 30)):
+    """A rectangular board `size` mm with `body` (footprint blocks) on it."""
+    text = ('(kicad_pcb (version 20240108) (generator pcbnew)\n'
+            '  (layers (0 "F.Cu" signal) (31 "B.Cu" signal)'
+            ' (44 "Edge.Cuts" user))\n'
+            '  (net 0 "") (net 1 "N1")\n'
+            f'  (gr_rect (start 0 0) (end {size[0]} {size[1]}) (stroke'
+            ' (width 0.1) (type default)) (layer "Edge.Cuts"))\n'
+            + body + ')\n')
+    path = os.path.join(td, 'b.kicad_pcb')
+    with open(path, 'w', encoding='utf-8') as fh:
+        fh.write(text)
+    return path
 
 
 def _fp(ref, x, y, crt, pad=(0.0, 0.0)):
@@ -113,6 +137,103 @@ class UnsetEdgeIsTheFloorRoutingWrites(unittest.TestCase):
     def test_no_board_file_reads_the_same_floor(self):
         from list_nets import unset_board_edge_clearance
         self.assertEqual(unset_board_edge_clearance(None), (0.2, FAB_SOURCE))
+
+
+class TheBandTakesNoMargin(unittest.TestCase):
+
+    def setUp(self):
+        self.td = tempfile.mkdtemp(prefix='krt1301_')
+        self.path = _board(self.td, BODY, size=(40, 30))
+        self.intent = floorplan.intent_from_dict(INTENT, '')
+
+    def tearDown(self):
+        shutil.rmtree(self.td, ignore_errors=True)
+
+    def _grade(self, clr, edge):
+        return floorplan.grade(self.intent, parse_kicad_pcb(self.path),
+                               self.path, clearance=clr,
+                               board_edge_clearance=edge)
+
+    @staticmethod
+    def _ev(res, ref):
+        return next(e for e in res.edge_connector_evidence
+                    if e['ref'] == ref)
+
+    @staticmethod
+    def _viol(res, ref):
+        return sorted(v.message for v in res.violations
+                      if v.ref == ref and v.rule == 'edge_connector')
+
+    def test_one_pose_reads_one_overhang_at_every_margin(self):
+        seen = set()
+        for clr, edge in MARGINS:
+            r = self._grade(clr, edge)
+            ev = self._ev(r, 'J1')
+            self.assertEqual(ev['overhang_basis'], 'legacy_occupancy@margin=0')
+            # the courtyard's 1.0 mm past the west edge, not 1.0 + margin
+            self.assertAlmostEqual(ev['overhang_mm'], 1.0, places=4)
+            self.assertEqual(ev['overhang_disposition'], 'pass')
+            self.assertEqual(self._viol(r, 'J1'), [], (clr, edge))
+            seen.add((ev['overhang_mm'], tuple(self._viol(r, 'J1'))))
+        self.assertEqual(len(seen), 1, seen)
+
+    def test_the_setback_no_overhang_test_takes_no_margin(self):
+        # J2's courtyard is 0.52 mm inside: no overhang at ANY margin, so its
+        # 0.5 mm receptacle seat tolerance applies at every one. At a 0.55
+        # margin it used to read 0.03 of "overhang" and skip the seat.
+        for clr, edge in MARGINS:
+            r = self._grade(clr, edge)
+            msgs = self._viol(r, 'J2')
+            self.assertEqual(len(msgs), 1, (clr, edge, msgs))
+            self.assertIn('seated 0.52mm from the nearest edge with no '
+                          'overhang', msgs[0])
+            self.assertAlmostEqual(self._ev(r, 'J2')['overhang_mm'], 0.0)
+
+    def test_oob_exempt_reads_the_band_in_the_same_currency(self):
+        for clr, edge in MARGINS:
+            ctx = floorplan._grade_ctx(                     # noqa: SLF001
+                self.intent, parse_kicad_pcb(self.path), self.path,
+                clearance=clr, board_edge_clearance=edge)[0]
+            self.assertAlmostEqual(ctx.oob_exempt().get('J1'), 1.0, places=4)
+
+
+def _module(name):
+    try:
+        return __import__('placement.' + name, fromlist=[name])
+    except ImportError:
+        return None
+
+
+EDGE_SEAT = _module('edge_seat')
+
+
+class ThePlacersSeatInTheSameCurrency(unittest.TestCase):
+
+    def setUp(self):
+        self.td = tempfile.mkdtemp(prefix='krt1301_')
+        self.path = _board(self.td, BODY, size=(40, 30))
+
+    def tearDown(self):
+        shutil.rmtree(self.td, ignore_errors=True)
+
+    def _state(self, clr, edge):
+        import pose_score
+        pcb = parse_kicad_pcb(self.path)
+        return pcb, pose_score.make_state(pcb, self.path, clearance=clr,
+                                          board_edge_clearance=edge)
+
+    @unittest.skipUnless(EDGE_SEAT, "the grouped edge_seat is not in this tree")
+    def test_edge_seat_probe(self):
+        from placement.body import board_bodies
+        for clr, edge in MARGINS:
+            pcb, st = self._state(clr, edge)
+            probe = EDGE_SEAT._Probe(                       # noqa: SLF001
+                st, pcb, self.path, board_bodies(pcb, self.path),
+                floorplan.outline_state(pcb, self.path))
+            p = st.parts['J1']
+            amount, basis = probe.band_read('J1', 'west', (p.x, p.y, p.rot))
+            self.assertEqual(basis, 'legacy_occupancy@margin=0')
+            self.assertAlmostEqual(amount, 1.0, places=4)
 
 
 if __name__ == '__main__':

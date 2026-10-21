@@ -236,25 +236,33 @@ class Conjuncts(_Boards):
         self.assertIn('past the declared maximum', tight[0].message)
         self.assertAlmostEqual(tight[0].measured['overhang_mm'], 1.0, places=4)
 
-    def test_setback_gate_keeps_the_occupancy_reading(self):
-        """Run 4 A's seat conjunct opens only when the part does not overhang,
-        and #961 leaves that gate on the occupancy reading: a body 0.3 mm
-        inboard whose courtyard grazes the edge margin stays ungraded by it."""
+    def test_setback_gate_reads_the_courtyard_at_zero_margin(self):
+        """Run 4 A's seat conjunct opens only when the part does not overhang.
+        #961 left that gate on the occupancy reading at the gate's margin, so
+        a courtyard 0.2 mm inside the edge read as overhanging at 0.55 and its
+        setback went ungraded; #1301 reads "no overhang" on the courtyard at
+        ZERO margin, so the conjunct grades it at every margin alike."""
         path = self.synthetic(
             'setback.kicad_pcb',
             '(fp_rect (start -1 -1) (end 1 1) (layer "F.Fab")) '
             '(fp_rect (start -1.1 -1.1) (end 1.1 1.1) (layer "F.CrtYd"))',
             at='1.3 10 0')
-        r = floorplan.grade(
-            _intent(ref='J1', edge='west', overhang_mm={'min': 0.0, 'max': 2.0},
-                    max_setback_mm=0.1),
-            parse_kicad_pcb(str(path)), str(path),
-            clearance=.25, board_edge_clearance=.55)
-        self.assertEqual(_evidence(r, 'J1')['overhang_basis'], 'body:F.Fab')
-        self.assertAlmostEqual(_evidence(r, 'J1')['body_setback_mm'], 0.3,
-                               places=4)
-        self.assertFalse([v for v in r.violations
-                          if v.ref == 'J1' and 'seated' in v.message])
+        for clr, edge in ((.25, .55), (.2, .2)):
+            r = floorplan.grade(
+                _intent(ref='J1', edge='west',
+                        overhang_mm={'min': 0.0, 'max': 2.0},
+                        max_setback_mm=0.1),
+                parse_kicad_pcb(str(path)), str(path),
+                clearance=clr, board_edge_clearance=edge)
+            self.assertEqual(_evidence(r, 'J1')['overhang_basis'],
+                             'body:F.Fab')
+            self.assertAlmostEqual(_evidence(r, 'J1')['body_setback_mm'],
+                                   0.3, places=4)
+            seated = [v for v in r.violations
+                      if v.ref == 'J1' and 'seated' in v.message]
+            self.assertEqual(len(seated), 1, (clr, edge))
+            self.assertAlmostEqual(
+                seated[0].measured['edge_clearance_mm'], 0.2, places=4)
 
 
 class Coverage(_Boards):
@@ -1036,10 +1044,14 @@ class Round4(_Boards):
 
 class LegacyFallback(_Boards):
     def _legacy(self, path, clr=.25, edge=.55):
+        # #1301: the courtyard's occupancy reading at ZERO margin, whatever
+        # the state's own gate margin -- the band is a mechanical measure.
+        from placement.legality import BoardOutlineGate
         pcb = parse_kicad_pcb(str(path))
         st = pose_score.make_state(pcb, str(path), clearance=clr,
                                    board_edge_clearance=edge)
-        return st.edge_gate.rect_outside_amount(st.parts['J1'].rect())
+        return BoardOutlineGate(pcb.board_info, 0.0).rect_outside_amount(
+            st.parts['J1'].rect())
 
     def test_unmeasured_bodies_grade_on_the_legacy_reading(self):
         cases = {
