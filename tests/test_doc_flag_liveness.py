@@ -291,6 +291,7 @@ EXTERNAL = {
     '--oneline', '--json', '--format', '--output', '--help', '--version',
     '--no-verify', '--hard', '--force', '--from-source', '--stat',
     '--exclude-all', '--define-var', '--drc', '--severity-all', '--units',
+    '--refill-zones',
     '--schematic-parity', '--all', '--quiet', '--verbose', '--dry-run',
     '--name-only', '--porcelain', '--short', '--set-upstream', '--amend',
     '--no-pager', '--follow', '--patch', '--word-diff', '--color',

@@ -3202,6 +3202,25 @@ hunt for.
    fully-unrouted multi-pad net, the board is NOT done — handle each (route or
    pour it) and re-verify before summarizing. Do not present an unrouted net as
    an accepted shortfall.
+4c. **Deliver a filled copy (#910), last.** The routed board carries zone
+   OUTLINES with no fill: KiCad shows the planes empty until they are refilled
+   (press B), and plain `kicad-cli pcb drc` without `--refill-zones` reports
+   plane-net opens that are not real (`docs/utilities.md` measures 12 on one
+   in-repo board). `check_connected` and `check_complete` refill on their
+   own, so they never see this. From the verified final board:
+   ```bash
+   python3 -X utf8 py_tools/fill_for_delivery.py board_final.kicad_pcb -o board_delivered.kicad_pcb
+   ```
+   It fills with KiCad's own zone filler, copies the siblings, keeps the net
+   classes and prints `unconnected (no --refill-zones): N -> M`. The filled
+   copy is the deliverable, not a chain step: route nothing further from it,
+   since a fill stored before more copper is laid is stale. Exit 1 means the
+   fill did not run (it needs KiCad's bundled python) or a net class went
+   missing; then say in the summary that the board must be refilled (press B,
+   or `kicad-cli pcb drc --refill-zones`) before it is plotted. Keep
+   `board_delivered.kicad_pcb` beside the final board when cleaning up (item 6).
+   (`route.py --write-fill` fills in place at the end of a route step; use it
+   only on a step nothing will route after.)
 5. Summarize the final state of the board
 6. **Offer to clean up intermediate files**:
    - List the intermediate `.kicad_pcb` files created (e.g., `board_step1.kicad_pcb`, `board_step2.kicad_pcb`, etc.)
