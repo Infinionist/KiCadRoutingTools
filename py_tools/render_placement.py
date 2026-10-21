@@ -1649,6 +1649,25 @@ def describe_pair(before_model, after_model, args):
     return "\n".join(L), J
 
 
+def crop_path_for(args):
+    """`name -> path` for the follow-up renders a report suggests, beside
+    this run's own -o target (#1354). A directory target holds them
+    (`<dir>/worst1.png`); a file target gets stem-suffixed siblings
+    (`x.png` -> `x_worst1.png`, `x_focus/`), the way multi-panel output is
+    named; no -o means the default `<board>_placement.png` target."""
+    out = getattr(args, 'output', None)
+    as_dir = bool(out) and (out.endswith(('/', os.sep)) or os.path.isdir(out)
+                            or not os.path.splitext(out)[1])
+    if not out:
+        out = os.path.splitext(args.board)[0] + '_placement.png'
+
+    def path(name):
+        if as_dir:
+            return os.path.join(out, name)
+        return os.path.splitext(out)[0] + '_' + name
+    return path
+
+
 def describe(model, fnd, moves, args, panel_paths):
     """Say what is IN the picture, then say what to run to see it better.
 
@@ -1735,6 +1754,10 @@ def describe(model, fnd, moves, args, panel_paths):
     if args.ignore_nets:
         same.append("--ignore-nets " + " ".join(args.ignore_nets))
     same_s = (" " + " ".join(same)) if same else ""
+    # The suggested crops land NEXT TO this run's own -o target (#1354): they
+    # were hard-coded under `wk/`, whatever -o said, so a run writing
+    # elsewhere was told to write its crops into a folder it never chose.
+    _cp = crop_path_for(args)
 
     shots = []
     for _sev, kind, refs, note in worst[:args.max_focus]:
@@ -1756,13 +1779,13 @@ def describe(model, fnd, moves, args, panel_paths):
             v = s['view']
             L.append(f"     python3 -X utf8 py_tools/render_placement.py {board}"
                      f" --view {v[0]},{v[1]},{v[2]},{v[3]}{same_s}"
-                     f" --no-ratsnest -o wk/worst{i}.png")
+                     f" --no-ratsnest -o {_cp(f'worst{i}.png')}")
     L.append("")
     L.append("SEE THE WHOLE PICTURE AGAIN, uncluttered")
     L.append(f"  python3 -X utf8 py_tools/render_placement.py {board}{same_s} "
-             f"--no-ratsnest --no-labels -o wk/clean.png")
+             f"--no-ratsnest --no-labels -o {_cp('clean.png')}")
     L.append(f"  python3 -X utf8 py_tools/render_placement.py {board}{same_s} "
-             f"--focus -o wk/focus/    # a panel per legality pocket")
+             f"--focus -o {_cp('focus/')}    # a panel per legality pocket")
     L.append("")
     L.append("DECLUTTER  (add these when the panel is too busy to read)")
     L.append("  --no-ratsnest    drop the airwires -- the biggest source of "
