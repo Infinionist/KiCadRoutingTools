@@ -830,6 +830,17 @@ def main(argv=None):
     if drift:
         print("  template drift (worst pad, mm): " + ', '.join(
             f"{d['ref']} {d['worst_mm']:.2f}" for d in drift))
+    # an `apart` hint whose groups still touch prices the least gap over all
+    # their member pairs, 0 at any pose where they touch: a flat
+    # weight x APART_MM that steered nothing (#1330)
+    from placement.simple import APART_MM
+    saturated = [h['key'] for h in model.hints
+                 if h['kind'] == 'apart' and model._hint_full(h)[0] <= 0.0]
+    for key in saturated:
+        print(f"  WARNING: {key}: the two groups touch, so the hint sits at its "
+              f"saturated value (weight x {APART_MM:g} mm wherever they still "
+              f"touch) and steered nothing; separate them with a zone or keep-out, "
+              f"or drop the hint")
     placements = [{'reference': r, 'new_x': round(state.parts[r].x, 4),
                    'new_y': round(state.parts[r].y, 4),
                    'new_rotation': state.parts[r].rot % 360.0}
@@ -856,13 +867,14 @@ def main(argv=None):
               'oversubscribed': model.edge_oversubscribed, 'floorplan': fp, 'assembly': asm,
               'unseated': model.edge_unseated, 'notes': notes,
               'groups': model.groups, 'stats': res['stats'], 'templates': drift,
+              'hints_saturated': saturated,
               'seconds': {'setup': round(t1 - t0, 1), 'anneal': round(t2 - t1, 1)}}
     if a.json:
         json.dump(report, open(a.json, 'w', encoding='utf-8'), indent=1)
     print('JSON_SUMMARY: ' + json.dumps({k: report[k] for k in
                                           ('final', 'moves', 'seed', 'start', 'reseated', 'illegal',
                                            'refused', 'oversubscribed', 'floorplan', 'assembly',
-                                           'seconds')}))
+                                           'hints_saturated', 'seconds')}))
     return 4 if illegal or refused or model.edge_oversubscribed else 0
 
 

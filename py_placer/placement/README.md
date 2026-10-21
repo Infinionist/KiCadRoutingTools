@@ -148,7 +148,7 @@ its load caps show `clock`, the group the placer folds into `core`.*
 | `role` | a label for the reader and the legend (`power`, `core`, `interface`, `clock`, `ui`, ...) |
 | `anchor` | the part the group is built around. When the anchor itself follows a claim (a crystal), the whole group follows it |
 | `near` | groups to sit against: costs the gap between the two groups' nearest courtyards |
-| `apart` | groups to keep 3 mm from: costs how far the gap falls short of 3 mm |
+| `apart` | groups to keep 3 mm from: costs how far the least gap between the two groups falls short of 3 mm. Once any two members touch that is a flat 3 mm at every nearby pose, and `place_simple` warns that the hint is saturated (`hints_saturated` in its report) |
 | `edge` | `N` / `S` / `E` / `W`: costs the group's distance from that board edge |
 | `side` | `F` / `B`: every part of the group goes on that face (flipped before the anneal) |
 | `why`, `note` | free text; `why` is where the judgement is recorded |
