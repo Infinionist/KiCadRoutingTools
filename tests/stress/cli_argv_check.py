@@ -218,6 +218,14 @@ def _planes_count_mismatch(ns, cwd):
                 f"of plane layers ({len(ns.plane_layers)})")
 
 
+def _power_nets_count_mismatch(ns, cwd):
+    pn = list(getattr(ns, 'power_nets', None) or [])
+    pw = list(getattr(ns, 'power_nets_widths', None) or [])
+    if len(pn) != len(pw):
+        return (f"--power-nets ({len(pn)}) and --power-nets-widths ({len(pw)}) "
+                f"must have the same length")
+
+
 def _repair_count_mismatch(ns, cwd):
     if ns.nets and ns.plane_layers and len(ns.nets) != len(ns.plane_layers):
         return "when both --nets and --plane-layers are given, counts must match"
@@ -264,7 +272,7 @@ POST_PARSE = {
     'route_disconnected_planes.py': (_fab_overrides_missing, _output_twice,
                                      _repair_count_mismatch),
     'bga_fanout.py': (_fab_overrides_missing,),
-    'qfn_fanout.py': (_fab_overrides_missing,),
+    'qfn_fanout.py': (_power_nets_count_mismatch, _fab_overrides_missing),
     'place_fanout_clearance.py': (_cap_clearance_not_finite,
                                   _cap_intent_unreadable),
 }
@@ -351,6 +359,7 @@ REFUSAL_SITES = {
         'call:finish_design_rules': ('after the run', '--strict-sizes: exit 3 after routing'),
     },
     'qfn_fanout.py': {
+        '--power-nets (': ('argv', '_power_nets_count_mismatch'),
         'call:fab_tier_from_args': ('file', '_fab_overrides_missing'),
         'if qfn_components': ('board', "auto-detects the QFN on the board"),
         'if args.component not in pcb_data.footprints':

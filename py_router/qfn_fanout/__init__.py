@@ -1415,6 +1415,69 @@ def resolve_escape_layer(footprint: Footprint, layer: Optional[str] = None,
     return layer, None, False
 
 
+def _stub_legs(stub):
+    """(index, start, end) of a stub's legs: 0 pad -> corner, 1 corner -> tip,
+    2 tip -> join_end (#1332); a zero-length leg is not copper."""
+    legs = []
+    for k, a, b in ((0, stub.pad_pos, stub.corner_pos),
+                    (1, stub.corner_pos, stub.stub_end),
+                    (2, stub.stub_end, stub.join_end)):
+        if b is None:
+            continue
+        if abs(b[0] - a[0]) > POSITION_TOLERANCE or abs(b[1] - a[1]) > POSITION_TOLERANCE:
+            legs.append((k, a, b))
+    return legs
+
+
+def _widen_power_stub_legs(stubs, power_w, track_width, clearance, seg_grazes,
+                           hits_reserve):
+    """#1318: per-leg widths ``{id(stub): (w0, w1, w2)}`` for the stubs of
+    power nets.
+
+    Each stub was laid and cleared at `track_width`. A power net's legs are
+    then tried, stub by stub, at the net's width -- only where the pad's
+    short side admits it: a stub narrower than the requested width ships
+    under width either way, and widening it only takes room from the pins
+    around it. A leg keeps that width only if it clears everything the stub
+    test checks at that width (`seg_grazes(.., width=)`: board edge, the stub map stamped
+    for that track, every pad exactly, the input copper of the fanned nets),
+    a neighbouring chip's reserved escape room, and every other net's stub as
+    laid so far, at their own widths (stubs are never checked against each
+    other at `track_width`: they are spaced by construction, and a wider
+    one is not). Otherwise it stays at `track_width` -- narrow only where the
+    power width does not fit, as route.py's pad-entry zone is."""
+    from geometry_utils import segment_to_segment_distance
+    cur = {id(s): [track_width] * 3 for s in stubs}
+    legs = {id(s): _stub_legs(s) for s in stubs}
+    for stub in stubs:
+        w_net = power_w.get(stub.net_id)
+        if not w_net:
+            continue
+        w = w_net
+        if w <= track_width + 1e-9 or \
+                min(stub.pad.size_x, stub.pad.size_y) < w - 1e-9:
+            continue
+        for k, a, b in legs[id(stub)]:
+            if seg_grazes(a, b, stub.net_id, width=w) or \
+                    hits_reserve(a, b, stub.net_id, width=w):
+                continue
+            ok = True
+            for other in stubs:
+                if other.net_id == stub.net_id or other.layer != stub.layer:
+                    continue
+                for ko, oa, ob in legs[id(other)]:
+                    if segment_to_segment_distance(a[0], a[1], b[0], b[1],
+                                                   oa[0], oa[1], ob[0], ob[1]) \
+                            < w / 2 + cur[id(other)][ko] / 2 + clearance - 1e-9:
+                        ok = False
+                        break
+                if not ok:
+                    break
+            if ok:
+                cur[id(stub)][k] = w
+    return {k: tuple(v) for k, v in cur.items()}
+
+
 def generate_qfn_fanout(footprint: Footprint,
                         pcb_data: PCBData,
                         net_filter: Optional[List[str]] = None,
@@ -1435,7 +1498,12 @@ def generate_qfn_fanout(footprint: Footprint,
                         # progress_callback(current, total, label); the fanout
                         # tab otherwise shows one static label for the run.
                         progress_callback=None,
-                        cancel_check=None) -> Tuple[List[Dict], List[Dict], List[str]]:
+                        cancel_check=None,
+                        # route.py's --power-nets / --power-nets-widths: a
+                        # power net's stub is laid at its width where it fits.
+                        power_nets: Optional[List[str]] = None,
+                        power_nets_widths: Optional[List[float]] = None,
+                        ) -> Tuple[List[Dict], List[Dict], List[str]]:
     """
     Generate QFN fanout tracks for a footprint.
 
@@ -1454,6 +1522,13 @@ def generate_qfn_fanout(footprint: Footprint,
         layer: Routing layer (default F.Cu)
         track_width: Width of fanout tracks
         extension: Extension past pad edge before bend (mm)
+        power_nets / power_nets_widths: glob patterns and widths, read as
+            route.py reads them (identify_power_nets, floored at track_width).
+            A surface stub of such a net, on a pad at least that wide, is
+            laid leg by leg at the net's width wherever that clears
+            everything the stub test checks plus the run's other stubs, and
+            at track_width where it does not (#1318: route.py keeps input
+            copper, so a stub laid narrow shipped narrow).
 
     Returns:
         (tracks, vias, failed_nets) - tracks are the segments, vias is empty.
@@ -1792,7 +1867,13 @@ def generate_qfn_fanout(footprint: Footprint,
         base = _base_cl if cl == clearance else _obs_cfg.layer_clearance(layer, cl)
         return max(cl, _obs_cfg.pad_override_clearance(base, pad))
     # The pad window must reach the widest clearance any pad is held to.
-    _pad_reach = track_width / 2 + max(
+    _power_w = {}
+    if power_nets:
+        from net_queries import identify_power_nets
+        _power_w = {nid: max(track_width, w) for nid, w in identify_power_nets(
+            pcb_data, list(power_nets), list(power_nets_widths or ())).items()}
+    _w_max = max([track_width] + list(_power_w.values()))
+    _pad_reach = _w_max / 2 + max(
         [clearance, _base_cl] + [getattr(p, 'local_clearance', 0.0) or 0.0
                                  for pl in pcb_data.pads_by_net.values() for p in pl])
     _sxs = [pt[0] for s in stubs for pt in (s.pad_pos, s.corner_pos, s.stub_end)]
@@ -1842,51 +1923,63 @@ def generate_qfn_fanout(footprint: Footprint,
     from check_drc import _point_on_board as _pt_on_board
 
     # #1328: a stub that cannot escape at `clearance` retries at the rungs of
-    # qfn_clearance_ladder (empty under --escalation off). Each rung gets its
-    # own obstacle map and edge model, built the first time a stub needs it;
-    # the run clearance keeps the ones built above, so a run in which nothing
-    # escalates checks exactly what it always did. A .kicad_dru rule on the
-    # escape layer REPLACES the pair clearance there (#498, applied to
-    # `clearance` above) and would pin every rung's map back to it, so a ruled
-    # escape layer does not escalate: the board states that layer's clearance.
+    # qfn_clearance_ladder (empty under --escalation off), and #1318 tries a
+    # power net's stub at the net's width. Each (rung, width) gets its own
+    # obstacle map and each rung its own edge model, built the first time a
+    # stub needs it; the run clearance at --width keeps the ones built above,
+    # so a run in which nothing escalates or widens checks exactly what it
+    # always did. A .kicad_dru rule on the escape layer REPLACES the pair
+    # clearance there (#498, applied to `clearance` above) and would pin
+    # every rung's map back to it, so a ruled escape layer does not escalate:
+    # the board states that layer's clearance.
     _esc_ladder = ([] if _lcl_498.get(layer) is not None else
                    qfn_clearance_ladder(clearance, len(pcb_data.board_info.copper_layers or ())
                                         or 2))
-    _rung_ctx = {clearance: (_obstacles, _obs_cfg,
-                             (_edge_clear, _edge_rings, _edge_outer, _edge_cutouts))}
+    _rung_maps = {(clearance, round(track_width, 6)): (_obstacles, _obs_cfg)}
+    _rung_edges = {clearance: (_edge_clear, _edge_rings, _edge_outer, _edge_cutouts)}
 
-    def _ctx(cl):
-        c = _rung_ctx.get(cl)
-        if c is None:
-            _cfg = GridRouteConfig(layers=list(_obs_cfg.layers), track_width=track_width,
+    def _map_at(cl, width=track_width):
+        """The stub map at rung `cl` for a track `width`: stamped for that
+        track and clearance, with the same pad-free build and guard as the
+        base map."""
+        key = (cl, round(width, 6))
+        hit = _rung_maps.get(key)
+        if hit is None:
+            _cfg = GridRouteConfig(layers=list(_obs_cfg.layers), track_width=width,
                                    clearance=cl)
             install_layer_clearances(_cfg, None, None, pcb_data)  # #498
-            _obs = build_base_obstacle_map(pcb_data, _cfg, nets_to_route=_fanned_net_ids,
+            hit = (build_base_obstacle_map(pcb_data, _cfg, nets_to_route=_fanned_net_ids,
                                            extra_clearance=track_width / 2,
-                                           stamp_pads=False)
-            c = (_obs, _cfg, _board_edge_model(pcb_data, cl, board_edge_clearance))
-            _rung_ctx[cl] = c
-        return c
+                                           stamp_pads=False), _cfg)
+            _rung_maps[key] = hit
+        return hit
 
-    def _seg_hits_edge(p1, p2, cl=clearance):
-        _ec, _er, _eo, _ecut = _ctx(cl)[2]
+    def _edge_at(cl):
+        e = _rung_edges.get(cl)
+        if e is None:
+            e = _rung_edges[cl] = _board_edge_model(pcb_data, cl, board_edge_clearance)
+        return e
+
+    def _seg_hits_edge(p1, p2, cl=clearance, width=track_width):
+        _ec, _er, _eo, _ecut = _edge_at(cl)
         if not _er:
             return False
         for (x, y) in (p1, p2):
             if not _pt_on_board(x, y, _eo, _ecut):
                 return True
         return _seg_rings_dist(p1[0], p1[1], p2[0], p2[1], _er) \
-            < track_width / 2 + _ec - 1e-6
+            < width / 2 + _ec - 1e-6
 
-    def _seg_grazes(p1, p2, net_id, cl=clearance):
-        _obs, _cfg, _ = _ctx(cl)
+    def _seg_grazes(p1, p2, net_id, cl=clearance, width=track_width):
         # Board edge first (issue #288) - independent of net.
-        if _seg_hits_edge(p1, p2, cl):
+        if _seg_hits_edge(p1, p2, cl, width):
             return True
         # Foreign tracks / vias via the shared obstacle map (issue #149 part 2).
-        if _obs_layer_idx is not None and not check_line_clearance(
-                _obs, p1[0], p1[1], p2[0], p2[1], _obs_layer_idx, _cfg):
-            return True
+        if _obs_layer_idx is not None:
+            _om, _oc = _map_at(cl, width)
+            if not check_line_clearance(_om, p1[0], p1[1], p2[0], p2[1],
+                                        _obs_layer_idx, _oc):
+                return True
         # Foreign pads, exact (issue #123; found in #1328's replays):
         # check_drc's segment_pad_gap on the pad's true copper (round corners,
         # tilt, custom polygons) -- the shape KiCad and check_drc grade -- at
@@ -1901,7 +1994,7 @@ def generate_qfn_fanout(footprint: Footprint,
                 continue
             if layer not in expand_pad_layers(pad.layers, [layer]):
                 continue
-            if _segment_pad_gap(p1[0], p1[1], p2[0], p2[1], pad) - track_width / 2 \
+            if _segment_pad_gap(p1[0], p1[1], p2[0], p2[1], pad) - width / 2 \
                     < _pad_need(pad, cl) - 1e-9:
                 return True
         # Existing copper of the part's other fanned nets (issue #257).
@@ -1911,23 +2004,23 @@ def generate_qfn_fanout(footprint: Footprint,
             if segment_to_segment_distance(
                     p1[0], p1[1], p2[0], p2[1],
                     s.start_x, s.start_y, s.end_x, s.end_y) \
-                    < s.width / 2 + track_width / 2 + cl - 1e-6:
+                    < s.width / 2 + width / 2 + cl - 1e-6:
                 return True
         for v in _fanned_existing_vias:
             if v.net_id == net_id:
                 continue
             if point_to_segment_distance(v.x, v.y, p1[0], p1[1], p2[0], p2[1]) \
-                    < v.size / 2 + track_width / 2 + cl - 1e-6:
+                    < v.size / 2 + width / 2 + cl - 1e-6:
                 return True
         return False
 
-    def _hits_neighbour_reserve(p1, p2, net_id, cl=clearance):
+    def _hits_neighbour_reserve(p1, p2, net_id, cl=clearance, width=track_width):
         for a, b, rn in _neighbour_reserve:
             if rn == net_id:
                 continue
             if segment_to_segment_distance(p1[0], p1[1], p2[0], p2[1],
                                            a[0], a[1], b[0], b[1]) \
-                    < track_width + cl - 1e-6:
+                    < width / 2 + track_width / 2 + cl - 1e-6:
                 return True
         return False
 
@@ -2091,9 +2184,15 @@ def generate_qfn_fanout(footprint: Footprint,
               + ', '.join(f'{s.pad.net_name} at {s.joined_pad}'
                           for s in stubs if s.joined_pad)[:300])
 
+    # #1318: a power net's stub at its power width, leg by leg, where it fits.
+    _leg_w = _widen_power_stub_legs(
+        stubs, _power_w, track_width, clearance, _seg_grazes,
+        _hits_neighbour_reserve) if _power_w else {}
+
     # Generate tracks - two segments per stub
     tracks = []
     for stub in stubs:
+        _w3 = _leg_w.get(id(stub), (track_width,) * 3)
         # Segment 1: Straight from pad to corner
         dx1 = abs(stub.corner_pos[0] - stub.pad_pos[0])
         dy1 = abs(stub.corner_pos[1] - stub.pad_pos[1])
@@ -2101,7 +2200,7 @@ def generate_qfn_fanout(footprint: Footprint,
             tracks.append({
                 'start': stub.pad_pos,
                 'end': stub.corner_pos,
-                'width': track_width,
+                'width': _w3[0],
                 'layer': stub.layer,
                 'net_id': stub.net_id
             })
@@ -2113,7 +2212,7 @@ def generate_qfn_fanout(footprint: Footprint,
             tracks.append({
                 'start': stub.corner_pos,
                 'end': stub.stub_end,
-                'width': track_width,
+                'width': _w3[1],
                 'layer': stub.layer,
                 'net_id': stub.net_id
             })
@@ -2124,7 +2223,7 @@ def generate_qfn_fanout(footprint: Footprint,
             tracks.append({
                 'start': stub.stub_end,
                 'end': stub.join_end,
-                'width': track_width,
+                'width': _w3[2],
                 'layer': stub.layer,
                 'net_id': stub.net_id
             })
@@ -2245,6 +2344,15 @@ def main():
                              'that would graze the board edge are shortened or '
                              'dropped; underpad escape vias near the edge are '
                              'rejected (issue #288).')
+    parser.add_argument('--power-nets', nargs='*', default=[],
+                        help="Glob patterns for power nets, as route.py takes them "
+                             "(e.g. '*GND*' '+3V3'). Must pair with --power-nets-widths. "
+                             "A power net's stub, on a pad at least that wide, is laid at "
+                             "its width wherever that fits, and at --width where it does "
+                             "not (#1318): route.py keeps fanout copper as it finds it, so "
+                             "pass the route step's own --power-nets here.")
+    parser.add_argument('--power-nets-widths', nargs='*', type=float, default=[],
+                        help='Track widths in mm for each --power-nets pattern')
     parser.add_argument('--same-net-pad-clearance', type=float, default=None,
                         help='#581: > 0 forbids via-in-pad (overrides --allow-via-in-pad) and '
                              'is recorded in the sibling .kicad_pro so later chain steps '
@@ -2275,6 +2383,9 @@ def main():
     from fix_kicad_drc_settings import add_drc_fix_args
     add_drc_fix_args(parser)
     args = __import__("cli_nets").pin_dash_digit_values(parser).parse_args()
+    if len(args.power_nets) != len(args.power_nets_widths):
+        parser.error(f"--power-nets ({len(args.power_nets)}) and --power-nets-widths "
+                     f"({len(args.power_nets_widths)}) must have the same length")
     from fix_kicad_drc_settings import warn_if_missing_project_floor
     warn_if_missing_project_floor(args.pcb)  # #441: a dropped sibling .kicad_pro strands the DRC floor
     # #1328: an omitted --clearance is the board's Default net class, as on
@@ -2412,7 +2523,9 @@ def main():
         via_size=args.via_size,
         via_drill=args.via_drill,
         allow_via_in_pad=args.allow_via_in_pad,
-        same_net_pad_clearance=args.same_net_pad_clearance  # #581
+        same_net_pad_clearance=args.same_net_pad_clearance,  # #581
+        power_nets=args.power_nets or None,                  # #1318
+        power_nets_widths=args.power_nets_widths or None,
     )
 
     if tracks or vias:

@@ -1790,6 +1790,10 @@ _POST_PARSE_WITNESSES = (
      '--nets GND VCC --plane-layers In1.Cu In2.Cu', None),
     ('_repair_count_mismatch', 'repair_planes.py a.kicad_pcb b.kicad_pcb '
      '--nets GND VCC --plane-layers In1.Cu', 'counts must match'),
+    ('_power_nets_count_mismatch', 'qfn_fanout.py a.kicad_pcb --output b.kicad_pcb '
+     '--power-nets GND +3V3 --power-nets-widths 0.3', 'must have the same length'),
+    ('_power_nets_count_mismatch', 'qfn_fanout.py a.kicad_pcb --output b.kicad_pcb '
+     '--power-nets GND +3V3 --power-nets-widths 0.3 0.3', None),
     ('_cap_clearance_not_finite', 'place_fanout_clearance.py a.kicad_pcb '
      '--clearance nan', 'finite number'),
     ('_cap_clearance_not_finite', 'place_fanout_clearance.py a.kicad_pcb '

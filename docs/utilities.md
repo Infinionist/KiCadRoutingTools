@@ -1227,6 +1227,15 @@ Options:
                       is clamped to the pad edge (#202) and needs IPC-4761 Type
                       VII; JSON_SUMMARY reports via_in_pad / via_in_pad_clamped /
                       via_in_pad_offcentre / max_stub_mm.
+  --power-nets / --power-nets-widths  route.py's power nets and widths (pass
+                      the route step's own). A surface stub of such a net, on a
+                      pad at least that wide, is laid leg by leg at the net's
+                      width wherever that clears everything the stub test
+                      checks and every other net's stub, and at --width where it
+                      does not (#1318: route.py keeps fanout copper as it is).
+                      A pad narrower than the rail keeps --width: that stub ships
+                      under width either way. GUI: the route tab's Power Nets /
+                      Power Widths fields reach the QFN fanout.
   --fab-tier          JLC fab capability floor: standard (default) or advanced
   --fab-overrides FILE  Fab-floor override file overlaying the selected --fab-tier
 ```

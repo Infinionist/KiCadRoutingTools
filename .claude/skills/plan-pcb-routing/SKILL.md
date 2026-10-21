@@ -2434,6 +2434,14 @@ naming the board's own plane nets): a stub on a poured net is copper the pour
 connects anyway, and it ships as a dangling tail once the pour welds the pad
 (#1332).
 
+**Pass the route step's own `--power-nets ... --power-nets-widths ...` to
+`qfn_fanout.py` too.** route.py keeps the copper a fanout laid, so a power
+pin's stub drawn at `--width` ships at it (#1318: steppenprobe's +1V8 and +3V3
+stubs were 7.6 / 6.9 mm of copper under the 0.3 mm rail). With them, a power
+net's stub on a pad at least as wide as the rail is laid at the rail's width
+wherever it fits and at `--width` where it does not; a rail wider than the pad
+leaves its stubs at `--width`.
+
 Creates two-segment stubs (straight + 45° fan) for each pad. A stub that
 reaches a same-net pad on its way out (a pin's own decoupling cap beside it)
 ends on that pad rather than running past it (#1332); the run prints

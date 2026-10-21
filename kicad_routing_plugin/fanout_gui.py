@@ -2068,6 +2068,9 @@ class FanoutTab(wx.Panel):
             board_edge_clearance=shared.get('board_edge_clearance', 0.0),
             # #581: the Basic tab's via-in-pad policy, as the BGA path.
             same_net_pad_clearance=shared.get('same_net_pad_clearance', -1.0),
+            # #1318: the route tab's power nets (qfn_fanout.py --power-nets).
+            power_nets=shared.get('power_nets'),
+            power_nets_widths=shared.get('power_nets_widths'),
             # See the BGA path: safe from the worker via ui_thread_status.
             # Only the counted x/N lines reach the status feed -- the
             # uncounted phase chatter (gridding, staging, ...) is log-only.
