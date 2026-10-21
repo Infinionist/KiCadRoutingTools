@@ -897,7 +897,11 @@ end reports `already_connected` and nothing about the rest of the board.
 board. It leaves DRC, assembly and the floorplan out: level 2 skips the
 passes that fix grazes, so DRC on its board measures the polish it skipped,
 not the placement. The JSON has `board_score`'s keys, so the GUI's candidates
-table reads either.
+table reads either, and it lists what it leaves out in `ungraded`, by
+`board_score`'s component names (`components[k].reason` says why): a converge
+ledger compares two rows' graded sets before their `blocking`, so a quick row
+followed by a full one reads as incommensurable, not as a full row that
+graded fewer components (#1323).
 
 ```bash
 python3 -X utf8 py_tools/quick_score.py s0_fast.kicad_pcb --json s0_fast.score.json

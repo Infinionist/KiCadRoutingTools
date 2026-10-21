@@ -18,7 +18,10 @@
 DRC, assembly and the floorplan are left out: level 2 skips the passes that
 fix grazes, so DRC on its board measures the polish it skipped, not the
 placement. The keys are `board_score --json`'s (`blocking`, `blocking_by`,
-`quality`), so a seed's `s<S>_fast.score.json` reads the same either way.
+`quality`), so a seed's `s<S>_fast.score.json` reads the same either way, and
+what it leaves out is listed in `ungraded`, by board_score's own component
+names (#1323): a converge ledger holds quick and full rows side by side, and
+it compares two rows' graded sets before it compares their `blocking`.
 Rank seeds by blocking, then vias, copper_mm, segments. Never grade a board
 to ship with it: route that one in full and run `board_score`.
 """
@@ -59,10 +62,41 @@ def connectivity(board):
              'nets': sorted(set(poured_unrouted) | {n for n, j in poured.items() if j})})
 
 
+#: What this score leaves out of board_score's `blocking`, by board_score's
+#: component names, and why. `converge.ungraded_set` reads a payload's
+#: `ungraded` list and `components[k].reason`; without them a quick row read
+#: as grading everything, and the first board_score row after it -- which
+#: honestly lists impedance, length and net_widths -- was refused as an
+#: improvement that "graded FEWER components" (#1323). `assembly.courtyard_
+#: gating` is board_score's own entry for check_assembly's moved-part gate;
+#: `connectivity.poured_nets` is the half of `unrouted`/`broken` this score
+#: sets apart (`poured`).
+UNGRADED = {
+    'drc': '--quick 2 leaves the grazes for the full route\'s cleanup; DRC is '
+           'graded on the full route',
+    'undersized': '--quick 2 leaves the copper polish for the full route; '
+                  'sizes are graded on the full route',
+    'floorplan': 'quick_score grades the route; check_floorplan --intent '
+                 'grades the placement',
+    'assembly': 'quick_score grades the route; check_assembly grades the '
+                'placement',
+    'assembly.courtyard_gating': 'quick_score runs no check_assembly',
+    'impedance': 'quick_score grades no impedance',
+    'length': 'quick_score grades no length matching',
+    'net_widths': 'quick_score grades no per-net widths',
+    'connectivity.poured_nets': '--quick 2 skips the plane finalize that joins '
+                                'a poured net\'s pads, so their open pads are '
+                                'reported as `poured`, not graded',
+}
+
+
 def quick_score(board):
     from board_score import quality
     blk, by, poured = connectivity(board)
+    ungraded = sorted(UNGRADED)
     return {'blocking': blk, 'blocking_by': by, 'poured': poured, 'quality': quality(board),
+            'ungraded': ungraded,
+            'components': {k: {'ran': False, 'reason': UNGRADED[k]} for k in ungraded},
             'score': 'quick_score: connectivity of the nets without a zone (route.py --quick 2)'}
 
 
@@ -79,6 +113,7 @@ def main(argv=None):
     p = sc['poured']
     print(f"blocking={sc['blocking']} vias={q.get('vias')} copper_mm={q.get('copper_mm')} "
           f"segments={q.get('segments')} (poured, not counted: {p.get('broken')} joins)")
+    print(f"UNGRADED (the full route's board_score grades these): {', '.join(sc['ungraded'])}")
     return 2 if sc['blocking'] is None else (4 if sc['blocking'] else 0)
 
 
