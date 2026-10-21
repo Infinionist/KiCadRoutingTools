@@ -538,6 +538,10 @@ def pose_free_chip_refs(pcb) -> set:
                             global_y=float(p.local_y or 0.0)) for p in pads])
         if groups_mod._pads_are_collinear(local):
             continue
+        # #1351: the role gate `_ic_list` applies (pose-free: roles, pin
+        # types and names)
+        if groups_mod.passive_by_role(pcb, ref) is not None:
+            continue
         out.add(ref)
     # #1249: the supply owners `chip_refs` adds read no pose at all
     # (pintypes, footprint name, nets), so they join as they are.

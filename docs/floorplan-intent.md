@@ -2233,7 +2233,12 @@ supply owner (#1249):
 **Who owns caps (#1249).** The parts asked about are the cap owners
 `groups.chip_refs` names -- the same set the tether election, the quench's
 tether terms and the seeder's pin stages read. An owner is an IC by shape (four
-or more copper pads, not a single row), or a **supply owner**: a part with at
+or more copper pads, not a single row, and not a passive by role: #1351 drops a
+part the role table calls a resistor, diode or LED, or a resistor network
+(`RN`, `R_Array_*`), unless a pin of it is typed or named as a supply pin on a
+rail or its name says it is an addressable LED -- so rp2350's pull-up arrays
+RN1/RN2 and its RGB LED D1 no longer own the +3V3 caps, while an SK6812 still
+owns its VDD cap), or a **supply owner**: a part with at
 least three copper pads and no `part_class` that has a pad typed `power_out`,
 or that `board_context`'s role table calls a `regulator`
 (`placement/roles.py`), or that has exactly three copper pads on three nets --
