@@ -143,7 +143,8 @@ path — measure the driver→receiver path instead, and match on that:
 ```python
 path_mm = net_match_length(pcb, name_to_id['DQ0'], mode='pin_pair')
 # None = the net's first two pads are not joined by TRACK copper
-# (plane-only or broken); pin_pair_path_length(pcb, nid, pad_a, pad_b)
+# (plane-only or broken; a via centred in a pad joins it through its
+# barrel, #1314); pin_pair_path_length(pcb, nid, pad_a, pad_b)
 # measures any other pad pair
 ```
 

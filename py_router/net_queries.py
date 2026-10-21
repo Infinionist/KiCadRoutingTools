@@ -568,8 +568,29 @@ def _net_track_graph(pcb_data: PCBData, net_id: int, pads,
         _node_xy.append((x, y, layer))
         return nid
 
+    # A via-in-pad (#1314): a via whose centre lies in one of `pads` -- the
+    # same landing test a track end gets -- joins that pad on every layer
+    # both carry. Without it the pad's hubs met only TRACK nodes, so a via
+    # centred in an SMD pad whose tracks leave on an inner layer never reached
+    # its pad: board_score read imx6ulz's DQ3/DQ7 as "not joined by track
+    # copper" and left the whole length group ungraded, though KiCad measured
+    # both nets.
+    via_pad_contacts = []          # (via, pad, [layers both carry])
+    via_contact_layers: Dict[int, set] = {}
+    for (vx, vy, _vr, vlayers, _vh, vkind, via) in discs:
+        if vkind != 'via':
+            continue
+        for (_px, _py, _pr, players, _ph, pkind, pad) in discs:
+            if pkind != 'pad' or not _pad_holds_point(pad, vx, vy, tolerance):
+                continue
+            common = [l for l in vlayers if l in players]
+            if common:
+                via_pad_contacts.append((via, pad, common))
+                via_contact_layers.setdefault(id(via), set()).update(common)
+
     track_nodes = list(adjacency.keys())
     pad_nodes: Dict[int, List[int]] = {}
+    hubs_by_obj: Dict[int, Dict[str, int]] = {}
     for (cx, cy, radius, dlayers, hit, kind, obj) in discs:
         layer_nodes: Dict[str, int] = {}
         for layer in dlayers:
@@ -582,7 +603,8 @@ def _net_track_graph(pcb_data: PCBData, net_id: int, pads,
                 if hit(nx, ny):
                     add_edge(hub, node, 0.0)
                     joined = True
-            if joined or kind == 'pad':
+            if joined or kind == 'pad' \
+                    or layer in via_contact_layers.get(id(obj), ()):
                 layer_nodes[layer] = hub
 
         if kind == 'via':
@@ -605,6 +627,13 @@ def _net_track_graph(pcb_data: PCBData, net_id: int, pads,
                 for other in hubs[1:]:
                     add_edge(hubs[0], other, 0.0)
             pad_nodes[id(obj)] = hubs
+        hubs_by_obj[id(obj)] = layer_nodes
+
+    for via, pad, common in via_pad_contacts:
+        vh, ph = hubs_by_obj.get(id(via), {}), hubs_by_obj.get(id(pad), {})
+        for layer in common:
+            if layer in vh and layer in ph:
+                add_edge(vh[layer], ph[layer], 0.0)
 
     return adjacency, pad_nodes
 

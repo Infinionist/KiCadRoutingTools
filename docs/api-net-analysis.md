@@ -260,7 +260,10 @@ carry their length, coincident endpoints and T-junctions join at zero cost,
 and a via crosses its span at the barrel length from the stackup. Pads and vias
 attach by copper **overlap** (a track ends anywhere inside them, not on their
 centre), and their own pad/barrel copper is not charged — matching how KiCad
-measures track length.
+measures track length. A **via-in-pad** — a via whose centre lies in the pad —
+joins that pad on every layer both carry, so a via centred in an SMD pad whose
+tracks leave on an inner layer reaches its pad through the barrel (#1314;
+before, the pad met only track ends and such a net read as not joined).
 
 Returns `None` when no track path joins the two pads: an unrouted or broken
 net, or one whose pads meet only through a **zone** (pours are not traversed).
