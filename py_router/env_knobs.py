@@ -741,6 +741,16 @@ _NOT_REPLAYED_NAMES = frozenset({'KICAD_SAVELOG', 'KICAD_IMAGE',
                                  'KRT_CMD_TIMING_LEDGER'})
 
 
+def is_replay_knob(name: str) -> bool:
+    """A KICAD_*/KRT_* knob a replay must reproduce (#1302): not a KiCad
+    install path, and not a machine-local or harness variable."""
+    if not (name.startswith('KICAD') or name.startswith('KRT_')):
+        return False
+    if _INSTALL_PREFIX.match(name) or name in _INSTALL_NAMES:
+        return False
+    return not (_NOT_REPLAYED.match(name) or name in _NOT_REPLAYED_NAMES)
+
+
 def replay_env_knobs() -> dict:
     """{name: EXACT value} of the knobs a replay must reproduce (#1302).
 
@@ -751,16 +761,8 @@ def replay_env_knobs() -> dict:
     what the routing skill tells an agent to type, so a manifest replays the
     step as it ran instead of the defaults.
     """
-    out = {}
-    for k, v in os.environ.items():
-        if not (k.startswith('KICAD') or k.startswith('KRT_')):
-            continue
-        if _INSTALL_PREFIX.match(k) or k in _INSTALL_NAMES:
-            continue
-        if _NOT_REPLAYED.match(k) or k in _NOT_REPLAYED_NAMES:
-            continue
-        out[k] = v
-    return dict(sorted(out.items()))
+    return dict(sorted((k, v) for k, v in os.environ.items()
+                       if is_replay_knob(k)))
 
 
 def env_knobs_line() -> str:

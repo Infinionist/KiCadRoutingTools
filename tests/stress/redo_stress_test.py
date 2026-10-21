@@ -244,9 +244,35 @@ def parse_manifest(path):
     So lines are ACCUMULATED until shlex can split them, which is exactly the
     shell's own continuation rule. Newlines inside the quotes survive into the
     token, reproducing the recorded argument byte-for-byte.
+
+    Two SHELL lines are directives here, not commands (#1337). A hand-written
+    plan.sh starts with `cd <repo>` -- the routing skill requires it and
+    route_plan_check enforces it -- and this read it as a command, so every
+    command's cwd stayed None and its relative paths resolved against the
+    manifest's folder: manifest_to_plan "rejected" a valid repo-relative
+    `--intent`, and the pruner dropped every step upstream of it (gp14
+    daplink: 4 plan steps where the chain has 7).
+      * `cd DIR` sets the cwd exactly as `# cwd=` does, sticky. `~` expands;
+        a relative DIR resolves against the cwd so far, else the manifest's
+        folder. `cd` alone is $HOME. A `cd` sharing a line with more
+        (`cd x && ...`) stays a command.
+      * `export NAME=value ...` exports a knob to every LATER command, as
+        the shell does: each export that `env_knobs.is_replay_knob` accepts
+        joins the leading `NAME=value` prefix of every command after it
+        (#1302; a command's own prefix still wins, as in the shell).
+        Anything else exported -- REDO_MANIFEST, REDO_RUNDIR, PATH -- is the
+        recording harness's, and is dropped: a replay that inherited
+        REDO_MANIFEST would append to the ORIGINAL run's manifest.
     """
     cmds = []
     current_cwd = None
+    exported = {}
+    base = os.path.dirname(os.path.abspath(path))
+    try:
+        from env_knobs import is_replay_knob
+    except Exception:                  # the engine dir missing: export none
+        def is_replay_knob(_name):
+            return False
     buf = ""
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -270,8 +296,24 @@ def parse_manifest(path):
             except ValueError:
                 continue  # unbalanced quote so far -> this command continues
             buf = ""
-            if argv:
-                cmds.append((current_cwd, argv))
+            if not argv:
+                continue
+            if argv[0] == "cd" and len(argv) <= 2:
+                target = os.path.expanduser(argv[1] if len(argv) == 2 else "~")
+                if not os.path.isabs(target):
+                    target = os.path.join(current_cwd or base, target)
+                current_cwd = os.path.normpath(target)
+                continue
+            if argv[0] == "export":
+                for tok in argv[1:]:
+                    if "=" in tok:
+                        k, v = tok.split("=", 1)
+                        if is_replay_knob(k):
+                            exported[k] = v
+                continue
+            if exported:
+                argv = [f"{k}={v}" for k, v in exported.items()] + argv
+            cmds.append((current_cwd, argv))
     if buf.strip():
         # Genuinely unterminated at EOF: raise rather than silently drop the tail,
         # which would replay a TRUNCATED chain and look like a routing failure.

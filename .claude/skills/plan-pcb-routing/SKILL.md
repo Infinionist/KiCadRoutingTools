@@ -3206,7 +3206,11 @@ next to the board, so the exact tuned choices replay with no LLM:
    including the Step 2c environment block and iteration passes.
    **Begin the file with an explicit `cd <repo>` line** (not just a
    `# cwd=` comment) so a bare `bash <board>_plan.sh` works — relative
-   `py_router/` tool paths fail from any other directory.
+   `py_router/` tool paths fail from any other directory. The replayer and
+   the converter below read that `cd` as the commands' working directory,
+   as `# cwd=` is read (#1337), and an `export` of a `KICAD_*` knob as the
+   env prefix of every later command; other exports (`REDO_*`) are the
+   recorder's, and are not replayed.
    **Verification commands go in as COMMENTS, never executable lines** —
    the file's exit code is read by executors as the chain verdict, and a
    trailing read-only check that exits non-zero (violations found, or a
@@ -3224,9 +3228,12 @@ next to the board, so the exact tuned choices replay with no LLM:
    the same chain through the GUI engine path. KNOWN LIMITATION: the topo
    bus step (`awx/route_bus.py`, Step 1a) has no GUI action, and the
    converter skips it ("kept-but-non-GUI command(s) skipped") -- a plan with
-   a bus step replays from the `.sh` alone. Env-only
+   a bus step replays from the `.sh` alone. A command its own tool would
+   refuse is named as REJECTED, with every command upstream of it that
+   only fed it, and all of them are counted in the "skipped" figure. Env-only
    knobs (the Step 2c plan/attraction stack) do not survive into the JSON —
-   only `--flag` params map to plan params. Until those knobs are promoted
+   only `--flag` params map to plan params, and the converter names each
+   knob it drops. Until those knobs are promoted
    to first-class engine params + dialog controls (the #513 discipline),
    the `.sh` form is the one that reproduces the tuned result exactly; say
    so in the summary when the two forms differ.
