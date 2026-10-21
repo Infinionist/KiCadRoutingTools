@@ -1206,9 +1206,9 @@ def test_1075_a_score_whose_blocking_is_not_a_count_is_NO_SCORE():
     inf = float('inf')
     for v in (True, float('nan'), inf, '3'):
         k = converge._score_key({'blocking': 0, 'quality': {'vias': v}})
-        assert k == (0, (inf, inf, inf)), (v, k)
+        assert k == (0, (0, inf, inf, inf)), (v, k)
     assert converge._score_key({'blocking': 0, 'quality': {'vias': 4}}) \
-        == (0, (4, inf, inf))
+        == (0, (0, 4, inf, inf))
     # A 400-digit JSON integer: `isfinite` converts an int to float and raised
     # OverflowError. As a `blocking` it is not a count (past any float, and the
     # film plots `float(b)`); as a quality item it ranks, and a ledger row
@@ -1218,7 +1218,7 @@ def test_1075_a_score_whose_blocking_is_not_a_count_is_NO_SCORE():
     assert 'digits' in (converge.blocking_defect(huge) or ''), \
         converge.blocking_defect(huge)
     assert converge._score_key({'blocking': 3, 'quality': {'vias': huge}}) \
-        == (3, (huge, inf, inf))
+        == (3, (inf, huge, inf, inf))
     with tempfile.TemporaryDirectory() as td:
         rows = [_row_1071(i, 'completion', 3, quality={'vias': huge})
                 for i in range(5)]
@@ -1228,6 +1228,20 @@ def test_1075_a_score_whose_blocking_is_not_a_count_is_NO_SCORE():
             (r.returncode, r.stderr[-300:])
     print("  PASS: a --score whose blocking is not a count is NO-SCORE, named "
           "for what it is")
+    # #1340: at equal blocking the joins the open nets need rank before vias:
+    # the lap that stranded a 9-pad rail (8 joins, 143 vias) is not better
+    # than the one with a 2-pad net open (1 join, 151 vias)
+    rail = converge._score_key({'blocking': 1, 'joins_needed': 8,
+                                'quality': {'vias': 143, 'copper_mm': 962.8,
+                                            'segments': 900}})
+    one = converge._score_key({'blocking': 1, 'joins_needed': 1,
+                               'quality': {'vias': 151, 'copper_mm': 980.3,
+                                           'segments': 950}})
+    assert one < rail, (one, rail)
+    # a score without joins_needed: 0 at blocking 0, unmeasured above it
+    assert converge._score_key({'blocking': 0, 'quality': {}})[1][0] == 0
+    assert converge._score_key({'blocking': 2, 'quality': {}})[1][0] == inf
+    print("  PASS: joins_needed ranks ahead of vias at equal blocking (#1340)")
 
 
 def test_1076_verdict_reads_a_malformed_ungraded_beside_a_real_blocking():

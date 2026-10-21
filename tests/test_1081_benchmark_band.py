@@ -136,7 +136,9 @@ def test_quality_key_is_the_runs_own_ranking():
         ck = converge._score_key(sc)
         if ck is None:
             continue
-        if tuple(ck[1]) != LS.quality_key(sc):
+        # below the DONE line `joins_needed` is 0 (#1340): the film ranks
+        # the quality terms after it
+        if ck[1][0] != 0 or tuple(ck[1][1:]) != LS.quality_key(sc):
             bad += 1
             if bad < 4:
                 print('    diverge on %r: converge %r, film %r'

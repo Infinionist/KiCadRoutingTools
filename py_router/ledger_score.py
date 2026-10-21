@@ -21,7 +21,8 @@ placement engines):
 
 `tests/test_1081_benchmark_band.py` holds `quality_key` to
 `converge._score_key`'s quality half on a shuffled ledger, so the two cannot
-drift apart.
+drift apart. That half leads with `joins_needed` (#1340), which is 0 on every
+board below the DONE line, so the film ranks the terms after it.
 """
 from __future__ import annotations
 
