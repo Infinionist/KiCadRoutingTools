@@ -22,7 +22,11 @@ edge clearance is the fab floor routing writes, 0.2), and with no board file
   4. the callers that pass no floors are unaffected: on tigard,
      `fanout_clearance._decap_violations` (45 decap findings under a tight
      limit) and `emc_roles._measure_keep_away` read the same under the old
-     default and the new one.
+     default and the new one;
+  5. `pose_score.make_state` (the state reconcile, lock_advisor and the pose
+     tools build) reads the board's floors when handed none, and reconcile
+     reads a part's edge at the floors check_floorplan graded at -- the
+     NEGATIVE CONTROL (the old 0.55 default) reads the corner part south.
 
     python3 tests/test_1301_grade_default_floors.py
 """
@@ -78,7 +82,8 @@ def _quiet():
     return stack
 
 
-class DefaultFloors(unittest.TestCase):
+class _Board(unittest.TestCase):
+    """The fixture board, with its project; no tests of its own."""
 
     def setUp(self):
         self.td = tempfile.mkdtemp(prefix='krt1301floors_')
@@ -95,6 +100,9 @@ class DefaultFloors(unittest.TestCase):
             json.dump({'net_settings': {'classes': [
                 {'name': 'Default', 'clearance': 0.254, 'track_width': 0.2}]},
                 'board': {'design_settings': {'rules': rules}}}, fh)
+
+
+class DefaultFloors(_Board):
 
     def test_resolved_floors(self):
         rf = floorplan.resolved_floors
@@ -162,6 +170,43 @@ class DefaultFloors(unittest.TestCase):
         self.assertTrue(all(r.get('state') != 'not measured' for r in new[1].values()),
                         new[1])
         self.assertEqual(new, old)
+
+
+class StateDefaultFloors(_Board):
+    """`pose_score.make_state`, the state every pose tool, reconcile and
+    lock_advisor build, defaulted its floors to (0.25, 0.55) as well:
+    reconcile read a part's edge at a 0.55 reach while the grade beside it
+    read 0.2. Now a None floor is the board's (`resolved_floors`), and
+    reconcile's geometry takes the floors check_floorplan graded at."""
+
+    def _edge(self, floors_used=None):
+        from placement import reconcile
+        with _quiet():
+            pcb = parse_kicad_pcb(self.path)
+            geo = reconcile._Geometry(pcb, self.path, floors_used)  # noqa: SLF001
+            p = geo.state.parts['J1']
+            return reconcile._edge_of(                              # noqa: SLF001
+                p.rect(p.x, p.y, p.rot), pcb.board_info.board_bounds, geo, 'J1', p.rot)
+
+    def test_make_state_reads_the_boards_floors(self):
+        import pose_score
+        with _quiet():
+            st = pose_score.make_state(parse_kicad_pcb(self.path), self.path)
+            st2 = pose_score.make_state(parse_kicad_pcb(self.path), self.path,
+                                        clearance=0.3, board_edge_clearance=0.55)
+        self.assertEqual((st.clearance, st.board_edge_clearance), (0.254, 0.2))
+        self.assertEqual((st2.clearance, st2.board_edge_clearance), (0.3, 0.55))
+
+    def test_reconcile_reads_the_edge_the_grade_reads(self):
+        self.assertEqual(self._edge(), 'west')
+        knobs = {'clearance': {'value': 0.254, 'source': 'board netclass'},
+                 'board_edge_clearance': {'value': 0.3, 'source': 'cli'}}
+        # at a 0.3 edge clearance J1 reaches the south side too, and lies
+        # along it: the grade reads south there, and so does reconcile
+        self.assertEqual(self._edge(knobs), 'south')
+        # NEGATIVE CONTROL: the old (0.25, 0.55) default reads south here
+        with mock.patch.object(floorplan, 'resolved_floors', _old_default):
+            self.assertEqual(self._edge(), 'south')
 
 
 if __name__ == '__main__':

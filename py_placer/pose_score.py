@@ -39,13 +39,18 @@ def _offsets(radius: float, step: float):
     return out
 
 
-def make_state(pcb_data, board_path: str, *, clearance: float = 0.25,
-               board_edge_clearance: float = 0.55, extra_locked_refs=None,
+def make_state(pcb_data, board_path: str, *, clearance: Optional[float] = None,
+               board_edge_clearance: Optional[float] = None, extra_locked_refs=None,
                keepouts=None, intent_zones=None, exclusive_zones=None):
     """A QuenchState for `pcb_data`: its parts, their poses and the seat
     gate. `place_simple` keeps one for the whole run; the pose tools build
-    one per call."""
+    one per call. A floor left None is the board's own
+    (`floorplan.resolved_floors`, #1301), never the fixed (0.25, 0.55) it
+    used to default to."""
+    from placement.floorplan import resolved_floors
     from placement.quench import QuenchState
+    clearance, board_edge_clearance = resolved_floors(
+        board_path, clearance, board_edge_clearance)
     return QuenchState(
         pcb_data=pcb_data, pcb_file=board_path,
         clearance=clearance, board_edge_clearance=board_edge_clearance,

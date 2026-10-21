@@ -209,9 +209,14 @@ class _Geometry:
     reconciliation with nothing to compare must not pay for either (the
     Phase-3 verifier measured 0.55 s on ulx3s for an empty one)."""
 
-    def __init__(self, pcb, board_path):
+    def __init__(self, pcb, board_path, floors_used=None):
         self.pcb, self.board_path = pcb, board_path
         self._bodies = self._state = None
+        # the floors the grade beside this read at (check_floorplan's
+        # `knobs`), so an edge read here is the grade's; else the board's
+        knobs = floors_used or {}
+        self._floors = tuple((knobs.get(k) or {}).get('value')
+                             for k in ('clearance', 'board_edge_clearance'))
 
     @property
     def bodies(self):
@@ -228,8 +233,9 @@ class _Geometry:
         if self._state is None:
             import pose_score
             try:
-                self._state = pose_score.make_state(self.pcb,
-                                                    self.board_path)
+                self._state = pose_score.make_state(
+                    self.pcb, self.board_path, clearance=self._floors[0],
+                    board_edge_clearance=self._floors[1])
             except ValueError as exc:
                 # No outline: there is no edge to read a part against. The
                 # grade refuses such a board itself, at exit 3 --
@@ -333,7 +339,7 @@ def reconcile(pcb, board_path: str, *, brief_fragment: Optional[Dict] = None,
     contradiction). A row whose mechanical value lost ANOTHER row's
     contradiction does not name mechanical its winner.
     """
-    geo = _Geometry(pcb, board_path)
+    geo = _Geometry(pcb, board_path, floors_used)
     bounds = pcb.board_info.board_bounds if pcb.board_info else None
     brief_entries = {str(c.get('ref')): c
                      for c in (brief_fragment or {}).get('edge_connectors')
