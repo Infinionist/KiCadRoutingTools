@@ -646,6 +646,24 @@ def preexisting_blocker_hint(blocked_cells, config, pcb_data, net_id,
             f"{had_txt}{lock_txt}" + prot_txt, names)
 
 
+def _escaped_on_input(pcb_data, net_id, bare, reach=0.05):
+    """The `(pad, ref)` entries of `bare` whose escape copper the step's INPUT
+    carried: a segment end or via of `net_id` within `reach` of the pad, the
+    attachment rule `entombed_bare_pads` applies to the live board. Read off
+    `pcb_data._input_copper` (rip_up_reroute.mark_input_copper); [] when the
+    run never marked its input."""
+    mark = getattr(pcb_data, '_input_copper', None)
+    if not mark:
+        return []
+    _ids, segs, vias = mark
+    pts = [(s.start_x, s.start_y) for s in segs if s.net_id == net_id]
+    pts += [(s.end_x, s.end_y) for s in segs if s.net_id == net_id]
+    pts += [(v.x, v.y) for v in vias if v.net_id == net_id]
+    return [(p, r) for p, r in bare
+            if any(abs(x - p.global_x) < reach and abs(y - p.global_y) < reach
+                   for x, y in pts)]
+
+
 def fanout_dropped_ball_hint(pcb_data, config, net_id, net_name=None, *,
                              return_verdict=False, plane_like_pads=6):
     """`no rippable blockers found` is TRUE. It is also useless (#652).
@@ -683,9 +701,27 @@ def fanout_dropped_ball_hint(pcb_data, config, net_id, net_name=None, *,
         return _ret('')
     if not bare:
         return _ret('')
+    # The geometry reads the LIVE board, which mid-run lacks whatever this run
+    # has ripped. A ball whose escape the INPUT carried was escaped by the
+    # fanout and is bare only because this run took the copper, so the fanout
+    # is not the remedy (#1311: glasgow U30.C9, ripped as a blocker, then
+    # "Re-run the fanout").
+    ripped = _escaped_on_input(pcb_data, net_id, bare)
+    _rids = {id(p) for p, _r in ripped}
+    dropped = [b for b in bare if id(b[0]) not in _rids]
+    name = net_name or bare[0][0].net_name or f"net{net_id}"
+    if not dropped:
+        rw = f"{ripped[0][1]}.{ripped[0][0].pad_number}"
+        hint = (f"Hint: pad {rw} has no copper of {name} on the board now, "
+                f"but the input carried its escape: this run ripped it, so "
+                f"the fanout is not the cause.")
+        return _ret(hint, {'verdict': 'ripped_by_run', 'pad': rw,
+                           'component': ripped[0][1],
+                           'pads': [f"{r}.{p.pad_number}"
+                                    for p, r in ripped[:6]]})
+    bare = dropped
     pad, ref = bare[0]
     where = f"{ref}.{pad.pad_number}"
-    name = net_name or pad.net_name or f"net{net_id}"
     # A net with many pads is usually plane-destined, and telling its owner to
     # re-run the FANOUT is the wrong remedy: on a pre-plane board `zones` is
     # empty, so `entombed_bare_pads` cannot tell a dropped signal ball from a

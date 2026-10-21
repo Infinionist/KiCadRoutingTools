@@ -1716,8 +1716,9 @@ def route_single_ended_nets(
                         _c652 = condense_hint(_h652)
                         if _c652:
                             print(f"  {_c652}")
-                        record_net_event(state, net_id, "fanout_dropped",
-                                         _v652)
+                        if (_v652 or {}).get('verdict') == 'fanout_dropped':
+                            record_net_event(state, net_id, "fanout_dropped",
+                                             _v652)
                 except Exception:
                     pass
                 # A forced oracle link (#572) failed between its OWN

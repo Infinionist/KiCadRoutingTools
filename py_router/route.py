@@ -3542,7 +3542,16 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             refresh_net_obstacles(state.working_obstacles,
                                   state.net_obstacles_cache,
                                   pcb_data, config, [nid])
-            results.append(pruned)
+            # The pieces that are this run's own copper ride the write-list;
+            # input objects (a pre-existing net's custody registration) are
+            # already on the board this run writes, and re-emitting them made
+            # the #284 stale strip erase them (#1311) or take them off
+            # pcb_data while the file kept them (#1310).
+            from rip_up_reroute import restore_write_entry
+            _wentry = restore_write_entry(
+                pruned, original_segment_ids | original_via_ids)
+            if _wentry is not None:
+                results.append(_wentry)
             # #508 finding 8: register the restore as the net's AUTHORITATIVE
             # result, or the #87 superseded-result filter (`_authoritative`,
             # identity-keyed off routed_results) silently drops it from the

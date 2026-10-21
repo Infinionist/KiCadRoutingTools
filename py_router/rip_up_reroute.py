@@ -556,6 +556,38 @@ def _saved_route_colliders(saved_result: dict, pcb_data: PCBData,
     return hits
 
 
+def restore_write_entry(pruned: dict, input_ids) -> Optional[dict]:
+    """The write-list entry for a piece-level restore (#134's last resort),
+    given the ids of the copper this run was handed (`input_ids`).
+
+    A restored piece that is one of those INPUT objects is copper the run's
+    board already carries -- the input file on the CLI, the live board on the
+    GUI, the parent's write model in a nested sub-run -- so it rides no
+    write-list: on the board and not re-emitted, the stale strip leaves it
+    alone. Put on the write-list, each such piece was its own re-emitted twin,
+    which the #284 clause strips: in a nested in-memory sub-run that strip
+    reaches the parent as a removal (plane_write_reconcile.
+    consume_inner_strips), which deleted the restored copper from the board,
+    the write-list and the file at once (#1311: glasgow /IO_Banks/Z9_N, its
+    escape restored "10 segment(s) + 2 via(s)", shipped with none).
+
+    Returns `pruned` when every piece is this run's own copper, None when
+    every piece is input copper, else an entry carrying the run's pieces that
+    `extends` `pruned` (route.py's #87 filter keeps it while `pruned` is the
+    net's result)."""
+    segs = list(pruned.get('new_segments') or [])
+    vias = list(pruned.get('new_vias') or [])
+    own_s = [s for s in segs if id(s) not in input_ids]
+    own_v = [v for v in vias if id(v) not in input_ids]
+    if len(own_s) == len(segs) and len(own_v) == len(vias):
+        return pruned
+    if not (own_s or own_v):
+        return None
+    return {'net_name': pruned.get('net_name'), 'net_id': pruned.get('net_id'),
+            'new_segments': own_s, 'new_vias': own_v,
+            'iterations': pruned.get('iterations', 0), 'extends': pruned}
+
+
 def partition_force_restores(force_ripped, pcb_data: PCBData,
                              clearance: float, skip_net_ids=None,
                              config: Optional[GridRouteConfig] = None):
