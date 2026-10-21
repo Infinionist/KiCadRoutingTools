@@ -1137,6 +1137,13 @@ end-jog is validated against the full obstacle map (foreign pads + tracks +
 vias): a jog that would extend into a foreign obstacle is dropped, leaving an
 on-grid stub end the router can launch from (issue #149).
 
+A pad or footprint clearance override above `--clearance` is honoured. The
+underpad and dog-bone escapes keep their tracks and vias that far from the
+part's own balls and from immovable foreign pads, as `qfn_fanout` and the
+router's obstacle map do. imx6ulz's U1 declares 0.12 over a 0.1 run, and its
+dog-bone escapes used to slide to 0.115 from neighbouring balls (#1317). An
+override below `--clearance` leaves `--clearance` in force here.
+
 ### Example
 
 ```bash
