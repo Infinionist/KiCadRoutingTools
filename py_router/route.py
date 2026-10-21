@@ -821,7 +821,8 @@ def _ship_via_protection962(pcb_data, output_file, return_results, results_data,
     return record
 
 
-def _strip_written_copper(output_file, segments, vias, name_of):
+def _strip_written_copper(output_file, segments, vias, name_of,
+                          match_width=False):
     """Delete `segments` and `vias` from the written file, in place. Returns
     the (segments, vias) counts actually deleted, which the caller reports.
 
@@ -842,7 +843,8 @@ def _strip_written_copper(output_file, segments, vias, name_of):
     n_s = n_v = 0
     if segments:
         content, n_s = remove_segments_from_content(content, segments,
-                                                    net_id_to_name=nmap)
+                                                    net_id_to_name=nmap,
+                                                    match_width=match_width)
     if vias:
         content, n_v = remove_vias_from_content(content, vias,
                                                 net_id_to_name=nmap)
@@ -1213,6 +1215,117 @@ def _late_dangling_via_sweep1166(pcb_data, output_file, return_results,
         print(f"  (end-of-run dangling-via sweep skipped: "
               f"{type(_e).__name__}: {_e})")
         return 0, 0
+
+
+def _late_stacked_dedup162(pcb_data, output_file, return_results, results_data,
+                           write_model, input_signature, scope_names,
+                           keep_input_copper):
+    """#162: remove exact same-net duplicate segments from the board this run
+    SHIPS, after every pass that lays copper.
+
+    KiCad never flags a same-net stack, and nothing else removes one: the
+    strict collapse skips zoned nets, the write-list via dedup is vias-only,
+    and the stacked-copper census (summary['stacked_copper']) reads the board
+    before the plane finalize, whose pad repair lays them -- two pads tapped
+    into one reused via share the run into it, and each tap laid its own copy
+    (One-Air-Max's route step: 38 groups on GND/PGND B.Cu, 54 surplus copies,
+    shipped and re-shipped by every later step; most are a 0.127 mm tap copy
+    under the 0.3 mm power-width track). A duplicate carries no copper its
+    keeper does not: same net, layer and span (check_weird's ~1 um quantum),
+    the keeper the widest copy. So the removal changes no connectivity and no
+    clearance.
+
+    Same plumbing and scope as _late_strict_collapse1063 (the written file on
+    the CLI, the write model on the GUI; the run's nets plus every net whose
+    copper it changed). The file strip matches width too, so it takes the copy
+    meant to go. A group with an immutable (locked / sense-held) member is
+    left alone, and --keep-input-copper makes input copper read-only. Returns
+    the number of segments removed.
+    """
+    import copy as _copy
+    from collections import Counter, defaultdict
+    from improvement_gate import copper_signature, copper_item_key
+    from kicad_parser import is_immutable_copper
+    try:
+        rd = None
+        if return_results:
+            rd = results_data if results_data is not None else {}
+            board = _copy.copy(pcb_data)
+            segs_by_net, _vb = write_model(rd)
+            board.segments = [x for _l in segs_by_net.values() for x in _l]
+            board.vias = [x for _l in _vb.values() for x in _l]
+        elif output_file and os.path.isfile(output_file):
+            from kicad_parser import parse_kicad_pcb as _pk162
+            board = _pk162(output_file)
+        else:
+            return 0
+        name_of = {nid: n.name for nid, n in board.nets.items()}
+        final_sig = copper_signature(board.segments, board.vias, name_of.get)
+        changed = {n for n in set(final_sig) | set(input_signature or {})
+                   if final_sig.get(n) != (input_signature or {}).get(n)}
+        names = set(scope_names) | changed
+        left = {n: Counter(c) for n, c in (input_signature or {}).items()}
+        is_input = set()
+        for s in board.segments:
+            c = left.get(name_of.get(s.net_id))
+            k = copper_item_key(s)
+            if c and c[k] > 0:
+                c[k] -= 1
+                is_input.add(id(s))
+        groups = defaultdict(list)
+        for s in board.segments:
+            if not s.net_id or getattr(s, 'graphic', False) \
+                    or name_of.get(s.net_id) not in names:
+                continue
+            a = (round(s.start_x, 3), round(s.start_y, 3))
+            b = (round(s.end_x, 3), round(s.end_y, 3))
+            groups[(s.net_id, s.layer, min(a, b), max(a, b))].append(s)
+        removed, nets = [], set()
+        for (nid, _l, _a, _b), members in groups.items():
+            # Nothing immutable: the file strip matches a block by span,
+            # layer, net and width -- never lock -- so it could take a locked
+            # block for an unlocked copy of the same width.
+            if len(members) < 2 \
+                    or any(is_immutable_copper(s) for s in members):
+                continue
+            keeper = max(members, key=lambda s: (round(s.width, 4),
+                                                 id(s) in is_input))
+            for s in members:
+                if s is keeper or (keep_input_copper and id(s) in is_input):
+                    continue
+                removed.append(s)
+                nets.add(nid)
+        if not removed:
+            return 0
+        if return_results:
+            gone = {id(x) for x in removed}
+            for r in rd.get('results') or []:
+                if r.get('new_segments'):
+                    r['new_segments'] = [x for x in r['new_segments']
+                                         if id(x) not in gone]
+            if rd.get('all_swap_segments'):
+                rd['all_swap_segments'] = [x for x in rd['all_swap_segments']
+                                           if id(x) not in gone]
+            rd.setdefault('segments_to_remove', []).extend(
+                x for x in removed if id(x) in is_input)
+            pcb_data.segments = [x for x in pcb_data.segments
+                                 if id(x) not in gone]
+            bump_copper_epoch(pcb_data)
+            n_s = len(removed)
+        else:
+            n_s, _nv = _strip_written_copper(output_file, removed, [], name_of,
+                                             match_width=True)
+            if n_s != len(removed):
+                print(f"  WARNING: stacked-copper dedup (#162): chose "
+                      f"{len(removed)} segment(s), found {n_s} in the written "
+                      f"file")
+        print(f"  Stacked copper (#162, end of run): removed {n_s} duplicate "
+              f"segment(s) on {len(nets)} net(s)")
+        return n_s
+    except Exception as _e:                                     # noqa: BLE001
+        print(f"  (end-of-run stacked-copper dedup skipped: "
+              f"{type(_e).__name__}: {_e})")
+        return 0
 
 
 def _late_orphan_sweep659(pcb_data, output_file, return_results, results_data,
@@ -7518,6 +7631,14 @@ def batch_route(input_file: str, output_file: str, net_names: List[str],
             keep_input_copper)
         # #1166: after the collapse, which can itself free a via.
         _late_dangling_via_sweep1166(
+            pcb_data, output_file, return_results, locals().get('results_data'),
+            _gui_write_model, _input_sig1069,
+            {pcb_data.nets[_n].name for _n in sweep_scope_ids
+             if _n in pcb_data.nets},
+            keep_input_copper)
+        # #162: exact same-net duplicates, which none of the above removes
+        # on a zoned net and the finalize's pad repair lays.
+        _late_stacked_dedup162(
             pcb_data, output_file, return_results, locals().get('results_data'),
             _gui_write_model, _input_sig1069,
             {pcb_data.nets[_n].name for _n in sweep_scope_ids

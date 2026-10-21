@@ -1571,7 +1571,8 @@ def assert_balanced_sexpr(text: str, label: str = 'board'):
 
 def remove_segments_from_content(content: str, segments: List,
                                  net_id_to_name: Dict = None,
-                                 unmatched_out: List = None) -> Tuple[str, int]:
+                                 unmatched_out: List = None,
+                                 match_width: bool = False) -> Tuple[str, int]:
     """Delete whole ``(segment ...)`` blocks matching the given segments.
 
     Used by the dead-end sweep (issue #84) to strip original input-file copper
@@ -1585,6 +1586,11 @@ def remove_segments_from_content(content: str, segments: List,
     (``kicad_parser.board_uses_name_nets``), whatever its version stamp: a
     ``(net "name")`` block matches a target only through the map, so a
     pre-KiCad-10 file with name refs matched nothing without it (#1312).
+
+    ``match_width`` adds the track width to the key, for a caller removing
+    some members of a same-span stack whose widths differ (#162): without it
+    the counted match takes the FIRST block of the span, which may be the
+    wider one meant to stay.
 
     Returns ``(modified_content, count_removed)``.
     """
@@ -1604,8 +1610,9 @@ def remove_segments_from_content(content: str, segments: List,
     def _canon(nid):
         return net_id_to_name.get(nid, nid) if net_id_to_name else nid
 
-    def seg_key(p1, p2, layer, net_token):
-        return (frozenset((p1, p2)), layer, net_token)
+    def seg_key(p1, p2, layer, net_token, width=None):
+        return (frozenset((p1, p2)), layer, net_token,
+                round(width, 4) if match_width and width is not None else None)
 
     # COUNTED multiset, not a set (#318 follow-up): a board can legitimately
     # carry N identical-span segments with only K < N of them strip-listed
@@ -1616,7 +1623,8 @@ def remove_segments_from_content(content: str, segments: List,
     by_key = {}
     for s in segments:
         k = seg_key(pos_key(s.start_x, s.start_y),
-                    pos_key(s.end_x, s.end_y), s.layer, _canon(s.net_id))
+                    pos_key(s.end_x, s.end_y), s.layer, _canon(s.net_id),
+                    s.width)
         targets[k] += 1
         by_key.setdefault(k, []).append(s)
 
@@ -1627,6 +1635,7 @@ def remove_segments_from_content(content: str, segments: List,
     layer_re = re.compile(r'\(layer\s+"?([^")]+)"?\)|\(layers\s+"([^"]+\.Cu)"')
     net_name_re = re.compile(r'\(net\s+"((?:[^"\\]|\\.)*)"\)')
     net_id_re = re.compile(r'\(net\s+(\d+)\)')
+    width_re = re.compile(r'\(width\s+([\d.]+)\)')
 
     # Scan top-level (segment ...) blocks with a quote-aware paren matcher. A
     # plain nested-paren regex breaks on KiCad v10 auto-net names that contain
@@ -1675,9 +1684,11 @@ def remove_segments_from_content(content: str, segments: List,
             else:
                 mi = net_id_re.search(block)
                 net_token = _canon(int(mi.group(1))) if mi else None
+            mw = width_re.search(block) if match_width else None
             key = seg_key(pos_key(float(ms.group(1)), float(ms.group(2))),
                           pos_key(float(me.group(1)), float(me.group(2))),
-                          ml.group(1) or ml.group(2), net_token)
+                          ml.group(1) or ml.group(2), net_token,
+                          float(mw.group(1)) if mw else None)
             if targets.get(key, 0) > 0:
                 targets[key] -= 1
                 keep = False

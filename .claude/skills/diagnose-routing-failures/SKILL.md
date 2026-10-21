@@ -29,6 +29,9 @@ Key fields:
   and the pre-rip copper could not be fully put back).
 - `stacked_copper`: same-net duplicate copper KiCad's DRC will never flag. Not a
   routing failure, but if present, say so — it is invisible to every other check.
+  It is censused before the plane finalize; route.py's end-of-run dedup (#162)
+  then removes exact same-span copies, so read `check_weird` on the output for
+  what shipped.
 - `failed_multipoint`: nets with unconnected pads, including pad coordinates
 - `blockers`: per still-failed net, the run's LAST frontier blocking analysis
   (#409): `{net, stage, blocked_by: [{net, blocked_count, unique_cells,
