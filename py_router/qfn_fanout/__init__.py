@@ -1143,6 +1143,7 @@ def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
         configs = configs[:1]
 
     tracks, vias, dropped = [], [], []
+    dropped_pads = []        # (pad number, net name): `dropped` names nets only
     placed_global = []
     by_side = defaultdict(list)
     for pi in pad_infos:
@@ -1171,6 +1172,7 @@ def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
             pos = best.get(idx)
             if pos is None:
                 dropped.append(pi.pad.net_name)
+                dropped_pads.append((pi.pad.pad_number, pi.pad.net_name))
                 continue
             vx, vy = pos
             px, py = pi.pad.global_x, pi.pad.global_y
@@ -1260,6 +1262,7 @@ def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
                                              t['end'][1] - t['start'][1])
                                   for t in tracks), default=0.0), 4),
         'allow_via_in_pad': bool(allow_via_in_pad),
+        'dropped_pads': list(dropped_pads),
     })
     if offcentre_n:
         # Disclosed separately, not folded into the line above: these are the
@@ -1734,6 +1737,7 @@ def generate_qfn_fanout(footprint: Footprint,
                                         board_edge_clearance=board_edge_clearance,
                                         progress_callback=progress_callback)
         res = _drop_run(clearance)
+        res_pads = list(LAST_UNDERPAD_REPORT.get('dropped_pads', ()))
         # #1328: the underpad escape escalates as the surface stub does. Its
         # vias are placed greedily per side against each other, so a dropped
         # pad cannot be retried alone: the whole part is re-run down
@@ -1760,13 +1764,16 @@ def generate_qfn_fanout(footprint: Footprint,
                 import clearance_ledger
                 rungs = escalation_rungs(len(pcb_data.board_info.copper_layers or ()) or 2)
                 nominal = rungs[0]['clearance'] if rungs else None
-                rescued = [n for n in res[2] if n not in best[2]]
-                by_name = {p.net_name: p for p in footprint.pads if p.net_name}
-                for name in rescued:
-                    pad = by_name.get(name)
+                # By PAD, not net name: a two-pad net that escapes one of
+                # its pads at the rung is still in the dropped names.
+                from collections import Counter
+                rescued = list((Counter(res_pads) - Counter(
+                    LAST_UNDERPAD_REPORT.get('dropped_pads', ()))).elements())
+                by_pad = {(p.pad_number, p.net_name): p for p in footprint.pads}
+                for num, name in rescued:
+                    pad = by_pad.get((num, name))
                     LAST_ESCALATED.append({'net': name,
-                                           'pad': f"{footprint.reference}."
-                                                  f"{pad.pad_number if pad else '?'}",
+                                           'pad': f"{footprint.reference}.{num}",
                                            'clearance': round(best_cl, 4)})
                     note_narrowing(pad.net_id if pad else None, 'clearance', clearance,
                                    best_cl, 'qfn underpad escape', net_name=name)
