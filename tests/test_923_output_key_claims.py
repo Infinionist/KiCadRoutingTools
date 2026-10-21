@@ -113,6 +113,11 @@ UNRESOLVED_OK = {
     'power_widths.<net>.under_mm': (
         "route.py's JSON_SUMMARY key, not a board_score document",
         'py_router/route.py', "summary['power_widths']"),
+    # #1339: pcb-free-agent cites the re-grade's exact-fill nets in a
+    # paragraph that ends on `board_score`.
+    'regrade.exact_open': (
+        "route.py's JSON_REGRADE / --json-out key, not a board_score document",
+        'py_router/route.py', "record['exact_open']"),
 }
 
 FAILURES = []
