@@ -824,7 +824,9 @@ def diff_pair_coupling(pcb_data: PCBData, p_net_id: int, n_net_id: int,
                        gap_min: Optional[float] = None,
                        gap_max: Optional[float] = None,
                        epsilon: float = KICAD_DRC_EPSILON_MM,
-                       index: Optional['CopperIndex'] = None) -> Dict:
+                       index: Optional['CopperIndex'] = None,
+                       p_tracks=None, n_tracks=None,
+                       obstruction: bool = True) -> Dict:
     """How much of a diff pair's TRACK copper is coupled, as KiCad's DRC
     decides it (drc_test_provider_diff_pair_coupling.cpp, KiCad 10.0.0), in mm.
 
@@ -851,6 +853,10 @@ def diff_pair_coupling(pcb_data: PCBData, p_net_id: int, n_net_id: int,
     diff_pair_gap constraint (KiCad's), route_diff the gap the pair was routed
     at. With no window every parallel facing span with nothing between counts,
     as KiCad counts it under a rule that sets no gap.
+
+    `p_tracks` / `n_tracks` measure copper that is not on the board yet (a
+    candidate route); `obstruction=False` skips the "anything between" test,
+    which needs the board (`pcb_data` may then be None).
     """
     from kicad_seg import (iu, intersects, common_parallel_projection,
                            nearest_points, norm, sq_len)
@@ -859,7 +865,11 @@ def diff_pair_coupling(pcb_data: PCBData, p_net_id: int, n_net_id: int,
         return [s for s in pcb_data.segments
                 if s.net_id == nid and not getattr(s, 'graphic', False)]
 
-    p_tracks, n_tracks = _tracks(p_net_id), _tracks(n_net_id)
+    if p_tracks is None:
+        p_tracks = _tracks(p_net_id)
+    if n_tracks is None:
+        n_tracks = _tracks(n_net_id)
+    p_tracks, n_tracks = list(p_tracks), list(n_tracks)
 
     def _pts(s):
         return (iu(s.start_x), iu(s.start_y)), (iu(s.end_x), iu(s.end_y))
@@ -901,12 +911,14 @@ def diff_pair_coupling(pcb_data: PCBData, p_net_id: int, n_net_id: int,
                 continue
             if hi is not None and gap > hi + eps:
                 continue
-            if index is None:
-                index = CopperIndex(pcb_data)
-            ends = [(q[0] / 1e6, q[1] / 1e6) for q in (da, db, ca, cb)]
-            chk = ((near_n[0] / 1e6, near_n[1] / 1e6), (near_p[0] / 1e6, near_p[1] / 1e6))
-            if _coupling_blocked(index, sp.layer, chk, ends, sp, sn):
-                continue
+            if obstruction:
+                if index is None:
+                    index = CopperIndex(pcb_data)
+                ends = [(q[0] / 1e6, q[1] / 1e6) for q in (da, db, ca, cb)]
+                chk = ((near_n[0] / 1e6, near_n[1] / 1e6),
+                       (near_p[0] / 1e6, near_p[1] / 1e6))
+                if _coupling_blocked(index, sp.layer, chk, ends, sp, sn):
+                    continue
             length = norm(db[0] - da[0], db[1] - da[1])
             coupled += length
             by_layer[sp.layer] = by_layer.get(sp.layer, 0) + length

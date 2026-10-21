@@ -581,6 +581,19 @@ from the terminal escapes (`_route_direct_coupled_middle`):
    (boxed by the adjacent `USB_DET` stub, ~0.225 mm away) 1/1 with no hand-placed
    vias — issue #197.
 
+4. **Seam re-ask (#444), never at the cost of coupling (#1303).** Each net's
+   assembled copper (escape → middle → escape) is re-asked as ONE whole-connection
+   A* against its partner's copper, and the pair of replacements is taken when
+   it scores better: length + 2 per via + 3 per mm of leg copper farther than
+   1 mm from the partner + **3 per mm of uncoupled length** at up to 1.5x the
+   routed gap (`seam_coupling`, KiCad's coupling measure). A candidate that
+   loses more than one pitch of the coupled run it started from is rejected
+   outright (`#444 seam re-ask rejected: it loses the coupled middle (8.7 ->
+   0.2mm coupled)`): the re-ask dissolves seams, it does not trade the coupled
+   middle for length. On imx6ulz DQS0 it used to swap the middle for P on
+   In2.Cu and N on B.Cu (0 mm coupled) on length alone. The chain re-ask of a
+   multipoint leg (`seam_reask_chain_leg`) carries the same term and gate.
+
 The result is a fully-connected, DRC-clean pair: coupled where it matters (the
 parallel run) and single-ended only on the last millimetre at each terminal,
 where coupling buys nothing and flexibility is everything.
