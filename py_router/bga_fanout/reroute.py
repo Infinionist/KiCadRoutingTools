@@ -102,6 +102,14 @@ def _seg_hits_pad(x1, y1, x2, y2, pad, samples=16, margin: float = 0.0) -> bool:
     hx = pad.size_x / 2.0 + margin + eps
     hy = pad.size_y / 2.0 + margin + eps
     px, py = pad.global_x, pad.global_y
+    # Every sample lies on the segment and a hit lies within hypot(hx, hy) of
+    # the pad centre in any frame, so a pad whose reach misses the segment's
+    # box cannot be hit: the same answer without the samples. The pad-aware
+    # checks call this for every pad on the board per route segment.
+    reach = math.hypot(hx, hy)
+    if (px + reach < min(x1, x2) or px - reach > max(x1, x2)
+            or py + reach < min(y1, y2) or py - reach > max(y1, y2)):
+        return False
     rr = getattr(pad, 'rect_rotation', 0.0)
     if rr:
         rad = math.radians(rr)

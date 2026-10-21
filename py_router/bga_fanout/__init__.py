@@ -3815,6 +3815,21 @@ def _generate_bga_fanout_core(footprint: Footprint,
         for p in fp.pads
         if p.drill > 0 or any(l in copper_layer_set for l in (p.layers or []))
     ]
+    # The BGA's OWN balls are pads too. The channel geometry keeps a stub off
+    # every ball, but the reroute helpers build theirs freely: a jogged or
+    # alternate-channel stub runs at 45 degrees from its ball to a channel up
+    # to 1.5 pitches away, straight across the diagonal neighbour (daisho U1:
+    # a V1P2 stub through the centre of NC ball N8, shipped and graded as a
+    # pad-segment short). Every RAW-SHORT check therefore reads them -- the
+    # collision resolver's candidates, the pad-aware trigger and its repairs.
+    # The per-route checks skip pads on the route's own net, so a stub still
+    # starts on its own ball. The clearance-margin escape trim keeps the
+    # foreign list: on a fine pitch a channel track sits within clearance of
+    # its own package's balls by design, which is not a short.
+    short_pads = foreign_pads + [
+        p for p in footprint.pads
+        if p.drill > 0 or any(l in copper_layer_set for l in (p.layers or []))
+    ]
 
     # Build routes - process differential pairs together
     def _run_pass(force_secondary_pairs):
@@ -4005,7 +4020,7 @@ def _generate_bga_fanout_core(footprint: Footprint,
             net_id_to_name = {r.net_id: r.pad.net_name for r in routes if r.pad.net_name}
             reassigned, failed_nets = resolve_collisions(routes, tracks, layers, track_width, clearance, diff_pair_gap,
                                             existing_tracks, grid, channels, exit_margin, net_id_to_name, no_inner_top_layer,
-                                            obstacles, obstacle_cfg, obstacle_layer_map, foreign_pads)
+                                            obstacles, obstacle_cfg, obstacle_layer_map, short_pads)
 
             if failed_nets:
                 print(f"\n  ERROR: Failed to route {len(failed_nets)} net(s):")
@@ -4124,7 +4139,7 @@ def _generate_bga_fanout_core(footprint: Footprint,
     # machinery as collision resolution.
     failed_nets = list(failed_nets)
     n_bad = sum(1 for r in best_routes
-                if not route_clear_of_foreign_pads(r, foreign_pads, obstacle_layer_map))
+                if not route_clear_of_foreign_pads(r, short_pads, obstacle_layer_map))
     if n_bad > 0:
         print(f"  Pad-aware check: {n_bad} route(s) cross a foreign pad; repairing...")
         existing_tracks = convert_segments_to_tracks(pcb_data) if check_for_previous else []
@@ -4132,7 +4147,7 @@ def _generate_bga_fanout_core(footprint: Footprint,
         pad_repaired, pad_failed = repair_pad_crossings(
             best_routes, tracks, layers, track_width, clearance, diff_pair_gap,
             existing_tracks, grid, channels, exit_margin, net_id_to_name_all,
-            no_inner_top_layer, obstacles, obstacle_cfg, obstacle_layer_map, foreign_pads)
+            no_inner_top_layer, obstacles, obstacle_cfg, obstacle_layer_map, short_pads)
         if pad_repaired:
             print(f"  Pad-aware: repaired {pad_repaired} route(s)")
         if pad_failed:
