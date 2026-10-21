@@ -78,7 +78,9 @@ class APlacedReferenceWithASharedOrigin(unittest.TestCase):
 
     def test_both_limits_are_derived(self):
         decaps = self.doc.get('decaps') or {}
-        self.assertEqual(decaps.get('max_distance_mm'), 1.0925, decaps)
+        # 1.3073 since #1351: a passive part owns no decap, so the cap that
+        # was 1.09 mm from it is measured to its chip (owners 7 -> 6)
+        self.assertEqual(decaps.get('max_distance_mm'), 1.3073, decaps)
         # U5 pin 6; connector J3's +3V3 pin (6.713) owns no decap, so it is
         # not one of the reference's supply pins
         self.assertEqual(decaps.get('max_pin_distance_mm'), 5.904, decaps)
@@ -108,7 +110,7 @@ class APlacedReferenceWithASharedOrigin(unittest.TestCase):
                        os.path.join(ROOT, 'py_tools', 'check_floorplan.py'),
                        RP, '--emit-intent', out, '--decaps-from', RP],
                       accept=True)
-            self.assertIn('decaps: max_distance_mm 1.0925', r.stdout)
+            self.assertIn('decaps: max_distance_mm 1.3073', r.stdout)
             self.assertIn('J2, U3 share an origin', r.stdout)
             self.assertNotIn('WITHHELD', r.stdout)
         finally:
@@ -146,7 +148,7 @@ class TheAutoArm(unittest.TestCase):
     def test_auto_derives_off_the_placed_board(self):
         doc = _emit(RP, derive_decaps='auto')
         self.assertEqual((doc.get('decaps') or {}).get('max_distance_mm'),
-                         1.0925, doc.get('decaps'))
+                         1.3073, doc.get('decaps'))
         self.assertNotIn('auto_withheld', doc['context']['decap_census'])
 
     def test_auto_still_withholds_on_run29s_heap(self):
