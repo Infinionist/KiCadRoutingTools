@@ -3202,12 +3202,31 @@ hunt for.
    fully-unrouted multi-pad net, the board is NOT done — handle each (route or
    pour it) and re-verify before summarizing. Do not present an unrouted net as
    an accepted shortfall.
-4c. **Deliver a filled copy (#910), last.** The routed board carries zone
+4c. **Grade the silkscreen.** No grader on the DONE path reads silk
+   (`kicad_drc_compare` drops the silk classes by design), so read KiCad's
+   own (it can take minutes on a silk-heavy board, #333):
+   ```bash
+   kicad-cli pcb drc board_final.kicad_pcb --severity-all --format json -o /tmp/silk_drc.json
+   python3 -c "import json,collections;v=json.load(open('/tmp/silk_drc.json'))['violations'];print(dict(collections.Counter(x['type'] for x in v if x['type'].startswith('silk'))) or 'no silk violations')"
+   ```
+   Report each silk class in the summary. The tidy is
+   `python3 -X utf8 py_placer/beautify_labels.py board_final.kicad_pcb board_labels.kicad_pcb`:
+   it moves reference labels clear of pads, holes, the edge and each other,
+   silkscreen only (copper passes through byte for byte, siblings copied).
+   It does not see drawn silk, a part's own outline included, so it can
+   trade one overlap for another. Measured: one routed board went from 4
+   KiCad silk errors to 0, and another board from 54 to 76 (labels moved
+   onto footprint outlines). So grade `board_labels.kicad_pcb` the same
+   way and keep it as the final board only when its silk count is lower. It
+   moves the designer's labels, too: on a placement the user made, offer it
+   rather than run it.
+4d. **Deliver a filled copy (#910), last.** The routed board carries zone
    OUTLINES with no fill: KiCad shows the planes empty until they are refilled
    (press B), and plain `kicad-cli pcb drc` without `--refill-zones` reports
    plane-net opens that are not real (`docs/utilities.md` measures 12 on one
    in-repo board). `check_connected` and `check_complete` refill on their
-   own, so they never see this. From the verified final board:
+   own, so they never see this. From the verified final board (the labelled
+   copy, when 4c kept it):
    ```bash
    python3 -X utf8 py_tools/fill_for_delivery.py board_final.kicad_pcb -o board_delivered.kicad_pcb
    ```
