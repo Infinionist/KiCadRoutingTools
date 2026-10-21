@@ -423,8 +423,10 @@ become strictly more buildable.
 So, when grading a placement:
 
 - **Lead with the routed outcome** — `board_score`'s `blocking`
-  (`unrouted + broken` first, then the rest), with `quality` (vias,
-  copper_mm, segments) as the tie-break once `blocking` is 0.
+  (`unrouted + broken` first, then the rest), then `joins_needed` (the joins
+  the open nets still need: a missing 17-pad rail is 16, one stranded pad 1,
+  where `blocking` counts each as one net), with `quality` (vias, copper_mm,
+  segments) as the tie-break after that.
 - **Keep `recovery` as a DIAGNOSTIC, never the score.** It is how you catch a
   run that wandered — `collateral_pad_rms` rising (run 10: 0.000 → 3.670 mm)
   means parts nothing had damaged were moved, which is a real defect. But a
