@@ -1931,6 +1931,13 @@ def oracle_reconnect(board_file: str, net_names, config,
     # carry either away. A field-for-field copy, so a board with no map
     # routes exactly as before.
     config = replace(config)
+    # The caller's drill-to-drill floor is the hole_to_hole_clearance argument
+    # (every caller passes its run's); the configs the callers build carry the
+    # dataclass's 0.20, and the oracle's #649b stitching via and its rescue
+    # escalation (net_rescue reads config.hole_to_hole_clearance) priced holes
+    # at that instead.
+    if hole_to_hole_clearance and hole_to_hole_clearance > 0:
+        config.hole_to_hole_clearance = hole_to_hole_clearance
     # The board's copper-to-HOLE floor (#617/#1038), resolved once from the
     # REAL project. Every NPTH check of this leg -- the link maps' track and
     # via keep-outs (build_base_obstacles), the width upgrade, #1169's leg
