@@ -1247,6 +1247,18 @@ class DifferentialTab(wx.Panel):
         if skipped_bad_fanout:
             msg += (f"Skipped: {len(skipped_bad_fanout)} "
                     f"(fanout stubs self-overlap - fix the fanout first)\n")
+        # #1303: routed, but the copper placed on the board is not coupled
+        # (the engine measured it; the CLI prints the same "Not coupled" line).
+        uncoupled_pairs = results_data.get('uncoupled_diff_pairs', [])
+        if uncoupled_pairs:
+            msg += (f"Not coupled: {len(uncoupled_pairs)} "
+                    f"(routed, but no coupled run on the board - not counted "
+                    f"as routed, not protected): {', '.join(uncoupled_pairs)}\n")
+        _intra_bad = [r['pair'] for r in results_data.get('intra_pair_matching', [])
+                      if r.get('status') not in ('matched', 'within-tolerance', 'skipped')]
+        if _intra_bad:
+            msg += (f"Intra-pair skew NOT matched on the board: "
+                    f"{', '.join(_intra_bad)}\n")
         msg += f"Time: {total_time:.1f}s\n\n"
         msg += f"Added to board:\n"
         msg += f"  {tracks_added} segments\n"

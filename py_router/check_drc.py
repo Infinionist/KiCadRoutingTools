@@ -2908,6 +2908,7 @@ def _length_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet):
     from list_nets import net_class_memberships
     from net_queries import net_match_length
     names = {nid: n.name for nid, n in pcb_data.nets.items() if nid and n.name}
+    board_names = set(names.values())
     member = net_class_memberships(path, names)
     graded, unmeasured, undecided = 0, [], {}
     for nid, name in sorted(names.items(), key=lambda kv: kv[1]):
@@ -2915,7 +2916,8 @@ def _length_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet):
             continue
         if len(pcb_data.pads_by_net.get(nid) or ()) < 2:
             continue
-        rule, blocker = binding_length_rule(rules, name, member.get(nid))
+        rule, blocker = binding_length_rule(rules, name, member.get(nid),
+                                            board_names)
         if blocker is not None:
             undecided.setdefault(blocker.name, (blocker.unsupported, []))[1].append(name)
             continue
@@ -2958,6 +2960,176 @@ def _length_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet):
                  + (' ...' if len(unmeasured) > 6 else '') if unmeasured else ''))
         for rname, (why, nets) in undecided.items():
             print(f"  NOT GRADED: rule '{rname}' ({why}) -- {len(nets)} net(s) "
+                  f"it may bind are not graded here; KiCad still grades them")
+        for n in notes:
+            print(f"  .kicad_dru: {n}")
+    return summary
+
+
+def _pair_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet):
+    """Grade every `.kicad_dru` skew and diff_pair_uncoupled rule (#1303).
+
+    The diff-pair half of #1313's length channel
+    (`kicad_dru.read_board_length_rules(kinds=...)`), measured as KiCad's DRC
+    measures it:
+
+      skew                  KiCad's skew_out_of_range. The nets a rule binds
+                            form one group (KiCad groups by rule); each net is
+                            graded by how much shorter it is than the
+                            group's longest, both measured as
+                            `net_match_length(mode 'total')`. With
+                            `(within_diff_pairs)` every pair (KiCad's
+                            MatchDpSuffix complement) is its own group.
+      diff_pair_uncoupled   KiCad's diff_pair_uncoupled_length_too_long. For
+                            every pair KiCad recognises, max(P, N track
+                            length) - coupled length
+                            (`net_queries.diff_pair_coupling`), with the gap
+                            window KiCad applies to the pair (its binding
+                            diff_pair_gap, `design_rules.DesignRules`).
+
+    As in the length pass, a member whose pads are not joined by track copper
+    is reported "not measured" (its group or pair is not graded; connectivity
+    already counts it), and a rule whose scope is not modelled is listed NOT
+    GRADED with its reason. Returns the summary, or None when the board
+    declares neither kind.
+    """
+    path = pcb_file or getattr(pcb_data, 'source_path', '') or ''
+    from kicad_dru import (read_board_length_rules, binding_length_rule,
+                           coupled_net_pairs)
+    rules, notes = read_board_length_rules(path, kinds=('skew', 'diff_pair_uncoupled'))
+    if not rules:
+        if notes and not quiet:
+            for n in notes:
+                print(f"  .kicad_dru: {n}")
+        return None
+    from list_nets import net_class_memberships
+    from net_queries import (net_match_length, net_pads_joined,
+                             diff_pair_coupling, CopperIndex)
+    names = {nid: n.name for nid, n in pcb_data.nets.items() if nid and n.name}
+    board_names = set(names.values())
+    member = net_class_memberships(path, names)
+    pads_by = getattr(pcb_data, 'pads_by_net', None) or {}
+
+    def in_scope(nid):
+        return matching_net_ids is None or nid in matching_net_ids
+
+    undecided: Dict[str, tuple] = {}
+    unmeasured: List[str] = []
+    n_skew = n_unc = 0
+
+    # ---- skew ----------------------------------------------------------
+    skew_rules = [r for r in rules if r.kind == 'skew']
+    groups: Dict[int, tuple] = {}
+    for nid, name in sorted(names.items(), key=lambda kv: kv[1]):
+        if not skew_rules or len(pads_by.get(nid) or ()) < 2:
+            continue
+        rule, blocker = binding_length_rule(skew_rules, name, member.get(nid), board_names)
+        if blocker is not None:
+            undecided.setdefault(blocker.name, (blocker.unsupported, []))[1].append(name)
+            continue
+        if rule is None or (rule.min_mm is None and rule.max_mm is None):
+            continue
+        groups.setdefault(id(rule), (rule, []))[1].append(nid)
+    for rule, nids in groups.values():
+        if rule.within_diff_pairs:
+            sets = coupled_net_pairs({i: names[i] for i in nids})
+        else:
+            sets = [tuple(nids)] if len(nids) >= 2 else []
+        for members in sets:
+            if not any(in_scope(m) for m in members):
+                continue
+            lens = {m: net_match_length(pcb_data, m, 'total') for m in members}
+            if any(v is None for v in lens.values()):
+                unmeasured.append(' / '.join(names[m] for m in members))
+                continue
+            n_skew += 1
+            top = max(members, key=lambda m: (lens[m], names[m]))
+            for m in members:
+                if not in_scope(m):
+                    continue
+                skew = lens[top] - lens[m]
+                bound = limit = None
+                if rule.max_mm is not None and skew > rule.max_mm + 1e-6:
+                    bound, limit = 'max', rule.max_mm
+                elif rule.min_mm is not None and skew < rule.min_mm - 1e-6:
+                    bound, limit = 'min', rule.min_mm
+                if bound:
+                    violations.append({
+                        'type': 'skew-out-of-range', 'net1': names[m],
+                        'net2': names[top], 'rule': rule.name,
+                        'severity': rule.severity,
+                        'within_diff_pairs': rule.within_diff_pairs,
+                        'skew_mm': round(skew, 4), 'length_mm': round(lens[m], 4),
+                        'target_mm': round(lens[top], 4), 'bound': bound,
+                        'limit_mm': limit, 'min_mm': rule.min_mm,
+                        'max_mm': rule.max_mm})
+
+    # ---- diff_pair_uncoupled ------------------------------------------
+    unc_rules = [r for r in rules if r.kind == 'diff_pair_uncoupled']
+    index = dr = None
+    for p, n in (coupled_net_pairs(names) if unc_rules else ()):
+        if not (in_scope(p) or in_scope(n)):
+            continue
+        rp, bp = binding_length_rule(unc_rules, names[p], member.get(p), board_names)
+        rn, bn = binding_length_rule(unc_rules, names[n], member.get(n), board_names)
+        blocker = bp or bn
+        if blocker is not None:
+            undecided.setdefault(blocker.name, (blocker.unsupported, []))[1].append(
+                f"{names[p]} / {names[n]}")
+            continue
+        if rp is None and rn is None:
+            continue
+        if rp is not rn:
+            undecided.setdefault(f"{(rp or rn).name}", (
+                "binds only one member of the pair (KiCad then grades that "
+                "member's copper alone)", []))[1].append(f"{names[p]} / {names[n]}")
+            continue
+        if rp.max_mm is None or rp.max_mm < 0:
+            continue
+        if len(pads_by.get(p) or ()) < 2 or len(pads_by.get(n) or ()) < 2:
+            continue
+        if not (net_pads_joined(pcb_data, p) and net_pads_joined(pcb_data, n)):
+            unmeasured.append(f"{names[p]} / {names[n]}")
+            continue
+        if dr is None:
+            from design_rules import DesignRules
+            dr = DesignRules.from_project(pcb_data, path)
+            index = CopperIndex(pcb_data)
+        gap = dr.resolve('diff_pair_gap', dr.item_for_net(p, 'track'))
+        gmin = gap.kicad_min if gap.kicad_min is not None else gap.min
+        meas = diff_pair_coupling(pcb_data, p, n, gmin, gap.max, index=index)
+        n_unc += 1
+        if meas['uncoupled_mm'] > rp.max_mm + 1e-6:
+            violations.append({
+                'type': 'diff-pair-uncoupled', 'net1': names[p], 'net2': names[n],
+                'rule': rp.name, 'severity': rp.severity,
+                'uncoupled_mm': round(meas['uncoupled_mm'], 4),
+                'coupled_mm': round(meas['coupled_mm'], 4),
+                'length_p_mm': round(meas['length_p_mm'], 4),
+                'length_n_mm': round(meas['length_n_mm'], 4),
+                'limit_mm': rp.max_mm,
+                'gap_window': [gmin, gap.max]})
+
+    summary = {'rules': len(rules),
+               'skew_graded': n_skew,
+               'skew_out_of_range': sum(1 for v in violations
+                                        if v['type'] == 'skew-out-of-range'),
+               'uncoupled_graded': n_unc,
+               'uncoupled_over': sum(1 for v in violations
+                                     if v['type'] == 'diff-pair-uncoupled'),
+               'unmeasured': unmeasured,
+               'not_graded': {k: {'reason': r, 'nets': nn}
+                              for k, (r, nn) in undecided.items()}}
+    if not quiet:
+        print(f"Diff-pair rules (.kicad_dru, #1303): {len(rules)} rule(s); skew: "
+              f"{n_skew} group(s)/pair(s) graded, {summary['skew_out_of_range']} "
+              f"net(s) out of range; uncoupled: {n_unc} pair(s) graded, "
+              f"{summary['uncoupled_over']} over"
+              + (f"; {len(unmeasured)} not measured (pads not joined by track "
+                 f"copper): {', '.join(unmeasured[:4])}"
+                 + (' ...' if len(unmeasured) > 4 else '') if unmeasured else ''))
+        for rname, (why, nn) in undecided.items():
+            print(f"  NOT GRADED: rule '{rname}' ({why}) -- {len(nn)} net(s)/pair(s) "
                   f"it may bind are not graded here; KiCad still grades them")
         for n in notes:
             print(f"  .kicad_dru: {n}")
@@ -5490,6 +5662,7 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
     _via_in_paste_pass(pcb_data, matching_via_nets, _baseline_pd, violations,
                        _accepted_edge, quiet)
     _length_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet)
+    _pair_rule_pass(pcb_file, pcb_data, matching_net_ids, violations, quiet)
 
     # #1306: ONE footprint's own pads, graded as KiCad grades them. A contact
     # between two of its pads on different nets is a `pad-pad` violation
@@ -5781,6 +5954,22 @@ def run_drc(pcb_file: str, clearance: float = 0.1, net_patterns: Optional[List[s
                               + ("" if v.get('format_can_declare', True) else
                                  "  [this file format cannot declare it per via: "
                                  "state Type VII on the fab drawing, or move the via]"))
+                    elif vtype == 'skew-out-of-range':
+                        print(f"  {v['net1']}: {v['skew_mm']:.4f}mm shorter than "
+                              f"{v['net2']} ({v['length_mm']:.4f} vs "
+                              f"{v['target_mm']:.4f}mm), {v['bound']} "
+                              f"{v['limit_mm']:.4f}mm")
+                        print(f"    .kicad_dru rule '{v['rule']}'"
+                              + (" (within_diff_pairs)" if v.get('within_diff_pairs') else '')
+                              + " (KiCad: skew_out_of_range)")
+                    elif vtype == 'diff-pair-uncoupled':
+                        print(f"  {v['net1']} / {v['net2']}: uncoupled "
+                              f"{v['uncoupled_mm']:.4f}mm > max {v['limit_mm']:.4f}mm "
+                              f"(coupled {v['coupled_mm']:.4f}mm of "
+                              f"{max(v['length_p_mm'], v['length_n_mm']):.4f}mm)")
+                        print(f"    .kicad_dru rule '{v['rule']}', gap window "
+                              f"{v['gap_window']} (KiCad: "
+                              f"diff_pair_uncoupled_length_too_long)")
                     elif vtype == 'length-out-of-range':
                         print(f"  {v['net1']}: length {v['length_mm']:.4f}mm "
                               f"{'<' if v['bound'] == 'min' else '>'} {v['bound']} "

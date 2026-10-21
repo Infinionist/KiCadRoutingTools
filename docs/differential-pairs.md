@@ -596,6 +596,19 @@ from the terminal escapes (`_route_direct_coupled_middle`):
    (boxed by the adjacent `USB_DET` stub, ~0.225 mm away) 1/1 with no hand-placed
    vias — issue #197.
 
+4. **Seam re-ask (#444), never at the cost of coupling (#1303).** Each net's
+   assembled copper (escape → middle → escape) is re-asked as ONE whole-connection
+   A* against its partner's copper, and the pair of replacements is taken when
+   it scores better: length + 2 per via + 3 per mm of leg copper farther than
+   1 mm from the partner + **3 per mm of uncoupled length** at up to 1.5x the
+   routed gap (`seam_coupling`, KiCad's coupling measure). A candidate that
+   loses more than one pitch of the coupled run it started from is rejected
+   outright (`#444 seam re-ask rejected: it loses the coupled middle (8.7 ->
+   0.2mm coupled)`): the re-ask dissolves seams, it does not trade the coupled
+   middle for length. On imx6ulz DQS0 it used to swap the middle for P on
+   In2.Cu and N on B.Cu (0 mm coupled) on length alone. The chain re-ask of a
+   multipoint leg (`seam_reask_chain_leg`) carries the same term and gate.
+
 The result is a fully-connected, DRC-clean pair: coupled where it matters (the
 parallel run) and single-ended only on the last millimetre at each terminal,
 where coupling buys nothing and flexibility is everything.
@@ -614,7 +627,8 @@ pair worse.
 
 **How it is reported (#766).** A hybrid-routed pair is genuinely routed — its pads
 connect and its copper is DRC-clean — so it keeps its place in `routed_diff_pairs`
-and in `successful`. But its **terminal legs are point-to-point single-ended
+and in `successful`, as long as the copper it ships still carries its coupled
+middle (#1303, [below](#how-a-pair-is-graded-the-copper-it-ships-1303)). But its **terminal legs are point-to-point single-ended
 copper**, which is not what `outcome: "coupled"` claims ("both members routed
 coupled"), and the terminals are exactly where P/N geometry breaks and intra-pair
 skew is born. The pair report therefore discloses it rather than reclassifying it:
@@ -630,6 +644,56 @@ signal that the pair's terminals want a coupled fanout (see `bga_fanout.py
 Deliberately *not* demoted to `partial`: a partial pair's terminals are peeled to a
 downstream single-ended pass, whereas a hybrid's are already routed, so demoting
 would drop it out of the routed column and imply follow-up work that does not exist.
+
+## How a Pair Is Graded: the Copper It Ships (#1303)
+
+A pair's outcome used to come from its routing RESULT: both members had a
+coupled-route result, so the pair was `coupled`. On imx6ulz that reported DQS0
+`coupled` -- "coupled middle on F.Cu" -- while the copper written put P on In2.Cu
+and N on B.Cu: **0 mm coupled, 4.5 mm of P/N skew** (the #444 seam re-ask had
+swapped the coupled middle for two single-ended routes). Every claim is now read
+off the board the run ships (`pcb_data` after the post-route cleanup, which the
+`KICAD_BOARD_LEDGER=1` audit holds equal to the written file), engine-side, so
+the GUI diff tab gets the same answer:
+
+- **The measure** (`net_queries.diff_pair_coupling` / `diff_pair_skew`, see
+  [the API](api-net-analysis.md)) is KiCad's: coupled length as KiCad 10's
+  diff-pair coupling DRC computes it, in its integer geometry, and P/N skew as
+  its skew DRC does. Both matched kicad-cli 10.0.0 to 0.1 µm.
+- **Coupled** means the pair's copper carries at least one pitch (track width +
+  gap) of coupled run at a gap no wider than 1.5x the gap the pair was routed at
+  (`diff_pair_custody.measure_pair_copper`). The router lays its coupled run AT
+  the gap (a 45° run lands ~12 µm wider after grid snapping); its via approach
+  tracks and a hybrid's single-ended legs sit 3-6x apart and do not count. The
+  floor is one pitch, not a fraction: a hybrid's coupled middle can be 1.4 mm of
+  a 3 mm pair and is still the coupled route, while two legs that only pass each
+  other at a corner leave 2 µm to 0.15 mm.
+- **Every claimed pair carries its record** as `pair_reports[].copper`:
+  `coupled_mm`, `uncoupled_mm`, `length_p_mm` / `length_n_mm`, `layers_p` /
+  `layers_n`, `skew_mm`, the gap window and `coupled`.
+- **A pair routed but not coupled** is outcome `uncoupled`, listed in
+  `JSON_SUMMARY.uncoupled_diff_pairs` (and the GUI's completion dialog), and is
+  **not** counted in `routed_diff_pairs` / `successful`. The end-of-run summary
+  names it with what does ship:
+
+  ```
+  Not coupled:   1 pair(s) routed whose shipped copper is not coupled (#1303; not credited as routed, not protected): /DRAM/DRAM_DQS0 (0.000mm coupled of 21.081mm; P on F.Cu/In2.Cu, N on B.Cu/F.Cu; skew 4.510mm)
+  ```
+
+  A `partial` pair with no coupled copper is flagged `no_coupled_trunk` and
+  moves to `partial_diff_pairs`, as before.
+- **#521 protection follows the copper**: a pair whose copper is not coupled is
+  not recorded in `kicad_routing_tools.protected_nets` -- it is two single-ended
+  routes a later step can redo, so freezing it would only take rip room away.
+- **The intra-pair status** (`--diff-pair-intra-match`) is re-read off the
+  shipped copper too; see [Intra-Pair P/N Length Matching](#intra-pair-pn-length-matching).
+
+Graders see the same numbers: `check_drc.py` grades a board's `.kicad_dru`
+`skew` and `diff_pair_uncoupled` rules (check 17 in
+[utilities](utilities.md#checks-performed)), and `board_score.py`'s `diff_pairs`
+component measures every pair KiCad recognises and counts those rule rows. With
+no such rule the component is UNGRADED, as KiCad grades no pair without one; its
+console line still names the largest skews and any pair with no coupled copper.
 
 ## Debug Visualization
 
@@ -721,10 +785,37 @@ Use `--diff-pair-intra-match` to match P and N track lengths within each differe
 - Different via positions
 
 When enabled:
-1. After routing and inter-pair length matching, the router calculates P and N lengths for each pair
+1. After routing and inter-pair length matching, the router measures P and N
+   **on the board's copper** (#1303, `net_queries.net_signal_length`): the
+   pad-to-pad copper path of a 2-pad member, the copper of a larger one with
+   every dead-end branch trimmed, plus pad-to-die -- what the post-route cleanup
+   will leave of it. The routing result alone is not that copper: a hybrid
+   escape or seam re-ask returns no stub lengths, and on imx6ulz DQS0 the result
+   read P 12.00 < N 13.08 while the board had P 21.31 > N 16.82. A member whose
+   pads are not joined yet falls back to the result's own sums (segments plus
+   recorded stub lengths), as before
 2. If the difference exceeds `--length-match-tolerance` (default 0.1mm), meanders are added to the shorter track
 3. The meanders are placed with clearance checking against the other track of the pair
-4. For polarity-swapped pairs, stub lengths are correctly recalculated using post-swap assignments (P gets P_source + N_target stubs, N gets N_source + P_target stubs)
+4. For polarity-swapped pairs, stub lengths are correctly recalculated using post-swap assignments (P gets P_source + N_target stubs, N gets N_source + P_target stubs) -- in the fallback; the board copper already carries the swap
+5. A multipoint pair's meander lands in the **leg** that held the copper it
+   replaced (`length_matching._splice_into_legs`), as group matching's does: the
+   writer emits the per-leg dicts, so a meander written only to the merged
+   bookkeeping dict shipped beside the leg's original straight run, which
+   shorted the bump out (imx6ulz CLK0; `KICAD_BOARD_LEDGER=1` reported the net
+   diverged)
+6. **The verdict is read off the shipped copper** (#1303). The board the matcher
+   measures (step 1) is the one BEFORE the post-route cleanup, so what ships can
+   still differ by what the cleanup trims or collapses (imx6ulz CLK0: the matcher
+   reached 0.001 mm, the board shipped 0.214 mm).
+   Once the board is final, `length_matching.regrade_intra_pair_reports` sets each
+   `intra_pair_matching` record's `delta_mm` to the shipped skew (KiCad's
+   measure, `net_queries.diff_pair_skew`) and its `status` from it: `matched` /
+   `within-tolerance` inside `--length-match-tolerance`, `unmatched` over it
+   (`reason` keeps the matcher's own, or `copper-skew-over-tolerance` when the
+   matcher believed it matched, or `not-measured` when a member's pads are not
+   joined). `matcher_status` / `matcher_delta_mm` keep what the matcher reported;
+   `delta_before_mm` stays the matcher's estimate. The `Intra-pair (shipped
+   copper)` console line prints the regraded verdict
 
 ```bash
 # Enable intra-pair matching

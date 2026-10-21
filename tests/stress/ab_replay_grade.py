@@ -205,6 +205,10 @@ def _diff_pair_stats(log_text):
         # kept its stale "coupled" -- the member-audit demotion route_diff had
         # already made was invisible to the very metric this computes.
         for p in d.get("partial_diff_pairs", []):      status[p] = "partial"
+        # #1303: routed, but the shipped copper is not coupled. Its own
+        # status: absent from routed_diff_pairs, it would otherwise drop out
+        # of the total altogether.
+        for p in d.get("uncoupled_diff_pairs", []):    status[p] = "uncoupled"
         # Pairs the audit found with disconnected member pads, in ANY bucket.
         for p in d.get("member_incomplete_pairs", []): incomplete.add(p)
         for p in d.get("routed_diff_pairs", []):
@@ -217,6 +221,7 @@ def _diff_pair_stats(log_text):
             "diff_pairs_single_ended": sum(1 for v in status.values() if v == "single_ended"),
             "diff_pairs_failed": sum(1 for v in status.values() if v == "failed"),
             "diff_pairs_partial": sum(1 for v in status.values() if v == "partial"),
+            "diff_pairs_uncoupled": sum(1 for v in status.values() if v == "uncoupled"),
             # Gate on this for "member pads actually connected" -- it is the
             # audit's verdict, not an inference from the coupled count.
             "diff_pairs_member_incomplete": len(incomplete),

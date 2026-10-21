@@ -360,6 +360,64 @@ print(f"{net_copper_length(pcb, nid):.2f} mm of copper, "
 # -> fanout stubs only: the net is not routed, so it has no length to match.
 ```
 
+### Differential-pair copper: coupling and skew (#1303)
+
+```python
+diff_pair_coupling(pcb_data, p_net_id, n_net_id, gap_min=None, gap_max=None,
+                   epsilon=KICAD_DRC_EPSILON_MM, index=None) -> dict
+diff_pair_skew(pcb_data, p_net_id, n_net_id, tolerance=0.02) -> dict
+diff_pair_copper(pcb_data, p_net_id, n_net_id, gap_min=None, gap_max=None,
+                 index=None) -> dict        # both, rounded to 0.1 um
+CopperIndex(pcb_data)                       # build once per board state
+```
+
+What a pair's copper delivers, measured as KiCad's DRC measures it. Coupling
+is KiCad 10.0.0's diff-pair coupling test (`drc_test_provider_diff_pair_
+coupling.cpp`) in KiCad's own integer geometry (`kicad_seg.py`): for every P
+track and every N track on one layer whose lines are parallel (they do not
+meet inside the int32 coordinate range -- a few nm off parallel still counts),
+the parts facing each other are a candidate; its gap is their distance minus
+the two half widths; it counts when nothing else lies on the one line KiCad
+checks between P and N (a track or via touching the span's ends, or a pad a
+parent track leaves, does not block) and, given a window, the gap is in
+`[gap_min - 0.5 um, gap_max + 0.5 um]`. Returns `coupled_mm`, `length_p_mm` /
+`length_n_mm` (tracks only, as KiCad's test sums them), `uncoupled_mm` (=
+`max(P, N) - coupled`, KiCad's `diff_pair_uncoupled` actual), `coupled_by_layer`,
+`layers_p` / `layers_n`, and `arc_chords` (tracks parsed from `(arc ...)`, which
+the parser linearises -- nonzero means the figures are approximate).
+`diff_pair_skew` is each member's `net_match_length(mode='total')` and their
+difference, `None` while a member's pads are not joined. On a routed imx6ulz
+board and a ten-case fixture both matched kicad-cli 10.0.0's actuals to 0.1 um.
+
+```python
+net_signal_length(pcb_data, net_id, tolerance=0.02) -> Optional[float]
+```
+
+What a net's copper will measure once the post-route cleanup has trimmed it,
+read off a board that still carries the trimmings (#1303): the pad-to-pad path
+of a 2-pad net (`pin_pair_path_length`; a loop collapses to it), the copper of
+a larger net with every dead-end branch trimmed, plus every pad's pad-to-die;
+`None` while the pads are not joined. Intra-pair matching measures its two legs
+with it.
+
+The gap window is the caller's: `check_drc` and `board_score` pass the pair's
+binding `diff_pair_gap` (`design_rules.DesignRules`), as KiCad does;
+route_diff passes the gap it routed the pair at, up to 1.5x
+(`diff_pair_custody.measure_pair_copper`), because with no maximum KiCad also
+counts single-ended legs that happen to run parallel at 3-6x the gap.
+
+```python
+from kicad_parser import parse_kicad_pcb
+from net_queries import diff_pair_copper
+
+pcb = parse_kicad_pcb('kicad_files/rp2350_fpga_eensy_prePlane.kicad_pcb')
+ids = {n.name: i for i, n in pcb.nets.items()}
+r = diff_pair_copper(pcb, ids['/RP2354A/USB_D+'], ids['/RP2354A/USB_D-'])
+print(f"coupled {r['coupled_mm']} mm, uncoupled {r['uncoupled_mm']} mm, "
+      f"skew {r['skew_mm']} mm")
+# coupled 1.8 mm, uncoupled 0.7294 mm, skew 0.0366 mm
+```
+
 ### Ground domains
 
 ```python

@@ -605,8 +605,11 @@ Use the printed flags as-is:
   width from the stackup and clamps it to the floor, so the target impedance is
   **maintained** while the geometry stays as small as it can. **When a pair fails
   or falls back** — `route_diff.py`'s `JSON_SUMMARY` lists it in `failed_diff_pairs`,
-  `single_ended_diff_pairs` or `partial_diff_pairs` (coupled, but the member audit
-  found member pads left open), or DRC shows an intra-pair / via-via graze — re-run
+  `single_ended_diff_pairs`, `partial_diff_pairs` (coupled, but the member audit
+  found member pads left open) or `uncoupled_diff_pairs` (#1303: routed, but the
+  copper it ships is not coupled -- members on separate layers; route_diff reads
+  this off the board, not off its own result, and does not protect such a pair, so
+  a retry may rip it), or DRC shows an intra-pair / via-via graze — re-run
   the failing pairs with **smaller track width, smaller gap, AND smaller vias**
   (`--via-size`/`--via-drill` toward the fab via floor). A tighter track+gap fits a
   narrower channel, and smaller vias fit a tight pad pitch (measured: lumenpnp
@@ -2424,7 +2427,12 @@ issue #116). Use the same copper-layer list you passed to `bga_fanout.py`; drop
 Key options:
 - `--diff-pair-gap 0.1` - Gap between P and N traces (mm)
 - `--no-gnd-vias` - Disable automatic GND via placement near signal vias
-- `--diff-pair-intra-match` - Match P/N lengths within each pair
+- `--diff-pair-intra-match` - Match P/N lengths within each pair. Its verdict
+  (`intra_pair_matching[].status`) is read off the shipped copper (#1303), so a
+  `matched` means the board's P/N skew is inside `--length-match-tolerance`.
+  Where the pair has a hard skew budget, declare it as a `.kicad_dru`
+  `(constraint skew (max ..) (within_diff_pairs))` rule: check_drc and
+  board_score grade it, as KiCad does
 - `--swappable-nets "*rx*"` - Allow target swap optimization for memory lanes
 
 ### QFN/QFP Components (Perimeter Pads)

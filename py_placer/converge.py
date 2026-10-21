@@ -84,7 +84,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: from board_score.py's own source and fails when a new one has no home here.
 LENS_COMPONENTS = {
     'connectivity': ('unrouted', 'broken'),
-    'drc': ('drc', 'undersized'),
+    # diff_pairs: the .kicad_dru pair-rule rows #1303 split out of `drc`
+    'drc': ('drc', 'undersized', 'diff_pairs'),
     'spec': ('impedance', 'floorplan', 'length', 'net_widths'),
     'intent': ('floorplan',),
 }

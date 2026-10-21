@@ -225,6 +225,17 @@ def protection_candidates(routed_results, pcb_data, pairs=None):
     return out
 
 
+def coupled_protection_pairs(pairs, pair_copper):
+    """#1303: the pairs #521 may protect -- every pair of the run except one
+    whose shipped copper `diff_pair_custody.measure_pair_copper` found NOT
+    coupled. That pair's copper is two single-ended routes, which a later
+    step can redo, so freezing it only takes rip room away; imx6ulz DQS0
+    (P on In2.Cu, N on B.Cu) was recorded protected before this."""
+    bad = {name for name, rec in (pair_copper or {}).items()
+           if not rec.get('coupled')}
+    return [(name, pair) for name, pair in pairs if name not in bad]
+
+
 def diff_cleanup_scope(pairs, routed_results, single_ended_nets, member_connected):
     """The net ids route_diff's post-route cleanup (dead-end sweep and the rest)
     may touch: the members of every pair routed in this run, except copper a
@@ -1794,22 +1805,8 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         intra_pair_reports = run_intra_pair_matching(
             diff_pair_ids_to_route, routed_results, config, pcb_data,
             skip_p_net_ids=xnet_member_p_net_ids)
-        # 'skipped' pairs are matched end-to-end by the AC-couple pass, so they
-        # belong in neither column -- counting them either way misreports.
-        _isk = [r for r in intra_pair_reports if r['status'] == 'skipped']
-        _im = [r for r in intra_pair_reports
-               if r['status'] in ('matched', 'within-tolerance')]
-        _iu = [r for r in intra_pair_reports
-               if r['status'] not in ('matched', 'within-tolerance', 'skipped')]
-        print(f"\n  Intra-pair: {len(_im)}/{len(_im) + len(_iu)} pair(s) within "
-              f"{config.length_match_tolerance}mm"
-              + (f" ({len(_isk)} matched end-to-end by the AC-coupled pass)"
-                 if _isk else ""))
-        if _iu:
-            print(f"  {RED}Intra-pair NOT matched: " + ", ".join(
-                f"{r['pair']} ({r['reason'] or r['status']}"
-                + (f", delta={r['delta_mm']:.3f}mm" if r['delta_mm'] is not None else "")
-                + ")" for r in _iu) + RESET)
+        # The verdict line is printed once the board is final and each
+        # status has been re-read off the shipped copper (#1303, below).
 
     # Apply end-to-end AC-coupled (XNet) length matching if configured (#196).
     # Runs AFTER group + intra-pair matching; for its member pairs it supersedes
@@ -1839,16 +1836,8 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
                            original_via_ids=(original_via_ids
                                              | {id(v) for v in all_swap_vias}))
 
-    # #521: coupled pair copper is an invariant later chain steps cannot
-    # reproduce (P/N geometry, gap, polarity) -- mark routed members protected
-    # so downstream rip steps skip them. Engine-side: the GUI diff tab and the
-    # AI-plan executor inherit the noting; the writeback next to the DRC-floor
-    # persistence records it in the sibling .kicad_pro.
-    from protected_nets import note_protection_candidates
-    _prot = protection_candidates(routed_results, pcb_data,
-                                  pairs=diff_pair_ids_to_route)
-    if _prot:
-        note_protection_candidates(_prot)
+    # #521's protection noting moved below the copper measure (#1303): a pair
+    # is protected only when the copper it ships is coupled.
 
     # ----- Post-route cleanup (#215): the ONE shared pipeline ---------------
     # Same passes, ordering and strip plumbing as route.py's single-ended
@@ -1886,9 +1875,20 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     # pad connectivity on the final copper (post-sync, post-cleanup) - known
     # cases exist of one member silently incomplete. Feeds the per-pair reports.
     member_audit = audit_pair_members(pcb_data, diff_pair_ids_to_route)
+    # #1303: what every claimed pair's WRITTEN copper delivers -- coupled
+    # length at the gap it was routed at, and KiCad's P/N skew. The outcome,
+    # the routed column, the #521 protection and the intra-pair status below
+    # are all decided from it, not from the routing result.
+    from diff_pair_custody import measure_pair_copper
+    _geom1303 = getattr(state, 'pair_diff_geom', None) or {}
+    pair_copper = measure_pair_copper(
+        pcb_data, diff_pair_ids_to_route, routed_results,
+        lambda _pr: _geom1303.get(_pr.p_net_id,
+                                  (config.track_width, config.diff_pair_gap)))
     pair_reports = build_pair_reports(state, diff_pair_ids_to_route,
                                       member_audit,
-                                      skipped_fanout=skipped_fanout_info)
+                                      skipped_fanout=skipped_fanout_info,
+                                      pair_copper=pair_copper)
     _audit_mismatches = [r for r in pair_reports if r['member_audit_mismatch']]
     for _r in _audit_mismatches:
         # The pair CLAIMED 'coupled'; build_pair_reports has already demoted
@@ -1910,6 +1910,10 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     failed_diff_pairs = []
     single_ended_diff_pairs = []
     partial_diff_pairs = []
+    # #1303: both members routed, the shipped copper not coupled.
+    uncoupled_diff_pairs = []
+    _uncoupled_by_copper = {r['pair'] for r in pair_reports
+                            if r.get('outcome') == 'uncoupled'}
     # #514 (-> #261): the MEMBER AUDIT already knows when a "routed" pair left
     # member pads disconnected, but the summary lists ignored it -- so
     # JSON_SUMMARY said successful while check_connected showed 0% members
@@ -1929,6 +1933,8 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
             # routed diff pair.
             if pair_name in _partial_by_audit:
                 partial_diff_pairs.append(pair_name)
+            elif pair_name in _uncoupled_by_copper:
+                uncoupled_diff_pairs.append(pair_name)
             else:
                 routed_diff_pairs.append(pair_name)
         elif (pair.p_net_id in state.diff_pair_single_ended_nets
@@ -1949,6 +1955,52 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
     # member audit sitting next to them.
     if partial_diff_pairs:
         successful = max(0, successful - len(partial_diff_pairs))
+    # #1303: same for a pair whose shipped copper is not coupled.
+    if uncoupled_diff_pairs:
+        successful = max(0, successful - len(uncoupled_diff_pairs))
+
+    # #521, decided on the copper (#1303): coupled pair copper is an invariant
+    # later chain steps cannot reproduce (P/N geometry, gap, polarity), so its
+    # members are recorded protected and downstream rip steps skip them. A
+    # pair whose shipped copper is NOT coupled has nothing a later step could
+    # not redo, so it is left rippable. Engine-side: the GUI diff tab and the
+    # AI-plan executor inherit the noting; the writeback next to the DRC-floor
+    # persistence records it in the sibling .kicad_pro.
+    from protected_nets import note_protection_candidates
+    _prot = protection_candidates(
+        routed_results, pcb_data,
+        pairs=coupled_protection_pairs(diff_pair_ids_to_route, pair_copper))
+    if _prot:
+        note_protection_candidates(_prot)
+
+    # #1303: the intra-pair status from the shipped copper. The matcher
+    # measured its own result dict (segments + stub estimates), which after a
+    # seam re-ask is not the copper that ships: imx6ulz DQS0 read P 12.00 <
+    # N 13.08 there, was meandered on P, and shipped P 21.33 > N 16.82.
+    if intra_pair_reports:
+        from length_matching import regrade_intra_pair_reports
+        regrade_intra_pair_reports(intra_pair_reports, pair_copper, pcb_data,
+                                   diff_pair_ids_to_route,
+                                   config.length_match_tolerance)
+        # 'skipped' pairs are matched end-to-end by the AC-couple pass, so they
+        # belong in neither column -- counting them either way misreports.
+        _isk = [r for r in intra_pair_reports if r['status'] == 'skipped']
+        _im = [r for r in intra_pair_reports
+               if r['status'] in ('matched', 'within-tolerance')]
+        _iu = [r for r in intra_pair_reports
+               if r['status'] not in ('matched', 'within-tolerance', 'skipped')]
+        print(f"\n  Intra-pair (shipped copper, #1303): {len(_im)}/{len(_im) + len(_iu)} "
+              f"pair(s) within {config.length_match_tolerance}mm"
+              + (f" ({len(_isk)} matched end-to-end by the AC-coupled pass)"
+                 if _isk else ""))
+        if _iu:
+            print(f"  {RED}Intra-pair NOT matched: " + ", ".join(
+                f"{r['pair']} ({r['reason'] or r['status']}"
+                + (f", skew={r['delta_mm']:.3f}mm" if r['delta_mm'] is not None else "")
+                + (f"; the matcher read {r['matcher_delta_mm']:.3f}mm"
+                   if r.get('matcher_status') in ('matched', 'within-tolerance')
+                   and r.get('matcher_delta_mm') is not None else "")
+                + ")" for r in _iu) + RESET)
 
     # Count total vias from results
     total_vias = sum(len(r.get('new_vias', [])) for r in results)
@@ -1965,6 +2017,21 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         print(f"  {RED}Partial:       {len(partial_diff_pairs)} pair(s) whose coupled "
               f"route left member pads disconnected (see MEMBER AUDIT): "
               f"{', '.join(sorted(partial_diff_pairs))}{RESET}")
+    if uncoupled_diff_pairs:
+        # #1303: both members routed, but no coupled run ships. Named with
+        # what the copper does carry, because 'routed' alone hides it.
+        def _uc(name):
+            c = pair_copper.get(name) or {}
+            sk = c.get('skew_mm')
+            return (f"{name} ({c.get('coupled_mm', 0):.3f}mm coupled of "
+                    f"{max(c.get('length_p_mm', 0), c.get('length_n_mm', 0)):.3f}mm; "
+                    f"P on {'/'.join(c.get('layers_p') or ['-'])}, "
+                    f"N on {'/'.join(c.get('layers_n') or ['-'])}"
+                    + (f"; skew {sk:.3f}mm" if sk is not None else '') + ")")
+        print(f"  {RED}Not coupled:   {len(uncoupled_diff_pairs)} pair(s) routed whose "
+              f"shipped copper is not coupled (#1303; not credited as routed, not "
+              f"protected): {'; '.join(_uc(n) for n in sorted(uncoupled_diff_pairs))}"
+              f" — JSON_SUMMARY.uncoupled_diff_pairs{RESET}")
     if _member_incomplete:
         # Counted separately from the buckets above: a by-design 'partial'
         # pair is still in routed_diff_pairs (its trunk IS coupled), so the
@@ -2030,6 +2097,9 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
         # coupled count (which by design still includes a partial pair whose
         # trunk is coupled and whose peeled terminals close later).
         'member_incomplete_pairs': _member_incomplete,
+        # #1303: routed, but the shipped copper is not coupled (pair_reports[]
+        # outcome 'uncoupled', its `copper` record says what does ship).
+        'uncoupled_diff_pairs': sorted(uncoupled_diff_pairs),
         'single_ended_diff_pairs': single_ended_diff_pairs,
         'ripup_success_pairs': sorted(ripup_success_pairs),
         'rerouted_pairs': sorted(rerouted_pairs),
@@ -2150,6 +2220,12 @@ def batch_route_diff_pairs(input_file: str, output_file: str, net_names: List[st
             # failed" result looks like nothing happened.
             'single_ended_diff_pairs': single_ended_diff_pairs,
             'skipped_bad_fanout': sorted(skipped_bad_fanout),
+            # #1303: same data as JSON_SUMMARY['uncoupled_diff_pairs'] --
+            # routed, but the copper shipped is not coupled.
+            'uncoupled_diff_pairs': sorted(uncoupled_diff_pairs),
+            # #1303: the intra-pair status, re-read off the shipped copper
+            # (JSON_SUMMARY['intra_pair_matching']); [] without the flag.
+            'intra_pair_matching': intra_pair_reports,
             # Per-pair diagnostics + casualty custody tally (additive), same
             # data as the CLI JSON_SUMMARY keys of the same names.
             'pair_reports': pair_reports,

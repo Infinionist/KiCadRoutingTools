@@ -3564,12 +3564,20 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
                         return None
                     return _rs, _rv
 
+                # #1303: the coupling term and the coupling gate
+                # (`seam_coupling`).
+                _pitch1303 = config.track_width + config.diff_pair_gap
+
+                def _coupling(_segs):
+                    return seam_coupling(_segs, p_net_id, n_net_id, config)
+
                 def _joint_score(_segs, _vias):
                     _pl = [s for s in _segs if s.net_id == p_net_id]
                     _nl = [s for s in _segs if s.net_id == n_net_id]
                     _len = sum(math.hypot(s.end_x - s.start_x, s.end_y - s.start_y)
                                for s in _segs)
-                    return _len + 2.0 * len(_vias) + 3.0 * _split_len(_pl, _nl)
+                    return (_len + 2.0 * len(_vias) + 3.0 * _split_len(_pl, _nl)
+                            + 3.0 * _coupling(_segs)[1])
 
                 # JOINT re-ask: each net re-asked in turn, the second against
                 # the first's NEW copper -- then the pair result is accepted or
@@ -3578,9 +3586,11 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
                 # "decoupled" until BOTH nets move into it); a raw-length
                 # accept undoes the coupling. Both orders are tried.
                 _base_score = _joint_score(all_segs, all_vias)
+                _base_coupled = _coupling(all_segs)[0]
                 _other_v = [v for v in all_vias
                             if v.net_id not in (p_net_id, n_net_id)]
                 _best_joint = None
+                _lost1303 = None
                 for _first, _second in ((p_net_id, n_net_id), (n_net_id, p_net_id)):
                     _cur_s, _cur_v = list(all_segs), list(all_vias)
                     for _net in (_first, _second):
@@ -3602,9 +3612,21 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
                                                   _cur_s, _cur_v,
                                                   terminal_pads=terminal_pads):
                         continue
+                    # #1303: a re-ask exists to dissolve the seams of a
+                    # coupled pair, never to trade its coupled run for
+                    # length. One pitch of slack lets a dissolved seam move
+                    # where the coupled run starts or ends.
+                    _cc = _coupling(_cur_s)[0]
+                    if _cc < _base_coupled - _pitch1303:
+                        if _lost1303 is None or _cc > _lost1303:
+                            _lost1303 = _cc
+                        continue
                     _sc = _joint_score(_cur_s, _cur_v)
                     if _best_joint is None or _sc < _best_joint[0]:
                         _best_joint = (_sc, _cur_s, _cur_v)
+                if _lost1303 is not None and _best_joint is None:
+                    print(f"      #444 seam re-ask rejected: it loses the coupled "
+                          f"middle ({_base_coupled:.1f} -> {_lost1303:.1f}mm coupled)")
                 if _best_joint is not None and _best_joint[0] < _base_score - 0.2:
                     print(f"      #444 seam re-ask: joint whole-connection A* "
                           f"replaces composed pair (score {_base_score:.1f} -> "
@@ -4227,6 +4249,31 @@ def _route_hybrid_leg(pcb_data, net_id, config, obstacles, layer_names, coord,
             obstacles.remove_blocked_vias_batch(np.array(ring_cells, dtype=np.int32))
 
 
+def seam_coupling(segs, p_net_id, n_net_id, config):
+    """#1303: (coupled mm, uncoupled mm) of a seam re-ask candidate's copper.
+
+    Both #444 re-asks priced a candidate by length, vias and `_split_len` --
+    copper farther than 1 mm from its partner -- and nothing asked whether the
+    pair was still COUPLED: P and N side by side at the gap they were routed
+    at. On imx6ulz DQS0 the joint re-ask swapped the coupled middle for P on
+    In2.Cu and N on B.Cu (0 mm coupled) on length alone (score 185.0 ->
+    100.4). Coupled length here is KiCad's measure
+    (`net_queries.diff_pair_coupling`, no obstruction test: the candidate is
+    not on the board) at the window route_diff grades the shipped pair with
+    (`diff_pair_custody.COUPLED_GAP_FACTOR` x gap); uncoupled is
+    max(P, N track length) - coupled. Each re-ask adds 3 x uncoupled to its
+    score and rejects a candidate that loses more than one pitch of the
+    coupled run it started from."""
+    from net_queries import diff_pair_coupling
+    from diff_pair_custody import COUPLED_GAP_FACTOR
+    c = diff_pair_coupling(None, p_net_id, n_net_id, None,
+                           COUPLED_GAP_FACTOR * config.diff_pair_gap,
+                           p_tracks=[s for s in segs if s.net_id == p_net_id],
+                           n_tracks=[s for s in segs if s.net_id == n_net_id],
+                           obstruction=False)
+    return c['coupled_mm'], c['uncoupled_mm']
+
+
 def seam_reask_chain_leg(pcb_data, pair, config, leg_obstacles, layer_names,
                          leg_result):
     """#444 chain-completion seam re-ask for ONE committed chain leg.
@@ -4287,7 +4334,9 @@ def seam_reask_chain_leg(pcb_data, pair, config, leg_obstacles, layer_names,
         _nl = [s for s in segs if s.net_id == n_id]
         _len = sum(math.hypot(s.end_x - s.start_x, s.end_y - s.start_y)
                    for s in segs)
-        return _len + 2.0 * len(vias) + 3.0 * _split_len(_pl, _nl)
+        # #1303: + the coupling term (seam_coupling).
+        return (_len + 2.0 * len(vias) + 3.0 * _split_len(_pl, _nl)
+                + 3.0 * seam_coupling(segs, p_id, n_id, config)[1])
 
     def _reask(net, cur_segs, cur_vias):
         partner = n_id if net == p_id else p_id
@@ -4328,7 +4377,10 @@ def seam_reask_chain_leg(pcb_data, pair, config, leg_obstacles, layer_names,
     old_segs = list(leg_result.get('new_segments') or [])
     old_vias = list(leg_result.get('new_vias') or [])
     base = _score(old_segs, old_vias)
+    base_coupled = seam_coupling(old_segs, p_id, n_id, config)[0]
+    pitch = config.track_width + config.diff_pair_gap
     best = None
+    lost = None
     for first, second in ((p_id, n_id), (n_id, p_id)):
         cur_s, cur_v = list(old_segs), list(old_vias)
         moved = False
@@ -4348,9 +4400,17 @@ def seam_reask_chain_leg(pcb_data, pair, config, leg_obstacles, layer_names,
         if not _hybrid_route_connects(pcb_data, p_id, n_id, cur_s, cur_v,
                                       terminal_pads=_leg_pads):
             continue
+        # #1303: never trade the leg's coupled run for length.
+        cc = seam_coupling(cur_s, p_id, n_id, config)[0]
+        if cc < base_coupled - pitch:
+            lost = cc if lost is None else max(lost, cc)
+            continue
         sc = _score(cur_s, cur_v)
         if best is None or sc < best[0]:
             best = (sc, cur_s, cur_v)
+    if best is None and lost is not None:
+        print(f"      #444 chain seam re-ask rejected: it loses the coupled "
+              f"run ({base_coupled:.1f} -> {lost:.1f}mm coupled)")
     if best is None or best[0] >= base - 0.2:
         return False
     print(f"      #444 chain seam re-ask: leg replaced "
