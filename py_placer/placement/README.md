@@ -161,7 +161,7 @@ resistors, buttons). A decoupling cap belongs with the IC whose supply pin it
 decouples; a load or RC cap belongs with the part it loads. Do not send the
 power group to an edge: say `near` its power entry's group.
 
-**Crystals take care of themselves.** `check_floorplan --emit-intent` finds each
+**Crystals are claimed for you.** `check_floorplan --emit-intent` finds each
 passive crystal at its IC's oscillator pins and the load caps on the crystal's
 nets (`crystals.py`) and writes them into the intent as proximity claims
 (graded as warnings; `place_simple` derives the same rows itself when an intent

@@ -185,7 +185,7 @@ Write `wk/<run>/groups.json` (the format is in `py_placer/placement/grouping.py`
   with their resistors, buttons). Five to eight groups suit a small board.
 - **A cap belongs with the IC whose supply pin it decouples.** A load or RC
   cap belongs with its crystal or its button.
-- **Crystals take care of themselves.** `place_simple` claims each passive
+- **Crystals are claimed for you.** `place_simple` claims each passive
   crystal at its IC's oscillator pins (link by link through a series
   resistor on a leg) and its load caps at the crystal, and moves them all
   into the IC's group. The rest of their clock group follows
@@ -195,7 +195,9 @@ Write `wk/<run>/groups.json` (the format is in `py_placer/placement/grouping.py`
   crystal claims as `proximity[]` rows (`context.source`
   `placement.crystals`, `max_mm` 8.1 and 2.2), graded as warnings; edit a
   row's `max_mm` to loosen or tighten that loop, or drop the `source` to
-  make it an error-graded claim.
+  make it an error-graded claim. Each limit is priced, not guaranteed: a
+  seed can leave a crystal past it, so read the grade's `proximity`
+  warnings (the judge ranks only errors).
 - **Hints, each a soft term of the objective:** `near` (a list of groups to
   sit against), `apart` (groups to keep 3 mm from), `edge` (`N`/`S`/`E`/`W`,
   a group that belongs on a board side; a group holding an edge connector
