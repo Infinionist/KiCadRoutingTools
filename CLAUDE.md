@@ -402,8 +402,10 @@ parts to the poses they had before.**
 So, when grading a placement:
 
 - **Lead with the routed outcome** — `board_score`'s `blocking`
-  (`unrouted + broken` first, then the rest), with `quality` (vias,
-  copper_mm, segments) as the tie-break once `blocking` is 0.
+  (`unrouted + broken` first, then the rest), then `joins_needed` (the joins
+  the open nets still need: a missing 17-pad rail is 16, one stranded pad 1,
+  where `blocking` counts each as one net), with `quality` (vias, copper_mm,
+  segments) as the tie-break after that.
 - **The human original is a BENCHMARK TO APPROACH, not a pose to match**
   (its vias / copper_mm / segments), because a human layout is one solution,
   not the only one.
@@ -454,7 +456,7 @@ gives the same placement for the same board, inputs and `--seed`, but seeds
 differ more than most changes to its objective or inputs: on ch32v003_usb,
 seeds 0-3 of one configuration routed 24-54 vias. So place several seeds of
 each arm, route each by the board's recorded chain (blocking first, then
-vias, copper_mm, segments), and LOOK at the routed boards -- the objective's
+joins_needed, then vias, copper_mm, segments), and LOOK at the routed boards -- the objective's
 own cost, crossings and hpwl are proxies for ranking unrouted candidates,
 never the verdict.
 

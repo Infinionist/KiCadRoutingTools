@@ -1180,10 +1180,16 @@ def _is_lap(row, half):
 
 
 def _score_key(score):
-    """(blocking, quality) as a comparable tuple, or None if not gradeable.
+    """(blocking, (joins_needed, *quality)) as a comparable tuple, or None if
+    not gradeable.
 
     Lexicographic, never a weighted sum: a weighted sum lets a router buy off a
-    disconnected net with a lower via count. `blocking == None` is NOT zero --
+    disconnected net with a lower via count. `joins_needed` (board_score, #1340:
+    the joins the open nets still need) ranks ahead of quality, because
+    `blocking` counts an unrouted net as one whatever its size: a lap that
+    strands a 17-pad rail has fewer vias BECAUSE the rail is missing, and read
+    as an improvement on vias alone. A score without it is 0 at `blocking` 0
+    (no open net needs a join) and unmeasured (sorts last) above it. `blocking == None` is NOT zero --
     it means a component that was asked for could not answer -- so it sorts
     worse than any real number rather than reading as a perfect board.
 
@@ -1218,6 +1224,10 @@ def _score_key(score):
                     else float('inf')
                     for v in (q.get('vias'), q.get('copper_mm'),
                               q.get('segments')))
+    joins = score.get('joins_needed')
+    if not (isinstance(joins, int) and not isinstance(joins, bool)
+            and joins >= 0):
+        joins = 0 if b == 0 else float('inf')
     if b is None:
         # NOT `inf`. A row whose score never measured `blocking` used to rank
         # as the worst possible board, and `inf >= inf` then made the plateau
@@ -1226,7 +1236,7 @@ def _score_key(score):
         # entirely (the callers already filter None), so a half is judged on
         # laps that actually measured something.
         return None
-    return (b, quality)
+    return (b, (joins,) + quality)
 
 
 def _declaration(rows, half):
