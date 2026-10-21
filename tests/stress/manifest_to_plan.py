@@ -927,7 +927,7 @@ def plan_steps_from_manifest(manifest, keep_files=False):
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'py_router'))  # #522/py_placer layout
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'py_placer'))  # #522/py_placer layout
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'py_tools'))  # #522/py_placer layout
-    from redo_stress_test import parse_manifest, is_check_cmd
+    from redo_stress_test import parse_manifest, is_check_cmd, split_env_prefix
 
     cmds = parse_manifest(manifest)
     keep, rejected = prune_manifest(cmds, manifest)
@@ -936,9 +936,16 @@ def plan_steps_from_manifest(manifest, keep_files=False):
     skipped = len(rejected)
     refused = []
     noops = []
+    env_dropped = []
     for i, (_cwd, argv) in enumerate(cmds):
         if i not in keep or is_check_cmd(argv):
             continue  # pruned out, or a check/grade command (no GUI step)
+        # #1302: a recorded `NAME=value` prefix is the step's environment. A
+        # plan step has nowhere to carry it (#670), so the GUI runs the step
+        # at the defaults; converted without it, and named below.
+        _env, argv = split_env_prefix(argv)
+        if _env:
+            env_dropped.append((i, _env))
         if any(os.path.basename(a) == CAP_TOOL for a in argv):
             # standalone optimize_caps step, matching the live GUI plan (see above)
             step = cap_optimization_step(argv, cwd=_cwd)
@@ -996,6 +1003,19 @@ def plan_steps_from_manifest(manifest, keep_files=False):
             print(f"  - {r}", file=sys.stderr)
         print("  The replayed plan will DIVERGE from the recorded chain at "
               "these steps. Run them on the CLI.", file=sys.stderr)
+    if env_dropped:
+        # #1302: loud, like the refusals -- the plan step runs, but not as
+        # the recorded one did.
+        print(f"WARNING: {len(env_dropped)} converted command(s) ran with env "
+              f"knobs a plan step cannot carry (#670); the GUI runs them at "
+              f"the defaults, so the replayed plan may route a different "
+              f"board:", file=sys.stderr)
+        for i, env in env_dropped:
+            print(f"  - command {i + 1}: "
+                  + " ".join(f"{k}={v}" for k, v in env.items()),
+                  file=sys.stderr)
+        print("  Export them in the KiCad session's environment, or replay "
+              "the manifest on the CLI.", file=sys.stderr)
     if noops:
         counts = {n: noops.count(n) for n in sorted(set(noops))}
         print("NOTE: no plan step for " + ", ".join(

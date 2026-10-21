@@ -29,6 +29,7 @@ directory (the source board, referenced by its own absolute path, still resolves
 import argparse
 import os
 import json
+import re
 import shlex
 import shutil
 import subprocess
@@ -177,7 +178,8 @@ def _kill_tree(p):
     p.wait()
 
 
-def run_with_peak_rss(argv, cwd, interval=0.5, timeout=None, footprint_interval=5.0):
+def run_with_peak_rss(argv, cwd, interval=0.5, timeout=None, footprint_interval=5.0,
+                      env=None):
     """Run a command (inheriting stdout/stderr) while sampling its process-tree
     RSS; return (returncode, peak_rss_kb, timed_out, peak_footprint_mb). Lets the
     replay record per-step peak memory so an engine change's memory effect is
@@ -193,8 +195,10 @@ def run_with_peak_rss(argv, cwd, interval=0.5, timeout=None, footprint_interval=
     (run_board.sh's 3-hour/command budget); the replay had none, so a board that
     wedges in rip-up (issue #211: ulx3s' 40-min+ non-terminating final route)
     could hang a whole sweep forever. A generous cap (default 3h) lets slow-but-
-    finishing boards complete while still bailing a true non-termination."""
-    p = subprocess.Popen(argv, cwd=cwd)
+    finishing boards complete while still bailing a true non-termination.
+
+    `env`: the child's whole environment (None inherits this process's)."""
+    p = subprocess.Popen(argv, cwd=cwd, env=env)
     peak = 0
     peak_fp = 0.0
     start = time.time()
@@ -273,6 +277,32 @@ def parse_manifest(path):
         # which would replay a TRUNCATED chain and look like a routing failure.
         raise ValueError(f"{path}: unterminated quote at end of manifest: {buf[:120]!r}")
     return cmds
+
+
+_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def split_env_prefix(argv):
+    """(env, argv): the command's leading `NAME=value` assignments, and the
+    command that follows them (#1302).
+
+    The recorder writes the env knobs a step ran with as that prefix -- the
+    shell's own spelling, so `bash redo_commands.sh` applies them -- and an
+    agent may type one by hand. A replayer must apply them as the child's
+    ENVIRONMENT: handed to Popen as argv, `KICAD_PLANE_FRAGILITY_COST=0` was
+    run as a program (PermissionError / FileNotFoundError), and a replayer
+    that dropped them routed the step at the defaults instead. The parsed
+    manifest keeps the prefix in argv, so every reader sees what was run;
+    the analysis helpers (board_io, is_check_cmd, the pruner) are blind to
+    it by construction, and anything that EXECUTES or converts a command
+    splits it here."""
+    env = {}
+    i = 0
+    while i < len(argv) and _ENV_ASSIGN.match(argv[i]):
+        k, v = argv[i].split("=", 1)
+        env[k] = v
+        i += 1
+    return env, list(argv[i:])
 
 
 def relocate_moved_scripts(argv):
@@ -870,7 +900,18 @@ def main():
         # readers default a missing figure, as they do for older timings).
         _ru0 = _resource.getrusage(_resource.RUSAGE_CHILDREN) if _resource else None
         timeout = args.timeout if args.timeout and args.timeout > 0 else None
-        rc, peak_kb, timed_out, peak_fp_mb = run_with_peak_rss(argv, cwd, timeout=timeout)
+        # #1302: the recorded env knobs are the child's ENVIRONMENT, not argv.
+        env_knobs, run_argv = split_env_prefix(argv)
+        child_env = dict(os.environ, **env_knobs) if env_knobs else None
+        # The prefix wins, as in the shell -- so an A/B arm exporting a knob
+        # this step pinned does not reach it. Say so rather than let the arm
+        # measure nothing.
+        for _k, _v in env_knobs.items():
+            if _k in os.environ and os.environ[_k] != _v:
+                print(f"    NOTE: the recorded {_k}={_v} overrides this "
+                      f"replay's {_k}={os.environ[_k]} for this step")
+        rc, peak_kb, timed_out, peak_fp_mb = run_with_peak_rss(
+            run_argv, cwd, timeout=timeout, env=child_env)
         cpu_s = None
         if _resource:
             _ru1 = _resource.getrusage(_resource.RUSAGE_CHILDREN)
@@ -878,7 +919,7 @@ def main():
         if rc == 0 and not timed_out:
             # A `cp`/`mv` of a board must carry its .kicad_pro (the recorded DRC
             # floor) or the renamed board grades at the looser design default.
-            mirror_project_sibling(argv, cwd)
+            mirror_project_sibling(run_argv, cwd)
         dt = time.time() - cmd_t0
         rec = {"index": i, "seconds": round(dt, 3), "returncode": rc,
                "peak_rss_mb": round(peak_kb / 1024, 1),

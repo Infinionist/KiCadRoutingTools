@@ -1770,7 +1770,10 @@ since been reverted (item 2).
    (SEQ-negotiated global plan + potential attraction + river packing +
    finalize re-audit. These are env knobs today, so they ride the
    redo-manifest form of the plan but NOT the GUI plan JSON — see the
-   promotion note in Step 9.)
+   promotion note in Step 9. The recorder writes the knobs a step ran
+   with as that same `NAME=value` prefix on its `redo_commands.sh` line,
+   `redo_stress_test.py` applies it to the replayed step, and
+   `manifest_to_plan.py` names every knob its plan steps drop, #1302.)
    **This stack is bundle-measured only.** Its evidence is the 62 → 23
    bundle above (which also carried direction preference 5, the small
    features and the layer pricing) and #589's merge gate, which replayed the 15 skill plans

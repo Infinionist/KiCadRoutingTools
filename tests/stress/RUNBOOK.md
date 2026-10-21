@@ -668,7 +668,11 @@ lists verbatim. No file dumps.
 
 Each board's `runs_set*/<board>/redo_commands.sh` records every board-mutating
 command (fully-quoted argv + `# cwd=`), so a run replays deterministically with no
-LLM. Manifests reference tools by **absolute repo path**, so a replay always runs
+LLM. A step run under env knobs carries them as a leading `NAME=value` prefix
+(#1302; interpreter, kicad-cli, directory and harness variables are left out,
+`env_knobs.replay_env_knobs`), which `redo_stress_test.py` applies as the
+replayed step's environment; a manifest recorded before #1302 has no prefix
+and replays at the defaults. Manifests reference tools by **absolute repo path**, so a replay always runs
 whatever is checked out — this is how you A/B an engine change. DRC is always
 graded at each board's own routed `--clearance` (parsed from the manifest); never
 grade stricter or you manufacture phantom grazes.
