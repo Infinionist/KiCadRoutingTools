@@ -345,7 +345,13 @@ formed, and the board said no (a measurement you act on), nothing written —
 note that 4 departs from `place_seed`, where it means "written, but the grade
 found errors". Every exit the tool itself decides prints one `JSON_SUMMARY:`
 line; argparse's own usage errors exit 2 from inside argparse, before there is
-a board to summarise. There is no `--allow-unplaced`: this tool has no
+a board to summarise. That line caps each per-pad and per-pair list (the
+pad-edge findings and unmeasured rows, pad stacks, graphic-copper rows,
+`pad_clearance_required`, ...) at 20 entries, with `<list>_count` and
+`<list>_truncated` beside a capped one, as board_score does (#1352: a 97-part
+pile printed a 291 KB line); the counts and magnitudes the verdict reads are
+never cut. `--json PATH` writes the whole summary, and the text report lists 5
+pad-edge findings and says how many more. There is no `--allow-unplaced`: this tool has no
 unplaced gate, because arranging a pile one decision at a time is what it is
 for.
 

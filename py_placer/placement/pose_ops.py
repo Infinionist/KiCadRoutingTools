@@ -145,6 +145,63 @@ LEGAL_UNMEASURED = ('footprint graphic copper vs the edge-clearance floor '
                     "(check_assembly's coincident_origins)")
 MAGNITUDE_EPS = 1e-6
 
+#: How many entries of each per-pad / per-pair list the stdout JSON_SUMMARY
+#: carries (#1352) -- board_score's cap (#1194). On a 97-part pile
+#: (pico_ice_rev3) the summary line was 291 KB, 245 KB of it the pad-edge
+#: findings and unmeasured rows before and after, and a refusal's one-line
+#: reason was buried in it. `place_pose --json PATH` writes every entry.
+STDOUT_LIST_CAP = 20
+
+#: The summary's per-pad and per-pair lists (`_legality_row`), capped on
+#: stdout. The request's own lists (`ops`, `moved`, `locked`) are not.
+SUMMARY_LISTS = ('pad_clearance_required', 'worst',
+                 'oob_pad_copper_refs_after',
+                 'oob_graphic_copper_refs_after',
+                 'oob_graphic_copper_waived_after',
+                 'oob_graphic_copper_unmeasured_after',
+                 'graphic_edge_shortfall_refs_after',
+                 'keepout_copper_pads_after', 'keepout_copper_tht_refs_after',
+                 'keepout_copper_unmeasured_after', 'pad_stack_pairs_after',
+                 'graphic_pad_conflict_pairs_after',
+                 'graphic_pad_stack_pairs_after', 'graphic_pad_rows_after',
+                 'graphic_pad_unmeasured_after', 'own_pad_short_pairs_after')
+
+#: ...and the lists inside each pad-edge grade (`pad_edge_before/_after`).
+PAD_EDGE_LISTS = ('findings', 'unmeasured', 'rules_unmeasured')
+
+
+def _cap_lists(doc: Dict, keys, cap: int) -> Dict:
+    """`doc` with each list in `keys` longer than `cap` cut to `cap`, and
+    `<key>_count` / `<key>_truncated` beside it; `doc` itself is untouched."""
+    long_ = [k for k in keys if isinstance(doc.get(k), list) and len(doc[k]) > cap]
+    if not long_:
+        return doc
+    out = dict(doc)
+    for k in long_:
+        out[k] = doc[k][:cap]
+        out[k + '_count'] = len(doc[k])
+        out[k + '_truncated'] = len(doc[k]) - cap
+    return out
+
+
+def stdout_summary(summary: Dict, cap: int = STDOUT_LIST_CAP) -> Dict:
+    """The JSON_SUMMARY copy of a place_pose summary (#1352): every list in
+    SUMMARY_LISTS, and each pad-edge grade's PAD_EDGE_LISTS, capped at `cap`
+    entries, `<list>_count` the full length and `<list>_truncated` how many
+    were left out. The counts and magnitudes the verdict reads are scalars
+    and are never cut. `summary` itself -- what `--json` writes -- is not
+    touched. Pure."""
+    out = _cap_lists(summary, SUMMARY_LISTS, cap)
+    for ch in ('pad_edge_before', 'pad_edge_after'):
+        g = out.get(ch)
+        if isinstance(g, dict):
+            capped = _cap_lists(g, PAD_EDGE_LISTS, cap)
+            if capped is not g:
+                if out is summary:
+                    out = dict(summary)
+                out[ch] = capped
+    return out
+
 #: `replicate --search`'s default lattice pitch, mm (#1211). Coarser than
 #: the snap's 0.25: every candidate is a written, re-parsed, re-graded board
 #: (about 0.27 s on the 114-part multichannel_mixer), and a 3 mm radius at
