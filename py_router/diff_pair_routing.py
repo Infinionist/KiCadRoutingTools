@@ -1425,9 +1425,18 @@ def _generate_debug_arrows(center_src_x, center_src_y, src_dir_x, src_dir_y,
     return arrows
 
 
-def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data):
+def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data,
+                              p_vias=(), n_vias=()):
     """#318: neck a polarity's segment that sits sub-clearance to its PARTNER's
     just-created copper, and REPORT what necking cannot fix.
+
+    `p_vias` / `n_vias` are the members' just-created vias. A via is partner
+    copper on every layer it spans: a segment is necked against it like
+    against a track, and a via on or near the partner's track or via is a hard
+    violation. Without them a route that loops back over its own via pair
+    (rp2040_motorctrl /CAN1 leg 1, a polarity-fix route out the target's
+    opposite side) shipped each via sitting on the partner's diagonal -- a
+    P/N short graded clean here because only tracks were compared.
 
     Returns ``(necked, hard)``: `hard` lists (seg, partner, gap) still inside
     clearance after necking, which the caller must treat as a failed route --
@@ -1475,10 +1484,19 @@ def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data):
             hit = _pc_memo[key] = _pcf(a_nid, b_nid, layer)
         return hit
 
-    def neck_side(own, partner):
+    from geometry_utils import via_on_layer
+    from kicad_parser import Segment
+
+    def _via_copper(vias, layer):
+        # A via on `layer` as a zero-length track of its own diameter.
+        return [Segment(start_x=v.x, start_y=v.y, end_x=v.x, end_y=v.y,
+                        width=v.size, layer=layer, net_id=v.net_id)
+                for v in vias if via_on_layer(v, layer)]
+
+    def neck_side(own, partner, partner_vias):
         nonlocal necked
         for s in own:
-            for o in partner:
+            for o in list(partner) + _via_copper(partner_vias, s.layer):
                 if o.layer != s.layer:
                     continue
                 d = _seg_seg_min_dist(s.start_x, s.start_y, s.end_x, s.end_y,
@@ -1491,8 +1509,8 @@ def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data):
                         s.width = round(new_w, 4)
                         necked += 1
 
-    neck_side(p_segs, n_segs)
-    neck_side(n_segs, p_segs)
+    neck_side(p_segs, n_segs, n_vias)
+    neck_side(n_segs, p_segs, p_vias)
 
     # HARD violations -- what necking cannot reach. `neck_side` floors every
     # width at the fab minimum, so when `allowed_half` goes NEGATIVE it quietly
@@ -1508,15 +1526,29 @@ def _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data):
     # another option, exactly as the terminal SHORT gate (#157 `hard` list) does
     # for single-ended terminals.
     hard = []
-    for s in p_segs:
-        for o in n_segs:
-            if o.layer != s.layer:
-                continue
-            d = _seg_seg_min_dist(s.start_x, s.start_y, s.end_x, s.end_y,
-                                  o.start_x, o.start_y, o.end_x, o.end_y)
-            gap = d - s.width / 2.0 - o.width / 2.0
-            if gap < _pair_clearance(s.net_id, o.net_id, s.layer) - 1e-6:
-                hard.append((s, o, gap))
+
+    def _hard(a_list, b_list):
+        for s in a_list:
+            for o in b_list:
+                if o.layer != s.layer:
+                    continue
+                d = _seg_seg_min_dist(s.start_x, s.start_y, s.end_x, s.end_y,
+                                      o.start_x, o.start_y, o.end_x, o.end_y)
+                gap = d - s.width / 2.0 - o.width / 2.0
+                if gap < _pair_clearance(s.net_id, o.net_id, s.layer) - 1e-6:
+                    hard.append((s, o, gap))
+    _hard(p_segs, n_segs)
+    if p_vias or n_vias:
+        # Tracks against the partner's vias, on every layer each via spans,
+        # then via against via on every layer both span.
+        for lyr in {s.layer for s in list(p_segs) + list(n_segs)}:
+            _hard([s for s in p_segs if s.layer == lyr], _via_copper(n_vias, lyr))
+            _hard([s for s in n_segs if s.layer == lyr], _via_copper(p_vias, lyr))
+        _stack = (getattr(config, 'board_copper_layers', None)
+                  or getattr(config, 'layers', None)
+                  or {l for v in list(p_vias) + list(n_vias) for l in (v.layers or ())})
+        for lyr in set(_stack):
+            _hard(_via_copper(p_vias, lyr), _via_copper(n_vias, lyr))
     return necked, hard
 
 
@@ -3672,7 +3704,9 @@ def _route_direct_coupled_middle(pcb_data, diff_pair, config, obstacles, layer_n
         _n318, _h318 = _neck_pair_partner_grazes(
             [s for s in best['all_segs'] if s.net_id == p_net_id],
             [s for s in best['all_segs'] if s.net_id == n_net_id],
-            config, pcb_data)
+            config, pcb_data,
+            p_vias=[v for v in best['all_vias'] if v.net_id == p_net_id],
+            n_vias=[v for v in best['all_vias'] if v.net_id == n_net_id])
         if _h318:
             # An intra-pair short is not a pair. This loop already RANKS
             # candidates by `overlaps`, so a self-grazing polarity loses to a
@@ -5064,7 +5098,8 @@ def _route_diff_pair_with_obstacles_impl(pcb_data: PCBData, diff_pair: DiffPairN
 
     # #318: pairwise partner neck -- emission-time necking cannot see the
     # partner's copper (assembled in the same commit), see helper docstring.
-    _necked318, _hard318 = _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data)
+    _necked318, _hard318 = _neck_pair_partner_grazes(p_segs, n_segs, config, pcb_data,
+                                                     p_vias=p_vias, n_vias=n_vias)
     if _hard318:
         # An intra-pair short is not a pair. Necking has already tried and the
         # gap is still inside clearance, so writing this would ship P and N
