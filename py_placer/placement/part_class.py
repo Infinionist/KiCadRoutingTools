@@ -92,11 +92,21 @@ EDGE_RECEPTACLE_FP = ('usb', 'hdmi', 'rj45', 'rj11', 'dsub', 'd-sub',
                       'jack', 'displayport', 'cardedge', 'card_edge')
 # Switches/buttons whose actuator may overhang the edge by design.
 EDGE_ACTUATOR_FP = ('switch', 'slide', 'sw_', 'button', 'tact', 'pushbutton')
+#: Stems too short to test as a bare substring, matched only with no letter on
+#: either side (#1331). A DC power-input jack named for what it is
+#: (`DC-IN-SMD_DC-045A-13A`, `DC_IN`) is a receptacle, and the `dc_in` inside
+#: `Converter_DCDC_Intel_QFN-24` is not. The hyphen spelling of the `sw_` stem
+#: (`SW-TH_TK-6580A8-1`, `SW-SMD_TS-1010A-B`) is an actuator, and Samtec's
+#: `TSW-114` pin header is not: both bare substrings hit those on the corpus.
+EDGE_RECEPTACLE_WORDS = re.compile(r'(?<![a-z])dc[-_]?in(?![a-z])')
+EDGE_ACTUATOR_WORDS = re.compile(r'(?<![a-z])sw-')
 
 # Reference-designator prefixes. IEEE-315 convention, NOT a property of the
 # file -- prefix evidence alone never makes a receptacle.
 CONN_PREFIX_MED = ('J', 'P', 'X', 'CN')
 CONN_PREFIX_LOW = ('SW', 'TP', 'MH', 'H', 'FID')
+#: Read on the leading letters AND on the designator after a qualifier
+#: (`_designator`): `PWR_SW1` is a switch (#1331).
 ACTUATOR_PREFIX = ('SW',)
 
 # USB/edge pin functions KiCad writes only when the symbol carried one.
@@ -135,6 +145,14 @@ class PartClass:
     evidence: Tuple[str, ...] = ()
 
 
+def _designator(ref: str) -> str:
+    """The letters before a reference's number once a qualifier is set
+    aside: `SW` in `PWR_SW1` (#1331), where `_prefix` reads `PWR`. Read for
+    the actuator prefix only: `TP_GND1` stays a test point by its leading
+    `TP`, which this would read as `GND`."""
+    return _prefix(re.split(r'[_\-.]', ref or '')[-1])
+
+
 def _prefix(ref: str) -> str:
     m = _PREFIX_RE.match(ref or '')
     return (m.group(1) if m else '').upper()
@@ -167,8 +185,12 @@ def classify_part(fp, ref: str) -> PartClass:
     pins = {str(getattr(p, 'pinfunction', '') or '').upper() for p in pads}
     recep_pins = pins & RECEPTACLE_PINS
     is_ic_pkg = any(k in name for k in IC_PACKAGE_FP)
-    fp_recep = any(k in name for k in EDGE_RECEPTACLE_FP) and not is_ic_pkg
-    fp_act = any(k in name for k in EDGE_ACTUATOR_FP)
+    fp_recep = ((any(k in name for k in EDGE_RECEPTACLE_FP)
+                 or EDGE_RECEPTACLE_WORDS.search(name) is not None)
+                and not is_ic_pkg)
+    fp_act = (any(k in name for k in EDGE_ACTUATOR_FP)
+              or EDGE_ACTUATOR_WORDS.search(name) is not None)
+    desig = _designator(ref)
 
     if (fp_recep or recep_pins) and not is_ic_pkg:
         ev = []
@@ -184,9 +206,12 @@ def classify_part(fp, ref: str) -> PartClass:
                  bool(recep_pins & {'CC1', 'CC2', 'SBU1', 'SBU2'})
         return PartClass('edge_receptacle', 'high' if strong else 'medium',
                          tuple(ev))
-    if fp_act or pref in ACTUATOR_PREFIX:
+    if fp_act or pref in ACTUATOR_PREFIX or desig in ACTUATOR_PREFIX:
         ev = ['footprint name matches the edge-actuator table' if fp_act
-              else f"reference prefix {pref!r} (convention only)"]
+              else f"reference prefix {pref!r} (convention only)"
+              if pref in ACTUATOR_PREFIX
+              else f"reference designator {desig!r} in {ref!r} "
+                   f"(convention only)"]
         return PartClass('edge_actuator', 'medium' if fp_act else 'low',
                          tuple(ev))
     # run-23: the WEAK connector class. Generic connectors (headers, JST,
