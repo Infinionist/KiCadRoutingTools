@@ -114,9 +114,13 @@ def _seed(td, parts, claims, code, refuse=None, flags=('--force',)):
     """place_seed the board `parts` under `claims`: (run, summary, out)."""
     path, ip = _board(td, parts), _intent(td, claims)
     out = os.path.join(td, 's.kicad_pcb')
+    # 0.55: the edge floor this fixture was built at -- it declares none,
+    # which #1301 reads as the 0.2 fab floor; there the fallback seat slides
+    # J2's courtyard onto the east edge and its nearest-edge error fires first.
     r = check([PY, '-X', 'utf8',
                os.path.join(ROOT, 'py_placer', 'place_seed.py'),
-               path, out, '--intent', ip] + list(flags),
+               path, out, '--intent', ip, '--board-edge-clearance', '0.55']
+              + list(flags),
               **({'accept': True} if code == 0
                  else {'refuse': refuse, 'code': code}))
     evidence(out, 'written seed')
