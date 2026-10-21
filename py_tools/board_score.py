@@ -35,7 +35,11 @@ disconnected net with a lower via count::
     quality  = (vias, copper_mm, segments)      # only compared once blocking == 0
 
 `blocking` must reach 0 before a board is deliverable. `quality` orders the
-boards that already got there.
+boards that already got there. Below that, two boards of equal `blocking`
+are ordered by `joins_needed` -- the joins their open nets still need (an
+unrouted net of N pads needs N - 1, a broken one components - 1) -- never by
+`quality`: a board missing a 17-pad rail has fewer vias BECAUSE the rail is
+missing, and one net counts 1 in `blocking` whatever its size (#1340).
 
 Vacuity
 -------
@@ -269,6 +273,7 @@ def score_connectivity(root: str, board: str) -> dict:
     rc, out = run_tool(root, 'check_connected.py', board)
     if 'ALL NETS FULLY CONNECTED' in out:
         return {'ran': True, 'count': 0, 'unrouted': 0, 'broken': 0, 'nets': [],
+                'unrouted_pads': {}, 'joins_needed': 0,
                 'poured_nets': sorted(poured_net_names(board)),
                 'poured_nets_meaning': POURED_NETS_MEANING}
     m = _CONN_TOTAL.search(out)
@@ -288,7 +293,9 @@ def score_connectivity(root: str, board: str) -> dict:
     # Net names, so the ledger can say WHICH nets failed and a later round can
     # tell "the same nets every time" (parameters) from "different nets"
     # (congestion) -- the Step 9 classification needs this distinction.
-    unrouted_names = re.findall(r'^\s{4}(\S+) \(\d+ pads\)', out, re.M)
+    unrouted_pads = {n: int(c) for n, c in
+                     re.findall(r'^\s{4}(\S+) \((\d+) pads\)', out, re.M)}
+    unrouted_names = list(unrouted_pads)
     broken_names = re.findall(r'^\s{2}(\S+) \(net \d+\):', out, re.M)
     nets = unrouted_names + broken_names
 
@@ -338,10 +345,22 @@ def score_connectivity(root: str, board: str) -> dict:
     for name, v in detail.items():
         v['handler'] = 'route'
 
+    # THE JOINS THE BOARD STILL NEEDS (#1340). `unrouted` counts NETS, so a
+    # 17-pad rail with no copper weighs 1 -- the same as one stranded pad --
+    # and a tie on `blocking` fell to vias and copper, where the missing rail
+    # reads as quality: StickHub's rail-less board (117 vias) outranked the
+    # one with a single open pad (132). An unrouted net of N pads needs N - 1
+    # joins, a broken one (components - 1), the unit `broken` already counts;
+    # their sum breaks a `blocking` tie before vias or copper do. check_
+    # connected prints each unrouted net's pad count, which was parsed and
+    # dropped.
+    joins = sum(max(0, n - 1) for n in unrouted_pads.values()) + broken
     return {'ran': True, 'count': int(m.group(1)), 'unrouted': unrouted,
             'broken': broken, 'broken_nets': broken_nets,
             'components_per_broken_net': comps, 'nets': sorted(set(nets)),
             'unrouted_net_names': sorted(set(unrouted_names)),
+            'unrouted_pads': dict(sorted(unrouted_pads.items())),
+            'joins_needed': joins,
             'poured_nets': sorted(poured),
             'poured_nets_meaning': POURED_NETS_MEANING,
             'broken_detail': detail}
@@ -1418,6 +1437,7 @@ def main():
                            pcb=_pcb)
     parts = {'unrouted': {'ran': conn['ran'], 'count': conn.get('unrouted'),
                           'nets': conn.get('unrouted_net_names', []),
+                          'pads': conn.get('unrouted_pads', {}),
                           **shape},
              'broken': {'ran': conn['ran'], 'count': conn.get('broken'),
                         'poured_nets': conn.get('poured_nets', []),
@@ -1462,6 +1482,9 @@ def main():
     score = {'schema': 1, 'kind': 'board-score', 'board': os.path.abspath(args.board),
              'board_sha': _h.hexdigest(),
              'label': args.label, 'blocking': blocking,
+             # the joins the open nets still need: a `blocking` tie's
+             # breaker, ahead of `quality` (#1340); None when unmeasured
+             'joins_needed': conn.get('joins_needed') if conn.get('ran') else None,
              'blocking_by': {k: v.get('count') for k, v in parts.items()},
              'advisory': {k: v.get('count') for k, v in advisory.items()},
              'ungraded': ungraded_entries(parts),
@@ -1492,7 +1515,8 @@ def main():
                     if v is not None)
     q = score['quality']
     print(f"BLOCKING={blocking}  ({bits})  "
-          f"vias={q.get('vias')} copper_mm={q.get('copper_mm')}")
+          f"vias={q.get('vias')} copper_mm={q.get('copper_mm')}  "
+          f"joins_needed={score['joins_needed']}")
     _adv_bits = ' '.join(f'{k}={v}' for k, v in score['advisory'].items() if v)
     if _adv_bits:
         print(f"ADVISORY (floor-governed, not blocking): {_adv_bits}")
