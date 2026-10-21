@@ -300,6 +300,15 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 's{seed}.kicad_pcb' \
   region or shape; its gap tree is a cost term that keeps it in one piece.
   The hints are soft terms; the intent's keep-outs and zones bind every part
   through the anneal's overlap term. Every weight is a flag (`--help`).
+- **A part that draws no courtyard** is seated on an estimated one (#1300,
+  `body.estimated_courtyards`): its .Fab body, else its silk, else its pads,
+  united with its pads -- what `check_assembly` grades it on -- grown by the
+  courtyard excess KiCad's libraries use (0.25 mm; 0.15 mm under an 0603,
+  0.5 mm on a connector, 1.0 mm on a BGA). The anneal's overlap, the seat
+  gate and the final legality read it wherever they read a courtyard, so a
+  legal seed keeps the graded bodies apart; a NOTE names the parts. Two
+  declared or locked poses are still judged against each other on what the
+  board draws.
   A run that leaves a part with no legal pose is annealed again from a fresh
   start, up to two more times (the last one shoves its remaining overlaps
   apart where they stand); the run with the fewest illegal parts is kept.
@@ -1083,8 +1092,8 @@ draws them.
 `--render` draws the fitted template:
 - courtyards, and every pad with its number;
 - each leg across its pad-edge gap to the nearest partner pad;
-- parts with no courtyard labelled, since each is fitted as the box round its
-  pads, and the run names them.
+- parts with no courtyard labelled, since each is fitted on the estimated
+  courtyard `place_simple` seats it on (#1300), and the run names them.
 
 The sketch's `kind` (`switching stage` or `rf front end`, as the groups
 file names the candidate) goes into the row. For a switching stage the run
@@ -1257,6 +1266,11 @@ python3 -X utf8 py_tools/render_placement.py placed.kicad_pcb --intent intent.js
   `checklist` (`a_off_outline.pad_copper_gating` names the parts whose pad
   copper lies outside the outline; `b_courtyard_blocking_pairs`,
   `c_hole_conflicts`, ...).
+- A part that draws no courtyard is drawn, dashed, on the estimated
+  courtyard `place_simple` seats it on (#1300), and
+  `a_off_outline.courtyard` measures that estimate;
+  `a_off_outline.courtyard_estimated` lists those parts as `[ref, basis,
+  excess_mm]`.
 - `--clearance` defaults to the board's own Default net-class clearance, else
   its `min_clearance` constraint, else 0.25; the value used and its source are
   printed.

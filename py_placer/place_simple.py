@@ -161,7 +161,9 @@ def build(pcb, board, doc, base, args, intent=None, blocks=None, fixed=()):
     from placement.simple import Model
     notes = []
     clearance, edge, _ = board_floor_knobs(board)
-    state = seat_state(pcb, board, intent, blocks, clearance, edge, fixed)
+    # a part that draws no courtyard is seated on an estimated one (#1300)
+    state = seat_state(pcb, board, intent, blocks, clearance, edge, fixed,
+                       estimate_courtyards=True)
     movable = sorted(r for r, p in state.parts.items() if not p.locked)
     # claims: the intent's own, and each crystal at its IC's oscillator pins
     rows, xnotes = claim_rows(pcb, base)

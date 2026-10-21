@@ -470,7 +470,13 @@ def _courtyard_overlap(state, a: str, pose_a, b: str, pose_b):
     R1, U2 and CON2 at their own file poses, One-Air-Max's C53/U8 at 0.135
     mm2) -- the courtyard-blocking floors and the silk exemption are the
     grader's, not this screen's. `w` x `h` is the rects' intersection, for
-    the refusal's text only."""
+    the refusal's text only.
+
+    #1300: a part the state seats on an ESTIMATED courtyard is screened on
+    the estimate when the pose was SEARCHED (an edge seat against the parts
+    round it), and on its pad box, as before, when both parts stand where
+    they were declared or locked: a declared arrangement is judged as KiCad
+    judges it, never refused on an estimate KiCad does not draw."""
     from .legality import (graded_part_at_pose, pair_overlap_area,
                            pair_overlap_area_exact)
     if getattr(state, 'courtyards_ignored', False):
@@ -481,7 +487,10 @@ def _courtyard_overlap(state, a: str, pose_a, b: str, pose_b):
     cache = state.__dict__.setdefault('_exact_overlap_cache', {})
     pcb_file = getattr(state, 'pcb_file', None)
     ta, tb = pa.tht_rect(*pose_a), pb.tht_rect(*pose_b)
-    ra, rb = pa.grade_rect(*pose_a), pb.grade_rect(*pose_b)
+    if pa.locked and pb.locked:
+        ra, rb = pa.drawn_rect(*pose_a), pb.drawn_rect(*pose_b)
+    else:
+        ra, rb = pa.grade_rect(*pose_a), pb.grade_rect(*pose_b)
     area = pair_overlap_area(pa.sides, pa.side, ra, ta,
                              pb.sides, pb.side, rb, tb)
     if area > FIXED_OVERLAP_EPS_MM2:

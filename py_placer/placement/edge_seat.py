@@ -604,12 +604,15 @@ def seats(state, pcb, pcb_file, intent, movable, crowded=None
     return out, notes, unseated
 
 
-def seat_state(pcb, pcb_file, intent, blocks, clearance, edge, fixed=()):
+def seat_state(pcb, pcb_file, intent, blocks, clearance, edge, fixed=(),
+               estimate_courtyards=True):
     """The placement state `place_simple` seats and anneals on: the board's
     floors, the intent's `fixed_poses[]` refs held (`fixed`), its keep-outs,
     and every declared zone binding its members (containment) and, when
     exclusive, keeping strangers out -- the board's bounds open a zone side
-    on the outline to an edge-claim member (#1174)."""
+    on the outline to an edge-claim member (#1174). A part that draws no
+    courtyard is seated on an estimated one (#1300), here as in place_simple,
+    so `oversubscribed` predicts the crowding place_simple will meet."""
     import pose_score
     from . import floorplan as fp
     zones = (fp.zone_entries(intent, blocks or {}, bounds=pcb.board_info.board_bounds)
@@ -619,7 +622,8 @@ def seat_state(pcb, pcb_file, intent, blocks, clearance, edge, fixed=()):
                                  extra_locked_refs=set(fixed) or None,
                                  keepouts=intent.keepouts if intent is not None else (),
                                  intent_zones=list(zones),
-                                 exclusive_zones=[z for z in zones if z['exclusive']])
+                                 exclusive_zones=[z for z in zones if z['exclusive']],
+                                 estimate_courtyards=estimate_courtyards)
 
 
 def oversubscribed(pcb, pcb_file, intent, clearance, edge, group_sources=()

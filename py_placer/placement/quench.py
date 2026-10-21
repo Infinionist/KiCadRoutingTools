@@ -850,9 +850,10 @@ class _Part(_NearWatched):
                  'nets', 'footprint_name', 'orig_rot',
                  'side', 'has_tht', 'sides', 'tht_by_rot', 'padbox_local',
                  'padbox_by_rot', 'grade_by_rot', '_live_rects',
-                 '_pg_rot', '_pg_pose')
+                 '_pg_rot', '_pg_pose', 'drawn_local')
 
-    def __init__(self, ref, fp, courtyard_sides, locked, body_local=None):
+    def __init__(self, ref, fp, courtyard_sides, locked, body_local=None,
+                 drawn_sides=None):
         self._live_rects = None
         self.ref = ref
         self.footprint_name = fp.footprint_name
@@ -884,6 +885,15 @@ class _Part(_NearWatched):
         self.grade_by_rot = (self.bounds_by_rot if lb is grade_lb else
                              {r: _rotate_local_bounds(*grade_lb, r)
                               for r in ROTATIONS})
+        # #1300: when `courtyard_sides` carries an ESTIMATED courtyard for a
+        # part that draws none, `drawn_sides` is the board's own map, and
+        # `drawn_local` the box KiCad would judge the part on (its pad box):
+        # `drawn_rect` hands it to the one test that judges two declared
+        # poses as KiCad does. None when the part's courtyard is drawn.
+        self.drawn_local = None
+        if drawn_sides is not None and ref in courtyard_sides \
+                and ref not in drawn_sides:
+            self.drawn_local = tuple(compute_footprint_bbox_local(fp))
         # #1101: the PAD copper box, for a board whose project waives the
         # courtyard rule -- the seat then spaces pads, not courtyards. None
         # for a pad-less footprint (a logo occupies no copper).
@@ -980,6 +990,20 @@ class _Part(_NearWatched):
         if self.tht_by_rot is None:
             return self.grade_rect(x, y, rot), None
         return self.grade_rect(x, y, rot), self.tht_rect(x, y, rot)
+
+    def drawn_rect(self, x=None, y=None, rot=None):
+        """The rect KiCad judges this part on at a pose: `grade_rect`, except
+        that a part seated on an ESTIMATED courtyard (#1300) answers its pad
+        box, as it did before the estimate -- for `seeder._courtyard_overlap`
+        between two parts that both stand where they were declared or
+        locked, so a declared arrangement is never refused on an estimate."""
+        if self.drawn_local is None:
+            return self.grade_rect(x, y, rot)
+        x = self.x if x is None else x
+        y = self.y if y is None else y
+        rot = self.rot if rot is None else rot
+        b = _rotate_local_bounds(*self.drawn_local, rot % 360)
+        return (x + b[0], y + b[1], x + b[2], y + b[3])
 
     def padbox(self, x=None, y=None, rot=None):
         """The part's pad-copper box at a pose (#1101), or None (no pads)."""
@@ -1126,7 +1150,14 @@ class QuenchState:
                  # alone, gated ABSOLUTELY, while `intent_zones` feeds
                  # `candidate_valid`'s MONOTONE `intent_ok`. Same plain data
                  # (`floorplan.zone_entries`), empty by default.
-                 exclusive_zones: Optional[Sequence[Dict]] = None):
+                 exclusive_zones: Optional[Sequence[Dict]] = None,
+                 # --- #1300: a part that draws no courtyard is seated on an
+                 # ESTIMATED one (`body.estimated_courtyards`). Off by
+                 # default, so a state that grades what the board draws --
+                 # INCLUDING the one `floorplan.grade` builds -- keeps doing
+                 # so; `place_simple` and the renderer that draws its model
+                 # ask for it.
+                 estimate_courtyards: bool = False):
         bounds = pcb_data.board_info.board_bounds
         if bounds is None:
             raise ValueError("No board boundary (Edge.Cuts) found")
@@ -1154,7 +1185,25 @@ class QuenchState:
         self._fab_local = None
         self._fab_cache = {}
 
-        courtyards = extract_courtyard_sides(pcb_file)
+        # #1300: with `estimate_courtyards`, every pad-bearing part that
+        # draws no courtyard enters this map with an ESTIMATED one -- the
+        # occupancy check_assembly grades it on (its .Fab body, else silk,
+        # else pads, united with the pads) grown by the library's courtyard
+        # excess -- so `rect`, `grade_rect` and every seat test below see it
+        # where they would see a drawn courtyard. Before, such a part was
+        # seated on its PAD box: on multichannel_mixer an electrolytic's
+        # 4.0 x 1.5 mm pads stand in a 5 mm body, and every seed packed caps
+        # into each other's bodies, NOT BUILDABLE. `_drawn_courtyards` keeps
+        # what the board draws, for the one test that must judge it as KiCad
+        # does (`_Part.drawn_rect`, a declared pose against a declared pose).
+        self._drawn_courtyards = extract_courtyard_sides(pcb_file)
+        courtyards = self._drawn_courtyards
+        self.courtyard_estimates: Dict[str, object] = {}
+        if estimate_courtyards:
+            from placement.body import courtyard_sides_with_estimates
+            courtyards, self.courtyard_estimates = (
+                courtyard_sides_with_estimates(pcb_data, pcb_file,
+                                               drawn=self._drawn_courtyards))
         file_locked = set(extract_locked_refs(pcb_file))
         locked_refs = set(file_locked)
         if extra_locked_refs:
@@ -1215,7 +1264,10 @@ class QuenchState:
                     if locked_bodies is None:
                         locked_bodies = locked_body_locals(pcb_data, pcb_file)
                     body_local = locked_bodies.get(ref)
-            self.parts[ref] = _Part(ref, fp, courtyards, locked, body_local)
+            self.parts[ref] = _Part(
+                ref, fp, courtyards, locked, body_local,
+                drawn_sides=(self._drawn_courtyards
+                             if self.courtyard_estimates else None))
             if locked:
                 self.lock_reasons[ref] = (
                     LOCK_FILE if ref in file_locked else
@@ -1235,6 +1287,9 @@ class QuenchState:
                   f" resize the board. Edit the part and the outline"
                   f" together in KiCad if it really must move.")
         warn_missing_courtyards(no_courtyard, 'placement')
+        if self.courtyard_estimates:
+            from placement.body import format_estimates
+            print(format_estimates(self.courtyard_estimates, 'placement'))
 
         # #701 intent keep-outs, resolved ONCE per state rather than once per
         # candidate pose. Neither an `allow` fnmatch against a reference nor

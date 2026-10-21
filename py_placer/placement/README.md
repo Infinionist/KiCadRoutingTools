@@ -524,7 +524,7 @@ after a QFN fanout, as tigard's does. See
 | `templates.py` | Datasheet layout templates: the intent rows' validation, a member's pose for its chip's pose, its drift, the fit of a sketch to the board's footprints, the pin table and the render (`py_tools/fit_template.py`) |
 | `seeder.py` | The seat predicate `pose_ok`, the wiring target, the fixed-pose checks and the `(locked yes)` stamps |
 | `legality.py` | The legality every tool shares: board side, Edge.Cuts containment, pad and drill legality, courtyards, the graders |
-| `body.py` | A footprint's body: courtyard, else fab, else silk, else the pad box |
+| `body.py` | A footprint's body: courtyard, else fab, else silk, else the pad box; and the estimated courtyard of a part that draws none (#1300) |
 | `writer.py` | Writes poses and face flips back to the board |
 | `parser.py` | Courtyard, fab, silk and lock extraction |
 | `../place_pose.py`, `pose_ops.py` | Hand placement: set, rotate, face, lock, unlock, snap |
@@ -578,9 +578,22 @@ gate, `place_pose` and the graders:
   pin-frame module (a Teensy) is graded by its holes, not as a body. The
   anneal's overlap prices it the same way: a courtyard over a pin frame's
   drilled holes, on either face, and nothing for the frame's rect.
-- **Bodies.** A footprint without a courtyard is modelled by its fab drawing,
+- **Bodies.** A footprint without a courtyard is graded by its fab drawing,
   else its silk, else its pad box (`body.py`); the fallback is named in the
   output.
+- **Estimated courtyards (#1300).** The placer, the seat gate and the
+  renderer seat such a part on an ESTIMATED courtyard
+  (`body.estimated_courtyards`, `QuenchState(estimate_courtyards=True)`):
+  the graded body above, united with the pads, grown by the courtyard
+  excess KiCad's libraries use -- 0.25 mm, 0.15 mm for a body under 2 mm,
+  0.5 mm on a connector, 1.0 mm on a BGA, which over 1014 corpus footprints
+  that draw both puts every side within 0.05 mm of the drawn courtyard on
+  61% of them. It contains what `check_assembly` grades, so a legal seed
+  keeps those bodies apart; before it, multichannel_mixer's radial caps (a
+  5 mm body on a 4 x 1.5 mm pad box) were packed into each other and every
+  seed graded NOT BUILDABLE. It is an input, not a grade: the graders, and
+  two declared or locked poses judged against each other
+  (`_Part.drawn_rect`), still read what the board draws.
 
 [docs/floorplan-intent.md](../../docs/floorplan-intent.md) has the intent's
 rules, and [docs/utilities.md](../../docs/utilities.md) each tool's full

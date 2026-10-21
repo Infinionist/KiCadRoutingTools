@@ -366,6 +366,13 @@ def legality_findings(model) -> Dict[str, object]:
            # sheet/gate say NOT MEASURED rather than reporting "blocking: none"
            # on a board nothing looked at.
            'courtyard_census_error': None,
+           # #1300: [ref, basis, excess_mm] for each part the model seats on
+           # an ESTIMATED courtyard (it draws none); `oob_refs_courtyard`
+           # measures those estimates.
+           'estimated_courtyards': [
+               [e.ref, e.basis, e.excess_mm] for e in sorted(
+                   (getattr(getattr(model, 'state', None),
+                            'courtyard_estimates', None) or {}).values())],
            'locked_refs': sorted(r for r, p in model.parts().items()
                                  if getattr(p, 'locked', False))}
     state = getattr(model, 'state', None)
@@ -1036,9 +1043,15 @@ def draw_courtyards(d, r, model, refs, *, side=None, color=None, dim=False,
         # what made esp_prog's SOT89 look 5.2mm wide when the part is 4.5mm,
         # and it is why a silk body never gates. A dash rather than a colour
         # because the four colours here already carry side and lock state.
+        # #1300: an ESTIMATED courtyard is dashed too -- the outline a part
+        # that draws none is seated on, which no library drew (a silk body's
+        # outline is always one of these now).
         _src = (getattr(model, 'body_sources', None) or {}).get(ref)
+        _est = (ref in (getattr(getattr(model, 'state', None),
+                                'courtyard_estimates', None) or {})
+                and (side is None or own == side))
         _wpx = _w(r, width_mm)
-        if _src == 'silk':
+        if _src == 'silk' or _est:
             _on, _off = max(3, _wpx * 4), max(3, _wpx * 3)
             corners = [(box[0], box[1]), (box[2], box[1]),
                        (box[2], box[3]), (box[0], box[3])]
@@ -2300,9 +2313,13 @@ def main(argv=None):
     # lying -- a flag that accepts a value and changes nothing reads as a knob
     # somebody already thought about. Making `none` real means teaching the
     # render path to draw without a state, which is a different change.
+    # #1300: a part that draws no courtyard is drawn, and measured, on the
+    # ESTIMATED courtyard place_simple seats it on -- the model the placer
+    # acted on, as everything else here is (dashed: no library drew it).
     model = PlacementModel(pcb, args.board, exact=True,
                            quench_kwargs={'clearance': args.clearance,
-                                          'ignore_net_ids': ignore_ids})
+                                          'ignore_net_ids': ignore_ids,
+                                          'estimate_courtyards': True})
 
     # #897: authored overlap waivers, BEFORE the first legality_findings call
     # (which is memoised, and which draw_legality makes while rendering the
@@ -2376,7 +2393,8 @@ def main(argv=None):
         _pair_floors = {n: d['value'] for n, d in model.floor_knobs.items()}
         before_model = PlacementModel(
             _bpcb, args.before, exact=True,
-            quench_kwargs={'ignore_net_ids': _bignore, **_pair_floors})
+            quench_kwargs={'ignore_net_ids': _bignore, **_pair_floors,
+                           'estimate_courtyards': True})
     failed, blockers, route_metrics = _load_summary(args.summary_json)
     prominent = {m['reference'] for m in moves} | \
         model.refs_of_nets(model.net_ids_for(failed))
@@ -2752,6 +2770,9 @@ def main(argv=None):
                 # castellated module) or is a round pad's bbox corner.
                 'pad_copper_gating': fnd['oob_refs_pad_copper_gating'],
                 'courtyard': fnd['oob_refs_courtyard'],
+                # #1300: [ref, basis, excess_mm] of the parts whose
+                # courtyard above is an ESTIMATE (they draw none)
+                'courtyard_estimated': fnd.get('estimated_courtyards', []),
                 # #962: footprint graphic copper past the outline
                 'graphic_copper': fnd.get('oob_refs_graphic_copper', []),
                 'graphic_copper_unmeasured': fnd.get('graphic_copper_unmeasured', []),

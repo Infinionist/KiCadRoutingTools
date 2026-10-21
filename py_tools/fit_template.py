@@ -39,8 +39,10 @@ member prints with each leg's gap and its gap to the chip; a NOTE names a
 member with one `side` that ended beside another edge.
 A member that cannot be seated stops the fit with the reason (its side, or
 the members in its way, named), and `--render` then draws the members seated
-before it. A part with no courtyard is fitted as the box round its pads,
-and the run names it: check that box against the part's real body. The row gives each
+before it. A part with no courtyard is fitted on the estimated courtyard
+place_simple seats it on -- its body and pads grown by the library's
+courtyard excess (#1300) -- and the run names it: check that box against the
+part's real body. The row gives each
 member's pose in the chip's frame, the chip at the origin unturned, and the
 pad-edge gaps the fit reached (`fitted.legs_mm`, one per named pad of the
 member, in the order of its pads; `legs_gap_mm` sums them). `--render` draws the
@@ -129,15 +131,20 @@ def main(argv=None):
         sketch = json.load(open(a.sketch, encoding='utf-8'))
         pcb = parse_kicad_pcb(a.board)
         clearance, edge, _ = board_floor_knobs(a.board)
+        # #1300: a part that draws no courtyard is fitted on the ESTIMATED
+        # courtyard place_simple seats it on, so the fit and the placement
+        # space it alike
         state = pose_score.make_state(pcb, a.board, clearance=clearance,
-                                      board_edge_clearance=edge)
+                                      board_edge_clearance=edge,
+                                      estimate_courtyards=True)
         names = [sketch.get('anchor')] + [m.get('ref') for m in sketch.get('members') or ()]
         crt = extract_courtyard_sides(a.board)
         boxed = [r for r in names if r in pcb.footprints and r not in crt]
         if boxed:
-            print(f"  NOTE: no courtyard on {', '.join(boxed)}: each is fitted (and placed) as "
-                  f"the box round its pads -- check that box against the part's real body in "
-                  f"the render", flush=True)
+            print(f"  NOTE: no courtyard on {', '.join(boxed)}: each is fitted (and placed) on "
+                  f"an estimated one, its body and pads grown by the library's courtyard "
+                  f"excess (#1300) -- check it against the part's real body in the render",
+                  flush=True)
         row = fit(pcb, state, sketch, reach=a.reach)
     except FitError as ex:
         print(f"fit_template: {ex}", file=sys.stderr)
@@ -178,7 +185,7 @@ def main(argv=None):
     if near:
         boxed = boxed + near
         print(f"  NOTE: no courtyard on the locked neighbour(s) {', '.join(near)}: each is an "
-              f"obstacle as the box round its pads -- check that box against its real body")
+              f"obstacle on its estimated courtyard (#1300) -- check it against its real body")
     if row['fitted'].get('context'):
         print(f"  locked neighbours of the locked chip, as obstacles and partners: "
               f"{', '.join(row['fitted']['context'])}")
