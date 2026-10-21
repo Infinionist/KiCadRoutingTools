@@ -140,7 +140,8 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
                             net_clearances: dict = None,
                             static_base: bool = False,
                             progress_callback=None,
-                            _rung_pass: bool = False) -> GridObstacleMap:
+                            _rung_pass: bool = False,
+                            stamp_pads: bool = True) -> GridObstacleMap:
     """Build base obstacle map with static obstacles (BGA zones, pads, pre-existing tracks/vias).
 
     Excludes all nets that will be routed (nets_to_route) - their stubs will be added
@@ -154,6 +155,9 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
             obstacle net's own class clearance). The floor maxes over the ROUTED nets only, so a
             foreign class cannot inflate it (that would over-block every routed net). An empty/
             absent map reproduces plain config.clearance behaviour exactly.
+        stamp_pads: False leaves pad COPPER off the map (their drill holes are
+            still stamped). Only for a caller that measures every pad itself,
+            exactly: qfn_fanout's stub test. Routing maps keep the default.
     """
     if net_clearances is None:
         net_clearances = {}
@@ -472,7 +476,7 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
     for _pn_i, (net_id, pads) in enumerate(pcb_data.pads_by_net.items()):
         if (_pn_i & 63) == 0:
             _report("pads", _pn_i, _n_pad_nets)
-        if net_id in nets_to_route_set:
+        if net_id in nets_to_route_set or not stamp_pads:
             continue
         for pad in pads:
             if id(pad) in _tie_partner_pad_ids:
@@ -620,7 +624,7 @@ def build_base_obstacle_map(pcb_data: PCBData, config: GridRouteConfig,
                 _sub = build_base_obstacle_map(
                     pcb_data, _dc_replace(config, via_size=_d, via_drill=_h),
                     nets_to_route, extra_clearance, net_clearances,
-                    static_base=False, _rung_pass=True)
+                    static_base=False, _rung_pass=True, stamp_pads=stamp_pads)
                 _cells = _sub.blocked_via_cells_at_rung(0)
                 if _cells:
                     _real_obstacles.add_blocked_vias_rung_batch(

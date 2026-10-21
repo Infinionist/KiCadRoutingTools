@@ -1741,16 +1741,22 @@ def generate_qfn_fanout(footprint: Footprint,
     # bga_fanout escape clearing: shorten the 45 fan inward to clear the pad
     # (connectivity-neutral - the straight segment still escapes the chip), and
     # if even the straight escape itself grazes a pad, drop that stub and warn.
-    from bga_fanout.reroute import _seg_hits_pad
     from obstacle_map import build_base_obstacle_map, build_layer_map, check_line_clearance
     from routing_config import GridRouteConfig
-    margin = clearance + track_width / 2
 
     # Full obstacle map so a stub is checked against foreign TRACKS and VIAS too,
     # not just foreign pads (issue #149 part 2). The part's own nets are excluded
     # (nets_to_route) so same-net taps stay legal; extra_clearance = track half so
     # the cell test is a clearance test. Checked at stub-creation time (below), so
     # a stub/fan that would extend into a foreign obstacle is shortened or dropped.
+    #
+    # Pad COPPER is left off this map (stamp_pads=False): every pad near the
+    # stubs is measured exactly in _seg_grazes instead. The stamps already
+    # carry the track half-width, so extra_clearance counts it twice -- the
+    # guard check_line_clearance's nearest-cell sampling needs (0.07 mm at this
+    # 0.1 mm grid) -- and a pad stamped that way refused fans that clear it:
+    # uhk_trackball's /NCS fan was cut back at a tip 0.188 mm from R2.1 with
+    # 0.175 needed. Tracks, vias, holes and keep-outs stay on the map.
     _obs_cfg = GridRouteConfig(layers=list(pcb_data.board_info.copper_layers or [layer]),
                                track_width=track_width, clearance=clearance)
     from kicad_dru import install_layer_clearances
@@ -1761,15 +1767,16 @@ def generate_qfn_fanout(footprint: Footprint,
         progress_callback(0, 0, "QFN fanout: building obstacle map...")
     _obstacles = build_base_obstacle_map(pcb_data, _obs_cfg, nets_to_route=_fanned_net_ids,
                                          extra_clearance=track_width / 2,
-                                         progress_callback=progress_callback)
+                                         progress_callback=progress_callback,
+                                         stamp_pads=False)
     _obs_layer_idx = _obs_layer_map.get(layer)
     # Window the foreign-pad scan by the actual STUB extent (every stub endpoint),
     # not the part's pad bbox: on large packages (LQFP) a straight escape runs
     # several mm past the pad bbox and grazes a nearby foreign component pad (a
     # connector/header) that a pad-bbox+3mm window misses -- and the grid obstacle
     # map is too coarse to catch a sub-grid graze (issue #214). Each pad is
-    # included if its OWN footprint can reach the stub span within `margin`, so the
-    # window is correct for large pads too.
+    # included if its OWN footprint can reach the stub span within `_pad_reach`, so
+    # the window is correct for large pads too.
     #
     # The part's OWN pads are included too (issue #356): the obstacle map excludes
     # every fanned net, and this scan used to exclude the whole footprint, so an
@@ -1777,6 +1784,17 @@ def generate_qfn_fanout(footprint: Footprint,
     # 0.006mm from a NEIGHBOUR pad of the same part with no check at all. The
     # per-stub `pad.net_id == net_id` skip below already exempts the stub's own
     # pad(s); every other-net pad -- own part or not -- is real foreign copper.
+    from check_drc import segment_pad_gap as _segment_pad_gap, _pad_has_no_copper
+    from net_queries import expand_pad_layers
+    _base_cl = _obs_cfg.layer_clearance(layer, clearance)
+
+    def _pad_need(pad, cl=clearance):
+        base = _base_cl if cl == clearance else _obs_cfg.layer_clearance(layer, cl)
+        return max(cl, _obs_cfg.pad_override_clearance(base, pad))
+    # The pad window must reach the widest clearance any pad is held to.
+    _pad_reach = track_width / 2 + max(
+        [clearance, _base_cl] + [getattr(p, 'local_clearance', 0.0) or 0.0
+                                 for pl in pcb_data.pads_by_net.values() for p in pl])
     _sxs = [pt[0] for s in stubs for pt in (s.pad_pos, s.corner_pos, s.stub_end)]
     _sys = [pt[1] for s in stubs for pt in (s.pad_pos, s.corner_pos, s.stub_end)]
     if _sxs:
@@ -1784,7 +1802,7 @@ def generate_qfn_fanout(footprint: Footprint,
         _lo_y, _hi_y = min(_sys), max(_sys)
 
         def _pad_near(p):
-            r = 0.5 * math.hypot(p.size_x or 0.0, p.size_y or 0.0) + margin
+            r = 0.5 * math.hypot(p.size_x or 0.0, p.size_y or 0.0) + _pad_reach
             return (_lo_x - r <= p.global_x <= _hi_x + r
                     and _lo_y - r <= p.global_y <= _hi_y + r)
 
@@ -1822,7 +1840,6 @@ def generate_qfn_fanout(footprint: Footprint,
         pcb_data, clearance, board_edge_clearance)
     from check_drc import _segment_to_rings_distance as _seg_rings_dist
     from check_drc import _point_on_board as _pt_on_board
-    from check_drc import segment_pad_gap as _segment_pad_gap
 
     # #1328: a stub that cannot escape at `clearance` retries at the rungs of
     # qfn_clearance_ladder (empty under --escalation off). Each rung gets its
@@ -1835,7 +1852,7 @@ def generate_qfn_fanout(footprint: Footprint,
     _esc_ladder = ([] if _lcl_498.get(layer) is not None else
                    qfn_clearance_ladder(clearance, len(pcb_data.board_info.copper_layers or ())
                                         or 2))
-    _rung_ctx = {clearance: (_obstacles, _obs_cfg, margin,
+    _rung_ctx = {clearance: (_obstacles, _obs_cfg,
                              (_edge_clear, _edge_rings, _edge_outer, _edge_cutouts))}
 
     def _ctx(cl):
@@ -1845,14 +1862,14 @@ def generate_qfn_fanout(footprint: Footprint,
                                    clearance=cl)
             install_layer_clearances(_cfg, None, None, pcb_data)  # #498
             _obs = build_base_obstacle_map(pcb_data, _cfg, nets_to_route=_fanned_net_ids,
-                                           extra_clearance=track_width / 2)
-            c = (_obs, _cfg, cl + track_width / 2,
-                 _board_edge_model(pcb_data, cl, board_edge_clearance))
+                                           extra_clearance=track_width / 2,
+                                           stamp_pads=False)
+            c = (_obs, _cfg, _board_edge_model(pcb_data, cl, board_edge_clearance))
             _rung_ctx[cl] = c
         return c
 
     def _seg_hits_edge(p1, p2, cl=clearance):
-        _ec, _er, _eo, _ecut = _ctx(cl)[3]
+        _ec, _er, _eo, _ecut = _ctx(cl)[2]
         if not _er:
             return False
         for (x, y) in (p1, p2):
@@ -1862,7 +1879,7 @@ def generate_qfn_fanout(footprint: Footprint,
             < track_width / 2 + _ec - 1e-6
 
     def _seg_grazes(p1, p2, net_id, cl=clearance):
-        _obs, _cfg, _margin, _ = _ctx(cl)
+        _obs, _cfg, _ = _ctx(cl)
         # Board edge first (issue #288) - independent of net.
         if _seg_hits_edge(p1, p2, cl):
             return True
@@ -1870,19 +1887,22 @@ def generate_qfn_fanout(footprint: Footprint,
         if _obs_layer_idx is not None and not check_line_clearance(
                 _obs, p1[0], p1[1], p2[0], p2[1], _obs_layer_idx, _cfg):
             return True
-        # Foreign pads, geometric + rotation-exact (issue #123), measured on the
-        # pad's real copper (check_drc.segment_pad_gap: round corners, tilt,
-        # custom polygons) -- the shape KiCad and check_drc grade. _seg_hits_pad
-        # grows the pad RECTANGLE by the margin with square corners, which
-        # overstates a diagonal fan's need at a neighbour pad's corner by up to
-        # margin*(sqrt2-1): 0.12 mm at a 0.2 mm class, enough to collapse fans
-        # check_drc grades clean (#1328, uhk_trackball U1).
+        # Foreign pads, exact (issue #123; found in #1328's replays):
+        # check_drc's segment_pad_gap on the pad's true copper (round corners,
+        # tilt, custom polygons) -- the shape KiCad and check_drc grade -- at
+        # the larger of the rung's fan clearance and the clearance the pad is
+        # held to (a .kicad_dru layer rule, the pad's own override). The old
+        # rectangle grown by the margin with square corners overstated a
+        # diagonal fan's need at a neighbour pad's corner by up to
+        # margin*(sqrt2-1), enough to collapse fans check_drc grades clean
+        # (uhk_trackball U1). NPTH copper-less pads are the map's holes.
         for pad in foreign_pads:
-            if pad.net_id == net_id:
+            if pad.net_id == net_id or _pad_has_no_copper(pad):
                 continue
-            if pad.drill <= 0 and layer not in (pad.layers or []):
+            if layer not in expand_pad_layers(pad.layers, [layer]):
                 continue
-            if _segment_pad_gap(p1[0], p1[1], p2[0], p2[1], pad) < _margin - 1e-9:
+            if _segment_pad_gap(p1[0], p1[1], p2[0], p2[1], pad) - track_width / 2 \
+                    < _pad_need(pad, cl) - 1e-9:
                 return True
         # Existing copper of the part's other fanned nets (issue #257).
         for s in _fanned_existing_segs:
