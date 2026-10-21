@@ -76,7 +76,8 @@ serves those nets from the fill.
   any of them, because a limit read off the board would bless its pose. Run
   `python3 -X utf8 py_tools/board_context.py <board> --json -o <ctx.json>`
   and read `emc_roles.roles`: each converter, crystal, oscillator and ESD
-  array its pin functions name, every leg measured pad edge to pad edge in
+  array its pin functions name, and each discrete ESD/TVS diode at the one
+  connector its line reaches (`esd diode`), every leg measured pad edge to pad edge in
   `emc_roles.roles[].proximity[].legs` (on a pile its `gap_mm` is null: a
   staging pose measures nothing, #1353), and a ready row in
   `emc_roles.roles[].proximity[].row` with `max_mm` left null. Ask the user

@@ -1,5 +1,7 @@
 """EMC roles (#1254): which parts form a converter's hot loop, a crystal's load
-loop or an ESD path, and how far apart their pads are. REPORT ONLY.
+loop or an ESD path (an array by its I/O pins, a discrete TVS diode by the
+role table and its nets, #1344), and how far apart their pads are. REPORT
+ONLY.
 
 `proximity[]` (#902) can grade "Cin within 1 mm of VIN/PGND", "L within 1 mm
 of SW", "the crystal within 2 mm of XIN/XOUT", "the ESD array within 1 mm of
@@ -485,6 +487,55 @@ def _esd_arrays(b: _Board, out: List[Dict]) -> None:
                 'proximity': [_row(e, j, subj, part, legs)]})
 
 
+def _esd_diodes(b: _Board, out: List[Dict]) -> None:
+    """A DISCRETE ESD / TVS diode (#1344): `_esd_arrays` reads an array by
+    its I/O pin functions, and a two-terminal diode has none (its pins are
+    A / K, or A1 / A2 for a bidirectional TVS), so StickHub's sixteen D_0402
+    TVS diodes, each from a USB port's D+ or D- to GND, were no role and
+    nothing proposed their row.
+
+    A part the role table calls a diode (an LED footprint aside) with
+    exactly two copper pads on two nets, one of them ground, whose other
+    net -- the line it clamps -- reaches exactly ONE connector: the record
+    is that diode at that connector, one leg from its line pad to the
+    connector's pads on the line. A line reaching two connectors or more (a
+    rail clamp on +5V that every port's VBUS shares) names no one
+    connector to place it at, so it is no role here."""
+    for d in sorted(b.fps, key=_nkey):
+        if b.role[d]['role'] != 'diode':
+            continue
+        name = getattr(b.fps[d], 'footprint_name', '') or ''
+        if 'led' in _norm(name):
+            continue
+        pads = b.copper[d]
+        if len(pads) != 2 or len({p.net_id for p in pads}) != 2 \
+                or min(p.net_id for p in pads) <= 0:
+            continue
+        gnd = [p for p in pads if b.ground(p.net_id)]
+        if len(gnd) != 1:
+            continue
+        line = next(p for p in pads if p is not gnd[0])
+        conns = sorted((r for r in b.net_parts.get(line.net_id, ())
+                        if r != d and b.connector(r)), key=_nkey)
+        if len(conns) != 1:
+            continue
+        j = conns[0]
+        qs = [q for q in b.copper[j] if q.net_id == line.net_id]
+        leg = b.leg('ESD line -> connector', d, line, j, qs)
+        ic_side = sorted((r for r in b.net_parts.get(line.net_id, ())
+                          if r not in (d, j) and b.big(r)), key=_nkey)
+        out.append({
+            'role': 'esd diode', 'part': d, 'value': b.value(d),
+            'connector': j, 'ic': ic_side,
+            'evidence': [f"{d} is a two-terminal diode ("
+                         + '; '.join(b.role[d]['evidence'])
+                         + f") from {b.net(line.net_id)} to "
+                         f"{b.net(gnd[0].net_id)}",
+                         f"{j} is the one connector carrying "
+                         f"{b.net(line.net_id)}"],
+            'proximity': [_row(d, j, [line], qs, [leg])]})
+
+
 def _switch_nodes(b: _Board, roles: List[Dict]) -> List[Dict]:
     """The board's switch nodes, one per net, for the keep-away proposals
     (#1253): a converter's SW / LX net (pin function), the inductor end a
@@ -704,7 +755,8 @@ def _keep_away(b: _Board, roles: List[Dict], notes: List[str]
 
 def emc_roles(pcb_data) -> Dict[str, object]:
     """`{roles, counts, basis, note, keep_away, ...}` -- the converters,
-    crystals, oscillators and ESD arrays a board's pins and roles name, each
+    crystals, oscillators, ESD arrays and ESD diodes a board's pins and roles
+    name, each
     relation with its legs measured and a ready `proximity[]` row (#1254),
     and the keep-away rules those roles propose, measured (#1253).
     `unknown` records a part that looks like one (an inductor shares its
@@ -715,6 +767,7 @@ def emc_roles(pcb_data) -> Dict[str, object]:
     _converters(b, roles)
     _crystals(b, roles)
     _esd_arrays(b, roles)
+    _esd_diodes(b, roles)
     counts: Dict[str, int] = {}
     for r in roles:
         counts[r['role']] = counts.get(r['role'], 0) + 1
