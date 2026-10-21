@@ -251,6 +251,12 @@ KNOWN_CLI_ONLY = {
                               'branches on the board it wrote, for '
                               'JSON_SUMMARY (report-only, no board mutation; '
                               'no GUI front runs repair_planes\' main)',
+    # #1329, listed by hand like consume_sense_branches. It only fills
+    # JSON_SUMMARY.zone_replacements; the lines a GUI user reads (what each
+    # replaced pour's settings become, and why) are printed by create_plane.
+    'consume_zone_replacements': 'route_planes.py: takes create_plane\'s '
+                                 'replaced-pour records for JSON_SUMMARY '
+                                 '(report-only, no board mutation)',
 }
 
 

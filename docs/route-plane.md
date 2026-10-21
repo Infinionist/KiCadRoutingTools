@@ -22,7 +22,7 @@ The `route_planes.py` script creates copper pour zones (plus optional via featur
 
 When creating a ground or power plane on an inner or bottom layer, SMD pads on other layers need via connections to reach the plane. This tool automates:
 
-1. **Zone creation** - Creates a copper pour zone covering the board. Replaces an existing zone for the same net/layer with new parameters; coexists with other nets' pours on that layer (warning + explicit fill priority)
+1. **Zone creation** - Creates a copper pour zone covering the board. Replaces an existing zone for the same net/layer with this run's settings, and lists each setting that changes (see [Replacing a same-net pour](#replacing-a-same-net-pour)); coexists with other nets' pours on that layer (warning + explicit fill priority)
 2. **Pad classification** - Identifies which pads need vias vs direct zone connection (the ones needing vias are handed to the route step; see the note above)
 3. **Thermal via arrays** (#487) - Exposed/thermal pads get a lattice of vias into the plane
 4. **Area via stitching / GND return vias** - Optional via features (`--stitch-vias`, `--add-gnd-vias`)
@@ -78,7 +78,7 @@ When specifying multiple nets, each net is paired with its corresponding plane l
 |--------|---------|-------------|
 | `--zone-clearance` | 0.2 | Zone clearance from other copper in mm |
 | `--min-thickness` | 0.1 | Minimum zone copper thickness in mm |
-| `--skip-existing-zones` | off | Keep an existing same-net zone on the target layer instead of replacing it (place stitching vias only). When off (the CLI default), an existing same-net zone on the target layer is replaced. **Other nets' pours on the layer are tolerated either way** — see below |
+| `--skip-existing-zones` | off | Keep an existing same-net zone on the target layer instead of replacing it (place stitching vias only). When off (the CLI default), an existing same-net zone on the target layer is replaced, and the run lists every setting the replacement changes (pad connection, clearance, width, outline, ...). Use it to keep a designer's pour as drawn. **Other nets' pours on the layer are tolerated either way** — see below |
 
 ### Algorithm Options
 
@@ -266,6 +266,31 @@ An existing pour for the **same** net on the target layer is replaced by default
 
 A pour is therefore removed only when every layer it covers is being replaced.
 A teardrop area on the net is not a pour (#1164) and is never removed with it.
+
+**What a replacement changes (#1329).** The new pour takes this run's
+settings, not the old pour's. The run prints every setting that changes, with
+the old value, the new one and where the new one comes from, once the new pour
+is built. It records the same in `JSON_SUMMARY.zone_replacements` (one entry
+per replaced pour: `net`, `layers`, `replaced_uuid`, and `changes` as
+`{setting, old, new, why}`):
+
+```
+Replaced 'GND' pour on B.Cu (--skip-existing-zones keeps it): 5 setting(s) changed
+    pad connection: thermal relief -> solid  [route_planes connects pads solid unless --thermal-relief (Planes tab: Thermal relief pad connections)]
+    clearance: 0.508 mm -> 0.254 mm  [this run's zone clearance: --zone-clearance, else the routed clearance]
+    minimum width: 0.254 mm -> 0.1 mm  [--min-thickness]
+    thermal gap / spoke width: 0.508 mm / 0.508 mm -> 0.2 mm / 0.2 mm  [route_planes' fixed spoke geometry; unused while pads connect solid]
+    outline: 4-vertex outline (105.41, 67.31)..(182.88, 110.49) -> 4-vertex outline (103.50, 67.51)..(183.50, 110.29)  [the board's bounding box inset 0.2 mm (--board-edge-clearance)]
+```
+
+The settings compared are the pad connection, clearance, minimum width,
+thermal gap and spoke width, outline (and its cut-outs), isolated-island
+removal and fill priority. The pad connection matters most on a hand-soldered
+through-hole board: route_planes connects pads solid unless `--thermal-relief`
+is given, so a designer's thermal-relief pour comes back solid. To keep a
+designer's pour as drawn, pass `--skip-existing-zones`. To keep replacing it
+but keep its thermal relief, pass `--thermal-relief`. Before #1329 the run
+said only "Replacing existing zone ... with new parameters".
 
 The GUI planes tab does the same. Its **Skip existing zones** checkbox is
 `--skip-existing-zones`, unticked by default as on the CLI. The tab then deletes

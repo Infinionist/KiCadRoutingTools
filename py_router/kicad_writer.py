@@ -810,6 +810,13 @@ def zone_overlap_priorities(zones) -> List[int]:
     return prio
 
 
+#: The thermal-relief spoke geometry every pour route_planes writes (the
+#: Planes tab sets the same two numbers on its pcbnew ZONE), named so that
+#: replacing a designer's pour can say what its spokes become (#1329).
+ZONE_THERMAL_GAP = 0.2
+ZONE_THERMAL_BRIDGE_WIDTH = 0.2
+
+
 def generate_zone_sexpr(
     net_id: int,
     net_name: str,
@@ -817,8 +824,8 @@ def generate_zone_sexpr(
     polygon_points: List[Tuple[float, float]],
     clearance: float = 0.2,
     min_thickness: float = 0.1,
-    thermal_gap: float = 0.2,
-    thermal_bridge_width: float = 0.2,
+    thermal_gap: float = ZONE_THERMAL_GAP,
+    thermal_bridge_width: float = ZONE_THERMAL_BRIDGE_WIDTH,
     direct_connect: bool = True,
     use_net_name: bool = False,
     priority: int = 0

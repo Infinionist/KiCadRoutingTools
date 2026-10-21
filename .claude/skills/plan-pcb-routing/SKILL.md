@@ -1384,9 +1384,20 @@ python3 -X utf8 py_router/route_planes.py board.kicad_pcb board_step1.kicad_pcb 
     2>&1 | tee /tmp/step1_pour.txt
 
 **A pour the board already has.** A same-net pour on a layer of this run is
-replaced. A multi-layer pour, such as `(layers "F.Cu" "B.Cu")`, is ONE zone and
-is replaced only when this run pours the net on every layer it covers (#1299),
-so name them all (`--nets GND GND --plane-layers F.Cu B.Cu`). If the run pours
+replaced with this run's settings, not its own. The run lists every setting
+that changes under `Replaced '<net>' pour on <layers>`, and in
+`JSON_SUMMARY.zone_replacements` (#1329). The usual one is the pad
+connection: route_planes pours solid unless `--thermal-relief` is given, so a
+designer's thermal-relief pour comes back solid, which matters on a
+hand-soldered through-hole board. Before the pour, look for existing pours on
+the plane nets. If the designer's pour should stay as drawn (its outline,
+connection style or clearance), add `--skip-existing-zones` for that step. If
+it should be replaced but keep thermal relief, add `--thermal-relief`. Then
+check the listed changes.
+
+A multi-layer pour, such as `(layers "F.Cu" "B.Cu")`, is ONE zone and is
+replaced only when this run pours the net on every layer it covers (#1299), so
+name them all (`--nets GND GND --plane-layers F.Cu B.Cu`). If the run pours
 only some of them, it prints `WARNING: ... cannot be replaced` and keeps the
 old pour under the new zone. Read that line, and re-run with the layers it
 names.
