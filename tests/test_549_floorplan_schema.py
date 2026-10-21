@@ -121,6 +121,10 @@ RULE_LITERAL = "rule=[" + chr(39) + chr(34) + "](" + chr(92) + "w+)[" \
 #: #704's provenance deliberately went to `context`, which has NO key set --
 #: growing `_DECAP_KEYS` would make an older build REFUSE the whole file,
 #: since `_reject_unknown` raises.
+#: #1357: a row's free text, `why`, and its aliases `note` and `reason`,
+#: accepted on every row type -- one meaning, three spellings.
+FREE = {'why', 'note', 'reason'}
+
 KEY_SETS = {
     '_TOP_LEVEL_KEYS': {
         'schema', 'kind', 'board', 'units', 'min_reader', 'envelope',
@@ -138,23 +142,23 @@ KEY_SETS = {
     '_ENVELOPE_KEYS': {'rect', 'tolerance_mm'},
     '_DEFAULTS_KEYS': {'zone_tolerance_mm'},
     '_BLOCK_KEYS': {'name', 'group', 'refs', 'zone', 'side', 'exclusive',
-                    'tolerance_mm', 'note', 'context',
+                    'tolerance_mm', 'context',
                     # #893: a DECISION and a SET, never both on one block.
                     'rotation', 'rotation_candidates',
                     # #1052: opt-in, the block moves as one piece.
-                    'rigid'},
-    '_KEEPOUT_KEYS': {'name', 'rect', 'circle', 'sides', 'allow', 'note',
-                      'context'},
+                    'rigid'} | FREE,
+    '_KEEPOUT_KEYS': {'name', 'rect', 'circle', 'sides', 'allow',
+                      'context'} | FREE,
     '_EDGE_CONNECTOR_KEYS': {
         'ref', 'edge', 'overhang_mm', 'max_setback_mm', 'class', 'source',
-        'note', 'suspect', 'suspect_reason', 'overhang_capped',
+        'suspect', 'suspect_reason', 'overhang_capped',
         'observed_overhang_mm', 'context',
         # #712: WHERE ALONG the edge. Mutually exclusive, absent by default,
         # and never written by `emit_intent`.
         'center_on_edge', 'along_edge_band',
         # #959 (#1000): the face, compiled from the brief. Absent by
         # default and never written by `emit_intent` itself.
-        'side'},
+        'side'} | FREE,
     '_OVERHANG_KEYS': {'min', 'max'},
     '_CENTER_ON_EDGE_KEYS': {'tolerance_mm'},
     '_ALONG_EDGE_BAND_KEYS': {'from', 'to'},
@@ -168,32 +172,32 @@ KEY_SETS = {
                      'plane_layers'},
     '_CORRIDOR_KEYS': {'name', 'nets', 'width_mm'},
     '_BUDGET_KEYS': {'overlap_area', 'oob_count', 'oob_amount'},
-    '_WAIVER_KEYS': {'pair', 'reason', 'context'},
+    '_WAIVER_KEYS': {'pair', 'context'} | FREE,
     # #837: the board-level assembly policy. `sides` is the claim; `why`
     # records how it was reached, and `emit_intent` fills it with the
     # observation rather than a reason nobody gave.
     # #1255: `body_edge_mm`, the assembler's least body-to-edge distance.
-    '_ASSEMBLY_KEYS': {'sides', 'why', 'context', 'body_edge_mm'},
+    '_ASSEMBLY_KEYS': {'sides', 'context', 'body_edge_mm'} | FREE,
     # #902: one declared claim -- these two named parts, no further apart
     # than `max_mm`. `ref` is a single ref here; the brief's list form is
     # sugar that `compile_brief` expands before it reaches this schema.
-    '_PROXIMITY_KEYS': {'ref', 'near', 'max_mm', 'basis', 'pads', 'note',
-                        'source', 'context'},
+    '_PROXIMITY_KEYS': {'ref', 'near', 'max_mm', 'basis', 'pads',
+                        'source', 'context'} | FREE,
     # #959 (#997): one map per kind of question P1 refuses on.
     '_DISPOSITION_KEYS': {'rules', 'withheld', 'refs', 'contradictions'},
     # #1051: one declared row. `members` is ordered and literal.
     '_ARRAY_KEYS': {'name', 'members', 'serves', 'order', 'rotation',
-                    'pitch_mm', 'axis', 'allow_mixed', 'why', 'note',
-                    'source', 'context'},
+                    'pitch_mm', 'axis', 'allow_mixed',
+                    'source', 'context'} | FREE,
     # #1054: one exact pose to seat, and whose fact it is.
-    '_FIXED_POSE_KEYS': {'ref', 'x', 'y', 'rot', 'side', 'basis', 'why',
-                         'context', 'accept_courtyard_overlap'},
+    '_FIXED_POSE_KEYS': {'ref', 'x', 'y', 'rot', 'side', 'basis',
+                         'context', 'accept_courtyard_overlap'} | FREE,
     # #1253: one rule per row, in route.py's own syntax.
-    '_KEEP_AWAY_KEYS': {'rule', 'note', 'source', 'context'},
+    '_KEEP_AWAY_KEYS': {'rule', 'source', 'context'} | FREE,
     # #1211: `place_pose replicate`'s own flags, plus the grade's tolerance.
     '_REPLICATE_KEYS': {'from', 'to', 'anchor', 'allow_net_mismatch', 'only',
-                        'skip', 'search_mm', 'tolerance_mm', 'why', 'note',
-                        'source', 'context'},
+                        'skip', 'search_mm', 'tolerance_mm',
+                        'source', 'context'} | FREE,
 }
 
 

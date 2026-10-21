@@ -513,7 +513,7 @@ ROWS = [
      "            pass",
      (T_SEED + '::test_a_named_courtyard_waiver_seats_u30_exactly',), 'KILLED'),
     ('waiver-needs-no-why', 'fp',
-     "            if acc and not str(f.get('why') or '').strip():",
+     "            if acc and not free_text(f).strip():",
      "            if False:",
      (T_SEED + '::test_a_waiver_the_board_cannot_honour_is_refused',), 'KILLED'),
     ('waiver-never-reaches-waiver-pairs', 'fp',
