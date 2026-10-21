@@ -315,12 +315,19 @@ python3 -X utf8 py_placer/place_simple.py board.kicad_pcb 's{seed}.kicad_pcb' \
   its log beside its board as `.log`; it prints one line per seed and exits 2
   if any seed failed, else 4 if any left parts illegal, else 0. One process
   takes about 120 MB.
-- **The seeds to judge.** A run of several seeds then names the `--judge`
-  legal seeds of lowest `final.cost` (default 6) for a judging route:
-  printed, and written to `judge.json` beside the boards (`judge`, cheapest
-  first, then the `scattered`, `clustered`, `anchored` and `illegal` seeds,
-  and `refused`: the declared poses that are not legal, the same in every
-  seed, so they do not keep a seed from the judge).
+- **The seeds to judge.** Each seed grades its own floorplan
+  (`check_floorplan --intent`, as `board_score --intent` grades it; the
+  `floorplan` line of its log and of its report). A run of several seeds then
+  names the `--judge` (default 6) legal seeds for a judging route: those
+  graded without a floorplan error first, then the fewest errors, each lot
+  by lowest `final.cost` (`judge_order`, #1296). A route cannot clear a
+  floorplan error, so such a seed cannot be DONE as placed, and the limit it
+  breaks often made it the cheapest. They are printed, a WARNING naming each
+  judged seed that carries an error, and written to `judge.json` beside the
+  boards (`judge` in judging order, then the `scattered`, `clustered`,
+  `anchored` and `illegal` seeds, `floorplan`: each seed's error count, and
+  `refused`: the declared poses that are not legal, the same in every seed,
+  so they do not keep a seed from the judge).
   Judging all 12 default seeds instead of the 6 cheapest shipped worse.
 - **Output.** The placed board with its siblings, a `JSON_SUMMARY:` line
   (final cost, moves, seed, `start` -- `scattered`, `clustered` or `anchored` -- parts
@@ -894,7 +901,11 @@ The board is graded rather than the route step's tally because each route
 step of a chain tallies only its own `--nets`: a recorded one-net retry at the
 end reports `already_connected` and nothing about the rest of the board.
 `quality` (vias, copper_mm, segments) is `board_score`'s own count of the
-board. It leaves DRC, assembly and the floorplan out: level 2 skips the
+board. With `--intent` it grades the floorplan as `board_score --intent`
+does (check_floorplan's errors, `blocking_by.floorplan`, summed into
+`blocking`): a route cannot clear a floorplan error, so the judge ranks by
+it first (`judge_key`: floorplan errors, then blocking, then vias, copper,
+segments; #1296). It leaves DRC and assembly out: level 2 skips the
 passes that fix grazes, so DRC on its board measures the polish it skipped,
 not the placement. The JSON has `board_score`'s keys, so the GUI's candidates
 table reads either, and it lists what it leaves out in `ungraded`, by
@@ -904,7 +915,7 @@ followed by a full one reads as incommensurable, not as a full row that
 graded fewer components (#1323).
 
 ```bash
-python3 -X utf8 py_tools/quick_score.py s0_fast.kicad_pcb --json s0_fast.score.json
+python3 -X utf8 py_tools/quick_score.py s0_fast.kicad_pcb --intent intent.json --json s0_fast.score.json
 ```
 
 Exit 0 when no net blocks, 4 when some do, 2 when check_connected gave no
@@ -1274,10 +1285,10 @@ this one, the chain `tests/stress/placement_ab/route_placed.py` replays -- it
 first runs the flow: places the skill's seeds (`--scattered` and
 `--clustered`, default 6 each, and the opt-in `--anchored`, default 0, as
 place_simple's default seeds; `--jobs` at a
-time), fast-routes the `--judge` (default 6) legal seeds the
-objective rates cheapest (the chain with `--quick 2`, scored by
-`quick_score.py`), and routes the best (fewest blocking, then vias, copper,
-segments) in full. The movie films that seed's placement -- the one routed
+time), fast-routes the `--judge` (default 6) legal seeds place_simple
+names (floorplan-clean first, then the objective's cheapest; the chain with
+`--quick 2`, scored by `quick_score.py`), and routes the best
+(`quick_score.judge_key`) in full. The movie films that seed's placement -- the one routed
 in full -- then:
 
 8. its **fast route**, played by the routing movie's own player;

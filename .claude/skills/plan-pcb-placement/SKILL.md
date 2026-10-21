@@ -615,8 +615,14 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
   total), roughly 2 s for 25 parts.
 - **Place 12 seeds (6 scattered, 6 clustered); judge the 6 the objective
   rates best.** place_simple ends by naming them: printed, and written to
-  `wk/<run>/judge.json` (`judge`, cheapest first; a seed that left a part
-  illegal is never named). Seeds differ more than most input changes, and the anneal's own
+  `wk/<run>/judge.json` (`judge`, in judging order; a seed that left a part
+  illegal is never named). Each seed grades its own floorplan
+  (`check_floorplan --intent`, the `floorplan` line of its log and of
+  `judge.json`), and the seeds it grades without an error are named first,
+  cheapest first, then the fewest errors: a route cannot clear a floorplan
+  error (a decap past its pin limit), so such a seed cannot be DONE as
+  placed, and the limit it breaks often makes it the cheapest. A WARNING
+  names each judged seed that carries one. Seeds differ more than most input changes, and the anneal's own
   cost (`final.cost` in each `s<S>.json`) says which are worth a judging
   route: the seed the judge would pick out of 16 is in the cheaper half
   85-100% of the time. Over 11 boards from 25 to 350 parts (each seed's
@@ -638,9 +644,11 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
   parts still left illegal; exit 2 a face or pose the inputs contradict.
   Read the `cost` line: `hints` and `groups` say which group or hint the
   result could not satisfy.
-- **Check and LOOK:**
+- **Check and LOOK** at each judged seed:
   `python3 -X utf8 py_tools/check_assembly.py <placed> --baseline wk/<run>/fixed.kicad_pcb`
-  (read `buildable`) and
+  (read `buildable`),
+  `python3 -X utf8 py_tools/check_floorplan.py <placed> --intent wk/<run>/intent.json`
+  (0 errors; the seed's `floorplan` line already counts them) and
   `python3 -X utf8 py_tools/render_placement.py <placed> -o <placed>.png`.
   Check the render against `references/placement-lessons.md`: the power
   stage between its entry and its loads, a regulator's caps tight around it,
@@ -662,16 +670,22 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
    chain for every candidate, so they compare. Run it in `s<S>_route/` and
    copy its last board to `s<S>_fast.kicad_pcb`. Never ship a `--quick`
    board.
-2. **Score each** with `py_tools/quick_score.py wk/<run>/s<S>_fast.kicad_pcb --json wk/<run>/s<S>_fast.score.json`:
+2. **Score each** with `py_tools/quick_score.py wk/<run>/s<S>_fast.kicad_pcb --intent wk/<run>/intent.json --json wk/<run>/s<S>_fast.score.json`:
    the board's open nets, graded as `board_score` grades a full route but
    over the nets without a zone (level 2 skips the plane finalize, which
-   joins a poured net's pads; the score lists those apart as `poured`), and
-   `board_score`'s via, copper and segment counts. (`board_score` itself
-   would count DRC grazes that level 2 leaves for the full route's cleanup,
-   which say nothing about the placement.)
-3. **Keep the best** by blocking, then vias, copper_mm, segments: copy its
-   placement (`s<S>.kicad_pcb`, never the `--quick` board) to
-   `wk/<run>/final.kicad_pcb` with `copy_board.py`.
+   joins a poured net's pads; the score lists those apart as `poured`), the
+   floorplan's errors as `board_score --intent` grades them
+   (`blocking_by.floorplan`, summed into `blocking`), and `board_score`'s
+   via, copper and segment counts. (`board_score` itself would count DRC
+   grazes that level 2 leaves for the full route's cleanup, which say
+   nothing about the placement.)
+3. **Keep the best** by floorplan errors first, then blocking, then vias,
+   copper_mm, segments (`quick_score.judge_key`): every seed whose floorplan
+   grades clean ranks above every seed that does not, since a route cannot
+   clear a floorplan error. Copy its placement (`s<S>.kicad_pcb`, never the
+   `--quick` board) to `wk/<run>/final.kicad_pcb` with `copy_board.py`. A
+   kept seed is not finished while its `floorplan` is above 0, whatever its
+   route.
 
 In `place` mode that placement is the result. Run
 `python3 -X utf8 py_tools/route_review.py wk/<run>/s<S>_fast.kicad_pcb --json wk/<run>/review.json`

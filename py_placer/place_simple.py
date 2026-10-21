@@ -9,9 +9,11 @@
 An OUT carrying {seed}, with no seed named, places the default seeds: 6
 started scattered, then 6 with each group gathered (`--scattered`,
 `--clustered`, and the opt-in `--anchored`), one process each, and names the
-`--judge` (6) legal seeds of lowest cost for a judging route, printed and
-written to judge.json beside the boards. `--seeds LIST` places the seeds it
-lists instead, and names the judged ones the same way.
+`--judge` (6) legal seeds for a judging route, printed and written to
+judge.json beside the boards: those `check_floorplan --intent` grades
+without an error first, then the fewest errors, each lot by lowest cost.
+`--seeds LIST` places the seeds it lists instead, and names the judged ones
+the same way.
 
 1. GROUPS: the groups file (`check_groups.py`), a crystal and its load caps
    folded into their IC's group. A group is a set of parts kept together:
@@ -283,6 +285,30 @@ def _line(t):
             + f", hints {t['hints']:.1f}" + (f": {hints}" if hints else "") + ")")
 
 
+def _floorplan(board, intent):
+    """The placed board's floorplan as the judge and `board_score --intent`
+    grade it (`board_score.score_floorplan`: check_floorplan --intent, its
+    ERROR findings): `{'errors': N, 'rules': [...]}`, or `{'errors': None,
+    'reason': ...}` when check_floorplan could not grade the board. A route
+    cannot clear such an error (a decap past its pin limit), so a seed that
+    carries one cannot be DONE as placed (#1296)."""
+    from board_score import score_floorplan
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with tempfile.TemporaryDirectory(prefix='place_simple_fp_') as tmp:
+        fp = score_floorplan(root, board, intent, tmp)
+    if not fp.get('ran'):
+        return {'errors': None, 'reason': fp.get('reason')}
+    return {'errors': fp['count'], 'rules': sorted({str(r) for r in fp.get('violations') or ()})}
+
+
+def _fp_text(fp):
+    """'3 floorplan error(s) (decap_pin_distance)', '' when clean or absent."""
+    e = (fp or {}).get('errors')
+    if e is None and fp:
+        return f"floorplan not graded ({fp.get('reason')})"
+    return f"{e} floorplan error(s) ({', '.join(fp.get('rules') or ())})" if e else ''
+
+
 def _seed_list(spec):
     """'0-3' or '0,1,2,3' (or a mix: '0-2,7') -> [0, 1, 2, 3]."""
     out = []
@@ -363,10 +389,12 @@ def _many_seeds(ap, a):
             fin = summary['final']
             ill = summary.get('illegal') or []
             start = summary.get('start')
+            fpt = _fp_text(summary.get('floorplan'))
             print(f"  seed {s}{f' ({start})' if start in ('clustered', 'anchored') else ''}: "
                   f"cost {fin['cost']:.1f}, {summary['moves']} moves in "
                   f"{summary['seconds']['anneal']} s"
-                  + (f", no legal pose for {', '.join(ill)}" if ill else '') + f" -> {out}")
+                  + (f", no legal pose for {', '.join(ill)}" if ill else '')
+                  + (f", {fpt}" if fpt else '') + f" -> {out}")
         else:
             print(f"  seed {s}: exit {rc}, no summary (see {os.path.splitext(out)[0]}.log)")
     _name_judged(a, seeds, summaries)
@@ -374,14 +402,31 @@ def _many_seeds(ap, a):
     return 2 if rcs - {0, 4} else (4 if 4 in rcs else 0)
 
 
+def judge_order(reports):
+    """`{seed: report}` (each seed's summary or `--json` report) -> its legal
+    seeds in judging order: floorplan errors first, then `final.cost` (#1296).
+
+    A seed check_floorplan grades with an ERROR cannot be DONE as placed, and
+    the limit it breaks often lowers its cost (it stopped paying to hold the
+    cap in), so by cost alone it was named first: gp14 board 05 judged
+    [8, 7, 3, 4, 9, 5] with s8 three decaps past their pin limit, and the
+    judge kept s8. Such a seed is ranked below every seed that grades clean,
+    not dropped: when none grades clean, the fewest errors are still judged
+    rather than nothing. A seed whose floorplan was not graded ranks after
+    every graded one. A seed that left a part illegal is never judged."""
+    def rank(s):
+        e = (reports[s].get('floorplan') or {}).get('errors')
+        return (e is None, e or 0, reports[s]['final']['cost'], s)
+    return sorted((s for s, r in reports.items() if not r.get('illegal')), key=rank)
+
+
 def _name_judged(a, seeds, summaries):
-    """A run of several seeds' last step: the `--judge` legal seeds of lowest
-    `final.cost`, printed and written to `judge.json` beside the seeds' boards
-    (`judge` in judging order, cheapest first; `scattered`, `clustered`,
-    `anchored` and `illegal` list the seeds by start and verdict)."""
-    legal = sorted((summaries[s]['final']['cost'], s) for s in seeds
-                   if s in summaries and not summaries[s].get('illegal'))
-    judge = [s for _c, s in legal[:a.judge]]
+    """A run of several seeds' last step: the `--judge` legal seeds to judge
+    (`judge_order`), printed and written to `judge.json` beside the seeds'
+    boards (`judge` in judging order; `scattered`, `clustered`, `anchored` and
+    `illegal` list the seeds by start and verdict, `floorplan` each seed's
+    floorplan errors)."""
+    judge = judge_order({s: summaries[s] for s in seeds if s in summaries})[:a.judge]
     doc = {'judge': judge,
            'scattered': [s for s in seeds if summaries.get(s, {}).get('start')
                          not in ('clustered', 'anchored')],
@@ -391,12 +436,24 @@ def _name_judged(a, seeds, summaries):
            # the declared poses refused, the same in every seed: the
            # intent's to fix, not a seed's
            'refused': next((summaries[s]['refused'] for s in seeds
-                            if summaries.get(s, {}).get('refused')), {})}
+                            if summaries.get(s, {}).get('refused')), {}),
+           # each placed seed's check_floorplan --intent errors (None: not
+           # graded), keyed by seed as JSON keys must be
+           'floorplan': {str(s): (summaries[s].get('floorplan') or {}).get('errors')
+                         for s in seeds if s in summaries}}
     path = os.path.join(os.path.dirname(a.out.format(seed=seeds[0])), 'judge.json')
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(doc, f, indent=1)
     print(f"place_simple: judge seeds {', '.join(map(str, judge)) or 'none'} "
-          f"(the {a.judge} legal seeds of lowest cost) -> {path}")
+          f"(the {a.judge} legal seeds of lowest cost, floorplan-clean first) -> {path}")
+    for s in judge:
+        fp = summaries[s].get('floorplan') or {}
+        if fp.get('errors'):
+            print(f"  WARNING: seed {s} is judged with {_fp_text(fp)}: it cannot be DONE "
+                  f"as placed (fewer than {a.judge} legal seeds grade clean)")
+        elif fp and fp.get('errors') is None:
+            print(f"  WARNING: seed {s} is judged with its {_fp_text(fp)}: grade it with "
+                  f"check_floorplan --intent before keeping it")
     for r, why in sorted(doc['refused'].items()):
         print(f"  WARNING: {r}'s declared pose is not legal, in every seed: "
               f"{'; '.join(why)}")
@@ -494,9 +551,10 @@ def main(argv=None):
                     help=f'likewise, the seeds started anchored, after the clustered ones '
                          f'(default {ANCHORED_SEEDS}: opt-in)')
     ap.add_argument('--judge', type=int, default=JUDGED_SEEDS,
-                    help=f'in a run of several seeds, how many legal seeds of lowest cost '
-                         f'to name for a judging route, printed and written to judge.json '
-                         f'beside the boards (default {JUDGED_SEEDS})')
+                    help=f'in a run of several seeds, how many legal seeds to name for a '
+                         f'judging route, printed and written to judge.json beside the '
+                         f'boards: those check_floorplan --intent grades without an error '
+                         f'first, then by lowest cost (default {JUDGED_SEEDS})')
     ap.add_argument('--jobs', type=int, default=0,
                     help='with several seeds, how many run at once (default: one per '
                          'seed, at most 4)')
@@ -723,6 +781,10 @@ def main(argv=None):
     copy_siblings(a.board, a.out)
     if tmp:
         shutil.rmtree(tmp, ignore_errors=True)
+    # the placed board's floorplan, graded as the judge grades it (#1296):
+    # report only, the exit code and the placement are untouched
+    fp = _floorplan(a.out, a.intent)
+    print(f"  floorplan: {_fp_text(fp) or 'no error'} (check_floorplan --intent)")
     final.pop('per_group', None)
     final.pop('per_hint', None)
     report = {'final': final, 'moves': res['moves'], 'seed': a.seed,
@@ -730,7 +792,7 @@ def main(argv=None):
                         else 'scattered'), 'runs': k + 1,
               'declared': sorted(f['reference'] for f in flips),
               'reseated': res['reseated'], 'repaired': bool(res.get('repaired')),
-              'illegal': illegal, 'refused': refused,
+              'illegal': illegal, 'refused': refused, 'floorplan': fp,
               'unseated': model.edge_unseated, 'notes': notes,
               'groups': model.groups, 'stats': res['stats'], 'templates': drift,
               'seconds': {'setup': round(t1 - t0, 1), 'anneal': round(t2 - t1, 1)}}
@@ -738,7 +800,7 @@ def main(argv=None):
         json.dump(report, open(a.json, 'w', encoding='utf-8'), indent=1)
     print('JSON_SUMMARY: ' + json.dumps({k: report[k] for k in
                                           ('final', 'moves', 'seed', 'start', 'reseated', 'illegal',
-                                           'refused', 'seconds')}))
+                                           'refused', 'floorplan', 'seconds')}))
     return 4 if illegal or refused else 0
 
 

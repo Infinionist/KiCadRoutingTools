@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Score a `route.py --quick 2` board: the seed judge's score.
 
-    quick_score.py FAST.kicad_pcb [--json OUT]
+    quick_score.py FAST.kicad_pcb [--intent INTENT] [--json OUT]
 
 - **blocking** is the board's own connectivity, graded the way `board_score`
   grades a full route (`check_connected`: unrouted nets plus the joins each
@@ -12,18 +12,26 @@
   The board is graded, not the route step's tally, because a chain's later
   route steps each tally only their own `--nets` (a one-net retry reports
   `already_connected` and nothing about the rest of the board).
+- **floorplan**, with `--intent`, is `board_score`'s own floorplan component:
+  `check_floorplan --intent` on the board, its ERROR findings counted (a
+  decap past its pin limit, a claim past its `max_mm`), summed into
+  `blocking` as board_score sums it. A route cannot clear such a finding, so
+  a seed that carries one cannot be DONE as placed (#1296).
 - **quality** (vias, copper_mm, segments) is `board_score`'s own, counted on
   FAST.kicad_pcb.
 
-DRC, assembly and the floorplan are left out: level 2 skips the passes that
-fix grazes, so DRC on its board measures the polish it skipped, not the
-placement. The keys are `board_score --json`'s (`blocking`, `blocking_by`,
-`quality`), so a seed's `s<S>_fast.score.json` reads the same either way, and
-what it leaves out is listed in `ungraded`, by board_score's own component
-names (#1323): a converge ledger holds quick and full rows side by side, and
-it compares two rows' graded sets before it compares their `blocking`.
-Rank seeds by blocking, then vias, copper_mm, segments. Never grade a board
-to ship with it: route that one in full and run `board_score`.
+DRC and assembly are left out: level 2 skips the passes that fix grazes, so
+DRC on its board measures the polish it skipped, not the placement. The keys
+are `board_score --json`'s (`blocking`, `blocking_by`, `quality`), so a
+seed's `s<S>_fast.score.json` reads the same either way, and what it leaves
+out is listed in `ungraded`, by board_score's own component names (#1323): a
+converge ledger holds quick and full rows side by side, and it compares two
+rows' graded sets before it compares their `blocking`.
+
+Rank seeds by `judge_key`: floorplan errors first (every seed that grades
+clean before any that does not), then blocking, then vias, copper_mm,
+segments. Never grade a board to ship with it: route that one in full and run
+`board_score`.
 """
 
 #: #937 registry: which door(s) show this tool, and whether it changes
@@ -76,8 +84,7 @@ UNGRADED = {
            'graded on the full route',
     'undersized': '--quick 2 leaves the copper polish for the full route; '
                   'sizes are graded on the full route',
-    'floorplan': 'quick_score grades the route; check_floorplan --intent '
-                 'grades the placement',
+    'floorplan': 'no --intent given; the floorplan is ungraded',
     'assembly': 'quick_score grades the route; check_assembly grades the '
                 'placement',
     'assembly.courtyard_gating': 'quick_score runs no check_assembly',
@@ -90,29 +97,77 @@ UNGRADED = {
 }
 
 
-def quick_score(board):
-    from board_score import quality
+def quick_score(board, intent=None):
+    """The score document. With `intent`, the floorplan is graded as
+    `board_score --intent` grades it (`score_floorplan`: check_floorplan's
+    ERROR findings) and summed into `blocking`; without it, or when
+    check_floorplan could not grade, `floorplan` is listed in `ungraded`."""
+    import tempfile
+    from board_score import quality, score_floorplan
     blk, by, poured = connectivity(board)
-    ungraded = sorted(UNGRADED)
+    reasons = dict(UNGRADED)
+    components = {}
+    if intent:
+        with tempfile.TemporaryDirectory(prefix='quick_score_') as tmp:
+            fp = score_floorplan(ROOT, board, intent, tmp)
+        if fp.get('ran'):
+            reasons.pop('floorplan')
+            components['floorplan'] = fp
+            by['floorplan'] = fp['count']
+            if blk is not None:
+                blk += fp['count']
+        else:
+            reasons['floorplan'] = fp.get('reason') or reasons['floorplan']
+    ungraded = sorted(reasons)
+    components.update({k: {'ran': False, 'reason': reasons[k]} for k in ungraded})
     return {'blocking': blk, 'blocking_by': by, 'poured': poured, 'quality': quality(board),
-            'ungraded': ungraded,
-            'components': {k: {'ran': False, 'reason': UNGRADED[k]} for k in ungraded},
-            'score': 'quick_score: connectivity of the nets without a zone (route.py --quick 2)'}
+            'ungraded': ungraded, 'components': components,
+            'score': 'quick_score: connectivity of the nets without a zone (route.py --quick 2)'
+                     + (', and the floorplan' if 'floorplan' not in reasons else '')}
+
+
+def judge_key(score):
+    """How the seed judge ranks scored seeds, best first (sort ascending).
+
+    Floorplan errors come first, ahead of the route: a seed check_floorplan
+    grades with an ERROR (a decap past its pin limit) cannot be DONE as
+    placed whatever its route does, so every seed that grades clean ranks
+    above every seed that does not (#1296). Then `blocking`, then vias,
+    copper_mm, segments. A floorplan nobody graded (no --intent) counts as 0,
+    so a run scored without an intent ranks as it did before; a value that is
+    not a number sorts last."""
+    def num(v):
+        return (v if isinstance(v, (int, float)) and not isinstance(v, bool)
+                else float('inf'))
+    by = score.get('blocking_by') if isinstance(score.get('blocking_by'), dict) else {}
+    q = score.get('quality') if isinstance(score.get('quality'), dict) else {}
+    fp = by.get('floorplan')
+    return (0 if fp is None else num(fp), num(score.get('blocking')),
+            num(q.get('vias')), num(q.get('copper_mm')), num(q.get('segments')))
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('board')
+    ap.add_argument('--intent',
+                    help="the run's intent: grade the floorplan as `board_score --intent` "
+                         "does (check_floorplan's errors, summed into blocking)")
     ap.add_argument('--json', help='write the score here')
     a = ap.parse_args(argv)
-    sc = quick_score(a.board)
+    sc = quick_score(a.board, intent=a.intent)
     if a.json:
         with open(a.json, 'w', encoding='utf-8') as fh:
             json.dump(sc, fh, indent=1)
     q = sc['quality']
     p = sc['poured']
+    fp = sc['blocking_by'].get('floorplan')
     print(f"blocking={sc['blocking']} vias={q.get('vias')} copper_mm={q.get('copper_mm')} "
-          f"segments={q.get('segments')} (poured, not counted: {p.get('broken')} joins)")
+          f"segments={q.get('segments')} (poured, not counted: {p.get('broken')} joins)"
+          + (f" floorplan={fp}" if fp is not None else ''))
+    if fp:
+        rules = sorted(set(sc['components']['floorplan'].get('violations') or ()))
+        print(f"FLOORPLAN: {fp} error(s) ({', '.join(map(str, rules))}): a route cannot "
+              f"clear them, so this placement cannot be DONE as it stands")
     print(f"UNGRADED (the full route's board_score grades these): {', '.join(sc['ungraded'])}")
     return 2 if sc['blocking'] is None else (4 if sc['blocking'] else 0)
 

@@ -37,10 +37,11 @@ With --route BOARD:SET (a stress-corpus board whose recorded chain routes
 this one: `tests/stress/placement_ab/route_placed.py`), it runs the placement
 skill's flow first and films it after: the skill's seeds are placed
 (--scattered seeds started scattered, then --clustered started clustered, then
-the opt-in --anchored started anchored, as place_simple's default seeds), the --judge legal seeds the objective rates cheapest
-are fast-routed (the chain
-with `--quick 2`) and scored by quick_score, the best (fewest blocking, then
-vias, copper, segments) is routed in full. The movie films that seed's
+the opt-in --anchored started anchored, as place_simple's default seeds), the
+--judge legal seeds place_simple names (`judge_order`: floorplan-clean first,
+then the objective's cheapest) are fast-routed (the chain
+with `--quick 2`) and scored by quick_score, the best (`quick_score.judge_key`)
+is routed in full. The movie films that seed's
 placement -- the one routed in full -- and goes on:
 
   8. its fast route, played as the routing movie plays a run;
@@ -291,9 +292,9 @@ def _strip(opts, *flags):
 
 
 def _score_key(sc):
-    q = sc.get('quality') or {}
-    return (sc.get('blocking', 1e9), q.get('vias', 1e9), q.get('copper_mm', 1e9),
-            q.get('segments', 1e9))
+    """The seed judge's own ranking (`quick_score.judge_key`)."""
+    from quick_score import judge_key
+    return judge_key(sc)
 
 
 def _route(placed, name, set_, out, quick):
@@ -335,12 +336,12 @@ def run_flow(a, board, out, opts, work):
             return None
     reps = {s: json.load(open(os.path.join(work, f's{s}.json'))) for s in seeds
             if os.path.isfile(os.path.join(work, f's{s}.json'))}
-    legal = sorted((r['final']['cost'], s) for s, r in reps.items() if not r.get('illegal'))
-    judged = [s for _c, s in legal[:a.judge]]
+    from place_simple import judge_order
+    judged = judge_order(reps)[:a.judge]
     if not judged:
         print("place_movie: no seed placed every part legally; nothing to route", file=sys.stderr)
         return None
-    print(f"place_movie: fast-routing the {len(judged)} cheapest legal seeds: {judged}")
+    print(f"place_movie: fast-routing the {len(judged)} legal seeds the judge names: {judged}")
     with ThreadPoolExecutor(max_workers=max(1, a.route_jobs or a.jobs)) as pool:
         got = list(pool.map(lambda s: _done(work, f'fast_s{s}') or _route(
             os.path.join(work, f's{s}.kicad_pcb'), name, set_, os.path.join(work, f'fast_s{s}'), True),

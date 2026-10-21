@@ -267,7 +267,10 @@ overlaps, the movable parts in its way pushed aside in turn.
 
 A placement is judged by routing it: blocking nets first (unrouted, then
 broken), then vias, copper length and segment count. The objective's cost,
-crossings and hpwl only rank placements nobody has routed yet.
+crossings and hpwl only rank placements nobody has routed yet. A floorplan
+error (`check_floorplan --intent`: a decap past its pin limit) ranks ahead
+of all of them, since no route clears it: a seed that carries one cannot be
+DONE as placed, so every seed that grades clean ranks above it.
 
 Route each seed with the board's own routing chain (the `plan-pcb-routing`
 skill writes one), giving `route.py` and every `route_diff.py` step
@@ -309,20 +312,24 @@ python3 -X utf8 py_router/route.py $W/diff.kicad_pcb $W/route.kicad_pcb \
     --layers F.Cu In1.Cu In2.Cu B.Cu --layer-costs 1.0 3.0 3.0 1.0 \
     --power-nets GND +3V3 +5V VTARGET VREG /VBUS +1V8
 python3 -X utf8 py_router/copy_board.py $W/route.kicad_pcb $R/s${s}_fast.kicad_pcb
-python3 -X utf8 py_tools/quick_score.py $R/s${s}_fast.kicad_pcb --json $R/s${s}_fast.score.json
+python3 -X utf8 py_tools/quick_score.py $R/s${s}_fast.kicad_pcb --intent $R/intent.json \
+    --json $R/s${s}_fast.score.json
 ```
 
 `quick_score` exits 0 when no net blocks, 4 when some do, and 2 when
-check_connected gave no summary. Read `blocking`
-and `quality` (vias, copper_mm, segments) from the score file, keep the best
-seed, and copy its placement (`$R/s<S>.kicad_pcb`, never the `--quick` board)
+check_connected gave no summary. Read `blocking` (with `--intent`, the
+floorplan's errors are in it: `blocking_by.floorplan`) and `quality` (vias,
+copper_mm, segments) from the score file, keep the best seed by
+`quick_score.judge_key` (floorplan errors first, then blocking, then vias,
+copper, segments), and copy its placement (`$R/s<S>.kicad_pcb`, never the `--quick` board)
 to `wk/tig/final.kicad_pcb` with `copy_board.py`; in `full` mode the skill then
 routes it with `/plan-pcb-routing`, without `--quick`.
 
 **The skill's seeds.** `place_simple`'s default seeds are `--scattered` seeds
 (default 6), then `--clustered` seeds started clustered (default 6, below);
-it names the `--judge` legal seeds of lowest `final.cost` (default 6) in
-`judge.json`. The skill fast-routes those and keeps the best.
+it names the `--judge` legal seeds (default 6) in `judge.json`: those
+`check_floorplan --intent` grades without an error first, then by lowest
+`final.cost`. The skill fast-routes those and keeps the best.
 
 ## What the placer reads from the intent
 
