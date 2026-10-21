@@ -13,9 +13,14 @@ it only when the grade shows no zone / keep-out / exclusive-zone / edge error
 on the part, no floor fallback and no band contradiction; otherwise it falls
 back to `_try_place` as before.
 
-  1. band min 1.5: (5.0, 0.851), exit 0; blind twin (5) the old (8.0, 2.851),
+  1. band min 1.5: (5.0, 0.5), exit 0; blind twin (5) the old (8.0, 2.5),
      exit 4.
-  2. band min 0: (5.0, 1.55), on its edge; blind, (8.0, 2.55), no overhang.
+  2. band min 0: (5.0, 1.25), on its edge; blind, (8.0, 2.25), no overhang.
+
+The poses are measured at the unset edge's 0.2 fab floor (#1301; they were
+0.35 mm further in at the old 0.55). Passing 0.55 does not restore them: the
+band is graded at zero margin since #1301 while the seeder still seats the
+courtyard at the gate margin, so a 0.55 seat reads under its own minimum.
   3. a band the footprint contradicts (#1241) refuses the edge seat, so the
      fall-back runs and the zone error is still repaired.
   4. the line says WHO broke the rule: a part the seed placed outside, which
@@ -93,7 +98,7 @@ class TheReseatKeepsTheEdge(unittest.TestCase):
     def test_1_band_min_1_5_is_seated_in_its_zone_on_its_edge(self):
         with tempfile.TemporaryDirectory() as td:
             rc, pose, s, out = _seed(td)
-        self.assertEqual((rc, pose), (0, (5.0, 0.851, 0.0)), out[-1500:])
+        self.assertEqual((rc, pose), (0, (5.0, 0.5, 0.0)), out[-1500:])
         self.assertIn('the seed placed J1 outside a declared '
                       'zone_containment and the polish did not move it',
                       out)
@@ -101,18 +106,20 @@ class TheReseatKeepsTheEdge(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             rc, pose, s, out = _seed(td, blind=True)
         # The blind twin: `_try_place` pulls it in, overhang 0.
-        self.assertEqual((rc, pose), (4, (8.0, 2.851, 0.0)))
+        self.assertEqual((rc, pose), (4, (8.0, 2.5, 0.0)))
         self.assertIn('under the declared minimum 1.50mm', out)
 
     def test_2_band_min_0_keeps_its_overhang(self):
         with tempfile.TemporaryDirectory() as td:
             rc, pose, s, _out = _seed(td, band_min=0.0)
-        self.assertEqual((rc, pose), (0, (5.0, 1.55, 0.0)))
-        self.assertAlmostEqual(_edge_rows(s)['J1']['overhang_mm'], 1.0,
+        self.assertEqual((rc, pose), (0, (5.0, 1.25, 0.0)))
+        # 0.75 = the courtyard's overhang itself, read at zero margin (#1301);
+        # it read 1.0 = 0.45 + the 0.55 margin before.
+        self.assertAlmostEqual(_edge_rows(s)['J1']['overhang_mm'], 0.75,
                                places=3)
         with tempfile.TemporaryDirectory() as td:
             rc, pose, s, _out = _seed(td, band_min=0.0, blind=True)
-        self.assertEqual((rc, pose), (0, (8.0, 2.55, 0.0)))
+        self.assertEqual((rc, pose), (0, (8.0, 2.25, 0.0)))
         self.assertEqual(_edge_rows(s)['J1']['overhang_mm'], 0.0)
 
     def test_3_a_contradicted_band_falls_back_and_repairs_the_zone(self):
