@@ -742,6 +742,7 @@ KiCadRoutingTools/
 ├── py_placer/                # Placement CLIs and the placement package
 │   ├── place_simple.py           # The placer: functional groups, one objective, annealed
 │   ├── place_movie.py            # place_simple with a camera: a movie of the placement, step by step
+│   ├── judge_seeds.py            # The seed judge: judge.json's seeds routed by one quick chain, scored
 │   ├── place_pose.py             # Set, turn, face, lock or replicate parts by hand
 │   ├── place_fanout_clearance.py # Move decoupling caps off fanout vias
 │   ├── beautify_labels.py        # Tidy the reference-designator silkscreen
@@ -974,6 +975,7 @@ Every tool prints its full option list with `--help`, and **[docs/configuration.
 | `bga_fanout.py` / `qfn_fanout.py` | BGA / QFN escape fanout | [BGA](py_router/bga_fanout/README.md) · [QFN](py_router/qfn_fanout/README.md) · [Utilities](docs/utilities.md) |
 | `place_fanout_clearance.py` | Move decoupling caps off fanout vias | [Utilities](docs/utilities.md#decap-clearance-repair-place_fanout_clearancepy) |
 | `place_simple.py` | Place a board by its functional groups | [Placement](py_placer/placement/README.md) |
+| `judge_seeds.py` | The seed judge: the seeds judge.json names routed by one quick (level 2) chain and scored | [Utilities](docs/utilities.md#seed-judge-runner-judge_seedspy) |
 | `board_brief.py` | Assemble what a placement author needs to read, in one artifact | [Utilities](docs/utilities.md#board-brief-board_briefpy) · [Design Brief](docs/design-brief.md) |
 | `check_floorplan.py` | Grade a board against a declared floorplan intent | [Floorplan Intent](docs/floorplan-intent.md) |
 | `check_*.py` | DRC / connectivity / hygiene / pad checks | [Utilities](docs/utilities.md) |

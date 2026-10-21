@@ -845,6 +845,7 @@ _COMMAND_STAGES = (
     (re.compile(r"place_simple\.py\b.*?" + _SS + r"\.kicad_pcb"), "placing seed {0}"),
     (re.compile(r"place_simple\.py\b.*?--seed[ =](\d+)"), "placing seed {0}"),
     (re.compile(r"place_simple\.py\b"), "placing"),
+    (re.compile(r"judge_seeds\.py\b"), "fast-routing the judged seeds"),
     (re.compile(r"(?:quick_score|board_score)\.py\b.*?" + _SS + r"_fast"), "scoring seed {0}"),
     (re.compile(r"route_review\.py\b"), "reviewing the fast route"),
     (re.compile(_SS + r"_(?:route|fast)\b"), "fast-routing seed {0}"),

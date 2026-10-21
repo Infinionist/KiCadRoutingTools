@@ -29,6 +29,7 @@ runnable tool in the clone with a one-line purpose.
   [context sheet](#board-context-sheet-board_contextpy) ·
   [route review](#route-review-route_reviewpy) ·
   [seed judge score](#seed-judge-score-quick_scorepy) ·
+  [seed judge runner](#seed-judge-runner-judge_seedspy) ·
   [datasheet template fit](#datasheet-template-fit-fit_templatepy) ·
   [run ledger](#run-ledger-convergepy) ·
   [label tidy](#label-tidy-beautify_labelspy) ·
@@ -930,6 +931,53 @@ Exit 0 when no net blocks, 4 when some do, 2 when check_connected gave no
 summary.
 Never grade a board to ship with it: route that one in full and run
 `board_score`.
+
+## Seed Judge Runner (`judge_seeds.py`)
+
+Runs the placement skill's judging step over the seeds `place_simple` names
+in `judge.json`: each seed routed by the SAME chain, its last board copied
+out and scored, so the seeds compare (#1327). The chain is a text file, one
+command per line (a trailing `\` continues it, `#` comments), each naming its
+boards by placeholder: `{in}` the board the step reads (the seed's placement
+for the first step, then the board the last step wrote), `{out}` the board it
+writes (`s<S>_route/<N>_<script>.kicad_pcb`; a step without one writes no
+board), `{dir}` the seed's route folder, `{seed}`, and `{run}` the folder
+`judge.json` is in.
+
+```text
+python3 -X utf8 py_router/route_planes.py {in} {out} --nets GND --plane-layers B.Cu
+python3 -X utf8 py_router/qfn_fanout.py {in} --output {out} --component U2 --nets '*' '!GND'
+python3 -X utf8 py_placer/place_fanout_clearance.py {in} {out} --clearance 0.2 --intent {run}/intent.json
+python3 -X utf8 py_router/route.py {in} {out} --nets '*' --json-out {dir}/route.json
+```
+
+```bash
+python3 -X utf8 py_placer/judge_seeds.py wk/run/judge.json --chain wk/run/judge_chain.txt \
+    --intent wk/run/intent.json [--seeds 3,4] [--jobs 1]
+```
+
+- Every `route.py` and `route_diff.py` step runs at `--quick 2`, added when
+  the line has no `--quick` of its own (and logged), so the full route's
+  chain can be the file as it stands.
+- A command runs from the current folder (the repo root) with no shell: a
+  quoted `'*'` reaches the tool as `*`, and `python3` at the head of a line is
+  the runner's own interpreter.
+- Per seed: `s<S>_route/` made afresh with the placement copied in
+  (`copy_board`, siblings included), every step's output in
+  `s<S>_route/chain.log`, the last board copied to `s<S>_fast.kicad_pcb` and
+  scored by `quick_score.py` (with `--intent`) into `s<S>_fast.score.json`,
+  the names the skill and the GUI's candidates table read. A step's non-zero
+  exit is logged and the chain goes on; a step whose `{out}` was not written
+  stops that seed.
+- At the end the seeds are ranked by `quick_score.judge_key` and the best
+  named; keeping it (its placement, never the `--quick` board) is the
+  skill's step. `JSON_SUMMARY:` carries every seed's score and the ranking.
+
+Exit 0 every seed scored; 4 a seed's chain wrote no board or its score could
+not be read (named); 2 nothing run: `judge.json` unreadable or naming no
+seed, a seed's placement missing, or a chain that reads no `{in}`, writes no
+`{out}` or names an unknown placeholder (`~{...}`, KiCad's overbar in a net
+name, is not one).
 
 ## Datasheet Template Fit (`fit_template.py`)
 

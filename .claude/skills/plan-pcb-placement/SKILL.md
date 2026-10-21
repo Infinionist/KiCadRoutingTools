@@ -663,28 +663,44 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
 
 ### 3.7 Fast-route the judged seeds and keep the best
 
-1. **Fast-route the seeds `wk/<run>/judge.json` names** (the `--judge` legal
-   seeds of lowest `final.cost`) with the board's routing
-   chain (the recipe
-   is `plan-pcb-routing`'s: planes, fanout, the decap clearance step,
-   `route.py`), giving `route.py` and every `route_diff.py` step `--quick 2`.
-   Level 2 skips the recovery tail (net rescue, terminal escalation, plane
-   finalize, reconciliation laps), where a poor placement's routing time
-   goes, and every pass that only polishes copper for shipping: about half
-   the time of `--quick` alone, and it picks seeds as well (measured over 16
-   seeds of five corpus boards against their full routes). Use the SAME
-   chain for every candidate, so they compare. Run it in `s<S>_route/` and
-   copy its last board to `s<S>_fast.kicad_pcb`. Never ship a `--quick`
-   board.
-2. **Score each** with `py_tools/quick_score.py wk/<run>/s<S>_fast.kicad_pcb --intent wk/<run>/intent.json --json wk/<run>/s<S>_fast.score.json`:
-   the board's open nets, graded as `board_score` grades a full route but
-   over the nets without a zone (level 2 skips the plane finalize, which
-   joins a poured net's pads; the score lists those apart as `poured`), the
+1. **Write the judging chain** to `wk/<run>/judge_chain.txt`: the board's
+   routing chain (the recipe is `plan-pcb-routing`'s: planes, fanout, the
+   decap clearance step, `route_diff.py`, `route.py`), one command per line
+   (a trailing `\` continues it), each naming its boards by placeholder:
+   `{in}` the board the step reads, `{out}` the one it writes, `{dir}` the
+   seed's route folder (`--json-out {dir}/route.json`), `{run}` this folder
+   (`--intent {run}/intent.json`).
+   ```text
+   python3 -X utf8 py_router/route_planes.py {in} {out} --nets GND --plane-layers B.Cu
+   python3 -X utf8 py_router/route.py {in} {out} --nets '*' --json-out {dir}/route.json
+   ```
+2. **Fast-route and score the seeds `wk/<run>/judge.json` names** (the
+   `--judge` legal seeds, floorplan-clean first, then lowest `final.cost`):
+   ```bash
+   python3 -X utf8 py_placer/judge_seeds.py wk/<run>/judge.json \
+       --chain wk/<run>/judge_chain.txt --intent wk/<run>/intent.json
+   ```
+   It runs the SAME chain on every seed, so they compare, with `route.py`
+   and every `route_diff.py` step at `--quick 2` (added when a line has
+   none). Level 2 skips the recovery tail (net rescue, terminal escalation,
+   plane finalize, reconciliation laps), where a poor placement's routing
+   time goes, and every pass that only polishes copper for shipping: about
+   half the time of `--quick` alone, and it picks seeds as well (measured
+   over 16 seeds of five corpus boards against their full routes). Each
+   seed runs in `s<S>_route/` (its `chain.log` holds every step), its last
+   board is copied to `s<S>_fast.kicad_pcb` and scored by
+   `py_tools/quick_score.py --intent` into `s<S>_fast.score.json`: the
+   board's open nets, graded as `board_score` grades a full route but over
+   the nets without a zone (level 2 skips the plane finalize, which joins a
+   poured net's pads; the score lists those apart as `poured`), the
    floorplan's errors as `board_score --intent` grades them
-   (`blocking_by.floorplan`, summed into `blocking`), and `board_score`'s
-   via, copper and segment counts. (`board_score` itself would count DRC
-   grazes that level 2 leaves for the full route's cleanup, which say
-   nothing about the placement.)
+   (`blocking_by.floorplan`, summed into `blocking`), `joins_needed`, and
+   `board_score`'s via, copper and segment counts. (`board_score` itself
+   would count DRC grazes that level 2 leaves for the full route's cleanup,
+   which say nothing about the placement.) It ends by ranking the seeds
+   and naming the best. `--jobs N` routes N seeds at once: a judging route
+   takes up to about 1.3 GB on a small board and 5 GB on a 350-part one.
+   Never ship a `--quick` board.
 3. **Keep the best** by floorplan errors first, then blocking, then
    `joins_needed`, then vias, copper_mm, segments
    (`quick_score.judge_key`): every seed whose floorplan

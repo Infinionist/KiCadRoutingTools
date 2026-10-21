@@ -297,35 +297,41 @@ reads the same names:
 | `s<S>_fast.kicad_pcb` | the fast-routed board, copied out of `s<S>_route/` |
 | `s<S>_fast.score.json` | its `quick_score` |
 
-and the kept board goes to `wk/<run>/final.kicad_pcb`. For tigard's seed 0:
+and the kept board goes to `wk/<run>/final.kicad_pcb`. `py_placer/judge_seeds.py`
+runs the judging route over the seeds `judge.json` names, the same chain on
+each, and writes those files (#1327). The chain is a text file, one command
+per line, its boards named by placeholder (`{in}` the board the step reads,
+`{out}` the one it writes, `{dir}` the seed's route folder, `{run}` the run
+folder); every `route.py` and `route_diff.py` step runs at `--quick 2`. For
+tigard, `wk/tig/judge_chain.txt`:
 
-```bash
-R=wk/tig; s=0; W=$R/s${s}_route; mkdir -p $W
-python3 -X utf8 py_router/route_planes.py $R/s$s.kicad_pcb $W/planes.kicad_pcb \
+```text
+python3 -X utf8 py_router/route_planes.py {in} {out} \
     --nets GND +3V3 --plane-layers In1.Cu In2.Cu --clearance-ceiling 0.15
-python3 -X utf8 py_router/qfn_fanout.py $W/planes.kicad_pcb --component U3 \
-    --nets '*' '!GND' '!+3V3' --output $W/fanout.kicad_pcb
-python3 -X utf8 py_placer/place_fanout_clearance.py $W/fanout.kicad_pcb $W/caps.kicad_pcb --clearance 0.1
-python3 -X utf8 py_router/route_diff.py $W/caps.kicad_pcb $W/diff.kicad_pcb \
-    --nets /USB_DP /USB_DN --track-width 0.1 --diff-pair-gap 0.1 --clearance-ceiling 0.1 --no-gnd-vias \
-    --quick 2
-python3 -X utf8 py_router/route.py $W/diff.kicad_pcb $W/route.kicad_pcb \
-    --nets '*' --quick 2 --track-width 0.10 --clearance-ceiling 0.15 --via-size 0.5 \
+python3 -X utf8 py_router/qfn_fanout.py {in} --component U3 \
+    --nets '*' '!GND' '!+3V3' --output {out}
+python3 -X utf8 py_placer/place_fanout_clearance.py {in} {out} --clearance 0.1
+python3 -X utf8 py_router/route_diff.py {in} {out} \
+    --nets /USB_DP /USB_DN --track-width 0.1 --diff-pair-gap 0.1 --clearance-ceiling 0.1 --no-gnd-vias
+python3 -X utf8 py_router/route.py {in} {out} \
+    --nets '*' --track-width 0.10 --clearance-ceiling 0.15 --via-size 0.5 \
     --via-drill 0.25 --hole-to-hole-clearance 0.25 --board-edge-clearance 0.5 --grid-step 0.05 \
     --layers F.Cu In1.Cu In2.Cu B.Cu --layer-costs 1.0 3.0 3.0 1.0 \
-    --power-nets GND +3V3 +5V VTARGET VREG /VBUS +1V8
-python3 -X utf8 py_router/copy_board.py $W/route.kicad_pcb $R/s${s}_fast.kicad_pcb
-python3 -X utf8 py_tools/quick_score.py $R/s${s}_fast.kicad_pcb --intent $R/intent.json \
-    --json $R/s${s}_fast.score.json
+    --power-nets GND +3V3 +5V VTARGET VREG /VBUS +1V8 --json-out {dir}/route.json
 ```
 
-`quick_score` exits 0 when no net blocks, 4 when some do, and 2 when
-check_connected gave no summary. Read `blocking` (with `--intent`, the
-floorplan's errors are in it: `blocking_by.floorplan`) and `quality` (vias,
-copper_mm, segments) from the score file, keep the best seed by
+```bash
+python3 -X utf8 py_placer/judge_seeds.py wk/tig/judge.json --chain wk/tig/judge_chain.txt \
+    --intent wk/tig/intent.json
+```
+
+Each seed's score is `quick_score`'s (`--intent` passed through): `blocking`
+(with the floorplan's errors in it, `blocking_by.floorplan`), `joins_needed`
+and `quality` (vias, copper_mm, segments). The runner ranks the seeds by
 `quick_score.judge_key` (floorplan errors first, then blocking, then
-`joins_needed`, then vias, copper, segments), and copy its placement (`$R/s<S>.kicad_pcb`, never the `--quick` board)
-to `wk/tig/final.kicad_pcb` with `copy_board.py`; in `full` mode the skill then
+`joins_needed`, then vias, copper, segments) and names the best; copy its
+placement (`wk/tig/s<S>.kicad_pcb`, never the `--quick` board) to
+`wk/tig/final.kicad_pcb` with `copy_board.py`; in `full` mode the skill then
 routes it with `/plan-pcb-routing`, without `--quick`.
 
 **The skill's seeds.** `place_simple`'s default seeds are `--scattered` seeds
