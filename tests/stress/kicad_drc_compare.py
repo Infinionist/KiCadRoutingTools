@@ -34,6 +34,11 @@ the flagged artifact lives in KiCad's own float-borderline web measurement.
 Usage:
   python3 tests/stress/kicad_drc_compare.py <board.kicad_pcb> [...]
   python3 tests/stress/kicad_drc_compare.py --wave <wave_dir>   # summary.json
+  python3 tests/stress/kicad_drc_compare.py <final> --baseline <input>
+
+--baseline subtracts the input board's items from BOTH engines, one for one,
+by position and then by (type, net pair). It cancels only what is reported
+identically on both boards, so a pile baseline cancels little (#1333).
 
 Exit: 0 every board compared and consistent; 1 a board diverged; 2 a board
 was NOT compared (kicad-cli missing or failed on it), or none was given (#995).
@@ -1135,7 +1140,15 @@ def main():
                          "design conditions, e.g. edge-connector pads inside "
                          "the board's own edge rule) are subtracted so "
                          "kicad_only reflects router-introduced items "
-                         "(single-board mode only)")
+                         "(single-board mode only). It cancels only an item "
+                         "the engine reports on BOTH boards, at the same "
+                         "position or as a (type, net pair) twin, one for "
+                         "one. A PILE (parts staged off the outline) is a "
+                         "poor baseline: its pad-on-pad items are not the "
+                         "placed board's, and KiCad reports a part's "
+                         "footprint-inherent items in different numbers "
+                         "there (#1333). The baseline's own check_drc "
+                         "listing is never printed")
     args = ap.parse_args()
     boards = list(args.boards)
     jobs = [(b, None) for b in boards]

@@ -453,6 +453,12 @@ harmless.
    copper_edge_clearance on edge-connector fingers is design intent, not a
    routing defect. The no-LLM replay grader (ab_replay_grade.py) now records
    the same fields automatically.
+   `--baseline <unrouted input>` subtracts the input's items from both
+   engines, one for one, matched by position and then by (type, net pair).
+   It cancels only what both boards report identically, so a PILE is a poor
+   baseline: its pad-on-pad items are not the placed board's, and KiCad
+   reports a part's footprint-inherent items (pads against its own net-less
+   EP) in different numbers there (#1333).
    CONNECTION_WIDTH (#406): the cross-check also grades KiCad's min-copper-web
    class, SEPARATELY from the copper classes (check_drc has no counterpart --
    the artifact lives in KiCad's own float-borderline web measurement, so web
