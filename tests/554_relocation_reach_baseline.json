@@ -958,46 +958,47 @@
       "want_mm": 6.2407
     },
     "tigard/decap:U5": {
-      "base_violation": 0.0,
+      "base_violation": 0.19,
       "binding": [
         [
-          "RN3",
+          "U6",
           0.25,
           "clearance"
         ],
         [
-          "J2",
+          "J5",
           0.25,
           "clearance"
         ],
         [
           "<wall hi>",
-          0.0,
+          -0.6324,
           "wall"
         ]
       ],
       "binding_axis": "x",
       "block": "decap:U5",
       "board": "tigard",
-      "control_ok": true,
+      "control_ok": false,
       "foreign_pads": 46,
       "frozen_mm": 0.2692,
       "identity_violations": 0,
       "members": [
         "C15",
+        "C16",
         "C20",
         "C22",
         "U5"
       ],
-      "n": 4,
+      "n": 5,
       "nets": 19,
-      "nets_ignored": 9,
+      "nets_ignored": 11,
       "reach_mm": 1.4415,
       "reach_over_frozen": 5.3548,
       "refusal": "",
       "schema": 1,
-      "slide_frozen_abs_mm": 0.2384,
-      "slide_frozen_mm": 0.2384,
+      "slide_frozen_abs_mm": 0.0,
+      "slide_frozen_mm": 0.3768,
       "want_mm": 5.5368
     },
     "tigard/decap:Y1": {
@@ -1443,8 +1444,8 @@
       "tigard",
       "watchy"
     ],
-    "controls_failed": 18,
-    "controls_ok": 6,
+    "controls_failed": 19,
+    "controls_ok": 5,
     "frozen_mm_median": 0.0,
     "gain_mm_max": 16.6564,
     "gain_mm_median": 0.3052,
