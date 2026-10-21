@@ -9480,7 +9480,8 @@ def emit_intent(pcb_data, pcb_file: str, *,
                 declare_classes: bool = False,
                 derive_decaps='off', brief_fragment=None,
                 decaps_from: Optional[str] = None,
-                derive_arrays='off') -> Dict:
+                derive_arrays='off', clearance: Optional[float] = None,
+                board_edge_clearance: Optional[float] = None) -> Dict:
     """A starter intent READ OFF the board, for a human or a model to edit.
 
     Everything here describes what the board already is. The envelope is
@@ -9507,9 +9508,19 @@ def emit_intent(pcb_data, pcb_file: str, *,
     leak guarantee is the detector's, and the written rows carry a little
     of the board's current arrangement -- disclosed member by member in
     `context.arrays_dropped` / `arrays_edge_released`.
+
+    It reads the board at the floors its grade will (`resolved_floors`:
+    `clearance` / `board_edge_clearance` as given, else the board's own),
+    and in the grade's currencies (#1301): a part is AT the edge when it
+    comes within `part_class.SEAT_TOL_MM` of the outline or past it, the seat
+    tolerance the grade gives a receptacle; its band is read at zero margin
+    (`connector_geometry.courtyard_overhang`), `max` that overhang plus 0.5;
+    and its edge at `edge_reach_mm`. It used to read all three off one
+    occupancy reading at a fixed 0.55 edge clearance, so every emitted band
+    sat 0.55 above the zero-margin grade, and the edge it read was not the
+    one the grade read.
     """
     from .quench import QuenchState
-    import routing_defaults as defaults
 
     if derive_arrays not in ('off', 'auto'):
         raise ValueError(f"derive_arrays {derive_arrays!r}: expected 'off' "
@@ -9519,9 +9530,19 @@ def emit_intent(pcb_data, pcb_file: str, *,
     if not outline['trustworthy']:
         raise UntrustworthyOutline(outline['problems'])
 
-    state = QuenchState(pcb_data, pcb_file, clearance=defaults.CLEARANCE,
-                        board_edge_clearance=0.55)
+    clearance, board_edge_clearance = resolved_floors(
+        pcb_file, clearance, board_edge_clearance)
+    state = QuenchState(pcb_data, pcb_file, clearance=clearance,
+                        board_edge_clearance=board_edge_clearance)
     parts = {p.ref: p for p in state.graded_parts()}
+    # AT the edge: within the grade's receptacle seat tolerance of the
+    # outline, or past it -- a mechanical distance, so no DRC floor decides
+    # which parts are observed there (watchy's side switches sit 0.21 mm
+    # inside, ulx3s's B4-B6 0.41: at the edge clearance they were not).
+    from .connector_geometry import courtyard_overhang, geometry_for
+    from .part_class import SEAT_TOL_MM
+    _at_edge_gate = legality.BoardOutlineGate(pcb_data.board_info, SEAT_TOL_MM)
+    _overhang_geo = geometry_for(state, pcb_data, pcb_file)
     bounds = outline['bounds']
 
     derived = (groups_mod.derive_groups(pcb_data, tuple(group_sources))
@@ -9685,7 +9706,6 @@ def emit_intent(pcb_data, pcb_file: str, *,
 
     conns = []
     declared = set()
-    body_geometry = None     # #961: built only if an edged entry is emitted
     # the bodies, read once if a part reaching two sides asks which way it
     # faces (`_nearest_edge`), and again by #1155's pass below
     _emit_bodies: Dict[str, object] = {}
@@ -9694,12 +9714,14 @@ def emit_intent(pcb_data, pcb_file: str, *,
     #: read off the part -- labelled `derived_default`, not an observation.
     band_default = set()
     for ref in sorted(parts):
-        amt = state.edge_gate.rect_outside_amount(parts[ref].rect)
+        near = _at_edge_gate.rect_outside_amount(parts[ref].rect)
+        # the overhang the grade reads its band on, at zero margin (#1301)
+        amt = courtyard_overhang(_overhang_geo, parts[ref].rect)
         if _pile and ref not in _pile_locked:
-            if amt > legality.EPS:
+            if near > legality.EPS:
                 _pose_withheld.append(ref)
             continue
-        if amt > legality.EPS:
+        if near > legality.EPS:
             # An OBSERVED overhang above the sanity cap is not a band. Emitting
             # it as one launders the damage into the spec that is supposed to
             # gate the damage's repair -- see EDGE_BAND_SANITY_MM.
@@ -9807,10 +9829,7 @@ def emit_intent(pcb_data, pcb_file: str, *,
                 # itself when no body is measured) plus 0.5, so an edged
                 # entry still grades its band clean by construction. Measured
                 # on the 22 tracked boards: the widening never fires.
-                if body_geometry is None:
-                    from .connector_geometry import ConnectorGeometry
-                    body_geometry = ConnectorGeometry(pcb_data, pcb_file)
-                body = body_geometry.measure(ref, entry['edge'])
+                body = _overhang_geo.measure(ref, entry['edge'])
                 if (body['body_measured']
                         and body['body_outside_mm'] > amt + legality.EPS):
                     entry['overhang_mm']['max'] = round(

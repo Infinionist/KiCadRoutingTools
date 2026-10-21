@@ -577,11 +577,15 @@ def main(argv=None):
         return 2
     if args.emit_intent:
         try:
+            from list_nets import board_floor_knobs
+            _ec, _ee, _ek = board_floor_knobs(args.board, args.clearance,
+                                              args.board_edge_clearance)
             doc = emit_intent(pcb, args.board, group_sources=sources or (),
                               declare_classes=args.declare_classes,
                               derive_decaps=args.declare_decaps,
                               brief_fragment=brief_fragment or None,
-                              decaps_from=args.decaps_from)
+                              decaps_from=args.decaps_from,
+                              clearance=_ec, board_edge_clearance=_ee)
         except UntrustworthyOutline as exc:
             print(f"ERROR: {args.board}: {exc}", file=sys.stderr)
             return UNPLACED_EXIT

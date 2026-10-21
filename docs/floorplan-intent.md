@@ -687,7 +687,13 @@ writeback lowers the clearance half of that max (sonde_xilinx's class 0.254 is
 written back as 0.2), so a part 0.23 mm from a second side used to reach it
 placed and not routed. When `min_copper_edge_clearance` is unset, that floor is
 the fab edge floor every routing step writes back (0.20 mm, source `fab edge
-floor (what routing writes)`), not a fixed 0.55 mm.
+floor (what routing writes)`), not a fixed 0.55 mm. `--emit-intent` reads the
+board the same way: at the floors its grade reads, a part counted AT the edge
+when it comes within the grade's receptacle seat tolerance (0.5 mm) of the
+outline or past it, its band `max` its zero-margin overhang plus 0.5, and its
+edge at the same reach. It used to read all three at a fixed 0.55 edge
+clearance, so an intent emitted before this carries bands 0.55 mm wider than
+the part's overhang (more on a corner part, whose reading summed both sides).
 
 Every declared connector on the board gets a row in `edge_connector_evidence`
 (`--json`), including passing ones. Each row carries:
