@@ -837,6 +837,11 @@ boards" and "which commit broke connectivity".
       --env KICAD_SMOOTH_ROUTE=0
   # or a routing_defaults constant, patched in the container's own repo copy
   ... --label hw19 --defaults HEURISTIC_WEIGHT=1.9
+  # or a CLI DEFAULT: a replay only exercises it where the recorded step
+  # omitted the flag, so strip the flag from every step of that tool, on
+  # BOTH arms (each container rewrites its own manifest copy; the corpus
+  # volume is untouched, and the label gains a -strip<hash> suffix)
+  ... --label qfnbase --strip-flag qfn_fanout.py:--clearance
   ```
 
 - **`corpus_bisect.sh`** — score ONE engine commit across the corpus, for

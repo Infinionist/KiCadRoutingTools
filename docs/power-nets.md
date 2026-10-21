@@ -47,8 +47,12 @@ or threading a congested region. When a power route (a 2-pad route, a multipoint
 connection, or a tap edge) fails at its power width, the router automatically retries it at
 the layer's default track width and applies neck-down widths to the result:
 
-- Segments within `--neckdown-length` (default 2.5mm) of a pad endpoint stay at the default
-  width - the standard neck-down practice for fanout on fine-pitch parts.
+- Segments within `--neckdown-length` (default 2.5mm) of a pad endpoint are laid at the
+  pad-entry width -- the power width capped at that pad's short side -- wherever it fits, and
+  at the default width only where it does not (#1318). An end on a via or a track takes the
+  power width there. They used to stay at the default width whole, fit or not, so a short edge
+  (a 1 mm pin-to-pin run, a 1.2 mm drop to a via at a 0.5 mm-pitch LQFP) shipped narrow end to
+  end.
 - Farther segments return to the power width wherever the wide clearance actually fits;
   a mid-route pinch stays narrow while open stretches go wide.
 - Each narrow/wide transition gets a stepped width taper (`--neckdown-taper-length`,

@@ -175,10 +175,10 @@ def test_rescue_skips_connected_and_reports_unchanged():
 def _pinch_board():
     """#1033: VICTIM is a POWER net (0.4 requested) whose only way across is
     a 0.5 mm long pinch at x 3.0..3.5 -- solid net-2 copper above and below it
-    on both layers -- with free space either side. Its pads are 10 mm apart,
-    so beyond the 2.5 mm neck zone at each pad there is ~3 mm of free middle
-    where the full width fits; only a width below the power width fits the
-    pinch."""
+    on both layers -- with free space either side. Its pads are 10 mm apart
+    and 0.6 mm wide, so the full width fits everywhere but the pinch, the
+    2.5 mm pad-entry zones included (#1318); only a width below the power
+    width fits the pinch."""
     bi = BoardInfo(layers={0: 'F.Cu', 31: 'B.Cu'},
                    copper_layers=['F.Cu', 'B.Cu'],
                    board_bounds=(-5.0, -2.0, 7.0, 2.0))
@@ -251,8 +251,14 @@ def test_rescued_power_net_keeps_its_width_where_it_fits():
     wide_len = sum(math.hypot(s.end_x - s.start_x, s.end_y - s.start_y)
                    for s in wide)
     assert wide_len >= 2.0, f"the free middle must carry the full 0.4: {wide_len:.2f} mm"
-    assert all(-1.6 < min(s.start_x, s.end_x) and max(s.start_x, s.end_x) < 2.6
-               for s in wide), "full width only in the free middle"
+    # #1318: the pad-entry zone carries the full width too where it fits
+    # (these 0.6 mm pads take 0.4), so the 0.4 runs pad to pinch on each side
+    # and only the pinch neighbourhood narrows
+    assert all(max(s.start_x, s.end_x) < 2.6 or min(s.start_x, s.end_x) > 3.9
+               for s in wide), "full width kept out of the pinch"
+    assert (min(min(s.start_x, s.end_x) for s in wide) <= -3.5
+            and max(max(s.start_x, s.end_x) for s in wide) >= 5.5), \
+        "full width at both pads, where it fits (#1318)"
     pinch = [s.width for s in segs
              if min(s.start_x, s.end_x) < 3.4 and max(s.start_x, s.end_x) > 3.1]
     assert pinch and max(pinch) < 0.2, f"the pinch must stay narrow: {pinch}"
