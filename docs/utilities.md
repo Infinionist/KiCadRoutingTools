@@ -442,6 +442,10 @@ moves, so it would refuse poses no worse than where the part already sits, and
 would make this tool useless on the unplaced pile it exists to arrange. The
 summary carries the two facts under different names: `no_worse` is the
 verdict the verb acts on, `legal` is whether the board is clean at this pose.
+`legal` needs the pad-edge clearance measured exactly, which it is against a
+rectangular outline, or one within 0.1 mm of its bbox (measured against the
+bbox shrunk by that stray, `pad_edge.outline_inset_mm`); a castellated pad
+straddling the outline is exempt there, as it is off the board (#1326).
 `--strict-legal` refuses unless the result is clean; `--force` writes anyway
 and records `forced`. A KiCad `(locked yes)` refuses a direct move — name the
 ref in `unlock` in the same call if you mean it; `--force` deliberately does

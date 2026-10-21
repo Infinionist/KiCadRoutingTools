@@ -5410,6 +5410,48 @@ def _segments_cover_rectangle(segments, bounds) -> bool:
     return True
 
 
+
+#: An outline is measured as a rectangle when every Edge.Cuts segment runs
+#: within this of one side of its bbox (#1326: complex_hierarchy draws one
+#: corner at y=51.816 against 51.8, which made every pad 'sampled' and `legal`
+#: unreachable on every pose).
+NEAR_RECTANGLE_MM = 0.1
+
+
+def _near_rectangle_inset(segments, bounds) -> Optional[float]:
+    """How far inside `bounds` an outline that is a rectangle but for drawing
+    tolerance strays: the largest distance of a segment end from the bbox side
+    it runs along, when every segment runs within NEAR_RECTANGLE_MM of one side
+    and the sides' segments together cover the rectangle to that tolerance;
+    None otherwise. Every point of such an outline lies in the band between the
+    bbox and the bbox shrunk by the inset, so the board contains the shrunk
+    rectangle, and a gap measured against it never claims more room than the
+    outline gives."""
+    if not segments or not bounds:
+        return None
+    tol = NEAR_RECTANGLE_MM
+    x0, y0, x1, y1 = bounds
+    sides = [[], [], [], []]
+    inset = 0.0
+    for a, b in segments:
+        for index, (axis, fixed) in enumerate(((0, x0), (0, x1), (1, y0), (1, y1))):
+            da, db = abs(a[axis]-fixed), abs(b[axis]-fixed)
+            if da <= tol and db <= tol:
+                sides[index].append(sorted((a[1-axis], b[1-axis])))
+                inset = max(inset, da, db)
+                break
+        else:
+            return None
+    for intervals, low, high in zip(sides, (y0, y0, x0, x0), (y1, y1, x1, x1)):
+        cursor = low
+        for start, end in sorted(intervals):
+            if start - cursor > tol:
+                return None
+            cursor = max(cursor, end)
+        if high - cursor > tol:
+            return None
+    return inset
+
 class PadCopper(NamedTuple):
     """One copper pad's edge reading, as `EdgeCopperContext` measures it.
 
@@ -5441,7 +5483,8 @@ class _PosedPad:
     """
     __slots__ = ('pad_number', 'pad_type', 'layers', 'shape', 'size_x', 'size_y',
                  'roundrect_rratio', 'rect_rotation', 'rotation', 'global_x',
-                 'global_y', 'polygons', 'geometry_approximations', 'copper_box')
+                 'global_y', 'polygons', 'geometry_approximations', 'copper_box',
+                 'castellated')
 
 
 def _custom_box_at_pose(original, posed, delta):
@@ -5518,6 +5561,7 @@ def pads_at_pose(fp, pose) -> List[_PosedPad]:
         pad.shape = original.shape
         pad.roundrect_rratio = getattr(original, 'roundrect_rratio', 0.0)
         pad.geometry_approximations = getattr(original, 'geometry_approximations', ())
+        pad.castellated = bool(getattr(original, 'castellated', False))
         base = getattr(original, 'rotation', 0.0) or 0.0
         pad.rotation = (base + delta) % 360
         # the copper box's corners turned about the pad, then boxed: exact
@@ -5701,8 +5745,9 @@ class EdgeCopperContext:
     board object instead (`edge_copper_for`).
     """
     __slots__ = ('pcb_data', 'path', 'required', 'bounds', 'rings', 'outer',
-                 'cutouts', 'rectangular', 'rules_unmeasured', 'clearance',
-                 'argument_mm', 'knobs', 'source', '_check_pad_board_edge')
+                 'cutouts', 'rectangular', 'inset', 'bounds_measured',
+                 'rules_unmeasured', 'clearance', 'argument_mm', 'knobs',
+                 'source', '_check_pad_board_edge')
 
     def __init__(self, pcb_data, required: float, pcb_file=None):
         from check_drc import board_edge_geometry, check_pad_board_edge
@@ -5716,6 +5761,8 @@ class EdgeCopperContext:
         # even when a rectangular ring survived parsing; a ring/bbox alone cannot
         # certify the outline. A live caller must supply its current saved board.
         rectangular = False
+        inset = 0.0
+        bounds_measured = bounds
         source = pcb_file or getattr(pcb_data, 'source_path', None)
         if source and bounds:
             from kicad_parser import _collect_edge_cuts_segments
@@ -5723,6 +5770,14 @@ class EdgeCopperContext:
                 with open(source, encoding='utf-8') as stream:
                     segments = _collect_edge_cuts_segments(stream.read())
                 rectangular = _segments_cover_rectangle(segments, bounds)
+                if not rectangular and not cutouts:
+                    inset = _near_rectangle_inset(segments, bounds)
+                    if inset is not None:
+                        # measured against the bbox shrunk by the drawing's
+                        # stray, which the board contains (#1326)
+                        rectangular = True
+                        bounds_measured = (bounds[0] + inset, bounds[1] + inset,
+                                           bounds[2] - inset, bounds[3] - inset)
             except (OSError, ValueError):
                 pass
         rules_unmeasured = []
@@ -5761,6 +5816,9 @@ class EdgeCopperContext:
         self.pcb_data, self.path, self.required = pcb_data, source, required
         self.bounds, self.rings, self.outer, self.cutouts = bounds, rings, outer, cutouts
         self.rectangular = rectangular
+        # The rectangle pads are measured against: the bbox, or for an outline
+        # within NEAR_RECTANGLE_MM of one, the bbox shrunk by its stray.
+        self.inset, self.bounds_measured = inset, bounds_measured
         # A tuple, so no caller can append to the board's constants; `grade`
         # hands out a deep copy because callers mutate the result.
         self.rules_unmeasured = tuple(rules_unmeasured)
@@ -5789,8 +5847,27 @@ class EdgeCopperContext:
         pads = fp.pads if pose is None else pads_at_pose(fp, pose)
         return tuple(self._readings(pads))
 
+    def _straddles(self, pad) -> bool:
+        """Does `pad`'s copper lie both on and off the board -- a castellated
+        half-hole on its module's edge? Read as `pad_copper_overrun_mm` reads
+        it: the vertices of the pad's true outline."""
+        from check_drc import _point_on_board
+        from check_pads import pad_outline_polygon
+        try:
+            pts = pad_outline_polygon(pad)
+        except Exception:                                    # noqa: BLE001
+            return False
+        if not pts:
+            return False
+        if self.outer:
+            on = [_point_on_board(x, y, self.outer, self.cutouts) for x, y in pts]
+        else:
+            b = self.bounds
+            on = [b[0] <= x <= b[2] and b[1] <= y <= b[3] for x, y in pts]
+        return any(on) and not all(on)
+
     def _readings(self, pads):
-        required, bounds = self.required, self.bounds
+        required, bounds = self.required, self.bounds_measured
         for index, pad in enumerate(pads):
             if _pad_has_no_copper(pad):
                 continue
@@ -5799,6 +5876,12 @@ class EdgeCopperContext:
             if not bounds or not supported:
                 yield PadCopper(index, pad, None, None, '', 'none', (
                     'missing board outline' if not bounds else 'unsupported pad geometry'))
+                continue
+            if getattr(pad, 'castellated', False) and self._straddles(pad):
+                # On the outline by design: the off-board channel exempts an
+                # edge-straddling castellated pad (`pad_copper_overrun_mm`),
+                # and so does this one (#1326: rp2350's Teensy U8, 33 of them).
+                yield PadCopper(index, pad, 0.0, None, '', 'castellated', '')
                 continue
             approximations = getattr(pad, 'geometry_approximations', ())
             reasons = (['simplified pad geometry: ' + ', '.join(approximations)]
@@ -5890,11 +5973,15 @@ class EdgeCopperContext:
                 'minimum_gap_mm': minimum, 'measured_pads': measured,
                 'minimum_gap_by_ref_mm': minimum_by_ref,
                 'complete': self.rectangular and not unmeasured and not rules_unmeasured,
+                'outline_inset_mm': self.inset,
                 'rules_unmeasured': rules_unmeasured,
                 'unmeasured': unmeasured, 'findings': findings,
                 'basis': ('analytic pad copper extrema (custom pads: parsed polygons) '
-                          'vs rectangular Edge.Cuts centreline; '
-                          'other outlines sampled, not certified; no body/track/via/fill check')}
+                          'vs rectangular Edge.Cuts centreline (within '
+                          f'{NEAR_RECTANGLE_MM:g} mm of one: its bbox shrunk by the '
+                          'outline_inset_mm it strays); edge-straddling castellated '
+                          'pads exempt; other outlines sampled, not certified; '
+                          'no body/track/via/fill check')}
 
 
 def grade_pad_edge_clearance(pcb_data, required: float, pcb_file=None) -> Dict:
