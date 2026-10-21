@@ -726,7 +726,8 @@ python3 -X utf8 py_placer/place_simple.py wk/<run>/fixed.kicad_pcb 'wk/<run>/s{s
      will fix it: the part has no room (a WARNING that it fits the usable
      area at neither quarter turn, or that an edge part has no seat there,
      which names what stopped it: a band its overhang never comes down to,
-     or the part in the way), an edge declared more connectors than fit on
+     the part in the way, or a part seated on the adjacent edge that covers
+     its whole line at the corner), an edge declared more connectors than fit on
      it together (`oversubscribed`: the same parts and free span in every
      seed; move a connector to another edge, drop a declaration, or widen a
      band),

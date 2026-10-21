@@ -57,6 +57,17 @@ subset, one row per edge and face. When they do not all fit, the most that
 fit together are seated, the earlier declared on a tie (the intent's
 `edge_connectors[]` order), and the rest are placed as any other part. The
 record (`crowding_text`) is the intent's to fix, the same in every seed.
+
+A line is read against the fixed parts alone, so a part seated on ANOTHER
+edge is walled off it separately (`_corners`): what that part covers at
+every pose its own seat allows (`_covered`) is cut from the line, to a fixed
+point, before the rows are packed. CM5_MINIMA's J501, on the south edge,
+covers x 85.70-98.00 over y 68.8-80.7 wherever it stands, and the west
+edge's J101 and USB701 were given their line up to y 76.0 regardless: of
+seeds 0-3 and 7, four annealed three times and three ended with J501 and J101
+or USB701 illegal at that corner. A part
+the cut leaves no position is placed as any other part, its reason naming
+the parts that walled it.
 """
 from __future__ import annotations
 
@@ -550,29 +561,185 @@ def seats(state, pcb, pcb_file, intent, movable, crowded=None
             continue
         seat = EdgeSeat(ref, edge, axis, face, lines)
         out[ref] = seat
-        own = rot_key(part.rot)
-        rot = own if own in lines else max(lines, key=lambda r: _room(lines[r]))
-        a0, a1 = max(lines[rot].free, key=lambda f: f[1] - f[0])
-        x, y = ((a0 + a1) / 2.0, lines[rot].coord) if axis == 0 else (lines[rot].coord, (a0 + a1) / 2.0)
         was[ref] = (part.x, part.y, part.rot)
-        part.ensure_rotation(rot)
-        part.x, part.y, part.rot = x, y, rot
+        _sit(part, seat)
         said[ref] = (f"edge connector {ref} on the {edge} edge"
                      + (f", facing it ({face})" if face else
                         f", no mating face: {len(lines)} turn(s) seat there"))
         notes.append(said[ref])
-    # parts that each have a seat but do not all fit on their edge together:
-    # the rest go back where they stood and are placed as any other part
-    for rec in _crowding(state, out, [str(c['ref']) for c in entries]):
-        for ref in rec['unseated']:
-            del out[ref]
-            notes.remove(said[ref])
-            part = state.parts[ref]
-            part.x, part.y, part.rot = was[ref]
-            part.ensure_rotation(part.rot)
-        if crowded is not None:
-            crowded.append(rec)
+    # What a part seated on one edge covers wherever it stands is a wall on
+    # every other edge's line (`_corners`), and then the parts on one edge
+    # that do not all fit there together (`_crowding`): either kind goes back
+    # where it stood and is placed as any other part. A part dropped no
+    # longer walls the other edges, so the lines are cut again without it,
+    # and of parts walled off at once (two that wall each other) the later
+    # declared goes first, as `_crowding` breaks a tie.
+    order = [str(c['ref']) for c in entries]
+    gone: Dict[str, str] = {}
+    while True:
+        narrowed, lost = _corners(state, {r: s for r, s in out.items() if r not in gone})
+        if lost:
+            ref = max(lost, key=order.index)
+            gone[ref] = 'corner'
+            unseated[ref] = _cornered_reason(out[ref], lost[ref])
+            continue
+        recs = _crowding(state, narrowed, order)
+        for rec in recs:
+            for ref in rec['unseated']:
+                gone[ref] = 'crowded'
+            if crowded is not None:
+                crowded.append(rec)
+        if not recs:
+            break
+    for ref in gone:
+        del out[ref]
+        notes.remove(said[ref])
+        part = state.parts[ref]
+        part.x, part.y, part.rot = was[ref]
+        part.ensure_rotation(part.rot)
+    for ref, seat in narrowed.items():
+        if seat.lines != out[ref].lines:
+            out[ref] = seat
+            _sit(state.parts[ref], seat)
     return out, notes, unseated
+
+
+def _sit(part, seat) -> None:
+    """Move `part` onto `seat`: at its own turn when the seat has it (else
+    the turn with the most room), in the middle of that turn's longest
+    stretch."""
+    lines = seat.lines
+    own = rot_key(part.rot)
+    rot = own if own in lines else max(lines, key=lambda r: _room(lines[r]))
+    a0, a1 = max(lines[rot].free, key=lambda f: f[1] - f[0])
+    line = lines[rot]
+    x, y = ((a0 + a1) / 2.0, line.coord) if seat.axis == 0 else (line.coord, (a0 + a1) / 2.0)
+    part.ensure_rotation(rot)
+    part.x, part.y, part.rot = x, y, rot
+
+
+def _pose_on(seat, coord, a, rot):
+    return (a, coord, rot) if seat.axis == 0 else (coord, a, rot)
+
+
+def _meet(p, q):
+    """The overlap of two boxes, or None when it has no area."""
+    box = (max(p[0], q[0]), max(p[1], q[1]), min(p[2], q[2]), min(p[3], q[3]))
+    return box if box[2] - box[0] > EPS and box[3] - box[1] > EPS else None
+
+
+def _covered(state, seat) -> Dict[str, list]:
+    """`{face: [box, ...]}`: what `seat`'s part occupies on each board face
+    at EVERY pose its seat allows, as the declared-pose check reads a part
+    (`legality.rect_on`: its courtyard on its own face, its drilled pads'
+    clusters, `legality.far_boxes`, on the other).
+
+    Each turn's boxes are held at both ends of the span its stretches cover
+    -- a box translated along a line covers, everywhere between two
+    positions, what it covers at both -- one pad cluster against itself, and
+    then only what every turn covers. A subset of what the part covers, never
+    more: at CM5_MINIMA's south-west corner the HDMI receptacle J501 (16.90
+    mm, its origin anywhere in x 89.50-94.10) covers x 85.70-98.00 wherever
+    it stands."""
+    from .legality import far_boxes, rect_on
+    part = state.parts[seat.ref]
+    out: Dict[str, list] = {}
+    for face in sorted(part.sides):
+        common = None
+        for rot, line in sorted(seat.lines.items()):
+            ends = [a for f in line.free for a in f]
+            part.ensure_rotation(rot)
+            at = [_pose_on(seat, line.coord, a, rot) for a in (min(ends), max(ends))]
+            got = [rect_on(face, part.side, part.grade_rect(*p), part.tht_rect(*p)) for p in at]
+            boxes = []
+            if got[0] is not None and got[1] is not None:
+                boxes = [m for b0, b1 in zip(far_boxes(got[0]), far_boxes(got[1]))
+                         if (m := _meet(b0, b1)) is not None]
+            common = boxes if common is None else [
+                m for p in common for q in boxes if (m := _meet(p, q)) is not None]
+            if not common:
+                break
+        if common:
+            out[face] = common
+    part.ensure_rotation(part.rot)
+    return out
+
+
+def _walled(state, seat, rot, covered) -> List[Tuple[float, float]]:
+    """The open intervals of `seat`'s origin along its edge, at `rot`, where
+    its part overlaps a box of `covered` (`_covered`'s) on a face both
+    occupy, held SEAT_GAP_MM clear as `pack` holds a wall."""
+    from .legality import far_boxes, rect_on
+    part = state.parts[seat.ref]
+    ax, perp = seat.axis, 1 - seat.axis
+    part.ensure_rotation(rot)
+    at = _pose_on(seat, seat.lines[rot].coord, 0.0, rot)
+    out = []
+    for face, boxes in covered.items():
+        if face not in part.sides:
+            continue
+        mine = rect_on(face, part.side, part.grade_rect(*at), part.tht_rect(*at))
+        if mine is None:
+            continue
+        for m in far_boxes(mine):
+            for q in boxes:
+                if min(m[perp + 2], q[perp + 2]) - max(m[perp], q[perp]) <= EPS:
+                    continue
+                out.append((q[ax] - m[ax + 2] - SEAT_GAP_MM, q[ax + 2] - m[ax] + SEAT_GAP_MM))
+    return out
+
+
+def _corners(state, seats) -> Tuple[Dict[str, EdgeSeat], Dict[str, List[str]]]:
+    """`(seats, lost)`: each seat's lines less every position where its part
+    would overlap what a part seated on ANOTHER edge covers wherever that one
+    stands (`_covered`), cut until nothing changes; `lost` names, for a part
+    left no position at all, the parts that walled it.
+
+    A seat line was read against the fixed parts alone, so a part seated on
+    the adjacent edge near a corner was invisible to it: CM5_MINIMA's J501,
+    seated on the south edge, covers x 85.70-98.00 over y 68.8-80.7 wherever
+    it stands, and the west edge's J101 and USB701 were still given the line
+    up to y 76.0, so the anneal put them there and annealed again. Parts on
+    the same edge are `_crowding`'s; a project
+    that waives KiCad's courtyard rule (#1101) walls nothing."""
+    lines = {r: dict(s.lines) for r, s in seats.items()}
+    walled_by: Dict[str, set] = {r: set() for r in seats}
+    if not getattr(state, 'courtyards_ignored', False):
+        for _ in range(2 * len(seats) + 1):
+            covered = {r: _covered(state, seats[r]._replace(lines=lines[r]))
+                       for r in seats if lines[r]}
+            changed = False
+            for a, sa in seats.items():
+                for rot in list(lines[a]):
+                    line = lines[a][rot]
+                    free = line.free
+                    for b, cov in covered.items():
+                        if b == a or seats[b].edge == sa.edge or not cov:
+                            continue
+                        cut = _walled(state, sa._replace(lines=lines[a]), rot, cov)
+                        less = tuple(p for f0, f1 in free for p in _less(f0, f1, cut))
+                        if less != free:
+                            walled_by[a].add(b)
+                            free = less
+                    if free != line.free:
+                        changed = True
+                        if free:
+                            lines[a][rot] = Line(line.coord, free)
+                        else:
+                            del lines[a][rot]
+            if not changed:
+                break
+    for r, s in seats.items():
+        state.parts[r].ensure_rotation(state.parts[r].rot)
+    narrowed = {r: s._replace(lines=lines[r]) for r, s in seats.items() if lines[r]}
+    lost = {r: sorted(walled_by[r]) for r in seats if not lines[r]}
+    return narrowed, lost
+
+
+def _cornered_reason(seat, who) -> str:
+    return (f"no room along the {seat.edge} edge: every position its seat line had overlaps "
+            f"{', '.join(who)}, seated on another edge, wherever that one stands; declare "
+            f"one of them on another edge or drop a declaration")
 
 
 def _crowding(state, out, order) -> List[dict]:

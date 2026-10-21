@@ -38,7 +38,8 @@ the same way.
    that cannot all stand there together keep the most that fit, the
    earlier declared on a tie; the rest are placed as any other part, and
    the edge is reported once (`oversubscribed`): the intent's to fix, not a
-   seed's. The intent's keep-outs and
+   seed's. A part seated on one edge near a corner walls the other edge's
+   line where it stands wherever it seats. The intent's keep-outs and
    zones bind every part through the anneal's overlap term.
 3. ANNEAL: one cost (`placement/simple.py`) -- signal and rail trees,
    crossings, claims and each claim's `max_mm` limit (a crystal at its
