@@ -3835,11 +3835,16 @@ def _generate_bga_fanout_core(footprint: Footprint,
     obstacle_layer_map = build_layer_map(obstacle_cfg.layers)
     print(f"  Building pad-aware obstacle map ({len(fanned_net_ids)} fanned nets excluded)...")
     _prog("building obstacle map...")
-    obstacles = build_base_obstacle_map(
+    # Pad copper is measured exactly, not stamped (reroute.PadFreeMap): the
+    # stamps carry the track half-width twice (once in the stamp, once as
+    # this extra clearance) and cut back escapes that clear a pad.
+    from bga_fanout.reroute import PadFreeMap
+    obstacles = PadFreeMap(build_base_obstacle_map(
         pcb_data, obstacle_cfg,
         nets_to_route=list(fanned_net_ids),
         extra_clearance=track_width / 2,
-    )
+        stamp_pads=False,
+    ), pcb_data, set(fanned_net_ids), obstacle_cfg)
 
     # Foreign-component pads on copper layers. These supplement the shared map:
     # a foreign pad that shares a net with a BGA ball is dropped from the map

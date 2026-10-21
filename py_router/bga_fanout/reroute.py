@@ -36,6 +36,82 @@ from bga_fanout.escape import get_alternate_channels_for_pad
 from obstacle_map import check_line_clearance
 
 
+class PadFreeMap:
+    """A fanout's obstacle map with pad copper left OFF
+    (build_base_obstacle_map(stamp_pads=False)), and the pads it would have
+    stamped -- every pad of a net the map was not built to route -- measured
+    exactly instead (check_drc.segment_pad_gap, at the clearance the stamp
+    priced the pad at, never below cfg.clearance).
+
+    A fanout map is built with extra_clearance = track_width / 2 on top of
+    stamps that already carry the track's half-width: the guard
+    check_line_clearance's nearest-cell sampling needs, which held every pad a
+    further half track width (plus cell rounding) away. Measured on the
+    recorded chains: bga_fanout cut back end-jogs (ottercast_audio, at R89.1
+    and C95.1) and qfn_fanout's under-pad escape refused stub candidates
+    (mikoto_nrf52840, beside C2.2) whose copper clears those pads exactly. The
+    surface fan's version is qfn_fanout's `_seg_grazes`. Tracks, vias, holes
+    and keep-outs stay on the grid with their guard.
+    """
+
+    def __init__(self, grid, pcb_data, exclude_nets, cfg):
+        from check_drc import _pad_has_no_copper
+        self.grid = grid
+        self._cfg = cfg
+        self._layer_idx = {name: i for i, name in enumerate(cfg.layers)}
+        self._pads = [p for nid, pl in pcb_data.pads_by_net.items()
+                      if nid not in exclude_nets for p in pl
+                      if not _pad_has_no_copper(p)]
+        bb = []
+        for p in self._pads:
+            vs = [v for poly in (getattr(p, 'polygons', None) or ()) for v in poly]
+            if vs:
+                bb.append((min(v[0] for v in vs), min(v[1] for v in vs),
+                           max(v[0] for v in vs), max(v[1] for v in vs)))
+            else:
+                r = 0.5 * math.hypot(p.size_x, p.size_y)
+                bb.append((p.global_x - r, p.global_y - r, p.global_x + r, p.global_y + r))
+        import numpy as np
+        a = np.asarray(bb, dtype=float).reshape(-1, 4)
+        self._x0, self._y0, self._x1, self._y1 = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
+        lcs = [getattr(p, 'local_clearance', 0.0) or 0.0 for p in self._pads]
+        rules = list((getattr(cfg, 'layer_clearances', None) or {}).values())
+        self._reach = max([cfg.clearance] + lcs + rules)
+
+    def pads_clear(self, x1, y1, x2, y2, layer):
+        """Every stamped pad on `layer` clears the segment at cfg.track_width."""
+        if not self._pads:
+            return True
+        import numpy as np
+        from check_drc import segment_pad_gap
+        from net_queries import expand_pad_layers
+        cfg = self._cfg
+        hw = cfg.track_width / 2
+        r = hw + self._reach + 1e-3
+        near = ((self._x1 >= min(x1, x2) - r) & (self._x0 <= max(x1, x2) + r)
+                & (self._y1 >= min(y1, y2) - r) & (self._y0 <= max(y1, y2) + r))
+        base = cfg.layer_clearance(layer, cfg.clearance)
+        for i in np.nonzero(near)[0]:
+            p = self._pads[int(i)]
+            if layer not in expand_pad_layers(p.layers, [layer]):
+                continue
+            need = max(cfg.clearance, cfg.pad_override_clearance(base, p))
+            if segment_pad_gap(x1, y1, x2, y2, p) - hw < need - 1e-9:
+                return False
+        return True
+
+    def line_clear(self, x1, y1, x2, y2, layer, cfg):
+        """check_line_clearance on the pad-free grid's plane for `layer`,
+        then the pads exactly on `layer` -- one name for both, so the plane
+        read and the pads measured cannot be different layers (#845's bug).
+        True for a layer the map has no plane for."""
+        li = self._layer_idx.get(layer)
+        if li is None:
+            return True
+        return (check_line_clearance(self.grid, x1, y1, x2, y2, li, cfg)
+                and self.pads_clear(x1, y1, x2, y2, layer))
+
+
 def segments_clear_of_pads(segments: List[Dict],
                            layer: str,
                            obstacles,
@@ -46,6 +122,7 @@ def segments_clear_of_pads(segments: List[Dict],
     Each segment is a dict with 'start' and 'end' (x, y) tuples. The check is
     done on `layer` using the shared obstacle map (which already encodes
     foreign pads, existing copper and vias; through-hole pads block all layers).
+    A PadFreeMap measures its pads exactly instead (see there).
 
     If obstacles/cfg/layer_map are not provided (None), this is a no-op that
     returns True so callers keep their previous behavior.
@@ -58,7 +135,10 @@ def segments_clear_of_pads(segments: List[Dict],
     for seg in segments:
         (x1, y1) = seg['start']
         (x2, y2) = seg['end']
-        if not check_line_clearance(obstacles, x1, y1, x2, y2, layer_idx, cfg):
+        if isinstance(obstacles, PadFreeMap):
+            if not obstacles.line_clear(x1, y1, x2, y2, layer, cfg):
+                return False
+        elif not check_line_clearance(obstacles, x1, y1, x2, y2, layer_idx, cfg):
             return False
     return True
 

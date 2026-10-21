@@ -487,7 +487,25 @@ def test_layer_scope_decision():
     check("the fixture is genuinely cross-layer: U2 mounts on F.Cu and is "
           "escaped to B.Cu, so the stub's layer and the escape layer differ",
           fp.layer == "F.Cu")
-    t_x, v_x, d_x = _fanout(pcb, "U2", layer="B.Cu")
+    # The stub's primary clearance test (#845) is PadFreeMap.line_clear, which
+    # reads ONE layer name for its grid plane and its exact pads. On this
+    # fixture no escape depends on which plane it reads (via_clears and this
+    # gate already refuse what the B.Cu plane would let through), so no tally
+    # can see the escape layer passed there: the call is spied on instead.
+    from bga_fanout.reroute import PadFreeMap
+    _seen_layers = set()
+    _orig_lc = PadFreeMap.line_clear
+
+    def _spy_lc(self, x1, y1, x2, y2, layer, cfg):
+        _seen_layers.add(layer)
+        return _orig_lc(self, x1, y1, x2, y2, layer, cfg)
+    PadFreeMap.line_clear = _spy_lc
+    try:
+        t_x, v_x, d_x = _fanout(pcb, "U2", layer="B.Cu")
+    finally:
+        PadFreeMap.line_clear = _orig_lc
+    check("the stub's clearance test reads the stub's own layer (F.Cu), never "
+          "the escape layer (#845)", _seen_layers == {"F.Cu"}, str(_seen_layers))
     e = _erased(pcb, "U2")
     check("the stub's copper layer is footprint.layer, not the escape layer "
           "(#195: putting it on the escape layer would float it above the pad)",
@@ -497,12 +515,12 @@ def test_layer_scope_decision():
     # read the mount layer, and this configuration is one of only two places in
     # the repo that can tell the difference -- every board in the corpus sweep
     # runs escape layer == footprint.layer, where the distinction is invisible.
-    check("cross-layer tally pinned at 14 tracks / 13 vias / 28 dropped "
-          "(15 / 13 / 27 before the #845 layer fix). Filtering erased segments "
-          "by the ESCAPE layer instead of the stub's layer selects a DIFFERENT "
-          "set (25 vs 17 pairs on this board) and moves this number -- which "
-          "is what makes this a real check",
-          (len(t_x), len(v_x), len(d_x)) == (14, 13, 28),
+    check("cross-layer tally pinned at 15 tracks / 13 vias / 27 dropped "
+          "(14 / 13 / 28 before the stub measured pads exactly, PadFreeMap). "
+          "Filtering erased segments by the ESCAPE layer instead of the stub's "
+          "layer selects a DIFFERENT set (25 vs 17 pairs on this board) and "
+          "moves this number -- which is what makes this a real check",
+          (len(t_x), len(v_x), len(d_x)) == (15, 13, 27),
           f"got {(len(t_x), len(v_x), len(d_x))}")
 
 
@@ -610,11 +628,15 @@ NOOP_ROWS = [
 
 # Each half alone on routed_output U2, and the pairs it leaves behind.
 # (arm, tally t/v/d, residual pairs via/seg/pad)
+# Every arm escapes one more pad since the stub measures pads exactly
+# (bga_fanout.reroute.PadFreeMap): Net-(U2A-DATA_23)'s 0.67 mm F.Cu stub to an
+# existing via clears U2.68 by 0.188 mm at a 0.1 rule, and the pad-stamped
+# map refused it. The residual pairs, which are this file's point, are unchanged.
 ARM_ROWS = [
-    ('off',     (27, 26, 15), (7, 32, 0)),
-    ('via',     (20, 19, 22), (0, 13, 0)),   # via contacts gone, 13 seg remain
-    ('seg',     (16, 15, 26), (2, 0, 0)),    # seg contacts gone,  2 via remain
-    ('all',     (14, 13, 28), (0, 0, 0)),
+    ('off',     (28, 26, 14), (7, 32, 0)),
+    ('via',     (21, 19, 21), (0, 13, 0)),   # via contacts gone, 13 seg remain
+    ('seg',     (17, 15, 25), (2, 0, 0)),    # seg contacts gone,  2 via remain
+    ('all',     (15, 13, 27), (0, 0, 0)),
 ]
 
 # (board, ref, post-fix tally t/v/d, pre-fix pairs via/seg/pad)
@@ -624,7 +646,7 @@ ARM_ROWS = [
 # that showed zero yield; the full 408-footprint sweep found 49 pairs on 9
 # footprints across 6 boards, so it ships.
 BOARD_ROWS = [
-    (U2BOARD, "U2", (14, 13, 28), (7, 32, 0)),
+    (U2BOARD, "U2", (15, 13, 27), (7, 32, 0)),   # (14, 13, 28) before PadFreeMap
     (ORANGE, "U7", (2, 0, 4), (3, 0, 4)),
     # (33, 33, 62) before #1342: its 6 escapes and 4 drops on single-pad
     # (NC) nets are no longer fanned at all.

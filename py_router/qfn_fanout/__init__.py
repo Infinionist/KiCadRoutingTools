@@ -646,7 +646,7 @@ def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
     (issue #410); each uses its own long-axis escape direction from analyze_pad
     -- nothing here assumes a group shares an edge axis."""
     from obstacle_map import (build_base_obstacle_map, build_layer_map,
-                              check_line_clearance, point_to_segment_distance)
+                              point_to_segment_distance)
     from geometry_utils import segment_to_segment_distance
     from bga_fanout.reroute import _seg_hits_pad
     from bga_fanout.geometry import clamp_via_to_pad
@@ -680,8 +680,14 @@ def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
     install_layer_clearances(cfg, None, None, pcb_data)  # #498
     layer_map = build_layer_map(cfg.layers)
     _prog(0, 0, "building obstacle map...")
-    obstacles = build_base_obstacle_map(pcb_data, cfg, nets_to_route=list(fanned_nets),
-                                        extra_clearance=track_width / 2)
+    # Pad copper is measured exactly, not stamped (bga_fanout.reroute.
+    # PadFreeMap): the stamps carry the track half-width twice and refused
+    # pad -> via stubs that clear the pad (mikoto_nrf52840, beside C2.2).
+    from bga_fanout.reroute import PadFreeMap
+    obstacles = PadFreeMap(build_base_obstacle_map(
+        pcb_data, cfg, nets_to_route=list(fanned_nets),
+        extra_clearance=track_width / 2, stamp_pads=False),
+        pcb_data, set(fanned_nets), cfg)
     # #845: the obstacle plane for the STUB, which is emitted on the pad's own
     # mount layer (:766 and :777, deliberately -- putting it on an inner/back
     # escape layer would float it above the pad, #195). This used to resolve
@@ -699,7 +705,8 @@ def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
     # Per-layer clearance comes along for free: build_base_obstacle_map stamps
     # each layer at that layer's own rule (#498, installed into cfg at :331),
     # so reading the mount layer's plane also reads the mount layer's floor.
-    stub_layer_idx = layer_map.get(footprint.layer)
+    stub_layer = footprint.layer
+    stub_layer_idx = layer_map.get(stub_layer)
 
     # Foreign obstacles, keyed by net so the via's OWN net is exempt at check
     # time. A through-via spans every copper layer, so foreign tracks on ANY
@@ -1083,8 +1090,7 @@ def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
             # map, and #619 is pure geometry on the mount layer that must run
             # regardless.
             if (stub_layer_idx is None or
-                    check_line_clearance(obstacles, px, py, _rvx, _rvy,
-                                         stub_layer_idx, cfg)) \
+                    obstacles.line_clear(px, py, _rvx, _rvy, stub_layer, cfg)) \
                     and stub_clears_erased(px, py, _rvx, _rvy, pi.pad.net_id) \
                     and not run_output_conflict(
                         _rvx, _rvy, pi.pad.net_id, placed, px, py,
@@ -1095,7 +1101,7 @@ def _underpad_via_escape(footprint, pcb_data, pad_infos, layout, layer,
         for d in candidate_offsets(pi.pad_width, mode):
             vx, vy = snap(px + ex * d), snap(py + ey * d)
             stub_ok = (stub_layer_idx is None or
-                       check_line_clearance(obstacles, px, py, vx, vy, stub_layer_idx, cfg))
+                       obstacles.line_clear(px, py, vx, vy, stub_layer, cfg))
             if stub_ok \
                     and stub_clears_erased(px, py, vx, vy, pi.pad.net_id) \
                     and via_clears(vx, vy, pi.pad.net_id, placed, px, py):
