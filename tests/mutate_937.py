@@ -100,10 +100,17 @@ ROWS = [
      "        t = tool_of(s.split())\n        if t and t.startswith('check_'):",
      "        t = tool_of(s.split())\n        if False:",
      (T_CHK,), KILLED),
-    # Step 5b's two asserts, which shipped in a fenced block no test ran.
+    # Step 5b's asserts, which shipped in a fenced block no test ran.
     ('checker-net-coverage-blinded', 'chk',
-     "    orphans = exclusions ^ impedance_se",
-     "    orphans = set()",
+     "                orphans.add(net)",
+     "                pass",
+     (T_CHK,), KILLED),
+    # #1346: a LATER route step claims what an earlier one excluded, and an
+    # earlier claim does not count. Crediting every route step alike is the
+    # loosening the "claimed only before" row in test_937 refuses.
+    ('checker-net-coverage-any-claim', 'chk',
+     "            if not any(_claims(later, net) for later in routes[i + 1:]):",
+     "            if not any(_claims(later, net) for later in routes):",
      (T_CHK,), KILLED),
     # A refusal that exits 0 is a checker nobody has to obey.
     ('checker-refusal-exits-clean', 'chk',

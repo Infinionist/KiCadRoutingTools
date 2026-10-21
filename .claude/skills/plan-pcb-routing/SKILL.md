@@ -1206,7 +1206,10 @@ added to the plane step's `--nets`, ending with 0/23 pads connected while the ru
 reported success.
 
 **The invariant: every routable net (≥2 pads, not no-connect) must be claimed by
-exactly one stage. A net excluded from any stage MUST be claimed by a later one.**
+a stage. A net a route step excludes (`!X`) MUST be claimed by another: Step
+2b's impedance pass, or a LATER route step whose `--nets` takes it.** A claim
+before the exclusion does not count: the last route step to see a net is the
+one whose in-run finalize answers for it.
 
 Before running any command, write the net-handling ledger and reconcile it
 mechanically — do not eyeball it:
@@ -1217,28 +1220,42 @@ mechanically — do not eyeball it:
      in-run finalize taps whatever fill can't reach)
    - `diff-pair route` — detected pairs
    - `impedance SE route (Step 2b)` — single-ended controlled-impedance nets (RF/antenna
-     50 ohm, DDR SSTL 40 ohm); the ONLY nets excluded from the route step
-   - `pour` — nets the plane step pours; they are ALSO in the route step (see above)
+     50 ohm, DDR SSTL 40 ohm); the only nets the route step excludes for good
+   - `pour` — nets the plane step pours; they are ALSO in the route step (see above).
+     In Step 8's pour-last flow the signal step, which runs before that pour
+     exists, may leave the poured net out (`--nets "*" "!GND"`), and the
+     closing route step after the pour claims it
    - `wide trace` — power carried via `--power-nets` widths (never excluded)
 
-2. **Diff the pattern lists (#562 rules).** Two checks, and note that the old
+2. **Diff the pattern lists (#562 rules).** Three checks, and note that the old
    "every poured net must be excluded" rule is now exactly backwards — a
-   poured net that is missing from the route step is the bug, because nothing
-   then welds its pads to the pour:
-   - the route step's exclusions MUST equal the Step-2b impedance set;
+   poured net that no route step after its pour claims is the bug, because
+   nothing then welds its pads to the pour:
+   - every net a route step excludes is a Step-2b impedance net or is claimed
+     by a LATER route step;
+   - every Step-2b impedance net is excluded from a route step;
    - every poured net MUST appear in the route step's `--power-nets` (that is
      where the finalize's taps and welds get their width).
    ```python
-   route_exclusions = {"RF"}                    # the !X you will pass route.py
-   plane_nets       = {"GND", "+3V3"}           # the --nets you pass route_planes.py
-   impedance_se     = {"RF"}                    # nets routed in Step 2b (route.py --impedance)
-   power_nets       = {"GND", "+3V3"}           # the --power-nets on the route step
-   orphans = route_exclusions ^ impedance_se
+   from fnmatch import fnmatchcase
+   route_steps  = [["*", "!RF"]]              # each route.py step's --nets, in plan order
+   plane_nets   = {"GND", "+3V3"}             # the --nets you pass route_planes.py
+   impedance_se = {"RF"}                      # nets routed in Step 2b (route.py --impedance)
+   power_nets   = {"GND", "+3V3"}             # the --power-nets on the route steps
+   def claims(step, net):                     # the router's order: includes add, "!" removes
+       return (not any(p[0] == "!" and fnmatchcase(net, p[1:]) for p in step)
+               and any(p[0] != "!" and fnmatchcase(net, p) for p in step))
+   excluded = [{p[1:] for p in step if p[0] == "!"} for step in route_steps]
+   orphans = {n for i, ex in enumerate(excluded) for n in ex - impedance_se
+              if not any(claims(later, n) for later in route_steps[i + 1:])}
    assert not orphans, f"Net-coverage gap: {sorted(orphans)} handled by no stage"
+   unexcluded = impedance_se - set().union(*excluded)
+   assert not unexcluded, f"Step 2b nets no route step excludes: {sorted(unexcluded)}"
    unsized = plane_nets - power_nets
    assert not unsized, f"Poured but no route-step width: {sorted(unsized)}"
    ```
-   Do not proceed until both are empty.
+   Do not proceed until all three are empty. `route_plan_check.py` R14 runs
+   the same checks on the emitted plan (Step 9).
 
 3. **Secondary grounds / split rails** (`AGND`, `GNDA`, `DGND`, `VREF`, or any rail
    tied to its parent through a single 0Ω resistor or ferrite bead — find the tie
@@ -2121,7 +2138,9 @@ after the signal steps — the pour flows around existing copper; 80% of human
 `route.py --nets "*"` at the signal steps' parameters: a late pour connects
 nothing until that step's in-run finalize welds it (see "End every chain on
 route.py"; never `repair_planes.py`, which repairs at the board's class via
-and track, not the chain's sizes). Power rails as pours are a minority
+and track, not the chain's sizes). The signal steps may leave GND out
+(`--nets "*" "!GND"`) or keep it; either way that closing step is the one
+that claims GND (Step 5b, R14). Power rails as pours are a minority
 practice on 2-layer (≈38% of human boards) — pour them too when there's room,
 but GND-both-sides is the priority. Only plane-first on 2-layer boards with
 light signal content.
@@ -2604,7 +2623,7 @@ decided by signal type in Step 4c, never as a spreading knob.
 
 ## Important Notes
 
-0. **Net-coverage invariant (Step 5b)** - Every routable net must be claimed by a stage. Since #562 the route step takes `"*"` INCLUDING the plane nets, so the only legitimate exclusions are the Step-2b impedance nets; reconcile the exclusion set against that set (symmetric difference empty), check every poured net also appears in the route step's `--power-nets`, and confirm `check_connected.py`'s unrouted list is empty at the end. This is the guard against a net (e.g. a secondary ground like GNDA) being silently dropped by every stage.
+0. **Net-coverage invariant (Step 5b)** - Every routable net must be claimed by a stage. Since #562 the route step takes `"*"` INCLUDING the plane nets, so a route step's exclusions are the Step-2b impedance nets plus, in Step 8's pour-last flow, a net a LATER route step claims (GND, left out of the signal step and claimed by the closing step after the pour). Reconcile them with Step 5b's asserts (every exclusion claimed by Step 2b or a later route step, every Step-2b net excluded), check every poured net also appears in the route step's `--power-nets`, and confirm `check_connected.py`'s unrouted list is empty at the end. This is the guard against a net (e.g. a secondary ground like GNDA) being silently dropped by every stage.
 1. **Always check for GND connections** - If a component has GND pads but GND isn't being fanned out, the fanout's own plane-drop vias (#424) plus the route step's in-run finalize will handle it
 2. **Fanout ALL non-plane nets** - Use `--nets "*" "!GND" "!VCC"` to fan out all nets except those handled by planes. Do NOT use `"/*"` alone as it misses nets with non-hierarchical names like `Net-(U9-Pad1)`. Unconnected nets are automatically filtered out.
 3. **Order matters** - Fanout (with plane-ball drops) comes AFTER the Step 1 bare pour (#424: planes FIRST, so the fill picks up the drop vias while intact and the fragility field steers every later route), then diff pairs, then the all-nets route with the plane nets INCLUDED (#562 — the run ends with the in-run plane finalize, so there is no separate repair step), then optional GND return vias/stitching. Signals route before stitching because stitching vias can relocate around tracks, but a diff pair cannot relocate around a badly placed via
@@ -3288,7 +3307,7 @@ SECTION here each rule comes from so you can argue with it at its source.
 **Run `--list` BEFORE you author the plan**, not after it is refused — it
 prints all seventeen in a few lines. The five that bite most often are: the
 chain ends on `route.py`, verification is commented rather than executable,
-no pipes, Step 5b's two net-coverage `assert`s, and one cap pass after the
+no pipes, Step 5b's net-coverage `assert`s, and one cap pass after the
 last fanout.
 
 Exit **0** checked and clean — proceed. **1** the checker itself crashed:
