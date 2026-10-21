@@ -7172,6 +7172,7 @@ def merge_close_same_net_vias(all_new_vias, all_new_segments, pcb_data,
                      _p.drill, _all_cu))
 
     kept, merged, unmergeable = [], 0, 0
+    moved = set()   # id() of segments re-anchored onto a survivor
     for nv in all_new_vias:
         nid = nv['net_id']
         nx, ny = nv['x'], nv['y']
@@ -7190,8 +7191,10 @@ def merge_close_same_net_vias(all_new_vias, all_new_segments, pcb_data,
                 a, b = _seg_ends(s)
                 if a and abs(a[0] - nx) < EPS and abs(a[1] - ny) < EPS:
                     _set_end(s, 'start', survivor)
+                    moved.add(id(s))
                 if b and abs(b[0] - nx) < EPS and abs(b[1] - ny) < EPS:
                     _set_end(s, 'end', survivor)
+                    moved.add(id(s))
             # #508 finding 12: the plane engines stamp the new via and its tap
             # segments into pcb_data as OBJECTS during routing; updating only
             # the write-list dicts left the BOARD carrying a via the file
@@ -7207,8 +7210,10 @@ def merge_close_same_net_vias(all_new_vias, all_new_segments, pcb_data,
                     continue
                 if abs(ps.start_x - nx) < EPS and abs(ps.start_y - ny) < EPS:
                     ps.start_x, ps.start_y = survivor
+                    moved.add(id(ps))
                 if abs(ps.end_x - nx) < EPS and abs(ps.end_y - ny) < EPS:
                     ps.end_x, ps.end_y = survivor
+                    moved.add(id(ps))
             merged += 1
             continue
         if blocked:
@@ -7218,9 +7223,27 @@ def merge_close_same_net_vias(all_new_vias, all_new_segments, pcb_data,
 
     if merged:
         all_new_vias[:] = kept
+        # A leg that ran from the dropped via to its survivor now has both
+        # ends on the survivor: zero-length copper that connects nothing (the
+        # survivor's barrel already joins its layers) and that KiCad grades as
+        # "Tracks crossing" against tracks millimetres away. Drop exactly the
+        # re-anchored segments that degenerated, from the write list and from
+        # the board mirror alike.
+        def _degenerate(s):
+            a, b = _seg_ends(s)
+            return (id(s) in moved and a and b
+                    and abs(a[0] - b[0]) < EPS and abs(a[1] - b[1]) < EPS)
+        n_before = len(all_new_segments)
+        all_new_segments[:] = [s for s in all_new_segments if not _degenerate(s)]
+        dropped = n_before - len(all_new_segments)
+        _board_segs = getattr(pcb_data, 'segments', None)
+        if _board_segs:
+            _board_segs[:] = [s for s in _board_segs if not _degenerate(s)]
         if verbose:
             print(f"  Via reuse: merged {merged} same-net via(s) within hole-to-hole "
-                  f"clearance ({hole_to_hole_clearance}mm) onto an existing same-net via")
+                  f"clearance ({hole_to_hole_clearance}mm) onto an existing same-net via"
+                  + (f"; dropped {dropped} leg(s) left zero-length by the merge"
+                     if dropped else ""))
     if unmergeable and verbose:
         print(f"  WARNING: {unmergeable} same-net via(s) violate hole-to-hole but the "
               f"nearby via does not span their layers -- left in place (needs a nudge)")
