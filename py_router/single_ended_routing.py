@@ -5764,7 +5764,8 @@ def _route_multipoint_taps_impl(
             _ex, _ey = _tgt_isl[path[-1]]
             end_original = (_ex, _ey, path_end_layer)
         else:
-            end_original = (tgt_x, tgt_y, path_end_layer)
+            end_original = (tgt_x, tgt_y,
+                            _tap_target_layer(tgt_pad, layer_names, path_end_layer))
         # Barrel-in-fill completion (#562): the edge is done at the first via
         # piercing the landing region -- truncate the tail before emission.
         path, _fill_end = _trim_after_fill_via(path, coord, layer_names,
@@ -5963,6 +5964,34 @@ def _terminal_copper_on_layer(pcb_data, net_id, x, y, layer) -> bool:
         if layer in spanned:
             return True
     return False
+
+
+def _tap_target_layer(tgt_pad, layer_names, path_end_layer) -> str:
+    """The layer a phase-3 tap edge's end connector is judged on: the TARGET's
+    own layer (``pad_info``'s layer index), as the single-ended route and the
+    multipoint main edge pass theirs -- never the layer the path happened to
+    end on.
+
+    ``_path_to_segments_vias`` draws the connector from the path's last cell
+    to the target on the path's end layer only when that IS the original's
+    layer, or when ``_terminal_copper_on_layer`` finds the net's copper under
+    the target on it (a through-hole pad, a via covering it -- #505). Passing
+    the path's own layer as the original's made that test vacuous: a tap that
+    reached an SMD pad through a #189/#535 unblock via -- in the pad off its
+    centre, or off the pad with its escape stub -- ended on the via's inner or
+    back layer, and a connector was drawn on that layer to the centre of a pad
+    with no copper there. The via already joins the pad (by overlap, or by its
+    stub), so the connector joined nothing; it dangled, and being terminal
+    copper it was obstacle-exempt. glasgow_revC: GND In1.Cu (86.70,91.90)-
+    (86.785,92.50) to C24.2, a B.Cu-only pad; on main, GND B.Cu
+    (95.20,105.40)-(95.15,105.30) to U25.2, an F.Cu pad."""
+    try:
+        li = int(tgt_pad[2])
+    except (IndexError, TypeError, ValueError):
+        return path_end_layer
+    if 0 <= li < len(layer_names):
+        return layer_names[li]
+    return path_end_layer
 
 
 def _bridge_inside_own_through_via(pcb_data, net_id, config, layer, a, b) -> bool:
