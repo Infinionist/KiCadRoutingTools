@@ -302,9 +302,11 @@ def test_a_part_nothing_is_placed_on_has_no_body():
            "ulx3s AE1 (a PCB antenna, not placed) has no body")
     sc = SC.build_scene(parse_kicad_pcb(os.path.join(
         FC.ROOT, 'kicad_files', 'rp2350_fpga_eensy_prePlane.kicad_pcb')))
+    # The control is U6 (the QFN-60, assembled): U1 is marked DNP on this
+    # board, and a DNP part draws no body since #1350.
     _check(sc['parts']['J2']['body'] is None
-           and sc['parts']['U1']['body'] is not None,
-           'rp2350 J2 (a Tag-Connect footprint) has no body; U1 keeps one')
+           and sc['parts']['U6']['body'] is not None,
+           'rp2350 J2 (a Tag-Connect footprint) has no body; U6 keeps one')
     sc = SC.build_scene(parse_kicad_pcb(os.path.join(
         FC.ROOT, 'kicad_files', 'esp_prog.kicad_pcb')))
     _check(sc['parts']['Ref*']['body'] is not None,
