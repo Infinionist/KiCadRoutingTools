@@ -99,9 +99,29 @@ def effective_floors(constraints, copper_layers):
     def floor(constraint_val, fab_val):
         return max(constraint_val or 0.0, fab_val)
 
+    # #1349: the diameter and the drill are floored separately, so a board
+    # whose hole minimum is large and whose via minimum is small got a via
+    # whose drill is wider than the via (One-Air-Max: min_via_diameter 0.3,
+    # min_through_hole_diameter 0.508 -> "0.45/0.508"). The diameter must hold
+    # the drill plus a ring each side: the board's min_via_annular_width (KiCad
+    # grades it), and never less than the ring of the smallest via the active
+    # tier can make (the fab table's 'annular' is the PTH-pad ring, which no
+    # tier's via meets). That changes nothing on a board whose working via
+    # already met both: over the corpus, the 58 of 437 projects it moves are
+    # exactly those whose old suggestion failed their own annular rule.
+    via_drill = floor(constraints.get('min_through_hole_diameter'), fab['via_drill'])
+    via_ring = max(constraints.get('min_via_annular_width') or 0.0,
+                   (fmin['via_diameter'] - fmin['via_drill']) / 2.0)
+    via_dia = floor(constraints.get('min_via_diameter'), fab['via_diameter'])
+    via_held = round(via_drill + 2.0 * via_ring, 4)
+
     return {
-        'working_via_diameter': floor(constraints.get('min_via_diameter'), fab['via_diameter']),
-        'working_via_drill':    floor(constraints.get('min_through_hole_diameter'), fab['via_drill']),
+        'working_via_diameter': max(via_dia, via_held),
+        'working_via_drill':    via_drill,
+        # The ring the working via was sized with, and whether the drill (not
+        # a diameter minimum) set its diameter -- print_design_rules says so.
+        'working_via_ring':     round(via_ring, 4),
+        'working_via_from_drill': via_held > via_dia + 1e-9,
         # Advanced small via for fine-pitch escape only. The fab's smallest reachable
         # via (the rung 'standard' escalates to), not floored by the board's nominal.
         'fine_via_diameter':    fmin['via_diameter'],
@@ -825,6 +845,13 @@ def print_design_rules(pcb_path):
     # a board minimum ABOVE the JLC figure is exactly the case where the two
     # disagreed: the printed 0.2 went into every command and check_drc graded at
     # the board's 0.25 anyway.
+    if eff.get('working_via_from_drill'):
+        print(f"  - working via {eff['working_via_diameter']}/{eff['working_via_drill']}: "
+              f"the drill {eff['working_via_drill']} is the board's "
+              f"min_through_hole_diameter (or the fab drill), so the diameter is that "
+              f"drill plus a {eff['working_via_ring']} ring each side (the board's "
+              f"min_via_annular_width, at least the ring of the fab tier's smallest "
+              f"via), not the smaller via minimum (#1349).")
     _h2h_con = float((dr['constraints'] or {}).get('min_hole_to_hole') or 0.0)
     if _h2h_con > eff['fab']['hole_to_hole']:
         print(f"  - hole-to-hole {eff['drc_hole_to_hole']} comes from the BOARD's "

@@ -960,7 +960,14 @@ is the value to route *and* grade at (#603 — printing the bare fab 0.2 while
 toolchain would not honour). Where an explicit `--hole-to-hole-clearance` /
 `--board-edge-clearance` is below such a minimum, `check_drc` now says it is
 being clamped (on stderr, so it survives `--quiet`) instead of substituting
-silently. The floor spells out
+silently. The **working via** is the board's `min_via_diameter` /
+`min_through_hole_diameter` (or the fab via, where larger). Its diameter is
+always at least the drill plus a ring each side: the board's
+`min_via_annular_width`, never less than the ring of the active tier's
+smallest via. A board whose hole minimum is large and whose via minimum is
+small used to be suggested a drill wider than its via (#1349, One-Air-Max:
+`0.45/0.508`, now `0.608/0.508`), and a line says when the drill set the
+diameter. The floor spells out
 two distinct rules the router honours: **hole-to-hole** (drill-to-drill) is
 net-INDEPENDENT and applies to via/via, via/pad-drill and pad-drill/pad-drill on
 *all* nets including same-net; **copper clearance** applies to via/pad and
